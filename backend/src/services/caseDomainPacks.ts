@@ -21,9 +21,13 @@ const SCROLLING_V1_FIELDS = new Set([
 const CASE_EVIDENCE_OPERATORS: ReadonlySet<CaseEvidenceSignatureOperator> =
   new Set(['eq', 'contains_any', 'gte', 'lte']);
 
-const SCROLLING_V1_REASON_CODES = new Set([
+export const SCROLLING_V1_REASON_CODES = [
   'buffer_stuffing',
   'sf_composition_slow',
+  'display_hal',
+  'prediction_error',
+  'app_jank_unattributed',
+  'frame_timeline_unattributed',
   'binder_sync_blocking',
   'gc_jank',
   'gc_pressure_cascade',
@@ -43,9 +47,16 @@ const SCROLLING_V1_REASON_CODES = new Set([
   'main_thread_file_io',
   'uninterruptible_wait',
   'binder_timeout',
+  'lock_contention',
+  'render_sync_wait',
+  // Legacy snapshots remain readable, but current Skills require direct
+  // lock/Binder evidence and no longer emit this q4b-only classification.
   'lock_binder_wait',
   'unknown',
-]);
+] as const;
+
+const SCROLLING_V1_REASON_CODE_SET: ReadonlySet<string> =
+  new Set(SCROLLING_V1_REASON_CODES);
 
 export function validateCaseDomainPack(
   frontmatter: CaseKnowledgeFrontmatter,
@@ -108,7 +119,7 @@ function validateRootCause(
   fieldPath: string,
   issues: CaseKnowledgeValidationIssue[],
 ): void {
-  if (!SCROLLING_V1_REASON_CODES.has(rootCause)) {
+  if (!SCROLLING_V1_REASON_CODE_SET.has(rootCause)) {
     issues.push(
       issue(
         filePath,
@@ -161,7 +172,7 @@ function validateReasonCode(
     ? signature.value
     : [signature.value];
   for (const value of values) {
-    if (typeof value !== 'string' || !SCROLLING_V1_REASON_CODES.has(value)) {
+    if (typeof value !== 'string' || !SCROLLING_V1_REASON_CODE_SET.has(value)) {
       issues.push(
         issue(
           filePath,

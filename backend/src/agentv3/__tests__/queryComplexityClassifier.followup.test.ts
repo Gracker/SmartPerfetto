@@ -51,6 +51,7 @@ const claudeSdkMock = require('@anthropic-ai/claude-agent-sdk') as {
 import {
   classifyQueryComplexity,
   isAcknowledgementFollowupReason,
+  PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
 } from '../queryComplexityClassifier';
 import { SCROLLING_TRIAGE_LOOKUP_REASON } from '../quickScrollingTriageIntent';
 import type { ComplexityClassifierInput } from '../types';
@@ -83,6 +84,55 @@ function makeInput(override: Partial<ComplexityClassifierInput>): ComplexityClas
 }
 
 describe('classifyQueryComplexity — keyword pre-filter', () => {
+  it('hard-routes an explicit prior-evidence-only follow-up without calling the classifier model', async () => {
+    const result = await classifyQueryComplexity(makeInput({
+      query: '只基于上一条已经给出的刷新率回答，不要重新分析，也不要调用工具。',
+      previousQueries: ['这个 trace 的刷新率是多少？'],
+    }));
+
+    expect(result).toEqual({
+      complexity: 'quick',
+      reason: PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
+      source: 'hard_rule',
+    });
+    expect(claudeSdkMock.query).not.toHaveBeenCalled();
+  });
+
+  it('lets an explicit prior-evidence-only follow-up outrank a retained reference trace', async () => {
+    const result = await classifyQueryComplexity(makeInput({
+      query: '只基于上一条已经给出的刷新率回答，不要重新分析，也不要调用工具。',
+      previousQueries: ['对比两条 trace 的刷新率。'],
+      hasReferenceTrace: true,
+    }));
+
+    expect(result).toEqual({
+      complexity: 'quick',
+      reason: PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
+      source: 'hard_rule',
+    });
+    expect(claudeSdkMock.query).not.toHaveBeenCalled();
+  });
+
+  it('does not hard-route prior-evidence wording without an actual prior turn', async () => {
+    const result = await classifyQueryComplexity(makeInput({
+      query: '只基于上一条已经给出的刷新率回答，不要重新分析，也不要调用工具。',
+      previousQueries: [],
+    }));
+
+    expect(result.source).toBe('ai');
+    expect(result.reason).not.toBe(PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON);
+  });
+
+  it('does not treat an explicit rerun request as a prior-evidence-only follow-up', async () => {
+    const result = await classifyQueryComplexity(makeInput({
+      query: '基于上一轮重新做一次完整分析并重新调用工具。',
+      previousQueries: ['先前分析'],
+    }));
+
+    expect(result.source).toBe('ai');
+    expect(result.reason).not.toBe(PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON);
+  });
+
   describe('CONFIRM_KEYWORDS in short query (<20 chars) → quick', () => {
     const cases = [
       '谢谢',

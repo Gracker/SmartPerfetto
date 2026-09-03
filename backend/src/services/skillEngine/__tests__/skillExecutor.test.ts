@@ -113,6 +113,71 @@ describe('normalizeLayer', () => {
 });
 
 // =============================================================================
+// Test Suite: SQL fragment composition
+// =============================================================================
+
+describe('SQL fragment composition', () => {
+  let executor: SkillExecutor;
+  let mockTraceProcessor: ReturnType<typeof createMockTraceProcessorService>;
+
+  beforeEach(() => {
+    mockTraceProcessor = createMockTraceProcessorService();
+    executor = createSkillExecutor(mockTraceProcessor);
+    executor.setFragmentRegistry(new Map([
+      ['fragments/first.sql', 'first_cte AS (SELECT 1 AS value)\n-- FIRST_FRAGMENT_END'],
+      ['fragments/second.sql', 'second_cte AS (SELECT 2 AS value)\n-- SECOND_FRAGMENT_END'],
+    ]));
+  });
+
+  it('keeps CTE separators outside trailing line comments', async () => {
+    const skill: SkillDefinition = {
+      name: 'fragment_comment_separator',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Fragment comment separator'),
+      steps: [{
+        id: 'query',
+        type: 'atomic',
+        sql_fragments: ['fragments/first.sql', 'fragments/second.sql'],
+        sql: 'WITH root_cte AS (SELECT 3 AS value) SELECT value FROM root_cte',
+      }],
+    };
+    executor.registerSkill(skill);
+
+    const result = await executor.execute('fragment_comment_separator', 'trace-1');
+    const executedSql = mockTraceProcessor.query.mock.calls[0]?.[1];
+
+    expect(result.success).toBe(true);
+    expect(executedSql).toContain('-- FIRST_FRAGMENT_END\n,\nsecond_cte');
+    expect(executedSql).toContain('-- SECOND_FRAGMENT_END\n,\nroot_cte');
+    expect(executedSql).not.toContain('-- FIRST_FRAGMENT_END,');
+    expect(executedSql).not.toContain('-- SECOND_FRAGMENT_END,');
+  });
+
+  it('keeps a comment-tailed fragment separate from a SELECT body', async () => {
+    const skill: SkillDefinition = {
+      name: 'fragment_comment_select_body',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Fragment comment select body'),
+      steps: [{
+        id: 'query',
+        type: 'atomic',
+        sql_fragments: ['fragments/first.sql'],
+        sql: 'SELECT value FROM first_cte',
+      }],
+    };
+    executor.registerSkill(skill);
+
+    const result = await executor.execute('fragment_comment_select_body', 'trace-1');
+    const executedSql = mockTraceProcessor.query.mock.calls[0]?.[1];
+
+    expect(result.success).toBe(true);
+    expect(executedSql).toContain('-- FIRST_FRAGMENT_END\nSELECT value FROM first_cte');
+  });
+});
+
+// =============================================================================
 // Test Suite: LayeredResult
 // =============================================================================
 
@@ -2072,6 +2137,100 @@ describe('Skill Reference Step 执行', () => {
     expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', 'SELECT 7 as value');
   });
 
+  it('required 子 skill 失败时应该让父 skill 失败并保留审计结果', async () => {
+    const childSkill: SkillDefinition = {
+      name: 'required_child_skill',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('Required Child Skill'),
+      inputs: [{name: 'start_ts', type: 'timestamp', required: true}],
+      sql: 'SELECT ${start_ts} as start_ts',
+    };
+    const parentSkill: SkillDefinition = {
+      name: 'required_child_parent',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Required Child Parent'),
+      steps: [{id: 'required_child', skill: 'required_child_skill'}],
+    };
+    executor.registerSkill(childSkill);
+    executor.registerSkill(parentSkill);
+
+    const result = await executor.execute('required_child_parent', 'trace-1');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('start_ts');
+    expect(result.rawResults?.required_child).toMatchObject({
+      stepType: 'skill',
+      success: false,
+    });
+    expect(mockTraceProcessor.query).not.toHaveBeenCalled();
+  });
+
+  it('optional 子 skill 失败时应该继续父 skill 并保留失败审计', async () => {
+    const childSkill: SkillDefinition = {
+      name: 'optional_child_skill',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('Optional Child Skill'),
+      inputs: [{name: 'start_ts', type: 'timestamp', required: true}],
+      sql: 'SELECT ${start_ts} as start_ts',
+    };
+    const parentSkill: SkillDefinition = {
+      name: 'optional_child_parent',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Optional Child Parent'),
+      steps: [{id: 'optional_child', skill: 'optional_child_skill', optional: true}],
+    };
+    executor.registerSkill(childSkill);
+    executor.registerSkill(parentSkill);
+
+    const result = await executor.execute('optional_child_parent', 'trace-1');
+
+    expect(result.success).toBe(true);
+    expect(result.rawResults?.optional_child).toMatchObject({
+      stepType: 'skill',
+      success: false,
+    });
+    expect(result.rawResults?.optional_child?.error).toContain('start_ts');
+    expect(mockTraceProcessor.query).not.toHaveBeenCalled();
+  });
+
+  it('非 optional 子 skill 条件不满足时应该跳过而不是让父 skill 失败', async () => {
+    const childSkill: SkillDefinition = {
+      name: 'conditional_child_skill',
+      type: 'atomic',
+      version: '1.0',
+      meta: createMeta('Conditional Child Skill'),
+      sql: 'SELECT 1 as value',
+    };
+    const parentSkill: SkillDefinition = {
+      name: 'conditional_child_parent',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Conditional Child Parent'),
+      steps: [{
+        id: 'conditional_child',
+        type: 'skill',
+        skill: 'conditional_child_skill',
+        condition: 'false',
+      }],
+    };
+    executor.registerSkill(childSkill);
+    executor.registerSkill(parentSkill);
+
+    const result = await executor.execute('conditional_child_parent', 'trace-1');
+
+    expect(result.success).toBe(true);
+    expect(result.rawResults?.conditional_child).toMatchObject({
+      stepType: 'skill',
+      success: false,
+      code: 'condition_not_met',
+    });
+    expect(mockTraceProcessor.query).not.toHaveBeenCalled();
+  });
+
   it('应该在 save_as + skill 引用场景下正确解包 data 供条件与模板访问', async () => {
     mockTraceProcessor.query
       .mockResolvedValueOnce({
@@ -3978,6 +4137,39 @@ describe('SkillExecutor - 集成测试', () => {
     expect(layeredResult.layers.overview?.overview_data).toBeDefined();
     expect(layeredResult.layers.list?.list_data).toBeDefined();
     expect(layeredResult.metadata.skillName).toBe('layered_analysis');
+  });
+
+  it('uses a layer-aware frame identity for deep entries without changing legacy frame keys', async () => {
+    mockTraceProcessor.query.mockResolvedValueOnce({
+      columns: ['frame_id', 'frame_identity_key', 'jank_type', 'session_id'],
+      rows: [
+        ['7', 'surface:Layer A:7', 'App Deadline Missed', 1],
+        ['7', 'surface:Layer/B:7', 'App Deadline Missed', 1],
+        ['8', '   ', 'Self Jank', 1],
+      ],
+    });
+
+    const skill: SkillDefinition = {
+      name: 'layer_aware_frames',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Layer-aware frames'),
+      steps: [{
+        id: 'frames',
+        type: 'atomic',
+        sql: 'SELECT frame_id, frame_identity_key, jank_type, session_id FROM frames',
+        display: {title: 'Frames', level: 'key', layer: 'deep'},
+      }],
+    };
+
+    const result = await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1'});
+    const keys = Object.keys(result.layers.deep?.session_1 ?? {}).sort();
+
+    expect(keys).toEqual([
+      'frame_8',
+      'frame_surface%3ALayer%20A%3A7',
+      'frame_surface%3ALayer%2FB%3A7',
+    ]);
   });
 
   it('应该支持带诊断的完整分析', async () => {

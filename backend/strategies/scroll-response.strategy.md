@@ -185,7 +185,7 @@ SELECT
   a.on_time_finish
 FROM actual_frame_timeline_slice a
 LEFT JOIN process p ON a.upid = p.upid
-WHERE p.name GLOB '{process_name}*'
+WHERE ('{process_name}' = '' OR p.name = '{process_name}' OR p.name GLOB '{process_name}:*')
   AND a.ts >= {gesture_start_ts}
 ORDER BY a.ts
 LIMIT 1

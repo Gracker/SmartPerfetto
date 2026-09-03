@@ -123,6 +123,30 @@ describe('SkillExecutor process identity gate', () => {
     expect(query.mock.calls[1][1]).toContain("SELECT 'com.real.process' AS package_name, '' AS leaked_process_name");
   });
 
+  it('consumes an UPID identity selector before target Skill input validation', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({
+        columns: ['rank', 'confidence_score', 'identity_status', 'canonical_package_name', 'recommended_process_name_param', 'upid', 'target_match_sources', 'supporting_sources', 'identity_warning'],
+        rows: [[1, 100, 'confirmed', 'com.example', 'com.example', 42, 'upid,process.name', 'frame_timeline.upid', 'ok']],
+        durationMs: 1,
+      })
+      .mockResolvedValueOnce({
+        columns: ['process_name'],
+        rows: [['com.example']],
+        durationMs: 1,
+      });
+
+    const result = await createExecutor(query).execute('target_process_skill', 'trace', {
+      process_name: 'com.example',
+      upid: 42,
+    });
+
+    expect(result.success).toBe(true);
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1][1]).toContain("SELECT 'com.example' AS process_name");
+    expect(query.mock.calls[1][1]).not.toContain('upid');
+  });
+
   it('blocks required process skills when resolver returns only weak identity evidence', async () => {
     const query = jest.fn().mockResolvedValueOnce({
       columns: ['rank', 'confidence_score', 'identity_status', 'canonical_package_name', 'recommended_process_name_param', 'upid', 'target_match_sources', 'supporting_sources', 'identity_warning'],
@@ -190,12 +214,40 @@ describe('SkillExecutor process identity gate', () => {
     expect(query).toHaveBeenCalledTimes(1);
   });
 
-  it('blocks required process skills when top identity candidates are too close', async () => {
+  it('accepts an exact requested main process over close package child processes', async () => {
+    const query = jest.fn()
+      .mockResolvedValueOnce({
+        columns: ['rank', 'confidence_score', 'identity_status', 'canonical_package_name', 'recommended_process_name_param', 'upid', 'process_name', 'target_match_sources', 'supporting_sources', 'identity_warning'],
+        rows: [
+          [1, 100, 'confirmed', 'com.example', 'com.example', 42, 'com.example', 'process.name', 'frame_timeline.upid', 'ok'],
+          [2, 100, 'confirmed', 'com.example', 'com.example:remote', 43, 'com.example:remote', 'android_process_metadata.package_name', '', 'ok'],
+        ],
+        durationMs: 1,
+      })
+      .mockResolvedValueOnce({
+        columns: ['process_name'],
+        rows: [['com.example']],
+        durationMs: 1,
+      });
+
+    const result = await createExecutor(query).execute('target_process_skill', 'trace', {
+      process_name: 'com.example',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.identityResolution?.status).toBe('verified');
+    expect(result.identityResolution?.warnings).not.toContain(
+      'multiple close process identity candidates require manual confirmation',
+    );
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
+  it('blocks required process skills when non-exact identity candidates are too close', async () => {
     const query = jest.fn().mockResolvedValueOnce({
-      columns: ['rank', 'confidence_score', 'identity_status', 'canonical_package_name', 'recommended_process_name_param', 'upid', 'target_match_sources', 'supporting_sources', 'identity_warning'],
+      columns: ['rank', 'confidence_score', 'identity_status', 'canonical_package_name', 'recommended_process_name_param', 'upid', 'process_name', 'target_match_sources', 'supporting_sources', 'identity_warning'],
       rows: [
-        [1, 95, 'confirmed', 'com.example', 'com.example', 42, 'process.name', 'frame_timeline.upid', 'ok'],
-        [2, 90, 'confirmed', 'com.example', 'com.example:remote', 43, 'process.name', 'frame_timeline.upid', 'ok'],
+        [1, 95, 'confirmed', 'com.example', 'com.example:main', 42, 'com.example:main', 'android_process_metadata.package_name', 'frame_timeline.upid', 'ok'],
+        [2, 90, 'confirmed', 'com.example', 'com.example:remote', 43, 'com.example:remote', 'android_process_metadata.package_name', 'frame_timeline.upid', 'ok'],
       ],
       durationMs: 1,
     });

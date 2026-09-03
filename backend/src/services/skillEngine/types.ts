@@ -203,6 +203,8 @@ export interface SkillRefStep {
   skill: string;   // 引用的 skill id
   name?: string;
   params?: Record<string, any>;  // 传递给子 skill 的参数
+  condition?: string;
+  optional?: boolean;
   display?: DisplayConfig | boolean;
   save_as?: string;
   synthesize?: boolean | SynthesizeConfig;

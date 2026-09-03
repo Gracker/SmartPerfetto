@@ -1656,6 +1656,9 @@ describe('buildQuickTraceFactEvidence', () => {
       expect(sql).toContain("t.name = 'VSYNC-sf'");
       expect(sql).toContain('FROM expected_frame_timeline_slice');
       expect(sql).toContain('sample_count >= 10');
+      expect(sql).toContain('PERCENTILE(interval_ns, 50)');
+      expect(sql).toContain('PERCENTILE(dur, 50)');
+      expect(sql).not.toMatch(/PERCENTILE\([^\n]*,\s*0\./);
       expect(sql).not.toContain('default_60hz');
       return {
         columns: [

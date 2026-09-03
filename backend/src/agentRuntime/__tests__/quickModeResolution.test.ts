@@ -3,13 +3,37 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { describe, expect, it } from '@jest/globals';
-import { TRACE_FACT_LOOKUP_REASON } from '../../agentv3/queryComplexityClassifier';
+import {
+  PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
+  TRACE_FACT_LOOKUP_REASON,
+} from '../../agentv3/queryComplexityClassifier';
 import {
   deriveRuntimeQuickPreEvidenceFlags,
   resolveRuntimeQuickMode,
 } from '../quickModeResolution';
 
 describe('resolveRuntimeQuickMode', () => {
+  it('skips all new trace preflights for an explicit prior-evidence-only follow-up', () => {
+    const resolution = resolveRuntimeQuickMode({
+      query: '只基于上一条已经给出的刷新率回答，不要重新分析，也不要调用工具。',
+      sceneType: 'scrolling',
+      hasReferenceTrace: false,
+      previousTurns: [{query: '这个 trace 的刷新率是多少？'}],
+    });
+
+    expect(resolution).toMatchObject({
+      quickMode: true,
+      localReason: PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
+      quickAcknowledgementDirectAnswer: false,
+      quickFocusAppPreEvidence: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+      skipFocusDetection: true,
+      skipTracePreflightDetection: true,
+    });
+  });
+
   it('derives mixed AI-fallback trace fact plus scrolling flags from the shared helper', () => {
     const flags = deriveRuntimeQuickPreEvidenceFlags({
       query: '总帧数是多少？整体流畅吗？',
@@ -1733,6 +1757,28 @@ describe('resolveRuntimeQuickMode', () => {
       quickTraceFactPreEvidence: false,
       skipFocusDetection: false,
       skipTracePreflightDetection: false,
+    });
+  });
+
+  it('reuses prior evidence without trace preflight in a retained reference-trace session', () => {
+    const resolution = resolveRuntimeQuickMode({
+      query: '只基于上一条已经给出的刷新率回答，不要重新分析，也不要调用工具。',
+      sceneType: 'scrolling',
+      hasReferenceTrace: true,
+      previousTurns: [{
+        query: '对比两条 trace 的刷新率。',
+      }],
+    });
+
+    expect(resolution).toMatchObject({
+      quickMode: true,
+      localReason: PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
+      quickFocusAppPreEvidence: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+      skipFocusDetection: true,
+      skipTracePreflightDetection: true,
     });
   });
 });

@@ -10,7 +10,10 @@
  */
 
 import { describe, it, expect } from '@jest/globals';
-import { validatePlanAgainstSceneTemplate } from '../scenePlanTemplates';
+import {
+  hasAffirmativeKeywordMention,
+  validatePlanAgainstSceneTemplate,
+} from '../scenePlanTemplates';
 import type { ExpectedCall } from '../types';
 
 const minimalPhase = (overrides: Partial<{ name: string; goal: string; expectedTools: string[]; expectedCalls: ExpectedCall[] }> = {}) => ({
@@ -22,6 +25,32 @@ const minimalPhase = (overrides: Partial<{ name: string; goal: string; expectedT
 });
 
 describe('validatePlanAgainstSceneTemplate', () => {
+  it('distinguishes affirmative architecture mentions from negated mentions and Skill IDs', () => {
+    expect(hasAffirmativeKeywordMention(
+      '若检测结果不是 Flutter，不要声明或调用 Flutter 专属 Skill；使用 TextureView 与 WebView。',
+      'Flutter',
+    )).toBe(false);
+    expect(hasAffirmativeKeywordMention(
+      'do not use Flutter; analyze TextureView and WebView instead',
+      'Flutter',
+    )).toBe(false);
+    expect(hasAffirmativeKeywordMention(
+      '架构为 STANDARD 非 Flutter，不调用 flutter_scrolling_analysis',
+      'flutter_scrolling_analysis',
+    )).toBe(false);
+    expect(hasAffirmativeKeywordMention(
+      '比较 Flutter 与 TextureView 的 producer 链路',
+      'Flutter',
+    )).toBe(true);
+    expect(hasAffirmativeKeywordMention('flutter_scrolling_analysis', 'Flutter')).toBe(false);
+    expect(hasAffirmativeKeywordMention(
+      'TEXTUREVIEW_STANDARD',
+      'TextureView',
+      {allowIdentifierSeparators: true},
+    )).toBe(true);
+    expect(hasAffirmativeKeywordMention('FLUTTER_TEXTUREVIEW', 'FLUTTER_TEXTUREVIEW')).toBe(true);
+  });
+
   it('returns no warnings for unknown scenes', () => {
     expect(validatePlanAgainstSceneTemplate([], undefined)).toEqual({
       warnings: [],
@@ -84,7 +113,7 @@ describe('validatePlanAgainstSceneTemplate', () => {
     expect(result.missingAspectIds).toEqual([]);
   });
 
-  it('requires scrolling mandatory aspects to declare structured expectedCalls', () => {
+  it('requires structured calls for collection but not a preselected root-cause drill', () => {
     const result = validatePlanAgainstSceneTemplate(
       [
         minimalPhase({
@@ -100,13 +129,11 @@ describe('validatePlanAgainstSceneTemplate', () => {
       ],
       'scrolling',
     );
-    expect(result.missingAspectIds).toEqual(expect.arrayContaining([
-      'frame_jank_analysis',
-      'root_cause_diagnosis',
-    ]));
+    expect(result.missingAspectIds).toContain('frame_jank_analysis');
+    expect(result.missingAspectIds).not.toContain('root_cause_diagnosis');
   });
 
-  it('requires the full scrolling root-cause drilldown chain, not only one representative skill', () => {
+  it('accepts one applicable scrolling root-cause drill instead of a fixed tool chain', () => {
     const result = validatePlanAgainstSceneTemplate(
       [
         minimalPhase({
@@ -133,7 +160,7 @@ describe('validatePlanAgainstSceneTemplate', () => {
       ],
       'scrolling',
     );
-    expect(result.missingAspectIds).toEqual(['root_cause_diagnosis']);
+    expect(result.missingAspectIds).not.toContain('root_cause_diagnosis');
   });
 
   it('accepts raw trace pair startup plans that use compare_skill instead of single-trace invoke_skill', () => {
@@ -268,6 +295,88 @@ describe('validatePlanAgainstSceneTemplate', () => {
       ],
       alternativeExpectedCalls: [],
     }));
+  });
+
+  it('rejects conditional Skill calls from inactive architecture groups', () => {
+    const result = validatePlanAgainstSceneTemplate([
+      minimalPhase({
+        name: 'WebView TextureView 架构专项',
+        goal: 'Run only the detected producer paths',
+        expectedTools: ['invoke_skill'],
+        expectedCalls: [
+          {tool: 'invoke_skill', skillId: 'textureview_producer_frame_timing'},
+          {tool: 'invoke_skill', skillId: 'webview_drawfunctor_jank_chain'},
+          {tool: 'invoke_skill', skillId: 'flutter_scrolling_analysis'},
+        ],
+      }),
+    ], 'scrolling', undefined, {
+      triggerContext: ['TEXTUREVIEW_STANDARD', 'WebView'],
+    });
+
+    expect(result.incompatibleExpectedCalls).toEqual([{
+      aspectId: 'architecture_specific_jank',
+      expectedCall: {tool: 'invoke_skill', skillId: 'flutter_scrolling_analysis'},
+      activeExpectedCalls: [
+        {tool: 'invoke_skill', skillId: 'textureview_producer_frame_timing'},
+        {tool: 'invoke_skill', skillId: 'webview_drawfunctor_jank_chain'},
+      ],
+    }]);
+  });
+
+  it('keeps every conditional Skill whose architecture group is active', () => {
+    const result = validatePlanAgainstSceneTemplate([
+      minimalPhase({
+        name: 'Flutter TextureView 架构专项',
+        goal: 'Run both active producer paths',
+        expectedTools: ['invoke_skill'],
+        expectedCalls: [
+          {tool: 'invoke_skill', skillId: 'flutter_scrolling_analysis'},
+          {tool: 'invoke_skill', skillId: 'textureview_producer_frame_timing'},
+        ],
+      }),
+    ], 'scrolling', undefined, {
+      triggerContext: ['FLUTTER', 'TEXTUREVIEW_STANDARD'],
+    });
+
+    expect(result.incompatibleExpectedCalls).toBeUndefined();
+  });
+
+  it('does not activate a conditional architecture group from negated trigger context', () => {
+    const result = validatePlanAgainstSceneTemplate([
+      minimalPhase({
+        name: 'WebView TextureView 架构专项',
+        goal: 'Run the detected producer paths',
+        expectedTools: ['invoke_skill'],
+        expectedCalls: [
+          {tool: 'invoke_skill', skillId: 'textureview_producer_frame_timing'},
+          {tool: 'invoke_skill', skillId: 'webview_drawfunctor_jank_chain'},
+        ],
+      }),
+    ], 'scrolling', undefined, {
+      triggerContext: [
+        '若检测结果不是 Flutter，不要声明或调用 Flutter 专属 Skill',
+        'TEXTUREVIEW_STANDARD',
+        'WebView',
+      ],
+    });
+
+    expect(result.missingAspectIds).not.toContain('architecture_specific_jank');
+    expect(result.incompatibleExpectedCalls).toBeUndefined();
+  });
+
+  it('does not reject conditional Skill calls when no architecture group is active', () => {
+    const result = validatePlanAgainstSceneTemplate([
+      minimalPhase({
+        name: '架构待确认',
+        goal: 'Run a conditional Skill only after detection',
+        expectedTools: ['invoke_skill'],
+        expectedCalls: [
+          {tool: 'invoke_skill', skillId: 'flutter_scrolling_analysis'},
+        ],
+      }),
+    ], 'scrolling', undefined, {triggerContext: []});
+
+    expect(result.incompatibleExpectedCalls).toBeUndefined();
   });
 
   it('does not allow waivers to bypass non-waivable architecture expected calls', () => {

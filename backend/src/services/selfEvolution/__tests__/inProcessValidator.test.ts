@@ -112,6 +112,30 @@ describe('in-process effective Skill validator', () => {
     ]));
   });
 
+  it('rejects ratio-scale Perfetto percentiles while preserving legacy guardrails as warnings', () => {
+    const percentile = validateSkillDefinitionsInProcess({
+      definitions: [skill('bad_percentile', 'SELECT PERCENTILE(value, 0.95) FROM samples')],
+    });
+    const legacy = validateSkillDefinitionsInProcess({
+      definitions: [skill('legacy_warning', 'CREATE VIEW unsafe_view AS SELECT 1')],
+    });
+
+    expect(percentile.valid).toBe(false);
+    expect(percentile.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'error',
+        code: 'sql_guardrail_percentile-percent-scale',
+      }),
+    ]));
+    expect(legacy.valid).toBe(true);
+    expect(legacy.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        severity: 'warning',
+        code: 'sql_guardrail_idempotent-create',
+      }),
+    ]));
+  });
+
   it('accepts metadata-only pipeline definitions and rejects incomplete steps', () => {
     const pipelineDefinition: SkillDefinition = {
       name: 'pipeline_catalog_entry',

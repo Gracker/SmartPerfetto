@@ -92,6 +92,59 @@ describe('scrolling.v1 domain pack validation', () => {
     expect(result).toEqual([]);
   });
 
+  it('accepts direct lock and RenderThread sync codes while preserving legacy snapshots', () => {
+    for (const reasonCode of ['lock_contention', 'render_sync_wait', 'lock_binder_wait']) {
+      const result = validateCaseDomainPack(
+        makeFrontmatter({
+          taxonomy: {
+            primary_root_cause: reasonCode,
+            secondary_root_causes: [],
+            responsibility: 'app',
+            severity: 'critical',
+          },
+          evidence_signatures: {
+            required: [{field: 'reason_code', op: 'eq', value: reasonCode}],
+            supportive: [],
+          },
+        }),
+        'case.md',
+      );
+
+      expect(result).toEqual([]);
+    }
+  });
+
+  it('accepts evidence-bound FrameTimeline terminal reason codes', () => {
+    for (const reasonCode of [
+      'prediction_error',
+      'display_hal',
+      'app_jank_unattributed',
+      'frame_timeline_unattributed',
+    ]) {
+      const result = validateCaseDomainPack(
+        makeFrontmatter({
+          taxonomy: {
+            primary_root_cause: reasonCode,
+            secondary_root_causes: [],
+            responsibility: reasonCode === 'app_jank_unattributed'
+              ? 'app'
+              : reasonCode === 'frame_timeline_unattributed'
+                ? 'unknown'
+                : 'oem',
+            severity: 'warning',
+          },
+          evidence_signatures: {
+            required: [{field: 'reason_code', op: 'eq', value: reasonCode}],
+            supportive: [],
+          },
+        }),
+        'case.md',
+      );
+
+      expect(result).toEqual([]);
+    }
+  });
+
   it('rejects evidence fields that the pack does not define', () => {
     const result = validateCaseDomainPack(
       makeFrontmatter({

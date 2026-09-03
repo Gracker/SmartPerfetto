@@ -183,6 +183,12 @@ export interface PlanValidationResult {
     requiredExpectedCalls: ExpectedCall[];
     alternativeExpectedCalls: ExpectedCall[];
   }>;
+  /** Conditional Skill calls declared for an architecture/context that is not active. */
+  incompatibleExpectedCalls?: Array<{
+    aspectId: string;
+    expectedCall: ExpectedCall;
+    activeExpectedCalls: ExpectedCall[];
+  }>;
 }
 
 export interface PlanValidationOptions {
@@ -234,6 +240,30 @@ function uniqueExpectedCalls(calls: readonly ExpectedCall[]): ExpectedCall[] {
     seen.add(key);
     return true;
   });
+}
+
+export function hasAffirmativeKeywordMention(
+  text: string,
+  keyword: string,
+  options: {allowIdentifierSeparators?: boolean} = {},
+): boolean {
+  const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const boundaryClass = options.allowIdentifierSeparators ? 'A-Za-z0-9' : 'A-Za-z0-9_';
+  const mentionPattern = new RegExp(
+    `(^|[^${boundaryClass}])${escaped}(?=$|[^${boundaryClass}])`,
+    'gi',
+  );
+  const prefixNegation = /(?:不是|非|不要|无需|不需要|不应|不(?:再)?调用|禁止|跳过|skip|without|do\s+not|don't|not|no\s+need|non[-\s]*)[^，。；;.!?\n]{0,24}$/i;
+  const suffixNegation = /^[^，。；;.!?\n]{0,16}(?:不适用|应跳过|排除|not\s+applicable|excluded|skip)/i;
+
+  for (const match of text.matchAll(mentionPattern)) {
+    const mentionStart = (match.index ?? 0) + match[1].length;
+    const mentionEnd = mentionStart + keyword.length;
+    const prefix = text.slice(Math.max(0, mentionStart - 24), mentionStart);
+    const suffix = text.slice(mentionEnd, mentionEnd + 16);
+    if (!prefixNegation.test(prefix) && !suffixNegation.test(suffix)) return true;
+  }
+  return false;
 }
 
 function sourceAspectCovered(
@@ -292,7 +322,6 @@ export function validatePlanAgainstSceneTemplate(
   const triggerContext = typeof options.triggerContext === 'string'
     ? options.triggerContext
     : (options.triggerContext ?? []).join(' ');
-  const triggerText = `${planText} ${triggerContext}`.toLowerCase();
   const detectedContextText = triggerContext.toLowerCase();
   const declaredExpectedCalls = phases.flatMap(p => p.expectedCalls ?? []);
 
@@ -306,13 +335,23 @@ export function validatePlanAgainstSceneTemplate(
   const missingAspectIds: string[] = [];
   const nonWaivableMissingAspectIds: string[] = [];
   const missingAspectRequirements: NonNullable<PlanValidationResult['missingAspectRequirements']> = [];
+  const incompatibleExpectedCalls: NonNullable<PlanValidationResult['incompatibleExpectedCalls']> = [];
   for (const aspect of mandatoryAspects) {
     const aspectId = aspect.id || aspect.matchKeywords[0];
     const waivable = aspect.waivable !== false;
     if (waivable && acceptedWaiverIds.has(aspectId)) continue;
-    if ((aspect.triggerKeywords ?? []).length > 0 &&
-      !aspect.triggerKeywords!.some(kw => triggerText.includes(kw.toLowerCase()))) {
-      continue;
+    if ((aspect.triggerKeywords ?? []).length > 0) {
+      const triggeredByPlan = aspect.triggerKeywords!.some(keyword =>
+        hasAffirmativeKeywordMention(planText, keyword),
+      );
+      const triggeredByContext = aspect.triggerKeywords!.some(keyword =>
+        hasAffirmativeKeywordMention(
+          detectedContextText,
+          keyword,
+          {allowIdentifierSeparators: true},
+        ),
+      );
+      if (!triggeredByPlan && !triggeredByContext) continue;
     }
     const covered = sourceAspect === aspect
       ? sourceAspectCovered(
@@ -323,8 +362,37 @@ export function validatePlanAgainstSceneTemplate(
       : aspect.matchKeywords.some(kw => planText.includes(kw.toLowerCase()));
     const matchedConditionalGroups = (aspect.conditionalRequiredExpectedCalls ?? [])
       .filter(group => group.triggerKeywords.some(keyword =>
-        detectedContextText.includes(keyword.toLowerCase()),
+        hasAffirmativeKeywordMention(
+          detectedContextText,
+          keyword,
+          {allowIdentifierSeparators: true},
+        ),
       ));
+    if (matchedConditionalGroups.length > 0) {
+      const activeConditionalCalls = uniqueExpectedCalls(
+        matchedConditionalGroups.flatMap(group => group.requiredExpectedCalls),
+      );
+      const inactiveConditionalCalls = uniqueExpectedCalls(
+        (aspect.conditionalRequiredExpectedCalls ?? [])
+          .filter(group => !matchedConditionalGroups.includes(group))
+          .flatMap(group => group.requiredExpectedCalls),
+      );
+      for (const declared of declaredExpectedCalls) {
+        const belongsToInactiveGroup = inactiveConditionalCalls.some(call =>
+          expectedCallMatchesExpectedCall(call, declared),
+        );
+        const belongsToActiveGroup = activeConditionalCalls.some(call =>
+          expectedCallMatchesExpectedCall(call, declared),
+        );
+        if (belongsToInactiveGroup && !belongsToActiveGroup) {
+          incompatibleExpectedCalls.push({
+            aspectId,
+            expectedCall: {...declared},
+            activeExpectedCalls: activeConditionalCalls.map(call => ({...call})),
+          });
+        }
+      }
+    }
     const requiredCalls = uniqueExpectedCalls([
       ...(aspect.requiredExpectedCalls ?? []),
       ...matchedConditionalGroups.flatMap(group => group.requiredExpectedCalls),
@@ -356,5 +424,6 @@ export function validatePlanAgainstSceneTemplate(
     missingAspectIds,
     ...(nonWaivableMissingAspectIds.length > 0 ? { nonWaivableMissingAspectIds } : {}),
     ...(missingAspectRequirements.length > 0 ? { missingAspectRequirements } : {}),
+    ...(incompatibleExpectedCalls.length > 0 ? {incompatibleExpectedCalls} : {}),
   };
 }

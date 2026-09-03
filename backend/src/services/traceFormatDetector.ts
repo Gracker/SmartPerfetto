@@ -42,7 +42,7 @@ export interface TraceFormatInfo {
 
 // ── Constants ─────────────────────────────────────────────────────────
 
-/** HarmonyOS-specific atrace tags that never appear in Android traces. */
+/** Strong HarmonyOS atrace tags. Each can independently refine OS detection. */
 const HARMONYOS_ATRACE_TAGS = [
   'ace::',
   'ArkTS',
@@ -59,8 +59,11 @@ const HARMONYOS_ATRACE_TAGS = [
   'AppExecFwk',
   'AbilityManagerService',
   'ohos.',
-  'H:',        // HarmonyOS hitrace uses "H:FunctionName" pattern in tracing_mark_write
 ] as const;
+
+// Do not classify on the generic `H:` tracing_mark_write prefix alone. Android
+// traces can legitimately contain markers such as `H:CPU_LOAD_RESET`; HarmonyOS
+// classification needs a hitrace header, a Harmony-only process, or a strong tag.
 
 /**
  * HarmonyOS-specific process/command names that appear in ftrace text output.

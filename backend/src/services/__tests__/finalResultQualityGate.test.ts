@@ -48,6 +48,50 @@ function result(overrides: Partial<AnalysisResult>): AnalysisResult {
 }
 
 describe('final result quality gate', () => {
+  it.each([
+    'Prediction Error 1123 帧是 SurfaceFlinger 预测模型系统性漂移的统计噪声。',
+    '49 帧 App Deadline Missed 是本 trace 唯一的真实用户可感知掉帧。',
+    'Prediction Error is merely statistical noise, and App Deadline Missed is the only user-perceived jank.',
+    '本 trace 报告的 89.06% 掉帧率是统计假象：1267 帧为 Prediction Error。',
+    '真实可感知卡顿仅 3.7%（49 帧），其余都是系统侧观察。',
+    'Prediction Error is a measurement artifact; real user-perceived jank only 49 frames.',
+  ])('rejects absolute scrolling jank semantics: %s', conclusion => {
+    const issue = assessFinalResultQuality({
+      result: result({
+        conclusion,
+        findings: [{severity: 'warning', title: 'Jank evidence', description: 'FrameTimeline evidence'}] as any,
+        conclusionContract: {mode: 'focused_answer'} as any,
+      }),
+      query: '分析这个滑动 trace 的准确根因',
+      sceneType: 'scrolling',
+    });
+
+    expect(issue?.code).toBe('scrolling_jank_claim_boundary');
+    expect(issue?.offendingStatement).toBeTruthy();
+  });
+
+  it.each([
+    '孤立 Prediction Error 通常不代表用户可感知的 App 卡顿；连续呈现间隔异常仍需单独报告。',
+    '不能把密集 Prediction Error 一概称为统计噪声，当前只确认 49 帧可直接归因到 App。',
+    'The trace cannot treat Prediction Error as statistical noise; isolated errors usually do not imply user-perceived app jank.',
+    '不能把 Prediction Error 一概称为统计假象；当前有 49 帧可直接归因到 App，另外 71 个 Prediction Error 间隔超过 12.5ms。',
+    '“Prediction Error 是统计假象”这种说法不成立，仍需单独报告 71 个超 12.5ms 的呈现间隔。',
+    'Prediction Error is a measurement artifact is not supported by the evidence.',
+    '“真实可感知卡顿仅 49 帧”是不准确的；49 帧只是可直接归因到 App 的类别。',
+  ])('accepts bounded scrolling jank semantics: %s', conclusion => {
+    const issue = assessFinalResultQuality({
+      result: result({
+        conclusion,
+        findings: [{severity: 'warning', title: 'Jank evidence', description: 'FrameTimeline evidence'}] as any,
+        conclusionContract: {mode: 'focused_answer'} as any,
+      }),
+      query: '分析这个滑动 trace 的准确根因',
+      sceneType: 'scrolling',
+    });
+
+    expect(issue).toBeUndefined();
+  });
+
   it('recognizes deliverable report headings without Chinese word-boundary false negatives', () => {
     expect(hasDeliverableFinalReportHeading('# 启动性能分析报告\n\n## 综合结论')).toBe(true);
     expect(hasDeliverableFinalReportHeading('## 综合结论\n\n冷启动 TTID=1912ms。')).toBe(true);
@@ -246,7 +290,7 @@ describe('final result quality gate', () => {
     expect(issue?.code).toBe('empty_conclusion');
     expect(target.partial).toBe(true);
     expect(target.confidence).toBe(0.55);
-    expect(target.terminationReason).toBe('plan_incomplete');
+    expect(target.terminationReason).toBe('quality_gate_failed');
     expect(target.terminationMessage).toContain('最终结果质量闸门');
   });
 
@@ -447,6 +491,54 @@ describe('final result quality gate', () => {
     expect(target.terminationMessage).toContain('未通过证据核对');
   });
 
+  it('blocks unverified causal relations in focused answers without requiring a full report', () => {
+    const target = result({
+      conclusion: '该行将帧 101 分类为 workload_heavy，证据 evidence_ref_id=`data:scrolling`。',
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [],
+        clusters: [],
+        evidenceChain: [],
+        claims: [],
+        uncertainties: [],
+        nextSteps: [],
+      },
+      claimSupport: [{
+        claimId: 'claim-cause',
+        kind: 'causal',
+        text: '工作负载导致该帧掉帧',
+        anchors: [],
+        supportLevel: 'inference',
+        relationEvaluation: 'candidate',
+      }],
+      claimVerificationResult: {
+        schemaVersion: 'claim_verifier@1',
+        status: 'partial',
+        policy: 'record_only',
+        passed: false,
+        checkedClaimCount: 1,
+        unsupportedClaimCount: 0,
+        claimResults: [{claimId: 'claim-cause', status: 'inference'}],
+        issues: [{
+          claimId: 'claim-cause',
+          severity: 'warning',
+          code: 'causal_relation_candidate',
+          message: 'Causal relation remains a candidate',
+        }],
+      },
+    });
+
+    const issue = applyFinalResultQualityGate({
+      result: target,
+      query: '分析这一帧为什么掉帧',
+    });
+
+    expect(issue?.code).toBe('causal_claim_unverified');
+    expect(target.partial).toBe(true);
+    expect(target.terminationMessage).toContain('候选关系或推断');
+  });
+
   it('marks over-expanded quick triage reports as partial', () => {
     const quickRun: NonNullable<AnalysisResult['quickRun']> = {
       requestedMode: 'fast',
@@ -505,6 +597,84 @@ describe('final result quality gate', () => {
     expect(issue?.code).toBe('quick_full_report_shape');
     expect(target.partial).toBe(true);
     expect(target.terminationMessage).toContain('快速模式');
+  });
+
+  it('does not count carried prior-turn claims as current quick-report expansion', () => {
+    const claims = Array.from({length: 12}, (_, index) => ({
+      id: `claim-carried-${index}`,
+      kind: 'numeric' as const,
+      text: `上一轮已验证事实 ${index}`,
+      references: [{
+        evidenceRefId: `data:carried:${index}`,
+        column: 'value',
+        value: index,
+      }],
+      relationRefs: [],
+    }));
+    const target = result({
+      conclusion: [
+        '## 快速 Triage',
+        '',
+        '上一轮已经证明目标帧缺少当前 trace 可用的直接归因证据。',
+        '',
+        '## 逐句数据引用（结构化来源）',
+        '',
+        '- C1: 复用上一轮已验证的 evidence_ref_id=data:carried:0。',
+        '- C2: 本轮没有调用新工具。',
+        '- C3: 后续只有新增 trace capability 时才会增加信息。',
+      ].join('\n'),
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [],
+        clusters: [],
+        evidenceChain: [],
+        claims,
+        uncertainties: [],
+        nextSteps: [],
+      },
+      quickRun: {
+        requestedMode: 'auto',
+        resolvedMode: 'quick',
+        profile: 'triage',
+        targetTurns: 5,
+        hardCapTurns: 50,
+        actualTurns: 1,
+        elapsedMs: 1000,
+        enforcement: 'turn_cap',
+        stopReason: 'answered',
+        evidence: {
+          frontendPrequeryInjected: 0,
+          frontendPrequeryCited: 0,
+          currentRunDataEnvelopes: 0,
+          citedEvidenceRefs: 3,
+        },
+        contextInjected: {
+          conversationTurns: 1,
+          recentSqlResults: 0,
+          sqlPitfallPairs: 0,
+          patternHints: 0,
+          negativePatternHints: 0,
+          caseBackgroundCases: 0,
+        },
+        verifierStatus: 'passed',
+      },
+      claimVerificationResult: {
+        schemaVersion: 'claim_verifier@1',
+        status: 'passed',
+        policy: 'record_only',
+        passed: true,
+        checkedClaimCount: claims.length,
+        unsupportedClaimCount: 0,
+        claimResults: claims.map(claim => ({claimId: claim.id, status: 'verified'})),
+        issues: [],
+      },
+    });
+
+    expect(assessFinalResultQuality({
+      result: target,
+      query: '只基于上一轮已经验证的证据回答，不要调用新工具',
+    })).toBeUndefined();
   });
 
   it('flags sparse unverified analysis conclusions and keeps concise factual answers alone', () => {
@@ -694,7 +864,7 @@ describe('final result quality gate', () => {
         findings: [],
         conclusionContract: {
           schemaVersion: 'conclusion_contract_v1',
-          mode: 'focused_answer',
+          mode: 'initial_report',
           conclusions: [],
           clusters: [],
           evidenceChain: [{
@@ -853,6 +1023,93 @@ describe('final result quality gate', () => {
     })).toBeUndefined();
   });
 
+  it('keeps focused follow-up accuracy gates but skips complete-report structure', () => {
+    const focused = result({
+      conclusion: [
+        '最值得先修的是主线程同步 UI 工作。',
+        '',
+        '1. batch_frame_root_cause 显示主要掉帧与 UI→RenderThread 同步等待重叠。',
+        '2. 代表帧的 Binder 与 Monitor 锁重叠均为 0ms，因此不应优先优化 Binder/锁。',
+        '',
+        '以上只复用上一轮已验证证据，没有重新扫描 trace。',
+      ].join('\n'),
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [],
+        clusters: [],
+        evidenceChain: [{conclusionId: 'c1', text: '复用上一轮 scrolling_analysis 证据'}],
+        claims: [{
+          id: 'claim-focus',
+          text: '优先减少主线程同步 UI 工作',
+          references: [{evidenceRefId: 'data:scrolling:prior'}],
+        }],
+        uncertainties: [],
+        nextSteps: [],
+        metadata: {sceneId: 'scrolling'},
+      },
+      claimVerificationResult: {
+        schemaVersion: 'claim_verifier@1',
+        status: 'passed',
+        policy: 'record_only',
+        passed: true,
+        checkedClaimCount: 1,
+        unsupportedClaimCount: 0,
+        claimResults: [{claimId: 'claim-focus', status: 'verified'}],
+        issues: [],
+      },
+    });
+
+    expect(assessFinalResultQuality({
+      result: focused,
+      query: '只基于上一轮证据回答，不要重新做全量分析',
+      sceneType: 'scrolling',
+    })).toBeUndefined();
+  });
+
+  it('records a quality-specific termination reason for a quality-only downgrade', () => {
+    const qualityOnly = result({
+      conclusion: '分析完成。',
+      terminationReason: undefined,
+    });
+    expect(applyFinalResultQualityGate({
+      result: qualityOnly,
+      query: '分析这个 trace',
+    })).toBeDefined();
+    expect(qualityOnly.partial).toBe(true);
+    expect(qualityOnly.terminationReason).toBe('quality_gate_failed');
+  });
+
+  it('defers only a pre-finalized focused sparse check until historical evidence is attached', () => {
+    const pending = result({
+      conclusion: '基于 120Hz，每帧预算约为 8.33ms。',
+      conclusionContract: {
+        schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer',
+        conclusions: [],
+        clusters: [],
+        evidenceChain: [],
+        claims: [],
+        uncertainties: [],
+        nextSteps: [],
+      },
+      claimSupport: undefined,
+      claimVerificationResult: undefined,
+    });
+
+    expect(applyFinalResultQualityGate({
+      result: pending,
+      query: '只基于上一条回答，不要重新分析',
+      deferFocusedEvidenceFinalization: true,
+    })).toBeUndefined();
+    expect(pending.partial).not.toBe(true);
+
+    expect(applyFinalResultQualityGate({
+      result: pending,
+      query: '只基于上一条回答，不要重新分析',
+    })?.code).toBe('sparse_unverified_conclusion');
+  });
+
   it('does not accept empty mentions as satisfying scene-required sections', () => {
     const hollowReport = [
       '## 综合结论',
@@ -877,7 +1134,7 @@ describe('final result quality gate', () => {
     });
 
     expect(issue?.code).toBe('scene_contract_incomplete');
-    expect(issue?.message).toContain('全帧根因分布');
+    expect(issue?.message).toContain('掉帧与根因分布');
     expect(issue?.message).toContain('代表帧分析');
   });
 

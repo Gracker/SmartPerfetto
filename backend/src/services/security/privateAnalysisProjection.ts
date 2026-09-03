@@ -34,6 +34,7 @@ const SAFE_TERMINATION_REASONS = new Set([
   'max_structured_output_retries',
   'execution_error',
   'timeout',
+  'quality_gate_failed',
   'plan_incomplete',
 ]);
 const MAX_PRIVATE_PROVENANCE_IDS = 100;

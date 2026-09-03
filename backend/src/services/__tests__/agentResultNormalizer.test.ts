@@ -8,6 +8,7 @@ import {
   normalizeNarrativeForContract,
   normalizeNarrativeForClient,
   normalizeResultForReport,
+  resolveConclusionOutputModeForTurn,
 } from '../agentResultNormalizer';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
 import type { ConclusionContract } from '../../agent/core/conclusionContract';
@@ -497,6 +498,42 @@ describe('deriveEvidenceBackedConclusionContractForNarrative', () => {
 });
 
 describe('normalizeResultForReport', () => {
+  test('derives delivery scope from the conversation turn instead of provider rounds', () => {
+    expect(resolveConclusionOutputModeForTurn({
+      existingMode: 'initial_report',
+      runSequence: 2,
+      requestedAnalysisMode: 'auto',
+    })).toBe('focused_answer');
+    expect(resolveConclusionOutputModeForTurn({
+      existingMode: 'initial_report',
+      runSequence: 2,
+      requestedAnalysisMode: 'full',
+    })).toBe('initial_report');
+    expect(resolveConclusionOutputModeForTurn({
+      existingMode: 'focused_answer',
+      runSequence: 1,
+      requestedAnalysisMode: 'auto',
+    })).toBe('focused_answer');
+    expect(resolveConclusionOutputModeForTurn({
+      existingMode: 'need_input',
+      runSequence: 2,
+      requestedAnalysisMode: 'auto',
+    })).toBe('need_input');
+  });
+
+  test('normalizes a one-provider-round continuation as a focused answer', () => {
+    const r = makeResult({
+      conclusion: '上一轮证据显示主线程先应减少同步 UI 工作。',
+      rounds: 1,
+      conclusionContract: {mode: 'initial_report'} as any,
+    });
+    const out = normalizeResultForReport(r, {
+      runSequence: 2,
+      requestedAnalysisMode: 'auto',
+    });
+    expect(out.conclusionContract?.mode).toBe('focused_answer');
+  });
+
   test('returns input identity when nothing would change', () => {
     const r = makeResult({ conclusion: 'plain text', conclusionContract: { mode: 'focused_answer' } as any });
     const out = normalizeResultForReport(r);

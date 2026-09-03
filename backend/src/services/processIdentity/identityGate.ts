@@ -212,6 +212,9 @@ function rewriteParams(
   const rewritten = { ...params };
   if (!isVerified(resolution, config)) return rewritten;
 
+  const declaredInputs = new Set((skill.inputs || []).map(input => input.name));
+  const hasInputDeclarations = Array.isArray(skill.inputs) && skill.inputs.length > 0;
+
   if (config.rewriteTo === 'upid' && resolution.upids.length > 0) {
     rewritten.upid = resolution.upids[0];
     return rewritten;
@@ -232,8 +235,6 @@ function rewriteParams(
   if (target.requestedName) {
     // Keep legacy YAML skills safe: most process filters read either package or
     // process_name regardless of which alias the caller originally supplied.
-    const declaredInputs = new Set((skill.inputs || []).map(input => input.name));
-    const hasInputDeclarations = Array.isArray(skill.inputs) && skill.inputs.length > 0;
     if (hasInputDeclarations) {
       for (const alias of aliases) {
         if (declaredInputs.has(alias) && rewritten[alias] === undefined) {
@@ -255,6 +256,12 @@ function rewriteParams(
       }
     }
   }
+
+  // UPID/PID may select a unique process for the identity gate without being
+  // part of the target Skill's public input contract. Consume those selectors
+  // before validating or substituting Skill parameters.
+  if (!declaredInputs.has('upid')) delete rewritten.upid;
+  if (!declaredInputs.has('pid')) delete rewritten.pid;
 
   return rewritten;
 }

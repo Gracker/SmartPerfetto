@@ -1200,6 +1200,39 @@ describe('verifySceneCompleteness', () => {
     expect(issues.some(i => i.severity === 'error' && i.message.includes('深钻'))).toBe(true);
   });
 
+  it('does not require a mechanical deep drill for prediction-only jank', () => {
+    const findings = [makeFinding({
+      title: 'Prediction drift',
+      description: 'prediction_error 955帧，属于 SurfaceFlinger scheduler prediction drift',
+    })];
+    const conclusion = '滑动分析：prediction_error 955帧。孤立预测误差通常不代表用户可感知 App 卡顿。';
+    const issues = verifySceneCompleteness('scrolling', findings, conclusion);
+
+    expect(issues.some(i => i.message.includes('Phase 1.9') || i.message.includes('深钻'))).toBe(false);
+  });
+
+  it('accepts disclosed app attribution gaps without inventing a deep cause', () => {
+    const findings = [makeFinding({
+      title: 'App deadline misses remain unattributed',
+      description: 'app_jank_unattributed 24帧，FrameTimeline 仅确认 App 责任',
+    })];
+    const conclusion = '当前 trace 缺少可把这 24 帧继续归因到 Binder、GC、锁或调度的直接证据，保持未归因。';
+    const issues = verifySceneCompleteness('scrolling', findings, conclusion);
+
+    expect(issues.some(i => i.severity === 'error')).toBe(false);
+  });
+
+  it('still requires deep drill when prediction errors coexist with actionable reasons', () => {
+    const findings = [makeFinding({
+      title: 'Mixed jank',
+      description: 'prediction_error 80帧，workload_heavy 20帧',
+    })];
+    const conclusion = '滑动分析：prediction_error 占 60%，workload_heavy 占 20%，共 100帧掉帧。';
+    const issues = verifySceneCompleteness('scrolling', findings, conclusion);
+
+    expect(issues.some(i => i.severity === 'error' && i.message.includes('深钻'))).toBe(true);
+  });
+
   it('does not count lookup_knowledge alone as scrolling deep drill evidence', () => {
     const findings = [makeFinding({ title: 'Jank', description: '真实掉帧 7 帧，App Deadline Missed' })];
     const conclusion = '滑动分析：真实掉帧 7 帧。lookup_knowledge rendering-pipeline 解释了 Android 渲染背景。';
@@ -1328,7 +1361,7 @@ describe('generateCorrectionPrompt', () => {
     ];
     const prompt = generateCorrectionPrompt(issues, '正在分析滑动帧。', 'zh-CN', 'scrolling');
     expect(prompt).toContain('Final Report Contract');
-    expect(prompt).toContain('全帧根因分布');
+    expect(prompt).toContain('掉帧与根因分布');
     expect(prompt).toContain('代表帧分析');
     expect(prompt).toContain('峰值/口径指标');
   });
@@ -1356,7 +1389,7 @@ describe('generateCorrectionPrompt', () => {
     expect(prompt).toContain('启动类型与 TTID/TTFD');
     expect(prompt).toContain('阶段耗时分解');
     expect(prompt).toContain('App/系统分层建议');
-    expect(prompt).not.toContain('全帧根因分布');
+    expect(prompt).not.toContain('掉帧与根因分布');
     expect(prompt).not.toContain('代表帧分析');
   });
 

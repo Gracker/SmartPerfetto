@@ -273,14 +273,14 @@ function buildPipelineScoresSql(pipelines: PipelineDefinition[], catalog: Pipeli
       app_filter_upids AS (
         SELECT p.upid
         FROM process p
-        WHERE '\${package}' <> '' AND p.name GLOB '\${package}*'
+        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
         UNION
         SELECT p.upid
         FROM process p
         JOIN dominant_pkg dp
         WHERE '\${package}' = ''
           AND dp.pkg IS NOT NULL
-          AND p.name GLOB dp.pkg || '*'
+          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
           AND p.name NOT LIKE 'com.android.systemui%'
           AND p.name NOT LIKE 'system_server%'
           AND p.name NOT LIKE '/system/%'
@@ -583,14 +583,14 @@ function buildSubvariantsSql(): string {
       app_filter_upids AS (
         SELECT p.upid
         FROM process p
-        WHERE '\${package}' <> '' AND p.name GLOB '\${package}*'
+        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
         UNION
         SELECT p.upid
         FROM process p
         JOIN dominant_pkg dp
         WHERE '\${package}' = ''
           AND dp.pkg IS NOT NULL
-          AND p.name GLOB dp.pkg || '*'
+          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
           AND p.name NOT LIKE 'com.android.systemui%'
           AND p.name NOT LIKE 'system_server%'
           AND p.name NOT LIKE '/system/%'
@@ -705,14 +705,14 @@ function buildTraceRequirementsSql(): string {
       app_filter_upids AS (
         SELECT p.upid
         FROM process p
-        WHERE '\${package}' <> '' AND p.name GLOB '\${package}*'
+        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
         UNION
         SELECT p.upid
         FROM process p
         JOIN dominant_pkg dp
         WHERE '\${package}' = ''
           AND dp.pkg IS NOT NULL
-          AND p.name GLOB dp.pkg || '*'
+          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
           AND p.name NOT LIKE 'com.android.systemui%'
           AND p.name NOT LIKE 'system_server%'
           AND p.name NOT LIKE '/system/%'
@@ -827,14 +827,14 @@ function buildActiveRenderingProcessesSql(): string {
       app_filter_upids AS (
         SELECT p.upid
         FROM process p
-        WHERE '\${package}' <> '' AND p.name GLOB '\${package}*'
+        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
         UNION
         SELECT p.upid
         FROM process p
         JOIN dominant_pkg dp
         WHERE '\${package}' = ''
           AND dp.pkg IS NOT NULL
-          AND p.name GLOB dp.pkg || '*'
+          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
           AND p.name NOT LIKE 'com.android.systemui%'
           AND p.name NOT LIKE 'system_server%'
           AND p.name NOT LIKE '/system/%'
@@ -1017,14 +1017,14 @@ function buildExtraRhythmSignalsSql(): string {
       app_filter_upids AS (
         SELECT p.upid
         FROM process p
-        WHERE '\${package}' <> '' AND p.name GLOB '\${package}*'
+        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
         UNION
         SELECT p.upid
         FROM process p
         JOIN dominant_pkg dp
         WHERE '\${package}' = ''
           AND dp.pkg IS NOT NULL
-          AND p.name GLOB dp.pkg || '*'
+          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
           AND p.name NOT LIKE 'com.android.systemui%'
           AND p.name NOT LIKE 'system_server%'
           AND p.name NOT LIKE '/system/%'
@@ -1110,14 +1110,14 @@ function buildBufferqueuePathSignalsSql(): string {
       app_filter_upids AS (
         SELECT p.upid
         FROM process p
-        WHERE '\${package}' <> '' AND p.name GLOB '\${package}*'
+        WHERE '\${package}' <> '' AND (p.name = '\${package}' OR p.name GLOB '\${package}:*')
         UNION
         SELECT p.upid
         FROM process p
         JOIN dominant_pkg dp
         WHERE '\${package}' = ''
           AND dp.pkg IS NOT NULL
-          AND p.name GLOB dp.pkg || '*'
+          AND (p.name = dp.pkg OR p.name GLOB dp.pkg || ':*')
           AND p.name NOT LIKE 'com.android.systemui%'
           AND p.name NOT LIKE 'system_server%'
           AND p.name NOT LIKE '/system/%'

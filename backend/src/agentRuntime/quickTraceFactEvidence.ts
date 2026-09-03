@@ -2724,7 +2724,7 @@ function buildRefreshRateSql(): string {
     ),
     vsync_sf_stats AS (
       SELECT
-        CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER) AS raw_median_period_ns,
+        CAST(PERCENTILE(interval_ns, 50) AS INTEGER) AS raw_median_period_ns,
         COUNT(*) AS sample_count
       FROM vsync_sf_raw
       WHERE interval_ns IS NOT NULL
@@ -2733,7 +2733,7 @@ function buildRefreshRateSql(): string {
     ),
     frame_timeline_stats AS (
       SELECT
-        CAST(PERCENTILE(dur, 0.5) AS INTEGER) AS raw_median_period_ns,
+        CAST(PERCENTILE(dur, 50) AS INTEGER) AS raw_median_period_ns,
         COUNT(*) AS sample_count
       FROM expected_frame_timeline_slice
       WHERE dur IS NOT NULL

@@ -8,6 +8,7 @@ import {
   executeStructuredReview,
   extractFirstJsonObject,
 } from '../evolutionLifecycle/reviewExecution';
+import {SCROLLING_V1_REASON_CODES} from '../caseDomainPacks';
 import { CASE_EVOLUTION_ALLOWED_RELATION_KINDS } from './caseCandidateReviewValidator';
 
 const DEFAULT_TIMEOUT_MS = 90_000;
@@ -16,32 +17,6 @@ const MAX_TURNS = 8;
 const TEMPLATE_NAME = 'case-candidate-review';
 
 const DECISION_ENUM = 'promote | reject | needs_more_evidence';
-const SCROLLING_V1_REASON_CODES = [
-  'buffer_stuffing',
-  'sf_composition_slow',
-  'binder_sync_blocking',
-  'gc_jank',
-  'gc_pressure_cascade',
-  'input_handling_slow',
-  'small_core_placement',
-  'sched_delay_in_slice',
-  'shader_compile',
-  'gpu_fence_wait',
-  'render_thread_heavy',
-  'workload_heavy',
-  'thermal_throttling',
-  'cpu_max_limited',
-  'big_core_low_freq',
-  'freq_ramp_slow',
-  'cpu_saturation',
-  'scheduling_delay',
-  'main_thread_file_io',
-  'uninterruptible_wait',
-  'binder_timeout',
-  'lock_binder_wait',
-  'unknown',
-];
-
 export type CaseCandidateReviewExecutionResult =
   | {ok: true; review: Record<string, unknown>}
   | {ok: false; reason: 'sdk_timeout' | 'sdk_error' | 'sdk_invalid'; details: string};

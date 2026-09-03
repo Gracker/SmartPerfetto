@@ -45,6 +45,7 @@ import {resolveRegisteredDrillDownSkillParams} from '../agent/core/drillDownEnti
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
 import type {
   DisplayResult as SkillDisplayResult,
+  SkillDefinition,
   SkillExecutionResult,
 } from '../services/skillEngine/types';
 import type { IdentityResolutionV1 } from '../types/identityContract';
@@ -71,7 +72,8 @@ import {
   type TraceProcessorQueryProvenance,
   type TraceProcessorTraceSide,
 } from '../services/traceProcessorConnectionModel';
-import { sqlUsesProcessNameFilter } from '../services/processIdentity/identityGate';
+import {getEffectiveIdentityConfig, sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
+import {assessScrollingJankClaimBoundary} from '../services/scrollingJankClaimBoundary';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import { normalizeRawSql } from './rawSqlNormalizer';
 import {
@@ -85,6 +87,7 @@ import {
 import { matchPhaseHintForNextPhase } from './phaseHintMatcher';
 import { buildActivePhaseReminder } from './activePhaseReminder';
 import {
+  hasAffirmativeKeywordMention,
   validatePlanAgainstSceneTemplate,
   MIN_WAIVER_REASON_CHARS,
   type PlanValidationResult,
@@ -103,6 +106,7 @@ import {
 import { isConclusionLikePlanPhase } from './planPhaseSemantics';
 import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
 import type { ArtifactStore, CompactArtifactSummary } from './artifactStore';
+import {resolveArtifactAccessPolicy} from './artifactAccessPolicy';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import {
   localizeSkillDefinition,
@@ -485,51 +489,33 @@ type NormalizedPlanPhaseToolInput = Omit<PlanPhase, 'status'> & {
   status?: PlanPhase['status'];
 };
 
-const PLAN_STRING_ARRAY_OR_STRING_SCHEMA = z.union([z.array(z.union([z.string(), z.number()])), z.string()]);
+const PLAN_STRING_ARRAY_OR_STRING_SCHEMA = z.array(z.union([z.string(), z.number()]));
+const PLAN_SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES = ['invoke_skill', 'compare_skill'] as const;
 const PLAN_EXPECTED_CALL_ARG_SCHEMA = z.union([
   z.string(),
   z.object({
-    tool: z.union([z.string(), z.number()]).optional(),
-    toolName: z.union([z.string(), z.number()]).optional(),
-    tool_name: z.union([z.string(), z.number()]).optional(),
-    name: z.union([z.string(), z.number()]).optional(),
-    skillId: z.union([z.string(), z.number()]).optional(),
-    skill_id: z.union([z.string(), z.number()]).optional(),
-    skill: z.union([z.string(), z.number()]).optional(),
-    skillName: z.union([z.string(), z.number()]).optional(),
-    skill_name: z.union([z.string(), z.number()]).optional(),
-  }).passthrough().refine(
-    value => Boolean(coercePlanString(readAliasedField(value, ['tool', 'toolName', 'tool_name', 'name']))),
-    { message: 'expectedCalls entries require tool/toolName/tool_name/name' },
-  ),
+    tool: z.enum(PLAN_SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES),
+    skillId: z.union([z.string(), z.number()]),
+  }).strict(),
+  z.object({
+    tool: z.union([z.string(), z.number()]),
+  }).strict(),
 ]);
-const PLAN_EXPECTED_CALLS_ARG_SCHEMA = z.union([z.array(PLAN_EXPECTED_CALL_ARG_SCHEMA), z.string()]);
+const PLAN_EXPECTED_CALLS_ARG_SCHEMA = z.array(PLAN_EXPECTED_CALL_ARG_SCHEMA);
 const PLAN_PHASE_ARG_SCHEMA = z.object({
-  id: z.union([z.string(), z.number()]).optional(),
-  phaseId: z.union([z.string(), z.number()]).optional(),
-  phase_id: z.union([z.string(), z.number()]).optional(),
-  name: z.union([z.string(), z.number()]).optional(),
-  phaseName: z.union([z.string(), z.number()]).optional(),
-  phase_name: z.union([z.string(), z.number()]).optional(),
-  title: z.union([z.string(), z.number()]).optional(),
-  goal: z.union([z.string(), z.number()]).optional(),
-  objective: z.union([z.string(), z.number()]).optional(),
-  description: z.union([z.string(), z.number()]).optional(),
+  id: z.union([z.string(), z.number()]),
+  name: z.union([z.string(), z.number()]),
+  goal: z.union([z.string(), z.number()]),
   expectedTools: PLAN_STRING_ARRAY_OR_STRING_SCHEMA.optional(),
-  expected_tools: PLAN_STRING_ARRAY_OR_STRING_SCHEMA.optional(),
   expectedCalls: PLAN_EXPECTED_CALLS_ARG_SCHEMA.optional(),
-  expected_calls: PLAN_EXPECTED_CALLS_ARG_SCHEMA.optional(),
   status: z.string().optional(),
-}).passthrough();
-const PLAN_PHASES_ARG_SCHEMA = z.union([z.array(PLAN_PHASE_ARG_SCHEMA), z.string()]);
+}).strict();
+const PLAN_PHASES_ARG_SCHEMA = z.array(PLAN_PHASE_ARG_SCHEMA);
 const PLAN_WAIVER_ARG_SCHEMA = z.object({
-  aspectId: z.string().optional(),
-  aspect_id: z.string().optional(),
-  aspect: z.string().optional(),
-  reason: z.string().optional(),
-  justification: z.string().optional(),
-}).passthrough();
-const PLAN_WAIVERS_ARG_SCHEMA = z.union([z.array(PLAN_WAIVER_ARG_SCHEMA), z.string()]);
+  aspectId: z.string(),
+  reason: z.string(),
+}).strict();
+const PLAN_WAIVERS_ARG_SCHEMA = z.array(PLAN_WAIVER_ARG_SCHEMA);
 
 const CORE_EXPECTED_CALL_TOOL_NAMES = new Set([
   'detect_architecture',
@@ -542,12 +528,12 @@ const CORE_EXPECTED_CALL_TOOL_NAMES = new Set([
   'resolve_hypothesis',
   'flag_uncertainty',
 ]);
-const SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES = new Set([
-  'invoke_skill',
-  'compare_skill',
+const SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...PLAN_SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES,
 ]);
 const EXPECTED_CALLS_FIELD_ALIASES = ['expectedCalls', 'expected_calls'];
-const EXPECTED_CALL_TOOL_FIELD_ALIASES = ['tool', 'toolName', 'tool_name', 'name'];
+const EXPECTED_CALL_STRONG_TOOL_FIELD_ALIASES = ['tool', 'toolName', 'tool_name'];
+const EXPECTED_CALL_FALLBACK_TOOL_FIELD_ALIASES = ['name'];
 const EXPECTED_CALL_SKILL_FIELD_ALIASES = ['skillId', 'skill_id', 'skill', 'skillName', 'skill_name'];
 const EXPECTED_CALL_PARAMS_FIELD_ALIASES = ['params', 'arguments', 'args', 'input'];
 
@@ -603,11 +589,21 @@ function resolveExpectedCall(call: unknown): ExpectedCallResolution {
   if (!call || typeof call !== 'object') return { errors: [] };
 
   const errors: string[] = [];
-  const invalidToolAliases = collectNonScalarExpectedCallAliases(call, EXPECTED_CALL_TOOL_FIELD_ALIASES);
+  const hasStrongToolAlias = collectMeaningfulAliasedValues(
+    call,
+    EXPECTED_CALL_STRONG_TOOL_FIELD_ALIASES,
+  ).length > 0;
+  const strongToolValues = collectExpectedCallAliasStrings(call, EXPECTED_CALL_STRONG_TOOL_FIELD_ALIASES);
+  const toolFieldAliases = hasStrongToolAlias
+    ? EXPECTED_CALL_STRONG_TOOL_FIELD_ALIASES
+    : EXPECTED_CALL_FALLBACK_TOOL_FIELD_ALIASES;
+  const invalidToolAliases = collectNonScalarExpectedCallAliases(call, toolFieldAliases);
   const invalidSkillAliases = collectNonScalarExpectedCallAliases(call, EXPECTED_CALL_SKILL_FIELD_ALIASES);
   errors.push(...invalidToolAliases.map(name => `contains non-scalar tool alias "${name}"`));
   errors.push(...invalidSkillAliases.map(name => `contains non-scalar skill alias "${name}"`));
-  const toolValues = collectExpectedCallAliasStrings(call, EXPECTED_CALL_TOOL_FIELD_ALIASES);
+  const toolValues = hasStrongToolAlias
+    ? strongToolValues
+    : collectExpectedCallAliasStrings(call, EXPECTED_CALL_FALLBACK_TOOL_FIELD_ALIASES);
   const skillValues = collectExpectedCallAliasStrings(call, EXPECTED_CALL_SKILL_FIELD_ALIASES);
   for (const rawNestedParams of collectMeaningfulAliasedValues(call, EXPECTED_CALL_PARAMS_FIELD_ALIASES)) {
     const nestedParams = parseToolObjectInput(rawNestedParams);
@@ -638,6 +634,11 @@ function resolveExpectedCall(call: unknown): ExpectedCallResolution {
 
   const normalizedTool = toolValues[0];
   const normalizedSkillId = distinctSkillValues[0];
+  if (SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES.has(normalizedTool) && !normalizedSkillId) {
+    return {
+      errors: [`requires a non-empty skillId for tool "${normalizedTool}"`],
+    };
+  }
   if (normalizedTool === 'invoke_skill' && normalizedSkillId && CORE_EXPECTED_CALL_TOOL_NAMES.has(normalizedSkillId)) {
     return { call: { tool: normalizedSkillId }, errors: [] };
   }
@@ -807,6 +808,50 @@ function normalizePlanPhaseToolInput(input: PlanPhaseToolInput): Omit<PlanPhase,
   };
 }
 
+type MaterializedPlanExpectedCall = {
+  phaseId: string;
+  tool: string;
+  skillId: string;
+};
+
+function materializeMentionedRequiredSkillCalls<T extends Omit<PlanPhase, 'status'> & {status?: PlanPhase['status']}>(
+  phases: T[],
+  requirements: NonNullable<PlanValidationResult['missingAspectRequirements']>,
+): {phases: T[]; additions: MaterializedPlanExpectedCall[]} {
+  const normalizedPhases = phases.map(phase => ({
+    ...phase,
+    ...(phase.expectedTools ? {expectedTools: [...phase.expectedTools]} : {}),
+    ...(phase.expectedCalls ? {expectedCalls: phase.expectedCalls.map(call => ({...call}))} : {}),
+  })) as T[];
+  const additions: MaterializedPlanExpectedCall[] = [];
+
+  for (const requirement of requirements) {
+    for (const call of requirement.requiredExpectedCalls) {
+      const tool = shortExpectedToolName(call.tool);
+      const skillId = call.skillId ? shortExpectedToolName(call.skillId) : undefined;
+      if (!skillId || !SKILL_SCOPED_EXPECTED_CALL_TOOL_NAMES.has(tool)) continue;
+      if (normalizedPhases.some(phase => (phase.expectedCalls ?? []).some(existing =>
+        shortExpectedToolName(existing.tool) === tool
+        && shortExpectedToolName(existing.skillId ?? '') === skillId,
+      ))) continue;
+
+      const phase = normalizedPhases.find(candidate =>
+        candidate.status !== 'completed'
+        && candidate.status !== 'skipped'
+        && hasAffirmativeKeywordMention(`${candidate.name}\n${candidate.goal}`, skillId),
+      );
+      if (!phase) continue;
+      phase.expectedCalls = [...(phase.expectedCalls ?? []), {tool, skillId}];
+      if (!phase.expectedTools?.some(expectedTool => shortExpectedToolName(expectedTool) === tool)) {
+        phase.expectedTools = [...(phase.expectedTools ?? []), tool];
+      }
+      additions.push({phaseId: phase.id, tool, skillId});
+    }
+  }
+
+  return {phases: normalizedPhases, additions};
+}
+
 function normalizePlanWaivers(inputs: PlanAspectWaiver[]): PlanAspectWaiver[] {
   return inputs
     .map(input => {
@@ -864,6 +909,7 @@ function moveConclusionPhasesLast<T extends Pick<PlanPhase, 'id' | 'name' | 'goa
 
 type PhaseSemanticKind =
   | 'architecture'
+  | 'artifact_review'
   | 'overview'
   | 'global_context'
   | 'root_drill'
@@ -872,6 +918,7 @@ type PhaseSemanticKind =
 
 const PHASE_SEMANTIC_LABELS: Record<PhaseSemanticKind, string> = {
   architecture: '架构检测',
+  artifact_review: '结构化证据读取',
   overview: '概览采集',
   global_context: '全局上下文',
   root_drill: '根因深钻',
@@ -895,6 +942,10 @@ const PHASE_SEMANTIC_PATTERNS: Array<{ kind: PhaseSemanticKind; pattern: RegExp 
   {
     kind: 'global_context',
     pattern: /(全局上下文|温控|thermal|视频|插帧|后台|background|干扰|系统干扰|global context)/i,
+  },
+  {
+    kind: 'artifact_review',
+    pattern: /(fetch_artifact|artifact|art-\d+|batch_frame_root_cause|reason_code|证据读取|evidence rows?)/i,
   },
   {
     kind: 'architecture',
@@ -1369,6 +1420,9 @@ export interface SourceUseDecisionAccessor {
  */
 export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const { traceId, traceProcessorService, skillExecutor, packageName, emitUpdate, onSkillResult, analysisNotes, artifactStore } = options;
+  const artifactAccessPolicy = resolveArtifactAccessPolicy(options.userQuery);
+  const artifactSummaryState = new Map<string, { complete?: boolean }>();
+  const phaseToolCallCounts = new Map<string, Map<string, number>>();
   const recentSqlErrors: SqlErrorFixPair[] = options.recentSqlErrors || [];
   const watchdogRef = options.watchdogWarning;
   const skillNotesBudget = options.skillNotesBudget;
@@ -1968,6 +2022,41 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
   }
 
+  function suggestRegisteredSkillIds(
+    unavailableExpectedSkills: readonly string[],
+    registry: SkillRegistryView,
+  ): string[] {
+    const genericTokens = new Set([
+      'analysis', 'detail', 'frame', 'jank', 'render', 'rendering', 'skill', 'trace',
+    ]);
+    const unavailableIds = unavailableExpectedSkills.flatMap(error => {
+      const match = /(?:unavailable analysis skill|non-executable metadata skill) "([^"]+)"/.exec(error);
+      return match?.[1] ? [match[1]] : [];
+    });
+    if (unavailableIds.length === 0) return [];
+
+    const requestTokens = new Set(unavailableIds.flatMap(skillId =>
+      skillId.toLowerCase().split(/[^a-z0-9]+/)
+        .filter(token => token.length >= 3 && !genericTokens.has(token)),
+    ));
+    if (requestTokens.size === 0) return [];
+
+    return registry.getAllSkills()
+      .filter(skill => skill.type !== 'pipeline_definition' && skill.type !== 'comparison')
+      .map(skill => {
+        const normalizedName = skill.name.toLowerCase();
+        const score = [...requestTokens].reduce(
+          (sum, token) => sum + (normalizedName.includes(token) ? token.length : 0),
+          0,
+        );
+        return {skillId: skill.name, score};
+      })
+      .filter(candidate => candidate.score > 0)
+      .sort((left, right) => right.score - left.score || left.skillId.localeCompare(right.skillId))
+      .slice(0, 8)
+      .map(candidate => candidate.skillId);
+  }
+
   function unavailableSkillResult(skillId: string, options: {comparison?: boolean} = {}) {
     return {
       content: [{
@@ -1991,20 +2080,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   function buildArchitectureTriggerContext(info: Partial<ArchitectureInfo> | undefined | null): string[] {
     if (!info) return [];
-    const collectStringValues = (value: unknown, depth = 0): string[] => {
-      if (depth > 2 || value === undefined || value === null) return [];
-      if (typeof value === 'string') return [value];
-      if (typeof value === 'number' || typeof value === 'boolean') return [String(value)];
-      if (Array.isArray(value)) return value.flatMap(entry => collectStringValues(entry, depth + 1));
-      if (typeof value === 'object') {
-        return Object.values(value as Record<string, unknown>)
-          .flatMap(entry => collectStringValues(entry, depth + 1));
-      }
-      return [];
-    };
+    const selectedPipelineId = typeof info.additionalInfo?.pipelineId === 'string'
+      ? info.additionalInfo.pipelineId.trim()
+      : '';
     const parts = [
       info.type,
       info.type ? String(info.type).replace(/_/g, ' ') : undefined,
+      selectedPipelineId || undefined,
+      selectedPipelineId ? selectedPipelineId.replace(/_/g, ' ') : undefined,
     ];
     if (info.flutter) {
       parts.push('Flutter', info.flutter.engine, info.flutter.surfaceType, `Flutter ${info.flutter.surfaceType}`);
@@ -2016,11 +2099,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       parts.push('Compose', ...(info.compose.features ?? []));
       if (info.compose.isHybridView) parts.push('mixed', 'hybrid');
     }
-    for (const evidence of info.evidence ?? []) {
+    const evidence = info.evidence ?? [];
+    const selectedEvidence = selectedPipelineId
+      ? evidence.filter(item => item.value.trim().toLowerCase() === selectedPipelineId.toLowerCase())
+      : evidence.reduce<typeof evidence>((best, item) => {
+          if (best.length === 0 || item.weight > best[0].weight) return [item];
+          return best;
+        }, []);
+    for (const evidence of selectedEvidence) {
       if (evidence.value) parts.push(evidence.value);
       if (evidence.type) parts.push(evidence.type);
     }
-    parts.push(...collectStringValues(info.additionalInfo));
     return parts.filter((part): part is string => Boolean(part && String(part).trim()));
   }
 
@@ -2106,22 +2195,33 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     };
   }
 
-  /** Normalize skill params: ensure process_name ↔ package are both set. */
-  function normalizeSkillParams(params: Record<string, any> | undefined, defaultPackage?: string): Record<string, any> {
+  /** Normalize skill params while respecting the target Skill's declared inputs. */
+  function normalizeSkillParams(
+    params: Record<string, any> | undefined,
+    defaultPackage?: string,
+    inputs?: ReadonlyArray<{name: string}>,
+  ): Record<string, any> {
     const p = { ...params };
     for (const key of Object.keys(p)) {
       if (TIMESTAMP_EXPRESSION_PARAM_KEYS.has(key)) {
         p[key] = normalizeTimestampExpression(p[key]);
       }
     }
-    if (defaultPackage && !p.process_name) p.process_name = defaultPackage;
-    if (p.process_name && !p.package) p.package = p.process_name;
-    if (p.package && !p.process_name) p.process_name = p.package;
+    const hasDeclaredInputs = Array.isArray(inputs) && inputs.length > 0;
+    const declaredNames = new Set((inputs ?? []).map(input => input.name));
+    const acceptsProcessIdentity = !hasDeclaredInputs ||
+      declaredNames.has('process_name') ||
+      declaredNames.has('package');
+    if (acceptsProcessIdentity) {
+      if (defaultPackage && !p.process_name) p.process_name = defaultPackage;
+      if (p.process_name && !p.package) p.package = p.process_name;
+      if (p.package && !p.process_name) p.process_name = p.package;
+    }
     return p;
   }
 
   function undeclaredModelSkillParams(
-    skill: {inputs?: Array<{name: string}>; identity?: {aliases?: string[]}},
+    skill: SkillDefinition,
     params: Record<string, any> | undefined,
   ): string[] {
     if (!params || !skill.inputs?.length) return [];
@@ -2129,6 +2229,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     for (const alias of skill.identity?.aliases ?? []) allowed.add(alias);
     if (allowed.has('process_name')) allowed.add('package');
     if (allowed.has('package')) allowed.add('process_name');
+    const identityConfig = getEffectiveIdentityConfig(skill);
+    if (identityConfig.policy !== 'none' && identityConfig.policy !== 'exempt') {
+      allowed.add('upid');
+    }
     return Object.keys(params).filter(key => !allowed.has(key)).sort();
   }
 
@@ -2136,8 +2240,16 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     params: Record<string, any> | undefined,
     currentDefaultPackage?: string,
     referenceDefaultPackage?: string,
+    inputs?: ReadonlyArray<{name: string}>,
   ): { params: Record<string, any>; identityRemapped: boolean } {
     const p = { ...params };
+    const hasDeclaredInputs = Array.isArray(inputs) && inputs.length > 0;
+    const declaredNames = new Set((inputs ?? []).map(input => input.name));
+    const acceptsProcessIdentity = !hasDeclaredInputs ||
+      declaredNames.has('process_name') ||
+      declaredNames.has('package');
+    if (!acceptsProcessIdentity) return {params: p, identityRemapped: false};
+
     const processName = typeof p.process_name === 'string' ? p.process_name : undefined;
     const packageParam = typeof p.package === 'string' ? p.package : undefined;
     const pointsAtCurrentPackage = Boolean(currentDefaultPackage && (
@@ -2286,7 +2398,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       lower !== '__intrinsic_batch_frame_root_cause' &&
       (
         /^__intrinsic_[a-z_]\w*$/i.test(tableName) ||
-        /^art-\d+$/i.test(tableName) ||
+        /^art[-_]\d+(?:[-_]\w+)*$/i.test(tableName) ||
         lower === 'synthesizeartifacts' ||
         lower === 'synthesize_artifacts' ||
         lower === 'artifacts'
@@ -2343,20 +2455,57 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     return null;
   }
 
+  function findArtifactPseudoFunctionReference(
+    sql: string,
+  ): { functionName: string; artifactId: string } | null {
+    let i = 0;
+    while (i < sql.length) {
+      const skipped = skipSqlIgnoredText(sql, i);
+      if (skipped !== i) {
+        i = skipped;
+        continue;
+      }
+
+      if (!/[A-Za-z_]/.test(sql[i])) {
+        i += 1;
+        continue;
+      }
+      const wordStart = i;
+      while (i < sql.length && /[A-Za-z0-9_]/.test(sql[i])) i += 1;
+      const functionName = sql.slice(wordStart, i);
+      if (!/^(?:read|query|fetch)_artifact(?:_rows)?$/i.test(functionName)) continue;
+
+      let argsStart = i;
+      while (argsStart < sql.length && /\s/.test(sql[argsStart])) argsStart += 1;
+      const artifactMatch = /^\(\s*(['"])(?:art[-_])(\d+)\1/i.exec(sql.slice(argsStart));
+      if (artifactMatch?.[2]) {
+        return {functionName, artifactId: `art-${artifactMatch[2]}`};
+      }
+    }
+    return null;
+  }
+
   function artifactSqlMisuseHint(sql: string, language: OutputLanguage): Record<string, unknown> | null {
+    const functionReference = findArtifactPseudoFunctionReference(sql);
     const tableName = findArtifactPseudoTableName(sql);
-    if (!tableName) return null;
+    if (!functionReference && !tableName) return null;
+    const artifactNumber = tableName ? /^art[-_](\d+)/i.exec(tableName)?.[1] : undefined;
+    const artifactId = functionReference?.artifactId ?? (artifactNumber ? `art-${artifactNumber}` : undefined);
+    const pseudoReference = functionReference?.functionName ?? tableName!;
 
     return {
       success: false,
       blocked: true,
       error: localize(
         language,
-        `${tableName} 不是 trace_processor SQL 表。Skill 返回的 art-* / synthesizeArtifacts 是 SmartPerfetto artifact 引用，不能用 execute_sql 查询。`,
-        `${tableName} is not a trace_processor SQL table. art-* / synthesizeArtifacts from Skill results are SmartPerfetto artifact references and cannot be queried with execute_sql.`,
+        `${pseudoReference} 不是 trace_processor SQL 表或函数。Skill 返回的 art-* / synthesizeArtifacts 是 SmartPerfetto artifact 引用，不能用 execute_sql 查询。`,
+        `${pseudoReference} is not a trace_processor SQL table or function. art-* / synthesizeArtifacts from Skill results are SmartPerfetto artifact references and cannot be queried with execute_sql.`,
       ),
       action_required: 'fetch_artifact',
-      hint: 'Use fetch_artifact(artifactId="art-N", detail="rows", offset=0, limit=50) with the artifactId returned by invoke_skill.',
+      ...(artifactId ? {artifactId} : {}),
+      hint: artifactId
+        ? `Use fetch_artifact(artifactId="${artifactId}", detail="summary") first. Read the minimum rows needed only if the summary lacks a required field or the user explicitly requests row-level data.`
+        : 'Use fetch_artifact(artifactId="art-N", detail="summary") first with the artifactId returned by invoke_skill. Read the minimum rows needed only if the summary lacks a required field or the user explicitly requests row-level data.',
       sql,
     };
   }
@@ -2437,6 +2586,27 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         input.nonWaivableMissingAspectIds.length > 0
           ? `Fix the plan by adding structured expectedCalls for the non-waivable aspect(s), then call ${input.mode} again; waivers cannot bypass them.`
           : `Add the missing phases and call ${input.mode} again, or provide a waiver reason of at least ${MIN_WAIVER_REASON_CHARS} characters explaining why it cannot be covered.`,
+      ),
+    };
+  }
+
+  function buildIncompatiblePlanCallsRejectPayload(
+    mode: 'submit_plan' | 'revise_plan',
+    incompatibleExpectedCalls: NonNullable<PlanValidationResult['incompatibleExpectedCalls']>,
+  ): Record<string, unknown> {
+    return {
+      success: false,
+      error: localize(
+        outputLanguage,
+        '计划声明了与当前用户意图/已检测架构不兼容的专属 Skill；不会把无关架构调用变成强制证据步骤。',
+        'The plan declares architecture-specific Skills incompatible with the current intent/detected architecture; unrelated calls will not become mandatory evidence steps.',
+      ),
+      incompatibleExpectedCalls,
+      action_required: mode,
+      hint: localize(
+        outputLanguage,
+        '删除不兼容的 expectedCall；保留 activeExpectedCalls 中与当前架构匹配的专属 Skill。',
+        'Remove the incompatible expectedCall and keep the architecture-specific Skills listed in activeExpectedCalls.',
       ),
     };
   }
@@ -3153,6 +3323,55 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     return { phase, attribution: 'active' };
   }
 
+  function consumePhaseToolCallBudget(
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Record<string, unknown> | undefined {
+    const plan = analysisPlanRef?.current;
+    if (!plan || !options.sceneType) return undefined;
+    const activePhases = plan.phases.filter(phase => phase.status === 'in_progress');
+    const phase = activePhases.length === 1
+      ? activePhases[0]
+      : activePlanPhaseForEvidence(toolName, input).phase;
+    if (!phase) return undefined;
+    const hint = matchPhaseHintForNextPhase({
+      hints: getPhaseHints(options.sceneType),
+      nextPhase: {name: phase.name, goal: phase.goal},
+      finishedPhases: plan.phases.map(candidate => ({
+        name: candidate.name,
+        goal: candidate.goal,
+        summary: candidate.summary,
+        status: candidate.status,
+      })),
+    });
+    const maxCalls = hint?.maxToolCalls?.[toolName];
+    if (maxCalls === undefined) return undefined;
+
+    const phaseCounts = phaseToolCallCounts.get(phase.id) ?? new Map<string, number>();
+    phaseToolCallCounts.set(phase.id, phaseCounts);
+    const usedCalls = phaseCounts.get(toolName) ?? 0;
+    if (usedCalls >= maxCalls) {
+      return {
+        success: false,
+        error: 'phase_tool_budget_exhausted',
+        phaseId: phase.id,
+        phaseName: phase.name,
+        phaseHintId: hint?.id,
+        toolName,
+        maxCalls,
+        usedCalls,
+        action_required: 'close_phase_or_revise_plan',
+        hint: localize(
+          outputLanguage,
+          '当前阶段的定向工具预算已用完。请用已有证据收口；只有新证据确实改变分析方向时才 revise_plan。',
+          'The targeted tool budget for this phase is exhausted. Close with existing evidence; revise the plan only if new evidence changes the analysis direction.',
+        ),
+      };
+    }
+    phaseCounts.set(toolName, usedCalls + 1);
+    return undefined;
+  }
+
   function createEvidenceProducerContext(
     toolName: string,
     input: Record<string, unknown>,
@@ -3300,6 +3519,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           isError: true,
         };
       }
+      const phaseBudgetError = consumePhaseToolCallBudget('execute_sql', {sql, summary});
+      if (phaseBudgetError) {
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify(phaseBudgetError)}],
+          isError: true,
+        };
+      }
       const producer = createEvidenceProducerContext(
         'execute_sql',
         { sql, summary },
@@ -3443,7 +3669,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                   artifact: sqlArtifact.artifactSummary,
                   rowsAvailableViaArtifact: true,
                   pageSize: SQL_ARTIFACT_PAGE_SIZE,
-                  hint: `Use fetch_artifact(artifactId="${sqlArtifact.artifactId}", detail="rows", offset=0, limit=${SQL_ARTIFACT_PAGE_SIZE}) to page full SQL rows.`,
+                  hint: `Use the current summary first. Fetch detail="rows" from artifactId="${sqlArtifact.artifactId}" only when a required field or representative sample is missing, or the user explicitly requests row-level data; read the minimum rows needed.`,
                 } : {}),
                 durationMs: result.durationMs,
                 traceSide: traceProvenance.traceSide,
@@ -3667,7 +3893,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           };
         }
 
-        const normalizedParams = normalizeSkillParams(params, packageName);
+        const normalizedParams = normalizeSkillParams(params, packageName, skillDef.inputs);
         const paramResolution = await resolveRegisteredDrillDownSkillParams({
           skillId,
           params: normalizedParams,
@@ -3801,8 +4027,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               queryReviewsByDisplayIndex[displayIndex] = queryReview;
             }
             artifactIdsByDisplayIndex[displayIndex] = artId;
-            const summary = artifactStore.generateCompactSummary(artId);
-            const preview = summary?.preview ?? previewFromColumnarData(dr.data);
+            const storedSummary = artifactStore.generateCompactSummary(artId);
+            const summary = storedSummary && artifactAccessPolicy.forbidRows
+              ? (({preview: _preview, ...rowFreeSummary}) => rowFreeSummary)(storedSummary)
+              : storedSummary;
+            const preview = artifactAccessPolicy.forbidRows
+              ? undefined
+              : storedSummary?.preview ?? previewFromColumnarData(dr.data);
             return summary ? {
               ...summary,
               ...(preview ? { preview } : {}),
@@ -3971,7 +4202,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                   ? {
                       quickMode: {
                         answerNow: true,
-                        guidance: buildQuickArtifactGuidance(),
+                        guidance: artifactAccessPolicy.forbidRows
+                          ? 'Answer from row-free artifact metadata and evidence references. Raw artifact rows are unavailable for this request.'
+                          : buildQuickArtifactGuidance(),
                       },
                     }
                   : {}),
@@ -3994,9 +4227,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                   ? { synthesizeArtifacts }
                   : {}),
                 ...(vendorOverrideHint ? { vendorOverride: vendorOverrideHint } : {}),
-                hint: options.lightweight
-                  ? 'Quick mode: answer from previews/evidenceRefId now; fetch artifacts only for explicit row-level follow-up.'
-                  : 'Use fetch_artifact(artifactId=<id>, detail="rows", offset=0, limit=50) to page through large datasets. All data is accessible — use offset/limit to paginate.',
+                hint: artifactAccessPolicy.forbidRows
+                  ? 'The user forbids raw artifact rows for this request. Use row-free summaries and aggregates only; fetch_artifact rows/full are blocked.'
+                  : artifactAccessPolicy.requireSummaryBeforeRows
+                    ? 'Fetch detail="summary" for each artifact first. Read rows/full only when that artifact summary is incomplete and the missing evidence requires it.'
+                    : options.lightweight
+                      ? 'Quick mode: answer from previews/evidenceRefId now; fetch artifacts only for explicit row-level follow-up.'
+                      : 'Use fetch_artifact(artifactId=<id>, detail="summary") first. If the summary lacks a required field or representative sample, fetch only the minimum rows needed with a concrete purpose; do not paginate mechanically.',
               })) + (result.success ? getReasoningNudge() : ''),
             }],
           };
@@ -4292,28 +4529,30 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   ) : null;
 
   // Conditional tool: fetch_artifact (only available when artifactStore is provided)
+  const artifactAccessDescription = artifactAccessPolicy.forbidRows
+    ? 'This request explicitly forbids raw artifact rows. Only detail="summary" is allowed; rows/full are rejected. Summary responses omit row previews.\n\n'
+    : artifactAccessPolicy.requireSummaryBeforeRows
+      ? 'This request requires summary-first access per artifact. Fetch detail="summary" for that artifact before rows/full. When aggregate.complete=true, rows/full are rejected as redundant.\n\n'
+      : 'Rows/full remain available when summary evidence is insufficient or the user explicitly requests row-level data.\n\n';
   const fetchArtifact = artifactStore ? tool(
     'fetch_artifact',
-    'Retrieve detailed data for a previously stored artifact from invoke_skill results. ' +
-    'Supports pagination for large datasets — use offset/limit to page through rows without token overflow. ' +
-    'Response includes totalRows and hasMore to guide pagination. ALL data is accessible; nothing is hidden.\n\n' +
-    'Use when: you need detailed data from a previous invoke_skill result (artifacts are referenced by ID in skill responses). Analyze these rows directly; do not copy them into execute_sql as FROM (VALUES ...).\n' +
-    'Don\'t use when: you need new data (use invoke_skill or execute_sql instead).\n' +
-    'Always set purpose to one short sentence explaining why this artifact is needed for the current plan phase.\n\n' +
+    'Retrieve a stored artifact. Default to detail="summary". Use detail="rows" with offset/limit only when the summary lacks a required field or representative sample, or the user explicitly requests row-level data; read the minimum rows and stop. Rows responses include totalRows and hasMore.\n\n' +
+    'Use for summary or targeted row evidence from invoke_skill. Do not copy artifact rows into execute_sql. Use invoke_skill or execute_sql for new data. Set purpose to one short sentence.\n\n' +
+    artifactAccessDescription +
     'Examples:\n' +
     '1. Get summary of skill result: artifactId="art-1", detail="summary"\n' +
-    '2. Page through jank frames: artifactId="art-2", detail="rows", offset=0, limit=50\n' +
-    '3. Get next page: artifactId="art-2", detail="rows", offset=50, limit=50',
+    '2. Read a few representative jank frames missing from the summary: artifactId="art-2", detail="rows", offset=0, limit=5\n' +
+    '3. Read another targeted page only if the first page lacks required evidence or the user requested complete rows: artifactId="art-2", detail="rows", offset=5, limit=5',
     {
       artifactId: z.string().describe('Artifact ID (e.g. "art-1") from a previous invoke_skill response'),
       detail: z.enum(['summary', 'rows', 'full']).optional().describe(
         'Detail level: summary (default, compact stats), rows (paginated data rows), full (complete original structure — use with caution on large artifacts)'
       ),
       offset: z.coerce.number().int().min(0).optional().describe(
-        'Row offset for pagination (detail="rows" only). Default: 0. Use with limit to page through large datasets.'
+        'Row offset for pagination (detail="rows" only). Default: 0. Use with limit to select a targeted row window.'
       ),
-      limit: z.coerce.number().int().min(1).max(200).optional().describe(
-        'Maximum rows to return (detail="rows" only). Default: 50. Increase up to 200 if you need more rows per page.'
+      limit: z.coerce.number().int().min(0).max(200).optional().describe(
+        'Maximum rows to return (detail="rows" only, 1-200). Ignored for summary/full. Default for rows: 50.'
       ),
       purpose: z.string().optional().describe(
         'One short sentence explaining why this artifact is needed for the current plan phase. Used in the user-visible timeline.'
@@ -4325,8 +4564,38 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return { content: [{ type: 'text' as const, text: planRevisionError }], isError: true };
       }
       const effectiveDetail = detail || 'summary';
-      const normalizedOffset = coerceOptionalInteger(offset, 'offset', { min: 0 });
-      const normalizedLimit = coerceOptionalInteger(limit, 'limit', { min: 1, max: 200 });
+      if (effectiveDetail === 'rows' || effectiveDetail === 'full') {
+        const summaryState = artifactSummaryState.get(artifactId);
+        const blockedReason = artifactAccessPolicy.forbidRows
+          ? 'raw_rows_forbidden'
+          : artifactAccessPolicy.requireSummaryBeforeRows && !summaryState
+            ? 'summary_required_before_rows'
+            : artifactAccessPolicy.forbidRowsWhenSummaryComplete && summaryState?.complete === true
+              ? 'complete_summary_already_available'
+              : undefined;
+        if (blockedReason) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({
+              success: false,
+              error: 'artifact_access_policy_blocked',
+              reason: blockedReason,
+              artifactId,
+              requestedDetail: effectiveDetail,
+              hint: blockedReason === 'summary_required_before_rows'
+                ? 'Fetch detail="summary" for this artifact first.'
+                : 'Use the existing summary aggregate and report any remaining evidence boundary.',
+            }) }],
+            isError: true,
+          };
+        }
+      }
+      const usesPagination = effectiveDetail === 'rows';
+      const normalizedOffset = usesPagination
+        ? coerceOptionalInteger(offset, 'offset', { min: 0 })
+        : {};
+      const normalizedLimit = usesPagination
+        ? coerceOptionalInteger(limit, 'limit', { min: 1, max: 200 })
+        : {};
       const paginationErrors = [normalizedOffset.error, normalizedLimit.error].filter(Boolean);
       const producerReason = purpose || localize(
         outputLanguage,
@@ -4349,6 +4618,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
 
       const result = artifactStore.fetch(artifactId, effectiveDetail, normalizedOffset.value, normalizedLimit.value);
+      if (result && effectiveDetail === 'summary') {
+        const complete = typeof result.aggregate?.complete === 'boolean'
+          ? result.aggregate.complete
+          : undefined;
+        artifactSummaryState.set(artifactId, {complete});
+      }
       const originPhase = result?.planPhaseId
         ? {
             phaseId: result.planPhaseId,
@@ -4394,10 +4669,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const reminder = (effectiveDetail === 'full' || effectiveDetail === 'rows')
         ? buildActivePhaseReminder(analysisPlanRef?.current, options.sceneType)
         : '';
+      const responseResult = result && effectiveDetail === 'summary' && artifactAccessPolicy.forbidRows
+        ? (({sampleRow: _sampleRow, preview: _preview, ...rowFreeResult}) => rowFreeResult)(result)
+        : result;
       const payload = JSON.stringify({
         success: true,
         detail: effectiveDetail,
-        ...result,
+        ...responseResult,
         sourceToolCallId: result?.sourceToolCallId || producer.sourceToolCallId,
         fetchedByToolCallId: producer.sourceToolCallId,
         paramsHash: producer.paramsHash,
@@ -6175,17 +6453,16 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'Define phases with goals and expected tools. The system tracks plan adherence and warns on deviation. ' +
     'You MUST call this tool as your first action in every analysis.\n\n' +
     'Use when: starting any new analysis — this is mandatory before execute_sql or invoke_skill.\n' +
-    'Don\'t use when: plan already submitted (use revise_plan to modify, update_plan_phase to track progress).\n\n' +
+    'Don\'t use when: plan already submitted (use revise_plan to modify, update_plan_phase to track progress).\n' +
+    'expectedCalls skillId is only valid for invoke_skill/compare_skill; scope every other tool as {tool:"fetch_artifact"} or {tool:"execute_sql"} with no skillId.\n\n' +
     'Examples:\n' +
     '1. Scrolling plan: phases=[{id:"p1", name:"概览采集", goal:"获取帧统计和卡顿分布", expectedTools:["invoke_skill"], expectedCalls:[{tool:"invoke_skill", skillId:"scrolling_analysis"}]}, ' +
     '{id:"p2", name:"根因分析", goal:"逐帧诊断卡顿原因", expectedTools:["invoke_skill","execute_sql"], expectedCalls:[{tool:"invoke_skill", skillId:"jank_frame_detail"}]}, ' +
     '{id:"p3", name:"深入验证", goal:"验证根因假设", expectedTools:["execute_sql","fetch_artifact"]}], ' +
     'successCriteria="识别卡顿根因并提供量化证据"',
     {
-      phases: PLAN_PHASES_ARG_SCHEMA.optional().describe('Ordered list of analysis phases, or a JSON string encoding that list.'),
-      phase_list: PLAN_PHASES_ARG_SCHEMA.optional().describe('Alias for phases for OpenAI-compatible callers.'),
-      successCriteria: z.string().optional().describe('What constitutes a successful analysis (e.g. "Identify root cause of jank frames with evidence")'),
-      success_criteria: z.string().optional().describe('Alias for successCriteria for OpenAI-compatible callers.'),
+      phases: PLAN_PHASES_ARG_SCHEMA.describe('Ordered list of analysis phases.'),
+      successCriteria: z.string().describe('What constitutes a successful analysis (e.g. "Identify root cause of jank frames with evidence")'),
       waivers: PLAN_WAIVERS_ARG_SCHEMA.optional().describe('Optional opt-outs for scene-template aspects when the trace genuinely cannot support them.'),
     },
     async (args: any, extra?: unknown) => {
@@ -6274,7 +6551,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
-      const normalizedPhases = moveConclusionPhasesLast(
+      let normalizedPhases = moveConclusionPhasesLast(
         phaseInputs.map(normalizePlanPhaseToolInput),
       );
       const phaseShapeErrors = collectPlanPhaseShapeErrors(normalizedPhases);
@@ -6296,6 +6573,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
+      const initialValidation = validatePhasesAgainstSceneTemplate(normalizedPhases, waiverInputs);
+      const materializedPlanCalls = materializeMentionedRequiredSkillCalls(
+        normalizedPhases,
+        initialValidation.missingAspectRequirements ?? [],
+      );
+      normalizedPhases = materializedPlanCalls.phases;
+
       const expectedSkillRegistry = await bindSkillRuntimeRegistry();
       throwIfTraceProcessorQueryCancelled(signal);
       const unavailableExpectedSkills = collectUnavailableExpectedSkillErrors(
@@ -6304,6 +6588,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         new Set(registry.listForRequest(toolRequestScope).map(toolDefinition => toolDefinition.name)),
       );
       if (unavailableExpectedSkills.length > 0) {
+        const suggestedSkillIds = suggestRegisteredSkillIds(unavailableExpectedSkills, expectedSkillRegistry);
         return {
           content: [{
             type: 'text' as const,
@@ -6315,8 +6600,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 'submit_plan can only declare MCP tools available in this session and registered executable analysis Skills.',
               ),
               unavailableExpectedSkills,
+              ...(suggestedSkillIds.length > 0 ? {suggestedSkillIds} : {}),
               action_required: 'submit_plan',
-              hint: 'Use a tool exposed in this session; for invoke_skill/compare_skill, call list_skills and choose a registered analysis Skill.',
+              hint: suggestedSkillIds.length > 0
+                ? 'Replace the unavailable skill with one of suggestedSkillIds. Call list_skills only if none matches the evidence gap.'
+                : 'Use a tool exposed in this session; for invoke_skill/compare_skill, call list_skills and choose a registered analysis Skill.',
             }),
           }],
           isError: true,
@@ -6324,7 +6612,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
 
       // P1-G11: Validate against the scene template, honouring agent waivers.
-      const validation = validatePhasesAgainstSceneTemplate(normalizedPhases, waiverInputs);
+      const validation = materializedPlanCalls.additions.length > 0
+        ? validatePhasesAgainstSceneTemplate(normalizedPhases, waiverInputs)
+        : initialValidation;
+      if ((validation.incompatibleExpectedCalls?.length ?? 0) > 0) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(buildIncompatiblePlanCallsRejectPayload(
+              'submit_plan',
+              validation.incompatibleExpectedCalls!,
+            )),
+          }],
+          isError: true,
+        };
+      }
       const { warnings: planWarnings, missingAspectIds } = validation;
       const nonWaivableMissingAspectIds = validation.nonWaivableMissingAspectIds ?? [];
 
@@ -6397,6 +6699,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       });
 
       const response: Record<string, any> = { success: true };
+      if (materializedPlanCalls.additions.length > 0) {
+        response.materializedExpectedCalls = materializedPlanCalls.additions;
+      }
       if (acceptedWaivers.length > 0) {
         response.acceptedWaivers = acceptedWaivers.map(w => w.aspectId);
       }
@@ -6432,9 +6737,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const updatePlanPhase = analysisPlanRef ? tool(
     'update_plan_phase',
-    'Update the status of a plan phase. Call this when transitioning between phases or when skipping a phase. ' +
-    'This helps track analysis progress and enables plan adherence verification. ' +
-    'When completing a phase, you MUST provide a summary with key evidence collected (e.g. "发现 5 帧卡顿，主因是 RenderThread 阻塞，最长耗时 45ms"). ' +
+    'Update the status of a plan phase. Ordinary transitions start automatically from the next phase first evidence call; do NOT call this to open or announce a phase. ' +
+    'Call it to close a phase with its evidence summary, or to skip/block one. ' +
+    'Completing REQUIRES a summary with key evidence (e.g. "发现 5 帧卡顿，主因是 RenderThread 阻塞，最长耗时 45ms"). ' +
     'When skipping, explain why (e.g. "trace 中无启动数据，跳过启动分析").',
     {
       phaseId: z.string().describe('Phase ID to update (e.g. "p1")'),
@@ -6701,6 +7006,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               name: nextPhase.name,
               constraints: matchedHint.constraints,
               criticalTools: matchedHint.criticalTools,
+              ...(matchedHint.maxToolCalls ? {maxToolCalls: matchedHint.maxToolCalls} : {}),
             };
             console.log(`[MCP] Phase hint injected: ${matchedHint.id} for ${options.sceneType}`);
           }
@@ -6741,12 +7047,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'Use this when initial data reveals unexpected conditions (e.g., discovered Flutter architecture but planned for Standard, ' +
     'or found ANR signals in a scrolling query). Preserves completed phases and audit trail.',
     {
-      reason: z.string().optional().describe('Why the plan needs revision (what new information triggered this)'),
-      reason_text: z.string().optional().describe('Alias for reason for OpenAI-compatible callers.'),
-      updatedPhases: PLAN_PHASES_ARG_SCHEMA.optional().describe('The revised phase list, or a JSON string encoding it. Must include all completed/in-progress phases from original plan.'),
-      updated_phases: PLAN_PHASES_ARG_SCHEMA.optional().describe('Alias for updatedPhases for OpenAI-compatible callers.'),
+      reason: z.string().describe('Why the plan needs revision (what new information triggered this)'),
+      updatedPhases: PLAN_PHASES_ARG_SCHEMA.describe('The revised phase list. Must include all completed/in-progress phases from original plan.'),
       updatedSuccessCriteria: z.string().optional().describe('Updated success criteria (only if the goal changed)'),
-      updated_success_criteria: z.string().optional().describe('Alias for updatedSuccessCriteria for OpenAI-compatible callers.'),
       waivers: PLAN_WAIVERS_ARG_SCHEMA.optional().describe('Optional opt-outs for waivable scene-template aspects when the trace genuinely cannot support them.'),
     },
     async (args: any) => {
@@ -6865,6 +7168,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         new Set(registry.listForRequest(toolRequestScope).map(toolDefinition => toolDefinition.name)),
       );
       if (unavailableExpectedSkills.length > 0) {
+        const suggestedSkillIds = suggestRegisteredSkillIds(unavailableExpectedSkills, expectedSkillRegistry);
         return {
           content: [{
             type: 'text' as const,
@@ -6876,8 +7180,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 'revise_plan can only declare MCP tools available in this session and registered executable analysis Skills.',
               ),
               unavailableExpectedSkills,
+              ...(suggestedSkillIds.length > 0 ? {suggestedSkillIds} : {}),
               action_required: 'revise_plan',
-              hint: 'Use a tool exposed in this session; for invoke_skill/compare_skill, call list_skills and choose a registered analysis Skill.',
+              hint: suggestedSkillIds.length > 0
+                ? 'Replace the unavailable skill with one of suggestedSkillIds. Call list_skills only if none matches the evidence gap.'
+                : 'Use a tool exposed in this session; for invoke_skill/compare_skill, call list_skills and choose a registered analysis Skill.',
             }),
           }],
           isError: true,
@@ -6943,7 +7250,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
-      const candidatePhases = normalizedUpdatedPhases.map((up): PlanPhase => {
+      let candidatePhases = normalizedUpdatedPhases.map((up): PlanPhase => {
         const original = plan.phases.find(p => p.id === up.id);
         if (original && (original.status === 'completed' || original.status === 'skipped')) {
           // Preserve completed phase data
@@ -6959,7 +7266,52 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       });
 
-      const validation = validatePhasesAgainstSceneTemplate(candidatePhases, waiverInputs);
+      const initialValidation = validatePhasesAgainstSceneTemplate(candidatePhases, waiverInputs);
+      const materializedPlanCalls = materializeMentionedRequiredSkillCalls(
+        candidatePhases,
+        initialValidation.missingAspectRequirements ?? [],
+      );
+      candidatePhases = materializedPlanCalls.phases;
+      const unavailableMaterializedSkills = collectUnavailableExpectedSkillErrors(
+        candidatePhases,
+        expectedSkillRegistry,
+        new Set(registry.listForRequest(toolRequestScope).map(toolDefinition => toolDefinition.name)),
+      );
+      if (unavailableMaterializedSkills.length > 0) {
+        const suggestedSkillIds = suggestRegisteredSkillIds(unavailableMaterializedSkills, expectedSkillRegistry);
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              success: false,
+              error: localize(
+                outputLanguage,
+                'revise_plan 物化出的 expectedCalls 引用了当前会话不可用的 Skill。',
+                'revise_plan materialized expectedCalls that reference Skills unavailable in this session.',
+              ),
+              unavailableExpectedSkills: unavailableMaterializedSkills,
+              ...(suggestedSkillIds.length > 0 ? {suggestedSkillIds} : {}),
+              action_required: 'revise_plan',
+            }),
+          }],
+          isError: true,
+        };
+      }
+      const validation = materializedPlanCalls.additions.length > 0
+        ? validatePhasesAgainstSceneTemplate(candidatePhases, waiverInputs)
+        : initialValidation;
+      if ((validation.incompatibleExpectedCalls?.length ?? 0) > 0) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify(buildIncompatiblePlanCallsRejectPayload(
+              'revise_plan',
+              validation.incompatibleExpectedCalls!,
+            )),
+          }],
+          isError: true,
+        };
+      }
       const revisedPlanWarnings = validation.warnings;
       const missingAspectIds = validation.missingAspectIds;
       const nonWaivableMissingAspectIds = validation.nonWaivableMissingAspectIds ?? [];
@@ -6994,7 +7346,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
       const expectedCallKey = (call: NonNullable<PlanPhase['expectedCalls']>[number]): string =>
         `${shortExpectedToolName(call.tool)}:${call.skillId ? shortExpectedToolName(call.skillId) : ''}`;
-      const updatedPhaseById = new Map(normalizedUpdatedPhases.map(phase => [phase.id, phase]));
+      const updatedPhaseById = new Map(candidatePhases.map(phase => [phase.id, phase]));
       const weakenedPhases = plan.phases.flatMap(original => {
         if (original.status === 'completed' || original.status === 'skipped') return [];
         const updated = updatedPhaseById.get(original.id);
@@ -7082,6 +7434,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       };
       if (acceptedWaivers.length > 0) {
         reviseResponse.acceptedWaivers = acceptedWaivers.map(w => w.aspectId);
+      }
+      if (materializedPlanCalls.additions.length > 0) {
+        reviseResponse.materializedExpectedCalls = materializedPlanCalls.additions;
       }
       if (tooShortWaivers.length > 0) {
         reviseResponse.tooShortWaivers = tooShortWaivers;
@@ -7175,37 +7530,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'Every hypothesis MUST be resolved (confirmed/rejected with evidence) before concluding.',
     {
       id: z.string().optional().describe('Optional caller-provided hypothesis ID (e.g., "h1"). If omitted, the system assigns one.'),
-      statement: z.string().optional().describe(
-        'The hypothesis statement (e.g., "RenderThread is blocked by Binder transactions causing jank frames"). Alias: title.'
+      statement: z.string().describe(
+        'The hypothesis statement (e.g., "RenderThread is blocked by Binder transactions causing jank frames").'
       ),
-      title: z.string().optional().describe('Alias for statement, accepted for Claude SDK argument compatibility.'),
       basis: z.string().optional().describe(
-        'What observation prompted this hypothesis (e.g., "Observed 3 frames with RenderThread in sleeping state"). Alias: reasoning.'
+        'What observation prompted this hypothesis (e.g., "Observed 3 frames with RenderThread in sleeping state").'
       ),
-      reasoning: z.string().optional().describe('Alias for basis, accepted for Claude SDK argument compatibility.'),
     },
-    async ({ id, statement, title, basis, reasoning }) => {
+    async (args: any) => {
+      const {id, statement, title, basis, reasoning} = args;
       const normalizedStatement = statement?.trim();
       const normalizedTitle = title?.trim();
       const normalizedBasis = basis?.trim();
       const normalizedReasoning = reasoning?.trim();
-      if (
-        (normalizedStatement && normalizedTitle && normalizedStatement !== normalizedTitle)
-        || (normalizedBasis && normalizedReasoning && normalizedBasis !== normalizedReasoning)
-      ) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              success: false,
-              error: 'submit_hypothesis aliases must contain matching values',
-              action_required: 'retry_submit_hypothesis_with_matching_aliases',
-            }),
-          }],
-          isError: true,
-        };
-      }
-
       const effectiveStatement = normalizedStatement || normalizedTitle;
       const effectiveBasis = normalizedBasis || normalizedReasoning;
       if (!effectiveStatement) {
@@ -7357,6 +7694,33 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           }) }],
           isError: true,
         };
+      }
+
+      if (effectiveStatus === 'confirmed' && options.sceneType === 'scrolling') {
+        const claimBoundaryIssue = assessScrollingJankClaimBoundary(hypothesis.statement);
+        if (claimBoundaryIssue) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                success: false,
+                hypothesisId: effectiveHypothesisId,
+                statement: hypothesis.statement,
+                error: localize(
+                  outputLanguage,
+                  claimBoundaryIssue.code === 'prediction_error_noise_overclaim'
+                    ? 'Prediction Error 只能作为 scheduler 预测偏差标签解释；不能把密集或连续样本一概确认为统计噪声、统计假象或 measurement artifact。请拒绝原假设，再提交带“孤立错误通常不代表用户可感知 App 卡顿”等边界的新假设。'
+                    : '不能确认“唯一真实/唯一用户可感知掉帧”这类排他性结论。请拒绝原假设，再提交只描述直接证据范围的新假设。',
+                  claimBoundaryIssue.code === 'prediction_error_noise_overclaim'
+                    ? 'Prediction Error is a scheduler prediction-drift label; dense or continuous samples cannot be confirmed as statistical noise. Reject the original hypothesis, then submit a bounded replacement such as “isolated errors usually do not imply user-perceived app jank.”'
+                    : 'An exclusive “only real/user-perceived jank” conclusion cannot be confirmed. Reject the original hypothesis, then submit a replacement limited to the directly supported evidence.',
+                ),
+                action_required: 'reject_hypothesis_and_submit_bounded_replacement',
+              }),
+            }],
+            isError: true,
+          };
+        }
       }
 
       hypothesis.status = effectiveStatus;
@@ -7561,6 +7925,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           isError: true,
         };
       }
+      const phaseBudgetError = consumePhaseToolCallBudget('execute_sql_on', {trace, sql, summary});
+      if (phaseBudgetError) {
+        return {
+          content: [{type: 'text' as const, text: JSON.stringify(phaseBudgetError)}],
+          isError: true,
+        };
+      }
       const targetTraceId = trace === 'reference' ? referenceTraceId : traceId;
       const traceLabel = `[${traceLocationDisplayLabel(trace)}]`;
       const producer = createEvidenceProducerContext(
@@ -7633,7 +8004,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               artifact: sqlArtifact.artifactSummary,
               rowsAvailableViaArtifact: true,
               pageSize: SQL_ARTIFACT_PAGE_SIZE,
-              hint: `Use fetch_artifact(artifactId="${sqlArtifact.artifactId}", detail="rows", offset=0, limit=${SQL_ARTIFACT_PAGE_SIZE}) to page full SQL rows.`,
+              hint: `Use the current summary first. Fetch detail="rows" from artifactId="${sqlArtifact.artifactId}" only when a required field or representative sample is missing, or the user explicitly requests row-level data; read the minimum rows needed.`,
             } : {}),
             durationMs,
             evidenceRefId: emittedEvidence?.evidenceRefId,
@@ -7797,14 +8168,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           params,
           packageName,
           comparisonContext?.referencePackageName,
+          comparisonSkillDef.inputs,
         );
         const normalizedCurrentParams = normalizeSkillParams(
           { ...(params ?? {}), ...(currentSideParams ?? {}) },
           packageName,
+          comparisonSkillDef.inputs,
         );
         const normalizedReferenceParams = normalizeSkillParams(
           { ...referenceSharedParams.params, ...(referenceSideParams ?? {}) },
           comparisonContext?.referencePackageName,
+          comparisonSkillDef.inputs,
         );
         const [currentParamResolution, referenceParamResolution] = await Promise.allSettled([
           resolveRegisteredDrillDownSkillParams({
@@ -7865,6 +8239,26 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         }
         const effectiveParams = currentParamResolution.value.params;
         const refParams = referenceParamResolution.value.params;
+        const invalidParamsBySide = {
+          current: undeclaredModelSkillParams(comparisonSkillDef, effectiveParams),
+          reference: undeclaredModelSkillParams(comparisonSkillDef, refParams),
+        };
+        if (invalidParamsBySide.current.length > 0 || invalidParamsBySide.reference.length > 0) {
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                success: false,
+                partial: false,
+                skillId,
+                invalidParamsBySide,
+                error: 'Undeclared Skill parameters were supplied for one or both comparison sides.',
+                action_required: 'retry_compare_skill_with_declared_side_params',
+              }),
+            }],
+            isError: true,
+          };
+        }
         const producerInput = {
           skillId,
           currentEffectiveParams: effectiveParams,

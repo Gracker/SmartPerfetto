@@ -550,9 +550,13 @@ SELECT
   ROUND(f.dur / 1e6, 2) AS dur_ms,
   f.jank_type AS jank_type,
   CASE
-    WHEN f.jank_type IN ('Self Jank', 'App Deadline Missed') THEN 'APP'
+    WHEN f.jank_type GLOB '*Self Jank*'
+      OR f.jank_type GLOB '*App Deadline Missed*'
+      OR f.jank_type GLOB '*App Resynced Jitter*' THEN 'APP'
     WHEN f.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
-    WHEN f.jank_type = 'Buffer Stuffing' THEN 'BUFFER_STUFFING'
+    WHEN f.jank_type GLOB '*Buffer Stuffing*' THEN 'BUFFER_STUFFING'
+    WHEN f.jank_type GLOB '*Prediction Error*'
+      OR f.jank_type GLOB '*Display HAL*' THEN 'SF'
     WHEN f.jank_type = 'None' OR f.jank_type IS NULL THEN 'HIDDEN'
     ELSE 'UNKNOWN'
   END AS jank_responsibility,

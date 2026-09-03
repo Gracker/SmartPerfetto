@@ -185,7 +185,7 @@ function validateDefinitionShape(
         includeRules: DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
       })) {
         issues.push(issue(
-          'warning',
+          guardrail.ruleId === 'percentile-percent-scale' ? 'error' : 'warning',
           `sql_guardrail_${guardrail.ruleId}`,
           skill.name,
           `${path}.sql`,
@@ -200,7 +200,7 @@ function validateDefinitionShape(
       includeRules: DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
     })) {
       issues.push(issue(
-        'warning',
+        guardrail.ruleId === 'percentile-percent-scale' ? 'error' : 'warning',
         `sql_guardrail_${guardrail.ruleId}`,
         skill.name,
         'sql',

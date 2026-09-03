@@ -299,7 +299,17 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
 
     const scrollingHints = getPhaseHints('scrolling');
     expect(scrollingHints.map(hint => hint.id)).toContain('display_pipeline_boundary');
-    expect(scrollingHints.find(hint => hint.id === 'display_pipeline_boundary')?.criticalTools).toContain('present_fence_timing');
+    const displayBoundary = scrollingHints.find(hint => hint.id === 'display_pipeline_boundary');
+    // The boundary decomposition tools stay declared...
+    expect(displayBoundary?.criticalTools).toEqual(
+      expect.arrayContaining(['surfaceflinger_analysis', 'buffer_transaction_lifecycle', 'fence_wait_decomposition']),
+    );
+    // ...but optional supplementary tools must NOT be pre-declared as
+    // unconditional expectedCalls. The hint's own constraints say to reuse the
+    // scrolling_analysis vsync_config artifact and only call the standalone
+    // tools when that evidence is missing.
+    expect(displayBoundary?.criticalTools).not.toContain('vsync_config');
+    expect(displayBoundary?.criticalTools).not.toContain('present_fence_timing');
   });
 
   it('loads network phase_hints for request-stage and stack-policy boundaries', () => {
@@ -401,7 +411,9 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
   it('keeps the quick prompt wired to fetch Skill artifacts instead of querying pseudo-tables', () => {
     const content = loadPromptTemplate('prompt-quick');
     expect(content).toContain('## Artifact 读取规则');
-    expect(content).toContain('fetch_artifact(artifactId="art-N", detail="rows", offset=0, limit=50)');
+    expect(content).toContain('fetch_artifact(artifactId="art-N", detail="summary")');
+    expect(content).toContain('只读取解决该缺口所需的最少 rows');
+    expect(content).toContain('不要机械分页');
     expect(content).toContain('__intrinsic_artifact_rows');
     expect(content).toContain('这些都不是 SQL 表');
   });

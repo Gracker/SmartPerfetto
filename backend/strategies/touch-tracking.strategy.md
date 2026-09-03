@@ -106,7 +106,7 @@ WITH input_events AS (
     p.name as process_name
   FROM android_input_event_dispatch ied
   LEFT JOIN process p ON p.upid = ied.upid
-  WHERE (p.name GLOB '{process_name}*' OR '{process_name}' = '')
+  WHERE ('{process_name}' = '' OR p.name = '{process_name}' OR p.name GLOB '{process_name}:*')
     AND (ied.event_action = 'ACTION_MOVE' OR ied.event_action = '2')
 ),
 frame_match AS (

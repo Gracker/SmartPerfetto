@@ -70,6 +70,7 @@ import {
   classifyQueryComplexity,
   classifyQueryComplexityLocal,
   isAcknowledgementFollowupReason,
+  PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
 } from '../../../agentv3/queryComplexityClassifier';
 import { buildComplexityClassifierInput } from '../../../agentv3/queryComplexityContext';
 import { buildAgentDefinitions } from './claudeAgentDefinitions';
@@ -1265,9 +1266,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           quickTraceFactPreEvidence = localQuickPreEvidenceFlags.quickTraceFactPreEvidence;
           quickScrollingTriagePreEvidence = localQuickPreEvidenceFlags.quickScrollingTriagePreEvidence;
           quickSkipFocusDetection = localQuickPreEvidenceFlags.skipFocusDetection;
-          skipQuickTracePreflightDetection = (
-            quickProcessIdentityPreEvidence || quickTraceFactPreEvidence
-          );
+          skipQuickTracePreflightDetection = localQuickPreEvidenceFlags.skipTracePreflightDetection ||
+            quickProcessIdentityPreEvidence || quickTraceFactPreEvidence;
         }
       } else {
         const classifierResult = localClassifierResult
@@ -1296,9 +1296,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         quickTraceFactPreEvidence = quickPreEvidenceFlags.quickTraceFactPreEvidence;
         quickScrollingTriagePreEvidence = quickPreEvidenceFlags.quickScrollingTriagePreEvidence;
         quickSkipFocusDetection = quickPreEvidenceFlags.skipFocusDetection;
-        skipQuickTracePreflightDetection = (
-          quickProcessIdentityPreEvidence || quickTraceFactPreEvidence
-        );
+        skipQuickTracePreflightDetection = quickPreEvidenceFlags.skipTracePreflightDetection ||
+          quickProcessIdentityPreEvidence || quickTraceFactPreEvidence;
       }
       executionLease.throwIfAborted();
 
@@ -1430,6 +1429,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           startTime,
           analysisRunSpec,
           skipQuickTracePreflightDetection,
+          priorEvidenceOnlyFollowup:
+            classifierReason === PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
           quickFocusAppPreEvidence,
           quickProcessIdentityPreEvidence,
           quickTraceFactPreEvidence,
@@ -2650,7 +2651,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         terminationMessage,
       };
       finalizeSourceAwareAnalysisResult(finalAnalysisResult, ctx.sourceUse);
-      const gateIssue = applyFinalResultQualityGate({ result: finalAnalysisResult, query, sceneType });
+      const gateIssue = applyFinalResultQualityGate({
+        result: finalAnalysisResult,
+        query,
+        sceneType,
+        deferFocusedEvidenceFinalization: true,
+      });
       if (gateIssue) {
         this.emitUpdate({
           type: 'degraded',
@@ -2987,6 +2993,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       startTime: number;
       analysisRunSpec: AnalysisRunSpec;
       skipQuickTracePreflightDetection: boolean;
+      priorEvidenceOnlyFollowup: boolean;
       quickFocusAppPreEvidence: boolean;
       quickProcessIdentityPreEvidence: boolean;
       quickTraceFactPreEvidence: boolean;
@@ -3006,6 +3013,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       startTime,
       analysisRunSpec,
       skipQuickTracePreflightDetection,
+      priorEvidenceOnlyFollowup,
       quickFocusAppPreEvidence,
       quickProcessIdentityPreEvidence,
       quickTraceFactPreEvidence,
@@ -3291,14 +3299,15 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       if (
         skipQuickPreflightForEvidence &&
         !deferQuickTracePreflightToModel &&
-        !useEvidenceOnlyQuick
+        !useEvidenceOnlyQuick &&
+        !priorEvidenceOnlyFollowup
       ) {
         architecture = await detectQuickArchitecture();
         sqlErrors = ensureSqlErrorsLoaded();
         executionLease.throwIfAborted();
       }
 
-      const quickTraceFeatures = useEvidenceOnlyQuick
+      const quickTraceFeatures = useEvidenceOnlyQuick || priorEvidenceOnlyFollowup
         ? undefined
         : extractTraceFeatures({
             architectureType: architecture?.type,
@@ -3396,7 +3405,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       let mcpServer: ReturnType<typeof createClaudeMcpServer>['server'] | undefined;
       let allowedTools: string[] = [];
-      if (!useEvidenceOnlyQuick) {
+      if (!useEvidenceOnlyQuick && !priorEvidenceOnlyFollowup) {
         executionLease.throwIfAborted();
         await (skillRegistryReady ?? ensureSkillRegistryInitialized());
         executionLease.throwIfAborted();
@@ -3749,7 +3758,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }),
       };
       finalizeSourceAwareAnalysisResult(quickResult, sourceUse);
-      const quickGateIssue = applyFinalResultQualityGate({ result: quickResult, query, sceneType });
+      const quickGateIssue = applyFinalResultQualityGate({
+        result: quickResult,
+        query,
+        sceneType,
+        deferFocusedEvidenceFinalization: true,
+      });
       executionLease.throwIfAborted();
       if (quickGateIssue) {
         this.emitUpdate({

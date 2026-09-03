@@ -38,7 +38,8 @@
 ## Artifact 读取规则
 
 - `invoke_skill` 返回的 `art-*`、`artifacts`、`synthesizeArtifacts` 是 SmartPerfetto artifact 引用，不是 trace_processor SQL 表。
-- 读取 artifact 行数据只能调用 `fetch_artifact(artifactId="art-N", detail="rows", offset=0, limit=50)`。
+- 需要 artifact 时默认先调用 `fetch_artifact(artifactId="art-N", detail="summary")`；摘要已足够回答时立即停止。
+- 只有摘要缺少必需字段/代表样本，或用户明确要求逐行数据时，才用 `detail="rows"`；只读取解决该缺口所需的最少 rows，不要机械分页。
 - 不要在 `execute_sql` 中查询 `art-*`、`__intrinsic_artifact_rows`、`synthesizeArtifacts`、Skill stepId 或 title；这些都不是 SQL 表。
 - 如果需要查询 Trace 原生数据，先用 `lookup_sql_schema` 确认真实 Perfetto 表/列，再调用 `execute_sql`。
 

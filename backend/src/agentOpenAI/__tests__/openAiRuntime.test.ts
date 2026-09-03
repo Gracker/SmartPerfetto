@@ -1547,6 +1547,53 @@ describe('OpenAIRuntime quick mode classification metadata', () => {
     })]);
   });
 
+  it('does not restore architecture, vendor, or tools for a prior-evidence-only follow-up', async () => {
+    const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
+    const runtime = new OpenAIRuntime(traceProcessor);
+    const runtimeWithPrivates = runtime as unknown as {
+      detectArchitecture: (...args: unknown[]) => Promise<unknown>;
+      detectVendor: (...args: unknown[]) => Promise<unknown>;
+      prepareAnalysisContext: (...args: unknown[]) => Promise<{
+        tools: unknown[];
+        allowedTools: string[];
+        architecture?: unknown;
+      }>;
+    };
+    const detectArchitecture = jest.spyOn(runtimeWithPrivates, 'detectArchitecture')
+      .mockResolvedValue({type: 'Standard', confidence: 0.9, evidence: []});
+    const detectVendor = jest.spyOn(runtimeWithPrivates, 'detectVendor')
+      .mockResolvedValue('xiaomi');
+    const sessionContext = createSessionContextForOpenAiPrepareTest();
+
+    const context = await runtimeWithPrivates.prepareAnalysisContext(
+      '只基于上一条证据回答，不要重新分析，也不要调用工具。',
+      's-openai-prior-evidence-only',
+      'trace-openai-prior-evidence-only',
+      {analysisMode: 'auto'},
+      {
+        config: {outputLanguage: 'zh-CN'},
+        sceneType: 'scrolling',
+        lightweight: true,
+        analysisRunSpec: createOpenAiAnalysisRunSpecForTest({
+          query: '只基于上一条证据回答，不要重新分析，也不要调用工具。',
+          sessionId: 's-openai-prior-evidence-only',
+          traceId: 'trace-openai-prior-evidence-only',
+          analysisMode: 'auto',
+        }),
+        sessionContext,
+        previousTurns: [],
+        skipQuickTracePreflightDetection: true,
+        priorEvidenceOnlyFollowup: true,
+      },
+    );
+
+    expect(detectArchitecture).not.toHaveBeenCalled();
+    expect(detectVendor).not.toHaveBeenCalled();
+    expect(context.architecture).toBeUndefined();
+    expect(context.tools).toEqual([]);
+    expect(context.allowedTools).toEqual([]);
+  });
+
   it('answers default auto trace facts before preparing the OpenAI SDK context', async () => {
     const traceProcessor = createTraceProcessorForOpenAiPrepareTest();
     traceProcessor.query.mockImplementation(async (_traceId: string, sql: string) => {

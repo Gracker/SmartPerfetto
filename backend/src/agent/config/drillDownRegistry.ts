@@ -16,6 +16,8 @@ export interface DrillDownSkillConfig {
   skillId: string;
   domain: string;
   agentId: string;
+  /** Reject registered drill-down calls that provide neither an entity nor a complete interval. */
+  requiresEntityOrInterval?: boolean;
   paramMapping: Record<string, string>;
   intervalBindings?: ReadonlyArray<{
     skillId: string;
@@ -30,6 +32,7 @@ export const DRILL_DOWN_SKILL_REGISTRY: Record<DrillDownEntityType, DrillDownSki
     skillId: 'jank_frame_detail',
     domain: 'frame',
     agentId: 'frame_agent',
+    requiresEntityOrInterval: true,
     paramMapping: {
       start_ts: 'startTs',
       end_ts: 'endTs',
@@ -167,6 +170,7 @@ export function findDrillDownSkillConfig(skillId: string): {
   config: DrillDownSkillConfig;
   paramMapping: Record<string, string>;
   dropEntityParamAfterResolution: boolean;
+  requiresEntityOrInterval: boolean;
 } | undefined {
   for (const [entityType, config] of Object.entries(DRILL_DOWN_SKILL_REGISTRY)) {
     if (config.skillId === skillId) {
@@ -175,6 +179,7 @@ export function findDrillDownSkillConfig(skillId: string): {
         config,
         paramMapping: config.paramMapping,
         dropEntityParamAfterResolution: false,
+        requiresEntityOrInterval: config.requiresEntityOrInterval === true,
       };
     }
     const binding = config.intervalBindings?.find(candidate => candidate.skillId === skillId);
@@ -184,6 +189,7 @@ export function findDrillDownSkillConfig(skillId: string): {
         config,
         paramMapping: binding.paramMapping,
         dropEntityParamAfterResolution: binding.dropEntityParamAfterResolution === true,
+        requiresEntityOrInterval: false,
       };
     }
   }

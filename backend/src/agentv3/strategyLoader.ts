@@ -36,6 +36,8 @@ export interface PhaseHint {
   keywords: string[];
   constraints: string;
   criticalTools: string[];
+  /** Optional per-phase hard cap for named tool attempts. */
+  maxToolCalls?: Readonly<Record<string, number>>;
   /** When true, this hint is injected as unconditional fallback if keyword matching fails. */
   critical: boolean;
 }
@@ -377,6 +379,7 @@ function parseStrategyFile(filePath: string): StrategyDefinition | null {
     keywords: (h.keywords as string[]) || [],
     constraints: (h.constraints as string) || '',
     criticalTools: (h.critical_tools as string[]) || [],
+    ...parsePhaseHintMaxToolCalls(h.max_tool_calls, `strategy_phase_hint_invalid_max_tool_calls:${filePath}`),
     critical: (h.critical as boolean) ?? false,
   }));
 
@@ -525,6 +528,7 @@ function cloneStrategyDefinition(definition: StrategyDefinition): StrategyDefini
       ...hint,
       keywords: [...hint.keywords],
       criticalTools: [...hint.criticalTools],
+      ...(hint.maxToolCalls ? {maxToolCalls: {...hint.maxToolCalls}} : {}),
     })),
     planTemplate: definition.planTemplate
       ? {
@@ -645,6 +649,25 @@ function assertStringArray(value: unknown, code: string): asserts value is strin
   }
 }
 
+function parsePhaseHintMaxToolCalls(
+  value: unknown,
+  code: string,
+): {maxToolCalls?: Record<string, number>} {
+  if (value === undefined) return {};
+  if (
+    !isRecord(value)
+    || Object.entries(value).some(([toolName, limit]) =>
+      !toolName.trim()
+      || (toolName !== 'execute_sql' && toolName !== 'execute_sql_on')
+      || typeof limit !== 'number'
+      || !Number.isInteger(limit)
+      || limit < 0)
+  ) {
+    throw new Error(code);
+  }
+  return {maxToolCalls: {...value} as Record<string, number>};
+}
+
 function parsePhaseHintContribution(
   value: unknown,
   contributionId: string,
@@ -656,6 +679,7 @@ function parsePhaseHintContribution(
       'keywords',
       'constraints',
       'criticalTools',
+      'maxToolCalls',
       'critical',
     ])
     || !nonEmptyString(value.id)
@@ -677,6 +701,10 @@ function parsePhaseHintContribution(
     keywords: [...value.keywords],
     constraints: value.constraints,
     criticalTools: [...value.criticalTools],
+    ...parsePhaseHintMaxToolCalls(
+      value.maxToolCalls,
+      `strategy_contribution_invalid_phase_hint_max_tool_calls:${contributionId}`,
+    ),
     critical: value.critical,
   };
 }
@@ -880,6 +908,7 @@ export function buildStrategyRegistrySnapshot(input: {
       ...hint,
       keywords: [...hint.keywords],
       criticalTools: [...hint.criticalTools],
+      ...(hint.maxToolCalls ? {maxToolCalls: {...hint.maxToolCalls}} : {}),
     }));
     const detailSections = current.detailSections.map(detail => ({
       ...detail,

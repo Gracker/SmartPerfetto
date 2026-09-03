@@ -52,6 +52,22 @@ interface ConclusionContractDeriveOptions {
 interface EvidenceBackedConclusionContractDeriveOptions extends ConclusionContractDeriveOptions {
   existingContract?: ConclusionContract | null;
   dataEnvelopes?: DataEnvelope[];
+  runSequence?: number;
+  requestedAnalysisMode?: 'fast' | 'full' | 'auto';
+}
+
+export function resolveConclusionOutputModeForTurn(input: {
+  existingMode?: ConclusionOutputMode | null;
+  runSequence?: number;
+  requestedAnalysisMode?: 'fast' | 'full' | 'auto';
+}): ConclusionOutputMode {
+  if (input.existingMode === 'need_input') return 'need_input';
+  if (input.requestedAnalysisMode === 'full') return 'initial_report';
+  if (input.existingMode === 'focused_answer') return 'focused_answer';
+  if (Number.isFinite(input.runSequence) && Number(input.runSequence) > 1) {
+    return 'focused_answer';
+  }
+  return input.existingMode ?? 'initial_report';
 }
 
 interface NarrativeCellCandidate {
@@ -533,7 +549,7 @@ export function normalizeNarrativeForClient(narrative: string): string {
 
 /**
  * Normalize an AnalysisResult's conclusion + re-derive its conclusionContract
- * (if missing) using the same rounds-based mode heuristic the HTTP path uses.
+ * (if missing) using the conversation turn rather than provider-internal rounds.
  * Returns the input unchanged when no fields would actually change, so the
  * identity check in callers (`result === normalized`) stays cheap.
  */
@@ -542,10 +558,20 @@ export function normalizeResultForReport(
   options: EvidenceBackedConclusionContractDeriveOptions = {},
 ): AnalysisResult {
   const normalizedConclusion = normalizeNarrativeForClient(result.conclusion);
+  const mode = resolveConclusionOutputModeForTurn({
+    existingMode: result.conclusionContract?.mode,
+    runSequence: options.runSequence,
+    requestedAnalysisMode: options.requestedAnalysisMode,
+  });
+  const existingContract = result.conclusionContract?.mode === mode
+    ? result.conclusionContract
+    : result.conclusionContract
+      ? {...result.conclusionContract, mode}
+      : undefined;
   const derivedContract =
     deriveEvidenceBackedConclusionContractForNarrative(result.conclusion, options.dataEnvelopes, {
-      existingContract: result.conclusionContract,
-      mode: result.rounds > 1 ? 'focused_answer' : 'initial_report',
+      existingContract,
+      mode,
       ...options,
     }) || undefined;
   let normalizedContract = derivedContract

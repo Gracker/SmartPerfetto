@@ -84,6 +84,7 @@ import { isConclusionLikePlanPhase } from '../../../agentv3/planPhaseSemantics';
 import {
   classifyQueryComplexityLocal,
   isAcknowledgementFollowupReason,
+  PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
 } from '../../../agentv3/queryComplexityClassifier';
 import { buildComplexityClassifierInput } from '../../../agentv3/queryComplexityContext';
 import { classifyQueryWithOpenAILightModel } from './openAiComplexityClassifier';
@@ -1089,6 +1090,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         sessionContext,
         previousTurns,
         skipQuickTracePreflightDetection: modeClassification.skipQuickTracePreflightDetection,
+        priorEvidenceOnlyFollowup:
+          modeClassification.reason === PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
         quickProcessIdentityPreEvidence: modeClassification.quickProcessIdentityPreEvidence,
         quickTraceFactPreEvidence: modeClassification.quickTraceFactPreEvidence,
         quickEvidenceAttempt: selectReusableRuntimeQuickEvidenceAttempt(quickEvidenceAttempt),
@@ -1858,6 +1861,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           query,
           sceneType: finalReportSceneType,
           comparisonIdentity: context.comparisonIdentity,
+          deferFocusedEvidenceFinalization: true,
         });
         if (gateIssue) {
           this.emitUpdate({
@@ -2244,6 +2248,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       sessionContext: ReturnType<typeof sessionContextManager.getOrCreate>;
       previousTurns: ConversationTurn[];
       skipQuickTracePreflightDetection: boolean;
+      priorEvidenceOnlyFollowup?: boolean;
       quickProcessIdentityPreEvidence?: boolean;
       quickTraceFactPreEvidence?: boolean;
       quickEvidenceAttempt?: RuntimeQuickEvidenceAttempt;
@@ -2254,6 +2259,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const { config, sceneType, lightweight, analysisRunSpec, sessionContext } = runtime;
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
     const reusableQuickEvidenceAttempt = runtime.quickEvidenceAttempt;
+    const priorEvidenceOnlyFollowup = runtime.priorEvidenceOnlyFollowup === true;
     const executionLease = runtime.executionLease;
     const runtimePerformance = runtime.runtimePerformance;
     const widenedPreflightDagAdmitted = isRuntimeCandidateAdmitted('task6');
@@ -2548,7 +2554,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         ? (fullModeKnowledgeBaseContextPromise ?? Promise.resolve(undefined))
         : Promise.resolve(undefined),
     ]);
-    if (!useEvidenceOnlyQuick) {
+    if (!useEvidenceOnlyQuick && !priorEvidenceOnlyFollowup) {
       await (fullModeSkillRegistryReady ?? Promise.resolve());
     }
     await throwIfPreflightAborted();
@@ -2568,12 +2574,16 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       : undefined;
     const entityStore = sessionContext.getEntityStore();
     const entityContext = this.buildEntityContext(entityStore);
-    const skillRegistryReady = !useEvidenceOnlyQuick
+    const skillRegistryReady = !useEvidenceOnlyQuick && !priorEvidenceOnlyFollowup
       ? (fullModeSkillRegistryReady ?? ensureSkillRegistryInitialized())
       : undefined;
     const traceInfo = lightweight ? undefined : this.traceProcessorService.getTrace(traceId);
 
-    if (skipQuickTracePreflight && !useEvidenceOnlyQuick) {
+    if (
+      skipQuickTracePreflight &&
+      !useEvidenceOnlyQuick &&
+      !priorEvidenceOnlyFollowup
+    ) {
       const [fallbackArchitecture, fallbackDetectedVendor] = await Promise.all([
         architecture ? Promise.resolve(architecture) : this.detectArchitecture(traceId, effectivePackageName),
         detectedVendor ? Promise.resolve(detectedVendor) : this.detectVendor(traceId),
@@ -2583,7 +2593,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       sqlErrors = ensureSqlErrorsLoaded();
     }
 
-    const shouldInjectQuickMemoryContext = lightweight && !useEvidenceOnlyQuick;
+    const shouldInjectQuickMemoryContext = lightweight &&
+      !useEvidenceOnlyQuick &&
+      !priorEvidenceOnlyFollowup;
     const sqlErrorFixPairs = (!lightweight || shouldInjectQuickMemoryContext)
       ? sqlErrors
           .filter((e: any) => e.fixedSql)
@@ -2615,7 +2627,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     let allowedTools: string[] = [];
     let tools: ReturnType<typeof createOpenAIToolsFromMcpDefinitions> = [];
     let sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'] | undefined;
-    if (!useEvidenceOnlyQuick) {
+    if (!useEvidenceOnlyQuick && !priorEvidenceOnlyFollowup) {
       await (skillRegistryReady ?? ensureSkillRegistryInitialized());
       const skillExecutor = createSkillExecutor(this.traceProcessorService);
       const effectiveSkillRegistry =
@@ -2899,7 +2911,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         reason: classification?.reason,
       });
     const shouldSkipQuickPreflightForEvidence = (flags: ReturnType<typeof deriveFlags>) => (
-      flags.quickProcessIdentityPreEvidence || flags.quickTraceFactPreEvidence
+      flags.skipTracePreflightDetection ||
+      flags.quickProcessIdentityPreEvidence ||
+      flags.quickTraceFactPreEvidence
     );
 
     if (explicitMode === 'fast') {

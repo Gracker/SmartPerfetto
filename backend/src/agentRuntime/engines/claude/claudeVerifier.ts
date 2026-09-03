@@ -518,11 +518,22 @@ export function verifySceneCompleteness(
       const hasSignificantJank = /(?:[2-9]\d|[1-9]\d{2,})\s*帧|(?:[1-9]\d+)\s*%.*(?:freq_ramp|workload|sched_delay|lock_binder|binder_wait|thermal|sf_composition|render_thread|gc_pressure|cpu_max)/i.test(allText) ||
         /(?:真实掉帧|real[_\s-]?jank|app deadline missed|vsync_missed|掉帧|卡顿)[^。\n]{0,80}\b[1-9]\s*(?:帧|frames?)/i.test(allText) ||
         /\b[1-9]\s*(?:帧|frames?)[^。\n]{0,80}(?:真实掉帧|real[_\s-]?jank|app deadline missed|vsync_missed|workload|lock_binder|binder_wait|deadline missed|掉帧|卡顿)/i.test(allText);
-      if (hasSignificantJank && !hasDeepDrill) {
+      const hasEvidenceBoundTerminalJank = /prediction_error|display_hal|app_jank_unattributed/i.test(allText);
+      const hasActionableReason = /buffer_stuffing|sf_composition_slow|binder_sync_blocking|gc_jank|gc_pressure_cascade|input_handling_slow|small_core_placement|sched_delay_in_slice|shader_compile|gpu_fence_wait|render_thread_heavy|workload_heavy|thermal_throttling|cpu_max_limited|big_core_low_freq|freq_ramp_slow|cpu_saturation|scheduling_delay|main_thread_file_io|uninterruptible_wait|binder_timeout|lock_contention|render_sync_wait|lock_binder_wait|unknown jank|reason_code\s*[:=]\s*unknown|未分类/i.test(allText);
+      const terminalOnlyJank = hasEvidenceBoundTerminalJank && !hasActionableReason;
+      if (hasSignificantJank && !hasDeepDrill && !terminalOnlyJank) {
         issues.push({
           type: 'missing_check',
           severity: 'error',
           message: '滑动分析有掉帧但缺少 Phase 1.9 根因深钻 — reason_code 只是分类标签，不是真正的根因。必须对关键根因类别调用 blocking_chain_analysis/binder_root_cause/jank_frame_detail/frame_blocking_calls/surfaceflinger_analysis 获取机制级证据，回答"WHY 这帧慢"；lookup_knowledge 只能作为背景解释，不能替代 trace 证据。',
+        });
+      }
+      if (/app_jank_unattributed/i.test(allText) &&
+          !/未归因|证据不足|缺少[^。\n]{0,40}直接证据|unattributed|insufficient evidence|not enough evidence/i.test(allText)) {
+        issues.push({
+          type: 'missing_check',
+          severity: 'error',
+          message: 'app_jank_unattributed 只能确认 FrameTimeline 的 App 责任，必须明确披露底层根因未归因或直接证据不足，不能把它改写成具体 Binder/GC/锁/调度原因。',
         });
       }
 

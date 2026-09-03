@@ -193,11 +193,11 @@ function createCompletedScrollingPlanWithFinalPhase(): any {
       {
         id: 'p1',
         name: '滑动概览与代表帧深钻',
-        goal: '采集全帧分布并深钻代表帧',
+        goal: '采集全量掉帧类型统计和带覆盖率的根因样本并深钻代表帧',
         expectedTools: ['invoke_skill'],
         expectedCalls: [{tool: 'invoke_skill', skillId: 'jank_frame_detail'}],
         status: 'completed',
-        summary: '已采集全帧根因分布并用 jank_frame_detail 完成代表帧机制级深钻。',
+        summary: '已采集全量掉帧类型统计和带覆盖率的根因样本，并用 jank_frame_detail 完成代表帧机制级深钻。',
       },
       {
         id: 'p2',
@@ -2328,7 +2328,7 @@ describe('experimental OpenCode runtime contract', () => {
       '## 峰值/口径指标',
       '真实掉帧 1 帧；最长帧 62.73ms；Buffer Stuffing 假阳性已单独排除。',
       '',
-      '## 全帧根因分布',
+      '## 掉帧与根因分布',
       '| 根因 | 帧数 | 占比 |',
       '| --- | ---: | ---: |',
       '| workload_heavy | 1 | 100% |',
@@ -2365,8 +2365,8 @@ describe('experimental OpenCode runtime contract', () => {
 
     expect(promptInputs).toHaveLength(2);
     expect((promptInputs[1] as any).body.parts[0].text).toContain('Final Report Contract');
-    expect((promptInputs[1] as any).body.parts[0].text).toContain('全帧根因分布');
-    expect(result.conclusion).toContain('## 全帧根因分布');
+    expect((promptInputs[1] as any).body.parts[0].text).toContain('掉帧与根因分布');
+    expect(result.conclusion).toContain('## 掉帧与根因分布');
     expect(result.conclusion).toContain('## 代表帧分析');
     expect(result.conclusion).not.toContain('本稿尚未展开');
     expect(result.partial).not.toBe(true);
@@ -2382,7 +2382,7 @@ describe('experimental OpenCode runtime contract', () => {
       '## 峰值/口径指标',
       '真实掉帧 1 帧；最长帧 62.73ms；Buffer Stuffing 假阳性已单独排除。',
       '',
-      '## 全帧根因分布',
+      '## 掉帧与根因分布',
       '| 根因 | 帧数 | 占比 |',
       '| --- | ---: | ---: |',
       '| workload_heavy | 1 | 100% |',
@@ -2430,7 +2430,7 @@ describe('experimental OpenCode runtime contract', () => {
 
     expect(promptInputs).toHaveLength(1);
     expect(result.conclusion).toContain('## 综合结论');
-    expect(result.conclusion).toContain('## 全帧根因分布');
+    expect(result.conclusion).toContain('## 掉帧与根因分布');
     expect(result.conclusion).not.toContain('## Objective');
     expect(result.partial).not.toBe(true);
     expect(close).toHaveBeenCalledTimes(1);
@@ -2507,7 +2507,7 @@ describe('experimental OpenCode runtime contract', () => {
       '## 峰值/口径指标',
       '真实掉帧 1 帧；最长帧 62.73ms；Buffer Stuffing 假阳性已单独排除。',
       '',
-      '## 全帧根因分布',
+      '## 掉帧与根因分布',
       '| 根因 | 帧数 | 占比 |',
       '| --- | ---: | ---: |',
       '| workload_heavy | 1 | 100% |',
@@ -2637,7 +2637,7 @@ describe('experimental OpenCode runtime contract', () => {
       '## 峰值/口径指标',
       '真实掉帧 1 帧；最长帧 62.73ms；Buffer Stuffing 假阳性已单独排除。',
       '',
-      '## 全帧根因分布',
+      '## 掉帧与根因分布',
       '| 根因 | 帧数 | 占比 |',
       '| --- | ---: | ---: |',
       '| workload_heavy | 1 | 100% |',
@@ -2688,7 +2688,7 @@ describe('experimental OpenCode runtime contract', () => {
     expect((promptInputs[1] as any).body.parts[0].text).toContain('p1');
     expect((promptInputs[2] as any).body.parts[0].text).toContain('p2');
     expect((promptInputs[3] as any).body.parts[0].text).toContain('Final Report Contract');
-    expect(result.conclusion).toContain('## 全帧根因分布');
+    expect(result.conclusion).toContain('## 掉帧与根因分布');
     expect(result.conclusion).not.toContain('补证前的旧报告');
     expect(result.partial).not.toBe(true);
     expect(result.rounds).toBe(4);
@@ -2755,7 +2755,7 @@ describe('experimental OpenCode runtime contract', () => {
       '## 峰值/口径指标',
       '真实掉帧 1 帧；最长帧 62.73ms；Buffer Stuffing 假阳性已单独排除。',
       '',
-      '## 全帧根因分布',
+      '## 掉帧与根因分布',
       '| 根因 | 帧数 | 占比 |',
       '| --- | ---: | ---: |',
       '| workload_heavy | 1 | 100% |',
@@ -4030,7 +4030,7 @@ describe('experimental OpenCode runtime contract', () => {
             '## 峰值/口径指标',
             '真实掉帧 0 帧；最长帧 12ms。',
             '',
-            '## 全帧根因分布',
+            '## 掉帧与根因分布',
             '| 根因 | 帧数 | 占比 |',
             '| --- | ---: | ---: |',
             '| none | 0 | 0% |',

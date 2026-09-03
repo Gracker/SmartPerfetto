@@ -17,6 +17,16 @@ import {
   MAX_SCENE_CORE_TOKENS,
   type PromptSegment,
 } from '../claudeSystemPrompt';
+import {loadPromptTemplate} from '../strategyLoader';
+import fs from 'fs';
+import path from 'path';
+
+function loadStrategy(scene: string): string {
+  return fs.readFileSync(
+    path.join(process.cwd(), 'strategies', `${scene}.strategy.md`),
+    'utf-8',
+  );
+}
 
 const M2_TOKEN_GATES = {
   fullPromptTokens: MAX_PROMPT_TOKENS,
@@ -266,6 +276,49 @@ function buildTokenReport(sceneType: 'startup' | 'scrolling') {
 }
 
 describe('system prompt token regression with real strategy files', () => {
+  it('keeps full planning evidence-driven instead of phase-transition driven', () => {
+    const methodology = loadPromptTemplate('prompt-methodology');
+
+    expect(methodology).toContain('Plan 是精简的证据契约，不是工作流叙事');
+    expect(methodology).toContain('默认只建 2–3 个证据阶段');
+    expect(methodology).toContain('不要为条件分支或最终报告单独创建空阶段');
+    expect(methodology).toContain('常规阶段切换由下一阶段首个证据调用自动启动');
+    expect(methodology).toContain('最终报告不是 plan 阶段');
+    expect(methodology).toContain('`aggregate.complete=true` 只证明该 artifact 内行已聚合完整');
+    expect(methodology).toContain('不等于覆盖全部 eligible 总体');
+    expect(methodology).toContain('外推前先看 `evidence_scope` / `claim_boundary`');
+    expect(methodology).not.toContain('`aggregate.complete=true` 可作为全表分布证据');
+    expect(methodology).toContain('`claim_boundary` 是结果生产者声明的结论上限');
+    expect(methodology).toContain('候选证据只有被独立证据明确绑定后');
+    expect(methodology).toContain('禁止 schema lookup + 探索 SQL 循环');
+    expect(methodology).not.toContain('阶段切换必须 `update_plan_phase`');
+    expect(methodology).not.toContain('summary 不是完整证据');
+  });
+
+  it('tells the model that frame_timeline_to_buffer_tx_ratio is not a bounded coverage', () => {
+    // The ratio is frame_timeline_frames / buffer_tx_produced_frames, two
+    // independent sources, so it can exceed 1. A real run reported
+    // "coverage_ratio=1.0024" which reads as 100.24% coverage. >1 actually
+    // means BufferTX undercounted; clamping would destroy that signal.
+    const strategy = loadStrategy('scrolling');
+    expect(strategy).toContain('不是有界覆盖率');
+    expect(strategy).toContain('> 1 说明 BufferTX 少计');
+  });
+
+  it('keeps the real quick prompt artifact rules summary-first instead of rows-first', () => {
+    const quick = loadPromptTemplate('prompt-quick');
+
+    expect(quick).toContain('## Artifact 读取规则');
+    expect(quick).toContain('fetch_artifact(artifactId="art-N", detail="summary")');
+    expect(quick).toContain('只读取解决该缺口所需的最少 rows');
+    expect(quick).toContain('不要机械分页');
+    expect(quick).toContain('__intrinsic_artifact_rows');
+    expect(quick).toContain('这些都不是 SQL 表');
+    expect(quick).toContain('detail="rows"');
+    expect(quick).not.toMatch(/page through large datasets/);
+    expect(quick).not.toMatch(/All data is accessible/);
+  });
+
   it.each(['startup', 'scrolling'] as const)(
     'enforces M2 full-mode token hard gate for %s without mocking strategyLoader',
     sceneType => {
@@ -311,6 +364,15 @@ describe('system prompt token regression with real strategy files', () => {
     expect(prompt).toContain('先 rejected 原命题，再 submit_hypothesis');
   });
 
+  it('keeps conditional skips and TextureView claim boundaries authoritative in the scrolling prompt', () => {
+    const prompt = buildSystemPromptParts(makeWorstCaseContext('scrolling')).fullPrompt;
+
+    expect(prompt).not.toContain('必须完整执行所有阶段');
+    expect(prompt).toContain('条件项只在用户问题、plan 或 trace 证据命中 trigger 时强制');
+    expect(prompt).toContain('`consumer_notification` cadence gap 只是时序候选');
+    expect(prompt).toContain('不得称为 hidden jank、producer stall 或根因');
+  });
+
   it('keeps report contract when scene core is forcibly truncated under an artificial budget', () => {
     const parts = buildSystemPromptParts(
       makeWorstCaseContext('startup'),
@@ -319,7 +381,6 @@ describe('system prompt token regression with real strategy files', () => {
     );
     const sceneCore = parts.segments.find(segment => segment.label === 'scene_strategy_core');
     const reportContract = parts.segments.find(segment => segment.label === 'report_contract');
-
     expect(parts.truncatedLabels).toEqual(expect.arrayContaining(['scene_strategy_core']));
     expect(parts.truncatedLabels.every(label => (
       label === 'scene_strategy_core' || label === 'selection_context'

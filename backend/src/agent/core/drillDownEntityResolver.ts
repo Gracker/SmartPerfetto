@@ -29,7 +29,7 @@ export interface DrillDownEntityResolution {
   resolvedEntityId: string;
   row: Record<string, unknown>;
   query: string;
-  resolveSource: 'registry' | 'legacy_android_frames' | 'doframe_alias';
+  resolveSource: 'registry' | 'legacy_android_frames' | 'doframe_alias' | 'actual_frame_ts';
 }
 
 export type DrillDownEntityResolutionAudit = Pick<
@@ -202,6 +202,32 @@ function buildLegacyFrameQuery(frameId: string, processName?: string): string {
   `;
 }
 
+function buildFrameTimestampQuery(frameTs: string, processName?: string): string {
+  return `
+    WITH candidates AS (
+      SELECT
+        COUNT(*) OVER () as match_count,
+        COALESCE(a.display_frame_token, a.surface_frame_token) as frame_id,
+        a.ts as start_ts,
+        a.ts + a.dur as end_ts,
+        a.dur,
+        p.name as process_name,
+        a.jank_type,
+        a.layer_name,
+        NULL as vsync_missed
+      FROM actual_frame_timeline_slice a
+      LEFT JOIN process p ON a.upid = p.upid
+      WHERE a.ts = ${frameTs}
+        AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+        ${processFilterSql(processName)}
+    )
+    SELECT *
+    FROM candidates
+    ORDER BY frame_id
+    LIMIT 1
+  `;
+}
+
 function buildDoFrameAliasQuery(frameId: string, processName?: string): string {
   return `
     WITH target_slice AS (
@@ -351,6 +377,44 @@ export async function resolveDrillDownEntity(input: {
   } : null;
 }
 
+async function resolveFrameByTimestamp(input: {
+  frameTs: unknown;
+  traceId: string;
+  traceProcessorService: TraceQueryService;
+  processName?: string;
+  signal?: AbortSignal;
+}): Promise<DrillDownEntityResolution | null> {
+  const requestedTimestamp = normalizeTimestamp(input.frameTs);
+  if (requestedTimestamp === null) return null;
+  const sql = buildFrameTimestampQuery(requestedTimestamp, input.processName);
+  const row = await queryFirstRow(
+    input.traceProcessorService,
+    input.traceId,
+    sql,
+    input.signal,
+  );
+  if (!row) return null;
+  if (Number(row.match_count ?? 0) !== 1) {
+    throw new DrillDownEntityResolutionError(
+      `Unable to resolve a unique frame interval for timestamp ${requestedTimestamp}`,
+    );
+  }
+  const frameId = normalizeDrillDownEntityId(row.frame_id);
+  if (frameId === null) {
+    throw new DrillDownEntityResolutionError(
+      `Resolved frame timestamp ${requestedTimestamp} is missing a canonical frame id`,
+    );
+  }
+  return {
+    entityType: 'frame',
+    requestedEntityId: requestedTimestamp,
+    resolvedEntityId: frameId,
+    row,
+    query: sql,
+    resolveSource: 'actual_frame_ts',
+  };
+}
+
 function canonicalizeCommonDrillDownAliases(params: Record<string, any>): Record<string, any> {
   const canonical = {...params};
   for (const [canonicalName, aliasName] of [
@@ -386,6 +450,21 @@ function rowValueForSource(row: Record<string, unknown>, source: string): unknow
   return row[rowField] ?? row[source];
 }
 
+function assertFrameTimestampMatchesInterval(frameTs: unknown, startTs: unknown): void {
+  if (frameTs == null) return;
+  const requestedFrameTs = normalizeTimestamp(frameTs);
+  const intervalStartTs = normalizeTimestamp(startTs);
+  if (
+    requestedFrameTs === null
+    || intervalStartTs === null
+    || requestedFrameTs !== intervalStartTs
+  ) {
+    throw new DrillDownEntityResolutionError(
+      'Explicit frame_ts conflicts with the resolved frame interval',
+    );
+  }
+}
+
 export async function resolveRegisteredDrillDownSkillParams(input: {
   skillId: string;
   params: Record<string, any>;
@@ -405,23 +484,46 @@ export async function resolveRegisteredDrillDownSkillParams(input: {
   const normalizedEntityId = normalizeDrillDownEntityId(entityId);
   if (normalizedEntityId !== null) params[entityParam] = normalizedEntityId;
   if (hasValidInterval(params)) {
+    if (registered.entityType === 'frame') {
+      assertFrameTimestampMatchesInterval(params.frame_ts, params.start_ts);
+    }
     if (registered.dropEntityParamAfterResolution) delete params[entityParam];
     return {params, enriched: false};
   }
-  if (entityId == null) return {params, enriched: false};
-
-  const resolution = await resolveDrillDownEntity({
-    entityType: registered.entityType,
-    entityId,
-    traceId: input.traceId,
-    traceProcessorService: input.traceProcessorService,
-    processName: params.process_name ?? params.package,
-    signal: input.signal,
-  });
+  const processName = params.process_name ?? params.package;
+  const resolution = entityId == null && registered.entityType === 'frame' && params.frame_ts != null
+    ? await resolveFrameByTimestamp({
+        frameTs: params.frame_ts,
+        traceId: input.traceId,
+        traceProcessorService: input.traceProcessorService,
+        processName,
+        signal: input.signal,
+      })
+    : entityId == null
+      ? null
+      : await resolveDrillDownEntity({
+          entityType: registered.entityType,
+          entityId,
+          traceId: input.traceId,
+          traceProcessorService: input.traceProcessorService,
+          processName,
+          signal: input.signal,
+        });
+  if (entityId == null && params.frame_ts == null) {
+    if (registered.requiresEntityOrInterval) {
+      throw new DrillDownEntityResolutionError(
+        `${input.skillId} requires an entity id, frame timestamp, or complete start_ts/end_ts interval`,
+      );
+    }
+    return {params, enriched: false};
+  }
   if (!resolution) {
     throw new DrillDownEntityResolutionError(
-      `Unable to resolve a complete ${registered.entityType} interval for ${input.skillId} entity ${String(entityId)}`,
+      `Unable to resolve a complete ${registered.entityType} interval for ${input.skillId} entity ${String(entityId ?? params.frame_ts)}`,
     );
+  }
+  if (registered.entityType === 'frame') {
+    assertFrameTimestampMatchesInterval(params.frame_ts, resolution.row.start_ts);
   }
 
   const enriched = {...params};

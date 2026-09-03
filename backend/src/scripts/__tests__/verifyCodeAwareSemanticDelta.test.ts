@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {
+  buildFollowUpVerificationChecks,
   parseArgs as parseAgentSseArgs,
   setupAnalysisContext,
 } from '../verifyAgentSseScrolling';
@@ -20,6 +21,63 @@ const repoRoot = path.resolve(__dirname, '../../../..');
 const sourceRoot = path.join(repoRoot, 'backend/tests/e2e/context-fixtures/app');
 
 describe('register-only Agent SSE setup', () => {
+  it('applies non-partial, verifier, and degraded checks to follow-up runs', () => {
+    const options = parseAgentSseArgs([
+      '--follow-up-query', '只解释上一轮证据',
+      '--require-non-partial',
+      '--require-claim-verifier-ok',
+      '--forbid-degraded-fallback', 'final_result_quality_gate',
+    ]);
+    const summary = {
+      progressCount: 1,
+      conclusionCount: 0,
+      analysisCompletedConclusionChars: 1209,
+      terminalEvent: 'analysis_completed',
+      errorEvents: [],
+      planSubmittedCount: 0,
+      requiredTextMatches: {},
+      toolCallCounts: {},
+      degradedFallbackCounts: {},
+      analysisCompletedPartial: false,
+      claimVerifierStatus: 'passed',
+      claimVerifierPassed: true,
+      claimVerifierUnsupportedClaimCount: 0,
+    } as any;
+
+    expect(Object.values(buildFollowUpVerificationChecks(summary, options)).every(Boolean))
+      .toBe(true);
+
+    const failedChecks = buildFollowUpVerificationChecks({
+      ...summary,
+      degradedFallbackCounts: {final_result_quality_gate: 1},
+      analysisCompletedPartial: true,
+      claimVerifierStatus: 'partial',
+      claimVerifierPassed: false,
+      claimVerifierUnsupportedClaimCount: 1,
+    }, options);
+    expect(failedChecks).toEqual(expect.objectContaining({
+      'followUpForbidsDegradedFallback:final_result_quality_gate': false,
+      followUpAnalysisCompletedNotPartial: false,
+      followUpClaimVerifierPassed: false,
+      followUpClaimVerifierHasNoUnsupportedClaims: false,
+    }));
+  });
+
+  it('defaults a follow-up to auto without changing the initial requested mode', () => {
+    const options = parseAgentSseArgs(['--mode', 'full', '--follow-up-query', '只解释上一轮证据']);
+    expect(options.analysisMode).toBe('full');
+    expect(options.followUpAnalysisMode).toBe('auto');
+  });
+
+  it('accepts an explicit per-turn follow-up mode override', () => {
+    const options = parseAgentSseArgs([
+      '--mode', 'full',
+      '--follow-up-query', '重新生成完整报告',
+      '--follow-up-mode', 'full',
+    ]);
+    expect(options.followUpAnalysisMode).toBe('full');
+  });
+
   it('requires a codebase root when setup mode is explicit', () => {
     expect(() => parseAgentSseArgs([
       '--setup-codebase-mode',

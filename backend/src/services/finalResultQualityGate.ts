@@ -10,6 +10,7 @@ import {
 } from '../agentv3/quickAnswerContract';
 import { assessFinalReportContractCompleteness } from './finalReportContractGate';
 import {verifySourceClaimBindingsForResult} from './codebase/sourceClaimVerifier';
+import {assessScrollingJankClaimBoundary} from './scrollingJankClaimBoundary';
 
 export type FinalResultQualityIssueCode =
   | 'empty_conclusion'
@@ -19,10 +20,12 @@ export type FinalResultQualityIssueCode =
   | 'sparse_unverified_conclusion'
   | 'quick_full_report_shape'
   | 'quick_verifier_failed'
+  | 'causal_claim_unverified'
   | 'scene_contract_incomplete'
   | 'comparison_identity_incomplete'
   | 'source_claim_binding_invalid'
-  | 'kernel_blocking_claim_boundary';
+  | 'kernel_blocking_claim_boundary'
+  | 'scrolling_jank_claim_boundary';
 
 export interface FinalResultQualityIssue {
   code: FinalResultQualityIssueCode;
@@ -438,8 +441,13 @@ function looksLikeOverExpandedQuickReport(
     /(^|\n)\s{0,3}#{1,3}\s*[^\n]{0,40}(?:完整诊断报告|完整分析报告|综合诊断报告|Full Report|Comprehensive Report)/i.test(reportShapeText);
   const triageOverBudget = result.quickRun?.profile === 'triage' &&
     reportShapeText.length > QUICK_TRIAGE_MAX_CHINESE_CHARS * 2;
+  const hasPriorConversation =
+    (result.quickRun?.contextInjected.conversationTurns ?? 0) > 0;
   const triageContractOverrun = result.quickRun?.profile === 'triage' &&
-    (headingCount > 2 || claimCount > QUICK_TRIAGE_MAX_CLAIMS);
+    (
+      headingCount > 2 ||
+      (!hasPriorConversation && claimCount > QUICK_TRIAGE_MAX_CLAIMS)
+    );
   return hasFullReportLanguage || triageOverBudget || triageContractOverrun || headingCount >= 6 || reportShapeText.length > 3600;
 }
 
@@ -1214,6 +1222,9 @@ export function assessFinalResultQuality(input: {
   if (!result.success) return undefined;
 
   const conclusion = result.conclusion.trim();
+  const requiresCompleteReportStructure =
+    result.conclusionContract?.mode !== 'focused_answer' &&
+    result.conclusionContract?.mode !== 'need_input';
   if (result.partial === true) {
     if (looksLikeAnalysisQuery(query)) {
       return assessKernelBlockingClaimBoundary(conclusion);
@@ -1268,6 +1279,7 @@ export function assessFinalResultQuality(input: {
 
   if (
     !isQuickRunResult(result) &&
+    requiresCompleteReportStructure &&
     looksLikeAnalysisQuery(query) &&
     hasReportStructureMarker(conclusion) &&
     !hasDeliverableFinalReportHeading(conclusion)
@@ -1292,9 +1304,36 @@ export function assessFinalResultQuality(input: {
     };
   }
 
+  const unverifiedCausalClaimIds = strictUnverifiedCausalClaimIds(result);
+  if (
+    result.conclusionContract?.mode === 'focused_answer' &&
+    unverifiedCausalClaimIds.size > 0
+  ) {
+    return {
+      code: 'causal_claim_unverified',
+      message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} 因果断言仍只是候选关系或推断，未通过关系证据核验：${[
+        ...unverifiedCausalClaimIds,
+      ].join('、')}。`,
+    };
+  }
+
   if (looksLikeAnalysisQuery(query)) {
     const kernelBlockingIssue = assessKernelBlockingClaimBoundary(conclusion);
     if (kernelBlockingIssue) return kernelBlockingIssue;
+  }
+
+  if (sceneType === 'scrolling') {
+    const jankClaimIssue = assessScrollingJankClaimBoundary(conclusion);
+    if (jankClaimIssue) {
+      const boundary = jankClaimIssue.code === 'prediction_error_noise_overclaim'
+        ? 'Prediction Error 是 SurfaceFlinger scheduler 的预测偏差标签；只能在“孤立错误通常不代表用户可感知 App 卡顿”等限定范围内解释，不能把密集或连续样本一概称为统计噪声、统计假象或 measurement artifact。'
+        : '当前证据可以说明哪些帧被直接归因到 App，但不能用“唯一真实/唯一用户可感知掉帧”排除其他呈现间隔异常或未归因帧。';
+      return {
+        code: 'scrolling_jank_claim_boundary',
+        message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} ${boundary}`,
+        offendingStatement: boundedOffendingStatement(jankClaimIssue.statement),
+      };
+    }
   }
 
   const comparisonIdentityIssue = assessFinalResultComparisonIdentity(
@@ -1303,7 +1342,11 @@ export function assessFinalResultQuality(input: {
   );
   if (comparisonIdentityIssue) return comparisonIdentityIssue;
 
-  if (!isQuickRunResult(result) && looksLikeAnalysisQuery(query)) {
+  if (
+    !isQuickRunResult(result) &&
+    requiresCompleteReportStructure &&
+    looksLikeAnalysisQuery(query)
+  ) {
     const contractIssue = assessFinalReportContractCompleteness({
       conclusion,
       query,
@@ -1349,6 +1392,7 @@ export function applyFinalResultQualityGate(input: {
   query?: string;
   sceneType?: string;
   comparisonIdentity?: FinalResultComparisonIdentity;
+  deferFocusedEvidenceFinalization?: boolean;
 }): FinalResultQualityIssue | undefined {
   const sourceClaimVerification = verifySourceClaimBindingsForResult(input.result);
   if (sourceClaimVerification) {
@@ -1359,10 +1403,20 @@ export function applyFinalResultQualityGate(input: {
   }
   const issue = assessFinalResultQuality(input);
   if (!issue) return undefined;
+  if (
+    input.deferFocusedEvidenceFinalization === true &&
+    issue.code === 'sparse_unverified_conclusion' &&
+    input.result.conclusionContract?.mode === 'focused_answer' &&
+    (input.result.conclusionContract.claims?.length ?? 0) === 0 &&
+    !input.result.claimVerificationResult &&
+    (input.result.claimSupport?.length ?? 0) === 0
+  ) {
+    return undefined;
+  }
 
   input.result.partial = true;
   input.result.confidence = Math.min(input.result.confidence || 0, 0.55);
-  input.result.terminationReason = input.result.terminationReason ?? 'plan_incomplete';
+  input.result.terminationReason = input.result.terminationReason ?? 'quality_gate_failed';
   if (!input.result.terminationMessage) {
     input.result.terminationMessage = issue.message;
   } else if (!input.result.terminationMessage.includes(issue.message)) {

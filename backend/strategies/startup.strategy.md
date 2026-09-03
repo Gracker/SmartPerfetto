@@ -511,7 +511,7 @@ invoke_skill("blocking_chain_analysis", { start_ts: "<slice_start>", end_ts: "<s
 ```sql
 SELECT name AS slice_name, dur / 1e6 AS dur_ms, thread_name
 FROM thread_slice
-WHERE process_name GLOB '{process_name}*'
+WHERE ('{process_name}' = '' OR process_name = '{process_name}' OR process_name GLOB '{process_name}:*')
   AND (is_main_thread = 1 OR thread_name = 'RenderThread')
   AND ts BETWEEN {end_ts} AND {end_ts} + 500000000
   AND dur > 5000000

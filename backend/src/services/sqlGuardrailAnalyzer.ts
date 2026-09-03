@@ -9,7 +9,8 @@ export type SqlGuardrailRuleId =
   | 'span-join-safety'
   | 'span-join-non-overlap'
   | 'idempotent-create'
-  | 'safe-arg-extraction';
+  | 'safe-arg-extraction'
+  | 'percentile-percent-scale';
 
 export interface SqlGuardrailRule {
   id: SqlGuardrailRuleId;
@@ -69,6 +70,11 @@ export const SQL_GUARDRAIL_RULES: readonly SqlGuardrailRule[] = [
     title: 'Prefer EXTRACT_ARG over direct args table parsing',
     defaultForValidate: true,
   },
+  {
+    id: 'percentile-percent-scale',
+    title: 'Use Perfetto PERCENTILE arguments on the 0 to 100 scale',
+    defaultForValidate: true,
+  },
 ] as const;
 
 export const DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES: readonly SqlGuardrailRuleId[] =
@@ -77,6 +83,40 @@ export const DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES: readonly SqlGuardrailRuleId[]
 const IGNORE_TOKEN = 'smartperfetto-guardrail-ignore';
 const SPAN_JOIN_PROOF_TOKEN = 'perfetto-span-join-non-overlap-proof';
 const RULE_IDS = new Set<SqlGuardrailRuleId>(SQL_GUARDRAIL_RULES.map(rule => rule.id));
+
+function findRatioScalePercentileArguments(maskedSql: string): number[] {
+  const findings: number[] = [];
+  const callPattern = /\bPERCENTILE\s*\(/gi;
+
+  for (const match of maskedSql.matchAll(callPattern)) {
+    let depth = 1;
+    let commaIndex = -1;
+    let cursor = (match.index ?? 0) + match[0].length;
+
+    for (; cursor < maskedSql.length && depth > 0; cursor += 1) {
+      const char = maskedSql[cursor];
+      if (char === '(') {
+        depth += 1;
+      } else if (char === ')') {
+        depth -= 1;
+        if (depth === 0 && commaIndex >= 0) {
+          const argumentStart = commaIndex + 1;
+          const argument = maskedSql.slice(argumentStart, cursor).trim();
+          if (/^(?:0?\.\d+)$/.test(argument)) {
+            const value = Number(argument);
+            if (value > 0 && value < 1) {
+              findings.push(argumentStart + maskedSql.slice(argumentStart, cursor).search(/\S/));
+            }
+          }
+        }
+      } else if (char === ',' && depth === 1 && commaIndex < 0) {
+        commaIndex = cursor;
+      }
+    }
+  }
+
+  return findings;
+}
 
 /**
  * Strip comments and SQL string literals while preserving newlines and offsets.
@@ -539,6 +579,17 @@ export function analyzeSqlGuardrails(
         match.index ?? 0,
         'safe-arg-extraction',
         'Prefer EXTRACT_ARG/STR_SPLIT helpers over direct args table parsing so key/value typing and repeated keys stay consistent.',
+      ));
+    }
+  }
+
+  if (matchesRule('percentile-percent-scale', includeRules)) {
+    for (const argumentIndex of findRatioScalePercentileArguments(maskedSql)) {
+      issues.push(makeIssue(
+        sql,
+        argumentIndex,
+        'percentile-percent-scale',
+        'Perfetto PERCENTILE uses a 0 to 100 percentile argument; ratio-scale literals between 0 and 1 produce sub-first-percentile results (use 50, 90, 95, or 99 as intended).',
       ));
     }
   }

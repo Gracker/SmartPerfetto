@@ -3385,6 +3385,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       query,
       sceneType: resolveFinalReportSceneType(),
       comparisonIdentity: prep.comparisonIdentity,
+      deferFocusedEvidenceFinalization: true,
     });
     if (gateIssue && !wasPartialBeforeQualityGate) {
       result.confidence = estimateConfidence(result.findings, true);

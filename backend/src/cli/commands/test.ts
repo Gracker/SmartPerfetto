@@ -46,7 +46,7 @@ export const testCommand = new Command('test')
     try {
       // Dynamic imports to avoid loading heavy dependencies at CLI startup
       const { skillRegistry, ensureSkillRegistryInitialized } = await import('../../services/skillEngine/skillLoader');
-      const { SkillExecutor, createSkillExecutor } = await import('../../services/skillEngine/skillExecutor');
+      const { createSkillExecutor } = await import('../../services/skillEngine/skillExecutor');
       const { getTraceProcessorService } = await import('../../services/traceProcessorService');
 
       // Initialize
@@ -80,6 +80,7 @@ export const testCommand = new Command('test')
       const startTime = Date.now();
 
       const executor = createSkillExecutor(traceProcessor);
+      executor.setFragmentRegistry(skillRegistry.getFragmentCache());
       executor.registerSkills(skillRegistry.getAllSkills());
       const result = await executor.execute(skillId, traceId, { package: options.package });
 

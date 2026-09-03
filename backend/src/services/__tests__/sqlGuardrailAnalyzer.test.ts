@@ -344,4 +344,34 @@ describe('sqlGuardrailAnalyzer', () => {
 
     expect(issues).toHaveLength(0);
   });
+
+  it('rejects ratio-scale literals for Perfetto PERCENTILE arguments', () => {
+    const issues = analyzeSqlGuardrails(`
+      SELECT
+        PERCENTILE(value, 0.95) AS wrong_p95,
+        PERCENTILE(COALESCE(value, fallback_value), 0.5) AS wrong_median,
+        PERCENTILE(value, 95) AS p95,
+        PERCENTILE(value, 50) AS median
+      FROM samples
+    `);
+
+    expect(issues.filter(
+      issue => String(issue.ruleId) === 'percentile-percent-scale',
+    )).toHaveLength(2);
+    expect(DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES as readonly string[])
+      .toContain('percentile-percent-scale');
+  });
+
+  it('ignores fractional percentile text in comments and SQL string literals', () => {
+    const issues = analyzeSqlGuardrails(`
+      -- PERCENTILE(value, 0.95) is intentionally shown as an invalid example.
+      SELECT 'PERCENTILE(value, 0.5)' AS note,
+        PERCENTILE(value, 95) AS p95
+      FROM samples
+    `);
+
+    expect(issues.some(
+      issue => String(issue.ruleId) === 'percentile-percent-scale',
+    )).toBe(false);
+  });
 });

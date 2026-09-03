@@ -897,6 +897,31 @@ function transformDeepFrameAnalysis(displayResults: any[]): { diagnosis_summary:
   };
 }
 
+function firstNonEmptyFrameIdentifier(...values: unknown[]): string | undefined {
+  for (const value of values) {
+    if (value === null || value === undefined) continue;
+    const normalized = String(value).trim();
+    if (normalized.length > 0) return normalized;
+  }
+  return undefined;
+}
+
+function deepFrameEntryKey(item: any, fallbackIndex: number): string {
+  const identity = firstNonEmptyFrameIdentifier(item?.frame_identity_key);
+  if (identity) return `frame_${encodeURIComponent(identity)}`;
+  const legacyIdentity = firstNonEmptyFrameIdentifier(
+    item?.frame_id,
+    item?.frame_index,
+    fallbackIndex,
+  );
+  return `frame_${legacyIdentity ?? fallbackIndex}`;
+}
+
+function frameDisplayIdentifier(item: any, fallbackIndex: number): string {
+  return firstNonEmptyFrameIdentifier(item?.frame_id, item?.frame_index, fallbackIndex)
+    ?? String(fallbackIndex);
+}
+
 function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
   const layers: LayeredResult['layers'] = {
     overview: {},
@@ -960,7 +985,8 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                 continue;
               }
 
-              const frameId = `frame_${item.frame_id || item.frame_index || i}`;
+              const frameId = deepFrameEntryKey(item, i);
+              const frameDisplayId = frameDisplayIdentifier(item, i);
               const sessionId = `session_${item.session_id ?? 0}`;
 
               if (!deepLayer[sessionId]) {
@@ -978,7 +1004,7 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                 data: transformedData,
                 executionTimeMs: iterItem.result?.executionTimeMs || 0,
                 display: {
-                  title: `帧 #${item.frame_id || item.frame_index || i} - ${item.jank_type || 'Unknown'}`,
+                  title: `帧 #${frameDisplayId} - ${item.jank_type || 'Unknown'}`,
                   level: 'key',
                   layer: 'deep',
                   format: 'table',
@@ -1002,7 +1028,8 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                 const item: any = normalizedStep.data[i];
                 if (!item || typeof item !== 'object') continue;
 
-                const frameId = `frame_${item.frame_id || item.frame_index || i}`;
+                const frameId = deepFrameEntryKey(item, i);
+                const frameDisplayId = frameDisplayIdentifier(item, i);
                 const sessionId = `session_${item.session_id ?? 0}`;
 
                 if (!deepLayer[sessionId]) {
@@ -1016,7 +1043,7 @@ function organizeByLayer(steps: StepResult[]): LayeredResult['layers'] {
                   data: [item],
                   executionTimeMs: normalizedStep.executionTimeMs / normalizedStep.data.length,
                   display: {
-                    title: `帧 #${item.frame_id || item.frame_index || i} - ${item.jank_type || 'Unknown'}`,
+                    title: `帧 #${frameDisplayId} - ${item.jank_type || 'Unknown'}`,
                     level: 'key',
                     layer: 'deep',
                     format: 'table',
@@ -1163,7 +1190,10 @@ export class SkillExecutor {
 
     if (fragmentCteBodies.length === 0) return sql;
 
-    const fragmentBlock = fragmentCteBodies.join(',\n');
+    // Put separators on their own line. A fragment may end with a `-- marker`
+    // comment; appending the comma to that line makes SQLite ignore it and
+    // leaves the next CTE syntactically unseparated.
+    const fragmentBlock = fragmentCteBodies.join('\n,\n');
     const trimmed = sql.trimStart();
 
     // Strip leading SQL single-line comments (-- ...) before WITH detection,
@@ -1174,7 +1204,7 @@ export class SkillExecutor {
       // Preserve original comments, insert fragments after WITH
       const commentPrefix = trimmed.slice(0, trimmed.length - noLeadingComments.length);
       const afterWith = noLeadingComments.slice(withMatch[0].length);
-      return `${commentPrefix}WITH\n${fragmentBlock},\n${afterWith}`;
+      return `${commentPrefix}WITH\n${fragmentBlock}\n,\n${afterWith}`;
     }
 
     // Wrap the entire SQL in a WITH clause
@@ -1310,6 +1340,20 @@ export class SkillExecutor {
     return Boolean(target.upid !== undefined && sources.has('upid'));
   }
 
+  private hasExactProcessNameTarget(
+    target: ProcessIdentityTarget,
+    candidate: ProcessIdentityCandidate | undefined,
+  ): boolean {
+    const requestedName = target.requestedName?.trim();
+    if (!requestedName || !candidate) return false;
+    return [
+      candidate.processName,
+      candidate.metadataProcessName,
+      candidate.cmdline,
+      candidate.recommendedProcessNameParam,
+    ].some(value => value === requestedName);
+  }
+
   private identityQualityWarnings(
     candidate: ProcessIdentityCandidate | undefined,
     candidates: ProcessIdentityCandidate[],
@@ -1342,10 +1386,14 @@ export class SkillExecutor {
       warnings.add('probable identity match requires additional confirmation before parameter rewrite');
     }
 
-    const second = candidates.find(item =>
+    const closeCandidates = candidates.filter(item =>
       item !== candidate &&
-      item.confidenceScore > 0);
-    if (second && candidate.confidenceScore - second.confidenceScore < 20) {
+      item.confidenceScore > 0 &&
+      candidate.confidenceScore - item.confidenceScore < 20);
+    const exactRequestedProcess = this.hasExactProcessNameTarget(target, candidate);
+    const closeExactRequestedProcess = closeCandidates.some(item =>
+      this.hasExactProcessNameTarget(target, item));
+    if (closeCandidates.length > 0 && (!exactRequestedProcess || closeExactRequestedProcess)) {
       warnings.add('multiple close process identity candidates require manual confirmation');
     }
     return Array.from(warnings);
@@ -2114,8 +2162,13 @@ export class SkillExecutor {
           aiSummary = stepResult.data.summary;
         }
       } else {
-        const isQueryFailure = stepResult.stepType === 'atomic' && stepResult.code !== 'condition_not_met';
-        if (isQueryFailure) {
+        if (stepResult.code === 'condition_not_met') {
+          context.results[step.id] = stepResult;
+          continue;
+        }
+        const isSkillFailure = stepResult.stepType === 'skill';
+        const isQueryFailure = stepResult.stepType === 'atomic';
+        if (isSkillFailure || isQueryFailure) {
           context.results[step.id] = stepResult;
           const optional = 'optional' in step && Boolean(step.optional);
           if (!optional) {
@@ -2863,7 +2916,7 @@ export class SkillExecutor {
         });
         return {
           stepId: step.id,
-          stepType: step.type,
+          stepType: step.type ?? 'skill',
           success: isOptional,
           data: isOptional ? [] : undefined,
           error: isOptional ? undefined : 'Condition not met',

@@ -39,6 +39,18 @@ const NORMALIZED_CONFIRM_KEYWORDS = CONFIRM_KEYWORDS
 export const TRACE_IDENTITY_FACT_LOOKUP_REASON = 'trace identity fact lookup';
 export const TRACE_FACT_LOOKUP_REASON = 'trace fact lookup';
 export const ACKNOWLEDGEMENT_FOLLOWUP_REASON_PREFIX = 'confirm-like follow-up:';
+export const PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON = 'prior evidence only follow-up';
+
+const PRIOR_EVIDENCE_ANCHOR_PATTERN =
+  /(?:上一(?:轮|条|次)|上条|之前|前面|已有|已经给出|先前|prior|previous|earlier|above)/i;
+const PRIOR_EVIDENCE_REUSE_PATTERN =
+  /(?:只|仅)?基于|复用|沿用|use\s+only|based\s+only\s+on|reuse/i;
+const PRIOR_EVIDENCE_NO_NEW_WORK_PATTERN =
+  /(?:不要|无需|不必|别|禁止|不再|不)\s*(?:重新|再)?\s*(?:分析|查询|扫描|跑|调用).{0,8}(?:工具|skill|sql)?|no\s+new\s+tools?|without\s+(?:rerunning|re-running|new\s+tools?)|(?:do\s+not|don't)\s+(?:rerun|re-run|analy[sz]e|call\s+(?:new\s+)?tools?)/i;
+const NEGATED_NEW_WORK_CLAUSE_PATTERN =
+  /(?:不要|无需|不必|别|禁止|不再|不)\s*(?:重新|再)?\s*(?:分析|查询|扫描|跑|调用).{0,8}(?:工具|skill|sql)?|no\s+new\s+tools?|without\s+(?:rerunning|re-running|new\s+tools?)|(?:do\s+not|don't)\s+(?:rerun|re-run|analy[sz]e|call\s+(?:new\s+)?tools?)/gi;
+const EXPLICIT_NEW_WORK_PATTERN =
+  /(?:重新|再(?:做|跑|查|分析|扫描|调用)|完整|全量|full|complete).{0,16}(?:分析|查询|扫描|跑|调用|报告|diagnos|analy[sz]|report|tools?)/i;
 
 const IDENTITY_FACT_PATTERNS = [
   /包名|应用包|package\s*name|application\s*id|app\s*id/i,
@@ -238,6 +250,14 @@ export function classifyQueryComplexityLocal(
       `[ComplexityClassifier] Acknowledgement rule → ${acknowledgementResult.complexity}: ${acknowledgementResult.reason}`,
     );
     return { ...acknowledgementResult, source: 'hard_rule' };
+  }
+
+  const priorEvidenceOnlyResult = applyPriorEvidenceOnlyFollowupRule(input);
+  if (priorEvidenceOnlyResult) {
+    console.log(
+      `[ComplexityClassifier] Prior-evidence rule → ${priorEvidenceOnlyResult.complexity}: ${priorEvidenceOnlyResult.reason}`,
+    );
+    return {...priorEvidenceOnlyResult, source: 'hard_rule'};
   }
 
   const scopeResult = applyScopeHardRules(input);
@@ -562,6 +582,19 @@ function applyAcknowledgementRule(
     return { complexity: 'quick', reason: `${ACKNOWLEDGEMENT_FOLLOWUP_REASON_PREFIX} "${query.trim()}"` };
   }
   return null;
+}
+
+function applyPriorEvidenceOnlyFollowupRule(
+  input: ComplexityClassifierInput,
+): {complexity: QueryComplexity; reason: string} | null {
+  if ((input.previousQueries?.length ?? 0) === 0) return null;
+  const query = input.query.trim();
+  if (!query || !PRIOR_EVIDENCE_ANCHOR_PATTERN.test(query)) return null;
+  if (!PRIOR_EVIDENCE_REUSE_PATTERN.test(query)) return null;
+  if (!PRIOR_EVIDENCE_NO_NEW_WORK_PATTERN.test(query)) return null;
+  const positiveRequest = query.replace(NEGATED_NEW_WORK_CLAUSE_PATTERN, '');
+  if (EXPLICIT_NEW_WORK_PATTERN.test(positiveRequest)) return null;
+  return {complexity: 'quick', reason: PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON};
 }
 
 export function isAcknowledgementFollowupReason(reason: string): boolean {

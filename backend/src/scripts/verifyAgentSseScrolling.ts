@@ -110,6 +110,8 @@ export interface VerifyOptions {
   forbiddenText: string[];
   /** Optional second-turn query sent to the same session after the first turn completes. */
   followUpQuery?: string;
+  /** Per-turn analysis mode for the follow-up; defaults to auto instead of inheriting the first turn. */
+  followUpAnalysisMode: 'fast' | 'full' | 'auto';
   /** Literal text that must appear in the follow-up conclusion/analysis_completed event. */
   followUpRequiredText: string[];
   /** Tool names that must not be dispatched during the follow-up turn. */
@@ -224,6 +226,71 @@ interface SseSummary {
   skillCallCounts: Record<string, number>;
 }
 
+export function buildFollowUpVerificationChecks(
+  followUpSse: SseSummary,
+  options: Pick<
+    VerifyOptions,
+    | 'followUpAnalysisMode'
+    | 'followUpRequiredText'
+    | 'followUpForbiddenTools'
+    | 'requireNonPartial'
+    | 'requireClaimVerifierOk'
+    | 'forbiddenDegradedFallbacks'
+  >,
+): Record<string, boolean> {
+  const followUpIsQuickMode = followUpSse.planSubmittedCount === 0;
+  const requiredTextChecks = Object.fromEntries(
+    options.followUpRequiredText.map(text => [
+      `followUpRequiresText:${text}`,
+      followUpSse.requiredTextMatches[text] === true,
+    ]),
+  );
+  const forbiddenToolChecks = Object.fromEntries(
+    options.followUpForbiddenTools.map(toolName => [
+      `followUpForbidsTool:${toolName}`,
+      (followUpSse.toolCallCounts[toolName] ?? 0) === 0,
+    ]),
+  );
+  const degradedFallbackChecks = Object.fromEntries(
+    options.forbiddenDegradedFallbacks.map(fallback => [
+      `followUpForbidsDegradedFallback:${fallback}`,
+      (followUpSse.degradedFallbackCounts[fallback] ?? 0) === 0,
+    ]),
+  );
+  const partialChecks: Record<string, boolean> = options.requireNonPartial
+    ? {followUpAnalysisCompletedNotPartial: followUpSse.analysisCompletedPartial !== true}
+    : {};
+  const claimVerifierChecks: Record<string, boolean> = options.requireClaimVerifierOk
+    ? {
+      followUpHasClaimVerifierResult: Boolean(followUpSse.claimVerifierStatus),
+      followUpClaimVerifierPassed:
+        followUpSse.claimVerifierStatus === 'passed' &&
+        followUpSse.claimVerifierPassed !== false,
+      followUpClaimVerifierHasNoUnsupportedClaims:
+        (followUpSse.claimVerifierUnsupportedClaimCount ?? 0) === 0,
+    }
+    : {};
+
+  return {
+    hasFollowUpProgressEvents: followUpSse.progressCount > 0,
+    hasFollowUpTerminalConclusionPayload:
+      followUpSse.conclusionCount > 0 ||
+      followUpSse.analysisCompletedConclusionChars > 0,
+    hasFollowUpAnalysisCompletedEvent:
+      followUpSse.terminalEvent === 'analysis_completed' ||
+      followUpSse.terminalEvent === 'end',
+    hasFollowUpNoSseErrors: followUpSse.errorEvents.length === 0,
+    ...(options.followUpAnalysisMode === 'fast'
+      ? {followUpFastModeHonored: followUpIsQuickMode}
+      : {}),
+    ...requiredTextChecks,
+    ...forbiddenToolChecks,
+    ...degradedFallbackChecks,
+    ...partialChecks,
+    ...claimVerifierChecks,
+  };
+}
+
 const DEFAULT_TRACE = '../Trace/real/android-scroll-customer/trace.pftrace';
 const DEFAULT_QUERY = '分析滑动性能';
 
@@ -265,6 +332,7 @@ function printUsage(): void {
   console.log('  --require-text <text>              Require literal text in conclusion/analysis_completed; repeatable');
   console.log('  --forbid-text <text>               Forbid literal text in conclusion/analysis_completed; repeatable');
   console.log('  --follow-up-query <text>           Run a second turn against the same session');
+  console.log('  --follow-up-mode <fast|full|auto>  Follow-up mode (default: auto)');
   console.log('  --follow-up-require-text <text>    Require literal text in follow-up conclusion; repeatable');
   console.log('  --follow-up-forbid-tool <name>     Fail if follow-up dispatches this tool; repeatable');
   console.log('  --forbid-degraded-fallback <name>  Fail if a degraded event with this fallback is emitted; repeatable');
@@ -346,6 +414,7 @@ export function parseArgs(argv: string[]): VerifyOptions {
     requiredText: [],
     forbiddenText: [],
     followUpRequiredText: [],
+    followUpAnalysisMode: 'auto',
     followUpForbiddenTools: [],
     forbiddenDegradedFallbacks: [],
     allowNoDataEnvelopes: false,
@@ -699,6 +768,18 @@ export function parseArgs(argv: string[]): VerifyOptions {
         throw new Error('--follow-up-query requires a value');
       }
       options.followUpQuery = next;
+      i += 1;
+      continue;
+    }
+
+    if (arg === '--follow-up-mode') {
+      if (!next) {
+        throw new Error('--follow-up-mode requires a value');
+      }
+      if (next !== 'fast' && next !== 'full' && next !== 'auto') {
+        throw new Error(`Invalid --follow-up-mode value: ${next} (expected fast|full|auto)`);
+      }
+      options.followUpAnalysisMode = next;
       i += 1;
       continue;
     }
@@ -2102,7 +2183,7 @@ async function main(): Promise<void> {
           ...(options.providerId !== undefined ? { providerId: options.providerId } : {}),
           ...(options.selectionContext ? { selectionContext: options.selectionContext } : {}),
           options: {
-            ...(options.analysisMode ? { analysisMode: options.analysisMode } : {}),
+            analysisMode: options.followUpAnalysisMode,
             ...(options.codeAwareMode ? { codeAwareMode: options.codeAwareMode } : {}),
             ...(options.codebaseIds.length > 0 ? { codebaseIds: options.codebaseIds } : {}),
             ...(options.knowledgeSourceIds.length > 0
@@ -2131,34 +2212,13 @@ async function main(): Promise<void> {
         },
         { runId: followUpStartJson.runId },
       );
-      const followUpIsQuickMode = followUpSse.planSubmittedCount === 0;
-      const followUpRequiredTextChecks = Object.fromEntries(
-        options.followUpRequiredText.map((text) => [
-          `followUpRequiresText:${text}`,
-          followUpSse.requiredTextMatches[text] === true,
-        ]),
-      );
-      const followUpForbiddenToolChecks = Object.fromEntries(
-        options.followUpForbiddenTools.map((toolName) => [
-          `followUpForbidsTool:${toolName}`,
-          (followUpSse.toolCallCounts[toolName] ?? 0) === 0,
-        ]),
-      );
-      const followUpChecks = {
-        hasFollowUpProgressEvents: followUpSse.progressCount > 0,
-        hasFollowUpTerminalConclusionPayload:
-          followUpSse.conclusionCount > 0 || followUpSse.analysisCompletedConclusionChars > 0,
-        hasFollowUpAnalysisCompletedEvent:
-          followUpSse.terminalEvent === 'analysis_completed' || followUpSse.terminalEvent === 'end',
-        hasFollowUpNoSseErrors: followUpSse.errorEvents.length === 0,
-        ...(options.analysisMode === 'fast' ? { followUpFastModeHonored: followUpIsQuickMode } : {}),
-        ...followUpRequiredTextChecks,
-        ...followUpForbiddenToolChecks,
-      };
+      const followUpChecks = buildFollowUpVerificationChecks(followUpSse, options);
       const followUpPassed = Object.values(followUpChecks).every(Boolean);
       passed = passed && followUpPassed;
       followUpOutput = {
         query: options.followUpQuery,
+        requestedAnalysisMode: options.followUpAnalysisMode,
+        resolvedAnalysisMode: followUpSse.quickRun?.resolvedMode,
         runId: followUpStartJson.runId,
         checks: followUpChecks,
         passed: followUpPassed,

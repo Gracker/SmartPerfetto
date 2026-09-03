@@ -154,7 +154,7 @@ function buildSceneStrategySections(sceneType: SceneType | undefined): SceneStra
 
   const core = content
     ? '### 场景策略（必须严格遵循）\n\n' +
-    '对于以下常见场景，已有验证过的分析流水线。**必须完整执行所有阶段**，不可跳过。\n\n---\n\n' +
+    '---\n\n' +
     content
     : '';
 

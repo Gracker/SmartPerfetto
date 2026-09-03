@@ -102,6 +102,34 @@ describe('IdentityGate', () => {
     expect(result.inherited.identity_resolution?.canonicalPackageName).toBe('com.example');
   });
 
+  it('uses UPID for identity verification without leaking it into undeclared Skill inputs', async () => {
+    const gate = new IdentityGate();
+    const targetSkill = skill({
+      identity: {
+        policy: 'required',
+        scope: 'process',
+        aliases: ['process_name'],
+        rewriteTo: 'recommended_process_name_param',
+      },
+      inputs: [{name: 'process_name', type: 'string', required: true}],
+    });
+    const result = await gate.apply({
+      traceId: 'trace',
+      skill: targetSkill,
+      params: {process_name: 'com.example', upid: 42},
+      resolve: async target => {
+        expect(target).toEqual(expect.objectContaining({
+          requestedName: 'com.example',
+          upid: 42,
+        }));
+        return verified();
+      },
+    });
+
+    expect(result.allowed).toBe(true);
+    expect(result.params).toEqual({process_name: 'com.real.process'});
+  });
+
   it('blocks required process skills when no target identity is provided', async () => {
     const gate = new IdentityGate();
     const result = await gate.apply({

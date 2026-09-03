@@ -12,6 +12,7 @@ import { buildComplexityClassifierInput } from '../agentv3/queryComplexityContex
 import {
   classifyQueryComplexityLocal,
   isAcknowledgementFollowupReason,
+  PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON,
   queryMentionsProcessListFact,
   queryMentionsTraceIdentityFact,
   TRACE_FACT_LOOKUP_REASON,
@@ -151,6 +152,16 @@ export function deriveRuntimeQuickPreEvidenceFlags(input: {
   complexity?: string;
   reason?: string;
 }): RuntimeQuickPreEvidenceFlags {
+  if (input.reason === PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON) {
+    return {
+      quickFocusAppPreEvidence: false,
+      quickProcessIdentityPreEvidence: false,
+      quickTraceFactPreEvidence: false,
+      quickScrollingTriagePreEvidence: false,
+      skipFocusDetection: true,
+      skipTracePreflightDetection: true,
+    };
+  }
   const quickProcessIdentityPreEvidence = input.directEvidenceEligibleQuickMode && shouldUseRuntimeQuickProcessIdentityPreEvidence({
     query: input.query,
     selectionContext: input.selectionContext,

@@ -247,6 +247,25 @@ describe('agent route RBAC', () => {
     })).toBe('anr');
   });
 
+  it('does not let prior-turn skill evidence override the current follow-up scene', () => {
+    expect(resolveConclusionSceneIdHint({
+      sessionId: 'scene-turn-scope-test',
+      query: '只解释上一轮结论，不要重新分析',
+      findings: [],
+      intent: {
+        primaryGoal: '只解释上一轮结论，不要重新分析',
+        aspects: [],
+        expectedOutputType: 'summary',
+        complexity: 'simple',
+        followUpType: 'clarify',
+      },
+      currentTurn: 2,
+      dataEnvelopes: [
+        {meta: {skillId: 'scrolling_analysis', turn: 1}} as any,
+      ],
+    })).toBe('generic');
+  });
+
   it('runs a no-Trace conversation through the lightweight contract and streams the answer', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';

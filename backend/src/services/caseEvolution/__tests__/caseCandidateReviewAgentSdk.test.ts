@@ -59,6 +59,15 @@ describe('caseCandidateReviewAgentSdk prompt rendering', () => {
     expect(prompt).toContain('"candidateId": "cand-sdk-1"');
     expect(prompt).toContain('promote | reject | needs_more_evidence');
     expect(prompt).toContain('similar_root_cause | derived_pattern');
+    for (const reasonCode of [
+      'prediction_error',
+      'display_hal',
+      'app_jank_unattributed',
+      'lock_contention',
+      'render_sync_wait',
+    ]) {
+      expect(prompt).toContain(reasonCode);
+    }
     expect(prompt).not.toContain('{{candidate_json}}');
     expect(prompt).not.toContain('```');
   });

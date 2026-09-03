@@ -549,4 +549,110 @@ describe('resolveRegisteredDrillDownSkillParams', () => {
     expect(result.params).not.toBe(params);
     expect(query).not.toHaveBeenCalled();
   });
+
+  test('resolves a frame_ts-only frame drill-down to one complete interval', async () => {
+    const query = jest.fn().mockResolvedValue({
+      columns: ['match_count', 'frame_id', 'start_ts', 'end_ts', 'dur', 'process_name', 'jank_type'],
+      rows: [[1, '8032532', '74829612835103', '74829621168436', '8333333', 'com.example.app', 'App Deadline Missed']],
+    });
+
+    const result = await resolveRegisteredDrillDownSkillParams({
+      skillId: 'jank_frame_detail',
+      params: {frame_ts: '74829612835103', process_name: 'com.example.app'},
+      traceId: 'trace-1',
+      traceProcessorService: {query},
+    });
+
+    expect(query).toHaveBeenCalledTimes(1);
+    expect(result.enriched).toBe(true);
+    expect(result.params).toEqual(expect.objectContaining({
+      frame_id: '8032532',
+      frame_ts: '74829612835103',
+      start_ts: '74829612835103',
+      end_ts: '74829621168436',
+      process_name: 'com.example.app',
+    }));
+    expect(result.resolution).toMatchObject({
+      entityType: 'frame',
+      resolvedEntityId: '8032532',
+      resolveSource: 'actual_frame_ts',
+    });
+  });
+
+  test('fails closed when frame_id and frame_ts resolve to different frames', async () => {
+    const query = jest.fn().mockResolvedValue({
+      columns: ['frame_id', 'start_ts', 'end_ts', 'process_name', 'jank_type'],
+      rows: [['8032532', '100', '200', 'com.example.app', 'App Deadline Missed']],
+    });
+
+    await expect(resolveRegisteredDrillDownSkillParams({
+      skillId: 'jank_frame_detail',
+      params: {
+        frame_id: '8032532',
+        frame_ts: '101',
+        process_name: 'com.example.app',
+      },
+      traceId: 'trace-1',
+      traceProcessorService: {query},
+    })).rejects.toThrow(/frame_ts conflicts with the resolved frame interval/i);
+  });
+
+  test('fails closed when jank_frame_detail has no frame entity or interval', async () => {
+    const query = jest.fn();
+
+    await expect(resolveRegisteredDrillDownSkillParams({
+      skillId: 'jank_frame_detail',
+      params: {process_name: 'com.example.app'},
+      traceId: 'trace-1',
+      traceProcessorService: {query},
+    })).rejects.toThrow(/requires an entity id, frame timestamp, or complete start_ts\/end_ts interval/i);
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    'jank_frame_detail',
+    'frame_blocking_calls',
+    'blocking_chain_analysis',
+  ])('accepts a complete explicit interval for %s without an entity lookup', async skillId => {
+    const query = jest.fn();
+    const params = {process_name: 'com.example.app', start_ts: '100', end_ts: '200'};
+
+    const result = await resolveRegisteredDrillDownSkillParams({
+      skillId,
+      params,
+      traceId: 'trace-1',
+      traceProcessorService: {query},
+    });
+
+    expect(result).toEqual({
+      params: {process_name: 'com.example.app', start_ts: '100', end_ts: '200'},
+      enriched: false,
+    });
+    expect(query).not.toHaveBeenCalled();
+  });
+
+  test('fails closed when frame_ts resolves to more than one process-scoped frame', async () => {
+    const query = jest.fn().mockResolvedValue({
+      columns: ['match_count', 'frame_id', 'start_ts', 'end_ts', 'process_name'],
+      rows: [[2, '8032532', '100', '200', 'com.example.app']],
+    });
+
+    await expect(resolveRegisteredDrillDownSkillParams({
+      skillId: 'jank_frame_detail',
+      params: {frame_ts: '100', process_name: 'com.example.app'},
+      traceId: 'trace-1',
+      traceProcessorService: {query},
+    })).rejects.toThrow(/unique frame interval/i);
+  });
+
+  test('fails closed when frame_ts does not resolve to a frame', async () => {
+    const query = jest.fn().mockResolvedValue({columns: [], rows: []});
+
+    await expect(resolveRegisteredDrillDownSkillParams({
+      skillId: 'jank_frame_detail',
+      params: {frame_ts: '100', process_name: 'com.example.app'},
+      traceId: 'trace-1',
+      traceProcessorService: {query},
+    })).rejects.toThrow(/unable to resolve/i);
+  });
 });

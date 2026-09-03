@@ -52,4 +52,27 @@ describe('scrollingRelationCandidateProducer real traces', () => {
       }
     }
   }, 240_000);
+
+  it('keeps the production batch frame budget on trace timing when the selected range has no local VSync tick', async () => {
+    const evaluator = new SkillEvaluator('scrolling_analysis');
+    try {
+      await evaluator.loadTrace(resolveTraceCase('android-scroll-customer'));
+      const result = await evaluator.executeStep('batch_frame_root_cause', {
+        package: PACKAGE,
+        start_ts: '506731768732822',
+        end_ts: '506731773000000',
+        max_frames_per_session: 10,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toMatchObject({
+        frame_id: '59665037',
+        frame_budget_ms: 8.33,
+      });
+      expect(String(result.data[0].vsync_source)).toMatch(/^(?:scoped|trace_wide)_vsync_counter$/);
+    } finally {
+      await evaluator.cleanup();
+    }
+  }, 240_000);
 });

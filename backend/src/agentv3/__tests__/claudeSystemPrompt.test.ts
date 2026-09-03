@@ -409,6 +409,7 @@ describe('buildSystemPrompt', () => {
       const prompt = buildSystemPrompt(makeContext({ sceneType: 'scrolling' }));
       expect(prompt).toContain('frame_timeline');
       expect(prompt).toContain('掉帧根因');
+      expect(prompt).not.toContain('必须完整执行所有阶段');
     });
 
     it('should inject declarative final report contract for scenes that define one', () => {

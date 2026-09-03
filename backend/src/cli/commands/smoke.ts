@@ -93,7 +93,10 @@ export const smokeCommand = new Command('smoke')
       console.log(colors.gray('Initializing skill registry...'));
       await ensureSkillRegistryInitialized();
 
-      let skills = skillRegistry.getAllSkills().slice().sort((a, b) => a.name.localeCompare(b.name));
+      const allSkills = skillRegistry.getAllSkills().slice().sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+      let skills = allSkills;
       if (!options.includeModules) {
         skills = skills.filter(s => !s.module);
       }
@@ -137,7 +140,8 @@ export const smokeCommand = new Command('smoke')
       };
 
       const executor = createSkillExecutor(traceProcessorProxy);
-      executor.registerSkills(skills);
+      executor.setFragmentRegistry(skillRegistry.getFragmentCache());
+      executor.registerSkills(allSkills);
 
       const baseParams: Record<string, any> = {};
       if (options.package !== undefined) {
@@ -214,4 +218,3 @@ export const smokeCommand = new Command('smoke')
       process.exit(1);
     }
   });
-

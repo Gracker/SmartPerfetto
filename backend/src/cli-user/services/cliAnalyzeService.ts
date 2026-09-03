@@ -557,6 +557,8 @@ export class CliAnalyzeService {
         session.knowledgeSourceIds = primaryOptions.knowledgeSourceIds;
         const normalized = normalizeResultForReport(result, {
           dataEnvelopes: session.dataEnvelopes as DataEnvelope[],
+          runSequence: session.runSequence,
+          requestedAnalysisMode,
         });
         result.conclusion = normalized.conclusion;
         if (normalized.conclusionContract) {

@@ -374,6 +374,11 @@ describe('normalizeRawSql', () => {
     expect(result.sql).toContain("SELECT '59665234' AS frame_id");
     expect(result.sql).toContain('FROM actual_frame_timeline_slice a');
     expect(result.sql).toContain('CAST(NULL AS TEXT) AS reason_code');
+    expect(result.sql).toContain("f.jank_type GLOB '*App Resynced Jitter*'");
+    expect(result.sql).toContain("f.jank_type GLOB '*Prediction Error*'");
+    expect(result.sql).toContain("f.jank_type GLOB '*Display HAL*'");
+    expect(result.sql.indexOf("f.jank_type GLOB '*Buffer Stuffing*'"))
+      .toBeLessThan(result.sql.indexOf("f.jank_type GLOB '*Prediction Error*'"));
     expect(result.sql).toContain('source_note');
     expect(result.sql).not.toContain('__intrinsic_batch_frame_root_cause');
     expect(result.rewrites).toContain(

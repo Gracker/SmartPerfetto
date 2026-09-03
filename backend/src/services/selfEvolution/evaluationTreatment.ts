@@ -130,11 +130,12 @@ export async function withEvaluationRoleVariant<T>(
 }
 
 export function evaluationPhaseHintInjectionContentHash(
-  hint: Pick<PhaseHint, 'constraints' | 'criticalTools'>,
+  hint: Pick<PhaseHint, 'constraints' | 'criticalTools' | 'maxToolCalls'>,
 ): string {
   return canonicalContentHash({
     constraints: hint.constraints,
     criticalTools: hint.criticalTools,
+    ...(hint.maxToolCalls ? {maxToolCalls: hint.maxToolCalls} : {}),
   });
 }
 
@@ -310,7 +311,7 @@ function normalizePhaseHint(value: unknown): PhaseHint {
   const hint = value as PhaseHint;
   if (
     Object.keys(hint).some(key =>
-      !['id', 'keywords', 'constraints', 'criticalTools', 'critical'].includes(
+      !['id', 'keywords', 'constraints', 'criticalTools', 'maxToolCalls', 'critical'].includes(
         key,
       ))
     || !hint.id
@@ -320,6 +321,20 @@ function normalizePhaseHint(value: unknown): PhaseHint {
     || !hint.constraints.trim()
     || !Array.isArray(hint.criticalTools)
     || !hint.criticalTools.every(tool => typeof tool === 'string')
+    || (
+      hint.maxToolCalls !== undefined
+      && (
+        !hint.maxToolCalls
+        || typeof hint.maxToolCalls !== 'object'
+        || Array.isArray(hint.maxToolCalls)
+        || Object.entries(hint.maxToolCalls).some(([toolName, limit]) =>
+          !toolName.trim()
+          || (toolName !== 'execute_sql' && toolName !== 'execute_sql_on')
+          || typeof limit !== 'number'
+          || !Number.isInteger(limit)
+          || limit < 0)
+      )
+    )
     || typeof hint.critical !== 'boolean'
   ) {
     throw new Error('evaluation_treatment_phase_hint_invalid');
@@ -329,6 +344,7 @@ function normalizePhaseHint(value: unknown): PhaseHint {
     keywords: [...hint.keywords],
     constraints: hint.constraints,
     criticalTools: [...hint.criticalTools],
+    ...(hint.maxToolCalls ? {maxToolCalls: {...hint.maxToolCalls}} : {}),
     critical: hint.critical,
   });
 }

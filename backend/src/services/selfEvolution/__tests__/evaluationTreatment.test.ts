@@ -51,6 +51,46 @@ function artifact(content = 'Candidate note') {
 }
 
 describe('evaluation treatment artifacts', () => {
+  it('changes the phase-hint injection hash when only maxToolCalls changes', () => {
+    const base = {
+      constraints: 'Use one targeted query.',
+      criticalTools: [] as string[],
+    };
+
+    expect(evaluationPhaseHintInjectionContentHash({
+      ...base,
+      maxToolCalls: {execute_sql: 1},
+    })).not.toBe(evaluationPhaseHintInjectionContentHash(base));
+    expect(evaluationPhaseHintInjectionContentHash(base)).toBe(
+      canonicalContentHash(base),
+    );
+  });
+
+  it('rejects evaluation phase-hint budgets for unsupported tools', () => {
+    expect(() => createEvaluationTreatmentArtifact({
+      artifactId: 'unsupported-tool-budget',
+      sourceCandidateContentHash: canonicalContentHash('unsupported-tool-budget'),
+      scope,
+      baseSkillRegistryFingerprint: 'a'.repeat(64),
+      baseStrategyRegistryFingerprint: 'b'.repeat(64),
+      entries: [{
+        kind: 'phase_hint_delta',
+        op: 'add',
+        scene: 'scrolling',
+        hintId: 'unsupported-tool-budget',
+        after: {
+          id: 'unsupported-tool-budget',
+          keywords: ['architecture'],
+          constraints: 'One bounded tool call.',
+          criticalTools: [],
+          maxToolCalls: {invoke_skill: 1},
+          critical: false,
+        },
+      }],
+      createdAt: '2026-09-02T00:00:00.000Z',
+    } as never)).toThrow('evaluation_treatment_phase_hint_invalid');
+  });
+
   it('stores content-addressed artifacts idempotently and rejects conflicts', () => {
     const store = new EvaluationTreatmentArtifactStore({
       persistence: persistenceUnavailable,

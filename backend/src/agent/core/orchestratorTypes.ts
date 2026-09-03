@@ -214,6 +214,7 @@ export type AnalysisTerminationReason =
   | 'max_structured_output_retries'
   | 'execution_error'
   | 'timeout'
+  | 'quality_gate_failed'
   | 'plan_incomplete';
 
 export interface AnalysisResult {

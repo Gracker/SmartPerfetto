@@ -87,6 +87,7 @@ import {
   buildRuntimeTracePairComparisonContext,
 } from '../../runtimePromptContext';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
+import {PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON} from '../../../agentv3/queryComplexityClassifier';
 import { resolveRuntimeQuickMode } from '../../quickModeResolution';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
@@ -434,6 +435,14 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       hasReferenceTrace: Boolean(options?.referenceTraceId),
       previousTurns,
     });
+    const priorEvidenceOnlyFollowUp =
+      quickModeResolution.localReason === PRIOR_EVIDENCE_ONLY_FOLLOWUP_REASON;
+    const skipFocusDetection = deferTracePreflightToModel || (
+      priorEvidenceOnlyFollowUp && quickModeResolution.skipFocusDetection
+    );
+    const skipTracePreflightDetection = deferTracePreflightToModel || (
+      priorEvidenceOnlyFollowUp && quickModeResolution.skipTracePreflightDetection
+    );
     runtimePerformance.finishClassification('ok');
     const task9Admitted = isRuntimeCandidateAdmitted('task9', this.env);
     let skillRegistryReady: Promise<void> | undefined;
@@ -567,7 +576,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     // Architecture detection
     let architecture: ArchitectureInfo | undefined;
-    if (!deferTracePreflightToModel) {
+    if (!skipTracePreflightDetection) {
       const architecturePhase = runtimePerformance.startPhase('architecture');
       try {
         const detector = createArchitectureDetector();
@@ -591,7 +600,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     // Focus app detection
     let focusApps: DetectedFocusApp[] = [];
     let focusAppMethod: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none' = 'none';
-    if (!deferTracePreflightToModel) {
+    if (!skipFocusDetection) {
       const focusPhase = runtimePerformance.startPhase('focus');
       try {
         const focusResult = reusableQuickEvidenceAttempt?.focusResult
@@ -614,7 +623,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     // Probe trace completeness
     let traceCompleteness: Awaited<ReturnType<typeof probeTraceCompleteness>> | undefined;
-    if (!deferTracePreflightToModel) {
+    if (!skipTracePreflightDetection) {
       const completenessPhase = runtimePerformance.startPhase('completeness');
       try {
         const detectedTraceCompleteness = await probeTraceCompleteness(
@@ -794,66 +803,71 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
 
     const watchdogWarning: { current: string | null } = { current: null };
 
-    const { server: mcpServer, allowedTools: allowedToolNames, sourceUse } = isQuickMode
-      ? createClaudeMcpServer({
-          conversationTraceAttached: options?.assistantSurface === 'conversation'
-            ? options.conversationTraceAttached === true
-            : undefined,
-          runManifestAttributionSink: options?.runManifestAttributionSink,
-          sessionId,
-          traceId,
-          traceProcessorService,
-          skillExecutor,
-          packageName: effectivePackageName,
-          emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
-          artifactStore,
-          recentSqlErrors,
-          skillNotesBudget,
-          sceneType,
-          watchdogWarning,
-          lightweight: true,
-          outputLanguage,
-          knowledgeScope,
-          codeAwareMode: options?.codeAwareMode,
-          codebaseIds: options?.codebaseIds,
-          knowledgeSourceIds: options?.knowledgeSourceIds,
-          sourceUsePolicy: options?.sourceUsePolicy,
-          analysisContextFingerprint: options?.analysisContextFingerprint,
-          androidInternalsPackPin: options?.androidInternalsPackPin,
-        })
-      : createClaudeMcpServer({
-          conversationTraceAttached: options?.assistantSurface === 'conversation'
-            ? options.conversationTraceAttached === true
-            : undefined,
-          runManifestAttributionSink: options?.runManifestAttributionSink,
-          sessionId,
-          traceId,
-          userQuery: query,
-          traceProcessorService,
-          skillExecutor,
-          packageName: effectivePackageName,
-          emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
-          analysisNotes: notes,
-          artifactStore,
-          cachedArchitecture: architecture,
-          recentSqlErrors,
-          analysisPlan: planState,
-          watchdogWarning,
-          hypotheses,
-          sceneType,
-          uncertaintyFlags,
-          referenceTraceId,
-          comparisonContext,
-          skillNotesBudget,
-          outputLanguage,
-          knowledgeScope,
-          codeAwareMode: options?.codeAwareMode,
-          codebaseIds: options?.codebaseIds,
-          knowledgeSourceIds: options?.knowledgeSourceIds,
-          sourceUsePolicy: options?.sourceUsePolicy,
-          analysisContextFingerprint: options?.analysisContextFingerprint,
-          androidInternalsPackPin: options?.androidInternalsPackPin,
-        });
+    const mcp = priorEvidenceOnlyFollowUp
+      ? undefined
+      : isQuickMode
+        ? createClaudeMcpServer({
+            conversationTraceAttached: options?.assistantSurface === 'conversation'
+              ? options.conversationTraceAttached === true
+              : undefined,
+            runManifestAttributionSink: options?.runManifestAttributionSink,
+            sessionId,
+            traceId,
+            traceProcessorService,
+            skillExecutor,
+            packageName: effectivePackageName,
+            emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
+            artifactStore,
+            recentSqlErrors,
+            skillNotesBudget,
+            sceneType,
+            watchdogWarning,
+            lightweight: true,
+            outputLanguage,
+            knowledgeScope,
+            codeAwareMode: options?.codeAwareMode,
+            codebaseIds: options?.codebaseIds,
+            knowledgeSourceIds: options?.knowledgeSourceIds,
+            sourceUsePolicy: options?.sourceUsePolicy,
+            analysisContextFingerprint: options?.analysisContextFingerprint,
+            androidInternalsPackPin: options?.androidInternalsPackPin,
+          })
+        : createClaudeMcpServer({
+            conversationTraceAttached: options?.assistantSurface === 'conversation'
+              ? options.conversationTraceAttached === true
+              : undefined,
+            runManifestAttributionSink: options?.runManifestAttributionSink,
+            sessionId,
+            traceId,
+            userQuery: query,
+            traceProcessorService,
+            skillExecutor,
+            packageName: effectivePackageName,
+            emitUpdate: (update: StreamingUpdate) => this.emitUpdate(update),
+            analysisNotes: notes,
+            artifactStore,
+            cachedArchitecture: architecture,
+            recentSqlErrors,
+            analysisPlan: planState,
+            watchdogWarning,
+            hypotheses,
+            sceneType,
+            uncertaintyFlags,
+            referenceTraceId,
+            comparisonContext,
+            skillNotesBudget,
+            outputLanguage,
+            knowledgeScope,
+            codeAwareMode: options?.codeAwareMode,
+            codebaseIds: options?.codebaseIds,
+            knowledgeSourceIds: options?.knowledgeSourceIds,
+            sourceUsePolicy: options?.sourceUsePolicy,
+            analysisContextFingerprint: options?.analysisContextFingerprint,
+            androidInternalsPackPin: options?.androidInternalsPackPin,
+          });
+    const mcpServer = mcp?.server;
+    const allowedToolNames = mcp?.allowedTools ?? [];
+    const sourceUse = mcp?.sourceUse;
 
     // The user prompt uses the shared, localized trace-context formatter. All
     // runtime methodology remains in strategies through the shared system prompt.
@@ -896,9 +910,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         : undefined;
 
       // Create SDK MCP server config
-      const mcpServers: Record<string, unknown> = {
-        smartperfetto: mcpServer,
-      };
+      const mcpServers: Record<string, unknown> = mcpServer
+        ? {smartperfetto: mcpServer}
+        : {};
 
       const sdkOptions: QoderSdkOptions = {
         auth,
@@ -1166,7 +1180,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       // Apply final result quality gate
       executionLease.throwIfAborted();
       finalizeSourceAwareAnalysisResult(result, sourceUse);
-      applyFinalResultQualityGate({ result, query, sceneType });
+      applyFinalResultQualityGate({
+        result,
+        query,
+        sceneType,
+        deferFocusedEvidenceFinalization: true,
+      });
 
       if (!privateAnalysisContext) {
         executionLease.throwIfAborted();

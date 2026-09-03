@@ -11,7 +11,10 @@ import {
   SOURCE_USE_DECISION_SCHEMA_VERSION,
   sanitizeSourceReference,
 } from '../codebase/sourceUseDecision';
-import {projectPrivateSessionStateSnapshot} from '../security/privateAnalysisProjection';
+import {
+  projectPrivateAnalysisResult,
+  projectPrivateSessionStateSnapshot,
+} from '../security/privateAnalysisProjection';
 
 function snapshot(): SessionStateSnapshot {
   const sourceReference = {
@@ -109,6 +112,23 @@ function snapshot(): SessionStateSnapshot {
 }
 
 describe('private session snapshot provenance', () => {
+  it('preserves the quality-specific termination reason', () => {
+    const projected = projectPrivateAnalysisResult('session-private', {
+      sessionId: 'session-private',
+      success: true,
+      findings: [],
+      hypotheses: [],
+      conclusion: '结果未通过最终质量核验。',
+      confidence: 0.55,
+      rounds: 1,
+      totalDurationMs: 1,
+      partial: true,
+      terminationReason: 'quality_gate_failed',
+    }, 'zh-CN');
+
+    expect(projected.terminationReason).toBe('quality_gate_failed');
+  });
+
   it('keeps bounded source generation provenance without private content', () => {
     const projected = projectPrivateSessionStateSnapshot(snapshot());
     const safeReference = sanitizeSourceReference({

@@ -440,6 +440,47 @@ describe('QoderRuntime', () => {
       }
     });
 
+    it('reuses prior evidence without running Qoder trace preflights', async () => {
+      const sessionId = 'session-qoder-prior-evidence';
+      const traceId = 'trace-qoder-prior-evidence';
+      const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
+      sessionContext.addTurn(
+        '分析这条滑动 Trace',
+        {
+          primaryGoal: '分析这条滑动 Trace',
+          aspects: ['scrolling'],
+          expectedOutputType: 'summary',
+          complexity: 'complex',
+          followUpType: 'initial',
+        },
+        {success: true, summary: '上一轮已经完成滑动分析', findings: []} as any,
+      );
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', result: '只基于上一轮证据回答。'},
+      ]));
+
+      try {
+        const result = await createRuntime().analyze(
+          '只基于上一轮证据回答，不要重新分析，也不要调用工具。',
+          sessionId,
+          traceId,
+          {analysisMode: 'auto'},
+        );
+
+        expect(result.success).toBe(true);
+        expect(createArchitectureDetector).not.toHaveBeenCalled();
+        expect(detectFocusApps).not.toHaveBeenCalled();
+        expect(probeTraceCompleteness).not.toHaveBeenCalled();
+        expect(mockCreateClaudeMcpServer).not.toHaveBeenCalled();
+        expect(mockQuery).toHaveBeenCalledTimes(1);
+        const callArgs = mockQuery.mock.calls[0][0] as any;
+        expect(callArgs.options.allowedTools).toBeUndefined();
+        expect(callArgs.options.mcpServers).toEqual({});
+      } finally {
+        sessionContextManager.remove(sessionId);
+      }
+    });
+
     it('rejects same-session direct overlap before Qoder provider work starts', async () => {
       const comparisonStarted = createDeferred<void>();
       const releaseComparison = createDeferred<void>();

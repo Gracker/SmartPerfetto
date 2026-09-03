@@ -41,6 +41,7 @@ import {
 import {
   deriveEvidenceBackedConclusionContractForNarrative,
   normalizeNarrativeForClient as sharedNormalizeNarrative,
+  resolveConclusionOutputModeForTurn,
 } from '../services/agentResultNormalizer';
 import { reportStore, persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
@@ -2375,6 +2376,7 @@ export function resolveConclusionSceneIdHint(params: {
   findings?: Finding[];
   intent?: Intent;
   dataEnvelopes?: DataEnvelope[];
+  currentTurn?: number;
 }): string | undefined {
   const findings = Array.isArray(params.findings) ? params.findings : [];
   let intent = params.intent;
@@ -2393,8 +2395,15 @@ export function resolveConclusionSceneIdHint(params: {
 
   if (!intent) return undefined;
 
+  const sceneEnvelopes = params.currentTurn === undefined
+    ? params.dataEnvelopes || []
+    : (params.dataEnvelopes || []).filter(envelope => {
+        const envelopeTurn = Number((envelope.meta as any)?.turn);
+        if (Number.isFinite(envelopeTurn)) return envelopeTurn === params.currentTurn;
+        return params.currentTurn === 1;
+      });
   const evidenceAspects = deriveConclusionSceneAspectsFromSkillIds(
-    (params.dataEnvelopes || []).map(envelope => envelope.meta?.skillId),
+    sceneEnvelopes.map(envelope => envelope.meta?.skillId),
   );
   const routedIntent = evidenceAspects.length > 0
     ? {...intent, aspects: evidenceAspects}
@@ -2409,6 +2418,30 @@ export function resolveConclusionSceneIdHint(params: {
   } catch {
     return undefined;
   }
+}
+
+function conclusionContractDeriveOptionsForSession(
+  session: AnalysisSession,
+  result: AgentRuntimeAnalysisResult,
+  sceneId: string | undefined,
+  requestedAnalysisMode?: AnalyzeMode,
+): {
+  existingContract?: ConclusionContract;
+  mode: ConclusionContract['mode'];
+  sceneId?: string;
+} {
+  const mode = resolveConclusionOutputModeForTurn({
+    existingMode: result.conclusionContract?.mode,
+    runSequence: session.runSequence,
+    requestedAnalysisMode,
+  });
+  return {
+    existingContract: result.conclusionContract
+      ? {...result.conclusionContract, mode} as ConclusionContract
+      : undefined,
+    mode,
+    ...(sceneId ? {sceneId} : {}),
+  };
 }
 
 // =============================================================================
@@ -3650,12 +3683,16 @@ router.get('/:sessionId/status', (req, res) => {
         query: session.query,
         findings: recoveredResult.findings,
         dataEnvelopes: session.dataEnvelopes,
+        currentTurn: session.runSequence,
       });
       const conclusionContract =
         deriveEvidenceBackedConclusionContractForNarrative(recoveredResult.conclusion, session.dataEnvelopes || [], {
-          existingContract: recoveredResult.conclusionContract as ConclusionContract | undefined,
-          mode: recoveredResult.rounds > 1 ? 'focused_answer' : 'initial_report',
-          sceneId: sceneIdHint,
+          ...conclusionContractDeriveOptionsForSession(
+            session,
+            recoveredResult,
+            sceneIdHint,
+            session.analysisMode,
+          ),
         }) || undefined;
       const qualityArtifacts =
         recoveredResult.claimSupport && recoveredResult.claimVerificationResult && recoveredResult.identityResolutions
@@ -6109,14 +6146,18 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
         query,
         findings: result.findings,
         dataEnvelopes: session.dataEnvelopes,
+        currentTurn: session.runSequence,
       });
       let normalizedConclusionContract = (deriveEvidenceBackedConclusionContractForNarrative(
         result.conclusion,
         session.dataEnvelopes || [],
         {
-          existingContract: result.conclusionContract as ConclusionContract | undefined,
-          mode: result.rounds > 1 ? 'focused_answer' : 'initial_report',
-          sceneId: sceneIdHint,
+          ...conclusionContractDeriveOptionsForSession(
+            session,
+            result,
+            sceneIdHint,
+            options.analysisMode,
+          ),
         },
       ) || undefined) as ConclusionContract | undefined;
       if (normalizedConclusionContract) {
@@ -8657,6 +8698,7 @@ function ensureCompletedAnalysisResultPayload(
         query: session.query,
         findings: result.findings,
         dataEnvelopes: session.dataEnvelopes,
+        currentTurn: session.runSequence,
       });
   const normalizedConclusionContract = replayOnlyScene
     ? undefined
@@ -8664,9 +8706,12 @@ function ensureCompletedAnalysisResultPayload(
       ? (result.conclusionContract as ConclusionContract)
       : hasEvidenceBackedConclusion
         ? deriveEvidenceBackedConclusionContractForNarrative(result.conclusion, session.dataEnvelopes || [], {
-            existingContract: result.conclusionContract as ConclusionContract | undefined,
-            mode: result.rounds > 1 ? 'focused_answer' : 'initial_report',
-            sceneId: sceneIdHint,
+            ...conclusionContractDeriveOptionsForSession(
+              session,
+              result,
+              sceneIdHint,
+              session.analysisMode,
+            ),
           }) || undefined
         : undefined;
   const qualityArtifacts =

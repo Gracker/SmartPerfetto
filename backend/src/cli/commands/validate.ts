@@ -661,14 +661,22 @@ function validateSql(sql: string): { errors: string[]; warnings: string[] } {
   const expandedGuardrails = guardrailMode === 'strict' || guardrailMode === 'audit' || guardrailMode === 'fail';
   const failGuardrails = guardrailMode === 'fail';
   const guardrailRules = expandedGuardrails ? undefined : DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES;
-  const guardrailIssues = summarizeSqlGuardrailIssues(
-    analyzeSqlGuardrails(sql, { includeRules: guardrailRules }),
-    { includeRules: guardrailRules },
+  const analyzedGuardrailIssues = analyzeSqlGuardrails(sql, { includeRules: guardrailRules });
+  const percentileScaleIssues = analyzedGuardrailIssues.filter(
+    issue => issue.ruleId === 'percentile-percent-scale',
+  );
+  const advisoryGuardrailIssues = analyzedGuardrailIssues.filter(
+    issue => issue.ruleId !== 'percentile-percent-scale',
   );
   if (failGuardrails) {
-    errors.push(...guardrailIssues);
+    errors.push(...summarizeSqlGuardrailIssues(analyzedGuardrailIssues, {
+      includeRules: guardrailRules,
+    }));
   } else {
-    warnings.push(...guardrailIssues);
+    errors.push(...summarizeSqlGuardrailIssues(percentileScaleIssues));
+    warnings.push(...summarizeSqlGuardrailIssues(advisoryGuardrailIssues, {
+      includeRules: guardrailRules,
+    }));
   }
 
   // Check for unbalanced parentheses (ignore parentheses inside string literals)
