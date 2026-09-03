@@ -16,6 +16,10 @@ import type { ArchitectureInfo } from '../agent/detectors/types';
 import type { DetectedFocusApp } from './focusAppDetector';
 import { formatDurationNs } from './focusAppDetector';
 import {
+  buildPlanTemplateTriggerContext,
+  resolveActiveConditionalPlanRequirements,
+} from './scenePlanTemplates';
+import {
   getFinalReportContract,
   getStrategyContent,
   loadPromptTemplate,
@@ -53,6 +57,17 @@ export function estimatePromptTokens(text: string): number {
 export const MAX_PROMPT_TOKENS = 12_000;
 /** M2 hard gate: always-injected scene strategy core budget. */
 export const MAX_SCENE_CORE_TOKENS = 4_000;
+/**
+ * Budget for the non-droppable architecture plan-requirement section. It is
+ * paid on every full-mode run of an affected scene, so it has to stay small
+ * enough not to evict the droppable context sections.
+ *
+ * Sized against the widest real branch set — Flutter TextureView activates two
+ * required skills — with calls rendered in their literal `expectedCalls` shape.
+ * The shorthand form is cheaper but induces `skillId` on tools that reject it,
+ * which costs a whole plan round trip.
+ */
+export const MAX_PLAN_ARCHITECTURE_REQUIREMENT_TOKENS = 240;
 
 function buildOutputLanguageSection(language: OutputLanguage): string {
   const templateName = language === 'en' ? 'prompt-language-en' : 'prompt-language-zh';
@@ -542,9 +557,37 @@ function joinSegmentsWithReplacement(
     .join('\n\n');
 }
 
-function splitMethodologyTemplate(template: string): { beforeSceneStrategy: string; afterSceneStrategy: string } {
+/**
+ * Index of `placeholder` in the template body, ignoring occurrences inside HTML
+ * comments.
+ *
+ * Template headers document their variables in a comment block, so the literal
+ * placeholder usually appears there first. Splitting on that occurrence injects
+ * the scene core *inside* the comment and pushes the methodology preamble after
+ * it — the exact inversion this helper exists to prevent.
+ */
+function findPlaceholderOutsideComments(template: string, placeholder: string): number {
+  let searchFrom = 0;
+  for (;;) {
+    const index = template.indexOf(placeholder, searchFrom);
+    if (index < 0) return -1;
+    const commentOpen = template.lastIndexOf('<!--', index);
+    if (commentOpen < 0) return index;
+    const commentClose = template.indexOf('-->', commentOpen);
+    if (commentClose > index) {
+      // Inside a closed comment: resume searching after it.
+      searchFrom = commentClose + '-->'.length;
+      continue;
+    }
+    // An unterminated comment swallows the rest of the template.
+    if (commentClose < 0) return -1;
+    return index;
+  }
+}
+
+export function splitMethodologyTemplate(template: string): { beforeSceneStrategy: string; afterSceneStrategy: string } {
   const placeholder = '{{sceneStrategy}}';
-  const placeholderIndex = template.indexOf(placeholder);
+  const placeholderIndex = findPlaceholderOutsideComments(template, placeholder);
   if (placeholderIndex < 0) {
     return { beforeSceneStrategy: template.trim(), afterSceneStrategy: '' };
   }
@@ -577,6 +620,64 @@ export interface SystemPromptBuildOptions {
  * Build the assembled prompt + structured segment metadata.
  * `buildSystemPrompt()` is now a thin wrapper around this.
  */
+
+/**
+ * Tell the model which architecture-conditional calls its plan must declare,
+ * before it submits — the requirement is fully determined by the detected
+ * architecture plus strategy frontmatter, so learning it from a plan rejection
+ * costs a guaranteed provider round trip on every such run.
+ *
+ * The mapping itself is never restated here; it comes from the same resolver
+ * the plan gate uses.
+ */
+function buildPlanArchitectureRequirementSection(
+  sceneType: SceneType | undefined,
+  architecture: ArchitectureInfo | undefined,
+  userQuery: string | undefined,
+): string {
+  if (!sceneType) return '';
+  const requirements = resolveActiveConditionalPlanRequirements(
+    sceneType,
+    buildPlanTemplateTriggerContext(userQuery, architecture),
+  );
+  if (requirements.length === 0) return '';
+  const template = loadPromptTemplate('plan-architecture-requirements');
+  if (!template) return '';
+  const lines = requirements.map(requirement => {
+    // Render the literal expectedCalls shape. A shorthand like
+    // `invoke_skill(id)` invites the model to attach skillId to tools that do
+    // not accept one, which the gate then rejects on its own rule.
+    const calls = requirement.requiredExpectedCalls
+      .map(call => (call.skillId
+        ? `{"tool":"${call.tool}","skillId":"${call.skillId}"}`
+        : `{"tool":"${call.tool}"}`))
+      .join(' ');
+    const mandatory = requirement.waivable ? '' : '（不可豁免）';
+    return `- ${requirement.aspectId}${mandatory}: ${calls}`;
+  });
+  return renderTemplate(template, { requirements: lines.join('\n') });
+}
+
+/**
+ * Drop developer-facing HTML comments before a section becomes prompt text.
+ *
+ * Template headers carry SPDX, copyright, and "which variables exist" notes.
+ * They mean nothing to the model and measurably cost ~400 tokens of a budget
+ * whose worst-case headroom is under 100, which is enough to push real context
+ * (trace completeness, pattern hints) out of the prompt.
+ *
+ * Runs at assembly, not at load: marker comments such as
+ * `<!-- tool-description:start -->` are consumed by their own loaders before
+ * the content ever reaches a prompt segment.
+ */
+export function stripTemplateComments(content: string): string {
+  return content
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/[ \t]+$/gm, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function buildSystemPromptParts(
   context: ClaudeAnalysisContext,
   maxTokens?: number,
@@ -593,7 +694,9 @@ export function buildSystemPromptParts(
     droppable = false,
     opts: { truncatable?: boolean } = {},
   ): void => {
-    if (!content) return;
+    const stripped = stripTemplateComments(content);
+    if (!stripped) return;
+    content = stripped;
     segments.push({
       tier,
       label,
@@ -669,6 +772,14 @@ export function buildSystemPromptParts(
   } else if (context.packageName) {
     push(2, 'architecture', `## 当前 Trace 信息\n\n- **包名**: ${context.packageName}\n- **架构**: 未检测（建议先调用 detect_architecture）`);
   }
+
+  // Not droppable and not truncatable: if the budget silently removed it, the
+  // first submit_plan would go back to being rejected by construction.
+  push(2, 'plan_architecture_requirements', buildPlanArchitectureRequirementSection(
+    context.sceneType,
+    context.architecture,
+    context.query,
+  ));
 
   if (context.focusApps && context.focusApps.length > 0) {
     push(2, 'focus_apps', buildFocusAppSection(context.focusApps, context.focusMethod));
@@ -993,6 +1104,8 @@ export function buildQuickSystemPrompt(opts: {
   selectionContext?: SelectionContext;
   runtimeEvidenceContext?: string;
   quickMemoryContext?: string;
+  /** Perfetto SQL definitions matched to the question; keeps quick SQL targeted. */
+  knowledgeBaseContext?: string;
   outputLanguage?: OutputLanguage;
   codeAwareMode?: ClaudeAnalysisContext['codeAwareMode'];
   codebaseIds?: string[];
@@ -1016,11 +1129,18 @@ export function buildQuickSystemPrompt(opts: {
     ? buildSelectionContextSection(opts.selectionContext)
     : '';
 
+  const sqlDefinitionsTemplate = opts.knowledgeBaseContext
+    ? loadPromptTemplate('prompt-quick-sql-definitions')
+    : undefined;
+  const knowledgeBaseSection = sqlDefinitionsTemplate
+    ? renderTemplate(sqlDefinitionsTemplate, {definitions: opts.knowledgeBaseContext ?? ''})
+    : '';
   const prompt = renderTemplate(template, {
     outputLanguageSection,
     architectureContext,
     focusAppContext,
     runtimeEvidenceContext: opts.runtimeEvidenceContext ?? '',
+    knowledgeBaseSection,
     selectionSection,
     quickMemoryContext: opts.quickMemoryContext ?? '',
     quickTriageMaxChineseChars: QUICK_TRIAGE_MAX_CHINESE_CHARS,

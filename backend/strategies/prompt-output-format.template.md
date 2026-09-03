@@ -8,8 +8,7 @@
 - 用 `self_ms` / exclusive time 归因和估收益；wall time 可说明体感，父子 slice 不并列相加。
 - 测试/基准/mock/synthetic/非生产 trace 要在概览标注并调整建议口径。
 - CPU 频率只做定性/区间判断；thermal/policy 需额外证据，不承诺精确收益。
-- 关键结论标明证据类型、置信度、版本/采集边界；缺数据时写最高信息增益的下一步采集。
-- 证据来源、置信度与版本边界必须显式写出；blocked reason 相关结论要标注 `thread-state-blocked-reason` 能力边界。
+- 关键结论必须写出证据来源、置信度与版本边界（含证据类型与采集边界）；缺数据时写最高信息增益的下一步采集；blocked reason 结论标注 `thread-state-blocked-reason` 能力边界。
 
 ### 发现格式
 每个发现使用：
@@ -17,7 +16,7 @@
 **[SEVERITY] 标题**
 描述：现象和影响。
 根因：WHY 链，至少“症状 → 机制”，CRITICAL/HIGH 尽量追到源头。
-证据：时间戳、耗时、比例、线程/进程、artifact/SQL/Skill 来源。
+证据：时间戳、耗时、比例、线程/进程、Skill 名与指标名。内部 ID（`art-N`、工具调用 id、evidence_ref_id）只写进结构化引用段。
 证据类型/置信度：trace_direct / derived_metric / diagnostic_api / external_aggregate / missing_evidence。
 边界：FrameTimeline、monitor_contention、input、power、diagnostic API 等版本/能力边界。
 建议：按 [App 层] / [系统/ROM 层] 分层，先给 App 可执行动作。

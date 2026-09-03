@@ -202,6 +202,26 @@ async function backfillSnapshotMetrics(
   }
 }
 
+/**
+ * Abort signal that fires when the HTTP client disconnects. The AI comparison
+ * conclusion can run for minutes, so an abandoned request must stop rather than
+ * hold a database connection and keep spending provider budget.
+ *
+ * Watches the *response*, not the request: `IncomingMessage` 'close' also fires
+ * on a normally consumed body, which would abort healthy requests. A response
+ * that closes without `writableEnded` is a real disconnect.
+ */
+function clientDisconnectSignal(res: {
+  writableEnded: boolean;
+  on(event: 'close', listener: () => void): unknown;
+}): AbortSignal {
+  const controller = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) controller.abort();
+  });
+  return controller.signal;
+}
+
 async function completeComparisonRun(
   input: {
     db: ReturnType<typeof openEnterpriseDb>;
@@ -213,6 +233,8 @@ async function completeComparisonRun(
     query: string;
     providerId?: string;
     scope: EnterpriseRepositoryScope;
+    /** Aborts the AI conclusion when the requesting client goes away. */
+    signal?: AbortSignal;
   },
 ): Promise<MultiTraceComparisonRun> {
   const result = buildDeterministicComparisonResult(input.snapshots, {
@@ -224,6 +246,7 @@ async function completeComparisonRun(
     query: input.query,
     providerId: input.providerId,
     providerScope: input.scope,
+    ...(input.signal ? {signal: input.signal} : {}),
   });
   const report = persistComparisonHtmlReport({
     comparison: input.comparison,
@@ -327,6 +350,7 @@ router.post('/', async (req, res) => {
       comparison = await completeComparisonRun({
         db,
         repository,
+        signal: clientDisconnectSignal(res),
         comparison: created,
         snapshots,
         baselineSnapshotId,
@@ -422,6 +446,7 @@ router.patch('/:comparisonId/baseline', async (req, res) => {
     const updated = await completeComparisonRun({
       db,
       repository,
+      signal: clientDisconnectSignal(res),
       comparison,
       snapshots,
       baselineSnapshotId,

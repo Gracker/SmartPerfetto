@@ -23,7 +23,6 @@ import type {
 } from './quickEvidenceDirectAnswer';
 import {
   buildQuickRunReceipt,
-  shouldMarkQuickRunTriage,
 } from './quickBudget';
 import {
   currentRunManifestAttributionSink,
@@ -87,7 +86,7 @@ export function buildQuickDirectEvidenceAnalysisResult(input: {
     totalDurationMs: elapsedMs,
     quickRun: buildQuickRunReceipt({
       requestedMode: input.options.analysisMode ?? 'auto',
-      profile: shouldMarkQuickRunTriage(input.query) ? 'triage' : undefined,
+      query: input.query,
       budget: input.budget,
       actualTurns: 0,
       elapsedMs,

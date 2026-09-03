@@ -4,6 +4,44 @@
 
 import { sanitizeNarrativeForClient } from '../narrativeSanitizer';
 
+describe('internal identifier stripping', () => {
+  // Measured on 13 real provider conclusions: 103 `art-N` artifact ids and 7
+  // `execute_sql:N` tool-call ids reached the text users read. The sanitizer
+  // already strips `ev_*` evidence ids; artifact and tool-call ids are the same
+  // class of internal plumbing and were simply not covered.
+  it('removes artifact ids from user-facing narrative', () => {
+    const out = sanitizeNarrativeForClient('art-11 聚合：49/49 帧全覆盖（art-26）。');
+    expect(out).not.toMatch(/\bart-\d+\b/);
+    expect(out).toContain('49/49 帧全覆盖');
+  });
+
+  it('removes tool-call ids from user-facing narrative', () => {
+    const out = sanitizeNarrativeForClient('全量验证（execute_sql:6:07787eaf）：49/49 帧命中。');
+    expect(out).not.toMatch(/execute_sql:\d+/);
+    expect(out).toContain('49/49 帧命中');
+  });
+
+  it('still strips evidence ids and keeps ordinary text', () => {
+    const out = sanitizeNarrativeForClient('主线程忙碌 ev_0123456789ab 导致迟到。');
+    expect(out).not.toMatch(/ev_[0-9a-f]{12}/);
+    expect(out).toContain('主线程忙碌');
+    expect(out).toContain('导致迟到');
+  });
+
+  it('leaves no dangling separator where an id was removed inside parentheses', () => {
+    const out = sanitizeNarrativeForClient('全量模式验证（定向 SQL，execute_sql:6:07787eaf）：49/49 命中。');
+    expect(out).not.toMatch(/[，,、]\s*[）)]/);
+    expect(out).toContain('定向 SQL');
+    expect(out).toContain('49/49 命中');
+  });
+
+  it('does not damage words that merely contain the token', () => {
+    const out = sanitizeNarrativeForClient('smart-artifact 与 chart-1 不是内部 ID。');
+    expect(out).toContain('smart-artifact');
+    expect(out).toContain('chart-1');
+  });
+});
+
 describe('narrativeSanitizer', () => {
   test('removes internal ev_ ids while keeping evidence text', () => {
     const input = `## 证据链（对应上述结论）

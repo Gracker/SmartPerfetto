@@ -284,3 +284,31 @@ export function collectRecentFindings<TFinding extends Pick<Finding, 'title'> = 
     return [];
   }
 }
+
+/**
+ * Perfetto SQL definitions matched to the question, for the quick prompt.
+ *
+ * Quick mode hands the model `execute_sql` with no schema knowledge, so a
+ * targeted question can only be approached by trial: measured runs issued 1-18
+ * exploratory queries for a single-slice lookup. The lookup itself is a local
+ * index hit (~1-2ms, bounded output), which is far cheaper than the round trips
+ * it removes.
+ *
+ * Returns undefined when nothing matches — broad questions are served by skills,
+ * not by table definitions.
+ */
+export async function buildQuickKnowledgeBaseContext(
+  query: string,
+  maxTemplates = 6,
+): Promise<string | undefined> {
+  if (!query.trim()) return undefined;
+  try {
+    const {getExtendedKnowledgeBase} = await import('../services/sqlKnowledgeBase');
+    const kb = await getExtendedKnowledgeBase();
+    const context = kb.getContextForAI(query, maxTemplates).trim();
+    return context.length > 0 ? context : undefined;
+  } catch {
+    // Schema hints are an accelerator, never a precondition for answering.
+    return undefined;
+  }
+}

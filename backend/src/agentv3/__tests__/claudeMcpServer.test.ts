@@ -983,10 +983,24 @@ describe('createClaudeMcpServer', () => {
         'execute_sql',
         'fetch_artifact',
         'invoke_skill',
+        'list_skills',
         'lookup_sql_schema',
       ]);
       expect(allowedTools).toContain(MCP_NAME_PREFIX + 'fetch_artifact');
       expect(tools.has('submit_plan')).toBe(false);
+    });
+
+    it('exposes list_skills in lightweight mode so invoke_skill is discoverable', () => {
+      // Registering invoke_skill without a catalog leaves every skill but the
+      // one named in the quick prompt unreachable, and questions degrade into
+      // hand-written exploratory SQL.
+      const { tools, allowedTools } = createTestServer({ lightweight: true });
+
+      expect(tools.has('list_skills')).toBe(true);
+      expect(allowedTools).toContain(MCP_NAME_PREFIX + 'list_skills');
+      // Planning/hypothesis tools stay out of the quick surface.
+      expect(tools.has('detect_architecture')).toBe(false);
+      expect(tools.has('list_stdlib_modules')).toBe(false);
     });
 
     it('audits first-wave safe reads as bounded metadata-only handlers', async () => {

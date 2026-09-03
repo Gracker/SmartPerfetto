@@ -87,6 +87,7 @@ import {
 import { matchPhaseHintForNextPhase } from './phaseHintMatcher';
 import { buildActivePhaseReminder } from './activePhaseReminder';
 import {
+  buildPlanTemplateTriggerContext,
   hasAffirmativeKeywordMention,
   validatePlanAgainstSceneTemplate,
   MIN_WAIVER_REASON_CHARS,
@@ -2078,48 +2079,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     };
   }
 
-  function buildArchitectureTriggerContext(info: Partial<ArchitectureInfo> | undefined | null): string[] {
-    if (!info) return [];
-    const selectedPipelineId = typeof info.additionalInfo?.pipelineId === 'string'
-      ? info.additionalInfo.pipelineId.trim()
-      : '';
-    const parts = [
-      info.type,
-      info.type ? String(info.type).replace(/_/g, ' ') : undefined,
-      selectedPipelineId || undefined,
-      selectedPipelineId ? selectedPipelineId.replace(/_/g, ' ') : undefined,
-    ];
-    if (info.flutter) {
-      parts.push('Flutter', info.flutter.engine, info.flutter.surfaceType, `Flutter ${info.flutter.surfaceType}`);
-    }
-    if (info.webview) {
-      parts.push('WebView', info.webview.engine, info.webview.surfaceType, `WebView ${info.webview.surfaceType}`);
-    }
-    if (info.compose) {
-      parts.push('Compose', ...(info.compose.features ?? []));
-      if (info.compose.isHybridView) parts.push('mixed', 'hybrid');
-    }
-    const evidence = info.evidence ?? [];
-    const selectedEvidence = selectedPipelineId
-      ? evidence.filter(item => item.value.trim().toLowerCase() === selectedPipelineId.toLowerCase())
-      : evidence.reduce<typeof evidence>((best, item) => {
-          if (best.length === 0 || item.weight > best[0].weight) return [item];
-          return best;
-        }, []);
-    for (const evidence of selectedEvidence) {
-      if (evidence.value) parts.push(evidence.value);
-      if (evidence.type) parts.push(evidence.type);
-    }
-    return parts.filter((part): part is string => Boolean(part && String(part).trim()));
-  }
-
-  let architectureTriggerContext = buildArchitectureTriggerContext(options.cachedArchitecture);
+  // Kept as the detected architecture itself so the trigger context is always
+  // derived through the shared helper, exactly like the pre-submit hint.
+  let architectureForTrigger: Partial<ArchitectureInfo> | undefined | null =
+    options.cachedArchitecture;
 
   function getPlanTemplateTriggerContext(): string[] {
-    return [
-      options.userQuery || '',
-      ...architectureTriggerContext,
-    ].filter(Boolean);
+    // Same helper the pre-submit hint uses, so the two can never diverge.
+    return buildPlanTemplateTriggerContext(options.userQuery, architectureForTrigger);
   }
 
   let pendingPlanRevisionGate: {
@@ -2612,7 +2579,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   }
 
   function recordArchitecturePlanGate(payload: Partial<ArchitectureInfo>): Record<string, unknown> {
-    architectureTriggerContext = buildArchitectureTriggerContext(payload);
+    architectureForTrigger = payload;
     const plan = analysisPlanRef?.current;
     if (!plan) return {};
     const planValidation = validatePhasesAgainstSceneTemplate(plan.phases, plan.waivers);
@@ -4285,6 +4252,23 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     { annotations: { readOnlyHint: true } },
   );
 
+  /**
+   * Quick mode never hides a match — a truncated catalog can silently omit the
+   * one skill that answers the question. Only the expensive part (descriptions)
+   * is bounded; every matched id stays visible so the model can invoke it or
+   * narrow with `category`.
+   */
+  const QUICK_SKILL_DESCRIBED_MATCHES = 15;
+  const QUICK_SKILL_DESCRIPTION_CHARS = 90;
+
+  /** First sentence of a skill description, bounded, for the quick catalog. */
+  const firstSentence = (text: string | undefined, maxChars: number): string => {
+    const normalized = (text ?? '').replace(/\s+/g, ' ').trim();
+    const end = normalized.search(/[。.!！?？]/);
+    const sentence = end > 0 ? normalized.slice(0, end + 1) : normalized;
+    return sentence.length > maxChars ? `${sentence.slice(0, maxChars)}…` : sentence;
+  };
+
   const listSkills = tool(
     'list_skills',
     'List all available SmartPerfetto analysis skills. ' +
@@ -4306,6 +4290,32 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               s.id.toLowerCase().includes(category.toLowerCase())
             )
           : allSkills;
+        if (options.lightweight) {
+          // Full descriptions for the leading matches, bare ids for the rest:
+          // the catalog stays affordable in a few-turn run without any match
+          // becoming invisible.
+          const described = filtered.slice(0, QUICK_SKILL_DESCRIBED_MATCHES);
+          const remainingIds = filtered.slice(QUICK_SKILL_DESCRIBED_MATCHES).map(s => s.id);
+          return {
+            content: [{
+              type: 'text' as const,
+              text: JSON.stringify({
+                matched: filtered.length,
+                skills: described.map(s => ({
+                  id: s.id,
+                  displayName: s.displayName,
+                  description: firstSentence(s.description, QUICK_SKILL_DESCRIPTION_CHARS),
+                })),
+                ...(remainingIds.length > 0
+                  ? {
+                      otherMatchedIds: remainingIds,
+                      hint: 'Every matched id is listed; pass a narrower `category` for their descriptions.',
+                    }
+                  : {}),
+              }),
+            }],
+          };
+        }
         return {
           content: [{
             type: 'text' as const,
@@ -8576,6 +8586,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if ((!isConversation || options.conversationTraceAttached) && !sourceOnlyPhase) {
       registry.registerSdk(executeSql, 'execute_sql', 'public');
       registry.registerSdk(invokeSkill, 'invoke_skill', 'public');
+      // Without this, `invoke_skill` is reachable but undiscoverable: the quick
+      // prompt names exactly one skill, so every other question degrades into
+      // hand-written exploratory SQL. The quick projection is capped.
+      registry.registerSdk(listSkills, 'list_skills', 'public');
       registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
         concurrency: {mode: 'commutative_read'},
       });

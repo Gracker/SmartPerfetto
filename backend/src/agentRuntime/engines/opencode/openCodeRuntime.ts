@@ -115,6 +115,7 @@ import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSp
 import {
   buildQuickConversationContext,
   buildRuntimeTracePairComparisonContext,
+  buildQuickKnowledgeBaseContext,
 } from '../../runtimePromptContext';
 import {
   buildQuickRunReceipt,
@@ -126,7 +127,6 @@ import {
   quickStopReasonFromTermination,
   repairTruncatedFinalReport,
   resolveQuickTurnBudget,
-  shouldMarkQuickRunTriage,
   toProtocolHypothesis as toRuntimeProtocolHypothesis,
 } from '../../runtimeCommon';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
@@ -3229,7 +3229,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
             });
             return buildQuickRunReceipt({
               requestedMode: options.analysisMode ?? 'auto',
-              profile: shouldMarkQuickRunTriage(query) ? 'triage' : undefined,
+              query,
               budget: quickBudget,
               actualTurns: 1,
               elapsedMs: Date.now() - startedAt,
@@ -3777,6 +3777,11 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         outputLanguage,
       });
       const quickMemoryContext = quickMemoryPayload.text;
+      // Quick mode hands the model execute_sql with no schema knowledge, so a
+      // targeted lookup can only be reached by trial. This is a local index hit.
+      const quickKnowledgeBaseContext = quickMode
+        ? await buildQuickKnowledgeBaseContext(query)
+        : undefined;
       return {
         systemPrompt: buildQuickSystemPrompt({
           architecture,
@@ -3785,6 +3790,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           focusMethod: focusResult.method,
           selectionContext: options.selectionContext,
           quickMemoryContext,
+          knowledgeBaseContext: quickKnowledgeBaseContext,
           outputLanguage,
           codeAwareMode: options.codeAwareMode,
           codebaseIds: options.codebaseIds,

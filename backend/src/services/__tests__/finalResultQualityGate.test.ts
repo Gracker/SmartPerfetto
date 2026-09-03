@@ -5,6 +5,7 @@
 import { describe, expect, it } from '@jest/globals';
 import type { AnalysisResult } from '../../agent/core/orchestratorTypes';
 import { createDataEnvelope } from '../../types/dataContract';
+import { buildQuickRunReceipt, resolveQuickTurnBudget } from '../../agentRuntime/quickBudget';
 import { runClaimVerification } from '../verifier/claimVerificationRunner';
 import {
   applyFinalResultQualityGate,
@@ -3173,5 +3174,71 @@ describe('final result quality gate', () => {
     expect(sourceBoundResult.sourceClaimVerificationResult?.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({code: 'source_binding_strength_downgraded'}),
     ]));
+  });
+});
+
+describe('quick-run triage budget follows the question boundary', () => {
+  const BOUNDED_FOLLOW_UP = '刚才那个最慢的帧，主线程具体在哪个 slice 上耗时最多？';
+  const SCENE_WIDE = '这个 trace 滑动为什么卡？';
+
+  /** A scoped, fully cited drill answer that exceeds the triage char budget. */
+  const boundedAnswer = [
+    '**直接结论**：那一帧里主线程耗时最多的是 `CustomScrollAdapter_continuousLoad`（24.82ms）。',
+    '',
+    '| 主线程 slice | 耗时 (ms) |',
+    '|---|---|',
+    '| CustomScrollAdapter_continuousLoad | 24.82 |',
+    '| Choreographer#doFrame 2199798 | 1.41 |',
+    '',
+    '补充口径：全 trace 主线程单次执行最长 slice 确为 continuousLoad 24.82ms。',
+    'x'.repeat(2000),
+    '',
+    '## 逐句数据引用（结构化来源）',
+    '- C1: 主线程最长 slice 为 CustomScrollAdapter_continuousLoad 24.82ms',
+    '  - evidence_ref_id=data:sql_table:current:abc123:def456:aaa111; column=dur_ms; value=24.82',
+  ].join('\n');
+
+  function quickReceiptFor(query: string, conversationTurns: number) {
+    return buildQuickRunReceipt({
+      requestedMode: 'auto',
+      query,
+      budget: resolveQuickTurnBudget(),
+      actualTurns: 3,
+      elapsedMs: 1200,
+      stopReason: 'answered',
+      evidence: {currentRunDataEnvelopes: 3, citedEvidenceRefs: 3},
+      contextInjected: {conversationTurns},
+      verifierStatus: 'passed',
+    });
+  }
+
+  it('does not flag a bounded follow-up drill as an over-expanded quick report', () => {
+    // Regression: the word 慢 alone used to force the triage profile, which
+    // capped this answer at the triage budget and marked the run partial.
+    expect(quickReceiptFor(BOUNDED_FOLLOW_UP, 2).profile).toBe('normal');
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: boundedAnswer,
+        quickRun: quickReceiptFor(BOUNDED_FOLLOW_UP, 2),
+      }),
+      query: BOUNDED_FOLLOW_UP,
+      sceneType: 'scrolling',
+    })?.code).not.toBe('quick_full_report_shape');
+  });
+
+  it('still caps a scene-wide quick ask at the triage budget', () => {
+    expect(quickReceiptFor(SCENE_WIDE, 2).profile).toBe('triage');
+    expect(assessFinalResultQuality({
+      result: result({
+        conclusion: boundedAnswer,
+        quickRun: quickReceiptFor(SCENE_WIDE, 2),
+      }),
+      query: SCENE_WIDE,
+      sceneType: 'scrolling',
+    })?.code).toBe('quick_full_report_shape');
+  });
+
+  it('treats the same follow-up wording without history as scene-wide', () => {
+    expect(quickReceiptFor(BOUNDED_FOLLOW_UP, 0).profile).toBe('triage');
   });
 });

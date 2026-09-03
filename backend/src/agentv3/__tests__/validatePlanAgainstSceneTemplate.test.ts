@@ -11,7 +11,10 @@
 
 import { describe, it, expect } from '@jest/globals';
 import {
+  buildArchitectureTriggerContext,
+  buildPlanTemplateTriggerContext,
   hasAffirmativeKeywordMention,
+  resolveActiveConditionalPlanRequirements,
   validatePlanAgainstSceneTemplate,
 } from '../scenePlanTemplates';
 import type { ExpectedCall } from '../types';
@@ -486,5 +489,112 @@ describe('validatePlanAgainstSceneTemplate', () => {
       ]);
       expect(result.missingAspectIds).toEqual(baseline.missingAspectIds);
     });
+  });
+});
+
+describe('resolveActiveConditionalPlanRequirements', () => {
+  function callsFor(architecture: Parameters<typeof buildArchitectureTriggerContext>[0]) {
+    return resolveActiveConditionalPlanRequirements(
+      'scrolling',
+      buildArchitectureTriggerContext(architecture),
+    ).flatMap(requirement => requirement.requiredExpectedCalls.map(call => call.skillId));
+  }
+
+  it('selects the skill for the detected architecture and excludes the others', () => {
+    const textureView = callsFor({
+      type: 'STANDARD',
+      additionalInfo: {pipelineId: 'TEXTUREVIEW_STANDARD'},
+    });
+    expect(textureView).toContain('textureview_producer_frame_timing');
+    expect(textureView).not.toContain('flutter_scrolling_analysis');
+    expect(textureView).not.toContain('webview_drawfunctor_jank_chain');
+
+    const flutter = callsFor({
+      type: 'FLUTTER',
+      flutter: {engine: 'SKIA', surfaceType: 'TEXTUREVIEW'},
+    });
+    expect(flutter).toContain('flutter_scrolling_analysis');
+
+    const webview = callsFor({
+      type: 'WEBVIEW',
+      webview: {engine: 'CHROMIUM', surfaceType: 'UNKNOWN'},
+    });
+    expect(webview).toContain('webview_drawfunctor_jank_chain');
+    expect(webview).not.toContain('textureview_producer_frame_timing');
+  });
+
+  it('reports the non-waivable aspects so the hint can say so', () => {
+    const requirements = resolveActiveConditionalPlanRequirements(
+      'scrolling',
+      buildArchitectureTriggerContext({
+        type: 'STANDARD',
+        additionalInfo: {pipelineId: 'TEXTUREVIEW_STANDARD'},
+      }),
+    );
+    expect(requirements.length).toBeGreaterThan(0);
+    expect(requirements.some(requirement => requirement.waivable === false)).toBe(true);
+  });
+
+  it('returns nothing when the architecture is unknown or no branch matches', () => {
+    expect(resolveActiveConditionalPlanRequirements('scrolling', [])).toEqual([]);
+    expect(resolveActiveConditionalPlanRequirements(undefined, ['TextureView'])).toEqual([]);
+    expect(callsFor({type: 'STANDARD'})).toEqual([]);
+  });
+
+  it('activates a branch the query names even when the architecture does not', () => {
+    // The gate matches user query + architecture; a hint built from
+    // architecture alone would stay silent here and the plan would be rejected.
+    const triggerContext = buildPlanTemplateTriggerContext(
+      '这个 WebView 页面滑动为什么卡',
+      {type: 'STANDARD'},
+    );
+    const skills = resolveActiveConditionalPlanRequirements('scrolling', triggerContext)
+      .flatMap(requirement => requirement.requiredExpectedCalls.map(call => call.skillId));
+    expect(skills).toContain('webview_drawfunctor_jank_chain');
+
+    const validation = validatePlanAgainstSceneTemplate(
+      [{
+        id: 'p1',
+        name: '滑动掉帧与根因',
+        goal: '调用 scrolling_analysis、fetch_artifact 读取 root cause artifact 并做根因诊断深入分析',
+        expectedCalls: [
+          {tool: 'invoke_skill', skillId: 'scrolling_analysis'},
+          {tool: 'fetch_artifact'},
+          ...resolveActiveConditionalPlanRequirements('scrolling', triggerContext)
+            .flatMap(requirement => requirement.requiredExpectedCalls),
+        ],
+      }] as never,
+      'scrolling',
+      [],
+      {triggerContext},
+    );
+    expect(validation.nonWaivableMissingAspectIds ?? []).toEqual([]);
+  });
+
+  it('agrees with the plan gate about what the plan must declare', () => {
+    // The hint and the gate must never disagree; both read the same resolver.
+    const triggerContext = buildArchitectureTriggerContext({
+      type: 'STANDARD',
+      additionalInfo: {pipelineId: 'TEXTUREVIEW_STANDARD'},
+    });
+    const required = resolveActiveConditionalPlanRequirements('scrolling', triggerContext);
+    const declared = required.flatMap(requirement => requirement.requiredExpectedCalls);
+
+    const validation = validatePlanAgainstSceneTemplate(
+      [{
+        id: 'p1',
+        name: '滑动掉帧与根因',
+        goal: '调用 scrolling_analysis、fetch_artifact 读取 root cause artifact 并做根因诊断深入分析',
+        expectedCalls: [
+          {tool: 'invoke_skill', skillId: 'scrolling_analysis'},
+          {tool: 'fetch_artifact'},
+          ...declared,
+        ],
+      }] as never,
+      'scrolling',
+      [],
+      {triggerContext},
+    );
+    expect(validation.nonWaivableMissingAspectIds ?? []).toEqual([]);
   });
 });

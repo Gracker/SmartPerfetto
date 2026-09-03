@@ -4,6 +4,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import {
+  CLASSIFIER_OUTPUT_TOKENS,
+  CLASSIFIER_RETRY_OUTPUT_TOKENS,
   buildChatCompletionsUrl,
   classifyQueryWithOpenAILightModel,
 } from '../openAiComplexityClassifier';
@@ -147,7 +149,7 @@ describe('classifyQueryWithOpenAILightModel', () => {
     expect(capturedAuth).toBe('Bearer sk-test-key');
     expect(capturedBody?.model).toBe('gpt-5.4-mini');
     expect(Array.isArray(capturedBody?.messages)).toBe(true);
-    expect(capturedBody?.max_tokens).toBe(200);
+    expect(capturedBody?.max_tokens).toBe(CLASSIFIER_OUTPUT_TOKENS);
     expect(capturedBody?.max_completion_tokens).toBeUndefined();
   });
 
@@ -166,7 +168,7 @@ describe('classifyQueryWithOpenAILightModel', () => {
       lightModel: 'openai/gpt-5.6-sol',
     });
 
-    expect(capturedBody?.max_completion_tokens).toBe(200);
+    expect(capturedBody?.max_completion_tokens).toBe(CLASSIFIER_OUTPUT_TOKENS);
     expect(capturedBody).not.toHaveProperty('max_tokens');
   });
 
@@ -218,5 +220,202 @@ describe('classifyQueryWithOpenAILightModel', () => {
 
     await classifyQueryWithOpenAILightModel('q', { ...baseConfig, apiKey: undefined });
     expect(capturedAuth).toBeUndefined();
+  });
+
+  describe('reasoning-model output budget', () => {
+    function truncatedEmptyBody(reasoningTokens: number, completionTokens: number) {
+      return JSON.stringify({
+        choices: [{ message: { content: '' }, finish_reason: 'length' }],
+        usage: {
+          completion_tokens: completionTokens,
+          completion_tokens_details: { reasoning_tokens: reasoningTokens },
+        },
+      });
+    }
+
+    it('retries at a larger budget when reasoning tokens exhausted the first one', async () => {
+      const budgets: number[] = [];
+      const fetchMock = installFetchMock(async ({ init }) => {
+        const body = JSON.parse(String(init?.body)) as { max_tokens?: number };
+        budgets.push(body.max_tokens ?? -1);
+        if (budgets.length === 1) {
+          return new Response(truncatedEmptyBody(2047, 2048), { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            choices: [{ message: { content: '{"complexity":"quick","reason":"bounded entity lookup"}' }, finish_reason: 'stop' }],
+          }),
+          { status: 200 },
+        );
+      });
+
+      const result = await classifyQueryWithOpenAILightModel('why is this one frame slow?', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(budgets).toEqual([CLASSIFIER_OUTPUT_TOKENS, CLASSIFIER_RETRY_OUTPUT_TOKENS]);
+      expect(result.complexity).toBe('quick');
+      // The model's own verdict must survive; starvation is transport diagnostics.
+      expect(result.reason).toBe('bounded entity lookup');
+    });
+
+    it('keeps a parseable verdict without retrying even when the cap was hit', async () => {
+      const fetchMock = installFetchMock(async () => new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"complexity":"quick","reason":"still valid"}' }, finish_reason: 'length' }],
+          usage: { completion_tokens: 2048 },
+        }),
+        { status: 200 },
+      ));
+
+      const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ complexity: 'quick', reason: 'still valid' });
+    });
+
+    it('detects exhaustion from usage alone when the gateway omits finish_reason', async () => {
+      const fetchMock = installFetchMock(async ({ init }) => {
+        const body = JSON.parse(String(init?.body)) as { max_tokens?: number };
+        if (body.max_tokens === CLASSIFIER_OUTPUT_TOKENS) {
+          return new Response(
+            JSON.stringify({
+              choices: [{ message: { content: '' } }],
+              usage: { completion_tokens: 2048 },
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({ choices: [{ message: { content: '{"complexity":"full","reason":"scene wide"}' } }] }),
+          { status: 200 },
+        );
+      });
+
+      const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.complexity).toBe('full');
+      expect(result.reason).toBe('scene wide');
+    });
+
+    it('does not retry a plain unparseable answer that did not hit the cap', async () => {
+      const fetchMock = installFetchMock(async () => new Response(
+        JSON.stringify({
+          choices: [{ message: { content: 'no json here at all' }, finish_reason: 'stop' }],
+          usage: { completion_tokens: 12 },
+        }),
+        { status: 200 },
+      ));
+
+      const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({ complexity: 'full', reason: 'no JSON in OpenAI response' });
+    });
+
+    it('does not retry when usage is missing and no finish_reason is reported', async () => {
+      const fetchMock = installFetchMock(async () => new Response(
+        JSON.stringify({ choices: [{ message: { content: '' } }] }),
+        { status: 200 },
+      ));
+
+      const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.complexity).toBe('full');
+      expect(result.reason).toContain('empty OpenAI classifier response');
+    });
+
+    it('reports the exhausted budget when the retry is truncated too', async () => {
+      const fetchMock = installFetchMock(async () => new Response(
+        truncatedEmptyBody(6143, 6144),
+        { status: 200 },
+      ));
+
+      const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.complexity).toBe('full');
+      expect(result.reason).toContain(String(CLASSIFIER_RETRY_OUTPUT_TOKENS));
+      expect(result.reason).toContain('reasoning tokens');
+    });
+
+    it('falls back on the retry HTTP failure rather than making a third request', async () => {
+      let calls = 0;
+      const fetchMock = installFetchMock(async () => {
+        calls += 1;
+        if (calls === 1) return new Response(truncatedEmptyBody(2047, 2048), { status: 200 });
+        return new Response('server error', { status: 500 });
+      });
+
+      const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.reason).toContain('HTTP 500');
+    });
+
+    it('skips the retry when the first request consumed most of the deadline', async () => {
+      // Deadline comfortably exceeds the retry floor, so only the elapsed time
+      // of the first request can make the retry unaffordable.
+      const fetchMock = installFetchMock(async () => {
+        await new Promise(resolve => setTimeout(resolve, 700));
+        return new Response(truncatedEmptyBody(2047, 2048), { status: 200 });
+      });
+
+      const result = await classifyQueryWithOpenAILightModel('q', {
+        ...baseConfig,
+        classifierTimeoutMs: 2_500,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result.complexity).toBe('full');
+      expect(result.reason).toContain(String(CLASSIFIER_OUTPUT_TOKENS));
+    });
+
+    it('aborts a started retry on the original deadline instead of restarting it', async () => {
+      let calls = 0;
+      const fetchMock = installFetchMock(async ({ init }) => {
+        calls += 1;
+        if (calls === 1) return new Response(truncatedEmptyBody(2047, 2048), { status: 200 });
+        return new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal as AbortSignal | undefined;
+          signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      });
+
+      const started = Date.now();
+      const result = await classifyQueryWithOpenAILightModel('q', {
+        ...baseConfig,
+        classifierTimeoutMs: 2_600,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(result.complexity).toBe('full');
+      expect(result.reason).toContain('timed out after 2.6s');
+      // The retry must share the original deadline, not restart it.
+      expect(Date.now() - started).toBeLessThan(2_600 * 2);
+    });
+
+    it('keeps the malformed-JSON diagnosis distinct from a missing one', async () => {
+      const fetchMock = installFetchMock(async () => new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '{"complexity": quick,}' }, finish_reason: 'stop' }],
+          usage: { completion_tokens: 14 },
+        }),
+        { status: 200 },
+      ));
+
+      const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(result).toEqual({
+        complexity: 'full',
+        reason: 'failed to parse OpenAI JSON response',
+      });
+    });
   });
 });

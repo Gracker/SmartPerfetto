@@ -6,6 +6,7 @@ import {afterEach, describe, expect, it, jest} from '@jest/globals';
 import * as focusAppDetector from '../../agentv3/focusAppDetector';
 import * as architectureDetector from '../../agent/detectors/architectureDetector';
 import {
+  buildQuickKnowledgeBaseContext,
   buildRuntimeTracePairComparisonContext,
   formatTraceContext,
 } from '../runtimePromptContext';
@@ -64,5 +65,18 @@ describe('runtime dual-trace comparison context', () => {
         referenceOnly: ['android_reference_only', 'linux_reference_only'],
       },
     }));
+  });
+});
+
+describe('buildQuickKnowledgeBaseContext', () => {
+  it('returns matched Perfetto SQL definitions for a targeted question', async () => {
+    // Quick mode has no schema knowledge otherwise, which is what turns a
+    // single-slice lookup into a string of exploratory queries.
+    const context = await buildQuickKnowledgeBaseContext('主线程哪个 slice 耗时最多');
+    expect(context && context.length).toBeGreaterThan(0);
+  });
+
+  it('returns undefined for an empty query instead of a stray section', async () => {
+    await expect(buildQuickKnowledgeBaseContext('   ')).resolves.toBeUndefined();
   });
 });

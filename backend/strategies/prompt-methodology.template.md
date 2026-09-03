@@ -1,9 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-<!-- Template variables:
-  {{sceneStrategy}} - Always-injected scene core from *.strategy.md
--->
+<!-- Variable "sceneStrategy" = scene core; no braces here, the split would land in this comment. -->
 ## 分析方法论
 
 ### Plan Gate

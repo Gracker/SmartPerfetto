@@ -18,30 +18,56 @@ import {
 import { parseOutputLanguage, outputLanguageDisplayName } from '../agentv3/outputLanguage';
 import { loadPromptTemplate, renderTemplate } from '../agentv3/strategyLoader';
 import { resolveAgentRuntimeSelection } from '../agentRuntime/runtimeSelection';
-import { buildOpenAIChatCompletionsTokenLimit } from './providerManager/openAiChatCompletionsCompat';
+import {
+  buildOpenAIChatCompletionsTokenLimit,
+  isOpenAIChatCompletionsOutputTruncated,
+  readOpenAIChatCompletionsOutput,
+} from './providerManager/openAiChatCompletionsCompat';
 import type {
   ComparisonConclusion,
   ComparisonResult,
 } from '../types/multiTraceComparison';
 import type { ProviderScope } from './providerManager';
 
-interface ChatCompletionsResponse {
-  choices?: Array<{
-    message?: {
-      content?: string;
-    };
-  }>;
-}
+/**
+ * Output budget for the comparison conclusion.
+ *
+ * This is a long-form structured generation (four populated arrays over a
+ * matrix up to 40k chars), and reasoning models bill hidden reasoning against
+ * the same budget. Measured on a reasoning light model: reasoning alone
+ * consumed 6.4k-8.2k tokens and a complete answer needed ~8.3k completion
+ * tokens, with 8192 truncating in half the runs. Size well above that so the
+ * conclusion is not silently replaced by the deterministic fallback.
+ */
+export const COMPARISON_CONCLUSION_OUTPUT_TOKENS = 16_384;
+
+/**
+ * Wall clock for that generation. It previously borrowed the classifier's
+ * timeout, which is sized for a one-line verdict; the same measurements show
+ * this call taking 158-210s, so a classifier-sized deadline aborted it before
+ * the budget ever mattered.
+ */
+export const COMPARISON_CONCLUSION_TIMEOUT_MS = 300_000;
 
 export interface ComparisonConclusionClientInput {
   prompt: string;
   providerId?: string | null;
   providerScope?: ProviderScope;
+  /**
+   * Caller cancellation. This generation runs for minutes on reasoning models,
+   * so a disconnected client must be able to stop it instead of leaving the
+   * request (and its provider spend) running to the deadline.
+   */
+  signal?: AbortSignal;
 }
 
 export interface ComparisonConclusionClientOutput {
   text: string;
   model?: string;
+  /** True when the provider stopped at the output cap rather than finishing. */
+  outputBudgetExhausted?: boolean;
+  /** Provider-reported stop reason, when the gateway supplies one. */
+  finishReason?: string;
 }
 
 export interface ComparisonConclusionClient {
@@ -54,6 +80,8 @@ export interface GenerateAiComparisonConclusionInput {
   providerId?: string | null;
   providerScope?: ProviderScope;
   client?: ComparisonConclusionClient;
+  /** Propagated to the provider call; see ComparisonConclusionClientInput. */
+  signal?: AbortSignal;
 }
 
 function truncateForPrompt(value: string, maxLength: number): string {
@@ -148,7 +176,13 @@ async function completeWithOpenAI(input: ComparisonConclusionClientInput): Promi
     throw new Error('OpenAI credentials are not configured');
   }
   const controller = new AbortController();
-  const timeoutMs = config.classifierTimeoutMs;
+  const timeoutMs = COMPARISON_CONCLUSION_TIMEOUT_MS;
+  const abortFromCaller = () => controller.abort(input.signal?.reason);
+  if (input.signal?.aborted) {
+    abortFromCaller();
+  } else {
+    input.signal?.addEventListener('abort', abortFromCaller, {once: true});
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetch(buildChatCompletionsUrl(config.baseURL || 'https://api.openai.com/v1'), {
@@ -162,19 +196,28 @@ async function completeWithOpenAI(input: ComparisonConclusionClientInput): Promi
         model: config.lightModel,
         messages: [{ role: 'user', content: input.prompt }],
         temperature: 0.1,
-        ...buildOpenAIChatCompletionsTokenLimit(config.lightModel, 1200),
+        ...buildOpenAIChatCompletionsTokenLimit(
+          config.lightModel,
+          COMPARISON_CONCLUSION_OUTPUT_TOKENS,
+        ),
       }),
     });
     if (!response.ok) {
       throw new Error(`OpenAI comparison conclusion HTTP ${response.status}`);
     }
-    const data = (await response.json()) as ChatCompletionsResponse;
+    const output = readOpenAIChatCompletionsOutput(await response.json());
     return {
-      text: data.choices?.[0]?.message?.content || '',
+      text: output.text,
       model: config.lightModel,
+      outputBudgetExhausted: isOpenAIChatCompletionsOutputTruncated(
+        output,
+        COMPARISON_CONCLUSION_OUTPUT_TOKENS,
+      ),
+      ...(output.finishReason === undefined ? {} : {finishReason: output.finishReason}),
     };
   } finally {
     clearTimeout(timer);
+    input.signal?.removeEventListener('abort', abortFromCaller);
   }
 }
 
@@ -186,6 +229,15 @@ async function completeWithClaude(input: ComparisonConclusionClientInput): Promi
     throw new Error('Claude credentials are not configured');
   }
   const binaryOption = getSdkBinaryOption(env);
+  // The SDK spawns a subprocess; without this, a disconnected client leaves it
+  // running and spending budget for the whole generation.
+  const abortController = new AbortController();
+  const abortFromCaller = () => abortController.abort(input.signal?.reason);
+  if (input.signal?.aborted) {
+    abortFromCaller();
+  } else {
+    input.signal?.addEventListener('abort', abortFromCaller, {once: true});
+  }
   const stream = sdkQuery({
     prompt: input.prompt,
     options: {
@@ -197,6 +249,7 @@ async function completeWithClaude(input: ComparisonConclusionClientInput): Promi
       cwd: config.cwd,
       effort: 'low',
       env,
+      abortController,
       ...binaryOption,
       stderr: (data: string) => {
         console.warn(`[ComparisonConclusion] Claude SDK stderr: ${data.trimEnd()}`);
@@ -204,17 +257,21 @@ async function completeWithClaude(input: ComparisonConclusionClientInput): Promi
     },
   });
   let text = '';
-  for await (const message of stream) {
-    if (message.type === 'assistant' && Array.isArray((message as any).message?.content)) {
-      for (const block of (message as any).message.content) {
-        if (block.type === 'text' && typeof block.text === 'string') {
-          text += block.text;
+  try {
+    for await (const message of stream) {
+      if (message.type === 'assistant' && Array.isArray((message as any).message?.content)) {
+        for (const block of (message as any).message.content) {
+          if (block.type === 'text' && typeof block.text === 'string') {
+            text += block.text;
+          }
         }
       }
+      if (message.type === 'result' && typeof (message as any).result === 'string') {
+        text = (message as any).result || text;
+      }
     }
-    if (message.type === 'result' && typeof (message as any).result === 'string') {
-      text = (message as any).result || text;
-    }
+  } finally {
+    input.signal?.removeEventListener('abort', abortFromCaller);
   }
   return {
     text,
@@ -253,10 +310,16 @@ export async function generateAiComparisonConclusion(
       prompt,
       providerId: input.providerId,
       providerScope: input.providerScope,
+      ...(input.signal ? {signal: input.signal} : {}),
     });
     const parsed = parseAiConclusion(output.text, fallback, output.model);
     if (!parsed) {
-      return fallbackConclusion(fallback, 'AI response did not contain valid conclusion JSON');
+      // Budget exhaustion and a malformed answer both arrive as "no usable
+      // JSON"; keep them distinct so a starved reasoning model is diagnosable
+      // instead of looking like a bad model response.
+      return fallbackConclusion(fallback, output.outputBudgetExhausted
+        ? `AI response hit the ${COMPARISON_CONCLUSION_OUTPUT_TOKENS}-token output budget before completing the conclusion JSON`
+        : 'AI response did not contain valid conclusion JSON');
     }
     return parsed;
   } catch (error) {

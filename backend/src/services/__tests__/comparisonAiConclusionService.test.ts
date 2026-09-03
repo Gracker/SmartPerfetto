@@ -6,7 +6,10 @@ import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
   type AnalysisResultSnapshot,
 } from '../../types/multiTraceComparison';
-import { generateAiComparisonConclusion } from '../comparisonAiConclusionService';
+import {
+  COMPARISON_CONCLUSION_OUTPUT_TOKENS,
+  generateAiComparisonConclusion,
+} from '../comparisonAiConclusionService';
 import { buildDeterministicComparisonResult } from '../comparisonResultService';
 
 function snapshot(
@@ -190,7 +193,7 @@ describe('generateAiComparisonConclusion', () => {
       });
 
       expect(conclusion.source).toBe('ai');
-      expect(requestBody.max_completion_tokens).toBe(1200);
+      expect(requestBody.max_completion_tokens).toBe(COMPARISON_CONCLUSION_OUTPUT_TOKENS);
       expect(requestBody).not.toHaveProperty('max_tokens');
     } finally {
       globalThis.fetch = originalFetch;
@@ -203,5 +206,142 @@ describe('generateAiComparisonConclusion', () => {
         }
       }
     }
+  });
+});
+
+describe('reasoning-model output budget on the comparison conclusion', () => {
+  async function fallbackReasonFor(output: {
+    text: string;
+    outputBudgetExhausted?: boolean;
+    finishReason?: string;
+  }): Promise<string[]> {
+    const conclusion = await generateAiComparisonConclusion({
+      result: comparisonResult(),
+      query: 'compare startup',
+      client: {async complete() { return output; }},
+    });
+    expect(conclusion.source).toBe('deterministic');
+    return conclusion.uncertainty;
+  }
+
+  test('names budget exhaustion instead of blaming the model output', async () => {
+    // A reasoning model spends the completion budget on hidden reasoning and
+    // returns empty content; that must not read as "the model sent bad JSON".
+    const uncertainty = await fallbackReasonFor({
+      text: '',
+      outputBudgetExhausted: true,
+      finishReason: 'length',
+    });
+    expect(uncertainty.some(line => line.includes('output budget'))).toBe(true);
+    expect(uncertainty.some(line =>
+      line.includes(String(COMPARISON_CONCLUSION_OUTPUT_TOKENS)))).toBe(true);
+  });
+
+  test('reports budget exhaustion for a non-empty but truncated JSON answer', async () => {
+    const uncertainty = await fallbackReasonFor({
+      text: '{"verifiedFacts": ["candidate startup is faster',
+      outputBudgetExhausted: true,
+      finishReason: 'length',
+    });
+    expect(uncertainty.some(line => line.includes('output budget'))).toBe(true);
+  });
+
+  test('keeps the original diagnosis for a genuinely malformed answer', async () => {
+    const uncertainty = await fallbackReasonFor({
+      text: 'not json',
+      outputBudgetExhausted: false,
+      finishReason: 'stop',
+    });
+    expect(uncertainty.some(line =>
+      line.includes('did not contain valid conclusion JSON'))).toBe(true);
+    expect(uncertainty.some(line => line.includes('output budget'))).toBe(false);
+  });
+
+  test('still accepts a valid conclusion that happened to hit the cap', async () => {
+    const conclusion = await generateAiComparisonConclusion({
+      result: comparisonResult(),
+      query: 'compare startup',
+      client: {
+        async complete() {
+          return {
+            model: 'mock-light-model',
+            outputBudgetExhausted: true,
+            finishReason: 'length',
+            text: JSON.stringify({
+              verifiedFacts: ['Candidate startup is 300 ms faster than baseline.'],
+              inferences: [],
+              recommendations: [],
+              uncertainty: [],
+            }),
+          };
+        },
+      },
+    });
+    expect(conclusion.source).toBe('ai');
+  });
+});
+
+describe('caller cancellation reaches the comparison provider call', () => {
+  test('forwards the caller signal to the client', async () => {
+    const controller = new AbortController();
+    let seen: AbortSignal | undefined;
+    await generateAiComparisonConclusion({
+      result: comparisonResult(),
+      query: 'compare startup',
+      signal: controller.signal,
+      client: {
+        async complete(input) {
+          seen = input.signal;
+          return {text: 'not json'};
+        },
+      },
+    });
+    expect(seen).toBe(controller.signal);
+  });
+
+  test('falls back deterministically when the caller aborts mid-flight', async () => {
+    const controller = new AbortController();
+    const conclusion = await generateAiComparisonConclusion({
+      result: comparisonResult(),
+      query: 'compare startup',
+      signal: controller.signal,
+      client: {
+        complete(input) {
+          return new Promise((_resolve, reject) => {
+            input.signal?.addEventListener('abort', () => {
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              reject(error);
+            });
+            controller.abort();
+          });
+        },
+      },
+    });
+    expect(conclusion.source).toBe('deterministic');
+  });
+});
+
+describe('client disconnect detection semantics', () => {
+  // Mirrors the route helper: a response that closes after finishing is a
+  // normal request; one that closes with output pending is a disconnect.
+  function signalFor(writableEnded: boolean): AbortSignal {
+    const listeners: Array<() => void> = [];
+    const res = {
+      writableEnded,
+      on(_event: 'close', listener: () => void) { listeners.push(listener); return res; },
+    };
+    const controller = new AbortController();
+    res.on('close', () => { if (!res.writableEnded) controller.abort(); });
+    listeners.forEach(listener => listener());
+    return controller.signal;
+  }
+
+  test('a completed response does not abort', () => {
+    expect(signalFor(true).aborted).toBe(false);
+  });
+
+  test('a response closed before finishing aborts', () => {
+    expect(signalFor(false).aborted).toBe(true);
   });
 });

@@ -159,7 +159,6 @@ import {
   providerScopeFromAnalysisOptions,
   quickStopReasonFromTermination,
   resolveQuickTurnBudget,
-  shouldMarkQuickRunTriage,
   repairTruncatedFinalReport,
   setLruCacheEntry,
   toProtocolHypothesis as toRuntimeProtocolHypothesis,
@@ -220,7 +219,10 @@ import {
 import {
   deriveRuntimeQuickPreEvidenceFlags,
 } from '../../quickModeResolution';
-import {buildRuntimeTracePairComparisonContext} from '../../runtimePromptContext';
+import {
+  buildRuntimeTracePairComparisonContext,
+  buildQuickKnowledgeBaseContext,
+} from '../../runtimePromptContext';
 import {
   createResettableRuntimeTimeout,
   resolveFullRequestTimeoutMs,
@@ -1718,7 +1720,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           quickRun: quickMode && quickBudget
             ? buildQuickRunReceipt({
                 requestedMode: options.analysisMode ?? 'auto',
-                profile: shouldMarkQuickRunTriage(query) ? 'triage' : undefined,
+                query,
                 budget: quickBudget,
                 actualTurns: rounds,
                 elapsedMs: Date.now() - startTime,
@@ -2623,6 +2625,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         })
       : undefined;
     const quickMemoryContext = quickMemoryPayload?.text;
+    // Quick mode hands the model execute_sql with no schema knowledge, so a
+    // targeted lookup can only be reached by trial. This is a local index hit.
+    const quickKnowledgeBaseContext = lightweight
+        ? await buildQuickKnowledgeBaseContext(query)
+        : undefined;
 
     let allowedTools: string[] = [];
     let tools: ReturnType<typeof createOpenAIToolsFromMcpDefinitions> = [];
@@ -2699,6 +2706,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             traceFactEvidence?.promptContext,
           ),
           quickMemoryContext,
+          knowledgeBaseContext: quickKnowledgeBaseContext,
           outputLanguage: config.outputLanguage,
           codeAwareMode: options.codeAwareMode,
           codebaseIds: options.codebaseIds,
@@ -3377,7 +3385,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       quickRun: params.quickMode && params.quickBudget
         ? buildQuickRunReceipt({
             requestedMode: params.requestedMode ?? 'auto',
-            profile: shouldMarkQuickRunTriage(params.query) ? 'triage' : undefined,
+            query: params.query,
             budget: params.quickBudget,
             actualTurns: params.rounds,
             elapsedMs: Date.now() - params.startTime,
@@ -3480,7 +3488,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       quickRun: params.quickMode && params.quickBudget
         ? buildQuickRunReceipt({
             requestedMode: params.requestedMode ?? 'auto',
-            profile: shouldMarkQuickRunTriage(params.query) ? 'triage' : undefined,
+            query: params.query,
             budget: params.quickBudget,
             actualTurns: params.rounds,
             elapsedMs: Date.now() - params.startTime,

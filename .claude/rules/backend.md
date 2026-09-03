@@ -111,8 +111,10 @@ fixed tool count in docs or code.
 
 Tool visibility is request-shaped:
 
-- Quick/lightweight analysis registers only core evidence tools and may include
-  `fetch_artifact` when an artifact store exists.
+- Quick/lightweight analysis registers only core evidence tools, plus
+  `list_skills` so `invoke_skill` is discoverable, and may include
+  `fetch_artifact` when an artifact store exists. The quick `list_skills`
+  projection is capped; the full catalog is full-mode only.
 - Full analysis registers the data, knowledge, memory, planning/hypothesis,
   artifact, baseline, and optional code-aware tool families.
 - Code-aware tools require codebase permission.

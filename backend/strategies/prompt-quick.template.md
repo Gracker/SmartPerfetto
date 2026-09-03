@@ -32,8 +32,11 @@
 - 用户问滑动、卡顿、jank、掉帧、FPS、帧率或流畅度概览时，优先调用 1 次 `invoke_skill("scrolling_analysis", ...)` 获取帧统计和 jank 分布；用运行时预证据/焦点应用里的包名或进程名填 `process_name`/`package`，有选区时同步传 `start_ts`/`end_ts`
 - 快速模式下先把 `enable_frame_details` 设为 `false`，`max_frames_per_session` 控制在小样本（如 10-20）；`invoke_skill` 返回的 artifact previews 和本轮 DataEnvelope 已足够支撑滑动概览时，直接回答，不要再调用 `fetch_artifact`
 - 只有用户明确要求逐行数据、代表帧、根因深钻，或当前 previews 缺少回答所需字段时，才读取 artifact 或追加专项查询
+- 其他问题先用 `list_skills(category=...)` 找现成 Skill（例如 `cpu`、`binder`、`memory`、`frame`），命中就 `invoke_skill`；没有合适 Skill 再手写 SQL
 - 不要把 FrameTimeline 原始 SQL 作为滑动概览的第一步。只有 Skill 输出不足、用户要求特定列，或需要交叉验证时才写 `execute_sql`
 - 如果必须手写 FrameTimeline SQL，先用 `lookup_sql_schema` 确认真实列；`actual_frame_timeline_slice` / `expected_frame_timeline_slice` 的帧耗时列是 `dur`（纳秒），不是 `dur_ns`
+
+{{knowledgeBaseSection}}
 
 ## Artifact 读取规则
 

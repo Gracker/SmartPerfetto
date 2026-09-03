@@ -168,7 +168,10 @@ import {
   shouldUseTraceFactEvidenceOnlyQuickAnalysis,
 } from '../../quickTraceFactEvidence';
 import { deriveRuntimeQuickPreEvidenceFlags } from '../../quickModeResolution';
-import {buildRuntimeTracePairComparisonContext} from '../../runtimePromptContext';
+import {
+  buildRuntimeTracePairComparisonContext,
+  buildQuickKnowledgeBaseContext,
+} from '../../runtimePromptContext';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import { CLAUDE_AGENT_RUNTIME_KIND } from '../../runtimeKinds';
 
@@ -518,7 +521,6 @@ import {
   providerScopeFromAnalysisOptions,
   quickStopReasonFromTermination,
   resolveQuickTurnBudget,
-  shouldMarkQuickRunTriage,
   setLruCacheEntry,
   toProtocolHypothesis as toRuntimeProtocolHypothesis,
 } from '../../runtimeCommon';
@@ -3335,6 +3337,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           })
         : undefined;
       const quickMemoryContext = quickMemoryPayload?.text;
+      // Quick mode hands the model execute_sql with no schema knowledge, so a
+      // targeted lookup can only be reached by trial. This is a local index hit.
+      const quickKnowledgeBaseContext = await buildQuickKnowledgeBaseContext(query);
       const quickConversationTurns = previousTurns.filter(turn => turn?.completed).slice(-3).length;
 
       const directQuickAnswer = useEvidenceOnlyQuick
@@ -3472,6 +3477,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           traceFactEvidence.promptContext,
         ),
         quickMemoryContext,
+        knowledgeBaseContext: quickKnowledgeBaseContext,
         outputLanguage: outputLanguage,
         codeAwareMode: options.codeAwareMode,
         codebaseIds: options.codebaseIds,
@@ -3736,7 +3742,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         terminationMessage,
         quickRun: buildQuickRunReceipt({
           requestedMode: options.analysisMode ?? 'auto',
-          profile: shouldMarkQuickRunTriage(query) ? 'triage' : undefined,
+          query,
           budget: quickBudget,
           actualTurns: quickRounds,
           elapsedMs: Date.now() - startTime,

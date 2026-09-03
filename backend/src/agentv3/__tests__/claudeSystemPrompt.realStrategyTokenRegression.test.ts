@@ -13,6 +13,9 @@ import {
   buildSelectionContextSection,
   buildSystemPromptParts,
   estimatePromptTokens,
+  MAX_PLAN_ARCHITECTURE_REQUIREMENT_TOKENS,
+  splitMethodologyTemplate,
+  stripTemplateComments,
   MAX_PROMPT_TOKENS,
   MAX_SCENE_CORE_TOKENS,
   type PromptSegment,
@@ -305,6 +308,21 @@ describe('system prompt token regression with real strategy files', () => {
     expect(strategy).toContain('> 1 说明 BufferTX 少计');
   });
 
+  it('keeps internal identifiers out of the readable conclusion prose', () => {
+    // Measured on 13 real GLM conclusions: 103 `art-N` artifact ids, 7
+    // `execute_sql:N` refs and 4 raw tool names leaked into the text the user
+    // reads. Nothing binds claims to those strings — verification uses the
+    // structured evidence refs — so in prose they are pure plumbing.
+    const outputFormat = loadPromptTemplate('prompt-output-format');
+
+    expect(outputFormat).toContain('内部 ID');
+    expect(outputFormat).toContain('只写进结构化引用段');
+    // The finding format must not invite an artifact citation in prose.
+    expect(outputFormat).not.toContain('artifact/SQL/Skill 来源');
+    // The structured section stays the place where ids belong.
+    expect(outputFormat).toContain('逐句数据引用（结构化来源）');
+  });
+
   it('keeps the real quick prompt artifact rules summary-first instead of rows-first', () => {
     const quick = loadPromptTemplate('prompt-quick');
 
@@ -410,5 +428,147 @@ describe('system prompt token regression with real strategy files', () => {
     expect(prompt).toContain('com.example.smartperfetto.demo');
     expect(prompt).toContain('com.example.reference');
     expect(prompt).toContain(rule);
+  });
+});
+
+describe('architecture-conditional plan requirements survive the prompt budget', () => {
+  it('keeps the requirement section in the worst-case scrolling prompt', () => {
+    // The whole point is to stop the first submit_plan from being rejected by
+    // construction; a section the budget can drop would silently restore that.
+    const parts = buildSystemPromptParts(makeWorstCaseContext('scrolling'));
+    const segment = parts.segments.find(
+      item => item.label === 'plan_architecture_requirements',
+    );
+
+    expect(segment).toBeDefined();
+    expect(segment?.droppable).not.toBe(true);
+    expect(segment?.truncatable).not.toBe(true);
+    expect(parts.droppedLabels).not.toContain('plan_architecture_requirements');
+    expect(parts.truncatedLabels).not.toContain('plan_architecture_requirements');
+    expect(parts.fullPrompt).toContain('计划强制项（当前架构）');
+    // The concrete skill the gate will demand must be named, not just described.
+    expect(parts.fullPrompt).toContain('flutter_scrolling_analysis');
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+  });
+
+  it('stays inside a tight token budget so it cannot crowd out other context', () => {
+    // The section is non-droppable by design, so its cost is paid on every
+    // full-mode run of this scene. Keep it small enough that it does not
+    // compete with the droppable context sections.
+    const unbudgeted = buildSystemPromptParts(makeWorstCaseContext('scrolling'), 1_000_000);
+    const section = unbudgeted.segments.find(
+      item => item.label === 'plan_architecture_requirements',
+    );
+
+    expect(section?.estimatedTokens).toBeGreaterThan(0);
+    expect(section?.estimatedTokens).toBeLessThanOrEqual(
+      MAX_PLAN_ARCHITECTURE_REQUIREMENT_TOKENS,
+    );
+  });
+
+  it('omits the section entirely when no conditional branch is active', () => {
+    const context = makeWorstCaseContext('scrolling');
+    const parts = buildSystemPromptParts({
+      ...context,
+      // Neither the query nor the architecture names a conditional branch.
+      query: '分析这个应用滑动掉帧的根因，并给出优化建议',
+      architecture: {
+        type: 'STANDARD',
+        confidence: 0.9,
+        evidence: [],
+      },
+    });
+
+    expect(parts.segments.find(
+      item => item.label === 'plan_architecture_requirements',
+    )).toBeUndefined();
+    expect(parts.fullPrompt).not.toContain('计划强制项（当前架构）');
+  });
+});
+
+describe('methodology split ignores placeholders inside comments', () => {
+  it('splits at the body placeholder, not the one documenting it', () => {
+    const template = [
+      '<!-- Variable "sceneStrategy" {{sceneStrategy}} documented here -->',
+      '## 分析方法论',
+      '### Plan Gate',
+      'rules before the scene core',
+      '{{sceneStrategy}}',
+      '### SQL Discipline',
+    ].join('\n');
+
+    const parts = splitMethodologyTemplate(template);
+    expect(parts.beforeSceneStrategy).toContain('### Plan Gate');
+    expect(parts.beforeSceneStrategy).toContain('## 分析方法论');
+    expect(parts.afterSceneStrategy).toBe('### SQL Discipline');
+    // The documenting comment stays on the "before" side, never split through.
+    expect(parts.beforeSceneStrategy).toContain('documented here -->');
+  });
+
+  it('falls back when the only placeholder sits inside a comment', () => {
+    const template = '<!-- {{sceneStrategy}} -->\n## 分析方法论\n### Plan Gate';
+    const parts = splitMethodologyTemplate(template);
+    expect(parts.afterSceneStrategy).toBe('');
+    expect(parts.beforeSceneStrategy).toContain('### Plan Gate');
+  });
+
+  it('treats an unterminated comment as swallowing the rest of the template', () => {
+    const template = '## 分析方法论\n<!-- oops\n{{sceneStrategy}}\n### SQL Discipline';
+    const parts = splitMethodologyTemplate(template);
+    expect(parts.afterSceneStrategy).toBe('');
+  });
+
+  it('keeps the existing fallback when no placeholder exists at all', () => {
+    const parts = splitMethodologyTemplate('## 分析方法论\n### Plan Gate');
+    expect(parts.beforeSceneStrategy).toBe('## 分析方法论\n### Plan Gate');
+    expect(parts.afterSceneStrategy).toBe('');
+  });
+
+  it('delivers the real scene core outside any comment, after the methodology preamble', () => {
+    const prompt = buildSystemPromptParts(makeWorstCaseContext('scrolling')).fullPrompt;
+    const sceneCore = prompt.indexOf('#### Scrolling Core Strategy');
+
+    expect(sceneCore).toBeGreaterThan(-1);
+    expect(prompt.indexOf('## 分析方法论')).toBeLessThan(sceneCore);
+    expect(prompt.indexOf('### Plan Gate')).toBeLessThan(sceneCore);
+    // The old split left this documentation line loose in the body, after the
+    // comment had already been closed by the injected scene core.
+    expect(prompt).not.toContain('Always-injected scene core from');
+    // Assembly strips developer comments outright, so the scene core can no
+    // longer be swallowed by an unclosed one.
+    expect(prompt).not.toMatch(/<!--/);
+    expect(prompt).not.toMatch(/-->/);
+  });
+});
+
+describe('developer comments never reach the model', () => {
+  it('removes comment blocks without welding the surrounding lines together', () => {
+    const stripped = stripTemplateComments([
+      '<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->',
+      '<!-- Copyright (C) 2024-2026 -->',
+      '## 输出格式',
+      '',
+      '- rule one',
+      '<!-- inline note -->',
+      '- rule two',
+    ].join('\n'));
+
+    expect(stripped).toBe('## 输出格式\n\n- rule one\n\n- rule two');
+    expect(stripped).not.toContain('SPDX');
+  });
+
+  it('leaves marker-bearing content to its own loader, which runs first', () => {
+    // The source-use loader extracts <!-- tool-description:* --> before the
+    // text becomes a segment, so stripping at assembly cannot break it.
+    const toolDescription = loadPromptTemplate('prompt-source-use-decision-zh');
+    expect(toolDescription).toContain('tool-description:start');
+    expect(stripTemplateComments(toolDescription ?? '')).not.toContain('tool-description:start');
+  });
+
+  it('keeps the real worst-case prompt free of comment tokens', () => {
+    for (const scene of ['startup', 'scrolling'] as const) {
+      const prompt = buildSystemPromptParts(makeWorstCaseContext(scene)).fullPrompt;
+      expect(prompt).not.toMatch(/<!--/);
+    }
   });
 });

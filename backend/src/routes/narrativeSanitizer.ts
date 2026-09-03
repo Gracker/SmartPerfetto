@@ -9,6 +9,13 @@
 import { LEGACY_TO_PLAIN_PHRASE_RULES } from '../utils/analysisNarrative';
 
 const EVIDENCE_ID_RE = /\bev_[0-9a-f]{12}\b/gi;
+// Artifact handles (`art-11`) and tool-call ids (`execute_sql:6:07787eaf`) are
+// the same class of internal plumbing as `ev_*`: the structured conclusion
+// contract is derived before display sanitization, so reports, snapshots and
+// claim verification keep them while the text users read does not.
+// The lookbehind keeps ordinary words such as `smart-artifact` / `chart-1`.
+const ARTIFACT_ID_RE = /(?<![\w-])art-\d+\b/g;
+const TOOL_CALL_ID_RE = /(?<![\w-])(?:execute_sql|execute_sql_on|invoke_skill|fetch_artifact|compare_skill):[0-9]+(?::[0-9a-f]+)?\b/gi;
 
 type PhraseRule = {
   pattern: RegExp;
@@ -195,8 +202,10 @@ export function sanitizeNarrativeForClient(narrative: string): string {
     ''
   );
 
-  // Remove any remaining standalone evidence IDs.
+  // Remove any remaining standalone internal identifiers.
   out = out.replace(EVIDENCE_ID_RE, '');
+  out = out.replace(TOOL_CALL_ID_RE, '');
+  out = out.replace(ARTIFACT_ID_RE, '');
 
   // Remove empty JSON evidence field after evidence-id stripping.
   out = out.replace(/,\s*"evidence"\s*:\s*""/g, '');
@@ -206,6 +215,9 @@ export function sanitizeNarrativeForClient(narrative: string): string {
   // Example: "（ vs ）", "( | )", "（ / ）"
   out = out.replace(/[（(]\s*(?:vs|VS)\s*[）)]/g, '');
   out = out.replace(/[（(]\s*(?:[|｜/:,+-]\s*)+[）)]/g, '');
+  // Drop a separator left dangling before the closing paren, e.g.
+  // "（定向 SQL，execute_sql:6:ab）" -> "（定向 SQL）".
+  out = out.replace(/([（(][^（()）]*?)[\s，,、;；|｜/+-]+([）)])/g, '$1$2');
 
   // Replace jargon-heavy wording with plain-language phrasing.
   out = humanizeNarrativeTerms(out);

@@ -22,6 +22,7 @@ import {buildSourceInvestigationPlanAspect} from './sourceInvestigationPolicy';
 import type {SourceInvestigationPlanAspect} from './sourceInvestigationPolicy';
 import {isSourceLookupToolName} from '../services/codebase/sourceLookupTools';
 import type { ExpectedCall } from './types';
+import type { ArchitectureInfo } from '../agent/detectors/types';
 
 export interface ScenePlanTemplateAspect {
   /**
@@ -295,6 +296,127 @@ function sourceAspectCovered(
  * the hard-gate cannot be bypassed by silently re-issuing a plan via the
  * revise endpoint.
  */
+/**
+ * Flatten detected architecture into the keyword text that plan-template
+ * `trigger_keywords` match against.
+ *
+ * The plan gate and the pre-submit hint must derive "which architecture is in
+ * play" identically, so this lives beside the requirement resolver instead of
+ * inside one caller.
+ */
+export function buildArchitectureTriggerContext(info: Partial<ArchitectureInfo> | undefined | null): string[] {
+  if (!info) return [];
+  const selectedPipelineId = typeof info.additionalInfo?.pipelineId === 'string'
+    ? info.additionalInfo.pipelineId.trim()
+    : '';
+  const parts = [
+    info.type,
+    info.type ? String(info.type).replace(/_/g, ' ') : undefined,
+    selectedPipelineId || undefined,
+    selectedPipelineId ? selectedPipelineId.replace(/_/g, ' ') : undefined,
+  ];
+  if (info.flutter) {
+    parts.push('Flutter', info.flutter.engine, info.flutter.surfaceType, `Flutter ${info.flutter.surfaceType}`);
+  }
+  if (info.webview) {
+    parts.push('WebView', info.webview.engine, info.webview.surfaceType, `WebView ${info.webview.surfaceType}`);
+  }
+  if (info.compose) {
+    parts.push('Compose', ...(info.compose.features ?? []));
+    if (info.compose.isHybridView) parts.push('mixed', 'hybrid');
+  }
+  const evidence = info.evidence ?? [];
+  const selectedEvidence = selectedPipelineId
+    ? evidence.filter(item => item.value.trim().toLowerCase() === selectedPipelineId.toLowerCase())
+    : evidence.reduce<typeof evidence>((best, item) => {
+        if (best.length === 0 || item.weight > best[0].weight) return [item];
+        return best;
+      }, []);
+  for (const evidence of selectedEvidence) {
+    if (evidence.value) parts.push(evidence.value);
+    if (evidence.type) parts.push(evidence.type);
+  }
+  return parts.filter((part): part is string => Boolean(part && String(part).trim()));
+}
+
+/**
+ * The exact trigger text the plan gate matches against: the user question plus
+ * the detected architecture. The pre-submit hint must build it the same way, or
+ * a query-driven branch would be demanded without ever being announced.
+ */
+export function buildPlanTemplateTriggerContext(
+  userQuery: string | undefined,
+  architecture: Partial<ArchitectureInfo> | undefined | null,
+): string[] {
+  return [userQuery || '', ...buildArchitectureTriggerContext(architecture)]
+    .filter(Boolean);
+}
+
+/** Single source of the "is this conditional group active?" rule. */
+function matchConditionalGroups(
+  aspect: ScenePlanTemplateAspect,
+  detectedContextText: string,
+): NonNullable<ScenePlanTemplateAspect['conditionalRequiredExpectedCalls']> {
+  return (aspect.conditionalRequiredExpectedCalls ?? []).filter(group =>
+    group.triggerKeywords.some(keyword =>
+      hasAffirmativeKeywordMention(
+        detectedContextText,
+        keyword,
+        {allowIdentifierSeparators: true},
+      ),
+    ),
+  );
+}
+
+/**
+ * The architecture-conditional expectedCalls a plan must declare right now.
+ *
+ * Deliberately limited to the conditional branches. The unconditional scene
+ * requirements are already spelled out in the scene core strategy, and adding
+ * them here grew this non-droppable section enough to evict the report
+ * contract under a tight budget — measured, not assumed.
+ *
+ * The plan gate and the pre-submit hint must never disagree about this, so both
+ * read it from here rather than restating the Flutter/TextureView/WebView
+ * mapping. The mapping itself stays in strategy frontmatter.
+ */
+export interface ActiveConditionalPlanRequirement {
+  aspectId: string;
+  /** False when the aspect cannot be waived and must appear in the plan. */
+  waivable: boolean;
+  requiredExpectedCalls: ExpectedCall[];
+  suggestion: string;
+}
+
+export function resolveActiveConditionalPlanRequirements(
+  scene: SceneType | undefined,
+  triggerContext: string | readonly string[] | undefined,
+): ActiveConditionalPlanRequirement[] {
+  const template = scene ? getScenePlanTemplate(scene) : undefined;
+  if (!template) return [];
+  const detectedContextText = (typeof triggerContext === 'string'
+    ? triggerContext
+    : (triggerContext ?? []).join(' ')).toLowerCase();
+  if (!detectedContextText.trim()) return [];
+
+  const requirements: ActiveConditionalPlanRequirement[] = [];
+  for (const aspect of template.mandatoryAspects) {
+    const groups = matchConditionalGroups(aspect, detectedContextText);
+    if (groups.length === 0) continue;
+    const requiredExpectedCalls = uniqueExpectedCalls(
+      groups.flatMap(group => group.requiredExpectedCalls),
+    );
+    if (requiredExpectedCalls.length === 0) continue;
+    requirements.push({
+      aspectId: aspect.id || aspect.matchKeywords[0],
+      waivable: aspect.waivable !== false,
+      requiredExpectedCalls,
+      suggestion: aspect.suggestion,
+    });
+  }
+  return requirements;
+}
+
 export function validatePlanAgainstSceneTemplate(
   phases: ReadonlyArray<{ name: string; goal: string; expectedTools?: string[]; expectedCalls?: ExpectedCall[] }>,
   scene: SceneType | undefined,
@@ -360,14 +482,7 @@ export function validatePlanAgainstSceneTemplate(
           options.sourceInvestigation?.decision,
         )
       : aspect.matchKeywords.some(kw => planText.includes(kw.toLowerCase()));
-    const matchedConditionalGroups = (aspect.conditionalRequiredExpectedCalls ?? [])
-      .filter(group => group.triggerKeywords.some(keyword =>
-        hasAffirmativeKeywordMention(
-          detectedContextText,
-          keyword,
-          {allowIdentifierSeparators: true},
-        ),
-      ));
+    const matchedConditionalGroups = matchConditionalGroups(aspect, detectedContextText);
     if (matchedConditionalGroups.length > 0) {
       const activeConditionalCalls = uniqueExpectedCalls(
         matchedConditionalGroups.flatMap(group => group.requiredExpectedCalls),
