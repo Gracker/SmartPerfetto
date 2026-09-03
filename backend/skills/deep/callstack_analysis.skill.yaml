@@ -281,7 +281,7 @@ steps:
       JOIN thread t ON ps.utid = t.utid
       JOIN process p ON t.upid = p.upid
       WHERE
-        '${package}' = '' OR p.name GLOB '${package}*'
+        '${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       GROUP BY t.utid
       ORDER BY sample_count DESC
       LIMIT 20

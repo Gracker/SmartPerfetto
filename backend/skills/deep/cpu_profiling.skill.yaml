@@ -181,7 +181,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE
           ss.dur > ${min_runtime_ms} * 1e6
-          AND ('${package}' = '' OR p.name GLOB '${package}*')
+          AND ('${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*'))
         GROUP BY p.upid
       )
       SELECT
@@ -243,7 +243,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE
           ss.dur > ${min_runtime_ms} * 1e6
-          AND ('${package}' = '' OR p.name GLOB '${package}*')
+          AND ('${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*'))
         GROUP BY ss.utid
       )
       SELECT
@@ -313,7 +313,7 @@ steps:
         JOIN cpu_info ci ON ss.cpu = ci.cpu_id
         WHERE
           ss.dur > ${min_runtime_ms} * 1e6
-          AND ('${package}' = '' OR p.name GLOB '${package}*')
+          AND ('${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*'))
         GROUP BY ss.utid, ci.core_type
       ),
       thread_totals AS (
@@ -403,7 +403,7 @@ steps:
         FROM runnable_slices rs
         JOIN thread t ON rs.utid = t.utid
         JOIN process p ON t.upid = p.upid
-        WHERE '${package}' = '' OR p.name GLOB '${package}*'
+        WHERE '${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         GROUP BY rs.utid
       )
       SELECT
@@ -463,7 +463,7 @@ steps:
         FROM sched_slice ss
         JOIN thread t ON ss.utid = t.utid
         JOIN process p ON t.upid = p.upid
-        WHERE '${package}' = '' OR p.name GLOB '${package}*'
+        WHERE '${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         GROUP BY ss.utid
       )
       SELECT

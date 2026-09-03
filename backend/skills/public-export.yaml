@@ -23,6 +23,15 @@ runtime_perfetto:
   rpc_api_version: 14
   stdlib_tree: 54fc9f0b5c8dedb8772283b6786753fbb918da0d
 sql_fragments:
+  backend/skills/fragments/buffer_tx_frame_production.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/buffer_tx_frame_production.sql
+  backend/skills/fragments/flutter_process_identity.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/flutter_process_identity.sql
+  backend/skills/fragments/root_cause_sample_cap.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/root_cause_sample_cap.sql
   backend/skills/fragments/target_threads.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/target_threads.sql
@@ -1242,6 +1251,12 @@ skills:
     disposition: exported
     destination: references/generated/skills/pipeline_webview_textureview_custom.md
 strategies:
+  backend/strategies/analysis-source-activation-policy.yaml:
+    disposition: product-only
+    reason: SmartPerfetto request-scoped private source authorization and runtime budget orchestration
+  backend/strategies/analysis-source-deep-supplement.template.md:
+    disposition: product-only
+    reason: SmartPerfetto provider follow-up and private source supplement orchestration
   backend/strategies/anr.strategy.md:
     workflow: anr-blocking
     disposition: exported
@@ -1280,6 +1295,9 @@ strategies:
   backend/strategies/code-aware.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
+  backend/strategies/conversation-source-enrichment.template.md:
+    disposition: product-only
+    reason: SmartPerfetto bounded private source enrichment for completed conversation turns
   backend/strategies/comparison-conclusion.template.md:
     workflow: trace-comparison
     disposition: exported
@@ -1437,6 +1455,9 @@ strategies:
   backend/strategies/prompt-source-use-decision-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime source-use control, provider consent, and codebase-aware orchestration
+  backend/strategies/prompt-source-activation-reset.template.md:
+    disposition: product-only
+    reason: SmartPerfetto provider session reset after private source activation changes
   backend/strategies/prompt-final-report-correction-system-en.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
@@ -1620,6 +1641,9 @@ strategies:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/smart.strategy.md
+  backend/strategies/source-investigation-policy.yaml:
+    disposition: product-only
+    reason: SmartPerfetto private codebase and kernel source investigation routing
   backend/strategies/startup.strategy.md:
     workflow: startup
     disposition: exported

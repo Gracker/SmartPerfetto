@@ -61,7 +61,7 @@ sql: |
     JOIN thread t ON ss.utid = t.utid
     JOIN process p ON t.upid = p.upid
     WHERE t.is_main_thread = 1
-      AND p.name GLOB '${package}*'
+      AND ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       AND ss.ts BETWEEN ${start_ts} AND CAST(${start_ts} AS INTEGER) + 100000000
   ),
   freq_at_time AS (

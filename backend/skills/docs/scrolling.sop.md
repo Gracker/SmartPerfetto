@@ -92,7 +92,7 @@ FROM expected_frame_timeline_slice efs
 JOIN actual_frame_timeline_slice afs
   ON efs.upid = afs.upid
   AND efs.display_frame_token = afs.display_frame_token
-WHERE efs.upid IN (SELECT upid FROM process WHERE name GLOB '${package}*')
+WHERE efs.upid IN (SELECT upid FROM process WHERE ('${package}' = '' OR name = '${package}' OR name GLOB '${package}:*'))
 ```
 
 ---
@@ -108,7 +108,7 @@ FROM slice s
 JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
 JOIN process p ON t.upid = p.upid
-WHERE p.name GLOB '${package}*'
+WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
   AND t.tid = p.pid
   AND s.name GLOB '*Choreographer#doFrame*'
 ORDER BY s.ts ASC
@@ -136,7 +136,7 @@ FROM slice s
 JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
 JOIN process p ON t.upid = p.upid
-WHERE p.name GLOB '${package}*'
+WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
   AND t.tid = p.pid
   AND s.dur > ${vsync_period_ns}
   AND s.name NOT GLOB '*Choreographer*'
@@ -163,7 +163,7 @@ FROM slice s
 JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
 JOIN process p ON t.upid = p.upid
-WHERE p.name GLOB '${package}*'
+WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
   AND t.name = 'RenderThread'
 GROUP BY s.name
 ORDER BY avg_dur_ms DESC

@@ -5,19 +5,19 @@
 # =============================================================================
 # TextureView Producer Frame Timing
 # =============================================================================
-# Detect producer-side frame cadence for non-Flutter TextureView pipelines.
+# Detect frame cadence signals for TextureView / SurfaceTexture pipelines.
 # TextureView content is resampled into the host window, so SurfaceFlinger
 # FrameTimeline can miss producer-side stalls or frame swallowing.
 
 name: textureview_producer_frame_timing
-version: "1.0"
+version: "1.1"
 type: atomic
 category: rendering
 tier: B
 
 meta:
   display_name: "TextureView 生产端帧时序"
-  description: "检测非 Flutter TextureView / SurfaceTexture 生产端 queueBuffer、swapBuffers、onFrameAvailable 的帧间隔异常"
+  description: "区分 TextureView / SurfaceTexture 生产、出队与消费通知，并检测同类事件流中的帧节奏缺口候选"
   icon: "texture"
   tags: [textureview, surfacetexture, producer, frame_timing, jank, atomic]
 
@@ -37,6 +37,7 @@ prerequisites:
     - process
   modules:
     - slices.with_context
+    - android.frames.timeline
 
 inputs:
   - name: package
@@ -58,7 +59,7 @@ inputs:
   - name: target_frame_ms
     type: number
     required: false
-    description: "目标帧预算(ms)，默认 16.67"
+    description: "显示帧预算(ms)覆盖值；默认从 trace 的 VSync / FrameTimeline 推断"
 
 steps:
   - id: textureview_signal_summary
@@ -72,6 +73,9 @@ steps:
         - name: signal_role
           label: "角色"
           type: string
+        - name: signal_type
+          label: "信号类型"
+          type: string
         - name: process_name
           label: "进程"
           type: string
@@ -79,7 +83,7 @@ steps:
           label: "线程"
           type: string
         - name: event_count
-          label: "次数"
+          label: "信号次数（非帧数）"
           type: number
           format: compact
         - name: avg_dur_ms
@@ -94,6 +98,12 @@ steps:
           label: "最大耗时"
           type: duration
           format: duration_ms
+        - name: evidence_scope
+          label: "证据范围"
+          type: string
+        - name: claim_boundary
+          label: "结论边界"
+          type: string
     sql: |
       WITH
       input AS (
@@ -109,7 +119,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND COALESCE(t.name, '') NOT GLOB '1.ui*'
@@ -129,18 +139,32 @@ steps:
           t.name AS thread_name,
           p.name AS process_name,
           CASE
-            WHEN s.name GLOB '*updateTexImage*' OR s.name GLOB '*DeferredLayerUpdater*' THEN 'host_consume_updateTexImage'
-            WHEN s.name GLOB '*onFrameAvailable*' OR s.name GLOB '*SurfaceTexture*' THEN 'producer_frame_available'
-            WHEN s.name GLOB '*queueBuffer*' OR s.name GLOB '*eglSwapBuffers*' OR s.name GLOB '*vkQueuePresent*' THEN 'producer_queue_present'
+            WHEN s.name GLOB '*updateTexImage*' OR s.name GLOB '*DeferredLayerUpdater*' THEN 'host_consume_update_tex_image'
+            WHEN s.name GLOB '*dequeueBuffer*' THEN 'buffer_dequeue'
+            WHEN (s.name GLOB '*queueBuffer*' AND s.name NOT GLOB '*dequeueBuffer*')
+              OR s.name GLOB '*eglSwapBuffers*'
+              OR s.name GLOB '*vkQueuePresent*' THEN 'producer_submit'
+            WHEN s.name GLOB '*onFrameAvailable*' THEN 'consumer_notification'
+            WHEN s.name GLOB '*SurfaceTexture*' THEN 'surfacetexture_related'
             ELSE 'textureview_related'
           END AS signal_role,
+          CASE
+            WHEN s.name GLOB '*updateTexImage*' OR s.name GLOB '*DeferredLayerUpdater*' THEN 'update_tex_image'
+            WHEN s.name GLOB '*dequeueBuffer*' THEN 'buffer_dequeue'
+            WHEN s.name GLOB '*queueBuffer*' AND s.name NOT GLOB '*dequeueBuffer*' THEN 'queue_buffer'
+            WHEN s.name GLOB '*eglSwapBuffers*' THEN 'egl_swap_buffers'
+            WHEN s.name GLOB '*vkQueuePresent*' THEN 'vk_queue_present'
+            WHEN s.name GLOB '*onFrameAvailable*' THEN 'frame_available'
+            WHEN s.name GLOB '*SurfaceTexture*' THEN 'surface_texture_related'
+            ELSE 'textureview_related'
+          END AS signal_type,
           ROUND(s.dur / 1e6, 2) AS dur_ms
         FROM slice s
         JOIN thread_track tt ON s.track_id = tt.id
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND p.upid IN (SELECT upid FROM textureview_processes)
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
@@ -159,25 +183,28 @@ steps:
       )
       SELECT
         signal_role,
+        signal_type,
         process_name,
         COALESCE(thread_name, '<unnamed>') AS thread_name,
         COUNT(*) AS event_count,
         ROUND(AVG(dur_ms), 2) AS avg_dur_ms,
-        ROUND(PERCENTILE(dur_ms, 0.95), 2) AS p95_dur_ms,
-        ROUND(MAX(dur_ms), 2) AS max_dur_ms
+        ROUND(PERCENTILE(dur_ms, 95), 2) AS p95_dur_ms,
+        ROUND(MAX(dur_ms), 2) AS max_dur_ms,
+        'signal_inventory' AS evidence_scope,
+        'event_count_is_not_frame_count_or_jank_count' AS claim_boundary
       FROM signals
-      GROUP BY signal_role, process_name, thread_name
+      GROUP BY signal_role, signal_type, process_name, thread_name
       ORDER BY event_count DESC, max_dur_ms DESC
       LIMIT 50
     save_as: textureview_signal_summary
 
   - id: textureview_producer_intervals
     type: atomic
-    name: "TextureView 生产端帧间隔"
+    name: "TextureView 事件流帧间隔"
     display:
       level: detail
       layer: list
-      title: "TextureView 生产端慢帧间隔"
+      title: "TextureView 事件流节奏缺口候选"
       columns:
         - name: ts
           label: "时间"
@@ -195,9 +222,15 @@ steps:
           type: duration
           format: duration_ms
         - name: vsync_missed
-          label: "疑似漏帧"
+          label: "疑似漏生产帧"
           type: number
           format: compact
+        - name: event_role
+          label: "事件角色"
+          type: string
+        - name: event_stream
+          label: "事件流"
+          type: string
         - name: event_name
           label: "事件"
           type: string
@@ -210,17 +243,48 @@ steps:
         - name: process_name
           label: "进程"
           type: string
+        - name: display_vsync_ms
+          label: "显示 VSync"
+          type: duration
+          format: duration_ms
+        - name: stream_period_ms
+          label: "事件流周期"
+          type: duration
+          format: duration_ms
+        - name: cadence_baseline_ms
+          label: "节奏基线"
+          type: duration
+          format: duration_ms
+        - name: vsync_source
+          label: "VSync 来源"
+          type: string
+        - name: evidence_scope
+          label: "证据范围"
+          type: string
+        - name: claim_boundary
+          label: "结论边界"
+          type: string
         - name: rating
           label: "评级"
           type: string
+    sql_fragments:
+      - fragments/vsync_config.sql
     sql: |
       WITH
       input AS (
         SELECT
           COALESCE(NULLIF('${package|}', ''), NULLIF('${process_name|}', ''), '') AS target_process,
-          COALESCE(${target_frame_ms}, 16.67) AS target_frame_ms,
           COALESCE(${start_ts}, 0) AS start_ts,
           COALESCE(${end_ts}, (SELECT COALESCE(MAX(ts + dur), 0) FROM slice)) AS end_ts
+      ),
+      display_config AS (
+        SELECT
+          CAST(COALESCE(${target_frame_ms} * 1000000.0, vsync_period_ns) AS INTEGER) AS display_vsync_ns,
+          CASE
+            WHEN ${target_frame_ms} IS NOT NULL THEN 'explicit_target_frame_ms'
+            ELSE vsync_source
+          END AS vsync_source
+        FROM vsync_config
       ),
       textureview_processes AS (
         SELECT DISTINCT p.upid
@@ -229,7 +293,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND COALESCE(t.name, '') NOT GLOB '1.ui*'
@@ -241,10 +305,22 @@ steps:
             s.name GLOB '*DeferredLayerUpdater*'
           )
       ),
-      producer_events AS (
+      cadence_events AS (
         SELECT
           s.ts,
           s.name AS event_name,
+          CASE
+            WHEN (s.name GLOB '*queueBuffer*' AND s.name NOT GLOB '*dequeueBuffer*')
+              OR s.name GLOB '*eglSwapBuffers*'
+              OR s.name GLOB '*vkQueuePresent*' THEN 'producer_submit'
+            WHEN s.name GLOB '*onFrameAvailable*' THEN 'consumer_notification'
+          END AS event_role,
+          CASE
+            WHEN s.name GLOB '*queueBuffer*' AND s.name NOT GLOB '*dequeueBuffer*' THEN 'queue_buffer'
+            WHEN s.name GLOB '*eglSwapBuffers*' THEN 'egl_swap_buffers'
+            WHEN s.name GLOB '*vkQueuePresent*' THEN 'vk_queue_present'
+            WHEN s.name GLOB '*onFrameAvailable*' THEN 'frame_available'
+          END AS event_stream,
           t.utid,
           COALESCE(t.name, '<unnamed>') AS thread_name,
           p.name AS process_name
@@ -253,7 +329,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND p.upid IN (SELECT upid FROM textureview_processes)
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
@@ -261,39 +337,82 @@ steps:
           AND COALESCE(t.name, '') NOT GLOB '1.raster*'
           AND (
             s.name GLOB '*onFrameAvailable*' OR
-            s.name GLOB '*queueBuffer*' OR
+            (s.name GLOB '*queueBuffer*' AND s.name NOT GLOB '*dequeueBuffer*') OR
             s.name GLOB '*eglSwapBuffers*' OR
             s.name GLOB '*vkQueuePresent*'
           )
       ),
-      intervals AS (
+      raw_intervals AS (
         SELECT
           ts,
           event_name,
-          LAG(event_name) OVER (PARTITION BY utid ORDER BY ts) AS previous_event_name,
-          ts - LAG(ts) OVER (PARTITION BY utid ORDER BY ts) AS interval_ns,
+          event_role,
+          event_stream,
+          utid,
+          LAG(event_name) OVER (PARTITION BY utid, event_stream ORDER BY ts) AS previous_event_name,
+          ts - LAG(ts) OVER (PARTITION BY utid, event_stream ORDER BY ts) AS interval_ns,
           thread_name,
           process_name
-        FROM producer_events
+        FROM cadence_events
+      ),
+      stream_periods AS (
+        SELECT
+          r.utid,
+          r.event_role,
+          r.event_stream,
+          CAST(PERCENTILE(r.interval_ns, 50) AS INTEGER) AS stream_period_ns
+        FROM raw_intervals r
+        CROSS JOIN display_config d
+        WHERE r.interval_ns > 0
+          AND r.interval_ns <= d.display_vsync_ns * 6
+        GROUP BY r.utid, r.event_role, r.event_stream
+      ),
+      qualified_streams AS (
+        SELECT p.*
+        FROM stream_periods p
+        CROSS JOIN display_config d
+        WHERE p.stream_period_ns >= d.display_vsync_ns * 0.5
+      ),
+      evaluated_intervals AS (
+        SELECT
+          r.*,
+          d.display_vsync_ns,
+          d.vsync_source,
+          p.stream_period_ns,
+          MAX(d.display_vsync_ns, COALESCE(p.stream_period_ns, d.display_vsync_ns)) AS cadence_baseline_ns
+        FROM raw_intervals r
+        CROSS JOIN display_config d
+        JOIN qualified_streams p
+          ON p.utid = r.utid
+         AND p.event_stream = r.event_stream
       )
       SELECT
         printf('%d', ts) AS ts,
         printf('%d', interval_ns) AS interval_ns,
         ROUND(interval_ns / 1e6, 2) AS interval_ms,
-        CAST(MAX(0, ROUND(interval_ns / ((SELECT target_frame_ms FROM input) * 1000000.0)) - 1) AS INTEGER) AS vsync_missed,
+        CAST(MAX(0, ROUND(interval_ns * 1.0 / cadence_baseline_ns) - 1) AS INTEGER) AS vsync_missed,
+        event_role,
+        event_stream,
         event_name,
         previous_event_name,
         thread_name,
         process_name,
+        ROUND(display_vsync_ns / 1e6, 2) AS display_vsync_ms,
+        ROUND(stream_period_ns / 1e6, 2) AS stream_period_ms,
+        ROUND(cadence_baseline_ns / 1e6, 2) AS cadence_baseline_ms,
+        vsync_source,
+        'per_thread_event_stream_cadence_gap_candidate' AS evidence_scope,
+        'timing_gap_candidate_not_jank_without_frame_correlation' AS claim_boundary,
         CASE
-          WHEN interval_ns > (SELECT target_frame_ms * 4 * 1000000.0 FROM input) THEN 'critical'
-          WHEN interval_ns > (SELECT target_frame_ms * 2 * 1000000.0 FROM input) THEN 'warning'
-          WHEN interval_ns > (SELECT target_frame_ms * 1.5 * 1000000.0 FROM input) THEN 'notice'
+          WHEN interval_ns > cadence_baseline_ns * 4 THEN 'critical'
+          WHEN interval_ns > cadence_baseline_ns * 2 THEN 'warning'
+          WHEN interval_ns > cadence_baseline_ns * 1.5 THEN 'notice'
           ELSE 'normal'
         END AS rating
-      FROM intervals
+      FROM evaluated_intervals
       WHERE interval_ns IS NOT NULL
-        AND interval_ns > (SELECT target_frame_ms * 1.5 * 1000000.0 FROM input)
+        AND interval_ns > cadence_baseline_ns * 1.5
+        AND interval_ns <= cadence_baseline_ns * 6
       ORDER BY interval_ns DESC
       LIMIT 100
     save_as: textureview_producer_intervals

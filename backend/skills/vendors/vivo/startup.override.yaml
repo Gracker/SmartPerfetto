@@ -70,7 +70,7 @@ additional_steps:
         client_dur / 1e6 as dur_ms,
         COUNT(*) as call_count
       FROM android_binder_txns
-      WHERE client_process GLOB '${package}*'
+      WHERE ('${package}' = '' OR client_process = '${package}' OR client_process GLOB '${package}:*')
         AND (server_process GLOB '*vivo*'
              OR server_process GLOB '*bbk*'
              OR server_process GLOB '*jovi*')

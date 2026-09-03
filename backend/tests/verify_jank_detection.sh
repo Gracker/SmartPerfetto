@@ -31,7 +31,7 @@ vsync_intervals AS (
 ),
 vsync_config AS (
   SELECT COALESCE(
-    (SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER)
+    (SELECT CAST(PERCENTILE(interval_ns, 50) AS INTEGER)
      FROM vsync_intervals WHERE interval_ns > 5000000 AND interval_ns < 15000000),
     8333333
   ) as vsync_period_ns

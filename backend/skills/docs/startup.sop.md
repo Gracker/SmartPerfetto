@@ -62,7 +62,7 @@ SELECT
   package,
   startup_type
 FROM android_startups
-WHERE package GLOB '${package}*'
+WHERE ('${package}' = '' OR package = '${package}' OR package GLOB '${package}:*')
 ORDER BY ts ASC
 ```
 
@@ -107,7 +107,7 @@ FROM slice s
 JOIN thread_track tt ON s.track_id = tt.id
 JOIN thread t ON tt.utid = t.utid
 JOIN process p ON t.upid = p.upid
-WHERE p.name GLOB '${package}*'
+WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
   AND t.tid = p.pid
   AND s.ts >= ${startup.ts} AND s.ts <= ${startup.ts_end}
   AND (s.name GLOB '*bindApplication*'
@@ -239,7 +239,7 @@ SELECT
   server_process,
   client_dur / 1e6 as dur_ms
 FROM android_binder_txns
-WHERE (client_process GLOB '${package}*' OR server_process GLOB '${package}*')
+WHERE (('${package}' = '' OR client_process = '${package}' OR client_process GLOB '${package}:*') OR ('${package}' = '' OR server_process = '${package}' OR server_process GLOB '${package}:*'))
   AND client_ts >= ${startup.ts} AND client_ts <= ${startup.ts_end}
   AND client_dur > 1000000  -- > 1ms
 ORDER BY client_dur DESC

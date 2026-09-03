@@ -159,7 +159,7 @@ steps:
           COALESCE(cb.cpu_dur, 0) as cpu_dur
         FROM process p
         LEFT JOIN cpu_by_process cb USING (upid)
-        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           -- 避免 package 为空时选到内核线程 (kworker 等)
           AND p.name NOT GLOB 'kworker*'
           AND p.name NOT GLOB 'swapper*'
@@ -174,7 +174,7 @@ steps:
         process_name
       FROM candidates
       ORDER BY
-        CASE WHEN '${package}' != '' AND process_name GLOB '${package}*' THEN 0 ELSE 1 END,
+        CASE WHEN '${package}' != '' AND ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') THEN 0 ELSE 1 END,
         -- package 为空时优先选择 app 进程（通常包含 '.'）
         CASE WHEN '${package}' = '' AND process_name LIKE '%.%' THEN 0 ELSE 1 END,
         cpu_dur DESC,

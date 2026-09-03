@@ -177,7 +177,7 @@ steps:
         FROM (
           SELECT
             CAST(COALESCE(
-              (SELECT PERCENTILE(interval_ns, 0.5)
+              (SELECT PERCENTILE(interval_ns, 50)
                FROM sf_vsync_intervals
                WHERE interval_ns > 5500000 AND interval_ns < 50000000),
               16666667
@@ -276,7 +276,7 @@ steps:
         COUNT(*) as total_compositions,
         CAST(ROUND(AVG(dur)) AS INTEGER) as avg_composition_dur,
         MAX(dur) as max_composition_dur,
-        CAST(ROUND(PERCENTILE(dur, 0.95)) AS INTEGER) as p95_composition_dur,
+        CAST(ROUND(PERCENTILE(dur, 95)) AS INTEGER) as p95_composition_dur,
         ROUND(AVG(dur) / 1e6, 2) as avg_composition_ms,
         SUM(CASE WHEN dur > ${vsync_env.data[0].vsync_period_ns} * ${slow_composition_multiplier|1.5} THEN 1 ELSE 0 END) as slow_composition_count,
         CASE

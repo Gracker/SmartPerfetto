@@ -65,7 +65,7 @@ steps:
       WHERE (
         ('${process_name}' = '' AND '${package}' = '')
         OR process_name GLOB '${process_name}*'
-        OR process_name GLOB '${package}*'
+        OR ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
       )
       ORDER BY bitmap_memory DESC
       LIMIT 30
@@ -143,7 +143,7 @@ steps:
         WHERE (
           ('${process_name}' = '' AND '${package}' = '')
           OR p.name GLOB '${process_name}*'
-          OR p.name GLOB '${package}*'
+          OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         )
       )
       SELECT
@@ -204,7 +204,7 @@ steps:
           AND (
             ('${process_name}' = '' AND '${package}' = '')
             OR receiver.name GLOB '${process_name}*'
-            OR receiver.name GLOB '${package}*'
+            OR ('${package}' = '' OR receiver.name = '${package}' OR receiver.name GLOB '${package}:*')
           )
       )
       SELECT

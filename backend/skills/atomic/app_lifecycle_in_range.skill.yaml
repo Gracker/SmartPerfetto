@@ -106,7 +106,7 @@ sql: |
     JOIN thread_track tt ON s.track_id = tt.id
     JOIN thread t ON tt.utid = t.utid
     JOIN process p ON t.upid = p.upid
-    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+    WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
       AND (t.is_main_thread = 1 OR t.name = p.name)

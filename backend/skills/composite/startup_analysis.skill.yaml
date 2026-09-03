@@ -237,7 +237,7 @@ steps:
           END as ttfd_ms
         FROM android_startups s
         LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
-        WHERE (s.package GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
           AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
           AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})

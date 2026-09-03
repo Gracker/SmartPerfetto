@@ -92,7 +92,7 @@ steps:
         ROUND(MAX(dur) / 1e6, 2) as max_ms,
         ROUND(AVG(dur) / 1e6, 2) as avg_ms
       FROM thread_slice
-      WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
         AND thread_name = 'RenderThread'
         AND ts >= ${start_ts}
         AND ts < ${end_ts}

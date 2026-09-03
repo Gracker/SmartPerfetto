@@ -87,7 +87,7 @@ steps:
       SELECT
         COUNT(*) AS samples,
         ROUND(AVG(runnable_thread_count), 2) AS avg_runnable,
-        ROUND(PERCENTILE(runnable_thread_count, 0.95), 2) AS p95_runnable,
+        ROUND(PERCENTILE(runnable_thread_count, 95), 2) AS p95_runnable,
         MAX(runnable_thread_count) AS max_runnable,
         SUM(CASE WHEN runnable_thread_count >= (SELECT pressure_threshold FROM input) THEN 1 ELSE 0 END) AS pressure_samples
       FROM rq

@@ -107,7 +107,7 @@ sql: |
     gc_runnable_dur,
     gc_unint_io_dur
   FROM android_garbage_collection_events
-  WHERE process_name GLOB '${package}*'
+  WHERE ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
     AND (${start_ts} IS NULL OR gc_ts >= ${start_ts})
     AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
   ORDER BY gc_ts

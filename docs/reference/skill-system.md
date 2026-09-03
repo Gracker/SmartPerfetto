@@ -454,7 +454,7 @@ vsync_config AS (
   END AS vsync_period_ns
   FROM (
     SELECT CAST(COALESCE(
-      (SELECT PERCENTILE(interval_ns, 0.5)
+      (SELECT PERCENTILE(interval_ns, 50)
        FROM vsync_ticks
        WHERE interval_ns > 5500000 AND interval_ns < 50000000),
       16666667

@@ -85,7 +85,7 @@ sql: |
     JOIN thread t ON tt.utid = t.utid
     JOIN process p ON t.upid = p.upid
     WHERE (${start_ts} IS NULL OR s.ts >= ${start_ts}) AND (${end_ts} IS NULL OR s.ts < ${end_ts})
-      AND (p.name GLOB '${package}*' OR '${package}' = '' OR p.name = 'surfaceflinger')
+      AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '' OR p.name = 'surfaceflinger')
       AND s.dur > 10000  -- > 10us
   )
   SELECT

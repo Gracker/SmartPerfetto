@@ -87,5 +87,5 @@ steps:
         ON s.startup_id = w.period_id
       LEFT JOIN startup_energy AS e
         ON e.period_id = w.period_id
-      WHERE (s.package GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
       ORDER BY w.ts ASC

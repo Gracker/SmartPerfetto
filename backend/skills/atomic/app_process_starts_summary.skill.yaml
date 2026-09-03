@@ -69,7 +69,7 @@ steps:
         ROUND(total_dur / 1e6, 1) AS total_dur_ms,
         reason
       FROM android_app_process_starts
-      WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR proc_start_ts >= ${start_ts})
         AND (${end_ts} IS NULL OR proc_start_ts < ${end_ts})
       ORDER BY proc_start_ts ASC

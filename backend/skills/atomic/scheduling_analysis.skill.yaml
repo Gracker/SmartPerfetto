@@ -74,7 +74,7 @@ sql: |
     SELECT t.utid, t.tid, t.name as thread_name, p.pid, p.name as process_name
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*' OR '${package}' = ''
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = ''
   ),
   thread_states AS (
     SELECT

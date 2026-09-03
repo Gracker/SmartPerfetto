@@ -64,7 +64,7 @@ steps:
       -- 当提供 start_ts/end_ts 时，只看该区间内的帧（避免 VRR 省电时段干扰）
       expected_frame_vsync AS (
         SELECT
-          CAST(PERCENTILE(dur, 0.5) AS INTEGER) as vsync_period_ns,
+          CAST(PERCENTILE(dur, 50) AS INTEGER) as vsync_period_ns,
           'expected_frame_dur' as source
         FROM expected_frame_timeline_slice
         WHERE dur > 5000000 AND dur < 50000000  -- 5ms-50ms 覆盖 24Hz VRR
@@ -99,7 +99,7 @@ steps:
         FROM (
           SELECT
             CAST(COALESCE(
-              (SELECT PERCENTILE(interval_ns, 0.5)
+              (SELECT PERCENTILE(interval_ns, 50)
                FROM sf_vsync_intervals
                WHERE interval_ns > 5500000 AND interval_ns < 50000000),
               (SELECT vsync_period_ns FROM expected_frame_vsync WHERE vsync_period_ns > 0),

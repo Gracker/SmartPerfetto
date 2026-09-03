@@ -281,7 +281,7 @@ steps:
         ROUND((MAX(gm.gpu_memory) - MIN(gm.gpu_memory)) / 1024.0 / 1024.0, 2) as memory_change_mb
       FROM android_gpu_memory_per_process gm
       JOIN process p ON gm.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR gm.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR gm.ts < ${end_ts})
       GROUP BY p.name
@@ -403,7 +403,7 @@ steps:
         FROM actual_frame_timeline_slice f
         LEFT JOIN process p ON f.upid = p.upid
         WHERE f.dur > 0
-          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR f.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR f.ts < ${end_ts})

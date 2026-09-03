@@ -6,7 +6,9 @@
 -- Q3: Runnable but not scheduled (scheduling contention)
 -- Q4a: Uninterruptible wait (D/DK). Treat as IO only when io_wait=1
 --       or blocked_function matches an IO/page-cache family.
--- Q4b: Voluntary sleep (S=interruptible sleep, I=idle) — waiting on lock/futex/binder
+-- Q4b: Voluntary/interruptible sleep (S/I). This is an observed wait state,
+--       not a root cause; lock, Binder, futex, timer, event-loop, and
+--       UI-to-RenderThread synchronization need independent direct evidence.
 thread_states AS (
   SELECT
     tt.thread_type,

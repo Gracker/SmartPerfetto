@@ -453,7 +453,7 @@ steps:
       SELECT startup_id, ts, ts + dur as ts_end, dur/1e6 as dur_ms,
              package, startup_type
       FROM android_startups
-      WHERE package GLOB '${package}*'
+      WHERE ('${package}' = '' OR package = '${package}' OR package GLOB '${package}:*')
       ORDER BY ts ASC
     required: true
     save_as: startups
@@ -471,7 +471,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name GLOB '${package}*'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND t.tid = p.pid  -- Main thread: tid == pid
         AND s.ts >= (SELECT ts FROM android_startups WHERE startup_id = ${item.startup_id})
         AND s.ts <= (SELECT ts + dur FROM android_startups WHERE startup_id = ${item.startup_id})

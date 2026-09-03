@@ -62,7 +62,7 @@ sql: |
     SELECT t.utid, t.name as thread_name
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*'
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       AND (t.name GLOB 'Jit thread pool*'
            OR t.name GLOB 'Profile Saver*')
   ),
@@ -70,7 +70,7 @@ sql: |
     SELECT t.utid
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*' AND t.tid = p.pid
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND t.tid = p.pid
     LIMIT 1
   ),
   -- JIT 线程的 CPU 时间和核类型

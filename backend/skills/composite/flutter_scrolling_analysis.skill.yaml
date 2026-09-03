@@ -3,7 +3,7 @@
 # This file is part of SmartPerfetto. See LICENSE for details.
 
 # =============================================================================
-# Flutter Scrolling Analysis v1.0
+# Flutter Scrolling Analysis v1.2
 # =============================================================================
 # Flutter-specific frame analysis using Perfetto's actual_frame_timeline_slice
 # and Flutter thread model (1.ui / 1.raster / 1.io).
@@ -16,7 +16,7 @@
 # =============================================================================
 
 name: flutter_scrolling_analysis
-version: "1.0"
+version: "1.2"
 type: composite
 category: interaction
 tier: S
@@ -32,6 +32,7 @@ prerequisites:
     - actual_frame_timeline_slice
   modules:
     - android.frames.timeline
+    - android.frames.jank_type
 
 inputs:
   - name: package
@@ -66,39 +67,131 @@ steps:
       layer: overview
       title: "Flutter 帧渲染概览"
       format: table
+    sql_fragments:
+      - fragments/flutter_process_identity.sql
     sql: |
-      WITH flutter_frames AS (
+      WITH
+      vsync_intervals AS (
         SELECT
-          a.ts,
-          a.dur,
-          a.dur / 1e6 AS dur_ms,
-          a.jank_type,
-          a.jank_tag,
-          a.on_time_finish
-        FROM actual_frame_timeline_slice a
-        LEFT JOIN process p ON a.upid = p.upid
-        WHERE (
-          '${package}' = '' OR p.name LIKE '%${package}%'
+          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
+        FROM counter c
+        JOIN counter_track t ON c.track_id = t.id
+        WHERE t.name = 'VSYNC-sf'
+          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
+      ),
+      flutter_timing AS (
+        SELECT CASE
+          WHEN raw_ns BETWEEN 5500000 AND 6500000 THEN 6060606
+          WHEN raw_ns BETWEEN 6500001 AND 7500000 THEN 6944444
+          WHEN raw_ns BETWEEN 7500001 AND 9500000 THEN 8333333
+          WHEN raw_ns BETWEEN 9500001 AND 12500000 THEN 11111111
+          WHEN raw_ns BETWEEN 12500001 AND 20000000 THEN 16666667
+          WHEN raw_ns BETWEEN 20000001 AND 35000000 THEN 33333333
+          ELSE raw_ns
+        END as vsync_period_ns
+        FROM (
+          SELECT CAST(COALESCE(
+            ${vsync_period_ns},
+            (SELECT PERCENTILE(interval_ns, 50)
+             FROM vsync_intervals
+             WHERE interval_ns > 5500000 AND interval_ns < 50000000),
+            (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
+             FROM expected_frame_timeline_slice
+             WHERE dur > 5000000 AND dur < 50000000
+               AND (${start_ts} IS NULL OR ts >= ${start_ts})
+               AND (${end_ts} IS NULL OR ts < ${end_ts})),
+            16666667
+          ) AS INTEGER) as raw_ns
         )
-        AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
-        AND (${end_ts} IS NULL OR a.ts <= ${end_ts})
+      ),
+      -- FLUTTER_OVERVIEW_CONSUMER_CTES_BEGIN
+      flutter_frame_rows AS (
+        SELECT
+          CASE
+            WHEN a.display_frame_token IS NOT NULL
+              THEN 'display:' || CAST(a.display_frame_token AS TEXT)
+            WHEN a.surface_frame_token IS NOT NULL
+              THEN 'surface:' || COALESCE(a.layer_name, '') || ':' || CAST(a.surface_frame_token AS TEXT)
+            ELSE NULL
+          END as frame_key,
+          a.ts,
+          CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as dur,
+          CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END / 1e6 as dur_ms,
+          COALESCE(a.jank_type, 'None') as jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
+          a.layer_name,
+          a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
+          LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as prev_present_ts,
+          CASE
+            WHEN a.jank_type GLOB '*Self Jank*' OR android_is_app_jank_type(a.jank_type) THEN 'APP'
+            WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
+            WHEN a.jank_type GLOB '*Buffer Stuffing*' THEN 'BUFFER_STUFFING'
+            WHEN android_is_sf_jank_type(a.jank_type) THEN 'SF'
+            WHEN a.jank_type = 'None' OR a.jank_type IS NULL THEN 'HIDDEN'
+            ELSE 'UNKNOWN'
+          END as jank_responsibility
+        FROM actual_frame_timeline_slice a
+        JOIN flutter_processes fp ON a.upid = fp.upid
+        WHERE (${start_ts} IS NULL OR a.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR a.ts <= ${end_ts})
+          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+      ),
+      flutter_row_signals AS (
+        SELECT
+          *,
+          CASE
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
+            WHEN jank_responsibility = 'BUFFER_STUFFING'
+              AND prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM flutter_timing) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM flutter_timing) * 6 THEN 1
+            ELSE 0
+          END as row_is_consumer_jank
+        FROM flutter_frame_rows
+      ),
+      ranked_flutter_rows AS (
+        SELECT
+          *,
+          MAX(row_is_consumer_jank) OVER (PARTITION BY frame_key) as is_consumer_jank,
+          ROW_NUMBER() OVER (
+            PARTITION BY frame_key
+            ORDER BY row_is_consumer_jank DESC, dur DESC, layer_name ASC
+          ) as frame_row_rank
+        FROM flutter_row_signals
+      ),
+      flutter_frames AS (
+        SELECT ts, dur, dur_ms, jank_type, is_consumer_jank
+        FROM ranked_flutter_rows
+        WHERE frame_row_rank = 1
       )
+      -- FLUTTER_OVERVIEW_CONSUMER_CTES_END
       SELECT
         COUNT(*) AS total_frames,
         ROUND(AVG(dur_ms), 2) AS avg_frame_ms,
         ROUND(MAX(dur_ms), 2) AS max_frame_ms,
         ROUND(MIN(dur_ms), 2) AS min_frame_ms,
-        SUM(CASE WHEN dur > ${vsync_period_ns|16666667} * 1.5 THEN 1 ELSE 0 END) AS jank_frames,
+        SUM(is_consumer_jank) AS jank_frames,
         SUM(CASE WHEN jank_type != 'None' THEN 1 ELSE 0 END) AS reported_jank_frames,
         ROUND(
-          100.0 * SUM(CASE WHEN dur > ${vsync_period_ns|16666667} * 1.5 THEN 1 ELSE 0 END) / MAX(COUNT(*), 1),
+          100.0 * SUM(is_consumer_jank) / MAX(COUNT(*), 1),
           1
         ) AS jank_rate_pct,
         CASE
           WHEN COUNT(*) > 0 AND MAX(ts + dur) > MIN(ts) THEN
             ROUND(COUNT(*) * 1e9 / NULLIF(MAX(ts + dur) - MIN(ts), 0), 1)
           ELSE 0
-        END AS estimated_fps
+        END AS estimated_fps,
+        CASE
+          WHEN (SELECT COUNT(*) FROM flutter_processes) = 0 THEN 'no_flutter_process_identity'
+          WHEN COUNT(*) = 0 THEN 'no_flutter_process_frame_timeline'
+          ELSE 'scoped_flutter_frame_timeline'
+        END AS evidence_status,
+        COALESCE((SELECT GROUP_CONCAT(process_name, '; ') FROM flutter_processes), '') AS process_scope,
+        'display_frame_present_type_hybrid' AS evidence_scope,
+        'on_time_present_gap_is_not_jank' AS claim_boundary
       FROM flutter_frames
     save_as: overview
 
@@ -111,20 +204,22 @@ steps:
       layer: list
       title: "Flutter 线程耗时分布"
       format: table
+    sql_fragments:
+      - fragments/flutter_process_identity.sql
     sql: |
       WITH
       -- Detect TextureView mode: 1.ui present + updateTexImage/SurfaceTexture slices > 5
       textureview_check AS (
         SELECT
           (SELECT COUNT(DISTINCT t.utid) FROM thread t
-           JOIN process p ON t.upid = p.upid
            WHERE t.name GLOB '*1.ui*'
-             AND ('${package}' = '' OR p.name LIKE '%${package}%')
+             AND t.upid IN (SELECT upid FROM flutter_processes)
           ) as flutter_ui_threads,
           (SELECT COUNT(*) FROM slice s
            JOIN thread_track tt ON s.track_id = tt.id
            JOIN thread t ON tt.utid = t.utid
            WHERE (s.name GLOB '*updateTexImage*' OR s.name GLOB '*SurfaceTexture*')
+             AND t.upid IN (SELECT upid FROM flutter_processes)
              AND s.dur > 0
           ) as texture_view_slices
       ),
@@ -144,8 +239,7 @@ steps:
         FROM slice s
         JOIN thread_track tt ON s.track_id = tt.id
         JOIN thread t ON tt.utid = t.utid
-        JOIN process p ON t.upid = p.upid
-        WHERE ('${package}' = '' OR p.name LIKE '%${package}%')
+        WHERE t.upid IN (SELECT upid FROM flutter_processes)
           AND (t.name GLOB '*1.ui*' OR t.name GLOB '*1.raster*' OR t.name GLOB '*1.io*')
           AND s.dur > 0
           AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
@@ -160,6 +254,7 @@ steps:
         JOIN thread_track tt ON s.track_id = tt.id
         JOIN thread t ON tt.utid = t.utid
         WHERE t.name = 'RenderThread'
+          AND t.upid IN (SELECT upid FROM flutter_processes)
           AND (s.name GLOB '*updateTexImage*' OR s.name GLOB '*DrawFrame*' OR s.name GLOB '*queueBuffer*')
           AND s.dur > 0
           AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
@@ -218,6 +313,14 @@ steps:
         - name: responsibility
           label: "类型标签"
           type: string
+        - name: evidence_scope
+          label: "证据范围"
+          type: string
+        - name: claim_boundary
+          label: "结论边界"
+          type: string
+    sql_fragments:
+      - fragments/flutter_process_identity.sql
     sql: |
       WITH
       vsync_intervals AS (
@@ -241,70 +344,107 @@ steps:
         END AS vsync_period_ns
         FROM (
           SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 0.5)
+            (SELECT PERCENTILE(interval_ns, 50)
              FROM vsync_intervals
              WHERE interval_ns > 5500000 AND interval_ns < 50000000),
             16666667
           ) AS INTEGER) AS raw_ns
         )
       ),
+      -- FLUTTER_CONSUMER_JANK_CTES_BEGIN
       flutter_app_frames AS (
         SELECT
+          CASE
+            WHEN a.display_frame_token IS NOT NULL
+              THEN 'display:' || CAST(a.display_frame_token AS TEXT)
+            WHEN a.surface_frame_token IS NOT NULL
+              THEN 'surface:' || COALESCE(a.layer_name, '') || ':' || CAST(a.surface_frame_token AS TEXT)
+            ELSE NULL
+          END as frame_key,
           COALESCE(a.display_frame_token, a.surface_frame_token) as display_frame_token,
           a.ts,
           CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as dur,
-          COALESCE(a.jank_type, 'Unknown') as jank_type,
+          COALESCE(a.jank_type, 'None') as jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
           a.layer_name,
           a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
           LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
-            OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as prev_present_ts
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as prev_present_ts,
+          CASE
+            WHEN a.jank_type GLOB '*Self Jank*' OR android_is_app_jank_type(a.jank_type) THEN 'APP'
+            WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
+            WHEN a.jank_type GLOB '*Buffer Stuffing*' THEN 'BUFFER_STUFFING'
+            WHEN android_is_sf_jank_type(a.jank_type) THEN 'SF'
+            WHEN a.jank_type = 'None' OR a.jank_type IS NULL THEN 'HIDDEN'
+            ELSE 'UNKNOWN'
+          END as jank_responsibility
         FROM actual_frame_timeline_slice a
-        LEFT JOIN process p ON a.upid = p.upid
-        WHERE (
-          '${package}' = '' OR p.name LIKE '%${package}%'
-        )
+        JOIN flutter_processes fp ON a.upid = fp.upid
+        WHERE 1 = 1
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       ),
-      jank_analysis AS (
+      jank_row_signals AS (
         SELECT
-          jank_type,
-          dur,
-          present_ts - prev_present_ts as interval_ns,
+          *,
           CASE
-            WHEN prev_present_ts IS NULL THEN 1
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 1
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
+            WHEN jank_responsibility = 'BUFFER_STUFFING'
+              AND prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_config) * 6 THEN 1
             ELSE 0
-          END as is_session_break,
-          CASE
-            WHEN prev_present_ts IS NULL THEN 0
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_config) THEN 0
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_config) * 1.5 THEN 1
-            ELSE 0
-          END as is_consumer_jank
+          END as row_is_consumer_jank
         FROM flutter_app_frames
-        WHERE prev_present_ts IS NOT NULL
+      ),
+      ranked_jank_rows AS (
+        SELECT
+          *,
+          MAX(row_is_consumer_jank) OVER (PARTITION BY frame_key) as is_consumer_jank,
+          ROW_NUMBER() OVER (
+            PARTITION BY frame_key
+            ORDER BY
+              row_is_consumer_jank DESC,
+              CASE jank_responsibility
+                WHEN 'APP' THEN 1
+                WHEN 'SF' THEN 2
+                WHEN 'BUFFER_STUFFING' THEN 3
+                WHEN 'UNKNOWN' THEN 4
+                ELSE 5
+              END,
+              dur DESC,
+              layer_name ASC
+          ) as frame_row_rank
+        FROM jank_row_signals
+      ),
+      jank_analysis AS (
+        SELECT jank_type, dur, is_consumer_jank
+        FROM ranked_jank_rows
+        WHERE frame_row_rank = 1
       )
+      -- FLUTTER_CONSUMER_JANK_CTES_END
       SELECT
         jank_type,
         COUNT(*) as count,
-        -- 实际用户感知掉帧数（呈现间隔 > 1.5 * VSync）
+        -- 非 BS 以 Late/Dropped present 为权威；BS 才用同 layer gap 二次验证。
         SUM(is_consumer_jank) as real_jank_count,
-        -- 隐藏掉帧（jank_type=None 但消费端实际掉帧）
+        -- 隐藏掉帧（jank_type=None 且 present_type 明确 Late/Dropped）
         SUM(CASE WHEN jank_type = 'None' AND is_consumer_jank = 1 THEN 1 ELSE 0 END) as hidden_jank_count,
-        -- 假阳性（jank_type 报告掉帧，但消费端未跳帧）
+        -- 假阳性（jank_type 报告掉帧，但消费证据未确认）
         SUM(CASE WHEN jank_type != 'None' AND is_consumer_jank = 0 THEN 1 ELSE 0 END) as false_positive,
         CAST(ROUND(AVG(CASE WHEN dur > 0 THEN dur ELSE NULL END)) AS INTEGER) as avg_dur,
         CASE
           WHEN jank_type GLOB '*App*' OR jank_type = 'Self Jank' THEN '标签:App'
           WHEN jank_type GLOB '*SurfaceFlinger*' THEN '标签:SurfaceFlinger'
           WHEN jank_type GLOB '*Buffer*' THEN '标签:Buffer Stuffing(需验证)'
-          WHEN jank_type = 'None' THEN '标签:None(可能漏检)'
+          WHEN jank_type = 'None' THEN '标签:None(仅 Late/Dropped 可记隐藏掉帧)'
           ELSE '标签:Other'
-        END as responsibility
+        END as responsibility,
+        'display_frame_present_type_hybrid' as evidence_scope,
+        'on_time_present_gap_is_not_jank' as claim_boundary
       FROM jank_analysis
-      WHERE is_session_break = 0
       GROUP BY jank_type
       ORDER BY real_jank_count DESC, count DESC
       LIMIT 10
@@ -330,7 +470,17 @@ steps:
           type: string
         - name: frames_dropped
           type: number
+    sql_fragments:
+      - fragments/flutter_process_identity.sql
     sql: |
+      WITH scoped_flutter_jank_frames AS (
+        SELECT a.*
+        FROM actual_frame_timeline_slice a
+        JOIN flutter_processes fp ON a.upid = fp.upid
+        WHERE a.dur > ${vsync_period_ns} * 1.5
+          AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
+          AND (${end_ts} IS NULL OR a.ts <= ${end_ts})
+      )
       SELECT
         printf('%d', a.ts) AS ts,
         printf('%d', a.ts + a.dur) AS end_ts,
@@ -343,14 +493,7 @@ steps:
         END AS jank_level,
         ROUND(a.dur / CAST(${vsync_period_ns} AS REAL), 1) AS frames_dropped,
         COALESCE(a.jank_tag, '') AS jank_tag
-      FROM actual_frame_timeline_slice a
-      LEFT JOIN process p ON a.upid = p.upid
-      WHERE (
-        '${package}' = '' OR p.name LIKE '%${package}%'
-      )
-      AND a.dur > ${vsync_period_ns} * 1.5
-      AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
-      AND (${end_ts} IS NULL OR a.ts <= ${end_ts})
+      FROM scoped_flutter_jank_frames a
       ORDER BY a.dur DESC
       LIMIT 30
     save_as: jank_frames
@@ -371,7 +514,17 @@ steps:
         - name: dur_ms
           type: duration
           format: duration_ms
+    sql_fragments:
+      - fragments/flutter_process_identity.sql
     sql: |
+      WITH flutter_ui_slices AS (
+        SELECT s.*
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM flutter_processes)
+          AND t.name GLOB '*1.ui*'
+      )
       SELECT
         s.name AS slice_name,
         printf('%d', s.ts) AS ts,
@@ -384,15 +537,8 @@ steps:
           WHEN s.name LIKE '%Semantics%' THEN 'semantics'
           ELSE 'other'
         END AS category
-      FROM slice s
-      JOIN thread_track tt ON s.track_id = tt.id
-      JOIN thread t ON tt.utid = t.utid
-      JOIN process p ON t.upid = p.upid
-      WHERE (
-        '${package}' = '' OR p.name LIKE '%${package}%'
-      )
-      AND t.name GLOB '*1.ui*'
-      AND s.dur > ${vsync_period_ns}
+      FROM flutter_ui_slices s
+      WHERE s.dur > ${vsync_period_ns}
       AND s.depth = 0
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR s.ts <= ${end_ts})
@@ -415,7 +561,17 @@ steps:
         - name: dur_ms
           type: duration
           format: duration_ms
+    sql_fragments:
+      - fragments/flutter_process_identity.sql
     sql: |
+      WITH flutter_raster_slices AS (
+        SELECT s.*
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        WHERE t.upid IN (SELECT upid FROM flutter_processes)
+          AND t.name GLOB '*1.raster*'
+      )
       SELECT
         s.name AS slice_name,
         printf('%d', s.ts) AS ts,
@@ -427,15 +583,8 @@ steps:
           WHEN s.name LIKE '%Compositor%' THEN 'compositor'
           ELSE 'other'
         END AS category
-      FROM slice s
-      JOIN thread_track tt ON s.track_id = tt.id
-      JOIN thread t ON tt.utid = t.utid
-      JOIN process p ON t.upid = p.upid
-      WHERE (
-        '${package}' = '' OR p.name LIKE '%${package}%'
-      )
-      AND t.name GLOB '*1.raster*'
-      AND s.dur > ${vsync_period_ns}
+      FROM flutter_raster_slices s
+      WHERE s.dur > ${vsync_period_ns}
       AND s.depth = 0
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR s.ts <= ${end_ts})

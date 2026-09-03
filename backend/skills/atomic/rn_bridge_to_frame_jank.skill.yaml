@@ -118,7 +118,7 @@ steps:
       ),
       frame_budget AS (
         SELECT COALESCE(
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM actual_frame_timeline_slice
            WHERE dur BETWEEN 5000000 AND 50000000),
           16666667
@@ -146,7 +146,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND s.dur > 0
@@ -168,7 +168,7 @@ steps:
         FROM actual_frame_timeline_slice a
         JOIN process p ON a.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND a.ts >= i.start_ts
           AND a.ts < i.end_ts
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL

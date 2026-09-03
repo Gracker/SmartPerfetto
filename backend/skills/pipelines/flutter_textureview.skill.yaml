@@ -46,6 +46,11 @@ meta:
     可能多一帧延迟（与 S04 一致）。
 
 detection:
+  required_signals:
+    - thread_pattern: "[0-9]*.ui"
+      min_count: 1
+    - slice_pattern: "*SurfaceTexture*"
+      min_count: 1
   scoring_signals:
     - signal: has_surface_texture
       slice_pattern: "*SurfaceTexture*"

@@ -106,8 +106,8 @@ steps:
         CASE WHEN COUNT(*) > 0 THEN 'available' ELSE 'unavailable' END as status
       FROM android_binder_txns
       WHERE (
-          client_process GLOB '${package}*'
-          OR server_process GLOB '${package}*'
+          ('${package}' = '' OR client_process = '${package}' OR client_process GLOB '${package}:*')
+          OR ('${package}' = '' OR server_process = '${package}' OR server_process GLOB '${package}:*')
           OR '${package}' = ''
         )
         AND (${start_ts} IS NULL OR client_ts + client_dur > ${start_ts})
@@ -147,7 +147,7 @@ steps:
       FROM android_binder_txns bt
       WHERE (${start_ts} IS NULL OR bt.client_ts + bt.client_dur > ${start_ts})
         AND (${end_ts} IS NULL OR bt.client_ts < ${end_ts})
-        AND (bt.client_process GLOB '${package}*' OR '${package}' = '')
+        AND (('${package}' = '' OR bt.client_process = '${package}' OR bt.client_process GLOB '${package}:*') OR '${package}' = '')
       GROUP BY bt.client_process
       ORDER BY txn_count DESC, total_client_ms DESC
       LIMIT 1

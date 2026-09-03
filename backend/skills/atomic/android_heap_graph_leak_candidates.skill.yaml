@@ -138,7 +138,7 @@ steps:
         LEFT JOIN process p ON p.upid = o.upid
         CROSS JOIN input
         WHERE o.reachable = 1
-          AND (input.target_process = '' OR p.name GLOB input.target_process || '*')
+          AND (input.target_process = '' OR p.name = input.target_process OR p.name GLOB input.target_process || ':*')
           AND (${graph_sample_ts} IS NULL OR o.graph_sample_ts = ${graph_sample_ts})
           AND COALESCE(c.deobfuscated_name, c.name) NOT IN (
             'android.app.Activity',
@@ -304,7 +304,7 @@ steps:
         LEFT JOIN process p ON p.upid = o.upid
         CROSS JOIN input
         WHERE o.reachable = 1
-          AND (input.target_process = '' OR p.name GLOB input.target_process || '*')
+          AND (input.target_process = '' OR p.name = input.target_process OR p.name GLOB input.target_process || ':*')
           AND (${graph_sample_ts} IS NULL OR o.graph_sample_ts = ${graph_sample_ts})
           AND COALESCE(c.deobfuscated_name, c.name) NOT IN (
             'android.app.Activity',

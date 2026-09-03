@@ -108,9 +108,9 @@ steps:
         pid,
         name as process_name
       FROM process
-      WHERE name GLOB '${package}*' OR '${package}' = ''
+      WHERE ('${package}' = '' OR name = '${package}' OR name GLOB '${package}:*') OR '${package}' = ''
       ORDER BY
-        CASE WHEN name GLOB '${package}*' THEN 0 ELSE 1 END,
+        CASE WHEN ('${package}' = '' OR name = '${package}' OR name GLOB '${package}:*') THEN 0 ELSE 1 END,
         pid DESC
       LIMIT 1
     save_as: target_process
@@ -153,7 +153,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
         AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR s.ts < ${end_ts})
@@ -502,7 +502,7 @@ steps:
       )
       LEFT JOIN process p ON af.upid = p.upid
       WHERE gc.is_main_thread = 1
-        AND p.name GLOB '${package}*'
+        AND ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       ORDER BY gc.dur DESC
       LIMIT 30
     save_as: gc_frame_impact
@@ -599,7 +599,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${package}*' AND t.tid = p.pid
+        WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND t.tid = p.pid
         LIMIT 1
       ),
       top_gc AS (

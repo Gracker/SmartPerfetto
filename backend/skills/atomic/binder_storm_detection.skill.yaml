@@ -85,7 +85,7 @@ steps:
           bt.client_dur,
           bt.client_process as process_name
         FROM android_binder_txns bt
-        WHERE (bt.client_process GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR bt.client_process = '${package}' OR bt.client_process GLOB '${package}:*') OR '${package}' = '')
           AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
       ),
@@ -173,7 +173,7 @@ steps:
           bt.client_process as process_name,
           bt.server_process
         FROM android_binder_txns bt
-        WHERE (bt.client_process GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR bt.client_process = '${package}' OR bt.client_process GLOB '${package}:*') OR '${package}' = '')
           AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
       ),
@@ -280,7 +280,7 @@ steps:
           COUNT(*) as call_count,
           SUM(bt.client_dur) as total_dur
         FROM android_binder_txns bt
-        WHERE (bt.client_process GLOB '${package}*' OR bt.server_process GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR bt.client_process = '${package}' OR bt.client_process GLOB '${package}:*') OR ('${package}' = '' OR bt.server_process = '${package}' OR bt.server_process GLOB '${package}:*') OR '${package}' = '')
           AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
         GROUP BY bt.client_process, bt.server_process
@@ -344,7 +344,7 @@ steps:
           ROUND(SUM(bt.client_dur) / 1e6, 2) as total_client_ms,
           ROUND(MAX(bt.client_dur) / 1e6, 2) as max_dur_ms
         FROM android_binder_txns bt
-        WHERE (bt.client_process GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR bt.client_process = '${package}' OR bt.client_process GLOB '${package}:*') OR '${package}' = '')
           AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR bt.client_ts <= ${end_ts})
         GROUP BY bt.client_process
@@ -364,7 +364,7 @@ steps:
             AND bt2.client_ts < bt1.client_ts + bt1.client_dur
             AND bt2.client_ts + bt2.client_dur > bt1.client_ts
           )
-          WHERE (bt1.client_process GLOB '${package}*' OR '${package}' = '')
+          WHERE (('${package}' = '' OR bt1.client_process = '${package}' OR bt1.client_process GLOB '${package}:*') OR '${package}' = '')
             AND (${start_ts} IS NULL OR bt1.client_ts >= ${start_ts})
             AND (${end_ts} IS NULL OR bt1.client_ts <= ${end_ts})
           GROUP BY bt1.client_process, bt1.client_ts

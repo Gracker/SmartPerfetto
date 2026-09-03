@@ -119,7 +119,7 @@ steps:
         LEFT JOIN process p USING (upid)
         WHERE o.dur > 0
           AND NOT th.is_idle
-          AND (COALESCE(p.name, '') GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR COALESCE(p.name, '') = '${package}' OR COALESCE(p.name, '') GLOB '${package}:*') OR '${package}' = '')
         GROUP BY process_name, thread_name
       ),
       cpu_count AS (

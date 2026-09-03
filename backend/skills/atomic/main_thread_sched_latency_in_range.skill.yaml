@@ -68,7 +68,7 @@ sql: |
     SELECT t.utid
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+    WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
       AND t.tid = p.pid
   )
   SELECT

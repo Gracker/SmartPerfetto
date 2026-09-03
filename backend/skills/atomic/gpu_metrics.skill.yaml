@@ -105,7 +105,7 @@ steps:
         ROUND(AVG(freq_mhz), 0) as avg_freq_mhz,
         ROUND(MAX(freq_mhz), 0) as max_freq_mhz,
         ROUND(MIN(freq_mhz), 0) as min_freq_mhz,
-        ROUND(PERCENTILE(freq_mhz, 0.5), 0) as median_freq_mhz,
+        ROUND(PERCENTILE(freq_mhz, 50), 0) as median_freq_mhz,
         COUNT(*) as sample_count,
         (SELECT GROUP_CONCAT(DISTINCT counter_name) FROM gpu_freq) as freq_counters
       FROM gpu_freq
@@ -164,7 +164,7 @@ steps:
         ROUND(AVG(utilization), 1) as avg_utilization_pct,
         ROUND(MAX(utilization), 1) as max_utilization_pct,
         ROUND(MIN(utilization), 1) as min_utilization_pct,
-        ROUND(PERCENTILE(utilization, 0.95), 1) as p95_utilization_pct,
+        ROUND(PERCENTILE(utilization, 95), 1) as p95_utilization_pct,
         COUNT(*) as sample_count,
         (SELECT GROUP_CONCAT(DISTINCT counter_name) FROM gpu_util) as util_counters
       FROM gpu_util
@@ -248,7 +248,7 @@ steps:
         ROUND(SUM(dur) / 1e6, 2) as total_time_ms,
         ROUND(AVG(dur) / 1e6, 2) as avg_time_ms,
         ROUND(MAX(dur) / 1e6, 2) as max_time_ms,
-        ROUND(PERCENTILE(dur, 0.95) / 1e6, 2) as p95_time_ms
+        ROUND(PERCENTILE(dur, 95) / 1e6, 2) as p95_time_ms
       FROM gpu_slices
       GROUP BY name
       ORDER BY total_time_ms DESC
@@ -310,7 +310,7 @@ steps:
       -- 动态检测 VSync 周期（VSYNC-sf 中位数优先，expected_frame 回退）
       vsync_config AS (
         SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
+          (SELECT PERCENTILE(interval_ns, 50)
            FROM (
              SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) AS interval_ns
              FROM counter c
@@ -319,7 +319,7 @@ steps:
                AND c.ts >= (SELECT start_ts FROM time_bounds)
                AND c.ts <= (SELECT end_ts FROM time_bounds)
            ) WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
              AND ts >= (SELECT start_ts FROM time_bounds)
@@ -347,7 +347,7 @@ steps:
         ROUND(SUM(dur) / 1e6, 2) as total_wait_ms,
         ROUND(AVG(dur) / 1e6, 2) as avg_wait_ms,
         ROUND(MAX(dur) / 1e6, 2) as max_wait_ms,
-        ROUND(PERCENTILE(dur, 0.95) / 1e6, 2) as p95_wait_ms,
+        ROUND(PERCENTILE(dur, 95) / 1e6, 2) as p95_wait_ms,
         ROUND((SELECT vsync_period_ns FROM vsync_config) / 1e6, 2) as vsync_period_ms,
         -- 使用动态 VSync 周期
         COUNT(CASE WHEN dur > (SELECT vsync_period_ns FROM vsync_config) THEN 1 END) as waits_over_vsync,

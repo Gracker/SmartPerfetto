@@ -100,7 +100,7 @@ steps:
         AND (${end_ts|NULL} IS NULL OR s.ts < ${end_ts|NULL})
         AND (
           '${package}' = ''
-          OR p.name GLOB '${package}*'
+          OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           OR p.name LIKE '%surfaceflinger%'
           OR p.name = 'system_server'
         )

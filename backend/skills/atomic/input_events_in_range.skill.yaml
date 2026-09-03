@@ -120,7 +120,7 @@ sql: |
       ELSE '正常'
     END as dispatch_status
   FROM android_input_events
-  WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+  WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
     AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
     AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})
     AND ('${event_type}' = '' OR event_type = '${event_type}')

@@ -146,7 +146,7 @@ steps:
           ELSE raw_ns
         END AS vsync_period_ns
         FROM (
-          SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER) AS raw_ns
+          SELECT CAST(PERCENTILE(interval_ns, 50) AS INTEGER) AS raw_ns
           FROM filtered
         )
       )
@@ -179,7 +179,7 @@ steps:
           dispatch_ts as ts,
           dispatch_ts - LAG(dispatch_ts) OVER (ORDER BY dispatch_ts) as interval_ns
         FROM android_input_events
-        WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
           AND event_action = 'MOVE'
           AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})
@@ -190,8 +190,8 @@ steps:
           AND interval_ns BETWEEN 1000000 AND 100000000
       )
       SELECT
-        ROUND(PERCENTILE(interval_ns, 0.5) / 1e6, 2) as median_interval_ms,
-        ROUND(1e9 / PERCENTILE(interval_ns, 0.5), 0) as sampling_rate_hz,
+        ROUND(PERCENTILE(interval_ns, 50) / 1e6, 2) as median_interval_ms,
+        ROUND(1e9 / PERCENTILE(interval_ns, 50), 0) as sampling_rate_hz,
         (SELECT COUNT(*) FROM move_events) as total_events
       FROM filtered
 
@@ -254,7 +254,7 @@ steps:
       ),
       vsync_cfg AS (
         SELECT COALESCE(
-          CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER),
+          CAST(PERCENTILE(interval_ns, 50) AS INTEGER),
           16666667
         ) as period_ns
         FROM vsync_intervals
@@ -278,7 +278,7 @@ steps:
         LEFT JOIN actual_frame_timeline_slice f
           ON ie.frame_id = f.surface_frame_token
           AND ie.upid = f.upid
-        WHERE (ie.process_name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR ie.process_name = '${package}' OR ie.process_name GLOB '${package}:*') OR '${package}' = '')
           AND (ie.event_action = 'MOVE'
                OR ('${event_action_filter}' != '' AND ie.event_action = '${event_action_filter}'))
           AND (${start_ts} IS NULL OR ie.dispatch_ts >= ${start_ts})
@@ -337,7 +337,7 @@ steps:
       ),
       vsync_cfg AS (
         SELECT COALESCE(
-          CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER),
+          CAST(PERCENTILE(interval_ns, 50) AS INTEGER),
           16666667
         ) as period_ns
         FROM vsync_intervals
@@ -346,7 +346,7 @@ steps:
       valid AS (
         SELECT end_to_end_latency_dur as latency_ns
         FROM android_input_events
-        WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
           AND event_action = 'MOVE'
           AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})
@@ -354,11 +354,11 @@ steps:
           AND end_to_end_latency_dur > 0
           AND end_to_end_latency_dur < 500000000
       )
-      SELECT 'P50' as metric, ROUND(PERCENTILE(latency_ns, 0.5) / 1e6, 2) as value_ms FROM valid
+      SELECT 'P50' as metric, ROUND(PERCENTILE(latency_ns, 50) / 1e6, 2) as value_ms FROM valid
       UNION ALL
-      SELECT 'P90', ROUND(PERCENTILE(latency_ns, 0.9) / 1e6, 2) FROM valid
+      SELECT 'P90', ROUND(PERCENTILE(latency_ns, 90) / 1e6, 2) FROM valid
       UNION ALL
-      SELECT 'P99', ROUND(PERCENTILE(latency_ns, 0.99) / 1e6, 2) FROM valid
+      SELECT 'P99', ROUND(PERCENTILE(latency_ns, 99) / 1e6, 2) FROM valid
       UNION ALL
       SELECT '均值', ROUND(AVG(latency_ns) / 1e6, 2) FROM valid
       UNION ALL
@@ -403,7 +403,7 @@ steps:
           end_to_end_latency_dur as latency_ns,
           is_speculative_frame
         FROM android_input_events
-        WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
           AND event_action = 'MOVE'
           AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})

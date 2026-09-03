@@ -131,7 +131,7 @@ steps:
         JOIN process p ON a.upid = p.upid
         WHERE
           a.surface_frame_token IS NOT NULL
-          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
       )
       SELECT
         COUNT(*) AS total_frames,
@@ -172,7 +172,7 @@ steps:
         JOIN process p ON a.upid = p.upid
         WHERE
           a.surface_frame_token IS NOT NULL
-          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND a.jank_type != 'None'
       )
       SELECT
@@ -212,7 +212,7 @@ steps:
       FROM android_frames_choreographer_do_frame f
       JOIN slice s ON f.id = s.id
       JOIN process p ON f.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
       UNION ALL
       SELECT
         'RenderThread' AS thread,
@@ -221,7 +221,7 @@ steps:
       FROM android_frames_draw_frame f
       JOIN slice s ON f.id = s.id
       JOIN process p ON f.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
     display:
       level: detail
       layer: overview
@@ -251,7 +251,7 @@ steps:
         JOIN process p ON a.upid = p.upid
         WHERE
           a.surface_frame_token IS NOT NULL
-          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND a.jank_type != 'None'
       ),
       main_ms AS (

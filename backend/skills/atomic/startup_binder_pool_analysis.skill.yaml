@@ -60,7 +60,7 @@ sql: |
     SELECT t.utid, t.name as thread_name
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*'
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       AND t.name GLOB 'Binder:*'
   ),
   pool_stats AS (

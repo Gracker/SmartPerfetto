@@ -86,7 +86,7 @@ sql: |
       SELECT SUM(dur) FROM android_startup_opinionated_breakdown
       WHERE startup_id IN (
         SELECT startup_id FROM android_startups
-        WHERE (package GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR package = '${package}' OR package GLOB '${package}:*') OR '${package}' = '')
           AND (${startup_id} IS NULL OR startup_id = ${startup_id})
           AND (${start_ts} IS NULL OR ts >= ${start_ts})
           AND (${end_ts} IS NULL OR ts + dur <= ${end_ts})
@@ -103,7 +103,7 @@ sql: |
     END as category
   FROM android_startup_opinionated_breakdown b
   JOIN android_startups s ON b.startup_id = s.startup_id
-  WHERE (s.package GLOB '${package}*' OR '${package}' = '')
+  WHERE (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})

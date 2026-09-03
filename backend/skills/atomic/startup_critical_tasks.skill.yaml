@@ -147,7 +147,7 @@ sql: |
       END as role
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*'
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
   ),
   -- Step 2: 计算每个线程的四象限分布
   thread_quadrant_raw AS (

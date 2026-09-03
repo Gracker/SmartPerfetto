@@ -106,7 +106,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
         AND (s.name GLOB '*v8.gc*' OR s.name GLOB '*V8.GC*'
@@ -170,7 +170,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
         AND s.name GLOB '*v8.run*'
@@ -223,7 +223,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
         AND s.name GLOB '*v8.compile*'
@@ -283,7 +283,7 @@ steps:
         AND gc.ts < af.ts + af.dur
         AND gc.ts + gc.dur > af.ts
       )
-      WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR gc.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR gc.ts + gc.dur <= ${end_ts})
         AND (gc.name GLOB '*v8.gc*' OR gc.name GLOB '*V8.GC*'

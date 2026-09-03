@@ -80,7 +80,7 @@ sql: |
     SELECT t.utid
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*' AND t.tid = p.pid
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') AND t.tid = p.pid
     LIMIT 1
   ),
   -- Generate time buckets (max 30 buckets)

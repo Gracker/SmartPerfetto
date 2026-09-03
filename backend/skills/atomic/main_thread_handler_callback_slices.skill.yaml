@@ -98,7 +98,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         CROSS JOIN bounds b
         WHERE t.tid = p.pid
-          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND s.ts < b.end_ts
           AND s.ts + s.dur > b.start_ts
           AND s.dur > 0

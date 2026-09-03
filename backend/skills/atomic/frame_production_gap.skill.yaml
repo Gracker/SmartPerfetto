@@ -107,7 +107,7 @@ steps:
       ),
       vsync_config AS (
         SELECT COALESCE(
-          (SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(interval_ns, 50) AS INTEGER)
            FROM vsync_intervals
            WHERE interval_ns BETWEEN 4000000 AND 50000000),
           16666667
@@ -254,7 +254,7 @@ steps:
       ),
       vsync_config AS (
         SELECT COALESCE(
-          (SELECT CAST(PERCENTILE(interval_ns, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(interval_ns, 50) AS INTEGER)
            FROM vsync_intervals
            WHERE interval_ns BETWEEN 4000000 AND 50000000),
           16666667

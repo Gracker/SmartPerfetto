@@ -251,7 +251,7 @@ steps:
         SELECT t.utid, t.tid, t.name as thread_name, p.pid, p.name as process_name
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${package}*'
+        WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND t.tid = p.pid  -- 主线程
       ),
       cpu_time AS (
@@ -314,7 +314,7 @@ steps:
         SELECT t.utid, t.tid, p.pid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${package}*'
+        WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND t.tid = p.pid
       ),
       running_samples AS (
@@ -456,7 +456,7 @@ steps:
         SELECT t.utid, t.tid, t.name as thread_name, p.pid, p.name as process_name
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${package}*'
+        WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND t.tid = p.pid
       ),
       thread_states AS (
@@ -644,7 +644,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND t.tid = p.pid
       ),
       slice_with_self AS (

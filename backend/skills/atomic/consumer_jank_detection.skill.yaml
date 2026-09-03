@@ -8,16 +8,16 @@
 # 从 SurfaceFlinger 消费端角度检测真正的掉帧
 #
 # 核心原理：
-# - 使用同 layer 的“实际呈现时间间隔”判断是否错过 VSync
-# - display_frame_token 仅作为帧标识，不再直接用 token gap 判定卡顿
-# - 通过动态 VSync 周期 + 会话断点过滤，避免长空窗/跨会话误判
+# - 非 Buffer Stuffing 帧以 FrameTimeline present_type 为权威消费状态
+# - Buffer Stuffing 用同 layer 呈现间隔二次验证，区分背压与真实漏呈现
+# - display_frame_token 仅作为帧身份，不直接用 token gap 判定卡顿
 #
 # 与传统 jank_type 的区别：
 # - jank_type 反映框架标记，不一定等同用户可见掉帧
-# - 这里的 consumer_jank 以“实际呈现是否跨过多个 VSync”为准
+# - 这里的 consumer_jank 与 scrolling_analysis 使用同一混合证据口径
 
 name: consumer_jank_detection
-version: "1.0"
+version: "1.1"
 type: atomic
 category: rendering
 tier: A
@@ -50,6 +50,7 @@ prerequisites:
     - actual_frame_timeline_slice
   modules:
     - android.frames.timeline
+    - android.frames.jank_type
 
 inputs:
   - name: package
@@ -99,10 +100,10 @@ steps:
         END AS vsync_period_ns
         FROM (
           SELECT CAST(COALESCE(
-            (SELECT PERCENTILE(interval_ns, 0.5)
+            (SELECT PERCENTILE(interval_ns, 50)
              FROM sf_vsync_intervals
              WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-            (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+            (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
              FROM expected_frame_timeline_slice
              WHERE dur > 5000000 AND dur < 50000000
                AND (${start_ts} IS NULL OR ts >= ${start_ts})
@@ -158,6 +159,9 @@ steps:
         - name: app_jank_type
           label: "App标记"
           type: string
+        - name: present_type
+          label: "呈现状态"
+          type: string
         - name: jank_severity
           label: "严重程度"
           type: string
@@ -165,6 +169,12 @@ steps:
           label: "延迟来源"
           type: string
           description: "app_late=应用渲染超时, sf_late=SF/显示延迟, buffer_stuffing=缓冲区满"
+        - name: evidence_scope
+          label: "证据范围"
+          type: string
+        - name: claim_boundary
+          label: "结论边界"
+          type: string
     sql: |
       WITH
       vsync_ticks AS (
@@ -178,10 +188,10 @@ steps:
       ),
       vsync_period AS (
         SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
+          (SELECT PERCENTILE(interval_ns, 50)
            FROM vsync_ticks
            WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
              AND (${start_ts} IS NULL OR ts >= ${start_ts})
@@ -189,21 +199,36 @@ steps:
           16666667
         ) AS INTEGER) as vsync_period_ns
       ),
-      raw_frames AS (
+      -- CONSUMER_JANK_FRAME_CTES_BEGIN
+      app_frame_rows AS (
         SELECT
+          CASE
+            WHEN a.display_frame_token IS NOT NULL
+              THEN 'display:' || CAST(a.display_frame_token AS TEXT)
+            WHEN a.surface_frame_token IS NOT NULL
+              THEN 'surface:' || COALESCE(a.layer_name, '') || ':' || CAST(a.surface_frame_token AS TEXT)
+            ELSE NULL
+          END as frame_key,
           COALESCE(a.display_frame_token, a.surface_frame_token) as frame_id,
           a.display_frame_token,
           a.surface_frame_token,
           a.ts,
-          a.dur,
+          CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as dur,
           a.layer_name,
-          a.jank_type,
-          a.present_type,
+          COALESCE(a.jank_type, 'None') as jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
           a.upid,
-          ROW_NUMBER() OVER (
-            PARTITION BY a.upid, COALESCE(a.display_frame_token, a.surface_frame_token)
-            ORDER BY a.ts, a.layer_name
-          ) as row_rank
+          a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
+          LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as prev_present_ts,
+          CASE
+            WHEN a.jank_type GLOB '*Self Jank*' OR android_is_app_jank_type(a.jank_type) THEN 'APP'
+            WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
+            WHEN a.jank_type GLOB '*Buffer Stuffing*' THEN 'BUFFER_STUFFING'
+            WHEN android_is_sf_jank_type(a.jank_type) THEN 'SF'
+            WHEN a.jank_type = 'None' OR a.jank_type IS NULL THEN 'HIDDEN'
+            ELSE 'UNKNOWN'
+          END as jank_responsibility
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
@@ -215,26 +240,51 @@ steps:
           AND ('${start_ts}' = '' OR a.ts >= CAST('${start_ts}' AS INTEGER))
           AND ('${end_ts}' = '' OR a.ts <= CAST('${end_ts}' AS INTEGER))
       ),
-      -- 同一 display frame token 在多 layer 会重复，先去重再做间隔分析
-      app_frames AS (
+      jank_row_signals AS (
         SELECT
-          frame_id,
-          display_frame_token,
-          surface_frame_token,
-          ts,
-          dur,
-          layer_name,
-          jank_type,
-          present_type,
-          upid,
-          ts + CASE WHEN dur > 0 THEN dur ELSE 0 END as present_ts,
-          LAG(ts + CASE WHEN dur > 0 THEN dur ELSE 0 END)
-            OVER (PARTITION BY upid ORDER BY ts, frame_id) as prev_present_ts
-        FROM raw_frames
-        WHERE row_rank = 1
+          *,
+          CASE
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
+            WHEN jank_responsibility = 'BUFFER_STUFFING'
+              AND prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_period) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_period) * 6 THEN 1
+            ELSE 0
+          END as row_is_consumer_jank,
+          CASE
+            WHEN prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_period) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_period) * 6
+            THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0)
+            ELSE 0
+          END as row_vsync_missed
+        FROM app_frame_rows
       ),
-      interval_analysis AS (
+      ranked_jank_rows AS (
         SELECT
+          *,
+          MAX(row_is_consumer_jank) OVER (PARTITION BY frame_key) as is_consumer_jank,
+          MAX(row_vsync_missed) OVER (PARTITION BY frame_key) as observed_vsync_missed,
+          ROW_NUMBER() OVER (
+            PARTITION BY frame_key
+            ORDER BY
+              row_is_consumer_jank DESC,
+              CASE jank_responsibility
+                WHEN 'APP' THEN 1
+                WHEN 'SF' THEN 2
+                WHEN 'BUFFER_STUFFING' THEN 3
+                WHEN 'UNKNOWN' THEN 4
+                ELSE 5
+              END,
+              dur DESC,
+              layer_name ASC
+          ) as frame_row_rank
+        FROM jank_row_signals
+      ),
+      frame_signals AS (
+        SELECT
+          frame_key,
           frame_id,
           display_frame_token,
           surface_frame_token,
@@ -243,58 +293,48 @@ steps:
           layer_name,
           jank_type as app_jank_type,
           present_type,
+          upid,
           present_ts - prev_present_ts as interval_ns,
+          is_consumer_jank,
           CASE
-            WHEN prev_present_ts IS NULL THEN 1
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_period) THEN 1
-            ELSE 0
-          END as is_session_break,
-          MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) as vsync_missed,
-          MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period), 0) AS INTEGER), 1) as token_gap,
-          CASE
-            WHEN prev_present_ts IS NULL THEN 0
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns * 6 FROM vsync_period) THEN 0
-            WHEN present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_period) * 1.5 THEN 1
-            ELSE 0
-          END as is_consumer_jank,
-          CASE
-            WHEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) = 0 THEN 'SMOOTH'
-            WHEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) = 1 THEN 'MINOR_JANK'
-            WHEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) <= 3 THEN 'JANK'
-            WHEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) <= 7 THEN 'SEVERE_JANK'
-            ELSE 'FROZEN'
-          END as jank_severity
-        FROM app_frames
-        WHERE prev_present_ts IS NOT NULL
+            WHEN is_consumer_jank = 0 THEN 0
+            WHEN observed_vsync_missed > 0 THEN observed_vsync_missed
+            ELSE 1
+          END as vsync_missed,
+          jank_responsibility
+        FROM ranked_jank_rows
+        WHERE frame_row_rank = 1
       )
+      -- CONSUMER_JANK_FRAME_CTES_END
       SELECT
         printf('%d', frame_id) as frame_id,
         layer_name,
         printf('%d', ts) as ts_str,
         ROUND(ts / 1e9, 3) as ts_sec,
         ROUND(CASE WHEN dur > 0 THEN dur ELSE 0 END / 1e6, 2) as dur_ms,
-        token_gap,
+        vsync_missed + 1 as token_gap,
         vsync_missed,
         ROUND(interval_ns / 1e6, 2) as interval_ms,
         app_jank_type,
         present_type,
-        jank_severity,
-        is_consumer_jank,
-        -- P0-3: Decompose delay source using framework jank classification (ground truth)
-        -- Note: dur from actual_frame_timeline_slice spans app→display, includes SF time,
-        -- so we rely on app_jank_type from the framework instead of dur comparison.
-        -- app_late = framework detected app missed its deadline
-        -- sf_late = app was on time (None) or SF was the bottleneck
-        -- buffer_stuffing = buffer queue full (triple-buffering backpressure)
         CASE
-          WHEN app_jank_type = 'None' THEN 'sf_late'
-          WHEN app_jank_type GLOB '*SurfaceFlinger*' THEN 'sf_late'
-          WHEN app_jank_type GLOB '*Buffer*' THEN 'buffer_stuffing'
-          ELSE 'app_late'
-        END as delay_source
-      FROM interval_analysis
-      WHERE is_session_break = 0
-        AND is_consumer_jank = 1
+          WHEN vsync_missed <= 1 THEN 'MINOR_JANK'
+          WHEN vsync_missed <= 3 THEN 'JANK'
+          WHEN vsync_missed <= 7 THEN 'SEVERE_JANK'
+          ELSE 'FROZEN'
+        END as jank_severity,
+        is_consumer_jank,
+        CASE
+          WHEN jank_responsibility = 'APP' THEN 'app_late'
+          WHEN jank_responsibility = 'SF' THEN 'sf_late'
+          WHEN jank_responsibility = 'BUFFER_STUFFING' THEN 'buffer_stuffing'
+          WHEN jank_responsibility = 'HIDDEN' THEN 'unattributed_consumer_late'
+          ELSE 'unknown'
+        END as delay_source,
+        'display_frame_present_type_hybrid' as evidence_scope,
+        'on_time_present_gap_is_not_jank' as claim_boundary
+      FROM frame_signals
+      WHERE is_consumer_jank = 1
       ORDER BY ts
     save_as: consumer_jank_frames
 
@@ -328,6 +368,12 @@ steps:
         - name: rating
           label: "评级"
           type: string
+        - name: evidence_scope
+          label: "证据范围"
+          type: string
+        - name: claim_boundary
+          label: "结论边界"
+          type: string
     sql: |
       WITH
       vsync_ticks AS (
@@ -341,10 +387,10 @@ steps:
       ),
       vsync_period AS (
         SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
+          (SELECT PERCENTILE(interval_ns, 50)
            FROM vsync_ticks
            WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
              AND (${start_ts} IS NULL OR ts >= ${start_ts})
@@ -352,92 +398,131 @@ steps:
           16666667
         ) AS INTEGER) as vsync_period_ns
       ),
-      vsync_events AS (
+      -- CONSUMER_JANK_SUMMARY_CTES_BEGIN
+      app_frame_rows AS (
         SELECT
-          c.ts as vsync_ts,
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      buffer_events AS (
-        SELECT c.ts, c.value as buffer_count
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name LIKE '%BufferTX%'
-          AND (t.name LIKE '%${package}%' OR '${package}' = '')
-          AND ('${end_ts}' = '' OR c.ts <= CAST('${end_ts}' AS INTEGER))
-      ),
-      vsync_with_buffer AS (
-        SELECT
-          v.vsync_ts,
-          v.interval_ns,
-          (SELECT b.buffer_count
-           FROM buffer_events b
-           WHERE b.ts <= v.vsync_ts
-           ORDER BY b.ts DESC
-           LIMIT 1
-          ) as buffer_at_vsync
-        FROM vsync_events v
-        WHERE v.interval_ns IS NOT NULL
-      ),
-      jank_events AS (
-        SELECT
-          vsync_ts,
-          interval_ns,
-          MAX(CAST(ROUND(interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) as vsync_missed
-        FROM vsync_with_buffer
-        WHERE buffer_at_vsync IS NOT NULL
-          AND interval_ns > (SELECT vsync_period_ns FROM vsync_period) * 1.5
-      ),
-      vsync_stats AS (
-        SELECT
-          COUNT(*) as total_frames,
-          (SELECT COUNT(*) FROM jank_events) as consumer_jank_frames,
-          COALESCE((SELECT MAX(vsync_missed) FROM jank_events), 0) as max_vsync_missed,
-          COALESCE((SELECT AVG(vsync_missed + 1.0) FROM (
-            SELECT MAX(CAST(ROUND(interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_period), 0) AS INTEGER), 1) as vsync_missed
-            FROM vsync_with_buffer
-            WHERE buffer_at_vsync IS NOT NULL
-          )), 1.0) as avg_token_gap
-        FROM vsync_with_buffer
-        WHERE buffer_at_vsync IS NOT NULL
-      ),
-      app_stats AS (
-        SELECT
-          COUNT(*) as app_total_frames,
-          SUM(CASE WHEN COALESCE(a.jank_type, 'None') != 'None' THEN 1 ELSE 0 END) as app_reported_jank
+          CASE
+            WHEN a.display_frame_token IS NOT NULL
+              THEN 'display:' || CAST(a.display_frame_token AS TEXT)
+            WHEN a.surface_frame_token IS NOT NULL
+              THEN 'surface:' || COALESCE(a.layer_name, '') || ':' || CAST(a.surface_frame_token AS TEXT)
+            ELSE NULL
+          END as frame_key,
+          CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as dur,
+          COALESCE(a.jank_type, 'None') as jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
+          a.layer_name,
+          a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
+          LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as prev_present_ts,
+          CASE
+            WHEN a.jank_type GLOB '*Self Jank*' OR android_is_app_jank_type(a.jank_type) THEN 'APP'
+            WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
+            WHEN a.jank_type GLOB '*Buffer Stuffing*' THEN 'BUFFER_STUFFING'
+            WHEN android_is_sf_jank_type(a.jank_type) THEN 'SF'
+            WHEN a.jank_type = 'None' OR a.jank_type IS NULL THEN 'HIDDEN'
+            ELSE 'UNKNOWN'
+          END as jank_responsibility
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
-        WHERE COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
-          AND (
+        WHERE (
             a.layer_name LIKE 'TX - ${package}%'
             OR a.layer_name = '${layer_name}'
             OR ('${package}' = '' AND '${layer_name}' = '')
           )
           AND ('${start_ts}' = '' OR a.ts >= CAST('${start_ts}' AS INTEGER))
           AND ('${end_ts}' = '' OR a.ts <= CAST('${end_ts}' AS INTEGER))
+          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+      ),
+      jank_row_signals AS (
+        SELECT
+          *,
+          CASE
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
+            WHEN jank_responsibility = 'BUFFER_STUFFING'
+              AND prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_period) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_period) * 6 THEN 1
+            ELSE 0
+          END as row_is_consumer_jank,
+          CASE
+            WHEN prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_period) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_period) * 6
+            THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0)
+            ELSE 0
+          END as row_vsync_missed
+        FROM app_frame_rows
+      ),
+      ranked_jank_rows AS (
+        SELECT
+          *,
+          MAX(row_is_consumer_jank) OVER (PARTITION BY frame_key) as is_consumer_jank,
+          MAX(row_vsync_missed) OVER (PARTITION BY frame_key) as observed_vsync_missed,
+          ROW_NUMBER() OVER (
+            PARTITION BY frame_key
+            ORDER BY
+              row_is_consumer_jank DESC,
+              CASE jank_responsibility
+                WHEN 'APP' THEN 1
+                WHEN 'SF' THEN 2
+                WHEN 'BUFFER_STUFFING' THEN 3
+                WHEN 'UNKNOWN' THEN 4
+                ELSE 5
+              END,
+              dur DESC,
+              layer_name ASC
+          ) as frame_row_rank
+        FROM jank_row_signals
+      ),
+      frame_signals AS (
+        SELECT
+          frame_key,
+          jank_type as app_jank_type,
+          is_consumer_jank,
+          CASE
+            WHEN is_consumer_jank = 0 THEN 0
+            WHEN observed_vsync_missed > 0 THEN observed_vsync_missed
+            ELSE 1
+          END as vsync_missed
+        FROM ranked_jank_rows
+        WHERE frame_row_rank = 1
+      ),
+      frame_stats AS (
+        SELECT
+          COUNT(*) as total_frames,
+          SUM(is_consumer_jank) as consumer_jank_frames,
+          SUM(CASE WHEN app_jank_type != 'None' THEN 1 ELSE 0 END) as app_reported_jank,
+          SUM(CASE WHEN app_jank_type != 'None' AND is_consumer_jank = 0 THEN 1 ELSE 0 END) as false_positives,
+          SUM(CASE WHEN app_jank_type = 'None' AND is_consumer_jank = 1 THEN 1 ELSE 0 END) as false_negatives,
+          COALESCE(MAX(vsync_missed), 0) as max_vsync_missed,
+          COALESCE(AVG(vsync_missed + 1.0), 1.0) as avg_token_gap
+        FROM frame_signals
       )
+      -- CONSUMER_JANK_SUMMARY_CTES_END
       SELECT
-        (SELECT total_frames FROM vsync_stats) as vsync_total_frames,
-        COALESCE((SELECT app_total_frames FROM app_stats), 0) as app_total_frames,
-        (SELECT consumer_jank_frames FROM vsync_stats) as consumer_jank_frames,
-        (SELECT total_frames FROM vsync_stats) - (SELECT consumer_jank_frames FROM vsync_stats) as smooth_frames,
-        ROUND(100.0 * (SELECT consumer_jank_frames FROM vsync_stats) / NULLIF((SELECT total_frames FROM vsync_stats), 0), 2) as consumer_jank_rate,
-        COALESCE((SELECT app_reported_jank FROM app_stats), 0) as old_logic_jank_count,
-        ROUND(100.0 * COALESCE((SELECT app_reported_jank FROM app_stats), 0) / NULLIF(COALESCE((SELECT app_total_frames FROM app_stats), 0), 0), 2) as old_logic_jank_rate,
-        MAX(COALESCE((SELECT app_reported_jank FROM app_stats), 0) - (SELECT consumer_jank_frames FROM vsync_stats), 0) as false_positives,
-        MAX((SELECT consumer_jank_frames FROM vsync_stats) - COALESCE((SELECT app_reported_jank FROM app_stats), 0), 0) as false_negatives,
-        (SELECT max_vsync_missed FROM vsync_stats) as max_vsync_missed,
-        ROUND((SELECT avg_token_gap FROM vsync_stats), 2) as avg_token_gap,
+        total_frames,
+        total_frames as vsync_total_frames,
+        total_frames as app_total_frames,
+        consumer_jank_frames,
+        total_frames - consumer_jank_frames as smooth_frames,
+        ROUND(100.0 * consumer_jank_frames / NULLIF(total_frames, 0), 2) as consumer_jank_rate,
+        app_reported_jank as old_logic_jank_count,
+        ROUND(100.0 * app_reported_jank / NULLIF(total_frames, 0), 2) as old_logic_jank_rate,
+        false_positives,
+        false_negatives,
+        max_vsync_missed,
+        ROUND(avg_token_gap, 2) as avg_token_gap,
         CASE
-          WHEN 100.0 * (SELECT consumer_jank_frames FROM vsync_stats) / NULLIF((SELECT total_frames FROM vsync_stats), 0) < 1 THEN '优秀'
-          WHEN 100.0 * (SELECT consumer_jank_frames FROM vsync_stats) / NULLIF((SELECT total_frames FROM vsync_stats), 0) < 5 THEN '良好'
-          WHEN 100.0 * (SELECT consumer_jank_frames FROM vsync_stats) / NULLIF((SELECT total_frames FROM vsync_stats), 0) < 15 THEN '一般'
+          WHEN 100.0 * consumer_jank_frames / NULLIF(total_frames, 0) < 1 THEN '优秀'
+          WHEN 100.0 * consumer_jank_frames / NULLIF(total_frames, 0) < 5 THEN '良好'
+          WHEN 100.0 * consumer_jank_frames / NULLIF(total_frames, 0) < 15 THEN '一般'
           ELSE '较差'
-        END as rating
+        END as rating,
+        'display_frame_present_type_hybrid' as evidence_scope,
+        'on_time_present_gap_is_not_jank' as claim_boundary
+      FROM frame_stats
       LIMIT 1
     save_as: consumer_jank_summary
 
@@ -473,10 +558,10 @@ steps:
       ),
       vsync_period AS (
         SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
+          (SELECT PERCENTILE(interval_ns, 50)
            FROM vsync_ticks
            WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
              AND (${start_ts} IS NULL OR ts >= ${start_ts})
@@ -484,63 +569,110 @@ steps:
           16666667
         ) AS INTEGER) as vsync_period_ns
       ),
-      vsync_events AS (
+      -- CONSUMER_JANK_SEVERITY_CTES_BEGIN
+      app_frame_rows AS (
         SELECT
-          c.ts as vsync_ts,
-          c.ts - LAG(c.ts) OVER (ORDER BY c.ts) as interval_ns
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name = 'VSYNC-sf'
-          AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-      ),
-      buffer_events AS (
-        SELECT
-          c.ts,
-          c.value as buffer_count
-        FROM counter c
-        JOIN counter_track t ON c.track_id = t.id
-        WHERE t.name LIKE '%BufferTX%'
-          AND (t.name LIKE '%${package}%' OR '${package}' = '')
-          AND ('${end_ts}' = '' OR c.ts <= CAST('${end_ts}' AS INTEGER))
-      ),
-      vsync_with_buffer AS (
-        SELECT
-          v.interval_ns,
-          (SELECT b.buffer_count
-           FROM buffer_events b
-           WHERE b.ts <= v.vsync_ts
-           ORDER BY b.ts DESC
-           LIMIT 1
-          ) as buffer_at_vsync
-        FROM vsync_events v
-        WHERE v.interval_ns IS NOT NULL
-      ),
-      gap_analysis AS (
-        SELECT
-          MAX(CAST(ROUND(interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) as vsync_missed,
           CASE
-            WHEN MAX(CAST(ROUND(interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) = 0 THEN 'SMOOTH (gap=1)'
-            WHEN MAX(CAST(ROUND(interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) = 1 THEN 'MINOR_JANK (gap=2, 跳1帧)'
-            WHEN MAX(CAST(ROUND(interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) <= 3 THEN 'JANK (gap=3-4, 跳2-3帧)'
-            WHEN MAX(CAST(ROUND(interval_ns * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0) <= 7 THEN 'SEVERE_JANK (gap=5-8, 跳4-7帧)'
-            ELSE 'FROZEN (gap>8, 跳8+帧)'
+            WHEN a.display_frame_token IS NOT NULL
+              THEN 'display:' || CAST(a.display_frame_token AS TEXT)
+            WHEN a.surface_frame_token IS NOT NULL
+              THEN 'surface:' || COALESCE(a.layer_name, '') || ':' || CAST(a.surface_frame_token AS TEXT)
+            ELSE NULL
+          END as frame_key,
+          CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as dur,
+          COALESCE(a.jank_type, 'None') as jank_type,
+          COALESCE(a.present_type, 'Unknown Present') as present_type,
+          a.layer_name,
+          a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END as present_ts,
+          LAG(a.ts + CASE WHEN a.dur > 0 THEN a.dur ELSE 0 END)
+            OVER (PARTITION BY a.layer_name ORDER BY a.ts, COALESCE(a.display_frame_token, a.surface_frame_token)) as prev_present_ts,
+          CASE
+            WHEN a.jank_type GLOB '*Self Jank*' OR android_is_app_jank_type(a.jank_type) THEN 'APP'
+            WHEN a.jank_type GLOB '*SurfaceFlinger*' THEN 'SF'
+            WHEN a.jank_type GLOB '*Buffer Stuffing*' THEN 'BUFFER_STUFFING'
+            WHEN android_is_sf_jank_type(a.jank_type) THEN 'SF'
+            WHEN a.jank_type = 'None' OR a.jank_type IS NULL THEN 'HIDDEN'
+            ELSE 'UNKNOWN'
+          END as jank_responsibility
+        FROM actual_frame_timeline_slice a
+        LEFT JOIN process p ON a.upid = p.upid
+        WHERE (
+            a.layer_name LIKE 'TX - ${package}%'
+            OR a.layer_name = '${layer_name}'
+            OR ('${package}' = '' AND '${layer_name}' = '')
+          )
+          AND ('${start_ts}' = '' OR a.ts >= CAST('${start_ts}' AS INTEGER))
+          AND ('${end_ts}' = '' OR a.ts <= CAST('${end_ts}' AS INTEGER))
+          AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
+      ),
+      jank_row_signals AS (
+        SELECT
+          *,
+          CASE
+            WHEN present_type IN ('Late Present', 'Dropped Frame')
+              AND (jank_responsibility != 'BUFFER_STUFFING' OR android_is_missed_frame_type(jank_type)) THEN 1
+            WHEN jank_responsibility = 'BUFFER_STUFFING'
+              AND prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_period) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_period) * 6 THEN 1
+            ELSE 0
+          END as row_is_consumer_jank,
+          CASE
+            WHEN prev_present_ts IS NOT NULL
+              AND present_ts - prev_present_ts > (SELECT vsync_period_ns FROM vsync_period) * 1.5
+              AND present_ts - prev_present_ts <= (SELECT vsync_period_ns FROM vsync_period) * 6
+            THEN MAX(CAST(ROUND((present_ts - prev_present_ts) * 1.0 / (SELECT vsync_period_ns FROM vsync_period) - 1, 0) AS INTEGER), 0)
+            ELSE 0
+          END as row_vsync_missed
+        FROM app_frame_rows
+      ),
+      ranked_jank_rows AS (
+        SELECT
+          *,
+          MAX(row_is_consumer_jank) OVER (PARTITION BY frame_key) as is_consumer_jank,
+          MAX(row_vsync_missed) OVER (PARTITION BY frame_key) as observed_vsync_missed,
+          ROW_NUMBER() OVER (
+            PARTITION BY frame_key
+            ORDER BY row_is_consumer_jank DESC, dur DESC, layer_name ASC
+          ) as frame_row_rank
+        FROM jank_row_signals
+      ),
+      frame_signals AS (
+        SELECT
+          frame_key,
+          is_consumer_jank,
+          CASE
+            WHEN is_consumer_jank = 0 THEN 0
+            WHEN observed_vsync_missed > 0 THEN observed_vsync_missed
+            ELSE 1
+          END as vsync_missed
+        FROM ranked_jank_rows
+        WHERE frame_row_rank = 1
+      ),
+      severity_analysis AS (
+        SELECT
+          CASE
+            WHEN is_consumer_jank = 0 THEN 'SMOOTH_OR_ON_TIME'
+            WHEN vsync_missed <= 1 THEN 'MINOR_JANK (missed=1)'
+            WHEN vsync_missed <= 3 THEN 'JANK (missed=2-3)'
+            WHEN vsync_missed <= 7 THEN 'SEVERE_JANK (missed=4-7)'
+            ELSE 'FROZEN (missed>=8)'
           END as severity
-        FROM vsync_with_buffer
-        WHERE buffer_at_vsync IS NOT NULL
+        FROM frame_signals
       )
+      -- CONSUMER_JANK_SEVERITY_CTES_END
       SELECT
         severity,
         COUNT(*) as count,
         ROUND(100.0 * COUNT(*) / NULLIF(SUM(COUNT(*)) OVER (), 0), 2) as percentage
-      FROM gap_analysis
+      FROM severity_analysis
       GROUP BY severity
       ORDER BY
         CASE severity
-          WHEN 'SMOOTH (gap=1)' THEN 1
-          WHEN 'MINOR_JANK (gap=2, 跳1帧)' THEN 2
-          WHEN 'JANK (gap=3-4, 跳2-3帧)' THEN 3
-          WHEN 'SEVERE_JANK (gap=5-8, 跳4-7帧)' THEN 4
+          WHEN 'SMOOTH_OR_ON_TIME' THEN 1
+          WHEN 'MINOR_JANK (missed=1)' THEN 2
+          WHEN 'JANK (missed=2-3)' THEN 3
+          WHEN 'SEVERE_JANK (missed=4-7)' THEN 4
           ELSE 5
         END
     save_as: jank_severity_distribution

@@ -80,7 +80,7 @@ sql: |
   FROM android_binder_txns
   WHERE (${start_ts} IS NULL OR client_ts >= ${start_ts})
     AND (${end_ts} IS NULL OR client_ts < ${end_ts})
-    AND (client_process GLOB '${package}*' OR '${package}' = '')
+    AND (('${package}' = '' OR client_process = '${package}' OR client_process GLOB '${package}:*') OR '${package}' = '')
   GROUP BY client_process, server_process
   HAVING total_client_ms > 1
   ORDER BY total_client_ms DESC

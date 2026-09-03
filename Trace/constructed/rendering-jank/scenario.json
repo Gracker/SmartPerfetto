@@ -225,6 +225,73 @@
       "name": "binder transaction"
     },
     {
+      "type": "frame-timeline",
+      "at_ns": "600000000",
+      "duration_ns": "24000000",
+      "process": "app",
+      "cookie": 102,
+      "token": 202,
+      "display_frame_token": 302,
+      "layer_name": "SyntheticRenderSyncLayer",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "602000000",
+      "duration_ns": "8000000",
+      "process": "app",
+      "thread": "main",
+      "name": "postAndWait"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "602000000",
+      "duration_ns": "8000000",
+      "process": "app",
+      "thread": "render",
+      "name": "syncFrameState"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "602000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "render",
+      "name": "DrawFrame"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "600000000",
+      "duration_ns": "2000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "616000000",
+      "duration_ns": "2000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "602000000",
+      "duration_ns": "8000000",
+      "thread": "render",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "618000000",
+      "duration_ns": "2000000",
+      "thread": "render",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
       "type": "gpu-frequency",
       "at_ns": "500000000",
       "gpu_id": 0,

@@ -108,7 +108,7 @@ steps:
           ON e.display_frame_token = a.display_frame_token
           AND e.upid = a.upid
         JOIN process p ON e.upid = p.upid
-        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND e.ts >= (SELECT start_ts FROM time_bounds)
           AND e.ts <= (SELECT end_ts FROM time_bounds)
       ),

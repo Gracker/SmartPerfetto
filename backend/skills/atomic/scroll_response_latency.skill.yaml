@@ -85,7 +85,7 @@ sql: |
       upid,
       ROW_NUMBER() OVER (PARTITION BY upid ORDER BY dispatch_ts) as move_idx
     FROM android_input_events
-    WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+    WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
       AND event_action = 'MOVE'
       AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
       AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})

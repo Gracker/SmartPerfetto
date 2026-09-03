@@ -87,7 +87,7 @@ steps:
         ROUND(MAX(anon_rss_and_swap) / 1024.0 / 1024.0, 2) AS max_anon_swap_mb,
         ROUND(MAX(COALESCE(swap, 0)) / 1024.0 / 1024.0, 2) AS max_swap_mb
       FROM memory_rss_and_swap_per_process, input
-      WHERE (input.target_process = '' OR process_name GLOB input.target_process || '*')
+      WHERE (input.target_process = '' OR process_name = input.target_process OR process_name GLOB input.target_process || ':*')
         AND ts >= input.start_ts
         AND ts < input.end_ts
       GROUP BY process_name

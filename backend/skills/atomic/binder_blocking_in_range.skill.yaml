@@ -73,7 +73,7 @@ sql: |
     SELECT t.tid
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+    WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
       AND t.tid = p.pid  -- 主线程
   )
   SELECT
@@ -88,7 +88,7 @@ sql: |
   WHERE (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
     AND (${end_ts} IS NULL OR bt.client_ts < ${end_ts})
     AND bt.is_sync = 1  -- 只关注同步调用
-    AND (bt.client_process GLOB '${package}*' OR '${package}' = '')
+    AND (('${package}' = '' OR bt.client_process = '${package}' OR bt.client_process GLOB '${package}:*') OR '${package}' = '')
     AND bt.client_dur > 500000  -- > 0.5ms
   GROUP BY bt.server_process, interface
   HAVING total_block_ms > 0.5

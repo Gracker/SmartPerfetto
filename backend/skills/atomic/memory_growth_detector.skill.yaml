@@ -166,7 +166,7 @@ steps:
           COALESCE(swap, 0) AS swap,
           anon_rss_and_swap
         FROM memory_rss_and_swap_per_process, input
-        WHERE (input.target_process = '' OR process_name GLOB input.target_process || '*')
+        WHERE (input.target_process = '' OR process_name = input.target_process OR process_name GLOB input.target_process || ':*')
           AND ts >= input.start_ts
           AND ts < input.end_ts
           AND rss IS NOT NULL

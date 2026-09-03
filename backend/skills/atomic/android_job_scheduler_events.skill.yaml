@@ -71,7 +71,7 @@ steps:
         package_name,
         uid
       FROM android_job_scheduler_events
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
       ORDER BY ts ASC

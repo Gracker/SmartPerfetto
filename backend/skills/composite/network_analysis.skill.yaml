@@ -96,7 +96,7 @@ steps:
         COUNT(*) as pkt_count,
         CASE WHEN COUNT(*) > 0 THEN 'available' ELSE 'unavailable' END as status
       FROM android_network_packets
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -248,7 +248,7 @@ steps:
           ELSE '正常'
         END as rating
       FROM android_network_packets
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -302,7 +302,7 @@ steps:
         SUM(packet_count) as total_packets,
         ROUND(SUM(packet_length) / 1024.0, 2) as total_kb
       FROM android_network_packets
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -358,7 +358,7 @@ steps:
         SUM(packet_count) as total_packets,
         ROUND(SUM(packet_length) / 1024.0, 2) as total_kb
       FROM android_network_packets
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -411,7 +411,7 @@ steps:
         SUM(packet_count) as total_packets,
         ROUND(SUM(packet_length) / 1024.0, 2) as total_kb
       FROM android_network_packets
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -466,7 +466,7 @@ steps:
         ROUND(SUM(packet_length) / 1024.0, 2) as total_kb
       FROM android_network_packets
       WHERE remote_port IS NOT NULL
-        AND (package_name GLOB '${package}*' OR '${package}' = '')
+        AND (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -513,7 +513,7 @@ steps:
         ROUND(SUM(CASE WHEN direction = 'Transmitted' THEN packet_length ELSE 0 END) / 1024.0, 2) as tx_kb,
         ROUND(SUM(CASE WHEN direction = 'Received' THEN packet_length ELSE 0 END) / 1024.0, 2) as rx_kb
       FROM android_network_packets
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -565,7 +565,7 @@ steps:
         packet_count,
         ROUND(packet_length / 1024.0, 2) as kb
       FROM android_network_packets
-      WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
         AND (iface GLOB '*${interface}*' OR '${interface}' = '')
         AND (${start_ts} IS NULL OR ts >= ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -621,7 +621,7 @@ steps:
       WITH filtered_packets AS (
         SELECT *
         FROM android_network_packets
-        WHERE (package_name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR package_name = '${package}' OR package_name GLOB '${package}:*') OR '${package}' = '')
           AND (iface GLOB '*${interface}*' OR '${interface}' = '')
           AND (${start_ts} IS NULL OR ts >= ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})

@@ -87,7 +87,7 @@ steps:
       -- 动态检测 VSync 周期（VSYNC-sf 中位数优先，expected_frame 回退）
       vsync_config AS (
         SELECT CAST(COALESCE(
-          (SELECT PERCENTILE(interval_ns, 0.5)
+          (SELECT PERCENTILE(interval_ns, 50)
            FROM (
              SELECT c.ts - LAG(c.ts) OVER (ORDER BY c.ts) AS interval_ns
              FROM counter c
@@ -96,7 +96,7 @@ steps:
                AND c.ts >= (SELECT start_ts FROM time_bounds)
                AND c.ts <= (SELECT end_ts FROM time_bounds)
            ) WHERE interval_ns > 5500000 AND interval_ns < 50000000),
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM expected_frame_timeline_slice
            WHERE dur > 5000000 AND dur < 50000000
              AND ts >= (SELECT start_ts FROM time_bounds)

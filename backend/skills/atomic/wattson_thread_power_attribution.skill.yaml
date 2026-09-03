@@ -97,7 +97,7 @@ steps:
       ))
       WHERE (
         ('${process_name}' != '' AND process_name GLOB '${process_name}*')
-        OR ('${package}' != '' AND process_name GLOB '${package}*')
+        OR ('${package}' != '' AND ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*'))
         OR ('${process_name}' = '' AND '${package}' = '')
       )
       GROUP BY process_name, thread_name

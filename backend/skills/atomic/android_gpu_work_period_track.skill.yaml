@@ -71,7 +71,7 @@ steps:
             SELECT 1
             FROM package_list p
             WHERE p.uid = t.uid
-              AND p.package_name GLOB '${package}*'
+              AND ('${package}' = '' OR p.package_name = '${package}' OR p.package_name GLOB '${package}:*')
           )
         )
       ORDER BY s.ts ASC

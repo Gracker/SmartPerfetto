@@ -341,7 +341,7 @@ steps:
             OR LOWER(COALESCE(ts.blocked_function, '')) LIKE '%dm_%'
           )
           AND ts.dur > ${min_duration_ms|1} * 1e6
-          AND ('${package}' = '' OR p.name GLOB '${package}*')
+          AND ('${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*'))
           AND (${start_ts} IS NULL OR ts.ts + ts.dur > ${start_ts})
           AND (${end_ts} IS NULL OR ts.ts < ${end_ts})
         GROUP BY p.upid
@@ -517,7 +517,7 @@ steps:
           OR LOWER(COALESCE(ts.blocked_function, '')) LIKE '%dm_%'
         )
         AND ts.dur > ${min_duration_ms|1} * 1e6
-        AND ('${package}' = '' OR p.name GLOB '${package}*')
+        AND ('${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*'))
         AND (${start_ts} IS NULL OR ts.ts + ts.dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts.ts < ${end_ts})
       GROUP BY ts.utid
@@ -585,7 +585,7 @@ steps:
           OR LOWER(COALESCE(ts.blocked_function, '')) LIKE '%dm_%'
         )
         AND ts.dur > ${long_io_threshold_ms|10} * 1e6
-        AND ('${package}' = '' OR p.name GLOB '${package}*')
+        AND ('${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*'))
         AND (${start_ts} IS NULL OR ts.ts + ts.dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts.ts < ${end_ts})
       ORDER BY ts.dur DESC

@@ -10,8 +10,8 @@
     "skillCount": 235,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1226,
-    "explicitColumnCount": 3491
+    "stepCount": 1228,
+    "explicitColumnCount": 3540
   },
   "skills": {
     "ams_module": {
@@ -8625,6 +8625,12 @@
                 "en": "App Jank Type"
               }
             },
+            "present_type": {
+              "label": {
+                "zh-CN": "呈现状态",
+                "en": "Present Type"
+              }
+            },
             "jank_severity": {
               "label": {
                 "zh-CN": "严重程度",
@@ -8635,6 +8641,18 @@
               "label": {
                 "zh-CN": "延迟来源",
                 "en": "Delay Source"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "claim_boundary": {
+              "label": {
+                "zh-CN": "结论边界",
+                "en": "Claim Boundary"
               }
             }
           },
@@ -8680,6 +8698,18 @@
               "label": {
                 "zh-CN": "评级",
                 "en": "Rating"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "claim_boundary": {
+              "label": {
+                "zh-CN": "结论边界",
+                "en": "Claim Boundary"
               }
             }
           },
@@ -12058,6 +12088,18 @@
               "label": {
                 "zh-CN": "类型标签",
                 "en": "Responsibility"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "claim_boundary": {
+              "label": {
+                "zh-CN": "结论边界",
+                "en": "Claim Boundary"
               }
             }
           },
@@ -17780,6 +17822,24 @@
               "label": {
                 "zh-CN": "掉帧类型",
                 "en": "Jank Type"
+              }
+            },
+            "lock_contention_ms": {
+              "label": {
+                "zh-CN": "Monitor锁竞争重叠",
+                "en": "Lock Contention ms"
+              }
+            },
+            "render_sync_wait_ms": {
+              "label": {
+                "zh-CN": "主线程等待RenderThread",
+                "en": "Render Sync Wait ms"
+              }
+            },
+            "render_sync_rt_work_ms": {
+              "label": {
+                "zh-CN": "RenderThread同步阶段工作",
+                "en": "Render Sync Rt Work ms"
               }
             }
           },
@@ -26952,6 +27012,18 @@
                 "en": "Frame Id"
               }
             },
+            "frame_identity_key": {
+              "label": {
+                "zh-CN": "帧身份键",
+                "en": "Frame Identity Key"
+              }
+            },
+            "layer_name": {
+              "label": {
+                "zh-CN": "LayerName",
+                "en": "Layer"
+              }
+            },
             "frame_index": {
               "label": {
                 "zh-CN": "帧序号",
@@ -26998,6 +27070,54 @@
               "label": {
                 "zh-CN": "责任归属",
                 "en": "Jank Responsibility"
+              }
+            },
+            "frame_timeline_coverage_status": {
+              "label": {
+                "zh-CN": "FrameTimeline 覆盖状态",
+                "en": "Frame Timeline Coverage Status"
+              }
+            },
+            "frame_timeline_to_buffer_tx_ratio": {
+              "label": {
+                "zh-CN": "FrameTimeline/BufferTX 帧数比",
+                "en": "Frame Timeline To Buffer Tx Ratio"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "根因证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "root_cause_eligible_frame_count": {
+              "label": {
+                "zh-CN": "可分析掉帧",
+                "en": "Root Cause Eligible Frame Count"
+              }
+            },
+            "root_cause_analyzed_frame_count": {
+              "label": {
+                "zh-CN": "已分析掉帧",
+                "en": "Root Cause Analyzed Frame Count"
+              }
+            },
+            "root_cause_coverage_ratio": {
+              "label": {
+                "zh-CN": "根因分析覆盖率",
+                "en": "Root Cause Coverage Ratio"
+              }
+            },
+            "root_cause_sample_limit_per_session": {
+              "label": {
+                "zh-CN": "每 Session 采样上限",
+                "en": "Root Cause Sample Limit Per Session"
+              }
+            },
+            "root_cause_analysis_scope": {
+              "label": {
+                "zh-CN": "根因分析范围",
+                "en": "Root Cause Analysis Scope"
               }
             },
             "reason_code": {
@@ -27056,7 +27176,7 @@
             },
             "main_q4b_pct": {
               "label": {
-                "zh-CN": "Q4b 锁/等待%",
+                "zh-CN": "Q4b 可中断睡眠/同步等待%",
                 "en": "Main Q4b Pct"
               }
             },
@@ -27086,7 +27206,7 @@
             },
             "render_q4b_pct": {
               "label": {
-                "zh-CN": "RT Q4b 锁/等待%",
+                "zh-CN": "RT Q4b 可中断睡眠/同步等待%",
                 "en": "Render Q4b Pct"
               }
             },
@@ -27156,6 +27276,24 @@
                 "en": "Binder Overlap ms"
               }
             },
+            "lock_contention_ms": {
+              "label": {
+                "zh-CN": "Monitor锁竞争重叠",
+                "en": "Lock Contention ms"
+              }
+            },
+            "render_sync_wait_ms": {
+              "label": {
+                "zh-CN": "主线程等待RenderThread",
+                "en": "Render Sync Wait ms"
+              }
+            },
+            "render_sync_rt_work_ms": {
+              "label": {
+                "zh-CN": "RenderThread同步阶段工作",
+                "en": "Render Sync Rt Work ms"
+              }
+            },
             "gc_overlap_ms": {
               "label": {
                 "zh-CN": "GC重叠",
@@ -27172,6 +27310,12 @@
               "label": {
                 "zh-CN": "帧预算",
                 "en": "Frame Budget ms"
+              }
+            },
+            "vsync_source": {
+              "label": {
+                "zh-CN": "帧预算来源",
+                "en": "Vsync Source"
               }
             },
             "device_peak_freq_mhz": {
@@ -27303,6 +27447,126 @@
             "group:reason_code": {
               "zh-CN": "根因分类分布",
               "en": "Reason Code"
+            }
+          }
+        },
+        "buffer_tx_coverage_probe": {
+          "title": {
+            "zh-CN": "BufferTX / FrameTimeline 覆盖探针",
+            "en": "Buffer Tx Coverage Probe"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "buffer_tx_performance_fallback": {
+          "title": {
+            "zh-CN": "滑动帧率概览（BufferTX 回退）",
+            "en": "Buffer Tx Performance Fallback"
+          },
+          "columns": {
+            "total_frames": {
+              "label": {
+                "zh-CN": "BufferTX 产出帧",
+                "en": "Total Frames"
+              }
+            },
+            "actual_fps": {
+              "label": {
+                "zh-CN": "实际 FPS",
+                "en": "Actual FPS"
+              }
+            },
+            "duration_sec": {
+              "label": {
+                "zh-CN": "有效时段(s)",
+                "en": "Duration Sec"
+              }
+            },
+            "refresh_rate": {
+              "label": {
+                "zh-CN": "刷新率",
+                "en": "Refresh Rate"
+              }
+            },
+            "fps_source": {
+              "label": {
+                "zh-CN": "帧率来源",
+                "en": "FPS Source"
+              }
+            },
+            "vsync_source": {
+              "label": {
+                "zh-CN": "VSync 证据来源",
+                "en": "Vsync Source"
+              }
+            },
+            "frame_source_track": {
+              "label": {
+                "zh-CN": "BufferTX 证据轨道",
+                "en": "Frame Source Track"
+              }
+            },
+            "frame_timeline_to_buffer_tx_ratio": {
+              "label": {
+                "zh-CN": "FrameTimeline/BufferTX 帧数比",
+                "en": "Frame Timeline To Buffer Tx Ratio"
+              }
+            },
+            "coverage_status": {
+              "label": {
+                "zh-CN": "FrameTimeline 覆盖状态",
+                "en": "Coverage Status"
+              }
+            },
+            "evidence_status": {
+              "label": {
+                "zh-CN": "可交付证据范围",
+                "en": "Evidence Status"
+              }
+            },
+            "rating": {
+              "label": {
+                "zh-CN": "证据边界",
+                "en": "Rating"
+              }
+            }
+          },
+          "synthesizeLabels": {
+            "field:total_frames": {
+              "zh-CN": "BufferTX 产出帧",
+              "en": "Total Frames"
+            },
+            "field:actual_fps": {
+              "zh-CN": "平均 FPS",
+              "en": "Actual FPS"
+            },
+            "field:fps_source": {
+              "zh-CN": "帧率来源",
+              "en": "FPS Source"
+            },
+            "field:duration_sec": {
+              "zh-CN": "有效时段",
+              "en": "Duration Sec"
+            },
+            "field:frame_source_track": {
+              "zh-CN": "BufferTX 证据轨道",
+              "en": "Frame Source Track"
+            },
+            "field:coverage_status": {
+              "zh-CN": "FrameTimeline 覆盖状态",
+              "en": "Coverage Status"
+            },
+            "field:frame_timeline_to_buffer_tx_ratio": {
+              "zh-CN": "FrameTimeline 覆盖率",
+              "en": "Frame Timeline To Buffer Tx Ratio"
+            },
+            "field:vsync_source": {
+              "zh-CN": "VSync 证据来源",
+              "en": "Vsync Source"
+            },
+            "field:evidence_status": {
+              "zh-CN": "可交付证据范围",
+              "en": "Evidence Status"
             }
           }
         },
@@ -27616,6 +27880,24 @@
               "label": {
                 "zh-CN": "类型标签",
                 "en": "Responsibility"
+              }
+            },
+            "frame_timeline_coverage_status": {
+              "label": {
+                "zh-CN": "FrameTimeline 覆盖状态",
+                "en": "Frame Timeline Coverage Status"
+              }
+            },
+            "frame_timeline_to_buffer_tx_ratio": {
+              "label": {
+                "zh-CN": "FrameTimeline/BufferTX 帧数比",
+                "en": "Frame Timeline To Buffer Tx Ratio"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "根因证据范围",
+                "en": "Evidence Scope"
               }
             }
           },
@@ -33515,7 +33797,7 @@
         "en": "Textureview Producer Frame Timing"
       },
       "description": {
-        "zh-CN": "检测非 Flutter TextureView / SurfaceTexture 生产端 queueBuffer、swapBuffers、onFrameAvailable 的帧间隔异常",
+        "zh-CN": "区分 TextureView / SurfaceTexture 生产、出队与消费通知，并检测同类事件流中的帧节奏缺口候选",
         "en": "Analyzes Textureview Producer Frame Timing using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -33538,7 +33820,7 @@
         },
         "textureview_producer_intervals": {
           "title": {
-            "zh-CN": "TextureView 生产端慢帧间隔",
+            "zh-CN": "TextureView 事件流节奏缺口候选",
             "en": "Textureview Producer Intervals"
           },
           "columns": {
@@ -33562,8 +33844,20 @@
             },
             "vsync_missed": {
               "label": {
-                "zh-CN": "疑似漏帧",
+                "zh-CN": "疑似漏生产帧",
                 "en": "Vsync Missed"
+              }
+            },
+            "event_role": {
+              "label": {
+                "zh-CN": "事件角色",
+                "en": "Event Role"
+              }
+            },
+            "event_stream": {
+              "label": {
+                "zh-CN": "事件流",
+                "en": "Event Stream"
               }
             },
             "event_name": {
@@ -33590,6 +33884,42 @@
                 "en": "Process Name"
               }
             },
+            "display_vsync_ms": {
+              "label": {
+                "zh-CN": "显示 VSync",
+                "en": "Display Vsync ms"
+              }
+            },
+            "stream_period_ms": {
+              "label": {
+                "zh-CN": "事件流周期",
+                "en": "Stream Period ms"
+              }
+            },
+            "cadence_baseline_ms": {
+              "label": {
+                "zh-CN": "节奏基线",
+                "en": "Cadence Baseline ms"
+              }
+            },
+            "vsync_source": {
+              "label": {
+                "zh-CN": "VSync 来源",
+                "en": "Vsync Source"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "claim_boundary": {
+              "label": {
+                "zh-CN": "结论边界",
+                "en": "Claim Boundary"
+              }
+            },
             "rating": {
               "label": {
                 "zh-CN": "评级",
@@ -33611,6 +33941,12 @@
                 "en": "Signal Role"
               }
             },
+            "signal_type": {
+              "label": {
+                "zh-CN": "信号类型",
+                "en": "Signal Type"
+              }
+            },
             "process_name": {
               "label": {
                 "zh-CN": "进程",
@@ -33625,7 +33961,7 @@
             },
             "event_count": {
               "label": {
-                "zh-CN": "次数",
+                "zh-CN": "信号次数（非帧数）",
                 "en": "Event Count"
               }
             },
@@ -33645,6 +33981,18 @@
               "label": {
                 "zh-CN": "最大耗时",
                 "en": "Max Dur ms"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "claim_boundary": {
+              "label": {
+                "zh-CN": "结论边界",
+                "en": "Claim Boundary"
               }
             }
           },

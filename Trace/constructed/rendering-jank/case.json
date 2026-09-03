@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "2a2d227148bcbf927d0acd3ca206fb2aaea0a8370a2a176f647b7310bba53c38",
+    "sha256": "60de316c980f2dbe2a02a770878a453bfbc083ab6956d15d6698cbf648b08791",
     "materialization": "base-plus-overlay"
   },
   "android": {
@@ -275,8 +275,11 @@
           "vsync_missed",
           "interval_ms",
           "app_jank_type",
+          "present_type",
           "jank_severity",
-          "delay_source"
+          "delay_source",
+          "evidence_scope",
+          "claim_boundary"
         ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
@@ -315,7 +318,11 @@
           "jank_frames",
           "reported_jank_frames",
           "jank_rate_pct",
-          "estimated_fps"
+          "estimated_fps",
+          "evidence_status",
+          "process_scope",
+          "evidence_scope",
+          "claim_boundary"
         ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
@@ -1031,7 +1038,9 @@
           "init_cpu_topology",
           "frame_timeline_check",
           "vsync_config",
+          "buffer_tx_coverage_probe",
           "performance_summary",
+          "buffer_tx_performance_fallback",
           "input_data_fallback_view",
           "input_data_check",
           "input_latency_summary",
@@ -1053,7 +1062,9 @@
         "required_sql_steps": [
           "frame_timeline_check",
           "vsync_config",
+          "buffer_tx_coverage_probe",
           "performance_summary",
+          "buffer_tx_performance_fallback",
           "input_data_fallback_view",
           "input_data_check",
           "input_latency_summary",
@@ -1073,7 +1084,9 @@
         ],
         "forced_sql_steps": [
           "vsync_config",
+          "buffer_tx_coverage_probe",
           "performance_summary",
+          "buffer_tx_performance_fallback",
           "input_data_check",
           "input_latency_summary",
           "expert_analysis_window",
@@ -1096,12 +1109,107 @@
             "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
           }
         ],
-        "semantic_step": "vsync_config",
+        "semantic_step": "batch_frame_root_cause",
         "required_columns": [
-          "refresh_rate_hz",
-          "vsync_period_ms",
+          "frame_id",
+          "frame_identity_key",
+          "layer_name",
+          "frame_index",
+          "start_ts",
+          "dur",
+          "dur_ms",
+          "jank_type",
+          "vsync_missed",
+          "present_interval_ms",
+          "jank_responsibility",
+          "frame_timeline_coverage_status",
+          "frame_timeline_to_buffer_tx_ratio",
+          "evidence_scope",
+          "root_cause_eligible_frame_count",
+          "root_cause_analyzed_frame_count",
+          "root_cause_coverage_ratio",
+          "root_cause_sample_limit_per_session",
+          "root_cause_analysis_scope",
+          "reason_code",
+          "primary_cause",
+          "confidence",
+          "top_slice_name",
+          "top_slice_ms",
+          "main_q1_pct",
+          "main_q2_pct",
+          "main_q3_pct",
+          "main_q4a_pct",
+          "main_q4b_pct",
+          "render_q1_pct",
+          "render_q2_pct",
+          "render_q3_pct",
+          "render_q4a_pct",
+          "render_q4b_pct",
+          "big_avg_freq_mhz",
+          "big_max_freq_mhz",
+          "ramp_ms",
+          "top_slice_little_pct",
+          "top_slice_big_pct",
+          "top_slice_runnable_pct",
+          "gpu_fence_ms",
+          "gpu_fence_total_ms",
+          "shader_count",
+          "shader_ms",
+          "binder_overlap_ms",
+          "lock_contention_ms",
+          "render_sync_wait_ms",
+          "render_sync_rt_work_ms",
+          "gc_overlap_ms",
+          "gc_count",
+          "frame_budget_ms",
           "vsync_source",
-          "total_frames"
+          "device_peak_freq_mhz",
+          "file_io_overlap_ms",
+          "input_event_count",
+          "input_move_count",
+          "input_handling_ms",
+          "input_handling_total_ms",
+          "input_dispatch_ms",
+          "input_e2e_ms",
+          "input_slice_ms",
+          "input_stage",
+          "input_speculative_events",
+          "cpu_freq_clusters_json",
+          "freq_timeline_json",
+          "main_slices_json",
+          "render_slices_json",
+          "binder_calls_json",
+          "gc_events_json",
+          "lock_contention_json",
+          "input_events_json",
+          "input_slices_json"
+        ],
+        "assertions": [
+          {
+            "column": "reason_code",
+            "operator": "eq",
+            "value": "render_sync_wait"
+          },
+          {
+            "column": "render_sync_wait_ms",
+            "operator": "gt",
+            "value": 0
+          },
+          {
+            "column": "render_sync_rt_work_ms",
+            "operator": "gt",
+            "value": 0
+          },
+          {
+            "column": "binder_overlap_ms",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "lock_contention_ms",
+            "operator": "eq",
+            "value": 0
+          }
         ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },
@@ -1315,12 +1423,15 @@
         "semantic_step": "textureview_signal_summary",
         "required_columns": [
           "signal_role",
+          "signal_type",
           "process_name",
           "thread_name",
           "event_count",
           "avg_dur_ms",
           "p95_dur_ms",
-          "max_dur_ms"
+          "max_dur_ms",
+          "evidence_scope",
+          "claim_boundary"
         ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
       },

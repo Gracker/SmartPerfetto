@@ -124,7 +124,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND s.dur > 0
@@ -143,7 +143,7 @@ steps:
         thread_name,
         COUNT(*) AS slice_count,
         ROUND(SUM(dur_ms), 2) AS total_dur_ms,
-        ROUND(PERCENTILE(dur_ms, 0.95), 2) AS p95_dur_ms,
+        ROUND(PERCENTILE(dur_ms, 95), 2) AS p95_dur_ms,
         ROUND(MAX(dur_ms), 2) AS max_dur_ms
       FROM codec_slices
       GROUP BY phase, process_name, thread_name
@@ -216,7 +216,7 @@ steps:
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
       CROSS JOIN input i
-      WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+      WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
         AND s.ts >= i.start_ts
         AND s.ts < i.end_ts
         AND s.dur > i.slow_threshold_ms * 1000000.0

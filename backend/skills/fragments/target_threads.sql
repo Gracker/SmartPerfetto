@@ -28,7 +28,11 @@ target_threads AS (
     END as thread_end_ts
   FROM thread t
   JOIN process p ON t.upid = p.upid
-  WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+  WHERE (
+      '${package}' = ''
+      OR p.name = '${package}'
+      OR p.name GLOB '${package}:*'
+    )
     AND (t.tid = p.pid OR t.name = 'RenderThread'
          OR t.name GLOB '[0-9]*.raster' OR t.name GLOB '[0-9]*.ui')
 )

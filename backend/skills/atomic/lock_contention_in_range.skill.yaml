@@ -81,7 +81,7 @@ steps:
       FROM android_monitor_contention
       WHERE ts >= ${start_ts}
         AND ts < ${end_ts}
-        AND (process_name GLOB '${package}*' OR '${package}' = '')
+        AND (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
         AND dur >= 1000000
       ORDER BY dur DESC
     save_as: monitor_contentions
@@ -236,7 +236,7 @@ steps:
         AND ros.rn = 1
       WHERE c.ts >= ${start_ts}
         AND c.ts < ${end_ts}
-        AND (c.process_name GLOB '${package}*' OR '${package}' = '')
+        AND (('${package}' = '' OR c.process_name = '${package}' OR c.process_name GLOB '${package}:*') OR '${package}' = '')
         AND c.dur >= 1000000
       ORDER BY c.dur DESC
       LIMIT 100
@@ -290,7 +290,7 @@ steps:
       JOIN process p ON t.upid = p.upid
       WHERE ts.ts >= ${start_ts}
         AND ts.ts < ${end_ts}
-        AND (p.name GLOB '${package}*' OR '${package}' = '')
+        AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND ts.state IN ('S', 'D')
         AND ts.dur >= 1000000
         AND (ts.blocked_function GLOB '*futex*'
@@ -358,7 +358,7 @@ steps:
         FROM android_monitor_contention
         WHERE ts >= ${start_ts}
           AND ts < ${end_ts}
-          AND (process_name GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
       ),
       futex_stats AS (
         SELECT
@@ -371,7 +371,7 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE ts.ts >= ${start_ts}
           AND ts.ts < ${end_ts}
-          AND (p.name GLOB '${package}*' OR '${package}' = '')
+          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND ts.state IN ('S', 'D')
           AND ts.dur >= 1000000
           AND (ts.blocked_function GLOB '*futex*'

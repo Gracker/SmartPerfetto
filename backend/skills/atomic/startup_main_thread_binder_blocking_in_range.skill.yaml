@@ -93,7 +93,7 @@ sql: |
   FROM android_binder_txns bt
   JOIN android_startups s ON (
     bt.client_ts >= s.ts AND bt.client_ts <= s.ts + s.dur
-    AND bt.client_process GLOB s.package || '*'
+    AND (bt.client_process = s.package OR bt.client_process GLOB s.package || ':*')
   )
   LEFT JOIN thread_state ts ON (
     ts.utid = bt.client_utid
@@ -102,7 +102,7 @@ sql: |
   )
   WHERE bt.is_main_thread = 1
     AND bt.is_sync = 1
-    AND (s.package GLOB '${package}*' OR '${package}' = '')
+    AND (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
     AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
     AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
     AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})

@@ -129,7 +129,7 @@ steps:
         COUNT(*) as event_count,
         CASE WHEN COUNT(*) > 0 THEN 'available' ELSE 'unavailable' END as status
       FROM android_input_events
-      WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
         AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
     save_as: input_check
@@ -161,7 +161,7 @@ steps:
         COUNT(*) as event_count,
         ROUND(MAX(total_latency_dur) / 1e6, 2) as max_total_ms
       FROM android_input_events
-      WHERE (process_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
         AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       GROUP BY process_name

@@ -112,7 +112,7 @@ sql: |
       END as role
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*'
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
   ),
   -- 查找所有阻塞事件（S/D 状态 > min_block_ms）及其唤醒者
   blocking_events AS (

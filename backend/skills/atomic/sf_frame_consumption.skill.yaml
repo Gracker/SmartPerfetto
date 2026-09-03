@@ -74,7 +74,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE a.surface_frame_token IS NOT NULL
-          AND (p.name GLOB '${package}*' OR '${package}' = '' OR a.layer_name GLOB '*${package}*')
+          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '' OR a.layer_name GLOB '*${package}*')
           AND a.ts >= (SELECT start_ts FROM time_bounds)
           AND a.ts <= (SELECT end_ts FROM time_bounds)
       ),
@@ -94,7 +94,7 @@ steps:
           COUNT(CASE WHEN jank_type = 'None' THEN 1 END) as on_time_frames,
           COUNT(CASE WHEN jank_type != 'None' THEN 1 END) as janky_frames,
           AVG(interval_ns) as avg_interval_ns,
-          PERCENTILE(interval_ns, 0.5) as median_interval_ns,
+          PERCENTILE(interval_ns, 50) as median_interval_ns,
           MIN(interval_ns) as min_interval_ns,
           MAX(interval_ns) as max_interval_ns
         FROM frame_intervals

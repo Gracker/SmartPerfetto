@@ -80,7 +80,7 @@ sql: |
     SELECT t.utid, p.pid
     FROM thread t
     JOIN process p ON t.upid = p.upid
-    WHERE p.name GLOB '${package}*'
+    WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       AND t.tid = p.pid
   ),
   hot_slices AS (

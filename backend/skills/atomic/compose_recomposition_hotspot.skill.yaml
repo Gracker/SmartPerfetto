@@ -117,7 +117,7 @@ steps:
           ELSE '正常'
         END as rating
       FROM thread_slice s
-      WHERE (s.process_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR s.process_name = '${package}' OR s.process_name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
         AND (s.name GLOB 'Recompos*' OR s.name GLOB 'Compose:*' OR s.name GLOB '*CompositionLocal*')
@@ -175,7 +175,7 @@ steps:
           ELSE 'notice'
         END as severity
       FROM thread_slice s
-      WHERE (s.process_name GLOB '${package}*' OR '${package}' = '')
+      WHERE (('${package}' = '' OR s.process_name = '${package}' OR s.process_name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
         AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
         AND (s.name GLOB 'Recompos*' OR s.name GLOB 'Compose:*' OR s.name GLOB '*CompositionLocal*')
@@ -221,7 +221,7 @@ steps:
           s.process_name,
           s.upid
         FROM thread_slice s
-        WHERE (s.process_name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR s.process_name = '${package}' OR s.process_name GLOB '${package}:*') OR '${package}' = '')
           AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
           AND (s.name GLOB 'Recompos*' OR s.name GLOB 'Compose:*' OR s.name GLOB '*CompositionLocal*')
@@ -331,7 +331,7 @@ steps:
           s.thread_name,
           s.upid
         FROM thread_slice s
-        WHERE (s.process_name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR s.process_name = '${package}' OR s.process_name GLOB '${package}:*') OR '${package}' = '')
           AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
           AND (s.name GLOB 'Recompos*' OR s.name GLOB 'Compose:*' OR s.name GLOB '*CompositionLocal*')
@@ -339,7 +339,7 @@ steps:
       ),
       frame_budget AS (
         SELECT COALESCE(
-          (SELECT CAST(PERCENTILE(dur, 0.5) AS INTEGER)
+          (SELECT CAST(PERCENTILE(dur, 50) AS INTEGER)
            FROM actual_frame_timeline_slice
            WHERE dur BETWEEN 5000000 AND 50000000),
           16666667
@@ -355,7 +355,7 @@ steps:
           a.upid
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
-        WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+        WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL

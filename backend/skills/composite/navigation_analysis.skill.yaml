@@ -111,7 +111,7 @@ steps:
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
       WHERE t.tid = p.pid
-        AND (p.name GLOB '${package}*' OR '${package}' = '')
+        AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR s.ts + s.dur > ${start_ts})
         AND (${end_ts} IS NULL OR s.ts < ${end_ts})
         AND (
@@ -140,7 +140,7 @@ steps:
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
       WHERE t.tid = p.pid
-        AND (p.name GLOB '${package}*' OR '${package}' = '')
+        AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR s.ts + s.dur > ${start_ts})
         AND (${end_ts} IS NULL OR s.ts < ${end_ts})
         AND (
@@ -634,7 +634,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE (p.name GLOB '${package}*' OR p.name = '${target_process.data[0].process_name}')
+      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR p.name = '${target_process.data[0].process_name}')
         AND (${start_ts} IS NULL OR s.ts + s.dur > ${start_ts})
         AND (${end_ts} IS NULL OR s.ts < ${end_ts})
         AND (

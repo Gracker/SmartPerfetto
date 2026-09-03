@@ -96,7 +96,7 @@ steps:
       LEFT JOIN process p ON t.upid = p.upid
       LEFT JOIN track tr ON l.track_id = tr.id
       CROSS JOIN input i
-      WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+      WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
         AND l.ts >= i.start_ts
         AND l.ts < i.end_ts
       GROUP BY counter_name, process_name, thread_name

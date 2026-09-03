@@ -196,7 +196,7 @@ steps:
       target_app_filter AS (
         SELECT p.upid
         FROM process p
-        WHERE '${package}' = '' OR p.name GLOB '${package}*'
+        WHERE '${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
       ),
       dequeue_slices AS (
         SELECT s.dur as dur_ns

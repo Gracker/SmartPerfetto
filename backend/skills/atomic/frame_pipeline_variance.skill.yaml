@@ -94,7 +94,7 @@ sql: |
       a.dur / 1e6 as frame_ms
     FROM actual_frame_timeline_slice a
     LEFT JOIN process p ON a.upid = p.upid
-    WHERE (p.name GLOB '${package}*' OR '${package}' = '')
+    WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
       AND p.name NOT LIKE '/system/%'
       AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
       AND (${start_ts} IS NULL OR a.ts >= ${start_ts})

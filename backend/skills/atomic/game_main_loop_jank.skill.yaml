@@ -121,7 +121,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND (
@@ -159,7 +159,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND p.upid IN (SELECT upid FROM engine_processes)
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
@@ -181,12 +181,12 @@ steps:
         COUNT(*) AS slice_count,
         ROUND(SUM(dur_ms), 2) AS total_dur_ms,
         ROUND(AVG(dur_ms), 2) AS avg_dur_ms,
-        ROUND(PERCENTILE(dur_ms, 0.95), 2) AS p95_dur_ms,
+        ROUND(PERCENTILE(dur_ms, 95), 2) AS p95_dur_ms,
         ROUND(MAX(dur_ms), 2) AS max_dur_ms,
         SUM(CASE WHEN dur_ms > (SELECT target_frame_ms * 1.5 FROM input) THEN 1 ELSE 0 END) AS over_budget_count,
         CASE
           WHEN MAX(dur_ms) > (SELECT target_frame_ms * 4 FROM input) THEN 'critical'
-          WHEN PERCENTILE(dur_ms, 0.95) > (SELECT target_frame_ms * 2 FROM input) THEN 'warning'
+          WHEN PERCENTILE(dur_ms, 95) > (SELECT target_frame_ms * 2 FROM input) THEN 'warning'
           WHEN SUM(CASE WHEN dur_ms > (SELECT target_frame_ms * 1.5 FROM input) THEN 1 ELSE 0 END) > 0 THEN 'notice'
           ELSE 'normal'
         END AS rating
@@ -250,7 +250,7 @@ steps:
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
         CROSS JOIN input i
-        WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+        WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
           AND s.ts >= i.start_ts
           AND s.ts < i.end_ts
           AND (
@@ -287,7 +287,7 @@ steps:
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
       CROSS JOIN input i
-      WHERE (i.target_process = '' OR p.name GLOB i.target_process || '*')
+      WHERE (i.target_process = '' OR p.name = i.target_process OR p.name GLOB i.target_process || ':*')
         AND p.upid IN (SELECT upid FROM engine_processes)
         AND s.ts >= i.start_ts
         AND s.ts < i.end_ts
