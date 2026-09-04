@@ -28,7 +28,16 @@ export interface IdentityGateResult {
   error?: string;
 }
 
-const PROCESS_NAME_FILTER_OPERATORS = '(?:NOT\\s+GLOB\\b|NOT\\s+LIKE\\b|GLOB\\b|LIKE\\b|IN\\b|IS(?:\\s+NOT)?\\b|=)';
+/**
+ * Comparison that scopes a query to a named process.
+ *
+ * Word operators need whitespace to be operators at all (`nameGLOB` is not a
+ * comparison), but symbol operators do not: `p.name='com.foo'` is idiomatic SQL
+ * and was previously invisible here, which silently skipped both the raw-SQL
+ * identity warning and Skill identity admission.
+ */
+const PROCESS_NAME_FILTER_OPERATORS =
+  '(?:\\s+(?:NOT\\s+GLOB|NOT\\s+LIKE|GLOB|LIKE|IN|IS(?:\\s+NOT)?)\\b|\\s*(?:!=|<>|=))';
 const SQL_KEYWORDS = new Set([
   'where',
   'on',
@@ -75,17 +84,17 @@ export function sqlUsesProcessNameFilter(sql: string): boolean {
   const hasProcessTable = /\b(?:FROM|JOIN)\s+process\b/i.test(stripped);
 
   for (const alias of collectProcessTableAliases(stripped)) {
-    const qualifiedNameRe = new RegExp(`\\b${escapeRegex(alias)}\\.name\\s+${operator}`, 'i');
+    const qualifiedNameRe = new RegExp(`\\b${escapeRegex(alias)}\\.name${operator}`, 'i');
     if (qualifiedNameRe.test(stripped)) return true;
   }
 
   if (hasProcessTable) {
-    const unqualifiedNameRe = new RegExp(`(?<!\\.)\\bname\\s+${operator}`, 'i');
+    const unqualifiedNameRe = new RegExp(`(?<!\\.)\\bname${operator}`, 'i');
     if (unqualifiedNameRe.test(stripped)) return true;
   }
 
   const identityColumnRe = new RegExp(
-    `\\b(?:[A-Za-z_][A-Za-z0-9_]*\\.)?(?:process_name|client_process|server_process|package_name)\\s+${operator}`,
+    `\\b(?:[A-Za-z_][A-Za-z0-9_]*\\.)?(?:process_name|client_process|server_process|package_name)${operator}`,
     'i',
   );
   return identityColumnRe.test(stripped);

@@ -175,3 +175,38 @@ describe('IdentityGate', () => {
     expect(result.inherited.identity_gate_warning).toContain('resolver failed');
   });
 });
+
+describe('sqlUsesProcessNameFilter operator boundaries', () => {
+  // The gate decides both the raw-SQL identity warning and Skill identity
+  // admission. It previously required whitespace before the operator, so the
+  // idiomatic `p.name='com.foo'` scoped a query to a process while looking
+  // unscoped — quick mode writes raw SQL freely, so this was reachable.
+  it.each([
+    ["SELECT * FROM slice JOIN process p USING(upid) WHERE p.name='com.a'", 'alias, no space'],
+    ["SELECT * FROM slice JOIN process p USING(upid) WHERE p.name!='com.a'", 'alias, !='],
+    ["SELECT * FROM slice JOIN process p USING(upid) WHERE p.name<>'com.a'", 'alias, <>'],
+    ["SELECT * FROM process WHERE name='com.a'", 'bare name, no space'],
+    ["SELECT * FROM v WHERE process_name='com.a'", 'process_name, no space'],
+    ["SELECT * FROM v WHERE package_name='com.a'", 'package_name, no space'],
+    ["WITH t AS (SELECT upid FROM process WHERE name='com.a') SELECT * FROM slice JOIN t USING(upid)", 'CTE'],
+  ])('detects a process filter written without whitespace (%s)', sql => {
+    expect(sqlUsesProcessNameFilter(sql)).toBe(true);
+  });
+
+  it.each([
+    ["SELECT * FROM process p WHERE p.name GLOB 'com.a*'", 'GLOB'],
+    ["SELECT * FROM process p WHERE p.name NOT LIKE '%a%'", 'NOT LIKE'],
+    ["SELECT * FROM process p WHERE p.name IN ('a','b')", 'IN'],
+  ])('still detects word operators, which do need whitespace (%s)', sql => {
+    expect(sqlUsesProcessNameFilter(sql)).toBe(true);
+  });
+
+  it.each([
+    ['SELECT * FROM thread_slice WHERE upid = 1008', 'upid only'],
+    ['SELECT * FROM slice WHERE dur > 1000', 'no identity column'],
+    ["SELECT * FROM slice s WHERE s.name='doFrame'", 'slice name is not a process name'],
+    ['SELECT nameGLOBAL FROM t WHERE nameGLOBAL > 1', 'identifier that merely starts with an operator'],
+  ])('does not treat unrelated comparisons as process scoping (%s)', sql => {
+    expect(sqlUsesProcessNameFilter(sql)).toBe(false);
+  });
+});
