@@ -45,6 +45,8 @@ import {
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
 import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
+import { formatToolCallNarration, formatToolResultNarration, toolResultIsFailure } from '../../../agentv3/toolNarration';
+import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { classifyScene, type SceneType } from '../../../agentv3/sceneClassifier';
 import {loadPromptTemplate, renderTemplate} from '../../../agentv3/strategyLoader';
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
@@ -786,6 +788,12 @@ interface OpenCodeBridgeDispatchOptions {
   analysisPlan?: { current: AnalysisPlanV3 | null };
   isDeliverable?: () => boolean;
   timeoutMs?: number;
+  /** Output language for shared tool call/result narration. */
+  outputLanguage?: OutputLanguage;
+}
+
+function openCodeOutputLanguage(options: OpenCodeBridgeDispatchOptions): OutputLanguage {
+  return options.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
 }
 
 function openCodeBridgeAbortError(message: string): Error {
@@ -886,7 +894,8 @@ export async function dispatchOpenCodeBridgeRequest(
           taskId,
           toolName: definition.name,
           args,
-          message: `OpenCode dispatched ${definition.name}`,
+          // Shared narrator, so the timeline reads the same across runtimes.
+          message: formatToolCallNarration(definition.name, args, openCodeOutputLanguage(options)),
         },
         timestamp: Date.now(),
       });
@@ -899,9 +908,12 @@ export async function dispatchOpenCodeBridgeRequest(
         }),
       );
       throwIfOpenCodeBridgeUndeliverable(options);
-      const resultText = summarizeOpenCodeToolResult(
-        projectToolResultForExternalSurface(definition.name, result),
-      );
+      // The shared MCP handler reports failure on the result envelope itself;
+      // projection can replace that envelope for sensitive tools, so read it
+      // from the raw result first.
+      const resultIsFailure = toolResultIsFailure({toolName: definition.name, result});
+      const projectedResult = projectToolResultForExternalSurface(definition.name, result);
+      const resultText = summarizeOpenCodeToolResult(projectedResult);
       const codeReferences = extractSourceLookupCodeReferences(definition.name, result);
       recordPlanOrPrePlanToolCall(options.analysisPlan, {
         toolName: definition.name,
@@ -914,7 +926,17 @@ export async function dispatchOpenCodeBridgeRequest(
         type: 'agent_response',
         content: {
           taskId,
+          toolName: definition.name,
           result: resultText,
+          // Narrate the projected object; resultText is byte-truncated.
+          resultNarration: formatToolResultNarration({
+            toolName: definition.name,
+            args,
+            result: projectedResult,
+            isError: resultIsFailure,
+            language: openCodeOutputLanguage(options),
+          }),
+          isError: resultIsFailure,
         },
         timestamp: Date.now(),
       });
@@ -930,11 +952,21 @@ export async function dispatchOpenCodeBridgeRequest(
       ) {
         throw openCodeBridgeAbortError('OpenCode SmartPerfetto MCP bridge request was aborted');
       }
+      const failureMessage = err instanceof Error ? err.message : String(err);
       emitOpenCodeBridgeUpdateIfDeliverable(emitUpdate, options, {
         type: 'agent_response',
         content: {
           taskId,
-          result: `ERROR: ${err instanceof Error ? err.message : String(err)}`,
+          toolName: definition.name,
+          result: `ERROR: ${failureMessage}`,
+          resultNarration: formatToolResultNarration({
+            toolName: definition.name,
+            args,
+            result: {success: false, error: failureMessage},
+            isError: true,
+            language: openCodeOutputLanguage(options),
+          }),
+          isError: true,
         },
         timestamp: Date.now(),
       });
@@ -2836,12 +2868,13 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       if (!closedFinalPhase) return;
       this.emitUpdate({
         type: 'plan_phase_updated',
-        content: {
+        content: planPhaseUpdatedContent({
           phaseId: closedFinalPhase.id,
           status: closedFinalPhase.status,
           summary: closedFinalPhase.summary,
           phaseName: closedFinalPhase.name,
-        },
+          origin: 'auto',
+        }),
         timestamp: Date.now(),
       });
     };

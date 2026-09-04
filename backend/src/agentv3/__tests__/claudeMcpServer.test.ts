@@ -4178,7 +4178,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('includes produced evidence tables when auto-closing a phase', async () => {
-      const { tools, analysisPlan } = createTestServer();
+      const { tools, analysisPlan, emittedUpdates } = createTestServer();
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: 'Collect', goal: 'Collect overview evidence', expectedTools: ['invoke_skill'] },
@@ -4199,7 +4199,14 @@ describe('createClaudeMcpServer', () => {
 
       const p1 = analysisPlan.current?.phases.find(p => p.id === 'p1');
       expect(p1?.status).toBe('completed');
-      expect(p1?.summary).toContain('自动完成阶段');
+      // The auto-close is identified by the event's `origin`, not by wording:
+      // the summary is localized, and the consumer supplies its own prefix.
+      expect(emittedUpdates.filter(u =>
+        u.type === 'plan_phase_updated' &&
+        u.content?.phaseId === 'p1' &&
+        u.content?.status === 'completed',
+      ).map(u => u.content.origin)).toEqual(['auto']);
+      expect(p1?.summary).toContain('上一阶段未收到显式完成摘要');
       expect(p1?.summary).toContain('1 个证据表');
       expect(p1?.summary).toContain('scrolling_analysis');
       expect(p1?.summary).toContain('Result');
@@ -6398,7 +6405,7 @@ describe('createClaudeMcpServer', () => {
 
       const p1 = analysisPlan.current?.phases.find(p => p.id === 'p1');
       expect(p1?.status).toBe('completed');
-      expect(p1?.summary).toContain('自动完成阶段');
+      expect(p1?.summary).toContain('上一阶段未收到显式完成摘要');
       expect(p2Started.next_phase_reminder).toBeUndefined();
       expect(p2Completed.allPhasesComplete).toBe(true);
     });

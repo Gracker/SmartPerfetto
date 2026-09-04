@@ -101,6 +101,29 @@ Keep these boundaries intact:
 - Do not patch only one surface when changing final-result shape. Check SSE
   payloads, HTML reports, CLI persistence/export, session snapshots, and
   generated frontend contracts.
+- Tool narration is a two-sided contract in `backend/src/agentv3/toolNarration.ts`:
+  `formatToolCallNarration` says what a call is for, `formatToolResultNarration`
+  says what came back. Narrate from the **externally projected** result object
+  (`projectToolResultForExternalSurface`) at the point the runtime still holds
+  it — the `result` field on `agent_response` is byte-truncated for transport
+  and can end mid-JSON. Several MCP tools wrap their JSON in guidance prose
+  (skill notes prefix, reasoning nudge, active-phase reminder), so a structured
+  consumer must extract the embedded JSON rather than parse the whole string.
+  A registered tool with no narration case prints `调用工具 <name>`; a coverage
+  test in `src/agentv3/__tests__/toolResultNarration.test.ts` enforces the set.
+- `plan_phase_updated` is emitted from nine sites across five files. Build its
+  payload with `planPhaseUpdatedContent(...)` so `origin` (`auto` vs `model`) is
+  always present: the process view shows automatic transitions, which nothing
+  else in the stream reports, and skips model-driven ones because the
+  `update_plan_phase` dispatch line already narrates them. Never infer origin
+  from the summary wording — those strings are localized. Its statuses are
+  `in_progress`, `completed`, `pending`, and `skipped`; a two-case mapping
+  renders an evidence rollback as progress.
+- `SSE_EVENT_TYPES` in `types/dataContract.ts` is documentation, not
+  enforcement. Events reach the wire whether or not they are listed, so an
+  event with no frontend handler is silently discarded after being computed and
+  transmitted — `plan_submitted`, `plan_phase_updated`, and `plan_revised` were
+  in that state. When adding an event, wire a consumer or say why there is none.
 - `sqlUsesProcessNameFilter` decides both the raw-SQL identity warning and
   Skill identity admission, so it is an accuracy control, not a formatting
   nicety. Any change to it must be checked in both directions against real

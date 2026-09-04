@@ -103,6 +103,29 @@ The plugin talks to `/api/agent/v1/*`.
   `fetch()` plus a bounded incremental parser, not native `EventSource`, because
   backend Authorization and workspace headers are mandatory.
 
+## Analysis Process View
+
+The `streaming_flow` message is the analysis process view (`### 🧭 分析过程`).
+It renders below the answer within a round — see `message_order.ts` — so the
+answer stays next to the question and the process reads as reference below it.
+
+- Keep steps structured (`StreamingFlowState.conversationSteps`) all the way to
+  render. Pre-formatting each step into a string destroys the phase grouping
+  before the renderer can use it, and the retained-step cap then leaves steps
+  indented under a header that was trimmed away.
+- Plan phase boundaries are identified by `sourceEventType === 'plan_phase_updated'`,
+  never by matching the localized wording. Runs without boundaries must render
+  a flat list: private-knowledge runs suppress `plan_phase_updated`, and quick
+  mode has no plan at all.
+- Do not mirror answer text into the process view. The answer streams in its
+  own bubble; snapshots there printed the same text twice once the process view
+  moved below the answer. Start and completion markers are fine.
+- The stop control has two forms: plain stop, and stop-and-redirect, which
+  focuses the composer only after the backend confirms the matching `runId`
+  reached a terminal state. Cancellation can still be waiting on run identity,
+  and a failed stop restores the SSE stream, so focusing earlier would invite
+  input against a live run.
+
 ## Self-Evolution UI
 
 - Bind the panel to the saved backend URL and credential. If connection edits

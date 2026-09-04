@@ -435,6 +435,137 @@ export function formatToolCallNarration(
         ? localize(language, `读取知识库：${topic}，用于校准当前诊断解释`, `Read knowledge base: ${topic} to calibrate the diagnosis`)
         : localize(language, '读取知识库：校准当前诊断解释', 'Read knowledge base: calibrate the current diagnosis'));
     }
+    case 'submit_hypothesis': {
+      const statement = readString(args.statement);
+      return shorten(statement
+        ? localize(language, `提出假设：${statement}`, `Propose hypothesis: ${statement}`)
+        : localize(language, '提出假设：给出待验证的根因解释', 'Propose hypothesis: state a root cause to verify'));
+    }
+    case 'search_codebase': {
+      const query = readString(args.query);
+      return shorten(query
+        ? localize(language, `搜索源码：${query}，确认 trace 现象对应的实现`, `Search source: ${query} to find the implementation behind the trace behaviour`)
+        : localize(language, '搜索源码：确认 trace 现象对应的实现', 'Search source: find the implementation behind the trace behaviour'));
+    }
+    case 'read_codebase_file': {
+      const filePath = readString(args.file_path || args.filePath);
+      const startLine = readString(args.start_line || args.startLine);
+      const location = filePath
+        ? `${filePath}${startLine ? `:${startLine}` : ''}`
+        : '';
+      return shorten(location
+        ? localize(language, `读取源码 ${location}：核对具体实现`, `Read source ${location}: check the actual implementation`)
+        : localize(language, '读取源码：核对具体实现', 'Read source: check the actual implementation'));
+    }
+    case 'query_code_graph': {
+      const query = readString(args.query);
+      return shorten(query
+        ? localize(language, `查询调用关系：${query}`, `Query the call graph: ${query}`)
+        : localize(language, '查询调用关系：确认代码路径如何被触发', 'Query the call graph: see how the code path is reached'));
+    }
+    case 'inspect_code_symbol': {
+      const symbol = readString(args.symbol);
+      return shorten(symbol
+        ? localize(language, `展开符号 ${symbol}：看它的定义和上下游`, `Inspect symbol ${symbol}: definition plus callers and callees`)
+        : localize(language, '展开符号：看它的定义和上下游', 'Inspect symbol: definition plus callers and callees'));
+    }
+    case 'resolve_symbol': {
+      const symbol = readString(args.symbol);
+      const kind = readString(args.kind);
+      const kindText = kind ? localize(language, `（${kind} 域）`, ` (${kind} domain)`) : '';
+      return shorten(symbol
+        ? localize(language, `解析符号 ${symbol}${kindText}：定位它在源码中的位置`, `Resolve symbol ${symbol}${kindText}: locate it in source`)
+        : localize(language, '解析符号：定位它在源码中的位置', 'Resolve symbol: locate it in source'));
+    }
+    case 'lookup_app_source':
+    case 'lookup_aosp_source':
+    case 'lookup_kernel_source':
+    case 'lookup_oem_sdk': {
+      const query = readString(args.query || args.symbol);
+      const layer = toolName === 'lookup_kernel_source'
+        ? localize(language, '内核', 'kernel')
+        : toolName === 'lookup_aosp_source'
+          ? localize(language, 'AOSP', 'AOSP')
+          : toolName === 'lookup_oem_sdk'
+            ? localize(language, '厂商 SDK', 'OEM SDK')
+            : localize(language, '应用', 'app');
+      return shorten(query
+        ? localize(language, `查阅${layer}源码：${query}，确认这段行为的实现机制`, `Look up ${layer} source: ${query} to confirm the mechanism behind this behaviour`)
+        : localize(language, `查阅${layer}源码：确认这段行为的实现机制`, `Look up ${layer} source: confirm the mechanism behind this behaviour`));
+    }
+    case 'propose_patch': {
+      const problem = readString(args.problem);
+      return shorten(problem
+        ? localize(language, `起草修复方案：${problem}`, `Draft a fix: ${problem}`)
+        : localize(language, '起草修复方案：把根因转成可落地的改动', 'Draft a fix: turn the root cause into an actionable change'));
+    }
+    case 'list_codebases':
+      return shorten(localize(language, '列出可用源码库：确认哪些实现可以查', 'List available codebases: see which implementations can be inspected'));
+    case 'record_source_use_decision': {
+      const status = readString(args.status);
+      const reason = readString(args.reason);
+      const detail = [status, reason].filter(Boolean).join(localize(language, '，', ', '));
+      return shorten(detail
+        ? localize(language, `记录源码使用结论：${detail}`, `Record source-use decision: ${detail}`)
+        : localize(language, '记录源码使用结论：说明源码是否参与了本次判断', 'Record source-use decision: state whether source informed this analysis'));
+    }
+    case 'recall_similar_case': {
+      const scene = readString(args.scene) || readString(args.cuj);
+      return shorten(scene
+        ? localize(language, `检索相似历史案例：${scene}，看这类问题以前怎么定位`, `Recall similar past cases: ${scene}, to see how this class of problem was diagnosed before`)
+        : localize(language, '检索相似历史案例：看这类问题以前怎么定位', 'Recall similar past cases: see how this class of problem was diagnosed before'));
+    }
+    case 'recall_similar_result': {
+      const snapshotId = readString(args.snapshot_id || args.snapshotId);
+      return shorten(snapshotId
+        ? localize(language, `对照历史分析结果 ${snapshotId}`, `Compare against past analysis result ${snapshotId}`)
+        : localize(language, '对照历史分析结果：看同类 trace 的结论', 'Compare against past analysis results for similar traces'));
+    }
+    case 'recall_patterns': {
+      const keywords = readString(args.keywords);
+      return shorten(keywords
+        ? localize(language, `回忆已知模式：${keywords}`, `Recall known patterns: ${keywords}`)
+        : localize(language, '回忆已知模式：复用以前验证过的判断', 'Recall known patterns: reuse previously validated judgments'));
+    }
+    case 'recall_project_memory': {
+      const tags = readString(args.tags) || readString(args.project_key || args.projectKey);
+      return shorten(tags
+        ? localize(language, `读取项目记忆：${tags}`, `Read project memory: ${tags}`)
+        : localize(language, '读取项目记忆：带上这个项目已知的背景', 'Read project memory: bring in known context for this project'));
+    }
+    case 'lookup_baseline': {
+      const baselineId = readString(args.baseline_id || args.baselineId)
+        || readString(args.cuj)
+        || readString(args.app_id || args.appId);
+      return shorten(baselineId
+        ? localize(language, `读取基线 ${baselineId}：判断当前数值是否异常`, `Read baseline ${baselineId}: decide whether the current numbers are abnormal`)
+        : localize(language, '读取基线：判断当前数值是否异常', 'Read baseline: decide whether the current numbers are abnormal'));
+    }
+    case 'compare_baselines': {
+      const base = readString(args.base_baseline_id || args.baseBaselineId);
+      const candidate = readString(args.candidate_baseline_id || args.candidateBaselineId);
+      return shorten(base && candidate
+        ? localize(language, `对比基线 ${base} 与 ${candidate}：定位回归`, `Compare baselines ${base} and ${candidate} to locate the regression`)
+        : localize(language, '对比基线：定位回归', 'Compare baselines to locate the regression'));
+    }
+    case 'list_stdlib_modules': {
+      const namespace = readString(args.namespace);
+      return shorten(namespace
+        ? localize(language, `列出 stdlib 模块：${namespace}`, `List stdlib modules: ${namespace}`)
+        : localize(language, '列出 stdlib 模块：确认可以直接用的官方能力', 'List stdlib modules: see which official helpers are available'));
+    }
+    case 'lookup_strategy_detail': {
+      const scene = readString(args.scene);
+      return shorten(scene
+        ? localize(language, `读取 ${scene} 场景方法论：确认这类问题的标准判据`, `Read the ${scene} methodology: confirm the standard criteria for this problem class`)
+        : localize(language, '读取场景方法论：确认这类问题的标准判据', 'Read the scene methodology: confirm the standard criteria for this problem class'));
+    }
+    case 'lookup_blog_knowledge': {
+      const query = readString(args.query);
+      return shorten(query
+        ? localize(language, `检索外部知识：${query}`, `Search external knowledge: ${query}`)
+        : localize(language, '检索外部知识：补充官方文档之外的解释', 'Search external knowledge: add context beyond the official docs'));
+    }
     default:
       return shorten(localize(language, `调用工具 ${toolName}`, `Call tool ${toolName}`));
   }
@@ -446,4 +577,315 @@ export function looksLikeGenericToolMessage(message: string): boolean {
   return /^调用工具[:：]\s*/.test(text) ||
     /^call tool[:：]\s*/.test(text) ||
     /^调用\s+(mcp__smartperfetto__)?[a-z0-9_]+$/.test(text);
+}
+
+// =============================================================================
+// Tool result narration
+//
+// `formatToolCallNarration` explains what a tool call is *for*. This is its
+// other half: what the call actually returned. Without it every runtime fell
+// back to `summarizeExternalToolResult`, which is a byte truncator rather than
+// a summary, so the timeline showed truncated JSON where a sentence belongs.
+//
+// The input must already be projected for external surfaces. Runtimes call
+// `projectToolResultForExternalSurface` before this; narrating a raw MCP result
+// would leak private source and knowledge content onto the SSE stream.
+// =============================================================================
+
+export interface ToolResultNarrationInput {
+  toolName: string;
+  /** Arguments of the originating call. Many results do not echo their target. */
+  args?: unknown;
+  /** Externally projected tool result. Never the raw MCP payload. */
+  result: unknown;
+  /** Runtime-reported failure, independent of any `success` field in the body. */
+  isError?: boolean;
+  language?: OutputLanguage;
+}
+
+const MAX_RESULT_UNWRAP_DEPTH = 6;
+
+/**
+ * Parse JSON that may be wrapped in prose.
+ *
+ * Several MCP tools deliberately surround their JSON with guidance text — the
+ * skill notes prefix and reasoning nudge around `invoke_skill`, the active
+ * phase reminder appended to `fetch_artifact` rows. A whole-string parse fails
+ * on those, which is why row fetches produced no timeline line while summary
+ * fetches did. Scan for the first balanced object or array instead.
+ */
+function parseEmbeddedJson(value: string): unknown | undefined {
+  const text = value.trim();
+  if (!text) return undefined;
+
+  const start = text.search(/[{[]/);
+  if (start < 0) return undefined;
+
+  const opener = text[start];
+  const closer = opener === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < text.length; i += 1) {
+    const char = text[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === opener) depth += 1;
+    else if (char === closer) {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, i + 1));
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function unwrapContentBlocks(value: unknown): unknown {
+  if (!Array.isArray(value)) return value;
+  for (const entry of value) {
+    const record = entry && typeof entry === 'object' ? entry as Record<string, unknown> : undefined;
+    if (record && typeof record.text === 'string') return record.text;
+  }
+  return value;
+}
+
+/**
+ * Unwrap whatever envelope this runtime happens to use so the narrator sees the
+ * tool's own object.
+ *
+ * The four runtimes deliver the same MCP result in three different shapes: the
+ * content-block array itself, that array already serialized to a string, and
+ * the `{content: [...]}` envelope. Handling only one of them silently produced
+ * shapeless lines like "取回 artifact art-11" with no row or column count.
+ *
+ * Returns `{}` when nothing parses — including a payload truncated mid-JSON,
+ * which is exactly why narration has to happen where the object is intact.
+ */
+function readToolResultBody(result: unknown): Record<string, unknown> {
+  let current: unknown = result;
+  for (let depth = 0; depth < MAX_RESULT_UNWRAP_DEPTH; depth += 1) {
+    if (typeof current === 'string') {
+      const parsed = parseEmbeddedJson(current);
+      if (parsed === undefined) return {};
+      current = parsed;
+      continue;
+    }
+    if (Array.isArray(current)) {
+      const unwrapped = unwrapContentBlocks(current);
+      if (unwrapped === current) {
+        // A bare array is the payload, not an envelope: `list_skills` in full
+        // mode returns the catalog directly. Expose it as a countable field.
+        return {items: current};
+      }
+      current = unwrapped;
+      continue;
+    }
+    if (current && typeof current === 'object') {
+      const record = current as Record<string, unknown>;
+      if (Array.isArray(record.content) || typeof record.content === 'string') {
+        current = record.content;
+        continue;
+      }
+      return record;
+    }
+    return {};
+  }
+  return {};
+}
+
+function readCount(value: unknown): number | undefined {
+  const count = typeof value === 'number'
+    ? value
+    : Array.isArray(value)
+      ? value.length
+      : undefined;
+  return typeof count === 'number' && Number.isFinite(count) ? count : undefined;
+}
+
+function readErrorText(body: Record<string, unknown>): string {
+  return readString(body.error) || readString(body.message) || readString(body.reason);
+}
+
+function narrateToolFailure(
+  toolName: string,
+  body: Record<string, unknown>,
+  language: OutputLanguage,
+): string {
+  const detail = readErrorText(body);
+  return shorten(detail
+    ? localize(language, `${toolName} 失败：${detail}`, `${toolName} failed: ${detail}`)
+    : localize(language, `${toolName} 失败`, `${toolName} failed`));
+}
+
+/**
+ * True when a tool result reports failure.
+ *
+ * Read this from the **raw** result, before `projectToolResultForExternalSurface`
+ * runs: a sensitive tool's projection is replaced wholesale by a rejection
+ * envelope that carries no `success` field, so a failed source lookup would
+ * otherwise be reported as an ordinary success and vanish from the timeline.
+ * The failure flag is a boolean, not content, so carrying it across the
+ * projection boundary discloses nothing.
+ */
+export function toolResultIsFailure(input: ToolResultNarrationInput): boolean {
+  if (input.isError === true) return true;
+  const value = input.result;
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const record = value as Record<string, unknown>;
+    if (record.isError === true) return true;
+  }
+  const body = readToolResultBody(value);
+  return body.success === false || body.isError === true;
+}
+
+export function formatToolResultNarration(input: ToolResultNarrationInput): string {
+  const language = input.language ?? DEFAULT_OUTPUT_LANGUAGE;
+  const toolName = shortToolName(readString(input.toolName) || 'unknown');
+  const args = asRecord(input.args);
+  const body = readToolResultBody(input.result);
+
+  if (input.isError === true || body.success === false) {
+    return narrateToolFailure(toolName, body, language);
+  }
+
+  // Nothing parsed and no call context to fall back on. Say nothing rather
+  // than print a line that only restates the dispatch above it.
+  if (Object.keys(body).length === 0 && Object.keys(args).length === 0) return '';
+
+  switch (toolName) {
+    case 'invoke_skill':
+      // The skill engine already emits its own completion line with duration
+      // and layer count, and the `data` event lists the evidence produced.
+      // A third sentence here would only repeat them.
+      return '';
+    case 'execute_sql':
+    case 'execute_sql_on': {
+      const rows = readCount(body.totalRows) ?? readCount(body.rowCount) ?? readCount(body.rows);
+      const summarized = body.mode === 'summary' || body.autoSummarized === true;
+      const summaryText = summarized ? localize(language, '（已摘要）', ' (summarized)') : '';
+      return shorten(rows !== undefined
+        ? localize(language, `SQL 返回 ${rows} 行${summaryText}`, `SQL returned ${rows} rows${summaryText}`)
+        : localize(language, 'SQL 执行完成', 'SQL execution finished'));
+    }
+    case 'fetch_artifact': {
+      const id = readString(body.id) || readString(args.id) || readString(args.artifactId);
+      const rows = readCount(body.rows) ?? readCount(body.totalRows);
+      const columns = readCount(body.columns);
+      const shape = [
+        rows !== undefined ? localize(language, `${rows} 行`, `${rows} rows`) : '',
+        columns !== undefined ? localize(language, `${columns} 列`, `${columns} columns`) : '',
+      ].filter(Boolean).join(localize(language, ' / ', ' / '));
+      // Without a shape this line only repeats the dispatch line above it.
+      if (!shape) return '';
+      const shapeText = localize(language, `：${shape}`, `: ${shape}`);
+      // A summary fetch reports columns but no rows; say so rather than
+      // leaving a bare column count that reads like a truncated row count.
+      const verb = (readString(body.detail) || readString(args.detail)) === 'summary'
+        ? localize(language, '取回 artifact 摘要', 'Fetched artifact summary')
+        : localize(language, '取回 artifact', 'Fetched artifact');
+      return shorten(id
+        ? `${verb} ${id}${shapeText}`
+        : `${verb}${shapeText}`);
+    }
+    case 'detect_architecture': {
+      const type = readString(body.type);
+      const confidence = typeof body.confidence === 'number' && Number.isFinite(body.confidence)
+        ? body.confidence
+        : undefined;
+      const confidenceText = confidence !== undefined
+        ? localize(language, `（置信度 ${confidence.toFixed(2)}）`, ` (confidence ${confidence.toFixed(2)})`)
+        : '';
+      return shorten(type
+        ? localize(language, `识别为 ${type} 渲染架构${confidenceText}`, `Detected ${type} rendering architecture${confidenceText}`)
+        : localize(language, '渲染架构检测完成', 'Rendering architecture detection finished'));
+    }
+    case 'submit_hypothesis': {
+      const id = readString(body.hypothesisId);
+      const statement = readString(body.statement) || readString(args.statement);
+      const idText = id ? ` ${id}` : '';
+      return shorten(statement
+        ? localize(language, `记录假设${idText}：${statement}`, `Recorded hypothesis${idText}: ${statement}`)
+        : localize(language, `记录假设${idText}`, `Recorded hypothesis${idText}`));
+    }
+    case 'resolve_hypothesis': {
+      const id = readString(body.hypothesisId) || readString(args.hypothesisId);
+      const status = readString(body.status) || readString(args.status);
+      const unresolved = readCount(body.unresolvedCount);
+      const unresolvedText = unresolved !== undefined
+        ? localize(language, `，剩余待验证 ${unresolved} 条`, `, ${unresolved} still unresolved`)
+        : '';
+      const idText = id ? ` ${id}` : '';
+      return shorten(status
+        ? localize(language, `假设${idText} 收敛为 ${status}${unresolvedText}`, `Hypothesis${idText} resolved as ${status}${unresolvedText}`)
+        : localize(language, `假设${idText} 已更新${unresolvedText}`, `Hypothesis${idText} updated${unresolvedText}`));
+    }
+    case 'flag_uncertainty': {
+      const flags = readCount(body.flagCount);
+      return shorten(flags !== undefined
+        ? localize(language, `已标记不确定性，共 ${flags} 条`, `Uncertainty flagged; ${flags} total`)
+        : localize(language, '已标记不确定性', 'Uncertainty flagged'));
+    }
+    case 'submit_plan':
+    case 'revise_plan': {
+      const phases = readCount(body.phases) ?? readCount(args.phases) ?? readCount(args.updatedPhases);
+      return shorten(phases !== undefined
+        ? localize(language, `计划已登记，共 ${phases} 个阶段`, `Plan registered with ${phases} phases`)
+        : localize(language, '计划已登记', 'Plan registered'));
+    }
+    case 'update_plan_phase': {
+      const phaseId = readString(args.phaseId || args.id);
+      const status = readString(args.status || args.state);
+      const allComplete = body.allPhasesComplete === true;
+      const completeText = allComplete
+        ? localize(language, '，全部阶段已完成', '; all phases complete')
+        : '';
+      return shorten(phaseId && status
+        ? localize(language, `阶段 ${phaseId} 标记为 ${status}${completeText}`, `Phase ${phaseId} marked ${status}${completeText}`)
+        : localize(language, `计划阶段已更新${completeText}`, `Plan phase updated${completeText}`));
+    }
+    case 'list_skills': {
+      // Quick mode returns {matched, skills[]}; full mode returns a bare array.
+      const count = readCount(body.matched)
+        ?? readCount(body.skills)
+        ?? readCount(body.items);
+      return shorten(count !== undefined
+        ? localize(language, `技能目录返回 ${count} 项`, `Skill catalog returned ${count} entries`)
+        : localize(language, '技能目录已返回', 'Skill catalog returned'));
+    }
+    case 'lookup_sql_schema':
+    case 'lookup_knowledge':
+    case 'query_perfetto_source': {
+      const hits = readCount(body.results) ?? readCount(body.matches) ?? readCount(body.entries);
+      return shorten(hits !== undefined
+        ? localize(language, `查到 ${hits} 条参考资料`, `Found ${hits} reference entries`)
+        : localize(language, '参考资料已返回', 'Reference material returned'));
+    }
+    case 'write_analysis_note': {
+      const section = readString(args.section) || readString(body.section);
+      return shorten(section
+        ? localize(language, `笔记已记录：${section}`, `Note recorded: ${section}`)
+        : localize(language, '笔记已记录', 'Note recorded'));
+    }
+    default:
+      // No shape we can describe honestly. The caller drops the step rather
+      // than falling back to a JSON dump.
+      return '';
+  }
 }

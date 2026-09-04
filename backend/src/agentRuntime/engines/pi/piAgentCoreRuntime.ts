@@ -58,7 +58,9 @@ import {
 } from '../../../agentv3/analysisPatternMemory';
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
 import { classifyScene, type SceneType } from '../../../agentv3/sceneClassifier';
-import { localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
+import { DEFAULT_OUTPUT_LANGUAGE, localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
+import { formatToolCallNarration, formatToolResultNarration, toolResultIsFailure } from '../../../agentv3/toolNarration';
+import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import type {
   AnalysisNote,
   AnalysisPlanV3,
@@ -1049,6 +1051,7 @@ export function isPiAgentCoreProviderOutputEvent(event: PiAgentCoreEvent): boole
 export function projectPiAgentCoreEventToStreamingUpdate(
   event: PiAgentCoreEvent,
   timestamp = Date.now(),
+  outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
 ): StreamingUpdate | undefined {
   switch (event.type) {
     case 'agent_start':
@@ -1075,17 +1078,21 @@ export function projectPiAgentCoreEventToStreamingUpdate(
           }
         : undefined;
     }
-    case 'tool_execution_start':
+    case 'tool_execution_start': {
+      const startToolName = typeof event.toolName === 'string' ? event.toolName : 'unknown';
       return {
         type: 'agent_task_dispatched',
         content: {
           taskId: event.toolCallId || 'unknown',
-          toolName: event.toolName || 'unknown',
+          toolName: startToolName,
           args: event.args,
-          message: `Pi agent-core dispatched ${event.toolName || 'unknown'}`,
+          // Same shared narrator the Claude and OpenAI paths use, so the
+          // timeline reads identically across runtimes.
+          message: formatToolCallNarration(startToolName, event.args, outputLanguage),
         },
         timestamp,
       };
+    }
     case 'tool_execution_update': {
       const toolName = typeof event.toolName === 'string' ? event.toolName : 'unknown';
       const rawUpdate = event.partialResult ?? event.update;
@@ -1105,9 +1112,22 @@ export function projectPiAgentCoreEventToStreamingUpdate(
     }
     case 'tool_execution_end': {
       const toolName = typeof event.toolName === 'string' ? event.toolName : 'unknown';
-      const result = summarizePiToolResult(
-        projectToolResultForExternalSurface(toolName, event.result),
-      );
+      // Failure comes from the raw result: projection can replace a sensitive
+      // tool's payload with a rejection envelope that carries no success field.
+      const resultIsFailure = toolResultIsFailure({
+        toolName,
+        result: event.result,
+        isError: event.isError === true,
+      });
+      const projected = projectToolResultForExternalSurface(toolName, event.result);
+      const result = summarizePiToolResult(projected);
+      // Narrate the projected object; `result` is byte-truncated for transport.
+      const resultNarration = formatToolResultNarration({
+        toolName,
+        result: projected,
+        isError: resultIsFailure,
+        language: outputLanguage,
+      });
       return event.isError
         ? {
             type: 'agent_response',
@@ -1116,6 +1136,7 @@ export function projectPiAgentCoreEventToStreamingUpdate(
               toolName,
               toolCallId: event.toolCallId,
               result,
+              resultNarration,
               isError: true,
               recoverable: true,
             },
@@ -1125,7 +1146,10 @@ export function projectPiAgentCoreEventToStreamingUpdate(
             type: 'agent_response',
             content: {
               taskId: event.toolCallId || 'unknown',
+              toolName,
               result,
+              resultNarration,
+              isError: resultIsFailure,
             },
             timestamp,
           };
@@ -2086,7 +2110,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       if (event.type === 'done') {
         recordEvaluationTokenDeltaIfPresent(event.message);
       }
-      const update = projectPiAgentCoreEventToStreamingUpdate(event);
+      const update = projectPiAgentCoreEventToStreamingUpdate(event, Date.now(), outputLanguage);
       if (correctionInProgress && update?.type === 'error') return;
       if (
         isPiAgentCoreVisibleOutputEvent(event)
@@ -2143,12 +2167,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         if (closedFinalPhase) {
           this.emit('update', {
             type: 'plan_phase_updated',
-            content: {
+            content: planPhaseUpdatedContent({
               phaseId: closedFinalPhase.id,
               status: closedFinalPhase.status,
               summary: closedFinalPhase.summary,
               phaseName: closedFinalPhase.name,
-            },
+              origin: 'auto',
+            }),
             timestamp: Date.now(),
           });
         }
@@ -2290,12 +2315,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         if (closedFinalPhase) {
           this.emit('update', {
             type: 'plan_phase_updated',
-            content: {
+            content: planPhaseUpdatedContent({
               phaseId: closedFinalPhase.id,
               status: closedFinalPhase.status,
               summary: closedFinalPhase.summary,
               phaseName: closedFinalPhase.name,
-            },
+              origin: 'auto',
+            }),
             timestamp: Date.now(),
           });
         }

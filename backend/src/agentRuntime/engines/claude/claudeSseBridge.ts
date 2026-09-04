@@ -9,7 +9,7 @@ import {
   SDK_MAX_TURNS_SUBTYPE,
 } from '../../../agentv3/analysisTermination';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from '../../../agentv3/outputLanguage';
-import { formatToolCallNarration, type ToolNarrationOptions } from '../../../agentv3/toolNarration';
+import { formatToolCallNarration, formatToolResultNarration, type ToolNarrationOptions } from '../../../agentv3/toolNarration';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import type {CodeAwareStreamingTextProjection} from '../../../services/security/codeAwareOutputRegistry';
 import {
@@ -80,6 +80,7 @@ export function createSseBridge(
 ): SseBridge {
   let lastToolUseId: string | undefined;
   const toolUseIdToName = new Map<string, string>();
+  const toolUseIdToArgs = new Map<string, unknown>();
   /**
    * Track whether the current assistant turn uses tools.
    * When true, stream_event text deltas are intermediate reasoning (emit as thought).
@@ -127,16 +128,24 @@ export function createSseBridge(
   const BUFFER_DELAY_MS = 200;
   const MAX_TRACKED_TASKS = 256;
 
-  function setBoundedTaskName(
-    target: Map<string, string>,
+  function setBoundedTaskEntry<T>(
+    target: Map<string, T>,
     taskId: string,
-    name: string,
+    value: T,
   ): void {
     if (!target.has(taskId) && target.size >= MAX_TRACKED_TASKS) {
       const oldestTaskId = target.keys().next().value;
       if (oldestTaskId) target.delete(oldestTaskId);
     }
-    target.set(taskId, name);
+    target.set(taskId, value);
+  }
+
+  function setBoundedTaskName(
+    target: Map<string, string>,
+    taskId: string,
+    name: string,
+  ): void {
+    setBoundedTaskEntry(target, taskId, name);
   }
 
   function projectCompleteText(text: string): string {
@@ -304,6 +313,9 @@ export function createSseBridge(
           lastToolUseId = block.id;
           if (typeof block.id === 'string' && typeof block.name === 'string') {
             setBoundedTaskName(toolUseIdToName, block.id, block.name);
+            // Result narration needs the call target: most tool results do not
+            // echo the skill id, artifact id, or SQL they were asked for.
+            setBoundedTaskEntry(toolUseIdToArgs, block.id, block.input);
           }
           const friendlyMsg = formatToolCallNarration(block.name, block.input, language, narrationOptions);
           emit({
@@ -336,38 +348,43 @@ export function createSseBridge(
       currentTurnHasToolUse = false;
       currentTurnStreamedText = false;
       streamingAsAnswer = false;
-      const resultBlocks = extractSdkToolResultBlocks(msg);
-      if (resultBlocks.length > 0) {
-        for (const block of resultBlocks) {
-          const taskId = block.toolUseId || lastToolUseId || 'unknown';
-          const toolName = toolUseIdToName.get(taskId);
-          emit({
-            type: 'agent_response',
-            content: {
-              taskId,
-              result: summarizeExternalToolResult(projectToolResultForExternalSurface(
-                toolName ?? 'unknown',
-                block.result,
-              )),
-            },
-            timestamp: now,
-          });
-          toolUseIdToName.delete(taskId);
-        }
-      } else {
-        const taskId = lastToolUseId || 'unknown';
-        const toolName = toolUseIdToName.get(taskId);
+      const emitToolResult = (taskId: string, rawResult: unknown, isError?: boolean): void => {
+        const toolName = toolUseIdToName.get(taskId) ?? 'unknown';
+        // Decide failure on the raw result: projection replaces a sensitive
+        // tool's payload with a rejection envelope carrying no success field.
+        const failed = isSdkToolResultFailure(rawResult, isError);
+        const projected = projectToolResultForExternalSurface(toolName, rawResult);
         emit({
           type: 'agent_response',
           content: {
             taskId,
-            result: summarizeExternalToolResult(projectToolResultForExternalSurface(
-              toolName ?? 'unknown',
-              msg.tool_use_result,
-            )),
+            toolName,
+            result: summarizeExternalToolResult(projected),
+            // Narrate the projected object before truncation can cut its JSON.
+            resultNarration: formatToolResultNarration({
+              toolName,
+              args: toolUseIdToArgs.get(taskId),
+              result: projected,
+              isError: failed,
+              language,
+            }),
+            isError: failed,
           },
           timestamp: now,
         });
+        toolUseIdToArgs.delete(taskId);
+      };
+
+      const resultBlocks = extractSdkToolResultBlocks(msg);
+      if (resultBlocks.length > 0) {
+        for (const block of resultBlocks) {
+          const taskId = block.toolUseId || lastToolUseId || 'unknown';
+          emitToolResult(taskId, block.result, block.isError);
+          toolUseIdToName.delete(taskId);
+        }
+      } else {
+        const taskId = lastToolUseId || 'unknown';
+        emitToolResult(taskId, msg.tool_use_result);
         toolUseIdToName.delete(taskId);
       }
       return;

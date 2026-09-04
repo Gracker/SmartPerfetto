@@ -14,6 +14,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import {
+  conclusionContractFragment,
+  externalIssueReportingFragment,
+  identityContractFragment,
+  verbatimContractFragment,
+} from './frontendContractFragments';
 
 // Paths
 const projectRoot = path.resolve(__dirname, '../..');
@@ -79,29 +85,21 @@ function extractConstArrayValues(content: string, constName: string): string[] {
 // Read backend contract
 console.log('Reading backend data contract...');
 const backendContent = fs.readFileSync(backendContractPath, 'utf-8');
-const conclusionContractContent = fs.readFileSync(conclusionContractPath, 'utf-8')
-  .trim()
-  .replace(/import type \{CaseKnowledgeReportRecommendation\} from '..\/..\/types\/caseKnowledge';\n\n?/, '')
-  .replace(
-    /import type \{\s*SourceClaimBindingV1,\s*SourceReferenceV1,\s*SourceUseDecisionV1,\s*\} from '..\/..\/services\/codebase\/sourceUseDecision';\n\n?/,
-    '',
-  )
-  .replace(/SourceUseDecisionV1/g, 'Record<string, unknown>')
-  .replace(/SourceReferenceV1/g, 'Record<string, unknown>')
-  .replace(/SourceClaimBindingV1/g, 'Record<string, unknown>');
-const evidenceContractContent = fs.readFileSync(evidenceContractPath, 'utf-8').trim();
-const claimVerificationContent = fs.readFileSync(claimVerificationPath, 'utf-8').trim();
-const identityContractContent = fs.readFileSync(identityContractPath, 'utf-8')
-  .trim()
-  // EvidenceContract and IdentityContract are separate backend modules but
-  // generated frontend types are concatenated into one file.
-  .replace(/export type TraceTimestampNs = string \| number;\n\n/, '');
-const externalIssueReportingContent = fs
-  .readFileSync(externalIssueReportingPath, 'utf-8')
-  .trim()
-  .replace(/^\/\/ SPDX-License-Identifier:[^\n]*\n/, '')
-  .replace(/^\/\/ Copyright[^\n]*\n/, '')
-  .replace(/^\/\/ This file[^\n]*\n\n/, '');
+const conclusionContractContent = conclusionContractFragment(
+  fs.readFileSync(conclusionContractPath, 'utf-8'),
+);
+const evidenceContractContent = verbatimContractFragment(
+  fs.readFileSync(evidenceContractPath, 'utf-8'),
+);
+const claimVerificationContent = verbatimContractFragment(
+  fs.readFileSync(claimVerificationPath, 'utf-8'),
+);
+const identityContractContent = identityContractFragment(
+  fs.readFileSync(identityContractPath, 'utf-8'),
+);
+const externalIssueReportingContent = externalIssueReportingFragment(
+  fs.readFileSync(externalIssueReportingPath, 'utf-8'),
+);
 
 // Transform content for frontend
 console.log('Transforming for frontend compatibility...');

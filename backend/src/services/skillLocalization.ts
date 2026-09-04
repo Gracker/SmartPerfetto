@@ -53,6 +53,34 @@ export interface LocalizableSkillListItem {
 
 export interface SkillLocalizationOptions {
   externalAuthored?: boolean;
+  /**
+   * Resolved skill parameters for the run being localized.
+   *
+   * Display titles may be templates (`启动 #${startup_id} 详情`). The executor
+   * substitutes them, then localization replaces the title with the catalog
+   * string — which is the same template. Without the parameters here the raw
+   * `${startup_id}` reaches the user, which it did in the default language.
+   */
+  parameters?: Record<string, unknown>;
+}
+
+/**
+ * Fill `${name}` placeholders in a localized display title.
+ *
+ * Unknown placeholders are left as-is rather than blanked: a visible
+ * `${unknown_param}` is a bug report, an empty gap is a silent one.
+ */
+export function substituteDisplayTitleParameters(
+  title: string,
+  parameters: Record<string, unknown> | undefined,
+): string {
+  if (!title || !parameters || !title.includes('${')) return title;
+  return title.replace(/\$\{([A-Za-z_][A-Za-z0-9_.]*)\}/g, (match, name: string) => {
+    const value = parameters[name];
+    return value === undefined || value === null || value === ''
+      ? match
+      : String(value);
+  });
 }
 
 const CATALOG_PATH = path.resolve(
@@ -316,7 +344,10 @@ export function localizeSkillDisplayResults<T extends {
     const step = catalogStep(skill, result.stepId, outputLanguage);
     return {
       ...result,
-      title: step.title[outputLanguage],
+      title: substituteDisplayTitleParameters(
+        step.title[outputLanguage],
+        options.parameters,
+      ),
       data: localizeDisplayData(result.data, step, outputLanguage),
       columnDefinitions: localizeColumnDefinitions(
         result.columnDefinitions,

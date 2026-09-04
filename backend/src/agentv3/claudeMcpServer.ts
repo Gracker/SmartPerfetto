@@ -106,6 +106,7 @@ import {
 } from './planToolCallRecorder';
 import { isConclusionLikePlanPhase } from './planPhaseSemantics';
 import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
+import { planPhaseUpdatedContent } from './planPhaseEvents';
 import type { ArtifactStore, CompactArtifactSummary } from './artifactStore';
 import {resolveArtifactAccessPolicy} from './artifactAccessPolicy';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
@@ -2870,15 +2871,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     phase.summary = undefined;
 
     const narration = formatToolCallNarration(toolName, input, outputLanguage, toolNarrationOptions());
-    const summary = localize(
-      outputLanguage,
-      `自动进入阶段：${narration}`,
-      `Auto-started phase for: ${narration}`,
-    ).slice(0, 260);
+    // The consumer prefixes the phase name; this text is the reason only.
+    const summary = narration.slice(0, 260);
 
     emitUpdate?.({
       type: 'plan_phase_updated',
-      content: { phaseId: phase.id, status: 'in_progress', summary, phaseName: phase.name },
+      content: planPhaseUpdatedContent({ phaseId: phase.id, status: 'in_progress', summary, phaseName: phase.name, origin: 'auto' }),
       timestamp: Date.now(),
     });
 
@@ -2918,10 +2916,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           `本阶段未记录 artifact，但已保留该阶段的工具调用和时间线事件。`,
           `This phase did not record artifacts, but its tool calls and timeline events remain available.`,
         );
+    // The consumer prefixes the phase name and the completed verb; repeating
+    // both here rendered `完成阶段「X」：自动完成阶段「X」：…` on one line.
     return localize(
       outputLanguage,
-      `自动完成阶段「${closedPhase.name}」：已进入后续阶段「${nextPhase.name}」。${evidenceSummary}阶段目标：${closedPhase.goal}。上一阶段未收到显式完成摘要。`,
-      `Auto-completed phase "${closedPhase.name}" after moving to "${nextPhase.name}". ${evidenceSummary} Phase goal: ${closedPhase.goal}. The previous phase did not provide an explicit completion summary.`,
+      `已进入后续阶段「${nextPhase.name}」。${evidenceSummary}阶段目标：${closedPhase.goal}。上一阶段未收到显式完成摘要。`,
+      `Moved on to "${nextPhase.name}". ${evidenceSummary} Phase goal: ${closedPhase.goal}. The previous phase did not provide an explicit completion summary.`,
     );
   }
 
@@ -2940,16 +2940,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           other.summary = undefined;
           emitUpdate?.({
             type: 'plan_phase_updated',
-            content: {
+            content: planPhaseUpdatedContent({
               phaseId: other.id,
               status: 'pending',
+              // The consumer prefixes the phase name and status; repeating
+              // both here rendered them twice on the same line.
               summary: localize(
                 outputLanguage,
-                `阶段「${other.name}」已进入后续阶段「${nextPhase.name}」，但仍缺少关键工具证据，保持待补证状态。`,
-                `Phase "${other.name}" moved behind "${nextPhase.name}" but is still missing required tool evidence, so it remains pending.`,
+                `已进入后续阶段「${nextPhase.name}」，但仍缺少关键工具证据。`,
+                `Moved behind "${nextPhase.name}" but still missing required tool evidence.`,
               ),
               phaseName: other.name,
-            },
+              origin: 'auto',
+            }),
             timestamp: Date.now(),
           });
           continue;
@@ -2961,7 +2964,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         other.summary = summary;
         emitUpdate?.({
           type: 'plan_phase_updated',
-          content: { phaseId: other.id, status: 'completed', summary, phaseName: other.name },
+          content: planPhaseUpdatedContent({ phaseId: other.id, status: 'completed', summary, phaseName: other.name, origin: 'auto' }),
           timestamp: Date.now(),
         });
       } else {
@@ -3000,17 +3003,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
 
       const narration = formatToolCallNarration(toolName, input, outputLanguage, toolNarrationOptions());
+      // The consumer supplies the phase name and verb; keep this to the reason.
       const summary = localize(
         outputLanguage,
-        `自动补记阶段：收到本阶段证据（${narration}），但当前已在后续阶段「${laterActive.name}」。该阶段直接标记完成，证据以推断方式绑定。`,
-        `Backfilled phase evidence (${narration}) while later phase "${laterActive.name}" was active. Marked this phase complete and bound the evidence as inferred.`,
+        `补记证据（${narration}），当时已在后续阶段「${laterActive.name}」，证据以推断方式绑定。`,
+        `Backfilled evidence (${narration}) while later phase "${laterActive.name}" was active; bound as inferred.`,
       ).slice(0, 260);
       phase.status = 'completed';
       phase.completedAt = Date.now();
       phase.summary = summary;
       emitUpdate?.({
         type: 'plan_phase_updated',
-        content: { phaseId: phase.id, status: 'completed', summary, phaseName: phase.name },
+        content: planPhaseUpdatedContent({ phaseId: phase.id, status: 'completed', summary, phaseName: phase.name, origin: 'auto' }),
         timestamp: Date.now(),
       });
       return {
@@ -3902,6 +3906,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           content: {
             phase: 'analyzing',
             message: localize(outputLanguage, `运行分析技能: ${skillId}...`, `Running analysis skill: ${skillId}...`),
+            // The tool dispatch line already said "调用 Skill <id>：<intent>" one
+            // step earlier. Keep the event for progress indicators, but do not
+            // spend a timeline line restating it.
+            duplicatesToolCall: true,
           },
           timestamp: Date.now(),
         });
@@ -4065,7 +4073,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           result.skillId || skillId,
           result.displayResults,
           outputLanguage,
-          {externalAuthored},
+          {externalAuthored, parameters: effectiveParams},
         ) || [];
         const localizedDiagnostics = localizeSkillDiagnostics(
           result.diagnostics,
@@ -6965,7 +6973,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
       emitUpdate?.({
         type: 'plan_phase_updated',
-        content: { phaseId, status: normalizedStatus, summary: trimmedSummary || '', phaseName: phase.name },
+        content: planPhaseUpdatedContent({ phaseId, status: normalizedStatus, summary: trimmedSummary || '', phaseName: phase.name, origin: 'model' }),
         timestamp: Date.now(),
       });
 

@@ -493,6 +493,7 @@ function chooseClaudeConclusionText(input: {
 }
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
 import { localize, type OutputLanguage } from '../../../agentv3/outputLanguage';
+import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import {
   deleteClaudeSessionMapRuntimeSnapshot,
   deleteClaudeSessionMapRuntimeSnapshots,
@@ -2208,7 +2209,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           conclusionPhase.summary = summary;
           this.emitUpdate({
             type: 'plan_phase_updated',
-            content: { phaseId: conclusionPhase.id, status: 'completed', summary, phaseName: conclusionPhase.name },
+            content: planPhaseUpdatedContent({ phaseId: conclusionPhase.id, status: 'completed', summary, phaseName: conclusionPhase.name, origin: 'auto' }),
             timestamp: Date.now(),
           });
         }

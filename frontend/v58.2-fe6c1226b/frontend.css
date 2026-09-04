@@ -8789,6 +8789,15 @@ kbd.pf-keycap.pf-spacing-large {
   filter: brightness(1.08);
   box-shadow: var(--chat-shadow-md);
 }
+.ai-send-btn.ai-redirect-btn {
+  background: var(--chat-bg-secondary);
+  border: 1px solid var(--chat-border);
+  color: var(--chat-text);
+}
+.ai-send-btn.ai-redirect-btn:hover {
+  filter: brightness(1.08);
+  box-shadow: var(--chat-shadow-md);
+}
 
 .ai-input-divider {
   width: 1px;

@@ -114,7 +114,8 @@ import {
   type CodeAwareStreamingTextProjection,
 } from '../../../services/security/codeAwareOutputRegistry';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
-import { formatToolCallNarration } from '../../../agentv3/toolNarration';
+import { formatToolCallNarration, formatToolResultNarration, toolResultIsFailure } from '../../../agentv3/toolNarration';
+import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { loadOpenAIConfig, type OpenAIAgentConfig } from './openAiConfig';
 import { buildOpenAIChatCompletionsTokenLimit } from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {
@@ -3035,10 +3036,13 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     this.emitUpdate({
       type: 'plan_phase_updated',
       content: {
-        phaseId: phase.id,
-        phaseName: phase.name,
-        status: 'completed',
-        summary: phase.summary,
+        ...planPhaseUpdatedContent({
+          phaseId: phase.id,
+          phaseName: phase.name,
+          status: 'completed',
+          summary: phase.summary,
+          origin: 'auto',
+        }),
         reconciledFromFinalReport: true,
       },
       timestamp: Date.now(),
@@ -3744,9 +3748,20 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         .map(taskId => streamContext.toolInputsByTaskId.get(taskId))
         .find(Boolean);
       const toolName = cached?.toolName || rawItem?.name || 'unknown';
-      const resultText = summarizeToolOutput(
-        projectToolResultForExternalSurface(toolName, rawOutput),
-      );
+      // Read failure from the raw result: projection replaces a sensitive
+      // tool's payload with a rejection envelope that has no success field.
+      const resultIsFailure = toolResultIsFailure({toolName, result: rawOutput});
+      const projectedOutput = projectToolResultForExternalSurface(toolName, rawOutput);
+      const resultText = summarizeToolOutput(projectedOutput);
+      // Narrate from the projected object while it is still intact; resultText
+      // is byte-truncated and can end mid-JSON.
+      const resultNarration = formatToolResultNarration({
+        toolName,
+        args: cached?.args,
+        result: projectedOutput,
+        isError: resultIsFailure,
+        language: outputLanguage,
+      });
       if (cached) {
         const codeReferences = extractSourceLookupCodeReferences(cached.toolName, rawOutput);
         recordPlanOrPrePlanToolCall(this.sessionPlans.get(streamContext.sessionId), {
@@ -3764,7 +3779,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         type: 'agent_response',
         content: {
           taskId: rawItem?.callId || rawItem?.id || 'unknown',
+          toolName,
           result: resultText,
+          resultNarration,
+          isError: resultIsFailure,
         },
         timestamp: now,
       });

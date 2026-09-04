@@ -55,6 +55,13 @@ cd backend && npm run build
   guidance. Before widening a rule, check the detector's boundary conditions
   against real inputs, and prefer giving the model the missing context over
   adding another prohibition.
+- A user-facing narration layer must cover both halves of an event. Tool
+  *calls* went through a shared narrator while tool *results* fell back to
+  `summarizeExternalToolResult` — a byte truncator whose name says summary — so
+  a third of the analysis process view was truncated JSON. When adding a
+  runtime event that reaches a user surface, give it a sentence in the shared
+  narration layer; if it cannot be described honestly, emit nothing rather than
+  a serialized payload.
 - `frontend/` is consumed by Docker, `./start.sh`, and portable packages. After
   AI Assistant plugin UI changes, verify in dev mode and run
   `./scripts/update-frontend.sh`.
