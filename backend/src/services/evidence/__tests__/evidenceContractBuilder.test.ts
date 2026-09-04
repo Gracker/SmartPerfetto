@@ -932,6 +932,48 @@ describe('evidence rows carry their declared boundary onto the claims citing the
     }));
   });
 
+  it('carries scope and root-cause boundaries the row declares', () => {
+    // `needs_peer_evidence` is a producer saying the root cause is not
+    // established. Dropping it let a claim assert a root cause while its own
+    // evidence disclaimed one.
+    const envelope = createDataEnvelope({
+      columns: ['signal_type', 'event_count', 'evidence_scope', 'root_cause_boundary'],
+      rows: [['onFrameAvailable', '2716', 'observed_callback_execution_only', 'needs_peer_evidence']],
+    }, {
+      type: 'skill_result',
+      source: 'textureview_producer_frame_timing',
+      title: 'signals',
+      executionStatus: 'observed',
+      evidenceRefId: 'data:tv',
+      sourceToolCallId: 'invoke_skill:tv',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    } as never);
+
+    const contract = {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+      claims: [{
+        id: 'c1',
+        text: 'onFrameAvailable 信号 2716 次导致掉帧',
+        references: [{
+          evidenceRefId: 'data:tv',
+          sourceToolCallId: 'invoke_skill:tv',
+          rowIndex: 0,
+          column: 'event_count',
+          value: '2716',
+        }],
+      }],
+    } as never;
+
+    expect(buildEvidenceContract({conclusionContract: contract, dataEnvelopes: [envelope]})
+      .claimSupport[0].anchors[0]).toEqual(expect.objectContaining({
+        evidenceScope: 'observed_callback_execution_only',
+        rootCauseBoundary: 'needs_peer_evidence',
+      }));
+  });
+
   it('omits the field when the row declares no boundary', () => {
     const envelope = createDataEnvelope({
       columns: ['signal_type', 'event_count'],

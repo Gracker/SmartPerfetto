@@ -677,17 +677,40 @@ function buildCell(ref: ConclusionContractClaimReference, row: Record<string, un
 }
 
 /**
- * The limitation an evidence row declares about itself. Skills emit it as a
- * `claim_boundary` column ("this count is not a frame count"), the strategy
- * tells the model to respect it, and until now the contract dropped it — so
- * whether it was honoured depended entirely on the model noticing it in the
- * raw row, and nothing downstream could show or audit it.
+ * Qualifiers an evidence row declares about itself.
+ *
+ * Skills emit these as ordinary columns — "this count is not a frame count",
+ * "this statistic covers callback execution only", "this root cause still needs
+ * peer evidence" — and the strategy tells the model they outrank any intuition
+ * from the column name. The contract used to drop them, so honouring them
+ * depended entirely on the model noticing them in the raw row and nothing
+ * downstream could show or check them.
+ *
+ * Deliberately a fixed set rather than every column: these are contract fields
+ * that reach reports and receipts, not a passthrough for arbitrary skill output.
  */
-function rowClaimBoundary(row: Record<string, unknown> | undefined): string | undefined {
-  const raw = row?.claim_boundary ?? row?.claimBoundary;
-  if (typeof raw !== 'string') return undefined;
-  const trimmed = raw.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+const DECLARED_ROW_QUALIFIERS = {
+  claimBoundary: ['claim_boundary', 'claimBoundary'],
+  evidenceScope: ['evidence_scope', 'evidenceScope'],
+  rootCauseBoundary: ['root_cause_boundary', 'rootCauseBoundary'],
+} as const;
+
+function rowDeclaredQualifiers(
+  row: Record<string, unknown> | undefined,
+): Partial<Record<keyof typeof DECLARED_ROW_QUALIFIERS, string>> {
+  const declared: Partial<Record<keyof typeof DECLARED_ROW_QUALIFIERS, string>> = {};
+  if (!row) return declared;
+  for (const [field, columns] of Object.entries(DECLARED_ROW_QUALIFIERS)) {
+    for (const column of columns) {
+      const raw = row[column];
+      if (typeof raw !== 'string') continue;
+      const trimmed = raw.trim();
+      if (trimmed.length === 0) continue;
+      declared[field as keyof typeof DECLARED_ROW_QUALIFIERS] = trimmed;
+      break;
+    }
+  }
+  return declared;
 }
 
 function buildAnchor(
@@ -728,7 +751,7 @@ function buildAnchor(
   const meta = envelope.meta || {};
   const artifactId = ref.artifactId || ref.sourceArtifactId || (meta as any).artifactId || (meta as any).sourceArtifactId;
   const cell = buildCell(ref, row);
-  const claimBoundary = rowClaimBoundary(row);
+  const declaredQualifiers = rowDeclaredQualifiers(row);
   if (match.missingReason) {
     return {
       anchorId,
@@ -753,7 +776,7 @@ function buildAnchor(
       missing: true,
       missingReason: match.missingReason,
       ...(cell ? { cells: [cell] } : {}),
-      ...(claimBoundary ? { claimBoundary } : {}),
+      ...declaredQualifiers,
       confidence: 0,
     };
   }
@@ -780,7 +803,7 @@ function buildAnchor(
     ...(cell ? { cells: [cell] } : {}),
     ...(deriveTimeRange(row) ? { timeRange: deriveTimeRange(row) } : {}),
     ...(deriveIdentity(envelope, row) ? { identity: deriveIdentity(envelope, row) } : {}),
-    ...(claimBoundary ? { claimBoundary } : {}),
+    ...declaredQualifiers,
     confidence: 1,
   };
 }

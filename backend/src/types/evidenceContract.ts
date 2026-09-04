@@ -138,14 +138,22 @@ export interface EvidenceAnchorV1 {
   identity?: EvidenceIdentityV1;
   confidence?: number;
   /**
-   * Limitation the evidence row declares about itself, verbatim from the
-   * skill's `claim_boundary` column (for example
-   * `event_count_is_not_frame_count_or_jank_count`).
+   * Qualifiers the evidence row declares about itself, verbatim from the
+   * skill's own columns. Carried onto every claim citing that row so they stay
+   * auditable instead of depending on the model having noticed them in the raw
+   * row — the scrolling strategy already treats them as outranking any
+   * intuition from a title or column name.
    *
-   * Carried onto every claim citing that row so the boundary stays auditable
-   * instead of depending on the model having noticed it in the raw row.
+   * - `claimBoundary`: the upper limit of what the row can support, e.g.
+   *   `event_count_is_not_frame_count_or_jank_count`.
+   * - `evidenceScope`: what the statistic is actually over, e.g.
+   *   `observed_callback_execution_only`.
+   * - `rootCauseBoundary`: the producer stating the root cause is not yet
+   *   established, e.g. `needs_peer_evidence`, `missing_slice_evidence`.
    */
   claimBoundary?: string;
+  evidenceScope?: string;
+  rootCauseBoundary?: string;
   missing?: boolean;
   missingReason?: string;
 }
