@@ -676,6 +676,20 @@ function buildCell(ref: ConclusionContractClaimReference, row: Record<string, un
   };
 }
 
+/**
+ * The limitation an evidence row declares about itself. Skills emit it as a
+ * `claim_boundary` column ("this count is not a frame count"), the strategy
+ * tells the model to respect it, and until now the contract dropped it — so
+ * whether it was honoured depended entirely on the model noticing it in the
+ * raw row, and nothing downstream could show or audit it.
+ */
+function rowClaimBoundary(row: Record<string, unknown> | undefined): string | undefined {
+  const raw = row?.claim_boundary ?? row?.claimBoundary;
+  if (typeof raw !== 'string') return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
 function buildAnchor(
   claimId: string,
   ref: ConclusionContractClaimReference,
@@ -714,6 +728,7 @@ function buildAnchor(
   const meta = envelope.meta || {};
   const artifactId = ref.artifactId || ref.sourceArtifactId || (meta as any).artifactId || (meta as any).sourceArtifactId;
   const cell = buildCell(ref, row);
+  const claimBoundary = rowClaimBoundary(row);
   if (match.missingReason) {
     return {
       anchorId,
@@ -738,6 +753,7 @@ function buildAnchor(
       missing: true,
       missingReason: match.missingReason,
       ...(cell ? { cells: [cell] } : {}),
+      ...(claimBoundary ? { claimBoundary } : {}),
       confidence: 0,
     };
   }
@@ -764,6 +780,7 @@ function buildAnchor(
     ...(cell ? { cells: [cell] } : {}),
     ...(deriveTimeRange(row) ? { timeRange: deriveTimeRange(row) } : {}),
     ...(deriveIdentity(envelope, row) ? { identity: deriveIdentity(envelope, row) } : {}),
+    ...(claimBoundary ? { claimBoundary } : {}),
     confidence: 1,
   };
 }

@@ -95,6 +95,7 @@ export function buildQuickRunReceipt(input: {
   evidence?: Partial<QuickRunEvidenceCounts>;
   contextInjected?: Partial<QuickRunContextInjectedCounts>;
   verifierStatus?: QuickRunVerifierStatus;
+  modeDecision?: QuickRunReceipt['modeDecision'];
   adaptiveRouting?: AdaptiveRoutingReceiptV1;
 }): QuickRunReceipt {
   const actualTurns = Number.isFinite(input.actualTurns)
@@ -125,6 +126,7 @@ export function buildQuickRunReceipt(input: {
     },
     contextInjected,
     verifierStatus: input.verifierStatus ?? 'not_checked',
+    ...(input.modeDecision ? {modeDecision: input.modeDecision} : {}),
     ...(input.adaptiveRouting
       ? {adaptiveRouting: parseAdaptiveRoutingReceipt(input.adaptiveRouting)}
       : {}),

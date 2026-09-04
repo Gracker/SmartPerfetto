@@ -137,6 +137,15 @@ export interface EvidenceAnchorV1 {
   timeRange?: EvidenceTimeRangeV1;
   identity?: EvidenceIdentityV1;
   confidence?: number;
+  /**
+   * Limitation the evidence row declares about itself, verbatim from the
+   * skill's `claim_boundary` column (for example
+   * `event_count_is_not_frame_count_or_jank_count`).
+   *
+   * Carried onto every claim citing that row so the boundary stays auditable
+   * instead of depending on the model having noticed it in the raw row.
+   */
+  claimBoundary?: string;
   missing?: boolean;
   missingReason?: string;
 }

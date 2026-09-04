@@ -442,6 +442,13 @@ export interface QuickRunReceipt {
   evidence: QuickRunEvidenceCounts;
   contextInjected: QuickRunContextInjectedCounts;
   verifierStatus: QuickRunVerifierStatus;
+  /**
+   * How the mode was decided. `ai_unavailable` means `full` was a fallback
+   * because classification could not run — a misconfigured light model pins
+   * every question to full, and that failure is otherwise invisible in a
+   * delivered run. Carries no provider, model, or usage detail.
+   */
+  modeDecision?: 'hard_rule' | 'ai' | 'ai_unavailable';
   adaptiveRouting?: import('../../types/adaptiveRouting').AdaptiveRoutingReceiptV1;
 }
 

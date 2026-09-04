@@ -44,6 +44,21 @@ const MIN_RETRY_BUDGET_MS = 2_000;
 interface ClassifierDecision {
   complexity: QueryComplexity;
   reason: string;
+  /**
+   * True when `full` is a fallback because classification could not run, not a
+   * judgement that the question needs full analysis.
+   *
+   * Callers must not infer this from the reason text: a misconfigured light
+   * model pins every question to full, and that failure previously survived
+   * only as a console line — which is why it went unnoticed until a real
+   * provider replay exposed it.
+   */
+  degraded?: true;
+}
+
+/** Fallback to full because classification itself failed. */
+function classificationUnavailable(reason: string): ClassifierDecision {
+  return {complexity: 'full', reason, degraded: true};
 }
 
 type ClassifierParse =
@@ -109,7 +124,7 @@ export async function classifyQueryWithOpenAILightModel(
   analysisSignal?: AbortSignal,
 ): Promise<ClassifierDecision> {
   if (!config.baseURL) {
-    return { complexity: 'full', reason: 'OpenAI baseURL missing' };
+    return classificationUnavailable('OpenAI baseURL missing');
   }
 
   const prompt = buildComplexityClassifierPrompt(input);
@@ -153,7 +168,7 @@ export async function classifyQueryWithOpenAILightModel(
   try {
     const first = await requestVerdict(CLASSIFIER_OUTPUT_TOKENS);
     if ('status' in first) {
-      return { complexity: 'full', reason: `OpenAI classifier HTTP ${first.status}` };
+      return classificationUnavailable(`OpenAI classifier HTTP ${first.status}`);
     }
     const firstParse = parseClassifierJson(first.output.text);
     if ('decision' in firstParse) return firstParse.decision;
@@ -163,36 +178,30 @@ export async function classifyQueryWithOpenAILightModel(
       CLASSIFIER_OUTPUT_TOKENS,
     );
     if (!budgetExhausted || Date.now() + MIN_RETRY_BUDGET_MS >= deadline) {
-      return {
-        complexity: 'full',
-        reason: unparsedReason(
-          first.output,
-          CLASSIFIER_OUTPUT_TOKENS,
-          firstParse.failure,
-        ),
-      };
+      return classificationUnavailable(unparsedReason(
+        first.output,
+        CLASSIFIER_OUTPUT_TOKENS,
+        firstParse.failure,
+      ));
     }
 
     const retry = await requestVerdict(CLASSIFIER_RETRY_OUTPUT_TOKENS);
     if ('status' in retry) {
-      return { complexity: 'full', reason: `OpenAI classifier HTTP ${retry.status}` };
+      return classificationUnavailable(`OpenAI classifier HTTP ${retry.status}`);
     }
     const retryParse = parseClassifierJson(retry.output.text);
     if ('decision' in retryParse) return retryParse.decision;
-    return {
-      complexity: 'full',
-      reason: unparsedReason(
-        retry.output,
-        CLASSIFIER_RETRY_OUTPUT_TOKENS,
-        retryParse.failure,
-      ),
-    };
+    return classificationUnavailable(unparsedReason(
+      retry.output,
+      CLASSIFIER_RETRY_OUTPUT_TOKENS,
+      retryParse.failure,
+    ));
   } catch (err) {
     if (analysisSignal?.aborted) throw err;
     if (timedOut) {
-      return { complexity: 'full', reason: `OpenAI classifier timed out after ${timeoutMs / 1000}s` };
+      return classificationUnavailable(`OpenAI classifier timed out after ${timeoutMs / 1000}s`);
     }
-    return { complexity: 'full', reason: `OpenAI classifier failed: ${(err as Error).message}` };
+    return classificationUnavailable(`OpenAI classifier failed: ${(err as Error).message}`);
   } finally {
     clearTimeout(timer);
     analysisSignal?.removeEventListener('abort', abortFromAnalysis);

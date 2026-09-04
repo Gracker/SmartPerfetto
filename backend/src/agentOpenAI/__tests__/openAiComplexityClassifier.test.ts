@@ -310,7 +310,11 @@ describe('classifyQueryWithOpenAILightModel', () => {
       const result = await classifyQueryWithOpenAILightModel('q', baseConfig);
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ complexity: 'full', reason: 'no JSON in OpenAI response' });
+      expect(result).toEqual({
+        complexity: 'full',
+        reason: 'no JSON in OpenAI response',
+        degraded: true,
+      });
     });
 
     it('does not retry when usage is missing and no finish_reason is reported', async () => {
@@ -415,7 +419,36 @@ describe('classifyQueryWithOpenAILightModel', () => {
       expect(result).toEqual({
         complexity: 'full',
         reason: 'failed to parse OpenAI JSON response',
+        degraded: true,
       });
+    });
+  });
+
+  describe('a failed classification is reported as a fallback, not a verdict', () => {
+    it('marks HTTP, timeout, and truncation fallbacks as degraded', async () => {
+      installFetchMock(async () => new Response('nope', { status: 500 }));
+      const http = await classifyQueryWithOpenAILightModel('q', baseConfig);
+      expect(http).toMatchObject({ complexity: 'full', degraded: true });
+
+      installFetchMock(async () => new Response(
+        JSON.stringify({
+          choices: [{ message: { content: '' }, finish_reason: 'length' }],
+          usage: {completion_tokens: 6144, completion_tokens_details: {reasoning_tokens: 6143}},
+        }),
+        { status: 200 },
+      ));
+      const starved = await classifyQueryWithOpenAILightModel('q', baseConfig);
+      expect(starved).toMatchObject({ complexity: 'full', degraded: true });
+    });
+
+    it('does not mark a real verdict as degraded', async () => {
+      installFetchMock(async () => new Response(
+        JSON.stringify({choices: [{message: {content: '{"complexity":"full","reason":"scene wide"}'}}]}),
+        { status: 200 },
+      ));
+      const verdict = await classifyQueryWithOpenAILightModel('分析滑动性能', baseConfig);
+      expect(verdict.complexity).toBe('full');
+      expect(verdict).not.toHaveProperty('degraded');
     });
   });
 });

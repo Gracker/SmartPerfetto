@@ -250,6 +250,8 @@ type OpenAIAnalysisSessionState = {
 interface OpenAIModeClassification {
   quickMode: boolean;
   source: 'user_explicit' | 'hard_rule' | 'ai';
+  /** Recorded in the quick-run receipt; distinguishes a verdict from a fallback. */
+  modeDecision?: import('../../../agent/core/orchestratorTypes').QuickRunReceipt['modeDecision'];
   reason: string;
   skipQuickTracePreflightDetection: boolean;
   quickAcknowledgementDirectAnswer: boolean;
@@ -1721,6 +1723,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             ? buildQuickRunReceipt({
                 requestedMode: options.analysisMode ?? 'auto',
                 query,
+                ...(modeClassification.modeDecision
+                  ? {modeDecision: modeClassification.modeDecision}
+                  : {}),
                 budget: quickBudget,
                 actualTurns: rounds,
                 elapsedMs: Date.now() - startTime,
@@ -2970,6 +2975,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       return {
         quickMode: local.complexity === 'quick',
         source: local.source,
+        modeDecision: 'hard_rule' as const,
         reason: local.reason,
         skipQuickTracePreflightDetection: shouldSkipQuickPreflightForEvidence(flags),
         quickAcknowledgementDirectAnswer,
@@ -2983,6 +2989,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     return {
       quickMode: ai.complexity === 'quick',
       source: 'ai',
+      modeDecision: ai.degraded ? 'ai_unavailable' as const : 'ai' as const,
       reason: ai.reason,
       skipQuickTracePreflightDetection: shouldSkipQuickPreflightForEvidence(flags),
       quickAcknowledgementDirectAnswer: ai.complexity === 'quick' &&

@@ -886,3 +886,86 @@ describe('evidenceContractBuilder', () => {
     expect(contract.anchors).toEqual([]);
   });
 });
+
+describe('evidence rows carry their declared boundary onto the claims citing them', () => {
+  it('attaches claim_boundary from the cited row to the anchor', () => {
+    // Skills declare limits like "this count is not a frame count". Dropping
+    // them left the limit visible only inside the raw row, so honouring it
+    // depended on the model noticing, and nothing downstream could audit it.
+    const envelope = createDataEnvelope({
+      columns: ['signal_type', 'event_count', 'claim_boundary'],
+      rows: [['onFrameAvailable', '2716', 'event_count_is_not_frame_count_or_jank_count']],
+    }, {
+      type: 'skill_result',
+      source: 'textureview_producer_frame_timing',
+      title: 'signals',
+      skillId: 'textureview_producer_frame_timing',
+      stepId: 'signal_inventory',
+      executionStatus: 'observed',
+      evidenceRefId: 'data:tv',
+      sourceToolCallId: 'invoke_skill:tv',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    } as never);
+
+    const contract = {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+      claims: [{
+        id: 'c1',
+        text: 'onFrameAvailable 信号 2716 次',
+        references: [{
+          evidenceRefId: 'data:tv',
+          sourceToolCallId: 'invoke_skill:tv',
+          rowIndex: 0,
+          column: 'event_count',
+          value: '2716',
+        }],
+      }],
+    } as never;
+
+    const built = buildEvidenceContract({conclusionContract: contract, dataEnvelopes: [envelope]});
+
+    expect(built.claimSupport[0].anchors[0]).toEqual(expect.objectContaining({
+      claimBoundary: 'event_count_is_not_frame_count_or_jank_count',
+    }));
+  });
+
+  it('omits the field when the row declares no boundary', () => {
+    const envelope = createDataEnvelope({
+      columns: ['signal_type', 'event_count'],
+      rows: [['onFrameAvailable', '2716']],
+    }, {
+      type: 'skill_result',
+      source: 'textureview_producer_frame_timing',
+      title: 'signals',
+      executionStatus: 'observed',
+      evidenceRefId: 'data:tv',
+      sourceToolCallId: 'invoke_skill:tv',
+      traceId: 'trace-a',
+      traceSide: 'current',
+    } as never);
+
+    const contract = {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+      claims: [{
+        id: 'c1',
+        text: 'onFrameAvailable 信号 2716 次',
+        references: [{
+          evidenceRefId: 'data:tv',
+          sourceToolCallId: 'invoke_skill:tv',
+          rowIndex: 0,
+          column: 'event_count',
+          value: '2716',
+        }],
+      }],
+    } as never;
+
+    const built = buildEvidenceContract({conclusionContract: contract, dataEnvelopes: [envelope]});
+
+    expect(built.claimSupport[0].anchors[0]).not.toHaveProperty('claimBoundary');
+  });
+});
