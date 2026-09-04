@@ -6,6 +6,7 @@ import type {
   ConclusionContract,
   ConclusionContractClaimReference,
 } from '../../agent/core/conclusionContract';
+import {claimTextAssertsCausality} from './evidenceContractBuilder';
 import type {
   EvidenceRelationCandidateV1,
   EvidenceRelationEndpointV1,
@@ -93,7 +94,9 @@ export function bindRelationCandidatesToClaims(
   const relationActivationClaimIds: string[] = [];
 
   for (const [index, claim] of (conclusionContractClone.claims || []).entries()) {
-    if (claim.kind !== 'causal') continue;
+    // Match classification: a root-cause sentence rarely carries an explicit
+    // kind, and requiring one left every producer relation unbound.
+    if (claim.kind !== 'causal' && !claimTextAssertsCausality(claim.text)) continue;
     const matchingIds = Array.from(new Set(relationCandidates
       .filter(candidate => (claim.references || []).some(reference =>
         matchesCandidateObject(reference, candidate, options)))

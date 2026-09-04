@@ -190,11 +190,35 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? 'undefined';
 }
 
+/**
+ * Wording that asserts one observation explains another.
+ *
+ * A root-cause sentence almost always carries a number too, so without this the
+ * shape-based rules below classify it as `numeric` and the causal branch of
+ * verification — relation binding, relation evaluation, strict causal support —
+ * never runs on the product's most consequential claims.
+ */
+const CAUSAL_CLAIM_PATTERN =
+  /导致|致使|造成|引起|引发|使得|因为|由于|归因于|根因|被[^，。；\s]{0,12}阻塞|阻塞了|root\s+cause|caused\s+by|because\s+of|leads?\s+to|results?\s+in|responsible\s+for|blocked\s+by|due\s+to/i;
+
+/**
+ * One definition of "this sentence asserts causality", shared by relation
+ * binding and by claim classification. They must agree: binding a relation to a
+ * claim that verification will not treat as causal, or classifying a claim as
+ * causal that binding skipped, produces warnings without checks.
+ */
+export function claimTextAssertsCausality(text: string | undefined): boolean {
+  return CAUSAL_CLAIM_PATTERN.test(text || '');
+}
+
 function inferClaimKind(
   claim: ConclusionContractClaimItem,
   references: ConclusionContractClaimReference[],
 ): ClaimKindV1 {
   if (claim.kind && !(claim.kind === 'inference' && references.length > 0)) return claim.kind;
+  // Causal wins over shape: the numbers in a causal sentence are its evidence,
+  // not its subject.
+  if (references.length > 0 && claimTextAssertsCausality(claim.text)) return 'causal';
   if (references.some(ref => typeof ref.value === 'number')) return 'numeric';
   if (references.some(ref => {
     const column = String(ref.column || '').toLowerCase();

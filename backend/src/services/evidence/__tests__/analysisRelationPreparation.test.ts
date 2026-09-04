@@ -386,3 +386,58 @@ describe('analysisRelationPreparation', () => {
     }
   });
 });
+
+describe('a root-cause sentence reaches relation binding without declaring its kind', () => {
+  const scrollingEvidence = () => createDataEnvelope({
+    columns: ['frame_id', 'start_ts', 'dur', 'dur_ms', 'reason_code'],
+    rows: [['9007199254740993', '200', '1500000', '1.5', 'workload_heavy']],
+  }, {
+    type: 'skill_result', source: 'scrolling_analysis', title: 'root causes',
+    skillId: 'scrolling_analysis', stepId: 'batch_frame_root_cause',
+    executionStatus: 'observed', evidenceRefId: 'data:scrolling',
+    sourceToolCallId: 'invoke_skill:scrolling', traceId: 'trace-a', traceSide: 'current',
+  });
+
+  function contractFor(text: string): ConclusionContract {
+    // No `kind` field: conclusions reach the contract through the markdown
+    // citation block, which has never carried one.
+    return {
+      schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer',
+      conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+      claims: [{
+        id: 'claim-root-cause',
+        text,
+        references: [{
+          evidenceRefId: 'data:scrolling',
+          sourceToolCallId: 'invoke_skill:scrolling',
+          rowIndex: 0,
+          column: 'reason_code',
+          value: 'workload_heavy',
+        }],
+      }],
+    } as ConclusionContract;
+  }
+
+  it('binds a producer relation to a causal sentence the model never labelled', () => {
+    // Relation producers ran in production all along, but binding requires a
+    // causal claim and nothing ever produced one — the whole causal branch of
+    // verification sat unreachable behind a field the prompt never asks for.
+    const prepared = prepareAnalysisRelations({
+      conclusionContract: contractFor('workload_heavy 导致该帧掉帧'),
+      dataEnvelopes: [scrollingEvidence()],
+    });
+
+    expect(prepared.relationActivationClaimIds).toEqual(['claim-root-cause']);
+    expect(prepared.conclusionContract?.claims?.[0].relationRefs?.length).toBeGreaterThan(0);
+  });
+
+  it('leaves a plain measurement unbound', () => {
+    const prepared = prepareAnalysisRelations({
+      conclusionContract: contractFor('该帧 reason_code 为 workload_heavy'),
+      dataEnvelopes: [scrollingEvidence()],
+    });
+
+    expect(prepared.relationActivationClaimIds).toEqual([]);
+  });
+});
