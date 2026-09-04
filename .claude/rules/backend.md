@@ -138,6 +138,14 @@ Keep these boundaries intact:
   silently degrades plan phase attribution to semantic inference and leaves
   tool success unknown. Pass `resultFacts` from `readToolResultFacts(...)` at
   the runtime call site; `resultText` is a fallback, not a source of truth.
+- Model text written before a plan is complete is reasoning, not the answer.
+  The OpenAI runtime already classifies it that way (`shouldExposeOpenAiAnswerDelta`)
+  but only accumulated it for conclusion recovery, so it never reached a user
+  surface; it now also feeds `ReasoningThoughtBuffer` and is emitted as one
+  `thought` at the next tool call. Whether any appears depends on the provider:
+  DeepSeek and GLM emit no prose between tool calls, so a run can legitimately
+  show none. Project it the same way as the Responses-API reasoning branch —
+  this is a public SSE surface.
 - `sqlUsesProcessNameFilter` decides both the raw-SQL identity warning and
   Skill identity admission, so it is an accuracy control, not a formatting
   nicety. Any change to it must be checked in both directions against real

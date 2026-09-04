@@ -13,6 +13,7 @@ import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as skillLoader from '../../services/skillEngine/skillLoader';
 import * as focusAppDetector from '../../agentv3/focusAppDetector';
 import { createAnalysisRunSpec } from '../../agentRuntime/analysisRunSpec';
+import { ReasoningThoughtBuffer } from '../../agentRuntime/reasoningThoughtBuffer';
 import {
   withEffectiveRuntimeRegistrySnapshot,
   type EffectiveRuntimeRegistrySnapshot,
@@ -114,6 +115,7 @@ type OpenAiStreamContextForTest = {
   runtimePerformance?: ReturnType<typeof createRuntimePerformanceRecorder>;
   toolInputsByTaskId: Map<string, { toolName: string; args: Record<string, unknown> }>;
   onSuppressedAnswerDelta?: (delta: string) => void;
+  reasoningThoughts?: ReasoningThoughtBuffer;
 };
 
 function rawOutputTextDelta(delta: string): RawOpenAiOutputTextDeltaForTest {
@@ -2291,6 +2293,62 @@ describe('OpenAIRuntime plan completion guard', () => {
     expect(delta).toBe('');
     expect(captured).toEqual(['我将重新制定计划并继续分析。']);
     expect(updates.some(update => update.type === 'answer_token')).toBe(false);
+  });
+
+  it('shows suppressed pre-plan text as reasoning at the next tool call', () => {
+    // The text a model writes before its plan is complete is reasoning, not
+    // the answer. It used to be accumulated for conclusion recovery and
+    // otherwise dropped, so the process view never showed what the model was
+    // working through.
+    const { runtime, updates } = createRuntimeWithUpdates();
+    const context = streamContext('s-reasoning', false);
+    context.reasoningThoughts = new ReasoningThoughtBuffer();
+
+    runtime.handleStreamEvent(
+      rawOutputTextDelta('先读全量掉帧类型分布，确认真实掉帧和假阳性的比例。'),
+      'zh-CN',
+      context,
+    );
+    expect(updates.some(update => update.type === 'thought')).toBe(false);
+
+    runtime.handleStreamEvent(
+      {
+        type: 'run_item_stream_event',
+        name: 'tool_called',
+        item: {rawItem: {name: 'fetch_artifact', callId: 'call_1', arguments: '{"id":"art-8"}'}},
+      },
+      'zh-CN',
+      context,
+    );
+
+    const thought = updates.find(update => update.type === 'thought');
+    expect(thought?.content).toEqual({
+      thought: '先读全量掉帧类型分布，确认真实掉帧和假阳性的比例。',
+    });
+    // The reasoning is shown before the call it explains.
+    const thoughtIndex = updates.findIndex(update => update.type === 'thought');
+    const dispatchIndex = updates.findIndex(
+      update => update.type === 'agent_task_dispatched',
+    );
+    expect(thoughtIndex).toBeLessThan(dispatchIndex);
+  });
+
+  it('does not invent a thought when there was no pre-plan text', () => {
+    const { runtime, updates } = createRuntimeWithUpdates();
+    const context = streamContext('s-no-reasoning', false);
+    context.reasoningThoughts = new ReasoningThoughtBuffer();
+
+    runtime.handleStreamEvent(
+      {
+        type: 'run_item_stream_event',
+        name: 'tool_called',
+        item: {rawItem: {name: 'invoke_skill', callId: 'call_1', arguments: '{}'}},
+      },
+      'zh-CN',
+      context,
+    );
+
+    expect(updates.some(update => update.type === 'thought')).toBe(false);
   });
 
   it('streams answer deltas after a full-mode plan is complete', () => {

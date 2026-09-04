@@ -117,6 +117,7 @@ import {
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import { formatToolCallNarration, formatToolResultNarration, toolResultIsFailure } from '../../../agentv3/toolNarration';
 import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
+import { ReasoningThoughtBuffer } from '../../reasoningThoughtBuffer';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { loadOpenAIConfig, type OpenAIAgentConfig } from './openAiConfig';
 import { buildOpenAIChatCompletionsTokenLimit } from '../../../services/providerManager/openAiChatCompletionsCompat';
@@ -1348,6 +1349,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               )
             : undefined;
           let suppressedRunAnswer = '';
+          // Pre-plan model text is reasoning, not the answer. Buffer it so the
+          // process view can show what the model was working through.
+          const reasoningThoughts = new ReasoningThoughtBuffer();
           let planCompleteIdleTimer: ReturnType<typeof setTimeout> | undefined;
           const clearPlanCompleteIdleTimer = () => {
             if (planCompleteIdleTimer) {
@@ -1432,6 +1436,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                       onSuppressedAnswerDelta: delta => {
                         suppressedRunAnswer += delta;
                       },
+                      reasoningThoughts,
                     });
                     if (delta) {
                       runAnswer += delta;
@@ -1440,6 +1445,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                     schedulePlanCompleteIdleAbort();
                   }
                   clearPlanCompleteIdleTimer();
+                  // The stream ended without another tool call to act as a
+                  // boundary; show whatever reasoning is still buffered.
+                  this.flushReasoningThought(
+                    {reasoningThoughts, answerTextProjection},
+                    Date.now(),
+                  );
                   await stream.completed;
                   const evaluationUsage =
                     (stream as any).runContext?.usage
@@ -3661,6 +3672,26 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       : warning;
   }
 
+  /**
+   * Emit buffered pre-plan reasoning as a single thought.
+   *
+   * Projected the same way as the Responses-API reasoning branch, so
+   * code-aware runs never put raw source into a public SSE surface.
+   */
+  private flushReasoningThought(
+    streamContext: {
+      reasoningThoughts?: ReasoningThoughtBuffer;
+      answerTextProjection?: CodeAwareStreamingTextProjection;
+    },
+    timestamp: number,
+  ): void {
+    const thought = streamContext.reasoningThoughts?.flush();
+    if (!thought) return;
+    const projected = streamContext.answerTextProjection?.projectComplete(thought) ?? thought;
+    if (!projected.trim()) return;
+    this.emitUpdate({type: 'thought', content: {thought: projected}, timestamp});
+  }
+
   private shouldExposeOpenAiAnswerDelta(sessionId: string, quickMode: boolean): boolean {
     return quickMode || this.getPlanCompletionStatus(sessionId, quickMode).complete;
   }
@@ -3678,6 +3709,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       tracePairContext?: TracePairContext;
       onToolCalled?: () => void;
       onSuppressedAnswerDelta?: (delta: string) => void;
+      /** Holds pre-plan model text so it can be shown as reasoning, not dropped. */
+      reasoningThoughts?: ReasoningThoughtBuffer;
     },
   ): string {
     const now = Date.now();
@@ -3686,7 +3719,15 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       if (data?.type === 'output_text_delta' && typeof data.delta === 'string') {
         const delta = filterOpenAiVisibleAnswerDelta(data.delta, streamContext.answerStreamFilter);
         if (!this.shouldExposeOpenAiAnswerDelta(streamContext.sessionId, streamContext.quickMode)) {
-          if (delta) streamContext.onSuppressedAnswerDelta?.(delta);
+          if (delta) {
+            streamContext.onSuppressedAnswerDelta?.(delta);
+            // This text is model reasoning, not the answer: the plan is not
+            // complete yet. It used to be accumulated for conclusion recovery
+            // and otherwise discarded, so the process view never showed what
+            // the model was working through. Hold it until the next tool call
+            // gives it a boundary.
+            streamContext.reasoningThoughts?.append(delta);
+          }
           return '';
         }
         if (!delta) return '';
@@ -3719,6 +3760,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const rawItem = (event.item as any)?.rawItem;
     if (event.name === 'tool_called') {
       streamContext.onToolCalled?.();
+      this.flushReasoningThought(streamContext, now);
       const args = parseJsonObject(rawItem?.arguments) || {};
       const taskIds = [rawItem?.callId, rawItem?.call_id, rawItem?.id]
         .filter((id): id is string => typeof id === 'string' && id.length > 0);
