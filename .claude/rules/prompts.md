@@ -56,6 +56,21 @@ rules.
 - Skill YAML parameter substitution uses `${param|default}`.
 - Strategy frontmatter may include `keywords`, `compound_patterns`, `priority`,
   `phase_hints`, and final-report contract fields.
+- Never write a variable in braces inside a template comment. Rendering
+  substitutes inside comments too, and split points that search for a
+  placeholder find the documented one first — that once injected the whole
+  scene core inside an unterminated HTML comment and pushed the methodology
+  preamble after it. Write `Variable "name" = ...` instead.
+- HTML comments are stripped when a template becomes a prompt segment, so
+  SPDX and authoring notes cost no tokens and never reach the model. Marker
+  comments such as `<!-- tool-description:start -->` are consumed by their own
+  loader before that point; keep any new marker on the same contract.
+- The full-mode prompt is budget-bound (`MAX_PROMPT_TOKENS`). Before adding a
+  section, measure with
+  `npx jest src/agentv3/__tests__/claudeSystemPrompt.realStrategyTokenRegression.test.ts`
+  and read the `[SystemPromptTokenGate]` line: a new section that pushes
+  `droppedLabels` wider has traded trace-completeness or schema context for
+  its own text.
 
 `strategyLoader.ts` owns loading, frontmatter parsing, template rendering, cache
 behavior, and phase hint access. Update it and its tests when adding template

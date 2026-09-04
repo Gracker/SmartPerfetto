@@ -101,6 +101,13 @@ Keep these boundaries intact:
 - Do not patch only one surface when changing final-result shape. Check SSE
   payloads, HTML reports, CLI persistence/export, session snapshots, and
   generated frontend contracts.
+- `sqlUsesProcessNameFilter` decides both the raw-SQL identity warning and
+  Skill identity admission, so it is an accuracy control, not a formatting
+  nicety. Any change to it must be checked in both directions against real
+  query shapes — it previously required whitespace before the operator, which
+  let `p.name='com.foo'` scope a query to one process while reading as
+  unscoped. Quick mode answers through model-written raw SQL, where that style
+  is ordinary.
 
 ## MCP Tool Registration
 

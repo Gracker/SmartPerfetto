@@ -49,6 +49,12 @@ cd backend && npm run build
   verification, identity resolution, reports, snapshots, CLI output, and
   frontend chat projection are separate surfaces. Keep chat readable without
   deleting report/snapshot provenance.
+- Accuracy guards are mostly pattern matchers, and that is where they break:
+  a token budget, a whitespace-sensitive regex, or a placeholder written inside
+  a comment has silently disabled routing, identity admission, and scene
+  guidance. Before widening a rule, check the detector's boundary conditions
+  against real inputs, and prefer giving the model the missing context over
+  adding another prohibition.
 - `frontend/` is consumed by Docker, `./start.sh`, and portable packages. After
   AI Assistant plugin UI changes, verify in dev mode and run
   `./scripts/update-frontend.sh`.
