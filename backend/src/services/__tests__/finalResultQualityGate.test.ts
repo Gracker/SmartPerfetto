@@ -839,7 +839,9 @@ describe('final result quality gate', () => {
         },
       }),
       query: '分析这个启动 trace',
-    })?.code).toBe('sparse_unverified_conclusion');
+      // A proven-unsupported claim outranks "the conclusion looks thin": the
+      // verifier has a result, and hiding it behind sparseness loses that.
+    })?.code).toBe('verifier_contradicted_claim');
 
     expect(assessFinalResultQuality({
       result: result({
@@ -3240,5 +3242,87 @@ describe('quick-run triage budget follows the question boundary', () => {
 
   it('treats the same follow-up wording without history as scene-wide', () => {
     expect(quickReceiptFor(BOUNDED_FOLLOW_UP, 0).profile).toBe('triage');
+  });
+});
+
+describe('a contradicted claim degrades full mode, not only quick mode', () => {
+  function verification(overrides: Record<string, unknown> = {}) {
+    return {
+      schemaVersion: 'claim_verifier@1',
+      status: 'failed',
+      policy: 'record_only',
+      passed: false,
+      checkedClaimCount: 2,
+      unsupportedClaimCount: 1,
+      claimResults: [
+        {
+          claimId: 'claim-dur',
+          status: 'unsupported',
+          referenceResults: [{
+            evidenceRefId: 'data:sql_table:current:a:b:c',
+            status: 'value_mismatch',
+            message: 'value mismatch for dur_ms',
+          }],
+        },
+        {claimId: 'claim-ok', status: 'verified', referenceResults: []},
+      ],
+      issues: [{
+        claimId: 'claim-dur',
+        severity: 'error',
+        code: 'claim_reference_value_mismatch',
+        message: 'value mismatch for dur_ms',
+      }],
+      ...overrides,
+    };
+  }
+
+  it('refuses to deliver a full-mode conclusion whose number the data contradicts', () => {
+    // Full mode is the authoritative surface — report, snapshot and comparison
+    // all reuse it. Proving a number wrong and shipping it anyway makes the
+    // verification pointless.
+    const issue = assessFinalResultQuality({
+      result: result({claimVerificationResult: verification() as never}),
+      query: '分析这个启动 trace',
+    });
+
+    expect(issue?.code).toBe('verifier_contradicted_claim');
+    expect(issue?.message).toContain('引用值与证据不符');
+  });
+
+  it('names an absent reference differently from a numeric disagreement', () => {
+    const issue = assessFinalResultQuality({
+      result: result({
+        claimVerificationResult: verification({
+          claimResults: [{
+            claimId: 'claim-dur',
+            status: 'unsupported',
+            referenceResults: [{
+              evidenceRefId: 'data:sql_table:current:a:b:c',
+              status: 'missing',
+              message: 'no value was found for dur_ms in the referenced evidence',
+            }],
+          }],
+        }) as never,
+      }),
+      query: '分析这个启动 trace',
+    });
+
+    expect(issue?.code).toBe('verifier_contradicted_claim');
+    expect(issue?.message).toContain('未找到');
+  });
+
+  it('leaves a passing verification alone', () => {
+    expect(assessFinalResultQuality({
+      result: result({
+        claimVerificationResult: verification({
+          status: 'passed',
+          passed: true,
+          unsupportedClaimCount: 0,
+          claimResults: [{claimId: 'claim-ok', status: 'verified', referenceResults: []}],
+          issues: [],
+        }) as never,
+      }),
+      query: '分析这个启动 trace',
+    })?.code).not.toBe('verifier_contradicted_claim');
   });
 });

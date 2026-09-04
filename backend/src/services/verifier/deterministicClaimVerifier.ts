@@ -71,6 +71,20 @@ function verifyAnchor(anchor: EvidenceAnchorV1): ClaimReferenceVerificationResul
         message: `claim reference for ${cell.column} did not provide an expected value`,
       };
     }
+    if (actual === undefined) {
+      // Nothing was compared: either no row resolved, or the cited column is
+      // not in the row. The claim is still unsupported, but calling it a value
+      // mismatch sends whoever audits it looking for a numeric discrepancy
+      // that does not exist.
+      return {
+        evidenceRefId: anchor.evidenceRefId,
+        artifactId: anchor.context.artifactId,
+        sourceToolCallId: anchor.context.sourceToolCallId,
+        sourceRef: cell.sourceRef,
+        status: 'missing',
+        message: `no value was found for ${cell.column} in the referenced evidence`,
+      };
+    }
     const matched = valuesMatch(expected, actual);
     return {
       evidenceRefId: anchor.evidenceRefId,

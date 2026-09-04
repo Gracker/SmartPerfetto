@@ -574,8 +574,10 @@ describe('runClaimVerification', () => {
     }));
     expect(result.claimSupport[0].anchors[0].cells?.[0]).not.toHaveProperty('actualValue');
     expect(result.claimVerificationResult.status).toBe('failed');
+    // Nothing was compared, so the reason is a missing value rather than a
+    // numeric disagreement; the verdict is unsupported either way.
     expect(result.claimVerificationResult.issues[0]).toEqual(expect.objectContaining({
-      code: 'claim_reference_value_mismatch',
+      code: 'claim_reference_missing',
     }));
   });
 

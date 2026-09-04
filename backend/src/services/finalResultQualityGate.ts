@@ -20,6 +20,7 @@ export type FinalResultQualityIssueCode =
   | 'sparse_unverified_conclusion'
   | 'quick_full_report_shape'
   | 'quick_verifier_failed'
+  | 'verifier_contradicted_claim'
   | 'causal_claim_unverified'
   | 'scene_contract_incomplete'
   | 'comparison_identity_incomplete'
@@ -368,6 +369,21 @@ function strictUnverifiedCausalClaimIds(result: AgentRuntimeAnalysisResult): Set
         claim.relationEvaluation !== 'not_configured')
       .map(claim => claim.claimId),
   );
+}
+
+/** Name what the verifier actually proved, so the receipt is auditable. */
+function describeContradictedClaims(
+  verification: NonNullable<AgentRuntimeAnalysisResult['claimVerificationResult']>,
+): string {
+  const results = verification.claimResults || [];
+  const unsupported = results.filter(claim => claim.status === 'unsupported');
+  const mismatched = unsupported.filter(claim =>
+    (claim.referenceResults || []).some(ref => ref.status === 'value_mismatch'));
+  const total = unsupported.length || verification.unsupportedClaimCount;
+  const detail = mismatched.length > 0
+    ? `其中 ${mismatched.length} 条引用值与证据不符`
+    : '引用的证据行或列未找到';
+  return `${total} 条断言未通过确定性证据核对（${detail}）；不能作为已核验结论交付。`;
 }
 
 function hasSupportedClaimVerification(result: AgentRuntimeAnalysisResult): boolean {
@@ -1263,10 +1279,21 @@ export function assessFinalResultQuality(input: {
     };
   }
 
-  if (isQuickRunResult(result) && result.claimVerificationResult?.status === 'failed') {
+  if (result.claimVerificationResult?.status === 'failed') {
+    // Deterministic verification proved a cited number wrong or its evidence
+    // absent. Full mode is the authoritative surface — report, snapshot and
+    // comparison all reuse it — so shipping a contradicted claim as a
+    // completed analysis defeats the point of verifying at all. Quick mode
+    // already refused; the asymmetry had no basis.
+    if (isQuickRunResult(result)) {
+      return {
+        code: 'quick_verifier_failed',
+        message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} 快速模式当前断言未通过证据核对；不能作为已核验快速答案交付。`,
+      };
+    }
     return {
-      code: 'quick_verifier_failed',
-      message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} 快速模式当前断言未通过证据核对；不能作为已核验快速答案交付。`,
+      code: 'verifier_contradicted_claim',
+      message: `${FINAL_RESULT_QUALITY_GATE_MESSAGE} ${describeContradictedClaims(result.claimVerificationResult)}`,
     };
   }
 
