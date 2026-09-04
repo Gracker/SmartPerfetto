@@ -755,6 +755,28 @@ export function toolResultIsFailure(input: ToolResultNarrationInput): boolean {
   return body.success === false || body.isError === true;
 }
 
+/**
+ * True when a result is the system refusing the call, not the tool breaking.
+ *
+ * Around thirty MCP handlers answer a disallowed call with
+ * `{success: false, action_required: '<what to do instead>'}` — an exhausted
+ * per-phase tool budget, a plan phase closed without its expected evidence, an
+ * artifact read that must fetch a summary first. Those are governance
+ * decisions. `action_required` is the distinguishing field: a tool that
+ * genuinely failed has no instruction to offer.
+ *
+ * The distinction matters because failure-rate monitoring treats them as
+ * malfunctions. In a real run, one budget refusal plus two plan-phase
+ * refusals were enough to trip the 60%-of-5 circuit breaker, whose remedy is
+ * to tell the model to simplify its scope — the system manufacturing evidence
+ * that the model is failing, then shrinking its room because of it.
+ */
+export function isPolicyRefusalResult(result: unknown): boolean {
+  const body = readToolResultBody(result);
+  if (body.success !== false && body.isError !== true) return false;
+  return typeof body.action_required === 'string' && body.action_required.trim().length > 0;
+}
+
 export function formatToolResultNarration(input: ToolResultNarrationInput): string {
   const language = input.language ?? DEFAULT_OUTPUT_LANGUAGE;
   const toolName = shortToolName(readString(input.toolName) || 'unknown');

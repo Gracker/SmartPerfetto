@@ -496,6 +496,7 @@ function chooseClaudeConclusionText(input: {
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
 import { localize, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
+import { isPolicyRefusalResult } from '../../../agentv3/toolNarration';
 import {
   deleteClaudeSessionMapRuntimeSnapshot,
   deleteClaudeSessionMapRuntimeSnapshots,
@@ -1627,6 +1628,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         id?: string;
         name: string;
         success: boolean;
+        /**
+         * The call was refused by policy rather than broken. Still a failure
+         * for the model to react to, but not evidence that anything is
+         * malfunctioning.
+         */
+        policyRefusal?: boolean;
         completed?: boolean;
         startTime?: number;
         input?: unknown;
@@ -1900,9 +1907,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                 currentTurnMetrics.toolResultPayloadBytes += Buffer.byteLength(resultStr, 'utf-8');
               }
               const isFailed = isSdkToolResultFailure(observed.result, observed.isError);
+              const refusedByPolicy = isFailed && isPolicyRefusalResult(observed.result);
               const matchedTool = findToolCallForResult(observed.toolUseId);
               if (matchedTool) {
                 matchedTool.success = !isFailed;
+                matchedTool.policyRefusal = refusedByPolicy;
                 matchedTool.completed = true;
                 // Record tool execution in metrics collector (stream-observed timing)
                 const toolName = matchedTool.name.replace(MCP_NAME_PREFIX, '');
@@ -1972,8 +1981,17 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                   && toolCallHistory.length >= CIRCUIT_BREAKER_WINDOW
                   && toolCallHistory.length - lastCircuitBreakerFireIdx >= 3) {
                 const recentWindow = toolCallHistory.slice(-CIRCUIT_BREAKER_WINDOW);
-                const failCount = recentWindow.filter(t => !t.success).length;
-                const failRate = failCount / recentWindow.length;
+                // Policy refusals are excluded: this breaker asks "is anything
+                // broken", and its remedy is to tell the model to simplify its
+                // scope. Counting the system's own refusals here shrank the
+                // model's room on the strength of decisions the system made.
+                // The watchdog still sees them, because repeatedly retrying a
+                // refused call is a loop worth interrupting.
+                const recentWindow2 = recentWindow.filter(t => t.policyRefusal !== true);
+                const failCount = recentWindow2.filter(t => !t.success).length;
+                const failRate = recentWindow2.length > 0
+                  ? failCount / recentWindow2.length
+                  : 0;
                 if (failRate >= CIRCUIT_BREAKER_THRESHOLD) {
                   circuitBreakerFires++;
                   lastCircuitBreakerFireIdx = toolCallHistory.length;

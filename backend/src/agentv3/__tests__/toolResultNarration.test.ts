@@ -348,3 +348,60 @@ describe('failure detection across the projection boundary', () => {
     })).toBe(true);
   });
 });
+
+describe('policy refusal vs tool malfunction', () => {
+  const {isPolicyRefusalResult} = require('../toolNarration') as typeof import('../toolNarration');
+
+  /**
+   * Around thirty MCP handlers answer a disallowed call with
+   * `{success:false, action_required}`. Counting those as malfunctions let one
+   * budget refusal plus two plan-phase refusals trip a 60%-of-5 circuit
+   * breaker whose remedy is to tell the model to simplify its scope.
+   */
+  it.each([
+    ['an exhausted per-phase tool budget', {
+      success: false,
+      error: 'phase_tool_budget_exhausted',
+      action_required: 'close_phase_or_revise_plan',
+    }],
+    ['a phase closed without its expected evidence', {
+      success: false,
+      error: 'missing expected calls',
+      action_required: 'run_expected_calls_or_explain_unavailability',
+    }],
+    ['an artifact read that must summarize first', {
+      success: false,
+      error: 'summary_required_before_rows',
+      action_required: 'fetch_artifact',
+    }],
+  ])('recognises %s as a refusal', (_label, body) => {
+    expect(isPolicyRefusalResult([{type: 'text', text: JSON.stringify(body)}])).toBe(true);
+  });
+
+  it('does not call a genuine tool failure a refusal', () => {
+    expect(isPolicyRefusalResult([{
+      type: 'text',
+      text: JSON.stringify({success: false, error: 'no such table: foo'}),
+    }])).toBe(false);
+  });
+
+  it('does not call a successful result a refusal', () => {
+    expect(isPolicyRefusalResult([{
+      type: 'text',
+      text: JSON.stringify({success: true, action_required: 'fetch_artifact'}),
+    }])).toBe(false);
+  });
+
+  it('reads a refusal through the isError channel too', () => {
+    expect(isPolicyRefusalResult({
+      content: [{type: 'text', text: JSON.stringify({isError: true, action_required: 'submit_plan'})}],
+    })).toBe(true);
+  });
+
+  it('ignores an empty action_required', () => {
+    expect(isPolicyRefusalResult([{
+      type: 'text',
+      text: JSON.stringify({success: false, action_required: '   '}),
+    }])).toBe(false);
+  });
+});

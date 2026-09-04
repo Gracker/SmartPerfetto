@@ -146,6 +146,16 @@ Keep these boundaries intact:
   DeepSeek and GLM emit no prose between tool calls, so a run can legitimately
   show none. Project it the same way as the Responses-API reasoning branch —
   this is a public SSE surface.
+- A policy refusal is not a tool malfunction. Around thirty MCP handlers answer
+  a disallowed call with `{success: false, action_required: '<what to do
+  instead>'}`; `isPolicyRefusalResult` recognises them by that field, which no
+  genuinely broken tool supplies. Keep them out of aggregate failure-rate
+  monitoring: the circuit breaker's remedy is to tell the model to simplify its
+  scope, and in a real run one budget refusal plus two plan-phase refusals were
+  enough to trip its 60%-of-5 threshold — the system manufacturing evidence
+  that the model was failing, then shrinking its room because of it. The
+  same-tool watchdog still counts them, because retrying a refused call is a
+  loop worth interrupting.
 - `sqlUsesProcessNameFilter` decides both the raw-SQL identity warning and
   Skill identity admission, so it is an accuracy control, not a formatting
   nicety. Any change to it must be checked in both directions against real
