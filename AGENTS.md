@@ -62,6 +62,10 @@ cd backend && npm run build
   runtime event that reaches a user surface, give it a sentence in the shared
   narration layer; if it cannot be described honestly, emit nothing rather than
   a serialized payload.
+- Read a structured fact from a payload before it is truncated for transport.
+  `summarizeExternalToolResult` caps tool results at 2000 characters, and the
+  fields appended last — `planPhaseId`, `success` — are the ones that vanish,
+  degrading plan attribution and tool-success evidence without any error.
 - `frontend/` is consumed by Docker, `./start.sh`, and portable packages. After
   AI Assistant plugin UI changes, verify in dev mode and run
   `./scripts/update-frontend.sh`.

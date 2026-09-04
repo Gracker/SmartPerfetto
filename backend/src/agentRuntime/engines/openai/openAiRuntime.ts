@@ -74,6 +74,7 @@ import {
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
   type PlanEvidenceGap,
+  readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
 import {
   getAnalysisPlanCompletionStatus,
@@ -115,6 +116,7 @@ import {
 } from '../../../services/security/codeAwareOutputRegistry';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import { formatToolCallNarration, formatToolResultNarration, toolResultIsFailure } from '../../../agentv3/toolNarration';
+import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { loadOpenAIConfig, type OpenAIAgentConfig } from './openAiConfig';
 import { buildOpenAIChatCompletionsTokenLimit } from '../../../services/providerManager/openAiChatCompletionsCompat';
@@ -1704,9 +1706,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           });
         }
         let findings = extractFindingsFromText(conclusion);
-        let confidence = partial
-          ? Math.min(0.55, this.estimateConfidence(findings, conclusion))
-          : this.estimateConfidence(findings, conclusion);
+        let confidence = estimateAnalysisConfidence({findings, partial});
         rounds = inferReportedRounds(conclusion);
         const result: AnalysisResult = {
           sessionId,
@@ -1817,7 +1817,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               result.findings = extractFindingsFromText(repairedConclusion);
               result.confidence = Math.min(
                 preRecoveryConfidence,
-                this.estimateConfidence(result.findings, repairedConclusion),
+                estimateAnalysisConfidence({findings: result.findings, partial: Boolean(result.partial)}),
               );
               this.emitUpdate({
                 type: 'progress',
@@ -3361,7 +3361,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       conclusion = sanitizeCodeAwareText(params.sessionId, conclusion);
     }
     const findings = extractFindingsFromText(conclusion);
-    const confidence = Math.min(0.55, this.estimateConfidence(findings, conclusion));
+    const confidence = estimateAnalysisConfidence({findings, partial: true});
     const terminationReason: AnalysisTerminationReason = planStatus.complete ? 'timeout' : 'plan_incomplete';
     const terminationMessage = localize(
       params.outputLanguage,
@@ -3483,7 +3483,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       partialConclusion = sanitizeCodeAwareText(params.sessionId, partialConclusion);
     }
     const findings = extractFindingsFromText(partialConclusion);
-    const confidence = Math.min(0.55, this.estimateConfidence(findings, partialConclusion));
+    const confidence = estimateAnalysisConfidence({findings, partial: true});
     const result: AnalysisResult = {
       sessionId: params.sessionId,
       success: true,
@@ -3768,6 +3768,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           toolName: cached.toolName,
           input: cached.args,
           resultText,
+          // Read before truncation: planPhaseId and success sit after the body.
+          resultFacts: readToolResultFacts(rawOutput),
           returnedCodeReferences: codeReferences.length > 0,
           returnedCodeReferenceHints: codeReferences,
         });
@@ -3810,12 +3812,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     } catch {
       return undefined;
     }
-  }
-
-  private estimateConfidence(findings: Finding[], conclusion: string): number {
-    if (findings.length === 0) return conclusion.trim().length > 0 ? 0.55 : 0.25;
-    const avg = findings.reduce((sum, f) => sum + (f.confidence ?? 0.5), 0) / findings.length;
-    return Math.min(1, Math.max(0, avg));
   }
 
   private recordTurn(input: {

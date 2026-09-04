@@ -25,7 +25,7 @@
 	}) : target, mod));
 	//#endregion
 	//#region \0perfetto:version:ui/src/virtual/version
-	var VERSION = "v58.2-fe6c1226b";
+	var VERSION = "v58.2-4cf6c5cac";
 	//#endregion
 	//#region ../../ui/src/base/utils.ts
 	function exists(value) {

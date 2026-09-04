@@ -126,6 +126,21 @@ answer stays next to the question and the process reads as reference below it.
   and a failed stop restores the SSE stream, so focusing earlier would invite
   input against a live run.
 
+## Run Conflicts
+
+`POST /analyze` and `POST /sessions/:id/runs` answer 409 for two unrelated
+situations, and only the code separates them. `analysis_run_conflict.ts` owns
+that distinction.
+
+- `CANCELLATION_IN_PROGRESS` and `RUN_ALREADY_ACTIVE` mean the session is busy,
+  not that the request is wrong. A cancelled run keeps session ownership until
+  its outer execution settles, so the cancel endpoint reports `cancelled`
+  roughly 2.4s before a new run is accepted — exactly the window a user types
+  into after stop-and-redirect. Wait it out with a bound, then surface the
+  original response.
+- Every other 409 keeps its existing handling. Retrying a code-aware context
+  conflict would loop against a backend that will keep refusing.
+
 ## Self-Evolution UI
 
 - Bind the panel to the saved backend URL and credential. If connection edits

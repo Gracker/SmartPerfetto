@@ -48,6 +48,7 @@ import {
   MAX_TURNS_TERMINATION_REASON,
   prependPartialNotice,
   SDK_MAX_TURNS_SUBTYPE,
+  estimateAnalysisConfidence,
 } from '../../../agentv3/analysisTermination';
 import { extractFindingsFromText, extractFindingsFromSkillResult, mergeFindings } from '../../../agentv3/claudeFindingExtractor';
 import {
@@ -85,6 +86,7 @@ import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
+  readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
 import { buildRecoveryNote } from '../../../agentv3/recoveryNoteBuilder';
 import { evaluateThreshold as evaluateContextThreshold } from '../../../agentv3/contextTokenMeter';
@@ -1954,6 +1956,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                   input: matchedTool.input,
                   returnedCodeReferences: codeReferences.length > 0,
                   returnedCodeReferenceHints: codeReferences,
+                  // Read before truncation: planPhaseId and success sit after
+                  // the body, so the projected/truncated text loses both.
+                  resultFacts: readToolResultFacts(observed.result),
                   resultText: projectClaudeToolResultForPlan(matchedTool.name, observed.result),
                 });
               }
@@ -2636,7 +2641,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       }
       mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
 
-      const baseConfidence = this.estimateConfidence(mergedFindings);
+      const baseConfidence = estimateAnalysisConfidence({findings: mergedFindings});
       const turnConfidence = isRuntimePartialResult
         ? capPartialConfidence(baseConfidence, mergedFindings.length > 0)
         : baseConfidence;
@@ -2864,7 +2869,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             findings,
             hypotheses: errorHypotheses,
             conclusion: recoveredConclusion,
-            confidence: capPartialConfidence(this.estimateConfidence(findings), findings.length > 0),
+            confidence: estimateAnalysisConfidence({findings, partial: true}),
             rounds,
             totalDurationMs: Date.now() - startTime,
             partial: true,
@@ -2913,7 +2918,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           hypotheses: errorHypotheses,
           conclusion: partialConclusion,
           confidence: capPartialConfidence(
-            this.estimateConfidence(safePartialFindings),
+            estimateAnalysisConfidence({findings: safePartialFindings, partial: true}),
             safePartialFindings.length > 0,
           ),
           rounds,
@@ -3725,10 +3730,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         conclusionText = sanitizeCodeAwareText(sessionId, conclusionText);
         mergedFindings = mergeFindings([extractFindingsFromText(conclusionText)]);
       }
-      const quickConfidenceBase = mergedFindings.length > 0 ? 0.8 : 0.5;
-      const quickConfidence = isPartialResult
-        ? capPartialConfidence(quickConfidenceBase, mergedFindings.length > 0)
-        : quickConfidenceBase;
+      // Quick mode uses the same rule as full mode. The flat 0.8/0.5 it used
+      // before asserted high confidence merely because findings had been
+      // extracted from prose; the findings already carry severity-derived
+      // confidences, so averaging them says something real.
+      const quickConfidence = estimateAnalysisConfidence({
+        findings: mergedFindings,
+        partial: isPartialResult,
+      });
       const quickResult: AnalysisResult = {
         sessionId,
         success: true,
@@ -4644,11 +4653,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     };
   }
 
-  private estimateConfidence(findings: Finding[]): number {
-    if (findings.length === 0) return 0.3;
-    const avg = findings.reduce((sum, f) => sum + (f.confidence ?? 0.5), 0) / findings.length;
-    return Math.min(1, Math.max(0, avg));
-  }
 
   /** Capture entities from skill displayResults into EntityStore for multi-turn drill-down. */
   private captureEntitiesFromSkillDisplayResults(

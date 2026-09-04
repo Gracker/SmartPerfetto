@@ -113,6 +113,32 @@ export function capPartialConfidence(confidence: number, hasFindings: boolean): 
   return Math.min(safeConfidence, cap);
 }
 
+/**
+ * Confidence for a completed analysis, shared by every runtime.
+ *
+ * Four runtimes carried four versions of this, and they disagreed exactly where
+ * the number matters most — when there are no findings to average. Claude
+ * returned a flat 0.30, Pi and OpenCode a byte-identical 0.35/0.25, and OpenAI
+ * returned **0.55 whenever the conclusion string was non-empty**, which reports
+ * moderate confidence on the strength of prose rather than evidence. The same
+ * trace could therefore be reported at 0.30 or 0.55 depending only on which
+ * runtime happened to run it.
+ *
+ * The rule here: confidence follows the findings' own confidences, a run with
+ * no findings gets a fixed low value, and a partial run is capped. Nothing is
+ * inferred from the presence of text.
+ */
+export function estimateAnalysisConfidence(input: {
+  findings: readonly {confidence?: number}[];
+  partial?: boolean;
+}): number {
+  const {findings, partial} = input;
+  if (findings.length === 0) return partial ? 0.25 : 0.35;
+  const total = findings.reduce((sum, finding) => sum + (finding.confidence ?? 0.5), 0);
+  const average = Math.min(1, Math.max(0, total / findings.length));
+  return partial ? capPartialConfidence(average, true) : average;
+}
+
 function formatPositiveInteger(value: unknown): string | undefined {
   if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
     return undefined;

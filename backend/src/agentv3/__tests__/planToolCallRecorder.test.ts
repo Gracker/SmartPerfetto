@@ -1079,3 +1079,59 @@ describe('recordPlanToolCall', () => {
     expect(findCompletedPhaseEvidenceGaps(withPriorEvidence)).toEqual([]);
   });
 });
+
+describe('result facts survive transport truncation', () => {
+  const {readToolResultFacts, extractPlanPhaseIdFromToolResult, extractToolCallSuccessFromResult} =
+    require('../planToolCallRecorder') as typeof import('../planToolCallRecorder');
+  const {summarizeExternalToolResult} =
+    require('../../agentRuntime/runtimeLimits') as typeof import('../../agentRuntime/runtimeLimits');
+
+  /**
+   * `planPhaseId` and `success` are appended after the result body, so a byte
+   * cap removes them first. Re-deriving them from the transported string
+   * silently degraded plan phase attribution to semantic inference and left
+   * tool success unknown for every large result.
+   */
+  function largeSkillResult() {
+    return [{
+      type: 'text',
+      text: JSON.stringify({
+        success: true,
+        skillId: 'scrolling_analysis',
+        displayResults: Array.from({length: 13}, (_, i) => ({
+          stepId: `s${i}`,
+          data: {rows: Array.from({length: 20}, (_, r) => [r, 'x'.repeat(40)])},
+        })),
+        planPhaseId: 'p1',
+      }),
+    }];
+  }
+
+  it('loses the facts when they are read back from the truncated text', () => {
+    const truncated = summarizeExternalToolResult(largeSkillResult());
+    expect(truncated.length).toBeLessThan(JSON.stringify(largeSkillResult()).length);
+    expect(extractPlanPhaseIdFromToolResult(truncated)).toBeUndefined();
+    expect(extractToolCallSuccessFromResult(truncated)).toBeUndefined();
+  });
+
+  it('keeps the facts when they are read from the intact result', () => {
+    expect(readToolResultFacts(largeSkillResult())).toEqual({planPhaseId: 'p1', success: true});
+  });
+
+  it('reads the facts through every envelope shape the runtimes use', () => {
+    const raw = largeSkillResult();
+    for (const shape of [raw, JSON.stringify(raw), {content: raw}]) {
+      expect(readToolResultFacts(shape)).toEqual({planPhaseId: 'p1', success: true});
+    }
+  });
+
+  it('reports nothing rather than guessing when the result is unparseable', () => {
+    expect(readToolResultFacts('ERROR: boom')).toEqual({});
+    expect(readToolResultFacts(undefined)).toEqual({});
+  });
+
+  it('records a failed tool call as failed', () => {
+    expect(readToolResultFacts([{type: 'text', text: '{"success":false,"error":"x"}'}]))
+      .toEqual({success: false});
+  });
+});

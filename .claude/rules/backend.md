@@ -124,6 +124,20 @@ Keep these boundaries intact:
   event with no frontend handler is silently discarded after being computed and
   transmitted — `plan_submitted`, `plan_phase_updated`, and `plan_revised` were
   in that state. When adding an event, wire a consumer or say why there is none.
+- Result confidence comes from `estimateAnalysisConfidence` in
+  `agentv3/analysisTermination.ts`, shared by every runtime. Four private
+  copies once disagreed exactly where the number matters most — with no
+  findings to average, Claude returned 0.30 while OpenAI returned 0.55 whenever
+  the conclusion string was non-empty, so the same trace scored differently
+  depending only on which runtime ran it. Confidence follows the findings' own
+  confidences; never infer it from the presence of text.
+- Structured facts must be read from a tool result **before**
+  `summarizeExternalToolResult` truncates it. `planPhaseId` and `success` are
+  appended after the result body, so they are the first casualties of the
+  2000-char transport cap: a realistic 13.8 KB skill result loses both, which
+  silently degrades plan phase attribution to semantic inference and leaves
+  tool success unknown. Pass `resultFacts` from `readToolResultFacts(...)` at
+  the runtime call site; `resultText` is a fallback, not a source of truth.
 - `sqlUsesProcessNameFilter` decides both the raw-SQL identity warning and
   Skill identity admission, so it is an accuracy control, not a formatting
   nicety. Any change to it must be checked in both directions against real

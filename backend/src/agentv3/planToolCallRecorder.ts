@@ -34,7 +34,21 @@ const MAX_PLAN_TOOL_CALL_LOG = 100;
 export interface PlanToolCallRecorderInput {
   toolName: string;
   input?: unknown;
+  /**
+   * Transport form of the result: byte-truncated to
+   * `DEFAULT_EXTERNAL_TOOL_RESULT_MAX_CHARS`. Structured facts must not be
+   * re-derived from it — a realistic 13.8 KB skill result truncates to 2000
+   * chars and loses both `planPhaseId` and `success`, because both are
+   * appended after the result body. Pass `resultFacts` instead; this stays
+   * only as the fallback for callers that have nothing better.
+   */
   resultText?: string;
+  /**
+   * Facts read from the intact result, before truncation or external-surface
+   * projection. Without these, a large result silently degrades plan phase
+   * attribution to semantic inference and leaves tool success unknown.
+   */
+  resultFacts?: ToolResultFacts;
   /** Privacy-safe fact extracted from the raw result before any external-surface projection. */
   returnedCodeReferences?: boolean;
   /** Ephemeral only: retained in memory and never copied into ToolCallRecord or snapshots. */
@@ -74,7 +88,7 @@ function shortToolName(toolName: string): string {
 
 function buildToolCallRecord(input: PlanToolCallRecorderInput): ToolCallRecord {
   const callSummary = summarizeToolCallInput(shortToolName(input.toolName), input.input);
-  const success = extractToolCallSuccessFromResult(input.resultText);
+  const success = input.resultFacts?.success ?? extractToolCallSuccessFromResult(input.resultText);
   const planCapability = getPlanToolCapability(input.toolName);
   const returnedCodeReferences = planCapability === 'evidence' && (
     input.returnedCodeReferences ?? (
@@ -187,6 +201,75 @@ export function extractToolCallSuccessFromResult(resultText?: string): boolean |
   return undefined;
 }
 
+export interface ToolResultFacts {
+  /** Plan phase the tool itself attributed the call to. */
+  planPhaseId?: string;
+  /** Whether the tool reported success. */
+  success?: boolean;
+}
+
+/**
+ * Read the plan-relevant facts out of an intact tool result.
+ *
+ * Runtimes call this while they still hold the result object, before
+ * `summarizeExternalToolResult` truncates it for transport. Both fields sit
+ * after the result body in the MCP payload, so they are the first casualties of
+ * a byte cap.
+ */
+export function readToolResultFacts(result: unknown): ToolResultFacts {
+  const body = unwrapToolResultObject(result);
+  if (!body) return {};
+  const planPhaseId = typeof body.planPhaseId === 'string' && body.planPhaseId.trim()
+    ? body.planPhaseId.trim()
+    : undefined;
+  const success = typeof body.success === 'boolean' ? body.success : undefined;
+  return {
+    ...(planPhaseId ? {planPhaseId} : {}),
+    ...(success === undefined ? {} : {success}),
+  };
+}
+
+/** Unwrap the MCP content envelope each runtime happens to use. */
+function unwrapToolResultObject(value: unknown): Record<string, unknown> | undefined {
+  let current: unknown = value;
+  for (let depth = 0; depth < 6; depth += 1) {
+    if (typeof current === 'string') {
+      const text = current.trim();
+      // A serialized content-block array has to keep unwrapping; parsing it as
+      // a leading object would stop at the `{type, text}` wrapper.
+      if (text.startsWith('[')) {
+        try {
+          current = JSON.parse(text);
+          continue;
+        } catch {
+          return undefined;
+        }
+      }
+      // Objects may carry trailing guidance prose, so scan for the leading one.
+      return parseLeadingJsonObject(text) ?? undefined;
+    }
+    if (Array.isArray(current)) {
+      const block = current.find(
+        (entry): entry is {text: string} =>
+          !!entry && typeof entry === 'object' && typeof (entry as {text?: unknown}).text === 'string',
+      );
+      if (!block) return undefined;
+      current = block.text;
+      continue;
+    }
+    if (current && typeof current === 'object') {
+      const record = current as Record<string, unknown>;
+      if (Array.isArray(record.content) || typeof record.content === 'string') {
+        current = record.content;
+        continue;
+      }
+      return record;
+    }
+    return undefined;
+  }
+  return undefined;
+}
+
 export function extractPlanPhaseIdFromToolResult(resultText?: string): string | undefined {
   if (!resultText) return undefined;
   for (const candidate of collectToolResultCandidates(resultText)) {
@@ -214,7 +297,8 @@ export function recordPlanToolCall(
   const expectedGapPhase = canSatisfyEvidence
     ? findBestPhaseForExpectedCallGap(plan, candidate, 'structured_only')
     : undefined;
-  const toolReturnedPhaseId = extractPlanPhaseIdFromToolResult(input.resultText);
+  const toolReturnedPhaseId =
+    input.resultFacts?.planPhaseId ?? extractPlanPhaseIdFromToolResult(input.resultText);
   let matchedPhaseId = canControlPlan
     ? findSourceControlPhase(plan)?.id
     : expectedGapPhase?.id;

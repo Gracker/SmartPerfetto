@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 import { pathToFileURL } from 'url';
 import type { IOrchestrator } from '../../../agent/core/orchestratorTypes';
 import type { AnalysisOptions, AnalysisResult } from '../../../agent/core/orchestratorTypes';
-import type { ConversationTurn, Finding, StreamingUpdate } from '../../../agent/types';
+import type { ConversationTurn, StreamingUpdate } from '../../../agent/types';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
@@ -60,6 +60,7 @@ import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber
 import { classifyScene, type SceneType } from '../../../agentv3/sceneClassifier';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import { formatToolCallNarration, formatToolResultNarration, toolResultIsFailure } from '../../../agentv3/toolNarration';
+import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import type {
   AnalysisNote,
@@ -78,6 +79,7 @@ import {
   formatPlanEvidenceGap,
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
+  readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
 import {
   assessFinalResultComparisonIdentity,
@@ -933,13 +935,6 @@ export async function verifyPiAgentCoreConclusionForCorrection(input: {
   return issues;
 }
 
-function estimateConfidence(findings: Finding[], partial: boolean): number {
-  if (findings.length === 0) return partial ? 0.25 : 0.35;
-  const avg = findings.reduce((sum, finding) => sum + (finding.confidence ?? 0.5), 0) / findings.length;
-  const confidence = Math.min(1, Math.max(0, avg));
-  return partial ? Math.min(confidence, 0.55) : confidence;
-}
-
 function summarizePiToolResult(result: unknown): string {
   const content = (result as { content?: Array<{ text?: unknown }> } | undefined)?.content;
   const text = Array.isArray(content)
@@ -1362,6 +1357,8 @@ export function createPiAgentCoreToolFromSharedSpec(
         input: toolArgs,
         returnedCodeReferences: codeReferences.length > 0,
         returnedCodeReferenceHints: codeReferences,
+        // Read before truncation: planPhaseId and success sit after the body.
+        resultFacts: readToolResultFacts(result),
         resultText: summarizePiToolResult(
           projectToolResultForExternalSurface(spec.name, result),
         ),
@@ -2508,7 +2505,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       findings,
       hypotheses: prep.hypotheses.map(h => toRuntimeProtocolHypothesis(h, 'pi-agent-core')),
       conclusion,
-      confidence: estimateConfidence(findings, partial),
+      confidence: estimateAnalysisConfidence({findings, partial}),
       rounds: Math.max(rounds, 1),
       totalDurationMs: Date.now() - startedAt,
       partial: partial || undefined,
@@ -2619,7 +2616,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           result.findings = extractFindingsFromText(repairedConclusion);
           result.confidence = Math.min(
             preRecoveryConfidence,
-            estimateConfidence(result.findings, Boolean(result.partial)),
+            estimateAnalysisConfidence({findings: result.findings, partial: Boolean(result.partial)}),
           );
           this.emit('update', {
             type: 'progress',
@@ -2682,7 +2679,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       deferFocusedEvidenceFinalization: true,
     });
     if (gateIssue && !wasPartialBeforeQualityGate) {
-      result.confidence = estimateConfidence(result.findings, true);
+      result.confidence = estimateAnalysisConfidence({findings: result.findings, partial: true});
       this.emit('update', {
         type: 'degraded',
         content: {

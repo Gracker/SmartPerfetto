@@ -16,7 +16,7 @@ import type {
   AnalysisResult,
   IOrchestrator,
 } from '../../../agent/core/orchestratorTypes';
-import type { ConversationTurn, Finding, StreamingUpdate } from '../../../agent/types';
+import type { ConversationTurn, StreamingUpdate } from '../../../agent/types';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
@@ -46,6 +46,7 @@ import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor
 import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import { formatToolCallNarration, formatToolResultNarration, toolResultIsFailure } from '../../../agentv3/toolNarration';
+import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { classifyScene, type SceneType } from '../../../agentv3/sceneClassifier';
 import {loadPromptTemplate, renderTemplate} from '../../../agentv3/strategyLoader';
@@ -67,6 +68,7 @@ import {
   formatPlanEvidenceGap,
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
+  readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
 import {
   createOpenCodeSnapshotEngineState,
@@ -919,6 +921,8 @@ export async function dispatchOpenCodeBridgeRequest(
         toolName: definition.name,
         input: args,
         resultText,
+        // Read before truncation: planPhaseId and success sit after the body.
+        resultFacts: readToolResultFacts(result),
         returnedCodeReferences: codeReferences.length > 0,
         returnedCodeReferenceHints: codeReferences,
       });
@@ -2212,13 +2216,6 @@ export async function runOpenCodePrompt(
   return { promptResponse, messagesResponse };
 }
 
-function estimateConfidence(findings: readonly Finding[], partial?: boolean): number {
-  if (findings.length === 0) return partial ? 0.25 : 0.35;
-  const avg = findings.reduce((sum, finding) => sum + (finding.confidence ?? 0.5), 0) / findings.length;
-  const confidence = Math.min(1, Math.max(0, avg));
-  return partial ? Math.min(confidence, 0.55) : confidence;
-}
-
 export function getOpenCodePlanCompletionStatus(plan: AnalysisPlanV3 | null): AnalysisPlanCompletionStatus & {
   pending: string[];
 } {
@@ -3245,7 +3242,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       findings,
       hypotheses: prep.hypotheses.map(h => toRuntimeProtocolHypothesis(h, 'opencode')),
       conclusion,
-      confidence: estimateConfidence(findings, partial),
+      confidence: estimateAnalysisConfidence({findings, partial}),
       rounds: 1 + planCompletionContinuations + hypothesisResolutionContinuations +
         (finalReportContinuationAttempted ? 1 : 0),
       totalDurationMs: Date.now() - startedAt,
@@ -3358,7 +3355,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           result.findings = extractFindingsFromText(repairedConclusion);
           result.confidence = Math.min(
             preRecoveryConfidence,
-            estimateConfidence(result.findings, Boolean(result.partial)),
+            estimateAnalysisConfidence({findings: result.findings, partial: Boolean(result.partial)}),
           );
           this.emitUpdate({
             type: 'progress',
@@ -3421,7 +3418,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       deferFocusedEvidenceFinalization: true,
     });
     if (gateIssue && !wasPartialBeforeQualityGate) {
-      result.confidence = estimateConfidence(result.findings, true);
+      result.confidence = estimateAnalysisConfidence({findings: result.findings, partial: true});
       this.emitUpdate({
         type: 'degraded',
         content: {
