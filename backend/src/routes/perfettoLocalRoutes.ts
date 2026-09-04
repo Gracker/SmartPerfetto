@@ -6,14 +6,19 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
+import fsSync from 'fs';
 import { perfettoLocalService } from '../services/perfettoLocalService';
 import { resolveTraceUploadLimitBytes } from '../services/traceUploadLimit';
 
 const router = express.Router();
 
 // Configure multer for file uploads
+// Portable launchers provide a writable user-data directory through UPLOAD_DIR.
+// Keep the package-local path as the source/development fallback.
+const uploadDir = process.env.UPLOAD_DIR || path.join(__dirname, '../../uploads');
+fsSync.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({
-  dest: path.join(__dirname, '../../uploads'),
+  dest: uploadDir,
   limits: {
     fileSize: resolveTraceUploadLimitBytes(),
   },

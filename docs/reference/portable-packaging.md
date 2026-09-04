@@ -175,6 +175,16 @@ Windows 用户操作以 [Windows 配置与运行指南](../getting-started/windo
 AI 分析推荐在 UI 里配置 Provider profile。需要 env 凭证时，在对应用户数据目录
 创建 `env` 文件后重启启动器。
 
+便携包启动时会将可写的上传目录通过 `UPLOAD_DIR` 传给后端，并在用户数据根目录下
+创建 `uploads/`。不要依赖包内的 `backend/uploads`；这可以避免 App 位于 macOS
+`AppTranslocation` 临时路径或应用包不可写时，后端因上传目录不存在而无法通过 readiness
+检查。若从下载目录启动出现 `AppTranslocation`，请将 App 移到 `/Applications` 后再打开；
+可信的未公证包也可以移除隔离属性：
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SmartPerfetto.app
+```
+
 Windows 新包选择 D 盘默认目录时，如果 `%LOCALAPPDATA%\SmartPerfetto` 非空而 D 盘
 目标不存在或为空，会把 C 盘数据安全复制到 staging，写入迁移回执后原子切换；C 盘
 原目录保持不变。D 盘目标非空时不合并、不覆盖。复制或激活失败会清理 staging、打印
