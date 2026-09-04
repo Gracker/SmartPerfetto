@@ -200,6 +200,18 @@ AI analysis should normally use Provider profiles configured in the UI. For env
 credentials, create an `env` file in the platform user data directory and
 restart the launcher.
 
+At startup, the portable package passes the writable upload directory to the
+backend through `UPLOAD_DIR` and creates `uploads/` under the user data root.
+Do not rely on package-local `backend/uploads`; this avoids readiness failures
+when the app is launched from a macOS `AppTranslocation` path or the app bundle
+is not writable. If a downloaded app starts under `AppTranslocation`, move it
+to `/Applications` before opening it. For a trusted, non-notarized package, you
+can also remove its quarantine attribute:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/SmartPerfetto.app
+```
+
 When a new Windows package selects the D-drive default and non-empty
 `%LOCALAPPDATA%\SmartPerfetto` data exists, the launcher safely copies it into staging for
 an absent or empty D target, writes a migration receipt, and atomically activates it. The C
