@@ -128,6 +128,7 @@ import {
   hasDeliverableFinalReportHeading,
   looksLikeProcessNarrationConclusion,
   looksLikePhaseSummaryFallback,
+  looksLikeProviderErrorConclusion,
 } from '../../../services/finalResultQualityGate';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
@@ -2194,6 +2195,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         finalResult: terminalResult || '',
         accumulatedAnswer: accumulatedAnswerBeforeVerification,
       });
+      // Detect before a report heading is added: the heading would make this
+      // text look like a deliverable conclusion to the detector, and to every
+      // gate downstream of it.
+      const providerErrorConclusion = looksLikeProviderErrorConclusion(conclusionText);
+      if (providerErrorConclusion) {
+        console.warn(
+          `[ClaudeRuntime] Session ${sessionId}: the provider returned an error instead of an ` +
+          'analysis; skipping conclusion-phase completion, verification and correction.',
+        );
+      }
       conclusionText = ensureClaudeFinalReportHeading(
         conclusionText,
         ctx.sceneType,
@@ -2214,7 +2225,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       allFindings.push(extractFindingsFromText(conclusionText));
       let mergedFindings = mergeFindings(allFindings);
 
-      if (conclusionText.trim() && ctx.analysisPlan.current) {
+      if (conclusionText.trim() && !providerErrorConclusion && ctx.analysisPlan.current) {
         const plan = ctx.analysisPlan.current;
         const conclusionPhase = plan.phases.find(p =>
           p.status === 'pending' &&
@@ -2272,7 +2283,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // and conclusion-length checks must fire even when zero findings are extracted.
       console.log(`[ClaudeRuntime] Pre-verification: conclusionText=${conclusionText.length} chars, sdkSessionId=${sdkSessionId ? 'set' : 'MISSING'}, enableVerification=${runtimeConfig.enableVerification}`);
       let verificationDegradedMessage: string | undefined;
-      if (!timedOut && (runtimeConfig.enableVerification || privateAnalysisContext)) {
+      if (!timedOut && !providerErrorConclusion && (runtimeConfig.enableVerification || privateAnalysisContext)) {
         const MAX_CORRECTION_ATTEMPTS = 2;
         let previousErrorSignatures = new Set<string>();
 
@@ -2623,6 +2634,36 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         });
       }
       let isRuntimePartialResult = isPartialResult;
+      if (providerErrorConclusion) {
+        // Not a content problem the pipeline can repair. Mark the run itself
+        // rather than relying on a downstream gate to notice: the gate can be
+        // satisfied by evidence collected before the provider failed, and with
+        // verification disabled it does not run at all.
+        isRuntimePartialResult = true;
+        // `execution_error` already means "the run did not execute", which is
+        // exactly this. Adding a member to the reason union would ripple into
+        // reports, snapshots and generated frontend types for no new meaning.
+        terminationReason = terminationReason ?? 'execution_error';
+        const providerErrorMessage = localize(
+          outputLanguage,
+          'Provider 返回的是错误信息而不是分析结论，本次结果不完整。',
+          'The provider returned an error instead of an analysis; this result is incomplete.',
+        );
+        terminationMessage = terminationMessage
+          ? `${terminationMessage}\n\n${providerErrorMessage}`
+          : providerErrorMessage;
+        this.emitUpdate({
+          type: 'degraded',
+          content: {
+            module: 'claudeRuntime',
+            fallback: 'provider_error_conclusion',
+            message: providerErrorMessage,
+            partial: true,
+            terminationReason: 'execution_error',
+          },
+          timestamp: Date.now(),
+        });
+      }
       if (verificationDegradedMessage && !isRuntimePartialResult) {
         isRuntimePartialResult = true;
         terminationMessage = terminationMessage

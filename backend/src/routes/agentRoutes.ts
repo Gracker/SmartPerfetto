@@ -4351,16 +4351,28 @@ router.post('/:sessionId/interaction', async (req, res) => {
       context,
     };
 
-    // Record the interaction — ClaudeRuntime (agentv3) doesn't implement these methods.
     if (typeof session.orchestrator.recordUserInteraction === 'function') {
       session.orchestrator.recordUserInteraction(interaction);
       const focusStore =
         typeof session.orchestrator.getFocusStore === 'function' ? session.orchestrator.getFocusStore() : null;
       const focusCount = focusStore ? focusStore.getTopFocuses(100).length : 0;
-      return res.json({ success: true, sessionId, focusCount });
+      return res.json({ success: true, supported: true, sessionId, focusCount });
     }
 
-    return res.json({ success: true, sessionId, focusCount: 0 });
+    // No production runtime implements focus tracking. This used to answer
+    // `{success: true, focusCount: 0}`, which reads as "recorded, nothing
+    // tracked yet" rather than "this backend cannot record it" — a caller had
+    // no way to tell the difference, and the frontend kept posting on every
+    // interaction forever. The status stays 200 so the fire-and-forget caller
+    // does not log a failure for a request that was well-formed.
+    return res.json({
+      success: false,
+      supported: false,
+      code: 'FOCUS_TRACKING_UNSUPPORTED',
+      error: 'The active runtime does not implement focus tracking',
+      sessionId,
+      focusCount: 0,
+    });
   } catch (error: any) {
     console.error(`[Interaction] Error recording interaction for session ${sessionId}:`, error);
     return res.status(500).json({

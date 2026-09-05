@@ -777,6 +777,51 @@ export function isPolicyRefusalResult(result: unknown): boolean {
   return typeof body.action_required === 'string' && body.action_required.trim().length > 0;
 }
 
+/**
+ * Tools whose whole job is to come back with hits.
+ *
+ * For these, how many hits is bookkeeping but *no* hits is an outcome: it is
+ * the result that forces the model to look somewhere else. Enumerating the
+ * tools rather than sniffing the body keeps a skill or SQL result that happens
+ * to carry an empty array from being announced as a failed lookup. A coverage
+ * test keeps this set in step with the registry.
+ */
+const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
+  'lookup_sql_schema',
+  'lookup_knowledge',
+  'lookup_blog_knowledge',
+  'lookup_strategy_detail',
+  'lookup_app_source',
+  'lookup_aosp_source',
+  'lookup_kernel_source',
+  'lookup_oem_sdk',
+  'lookup_baseline',
+  'query_perfetto_source',
+  'query_code_graph',
+  'search_codebase',
+  'inspect_code_symbol',
+  'resolve_symbol',
+  'recall_similar_case',
+  'recall_similar_result',
+  'recall_patterns',
+  'recall_project_memory',
+  'list_stdlib_modules',
+  'list_codebases',
+]);
+
+/**
+ * Hits across the field names these tools actually use. `query_code_graph`
+ * answers with `references`, the source lookups with `results`, others with
+ * `chunks` or `matches`; missing every one of them means we cannot tell, which
+ * is not the same as zero.
+ */
+function retrievalHitCount(body: Record<string, unknown>): number | undefined {
+  const counts = ['results', 'references', 'chunks', 'matches', 'entries', 'hits', 'items', 'skills', 'cases', 'candidates']
+    .map((field) => readCount(body[field]))
+    .filter((count): count is number => count !== undefined);
+  return counts.length === 0 ? undefined : Math.max(...counts);
+}
+
 export function formatToolResultNarration(input: ToolResultNarrationInput): string {
   const language = input.language ?? DEFAULT_OUTPUT_LANGUAGE;
   const toolName = shortToolName(readString(input.toolName) || 'unknown');
@@ -787,127 +832,83 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
     return narrateToolFailure(toolName, body, language);
   }
 
-  // Nothing parsed and no call context to fall back on. Say nothing rather
-  // than print a line that only restates the dispatch above it.
+  // Nothing parsed and no call context to fall back on.
   if (Object.keys(body).length === 0 && Object.keys(args).length === 0) return '';
 
   switch (toolName) {
-    case 'invoke_skill':
-      // The skill engine already emits its own completion line with duration
-      // and layer count, and the `data` event lists the evidence produced.
-      // A third sentence here would only repeat them.
-      return '';
     case 'execute_sql':
     case 'execute_sql_on': {
+      // The dispatch line already said what the query is for. A row count does
+      // not tell the reader whether it worked out — an empty result does, and
+      // it is the case that forces the model to change approach.
       const rows = readCount(body.totalRows) ?? readCount(body.rowCount) ?? readCount(body.rows);
-      const summarized = body.mode === 'summary' || body.autoSummarized === true;
-      const summaryText = summarized ? localize(language, '（已摘要）', ' (summarized)') : '';
-      return shorten(rows !== undefined
-        ? localize(language, `SQL 返回 ${rows} 行${summaryText}`, `SQL returned ${rows} rows${summaryText}`)
-        : localize(language, 'SQL 执行完成', 'SQL execution finished'));
+      return rows === 0
+        ? localize(language, 'SQL 未查到匹配数据', 'SQL matched no rows')
+        : '';
     }
     case 'fetch_artifact': {
-      const id = readString(body.id) || readString(args.id) || readString(args.artifactId);
       const rows = readCount(body.rows) ?? readCount(body.totalRows);
-      const columns = readCount(body.columns);
-      const shape = [
-        rows !== undefined ? localize(language, `${rows} 行`, `${rows} rows`) : '',
-        columns !== undefined ? localize(language, `${columns} 列`, `${columns} columns`) : '',
-      ].filter(Boolean).join(localize(language, ' / ', ' / '));
-      // Without a shape this line only repeats the dispatch line above it.
-      if (!shape) return '';
-      const shapeText = localize(language, `：${shape}`, `: ${shape}`);
-      // A summary fetch reports columns but no rows; say so rather than
-      // leaving a bare column count that reads like a truncated row count.
-      const verb = (readString(body.detail) || readString(args.detail)) === 'summary'
-        ? localize(language, '取回 artifact 摘要', 'Fetched artifact summary')
-        : localize(language, '取回 artifact', 'Fetched artifact');
-      return shorten(id
-        ? `${verb} ${id}${shapeText}`
-        : `${verb}${shapeText}`);
+      return rows === 0
+        ? localize(language, '该 artifact 没有数据行', 'That artifact has no rows')
+        : '';
     }
     case 'detect_architecture': {
+      // A genuine outcome: the dispatch could not know which pipeline it is.
       const type = readString(body.type);
+      if (!type) return '';
       const confidence = typeof body.confidence === 'number' && Number.isFinite(body.confidence)
         ? body.confidence
         : undefined;
       const confidenceText = confidence !== undefined
         ? localize(language, `（置信度 ${confidence.toFixed(2)}）`, ` (confidence ${confidence.toFixed(2)})`)
         : '';
-      return shorten(type
-        ? localize(language, `识别为 ${type} 渲染架构${confidenceText}`, `Detected ${type} rendering architecture${confidenceText}`)
-        : localize(language, '渲染架构检测完成', 'Rendering architecture detection finished'));
-    }
-    case 'submit_hypothesis': {
-      const id = readString(body.hypothesisId);
-      const statement = readString(body.statement) || readString(args.statement);
-      const idText = id ? ` ${id}` : '';
-      return shorten(statement
-        ? localize(language, `记录假设${idText}：${statement}`, `Recorded hypothesis${idText}: ${statement}`)
-        : localize(language, `记录假设${idText}`, `Recorded hypothesis${idText}`));
+      return shorten(localize(
+        language,
+        `识别为 ${type} 渲染架构${confidenceText}`,
+        `Detected ${type} rendering architecture${confidenceText}`,
+      ));
     }
     case 'resolve_hypothesis': {
+      // The verdict is the outcome; the dispatch only proposed it.
       const id = readString(body.hypothesisId) || readString(args.hypothesisId);
       const status = readString(body.status) || readString(args.status);
+      if (!status) return '';
       const unresolved = readCount(body.unresolvedCount);
       const unresolvedText = unresolved !== undefined
         ? localize(language, `，剩余待验证 ${unresolved} 条`, `, ${unresolved} still unresolved`)
         : '';
       const idText = id ? ` ${id}` : '';
-      return shorten(status
-        ? localize(language, `假设${idText} 收敛为 ${status}${unresolvedText}`, `Hypothesis${idText} resolved as ${status}${unresolvedText}`)
-        : localize(language, `假设${idText} 已更新${unresolvedText}`, `Hypothesis${idText} updated${unresolvedText}`));
+      return shorten(localize(
+        language,
+        `假设${idText} 收敛为 ${status}${unresolvedText}`,
+        `Hypothesis${idText} resolved as ${status}${unresolvedText}`,
+      ));
     }
-    case 'flag_uncertainty': {
-      const flags = readCount(body.flagCount);
-      return shorten(flags !== undefined
-        ? localize(language, `已标记不确定性，共 ${flags} 条`, `Uncertainty flagged; ${flags} total`)
-        : localize(language, '已标记不确定性', 'Uncertainty flagged'));
-    }
-    case 'submit_plan':
-    case 'revise_plan': {
-      const phases = readCount(body.phases) ?? readCount(args.phases) ?? readCount(args.updatedPhases);
-      return shorten(phases !== undefined
-        ? localize(language, `计划已登记，共 ${phases} 个阶段`, `Plan registered with ${phases} phases`)
-        : localize(language, '计划已登记', 'Plan registered'));
-    }
-    case 'update_plan_phase': {
-      const phaseId = readString(args.phaseId || args.id);
-      const status = readString(args.status || args.state);
-      const allComplete = body.allPhasesComplete === true;
-      const completeText = allComplete
-        ? localize(language, '，全部阶段已完成', '; all phases complete')
+    case 'update_plan_phase':
+      // The dispatch names the phase and the target status. Only the plan
+      // becoming complete is news.
+      return body.allPhasesComplete === true
+        ? localize(language, '全部计划阶段已完成', 'All plan phases complete')
         : '';
-      return shorten(phaseId && status
-        ? localize(language, `阶段 ${phaseId} 标记为 ${status}${completeText}`, `Phase ${phaseId} marked ${status}${completeText}`)
-        : localize(language, `计划阶段已更新${completeText}`, `Plan phase updated${completeText}`));
-    }
-    case 'list_skills': {
-      // Quick mode returns {matched, skills[]}; full mode returns a bare array.
-      const count = readCount(body.matched)
-        ?? readCount(body.skills)
-        ?? readCount(body.items);
-      return shorten(count !== undefined
-        ? localize(language, `技能目录返回 ${count} 项`, `Skill catalog returned ${count} entries`)
-        : localize(language, '技能目录已返回', 'Skill catalog returned'));
-    }
-    case 'lookup_sql_schema':
-    case 'lookup_knowledge':
-    case 'query_perfetto_source': {
-      const hits = readCount(body.results) ?? readCount(body.matches) ?? readCount(body.entries);
-      return shorten(hits !== undefined
-        ? localize(language, `查到 ${hits} 条参考资料`, `Found ${hits} reference entries`)
-        : localize(language, '参考资料已返回', 'Reference material returned'));
-    }
-    case 'write_analysis_note': {
-      const section = readString(args.section) || readString(body.section);
-      return shorten(section
-        ? localize(language, `笔记已记录：${section}`, `Note recorded: ${section}`)
-        : localize(language, '笔记已记录', 'Note recorded'));
-    }
+    case 'invoke_skill':
+    case 'submit_plan':
+    case 'revise_plan':
+    case 'submit_hypothesis':
+    case 'flag_uncertainty':
+    case 'list_skills':
+    case 'write_analysis_note':
+    case 'record_source_use_decision':
+      // These restate their own dispatch line. The skill engine reports its own
+      // completion, and the `data` event lists the evidence that arrived.
+      return '';
     default:
-      // No shape we can describe honestly. The caller drops the step rather
-      // than falling back to a JSON dump.
+      if (RETRIEVAL_TOOLS.has(toolName)) {
+        return retrievalHitCount(body) === 0
+          ? localize(language, '未查到相关资料', 'No matching reference material')
+          : '';
+      }
+      // No outcome we can state honestly. The caller drops the step rather
+      // than printing a line that only repeats the call above it.
       return '';
   }
 }

@@ -328,6 +328,31 @@ function collectIndependentEvidenceSectionText(text: string): string {
   return sections.join('\n').trim();
 }
 
+/**
+ * True when the "conclusion" is really a provider or infrastructure failure.
+ *
+ * A provider can answer with an error string in the success channel — an
+ * expired OAuth session, a quota rejection, a dropped upstream connection —
+ * and it then flows through the pipeline as if it were analysis. The final
+ * gate does eventually mark such a run partial, which is the right outcome,
+ * but on the way there the correction loop spends its attempts re-asking a
+ * provider that cannot answer. Re-asking only helps when the failure is about
+ * the content; an authentication error is not going to be fixed by rewording
+ * the request.
+ *
+ * Deliberately narrow: it matches short texts that are an error statement and
+ * nothing else. A real report that happens to discuss authentication or quotas
+ * is long and carries a conclusion heading.
+ */
+export function looksLikeProviderErrorConclusion(conclusion: string): boolean {
+  const text = conclusion.trim();
+  if (!text || text.length > 400) return false;
+  if (hasDeliverableFinalReportHeading(text)) return false;
+
+  return /(?:^|\n)\s*(?:Failed to authenticate|Authentication failed|OAuth session (?:expired|invalid)|Invalid API key|Incorrect API key|API key not (?:found|valid)|Insufficient (?:quota|balance)|quota exceeded|rate limit exceeded|Claude Code returned an error|provider returned an error|upstream (?:connect|request) error|Connection error|socket hang up|ECONNRESET|ETIMEDOUT)/i
+    .test(text);
+}
+
 export function looksLikePhaseSummaryFallback(conclusion: string): boolean {
   const text = conclusion.trim();
   if (!text) return false;

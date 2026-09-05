@@ -4206,7 +4206,7 @@ describe('createClaudeMcpServer', () => {
         u.content?.phaseId === 'p1' &&
         u.content?.status === 'completed',
       ).map(u => u.content.origin)).toEqual(['auto']);
-      expect(p1?.summary).toContain('上一阶段未收到显式完成摘要');
+      expect(p1?.summary).toContain('模型未给出完成摘要');
       expect(p1?.summary).toContain('1 个证据表');
       expect(p1?.summary).toContain('scrolling_analysis');
       expect(p1?.summary).toContain('Result');
@@ -6405,7 +6405,7 @@ describe('createClaudeMcpServer', () => {
 
       const p1 = analysisPlan.current?.phases.find(p => p.id === 'p1');
       expect(p1?.status).toBe('completed');
-      expect(p1?.summary).toContain('上一阶段未收到显式完成摘要');
+      expect(p1?.summary).toContain('模型未给出完成摘要');
       expect(p2Started.next_phase_reminder).toBeUndefined();
       expect(p2Completed.allPhasesComplete).toBe(true);
     });

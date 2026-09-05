@@ -62,12 +62,30 @@ export function readPlanPhaseUpdateOrigin(value: unknown): PlanPhaseUpdateOrigin
  * "entered" or "completed"; mislabelling a rollback as progress would be worse
  * than saying less.
  */
+/**
+ * One sentence is a line in a process view; the rest belongs in the report.
+ *
+ * CJK terminators end a sentence on their own — Chinese does not put a space
+ * after `。` — while an ASCII `.` needs a following boundary so a decimal such
+ * as `0.37ms` is not mistaken for the end of the thought.
+ */
+function leadingSentence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed) return '';
+  const end = trimmed.search(/[。！？]|[.!?](?:\s|$)/);
+  return end === -1 ? trimmed : trimmed.slice(0, end + 1);
+}
+
 export function formatPlanPhaseTransition(
   input: { phaseName?: string; phaseId: string; status: string; summary?: string },
   language: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
 ): string {
   const label = (input.phaseName || '').trim() || input.phaseId;
-  const summary = (input.summary || '').trim();
+  // A phase summary carries the evidence recap and the phase goal for the
+  // report and the plan record. In the process view those repeat the evidence
+  // lines and the plan line around them, so only the leading sentence — the
+  // reason this transition happened — earns the space.
+  const summary = leadingSentence(input.summary || '');
   const detail = summary ? `：${summary}` : '';
   const detailEn = summary ? `: ${summary}` : '';
 

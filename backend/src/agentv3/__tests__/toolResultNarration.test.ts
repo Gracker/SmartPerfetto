@@ -18,17 +18,24 @@ function mcpResult(body: unknown) {
 }
 
 describe('formatToolResultNarration', () => {
-  it('describes a SQL result by row count instead of dumping JSON', () => {
-    const text = formatToolResultNarration({
+  it('says nothing for a SQL query that returned rows', () => {
+    // The dispatch line already stated what the query is for; a row count does
+    // not tell the reader whether it worked out.
+    expect(formatToolResultNarration({
       toolName: 'mcp__smartperfetto__execute_sql',
       result: mcpResult({success: true, mode: 'summary', totalRows: 376}),
-    });
-    expect(text).toBe('SQL 返回 376 行（已摘要）');
-    expect(text).not.toContain('{');
+    })).toBe('');
   });
 
-  it('names the artifact and its shape', () => {
-    const text = formatToolResultNarration({
+  it('reports a SQL query that matched nothing, which forces a new approach', () => {
+    expect(formatToolResultNarration({
+      toolName: 'execute_sql',
+      result: mcpResult({success: true, totalRows: 0}),
+    })).toBe('SQL 未查到匹配数据');
+  });
+
+  it('says nothing for an artifact fetch that returned rows', () => {
+    expect(formatToolResultNarration({
       toolName: 'fetch_artifact',
       args: {id: 'art-8'},
       result: mcpResult({
@@ -38,25 +45,15 @@ describe('formatToolResultNarration', () => {
         columns: ['jank_type', 'count'],
         rows: [{}, {}, {}],
       }),
-    });
-    expect(text).toBe('取回 artifact art-8：3 行 / 2 列');
+    })).toBe('');
   });
 
-  it('falls back to the call arguments when the result omits its target', () => {
-    const text = formatToolResultNarration({
-      toolName: 'fetch_artifact',
-      args: {id: 'art-25'},
-      result: mcpResult({success: true, detail: 'rows', rows: [[1], [2]]}),
-    });
-    expect(text).toContain('art-25');
-    expect(text).toContain('2 行');
-  });
-
-  it('says summary when the fetch was a summary rather than rows', () => {
+  it('reports an empty artifact', () => {
     expect(formatToolResultNarration({
       toolName: 'fetch_artifact',
-      result: mcpResult({success: true, detail: 'summary', id: 'art-11', columns: new Array(72).fill('c')}),
-    })).toBe('取回 artifact 摘要 art-11：72 列');
+      args: {id: 'art-8'},
+      result: mcpResult({success: true, detail: 'rows', id: 'art-8', rows: []}),
+    })).toBe('该 artifact 没有数据行');
   });
 
   it('stays silent when the artifact result carries no shape', () => {
@@ -74,11 +71,11 @@ describe('formatToolResultNarration', () => {
     ['serialized envelope', (b: unknown) => JSON.stringify({content: mcpResult(b)})],
     ['plain object', (b: unknown) => b],
   ])('reads the same result through the %s wrapper each runtime uses', (_label, wrap) => {
-    const body = {success: true, detail: 'rows', id: 'art-11', columns: ['a', 'b'], rows: [[1], [2], [3]]};
+    const body = {success: true, detail: 'rows', id: 'art-11', rows: []};
     expect(formatToolResultNarration({
       toolName: 'fetch_artifact',
       result: wrap(body),
-    })).toBe('取回 artifact art-11：3 行 / 2 列');
+    })).toBe('该 artifact 没有数据行');
   });
 
   it('reports the detected architecture and confidence', () => {
@@ -102,12 +99,83 @@ describe('formatToolResultNarration', () => {
     expect(text).toBe('假设 h1 收敛为 confirmed，剩余待验证 0 条');
   });
 
-  it('says nothing for invoke_skill, which the skill engine already reports', () => {
+  it.each([
+    ['invoke_skill', {success: true, skillId: 'scrolling_analysis', displayResults: [{}, {}]}],
+    ['submit_plan', {success: true, phases: [{}, {}]}],
+    ['submit_hypothesis', {success: true, hypothesisId: 'h1', statement: 'x'}],
+    ['flag_uncertainty', {success: true, flagCount: 1}],
+    ['list_skills', {matched: 12, skills: [{}]}],
+    ['write_analysis_note', {success: true, section: 'finding'}],
+  ])('says nothing for %s, whose dispatch line already said it', (toolName, body) => {
+    expect(formatToolResultNarration({toolName, result: mcpResult(body)})).toBe('');
+  });
+
+  it('reports only the plan becoming complete, not each phase update', () => {
+    expect(formatToolResultNarration({
+      toolName: 'update_plan_phase',
+      args: {phaseId: 'p2', status: 'completed'},
+      result: mcpResult({success: true}),
+    })).toBe('');
+    expect(formatToolResultNarration({
+      toolName: 'update_plan_phase',
+      args: {phaseId: 'p2', status: 'completed'},
+      result: mcpResult({success: true, allPhasesComplete: true}),
+    })).toBe('全部计划阶段已完成');
+  });
+
+  it.each([
+    ['lookup_knowledge', 'results'],
+    ['lookup_aosp_source', 'results'],
+    ['lookup_app_source', 'results'],
+    ['lookup_kernel_source', 'results'],
+    ['lookup_oem_sdk', 'results'],
+    ['query_code_graph', 'references'],
+    ['search_codebase', 'chunks'],
+    ['recall_similar_case', 'cases'],
+    ['resolve_symbol', 'candidates'],
+  ])('reports %s finding nothing, using its own %s field', (toolName, field) => {
+    expect(formatToolResultNarration({
+      toolName,
+      result: mcpResult({success: true, [field]: []}),
+    })).toBe('未查到相关资料');
+    expect(formatToolResultNarration({
+      toolName,
+      result: mcpResult({success: true, [field]: [{}, {}]}),
+    })).toBe('');
+  });
+
+  it('does not announce a failed lookup when the body has no hit list at all', () => {
+    expect(formatToolResultNarration({
+      toolName: 'lookup_knowledge',
+      result: mcpResult({success: true, note: 'served from cache'}),
+    })).toBe('');
+  });
+
+  it('does not treat an empty array on a non-retrieval tool as a failed lookup', () => {
     expect(formatToolResultNarration({
       toolName: 'invoke_skill',
-      args: {skillId: 'scrolling_analysis'},
-      result: mcpResult({success: true, skillId: 'scrolling_analysis', displayResults: [{}, {}]}),
+      result: mcpResult({success: true, results: []}),
     })).toBe('');
+  });
+
+  it('keeps the retrieval set in step with the registry', () => {
+    const fs = require('fs') as typeof import('fs');
+    const path = require('path') as typeof import('path');
+    const serverSource = fs.readFileSync(path.join(__dirname, '..', 'claudeMcpServer.ts'), 'utf8');
+    const registered = [...serverSource.matchAll(/registry\.register(?:Sdk|Shared)?\(\s*[A-Za-z0-9_]+,\s*'([a-z_]+)'/g)]
+      .map((match) => match[1]);
+    // Every registered tool whose job is to come back with hits must report
+    // finding nothing; otherwise the result that should redirect the model is
+    // the one line we drop.
+    const retrievalShaped = registered.filter((tool) =>
+      /^(lookup_|search_|query_|recall_)/.test(tool) && tool !== 'query_trace');
+    const narrationSource = fs.readFileSync(path.join(__dirname, '..', 'toolNarration.ts'), 'utf8');
+    const setBlock = narrationSource.slice(
+      narrationSource.indexOf('const RETRIEVAL_TOOLS'),
+      narrationSource.indexOf('function retrievalHitCount'),
+    );
+    const missing = retrievalShaped.filter((tool) => !setBlock.includes(`'${tool}'`)).sort();
+    expect(missing).toEqual([]);
   });
 
   it('returns empty rather than guessing at an unknown tool', () => {
@@ -140,18 +208,18 @@ describe('formatToolResultNarration', () => {
   ])('reads JSON wrapped in %s', (_label, wrap) => {
     // invoke_skill and fetch_artifact deliberately surround their JSON with
     // guidance text; a whole-string parse silently dropped those results.
-    const body = JSON.stringify({success: true, detail: 'rows', id: 'art-8', columns: ['a', 'b'], rows: [[1], [2]]});
+    const body = JSON.stringify({success: true, detail: 'rows', id: 'art-8', rows: []});
     expect(formatToolResultNarration({
       toolName: 'fetch_artifact',
       result: [{type: 'text', text: wrap(body)}],
-    })).toBe('取回 artifact art-8：2 行 / 2 列');
+    })).toBe('该 artifact 没有数据行');
   });
 
   it('is not confused by braces inside JSON string values', () => {
     expect(formatToolResultNarration({
       toolName: 'execute_sql',
-      result: [{type: 'text', text: `${JSON.stringify({success: true, totalRows: 5, note: 'has } and { inside'})} trailing`}],
-    })).toBe('SQL 返回 5 行');
+      result: [{type: 'text', text: `${JSON.stringify({success: true, totalRows: 0, note: 'has } and { inside'})} trailing`}],
+    })).toBe('SQL 未查到匹配数据');
   });
 
   it('never emits raw JSON when the payload was truncated mid-object', () => {
@@ -163,12 +231,11 @@ describe('formatToolResultNarration', () => {
   });
 
   it('emits English when the output language is English', () => {
-    const text = formatToolResultNarration({
+    expect(formatToolResultNarration({
       toolName: 'execute_sql',
-      result: mcpResult({success: true, totalRows: 12}),
+      result: mcpResult({success: true, totalRows: 0}),
       language: 'en',
-    });
-    expect(text).toBe('SQL returned 12 rows');
+    })).toBe('SQL matched no rows');
   });
 });
 
@@ -299,22 +366,6 @@ describe('privacy canary', () => {
   });
 });
 
-describe('list_skills result shapes', () => {
-  it('counts the quick-mode object shape', () => {
-    expect(formatToolResultNarration({
-      toolName: 'list_skills',
-      result: [{type: 'text', text: JSON.stringify({matched: 12, skills: [{id: 'a'}, {id: 'b'}]})}],
-    })).toBe('技能目录返回 12 项');
-  });
-
-  it('counts the full-mode bare array shape', () => {
-    // Full mode returns the catalog directly rather than wrapping it.
-    expect(formatToolResultNarration({
-      toolName: 'list_skills',
-      result: [{type: 'text', text: JSON.stringify([{id: 'a'}, {id: 'b'}, {id: 'c'}])}],
-    })).toBe('技能目录返回 3 项');
-  });
-});
 
 describe('failure detection across the projection boundary', () => {
   const {projectToolResultForExternalSurface} =
@@ -403,5 +454,63 @@ describe('policy refusal vs tool malfunction', () => {
       type: 'text',
       text: JSON.stringify({success: false, action_required: '   '}),
     }])).toBe(false);
+  });
+});
+
+describe('what a phase transition line spends its words on', () => {
+  it('shows only the reason the phase closed, not the recap behind it', () => {
+    // The stored summary carries the evidence recap and the phase goal for the
+    // report and the plan record. In the process view those repeat the evidence
+    // lines and the plan line that surround them.
+    const stored = '模型未给出完成摘要，按已收集证据自动收口。本阶段已产生 18 个证据表'
+      + '（来源：scrolling_analysis）：洞见摘要、初始化 CPU 拓扑等 14 个。'
+      + '阶段目标：建立全量掉帧口径。已进入后续阶段「根因深钻」。';
+    const line = formatPlanPhaseTransition({
+      phaseId: 'p1',
+      phaseName: '概览与掉帧分布',
+      status: 'completed',
+      summary: stored,
+    });
+    expect(line).toBe('完成阶段「概览与掉帧分布」：模型未给出完成摘要，按已收集证据自动收口。');
+    expect(line).not.toContain('证据表');
+    expect(line).not.toContain('阶段目标');
+  });
+
+  it('keeps a short summary whole', () => {
+    expect(formatPlanPhaseTransition({
+      phaseId: 'p1',
+      phaseName: '概览',
+      status: 'pending',
+      summary: '仍缺少关键工具证据。',
+    })).toBe('阶段「概览」退回待补证：仍缺少关键工具证据。');
+  });
+
+  it('handles a summary with no sentence terminator', () => {
+    expect(formatPlanPhaseTransition({
+      phaseId: 'p1',
+      phaseName: '概览',
+      status: 'completed',
+      summary: '证据已足',
+    })).toBe('完成阶段「概览」：证据已足');
+  });
+});
+
+describe('leading-sentence trimming', () => {
+  it('does not cut a decimal in half', () => {
+    expect(formatPlanPhaseTransition({
+      phaseId: 'p1',
+      phaseName: '概览',
+      status: 'completed',
+      summary: '主线程 animation 59.31ms 是唯一热点。后续细节见报告。',
+    })).toBe('完成阶段「概览」：主线程 animation 59.31ms 是唯一热点。');
+  });
+
+  it('ends an English sentence on its period', () => {
+    expect(formatPlanPhaseTransition({
+      phaseId: 'p1',
+      phaseName: 'Overview',
+      status: 'completed',
+      summary: 'The model gave no summary. Evidence recap follows.',
+    }, 'en')).toBe('Completed phase "Overview": The model gave no summary.');
   });
 });

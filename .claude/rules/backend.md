@@ -111,6 +111,19 @@ Keep these boundaries intact:
   consumer must extract the embedded JSON rather than parse the whole string.
   A registered tool with no narration case prints `调用工具 <name>`; a coverage
   test in `src/agentv3/__tests__/toolResultNarration.test.ts` enforces the set.
+- A timeline line earns its place only when it says something the tool dispatch
+  line could not. Result narration reports an *outcome*, not a shape: a row or
+  column count answers "how much came back" when the reader is asking "did that
+  work out", so `execute_sql` and `fetch_artifact` speak only when the result is
+  empty — the case that forces the model to change approach. Tools whose result
+  restates their own dispatch (`invoke_skill`, `submit_plan`,
+  `submit_hypothesis`, `list_skills`, …) emit nothing. The same rule trims the
+  evidence line and the phase-transition line; full provenance stays in the
+  report and the snapshot, which is where it is consulted.
+- A provider can answer with an error string in the success channel. Re-asking
+  it cannot help, so `looksLikeProviderErrorConclusion` short-circuits the
+  correction loop instead of spending both attempts and two round trips on an
+  expired token; the final quality gate still marks the run partial.
 - `plan_phase_updated` is emitted from nine sites across five files. Build its
   payload with `planPhaseUpdatedContent(...)` so `origin` (`auto` vs `model`) is
   always present: the process view shows automatic transitions, which nothing

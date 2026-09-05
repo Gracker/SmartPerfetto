@@ -2916,12 +2916,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           `本阶段未记录 artifact，但已保留该阶段的工具调用和时间线事件。`,
           `This phase did not record artifacts, but its tool calls and timeline events remain available.`,
         );
-    // The consumer prefixes the phase name and the completed verb; repeating
-    // both here rendered `完成阶段「X」：自动完成阶段「X」：…` on one line.
+    // News first, bookkeeping after. The consumer prefixes the phase name and
+    // the completed verb, and shows only the leading sentence, so the reason
+    // this phase closed on its own has to come first; the evidence recap and
+    // goal stay for the report and the plan record, which is where they are
+    // actually consulted.
     return localize(
       outputLanguage,
-      `已进入后续阶段「${nextPhase.name}」。${evidenceSummary}阶段目标：${closedPhase.goal}。上一阶段未收到显式完成摘要。`,
-      `Moved on to "${nextPhase.name}". ${evidenceSummary} Phase goal: ${closedPhase.goal}. The previous phase did not provide an explicit completion summary.`,
+      `模型未给出完成摘要，按已收集证据自动收口。${evidenceSummary}阶段目标：${closedPhase.goal}。已进入后续阶段「${nextPhase.name}」。`,
+      `The model gave no completion summary, so the phase was closed on the evidence collected. ${evidenceSummary} Phase goal: ${closedPhase.goal}. Moved on to "${nextPhase.name}".`,
     );
   }
 
@@ -3927,10 +3930,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           type: 'progress',
           content: {
             phase: 'analyzing',
+            // Duration is a real signal in a performance tool. The result-layer
+            // count is not: the evidence line that follows already says what
+            // arrived, and repeating the number twice reads as bookkeeping.
             message: localize(
               outputLanguage,
-              `技能 ${skillId} 完成 (${skillDuration}ms, ${result.displayResults?.length || 0} 个结果层)`,
-              `Skill ${skillId} completed (${skillDuration}ms, ${result.displayResults?.length || 0} result layers)`,
+              `技能 ${skillId} 完成 (${skillDuration}ms)`,
+              `Skill ${skillId} completed (${skillDuration}ms)`,
             ),
           },
           timestamp: Date.now(),

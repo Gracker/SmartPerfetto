@@ -66,6 +66,10 @@ cd backend && npm run build
   `summarizeExternalToolResult` caps tool results at 2000 characters, and the
   fields appended last — `planPhaseId`, `success` — are the ones that vanish,
   degrading plan attribution and tool-success evidence without any error.
+- A user-facing line earns its place only when it says something the line above
+  it could not. Reporting a tool result's shape — row counts, column counts,
+  how many evidence IDs were registered — answers the system's question, not the
+  reader's; report the outcome, or nothing.
 - `frontend/` is consumed by Docker, `./start.sh`, and portable packages. After
   AI Assistant plugin UI changes, verify in dev mode and run
   `./scripts/update-frontend.sh`.

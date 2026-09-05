@@ -122,6 +122,21 @@ function summarizeTimelineResult(content: Record<string, any>): string {
   return '';
 }
 
+/**
+ * One line for the evidence that just arrived.
+ *
+ * This used to concatenate eight facts — count, kind, titles, row totals, trace
+ * side, plan phase, evidence-ID count, and the producer's reason. Most of those
+ * answer the system's questions rather than the reader's. Row totals and
+ * evidence-ID counts are bookkeeping; the plan phase is already a boundary line
+ * of its own; and the producer's reason repeats the tool dispatch line directly
+ * above it.
+ *
+ * What survives is what a reader uses: what arrived, and the caveats that
+ * change how it should be read — which trace it came from when a comparison is
+ * running, and any doubt about which phase it belongs to. The full provenance
+ * stays in the report and the snapshot, which is where it is actually consulted.
+ */
 export function summarizeDataEnvelopeForTimeline(
   update: StreamingUpdate,
   language: ReturnType<typeof parseOutputLanguage>,
@@ -136,82 +151,34 @@ export function summarizeDataEnvelopeForTimeline(
     .filter(Boolean);
   const titles = allTitles.slice(0, 4);
   const omittedTitleCount = Math.max(0, allTitles.length - titles.length);
-  const rows = envelopes
-    .map((env) => {
-      const data = env?.data;
-      return Array.isArray(data?.rows) ? data.rows.length : undefined;
-    })
-    .filter((rowCount): rowCount is number => typeof rowCount === 'number');
-  const rowCount = rows.reduce((sum, count) => sum + count, 0);
-  const rowText = rows.length > 0
-    ? localize(language, `，共 ${rowCount} 行`, `, ${rowCount} rows total`)
+  const titleText = titles.length > 0
+    ? localize(
+        language,
+        `：${titles.join(' / ')}${omittedTitleCount > 0 ? ` 等 ${allTitles.length} 项` : ''}`,
+        `: ${titles.join(' / ')}${omittedTitleCount > 0 ? ` and ${omittedTitleCount} more` : ''}`,
+      )
     : '';
+
+  // Only meaningful while a comparison is running; in a single-trace analysis
+  // every envelope is from the current trace and saying so is noise.
   const traceLocations = [
     ...new Set(envelopes.map(env => timelineTraceLocationLabel(env, language)).filter((label): label is string => !!label)),
   ];
-  const traceText = traceLocations.length > 0
+  const traceText = traceLocations.length > 1
     ? localize(language, `，Trace: ${traceLocations.join('/')}`, `, trace: ${traceLocations.join('/')}`)
     : '';
-  const evidenceRefs = envelopes.map((env) => sanitizeConversationText(env?.meta?.evidenceRefId)).filter(Boolean);
-  const evidenceText = evidenceRefs.length > 0
-    ? localize(language, `，已登记 ${evidenceRefs.length} 个证据 ID`, `, ${evidenceRefs.length} evidence IDs recorded`)
-    : '';
-  const formats = [
-    ...new Set(envelopes.map((env) => sanitizeConversationText(env?.display?.format, 24)).filter(Boolean)),
-  ];
-  const kindText =
-    formats.length === 1
-      ? (
-          {
-            table: localize(language, '数据表', 'tables'),
-            summary: localize(language, '摘要数据', 'summaries'),
-            metric: localize(language, '指标数据', 'metrics'),
-            chart: localize(language, '图表数据', 'charts'),
-            text: localize(language, '文本数据', 'text outputs'),
-            timeline: localize(language, '时间线数据', 'timelines'),
-          } as Record<string, string>
-        )[formats[0]] || localize(language, '数据输出', 'data outputs')
-      : localize(language, '数据输出', 'data outputs');
-  const planPhases = [
-    ...new Set(
-      envelopes
-        .map((env) => sanitizeConversationText(env?.meta?.planPhaseTitle || env?.meta?.planPhaseId, 80))
-        .filter(Boolean),
-    ),
-  ];
-  const phaseText = planPhases.length > 0
-    ? localize(language, `，阶段: ${planPhases.slice(0, 2).join('/')}`, `, phase: ${planPhases.slice(0, 2).join('/')}`)
-    : '';
+
+  // A caveat about which phase this evidence belongs to changes how it should
+  // be read, so it stays.
   const phaseWarnings = [
     ...new Set(envelopes.map((env) => sanitizeConversationText(env?.meta?.planPhaseWarning, 120)).filter(Boolean)),
   ];
   const phaseWarningText = phaseWarnings.length > 0
-    ? localize(language, `，阶段归因需核对: ${phaseWarnings.slice(0, 2).join('；')}`, `, phase attribution needs review: ${phaseWarnings.slice(0, 2).join('; ')}`)
+    ? localize(language, `，阶段归因需核对: ${phaseWarnings[0]}`, `, phase attribution needs review: ${phaseWarnings[0]}`)
     : '';
-  const reasons = envelopes
-    .map((env) => sanitizeConversationText(env?.meta?.producerReason || env?.meta?.toolNarration, 180))
-    .filter(Boolean);
-  const uniqueReasons = [...new Set(reasons)].slice(0, 3);
-  const omittedReasonCount = Math.max(0, reasons.length - uniqueReasons.length);
-  const reasonText =
-    uniqueReasons.length > 0
-      ? localize(
-          language,
-          `：${uniqueReasons.join('；')}${omittedReasonCount > 0 ? `；另有 ${omittedReasonCount} 条原因` : ''}`,
-          `: ${uniqueReasons.join('; ')}${omittedReasonCount > 0 ? `; ${omittedReasonCount} more reasons` : ''}`,
-        )
-      : '';
-  const titleText =
-    titles.length > 0
-      ? localize(
-          language,
-          `：${titles.join(' / ')}${omittedTitleCount > 0 ? ` / 另有 ${omittedTitleCount} 份` : ''}`,
-          `: ${titles.join(' / ')}${omittedTitleCount > 0 ? ` / ${omittedTitleCount} more` : ''}`,
-        )
-      : '';
-  const fallbackReason = localize(language, '，用于支撑后续诊断', ', supporting subsequent diagnosis');
-  return localize(language, `收到 ${envelopes.length} 份`, `Received ${envelopes.length} `) +
-    `${kindText}${titleText}${rowText}${traceText}${phaseText}${phaseWarningText}${evidenceText}${reasonText || fallbackReason}`;
+
+  return localize(language, `收到 ${envelopes.length} 份证据`, `Received ${envelopes.length} evidence outputs`) +
+    `${titleText}${traceText}${phaseWarningText}`;
 }
 
 /**
@@ -338,10 +305,15 @@ export function deriveTimelineStep(
     case 'conclusion':
       phase = 'result';
       role = 'agent';
+      // The conclusion event is deliberately withheld from clients until
+      // deterministic evidence and claim verification have run — `analysis_completed`
+      // is the terminal fact. Announcing "final conclusion generated" here
+      // contradicted that, and said it even when the text was a provider error
+      // that the run went on to report as incomplete.
       text =
         sanitizeConversationText(contentRecord.summary) ||
         sanitizeConversationText(contentRecord.message) ||
-        localize(language, '最终结论已生成', 'Final conclusion generated');
+        localize(language, '结论已生成，正在核验证据', 'Conclusion drafted; verifying evidence');
       break;
     case 'answer_token':
       if (contentRecord.done === true) {
