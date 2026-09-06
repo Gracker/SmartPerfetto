@@ -59,12 +59,26 @@ export interface PlanToolCallRecorderInput {
 export interface AnalysisPlanTracker {
   current: AnalysisPlanV3 | null;
   prePlanToolCallLog?: ToolCallRecord[];
+  /**
+   * How many tool calls this run has dispatched, counted once and never
+   * revised.
+   *
+   * The two logs cannot answer this. They are plan-adherence records, so they
+   * are *allowed* to forget: both are capped and trimmed from the front, and
+   * `replayPrePlanToolCalls` drops pre-plan calls that match no phase and then
+   * clears the pre-plan log outright. A run that ran one query before planning
+   * can therefore end with both logs empty. This counter exists because
+   * "did this run do anything" needs an answer that only ever grows.
+   */
+  dispatchedToolCallCount?: number;
 }
 
 export function resetPrePlanToolCallsForNewRun(
   tracker: AnalysisPlanTracker | null | undefined,
 ): void {
-  if (tracker) tracker.prePlanToolCallLog = [];
+  if (!tracker) return;
+  tracker.prePlanToolCallLog = [];
+  tracker.dispatchedToolCallCount = 0;
 }
 
 export interface PlanEvidenceGap {
@@ -339,6 +353,9 @@ export function recordPlanOrPrePlanToolCall(
   input: PlanToolCallRecorderInput,
 ): ToolCallRecord | undefined {
   if (!tracker) return undefined;
+  // Counted before any filtering: the model dispatched this call whether or not
+  // the call is one the plan cares to remember.
+  tracker.dispatchedToolCallCount = (tracker.dispatchedToolCallCount ?? 0) + 1;
   if (tracker.current) {
     return recordPlanToolCall(tracker.current, input);
   }
@@ -358,6 +375,20 @@ export function recordPlanOrPrePlanToolCall(
     tracker.prePlanToolCallLog.splice(0, tracker.prePlanToolCallLog.length - MAX_PLAN_TOOL_CALL_LOG);
   }
   return record;
+}
+
+/**
+ * How many tool calls this run dispatched.
+ *
+ * Reads the monotone counter, not the logs: see `dispatchedToolCallCount` for
+ * why the logs cannot answer this. Every runtime dispatches through
+ * `recordPlanOrPrePlanToolCall`, so this is the provider-neutral signal and
+ * runtimes should read it here rather than keeping private counters that drift.
+ */
+export function countDispatchedToolCalls(
+  tracker: AnalysisPlanTracker | null | undefined,
+): number {
+  return tracker?.dispatchedToolCallCount ?? 0;
 }
 
 export function replayPrePlanToolCalls(tracker: AnalysisPlanTracker | null | undefined): number {

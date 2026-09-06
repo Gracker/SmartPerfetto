@@ -134,6 +134,8 @@ import {
   applyFinalResultQualityGate,
   hasDeliverableFinalReportHeading,
   looksLikePhaseSummaryFallback,
+  looksLikeProviderErrorConclusion,
+  terminationReasonForProviderFailure,
   serializeFinalResultQualityIssueContext,
   type FinalResultComparisonIdentity,
   type FinalResultQualityIssue,
@@ -928,6 +930,21 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     let accumulatedAnswer = '';
     let rounds = 0;
     let observedToolCalls = 0;
+    /**
+     * True when the model never answered and the transport's error took its
+     * place, so no amount of re-asking will produce an analysis.
+     *
+     * Declared once because three separate places re-enter the provider: the
+     * final-report continuation, the plan continuation, and the quality gate
+     * that files the outcome. Both counters it reads are run-scoped and only
+     * ever grow, so the answer cannot flip back and forth within a run.
+     */
+    const providerFailedInsteadOfAnswering = (candidate: string): boolean =>
+      looksLikeProviderErrorConclusion(candidate, {
+        toolCallCount: observedToolCalls,
+        evidenceFindingCount: 0,
+        streamedAnswerChars: accumulatedAnswer.trim().length,
+      });
     const resolvedConfig = loadOpenAIConfig(options.providerId, providerScopeFromAnalysisOptions(options));
     const config = options.outputLanguage
       ? {...resolvedConfig, outputLanguage: options.outputLanguage}
@@ -1588,8 +1605,14 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               planStatus.complete &&
               !timedOut &&
               finalReportContinuations < OPENAI_MAX_FINAL_REPORT_CONTINUATIONS;
+            // A provider that answered with its own error cannot be talked into
+            // answering properly, and this budget is four full report
+            // continuations — the whole prompt re-sent each time. The guard has
+            // to wrap both terms: a provider error also produces a quality
+            // issue, so the second term alone would still spend them.
             const shouldRequestFinalReport =
-              this.shouldRequestFinalReportAfterPlanComplete({
+              !providerFailedInsteadOfAnswering(conclusion) &&
+              (this.shouldRequestFinalReportAfterPlanComplete({
               sessionId,
               quickMode,
               planStatus,
@@ -1603,7 +1626,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               comparisonIdentity: context.comparisonIdentity,
               qualityIssue: finalReportQualityIssue,
               }) ||
-              (canRequestFinalReportAfterPlanComplete && Boolean(finalReportQualityIssue));
+              (canRequestFinalReportAfterPlanComplete && Boolean(finalReportQualityIssue)));
             if (shouldRequestFinalReport && streamHistory.length > 0 && !streamHistoryWithinBudget) {
               markHistoryLimitPartial();
               break;
@@ -1637,6 +1660,33 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               currentPreviousResponseId = undefined;
               continue;
             }
+            break;
+          }
+
+          // The plan is unfinished, which is the normal reason to continue — but
+          // it is also what a dead provider leaves behind, and this branch is
+          // reached before the plan-complete guard above ever runs. Stop here
+          // and name the cause, or the run spends its plan continuations asking
+          // an expired token to finish the plan.
+          if (providerFailedInsteadOfAnswering(conclusion)) {
+            partial = true;
+            terminationReason = terminationReasonForProviderFailure(terminationReason);
+            terminationMessage = localize(
+              config.outputLanguage,
+              'Provider 返回的是错误信息而不是分析结论，本次结果不完整。',
+              'The provider returned an error instead of an analysis; this result is incomplete.',
+            );
+            this.emitUpdate({
+              type: 'degraded',
+              content: {
+                module: 'openAiRuntime',
+                fallback: 'provider_error_conclusion',
+                partial: true,
+                terminationReason,
+                message: terminationMessage,
+              },
+              timestamp: Date.now(),
+            });
             break;
           }
 
@@ -1875,6 +1925,14 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         }
         analysisAbortScope.throwIfAborted();
         finalizeSourceAwareAnalysisResult(result, context.sourceUse);
+        // Name the cause before the gate runs. Left alone, the gate files a
+        // provider failure as a report-quality failure, and its `??=` would then
+        // preserve whatever consequence reason the dead provider already caused
+        // — usually `plan_incomplete`.
+        if (providerFailedInsteadOfAnswering(result.conclusion)) {
+          result.partial = true;
+          result.terminationReason = terminationReasonForProviderFailure(result.terminationReason);
+        }
         const gateIssue = applyFinalResultQualityGate({
           result,
           query,

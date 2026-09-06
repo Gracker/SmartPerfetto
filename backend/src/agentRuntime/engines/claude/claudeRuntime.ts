@@ -84,6 +84,7 @@ import {
 import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, ComplexityClassifierInput, FailedApproach, Hypothesis, QueryComplexity, UncertaintyFlag, VerificationIssue } from '../../../agentv3/types';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {
+  countDispatchedToolCalls,
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
   readToolResultFacts,
@@ -129,6 +130,7 @@ import {
   looksLikeProcessNarrationConclusion,
   looksLikePhaseSummaryFallback,
   looksLikeProviderErrorConclusion,
+  terminationReasonForProviderFailure,
 } from '../../../services/finalResultQualityGate';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
@@ -2197,8 +2199,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
       // Detect before a report heading is added: the heading would make this
       // text look like a deliverable conclusion to the detector, and to every
-      // gate downstream of it.
-      const providerErrorConclusion = looksLikeProviderErrorConclusion(conclusionText);
+      // gate downstream of it. `allFindings` still holds only tool-derived
+      // findings here — the conclusion's own findings are pushed below — so it
+      // is safe to use as evidence that the run, not the transport, wrote this.
+      const providerErrorConclusion = looksLikeProviderErrorConclusion(conclusionText, {
+        toolCallCount: countDispatchedToolCalls(ctx.analysisPlan),
+        evidenceFindingCount: allFindings.reduce((sum, group) => sum + group.length, 0),
+        streamedAnswerChars: accumulatedAnswerBeforeVerification.trim().length,
+      });
       if (providerErrorConclusion) {
         console.warn(
           `[ClaudeRuntime] Session ${sessionId}: the provider returned an error instead of an ` +
@@ -2643,7 +2651,10 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         // `execution_error` already means "the run did not execute", which is
         // exactly this. Adding a member to the reason union would ripple into
         // reports, snapshots and generated frontend types for no new meaning.
-        terminationReason = terminationReason ?? 'execution_error';
+        // `??` would not be enough: a provider that dies mid-run leaves the plan
+        // unfinished, so `plan_incomplete` is usually already set and would keep
+        // the slot, naming the symptom instead of the cause.
+        terminationReason = terminationReasonForProviderFailure(terminationReason);
         const providerErrorMessage = localize(
           outputLanguage,
           'Provider 返回的是错误信息而不是分析结论，本次结果不完整。',

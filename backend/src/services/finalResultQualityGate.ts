@@ -2,7 +2,10 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { AgentRuntimeAnalysisResult } from '../agent/core/orchestratorTypes';
+import type {
+  AgentRuntimeAnalysisResult,
+  AnalysisTerminationReason,
+} from '../agent/core/orchestratorTypes';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
 import {
   QUICK_TRIAGE_MAX_CHINESE_CHARS,
@@ -329,6 +332,71 @@ function collectIndependentEvidenceSectionText(text: string): string {
 }
 
 /**
+ * What a run actually did, used to tell a provider failure from an answer
+ * about one.
+ *
+ * Counts must come from tool dispatch and tool results, never from the
+ * conclusion text: findings extracted out of the conclusion would let an error
+ * string vouch for itself.
+ */
+export interface AnalysisRunEvidence {
+  /** Tool calls this run dispatched. */
+  toolCallCount: number;
+  /** Findings collected from tool results, before reading the conclusion. */
+  evidenceFindingCount: number;
+  /**
+   * Characters the model streamed before a conclusion was chosen.
+   *
+   * This is what separates a transport failure from an *explanation* of one.
+   * "ECONNRESET 表示对端重置了连接" needs no tools and yields no findings, but
+   * the model still wrote it token by token; a provider that failed to
+   * authenticate never streamed anything and delivered its error whole, as the
+   * terminal result.
+   */
+  streamedAnswerChars: number;
+}
+
+/** True when the run produced something of its own — evidence, or prose. */
+export function runProducedAnalysisEvidence(run: AnalysisRunEvidence): boolean {
+  return run.toolCallCount > 0 ||
+    run.evidenceFindingCount > 0 ||
+    run.streamedAnswerChars > 0;
+}
+
+/**
+ * Reasons that keep their place when a provider failure is also detected.
+ *
+ * These name a limit the run genuinely reached: the clock ran out, the budget
+ * ran out, structured output kept failing, or an error was already recorded.
+ * The remaining reasons — an unfinished plan, exhausted turns, a failed quality
+ * gate — are consequences of the provider failing, and reporting one of them
+ * blames the run for something the transport did.
+ */
+const TERMINATION_REASONS_OUTRANKING_PROVIDER_FAILURE: ReadonlySet<AnalysisTerminationReason> =
+  new Set<AnalysisTerminationReason>([
+    'timeout',
+    'max_budget_usd',
+    'max_structured_output_retries',
+    'execution_error',
+  ]);
+
+/**
+ * The reason to report once a run's conclusion turns out to be a provider error.
+ *
+ * `reason ?? 'execution_error'` is not enough: a provider that dies mid-run
+ * leaves the plan unfinished, so `plan_incomplete` is usually already set and
+ * would win, naming the symptom instead of the cause.
+ */
+export function terminationReasonForProviderFailure(
+  current: AnalysisTerminationReason | undefined,
+): AnalysisTerminationReason {
+  if (current && TERMINATION_REASONS_OUTRANKING_PROVIDER_FAILURE.has(current)) {
+    return current;
+  }
+  return 'execution_error';
+}
+
+/**
  * True when the "conclusion" is really a provider or infrastructure failure.
  *
  * A provider can answer with an error string in the success channel — an
@@ -340,11 +408,20 @@ function collectIndependentEvidenceSectionText(text: string): string {
  * the content; an authentication error is not going to be fixed by rewording
  * the request.
  *
- * Deliberately narrow: it matches short texts that are an error statement and
- * nothing else. A real report that happens to discuss authentication or quotas
- * is long and carries a conclusion heading.
+ * The wording alone cannot decide this, and in this product it is actively
+ * misleading: `ECONNRESET`, `socket hang up` and `Connection error` are things
+ * a trace contains, so "ECONNRESET 出现 12 次" is an ordinary short answer.
+ * What separates the two is authorship, and authorship is legible in the run:
+ * only a run that collected no evidence of its own could have had its
+ * conclusion written by the transport. Hence the required second argument —
+ * a caller that cannot say what the run did cannot ask this question.
  */
-export function looksLikeProviderErrorConclusion(conclusion: string): boolean {
+export function looksLikeProviderErrorConclusion(
+  conclusion: string,
+  run: AnalysisRunEvidence,
+): boolean {
+  if (runProducedAnalysisEvidence(run)) return false;
+
   const text = conclusion.trim();
   if (!text || text.length > 400) return false;
   if (hasDeliverableFinalReportHeading(text)) return false;

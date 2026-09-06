@@ -55,6 +55,12 @@ cd backend && npm run build
   guidance. Before widening a rule, check the detector's boundary conditions
   against real inputs, and prefer giving the model the missing context over
   adding another prohibition.
+- A detector that must decide *who wrote* a piece of text cannot do it from the
+  text. This product analyses traces, so `ECONNRESET` and `Connection error` are
+  its subject matter, and a matcher for provider failures flagged five of six
+  ordinary short answers about them. Authorship lives in the run — what it
+  dispatched, collected, and streamed — so make that state a required argument
+  rather than an optional hint a caller can forget.
 - A user-facing narration layer must cover both halves of an event. Tool
   *calls* went through a shared narrator while tool *results* fell back to
   `summarizeExternalToolResult` — a byte truncator whose name says summary — so

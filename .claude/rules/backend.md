@@ -120,10 +120,46 @@ Keep these boundaries intact:
   `submit_hypothesis`, `list_skills`, …) emit nothing. The same rule trims the
   evidence line and the phase-transition line; full provenance stays in the
   report and the snapshot, which is where it is consulted.
-- A provider can answer with an error string in the success channel. Re-asking
-  it cannot help, so `looksLikeProviderErrorConclusion` short-circuits the
-  correction loop instead of spending both attempts and two round trips on an
-  expired token; the final quality gate still marks the run partial.
+- A provider can answer with an error string in the success channel, and every
+  runtime reads "this conclusion is bad" as "ask the model again" — so an
+  expired token bought up to four full report continuations on the OpenAI path,
+  each one the whole prompt re-sent. `looksLikeProviderErrorConclusion` stops
+  that, and `terminationReasonForProviderFailure` names the cause: `??=` is not
+  enough, because a provider that dies mid-run leaves `plan_incomplete` already
+  set and that reason would keep the slot, blaming the run for the transport.
+  Only `timeout`, `max_budget_usd`, `max_structured_output_retries` and an
+  existing `execution_error` outrank it; those name a limit the run really hit.
+- That detector cannot work on wording alone, and the reason generalises. This
+  product analyses traces, so `ECONNRESET`, `socket hang up` and
+  `Connection error` are things a trace *contains*: "ECONNRESET 出现 12 次" is
+  an ordinary short answer, and the first version of the matcher flagged five
+  of six such answers. What separates a failure from an answer about one is
+  authorship, and authorship is legible in the run, not the string — only a run
+  that dispatched no tools, collected no findings and streamed no prose could
+  have had its conclusion written by the transport. Hence the required
+  `AnalysisRunEvidence` argument: a caller that cannot say what the run did may
+  not ask the question, and Pi and OpenCode therefore do not ask. Both project
+  their conclusion out of assistant messages with no separate error channel, so
+  neither can observe authorship; leaving their bounded retry in place is
+  better than reintroducing the false positive on two more runtimes.
+- Evidence counts must come from a monotone, run-scoped signal. The two
+  tool-call logs are not one: they are plan-adherence records, capped and
+  trimmed from the front, and `replayPrePlanToolCalls` drops pre-plan calls
+  that match no phase and then clears the pre-plan log — so a run that executed
+  one query before planning can end with both logs empty. Use
+  `countDispatchedToolCalls`, which reads a counter incremented at dispatch and
+  reset only by `resetPrePlanToolCallsForNewRun`.
+- The detector is deliberately biased toward missing failures rather than
+  inventing them. A provider that worked, then died, leaves evidence behind and
+  will not be caught — the run wastes its retries as before. That is the
+  acceptable direction: a false positive corrupts a legitimate analysis, a
+  false negative only costs what today already costs.
+- Guard the whole retry decision, not the predicate inside it. Every OpenAI
+  route back into the provider needs the guard: the final-report continuation
+  is a disjunction (`shouldRequest… || (canRequest… && qualityIssue)`) whose
+  second term fires on its own, and the plan continuation is reached *before*
+  the plan-complete branch — an unfinished plan is exactly what a dead provider
+  leaves behind.
 - `plan_phase_updated` is emitted from nine sites across five files. Build its
   payload with `planPhaseUpdatedContent(...)` so `origin` (`auto` vs `model`) is
   always present: the process view shows automatic transitions, which nothing

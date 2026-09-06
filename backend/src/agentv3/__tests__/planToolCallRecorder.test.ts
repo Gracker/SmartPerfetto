@@ -5,10 +5,13 @@
 import { describe, expect, it } from '@jest/globals';
 import type { AnalysisPlanV3 } from '../types';
 import {
+  countDispatchedToolCalls,
   findCompletedPhaseEvidenceGaps,
   recordPlanToolCall,
   recordPlanOrPrePlanToolCall,
   replayPrePlanToolCalls,
+  resetPrePlanToolCallsForNewRun,
+  type AnalysisPlanTracker,
 } from '../planToolCallRecorder';
 import {getAnalysisPlanCompletionStatus} from '../planCompletionStatus';
 import {verifyPlanAdherence} from '../../agentRuntime/engines/claude/claudeVerifier';
@@ -1133,5 +1136,96 @@ describe('result facts survive transport truncation', () => {
   it('records a failed tool call as failed', () => {
     expect(readToolResultFacts([{type: 'text', text: '{"success":false,"error":"x"}'}]))
       .toEqual({success: false});
+  });
+});
+
+describe('countDispatchedToolCalls', () => {
+  /**
+   * Every runtime already writes here, so this is the one place that can say
+   * whether a run did any work of its own — the signal that separates a
+   * transport failure from a short answer that happens to name one.
+   */
+  it('returns zero for a run that dispatched nothing', () => {
+    expect(countDispatchedToolCalls(null)).toBe(0);
+    expect(countDispatchedToolCalls(undefined)).toBe(0);
+    expect(countDispatchedToolCalls({current: null})).toBe(0);
+  });
+
+  it('counts pre-plan calls before a plan exists', () => {
+    const tracker: {current: AnalysisPlanV3 | null} = {current: null};
+    recordPlanOrPrePlanToolCall(tracker, {
+      toolName: 'mcp__smartperfetto__execute_sql',
+      input: {sql: 'SELECT 1'},
+    });
+    expect(countDispatchedToolCalls(tracker)).toBe(1);
+  });
+
+  /**
+   * The counterexample that retired the previous log-based reader: a pre-plan
+   * call that matches no phase is dropped by replay, which then clears the
+   * pre-plan log — so both logs end empty for a run that demonstrably ran a
+   * query. Counting dispatch instead of retention is what makes this hold.
+   */
+  it('survives a replay that discards an unmatched pre-plan call', () => {
+    const tracker: AnalysisPlanTracker = {current: null};
+    recordPlanOrPrePlanToolCall(tracker, {
+      toolName: 'mcp__smartperfetto__execute_sql',
+      input: {sql: 'SELECT 1'},
+    });
+    expect(countDispatchedToolCalls(tracker)).toBe(1);
+
+    // A plan whose single phase expects nothing, so the pre-plan call matches
+    // no phase and replay drops it.
+    tracker.current = {
+      planId: 'p1',
+      goal: 'g',
+      phases: [{
+        id: 'phase-1',
+        name: 'n',
+        goal: 'g',
+        status: 'pending',
+        expectedTools: [],
+      }],
+      createdAt: Date.now(),
+      revision: 1,
+      toolCallLog: [],
+    } as unknown as AnalysisPlanV3;
+    replayPrePlanToolCalls(tracker);
+
+    expect(tracker.current.toolCallLog).toHaveLength(0);
+    expect(tracker.prePlanToolCallLog).toHaveLength(0);
+    // Both logs forgot it; the run still ran a query.
+    expect(countDispatchedToolCalls(tracker)).toBe(1);
+  });
+
+  it('resets to zero when a new run starts', () => {
+    const tracker: AnalysisPlanTracker = {current: null};
+    recordPlanOrPrePlanToolCall(tracker, {
+      toolName: 'mcp__smartperfetto__execute_sql',
+      input: {sql: 'SELECT 1'},
+    });
+    resetPrePlanToolCallsForNewRun(tracker);
+    expect(countDispatchedToolCalls(tracker)).toBe(0);
+  });
+
+  it('adds plan and pre-plan calls together', () => {
+    const tracker: {current: AnalysisPlanV3 | null} = {current: null};
+    recordPlanOrPrePlanToolCall(tracker, {
+      toolName: 'mcp__smartperfetto__execute_sql',
+      input: {sql: 'SELECT 1'},
+    });
+    tracker.current = {
+      planId: 'p1',
+      goal: 'g',
+      phases: [],
+      createdAt: Date.now(),
+      revision: 1,
+      toolCallLog: [],
+    } as unknown as AnalysisPlanV3;
+    recordPlanOrPrePlanToolCall(tracker, {
+      toolName: 'mcp__smartperfetto__execute_sql',
+      input: {sql: 'SELECT 2'},
+    });
+    expect(countDispatchedToolCalls(tracker)).toBe(2);
   });
 });
