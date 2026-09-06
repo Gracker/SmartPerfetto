@@ -46,6 +46,7 @@ function attributionSink(): RunManifestAttributionSink & {
     recordInjection: jest.fn(),
     recordToolAllowlist: jest.fn(),
     recordTurn: jest.fn(),
+    recordCapabilityManifest: jest.fn(),
   };
 }
 

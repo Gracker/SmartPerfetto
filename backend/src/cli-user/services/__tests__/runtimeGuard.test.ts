@@ -31,6 +31,7 @@ describe('runtime guard', () => {
     delete process.env.ANTHROPIC_AUTH_TOKEN;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.CLAUDE_BINARY_PATH;
+    delete process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH;
     delete process.env.QODER_PERSONAL_ACCESS_TOKEN;
     delete process.env.QODERCLI_PATH;
     resetProviderService();
@@ -151,6 +152,11 @@ describe('runtime guard', () => {
 
   test('reports the missing opt-in Qoder SDK instead of applying the Claude binary guard', () => {
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
+    // Force "not installed" rather than inferring it from this machine. The
+    // detector short-circuits on a configured module path, so a path that does
+    // not exist answers the question the same way on a developer box that ran
+    // `npm run qoder:install` and on one that never did.
+    process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH = path.join(tmpDir, 'absent-qoder-sdk.js');
 
     expect(() => assertAnalysisRuntimeReady({ providerId: null })).toThrow(
       'Qoder Agent SDK runtime is selected but @qoder-ai/qoder-agent-sdk is not installed',
@@ -159,6 +165,7 @@ describe('runtime guard', () => {
 
   test('doctor reports the opt-in Qoder SDK as missing', () => {
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
+    process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH = path.join(tmpDir, 'absent-qoder-sdk.js');
 
     const report = collectDoctorReport(tmpDir);
 

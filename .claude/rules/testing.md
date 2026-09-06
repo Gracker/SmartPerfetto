@@ -41,13 +41,24 @@ rotted outright: a member added to `RagSourceKind` left a fixture in
 unregistered and excluded from typecheck.
 
 `npm run check:test-registration` now answers the question mechanically, and
-`test:governance` runs it first in `verify:pr`. It ratchets rather than
-demands: the debt at the time of writing is frozen in
-`scripts/test-registration-baseline.json`, and any suite outside that baseline
-fails the check. Shrink the baseline by registering a suite and deleting its
-line; regenerate with `--update-baseline` only when deliberately accepting new
-debt, and say why in the commit. A baselined suite is still untested — the file
-records what is unguarded, it does not bless it.
+`test:governance` runs it first in `verify:pr`. All 573 suites are registered
+and `scripts/test-registration-baseline.json` is empty, so the check is
+currently zero-tolerance: any new suite that no script can reach fails the gate.
+
+Keep it that way. The baseline exists so the check could be introduced without
+a 237-file bang; it is not a parking space. `--update-baseline` records
+deliberately accepted debt and must be justified in the commit that does it —
+a baselined suite is still untested, and the file records what is unguarded
+rather than blessing it.
+
+Suites that no focused tier owns live in `test:unit-sweep` (233 of them, ~39s).
+Prefer the tier that matches the change; the sweep is the home for everything
+else. Directory-scoped patterns are also supported by the check, but note two
+costs before reaching for one: a directory pattern re-runs suites already owned
+by another tier (the same 233 cost five minutes that way rather than 39
+seconds), and Jest's `testMatch` treats every `.ts` under `__tests__/` as a
+suite, so a fixture such as `sourceFinalizationFixture.ts` fails with "must
+contain at least one test".
 
 ## Verification by Change Type
 

@@ -13,9 +13,10 @@
  * A suite can therefore be broken for months while `verify:pr` stays green.
  *
  * This check does not try to register anything. It answers one question — which
- * suites is the gate unable to run — and ratchets: the current debt lives in a
- * committed baseline, and anything not in that baseline fails. Removing a file
- * from the baseline is how the debt shrinks; the check refuses to let it grow.
+ * suites is the gate unable to run — and ratchets against a committed baseline:
+ * anything outside that baseline fails. The baseline is currently empty, so the
+ * check is zero-tolerance; it exists so the check could be introduced without
+ * failing on 237 files at once, not as a parking space for new debt.
  */
 
 import { execFileSync } from 'node:child_process';

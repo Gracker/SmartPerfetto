@@ -22,6 +22,7 @@ import traceRoutes from '../simpleTraceRoutes';
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
+const originalOutputLanguage = process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
 const API_KEY = 'workspace-route-secret';
 const API_USER_ID = `api-key-${crypto.createHash('sha256').update(API_KEY).digest('hex').slice(0, 8)}`;
 
@@ -89,6 +90,10 @@ beforeEach(async () => {
   uploadDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-workspace-routes-'));
   process.env.UPLOAD_DIR = uploadDir;
   process.env.SMARTPERFETTO_API_KEY = API_KEY;
+  // These cases assert route wiring through the exact error text, so the output
+  // language has to be pinned rather than inherited: the runtime defaults to
+  // zh-CN and would answer 「缺少 traceId」 on any machine that has not set this.
+  process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = 'en';
   reportStore.clear();
 });
 
@@ -103,6 +108,11 @@ afterEach(async () => {
     delete process.env.UPLOAD_DIR;
   } else {
     process.env.UPLOAD_DIR = originalUploadDir;
+  }
+  if (originalOutputLanguage === undefined) {
+    delete process.env.SMARTPERFETTO_OUTPUT_LANGUAGE;
+  } else {
+    process.env.SMARTPERFETTO_OUTPUT_LANGUAGE = originalOutputLanguage;
   }
   if (originalSsoTrustedHeaders === undefined) {
     delete process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;

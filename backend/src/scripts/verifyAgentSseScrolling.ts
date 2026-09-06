@@ -153,6 +153,18 @@ interface SseSummary {
   conclusionCount: number;
   dataEnvelopeCount: number;
   planSubmittedCount: number;
+  /**
+   * The analysis process view's own surface.
+   *
+   * These were computed, transmitted, and never observed: the process view is
+   * assembled from `conversation_step`, and `thought` carries the model's
+   * between-tool reasoning, yet neither had a counter here. A run that stopped
+   * emitting them would have looked identical to one that did not, so a claim
+   * that either reaches a user was unfalsifiable from this artifact.
+   */
+  conversationStepCount: number;
+  thoughtCount: number;
+  planPhaseUpdatedCount: number;
   architectureDetectedCount: number;
   degradedCount: number;
   degradedFallbackCounts: Record<string, number>;
@@ -1361,6 +1373,9 @@ async function collectSseSummary(
     conclusionCount: 0,
     dataEnvelopeCount: 0,
     planSubmittedCount: 0,
+    conversationStepCount: 0,
+    thoughtCount: 0,
+    planPhaseUpdatedCount: 0,
     architectureDetectedCount: 0,
     degradedCount: 0,
     degradedFallbackCounts: {},
@@ -1466,6 +1481,16 @@ async function collectSseSummary(
                 summary.planSubmittedCount += 1;
               } else if (sourceEventType === 'agent_response') {
                 summary.agentResponseCount += 1;
+              } else if (sourceEventType === 'plan_phase_updated') {
+                summary.planPhaseUpdatedCount += 1;
+              } else if (sourceEventType === 'conversation_step') {
+                // A private-knowledge run reports these through `progress` with
+                // the original name in `sourceEventType`, so both shapes have to
+                // be counted or the surface looks absent on exactly the runs
+                // whose projection is most worth checking.
+                summary.conversationStepCount += 1;
+              } else if (sourceEventType === 'thought' || sourceEventType === 'worker_thought') {
+                summary.thoughtCount += 1;
               } else if (sourceEventType === 'degraded') {
                 summary.degradedCount += 1;
                 const fallback = typeof payload?.degradedFallback === 'string'
@@ -1496,6 +1521,16 @@ async function collectSseSummary(
               break;
             case 'answer_token':
               summary.answerTokenCount += 1;
+              break;
+            case 'conversation_step':
+              summary.conversationStepCount += 1;
+              break;
+            case 'thought':
+            case 'worker_thought':
+              summary.thoughtCount += 1;
+              break;
+            case 'plan_phase_updated':
+              summary.planPhaseUpdatedCount += 1;
               break;
             case 'conclusion':
               summary.conclusionCount += 1;

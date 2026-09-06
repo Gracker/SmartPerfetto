@@ -30,6 +30,7 @@ describe('provider CLI command', () => {
     delete process.env.ANTHROPIC_AUTH_TOKEN;
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.SMARTPERFETTO_AI_ENABLED;
+    delete process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH;
     resetProviderService();
     consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
@@ -86,6 +87,10 @@ describe('provider CLI command', () => {
     process.env.SMARTPERFETTO_AGENT_RUNTIME = 'qoder-agent-sdk';
     delete process.env.QODER_PERSONAL_ACCESS_TOKEN;
     delete process.env.QODERCLI_PATH;
+    // Force "not installed" instead of inferring it from this machine: the
+    // detector short-circuits on a configured module path, so a nonexistent one
+    // gives the same answer whether or not `npm run qoder:install` has been run.
+    process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH = path.join(tmpDir, 'absent-qoder-sdk.js');
 
     const exitCode = await runProviderTestCommand({
       envFile,

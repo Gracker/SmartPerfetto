@@ -47,6 +47,21 @@ function restoreEnv(): void {
   }
 }
 
+/**
+ * Start each case from no provider environment at all.
+ *
+ * Restoring the ambient values here instead would let the developer's own
+ * configuration decide the assertion: a machine with `ANTHROPIC_BASE_URL` set
+ * — pointing Claude at a compatible gateway is an ordinary local setup —
+ * reports `anthropic_compatible_proxy` where this suite expects
+ * `anthropic_direct`, and adds `anthropic_base_url` to every runtime's
+ * credential-source list. Each case sets exactly the variables it is about;
+ * the real environment comes back in `afterEach`.
+ */
+function clearEnv(): void {
+  for (const key of ENV_KEYS) delete process.env[key];
+}
+
 function expectRuntimeDiagnosticsShape(payload: any, runtime: string): void {
   expect(payload.aiEngine.diagnostics).toMatchObject({
     runtime,
@@ -60,7 +75,7 @@ describe('buildRuntimeHealthPayload', () => {
   let dir: string;
 
   beforeEach(async () => {
-    restoreEnv();
+    clearEnv();
     dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-runtime-health-'));
     process.env.PROVIDER_DATA_DIR_OVERRIDE = dir;
     resetProviderService();
