@@ -1169,6 +1169,7 @@ describe('Plan 55 — AndroidperformanceAospRagContract', () => {
         app_source: {chunkCount: 0},
         kernel_source: {chunkCount: 0},
         android_internals_wiki: {chunkCount: 0},
+        android_internals_pack: {chunkCount: 0},
       },
       coverage: [
         {sparkId: 181, planId: '55', status: 'scaffolded'},

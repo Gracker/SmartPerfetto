@@ -33,6 +33,22 @@ cd backend && npm run test:gate
 
 A suite that is green locally but absent from `test:gate` counts as untested.
 
+Asking people to remember this did not work: when the rule was first written,
+237 of 573 backend suites — 41% — were unreachable from any `test:*`/`verify:*`
+script, and six of them were failing while `verify:pr` stayed green. One had
+rotted outright: a member added to `RagSourceKind` left a fixture in
+`sparkContracts.test.ts` type-broken, invisible because the file is both
+unregistered and excluded from typecheck.
+
+`npm run check:test-registration` now answers the question mechanically, and
+`test:governance` runs it first in `verify:pr`. It ratchets rather than
+demands: the debt at the time of writing is frozen in
+`scripts/test-registration-baseline.json`, and any suite outside that baseline
+fails the check. Shrink the baseline by registering a suite and deleting its
+line; regenerate with `--update-baseline` only when deliberately accepting new
+debt, and say why in the commit. A baselined suite is still untested — the file
+records what is unguarded, it does not bless it.
+
 ## Verification by Change Type
 
 | Change type | Required verification |

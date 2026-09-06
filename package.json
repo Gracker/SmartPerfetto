@@ -14,7 +14,7 @@
     "shellcheck": "shellcheck -x start.sh scripts/*.sh",
     "check:frontend-prebuild": "node scripts/check-frontend-prebuild.cjs",
     "test:node-env": "bash scripts/test-node-env.sh",
-    "test:governance": "node --test scripts/__tests__/check-perfetto-skills-impact.test.mjs scripts/__tests__/process-harness.test.mjs scripts/__tests__/service-lifecycle.test.mjs scripts/__tests__/startup-contracts.test.mjs scripts/__tests__/frontend-server-health.test.mjs scripts/__tests__/ensure-trace-processor.test.mjs scripts/__tests__/runtime-distribution-assets.test.mjs scripts/__tests__/release-portable.test.mjs scripts/__tests__/portable-release-smoke-workflow.test.mjs scripts/__tests__/verify-portable-package-safety.test.mjs scripts/__tests__/smoke-portable-archive.test.mjs scripts/__tests__/verify-portable-smoke-evidence.test.mjs scripts/__tests__/native-runtime-compat.test.mjs scripts/__tests__/dual-trace-e2e-services.test.mjs scripts/__tests__/perfetto-stdlib-docs.test.mjs scripts/__tests__/verify-docs.test.mjs scripts/__tests__/find-macho-files.test.mjs scripts/__tests__/i18n-heading-contract.test.mjs Trace/tools/__tests__/builder.test.cjs Trace/tools/__tests__/catalog.test.cjs Trace/tools/__tests__/cli.test.cjs Trace/tools/__tests__/generator.test.cjs Trace/tools/__tests__/skill-sql-contract.test.cjs",
+    "test:governance": "npm run check:test-registration && node --test scripts/__tests__/check-perfetto-skills-impact.test.mjs scripts/__tests__/check-test-registration.test.mjs scripts/__tests__/process-harness.test.mjs scripts/__tests__/service-lifecycle.test.mjs scripts/__tests__/startup-contracts.test.mjs scripts/__tests__/frontend-server-health.test.mjs scripts/__tests__/ensure-trace-processor.test.mjs scripts/__tests__/runtime-distribution-assets.test.mjs scripts/__tests__/release-portable.test.mjs scripts/__tests__/portable-release-smoke-workflow.test.mjs scripts/__tests__/verify-portable-package-safety.test.mjs scripts/__tests__/smoke-portable-archive.test.mjs scripts/__tests__/verify-portable-smoke-evidence.test.mjs scripts/__tests__/native-runtime-compat.test.mjs scripts/__tests__/dual-trace-e2e-services.test.mjs scripts/__tests__/perfetto-stdlib-docs.test.mjs scripts/__tests__/verify-docs.test.mjs scripts/__tests__/find-macho-files.test.mjs scripts/__tests__/i18n-heading-contract.test.mjs Trace/tools/__tests__/builder.test.cjs Trace/tools/__tests__/catalog.test.cjs Trace/tools/__tests__/cli.test.cjs Trace/tools/__tests__/generator.test.cjs Trace/tools/__tests__/skill-sql-contract.test.cjs",
     "verify:docs": "node scripts/verify-docs.mjs",
     "verify:i18n": "npm --prefix backend run check:skill-localizations && node scripts/verify-i18n.mjs",
     "sync:rendering-pipelines": "node scripts/sync-rendering-pipelines.mjs",
@@ -45,7 +45,8 @@
     "release:portable": "bash ./scripts/release-portable.sh",
     "release:windows-exe": "bash ./scripts/release-windows-exe.sh",
     "quality": "npm run lint && npm run format:check && npm run deadcode && npm run shellcheck",
-    "verify:pr": "npm run test:governance && npm run verify:docs && npm run verify:i18n && npm run verify:rendering-pipelines && npm run quality && npm run check:frontend-prebuild && npm run rust:verify && npm --prefix backend run verify:pr"
+    "verify:pr": "npm run test:governance && npm run verify:docs && npm run verify:i18n && npm run verify:rendering-pipelines && npm run quality && npm run check:frontend-prebuild && npm run rust:verify && npm --prefix backend run verify:pr",
+    "check:test-registration": "node scripts/check-test-registration.mjs"
   },
   "engines": {
     "node": ">=24.0.0 <25.0.0"
