@@ -200,7 +200,7 @@
     "yaml": "^2.9.0"
   },
   "optionalDependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.48",
+    "@ai-sdk/openai-compatible": "^3.0.41",
     "@earendil-works/pi-agent-core": "0.84.2",
     "@earendil-works/pi-ai": "0.84.2",
     "@opencode-ai/sdk": "^1.15.13",
