@@ -1,0 +1,13 @@
+Scene reconstruction v1.13.0 paired validation
+
+Source: bc007586871a720aed82537913617c64fb95a459
+Perfetto UI: 27d78b8405ac5f8215129c84fb926cc1dd4f3607 (pushed fork/main)
+Perfetto-Skills: 67b3f9fe8cc1894f50ce06a902ac633bc1ac6122 (pushed origin/main)
+Public source pin: bc007586871a720aed82537913617c64fb95a459
+Public complete gate: PASS; 681 static queries, 33 owned real-trace assertions, 254 tests (one expected no-SQL-overlay skip), agentskills valid.
+Root impact decision: required
+Root change fingerprint: bde63dd518174507c163b2171ec22547be3e6c1c5b6dc6a08d1711f899eba48c
+Public change fingerprint: 6d3cee214495b856505298f3b91ed4bff4757943614d0d4abde382033b951649
+The immutable-source bootstrap deferral is resolved by this paired commit and complete gate.
+
+Accuracy boundary: reconstructed scenes remain partial/unverified when observations or semantic verification are unavailable. This release does not claim a measured global accuracy rate or complete real-provider acceptance.
