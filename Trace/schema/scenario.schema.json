@@ -64,7 +64,8 @@
               "gpu-work-period", "gpu-frequency", "gpu-power-state", "cpu-frequency", "cpu-idle",
               "cpu-frequency-limits", "thermal-temperature", "cdev-update",
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
-              "gpu-compute-kernel", "anr-event", "perf-sample", "android-log"
+              "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
+              "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change"
             ]
           },
           "at_ns": {"type": "string", "pattern": "^[0-9]+$"},
@@ -87,6 +88,30 @@
           "action": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
           "vsync_id": {"type": "string", "pattern": "^-?[0-9]+$"},
           "target_process": {"type": "string"},
+          "atom": {"enum": ["app_standby_bucket_changed", "app_freeze_changed"], "description": "Statsd atom grafted from the pinned trace processor atoms.descriptor."},
+          "fields": {"type": "object", "description": "Statsd atom fields by snake_case proto name; enum fields take value names."},
+          "event": {"enum": ["longwake"], "description": "BatteryStats history event for battery-stats-span."},
+          "owner_process": {"type": "string", "description": "Actor whose uid owns a battery-stats-span."},
+          "records": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["process", "proc_state"],
+              "properties": {
+                "process": {"type": "string", "minLength": 1},
+                "proc_state": {"type": "string", "pattern": "^PROCESS_STATE_[A-Z_]+$"},
+                "oom_score": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647}
+              }
+            }
+          },
+          "prev_proc_state": {"type": "string", "pattern": "^PROCESS_STATE_[A-Z_]+$"},
+          "cur_proc_state": {"type": "string", "pattern": "^PROCESS_STATE_[A-Z_]+$"},
+          "prev_oom_score": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+          "cur_oom_score": {"type": "integer", "minimum": -2147483648, "maximum": 2147483647},
+          "reason": {"type": "string", "pattern": "^OOM_ADJ_REASON_[A-Z_]+$"},
+          "seq_id": {"type": "integer", "minimum": 0},
           "name": {"type": "string"},
           "error_id": {"type": "string", "minLength": 1},
           "subject": {"type": "string", "minLength": 1},
@@ -244,6 +269,22 @@
           {
             "if": {"properties": {"type": {"const": "cdev-update"}}},
             "then": {"required": ["cdev_type", "target"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "statsd-atom"}}},
+            "then": {"required": ["atom", "fields"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "battery-stats-span"}}},
+            "then": {"required": ["process", "thread", "duration_ns", "event", "owner_process", "tag"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-process-state-snapshot"}}},
+            "then": {"required": ["records"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-process-state-change"}}},
+            "then": {"required": ["thread", "target_process", "prev_proc_state", "cur_proc_state"]}
           },
           {
             "if": {"properties": {"type": {"const": "managed-heap-graph"}}},

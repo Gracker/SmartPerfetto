@@ -1012,6 +1012,94 @@ test('rejects malformed or unbounded managed heap graphs', () => {
   );
 });
 
+function frameworkStateScenario() {
+  return {
+    schema_version: 1,
+    clock: {anchor: 'trace-start', duration_ns: '1000000000'},
+    actors: {
+      processes: [
+        {id: 'app', name: 'com.smartperfetto.fixture', uid: 10123},
+        {id: 'system', name: 'system_server', uid: 1000},
+      ],
+      threads: [
+        {id: 'main', process: 'app', name: 'main', is_main: true},
+        {id: 'am', process: 'system', name: 'ActivityManager', is_main: true},
+      ],
+    },
+    signals: [
+      {type: 'android-process-state-change', at_ns: '100000000', thread: 'am', target_process: 'app',
+        prev_proc_state: 'PROCESS_STATE_TOP', cur_proc_state: 'PROCESS_STATE_LAST_ACTIVITY',
+        prev_oom_score: 0, cur_oom_score: 700, reason: 'OOM_ADJ_REASON_ACTIVITY'},
+      {type: 'android-process-state-change', at_ns: '400000000', thread: 'am', target_process: 'app',
+        prev_proc_state: 'PROCESS_STATE_LAST_ACTIVITY', cur_proc_state: 'PROCESS_STATE_CACHED_ACTIVITY'},
+      {type: 'android-process-state-snapshot', at_ns: '900000000', records: [
+        {process: 'app', proc_state: 'PROCESS_STATE_CACHED_ACTIVITY', oom_score: 900},
+        {process: 'system', proc_state: 'PROCESS_STATE_PERSISTENT', oom_score: -900},
+      ]},
+      {type: 'statsd-atom', at_ns: '200000000', atom: 'app_standby_bucket_changed',
+        fields: {package_name: 'com.smartperfetto.fixture', user_id: 0, bucket: 'BUCKET_RARE', main_reason: 'MAIN_TIMEOUT'}},
+      {type: 'statsd-atom', at_ns: '450000000', atom: 'app_freeze_changed', process: 'app',
+        fields: {action: 'FREEZE_APP', unfreeze_reason_v2: 'UFR_NONE'}},
+      {type: 'battery-stats-span', at_ns: '150000000', duration_ns: '300000000', process: 'system', thread: 'am',
+        event: 'longwake', owner_process: 'app', tag: 'SyncJob'},
+      {type: 'atrace-slice', at_ns: '450000000', duration_ns: '1000000', process: 'system', thread: 'am',
+        name: 'Freeze com.smartperfetto.fixture:{pid:app}'},
+      {type: 'atrace-slice', at_ns: '700000000', duration_ns: '1000000', process: 'system', thread: 'am',
+        name: 'Unfreeze com.smartperfetto.fixture:{pid:app} 18'},
+    ],
+  };
+}
+
+test('materializes framework process state, statsd atoms, battery stats and freezer slices', () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-framework-state-'));
+  const outputPath = path.join(tempDir, 'combined.pftrace');
+  const overlay = encodeScenarioOverlay(repoRoot, frameworkStateScenario(), {
+    anchorNs: '1000000000',
+    usedPids: new Set(),
+    sequenceId: 555555,
+  });
+  materializeTrace(Buffer.alloc(0), overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.process_state;
+    INCLUDE PERFETTO MODULE android.app_wakelocks;
+    INCLUDE PERFETTO MODULE android.standby_bucket;
+    INCLUDE PERFETTO MODULE android.freezer;
+    SELECT
+      (SELECT GROUP_CONCAT(state || ':' || dur, ',') FROM (
+        SELECT state, dur FROM _android_process_state_intervals
+        WHERE process_name = 'com.smartperfetto.fixture' ORDER BY ts, state_rank)) AS states,
+      (SELECT name || ':' || uid || ':' || dur FROM android_app_wakelocks) AS wakelock,
+      (SELECT bucket || ':' || main_reason FROM android_standby_bucket) AS bucket,
+      (SELECT freezer_state || ':' || pid FROM android_freezer_state_statsd) AS freeze_atom,
+      (SELECT unfreeze_reason_str || ':' || dur FROM android_freezer_events) AS freeze_slice`);
+  const pid = overlay.identities.processes.app;
+  assert.equal(output.trim().split(/\r?\n/)[1], [
+    '"TOP:0,LAST_ACTIVITY:300000000,CACHED_ACTIVITY:301000000"',
+    '"SyncJob:10123:300000000"',
+    '"BUCKET_RARE:MAIN_TIMEOUT"',
+    `"FREEZE_APP:${pid}"`,
+    '"binder_txns:250000000"',
+  ].join(','));
+});
+
+test('rejects framework signals outside the pinned proto and atom allow-list', () => {
+  const encode = (mutate) => {
+    const scenario = frameworkStateScenario();
+    mutate(scenario.signals);
+    return () => encodeScenarioOverlay(repoRoot, scenario, {anchorNs: '1', usedPids: new Set(), sequenceId: 1});
+  };
+  assert.throws(encode((signals) => { signals[0].cur_proc_state = 'CACHED'; }), /ProcessStateEnum value name/);
+  assert.throws(encode((signals) => { signals[3].atom = 'screen_state_changed'; }), /atom is unsupported/);
+  assert.throws(encode((signals) => { signals[3].fields.bucket = 'BUCKET_NOPE'; }), /value name/);
+  assert.throws(encode((signals) => { signals[3].fields.not_a_field = 1; }), /has no field not_a_field/);
+  assert.throws(encode((signals) => { signals[3].process = 'app'; }), /has no process fields/);
+  assert.throws(encode((signals) => { signals[5].event = 'wakelock'; }), /event is unsupported/);
+  assert.throws(encode((signals) => { signals[5].tag = 'a"b'; }), /must not contain a quote/);
+  assert.throws(encode((signals) => { signals[6].name = 'Freeze x:{pid:missing}'; }), /unknown process missing/);
+  assert.throws(encode((signals) => { signals[6].name = 'owner x ({tid:missing})'; }), /unknown thread missing/);
+});
+
 test('rejects unsafe or imprecise scenario values', () => {
   const invalid = fixtureScenario();
   invalid.signals[0].at_ns = 1;

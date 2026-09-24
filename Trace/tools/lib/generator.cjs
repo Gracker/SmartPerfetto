@@ -7,6 +7,7 @@ const {spawnSync} = require('node:child_process');
 const {randomUUID} = require('node:crypto');
 
 const {
+  STATSD_ATOMS,
   collectPacketSequenceIds,
   encodeTrace,
   resolveTracePacketFieldName,
@@ -14,14 +15,28 @@ const {
   loadTraceType,
 } = require('./perfetto-proto.cjs');
 const {sha256Buffer} = require('./hash.cjs');
+// Proto field names in JS form, as protobufjs names the loaded fields.
+const {camelCase} = require('protobufjs').util;
 
 const FIRST_SYNTHETIC_PID = 700000;
+// uid of a process actor that does not declare one.
+const DEFAULT_APP_UID = 10999;
+const PROCESS_STATE_ENUM = 'com.android.internal.ProcessStateEnum';
 const HEAP_GRAPH_EXTENSION = '.com.android.art.tracing.ArtHeapGraphTracePacket.heapGraph';
 const HEAP_GRAPH_LIMITS = Object.freeze({types: 5000, objects: 10000, roots: 1000, references: 50000});
 const GPU_COMPUTE_KERNELS_EXTENSION = '.perfetto.protos.GpuInternedData.computeKernels';
 const GPU_COMPUTE_ARG_NAMES_EXTENSION = '.perfetto.protos.GpuInternedData.computeArgNames';
 const GPU_COMPUTE_MAX_ARGS = 64;
 const FRAME_TIMELINE_TRACE_PACKET_FIELD_NUMBER = 76;
+const PROCESS_STATE_SNAPSHOT_EXTENSION = '.com.android.internal.FrameworksBaseTracePacket.androidProcessState';
+const PROCESS_STATE_CHANGED_EXTENSION = '.com.android.internal.FrameworksBaseTrackEvent.processStateChangedEvent';
+// BatteryStats history events that trace processor turns into
+// android_battery_stats_event_slices; `longwake` backs android_app_wakelocks.
+const BATTERY_STATS_EVENTS = new Set(['longwake']);
+// Name tokens that resolve to an allocated synthetic pid or tid, for framework
+// slices that embed one in their name (`Freeze <process>:<pid>`,
+// `monitor contention with owner <thread> (<tid>) ...`).
+const ACTOR_ID_TOKEN = /\{(pid|tid):([^}]*)\}/g;
 const SUPPORTED_SIGNAL_TYPES = new Set([
   'atrace-slice', 'atrace-counter', 'atrace-async-slice', 'atrace-async-track-slice',
   'sched-running', 'sched-switch', 'sched-waking', 'process-stats', 'battery-counters', 'power-rail',
@@ -30,6 +45,7 @@ const SUPPORTED_SIGNAL_TYPES = new Set([
   'irq-span', 'frame-timeline', 'lmk-kill',
   'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
   'atrace-track-instant', 'android-input-motion', 'android-input-dispatch',
+  'statsd-atom', 'battery-stats-span', 'android-process-state-snapshot', 'android-process-state-change',
 ]);
 // Signals that name a CPU twice: once as the ftrace stream (`cpu`) and once as
 // the payload identity (`cpu_id`). Both must be isolated together so an overlay
@@ -213,7 +229,7 @@ function buildIdentities(scenario, usedPids) {
     if (processDefinitions.has(id)) throw new Error(`duplicate process actor: ${id}`);
     const pid = allocatePid(usedPids);
     processes[id] = pid;
-    processDefinitions.set(id, {...actor, pid});
+    processDefinitions.set(id, {...actor, pid, uid: actor.uid ?? DEFAULT_APP_UID});
   }
   for (const actor of scenario.actors.threads) {
     const id = nonEmptyString(actor.id, 'thread.id');
@@ -524,6 +540,69 @@ function schedSwitchEvent(timestamp, prev, next, prevState, prevPrio = 120, next
   };
 }
 
+function expandActorIdTokens(name, identities, field) {
+  return name.replace(ACTOR_ID_TOKEN, (_, kind, id) => {
+    if (kind === 'pid') return String(processActor(identities, id, field).pid);
+    const thread = identities.threadDefinitions.get(id);
+    if (!thread) throw new Error(`${field} references unknown thread ${id}`);
+    return String(thread.tid);
+  });
+}
+
+function protoEnumNumber(enumType, value, field) {
+  if (typeof value !== 'string' || !Object.hasOwn(enumType.values, value)) {
+    throw new Error(`${field} must be a ${enumType.name} value name`);
+  }
+  return enumType.values[value];
+}
+
+function processStateEnum(repoRoot) {
+  return loadTraceType(repoRoot).root.lookupEnum(PROCESS_STATE_ENUM);
+}
+
+function processActor(identities, id, field) {
+  const process = identities.processDefinitions.get(id);
+  if (!process) throw new Error(`${field} references unknown process ${id}`);
+  return process;
+}
+
+// One statsd atom as trace processor receives it from the android.statsd data
+// source. Field names are the atom's snake_case proto names; enum fields take
+// value names. `process` fills pid/process_name from an actor.
+function statsdAtomPacket(repoRoot, signal, identities, timestamp) {
+  const atomField = camelCase(nonEmptyString(signal.atom, 'statsd-atom atom'));
+  if (!STATSD_ATOMS.includes(atomField)) {
+    throw new Error(`statsd-atom atom is unsupported: ${signal.atom}`);
+  }
+  const type = loadTraceType(repoRoot).root.lookupType('perfetto.protos.Atom').fields[atomField].resolve().resolvedType;
+  if (!signal.fields || typeof signal.fields !== 'object' || Array.isArray(signal.fields)) {
+    throw new Error('statsd-atom fields must be an object');
+  }
+  const payload = {};
+  for (const [key, value] of Object.entries(signal.fields)) {
+    const field = type.fields[camelCase(key)]?.resolve();
+    if (!field) throw new Error(`statsd-atom ${signal.atom} has no field ${key}`);
+    if (field.resolvedType?.values) {
+      protoEnumNumber(field.resolvedType, value, `statsd-atom ${key}`);
+      payload[field.name] = value;
+    } else if (field.type === 'string') {
+      payload[field.name] = nonEmptyString(value, `statsd-atom ${key}`);
+    } else {
+      if (!Number.isSafeInteger(value)) throw new Error(`statsd-atom ${key} must be an integer`);
+      payload[field.name] = value;
+    }
+  }
+  if (signal.process !== undefined) {
+    const process = processActor(identities, signal.process, 'statsd-atom process');
+    if (!type.fields.pid || !type.fields.processName) {
+      throw new Error(`statsd-atom ${signal.atom} has no process fields`);
+    }
+    payload.pid = process.pid;
+    payload.processName = process.name;
+  }
+  return {timestamp, statsdAtom: {atom: [{[atomField]: payload}], timestampNanos: [timestamp]}};
+}
+
 function encodeScenarioOverlay(repoRoot, scenario, options) {
   validateScenario(scenario);
   const frameTimelineFieldName = scenario.signals.some((signal) => signal.type === 'frame-timeline')
@@ -542,6 +621,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
   const ftraceByCpu = new Map();
   const dataPackets = [];
   const inputEventIds = isolatedInputEventIds(scenario, options.usedInputEventIds);
+  const processStateTracks = new Set();
 
   function eventsForCpu(cpu) {
     if (!Number.isInteger(cpu) || cpu < 0) throw new Error(`invalid cpu: ${cpu}`);
@@ -555,7 +635,8 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       const {process, thread} = actorForSignal(signal, identities);
       const end = absoluteTimestamp(timestamp, signal.duration_ns, `scenario.signals[${index}].duration_ns`);
       const events = eventsForCpu(signal.cpu ?? 0);
-      events.push(printEvent(timestamp, thread.tid, `B|${process.pid}|${nonEmptyString(signal.name, 'signal.name')}`));
+      const name = expandActorIdTokens(nonEmptyString(signal.name, 'signal.name'), identities, 'atrace-slice name');
+      events.push(printEvent(timestamp, thread.tid, `B|${process.pid}|${name}`));
       events.push(printEvent(end, thread.tid, `E|${process.pid}`));
     } else if (signal.type === 'atrace-track-instant') {
       const {process, thread} = actorForSignal(signal, identities);
@@ -660,6 +741,71 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
         stats.oomScoreAdj = signal.oom_score_adj;
       }
       dataPackets.push({timestamp, processStats: {processes: [stats], collectionEndTimestamp: timestamp}});
+    } else if (signal.type === 'statsd-atom') {
+      dataPackets.push(statsdAtomPacket(repoRoot, signal, identities, timestamp));
+    } else if (signal.type === 'battery-stats-span') {
+      const {process, thread} = actorForSignal(signal, identities);
+      const event = nonEmptyString(signal.event, 'battery-stats-span event');
+      if (!BATTERY_STATS_EVENTS.has(event)) throw new Error(`battery-stats-span event is unsupported: ${event}`);
+      const owner = processActor(identities, signal.owner_process, 'battery-stats-span owner_process');
+      const tag = atraceComponent(signal.tag, 'battery-stats-span tag');
+      if (tag.includes('"')) throw new Error('battery-stats-span tag must not contain a quote');
+      const end = absoluteTimestamp(timestamp, signal.duration_ns, `scenario.signals[${index}].duration_ns`);
+      const history = `${event}=${owner.uid}:"${tag}"`;
+      const events = eventsForCpu(signal.cpu ?? 0);
+      events.push(printEvent(timestamp, thread.tid, `N|${process.pid}|battery_stats.${event}|+${history}`));
+      events.push(printEvent(end, thread.tid, `N|${process.pid}|battery_stats.${event}|-${history}`));
+    } else if (signal.type === 'android-process-state-snapshot') {
+      if (!Array.isArray(signal.records) || signal.records.length === 0) {
+        throw new Error('android-process-state-snapshot records must be a non-empty array');
+      }
+      const record = signal.records.map((item, recordIndex) => {
+        const field = `android-process-state-snapshot records[${recordIndex}]`;
+        const process = processActor(identities, item.process, `${field}.process`);
+        return {
+          pid: process.pid,
+          uid: process.uid,
+          procState: protoEnumNumber(processStateEnum(repoRoot), item.proc_state,
+            `${field}.proc_state`),
+          ...(item.oom_score !== undefined ? {oomScore: int32(item.oom_score, `${field}.oom_score`)} : {}),
+          processName: process.name,
+        };
+      });
+      dataPackets.push({timestamp, [PROCESS_STATE_SNAPSHOT_EXTENSION]: {record}});
+    } else if (signal.type === 'android-process-state-change') {
+      const {thread} = actorForSignal(signal, identities);
+      const target = processActor(identities, signal.target_process, 'android-process-state-change target_process');
+      const trackUuid = ((BigInt(options.sequenceId) << 32n) | BigInt(thread.tid)).toString();
+      if (!processStateTracks.has(trackUuid)) {
+        processStateTracks.add(trackUuid);
+        dataPackets.push({
+          timestamp,
+          trackDescriptor: {uuid: trackUuid, thread: {pid: thread.tgid, tid: thread.tid, threadName: thread.name}},
+        });
+      }
+      const state = (value, field) => protoEnumNumber(processStateEnum(repoRoot), value,
+        `android-process-state-change ${field}`);
+      dataPackets.push({
+        timestamp,
+        trackEvent: {
+          type: 'TYPE_INSTANT',
+          trackUuid,
+          name: 'proc_state_change',
+          [PROCESS_STATE_CHANGED_EXTENSION]: {
+            uid: target.uid,
+            pid: target.pid,
+            prevProcState: state(signal.prev_proc_state, 'prev_proc_state'),
+            curProcState: state(signal.cur_proc_state, 'cur_proc_state'),
+            ...(signal.prev_oom_score !== undefined
+              ? {prevOomScore: int32(signal.prev_oom_score, 'android-process-state-change prev_oom_score')} : {}),
+            ...(signal.cur_oom_score !== undefined
+              ? {curOomScore: int32(signal.cur_oom_score, 'android-process-state-change cur_oom_score')} : {}),
+            ...(signal.reason !== undefined ? {reason: protoEnumNumber(
+              loadTraceType(repoRoot).root.lookupEnum('com.android.internal.OomChangeReasonEnum'), signal.reason, 'android-process-state-change reason')} : {}),
+            seqId: String(nonNegativeInteger(signal.seq_id ?? index, 'android-process-state-change seq_id')),
+          },
+        },
+      });
     } else if (signal.type === 'managed-heap-graph') {
       const process = identities.processDefinitions.get(signal.process);
       if (!process) throw new Error(`signal references unknown process ${signal.process}`);
@@ -742,7 +888,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
             logId,
             pid: process.pid,
             tid: thread.tid,
-            uid: process.uid ?? 10999,
+            uid: process.uid,
             timestamp: logTimestamp,
             tag: nonEmptyString(signal.tag, 'android-log tag'),
             prio: priority,
@@ -945,7 +1091,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       pid: actor.pid,
       ppid: 1,
       cmdline: [actor.name],
-      uid: actor.uid ?? 10999,
+      uid: actor.uid,
     })),
     threads: [...identities.threadDefinitions.values()].map((actor) => ({
       tid: actor.tid,

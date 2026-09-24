@@ -16,6 +16,32 @@ const OPTIONAL_TRACE_PACKET_EXTENSIONS = [
   },
 ];
 
+const FRAMEWORKS_BASE_TRACING = 'protos/third_party/android/frameworks/base/proto/tracing';
+// Perfetto declares StatsdAtom.atom as an empty `Atom` so it does not import
+// the statsd schema; trace processor decodes atoms with its bundled
+// descriptor. Only these atoms are grafted onto `Atom`, at the field numbers
+// that descriptor assigns, so an overlay can never carry an atom the pinned
+// trace processor would decode differently.
+const STATSD_ATOM_DESCRIPTOR = 'src/trace_processor/importers/proto/atoms.descriptor';
+const STATSD_ATOMS = Object.freeze(['appStandbyBucketChanged', 'appFreezeChanged']);
+
+function graftStatsdAtoms(protobuf, root, perfettoRoot) {
+  const {FileDescriptorSet} = require('protobufjs/ext/descriptor');
+  const atomsRoot = protobuf.Root.fromDescriptor(
+    FileDescriptorSet.decode(fs.readFileSync(path.join(perfettoRoot, STATSD_ATOM_DESCRIPTOR))),
+  );
+  const sourceAtom = atomsRoot.lookupType('android.os.statsd.Atom');
+  const targetAtom = root.lookupType('perfetto.protos.Atom');
+  const namespace = root.define('android.os.statsd');
+  for (const name of STATSD_ATOMS) {
+    const field = sourceAtom.fields[name];
+    if (!field) throw new Error(`statsd atom descriptor has no Atom.${name}`);
+    const type = field.resolve().resolvedType;
+    namespace.add(protobuf.Type.fromJSON(type.name, type.toJSON()));
+    targetAtom.add(new protobuf.Field(name, field.id, `.android.os.statsd.${type.name}`));
+  }
+}
+
 function loadTraceType(repoRoot) {
   const normalizedRoot = path.resolve(repoRoot);
   if (cache.has(normalizedRoot)) return cache.get(normalizedRoot);
@@ -34,7 +60,10 @@ function loadTraceType(repoRoot) {
     path.join(perfettoRoot, 'protos/perfetto/trace/trace.proto'),
     path.join(perfettoRoot, 'protos/third_party/android/art/heap_graph.proto'),
     path.join(perfettoRoot, 'protos/perfetto/trace/gpu/gpu_interned_data.proto'),
+    path.join(perfettoRoot, `${FRAMEWORKS_BASE_TRACING}/frameworks_base_trace_packet.proto`),
+    path.join(perfettoRoot, `${FRAMEWORKS_BASE_TRACING}/frameworks_base_track_event.proto`),
   ]);
+  graftStatsdAtoms(protobuf, root, perfettoRoot);
   const tracePacketType = root.lookupType('perfetto.protos.TracePacket');
   for (const extension of OPTIONAL_TRACE_PACKET_EXTENSIONS) {
     if (tracePacketType.fieldsArray.some((field) => field.id === extension.fieldNumber)) continue;
@@ -86,6 +115,7 @@ function collectPacketSequenceIds(repoRoot, traceBuffer) {
 }
 
 module.exports = {
+  STATSD_ATOMS,
   collectPacketSequenceIds,
   encodeTrace,
   loadTraceType,
