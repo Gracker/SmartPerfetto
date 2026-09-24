@@ -58,10 +58,16 @@ export type CriticalPathEvidence =
   | {kind: 'text'; text: string}
   | {kind: 'task'; process: string | null; thread: string | null}
   | {kind: 'state'; state: string | null}
+  /** The longest attributable (work, runnable or uninterruptible) segment of the chain. */
   | {kind: 'longest_segment'; process: string | null; thread: string | null; ms: number}
+  /** A chain leaf: another thread's interruptible sleep that ended the chain, and what woke it. */
+  | {kind: 'leaf_wait'; process: string | null; thread: string | null; ms: number; waitClass: WaitClass | null}
+  /** The selected thread's own wait the analysis explains. */
+  | {kind: 'root_wait'; state: string | null; ms: number}
   | {kind: 'duration'; ms: number}
   | {kind: 'selected_task'; ms: number}
-  | {kind: 'external_path'; ms: number}
+  /** Attributable path time: other threads' work, runnable and uninterruptible time. */
+  | {kind: 'attributable_path'; ms: number}
   | {kind: 'task_duration'; ms: number}
   | {kind: 'utid'; utid: number}
   | {kind: 'module'; id: CriticalPathModuleId}
@@ -79,10 +85,15 @@ export const CRITICAL_PATH_ANOMALY_IDS = [
   'java_monitor',
   'gc_overlap',
   'cpu_contention',
+  'peer_event_wait',
+  'idle_wait',
   'no_clear_anomaly',
+  // Unavailable reasons: an empty analysis carries its reason as its one anomaly.
   'task_state_running',
   'no_waiting_time',
   'no_critical_path_stack',
+  'no_thread_state_in_window',
+  'wait_open_at_trace_end',
 ] as const;
 
 export type CriticalPathAnomalyId = (typeof CRITICAL_PATH_ANOMALY_IDS)[number];
@@ -98,6 +109,10 @@ export const CRITICAL_PATH_RECOMMENDATION_IDS = [
   'running_selection',
   'no_waiting_selection',
   'record_sched_events',
+  'follow_peer_event_wait',
+  'choose_active_window',
+  'choose_thread_with_sched_data',
+  'inspect_unfinished_wait',
 ] as const;
 
 export type CriticalPathRecommendationId = (typeof CRITICAL_PATH_RECOMMENDATION_IDS)[number];
@@ -119,6 +134,9 @@ export const CRITICAL_PATH_WARNING_CODES = [
   'loader_row_cap',
   'frames_include_failed',
   'frame_query_failed',
+  'wait_open_at_trace_end',
+  'root_wait_query_failed',
+  'thread_state_id_ignored_conflict',
 ] as const;
 
 export type CriticalPathWarningCode = (typeof CRITICAL_PATH_WARNING_CODES)[number];
@@ -377,6 +395,28 @@ export interface CriticalPathTaskInfo {
   processName?: string | null;
 }
 
+/**
+ * What a chain segment's time means for the selected task.
+ *
+ * Perfetto's `thread_executing_span` ends a wake chain wherever the waker was
+ * itself woken from IRQ context, by the idle task, or out of an io_wait: those
+ * wakes have no waker thread to follow. The chain's segments of other threads
+ * in S/I or D state are therefore leaves — the waker's own sleep, ended by an
+ * interrupt — never another link.
+ *
+ * - `work`: the thread ran (Running).
+ * - `runnable`: the thread was ready but waited for a CPU (R, R+).
+ * - `device_wait`: uninterruptible sleep (D, DK), usually I/O or a kernel lock.
+ * - `event_wait`: interruptible sleep (S, I) until an external event: a
+ *   network packet, a timer, an input event or idle time. It can be the real
+ *   blocker (a lock owner sleeping on a socket) or plain idleness.
+ * - `other`: any other or missing state.
+ *
+ * `work + runnable + device_wait` is the attributable time; `event_wait` is
+ * reported beside it and never counted as attributable.
+ */
+export type CriticalPathRole = 'work' | 'runnable' | 'device_wait' | 'event_wait' | 'other';
+
 export interface CriticalPathSegment {
   startTs: number;
   dur: number;
@@ -406,6 +446,8 @@ export interface CriticalPathSegment {
   // It is a candidate label, not a cause: an IRQ-context wake is equally a
   // NET_RX softirq and a timer expiry.
   wakeSourceClass?: WaitClass;
+  /** What the segment's time means for the task; set by the engine on every segment. */
+  pathRole?: CriticalPathRole;
   recursionDepth?: number;
   // Children: result of recursing _critical_path_stack on this segment.
   children?: CriticalPathSegment[];
@@ -435,7 +477,7 @@ export interface CriticalPathAnomaly {
   evidence: string[];
 }
 
-/** The longest segment of the whole chain (the displayed prefix may not hold it). */
+/** The longest attributable segment of the whole chain (the displayed prefix may not hold it). */
 export interface CriticalPathLongestSegment {
   processName: string | null;
   threadName: string | null;
@@ -459,20 +501,81 @@ export interface SliceFinding {
 
 /**
  * Why `available` is false: the selected row is Running, the window holds no
- * S/D/DK/R/R+ time, or Perfetto returned no critical-path stack.
+ * S/I/D/DK/R/R+ time, Perfetto returned no critical-path stack, the thread has
+ * no thread_state row in the window at all (a thread without scheduling data,
+ * not an idle one), or the selected wait never ended before the trace did and
+ * nothing in it can be followed.
  */
 export type CriticalPathUnavailableReason =
   | 'task_state_running'
   | 'no_critical_path_stack'
-  | 'no_waiting_time';
+  | 'no_waiting_time'
+  | 'no_thread_state_in_window'
+  | 'wait_open_at_trace_end';
+
+/**
+ * Where the selected thread's own wait sat relative to its slices.
+ *
+ * - `in_slice`: a slice of the thread encloses the start of the wait, so the
+ *   thread blocked while doing traced work.
+ * - `between_slices`: no slice encloses it, but the thread has slices both
+ *   before and after it: the wait sat between instrumented work, which is how
+ *   an idle Looper looks.
+ * - `no_slice_data`: the thread has no slices on at least one side, so the
+ *   trace cannot tell work from idleness (atrace app categories missing).
+ */
+export type CriticalPathRootWaitContext = 'in_slice' | 'between_slices' | 'no_slice_data';
+
+/**
+ * The selected thread's own wait the chain explains: the selected
+ * thread_state row, or in range mode the longest waiting slice of the window.
+ */
+export interface CriticalPathRootWait {
+  threadStateId: number | null;
+  state: string | null;
+  startTs: number;
+  endTs: number;
+  durationMs: number;
+  context: CriticalPathRootWaitContext;
+  /** The deepest slice of the thread enclosing the wait's start (`in_slice` only). */
+  enclosingSlice: {name: string; startTs: number; dur: number; depth: number} | null;
+}
+
+/** The longest `event_wait` leaf of the chain: a peer's sleep that ended the chain. */
+export interface CriticalPathLeafWait {
+  utid: number;
+  processName: string | null;
+  threadName: string | null;
+  state: string | null;
+  durationMs: number;
+  wakeSourceClass: WaitClass | null;
+}
 
 export interface CriticalPathAnalysis {
   available: boolean;
   task: CriticalPathTaskInfo;
   totalMs: number;
+  /**
+   * Path coverage: the part of the window the chain covers with other threads,
+   * whatever they were doing. It includes their `event_wait` leaves, so it is
+   * not the time other threads cost the task; read `attributableMs`.
+   */
   blockingMs: number;
   selfMs: number;
+  /** `blockingMs` as a share of the window (path coverage). */
   externalBlockingPercentage: number;
+  /**
+   * Other threads' work, runnable and uninterruptible time on the chain: the
+   * part of the window another thread's execution or device wait accounts
+   * for. The headline number.
+   */
+  attributableMs?: number;
+  attributablePercentage?: number;
+  /** Other threads' interruptible sleep (S/I) that ended the chain. */
+  eventWaitMs?: number;
+  eventWaitPercentage?: number;
+  rootWait?: CriticalPathRootWait | null;
+  longestEventWait?: CriticalPathLeafWait | null;
   wakeupChain: CriticalPathSegment[];
   moduleBreakdown: CriticalPathModuleStat[];
   anomalies: CriticalPathAnomaly[];
@@ -486,6 +589,7 @@ export interface CriticalPathAnalysis {
   warnings: string[];
   rawRows: number;
   truncated: boolean;
+  /** The longest attributable segment (work, runnable or uninterruptible) of the whole chain. */
   longestSegment?: CriticalPathLongestSegment | null;
   // Additive fields:
   slices?: SliceFinding[];
@@ -498,7 +602,9 @@ export interface CriticalPathAnalysis {
   // They cover the top-level chain only: a recursion child covers the same
   // wall time as its parent, so adding it would count that interval again.
   chainSegmentCount?: number;
+  /** The chain's S/I/D time: `event_wait + device_wait`. */
   chainWaitMs?: number;
+  /** `chainWaitMs` split by the wake-source class of each wait (`unknown` when none). */
   waitClassTotalsMs?: Record<string, number>;
   /**
    * The exact ns behind the rounded headline ms fields. The window is
@@ -508,13 +614,25 @@ export interface CriticalPathAnalysis {
   totalsNs?: CriticalPathTotalsNs;
 }
 
+/**
+ * One accounting of the whole top-level chain, by `CriticalPathRole`:
+ * `work + runnable + deviceWait + eventWait + other = blocking`,
+ * `attributable = work + runnable + deviceWait`,
+ * `chainWait = deviceWait + eventWait`.
+ */
 export interface CriticalPathTotalsNs {
-  /** External blocking over the whole top-level chain. */
+  /** Path coverage: every segment of the whole top-level chain. */
   blocking: number;
-  /** The chain's S/D time (`chainWaitMs`). */
+  /** The chain's S/I/D time (`chainWaitMs`). */
   chainWait: number;
-  /** The selected thread's own S/D time inside the window. */
+  /** The selected thread's own S/I/D time inside the window. */
   waiting: number;
+  work: number;
+  runnable: number;
+  deviceWait: number;
+  eventWait: number;
+  other: number;
+  attributable: number;
 }
 
 /**

@@ -879,7 +879,7 @@ export async function dispatchOpenCodeBridgeRequest(
     if (!definition) {
       return rpcError(id, RPC_ERROR_CODES.METHOD_NOT_FOUND, `Unknown tool '${params.name}'`);
     }
-    const args = normalizeRuntimeToolArgs(params.arguments ?? {}) as Record<string, unknown>;
+    const args = normalizeRuntimeToolArgs(params.arguments ?? {}, definition.shared.inputSchema) as Record<string, unknown>;
     const taskId = String(id ?? `${params.name}-${Date.now()}`);
     try {
       emitOpenCodeBridgeUpdateIfDeliverable(emitUpdate, options, {

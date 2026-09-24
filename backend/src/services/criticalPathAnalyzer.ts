@@ -50,8 +50,11 @@ import type {
   CriticalPathModuleId,
   CriticalPathModuleStat,
   CriticalPathQuantification,
+  CriticalPathLeafWait,
   CriticalPathReason,
   CriticalPathRecommendationId,
+  CriticalPathRole,
+  CriticalPathRootWait,
   CriticalPathSegment,
   CriticalPathTaskInfo,
   CriticalPathTotalsNs,
@@ -72,7 +75,7 @@ import type {
  * their field semantics with it: bump it when a captured field changes meaning
  * or exactness, so claims verified against the old definition do not carry over.
  */
-export const CRITICAL_PATH_ENGINE_VERSION = 'critical-path-engine@3';
+export const CRITICAL_PATH_ENGINE_VERSION = 'critical-path-engine@4';
 
 export interface CriticalPathProfile {
   /** Segments of the chain displayed (and recursed into); totals always cover the whole chain. */
@@ -191,15 +194,47 @@ export function pct(value: number, total: number): number {
   return Math.round((value * 10_000) / total) / 100;
 }
 
-/** The one reading of a thread_state state the engine and its consumers share. */
+/**
+ * The one reading of a thread_state state the engine and its consumers share.
+ * `I` (TASK_IDLE: a kernel thread parked until there is work) is a sleep: it
+ * ends on an event, not on a device, and is not load.
+ */
 export function classifySlice(state: string | null | undefined): SliceKind {
   if (!state) return 'unknown';
   if (state === 'Running') return 'running';
   const first = state[0];
-  if (first === 'S') return 'sleeping';
+  if (first === 'S' || first === 'I') return 'sleeping';
   if (first === 'D') return 'uninterruptible';
   if (first === 'R') return 'runnable';
   return 'unknown';
+}
+
+const PATH_ROLE_BY_KIND: Record<SliceKind, CriticalPathRole> = {
+  running: 'work',
+  runnable: 'runnable',
+  uninterruptible: 'device_wait',
+  sleeping: 'event_wait',
+  unknown: 'other',
+};
+
+/** What a chain segment in `state` means for the task (see `CriticalPathRole`). */
+export function pathRoleOf(state: string | null | undefined): CriticalPathRole {
+  return PATH_ROLE_BY_KIND[classifySlice(state)];
+}
+
+/** The roles whose time another thread's execution or device wait accounts for. */
+export function isAttributableRole(role: CriticalPathRole | undefined): boolean {
+  return role === 'work' || role === 'runnable' || role === 'device_wait';
+}
+
+/** The S/I/D roles: a wait that ends the chain (`chainWait`). */
+export function isChainLeafRole(role: CriticalPathRole | undefined): boolean {
+  return role === 'event_wait' || role === 'device_wait';
+}
+
+/** A segment's role, read from its state when the segment carries none. */
+export function segmentPathRole(segment: Pick<CriticalPathSegment, 'pathRole' | 'state'>): CriticalPathRole {
+  return segment.pathRole ?? pathRoleOf(segment.state);
 }
 
 /** The non-empty strings among `items`. */
@@ -448,6 +483,7 @@ function buildSegments(
         modules: [],
         reasonItems,
         reasons: [],
+        pathRole: pathRoleOf(segment.state),
       };
     })
     .sort((a, b) => a.startTs - b.startTs || b.dur - a.dur);
@@ -601,11 +637,54 @@ function collectChainSignals(segments: CriticalPathSegment[]): ChainSignals {
   };
 }
 
+/** Share of the window attributable time must reach to call other threads the main cost. */
+const EXTERNAL_SHARE_HIGH_PERCENT = 70;
+/** Share of the window event-wait leaves must reach to say the chain ends in a peer's wait. */
+const PEER_EVENT_WAIT_PERCENT = 50;
+/** Attributable share below which a wait between slices reads as idle. */
+const IDLE_ATTRIBUTABLE_MAX_PERCENT = 20;
+
+/** The whole-chain facts the anomalies read beside the typed L3 signals. */
+interface ChainAccounting {
+  totals: ChainPathTotals;
+  /** The longest attributable segment: what `long_segment` and the counterfactual name. */
+  longestAttributable: CriticalPathSegment | undefined;
+  /** The longest event-wait leaf. */
+  longestLeaf: CriticalPathSegment | undefined;
+  rootWait: CriticalPathRootWait | null;
+  directWaker: WakerHop | null;
+}
+
+/** The threads whose event-wait leaves end the chain, most leaf time first. */
+function leafThreadEvidence(segments: readonly CriticalPathSegment[], limit: number): CriticalPathEvidence[] {
+  const byUtid = new Map<number, {ns: number; longest: CriticalPathSegment}>();
+  for (const segment of segments) {
+    if (segmentPathRole(segment) !== 'event_wait') continue;
+    const entry = byUtid.get(segment.utid);
+    if (!entry) {
+      byUtid.set(segment.utid, {ns: segment.dur, longest: segment});
+      continue;
+    }
+    entry.ns += segment.dur;
+    if (segment.dur > entry.longest.dur) entry.longest = segment;
+  }
+  return [...byUtid.values()]
+    .sort((a, b) => b.ns - a.ns || a.longest.utid - b.longest.utid)
+    .slice(0, limit)
+    .map(({ns, longest}): CriticalPathEvidence => ({
+      kind: 'leaf_wait',
+      process: longest.processName ?? null,
+      thread: longest.threadName ?? null,
+      ms: nsToMs(ns),
+      waitClass: longest.wakeSourceClass ?? null,
+    }));
+}
+
 function buildAnomalies(
   task: CriticalPathTaskInfo,
-  longest: CriticalPathSegment | undefined,
-  signals: ChainSignals,
-  blockingMs: number
+  chain: readonly CriticalPathSegment[],
+  accounting: ChainAccounting,
+  signals: ChainSignals
 ): CriticalPathAnomaly[] {
   const anomalies: CriticalPathAnomaly[] = [];
   const add = (
@@ -618,9 +697,30 @@ function buildAnomalies(
   };
   const text = (items: string[]): CriticalPathEvidence[] => items.map((item) => ({kind: 'text', text: item}));
   const totalMs = task.durationMs;
-  const blockingPct = pct(blockingMs, totalMs);
+  const {totals, longestAttributable: longest, longestLeaf, rootWait, directWaker} = accounting;
+  const attributableMs = nsToMs(totals.attributable);
+  const attributablePct = pct(totals.attributable, task.dur);
+  const eventWaitPct = pct(totals.eventWait, task.dur);
 
-  if (totalMs >= 50) {
+  // Idle is claimed only from where the thread's own wait sat — between its
+  // slices — and only when little of the window is attributable. A chain that
+  // merely ends in event waits is not idle: the peer that sleeps may hold the
+  // lock the task waits for.
+  const idle = rootWait?.context === 'between_slices' && attributablePct < IDLE_ATTRIBUTABLE_MAX_PERCENT;
+  if (idle && rootWait) {
+    add('idle_wait', 'info', {
+      state: rootWait.state ?? '-',
+      ms: rootWait.durationMs,
+      percent: attributablePct,
+      waker: directWaker?.kind ?? 'unknown',
+      wakerThread: directWaker?.threadName ?? '-',
+    }, [
+      {kind: 'root_wait', state: rootWait.state, ms: rootWait.durationMs},
+      {kind: 'attributable_path', ms: attributableMs},
+    ]);
+  } else if (totalMs >= 50) {
+    // An idle wait is long by nature; its length says nothing about jank, so
+    // the duration findings apply only to a wait that is not idle.
     add('task_too_long', 'critical', {ms: totalMs}, [
       {kind: 'task', process: task.processName ?? null, thread: task.threadName ?? null},
       {kind: 'state', state: task.state ?? null},
@@ -629,10 +729,24 @@ function buildAnomalies(
     add('task_over_frame_budget', 'warning', {ms: totalMs}, [{kind: 'state', state: task.state ?? null}]);
   }
 
-  if (blockingPct >= 70 && blockingMs >= 8) {
-    add('external_share_high', 'warning', {ms: blockingMs, percent: blockingPct}, longest
+  if (attributablePct >= EXTERNAL_SHARE_HIGH_PERCENT && attributableMs >= 8) {
+    add('external_share_high', 'warning', {ms: attributableMs, percent: attributablePct}, longest
       ? [{kind: 'longest_segment', process: longest.processName ?? null, thread: longest.threadName ?? null, ms: longest.durationMs}]
       : []);
+  }
+
+  // The chain ends in a peer that slept until an external event while the
+  // task was inside traced work (or the trace cannot tell): what that peer
+  // waited for — network, timer, device — is the blocker to report.
+  if (!idle && longestLeaf && rootWait?.context !== 'between_slices' && eventWaitPct >= PEER_EVENT_WAIT_PERCENT) {
+    add('peer_event_wait', 'warning', {
+      ms: nsToMs(totals.eventWait),
+      percent: eventWaitPct,
+      process: longestLeaf.processName ?? '-',
+      thread: longestLeaf.threadName ?? '-',
+      leafMs: longestLeaf.durationMs,
+      waitClass: longestLeaf.wakeSourceClass ?? 'unknown',
+    }, leafThreadEvidence(chain, 3));
   }
 
   if (longest && longest.durationMs >= 8) {
@@ -681,14 +795,14 @@ function buildAnomalies(
 
   // Only typed competition counts: a Running blocker is the thread doing the
   // work, not evidence that the chain waited for a CPU.
-  if (signals.cpu.evidence.length > 0 && blockingMs >= 4) {
+  if (signals.cpu.evidence.length > 0 && attributableMs >= 4) {
     add('cpu_contention', 'info', {ms: signals.cpu.ms}, text(signals.cpu.evidence));
   }
 
   if (anomalies.length === 0) {
     add('no_clear_anomaly', 'info', undefined, [
       {kind: 'selected_task', ms: totalMs},
-      {kind: 'external_path', ms: blockingMs},
+      {kind: 'attributable_path', ms: attributableMs},
     ]);
   }
 
@@ -712,6 +826,8 @@ function buildRecommendations(
   if (modules.has('graphics_surface')) recommendations.push('align_rendering');
   if (modules.has('sched_cpu')) recommendations.push('inspect_scheduling');
   if (signals.gc.ms >= MIN_SIGNAL_MS) recommendations.push('inspect_gc');
+  if (anomalies.some((item) => item.id === 'peer_event_wait')) recommendations.push('follow_peer_event_wait');
+  if (anomalies.some((item) => item.id === 'idle_wait')) recommendations.push('choose_active_window');
 
   if (recommendations.length === 0 || anomalies.some((item) => item.severity !== 'info')) {
     recommendations.push('start_longest_segment');
@@ -724,9 +840,11 @@ const EMPTY_ANALYSIS_RECOMMENDATION: Record<CriticalPathUnavailableReason, Criti
   task_state_running: 'running_selection',
   no_waiting_time: 'no_waiting_selection',
   no_critical_path_stack: 'record_sched_events',
+  no_thread_state_in_window: 'choose_thread_with_sched_data',
+  wait_open_at_trace_end: 'inspect_unfinished_wait',
 };
 
-/** The thread's own S/D time in the window, exact (slices are clipped to it). */
+/** The thread's own S/I/D time in the window, exact (slices are clipped to it). */
 function sliceWaitNs(slices: readonly SliceFinding[]): number {
   return slices
     .filter((slice) => slice.kind === 'sleeping' || slice.kind === 'uninterruptible')
@@ -765,11 +883,17 @@ function buildEmptyAnalysis(
     truncated: false,
     longestSegment: null,
     unavailableReason: reason,
+    attributableMs: 0,
+    attributablePercentage: 0,
+    eventWaitMs: 0,
+    eventWaitPercentage: 0,
+    rootWait: null,
+    longestEventWait: null,
     chainSegmentCount: 0,
     chainWaitMs: 0,
     waitClassTotalsMs: {},
     slices,
-    totalsNs: {blocking: 0, chainWait: 0, waiting: sliceWaitNs(slices)},
+    totalsNs: totalsNsOf(chainPathTotals([]), sliceWaitNs(slices)),
   };
 }
 
@@ -778,26 +902,79 @@ function uniqueWarnings(warnings: CriticalPathWarning[]): CriticalPathWarning[] 
   return [...new Map(warnings.map((warning) => [JSON.stringify(warning), warning])).values()];
 }
 
-// Waiting means an S or D state (`classifySlice`), the same reading applied to
-// `slices`; each wait is credited to its wake-source class or to `unknown`.
-// The engine passes the top-level chain only (see `CriticalPathAnalysis`).
-export function chainWaitTotals(
-  segments: readonly CriticalPathSegment[]
-): {chainWaitNs: number; chainWaitMs: number; waitClassTotalsMs: Record<string, number>} {
-  const classNs: Record<string, number> = {};
-  let waitNs = 0;
-  for (const segment of segments) {
-    const kind = classifySlice(segment.state);
-    if (kind !== 'sleeping' && kind !== 'uninterruptible') continue;
-    const key = segment.wakeSourceClass ?? 'unknown';
-    classNs[key] = (classNs[key] ?? 0) + segment.dur;
-    waitNs += segment.dur;
-  }
-  return {
-    chainWaitNs: waitNs,
-    chainWaitMs: nsToMs(waitNs),
-    waitClassTotalsMs: Object.fromEntries(Object.entries(classNs).map(([key, ns]) => [key, nsToMs(ns)])),
+/**
+ * The one accounting of a chain, by `CriticalPathRole`: every
+ * `CriticalPathTotalsNs` field except the thread's own `waiting`, plus
+ * `chainWait` split by wake-source class (`unknown` when a wait has none).
+ */
+type ChainPathTotals = Omit<CriticalPathTotalsNs, 'waiting'> & {waitClassNs: Record<string, number>};
+
+const ROLE_TOTAL_KEY = {
+  work: 'work',
+  runnable: 'runnable',
+  device_wait: 'deviceWait',
+  event_wait: 'eventWait',
+  other: 'other',
+} as const satisfies Record<CriticalPathRole, keyof CriticalPathTotalsNs>;
+
+// Waiting means an S, I or D state (`classifySlice`), the same reading applied
+// to `slices`; each wait is credited to its wake-source class or to `unknown`.
+// The engine passes the top-level chain only (see `CriticalPathAnalysis`): a
+// recursion child covers its parent's wall time and would count it twice.
+function chainPathTotals(segments: readonly CriticalPathSegment[]): ChainPathTotals {
+  const totals: ChainPathTotals = {
+    blocking: 0, chainWait: 0, work: 0, runnable: 0, deviceWait: 0, eventWait: 0, other: 0, attributable: 0,
+    waitClassNs: {},
   };
+  for (const segment of segments) {
+    const role = segmentPathRole(segment);
+    totals[ROLE_TOTAL_KEY[role]] += segment.dur;
+    totals.blocking += segment.dur;
+    if (isAttributableRole(role)) totals.attributable += segment.dur;
+    if (isChainLeafRole(role)) {
+      totals.chainWait += segment.dur;
+      const key = segment.wakeSourceClass ?? 'unknown';
+      totals.waitClassNs[key] = (totals.waitClassNs[key] ?? 0) + segment.dur;
+    }
+  }
+  return totals;
+}
+
+function nsRecordToMs(record: Record<string, number>): Record<string, number> {
+  return Object.fromEntries(Object.entries(record).map(([key, ns]) => [key, nsToMs(ns)]));
+}
+
+/** The chain's S/I/D time by wake-source class, in ms. */
+export function waitClassTotalsMs(segments: readonly CriticalPathSegment[]): Record<string, number> {
+  return nsRecordToMs(chainPathTotals(segments).waitClassNs);
+}
+
+function totalsNsOf({waitClassNs: _waitClassNs, ...chainTotals}: ChainPathTotals, waitingNs: number): CriticalPathTotalsNs {
+  return {...chainTotals, waiting: waitingNs};
+}
+
+/**
+ * The end of a thread_state row. A row whose state never ended before the
+ * trace did has `dur = -1`; it is read up to the end of the trace: for an ANR
+ * that open wait is the finding, not a malformed row. The one rule every
+ * critical-path query reads a row's end by.
+ */
+export function openRowEndSql(alias: string): string {
+  return `CASE WHEN ${alias}.dur < 0 THEN (SELECT end_ts FROM trace_bounds) ELSE ${alias}.ts + ${alias}.dur END`;
+}
+
+/** A thread_state row's duration under `openRowEndSql`. */
+function openRowDurSql(alias: string): string {
+  return `(${openRowEndSql(alias)}) - ${alias}.ts`;
+}
+
+interface LoadedTask {
+  primary: CriticalPathTaskInfo;
+  slices: SliceFinding[];
+  /** The longest waiting slice (`longestWaitingSlice`), or null when the slices hold no waiting time. */
+  dominantWait: SliceFinding | null;
+  /** The wait the analysis explains is still open at the end of the trace. */
+  openAtTraceEnd: boolean;
 }
 
 // Resolve task metadata + (when applicable) split a range selection into the
@@ -807,7 +984,7 @@ async function loadTask(
   tp: TraceProcessorService,
   traceId: string,
   options: CriticalPathAnalyzeOptions
-): Promise<{primary: CriticalPathTaskInfo; slices: SliceFinding[]}> {
+): Promise<LoadedTask> {
   const queryOptions = {signal: options.signal};
   const threadStateId = normalizeIntegerSql(
     options.threadStateId,
@@ -817,7 +994,8 @@ async function loadTask(
   if (threadStateId?.startsWith('-')) {
     throw new CriticalPathInputError('invalid_thread_state_id', 'threadStateId must be a non-negative integer');
   }
-  if (threadStateId) {
+  // `0` is a real row id, so presence is the test, never truthiness.
+  if (threadStateId !== undefined) {
     const rows = await queryRows(
       tp,
       traceId,
@@ -825,7 +1003,8 @@ async function loadTask(
       SELECT
         target.id AS thread_state_id,
         target.ts,
-        target.dur,
+        ${openRowDurSql('target')} AS dur,
+        target.dur < 0 AS open_at_trace_end,
         target.utid,
         target.state,
         target.blocked_function,
@@ -847,7 +1026,7 @@ async function loadTask(
     if (!row) {
       throw new CriticalPathInputError('thread_state_not_found', `thread_state ${threadStateId} not found`);
     }
-    const dur = toNumber(row.dur);
+    const dur = Math.max(0, toNumber(row.dur));
     const startTs = toNumber(row.ts);
     const state = toOptionalString(row.state);
     const primary: CriticalPathTaskInfo = {
@@ -876,7 +1055,12 @@ async function loadTask(
       blockedFunction: toOptionalString(row.blocked_function),
       ioWait: toBool(row.io_wait),
     };
-    return {primary, slices: [slice]};
+    return {
+      primary,
+      slices: [slice],
+      dominantWait: longestWaitingSlice([slice]),
+      openAtTraceEnd: toBool(row.open_at_trace_end) === true,
+    };
   }
 
   // Range mode: utid + startTs + dur
@@ -921,19 +1105,27 @@ async function loadTask(
 
   // Pull all overlapping thread_state slices to drive multi-slice splitting.
   // Half-open: a row that ends exactly at the window start (or starts exactly
-  // at its end) contributes no time and is not part of the selection.
+  // at its end) contributes no time and is not part of the selection. A row
+  // still open at the end of the trace runs to that end.
   const sliceRows = await queryRows(
     tp,
     traceId,
     `
-    SELECT id, ts, dur, state, blocked_function, io_wait, cpu
-    FROM thread_state
-    WHERE utid = ${utid}
-      AND ts < ${taskEnd}
-      AND ts + dur > ${taskStart}
+    SELECT id, ts, dur, open_at_trace_end, state, blocked_function, io_wait, cpu
+    FROM (
+      SELECT ts_row.id, ts_row.ts, ${openRowDurSql('ts_row')} AS dur, ts_row.dur < 0 AS open_at_trace_end,
+        ts_row.state, ts_row.blocked_function, ts_row.io_wait, ts_row.cpu
+      FROM thread_state AS ts_row
+      WHERE ts_row.utid = ${utid}
+        AND ts_row.ts < ${taskEnd}
+    )
+    WHERE ts + dur > ${taskStart}
     ORDER BY ts ASC
   `,
     queryOptions
+  );
+  const openIds = new Set(
+    sliceRows.filter((row) => toBool(row.open_at_trace_end) === true).map((row) => toNullableNumber(row.id))
   );
 
   const slices: SliceFinding[] = sliceRows.map((row) => {
@@ -957,7 +1149,8 @@ async function loadTask(
   // The task summary describes the longest waiting slice: that is what the
   // wait chain explains. A window without waiting time falls back to its
   // longest slice so the unavailable result still names the state it saw.
-  const dominant = longestWaitingSlice(slices) ?? longestSlice(slices);
+  const dominantWait = longestWaitingSlice(slices);
+  const dominant = dominantWait ?? longestSlice(slices);
 
   const primary: CriticalPathTaskInfo = {
     utid: toNumber(utid),
@@ -974,7 +1167,12 @@ async function loadTask(
     processName: toOptionalString(threadRow.process_name),
   };
 
-  return {primary, slices};
+  return {
+    primary,
+    slices,
+    dominantWait,
+    openAtTraceEnd: dominantWait !== null && openIds.has(dominantWait.threadStateId),
+  };
 }
 
 const WAITING_KINDS: ReadonlySet<SliceKind> = new Set<SliceKind>(['sleeping', 'uninterruptible', 'runnable']);
@@ -1003,13 +1201,12 @@ async function resolveTaskWaker(
   tp: TraceProcessorService,
   traceId: string,
   task: CriticalPathTaskInfo,
-  slices: SliceFinding[],
+  dominantWait: SliceFinding | null,
   signal: AbortSignal | undefined
 ): Promise<WakerChainResult | null> {
   if (typeof task.threadStateId === 'number') {
     return resolveDirectWaker(tp, traceId, {threadStateId: task.threadStateId, signal});
   }
-  const dominantWait = longestWaitingSlice(slices);
   if (dominantWait?.threadStateId === null || dominantWait?.threadStateId === undefined) return null;
   const result = await resolveDirectWaker(tp, traceId, {threadStateId: dominantWait.threadStateId, signal});
   if (result.hop) {
@@ -1174,11 +1371,18 @@ function recursionKey(segment: CriticalPathSegment): string {
   return `${segment.utid}|${segment.startTs}|${segment.dur}`;
 }
 
+// Only work segments are expanded. A sleeping or uninterruptible segment of
+// another thread is a chain leaf — Perfetto ended the chain there because an
+// interrupt, the idle task or an io_wait woke it — so its stack is always
+// empty (33 of 33 real calls, up to 16 s each); a runnable segment waited for a
+// CPU, not for another thread.
 function pickRecursionTargets(
   segments: CriticalPathSegment[],
   ctx: RecursionContext
 ): CriticalPathSegment[] {
-  const candidates = [...segments].sort((a, b) => b.durationMs - a.durationMs);
+  const candidates = segments
+    .filter((segment) => segmentPathRole(segment) === 'work')
+    .sort((a, b) => b.durationMs - a.durationMs);
   const picks: CriticalPathSegment[] = [];
   for (const segment of candidates) {
     if (picks.length >= 3) break;
@@ -1295,13 +1499,99 @@ function applySemanticsToSegments(
   }
 }
 
+/**
+ * Where the thread's own wait sat relative to its slices (see
+ * `CriticalPathRootWaitContext`), in one query over the thread's tracks.
+ * "Between slices" needs slices on both sides: a thread with none on one side
+ * (app atrace categories not recorded) cannot tell idleness from work.
+ */
+async function loadRootWait(
+  tp: TraceProcessorService,
+  traceId: string,
+  utid: number,
+  wait: SliceFinding,
+  warnings: CriticalPathWarning[],
+  signal: AbortSignal | undefined
+): Promise<CriticalPathRootWait | null> {
+  const waitStart = Math.trunc(wait.startTs);
+  let row: QueryRow | undefined;
+  try {
+    const rows = await queryRows(
+      tp,
+      traceId,
+      `
+      WITH own AS (
+        SELECT s.ts, s.dur, s.depth, s.name
+        FROM slice AS s
+        JOIN thread_track AS tt ON s.track_id = tt.id
+        WHERE tt.utid = ${Math.trunc(utid)}
+      ),
+      enclosing AS (
+        SELECT name, ts, dur, depth FROM own
+        WHERE ts <= ${waitStart} AND (dur < 0 OR ts + dur > ${waitStart})
+        ORDER BY depth DESC, ts DESC
+        LIMIT 1
+      )
+      SELECT
+        (SELECT name FROM enclosing) AS enclosing_name,
+        (SELECT ts FROM enclosing) AS enclosing_ts,
+        (SELECT dur FROM enclosing) AS enclosing_dur,
+        (SELECT depth FROM enclosing) AS enclosing_depth,
+        EXISTS (SELECT 1 FROM own WHERE ts < ${waitStart}) AS has_before,
+        EXISTS (SELECT 1 FROM own WHERE ts > ${waitStart}) AS has_after
+    `,
+      {signal}
+    );
+    row = rows[0];
+  } catch (error: unknown) {
+    rethrowIfTraceProcessorQueryCancelled(error);
+    warnings.push({code: 'root_wait_query_failed', params: {message: errorLine(error)}});
+    return null;
+  }
+  const enclosingName = row ? toOptionalString(row.enclosing_name) : null;
+  const enclosingSlice = row && enclosingName !== null && enclosingName !== undefined
+    ? {
+        name: enclosingName,
+        startTs: toNumber(row.enclosing_ts),
+        dur: toNumber(row.enclosing_dur),
+        depth: toNumber(row.enclosing_depth),
+      }
+    : null;
+  const context = enclosingSlice
+    ? 'in_slice'
+    : row && toBool(row.has_before) === true && toBool(row.has_after) === true
+      ? 'between_slices'
+      : 'no_slice_data';
+  return {
+    threadStateId: wait.threadStateId,
+    state: wait.state,
+    startTs: wait.startTs,
+    endTs: wait.endTs,
+    durationMs: wait.durationMs,
+    context,
+    enclosingSlice,
+  };
+}
+
+function leafWaitOf(segment: CriticalPathSegment | undefined): CriticalPathLeafWait | null {
+  if (!segment) return null;
+  return {
+    utid: segment.utid,
+    processName: segment.processName ?? null,
+    threadName: segment.threadName ?? null,
+    state: segment.state ?? null,
+    durationMs: segment.durationMs,
+    wakeSourceClass: segment.wakeSourceClass ?? null,
+  };
+}
+
 export async function analyzeCriticalPath(
   traceProcessorService: TraceProcessorService,
   traceId: string,
   options: CriticalPathAnalyzeOptions = {}
 ): Promise<CriticalPathAnalysis> {
   const {signal} = options;
-  const {primary: task, slices} = await loadTask(traceProcessorService, traceId, options);
+  const {primary: task, slices, dominantWait, openAtTraceEnd} = await loadTask(traceProcessorService, traceId, options);
   const defaults = CRITICAL_PATH_DEFAULTS.ui;
   const maxSegments = normalizePositiveInt(options.maxSegments, defaults.maxSegments, 20, 1000);
   const maxChainSegments = normalizePositiveInt(options.maxChainSegments, DEFAULT_MAX_CHAIN_SEGMENTS, maxSegments, 5000);
@@ -1315,8 +1605,11 @@ export async function analyzeCriticalPath(
     renderCriticalPathAnalysis(analysis, 'zh-CN');
 
   if (task.dur <= 0) {
+    // A wait that opened exactly at the end of the trace has nothing to read.
+    if (openAtTraceEnd) return render(buildEmptyAnalysis(task, warnings, 'wait_open_at_trace_end', slices));
     throw new CriticalPathInputError('non_positive_duration', 'Selected task duration must be positive');
   }
+  if (openAtTraceEnd) warnings.push({code: 'wait_open_at_trace_end', params: {ms: task.durationMs}});
 
   // L1 dispatch on waiting time, not on the longest slice: a window whose
   // longest slice is Running can still spend most of its time waiting.
@@ -1324,16 +1617,28 @@ export async function analyzeCriticalPath(
     if (slices.every((slice) => slice.kind === 'running')) {
       return render(buildEmptyAnalysis(task, warnings, 'task_state_running', slices));
     }
-  } else if (longestWaitingSlice(slices) === null) {
+  } else if (slices.length === 0) {
+    // No scheduling data at all is not idleness: the thread is not in the
+    // window, or its sched events were not recorded.
+    return render(buildEmptyAnalysis(task, warnings, 'no_thread_state_in_window', slices));
+  } else if (dominantWait === null) {
     return render(buildEmptyAnalysis(task, warnings, 'no_waiting_time', slices));
   }
 
   // L2 — direct waker, resolved before the stack so an empty chain still
   // reports who woke the task.
   throwIfTraceProcessorQueryCancelled(signal);
-  const wakerResult = await resolveTaskWaker(traceProcessorService, traceId, task, slices, signal);
+  const wakerResult = await resolveTaskWaker(traceProcessorService, traceId, task, dominantWait, signal);
   const directWaker = wakerResult?.hop ?? null;
   if (wakerResult) warnings.push(...wakerResult.warnings);
+
+  // The wait the chain explains: the selected row, or the longest waiting
+  // slice of the window (the same one L2 resolved the waker for).
+  throwIfTraceProcessorQueryCancelled(signal);
+  const rootWaitSlice = typeof task.threadStateId === 'number' ? slices[0] : dominantWait;
+  const rootWait = rootWaitSlice
+    ? await loadRootWait(traceProcessorService, traceId, task.utid, rootWaitSlice, warnings, signal)
+    : null;
 
   throwIfTraceProcessorQueryCancelled(signal);
   const stack = await loadCriticalPathChain(traceProcessorService, traceId, task, {
@@ -1353,9 +1658,12 @@ export async function analyzeCriticalPath(
   }
 
   if (segments.length === 0) {
+    // A wait still open at the end of the trace has no waker: nothing woke it
+    // before the recording stopped, which is itself the finding.
     return render({
-      ...buildEmptyAnalysis(task, warnings, 'no_critical_path_stack', slices),
+      ...buildEmptyAnalysis(task, warnings, openAtTraceEnd ? 'wait_open_at_trace_end' : 'no_critical_path_stack', slices),
       directWaker,
+      rootWait,
     });
   }
 
@@ -1410,16 +1718,25 @@ export async function analyzeCriticalPath(
   warnings.push(...enrichment.warnings);
 
   // Summed in ns and converted once: rounded per-segment ms can overshoot the task.
-  const blockingNs = chain.reduce((sum, segment) => sum + segment.dur, 0);
+  const totals = chainPathTotals(chain);
+  const blockingNs = totals.blocking;
   const blockingMs = nsToMs(blockingNs);
   const selfNs = Math.max(0, task.dur - blockingNs);
   const selfMs = nsToMs(selfNs);
   const moduleBreakdown = buildModuleBreakdown(chain, task.dur);
   const signals = collectChainSignals(chain);
-  const longest = longestSegment(chain);
-  const anomalies = buildAnomalies(task, longest, signals, blockingMs);
-
-  const waitTotals = chainWaitTotals(chain);
+  // Only attributable time can be saved by making another thread faster; an
+  // event-wait leaf is reported beside it, never as the longest cost.
+  const attributable = chain.filter((segment) => isAttributableRole(segmentPathRole(segment)));
+  const longest = longestSegment(attributable);
+  const longestLeaf = longestSegment(chain.filter((segment) => segmentPathRole(segment) === 'event_wait'));
+  const anomalies = buildAnomalies(task, chain, {
+    totals,
+    longestAttributable: longest,
+    longestLeaf,
+    rootWait,
+    directWaker,
+  }, signals);
 
   // L5 — Quantification.
   throwIfTraceProcessorQueryCancelled(signal);
@@ -1431,7 +1748,7 @@ export async function analyzeCriticalPath(
       startTs: task.startTs,
       endTs: task.startTs + task.dur,
     },
-    chain.map((segment): QuantifySegmentInput => ({
+    attributable.map((segment): QuantifySegmentInput => ({
       segmentKey: segmentKeyOf(segmentWindow(segment)),
       durNs: segment.dur,
     })),
@@ -1447,6 +1764,12 @@ export async function analyzeCriticalPath(
     blockingMs,
     selfMs,
     externalBlockingPercentage: pct(blockingNs, task.dur),
+    attributableMs: nsToMs(totals.attributable),
+    attributablePercentage: pct(totals.attributable, task.dur),
+    eventWaitMs: nsToMs(totals.eventWait),
+    eventWaitPercentage: pct(totals.eventWait, task.dur),
+    rootWait,
+    longestEventWait: leafWaitOf(longestLeaf),
     wakeupChain: segments,
     moduleBreakdown,
     anomalies,
@@ -1470,8 +1793,8 @@ export async function analyzeCriticalPath(
     quantification,
     semanticSources: enrichment.sources,
     chainSegmentCount: chain.length,
-    chainWaitMs: waitTotals.chainWaitMs,
-    waitClassTotalsMs: waitTotals.waitClassTotalsMs,
-    totalsNs: {blocking: blockingNs, chainWait: waitTotals.chainWaitNs, waiting: sliceWaitNs(slices)},
+    chainWaitMs: nsToMs(totals.chainWait),
+    waitClassTotalsMs: nsRecordToMs(totals.waitClassNs),
+    totalsNs: totalsNsOf(totals, sliceWaitNs(slices)),
   });
 }

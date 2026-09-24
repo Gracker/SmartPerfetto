@@ -56,8 +56,10 @@ import type { ColumnDefinition } from '../types/dataContract';
 import {nsToMs} from '../utils/traceProcessorRowUtils';
 import {
   analyzeCriticalPath,
-  chainWaitTotals,
   classifySlice,
+  isChainLeafRole,
+  segmentPathRole,
+  waitClassTotalsMs,
   CRITICAL_PATH_DEFAULTS,
   CRITICAL_PATH_ENGINE_VERSION,
   CriticalPathInputError,
@@ -67,8 +69,16 @@ import {
 import { renderCriticalPathAnalysis } from '../services/criticalPathLocalization';
 import { buildDeterministicCriticalPathSummary } from '../services/criticalPathSummary';
 import {
+  normalizeWaitChainSelectors,
+  waitChainNamesThread,
+  waitChainWindow,
+} from '../services/criticalPathSelectors';
+import {
+  findThreadsWithSchedData,
+  loadThreadStateOwner,
   MAX_THREAD_CANDIDATES,
   resolveCriticalPathThread,
+  threadStateSelectorConflicts,
   type ResolvedCriticalPathThread,
 } from '../services/criticalPathThreadResolver';
 import type {
@@ -255,6 +265,7 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
+import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
 import {
   rethrowIfTraceProcessorQueryCancelled,
@@ -264,6 +275,7 @@ import type {
   CriticalPathAnalysis,
   CriticalPathInputErrorCode,
   CriticalPathSegment,
+  CriticalPathWarning,
   SliceKind,
   WakeSourceSummary,
 } from '../types/criticalPathContract';
@@ -443,14 +455,7 @@ function parseOptionalToolArrayInput<T>(value: unknown): T[] | null {
 }
 
 export function normalizeOptionalToolString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const normalized = trimmed.toLowerCase();
-  if (normalized === 'null' || normalized === 'undefined' || normalized === 'none') {
-    return undefined;
-  }
-  return trimmed;
+  return typeof value === 'string' && !isPlaceholderToolString(value) ? value.trim() : undefined;
 }
 
 function parseToolStringArrayInput(value: unknown): string[] {
@@ -3704,11 +3709,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     async (input, extra) => {
       const signal = getRuntimeToolSignal(extra);
       throwIfTraceProcessorQueryCancelled(signal);
-      const {
-        planPhaseId, thread_state_id: threadStateId, utid, upid, pid, process_name: processName,
-        tid, thread_name: threadName, main_thread: mainThread, start_ts: startTs, end_ts: endTs,
-        max_segments: maxSegments, recursion_depth: recursionDepth,
-      } = input;
+      const {max_segments: maxSegments, recursion_depth: recursionDepth} = input;
+      const selectors = normalizeWaitChainSelectors(input);
+      const {utid, upid, pid, processName, tid, threadName, mainThread, startTs, endTs} = selectors;
       const producer = createEvidenceProducerContext(
         'analyze_wait_chain',
         input as Record<string, unknown>,
@@ -3729,13 +3732,59 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       try {
         let identity: ResolvedCriticalPathThread | undefined;
         let resolvedUtid: number | undefined;
+        let threadStateId = selectors.threadStateId;
+        let selectorWarning: CriticalPathWarning | undefined;
+        const requestedWindow = waitChainWindow(selectors);
+        const requestedThread = {
+          utid: utid ?? null, tid: tid ?? null, upid: upid ?? null, pid: pid ?? null,
+          processName: processName ?? null, threadName: threadName ?? null, mainThread: mainThread ?? false,
+        };
+        const namesThread = waitChainNamesThread(selectors);
+        const hasThreadSelector = namesThread
+          || upid !== undefined || pid !== undefined || processName !== undefined;
+
+        // A thread_state row given beside a thread or a window must belong to
+        // them: a filled-in `thread_state_id: "0"` once analyzed a kworker row
+        // while the caller asked about the app's main thread.
+        if (threadStateId !== undefined && (hasThreadSelector || requestedWindow)) {
+          const owner = await loadThreadStateOwner(traceProcessorService, traceId, threadStateId, {signal});
+          throwIfTraceProcessorQueryCancelled(signal);
+          const conflicts = owner
+            ? threadStateSelectorConflicts(owner, selectors, requestedWindow)
+            : [];
+          // With a named thread and a whole window there is a request to keep:
+          // answer it and say the row was set aside, rather than spend a model
+          // round trip on the refusal.
+          if ((conflicts.length > 0 || !owner) && namesThread && requestedWindow) {
+            selectorWarning = {
+              code: 'thread_state_id_ignored_conflict',
+              params: {threadStateId: String(threadStateId), ownerUtid: owner?.utid ?? null, conflicts: conflicts.join(',') || 'not_found'},
+            };
+            threadStateId = undefined;
+          } else if (owner && conflicts.length > 0) {
+            return refusal({
+              error: 'selector_conflict',
+              action_required: 'drop_thread_state_id_or_use_its_thread',
+              conflicts,
+              threadStateOwner: {
+                threadStateId: owner.threadStateId, utid: owner.utid, tid: owner.tid, threadName: owner.threadName,
+                upid: owner.upid, pid: owner.pid, processName: owner.processName,
+                startTs: owner.startTs, endTs: owner.endTs,
+              },
+              requestedThread,
+              ...(requestedWindow ? {requestedWindow} : {}),
+            });
+          }
+          // A row that does not exist, with nothing to fall back on, is left to
+          // the engine, which names it `thread_state_not_found`.
+        }
+
         if (threadStateId === undefined) {
           if (utid !== undefined) {
             resolvedUtid = Number(utid);
           } else {
-            const resolution = await resolveCriticalPathThread(traceProcessorService, traceId, {
-              upid, pid, processName, tid, threadName, mainThread,
-            }, {signal});
+            // utid is absent here, so the selectors name exactly what the resolver reads.
+            const resolution = await resolveCriticalPathThread(traceProcessorService, traceId, selectors, {signal});
             throwIfTraceProcessorQueryCancelled(signal);
             if (resolution.status === 'ambiguous') {
               return refusal({
@@ -3778,8 +3827,33 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           recursionEnabled: true,
           signal,
         };
-        const raw = await analyzeCriticalPath(traceProcessorService, traceId, analyzeOptions);
+        const engineResult = await analyzeCriticalPath(traceProcessorService, traceId, analyzeOptions);
         throwIfTraceProcessorQueryCancelled(signal);
+
+        // A thread with no scheduling data in the window is the wrong thread,
+        // not an idle one: refuse and name threads that do have data.
+        if (!engineResult.available && engineResult.unavailableReason === 'no_thread_state_in_window') {
+          const taskWindow = {
+            startTs: engineResult.task.startTs,
+            endTs: engineResult.task.startTs + engineResult.task.dur,
+          };
+          const found = await findThreadsWithSchedData(traceProcessorService, traceId, {
+            upid: engineResult.task.upid ?? identity?.upid ?? null,
+            ...taskWindow,
+          }, {signal});
+          throwIfTraceProcessorQueryCancelled(signal);
+          return refusal({
+            error: 'no_thread_state_in_window',
+            action_required: 'choose_thread_with_sched_data',
+            requestedThread: {...requestedThread, utid: engineResult.task.utid},
+            window: taskWindow,
+            processHasSchedData: found.processHasSchedData,
+            candidates: found.candidates,
+          });
+        }
+        const raw = selectorWarning
+          ? {...engineResult, warningCodes: [selectorWarning, ...engineResult.warningCodes]}
+          : engineResult;
         const analysis = renderCriticalPathAnalysis(raw, outputLanguage);
 
         // The summary row is captured first and the projection's headline
@@ -7937,18 +8011,23 @@ const waitChainIntLike = z.union([
 const WAIT_CHAIN_SEGMENT_COLUMNS = [
   'segment_index', 'start_ts', 'dur_ns', 'duration_ms', 'state', 'blocked_function', 'io_wait',
   'utid', 'process_name', 'thread_name', 'waker_kind', 'waker_thread', 'wake_source_class', 'modules',
+  'path_role',
 ] as const;
 
 /**
  * The one-row summary the tool's headline numbers are read from. `*_ns` cells
- * are the engine's exact integers; `*_ms`, the share and the count are the
+ * are the engine's exact integers; `*_ms`, the shares and the count are the
  * rounded display values and carry no semantics, so citing them never proves
- * or contradicts a claim.
+ * or contradicts a claim. `attributable_*` is the headline (other threads'
+ * work, runnable and uninterruptible time); `blocking_*` is path coverage and
+ * includes the `event_wait_*` leaves.
  */
 const WAIT_CHAIN_SUMMARY_COLUMNS = [
   'utid', 'window_start_ts', 'window_end_ts', 'window_dur_ns',
+  'attributable_ns', 'event_wait_ns',
   'blocking_ns', 'self_ns', 'waiting_ns', 'chain_wait_ns', 'best_case_ns', 'max_saving_ns',
-  'window_ms', 'blocking_ms', 'self_ms', 'waiting_ms', 'chain_wait_ms', 'external_blocking_pct',
+  'window_ms', 'attributable_ms', 'attributable_pct', 'event_wait_ms', 'event_wait_pct',
+  'blocking_ms', 'self_ms', 'waiting_ms', 'chain_wait_ms', 'external_blocking_pct',
   'best_case_ms', 'max_saving_ms', 'chain_segment_count',
 ] as const;
 type WaitChainSummaryColumn = typeof WAIT_CHAIN_SUMMARY_COLUMNS[number];
@@ -7988,6 +8067,8 @@ const WAIT_CHAIN_SUMMARY_FIELDS = nativeProducerFields('wait_summary', WAIT_CHAI
   window_start_ts: NS_START,
   window_end_ts: NS_END,
   window_dur_ns: NS_DURATION,
+  attributable_ns: NS_TOTAL,
+  event_wait_ns: NS_TOTAL,
   blocking_ns: NS_TOTAL,
   self_ns: NS_TOTAL,
   waiting_ns: NS_TOTAL,
@@ -8012,6 +8093,7 @@ const WAIT_CHAIN_SEGMENT_COLUMN_DEFS: ColumnDefinition[] = [
   {name: 'waker_thread', type: 'string'},
   {name: 'wake_source_class', type: 'string'},
   {name: 'modules', type: 'string'},
+  {name: 'path_role', type: 'string'},
 ];
 
 /**
@@ -8032,12 +8114,6 @@ const WAIT_CHAIN_MAX_ANOMALIES = 5;
 const WAIT_CHAIN_MAX_WARNINGS = 8;
 const WAIT_CHAIN_MAX_RECURSION = 6;
 const WAIT_CHAIN_MAX_SEGMENT_ROWS = 400;
-
-/** A sleeping or uninterruptible state, in the engine's own reading. */
-function isWaitState(state: string | null | undefined): boolean {
-  const kind = classifySlice(state);
-  return kind === 'sleeping' || kind === 'uninterruptible';
-}
 
 function flattenWaitChain(segments: readonly CriticalPathSegment[]): CriticalPathSegment[] {
   const flat: CriticalPathSegment[] = [];
@@ -8079,6 +8155,7 @@ function waitChainSegmentRows(segments: readonly CriticalPathSegment[]): unknown
       waker?.wakerThreadName ?? null,
       segment.wakeSourceClass ?? null,
       segment.modules.join(', ') || null,
+      segmentPathRole(segment),
     ];
   });
 }
@@ -8096,6 +8173,8 @@ function waitChainSummaryRow(analysis: CriticalPathAnalysis, flatSegments: numbe
     window_start_ts: analysis.task.startTs,
     window_end_ts: analysis.task.startTs + analysis.task.dur,
     window_dur_ns: analysis.task.dur,
+    attributable_ns: totals?.attributable ?? null,
+    event_wait_ns: totals?.eventWait ?? null,
     blocking_ns: totals?.blocking ?? null,
     self_ns: totals ? Math.max(0, analysis.task.dur - totals.blocking) : null,
     waiting_ns: totals?.waiting ?? null,
@@ -8103,6 +8182,10 @@ function waitChainSummaryRow(analysis: CriticalPathAnalysis, flatSegments: numbe
     best_case_ns: counterfactual?.bestCaseDurationNs ?? null,
     max_saving_ns: counterfactual?.maxSavingNs ?? null,
     window_ms: analysis.totalMs,
+    attributable_ms: analysis.attributableMs ?? null,
+    attributable_pct: analysis.attributablePercentage ?? null,
+    event_wait_ms: analysis.eventWaitMs ?? null,
+    event_wait_pct: analysis.eventWaitPercentage ?? null,
     blocking_ms: analysis.blockingMs,
     self_ms: analysis.selfMs,
     waiting_ms: totals ? nsToMs(totals.waiting) : null,
@@ -8151,7 +8234,7 @@ function waitChainRecursion(chain: readonly CriticalPathSegment[]): {entries: Wa
         omitted += 1;
         continue;
       }
-      const dominant = Object.entries(chainWaitTotals(children).waitClassTotalsMs)
+      const dominant = Object.entries(waitClassTotalsMs(children))
         .sort((a, b) => b[1] - a[1])[0];
       entries.push({
         level,
@@ -8189,7 +8272,8 @@ function projectWaitChainForModel(
     stateBreakdown[kind] = {ms: nsToMs(ns), percent: pct(ns, windowNs)};
   }
 
-  const waits = flat.filter(segment => isWaitState(segment.state));
+  // A sleeping or uninterruptible segment, in the engine's own reading: a chain leaf.
+  const waits = flat.filter(segment => isChainLeafRole(segmentPathRole(segment)));
 
   // Wait totals come from the engine over the whole chain. `wakeupChain`, and
   // so `waits`, holds only the displayed prefix, which still serves `topWaits`.
@@ -8205,6 +8289,11 @@ function projectWaitChainForModel(
         durationMs: segment.durationMs,
         state: segment.state ?? null,
         kind: classifySlice(segment.state),
+        pathRole: segmentPathRole(segment),
+        // Perfetto ends a chain at every S/I/D segment of another thread: its
+        // wake came from an interrupt, the idle task or an io_wait, so there
+        // is no further waker to follow from here.
+        terminal: true,
         blockedFunction: segment.blockedFunction ?? null,
         ioWait: segment.ioWait ?? null,
         processName: segment.processName ?? null,
@@ -8244,16 +8333,38 @@ function projectWaitChainForModel(
       windowMs: summary.window_ms,
     },
     totalMs: summary.window_ms,
+    // The headline: other threads' work, runnable and uninterruptible time,
+    // the part of the window another thread's execution accounts for.
+    attributableMs: summary.attributable_ms,
+    attributablePercentage: summary.attributable_pct,
+    // Other threads' interruptible sleeps that end the chain. Not cost by
+    // themselves: read them with rootWait and the peer_event_wait / idle_wait
+    // anomalies.
+    eventWaitMs: summary.event_wait_ms,
+    eventWaitPercentage: summary.event_wait_pct,
+    ...(analysis.rootWait ? {
+      rootWait: {
+        context: analysis.rootWait.context,
+        state: analysis.rootWait.state,
+        durationMs: analysis.rootWait.durationMs,
+        enclosingSlice: analysis.rootWait.enclosingSlice?.name ?? null,
+      },
+    } : {}),
+    ...(analysis.longestSegment ? {longestAttributable: analysis.longestSegment} : {}),
+    ...(analysis.longestEventWait ? {longestEventWait: analysis.longestEventWait} : {}),
+    // Path coverage: everything the chain covers, event-wait leaves included.
     blockingMs: summary.blocking_ms,
     selfMs: summary.self_ms,
     externalBlockingPercentage: summary.external_blocking_pct,
-    // The target thread's own S/D time, not the chain's: the chain also holds
-    // the waker tasks' waits, which belong to other threads.
+    // The target thread's own S/I/D time, not the chain's: the chain also
+    // holds the waker tasks' waits, which belong to other threads.
     waitingMs: summary.waiting_ms,
     chainWaitMs: summary.chain_wait_ms,
     // The exact values behind the ms figures, as captured in the summary row.
     exactNs: {
       window: summary.window_dur_ns,
+      attributable: summary.attributable_ns,
+      eventWait: summary.event_wait_ns,
       blocking: summary.blocking_ns,
       self: summary.self_ns,
       waiting: summary.waiting_ns,
@@ -8276,12 +8387,13 @@ function projectWaitChainForModel(
     recursion: recursion.entries,
     ...(recursion.omitted > 0 ? {recursionOmitted: recursion.omitted} : {}),
     anomalies: analysis.anomalies.slice(0, WAIT_CHAIN_MAX_ANOMALIES).map(anomaly => ({
+      id: anomaly.id,
       severity: anomaly.severity,
       title: anomaly.title,
       detail: anomaly.detail,
     })),
-    // Best case after removing the longest external segment, and the most that
-    // removal can save; another wait may become the bottleneck first.
+    // Best case after removing the longest attributable segment, and the most
+    // that removal can save; another wait may become the bottleneck first.
     counterfactualBestCaseMs: summary.best_case_ms,
     counterfactualMaxSavingMs: summary.max_saving_ms,
     segmentCount: summary.chain_segment_count,

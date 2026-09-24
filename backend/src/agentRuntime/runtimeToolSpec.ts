@@ -7,6 +7,7 @@ import {
   type SdkMcpToolDefinition,
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
+import {isPlaceholderToolString} from './toolArgPlaceholders';
 import type { McpToolExposure } from '../types/sparkContracts';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {runtimeOutcomeFromError} from './runtimePerformance';
@@ -484,14 +485,41 @@ function parseJsonContainerString(value: string): unknown {
   }
 }
 
-export function normalizeRuntimeToolArgs(value: unknown): unknown {
+/**
+ * Strict tool schemas make a model fill every field, so an optional argument
+ * it meant to omit arrives as `null` or a placeholder string. With the tool's
+ * input shape, top-level optional fields holding one are dropped before the
+ * handler sees them; required fields and nested values are left to the handler.
+ */
+function dropOptionalPlaceholders(
+  args: Record<string, unknown>,
+  inputSchema: z.ZodRawShape,
+): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(args).filter(([key, value]) => {
+    const field = inputSchema[key];
+    if (!field || (value !== null && !isPlaceholderToolString(value))) return true;
+    return !z.safeParse(field, undefined).success;
+  }));
+}
+
+export function normalizeRuntimeToolArgs(
+  value: unknown,
+  inputSchema?: z.ZodRawShape,
+): unknown {
+  const normalized = normalizeRuntimeToolArgValue(value);
+  return inputSchema && normalized && typeof normalized === 'object' && !Array.isArray(normalized)
+    ? dropOptionalPlaceholders(normalized as Record<string, unknown>, inputSchema)
+    : normalized;
+}
+
+function normalizeRuntimeToolArgValue(value: unknown): unknown {
   if (typeof value === 'string') {
     const parsed = parseJsonContainerString(value);
-    return parsed === value ? value : normalizeRuntimeToolArgs(parsed);
+    return parsed === value ? value : normalizeRuntimeToolArgValue(parsed);
   }
 
   if (Array.isArray(value)) {
-    return value.map((item) => normalizeRuntimeToolArgs(item));
+    return value.map((item) => normalizeRuntimeToolArgValue(item));
   }
 
   if (!value || typeof value !== 'object') {
@@ -499,7 +527,7 @@ export function normalizeRuntimeToolArgs(value: unknown): unknown {
   }
 
   return Object.fromEntries(
-    Object.entries(value).map(([key, nested]) => [key, normalizeRuntimeToolArgs(nested)]),
+    Object.entries(value).map(([key, nested]) => [key, normalizeRuntimeToolArgValue(nested)]),
   );
 }
 

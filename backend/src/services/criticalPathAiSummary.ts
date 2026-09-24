@@ -4,9 +4,10 @@
 
 import {loadPromptTemplate, renderTemplate, stripPromptComments} from '../agentv3/strategyLoader';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
-import type {CriticalPathAiSummary, CriticalPathAnalysis} from '../types/criticalPathContract';
+import type {CriticalPathAiSummary, CriticalPathAnalysis, CriticalPathRole} from '../types/criticalPathContract';
 import {redactObjectForLLM} from '../utils/llmPrivacy';
 import type {AiCapabilityPolicyV1} from './aiCapabilityPolicy';
+import {segmentPathRole} from './criticalPathAnalyzer';
 import {renderCriticalPathAnalysis} from './criticalPathLocalization';
 import {buildDeterministicCriticalPathSummary} from './criticalPathSummary';
 import {runOneShotSummary} from './oneShotModelCall';
@@ -132,6 +133,8 @@ interface TrimmedSegment {
   threadName: string | null | undefined;
   processName: string | null | undefined;
   state: string | null | undefined;
+  pathRole: CriticalPathRole;
+  wakeSourceClass: CriticalPathAnalysis['wakeupChain'][number]['wakeSourceClass'];
   blockedFunction: string | null | undefined;
   cpu: number | null | undefined;
   ioWait: boolean | null | undefined;
@@ -148,6 +151,8 @@ function compactAnalysisForLLM(analysis: CriticalPathAnalysis): unknown {
     threadName: segment.threadName,
     processName: segment.processName,
     state: segment.state,
+    pathRole: segmentPathRole(segment),
+    wakeSourceClass: segment.wakeSourceClass,
     blockedFunction: segment.blockedFunction,
     cpu: segment.cpu,
     ioWait: segment.ioWait,
@@ -203,6 +208,12 @@ function compactAnalysisForLLM(analysis: CriticalPathAnalysis): unknown {
     blockingMs: analysis.blockingMs,
     selfMs: analysis.selfMs,
     externalBlockingPercentage: analysis.externalBlockingPercentage,
+    attributableMs: analysis.attributableMs,
+    attributablePercentage: analysis.attributablePercentage,
+    eventWaitMs: analysis.eventWaitMs,
+    eventWaitPercentage: analysis.eventWaitPercentage,
+    rootWait: analysis.rootWait,
+    longestEventWait: analysis.longestEventWait,
     wakeupChain: analysis.wakeupChain.slice(0, HARD_CAPS.segments).map((segment) => trimSegment(segment)),
     moduleBreakdown: analysis.moduleBreakdown.slice(0, 8),
     ruleAnomalies: analysis.anomalies.slice(0, 8),

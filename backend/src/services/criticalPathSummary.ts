@@ -12,7 +12,7 @@
 // module re-exports it for its existing route consumer.
 
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
-import {renderCriticalPathAnalysis} from './criticalPathLocalization';
+import {pathLine, renderCriticalPathAnalysis} from './criticalPathLocalization';
 import type {CriticalPathAnalysis} from '../types/criticalPathContract';
 
 export function buildDeterministicCriticalPathSummary(
@@ -36,10 +36,7 @@ export function buildDeterministicCriticalPathSummary(
       `选中 task：${view.task.processName ?? '-'} / ${view.task.threadName ?? '-'}，${view.totalMs.toFixed(2)} ms。`,
       `Selected task: ${view.task.processName ?? '-'} / ${view.task.threadName ?? '-'}, ${view.totalMs.toFixed(2)} ms.`,
     ),
-    l(
-      `外部 critical path：${view.blockingMs.toFixed(2)} ms，占 ${view.externalBlockingPercentage.toFixed(2)}%。`,
-      `External critical path: ${view.blockingMs.toFixed(2)} ms (${view.externalBlockingPercentage.toFixed(2)}%).`,
-    ),
+    pathLine(view, outputLanguage),
   ];
 
   if (view.moduleBreakdown.length > 0) {
@@ -59,10 +56,10 @@ export function buildDeterministicCriticalPathSummary(
   }
   if (counterfactual) {
     lines.push(l(
-      `反事实最好情况：消除最长外部段（${counterfactual.longestSegmentDurMs.toFixed(2)} ms）后，` +
+      `反事实最好情况：消除最长可归因段（${counterfactual.longestSegmentDurMs.toFixed(2)} ms）后，` +
         `任务时长最好可降至 ${counterfactual.bestCaseDurationMs.toFixed(2)} ms，即至多节省 ` +
         `${counterfactual.maxSavingMs.toFixed(2)} ms；其他等待可能成为新瓶颈，实际节省可能更少。`,
-      `Counterfactual best case: removing the longest external segment ` +
+      `Counterfactual best case: removing the longest attributable segment ` +
         `(${counterfactual.longestSegmentDurMs.toFixed(2)} ms) leaves a best-case task duration of ` +
         `${counterfactual.bestCaseDurationMs.toFixed(2)} ms, a saving of at most ` +
         `${counterfactual.maxSavingMs.toFixed(2)} ms. ` +

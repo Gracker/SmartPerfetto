@@ -47,7 +47,10 @@ const UNPRODUCIBLE_HYPOTHESES = [
 // H1 checks a further claim (the server process ran GC), so its SQL may return
 // nothing; every other hypothesis re-selects the evidence that produced it.
 const CLAIM_ONLY_HYPOTHESES = new Set(['h-binder-server-gc']);
-const UNAVAILABLE_REASONS = ['task_state_running', 'no_critical_path_stack', 'no_waiting_time'];
+const UNAVAILABLE_REASONS = [
+  'task_state_running', 'no_critical_path_stack', 'no_waiting_time', 'no_thread_state_in_window', 'wait_open_at_trace_end',
+];
+const ROOT_WAIT_CONTEXTS = ['in_slice', 'between_slices', 'no_slice_data'];
 // Names a stdlib_missing warning must mention: `INCLUDE <module> failed` or
 // `stdlib table missing: ... <table> ...`.
 const SOURCE_STDLIB_NAMES: Record<string, string[]> = {
@@ -242,7 +245,27 @@ async function checkAnalysis(ctx: TraceContext, analysis: CriticalPathAnalysis, 
       .filter(slice => slice.kind === 'sleeping' || slice.kind === 'uninterruptible')
       .reduce((sum, slice) => sum + slice.endTs - slice.startTs, 0);
     if (totals.waiting !== ownWaitNs || totals.waiting > analysis.task.dur) {
-      problem(`totalsNs.waiting ${totals.waiting} != the window's own S/D time ${ownWaitNs}`);
+      problem(`totalsNs.waiting ${totals.waiting} != the window's own S/I/D time ${ownWaitNs}`);
+    }
+    // One accounting: the path roles add up to the coverage, attributable and
+    // chain-wait time are sums of them, and the ms fields are rounded from them.
+    if (totals.work + totals.runnable + totals.deviceWait + totals.eventWait + totals.other !== totals.blocking ||
+      totals.attributable !== totals.work + totals.runnable + totals.deviceWait ||
+      totals.chainWait !== totals.deviceWait + totals.eventWait) {
+      problem(`path-role totals do not add up: ${JSON.stringify(totals)}`);
+    }
+    if (toMs(totals.attributable) !== analysis.attributableMs || toMs(totals.eventWait) !== analysis.eventWaitMs) {
+      problem(`attributable/eventWait ms are not rounded from totalsNs: ${JSON.stringify(totals)}`);
+    }
+  }
+
+  await checkChainLeaves(ctx, analysis, problem);
+  if (analysis.available) {
+    const rootWait = analysis.rootWait;
+    if (!rootWait || !ROOT_WAIT_CONTEXTS.includes(rootWait.context)) {
+      problem(`rootWait missing or unclassified: ${JSON.stringify(rootWait)}`);
+    } else if ((rootWait.context === 'in_slice') !== (rootWait.enclosingSlice !== null)) {
+      problem(`rootWait ${rootWait.context} disagrees with its enclosing slice ${JSON.stringify(rootWait.enclosingSlice)}`);
     }
   }
 
@@ -259,6 +282,44 @@ async function checkAnalysis(ctx: TraceContext, analysis: CriticalPathAnalysis, 
       counterfactual.maxSavingMs !== counterfactual.longestSegmentDurMs) {
       problem(`counterfactual fields disagree: ${JSON.stringify(counterfactual)}`);
     }
+  }
+}
+
+/**
+ * Perfetto's thread_executing_span starts a span only at a wakeup from process
+ * context (`_runnable_state.is_irq` = 0: irq_context not 1 and io_wait not 1,
+ * with a recorded waker), so every S/I/D segment of another thread on the
+ * chain must end in a wakeup the graph cannot follow: no waker, the idle task
+ * (tid 0), IRQ context or io_wait. That is why the engine treats them as
+ * leaves, never recurses into them, and never counts them as attributable.
+ */
+async function checkChainLeaves(
+  ctx: TraceContext,
+  analysis: CriticalPathAnalysis,
+  problem: (text: string) => void,
+): Promise<void> {
+  const leaves = analysis.wakeupChain.filter(segment =>
+    (segment.pathRole === 'event_wait' || segment.pathRole === 'device_wait') && typeof segment.threadStateId === 'number');
+  for (const segment of analysis.wakeupChain) {
+    if (!segment.pathRole) problem(`segment ${segment.utid}@${segment.startTs} has no pathRole`);
+    if (segment.children?.length && segment.pathRole !== 'work') {
+      problem(`recursed into a ${segment.pathRole} segment ${segment.utid}@${segment.startTs}`);
+    }
+  }
+  if (leaves.length === 0) return;
+  const result = await sql(ctx.processor, `
+    SELECT s.id
+    FROM thread_state AS s
+    JOIN thread_state AS nxt ON nxt.utid = s.utid AND nxt.ts = s.ts + s.dur AND nxt.state IN ('R', 'R+')
+    LEFT JOIN thread AS w ON w.utid = nxt.waker_utid
+    WHERE s.id IN (${leaves.map(segment => segment.threadStateId).join(', ')})
+      AND nxt.waker_id IS NOT NULL
+      AND nxt.waker_utid IS NOT NULL
+      AND COALESCE(w.tid, -1) != 0
+      AND COALESCE(nxt.irq_context, 0) != 1
+      AND COALESCE(nxt.io_wait, 0) != 1`);
+  for (const [id] of result.rows) {
+    problem(`chain leaf thread_state ${id} was woken from process context: the chain should have continued`);
   }
 }
 

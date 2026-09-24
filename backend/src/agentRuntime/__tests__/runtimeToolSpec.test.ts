@@ -673,6 +673,25 @@ describe('SharedToolSpec', () => {
     })).toBe('first\n{"type":"json","payload":{"ok":true}}');
   });
 
+  it('drops null and placeholder strings from optional fields only, given the tool shape', () => {
+    const shape = {
+      sql: z.string(),
+      process_name: z.string().optional(),
+      thread_name: z.string().optional(),
+      utid: z.union([z.number(), z.string()]).optional(),
+      limit: z.number().default(10),
+      note: z.string().optional(),
+    };
+    expect(normalizeRuntimeToolArgs({
+      sql: 'null', process_name: 'null', thread_name: '', utid: null, limit: null, note: 'kept',
+    }, shape)).toEqual({sql: 'null', note: 'kept'});
+    // A real value, a required field and nested values are the handler's business.
+    expect(normalizeRuntimeToolArgs({sql: '', utid: '0', process_name: ' NONE '}, shape))
+      .toEqual({sql: '', utid: '0'});
+    // Without the shape nothing is dropped.
+    expect(normalizeRuntimeToolArgs({process_name: 'null'})).toEqual({process_name: 'null'});
+  });
+
   it('supports a fake third-party adapter without a production runtime value', async () => {
     const handler = jest.fn(async (args: Record<string, unknown>, _extra: unknown) => ({
       content: [{ type: 'text' as const, text: JSON.stringify(args) }],

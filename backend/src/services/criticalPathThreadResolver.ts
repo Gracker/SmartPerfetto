@@ -19,7 +19,8 @@ import {
   toNumber,
   toOptionalString,
 } from '../utils/traceProcessorRowUtils';
-import {CriticalPathInputError} from './criticalPathAnalyzer';
+import {CriticalPathInputError, openRowEndSql} from './criticalPathAnalyzer';
+import type {CriticalPathInputErrorCode} from '../types/criticalPathContract';
 import type {TraceProcessorService} from './traceProcessorService';
 
 export interface CriticalPathThreadSelector {
@@ -56,13 +57,22 @@ export type CriticalPathThreadResolution =
 /** How many candidates a caller is shown before it has to narrow the selector. */
 export const MAX_THREAD_CANDIDATES = 10;
 
-function integerPredicate(column: string, value: unknown, field: string): string | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
+/** `value` as non-negative integer SQL text; anything else is the caller's `code` error. */
+function nonNegativeIntegerSql(
+  value: unknown,
+  field: string,
+  code: CriticalPathInputErrorCode = 'invalid_integer',
+): string {
   const raw = String(value).trim();
   if (!/^\d+$/.test(raw)) {
-    throw new CriticalPathInputError('invalid_integer', `${field} must be a non-negative integer`);
+    throw new CriticalPathInputError(code, `${field} must be a non-negative integer`);
   }
-  return `${column} = ${raw}`;
+  return raw;
+}
+
+function integerPredicate(column: string, value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  return `${column} = ${nonNegativeIntegerSql(value, field)}`;
 }
 
 /**
@@ -191,4 +201,149 @@ export async function resolveCriticalPathThread(
     };
   }
   return {status: 'not_found', reason: 'no_match'};
+}
+
+// ── thread_state_id consistency ─────────────────────────────────────────────
+
+/** The thread and time span a thread_state row belongs to. */
+export interface ThreadStateOwner extends ResolvedCriticalPathThread {
+  threadStateId: number;
+  startTs: number;
+  /** A row still open at the end of the trace ends there. */
+  endTs: number;
+}
+
+/**
+ * The owner of a thread_state row, or null when no row has that id. A
+ * malformed id is the caller's error, reported as the engine reports it.
+ */
+export async function loadThreadStateOwner(
+  tp: TraceProcessorService,
+  traceId: string,
+  threadStateId: number | string,
+  options: {signal?: AbortSignal} = {},
+): Promise<ThreadStateOwner | null> {
+  const raw = nonNegativeIntegerSql(threadStateId, 'threadStateId', 'invalid_thread_state_id');
+  const rows = await queryRows(
+    tp,
+    traceId,
+    `
+    SELECT
+      target.id AS thread_state_id,
+      target.ts,
+      ${openRowEndSql('target')} AS end_ts,
+      thread.utid,
+      thread.tid,
+      thread.name AS thread_name,
+      thread.upid AS thread_upid,
+      thread.is_main_thread AS is_main_thread,
+      process.pid AS pid,
+      process.name AS process_name
+    FROM thread_state AS target
+    LEFT JOIN thread USING(utid)
+    LEFT JOIN process USING(upid)
+    WHERE target.id = ${raw}
+    LIMIT 1
+  `,
+    {signal: options.signal},
+  );
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...rowToThread(row),
+    threadStateId: toNumber(row.thread_state_id),
+    startTs: toNumber(row.ts),
+    endTs: toNumber(row.end_ts),
+  };
+}
+
+/** A selector field a thread_state row's owner can disagree with. */
+export type ThreadStateSelectorField =
+  | 'utid' | 'tid' | 'upid' | 'pid' | 'thread_name' | 'process_name' | 'main_thread' | 'window';
+
+const sameInteger = (value: number | string | undefined, actual: number | null): boolean =>
+  value === undefined || (actual !== null && String(value).trim() === String(actual));
+
+/**
+ * The selector fields the row's owner contradicts, empty when the row belongs
+ * to the requested thread and overlaps the requested window. Names match the
+ * way the resolver matches them: a thread name as a prefix (comm is truncated),
+ * a process name exactly or as a prefix.
+ */
+export function threadStateSelectorConflicts(
+  owner: ThreadStateOwner,
+  selector: CriticalPathThreadSelector,
+  window?: {startTs: number; endTs: number},
+): ThreadStateSelectorField[] {
+  const conflicts: ThreadStateSelectorField[] = [];
+  if (!sameInteger(selector.utid, owner.utid)) conflicts.push('utid');
+  if (!sameInteger(selector.tid, owner.tid)) conflicts.push('tid');
+  if (!sameInteger(selector.upid, owner.upid)) conflicts.push('upid');
+  if (!sameInteger(selector.pid, owner.pid)) conflicts.push('pid');
+  const threadName = selector.threadName?.trim();
+  if (threadName && !(owner.threadName ?? '').startsWith(threadName)) conflicts.push('thread_name');
+  const processName = selector.processName?.trim();
+  if (processName && !(owner.processName ?? '').startsWith(processName)) conflicts.push('process_name');
+  if (selector.mainThread === true && owner.isMainThread !== true) conflicts.push('main_thread');
+  if (window && !(owner.startTs < window.endTs && owner.endTs > window.startTs)) conflicts.push('window');
+  return conflicts;
+}
+
+// ── Threads with scheduling data ────────────────────────────────────────────
+
+/** How many threads with scheduling data a no-data refusal proposes. */
+export const MAX_SCHED_DATA_CANDIDATES = 5;
+
+export interface SchedDataThread extends ResolvedCriticalPathThread {
+  /** thread_state rows of this thread overlapping the window. */
+  threadStateRows: number;
+}
+
+/**
+ * Threads that do have thread_state rows in the window, for a caller whose
+ * chosen thread has none: the same process first (main thread, then most
+ * rows); when that process has none, the main threads of other processes.
+ * `processHasSchedData` is null when no process was given.
+ */
+export async function findThreadsWithSchedData(
+  tp: TraceProcessorService,
+  traceId: string,
+  window: {upid: number | null; startTs: number; endTs: number},
+  options: {signal?: AbortSignal} = {},
+): Promise<{processHasSchedData: boolean | null; candidates: SchedDataThread[]}> {
+  const select = async (predicate: string): Promise<SchedDataThread[]> => {
+    const rows = await queryRows(
+      tp,
+      traceId,
+      `
+      SELECT
+        thread.utid,
+        thread.tid,
+        thread.name AS thread_name,
+        thread.upid AS thread_upid,
+        thread.is_main_thread AS is_main_thread,
+        process.pid AS pid,
+        process.name AS process_name,
+        COUNT(1) AS thread_state_rows
+      FROM thread_state AS tstate
+      JOIN thread USING(utid)
+      LEFT JOIN process USING(upid)
+      WHERE tstate.ts < ${Math.trunc(window.endTs)}
+        AND ${openRowEndSql('tstate')} > ${Math.trunc(window.startTs)}
+        AND ${predicate}
+      GROUP BY thread.utid
+      ORDER BY COALESCE(thread.is_main_thread, 0) DESC, thread_state_rows DESC, thread.utid ASC
+      LIMIT ${MAX_SCHED_DATA_CANDIDATES}
+    `,
+      {signal: options.signal},
+    );
+    return rows.map((row) => ({...rowToThread(row), threadStateRows: toNumber(row.thread_state_rows)}));
+  };
+
+  if (window.upid !== null) {
+    const sameProcess = await select(`thread.upid = ${Math.trunc(window.upid)}`);
+    if (sameProcess.length > 0) return {processHasSchedData: true, candidates: sameProcess};
+  }
+  const mainThreads = await select('thread.is_main_thread = 1');
+  return {processHasSchedData: window.upid === null ? null : false, candidates: mainThreads};
 }

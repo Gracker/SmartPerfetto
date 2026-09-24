@@ -4,11 +4,16 @@
 
 import {describe, expect, it, jest} from '@jest/globals';
 import {
+  findThreadsWithSchedData,
+  loadThreadStateOwner,
   MAX_THREAD_CANDIDATES,
   resolveCriticalPathThread,
+  threadStateSelectorConflicts,
+  type ThreadStateOwner,
 } from '../criticalPathThreadResolver';
 import {CriticalPathInputError} from '../criticalPathAnalyzer';
 import type {QueryResult, TraceProcessorService} from '../traceProcessorService';
+import {sqliteTraceProcessor} from '../../../tests/helpers/criticalPathTraceProcessorFixture';
 
 const COLUMNS = ['utid', 'tid', 'thread_name', 'thread_upid', 'is_main_thread', 'pid', 'process_name'];
 
@@ -233,5 +238,65 @@ describe('resolveCriticalPathThread', () => {
     const resolution = await resolveCriticalPathThread(service, 'trace-1', {threadName: 'pool[1]-thread'});
 
     expect(resolution).toMatchObject({status: 'resolved', thread: {threadName: 'pool[1]-thread-3'}});
+  });
+});
+
+// Real SQL against the in-memory stand-in: com.demo (upid 7) has a main thread
+// and a worker; system_server (upid 8) has a main thread; thread 4 of com.demo
+// has no scheduling data at all.
+const SCHED_SETUP = `
+  INSERT INTO process(upid, name, pid) VALUES (7, 'com.demo', 1001), (8, 'system_server', 3001);
+  INSERT INTO thread VALUES
+    (1, 1001, 7, 'main'), (2, 1002, 7, 'OkHttp Dispatch'), (3, 3001, 8, 'main'), (4, 1004, 7, 'idle-worker');
+  UPDATE trace_bounds SET end_ts = 1000;
+  INSERT INTO thread_state(id, utid, ts, dur, state) VALUES
+    (10, 1, 100, 50, 'S'), (11, 1, 150, 20, 'Running'),
+    (12, 2, 100, 10, 'Running'), (13, 2, 110, 10, 'S'), (14, 2, 120, 10, 'R'),
+    (15, 3, 900, -1, 'S');
+`;
+
+describe('thread_state_id consistency', () => {
+  it('loads the owner of a row, reading an open row to the end of the trace', async () => {
+    const {tp} = sqliteTraceProcessor(SCHED_SETUP);
+
+    expect(await loadThreadStateOwner(tp, 'trace-1', 12)).toEqual({
+      threadStateId: 12, utid: 2, tid: 1002, threadName: 'OkHttp Dispatch', upid: 7, pid: 1001,
+      processName: 'com.demo', isMainThread: false, startTs: 100, endTs: 110,
+    });
+    expect(await loadThreadStateOwner(tp, 'trace-1', '15')).toMatchObject({utid: 3, endTs: 1000});
+    expect(await loadThreadStateOwner(tp, 'trace-1', 99)).toBeNull();
+    await expect(loadThreadStateOwner(tp, 'trace-1', 'null')).rejects.toMatchObject({code: 'invalid_thread_state_id'});
+  });
+
+  it('names every selector field the owner contradicts, matching names the way the resolver does', () => {
+    const owner: ThreadStateOwner = {
+      threadStateId: 12, utid: 2, tid: 1002, threadName: 'OkHttp Dispatch', upid: 7, pid: 1001,
+      processName: 'com.demo:push', isMainThread: false, startTs: 100, endTs: 110,
+    };
+
+    expect(threadStateSelectorConflicts(owner, {utid: '2', upid: 7, threadName: 'OkHttp', processName: 'com.demo'},
+      {startTs: 105, endTs: 200})).toEqual([]);
+    expect(threadStateSelectorConflicts(owner, {utid: 56, tid: 1, pid: 2, mainThread: true, threadName: 'Render'},
+      {startTs: 110, endTs: 200})).toEqual(['utid', 'tid', 'pid', 'thread_name', 'main_thread', 'window']);
+  });
+});
+
+describe('findThreadsWithSchedData', () => {
+  it('proposes the same process\'s threads with data, main thread first', async () => {
+    const {tp} = sqliteTraceProcessor(SCHED_SETUP);
+
+    const found = await findThreadsWithSchedData(tp, 'trace-1', {upid: 7, startTs: 100, endTs: 200});
+
+    expect(found.processHasSchedData).toBe(true);
+    expect(found.candidates.map((thread) => [thread.utid, thread.threadStateRows])).toEqual([[1, 2], [2, 3]]);
+  });
+
+  it('falls back to the main threads of other processes when the process has none in the window', async () => {
+    const {tp} = sqliteTraceProcessor(SCHED_SETUP);
+
+    const found = await findThreadsWithSchedData(tp, 'trace-1', {upid: 7, startTs: 950, endTs: 990});
+
+    expect(found.processHasSchedData).toBe(false);
+    expect(found.candidates).toEqual([expect.objectContaining({utid: 3, processName: 'system_server', threadStateRows: 1})]);
   });
 });

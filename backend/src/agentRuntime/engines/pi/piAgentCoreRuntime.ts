@@ -1102,7 +1102,7 @@ export function createPiAgentCoreToolFromSharedSpec(
         };
       }
       onUpdate?.({ type: 'smartperfetto_tool_started', toolCallId, toolName: spec.name });
-      const normalizedArgs = normalizeRuntimeToolArgs(params) as Record<string, unknown>;
+      const normalizedArgs = normalizeRuntimeToolArgs(params, spec.inputSchema) as Record<string, unknown>;
       const toolArgs = spec.name === 'submit_plan'
         ? repairPiAgentCoreSubmitPlanArgs(normalizedArgs)
         : normalizedArgs;

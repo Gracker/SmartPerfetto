@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {decodeRuntimeToolResult, readRuntimeToolResultFacts} from '../agentRuntime/runtimeToolResult';
+import { normalizeWaitChainSelectors } from '../services/criticalPathSelectors';
+import { waitClassText } from '../services/criticalPathText';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import type { TracePaneSide, TracePairContext, TraceSource } from './types';
 
@@ -427,12 +429,15 @@ export function formatToolCallNarration(
     case 'detect_architecture':
       return localize(language, '检测渲染架构：判断后续该按哪条渲染链路分析', 'Detect rendering architecture: choose the rendering pipeline to analyze');
     case 'analyze_wait_chain': {
-      const process = readString(args.process_name);
-      const thread = readString(args.thread_name)
-        || (args.main_thread === true ? localize(language, '主线程', 'the main thread') : '');
+      // The same reading as the handler: a filled-in `utid: "0"` or
+      // `thread_name: ""` names nothing and is not narrated as a target.
+      const selectors = normalizeWaitChainSelectors(args);
+      const process = readString(selectors.processName);
+      const thread = readString(selectors.threadName)
+        || (selectors.mainThread ? localize(language, '主线程', 'the main thread') : '');
       const target = [process, thread].filter(Boolean).join(' / ')
-        || readIdentifier(args.utid, 'utid')
-        || readIdentifier(args.thread_state_id, 'thread_state');
+        || readIdentifier(selectors.utid, 'utid')
+        || readIdentifier(selectors.threadStateId, 'thread_state');
       return shorten(target
         ? localize(
           language,
@@ -727,6 +732,54 @@ function readErrorText(body: Record<string, unknown>): string {
   return readString(body.error) || readString(body.message) || readString(body.reason);
 }
 
+/**
+ * What an `analyze_wait_chain` refusal asks the model to change, in words. The
+ * generic "failed: <code>" line names a code without saying what happens
+ * next; each of these is a selector the model fixes, not a broken tool.
+ */
+function narrateWaitChainRefusal(body: Record<string, unknown>, language: OutputLanguage): string | undefined {
+  switch (readString(body.error)) {
+    case 'ambiguous_thread_selection':
+      return localize(language, '线程选择匹配到多个线程，需要用 tid 或 utid 指定其中一个',
+        'The thread selection matched several threads; a tid or utid must pick one');
+    case 'no_thread_selector':
+      return localize(language, '没有指定要分析的线程，需要给出线程或 thread_state_id',
+        'No thread was named; a thread or a thread_state_id is needed');
+    case 'thread_not_found':
+      return localize(language, '没有找到匹配的线程，需要换一个进程名或线程名',
+        'No thread matched; a different process or thread name is needed');
+    case 'missing_window':
+      return localize(language, '缺少分析区间，需要同时给出 start_ts 和 end_ts',
+        'The window is missing; both start_ts and end_ts are needed');
+    case 'invalid_window':
+    case 'non_positive_duration':
+      return localize(language, '区间长度不为正，需要结束时间晚于开始时间',
+        'The window has no positive length; end_ts must be after start_ts');
+    case 'selector_conflict':
+      return localize(language, 'thread_state_id 不属于指定的线程或区间，需要去掉它或改用它所属的线程',
+        'The thread_state_id does not belong to the requested thread or window; drop it or use its own thread');
+    case 'no_thread_state_in_window': {
+      const candidate = asRecord(Array.isArray(body.candidates) ? body.candidates[0] : undefined);
+      const name = [readString(candidate.processName), readString(candidate.threadName)].filter(Boolean).join(' / ');
+      return shorten(name
+        ? localize(language, `该线程在区间内没有调度数据，需要换一个有数据的线程，如 ${name}`,
+          `That thread has no scheduling data in the window; a thread with data is needed, such as ${name}`)
+        : localize(language, '该线程在区间内没有调度数据，需要换一个有数据的线程',
+          'That thread has no scheduling data in the window; a thread with data is needed'));
+    }
+    case 'invalid_thread_state_id':
+    case 'thread_state_not_found':
+      return localize(language, 'thread_state_id 无效或不存在，需要换一个存在的行或改用线程和区间',
+        'The thread_state_id is invalid or missing; use an existing row, or a thread and a window');
+    case 'invalid_integer':
+      return localize(language, 'id 或时间戳不是整数，需要改成整数', 'An id or timestamp is not an integer');
+    case 'invalid_name':
+      return localize(language, '线程或进程名含控制字符或过长，需要改名', 'A thread or process name has control characters or is too long');
+    default:
+      return undefined;
+  }
+}
+
 function narrateToolFailure(
   toolName: string,
   body: Record<string, unknown>,
@@ -841,7 +894,8 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
   if (input.privateContext) return privateToolOutcome(input, toolName, body, language);
 
   if (toolResultIsFailure(input)) {
-    return narrateToolFailure(toolName, body, language);
+    return (toolName === 'analyze_wait_chain' ? narrateWaitChainRefusal(body, language) : undefined)
+      ?? narrateToolFailure(toolName, body, language);
   }
 
   // Nothing parsed and no call context to fall back on.
@@ -881,9 +935,11 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
       ));
     }
     case 'analyze_wait_chain': {
-      // The dispatch line already named the thread and the window. Only two
-      // outcomes change what the model does next: there is no chain to follow,
-      // or the thread never waited — both send it somewhere else entirely.
+      // The dispatch line already named the thread and the window. Only the
+      // outcomes that change what the model does next speak: there is no chain
+      // to follow, the thread never waited, the wait was idle, or the chain
+      // ends in another thread waiting for an external event. A window with no
+      // scheduling data never gets here: the handler answers it as a refusal.
       if (body.available === false) {
         switch (readString(body.unavailableReason)) {
           case 'task_state_running':
@@ -892,10 +948,30 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
           case 'no_waiting_time':
             return localize(language, '所选区间内没有等待时间，没有等待链可追',
               'The selected window has no waiting time; there is no wait chain to follow');
+          case 'wait_open_at_trace_end':
+            return localize(language, '这段等待到 trace 结束都没有结束，没有唤醒者可追',
+              'The wait never ended before the trace did; there is no waker to follow');
           default:
             return localize(language, '这段区间取不到等待链，trace 可能缺少 sched_waking',
               'No wait chain was available for that window; the trace may lack sched_waking');
         }
+      }
+      const anomalyIds = new Set((Array.isArray(body.anomalies) ? body.anomalies : [])
+        .map((anomaly) => readString(asRecord(anomaly).id)));
+      if (anomalyIds.has('idle_wait')) {
+        return localize(language, '这段等待位于两个 slice 之间，更像线程空闲而不是卡顿耗时',
+          'The wait sits between slices; it reads as idle time rather than slowness');
+      }
+      if (anomalyIds.has('peer_event_wait')) {
+        const leaf = asRecord(body.longestEventWait);
+        const thread = [readString(leaf.processName), readString(leaf.threadName)].filter(Boolean).join(' / ');
+        const waitClass = readString(leaf.wakeSourceClass);
+        const wake = waitClass ? waitClassText(waitClass, language) : '';
+        return shorten(thread
+          ? localize(language, `等待链终止于 ${thread} 等待外部事件${wake ? `（${wake}）` : ''}，这是要追的阻塞点`,
+            `The chain ends in ${thread} waiting for an external event${wake ? ` (${wake})` : ''}; that is the blocker to follow`)
+          : localize(language, '等待链终止于其他线程等待外部事件，这是要追的阻塞点',
+            'The chain ends in another thread waiting for an external event; that is the blocker to follow'));
       }
       // Both, so a result that carried no state breakdown at all stays silent
       // rather than claiming the thread never waited.

@@ -238,6 +238,23 @@ Keep these boundaries intact:
   same progress-aware budget (`CLAUDE_MAX_RUN_TIMEOUT_MS`), without a timeout
   delivery call; non-scene Claude runs, Pi, OpenCode and Qoder still use fixed
   budgets.
+- The semantic review response degrades per item, never upward. Location ids
+  are short (`L<line>.<digest prefix>`) but still resolved exactly per request.
+  An item the parser cannot use becomes `unknown`; an `inconsistent` judgment
+  keeps its issue even without a location; an unlocatable omission leaves body
+  coverage incomplete. Only envelope, body-coverage, report and investigation
+  rows still reject the whole response. In the E2E corpus one bad location used
+  to discard 9 of 20 reviews outright. Finalization reports only review
+  started/finished progress; no heartbeat (it would evict SSE replay entries).
+- `analyze_wait_chain` headlines attributable time: other threads' work,
+  runnable and uninterruptible segments. Perfetto ends a critical path at IRQ,
+  swapper and io_wait wakes, so the external S/I segments it returns are chain
+  leaves (`event_wait`). They are reported apart, never recursed into, and never
+  read as idle on their own: idle needs the root wait between slices *and* low
+  attributable time, while an in-slice chain ending in a peer's event wait is a
+  `peer_event_wait` warning (a lock holder waiting on the network). Summing leaves
+  as blocking once reported 95% "external critical path" for a thread idly
+  waiting for input.
 - One invalid claim makes the whole declaration ineligible, which skips the
   semantic review and fails a report's quality gate. The shared native
   declaration completion therefore also repairs a well-framed rejected
