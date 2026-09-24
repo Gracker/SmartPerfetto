@@ -21,7 +21,8 @@ import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId,
   collectVerifiedTraceOccurrenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
 import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT,
   type FinalSemanticAssessment, type FinalSemanticSnapshot} from './finalSemanticAssessment';
-import {SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
+import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
+import {locatedNumbersShowDeclaredRounding} from './finalSemanticNumericDisplay';
 import {appendTerminationMessage, applyFinalResultQualityGate, type FinalResultComparisonIdentity,
   type FinalResultQualityIssue} from './finalResultQualityGate';
 import {projectCodeAwareStructuredText, withOwnerCodeAwareProjection} from './security/codeAwareOutputRegistry';
@@ -178,9 +179,18 @@ function joinClaimVerification(input: {
       return {...prior, status: 'unsupported'};
     }
     if (bound && review?.consistency === 'inconsistent') {
-      for (const issue of review.issues) issues.push({claimId: id, severity: 'error',
-        code: semanticClaimIssueCode(issue.code), message: `Claim ${id}: ${issue.code}`});
-      return {...prior, status: 'unsupported'};
+      // Only the issue's own located text: a contradiction whose location could
+      // not be resolved stays a contradiction.
+      const displayRounding = (issue: typeof review.issues[number]): boolean =>
+        issue.code === 'numeric_mismatch' &&
+        locatedNumbersShowDeclaredRounding(body, issue.contentLocations, claim.semantics?.numeric);
+      const contradictions = review.issues.filter(issue => !displayRounding(issue));
+      for (const issue of review.issues) issues.push(contradictions.includes(issue)
+        ? {claimId: id, severity: 'error', code: semanticClaimIssueCode(issue.code), message: `Claim ${id}: ${issue.code}`}
+        : {claimId: id, severity: 'warning', code: SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE,
+          message: `Claim ${id}: the body shows the declared value at its displayed precision`});
+      // An unmarked rounding is not verified, but it contradicts nothing.
+      return {...prior, status: contradictions.length ? 'unsupported' : 'partial'};
     }
     if (!complete || review?.consistency !== 'consistent') return {...prior, status: 'partial'};
     const semantics = claim.semantics;
@@ -191,7 +201,9 @@ function joinClaimVerification(input: {
     return {...prior, status: prior.deterministicProof?.status === 'proved' &&
       prior.propositionCoverage?.status === 'complete' ? 'verified' : 'partial'};
   });
-  if (bound && semantic?.omissions.length) issues.push({claimId: '', severity: 'error',
+  // An undeclared assertion was never checked: the answer cannot pass, but it
+  // contradicts nothing, so it leaves the result unverified rather than failed.
+  if (bound && semantic?.omissions.length) issues.push({claimId: '', severity: 'warning',
     code: SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, message: 'The answer contains assertions missing from its declared claims.'});
   const unsupportedClaimCount = claimResults.filter(claim => claim.status === 'unsupported').length;
   const failed = unsupportedClaimCount > 0 || issues.some(issue => issue.severity === 'error');
@@ -203,7 +215,9 @@ function joinClaimVerification(input: {
     unsupportedClaimCount, claimResults, issues,
     ...(semantic?.reason ? {notCheckedReason: semantic.reason,
       ...(semantic.notCheckedDetail ? {notCheckedDetail: semantic.notCheckedDetail} : {})}
-      : !passed && !failed ? {notCheckedReason: 'complete_proposition_review_unavailable'} : {})};
+      // A completed review that left claims unverified names why in its issues,
+      // not as an unavailable review.
+      : !passed && !failed && !complete ? {notCheckedReason: 'complete_proposition_review_unavailable'} : {})};
 }
 
 function semanticReportAssessment(input: {

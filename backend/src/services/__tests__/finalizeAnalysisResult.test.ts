@@ -196,7 +196,8 @@ describe('current-run reference delivery diagnostics', () => {
   });
 
   it('does not let an advisory reference hide a canonical semantic rejection', async () => {
-    const final = await fixture({currentRead: true, wrongReferenceValue: 99, inconsistent: true}).run();
+    const final = await fixture({currentRead: true, wrongReferenceValue: 99, inconsistent: true,
+      body: 'The captured value is 50.'}).run();
     expect(final.result.deliveryAssurance?.claims).toBe('failed');
     expect(final.result.claimVerificationResult?.claimResults[0].status).toBe('unsupported');
   });
@@ -543,13 +544,42 @@ describe('shared final analysis boundary', () => {
   });
 
   it('does not invent an unavailable reason when a completed semantic review rejects a claim', async () => {
-    const target = fixture({inconsistent: true});
+    const target = fixture({inconsistent: true, body: 'The captured value is 50.'});
     const final = await target.run();
     expect(final.semanticAssessment).toMatchObject({status: 'checked', consistency: 'inconsistent'});
     expect(final.result.claimVerificationResult).toMatchObject({status: 'failed', passed: false,
       claimResults: [{status: 'unsupported'}]});
     expect(final.result.claimVerificationResult?.notCheckedReason).toBeUndefined();
     expect(target.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a numeric mismatch that only shows the declared value at display precision as a warning', async () => {
+    const target = fixture({inconsistent: true});
+    const final = await target.run();
+    const verification = final.result.claimVerificationResult;
+    expect(verification).toMatchObject({status: 'partial', passed: false, unsupportedClaimCount: 0,
+      claimResults: [{status: 'partial'}]});
+    expect(verification?.issues).toContainEqual(expect.objectContaining({claimId: 'count', severity: 'warning',
+      code: 'semantic_numeric_display_rounding'}));
+    expect(verification?.issues.some(issue => issue.severity === 'error')).toBe(false);
+  });
+
+  it.each([
+    ['another issue on the same claim', [{code: 'numeric_mismatch', located: true}, {code: 'scope_mismatch', located: true}]],
+    ['a mismatch whose location did not resolve', [{code: 'numeric_mismatch', located: false}]],
+  ])('keeps a rounding-shaped mismatch a contradiction with %s', async (_label, reviewIssues) => {
+    const body = 'The captured value is 49.';
+    const location = {start: 0, end: body.length, text: body};
+    const target = fixture({inconsistent: true, dispatch: async () => ({status: 'ok', text: JSON.stringify({
+      schemaVersion: 'final_semantic_response@1',
+      bodyCoverage: {status: 'complete', reviewedSpans: [{start: 0, end: body.length}]},
+      claims: [{claimId: 'count', consistency: 'inconsistent', contentLocations: [location],
+        issues: reviewIssues.map(issue => ({code: issue.code, contentLocations: issue.located ? [location] : [{start: 0, end: 3, text: 'bad'}]}))}],
+      omissions: [], requirements: []})})});
+    const final = await target.run();
+    expect(final.result.claimVerificationResult).toMatchObject({status: 'failed', claimResults: [{status: 'unsupported'}]});
+    expect(final.result.claimVerificationResult?.issues).toContainEqual(expect.objectContaining({
+      claimId: 'count', severity: 'error'}));
   });
 
   it('ignores tampered display evidence and continues to compare the original issued capture', async () => {
@@ -706,7 +736,8 @@ describe('shared final analysis boundary', () => {
   });
 
   it.each([false, true])('keeps report gaps independent from a complete claim review, inconsistent=%s', async inconsistent => {
-    const target = fixture({report: true, inconsistent});
+    // A rejection needs a body that actually disagrees with the declared 49.
+    const target = fixture({report: true, inconsistent, ...(inconsistent ? {body: 'The captured value is 50.'} : {})});
     const finalized = await target.run();
     expect(finalized.semanticAssessment?.coverage).toEqual({body: 'complete', claims: 'complete', report: 'incomplete'});
     expect(finalized.result.deliveryAssurance?.report).toBe('coverage_incomplete');
@@ -717,7 +748,8 @@ describe('shared final analysis boundary', () => {
   it('still reports an omitted claim when report coverage is incomplete', async () => {
     const target = fixture({report: true, omissions: true});
     const {result} = await target.run();
-    expect(result.claimVerificationResult?.status).toBe('failed');
+    // Unverified, not contradicted: the answer cannot pass, and the omission stays named.
+    expect(result.claimVerificationResult).toMatchObject({status: 'partial', passed: false});
     expect(result.claimVerificationResult?.issues.map(issue => issue.code)).toContain('semantic_undeclared_claim');
   });
 
@@ -775,7 +807,7 @@ describe('shared final analysis boundary', () => {
     const noFacts = fixture({body: 'Acknowledged.', claim: false});
     expect((await noFacts.run()).result.claimVerificationResult?.passed).toBe(true);
     const omitted = fixture({claim: false, omissions: true});
-    expect((await omitted.run()).result.claimVerificationResult?.status).toBe('failed');
+    expect((await omitted.run()).result.claimVerificationResult).toMatchObject({status: 'partial', passed: false});
     const unavailable = fixture({claim: false, dispatch: async () => ({status: 'unavailable', reason: 'provider_error'})});
     expect((await unavailable.run()).result.claimVerificationResult?.passed).toBe(false);
   });

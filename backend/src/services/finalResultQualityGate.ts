@@ -490,8 +490,9 @@ function describeContradictedClaims(
   const semanticInconsistentIds = new Set(verification.issues
     .filter(issue => issue.severity === 'error' && isSemanticClaimIssueCode(issue.code) && claimIds.has(issue.claimId))
     .map(issue => issue.claimId));
-  const undeclaredAssertions = verification.issues.some(issue =>
-    issue.severity === 'error' && issue.code === SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE);
+  // A warning since undeclared assertions stopped failing the gate on their
+  // own; still named when another check fails.
+  const undeclaredAssertions = verification.issues.some(issue => issue.code === SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE);
   const details = [
     ...(bindingIds.size ? [`${bindingIds.size} 条断言的声明或绑定无效，相关断言未通过核验准入`] : []),
     ...(globalBindingFailure ? ['声明或绑定校验存在未关联到具体断言的错误'] : []),

@@ -52,6 +52,22 @@ describe('claim verification status line', () => {
         globalErrorCodes: ['semantic_undeclared_claim'], issueCount: 3});
   });
 
+  it('names unmarked roundings and a warning-level undeclared assertion on an unverified answer (zh/en)', () => {
+    // critical-path E2E round 3 shape: a completed review, faithful roundings, an undeclared assertion.
+    const summary = summarizeClaimVerification({status: 'partial', schemaVersion: 'claim_verifier@2', claimResults: [
+      {claimId: 'a', status: 'partial', referenceCells: [{status: 'matched'}], deterministicProof: proof('candidate')},
+      {claimId: 'b', status: 'partial', referenceCells: [{status: 'matched'}], deterministicProof: proof('candidate')},
+    ], issues: [
+      {claimId: 'a', severity: 'warning', code: 'semantic_numeric_display_rounding'},
+      {claimId: 'a', severity: 'warning', code: 'semantic_numeric_display_rounding'},
+      {claimId: '', severity: 'warning', code: 'semantic_undeclared_claim'},
+    ]} as never);
+    expect(summary).toMatchObject({unmarkedRoundingClaimCount: 1, globalErrorCodes: ['semantic_undeclared_claim']});
+    expect(claimVerificationStatusLine(summary, 'zh-CN'))
+      .toBe('断言核验: 未完成 — 引用匹配 2/2 · 命题证明 0/2 · 已核验 0/2 · 未标注近似的数值 1 · 另: 正文含未声明的断言');
+    expect(claimVerificationStatusLine(summary, 'en')).toContain('rounded without an approximation marker 1');
+  });
+
   it('splits reference matching, proof and verification, and names a whole-answer failure (zh/en)', () => {
     // sfb_dut-demo-launch_a1 shape: partial claims, three semantic contradictions and an undeclared assertion.
     const failed = summarizeClaimVerification({status: 'failed', schemaVersion: 'claim_verifier@2', claimResults: [

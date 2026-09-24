@@ -191,7 +191,8 @@ Keep these boundaries intact:
 - Claim verification separates "could not verify" from "contradicted". An
   ineligible declaration, and evidence the product could not read, stay
   `not_checked` with warnings; only reference errors, value mismatches, rejected
-  propositions and semantic inconsistencies are errors that fail the gate. The
+  propositions and semantic inconsistencies are errors that fail the gate (an
+  unmarked display rounding and an undeclared assertion are warnings; see below). The
   unreadable classification is a positive list in `evidenceReadView.ts`
   (`evidence_not_retained` stays an error: it cannot tell eviction from a never
   issued identifier) and must come from an issued mark set by the builder
@@ -255,6 +256,18 @@ Keep these boundaries intact:
   `peer_event_wait` warning (a lock holder waiting on the network). Summing leaves
   as blocking once reported 95% "external critical path" for a thread idly
   waiting for input.
+- A semantic `numeric_mismatch` whose located text shows the declared exact
+  value rounded at its displayed precision (closed unit mapping, exact rational
+  arithmetic, every same-family number in the span must agree) is recorded as
+  the warning `semantic_numeric_display_rounding`: the claim stays unverified,
+  never contradicted. An undeclared assertion (`semantic_undeclared_claim`) is
+  likewise a warning that blocks passing and stays named in the claim line. Once
+  the review stopped failing to parse, these two produced `!` on 7 of 8 E2E runs
+  in which no value was actually contradicted (34 of 34 mismatches were faithful
+  roundings). The review quotes the number itself; the location only selects
+  it, and its whole line decides (ranges, signs, comparisons, units). A review
+  that quotes the wrong, correct-looking number is its own error; the check
+  cannot recover which value the claim meant.
 - One invalid claim makes the whole declaration ineligible, which skips the
   semantic review and fails a report's quality gate. The shared native
   declaration completion therefore also repairs a well-framed rejected

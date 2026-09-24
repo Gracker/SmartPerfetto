@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
+import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
 import type {AnalysisDeliveryAssurance, AnalysisAssuranceStatus} from '../types/analysisDelivery';
 import type {AnalysisReceipt} from '../types/dataContract';
 
@@ -39,7 +40,9 @@ export interface ClaimVerificationStatusSummary {
   propositionProvedClaimCount?: number;
   /** Claims that never entered verification. */
   notCheckedClaimCount?: number;
-  /** Error-level issue codes that belong to no declared claim (for example an undeclared assertion). */
+  /** Claims whose body shows the declared value rounded without an approximation marker. */
+  unmarkedRoundingClaimCount?: number;
+  /** Whole-answer issue codes that belong to no declared claim: errors and undeclared assertions. */
   globalErrorCodes?: string[];
   notCheckedReason?: string;
   notCheckedDetail?: string;
@@ -95,6 +98,10 @@ export function claimVerificationStatusLine(
     if (contradicted > 0) parts.push(localize(language, `矛盾 ${contradicted}`, `contradicted ${contradicted}`));
     const notChecked = summary.notCheckedClaimCount ?? 0;
     if (notChecked > 0) parts.push(localize(language, `未进入核验 ${notChecked}`, `not admitted ${notChecked}`));
+    const rounded = summary.unmarkedRoundingClaimCount ?? 0;
+    if (rounded > 0) {
+      parts.push(localize(language, `未标注近似的数值 ${rounded}`, `rounded without an approximation marker ${rounded}`));
+    }
   }
   const globalErrors = [...new Set(summary.globalErrorCodes ?? [])].map(code => globalClaimErrorLabel(code, language));
   if (globalErrors.length) {
@@ -186,9 +193,17 @@ export function summarizeClaimVerification(verification: {
   if (!verification) return undefined;
   const claims = verification.claimResults ?? [];
   const claimIds = new Set(claims.map(claim => claim.claimId).filter((id): id is string => Boolean(id)));
+  // Whole-answer issues: errors, plus undeclared assertions, which leave the
+  // answer unverified without failing it and must still be named.
   const globalErrorCodes = [...new Set((verification.issues ?? []).flatMap(issue =>
-    issue.severity === 'error' && typeof issue.code === 'string' && !(issue.claimId && claimIds.has(issue.claimId))
+    (issue.severity === 'error' || issue.code === SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE) &&
+      typeof issue.code === 'string' && !(issue.claimId && claimIds.has(issue.claimId))
       ? [issue.code] : []))];
+  // Only claims the rounding left unverified; a contradicted claim is counted as such.
+  const contradictedIds = new Set(claims.filter(claim => claim.status === 'unsupported').map(claim => claim.claimId));
+  const unmarkedRoundingClaimCount = new Set((verification.issues ?? []).flatMap(issue =>
+    issue.code === SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE && issue.claimId && !contradictedIds.has(issue.claimId)
+      ? [issue.claimId] : [])).size;
   // Finite proof exists only in verifier@2 results; older results never claim a proof count.
   const hasProofs = claims.some(claim => claim.deterministicProof !== undefined);
   return {
@@ -203,6 +218,7 @@ export function summarizeClaimVerification(verification: {
     }).length,
     ...(hasProofs ? {propositionProvedClaimCount: claims.filter(claim => claim.deterministicProof?.status === 'proved').length} : {}),
     notCheckedClaimCount: claims.filter(claim => claim.status === 'not_checked').length,
+    ...(unmarkedRoundingClaimCount ? {unmarkedRoundingClaimCount} : {}),
     ...(globalErrorCodes.length ? {globalErrorCodes} : {}),
     ...(verification.notCheckedReason ? {notCheckedReason: verification.notCheckedReason} : {}),
     ...(verification.notCheckedDetail ? {notCheckedDetail: verification.notCheckedDetail} : {}),

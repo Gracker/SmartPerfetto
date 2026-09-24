@@ -215,6 +215,9 @@ or reuse IDs from another request. If the needed location is not represented,
 or the optional catalog is absent, use exactly `{"text":"..."}` with the exact
 quotation rules below. The backend resolves either form and retains only its
 half-open UTF-16 offsets. Never return `start` or `end` in these entries.
+Exception: for a `numeric_mismatch` issue, even when a catalog is supplied,
+quote only the displayed number with its unit (for example
+`{"text":"5,844.24 ms"}`, with `occurrence` when needed), not a catalog line.
 
 The quotation form's `text` is a nonempty, non-whitespace quotation copied
 exactly from `body`. Preserve spaces, line endings, punctuation and Unicode
