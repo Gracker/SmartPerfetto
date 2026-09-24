@@ -64,6 +64,7 @@ import { DEFAULT_ANALYSIS_QUERY } from './constants';
 import type {CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import type {CapturePresetId, CliAnalysisMode} from './types';
 import {localize, parseOutputLanguage} from '../agentv3/outputLanguage';
+import {usePerProcessPortScanOrigin} from '../services/portPool';
 
 interface GlobalOpts {
   file?: string;
@@ -114,6 +115,9 @@ function programName(): string {
 
 function main(): void {
   installFatalHandlers();
+  // Several CLI processes may start trace processors at once; each scans the
+  // shared port range from its own origin so they rarely race for one port.
+  usePerProcessPortScanOrigin();
 
   const program = new Command();
   program.exitOverride();
