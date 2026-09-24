@@ -1926,6 +1926,9 @@ strategies:
   backend/strategies/prompt-artifact-result-guidance.template.md:
     disposition: product-only
     reason: Runtime artifact access policy and preview interpretation
+  backend/strategies/knowledge-focus-app-context.template.md:
+    disposition: product-only
+    reason: Interprets the runtime trace_context.focusApp hypothesis, package source and default Skill scoping
   backend/strategies/knowledge-trace-comparison.template.md:
     workflow: trace-comparison
     disposition: exported
