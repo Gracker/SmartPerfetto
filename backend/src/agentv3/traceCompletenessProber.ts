@@ -357,7 +357,10 @@ const CAPABILITY_REGISTRY: CapabilityDef[] = [
   {
     id: 'input_latency',
     displayName: '输入延迟分析',
+    // A stdlib table, not intrinsic: without the include it looks absent on
+    // every trace until some Skill happens to load the module first.
     primaryTable: 'android_input_events',
+    requiredModules: ['android.input'],
     priority: 'recommended',
   },
 

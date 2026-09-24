@@ -10846,7 +10846,7 @@
           },
           {
             "id": "input_latency_summary",
-            "sha256": "5960cfc2f0b32ada4aba48a130ed02b18ebac190d0c08a6455ca99ba17fc0687",
+            "sha256": "0012e5f7e0cc2e2a4a9230e4aa297bf087aa9d2960e9a36cb6647a6ee6490bfd",
             "required_columns": [
               "target_process",
               "total_input_events",
@@ -10968,7 +10968,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "daf5e0f4372f2c9c2530d13b8ad3aa1cd3880da7ab3d1c9aecb1bad28279a1f3",
+            "sha256": "a74f8a97074d407b868e9fdca5dfda724e14ee146537a2ec379dc7c52d9bdc5d",
             "required_columns": [
               "system_evidence_json",
               "frame_id",

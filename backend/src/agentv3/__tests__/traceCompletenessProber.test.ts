@@ -587,6 +587,18 @@ describe('probeTraceCompleteness', () => {
     expect(registryEntry?.captureHint).toContain('不能直接证明 DNS/TCP/TLS/TTFB');
   });
 
+  it('loads android.input before probing input latency', async () => {
+    const tps = makeTraceProcessorMock({android_input_events: 18});
+
+    const result = await probeTraceCompleteness(tps, 'trace-1');
+
+    const includeSql = tps.query.mock.calls
+      .map((call: unknown[]) => call[1])
+      .filter((sql: string) => sql.startsWith('INCLUDE PERFETTO MODULE'));
+    expect(includeSql).toContain('INCLUDE PERFETTO MODULE android.input;');
+    expect(result.available.map(cap => cap.id)).toContain('input_latency');
+  });
+
   it('keeps key evidence-boundary capability ids registered', () => {
     const ids = CAPABILITY_REGISTRY.map(cap => cap.id);
     expect(ids).toEqual(expect.arrayContaining([

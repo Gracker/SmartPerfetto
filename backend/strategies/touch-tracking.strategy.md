@@ -14,7 +14,7 @@ investigation_contract:
       description: "Correlate continuous input samples with corresponding app updates and presentation windows. Select input/Main/render/SF critical tasks across that sequence; summarize tracking delay distributions with actual coverage."
     - id: touch_tracking_dependencies
       domain: dependency_chain
-      description: "Distinguish input sampling, queueing, task service and presentation lag. Matching FPS alone does not prove good tracking or locate its cause."
+      description: "Distinguish input sampling, queueing, task service and presentation lag. Matching FPS alone does not prove good tracking or locate its cause. Speculative input-frame matches are unproven candidates and NULL end-to-end latency is unmeasured, not zero; if the app has no FrameTimeline/present linkage (e.g. Flutter SurfaceView), state tracking latency is unmeasurable."
 classification_description: "Continuous input-to-display tracking during a gesture, including how closely visual motion follows touch input."
 priority: 3
 effort: medium
@@ -97,6 +97,12 @@ invoke_skill("input_to_frame_latency", { package: "<包名>" })
 ```
 返回：每个 MOVE 事件的 5 维延迟分解（dispatch/handling/ack/e2e）+ 帧内分解（frame_dur/frame_to_present），以及统计指标（均值、P50、P90、P99、抖动）和 is_speculative 帧关联置信度。
 
+**写任何跟手度数值前，先判读证据可用性：**
+- `is_speculative=1`（stdlib `is_speculative_frame`）表示没有 doFrame 与该事件的投递相交，stdlib 只取了同一 UI 线程上之后的下一个 `Choreographer#doFrame`（不限间隔）。该帧未经证实消费了事件，只是候选：不能据此确认逐帧跟手延迟、帧关联、同帧输入堆积或上屏时间，由它推出的 input-to-display 也只是候选值。只有该线程就是出图线程且间隔很短时它才是可信的候选帧；许多事件落到同一个推测帧时，画面由其他线程产出则只说明该 UI 线程在手势期间没有出帧，标准 HWUI 上要结合主线程当时是否被占用判断。
+- `end_to_end_latency_dur`、`input_to_display_ms` 或统计值为 NULL、表为空，含义是“未测量”，不是 0ms，也不是“极佳/正常”；此时不给 P50/P90/P99 或评级。
+- dispatch/handling/ACK 按事件精确测量，不受帧关联是否推测影响，可以照常报告，但它们不是上屏延迟。
+- 画面不在接收输入的 UI 线程上产出的管线（Flutter SurfaceView 的 1.raster、GLSurfaceView/游戏引擎、独立 SurfaceView producer）：目标进程没有 app 层 FrameTimeline/present 链接时，跟手度在本 trace 中**不可测量**。分别报告 dispatch/handling/ACK、producer 帧节奏（如 `flutter_scrolling_analysis`）和 SF present 等已有证据，不把它们拼成端到端延迟。
+
 如果该 Skill 不可用（trace 缺少 `sendMessage(*)`/`receiveMessage(*)` slices），使用 SQL 回退：
 ```sql
 -- 查找 MOVE 事件与目标进程帧的关联。无 slice 时读 proto 输入表 android_motion_events：
@@ -137,6 +143,7 @@ FROM frame_match
 WHERE frame_present_ts IS NOT NULL
 ORDER BY input_ts
 ```
+该回退把输入配到目标进程之后的第一个 FrameTimeline 帧，与推测匹配同性质，结果只能写成候选；返回空按上面的“未测量”规则处理。
 
 **评级标准（基于 P90 input-to-display 延迟）：**
 
@@ -224,6 +231,8 @@ LIMIT 5
    | P99 延迟 | 65ms | 约 8 帧延迟 |
    | 抖动 (StdDev) | 8ms | 延迟稳定性 |
    ```
+   - 不可测量时直接写“本 trace 中跟手度（input-to-display）不可测量”，列出缺失的链接（app 层 FrameTimeline/present、精确帧关联），只给出可测的 dispatch/handling/ACK 与帧节奏；上表和第 2、3 项都不输出。
+   - 仅有推测帧关联时，数值标为候选值（不是上界也不是下界）并注明推测关联的事件占比。
 
 2. **延迟分布图**：按时间顺序展示每帧的 input-to-display 延迟
    - 标注延迟飙升点（spike）

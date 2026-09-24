@@ -1116,7 +1116,6 @@
           "buffer_tx_coverage_probe",
           "performance_summary",
           "buffer_tx_performance_fallback",
-          "input_data_check",
           "input_latency_summary",
           "expert_analysis_window",
           "jank_type_stats",
@@ -1132,12 +1131,7 @@
           "fallback_no_frame_timeline"
         ],
         "isolated_sql_probes": [],
-        "expected_condition_skips": [
-          {
-            "step": "input_data_fallback_view",
-            "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
-          }
-        ],
+        "expected_condition_skips": [],
         "semantic_step": "batch_frame_root_cause",
         "required_columns": [
           "system_evidence_json",

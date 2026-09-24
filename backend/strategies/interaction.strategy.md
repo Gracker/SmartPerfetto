@@ -14,7 +14,7 @@ investigation_contract:
       description: "Bind input event, receiving window, dispatch, app callback, state update and visible result. Select input/Main/render/SF tasks on that response path and distinguish ACK, focus and actual presentation."
     - id: interaction_dependencies
       domain: dependency_chain
-      description: "Use Binder, lock, queue, input dispatch and display dependencies only where they explain response latency; preserve missing endpoint or causal-link limitations."
+      description: "Use Binder, lock, queue, input dispatch and display dependencies only where they explain response latency; preserve missing endpoint or causal-link limitations. Speculative frame matches are unproven candidates and NULL end-to-end latency is unmeasured, not zero."
 classification_description: "Discrete input or tap response, from input dispatch through application handling to presentation."
 priority: 4
 effort: medium
@@ -53,7 +53,7 @@ final_report_contract:
   required_sections:
     - id: input_stage_breakdown
       label: 输入阶段拆分
-      description: '把 dispatch、handling、ACK，以及 display/present 证据或缺口拆开，避免把 completed input event 总耗时写成上屏延迟。'
+      description: '把 dispatch、handling、ACK，以及 display/present 证据或缺口拆开，避免把 completed input event 总耗时写成上屏延迟；推测关联的 frame_id 不算上屏链接，NULL 延迟写未测量。'
       pattern_groups:
         - ['输入阶段拆分', '阶段拆分', 'latency breakdown', 'dispatch', 'handling', 'ACK']
         - ['dispatch', '分发', 'handling', '处理', 'ACK', 'FINISHED']
@@ -195,7 +195,12 @@ invoke_skill("click_response_detail", {
 | dispatch_ms | 系统分发延迟（InputDispatcher 到目标 App receive 之前） | 系统侧或目标唤醒问题：system_server/InputDispatcher 调度、InputChannel/socket、目标窗口选择或进程唤醒；需要 system_server/窗口/logcat/dumpsys 交叉验证 |
 | handling_ms | 应用处理延迟（应用收到事件到处理完成） | 应用侧问题：主线程阻塞、计算量大 → 用四象限分析定位 |
 | ack_ms | FINISHED/ACK 延迟（处理回调完成到 finish/ack 写回及调度） | 可能是回调尾部、调度或 writeback 延迟；不是帧上屏证据 |
-| display/present | 输入到可见反馈（需要 `end_to_end_latency_dur`、`frame_id`/FrameTimeline、RenderThread/SF present） | 只有帧/上屏链路可用时才归因渲染或 SurfaceFlinger；缺失时写成数据缺口 |
+| display/present | 输入到可见反馈（需要 `end_to_end_latency_dur`、非推测的 `frame_id`/FrameTimeline、RenderThread/SF present） | 只有帧/上屏链路可用时才归因渲染或 SurfaceFlinger；缺失时写成数据缺口 |
+
+**帧关联与缺失值的读法：**
+- `is_speculative_frame=1` 的 `frame_id` 是同一 UI 线程上事件之后的下一个 `Choreographer#doFrame`，未经证实消费了该事件：该线程就是出图线程且间隔很短时可作候选帧，但不能单独证明帧链接、同帧堆积或上屏；由它推出的 `end_to_end_latency_dur` 只是候选值。DOWN/UP 常见推测关联，这不影响同一事件 dispatch/handling/ACK 的精确性。
+- `end_to_end_latency_dur` 为 NULL 表示未测量，不是 0ms 或“响应良好”；目标进程没有 app 层 FrameTimeline（Flutter SurfaceView、GL/游戏等）时，输入到上屏延迟在本 trace 中不可测量。
+- `event_action` 为 NULL 的行常是同一批物理触摸投递给 system_server/systemui 监听通道的副本，不是额外手势（可按共享的 `input_event_id` 核对），不计入目标应用的手势数或慢事件。未传 `package` 时，按事件数自动选出的目标进程可能是 systemui；先确认 `target_process` 是用户关心的应用。
 
 ### 输入队列、焦点和窗口边界（只在有证据时定因）
 
@@ -257,7 +262,7 @@ execute_sql("WITH downs AS (SELECT read_time AS ts, LAG(read_time) OVER (ORDER B
    - dispatch-heavy 事件 N 个（系统侧）
    - handling-heavy 事件 N 个（应用侧）
    - ack-heavy 事件 N 个（FINISHED/ACK 回写或调度）
-   - input-to-present / FrameTimeline 是否可用；不可用时不要写上屏延迟
+   - input-to-present / FrameTimeline 是否可用；不可用或只有推测帧关联时不要写上屏延迟
 
 3. **逐事件根因**（每个慢事件）：
    ```

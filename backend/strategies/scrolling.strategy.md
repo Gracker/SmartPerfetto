@@ -29,6 +29,12 @@ investigation_contract:
         value: 50
       evidence_metrics:
         - render.buffer.dequeue.wait.duration
+    - id: scrolling_input_latency_boundary
+      domain: dependency_chain
+      description: "Speculative input-frame matches (is_speculative_frame=1) are unproven candidates; count input backlog only from exact matches. NULL input-to-present latency is unmeasured, not zero or normal; without app FrameTimeline/present (e.g. Flutter SurfaceView) it is unmeasurable."
+      condition:
+        kind: semantic
+        description: "Applies when citing input-frame association, input backlog or input-to-present latency."
 classification_description: "Scroll and window-animation smoothness, frame pacing, and main-thread work during continuous visual updates, including concurrent content loading."
 priority: 3
 effort: medium
@@ -336,6 +342,8 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
   - `jank_type_stats`：掉帧类型分布，**注意 real_jank_count（真实掉帧）vs false_positive（假阳性）**
   - `scroll_sessions`：滑动区间列表
   - `input_data_check` / `input_latency_summary`：可选的 android.input 证据源检测和输入分发/处理/ACK/跟手度概览。缺数据时只能说明 trace 未包含完整 input event 链路，不可据此否定输入延迟问题
+    - dispatch/handling/ACK 按事件精确测量。`speculative_frame_matches` 计的是只推测关联到同一 UI 线程下一个 `Choreographer#doFrame` 的事件：该帧未经证实消费了事件，只是候选；`input_backlog_frames` 只按精确关联计数。画面不由该线程产出（如 Flutter SurfaceView）或全部事件都是推测关联时，跟手度结论只能是候选或不可测量。
+    - `max_e2e_ms` 等 Input→Present 字段为空表示未测量，不是 0ms 或正常；`input_latency_rating` 只按 App 处理耗时评级，不代表上屏延迟。
   - `batch_frame_root_cause`（主掉帧列表）：已选择掉帧帧的**完整逐帧分析**（frame_id + start_ts + jank_type + jank_responsibility + vsync_missed + reason_code + 四象限 MainThread/RenderThread + CPU 频率 + Binder/GC 重叠 + Input 处理证据 + 根因分类）。先读 `root_cause_analysis_scope` 和 X/Y coverage；默认每 Session 最多 200 帧，截断时它是代表性严重帧样本，不是全量 reason_code 分布
     - 特别注意 `App Resynced Jitter` / `Choreographer#doFrame - resynced...`：它们只能说明 App doFrame 相位重同步；如果要声称 SF 未合成，必须补充 consumer/SF 侧证据
   - `get_app_jank_frames`（内部数据源，无独立显示）：掉帧帧列表，供 Agent 内部使用（焦点区间、帧实体捕获）
@@ -383,7 +391,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
 | 架构 | 调整动作 |
 |------|---------|
 | **selected ANDROID_VIEW_MIXED / direct evidence 已确认多链路** | 先 `scrolling_analysis` 分析 HWUI host，再只对已确认激活的链路补 skill：Flutter → `flutter_scrolling_analysis`，WebView → `webview_drawfunctor_jank_chain`，TextureView → `textureview_producer_frame_timing`，RN → RN 专属 skill，GL/Game → GL/Game 专属 skill。最后检查 host/producer/SF 三者是否有依赖；不得把所有 runner-up 逐个执行一遍 |
-| **Flutter** | 不替代 host 分析。先用 `scrolling_analysis` 看宿主 HWUI/SF，再用 `invoke_skill("flutter_scrolling_analysis")` 看 1.ui/1.raster。Flutter TextureView 还要补 `textureview_producer_frame_timing` 或 `frame_production_gap` 看宿主 RT updateTexImage/帧吞噬 |
+| **Flutter** | 不替代 host 分析。先用 `scrolling_analysis` 看宿主 HWUI/SF，再用 `invoke_skill("flutter_scrolling_analysis")` 看 1.ui/1.raster。Flutter TextureView 还要补 `textureview_producer_frame_timing` 或 `frame_production_gap` 看宿主 RT updateTexImage/帧吞噬。输入关联只能落到宿主 UI 线程的 doFrame，不是 Flutter raster 帧：Flutter SurfaceView 目标进程没有 app 层 FrameTimeline/present 链接时，输入到上屏延迟不可测量；TextureView 由推测关联推出的 e2e 只是候选值 |
 | **WebView GL Functor / TextureView** | 先用 `scrolling_analysis` 获取宿主帧概览，再调用 `invoke_skill("webview_drawfunctor_jank_chain", {process_name, start_ts, end_ts})` 关联 V8/Chromium/Functor 与宿主帧。若是 WebView SurfaceTexture/X5/UC 内核，补 `textureview_producer_frame_timing` 或 `frame_production_gap` 检查生产端帧吞噬 |
 | **SurfaceTexture / TextureView** | 先用 `scrolling_analysis` 看宿主 HWUI。SurfaceTexture 出图时注意**单 buffer 帧吞噬**：producer 写入新帧覆盖了 consumer 尚未读取的旧帧。表现为帧间 gap 但无 jank 标记。可调用 `invoke_skill("textureview_producer_frame_timing", {process_name, start_ts, end_ts})` 和 `invoke_skill("frame_production_gap")` 检测生产端帧间隔与宿主消费 gap |
 | **React Native Old Architecture** | 先用 `scrolling_analysis` 看 HWUI host，再调用 `invoke_skill("rn_bridge_to_frame_jank", {process_name, start_ts, end_ts})` 检查 JS/BatchedBridge/UIManager 工作是否与掉帧帧重叠 |

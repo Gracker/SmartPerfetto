@@ -7,7 +7,7 @@ import fs from 'fs';
 import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import {describe, it, expect} from '@jest/globals';
-import {completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
+import {androidInputEventsTableDdl, completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
 import {withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
 
 // Execute maintained SQL fragments in the legacy named fixtures as well.
@@ -757,6 +757,42 @@ describe('scrolling_analysis skill schema', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('counts input backlog only from exact frame associations', () => {
+    const summarize = (rows: Array<[frameId: number, speculative: number | null]>) => {
+      const db = createScopedSqlFixture();
+      try {
+        db.exec(`
+          CREATE TABLE counter_track(id INTEGER, name TEXT);
+          CREATE TABLE counter(track_id INTEGER, ts INTEGER);
+          ${androidInputEventsTableDdl()}
+        `);
+        const insert = db.prepare(`
+          INSERT INTO android_input_events(process_name, upid, event_action, dispatch_ts, receive_ts, receive_dur,
+            handling_latency_dur, total_latency_dur, frame_id, is_speculative_frame)
+          VALUES ('com.example.app', 1, 'MOVE', ?, ?, 10, 100000, 1000000, ?, ?)
+        `);
+        rows.forEach(([frameId, speculative], index) => insert.run(100 + index * 100, 100 + index * 100, frameId, speculative));
+        return db.prepare(renderScrollingSql('input_latency_summary')).get() as {
+          input_backlog_frames: number;
+          speculative_frame_matches: number;
+          max_e2e_ms: number | null;
+        };
+      } finally {
+        db.close();
+      }
+    };
+
+    // A whole gesture speculatively matched to the one doFrame after it is not a backlog.
+    expect(summarize(Array(18).fill([7, 1]))).toMatchObject({
+      input_backlog_frames: 0, speculative_frame_matches: 18, max_e2e_ms: null,
+    });
+    expect(summarize([[7, 0], [7, 0], [7, 0], [8, 1]])).toMatchObject({
+      input_backlog_frames: 1, speculative_frame_matches: 1,
+    });
+    // Runtimes that do not report the flag keep their association as exact.
+    expect(summarize([[7, null], [7, null], [7, null]])).toMatchObject({input_backlog_frames: 1});
   });
 
   it('counts similar-prefix CPU work as non-app background interference', () => {
