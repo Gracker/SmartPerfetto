@@ -12,6 +12,7 @@ import {
   resolveAdbTool,
   resolveTraceboxTool,
 } from './captureTools';
+import { getCapturePreset, type CapturePresetRequirements } from './captureConfig';
 import type {
   CapturePresetId,
   CaptureToolResolution,
@@ -126,6 +127,9 @@ export async function captureAndroidTrace(input: AndroidCaptureInput): Promise<T
   const device = selectDevice(devices, input.serial);
   const probe = await probeAndroidDevice(adb.path, device.serial, runner);
   const shouldSideload = Boolean(input.sideload || probe.apiLevel < 29);
+  const presetRequirements = input.preset
+    ? assertDeviceSupportsCapturePreset(input.preset, probe, { sideload: shouldSideload })
+    : undefined;
   const tracebox = shouldSideload
     ? resolveTraceboxTool(input.traceboxPath, androidTraceboxPlatformKey(probe.abi), { backendRoot: input.backendRoot })
     : undefined;
@@ -135,6 +139,7 @@ export async function captureAndroidTrace(input: AndroidCaptureInput): Promise<T
   const preflight = await runAndroidCapturePreflight(adb.path, device.serial, runner, {
     killStale: input.killStale,
   });
+  preflight.warnings.push(...(presetRequirements?.notes ?? []).map((note) => note.en));
   const killAfterMs = input.configDurationMs ? undefined : durationMs;
   const hardTimeoutMs = durationMs + 120000;
   const startedAt = input.now?.() ?? Date.now();
@@ -227,6 +232,34 @@ export async function captureAndroidTrace(input: AndroidCaptureInput): Promise<T
       await fs.promises.rm(path.dirname(hostConfigPath), { recursive: true, force: true }).catch(() => undefined);
     }
   }
+}
+
+/**
+ * Fail closed before touching the device when a preset's data sources cannot
+ * run there. App-profiling presets rely on platform profiler daemons, which
+ * exist only in the device's own perfetto from their minimum API level on and
+ * which a sideloaded tracebox does not provide.
+ */
+export function assertDeviceSupportsCapturePreset(
+  presetId: CapturePresetId,
+  probe: Pick<AndroidDeviceProbe, 'apiLevel'>,
+  opts: { sideload: boolean },
+): CapturePresetRequirements | undefined {
+  const requirements = getCapturePreset(presetId).requirements;
+  if (!requirements) return undefined;
+  if (probe.apiLevel < requirements.minApiLevel) {
+    throw new Error(
+      `capture preset ${presetId} needs Android API ${requirements.minApiLevel}+ with the device's built-in perfetto; `
+      + `the device reports API ${probe.apiLevel}`,
+    );
+  }
+  if (opts.sideload) {
+    throw new Error(
+      `capture preset ${presetId} needs the device's built-in perfetto: its profilers are platform daemons `
+      + 'that a sideloaded tracebox does not provide; drop --sideload',
+    );
+  }
+  return requirements;
 }
 
 export async function runAndroidCapturePreflight(

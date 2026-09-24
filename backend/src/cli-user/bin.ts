@@ -38,7 +38,7 @@ import {
   runCapturePresetsCommand,
   runCaptureSuggestCommand,
 } from './commands/capture';
-import { isCapturePresetId } from './services/captureConfig';
+import { isCapturePresetId, listCapturePresets } from './services/captureConfig';
 import {
   runCodebaseAuditCommand,
   runCodebaseAuthorizeExtensionsCommand,
@@ -827,7 +827,7 @@ function main(): void {
   captureCmd
     .command('android')
     .description('capture an Android Perfetto trace from a connected adb device')
-    .option('--preset <preset>', 'capture preset: startup, scrolling, camera, anr, game, memory, cpu, power, overview, full', parseCapturePreset)
+    .option('--preset <preset>', `capture preset: ${capturePresetIds().join(', ')}`, parseCapturePreset)
     .option('--config <pbtxt>', 'existing Perfetto textproto config file')
     .option('--app <package>', 'target Android package name or *')
     .requiredOption('--out <file>', 'output trace file path')
@@ -991,7 +991,11 @@ function parseAnalysisMode(mode: string | undefined): CliAnalysisMode | undefine
 
 function parseCapturePreset(preset: string): CapturePresetId {
   if (isCapturePresetId(preset)) return preset;
-  throw new Error(`Invalid capture preset: ${preset}. Expected startup, scrolling, camera, anr, game, memory, cpu, power, overview, or full.`);
+  throw new Error(`Invalid capture preset: ${preset}. Expected one of: ${capturePresetIds().join(', ')}.`);
+}
+
+function capturePresetIds(): string[] {
+  return listCapturePresets().map((definition) => definition.id);
 }
 
 function parseCodebaseKind(kind: string | undefined): 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk' {

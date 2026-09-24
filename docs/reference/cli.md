@@ -371,22 +371,26 @@ smp capture presets
 smp capture suggest "debug startup jank" --app com.example.app --format json
 smp capture suggest "分析滑动掉帧，先不要真的抓取" --app com.example.app
 smp capture suggest "分析 Camera 打开到首帧预览延迟" --app com.example.camera
+smp capture suggest "分析 Java 堆内存泄漏" --app com.example.app
 smp capture config --preset startup --app com.example.app --duration 10 --out startup.pbtxt
 smp capture config --preset camera --app com.example.camera --duration 20
 smp capture config --preset cpu --app '*' --duration 30 --categories dalvikviktime my_custom_tag --out cpu-custom.pbtxt
 smp capture config --preset power --app com.example.app --duration 60 --out power.pbtxt
+smp capture config --preset memory-profile --app com.example.app --out memory-profile.pbtxt
 
 smp capture android --preset startup --app com.example.app --duration 10 --out launch.perfetto-trace
 smp capture android --preset scrolling --app com.example.app --duration 15 --serial <adbSerial> --out scroll.perfetto-trace
 smp capture android --preset power --app com.example.app --duration 60 --out power.perfetto-trace
+smp capture android --preset memory-profile --app com.example.app --duration 60 --out memory-profile.perfetto-trace
 smp capture android --config startup.pbtxt --out launch.perfetto-trace
 smp capture android --config template.pbtxt --duration 10 --categories my_custom_tag --out custom.perfetto-trace
 smp capture android --preset overview --app com.example.app --duration 10 --kill-stale --out retry.perfetto-trace
 smp capture android --preset game --app com.example.game --duration 20 --out game.perfetto-trace --analyze --query "分析启动和帧节奏问题" --mode fast
 ```
 
-内置预设包括：`startup`、`scrolling`、`camera`、`anr`、`game`、`memory`、`cpu`、
-`power`、`overview`、`full`。所有预设都会开启 `power/cpu_frequency` 与
+内置预设包括：`startup`、`scrolling`、`camera`、`anr`、`game`、`memory`、
+`memory-profile`、`cpu`、`power`、`overview`、`full`。除 `memory-profile` 外的
+所有系统级预设都会开启 `power/cpu_frequency` 与
 `power/cpu_frequency_limits`，后者提供每个 CPU 的频率上下限，用来区分“负载低所以
 频率低”和“被限频压住”。`cpu` 和 `power` 还会开启
 `thermal/thermal_temperature` 与 `thermal/cdev_update`，让限频可以和同一时间窗内
@@ -398,6 +402,41 @@ counters、power rails、suspend/wakeup 相关 ftrace 和 `android.network_packe
 内核和厂商实现而变化。即使使用该预设，trace 仍可能缺少可移植的 Camera open、
 request/result、buffer 或预览 presentation 锚点。SmartPerfetto 会把这种情况报告为
 证据缺口，而不会编造“打开到首帧”耗时。
+
+`memory-profile` 只剖析一个 app 进程，参照 Perfetto Memscope 的单进程配方：
+`linux.process_stats` 每秒采一次内存计数；`android.packages_list` 记录 app 是否
+profileable 或 debuggable；`android.heapprofd` 采 native 堆（32 KiB 采样间隔，
+每 5 秒 dump 一次）；`android.java_hprof` 做 Java heap dump；另有一个小的
+`linux.ftrace` buffer，包含 `ftrace/print` 以及 `dalvik`、`am`、`wm` atrace
+category。它和系统级预设有以下区别：
+
+- `--app` 必须是一个明确的包名或进程名（例如 `com.example.app` 或
+  `com.example.app:remote`）；`--app '*'`、空值和通配模式会被 `capture config`、
+  `capture android` 以及 renderer 本身拒绝。
+- 设备必须是 Android 11（API 30）及以上，并使用设备内置 `perfetto`：heapprofd
+  需要 API 29，`java_hprof` 需要 API 30。`capture android` 会先探测设备，在旧设备
+  或使用 `--sideload` 时直接失败，不做任何设备侧操作，因为 tracebox 不提供平台侧
+  profiler 守护进程。
+- user 版本上 app 必须是 profileable 或 debuggable，否则 profiler 不会为它记录任何
+  数据；每次 Java heap dump 都会在写堆期间暂停 app。这两点会作为 preflight 警告
+  输出。
+- 请先启动 app 再采集。Java heap dump 在 trace 开始时执行一次（基线），之后每隔
+  `max(10 秒, (时长 - 10 秒) / 2)` 执行一次，因此默认 60 秒采集约在 0、25、50 秒
+  得到 3 次 dump。时长至少 20 秒，保证基线之后还有第二次 dump。
+- 配置使用 4 个 buffer，而不是一个按时长放大的 ring：process stats 与 packages
+  list（RING，按每秒 64 KB 计算，8-128 MB）、heapprofd（RING，128 MB）、
+  `java_hprof`（DISCARD，256 MB）、ftrace（RING，16 MB）。DISCARD 保证基线 dump
+  不被覆盖；放不下的后期 dump 会被截断，heap graph 分析会把它标为不完整。buffer
+  覆盖值（配置 API 的 `bufferSizeKb`）设置的是 `java_hprof` buffer，且不得小于
+  256 MB。`--cuj` 对该预设无效。
+- 配置不包含 Memscope 使用的 `java_hprof` `smaps_config`（需要 Android build
+  ZP1A.260626.001 或更新）和 `process_stats` `record_process_age`，因为设备会拒绝
+  其 perfetto 不认识的配置字段。
+
+`smp capture suggest` 在请求涉及 heap dump、hprof、Java 堆、heap graph 或内存泄漏
+且 `--app` 为明确包名时建议 `memory-profile`；没有 `--app` 时保留系统级 `memory`
+预设，并在 rationale 中说明 heap dump 需要 `--app`。
+
 `smp capture suggest` 是无副作用的采集建议入口：它只根据自然语言确定内置
 preset，返回 rationale、warning、推荐命令和同一 renderer 生成的 textproto
 预览；不会调用 LLM、ADB、tracebox，也不会录制设备。真正执行仍需要用户显式运行

@@ -90,6 +90,71 @@ describe('buildTraceConfigProposal', () => {
     expect(proposal.config.textproto).toContain('name: "android.power"');
   });
 
+  it.each([
+    'analyze the java heap leak',
+    'capture an hprof heap dump',
+    'find the memory leak in the settings screen',
+    '分析 Java 堆内存泄漏',
+  ])('proposes memory-profile for heap requests with a concrete app: %s', (request) => {
+    const proposal = buildTraceConfigProposal({
+      request,
+      app: 'com.example.app',
+      outputLanguage: 'en',
+    });
+
+    expect(proposal.preset).toBe('memory-profile');
+    expect(proposal.intent).toBe('memory');
+    expect(proposal.confidence).toBe('high');
+    expect(proposal.command.capture).toEqual(expect.arrayContaining(['--preset', 'memory-profile', '--app', 'com.example.app']));
+    expect(proposal.config.textproto).toContain('name: "android.java_hprof"');
+    expect(proposal.config.dataSources).toEqual([
+      'android.packages_list',
+      'linux.process_stats',
+      'android.heapprofd',
+      'android.java_hprof',
+      'linux.ftrace',
+    ]);
+    expect(proposal.config.bufferSizeKb).toBe(262144);
+    expect(proposal.warnings.join('\n')).toContain('profileable or debuggable');
+    expect(proposal.warnings.join('\n')).toContain('pauses the app');
+  });
+
+  it('keeps heap requests without an app on the system-wide memory preset and says why', () => {
+    const proposal = buildTraceConfigProposal({
+      request: 'analyze the java heap leak',
+      outputLanguage: 'en',
+    });
+
+    expect(proposal.preset).toBe('memory');
+    expect(proposal.confidence).toBe('medium');
+    expect(proposal.config.textproto).not.toContain('android.java_hprof');
+    expect(proposal.rationale.join('\n')).toContain('falls back to the system-wide memory preset');
+    expect(proposal.rationale.join('\n')).toContain('--app <package>');
+
+    const zh = buildTraceConfigProposal({ request: '分析内存泄漏', app: '*', outputLanguage: 'zh-CN' });
+    expect(zh.preset).toBe('memory');
+    expect(zh.rationale.join('\n')).toContain('回退到系统级 memory 预设');
+  });
+
+  it('falls back for a glob app and raises a too-short heap-profile capture instead of throwing', () => {
+    const glob = buildTraceConfigProposal({ request: 'java heap dump', app: 'com.example.*', outputLanguage: 'en' });
+    expect(glob.preset).toBe('memory');
+
+    const short = buildTraceConfigProposal({
+      request: 'java heap dump', app: 'com.example.app', durationSeconds: 5, outputLanguage: 'en',
+    });
+    expect(short.preset).toBe('memory-profile');
+    expect(short.config.textproto).toContain('duration_ms: 20000');
+    expect(short.warnings.join('\n')).toContain('raised from 5 s to 20 s');
+  });
+
+  it('does not treat non-heap leaks as heap-profile requests', () => {
+    expect(buildTraceConfigProposal({ request: 'wakelock leak draining battery', app: 'com.example.app' }).preset)
+      .toBe('power');
+    expect(buildTraceConfigProposal({ request: 'inspect memory pressure and oom behavior', app: 'com.example.app' }).preset)
+      .toBe('memory');
+  });
+
   it('falls back to overview with low confidence when no intent matches', () => {
     const proposal = buildTraceConfigProposal({
       request: 'collect something useful before we inspect this trace',

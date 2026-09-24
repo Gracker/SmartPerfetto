@@ -4,13 +4,14 @@
 
 import { createHash } from 'crypto';
 import {
-  calculateCaptureBufferSizeKb,
   getCapturePreset,
+  isConcreteCaptureApp,
   renderAndroidTraceConfig,
+  resolveCaptureBufferSizeKb,
+  resolveCaptureDataSources,
   type CapturePresetDefinition,
   type CapturePresetId,
 } from './traceCaptureConfig';
-import { generateTraceConfig } from './traceConfigGenerator';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 
 export type TraceConfigProposalConfidence = 'high' | 'medium' | 'low';
@@ -130,6 +131,22 @@ const INTENT_RULES: IntentRule[] = [
       '主线程',
       '无响应',
       '卡死',
+    ],
+  },
+  {
+    // Heap dumps profile one process, so this needs --app; without one the
+    // proposal keeps the system-wide memory preset. Bare "leak" stays on the
+    // memory rule: wakelock, fd, and binder leaks are not heap questions.
+    preset: 'memory-profile',
+    confidence: 'high',
+    requiredKeywords: [
+      'heap dump', 'heapdump', 'hprof', 'java heap', 'heap graph',
+      'heap profile', 'heapprofd', 'memory leak', 'heap leak', 'leakcanary',
+      '内存泄漏', '内存泄露', '堆转储', '堆快照', 'java 堆', 'java堆',
+    ],
+    keywords: [
+      'native heap', 'allocation', 'retained', 'dominator', 'growth',
+      '分配', '增长', '持续上涨',
     ],
   },
   {
@@ -269,20 +286,19 @@ export function buildTraceConfigProposal(input: TraceConfigProposalInput): Trace
   }
 
   const match = classifyRequest(request);
-  const preset = getCapturePreset(match.rule.preset);
   const app = normalizeApp(input.app);
-  const durationSeconds = normalizeDuration(input.durationSeconds, preset.defaultDurationSeconds);
+  const matchedPreset = getCapturePreset(match.rule.preset);
+  // An app-profile preset needs one concrete app; without it the proposal
+  // uses the preset's system-wide fallback so it still renders a valid config.
+  const needsAppFallback = Boolean(matchedPreset.requirements) && !isConcreteCaptureApp(app);
+  const preset = needsAppFallback && matchedPreset.requirements
+    ? getCapturePreset(matchedPreset.requirements.appFallbackPreset)
+    : matchedPreset;
+  const requestedDurationSeconds = normalizeDuration(input.durationSeconds, preset.defaultDurationSeconds);
+  const durationSeconds = Math.max(requestedDurationSeconds, preset.requirements?.minDurationSeconds ?? 0);
   const categories = normalizeCategories(input.categories);
-  const generatorContract = generateTraceConfig({
-    intent: preset.intent,
-    packageName: app,
-    cuj: input.cuj,
-  });
-  const dataSources = unique([
-    ...preset.dataSources,
-    ...generatorContract.fragments.map(fragment => fragment.dataSource),
-  ]);
-  const bufferSizeKb = calculateCaptureBufferSizeKb(durationSeconds, preset.bufferSizeKb);
+  const dataSources = resolveCaptureDataSources(preset, { packageName: app, cuj: input.cuj });
+  const bufferSizeKb = resolveCaptureBufferSizeKb(preset, durationSeconds);
   const blockedDangerousOptions = detectDangerousOptions(request);
   const warnings = buildWarnings({
     request,
@@ -291,6 +307,13 @@ export function buildTraceConfigProposal(input: TraceConfigProposalInput): Trace
     blockedDangerousOptions,
     outputLanguage,
   });
+  if (durationSeconds !== requestedDurationSeconds) {
+    warnings.push(localize(
+      outputLanguage,
+      `${preset.id} 至少需要 ${durationSeconds} 秒，采集时长已从 ${requestedDurationSeconds} 秒调整为 ${durationSeconds} 秒。`,
+      `${preset.id} needs at least ${durationSeconds} s; the capture duration was raised from ${requestedDurationSeconds} s to ${durationSeconds} s.`,
+    ));
+  }
   const textproto = renderAndroidTraceConfig({
     target: 'android',
     preset: preset.id,
@@ -320,9 +343,16 @@ export function buildTraceConfigProposal(input: TraceConfigProposalInput): Trace
     preset: preset.id,
     presetLabel: preset.label,
     intent: preset.intent,
-    confidence: confidenceForMatch(match),
+    confidence: needsAppFallback ? 'medium' : confidenceForMatch(match),
     rationale: [
-      rationaleForRule(match.rule, outputLanguage),
+      rationaleForPreset(preset, outputLanguage),
+      ...(needsAppFallback
+        ? [localize(
+            outputLanguage,
+            `请求匹配 ${matchedPreset.id}，它只剖析一个明确的 app 进程；未提供具体的 --app，因此回退到系统级 ${preset.id} 预设。传入 --app <package> 才能使用 ${matchedPreset.id}。`,
+            `The request matches ${matchedPreset.id}, which profiles one concrete app process; no concrete --app was given, so the proposal falls back to the system-wide ${preset.id} preset. Pass --app <package> to use ${matchedPreset.id}.`,
+          )]
+        : []),
       localize(
         outputLanguage,
         `匹配 ${match.matches.length} 个关键词：${match.matches.join(', ') || 'fallback overview'}。`,
@@ -356,8 +386,7 @@ export function buildTraceConfigProposal(input: TraceConfigProposalInput): Trace
 
 // The preset definition is the single source for what a capture covers; the
 // proposal rationale is that description, not a second hand-written copy.
-function rationaleForRule(rule: IntentRule, outputLanguage: OutputLanguage): string {
-  const preset = getCapturePreset(rule.preset);
+function rationaleForPreset(preset: CapturePresetDefinition, outputLanguage: OutputLanguage): string {
   return localize(outputLanguage, preset.descriptionZh, preset.description);
 }
 
@@ -428,6 +457,9 @@ function buildWarnings(input: {
       '未提供 app 包名；生成的配置会用 atrace_apps: "*" 覆盖所有 app。',
       'No app package was provided; generated config targets all apps with atrace_apps: "*".',
     ));
+  }
+  for (const note of input.preset.requirements?.notes ?? []) {
+    warnings.push(localize(input.outputLanguage, note.zh, note.en));
   }
   if (input.preset.id === 'full') {
     warnings.push(localize(

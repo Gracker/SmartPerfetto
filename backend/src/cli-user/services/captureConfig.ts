@@ -19,5 +19,6 @@ export type {
   CaptureConfigRenderOptions,
   CapturePresetDefinition,
   CapturePresetId,
+  CapturePresetRequirements,
   CaptureTarget,
 } from '../../services/traceCaptureConfig';

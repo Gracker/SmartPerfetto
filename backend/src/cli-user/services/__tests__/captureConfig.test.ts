@@ -31,8 +31,8 @@ describe('capture config rendering', () => {
     expect(config).toContain('ftrace_events: "dmabuf_heap/dma_heap_stat"');
   });
 
-  it('renders every built-in Android preset as a textproto config', () => {
-    for (const preset of listCapturePresets()) {
+  it('renders every system-wide Android preset as a textproto config', () => {
+    for (const preset of listCapturePresets().filter((candidate) => !candidate.requirements)) {
       const config = renderAndroidTraceConfig({
         target: 'android',
         preset: preset.id,
@@ -46,6 +46,25 @@ describe('capture config rendering', () => {
       expect(config).toContain('duration_ms:');
       expect(config).toContain('atrace_apps: "com.example.app"');
     }
+  });
+
+  it('renders the app-scoped memory-profile preset only for a concrete app', () => {
+    expect(listCapturePresets().map(preset => preset.id)).toContain('memory-profile');
+    const config = renderAndroidTraceConfig({
+      target: 'android',
+      preset: 'memory-profile',
+      app: 'com.example.app',
+      durationSeconds: 60,
+    });
+    expect(config).toContain('name: "android.heapprofd"');
+    expect(config).toContain('name: "android.java_hprof"');
+    expect(config).toContain('atrace_apps: "com.example.app"');
+    expect(() => renderAndroidTraceConfig({
+      target: 'android',
+      preset: 'memory-profile',
+      app: '*',
+      durationSeconds: 60,
+    })).toThrow("concrete --app <package> (not '*')");
   });
 
   it('includes FrameTimeline for startup, scrolling, game, overview, and full presets', () => {

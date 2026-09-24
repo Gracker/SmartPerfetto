@@ -174,8 +174,9 @@ export async function runCapturePresetsCommand(args: CapturePresetsCommandArgs):
     return 0;
   }
   console.log('SmartPerfetto capture presets');
+  const idWidth = Math.max(10, ...presets.map((preset) => preset.id.length));
   for (const preset of presets) {
-    console.log(`${preset.id.padEnd(10)} ${preset.label} (${preset.defaultDurationSeconds}s)`);
+    console.log(`${preset.id.padEnd(idWidth)} ${preset.label} (${preset.defaultDurationSeconds}s)`);
     console.log(`  ${preset.description}`);
   }
   return 0;

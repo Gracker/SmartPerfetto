@@ -426,22 +426,26 @@ smp capture presets
 smp capture suggest "debug startup jank" --app com.example.app --format json
 smp capture suggest "investigate scrolling frame drops; do not record yet" --app com.example.app
 smp capture suggest "Analyze Camera open-to-first-preview latency" --app com.example.camera
+smp capture suggest "find the Java heap leak" --app com.example.app
 smp capture config --preset startup --app com.example.app --duration 10 --out startup.pbtxt
 smp capture config --preset camera --app com.example.camera --duration 20
 smp capture config --preset cpu --app '*' --duration 30 --categories dalvikviktime my_custom_tag --out cpu-custom.pbtxt
 smp capture config --preset power --app com.example.app --duration 60 --out power.pbtxt
+smp capture config --preset memory-profile --app com.example.app --out memory-profile.pbtxt
 
 smp capture android --preset startup --app com.example.app --duration 10 --out launch.perfetto-trace
 smp capture android --preset scrolling --app com.example.app --duration 15 --serial <adbSerial> --out scroll.perfetto-trace
 smp capture android --preset power --app com.example.app --duration 60 --out power.perfetto-trace
+smp capture android --preset memory-profile --app com.example.app --duration 60 --out memory-profile.perfetto-trace
 smp capture android --config startup.pbtxt --out launch.perfetto-trace
 smp capture android --config template.pbtxt --duration 10 --categories my_custom_tag --out custom.perfetto-trace
 smp capture android --preset overview --app com.example.app --duration 10 --kill-stale --out retry.perfetto-trace
 smp capture android --preset game --app com.example.game --duration 20 --out game.perfetto-trace --analyze --query "Find launch and frame pacing issues" --mode fast
 ```
 
-Available presets: `startup`, `scrolling`, `camera`, `anr`, `game`, `memory`, `cpu`,
-`power`, `overview`, and `full`. Every preset enables `power/cpu_frequency` and
+Available presets: `startup`, `scrolling`, `camera`, `anr`, `game`, `memory`,
+`memory-profile`, `cpu`, `power`, `overview`, and `full`. Every system-wide preset
+(all except `memory-profile`) enables `power/cpu_frequency` and
 `power/cpu_frequency_limits`; the latter carries each CPU's frequency bounds and
 separates "low frequency because the load is low" from "clamped". `cpu` and
 `power` also enable `thermal/thermal_temperature` and `thermal/cdev_update` so a
@@ -455,6 +459,47 @@ and vary by Android release, kernel, and vendor implementation. Even with this
 preset, a trace may lack portable Camera open, request/result, buffer, or
 preview-presentation anchors. SmartPerfetto reports that evidence gap instead
 of fabricating an open-to-first-frame number.
+
+`memory-profile` profiles one app process, following Perfetto's Memscope
+single-process recipe. It records `linux.process_stats` memory counters every
+second, `android.packages_list` (which shows whether the app was profileable or
+debuggable), `android.heapprofd` native heap samples (32 KiB sampling, a dump
+every 5 s), `android.java_hprof` Java heap dumps, and a small `linux.ftrace`
+buffer with `ftrace/print` plus the `dalvik`, `am`, and `wm` atrace categories.
+It differs from the system-wide presets in several ways:
+
+- `--app` must name one concrete package or process (for example
+  `com.example.app` or `com.example.app:remote`); `--app '*'`, an empty value,
+  and glob patterns are rejected by `capture config`, `capture android`, and the
+  renderer itself.
+- The device must run Android 11 (API 30) or later with its built-in `perfetto`:
+  heapprofd needs API 29 and `java_hprof` needs API 30. `capture android` probes
+  the device and fails before any device-side work on an older device or with
+  `--sideload`, because tracebox does not provide the platform profiler daemons.
+- On user builds the app must be profileable or debuggable; otherwise the
+  profilers record nothing for it. Each Java heap dump pauses the app while the
+  heap is written. Both caveats appear as preflight warnings.
+- Start the app before capturing. Java heap dumps happen when the trace starts
+  (the baseline) and then every `max(10 s, (duration - 10 s) / 2)`, so the
+  default 60 s capture yields three dumps at about 0 s, 25 s, and 50 s. The
+  duration must be at least 20 s so a second dump follows the baseline.
+- The config uses four buffers instead of one scaled ring: process stats and
+  packages list (RING, 64 KB per second of duration, 8-128 MB), heapprofd
+  (RING, 128 MB), `java_hprof` (DISCARD, 256 MB), and ftrace (RING, 16 MB).
+  DISCARD keeps the baseline dump intact; a late dump that no longer fits is
+  truncated, and the heap-graph analysis reports it as incomplete. A buffer size
+  override (`bufferSizeKb` in the config API) sets the `java_hprof` buffer and
+  must be at least 256 MB. `--cuj` has no effect on this preset.
+- The config omits `java_hprof` `smaps_config` (needs Android build
+  ZP1A.260626.001 or newer) and `process_stats` `record_process_age`, both used
+  by Memscope, because the device rejects config fields its perfetto does not
+  know.
+
+`smp capture suggest` proposes `memory-profile` for heap-dump, hprof, Java heap,
+heap graph, and memory-leak requests when `--app` names a concrete package.
+Without one it keeps the system-wide `memory` preset and says in the rationale
+that heap dumps need `--app`.
+
 `smp capture suggest` is side-effect free: it maps natural language to a
 built-in preset and returns rationale, warnings, recommended commands, and a
 textproto preview rendered by the same config renderer. It does not call an LLM,

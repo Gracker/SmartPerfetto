@@ -16,6 +16,7 @@ export type CapturePresetId =
   | 'anr'
   | 'game'
   | 'memory'
+  | 'memory-profile'
   | 'cpu'
   | 'power'
   | 'overview'
@@ -45,6 +46,24 @@ export interface CapturePresetDefinition {
   description: string;
   /** Chinese rendering of `description`; the proposal rationale is derived from these two. */
   descriptionZh: string;
+  /**
+   * Present only on a preset that profiles one app process: it needs a
+   * concrete `--app` (no `*` or glob) and the device's built-in perfetto,
+   * whose profilers are platform daemons a sideloaded tracebox lacks.
+   * System-wide presets have none and accept `--app '*'` on any device.
+   */
+  requirements?: CapturePresetRequirements;
+}
+
+export interface CapturePresetRequirements {
+  /** Lowest Android API level whose built-in perfetto provides every data source. */
+  minApiLevel: number;
+  /** Shortest capture the preset's own schedule (e.g. repeated dumps) needs. */
+  minDurationSeconds: number;
+  /** System-wide preset a proposal falls back to when no concrete app is given. */
+  appFallbackPreset: CapturePresetId;
+  /** Capture-time caveats: preflight warnings on `capture android`, warnings on proposals. */
+  notes: Array<{ en: string; zh: string }>;
 }
 
 const COMMON_DATA_SOURCES = [
@@ -124,6 +143,31 @@ const POWER_EVENTS = [
   ...THERMAL_EVENTS,
 ];
 
+// memory-profile layout. Each data source owns a buffer so one heavy producer
+// cannot evict another's data: buffer 0 process_stats + packages_list (RING,
+// sized so 1 s polling survives the duration), 1 heapprofd (RING: every
+// continuous dump is cumulative, so the newest ones are the ones to keep),
+// 2 java_hprof (DISCARD: an early baseline dump is never overwritten mid-dump;
+// a late dump that no longer fits is truncated, which the heap-graph analysis
+// reports as incomplete), 3 ftrace (small RING).
+const MEMORY_PROFILE_JAVA_HPROF_MIN_BUFFER_KB = 256 * 1024;
+const MEMORY_PROFILE_HEAPPROFD_BUFFER_KB = 128 * 1024;
+const MEMORY_PROFILE_FTRACE_BUFFER_KB = 16 * 1024;
+const MEMORY_PROFILE_PROCESS_STATS_KB_PER_SECOND = 64;
+const MEMORY_PROFILE_PROCESS_STATS_MIN_KB = 8 * 1024;
+const MEMORY_PROFILE_PROCESS_STATS_MAX_KB = 128 * 1024;
+const MEMORY_PROFILE_PROC_STATS_POLL_MS = 1000;
+const MEMORY_PROFILE_HEAPPROFD_SAMPLING_INTERVAL_BYTES = 32 * 1024;
+const MEMORY_PROFILE_HEAPPROFD_SHMEM_SIZE_BYTES = 16 * 1024 * 1024;
+const MEMORY_PROFILE_HEAPPROFD_DUMP_INTERVAL_MS = 5000;
+// java_hprof always dumps when its data source starts (the baseline) and then
+// continuously at dump_phase_ms + k * dump_interval_ms. Spreading two more
+// dumps over the duration minus a tail for the last dump to finish yields
+// about three dumps: baseline, middle, end.
+const MEMORY_PROFILE_JAVA_DUMP_TAIL_MS = 10000;
+const MEMORY_PROFILE_JAVA_DUMP_MIN_INTERVAL_MS = 10000;
+const CONCRETE_APP_PATTERN = /^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)*(:[A-Za-z0-9_.]+)?$/;
+
 export const CAPTURE_PRESETS: CapturePresetDefinition[] = [
   {
     id: 'startup',
@@ -196,6 +240,47 @@ export const CAPTURE_PRESETS: CapturePresetDefinition[] = [
     dataSources: COMMON_DATA_SOURCES,
     description: 'Memory pressure, GC, process stats, LMK-adj, reclaim, IO, and logcat correlation.',
     descriptionZh: '内存分析需要 process stats、reclaim、LMK-adj、GC、IO 和 logcat 上下文。',
+  },
+  {
+    // Modelled on Perfetto's Memscope single-process recipe; rendered by
+    // renderMemoryProfileConfig, not the shared system-wide layout.
+    id: 'memory-profile',
+    label: 'Android app memory profile',
+    intent: 'memory',
+    defaultDurationSeconds: 60,
+    bufferSizeKb: MEMORY_PROFILE_JAVA_HPROF_MIN_BUFFER_KB,
+    atraceCategories: ['dalvik', 'am', 'wm'],
+    ftraceEvents: ['ftrace/print'],
+    dataSources: [
+      'android.packages_list',
+      'linux.process_stats',
+      'android.heapprofd',
+      'android.java_hprof',
+      'linux.ftrace',
+    ],
+    description: 'Single-app memory profile after Perfetto Memscope: 1 s process memory counters, heapprofd native heap samples, and about three Java heap dumps (baseline, middle, end). Needs a concrete --app, Android 11+, and a profileable or debuggable app.',
+    descriptionZh: '单 app 内存剖析（参照 Perfetto Memscope）：1 秒粒度的进程内存计数、heapprofd native 堆采样，以及约 3 次 Java heap dump（基线、中段、末段）。需要明确的 --app、Android 11+，且 app 为 profileable 或 debuggable。',
+    requirements: {
+      // heapprofd needs API 29; android.java_hprof needs API 30.
+      minApiLevel: 30,
+      // Shorter captures cannot fit a second Java heap dump after the baseline.
+      minDurationSeconds: 20,
+      appFallbackPreset: 'memory',
+      notes: [
+        {
+          en: 'memory-profile: on user builds the app must be profileable or debuggable (userdebug/eng builds profile any app); otherwise heapprofd and java_hprof record nothing for it.',
+          zh: 'memory-profile：user 版本上 app 必须是 profileable 或 debuggable（userdebug/eng 版本可剖析任意 app），否则 heapprofd 和 java_hprof 不会为它记录任何数据。',
+        },
+        {
+          en: 'memory-profile: each Java heap dump pauses the app while the heap is written (often seconds); expect visible freezes at the dump points.',
+          zh: 'memory-profile：每次 Java heap dump 都会在写堆期间暂停 app（常为数秒），dump 时刻会出现可见卡顿。',
+        },
+        {
+          en: 'memory-profile: start the app before capturing; the baseline Java heap dump is taken when the trace starts and only finds a running process.',
+          zh: 'memory-profile：请先启动 app 再开始采集；基线 Java heap dump 在 trace 开始时执行，只能找到已在运行的进程。',
+        },
+      ],
+    },
   },
   {
     id: 'cpu',
@@ -315,6 +400,9 @@ export function renderAndroidTraceConfig(opts: CaptureConfigRenderOptions): stri
   if (!Number.isFinite(durationMs) || durationMs <= 0) {
     throw new Error('capture duration must be a positive number of seconds');
   }
+  if (preset.requirements) {
+    return renderMemoryProfileConfig(preset, preset.requirements, opts, durationMs);
+  }
 
   const packageName = opts.app?.trim() || '*';
   const contract = generateTraceConfig({
@@ -322,49 +410,184 @@ export function renderAndroidTraceConfig(opts: CaptureConfigRenderOptions): stri
     packageName,
     cuj: opts.cuj,
   });
-  const dataSources = unique([
-    ...preset.dataSources,
-    ...contract.fragments.map((fragment) => fragment.dataSource),
-  ]);
+  const dataSources = resolveCaptureDataSources(preset, { packageName, cuj: opts.cuj });
   const ftraceEvents = unique(preset.ftraceEvents);
   const atraceCategories = unique([
     ...preset.atraceCategories,
     ...(opts.extraAtraceCategories ?? []),
   ]);
-  const bufferSizeKb = opts.bufferSizeKb ?? calculateCaptureBufferSizeKb(opts.durationSeconds, preset.bufferSizeKb);
+  const bufferSizeKb = resolveCaptureBufferSizeKb(preset, opts.durationSeconds, opts.bufferSizeKb);
 
   return [
     `# SmartPerfetto capture preset: ${preset.id}`,
     `# ${preset.description}`,
     `# Trace config generator rationale: ${contract.rationale}`,
-    'buffers {',
-    `  size_kb: ${bufferSizeKb}`,
-    '  fill_policy: RING_BUFFER',
-    '}',
-    'buffers {',
-    '  size_kb: 4096',
-    '  fill_policy: RING_BUFFER',
-    '}',
+    ...renderBuffer(bufferSizeKb, 'RING_BUFFER'),
+    ...renderBuffer(4096, 'RING_BUFFER'),
     ...dataSources
       .filter((source) => source !== 'linux.ftrace')
       .map((source) => renderDataSource(source)),
+    ...renderFtraceDataSource(0, ftraceEvents, atraceCategories, packageName),
+    ...renderConfigTrailer(durationMs),
+  ].join('\n');
+}
+
+/**
+ * Resolve the `--app` value of a preset that requires one concrete process.
+ * heapprofd treats glob characters as wildcards that are only valid with
+ * no_startup, and java_hprof needs an exact cmdline, so `*` and patterns fail.
+ */
+export function isConcreteCaptureApp(app: string | undefined): boolean {
+  return CONCRETE_APP_PATTERN.test(app?.trim() ?? '');
+}
+
+export function requireConcreteCaptureApp(preset: CapturePresetDefinition, app: string | undefined): string {
+  const packageName = app?.trim() ?? '';
+  if (!packageName || packageName === '*') {
+    throw new Error(`capture preset ${preset.id} profiles one app process; pass a concrete --app <package> (not '*')`);
+  }
+  if (!isConcreteCaptureApp(packageName)) {
+    throw new Error(`capture preset ${preset.id} needs an exact package or process name (e.g. com.example.app or com.example.app:remote), got ${JSON.stringify(packageName)}`);
+  }
+  return packageName;
+}
+
+/**
+ * Size of the preset's primary buffer. For system-wide presets this is the
+ * duration-scaled ring shared by ftrace. For memory-profile it is the
+ * java_hprof (heap graph) DISCARD buffer; the other memory-profile buffers are
+ * derived from the duration. An override must keep room for a full baseline
+ * dump, so memory-profile rejects one below its default.
+ */
+export function resolveCaptureBufferSizeKb(
+  preset: CapturePresetDefinition,
+  durationSeconds: number,
+  overrideKb?: number,
+): number {
+  if (!preset.requirements) {
+    return overrideKb ?? calculateCaptureBufferSizeKb(durationSeconds, preset.bufferSizeKb);
+  }
+  if (overrideKb === undefined) return preset.bufferSizeKb;
+  if (!Number.isFinite(overrideKb) || overrideKb < preset.bufferSizeKb) {
+    throw new Error(`capture preset ${preset.id} needs a java_hprof buffer of at least ${preset.bufferSizeKb} KB, got ${overrideKb}`);
+  }
+  return Math.ceil(overrideKb / 4) * 4;
+}
+
+/** Data sources a rendered preset config contains. */
+export function resolveCaptureDataSources(
+  preset: CapturePresetDefinition,
+  opts: { packageName: string; cuj?: string },
+): string[] {
+  if (preset.requirements) return [...preset.dataSources];
+  const contract = generateTraceConfig({
+    intent: preset.intent,
+    packageName: opts.packageName,
+    cuj: opts.cuj,
+  });
+  return unique([
+    ...preset.dataSources,
+    ...contract.fragments.map((fragment) => fragment.dataSource),
+  ]);
+}
+
+/** Interval between the continuous Java heap dumps that follow the baseline dump. */
+export function memoryProfileJavaDumpIntervalMs(durationMs: number): number {
+  const spread = Math.floor((durationMs - MEMORY_PROFILE_JAVA_DUMP_TAIL_MS) / 2 / 1000) * 1000;
+  return Math.max(MEMORY_PROFILE_JAVA_DUMP_MIN_INTERVAL_MS, spread);
+}
+
+// memory-profile is the only app-profile preset, so it is the one renderer
+// behind `requirements`. Only fields present both at the pinned Perfetto
+// revision and in Android 11 (API 30) perfetto are emitted: the device parses this textproto and rejects
+// unknown fields. That excludes process_stats record_process_age and
+// java_hprof smaps_config (needs build ZP1A.260626.001+), both used by
+// Memscope. Buffers are addressed by index because BufferConfig.name is newer
+// than Android 11. The CUJ option only annotates the system-wide generator
+// contract and has no effect here.
+function renderMemoryProfileConfig(
+  preset: CapturePresetDefinition,
+  requirements: CapturePresetRequirements,
+  opts: CaptureConfigRenderOptions,
+  durationMs: number,
+): string {
+  const packageName = requireConcreteCaptureApp(preset, opts.app);
+  const app = escapeTextProto(packageName);
+  if (durationMs < requirements.minDurationSeconds * 1000) {
+    throw new Error(`capture preset ${preset.id} needs --duration >= ${requirements.minDurationSeconds} s so a second Java heap dump follows the baseline`);
+  }
+  const javaHprofBufferKb = resolveCaptureBufferSizeKb(preset, durationMs / 1000, opts.bufferSizeKb);
+  const processStatsBufferKb = Math.min(
+    MEMORY_PROFILE_PROCESS_STATS_MAX_KB,
+    Math.max(
+      MEMORY_PROFILE_PROCESS_STATS_MIN_KB,
+      Math.ceil(durationMs / 1000) * MEMORY_PROFILE_PROCESS_STATS_KB_PER_SECOND,
+    ),
+  );
+  const javaDumpIntervalMs = memoryProfileJavaDumpIntervalMs(durationMs);
+  const atraceCategories = unique([
+    ...preset.atraceCategories,
+    ...(opts.extraAtraceCategories ?? []),
+  ]);
+
+  return [
+    `# SmartPerfetto capture preset: ${preset.id}`,
+    `# ${preset.description}`,
+    '# Buffers: 0 process_stats + packages_list (RING), 1 heapprofd (RING), 2 java_hprof (DISCARD), 3 ftrace (RING).',
+    `# java_hprof dumps when the trace starts (baseline), then every ${javaDumpIntervalMs} ms.`,
+    ...renderBuffer(processStatsBufferKb, 'RING_BUFFER'),
+    ...renderBuffer(MEMORY_PROFILE_HEAPPROFD_BUFFER_KB, 'RING_BUFFER'),
+    ...renderBuffer(javaHprofBufferKb, 'DISCARD'),
+    ...renderBuffer(MEMORY_PROFILE_FTRACE_BUFFER_KB, 'RING_BUFFER'),
     'data_sources {',
     '  config {',
-    '    name: "linux.ftrace"',
+    '    name: "android.packages_list"',
     '    target_buffer: 0',
-    '    ftrace_config {',
-    ...ftraceEvents.map((event) => `      ftrace_events: "${escapeTextProto(event)}"`),
-    ...atraceCategories.map((category) => `      atrace_categories: "${escapeTextProto(category)}"`),
-    `      atrace_apps: "${escapeTextProto(packageName)}"`,
+    '  }',
+    '}',
+    'data_sources {',
+    '  config {',
+    '    name: "linux.process_stats"',
+    '    target_buffer: 0',
+    '    process_stats_config {',
+    '      scan_all_processes_on_start: true',
+    `      proc_stats_poll_ms: ${MEMORY_PROFILE_PROC_STATS_POLL_MS}`,
     '    }',
     '  }',
     '}',
-    `duration_ms: ${durationMs}`,
-    'flush_period_ms: 5000',
-    'incremental_state_config {',
-    '  clear_period_ms: 5000',
+    'data_sources {',
+    '  config {',
+    '    name: "android.heapprofd"',
+    '    target_buffer: 1',
+    '    heapprofd_config {',
+    `      process_cmdline: "${app}"`,
+    `      sampling_interval_bytes: ${MEMORY_PROFILE_HEAPPROFD_SAMPLING_INTERVAL_BYTES}`,
+    `      shmem_size_bytes: ${MEMORY_PROFILE_HEAPPROFD_SHMEM_SIZE_BYTES}`,
+    '      block_client: true',
+    '      continuous_dump_config {',
+    `        dump_phase_ms: ${MEMORY_PROFILE_HEAPPROFD_DUMP_INTERVAL_MS}`,
+    `        dump_interval_ms: ${MEMORY_PROFILE_HEAPPROFD_DUMP_INTERVAL_MS}`,
+    '      }',
+    '    }',
+    '  }',
     '}',
-    '',
+    'data_sources {',
+    '  config {',
+    '    name: "android.java_hprof"',
+    '    target_buffer: 2',
+    '    java_hprof_config {',
+    `      process_cmdline: "${app}"`,
+    '      continuous_dump_config {',
+    // The baseline dump is implicit at data-source start; a phase equal to
+    // the interval keeps the first continuous dump off the baseline.
+    `        dump_phase_ms: ${javaDumpIntervalMs}`,
+    `        dump_interval_ms: ${javaDumpIntervalMs}`,
+    '      }',
+    '    }',
+    '  }',
+    '}',
+    ...renderFtraceDataSource(3, preset.ftraceEvents, atraceCategories, packageName),
+    ...renderConfigTrailer(durationMs),
   ].join('\n');
 }
 
@@ -455,6 +678,42 @@ export function extractDurationMs(textproto: string): number | undefined {
   if (!last) return undefined;
   const value = Number.parseInt(last, 10);
   return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function renderBuffer(sizeKb: number, fillPolicy: 'RING_BUFFER' | 'DISCARD'): string[] {
+  return ['buffers {', `  size_kb: ${sizeKb}`, `  fill_policy: ${fillPolicy}`, '}'];
+}
+
+function renderFtraceDataSource(
+  targetBuffer: number,
+  ftraceEvents: string[],
+  atraceCategories: string[],
+  atraceApp: string,
+): string[] {
+  return [
+    'data_sources {',
+    '  config {',
+    '    name: "linux.ftrace"',
+    `    target_buffer: ${targetBuffer}`,
+    '    ftrace_config {',
+    ...ftraceEvents.map((event) => `      ftrace_events: "${escapeTextProto(event)}"`),
+    ...atraceCategories.map((category) => `      atrace_categories: "${escapeTextProto(category)}"`),
+    `      atrace_apps: "${escapeTextProto(atraceApp)}"`,
+    '    }',
+    '  }',
+    '}',
+  ];
+}
+
+function renderConfigTrailer(durationMs: number): string[] {
+  return [
+    `duration_ms: ${durationMs}`,
+    'flush_period_ms: 5000',
+    'incremental_state_config {',
+    '  clear_period_ms: 5000',
+    '}',
+    '',
+  ];
 }
 
 function renderDataSource(source: string): string {
