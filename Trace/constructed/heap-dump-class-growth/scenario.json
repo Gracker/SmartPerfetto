@@ -1,0 +1,508 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "1000000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "10000000",
+      "duration_ns": "18000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::heap-dump-class-growth"
+    },
+    {
+      "type": "managed-heap-graph",
+      "at_ns": "200000000",
+      "process": "app",
+      "heap_bytes_allocated": "8528",
+      "types": [
+        {
+          "id": 1,
+          "class_name": "com.smartperfetto.fixture.TileRegistry",
+          "object_size": 32
+        },
+        {
+          "id": 2,
+          "class_name": "java.util.ArrayList",
+          "object_size": 24
+        },
+        {
+          "id": 3,
+          "class_name": "java.lang.Object[]",
+          "object_size": 64
+        },
+        {
+          "id": 4,
+          "class_name": "com.smartperfetto.fixture.TileSessionState",
+          "object_size": 48
+        },
+        {
+          "id": 5,
+          "class_name": "byte[]",
+          "object_size": 4096
+        },
+        {
+          "id": 6,
+          "class_name": "com.smartperfetto.fixture.WifiTileState",
+          "object_size": 40
+        }
+      ],
+      "objects": [
+        {
+          "id": 1,
+          "type_id": 1,
+          "self_size": 32,
+          "reference_object_ids": [
+            2,
+            100,
+            101,
+            102
+          ]
+        },
+        {
+          "id": 2,
+          "type_id": 2,
+          "self_size": 24,
+          "reference_object_ids": [
+            3
+          ]
+        },
+        {
+          "id": 10,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            50
+          ]
+        },
+        {
+          "id": 50,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 11,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            51
+          ]
+        },
+        {
+          "id": 51,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 3,
+          "type_id": 3,
+          "self_size": 64,
+          "reference_object_ids": [
+            10,
+            11
+          ]
+        },
+        {
+          "id": 100,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 101,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 102,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        }
+      ],
+      "roots": [
+        {
+          "root_type": "ROOT_JNI_GLOBAL",
+          "object_ids": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "type": "managed-heap-graph",
+      "at_ns": "500000000",
+      "process": "app",
+      "heap_bytes_allocated": "17840",
+      "types": [
+        {
+          "id": 1,
+          "class_name": "com.smartperfetto.fixture.TileRegistry",
+          "object_size": 32
+        },
+        {
+          "id": 2,
+          "class_name": "java.util.ArrayList",
+          "object_size": 24
+        },
+        {
+          "id": 3,
+          "class_name": "java.lang.Object[]",
+          "object_size": 64
+        },
+        {
+          "id": 4,
+          "class_name": "com.smartperfetto.fixture.TileSessionState",
+          "object_size": 48
+        },
+        {
+          "id": 5,
+          "class_name": "byte[]",
+          "object_size": 4096
+        },
+        {
+          "id": 6,
+          "class_name": "com.smartperfetto.fixture.WifiTileState",
+          "object_size": 40
+        }
+      ],
+      "objects": [
+        {
+          "id": 1,
+          "type_id": 1,
+          "self_size": 32,
+          "reference_object_ids": [
+            2,
+            100,
+            101,
+            102
+          ]
+        },
+        {
+          "id": 2,
+          "type_id": 2,
+          "self_size": 24,
+          "reference_object_ids": [
+            3
+          ]
+        },
+        {
+          "id": 10,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            50
+          ]
+        },
+        {
+          "id": 50,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 11,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            51
+          ]
+        },
+        {
+          "id": 51,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 12,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            52
+          ]
+        },
+        {
+          "id": 52,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 13,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            53
+          ]
+        },
+        {
+          "id": 53,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 3,
+          "type_id": 3,
+          "self_size": 64,
+          "reference_object_ids": [
+            10,
+            11,
+            12,
+            13
+          ]
+        },
+        {
+          "id": 100,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 101,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 102,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 200,
+          "type_id": 5,
+          "self_size": 1024,
+          "reference_object_ids": []
+        }
+      ],
+      "roots": [
+        {
+          "root_type": "ROOT_JNI_GLOBAL",
+          "object_ids": [
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "type": "managed-heap-graph",
+      "at_ns": "800000000",
+      "process": "app",
+      "heap_bytes_allocated": "27152",
+      "types": [
+        {
+          "id": 1,
+          "class_name": "com.smartperfetto.fixture.TileRegistry",
+          "object_size": 32
+        },
+        {
+          "id": 2,
+          "class_name": "java.util.ArrayList",
+          "object_size": 24
+        },
+        {
+          "id": 3,
+          "class_name": "java.lang.Object[]",
+          "object_size": 64
+        },
+        {
+          "id": 4,
+          "class_name": "com.smartperfetto.fixture.TileSessionState",
+          "object_size": 48
+        },
+        {
+          "id": 5,
+          "class_name": "byte[]",
+          "object_size": 4096
+        },
+        {
+          "id": 6,
+          "class_name": "com.smartperfetto.fixture.WifiTileState",
+          "object_size": 40
+        }
+      ],
+      "objects": [
+        {
+          "id": 1,
+          "type_id": 1,
+          "self_size": 32,
+          "reference_object_ids": [
+            2,
+            100,
+            101,
+            102
+          ]
+        },
+        {
+          "id": 2,
+          "type_id": 2,
+          "self_size": 24,
+          "reference_object_ids": [
+            3
+          ]
+        },
+        {
+          "id": 10,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            50
+          ]
+        },
+        {
+          "id": 50,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 11,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            51
+          ]
+        },
+        {
+          "id": 51,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 12,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            52
+          ]
+        },
+        {
+          "id": 52,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 13,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            53
+          ]
+        },
+        {
+          "id": 53,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 14,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            54
+          ]
+        },
+        {
+          "id": 54,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 15,
+          "type_id": 4,
+          "self_size": 48,
+          "reference_object_ids": [
+            55
+          ]
+        },
+        {
+          "id": 55,
+          "type_id": 5,
+          "self_size": 4096,
+          "reference_object_ids": []
+        },
+        {
+          "id": 3,
+          "type_id": 3,
+          "self_size": 64,
+          "reference_object_ids": [
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ]
+        },
+        {
+          "id": 100,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 101,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 102,
+          "type_id": 6,
+          "self_size": 40,
+          "reference_object_ids": []
+        },
+        {
+          "id": 200,
+          "type_id": 5,
+          "self_size": 1024,
+          "reference_object_ids": []
+        },
+        {
+          "id": 201,
+          "type_id": 5,
+          "self_size": 1024,
+          "reference_object_ids": []
+        }
+      ],
+      "roots": [
+        {
+          "root_type": "ROOT_JNI_GLOBAL",
+          "object_ids": [
+            1
+          ]
+        }
+      ]
+    }
+  ]
+}

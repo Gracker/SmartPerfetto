@@ -1,0 +1,112 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "1000000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      },
+      {
+        "id": "sync",
+        "name": "com.smartperfetto.fixture:sync",
+        "uid": 10999
+      },
+      {
+        "id": "system",
+        "name": "system_server",
+        "uid": 1000
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "sync-main",
+        "process": "sync",
+        "name": "sync",
+        "is_main": true
+      },
+      {
+        "id": "am",
+        "process": "system",
+        "name": "ActivityManager"
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "10000000",
+      "duration_ns": "18000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::process-state-residency"
+    },
+    {
+      "type": "android-process-state-change",
+      "at_ns": "100000000",
+      "thread": "am",
+      "target_process": "app",
+      "prev_proc_state": "PROCESS_STATE_TOP",
+      "cur_proc_state": "PROCESS_STATE_LAST_ACTIVITY",
+      "prev_oom_score": 0,
+      "cur_oom_score": 700,
+      "reason": "OOM_ADJ_REASON_ACTIVITY",
+      "seq_id": 1
+    },
+    {
+      "type": "android-process-state-change",
+      "at_ns": "400000000",
+      "thread": "am",
+      "target_process": "app",
+      "prev_proc_state": "PROCESS_STATE_LAST_ACTIVITY",
+      "cur_proc_state": "PROCESS_STATE_CACHED_ACTIVITY",
+      "prev_oom_score": 700,
+      "cur_oom_score": 900,
+      "reason": "OOM_ADJ_REASON_UI_VISIBILITY",
+      "seq_id": 2
+    },
+    {
+      "type": "android-process-state-change",
+      "at_ns": "450000000",
+      "thread": "am",
+      "target_process": "sync",
+      "prev_proc_state": "PROCESS_STATE_SERVICE",
+      "cur_proc_state": "PROCESS_STATE_CACHED_EMPTY",
+      "prev_oom_score": 500,
+      "cur_oom_score": 950,
+      "reason": "OOM_ADJ_REASON_STOP_SERVICE",
+      "seq_id": 3
+    },
+    {
+      "type": "android-process-state-snapshot",
+      "at_ns": "900000000",
+      "records": [
+        {
+          "process": "app",
+          "proc_state": "PROCESS_STATE_CACHED_ACTIVITY",
+          "oom_score": 900
+        },
+        {
+          "process": "sync",
+          "proc_state": "PROCESS_STATE_CACHED_EMPTY",
+          "oom_score": 950
+        },
+        {
+          "process": "system",
+          "proc_state": "PROCESS_STATE_PERSISTENT",
+          "oom_score": -900
+        }
+      ]
+    }
+  ]
+}

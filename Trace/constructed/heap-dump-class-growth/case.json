@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "id": "heap-dump-class-growth",
+  "kind": "constructed",
+  "title": "Java heap dump class growth",
+  "description": "Three Java heap dumps of one app process: a leaked application class grows 2 -> 4 -> 6 reachable instances with its byte[] payload, a holder's retained set grows with a flat instance count, and a control class stays flat.",
+  "scene": "memory",
+  "tags": [
+    "android",
+    "constructed",
+    "memory",
+    "heap_graph"
+  ],
+  "aliases": [],
+  "trace": {
+    "file": "trace.overlay.pftrace",
+    "format": "perfetto-protobuf",
+    "sha256": "c207b919c7f903c818663ce7bbe26b021e7378b15e023d13be6618eb75e38f87",
+    "materialization": "base-plus-overlay"
+  },
+  "android": {
+    "release": "16",
+    "api_level": 36,
+    "device": "Google raven base",
+    "build_fingerprint": null,
+    "compatibility": {
+      "min_api": 35,
+      "max_api": 36
+    }
+  },
+  "source": {
+    "origin": "SmartPerfetto deterministic trace generator",
+    "captured_at": null,
+    "imported_at": "2026-09-25T00:00:00.000Z",
+    "license": "AGPL-3.0-or-later",
+    "consent": "generated",
+    "privacy_review": "not-applicable",
+    "sanitization_review": "not-applicable",
+    "publication": "public",
+    "evidence_tier": "R3"
+  },
+  "analysis": {
+    "results": [
+      "analysis/expected.json"
+    ],
+    "logs": []
+  },
+  "construction": {
+    "base_case_id": "android-startup-light",
+    "scenario_file": "scenario.json",
+    "generator_version": 1,
+    "seed": "heap-dump-class-growth-v1",
+    "output": "Trace/.generated/constructed/heap-dump-class-growth/trace.pftrace",
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+  },
+  "coverage": {
+    "skills": [
+      "android_heap_graph_class_growth"
+    ],
+    "strategies": [],
+    "expectations": [
+      {
+        "id": "leaked-class-grows-across-dumps",
+        "type": "skill",
+        "target": "android_heap_graph_class_growth",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_heap_graph_class_growth.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "required_sql_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "forced_sql_steps": [
+          "class_growth_within_trace"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "class_growth_within_trace",
+        "required_columns": [
+          "process_name",
+          "class_category",
+          "class_name",
+          "baseline_reachable_count",
+          "target_reachable_count",
+          "reachable_count_delta",
+          "baseline_dominated_bytes",
+          "target_dominated_bytes",
+          "dominated_delta_bytes",
+          "growth_signal",
+          "monotonic_growth",
+          "dump_count",
+          "comparability",
+          "baseline_ts",
+          "target_ts"
+        ],
+        "assertions": [
+          {
+            "column": "class_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture.TileSessionState"
+          },
+          {
+            "column": "baseline_reachable_count",
+            "operator": "eq",
+            "value": 2
+          },
+          {
+            "column": "target_reachable_count",
+            "operator": "eq",
+            "value": 6
+          },
+          {
+            "column": "growth_signal",
+            "operator": "eq",
+            "value": "instance_growth"
+          },
+          {
+            "column": "monotonic_growth",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "dump_count",
+            "operator": "eq",
+            "value": 3
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::heap-dump-class-growth"
+      },
+      {
+        "id": "holder-retains-growth-with-flat-count",
+        "type": "skill",
+        "target": "android_heap_graph_class_growth",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_heap_graph_class_growth.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "required_sql_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "forced_sql_steps": [
+          "class_growth_within_trace"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "class_growth_within_trace",
+        "required_columns": [
+          "process_name",
+          "class_category",
+          "class_name",
+          "baseline_reachable_count",
+          "target_reachable_count",
+          "reachable_count_delta",
+          "baseline_dominated_bytes",
+          "target_dominated_bytes",
+          "dominated_delta_bytes",
+          "growth_signal",
+          "monotonic_growth",
+          "dump_count",
+          "comparability",
+          "baseline_ts",
+          "target_ts"
+        ],
+        "assertions": [
+          {
+            "column": "class_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture.TileRegistry"
+          },
+          {
+            "column": "reachable_count_delta",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "growth_signal",
+            "operator": "eq",
+            "value": "retained_growth_only"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::heap-dump-class-growth"
+      },
+      {
+        "id": "unreachable-payload-excluded-from-growth",
+        "type": "skill",
+        "target": "android_heap_graph_class_growth",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_heap_graph_class_growth.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "required_sql_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "forced_sql_steps": [
+          "class_growth_within_trace"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "class_growth_within_trace",
+        "required_columns": [
+          "process_name",
+          "class_category",
+          "class_name",
+          "baseline_reachable_count",
+          "target_reachable_count",
+          "reachable_count_delta",
+          "baseline_dominated_bytes",
+          "target_dominated_bytes",
+          "dominated_delta_bytes",
+          "growth_signal",
+          "monotonic_growth",
+          "dump_count",
+          "comparability",
+          "baseline_ts",
+          "target_ts"
+        ],
+        "assertions": [
+          {
+            "column": "class_name",
+            "operator": "eq",
+            "value": "byte[]"
+          },
+          {
+            "column": "class_category",
+            "operator": "eq",
+            "value": "libcore_or_array"
+          },
+          {
+            "column": "reachable_count_delta",
+            "operator": "eq",
+            "value": 4
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::heap-dump-class-growth"
+      },
+      {
+        "id": "requested-class-aligned-with-explicit-zero",
+        "type": "skill",
+        "target": "android_heap_graph_class_growth",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_heap_graph_class_growth.skill.yaml",
+        "parameters": {
+          "process_name": "com.smartperfetto.fixture",
+          "class_names": "com.smartperfetto.fixture.TileSessionState, com.smartperfetto.fixture.NotInHeap"
+        },
+        "required_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "required_sql_steps": [
+          "heap_class_table",
+          "class_growth_availability",
+          "class_dump_inventory",
+          "class_ranking",
+          "requested_classes",
+          "class_growth_within_trace"
+        ],
+        "forced_sql_steps": [
+          "class_growth_within_trace"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "requested_classes",
+        "required_columns": [
+          "process_name",
+          "graph_sample_ts",
+          "class_name",
+          "present_in_dump",
+          "reachable_obj_count",
+          "obj_count",
+          "dominated_bytes",
+          "dump_completeness"
+        ],
+        "assertions": [
+          {
+            "column": "class_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture.NotInHeap"
+          },
+          {
+            "column": "present_in_dump",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "obj_count",
+            "operator": "eq",
+            "value": 0
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::heap-dump-class-growth"
+      }
+    ]
+  }
+}

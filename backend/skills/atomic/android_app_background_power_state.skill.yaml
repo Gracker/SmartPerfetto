@@ -1,0 +1,595 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# Android App Background Power State（原子 Skill）
+# =============================================================================
+# 应用级后台耗电的三层可选证据，每层独立按数据存在与 runtime 能力启用：
+# 1. App wakelock（PowerManager 持锁，按 uid + tag）：SDK track event
+#    (`app_wakelock_events`) 优先，否则 BatteryStats `longwake` 事件。与
+#    kernel wakelock（wakeup source）不是同一层。
+# 2. App standby bucket（statsd atom app_standby_bucket_changed）：ACTIVE /
+#    WORKING_SET / FREQUENT / RARE / RESTRICTED 决定 job、alarm、网络的配额。
+# 3. Freezer：cached 进程被冻结的区间。statsd atom app_freeze_changed 或
+#    system_server 的 `Freeze <proc>:<pid>` / `Unfreeze ...` slice；按哪一个
+#    有数据选来源，两者不相加。
+# Runtime 边界（trace processor v58.2 没有 android.app_wakelocks、
+# android.standby_bucket 与 android_freezer_state_statsd）：
+# - wakelock 退回 android_battery_stats_event_slices 的 longwake，与上游模块
+#   自身的回退来源相同；
+# - standby bucket 与 statsd freezer 视图缺失时显式报 runtime 缺口并给出原始
+#   atom 数量；
+# - slice 来源的 android_freezer_events 两个版本都有。
+# 能力检查只读 sqlite_master 和所有 runtime 都有的 track/slice 表；
+# 模块表只在条件满足的步骤里读取。
+
+name: android_app_background_power_state
+version: "1.0"
+type: atomic
+category: power
+tier: B
+
+meta:
+  display_name: "应用后台功耗状态"
+  description: "App wakelock（按 uid/tag）、standby bucket 驻留与 freezer 冻结区间三层可选证据；按数据与 trace processor 能力分别启用，旧 runtime 显式降级"
+  icon: "battery_saver"
+  tags: [power, battery, wakelock, standby_bucket, freezer, background]
+
+triggers:
+  keywords:
+    zh: [应用 wakelock, 持锁耗电, 待机分组, standby bucket, 冻结, freezer, 后台耗电]
+    en: [app wakelock, standby bucket, app freezer, frozen app, background drain]
+  patterns:
+    - ".*(standby bucket|待机分组|app wakelock|应用.*wakelock).*"
+    - ".*(freezer|冻结).*(进程|app|process).*"
+
+prerequisites:
+  modules:
+    - android.app_wakelocks
+    - android.battery_stats
+    - android.standby_bucket
+    - android.freezer
+
+inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标包名或进程名（精确或 name:* 子进程）；留空返回全部应用"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)；时长按窗口裁剪"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+
+steps:
+  - id: power_state_capability
+    type: atomic
+    name: "后台功耗证据能力检查"
+    display:
+      level: detail
+      layer: overview
+      title: "应用后台功耗证据：数据与 runtime 能力"
+      columns:
+        - name: wakelock_status
+          label: "App wakelock"
+          type: string
+        - name: standby_bucket_status
+          label: "Standby bucket"
+          type: string
+        - name: standby_atom_count
+          label: "Standby atom 数"
+          type: number
+        - name: freezer_status
+          label: "Freezer"
+          type: string
+        - name: freeze_atom_count
+          label: "Freeze atom 数"
+          type: number
+        - name: freezer_slice_count
+          label: "Freeze slice 数"
+          type: number
+    sql: |
+      WITH facts AS (
+        SELECT
+          EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'android_app_wakelocks') AS has_wakelock_view,
+          EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'android_battery_stats_event_slices') AS has_battery_stats_view,
+          EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'android_standby_bucket') AS has_standby_view,
+          EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'android_freezer_state_statsd') AS has_freezer_statsd_view,
+          EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'android_freezer_events') AS has_freezer_events_table,
+          EXISTS (
+            SELECT 1 FROM slice AS s JOIN track AS t ON s.track_id = t.id
+            WHERE t.name IN ('app_wakelock_events', 'battery_stats.longwake')
+          ) AS has_wakelock_data,
+          (SELECT COUNT(*) FROM slice WHERE name = 'app_standby_bucket_changed') AS standby_atom_count,
+          (SELECT COUNT(*) FROM slice WHERE name = 'app_freeze_changed') AS freeze_atom_count,
+          (SELECT COUNT(*) FROM slice WHERE name GLOB 'Freeze *:*') AS freezer_slice_count
+      )
+      SELECT
+        CASE
+          WHEN NOT has_wakelock_data THEN 'no_app_wakelock_data'
+          WHEN has_wakelock_view THEN 'available'
+          WHEN has_battery_stats_view THEN 'available_via_battery_stats'
+          ELSE 'runtime_lacks_app_wakelocks'
+        END AS wakelock_status,
+        CASE
+          WHEN standby_atom_count = 0 THEN 'no_standby_bucket_atoms'
+          WHEN has_standby_view THEN 'available'
+          ELSE 'runtime_lacks_android_standby_bucket'
+        END AS standby_bucket_status,
+        standby_atom_count,
+        CASE
+          WHEN freeze_atom_count > 0 AND has_freezer_statsd_view THEN 'available_statsd'
+          WHEN freezer_slice_count > 0 AND has_freezer_events_table THEN 'available_slices'
+          WHEN freeze_atom_count > 0 THEN 'runtime_lacks_freezer_statsd'
+          ELSE 'no_freezer_data'
+        END AS freezer_status,
+        freeze_atom_count,
+        freezer_slice_count
+      FROM facts
+    save_as: power_state_capability
+
+  - id: app_wakelock_summary
+    type: atomic
+    name: "App wakelock 汇总"
+    optional: true
+    condition: power_state_capability.data[0]?.wakelock_status === 'available'
+    display:
+      level: key
+      layer: list
+      title: "App wakelock（PowerManager 持锁，按 uid + tag，窗口内裁剪）"
+      columns:
+        - name: uid
+          label: "UID"
+          type: number
+        - name: user_id
+          label: "User"
+          type: number
+        - name: packages
+          label: "包/进程"
+          type: string
+        - name: tag
+          label: "Wakelock tag"
+          type: string
+        - name: wakelock_count
+          label: "次数"
+          type: number
+        - name: total_held_ms
+          label: "总持有"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: max_held_ms
+          label: "最长一次"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: source
+          label: "来源"
+          type: string
+    sql: |
+      WITH bounds AS (
+        SELECT
+          COALESCE(${start_ts}, trace_start()) AS window_start,
+          COALESCE(${end_ts}, trace_end()) AS window_end
+      ),
+      wakelocks AS (
+        -- The module view prefers SDK track events over BatteryStats.
+        SELECT
+          ts, dur, name, uid,
+          IIF(EXISTS (SELECT 1 FROM android_app_wakelocks_sdk), 'sdk_track_event', 'battery_stats_longwake') AS source
+        FROM android_app_wakelocks
+      ),
+      uid_names AS (
+        SELECT uid % 100000 AS app_id, package_name AS name FROM package_list
+        UNION
+        SELECT uid % 100000 AS app_id, name FROM process WHERE uid IS NOT NULL AND name IS NOT NULL
+      ),
+      clipped AS (
+        SELECT
+          w.uid,
+          w.name AS tag,
+          w.source,
+          MIN(w.ts + w.dur, b.window_end) - MAX(w.ts, b.window_start) AS held_dur
+        FROM wakelocks AS w
+        CROSS JOIN bounds AS b
+        WHERE w.ts < b.window_end AND w.ts + w.dur > b.window_start
+          AND (
+            '${package}' = ''
+            OR w.uid % 100000 IN (
+              SELECT app_id FROM uid_names
+              WHERE name = '${package}' OR name GLOB '${package}:*'
+            )
+          )
+      )
+      SELECT
+        c.uid,
+        c.uid / 100000 AS user_id,
+        (SELECT GROUP_CONCAT(DISTINCT n.name) FROM uid_names AS n WHERE n.app_id = c.uid % 100000) AS packages,
+        c.tag,
+        COUNT(*) AS wakelock_count,
+        ROUND(SUM(c.held_dur) / 1e6, 2) AS total_held_ms,
+        ROUND(MAX(c.held_dur) / 1e6, 2) AS max_held_ms,
+        c.source
+      FROM clipped AS c
+      GROUP BY c.uid, c.tag, c.source
+      ORDER BY SUM(c.held_dur) DESC
+      LIMIT 50
+    save_as: app_wakelock_summary
+
+  - id: app_wakelock_summary_battery_stats
+    type: atomic
+    name: "App wakelock 汇总（BatteryStats 回退）"
+    optional: true
+    condition: power_state_capability.data[0]?.wakelock_status === 'available_via_battery_stats'
+    display:
+      level: key
+      layer: list
+      title: "App wakelock（BatteryStats longwake 回退，按 uid + tag，窗口内裁剪）"
+      columns:
+        - name: uid
+          label: "UID"
+          type: number
+        - name: user_id
+          label: "User"
+          type: number
+        - name: packages
+          label: "包/进程"
+          type: string
+        - name: tag
+          label: "Wakelock tag"
+          type: string
+        - name: wakelock_count
+          label: "次数"
+          type: number
+        - name: total_held_ms
+          label: "总持有"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: max_held_ms
+          label: "最长一次"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: source
+          label: "来源"
+          type: string
+    sql: |
+      WITH bounds AS (
+        SELECT
+          COALESCE(${start_ts}, trace_start()) AS window_start,
+          COALESCE(${end_ts}, trace_end()) AS window_end
+      ),
+      wakelocks AS (
+        -- Older runtimes: the BatteryStats longwake events android.app_wakelocks
+        -- itself falls back to.
+        SELECT ts, safe_dur AS dur, str_value AS name, int_value AS uid, 'battery_stats_longwake' AS source
+        FROM android_battery_stats_event_slices
+        WHERE track_name = 'battery_stats.longwake'
+      ),
+      uid_names AS (
+        SELECT uid % 100000 AS app_id, package_name AS name FROM package_list
+        UNION
+        SELECT uid % 100000 AS app_id, name FROM process WHERE uid IS NOT NULL AND name IS NOT NULL
+      ),
+      clipped AS (
+        SELECT
+          w.uid,
+          w.name AS tag,
+          w.source,
+          MIN(w.ts + w.dur, b.window_end) - MAX(w.ts, b.window_start) AS held_dur
+        FROM wakelocks AS w
+        CROSS JOIN bounds AS b
+        WHERE w.ts < b.window_end AND w.ts + w.dur > b.window_start
+          AND (
+            '${package}' = ''
+            OR w.uid % 100000 IN (
+              SELECT app_id FROM uid_names
+              WHERE name = '${package}' OR name GLOB '${package}:*'
+            )
+          )
+      )
+      SELECT
+        c.uid,
+        c.uid / 100000 AS user_id,
+        (SELECT GROUP_CONCAT(DISTINCT n.name) FROM uid_names AS n WHERE n.app_id = c.uid % 100000) AS packages,
+        c.tag,
+        COUNT(*) AS wakelock_count,
+        ROUND(SUM(c.held_dur) / 1e6, 2) AS total_held_ms,
+        ROUND(MAX(c.held_dur) / 1e6, 2) AS max_held_ms,
+        c.source
+      FROM clipped AS c
+      GROUP BY c.uid, c.tag, c.source
+      ORDER BY SUM(c.held_dur) DESC
+      LIMIT 50
+    save_as: app_wakelock_summary_battery_stats
+
+  - id: standby_bucket_residency
+    type: atomic
+    name: "Standby bucket 驻留"
+    optional: true
+    condition: power_state_capability.data[0]?.standby_bucket_status === 'available'
+    display:
+      level: key
+      layer: list
+      title: "App standby bucket 驻留（窗口内裁剪）"
+      columns:
+        - name: package_name
+          label: "包名"
+          type: string
+        - name: user_id
+          label: "User"
+          type: number
+        - name: bucket
+          label: "Bucket"
+          type: string
+        - name: residency_ms
+          label: "驻留时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: entry_count
+          label: "进入次数"
+          type: number
+        - name: last_main_reason
+          label: "最近原因"
+          type: string
+        - name: first_entered_ts
+          label: "首次进入"
+          type: timestamp
+          unit: ns
+    sql: |
+      WITH bounds AS (
+        SELECT
+          COALESCE(${start_ts}, trace_start()) AS window_start,
+          COALESCE(${end_ts}, trace_end()) AS window_end
+      ),
+      clipped AS (
+        SELECT
+          s.*,
+          MIN(s.ts + s.dur, b.window_end) - MAX(s.ts, b.window_start) AS clipped_dur,
+          ROW_NUMBER() OVER (
+            PARTITION BY s.package_name, s.user_id, s.bucket ORDER BY s.ts DESC
+          ) AS recency
+        FROM android_standby_bucket AS s
+        CROSS JOIN bounds AS b
+        WHERE s.ts < b.window_end AND s.ts + s.dur > b.window_start
+          -- Buckets belong to packages: `pkg:subprocess` matches `pkg`.
+          AND (
+            '${package}' = ''
+            OR s.package_name = IIF(instr('${package}', ':') > 0,
+              substr('${package}', 1, instr('${package}', ':') - 1), '${package}')
+          )
+      )
+      SELECT
+        package_name,
+        user_id,
+        bucket,
+        ROUND(SUM(clipped_dur) / 1e6, 2) AS residency_ms,
+        COUNT(*) AS entry_count,
+        MAX(IIF(recency = 1, main_reason, NULL)) AS last_main_reason,
+        printf('%d', MIN(ts)) AS first_entered_ts
+      FROM clipped
+      GROUP BY package_name, user_id, bucket
+      ORDER BY package_name, user_id, SUM(clipped_dur) DESC
+    save_as: standby_bucket_residency
+
+  # Freezer: exactly one of the next two steps runs, chosen by which source
+  # has data (statsd preferred); the two are never added.
+  - id: freezer_summary
+    type: atomic
+    name: "Freezer 冻结汇总"
+    optional: true
+    condition: power_state_capability.data[0]?.freezer_status === 'available_statsd'
+    display:
+      level: key
+      layer: list
+      title: "Freezer 冻结区间（statsd app_freeze_changed，按进程，窗口内裁剪）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: pid
+          label: "PID"
+          type: number
+        - name: freeze_count
+          label: "冻结次数"
+          type: number
+        - name: total_frozen_ms
+          label: "总冻结时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: max_frozen_ms
+          label: "最长一次"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: top_unfreeze_reason
+          label: "主要解冻原因"
+          type: string
+        - name: source
+          label: "来源"
+          type: string
+    sql: |
+      WITH bounds AS (
+        SELECT
+          COALESCE(${start_ts}, trace_start()) AS window_start,
+          COALESCE(${end_ts}, trace_end()) AS window_end
+      ),
+      frozen AS (
+        -- dur runs to the next atom of the same process, so the matching
+        -- unfreeze is the next row.
+        SELECT
+          ts,
+          dur,
+          pid,
+          process_name,
+          IIF(next_state = 'UNFREEZE_APP', next_reason, NULL) AS unfreeze_reason,
+          'statsd_app_freeze_changed' AS source
+        FROM (
+          SELECT
+            *,
+            LEAD(freezer_state) OVER (PARTITION BY pid ORDER BY ts) AS next_state,
+            LEAD(unfreeze_reason) OVER (PARTITION BY pid ORDER BY ts) AS next_reason
+          FROM android_freezer_state_statsd
+        )
+        WHERE freezer_state = 'FREEZE_APP'
+      ),
+      clipped AS (
+        SELECT
+          f.*,
+          MIN(f.ts + f.dur, b.window_end) - MAX(f.ts, b.window_start) AS clipped_dur
+        FROM frozen AS f
+        CROSS JOIN bounds AS b
+        WHERE f.ts < b.window_end AND f.ts + f.dur > b.window_start
+          AND (
+            '${package}' = ''
+            OR f.process_name = '${package}'
+            OR f.process_name GLOB '${package}:*'
+          )
+      ),
+      reasons AS (
+        SELECT
+          process_name,
+          pid,
+          unfreeze_reason,
+          ROW_NUMBER() OVER (
+            PARTITION BY process_name, pid ORDER BY COUNT(*) DESC, unfreeze_reason
+          ) AS reason_rank
+        FROM clipped
+        WHERE unfreeze_reason IS NOT NULL
+        GROUP BY process_name, pid, unfreeze_reason
+      )
+      SELECT
+        c.process_name,
+        c.pid,
+        COUNT(*) AS freeze_count,
+        ROUND(SUM(c.clipped_dur) / 1e6, 2) AS total_frozen_ms,
+        ROUND(MAX(c.clipped_dur) / 1e6, 2) AS max_frozen_ms,
+        r.unfreeze_reason AS top_unfreeze_reason,
+        c.source
+      FROM clipped AS c
+      LEFT JOIN reasons AS r
+        ON r.process_name = c.process_name
+        AND r.pid = c.pid
+        AND r.reason_rank = 1
+      GROUP BY c.process_name, c.pid, c.source
+      ORDER BY SUM(c.clipped_dur) DESC
+      LIMIT 50
+    save_as: freezer_summary
+
+  - id: freezer_summary_slices
+    type: atomic
+    name: "Freezer 冻结汇总（slice 来源）"
+    optional: true
+    condition: power_state_capability.data[0]?.freezer_status === 'available_slices'
+    display:
+      level: key
+      layer: list
+      title: "Freezer 冻结区间（Freeze/Unfreeze slice，按进程，窗口内裁剪）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: pid
+          label: "PID"
+          type: number
+        - name: freeze_count
+          label: "冻结次数"
+          type: number
+        - name: total_frozen_ms
+          label: "总冻结时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: max_frozen_ms
+          label: "最长一次"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: top_unfreeze_reason
+          label: "主要解冻原因"
+          type: string
+        - name: source
+          label: "来源"
+          type: string
+    sql: |
+      WITH bounds AS (
+        SELECT
+          COALESCE(${start_ts}, trace_start()) AS window_start,
+          COALESCE(${end_ts}, trace_end()) AS window_end
+      ),
+      frozen AS (
+        SELECT
+          e.ts,
+          e.dur,
+          e.pid,
+          COALESCE(p.name, printf('pid:%d', e.pid)) AS process_name,
+          e.unfreeze_reason_str AS unfreeze_reason,
+          'freezer_slices' AS source
+        FROM android_freezer_events AS e
+        LEFT JOIN process AS p USING (upid)
+      ),
+      clipped AS (
+        SELECT
+          f.*,
+          MIN(f.ts + f.dur, b.window_end) - MAX(f.ts, b.window_start) AS clipped_dur
+        FROM frozen AS f
+        CROSS JOIN bounds AS b
+        WHERE f.ts < b.window_end AND f.ts + f.dur > b.window_start
+          AND (
+            '${package}' = ''
+            OR f.process_name = '${package}'
+            OR f.process_name GLOB '${package}:*'
+          )
+      ),
+      reasons AS (
+        SELECT
+          process_name,
+          pid,
+          unfreeze_reason,
+          ROW_NUMBER() OVER (
+            PARTITION BY process_name, pid ORDER BY COUNT(*) DESC, unfreeze_reason
+          ) AS reason_rank
+        FROM clipped
+        WHERE unfreeze_reason IS NOT NULL
+        GROUP BY process_name, pid, unfreeze_reason
+      )
+      SELECT
+        c.process_name,
+        c.pid,
+        COUNT(*) AS freeze_count,
+        ROUND(SUM(c.clipped_dur) / 1e6, 2) AS total_frozen_ms,
+        ROUND(MAX(c.clipped_dur) / 1e6, 2) AS max_frozen_ms,
+        r.unfreeze_reason AS top_unfreeze_reason,
+        c.source
+      FROM clipped AS c
+      LEFT JOIN reasons AS r
+        ON r.process_name = c.process_name
+        AND r.pid = c.pid
+        AND r.reason_rank = 1
+      GROUP BY c.process_name, c.pid, c.source
+      ORDER BY SUM(c.clipped_dur) DESC
+      LIMIT 50
+    save_as: freezer_summary_slices
+
+output:
+  format: structured
+  fields:
+    - name: power_state_capability
+      description: "Per layer status: available, available_via_battery_stats / available_slices (older-runtime-compatible sources), runtime_lacks_* (data present but the trace processor predates the module) or no_*_data; includes raw atom and slice counts"
+    - name: app_wakelock_summary
+      description: "Application (PowerManager) wakelocks by uid and tag with packages resolved from package_list and process uids; not kernel wakeup sources"
+    - name: standby_bucket_residency
+      description: "Per package standby bucket residency within the window and the latest main reason"
+    - name: app_wakelock_summary_battery_stats
+      description: "Same shape as app_wakelock_summary from BatteryStats longwake events, for trace processors without android.app_wakelocks"
+    - name: freezer_summary
+      description: "Per process frozen intervals from statsd app_freeze_changed atoms and the dominant unfreeze reason"
+    - name: freezer_summary_slices
+      description: "Same shape as freezer_summary from Freeze/Unfreeze slices; used when there are no freeze atoms or the runtime lacks the statsd view"

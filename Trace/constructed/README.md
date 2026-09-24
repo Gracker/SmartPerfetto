@@ -5,16 +5,20 @@ Run `npm run trace:build` to materialize base-plus-overlay traces under `Trace/.
 
 | Case | Scene | Android | Base | Coverage |
 | --- | --- | --- | --- | --- | --- |
+| [App background power state layers](./app-background-power/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Binder, lock, and I/O blocking](./binder-io-blocking/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 25 target(s) |
 | [Framework rendering pipeline signatures](./framework-pipelines/) | pipeline | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 33 target(s) |
 | [General analysis and runtime contracts](./general-runtime-contracts/) | general | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 17 target(s) |
 | [GPU workload and frequency](./gpu-workload/) | gpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 11 target(s) |
+| [Java heap dump class growth](./heap-dump-class-growth/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Input and interaction latency](./input-interaction-latency/) | interaction | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 14 target(s) |
 | [Linux and Android system state](./linux-system-state/) | linux | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |
+| [Lock holder intervals (android.lock_held)](./lock-held-ownership/) | io | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 1 target(s) |
 | [Main-thread work between animation frames](./main-thread-frame-work/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
 | [Media, network, and camera pipeline](./media-network-camera/) | media | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 8 target(s) |
 | [Memory and GC pressure](./memory-gc-pressure/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 20 target(s) |
 | [Power and thermal throttling](./power-thermal/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 19 target(s) |
+| [Framework process state residency](./process-state-residency/) | memory | Android 16 / API 36 (tested API 35-36) | android-startup-light | 1 target(s) |
 | [Rendering pipeline jank](./rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 46 target(s) |
 | [Scene observation and device state contracts](./scene-observation-contracts/) | scene_reconstruction | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |
 | [Scheduler and CPU contention](./scheduler-cpu-contention/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 38 target(s) |

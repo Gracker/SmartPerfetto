@@ -690,6 +690,9 @@
         "blocking_thread_state",
         "blocking_functions",
         "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
         "root_cause_classification",
         "fallback_no_data"
       ],
@@ -703,6 +706,9 @@
         "blocking_thread_state",
         "blocking_functions",
         "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
         "root_cause_classification",
         "fallback_no_data"
       ],
@@ -714,6 +720,8 @@
         "blocking_thread_state",
         "blocking_functions",
         "contention_binder_correlation",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
         "root_cause_classification",
         "fallback_no_data"
       ],

@@ -22,6 +22,11 @@
 # - android_monitor_contention_chain_thread_state: 持锁线程状态
 # - android_monitor_contention_chain_thread_state_by_txn: 按事务聚合线程状态
 # - android_monitor_contention_chain_blocked_functions_by_txn: 阻塞函数
+# - android_lock_held（trace processor v58.2 之后）：持锁一侧的持有区间。
+#   来源是 system_server 锁追踪的 `<lock>_lock_held` slice；同线程递归持有
+#   已合并，同名锁被下一个线程获取时截断；blocking_method 是持锁期间
+#   等锁线程看到的持锁方法。截断按锁名在全 trace 范围进行，不区分进程。
+#   旧 runtime 缺该模块时只报告 slice 数量与 runtime 缺口，不给未合并的数字。
 
 name: lock_contention_analysis
 version: "3.0"
@@ -52,6 +57,7 @@ prerequisites:
     - thread_state
   modules:
     - android.monitor_contention
+    - android.lock_held
     - slices.with_context
 
 inputs:
@@ -663,6 +669,257 @@ steps:
       LIMIT 30
     save_as: contention_binder_correlation
     condition: data_check.data[0]?.status === 'available'
+
+  # ==========================================================================
+  # L2: 持锁一侧（android.lock_held）
+  # ==========================================================================
+  # Independent of monitor contention: lock tracing can exist without any
+  # contention slice. The probe reads only sqlite_master and thread_slice,
+  # which every runtime has; the module table is read only behind it.
+  - id: lock_held_capability
+    type: atomic
+    name: "持锁区间数据检查"
+    optional: true
+    display:
+      level: detail
+      layer: overview
+      title: "持锁区间（lock_held）数据可用性"
+      columns:
+        - name: lock_held_slice_count
+          label: "lock_held slice 数"
+          type: number
+        - name: lock_held_slice_count_in_scope
+          label: "目标进程内 slice 数"
+          type: number
+        - name: runtime_has_lock_held
+          label: "Runtime 有 android.lock_held"
+          type: number
+        - name: status
+          label: "状态"
+          type: string
+    sql: |
+      -- Lock holds are traced in the process that owns the lock (usually
+      -- system_server), so a process_name filter can leave none in scope even
+      -- when the trace has them; that is reported, not shown as "no holds".
+      WITH held AS (
+        SELECT process_name FROM thread_slice WHERE name GLOB '*_lock_held'
+      ),
+      facts AS (
+        SELECT
+          (SELECT COUNT(*) FROM held) AS lock_held_slice_count,
+          (
+            SELECT COUNT(*) FROM held
+            WHERE '${process_name}' = '' OR process_name GLOB '*${process_name}*'
+          ) AS lock_held_slice_count_in_scope,
+          EXISTS (
+            SELECT 1 FROM sqlite_master WHERE name = 'android_lock_held'
+          ) AS runtime_has_lock_held
+      )
+      SELECT
+        lock_held_slice_count,
+        lock_held_slice_count_in_scope,
+        runtime_has_lock_held,
+        CASE
+          WHEN lock_held_slice_count = 0 THEN 'no_lock_held_slices'
+          WHEN lock_held_slice_count_in_scope = 0 THEN 'no_lock_held_slices_for_process'
+          WHEN NOT runtime_has_lock_held THEN 'runtime_lacks_android_lock_held'
+          ELSE 'available'
+        END AS status
+      FROM facts
+    save_as: lock_held_capability
+
+  - id: lock_held_owner_summary
+    type: atomic
+    name: "持锁时长汇总"
+    optional: true
+    condition: lock_held_capability.data[0]?.status === 'available'
+    display:
+      level: key
+      layer: list
+      title: "持锁时长汇总（按锁）"
+      columns:
+        - name: process_name
+          label: "进程名"
+          type: string
+        - name: lock_name
+          label: "锁"
+          type: string
+        - name: hold_count
+          label: "持有次数"
+          type: number
+        - name: total_held_ms
+          label: "总持有时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: max_held_ms
+          label: "最长持有"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: contended_hold_count
+          label: "期间有线程等锁"
+          type: number
+        - name: incomplete_hold_count
+          label: "trace 结束仍持有"
+          type: number
+        - name: top_holder_thread
+          label: "主要持锁线程"
+          type: string
+        - name: top_holder_held_ms
+          label: "该线程持有时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: top_blocking_method
+          label: "等锁方看到的持锁方法"
+          type: string
+    sql: |
+      WITH holds AS (
+        SELECT
+          COALESCE(p.name, 'unknown') AS process_name,
+          h.lock_name,
+          COALESCE(t.name, 'tid:' || t.tid) AS holder_thread,
+          h.is_incomplete,
+          h.blocking_method,
+          MIN(h.ts + h.dur, COALESCE(${end_ts}, h.ts + h.dur))
+            - MAX(h.ts, COALESCE(${start_ts}, h.ts)) AS held_dur
+        FROM android_lock_held AS h
+        JOIN thread AS t USING (utid)
+        LEFT JOIN process AS p USING (upid)
+        WHERE
+          CASE WHEN '${process_name}' != ''
+               THEN p.name GLOB '*${process_name}*'
+               ELSE 1 END
+          AND (${start_ts} IS NULL OR h.ts + h.dur > ${start_ts})
+          AND (${end_ts} IS NULL OR h.ts < ${end_ts})
+      ),
+      holders AS (
+        SELECT
+          process_name,
+          lock_name,
+          holder_thread,
+          SUM(held_dur) AS holder_dur,
+          ROW_NUMBER() OVER (
+            PARTITION BY process_name, lock_name ORDER BY SUM(held_dur) DESC, holder_thread
+          ) AS holder_rank
+        FROM holds
+        GROUP BY process_name, lock_name, holder_thread
+      ),
+      methods AS (
+        SELECT
+          process_name,
+          lock_name,
+          blocking_method,
+          ROW_NUMBER() OVER (
+            PARTITION BY process_name, lock_name ORDER BY COUNT(*) DESC, blocking_method
+          ) AS method_rank
+        FROM holds
+        WHERE blocking_method IS NOT NULL
+        GROUP BY process_name, lock_name, blocking_method
+      )
+      SELECT
+        h.process_name,
+        h.lock_name,
+        COUNT(*) AS hold_count,
+        ROUND(SUM(h.held_dur) / 1e6, 2) AS total_held_ms,
+        ROUND(MAX(h.held_dur) / 1e6, 2) AS max_held_ms,
+        SUM(h.blocking_method IS NOT NULL) AS contended_hold_count,
+        SUM(h.is_incomplete) AS incomplete_hold_count,
+        top.holder_thread AS top_holder_thread,
+        ROUND(top.holder_dur / 1e6, 2) AS top_holder_held_ms,
+        m.blocking_method AS top_blocking_method
+      FROM holds AS h
+      JOIN holders AS top
+        ON top.process_name = h.process_name
+        AND top.lock_name = h.lock_name
+        AND top.holder_rank = 1
+      LEFT JOIN methods AS m
+        ON m.process_name = h.process_name
+        AND m.lock_name = h.lock_name
+        AND m.method_rank = 1
+      GROUP BY h.process_name, h.lock_name
+      ORDER BY SUM(h.held_dur) DESC
+      LIMIT 50
+    save_as: lock_held_owner_summary
+
+  - id: lock_held_long_holds
+    type: atomic
+    name: "长时间持锁"
+    optional: true
+    condition: lock_held_capability.data[0]?.status === 'available'
+    display:
+      level: detail
+      layer: list
+      title: "长时间持锁（持锁线程、时长、等锁方看到的持锁方法）"
+      columns:
+        - name: process_name
+          label: "进程名"
+          type: string
+        - name: lock_name
+          label: "锁"
+          type: string
+        - name: holder_thread
+          label: "持锁线程"
+          type: string
+        - name: holder_tid
+          label: "TID"
+          type: number
+        - name: is_main_thread
+          label: "主线程"
+          type: number
+        - name: ts
+          label: "获取时间"
+          type: timestamp
+          unit: ns
+        - name: held_ms
+          label: "窗口内持有时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: full_held_ms
+          label: "完整持有时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: blocking_method
+          label: "等锁方看到的持锁方法"
+          type: string
+        - name: is_incomplete
+          label: "trace 结束仍持有"
+          type: number
+        - name: slice_id
+          label: "Slice ID"
+          type: number
+    sql: |
+      SELECT
+        COALESCE(p.name, 'unknown') AS process_name,
+        h.lock_name,
+        COALESCE(t.name, 'tid:' || t.tid) AS holder_thread,
+        t.tid AS holder_tid,
+        COALESCE(t.is_main_thread, t.tid = p.pid, 0) AS is_main_thread,
+        printf('%d', h.ts) AS ts,
+        ROUND((
+          MIN(h.ts + h.dur, COALESCE(${end_ts}, h.ts + h.dur))
+            - MAX(h.ts, COALESCE(${start_ts}, h.ts))
+        ) / 1e6, 2) AS held_ms,
+        ROUND(h.dur / 1e6, 2) AS full_held_ms,
+        h.blocking_method,
+        h.is_incomplete,
+        h.id AS slice_id
+      FROM android_lock_held AS h
+      JOIN thread AS t USING (utid)
+      LEFT JOIN process AS p USING (upid)
+      WHERE
+        CASE WHEN '${process_name}' != ''
+             THEN p.name GLOB '*${process_name}*'
+             ELSE 1 END
+        AND h.dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
+        AND (${start_ts} IS NULL OR h.ts + h.dur > ${start_ts})
+        AND (${end_ts} IS NULL OR h.ts < ${end_ts})
+      ORDER BY h.dur DESC
+      LIMIT 50
+    save_as: lock_held_long_holds
 
   # ==========================================================================
   # L3: SQL 根因分类

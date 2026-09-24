@@ -147,5 +147,14 @@ Before calling the sync done, explicitly check:
 - Trace processor version and packaged prebuilts match the intended runtime pin.
 - SQL docs, stdlib symbols, Skills, and Strategies agree on the new Perfetto
   schema/stdlib capabilities.
+- Private stdlib tables that Skills read directly still exist with the shape
+  the Skill expects. `_android_process_state_intervals` changes right after
+  99234d73fe (e9603ed549 adds EXITED rows with `dur = -1` and pre-birth
+  NONEXISTENT rows); `android_process_state_residency` already excludes both
+  from alive time, but re-run its constructed case and read the rows rather
+  than trusting a green gate.
+- Runtime-gated Skill layers (`runtime_lacks_*` capability statuses) still
+  degrade explicitly on the previous release binary: run the affected Skills
+  with `TRACE_PROCESSOR_PATH` pointing at it on their constructed cases.
 - Scene trace regression still passes on the canonical traces.
 - The root repository and `perfetto/` submodule have no unrelated staged files.

@@ -4731,6 +4731,25 @@ describe('createClaudeMcpServer', () => {
       }
     });
 
+    it('rejects a heap dump timestamp shared across both comparison sides', async () => {
+      const {tools, mockSkillExecutor} = createTestServer({
+        referenceTraceId: 'ref-trace-456',
+        packageName: 'com.example.current',
+        referencePackageName: 'com.example.reference',
+      });
+
+      const result = await callTool(tools, 'compare_skill', {
+        skillId: 'android_heap_graph_class_growth',
+        params: {graph_sample_ts: 1200000000},
+      });
+
+      expect(result).toMatchObject({
+        success: false,
+        action_required: 'provide_per_trace_process_selectors',
+      });
+      expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+    });
+
     it('fails comparison before execution when either side supplies undeclared identity params', async () => {
       const getSkillMock = skillRegistry.getSkill as jest.MockedFunction<typeof skillRegistry.getSkill>;
       const zeroIdentitySkill = {

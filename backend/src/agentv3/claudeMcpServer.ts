@@ -7199,10 +7199,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             invalidParamsBySide: explicitInvalidParamsBySide,
             action_required: 'retry_compare_skill_with_declared_side_params'});
         }
-        const sharedNumericSelectors = ['upid', 'pid'].filter(key => params?.[key] != null);
-        if (sharedNumericSelectors.some(key => currentSideParams?.[key] == null || referenceSideParams?.[key] == null)) {
+        // Process ids and heap dump timestamps only mean something inside one trace.
+        const sharedTraceLocalSelectors = ['upid', 'pid', 'graph_sample_ts'].filter(key => params?.[key] != null);
+        if (sharedTraceLocalSelectors.some(key => currentSideParams?.[key] == null || referenceSideParams?.[key] == null)) {
           return createRuntimeToolResult({ success: false, skillId,
-            error: 'Trace-local UPID/PID selectors require explicit currentParams and referenceParams; they cannot be shared across traces.',
+            error: 'Trace-local UPID/PID/graph_sample_ts selectors require explicit currentParams and referenceParams; they cannot be shared across traces.',
             action_required: 'provide_per_trace_process_selectors' });
         }
         const referenceSharedParams = referenceSharedParamsForComparison(

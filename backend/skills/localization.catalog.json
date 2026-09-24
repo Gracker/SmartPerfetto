@@ -7,11 +7,11 @@
     "authoredNarrativeRemainsVerbatim": true
   },
   "inventory": {
-    "skillCount": 249,
+    "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1339,
-    "explicitColumnCount": 4814
+    "stepCount": 1366,
+    "explicitColumnCount": 4976
   },
   "skills": {
     "ams_module": {
@@ -85,6 +85,384 @@
               "en": "TTID ms"
             }
           }
+        }
+      }
+    },
+    "android_app_background_power_state": {
+      "displayName": {
+        "zh-CN": "应用后台功耗状态",
+        "en": "Android App Background Power State"
+      },
+      "description": {
+        "zh-CN": "App wakelock（按 uid/tag）、standby bucket 驻留与 freezer 冻结区间三层可选证据；按数据与 trace processor 能力分别启用，旧 runtime 显式降级",
+        "en": "Analyzes Android App Background Power State using trace metrics and supporting evidence."
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "app_wakelock_summary": {
+          "title": {
+            "zh-CN": "App wakelock（PowerManager 持锁，按 uid + tag，窗口内裁剪）",
+            "en": "App Wakelock Summary"
+          },
+          "columns": {
+            "uid": {
+              "label": {
+                "zh-CN": "Uid",
+                "en": "UID"
+              }
+            },
+            "user_id": {
+              "label": {
+                "zh-CN": "UserId",
+                "en": "User"
+              }
+            },
+            "packages": {
+              "label": {
+                "zh-CN": "包/进程",
+                "en": "Packages"
+              }
+            },
+            "tag": {
+              "label": {
+                "zh-CN": "Tag",
+                "en": "Wakelock tag"
+              }
+            },
+            "wakelock_count": {
+              "label": {
+                "zh-CN": "次数",
+                "en": "Wakelock Count"
+              }
+            },
+            "total_held_ms": {
+              "label": {
+                "zh-CN": "总持有",
+                "en": "Total Held ms"
+              }
+            },
+            "max_held_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Held ms"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "app_wakelock_summary_battery_stats": {
+          "title": {
+            "zh-CN": "App wakelock（BatteryStats longwake 回退，按 uid + tag，窗口内裁剪）",
+            "en": "App Wakelock Summary Battery Stats"
+          },
+          "columns": {
+            "uid": {
+              "label": {
+                "zh-CN": "Uid",
+                "en": "UID"
+              }
+            },
+            "user_id": {
+              "label": {
+                "zh-CN": "UserId",
+                "en": "User"
+              }
+            },
+            "packages": {
+              "label": {
+                "zh-CN": "包/进程",
+                "en": "Packages"
+              }
+            },
+            "tag": {
+              "label": {
+                "zh-CN": "Tag",
+                "en": "Wakelock tag"
+              }
+            },
+            "wakelock_count": {
+              "label": {
+                "zh-CN": "次数",
+                "en": "Wakelock Count"
+              }
+            },
+            "total_held_ms": {
+              "label": {
+                "zh-CN": "总持有",
+                "en": "Total Held ms"
+              }
+            },
+            "max_held_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Held ms"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "freezer_summary": {
+          "title": {
+            "zh-CN": "Freezer 冻结区间（statsd app_freeze_changed，按进程，窗口内裁剪）",
+            "en": "Freezer Summary"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "pid": {
+              "label": {
+                "zh-CN": "PID",
+                "en": "PID"
+              }
+            },
+            "freeze_count": {
+              "label": {
+                "zh-CN": "冻结次数",
+                "en": "Freeze Count"
+              }
+            },
+            "total_frozen_ms": {
+              "label": {
+                "zh-CN": "总冻结时长",
+                "en": "Total Frozen ms"
+              }
+            },
+            "max_frozen_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Frozen ms"
+              }
+            },
+            "top_unfreeze_reason": {
+              "label": {
+                "zh-CN": "主要解冻原因",
+                "en": "Top Unfreeze Reason"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "freezer_summary_slices": {
+          "title": {
+            "zh-CN": "Freezer 冻结区间（Freeze/Unfreeze slice，按进程，窗口内裁剪）",
+            "en": "Freezer Summary Slices"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "pid": {
+              "label": {
+                "zh-CN": "PID",
+                "en": "PID"
+              }
+            },
+            "freeze_count": {
+              "label": {
+                "zh-CN": "冻结次数",
+                "en": "Freeze Count"
+              }
+            },
+            "total_frozen_ms": {
+              "label": {
+                "zh-CN": "总冻结时长",
+                "en": "Total Frozen ms"
+              }
+            },
+            "max_frozen_ms": {
+              "label": {
+                "zh-CN": "最长一次",
+                "en": "Max Frozen ms"
+              }
+            },
+            "top_unfreeze_reason": {
+              "label": {
+                "zh-CN": "主要解冻原因",
+                "en": "Top Unfreeze Reason"
+              }
+            },
+            "source": {
+              "label": {
+                "zh-CN": "来源",
+                "en": "Source"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "power_state_capability": {
+          "title": {
+            "zh-CN": "应用后台功耗证据：数据与 runtime 能力",
+            "en": "Power State Capability"
+          },
+          "columns": {
+            "wakelock_status": {
+              "label": {
+                "zh-CN": "WakelockStatus",
+                "en": "App wakelock"
+              }
+            },
+            "standby_bucket_status": {
+              "label": {
+                "zh-CN": "StandbyBucketStatus",
+                "en": "Standby bucket"
+              }
+            },
+            "standby_atom_count": {
+              "label": {
+                "zh-CN": "Standby atom 数",
+                "en": "Standby Atom Count"
+              }
+            },
+            "freezer_status": {
+              "label": {
+                "zh-CN": "FreezerStatus",
+                "en": "Freezer"
+              }
+            },
+            "freeze_atom_count": {
+              "label": {
+                "zh-CN": "Freeze atom 数",
+                "en": "Freeze Atom Count"
+              }
+            },
+            "freezer_slice_count": {
+              "label": {
+                "zh-CN": "Freeze slice 数",
+                "en": "Freezer Slice Count"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "应用后台功耗状态",
+            "en": "Android App Background Power State"
+          },
+          "columns": {
+            "power_state_capability": {
+              "label": {
+                "zh-CN": "功耗StateCapability",
+                "en": "Power State Capability"
+              }
+            },
+            "app_wakelock_summary": {
+              "label": {
+                "zh-CN": "AppWakelock摘要",
+                "en": "App Wakelock Summary"
+              }
+            },
+            "standby_bucket_residency": {
+              "label": {
+                "zh-CN": "StandbyBucketResidency",
+                "en": "Standby Bucket Residency"
+              }
+            },
+            "app_wakelock_summary_battery_stats": {
+              "label": {
+                "zh-CN": "AppWakelock摘要BatteryStats",
+                "en": "App Wakelock Summary Battery Stats"
+              }
+            },
+            "freezer_summary": {
+              "label": {
+                "zh-CN": "Freezer摘要",
+                "en": "Freezer Summary"
+              }
+            },
+            "freezer_summary_slices": {
+              "label": {
+                "zh-CN": "Freezer摘要Slices",
+                "en": "Freezer Summary Slices"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "standby_bucket_residency": {
+          "title": {
+            "zh-CN": "App standby bucket 驻留（窗口内裁剪）",
+            "en": "Standby Bucket Residency"
+          },
+          "columns": {
+            "package_name": {
+              "label": {
+                "zh-CN": "包名",
+                "en": "Package Name"
+              }
+            },
+            "user_id": {
+              "label": {
+                "zh-CN": "UserId",
+                "en": "User"
+              }
+            },
+            "bucket": {
+              "label": {
+                "zh-CN": "Bucket",
+                "en": "Bucket"
+              }
+            },
+            "residency_ms": {
+              "label": {
+                "zh-CN": "驻留时长",
+                "en": "Residency ms"
+              }
+            },
+            "entry_count": {
+              "label": {
+                "zh-CN": "进入次数",
+                "en": "Entry Count"
+              }
+            },
+            "last_main_reason": {
+              "label": {
+                "zh-CN": "最近原因",
+                "en": "Last Main Reason"
+              }
+            },
+            "first_entered_ts": {
+              "label": {
+                "zh-CN": "首次进入",
+                "en": "First Entered Ts"
+              }
+            }
+          },
+          "synthesizeLabels": {}
         }
       }
     },
@@ -553,6 +931,419 @@
               "label": {
                 "zh-CN": "DominatorPaths",
                 "en": "Dominator Paths"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "android_heap_graph_class_growth": {
+      "displayName": {
+        "zh-CN": "Java Heap Class 增长对比",
+        "en": "Android Heap Graph Class Growth"
+      },
+      "description": {
+        "zh-CN": "按 class 对比 Java heap dump 的实例数与 dominated 大小：同 trace 多次 dump 比首尾，前后两份 trace 经 compare_skill 对照；app class 与 libcore/数组分开排名",
+        "en": "Analyzes Android Heap Graph Class Growth using trace metrics and supporting evidence."
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "class_dump_inventory": {
+          "title": {
+            "zh-CN": "Heap dump 清单（总量平稳不代表没有泄漏）",
+            "en": "Class Dump Inventory"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "graph_sample_ts": {
+              "label": {
+                "zh-CN": "Dump 时间",
+                "en": "Graph Sample Ts"
+              }
+            },
+            "dump_index": {
+              "label": {
+                "zh-CN": "序号",
+                "en": "Dump Index"
+              }
+            },
+            "selected_for_ranking": {
+              "label": {
+                "zh-CN": "用于排名",
+                "en": "Selected For Ranking"
+              }
+            },
+            "reachable_heap_bytes": {
+              "label": {
+                "zh-CN": "ReachableHeapbytes",
+                "en": "Reachable Heap"
+              }
+            },
+            "reachable_obj_count": {
+              "label": {
+                "zh-CN": "Reachable 对象数",
+                "en": "Reachable Obj Count"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "class_growth_availability": {
+          "title": {
+            "zh-CN": "Heap dump 对比可用性",
+            "en": "Class Growth Availability"
+          },
+          "columns": {
+            "dump_count": {
+              "label": {
+                "zh-CN": "Dump 数",
+                "en": "Dump Count"
+              }
+            },
+            "process_count": {
+              "label": {
+                "zh-CN": "进程数",
+                "en": "Process Count"
+              }
+            },
+            "max_dumps_per_process": {
+              "label": {
+                "zh-CN": "单进程最多 dump 数",
+                "en": "Max Dumps Per Process"
+              }
+            },
+            "incomplete_dump_count": {
+              "label": {
+                "zh-CN": "不完整 dump 数",
+                "en": "Incomplete Dump Count"
+              }
+            },
+            "dump_selector": {
+              "label": {
+                "zh-CN": "排名使用的 dump",
+                "en": "Dump Selector"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "class_growth_within_trace": {
+          "title": {
+            "zh-CN": "首次 → 末次 heap dump 的 class 增长（libcore/数组与其他 class 分开排名）",
+            "en": "Class Growth Within Trace"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "class_category": {
+              "label": {
+                "zh-CN": "类别",
+                "en": "Class Category"
+              }
+            },
+            "class_name": {
+              "label": {
+                "zh-CN": "ClassName",
+                "en": "Class"
+              }
+            },
+            "baseline_reachable_count": {
+              "label": {
+                "zh-CN": "首次 Reachable 实例",
+                "en": "Baseline Reachable Count"
+              }
+            },
+            "target_reachable_count": {
+              "label": {
+                "zh-CN": "末次 Reachable 实例",
+                "en": "Target Reachable Count"
+              }
+            },
+            "reachable_count_delta": {
+              "label": {
+                "zh-CN": "Reachable 实例增量",
+                "en": "Reachable Count Delta"
+              }
+            },
+            "baseline_dominated_bytes": {
+              "label": {
+                "zh-CN": "首次 Dominated",
+                "en": "Baseline Dominated bytes"
+              }
+            },
+            "target_dominated_bytes": {
+              "label": {
+                "zh-CN": "末次 Dominated",
+                "en": "Target Dominated bytes"
+              }
+            },
+            "dominated_delta_bytes": {
+              "label": {
+                "zh-CN": "Dominated 增量",
+                "en": "Dominated Delta bytes"
+              }
+            },
+            "growth_signal": {
+              "label": {
+                "zh-CN": "增长信号",
+                "en": "Growth Signal"
+              }
+            },
+            "monotonic_growth": {
+              "label": {
+                "zh-CN": "逐次不减",
+                "en": "Monotonic Growth"
+              }
+            },
+            "dump_count": {
+              "label": {
+                "zh-CN": "Dump 数",
+                "en": "Dump Count"
+              }
+            },
+            "comparability": {
+              "label": {
+                "zh-CN": "可比性",
+                "en": "Comparability"
+              }
+            },
+            "baseline_ts": {
+              "label": {
+                "zh-CN": "首次 Dump",
+                "en": "Baseline Ts"
+              }
+            },
+            "target_ts": {
+              "label": {
+                "zh-CN": "末次 Dump",
+                "en": "Target Ts"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "class_ranking": {
+          "title": {
+            "zh-CN": "所选 dump 的 class 按 dominated 大小排名（libcore/数组与其他 class 分开）",
+            "en": "Class Ranking"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "graph_sample_ts": {
+              "label": {
+                "zh-CN": "Dump 时间",
+                "en": "Graph Sample Ts"
+              }
+            },
+            "class_category": {
+              "label": {
+                "zh-CN": "类别",
+                "en": "Class Category"
+              }
+            },
+            "class_name": {
+              "label": {
+                "zh-CN": "ClassName",
+                "en": "Class"
+              }
+            },
+            "reachable_obj_count": {
+              "label": {
+                "zh-CN": "Reachable 实例数",
+                "en": "Reachable Obj Count"
+              }
+            },
+            "obj_count": {
+              "label": {
+                "zh-CN": "实例数（含不可达）",
+                "en": "Obj Count"
+              }
+            },
+            "reachable_size_bytes": {
+              "label": {
+                "zh-CN": "Reachable 浅大小",
+                "en": "Reachable Size bytes"
+              }
+            },
+            "dominated_obj_count": {
+              "label": {
+                "zh-CN": "Dominated 对象数",
+                "en": "Dominated Obj Count"
+              }
+            },
+            "dominated_bytes": {
+              "label": {
+                "zh-CN": "Dominated 大小",
+                "en": "Dominated bytes"
+              }
+            },
+            "type_id_count": {
+              "label": {
+                "zh-CN": "同名 type 数",
+                "en": "Type Id Count"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "heap_class_table": {
+          "title": {
+            "zh-CN": "Heap class 聚合",
+            "en": "Heap Class Table"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "requested_classes": {
+          "title": {
+            "zh-CN": "指定 class 在所选 dump 中的对齐行",
+            "en": "Requested Classes"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "graph_sample_ts": {
+              "label": {
+                "zh-CN": "Dump 时间",
+                "en": "Graph Sample Ts"
+              }
+            },
+            "class_name": {
+              "label": {
+                "zh-CN": "ClassName",
+                "en": "Class"
+              }
+            },
+            "present_in_dump": {
+              "label": {
+                "zh-CN": "存在",
+                "en": "Present In Dump"
+              }
+            },
+            "reachable_obj_count": {
+              "label": {
+                "zh-CN": "Reachable 实例数",
+                "en": "Reachable Obj Count"
+              }
+            },
+            "obj_count": {
+              "label": {
+                "zh-CN": "实例数（含不可达）",
+                "en": "Obj Count"
+              }
+            },
+            "dominated_bytes": {
+              "label": {
+                "zh-CN": "Dominated 大小",
+                "en": "Dominated bytes"
+              }
+            },
+            "dump_completeness": {
+              "label": {
+                "zh-CN": "Dump 完整性",
+                "en": "Dump Completeness"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "Java Heap Class 增长对比",
+            "en": "Android Heap Graph Class Growth"
+          },
+          "columns": {
+            "class_growth_availability": {
+              "label": {
+                "zh-CN": "ClassGrowthAvailability",
+                "en": "Class Growth Availability"
+              }
+            },
+            "class_dump_inventory": {
+              "label": {
+                "zh-CN": "ClassDumpInventory",
+                "en": "Class Dump Inventory"
+              }
+            },
+            "class_ranking": {
+              "label": {
+                "zh-CN": "ClassRanking",
+                "en": "Class Ranking"
+              }
+            },
+            "requested_classes": {
+              "label": {
+                "zh-CN": "RequestedClasses",
+                "en": "Requested Classes"
+              }
+            },
+            "class_growth_within_trace": {
+              "label": {
+                "zh-CN": "ClassGrowthWithinTrace",
+                "en": "Class Growth Within Trace"
               }
             }
           },
@@ -1418,6 +2209,279 @@
               "label": {
                 "zh-CN": "HeapProfileHotspots",
                 "en": "Heap Profile Hotspots"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        }
+      }
+    },
+    "android_process_state_residency": {
+      "displayName": {
+        "zh-CN": "进程状态驻留与切换",
+        "en": "Android Process State Residency"
+      },
+      "description": {
+        "zh-CN": "Framework 进程状态（TOP/前台服务/CACHED 等）的驻留时长、切换序列与最后观测状态；用于 LMK、后台与内存压力分析，旧 trace processor 显式降级",
+        "en": "Analyzes Android Process State Residency using trace metrics and supporting evidence."
+      },
+      "type": "atomic",
+      "steps": {
+        "__synthesize_summary__": {
+          "title": {
+            "zh-CN": "洞见摘要",
+            "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "process_state_capability": {
+          "title": {
+            "zh-CN": "进程状态（android.process_state）能力",
+            "en": "Process State Capability"
+          },
+          "columns": {
+            "runtime_has_process_state_table": {
+              "label": {
+                "zh-CN": "Runtime 有解析表",
+                "en": "Runtime Has Process State Table"
+              }
+            },
+            "runtime_has_process_state_module": {
+              "label": {
+                "zh-CN": "Runtime 有 stdlib 模块",
+                "en": "Runtime Has Process State Module"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_data": {
+          "title": {
+            "zh-CN": "进程状态数据",
+            "en": "Process State Data"
+          },
+          "columns": {
+            "state_event_count": {
+              "label": {
+                "zh-CN": "状态事件数",
+                "en": "State Event Count"
+              }
+            },
+            "process_count": {
+              "label": {
+                "zh-CN": "进程数",
+                "en": "Process Count"
+              }
+            },
+            "matched_process_count": {
+              "label": {
+                "zh-CN": "匹配目标的进程数",
+                "en": "Matched Process Count"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_last_observed": {
+          "title": {
+            "zh-CN": "每个进程最后一次观测到的状态",
+            "en": "Process State Last Observed"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "last_state": {
+              "label": {
+                "zh-CN": "最后状态",
+                "en": "Last State"
+              }
+            },
+            "entered_ts": {
+              "label": {
+                "zh-CN": "进入时间",
+                "en": "Entered Ts"
+              }
+            },
+            "process_end_ts": {
+              "label": {
+                "zh-CN": "进程结束时间",
+                "en": "Process End Ts"
+              }
+            },
+            "lifecycle": {
+              "label": {
+                "zh-CN": "生命周期",
+                "en": "Lifecycle"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_residency": {
+          "title": {
+            "zh-CN": "进程状态驻留（存活时间内，按窗口裁剪）",
+            "en": "Process State Residency"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "upid": {
+              "label": {
+                "zh-CN": "UPID",
+                "en": "UPID"
+              }
+            },
+            "state": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "State"
+              }
+            },
+            "state_rank": {
+              "label": {
+                "zh-CN": "重要性序",
+                "en": "State Rank"
+              }
+            },
+            "residency_ms": {
+              "label": {
+                "zh-CN": "驻留时长",
+                "en": "Residency ms"
+              }
+            },
+            "residency_pct": {
+              "label": {
+                "zh-CN": "占存活时间",
+                "en": "Residency Pct"
+              }
+            },
+            "interval_count": {
+              "label": {
+                "zh-CN": "进入次数",
+                "en": "Interval Count"
+              }
+            },
+            "first_entered_ts": {
+              "label": {
+                "zh-CN": "首次进入",
+                "en": "First Entered Ts"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "process_state_transitions": {
+          "title": {
+            "zh-CN": "进程状态切换序列",
+            "en": "Process State Transitions"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程",
+                "en": "Process Name"
+              }
+            },
+            "ts": {
+              "label": {
+                "zh-CN": "切换时间",
+                "en": "Ts"
+              }
+            },
+            "prev_state": {
+              "label": {
+                "zh-CN": "原状态",
+                "en": "Prev State"
+              }
+            },
+            "state": {
+              "label": {
+                "zh-CN": "新状态",
+                "en": "State"
+              }
+            },
+            "prev_state_ms": {
+              "label": {
+                "zh-CN": "原状态停留",
+                "en": "Prev State ms"
+              }
+            },
+            "reason": {
+              "label": {
+                "zh-CN": "OomAdjuster 原因",
+                "en": "Reason"
+              }
+            },
+            "lifecycle": {
+              "label": {
+                "zh-CN": "生命周期",
+                "en": "Lifecycle"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "root": {
+          "title": {
+            "zh-CN": "进程状态驻留与切换",
+            "en": "Android Process State Residency"
+          },
+          "columns": {
+            "process_state_capability": {
+              "label": {
+                "zh-CN": "进程StateCapability",
+                "en": "Process State Capability"
+              }
+            },
+            "process_state_data": {
+              "label": {
+                "zh-CN": "进程StateData",
+                "en": "Process State Data"
+              }
+            },
+            "process_state_residency": {
+              "label": {
+                "zh-CN": "进程StateResidency",
+                "en": "Process State Residency"
+              }
+            },
+            "process_state_transitions": {
+              "label": {
+                "zh-CN": "进程StateTransitions",
+                "en": "Process State Transitions"
+              }
+            },
+            "process_state_last_observed": {
+              "label": {
+                "zh-CN": "进程StateLastObserved",
+                "en": "Process State Last Observed"
               }
             }
           },
@@ -3836,7 +4900,7 @@
         "en": "Battery Drain Attribution"
       },
       "description": {
-        "zh-CN": "组合 battery、Doze、wakelock、job、network、suspend/wakeup 证据，分析掉电和待机耗电原因",
+        "zh-CN": "组合 battery、Doze、kernel/app wakelock、standby bucket、freezer、job、network、suspend/wakeup 证据，分析掉电和待机耗电原因",
         "en": "Analyzes Battery Drain Attribution using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -3845,6 +4909,14 @@
           "title": {
             "zh-CN": "洞见摘要",
             "en": "Insight Summary"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
+        },
+        "app_background_power": {
+          "title": {
+            "zh-CN": "应用后台功耗状态",
+            "en": "App Background Power"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -22687,6 +23759,183 @@
               "label": {
                 "zh-CN": "等待者数",
                 "en": "Waiter Count"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "lock_held_capability": {
+          "title": {
+            "zh-CN": "持锁区间（lock_held）数据可用性",
+            "en": "Lock Held Capability"
+          },
+          "columns": {
+            "lock_held_slice_count": {
+              "label": {
+                "zh-CN": "lock_held slice 数",
+                "en": "Lock Held Slice Count"
+              }
+            },
+            "lock_held_slice_count_in_scope": {
+              "label": {
+                "zh-CN": "目标进程内 slice 数",
+                "en": "Lock Held Slice Count In Scope"
+              }
+            },
+            "runtime_has_lock_held": {
+              "label": {
+                "zh-CN": "Runtime 有 android.lock_held",
+                "en": "Runtime Has Lock Held"
+              }
+            },
+            "status": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "Status"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "lock_held_long_holds": {
+          "title": {
+            "zh-CN": "长时间持锁（持锁线程、时长、等锁方看到的持锁方法）",
+            "en": "Lock Held Long Holds"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程名",
+                "en": "Process Name"
+              }
+            },
+            "lock_name": {
+              "label": {
+                "zh-CN": "锁",
+                "en": "Lock Name"
+              }
+            },
+            "holder_thread": {
+              "label": {
+                "zh-CN": "持锁线程",
+                "en": "Holder Thread"
+              }
+            },
+            "holder_tid": {
+              "label": {
+                "zh-CN": "HolderTID",
+                "en": "TID"
+              }
+            },
+            "is_main_thread": {
+              "label": {
+                "zh-CN": "主线程",
+                "en": "Is Main Thread"
+              }
+            },
+            "ts": {
+              "label": {
+                "zh-CN": "获取时间",
+                "en": "Ts"
+              }
+            },
+            "held_ms": {
+              "label": {
+                "zh-CN": "窗口内持有时长",
+                "en": "Held ms"
+              }
+            },
+            "full_held_ms": {
+              "label": {
+                "zh-CN": "完整持有时长",
+                "en": "Full Held ms"
+              }
+            },
+            "blocking_method": {
+              "label": {
+                "zh-CN": "等锁方看到的持锁方法",
+                "en": "Blocking Method"
+              }
+            },
+            "is_incomplete": {
+              "label": {
+                "zh-CN": "trace 结束仍持有",
+                "en": "Is Incomplete"
+              }
+            },
+            "slice_id": {
+              "label": {
+                "zh-CN": "SliceId",
+                "en": "Slice ID"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "lock_held_owner_summary": {
+          "title": {
+            "zh-CN": "持锁时长汇总（按锁）",
+            "en": "Lock Held Owner Summary"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "进程名",
+                "en": "Process Name"
+              }
+            },
+            "lock_name": {
+              "label": {
+                "zh-CN": "锁",
+                "en": "Lock Name"
+              }
+            },
+            "hold_count": {
+              "label": {
+                "zh-CN": "持有次数",
+                "en": "Hold Count"
+              }
+            },
+            "total_held_ms": {
+              "label": {
+                "zh-CN": "总持有时长",
+                "en": "Total Held ms"
+              }
+            },
+            "max_held_ms": {
+              "label": {
+                "zh-CN": "最长持有",
+                "en": "Max Held ms"
+              }
+            },
+            "contended_hold_count": {
+              "label": {
+                "zh-CN": "期间有线程等锁",
+                "en": "Contended Hold Count"
+              }
+            },
+            "incomplete_hold_count": {
+              "label": {
+                "zh-CN": "trace 结束仍持有",
+                "en": "Incomplete Hold Count"
+              }
+            },
+            "top_holder_thread": {
+              "label": {
+                "zh-CN": "主要持锁线程",
+                "en": "Top Holder Thread"
+              }
+            },
+            "top_holder_held_ms": {
+              "label": {
+                "zh-CN": "该线程持有时长",
+                "en": "Top Holder Held ms"
+              }
+            },
+            "top_blocking_method": {
+              "label": {
+                "zh-CN": "等锁方看到的持锁方法",
+                "en": "Top Blocking Method"
               }
             }
           },

@@ -1,0 +1,128 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "1000000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      },
+      {
+        "id": "system",
+        "name": "system_server",
+        "uid": 1000
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "power",
+        "process": "system",
+        "name": "PowerManagerSer"
+      },
+      {
+        "id": "freezer",
+        "process": "system",
+        "name": "CachedAppOptimi"
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "10000000",
+      "duration_ns": "18000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::app-background-power"
+    },
+    {
+      "type": "battery-stats-span",
+      "at_ns": "150000000",
+      "duration_ns": "300000000",
+      "process": "system",
+      "thread": "power",
+      "event": "longwake",
+      "owner_process": "app",
+      "tag": "*job*/com.smartperfetto.fixture/.SyncJob"
+    },
+    {
+      "type": "battery-stats-span",
+      "at_ns": "600000000",
+      "duration_ns": "40000000",
+      "process": "system",
+      "thread": "power",
+      "event": "longwake",
+      "owner_process": "app",
+      "tag": "*job*/com.smartperfetto.fixture/.SyncJob"
+    },
+    {
+      "type": "statsd-atom",
+      "at_ns": "200000000",
+      "atom": "app_standby_bucket_changed",
+      "fields": {
+        "package_name": "com.smartperfetto.fixture",
+        "user_id": 0,
+        "bucket": "BUCKET_ACTIVE",
+        "main_reason": "MAIN_USAGE"
+      }
+    },
+    {
+      "type": "statsd-atom",
+      "at_ns": "500000000",
+      "atom": "app_standby_bucket_changed",
+      "fields": {
+        "package_name": "com.smartperfetto.fixture",
+        "user_id": 0,
+        "bucket": "BUCKET_RARE",
+        "main_reason": "MAIN_TIMEOUT"
+      }
+    },
+    {
+      "type": "statsd-atom",
+      "at_ns": "450000000",
+      "atom": "app_freeze_changed",
+      "process": "app",
+      "fields": {
+        "action": "FREEZE_APP",
+        "unfreeze_reason_v2": "UFR_NONE"
+      }
+    },
+    {
+      "type": "statsd-atom",
+      "at_ns": "700000000",
+      "atom": "app_freeze_changed",
+      "process": "app",
+      "fields": {
+        "action": "UNFREEZE_APP",
+        "time_unfrozen_millis": 0,
+        "unfreeze_reason_v2": "UFR_BINDER_TXNS"
+      }
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "450000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "freezer",
+      "name": "Freeze com.smartperfetto.fixture:{pid:app}"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "700000000",
+      "duration_ns": "1000000",
+      "process": "system",
+      "thread": "freezer",
+      "name": "Unfreeze com.smartperfetto.fixture:{pid:app} 18"
+    }
+  ]
+}

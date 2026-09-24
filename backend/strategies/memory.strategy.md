@@ -147,7 +147,8 @@ plan_template:
 7. **引用链从候选对象出发**：查 reference holder 时先收敛到 suspect object ids，再用 `heap_graph_reference.owned_id` 找持有者；引用来源需排除 Perfetto `_excluded_refs` 覆盖的 weak/phantom/finalizer referent 边；v56 的 `_excluded_refs` 不再排除 soft reference，不要自行把 soft referent 当作已过滤边，也不要对 heap graph 全量对象/引用做宽 JOIN 后直接下结论。
 8. **RSS/Anon/Swap 是趋势辅证**：RSS 增长、单点跳跃、Peak/Avg 异常、Anon+Swap 占比能说明内存压力或增长形态，但不能单独证明 Java 泄漏或 PSS 问题。
 9. **Profiler 只能回答各自能看见的问题**：Memory counters/LMK 给系统和进程趋势，ART heap dump 给 Java/Kotlin 引用保留图但不给分配调用栈，heapprofd 按 (进程, heap) 给分配调用栈，不能把其中一个证据源升级成全量内存真相。heapprofd `libc.malloc` 同时记录分配和释放，才能区分未释放保留与分配 churn；Java 分配剖析（heap `com.android.art`）只记录分配、不记录 GC 释放，“未释放”恒等于分配，只能写分配 churn/GC 压力，Java 保留和泄漏只能用 heap dump 证明。
-10. **采集窗口是结论边界**：heapprofd 不是 retroactive，只能看到 profiler 启动后的分配；Java heap dump 是 sample 点引用图；process stats 轮询可能漏掉很短的 RSS 峰值，`rss_stat`/`mm_event`/LMK 事件更适合捕获短时压力。缺失这些证据时必须转成具体采集建议。
+10. **Heap dump 对比按 class 做，不按总量做**：两次 Java heap dump（同一 trace 的 continuous dump，或前后两份 trace）用 `android_heap_graph_class_growth` 比较。实例数看 reachable（heap graph 含未回收垃圾），retained 大小只取 class 聚合的 dominated 值，不要逐实例相加 dominated_size（自嵌套 class 会重复计数）。App/框架 class 与 libcore/数组分开看：`byte[]`、`Object[]`、`ArrayList` 的增长通常是载荷，泄漏原因在持有它们的 class。总堆平稳也不能排除泄漏（缓存、SoftReference 回收会掩盖增长）。
+11. **采集窗口是结论边界**：heapprofd 不是 retroactive，只能看到 profiler 启动后的分配；Java heap dump 是 sample 点引用图；process stats 轮询可能漏掉很短的 RSS 峰值，`rss_stat`/`mm_event`/LMK 事件更适合捕获短时压力。缺失这些证据时必须转成具体采集建议。
 
 **Perfetto 官方内存证据映射：**
 
@@ -187,6 +188,16 @@ invoke_skill("memory_rss_high_watermark")
 - `oom_adjuster_score_timeline`：进程 OOM adj 分数时间线
 - `memory_rss_high_watermark`：RSS high watermark，辅助识别增长型内存压力
 
+需要解释进程为什么被杀、在后台停留多久，或 adj 变化背后的 framework 角色时：
+```
+invoke_skill("android_process_state_residency", { process_name })
+```
+- `process_state_residency`：各 framework 进程状态（TOP、FOREGROUND_SERVICE、CACHED_* 等）在存活时间内的驻留时长和占比
+- `process_state_transitions`：状态切换序列、上一状态停留时长、OomAdjuster 原因
+- `process_state_last_observed`：每个进程最后一次观测到的状态；进程已结束时就是它结束前所处的状态
+- `oom_score_adj` 是内核看到的分数，process state 是 framework 给的角色，两者对照着读：长时间 CACHED_* 解释了为什么在内存压力下先被杀；被杀前处于 TOP/FOREGROUND_SERVICE 则说明是压力极高或异常 kill，不是正常的缓存回收
+- `process_state_capability.status=runtime_lacks_process_state` 表示 trace processor 早于该解析器，`no_process_state_data` 表示采集没开 `android.process_state` 或设备不支持；两种都只能写数据缺口，不能写“进程一直在前台”
+
 **Phase 3 — 深度分析（按需选择）：**
 
 | 信号 | 工具 | 何时使用 |
@@ -194,6 +205,7 @@ invoke_skill("memory_rss_high_watermark")
 | GPU 内存 / DMA-BUF | `invoke_skill("dmabuf_analysis")` | 图形密集应用的 GPU 内存分析 |
 | Java Heap Graph | `invoke_skill("android_heap_graph_summary")` | trace 含 Java heap dump 时，先确认 sample/process，再按 retained/cumulative size 找主要 class retainer |
 | Java 泄漏候选 | `invoke_skill("android_heap_graph_leak_candidates")` | trace 含 heap graph 时，按 reachable Activity/Fragment、sample 前生命周期和小范围引用持有者识别候选 |
+| Heap dump class 增长 | `invoke_skill("android_heap_graph_class_growth")`；两份 trace 用 `compare_skill("android_heap_graph_class_growth")` | 同一进程有多次 dump 时直接给首次→末次的 class 增长；前后两份 trace 各一次 dump 时两侧各跑一次排名，只在一侧出现的 class 用 `class_names` 再跑一次拿到两侧对齐的行（缺失为 0），`graph_sample_ts` 只能按侧传 |
 | RSS/Swap 增长 | `invoke_skill("memory_growth_detector")` | 用 RSS 增长率、斜率、单次跳跃、Peak/Avg、Anon+Swap 占比判断增长型内存压力；只能作为泄漏辅证 |
 | Bitmap 内存 | `invoke_skill("android_bitmap_memory_per_process")` | 图片/纹理密集应用的 Bitmap footprint；有 heap graph 时同时看 width/height/density/storage/source attribution |
 | Native Heap / Java 分配 | `invoke_skill("native_heap_breakdown")` | trace 含 heapprofd 时，先读 `heap_profile_inventory` 的 (进程, heap) 与 `retention_claim`，再看按进程 × heap 的热点；只覆盖 profiler 启动后的分配 |
@@ -203,8 +215,10 @@ invoke_skill("memory_rss_high_watermark")
 
 **Phase 4 — 交叉分析：**
 - 内存压力 + LMK → 检查是否有进程被反复杀死重启（thrashing）
+- LMK 事件 + process state 可用 → 用 `process_state_last_observed` 和 `process_state_residency` 说明被杀进程当时的 framework 角色和在 CACHED 状态停留的时间，再与 kill 的 adj 对照；两者不一致时如实报告，不强行统一
 - GC 频繁 + RSS/Anon 增长 → 可能存在分配抖动或 Java 对象增长，但需要 heap graph / allocation / GC 后回落证据确认
 - Heap graph 可用 + retained class 集中 → 按 `android_heap_graph_summary` 的 top retainer 继续查 dominator/reference path；不要只按 raw object id 下结论
+- Heap dump class 增长 `growth_signal=instance_growth` → 报告首次→末次实例数（如 2 → 6，+4）和 dominated 增量，再对该 class 查 dominator/reference path；`retained_growth_only` 是实例数不变但保留集变大的持有者，通常是引用链上的容器，不是泄漏对象本身；`monotonic_growth=0` 说明中间有回落，写成波动而非持续增长；`comparability=incomplete_dump_lower_bound` 时增量只是下界
 - Heap graph 可用 + destroyed Activity/Fragment 仍 reachable → 用 `android_heap_graph_leak_candidates` 输出高置信候选；没有生命周期对齐时只写候选，不写已泄漏
 - Heapprofd 可用 + `native_signal=unreleased_native_retention` → 写 native 未释放保留候选；若 `native_signal=allocation_churn`，写分配抖动/allocator hotspot，不写泄漏；若 `retention_with_churn`，同时报告未释放保留和高分配 churn，不要把二者合并成单一根因
 - Heap `com.android.art`（`retention_claim=churn_only_frees_not_recorded`）→ 只报分配字节/次数和热点，不写 Java 泄漏；两次 profile 的差值在一个采样间隔（默认 4096 B）内视为噪声；`heapprofd_issues` 非 none 时说明 profile 可能截断

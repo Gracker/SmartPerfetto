@@ -1,0 +1,358 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# Android Process State Residency（原子 Skill）
+# =============================================================================
+# Framework 进程状态（ActivityManager 的 PROCESS_STATE_*：TOP、FOREGROUND_SERVICE、
+# CACHED_* 等）在每个状态停留的时间、状态切换序列，以及最后一次观测到的状态。
+# 用于内存/LMK/后台分析：oom_score_adj 是内核看到的分数，process state 是
+# framework 给出的进程角色；进程在 CACHED 状态停留多久、被杀前处于什么状态，
+# 需要这一层来回答。
+#
+# 数据来源：android.process_state 数据源（AndroidProcessStateConfig，trace 结束时
+# 的快照）与 frameworks_base 的 process_state_changed_event track event。
+# Runtime 边界：
+# - 解析器与 stdlib 模块只在 v58.2 之后的 trace processor 中存在；旧 runtime
+#   上 process_state_capability 报 runtime_lacks_process_state，其余步骤跳过。
+# - 读取的 `_android_process_state_intervals` 是 stdlib 私有表。当前 pin 丢弃
+#   NONEXISTENT 行、dur >= 0；上游后续版本会合成 EXITED（dur = -1，死亡后
+#   一直开放）与出生前的 NONEXISTENT 行。这里统一处理：dur < 0 视为开放到
+#   trace 结束，EXITED/NONEXISTENT 不计入存活时间，只作为生命周期标记。
+
+name: android_process_state_residency
+version: "1.0"
+type: atomic
+category: memory
+tier: B
+
+meta:
+  display_name: "进程状态驻留与切换"
+  description: "Framework 进程状态（TOP/前台服务/CACHED 等）的驻留时长、切换序列与最后观测状态；用于 LMK、后台与内存压力分析，旧 trace processor 显式降级"
+  icon: "swap_vert"
+  tags: [memory, lmk, process_state, background, oom_adj, framework]
+
+triggers:
+  keywords:
+    zh: [进程状态, process state, 后台进程, cached 进程, 进程优先级, 被杀前状态]
+    en: [process state, proc state, cached process, background process, process importance]
+  patterns:
+    - ".*(process state|proc state|进程状态).*"
+    - ".*(cached|后台).*(进程|process).*"
+
+prerequisites:
+  modules:
+    - android.process_state
+
+inputs:
+  - name: process_name
+    type: string
+    required: false
+    description: "目标进程名或包名（精确或 name:* 子进程）；留空返回全部有进程状态数据的进程"
+  - name: upid
+    type: integer
+    required: false
+    description: "可选的稳定进程身份"
+  - name: start_ts
+    type: timestamp
+    required: false
+    description: "分析起始时间戳(ns)；驻留时长按窗口裁剪"
+  - name: end_ts
+    type: timestamp
+    required: false
+    description: "分析结束时间戳(ns)"
+  - name: max_rows
+    type: integer
+    required: false
+    default: 200
+    description: "状态切换序列最多返回的行数"
+
+steps:
+  # Only sqlite_master / pragma_table_info here: on an older runtime the
+  # intrinsic table does not exist, and SQLite resolves every table named in a
+  # statement before running it.
+  - id: process_state_capability
+    type: atomic
+    name: "进程状态能力检查"
+    display:
+      level: detail
+      layer: overview
+      title: "进程状态（android.process_state）能力"
+      columns:
+        - name: runtime_has_process_state_table
+          label: "Runtime 有解析表"
+          type: number
+        - name: runtime_has_process_state_module
+          label: "Runtime 有 stdlib 模块"
+          type: number
+        - name: status
+          label: "状态"
+          type: string
+    sql: |
+      WITH facts AS (
+        SELECT
+          EXISTS (
+            SELECT 1 FROM pragma_table_info('__intrinsic_android_process_state')
+          ) AS runtime_has_process_state_table,
+          EXISTS (
+            SELECT 1 FROM sqlite_master WHERE name = '_android_process_state_intervals'
+          ) AS runtime_has_process_state_module
+      )
+      SELECT
+        runtime_has_process_state_table,
+        runtime_has_process_state_module,
+        CASE
+          WHEN NOT runtime_has_process_state_table THEN 'runtime_lacks_process_state'
+          WHEN NOT runtime_has_process_state_module THEN 'runtime_lacks_process_state_module'
+          ELSE 'runtime_supported'
+        END AS status
+      FROM facts
+    save_as: process_state_capability
+
+  - id: process_state_data
+    type: atomic
+    name: "进程状态数据检查"
+    optional: true
+    condition: process_state_capability.data[0]?.status === 'runtime_supported'
+    display:
+      level: detail
+      layer: overview
+      title: "进程状态数据"
+      columns:
+        - name: state_event_count
+          label: "状态事件数"
+          type: number
+        - name: process_count
+          label: "进程数"
+          type: number
+        - name: matched_process_count
+          label: "匹配目标的进程数"
+          type: number
+        - name: status
+          label: "状态"
+          type: string
+    sql_fragments:
+      - fragments/process_state_scoped_intervals.sql
+    sql: |
+      WITH events AS (
+        SELECT COUNT(*) AS state_event_count, COUNT(DISTINCT upid) AS process_count
+        FROM __intrinsic_android_process_state
+      ),
+      matched AS (
+        SELECT COUNT(DISTINCT upid) AS matched_process_count FROM process_state_scoped_intervals
+      )
+      SELECT
+        e.state_event_count,
+        e.process_count,
+        m.matched_process_count,
+        CASE
+          WHEN e.state_event_count = 0 THEN 'no_process_state_data'
+          WHEN m.matched_process_count = 0 THEN 'no_process_state_for_requested_process'
+          ELSE 'available'
+        END AS status
+      FROM events AS e
+      CROSS JOIN matched AS m
+    save_as: process_state_data
+
+  - id: process_state_residency
+    type: atomic
+    name: "进程状态驻留"
+    optional: true
+    condition: process_state_data.data[0]?.status === 'available'
+    display:
+      level: key
+      layer: list
+      title: "进程状态驻留（存活时间内，按窗口裁剪）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: state
+          label: "状态"
+          type: string
+        - name: state_rank
+          label: "重要性序"
+          type: number
+        - name: residency_ms
+          label: "驻留时长"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: residency_pct
+          label: "占存活时间"
+          type: percentage
+          format: percentage
+        - name: interval_count
+          label: "进入次数"
+          type: number
+        - name: first_entered_ts
+          label: "首次进入"
+          type: timestamp
+          unit: ns
+    sql_fragments:
+      - fragments/process_state_scoped_intervals.sql
+    sql: |
+      WITH bounds AS (
+        SELECT
+          COALESCE(${start_ts}, trace_start()) AS window_start,
+          COALESCE(${end_ts}, trace_end()) AS window_end
+      ),
+      intervals AS (
+        SELECT upid, process_label AS process_name, state, state_rank, ts, open_dur AS dur
+        FROM process_state_scoped_intervals
+        WHERE state != 'EXITED'
+      ),
+      clipped AS (
+        SELECT
+          i.*,
+          MAX(MIN(i.ts + i.dur, b.window_end) - MAX(i.ts, b.window_start), 0) AS clipped_dur
+        FROM intervals AS i
+        CROSS JOIN bounds AS b
+        WHERE i.ts < b.window_end AND i.ts + i.dur >= b.window_start
+      ),
+      alive AS (
+        SELECT upid, SUM(clipped_dur) AS alive_dur FROM clipped GROUP BY upid
+      )
+      SELECT
+        c.process_name,
+        c.upid,
+        c.state,
+        c.state_rank,
+        ROUND(SUM(c.clipped_dur) / 1e6, 2) AS residency_ms,
+        ROUND(100.0 * SUM(c.clipped_dur) / NULLIF(a.alive_dur, 0), 2) AS residency_pct,
+        COUNT(*) AS interval_count,
+        printf('%d', MIN(c.ts)) AS first_entered_ts
+      FROM clipped AS c
+      JOIN alive AS a USING (upid)
+      GROUP BY c.upid, c.state
+      ORDER BY c.process_name, c.upid, SUM(c.clipped_dur) DESC
+    save_as: process_state_residency
+
+  - id: process_state_transitions
+    type: atomic
+    name: "进程状态切换"
+    optional: true
+    condition: process_state_data.data[0]?.status === 'available'
+    display:
+      level: detail
+      layer: list
+      title: "进程状态切换序列"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: ts
+          label: "切换时间"
+          type: timestamp
+          unit: ns
+        - name: prev_state
+          label: "原状态"
+          type: string
+        - name: state
+          label: "新状态"
+          type: string
+        - name: prev_state_ms
+          label: "原状态停留"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: reason
+          label: "OomAdjuster 原因"
+          type: string
+        - name: lifecycle
+          label: "生命周期"
+          type: string
+    sql_fragments:
+      - fragments/process_state_scoped_intervals.sql
+    sql: |
+      SELECT
+        process_label AS process_name,
+        printf('%d', ts) AS ts,
+        prev_state,
+        state,
+        ROUND(prev_state_duration / 1e6, 2) AS prev_state_ms,
+        reason,
+        CASE
+          WHEN state = 'EXITED' THEN 'process_exited'
+          WHEN prev_state IS NULL THEN 'initial_state'
+          ELSE 'state_change'
+        END AS lifecycle
+      FROM process_state_scoped_intervals
+      WHERE (${start_ts} IS NULL OR ts >= ${start_ts})
+        AND (${end_ts} IS NULL OR ts < ${end_ts})
+      ORDER BY ts, upid
+      LIMIT COALESCE(${max_rows|200}, 200)
+    save_as: process_state_transitions
+
+  # The last alive state is the state a process died in when the process has
+  # an end timestamp; for LMK attribution compare it with the kill's adj.
+  - id: process_state_last_observed
+    type: atomic
+    name: "最后观测状态"
+    optional: true
+    condition: process_state_data.data[0]?.status === 'available'
+    display:
+      level: key
+      layer: list
+      title: "每个进程最后一次观测到的状态"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: last_state
+          label: "最后状态"
+          type: string
+        - name: entered_ts
+          label: "进入时间"
+          type: timestamp
+          unit: ns
+        - name: process_end_ts
+          label: "进程结束时间"
+          type: timestamp
+          unit: ns
+        - name: lifecycle
+          label: "生命周期"
+          type: string
+    sql_fragments:
+      - fragments/process_state_scoped_intervals.sql
+    sql: |
+      WITH ranked AS (
+        SELECT
+          *,
+          ROW_NUMBER() OVER (PARTITION BY upid ORDER BY ts DESC) AS recency
+        FROM process_state_scoped_intervals
+        WHERE state != 'EXITED'
+          AND (${end_ts} IS NULL OR ts < ${end_ts})
+      )
+      SELECT
+        process_label AS process_name,
+        upid,
+        state AS last_state,
+        printf('%d', ts) AS entered_ts,
+        IIF(process_end_ts IS NULL, NULL, printf('%d', process_end_ts)) AS process_end_ts,
+        IIF(process_end_ts IS NULL, 'alive_at_trace_end', 'process_ended') AS lifecycle
+      FROM ranked
+      WHERE recency = 1
+      ORDER BY process_name, upid
+    save_as: process_state_last_observed
+
+output:
+  format: structured
+  fields:
+    - name: process_state_capability
+      description: "Runtime support: runtime_lacks_process_state on trace processors up to v58.2, which cannot read this data at all"
+    - name: process_state_data
+      description: "Whether the trace carries android.process_state snapshot or state-change events, and whether any belong to the requested process"
+    - name: process_state_residency
+      description: "Per process and framework state, time spent while alive within the window and its share of alive time; EXITED/NONEXISTENT markers are excluded"
+    - name: process_state_transitions
+      description: "Ordered state changes with the previous state's duration and the OomAdjuster reason; initial_state rows are backfilled from snapshots"
+    - name: process_state_last_observed
+      description: "Last alive state per process and whether the process ended, for comparing with LMK kills and oom_score_adj"

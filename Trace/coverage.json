@@ -11,15 +11,18 @@
   "covered": {
     "skills": [
       "ams_module",
+      "android_app_background_power_state",
       "android_bitmap_memory_per_process",
       "android_dvfs_counter_stats",
       "android_gpu_work_period_track",
       "android_heap_dominator_path_extract",
+      "android_heap_graph_class_growth",
       "android_heap_graph_leak_candidates",
       "android_heap_graph_summary",
       "android_job_scheduler_events",
       "android_kernel_wakelock_summary",
       "android_memory_v57_ai_diagnostics",
+      "android_process_state_residency",
       "anr_analysis",
       "anr_context_in_range",
       "anr_detail",
@@ -288,14 +291,17 @@
   "quality": {
     "semantic": [
       "ams_module",
+      "android_app_background_power_state",
       "android_bitmap_memory_per_process",
       "android_dvfs_counter_stats",
       "android_gpu_work_period_track",
       "android_heap_dominator_path_extract",
+      "android_heap_graph_class_growth",
       "android_heap_graph_leak_candidates",
       "android_heap_graph_summary",
       "android_job_scheduler_events",
       "android_memory_v57_ai_diagnostics",
+      "android_process_state_residency",
       "anr_analysis",
       "anr_context_in_range",
       "anr_detail",
@@ -552,14 +558,17 @@
   "positive": {
     "sql_skills": [
       "ams_module",
+      "android_app_background_power_state",
       "android_bitmap_memory_per_process",
       "android_dvfs_counter_stats",
       "android_gpu_work_period_track",
       "android_heap_dominator_path_extract",
+      "android_heap_graph_class_growth",
       "android_heap_graph_leak_candidates",
       "android_heap_graph_summary",
       "android_job_scheduler_events",
       "android_memory_v57_ai_diagnostics",
+      "android_process_state_residency",
       "anr_analysis",
       "anr_context_in_range",
       "anr_detail",
@@ -787,16 +796,20 @@
     ],
     "R2": [],
     "R3": [
+      "app-background-power",
       "binder-io-blocking",
       "framework-pipelines",
       "general-runtime-contracts",
       "gpu-workload",
+      "heap-dump-class-growth",
       "input-interaction-latency",
       "linux-system-state",
+      "lock-held-ownership",
       "main-thread-frame-work",
       "media-network-camera",
       "memory-gc-pressure",
       "power-thermal",
+      "process-state-residency",
       "rendering-jank",
       "scene-observation-contracts",
       "scheduler-cpu-contention",
@@ -809,6 +822,109 @@
   "sql_sources": {
     "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368",
     "skills": [
+      {
+        "target": "android_app_background_power_state",
+        "source_file": "backend/skills/atomic/android_app_background_power_state.skill.yaml",
+        "modules": [
+          {
+            "name": "android.app_wakelocks",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/app_wakelocks.sql"
+          },
+          {
+            "name": "android.battery_stats",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/battery_stats.sql"
+          },
+          {
+            "name": "android.freezer",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/freezer.sql"
+          },
+          {
+            "name": "android.standby_bucket",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/standby_bucket.sql"
+          }
+        ],
+        "steps": [
+          {
+            "id": "power_state_capability",
+            "sha256": "91e964f61548c3933c773300b82ef8133c22108e8d7d96130fe5d27a32f5dc34",
+            "required_columns": [
+              "wakelock_status",
+              "standby_bucket_status",
+              "standby_atom_count",
+              "freezer_status",
+              "freeze_atom_count",
+              "freezer_slice_count"
+            ]
+          },
+          {
+            "id": "app_wakelock_summary",
+            "sha256": "c23414e9a97d4a197212ed496cc6d49d3fd1bf8eff29868ec9c668892bac8c61",
+            "required_columns": [
+              "uid",
+              "user_id",
+              "packages",
+              "tag",
+              "wakelock_count",
+              "total_held_ms",
+              "max_held_ms",
+              "source"
+            ]
+          },
+          {
+            "id": "app_wakelock_summary_battery_stats",
+            "sha256": "2977be9a41e62f347651423fc04ff65b03feff368368a1ea6abcc1bdf389321d",
+            "required_columns": [
+              "uid",
+              "user_id",
+              "packages",
+              "tag",
+              "wakelock_count",
+              "total_held_ms",
+              "max_held_ms",
+              "source"
+            ]
+          },
+          {
+            "id": "standby_bucket_residency",
+            "sha256": "5e00dc9395b0e2a190b6b1417ff174d79ad6b17fb34f5ae3bd850992b5781e6e",
+            "required_columns": [
+              "package_name",
+              "user_id",
+              "bucket",
+              "residency_ms",
+              "entry_count",
+              "last_main_reason",
+              "first_entered_ts"
+            ]
+          },
+          {
+            "id": "freezer_summary",
+            "sha256": "7319c928eab650a7f6539b1456e0bd4d9375c59cbc212c59a23ffb6a2488e247",
+            "required_columns": [
+              "process_name",
+              "pid",
+              "freeze_count",
+              "total_frozen_ms",
+              "max_frozen_ms",
+              "top_unfreeze_reason",
+              "source"
+            ]
+          },
+          {
+            "id": "freezer_summary_slices",
+            "sha256": "25536eb901f78be5a322aab8f52ca6344639f99b978ed5966e759aa4ce74c508",
+            "required_columns": [
+              "process_name",
+              "pid",
+              "freeze_count",
+              "total_frozen_ms",
+              "max_frozen_ms",
+              "top_unfreeze_reason",
+              "source"
+            ]
+          }
+        ]
+      },
       {
         "target": "android_bitmap_memory_per_process",
         "source_file": "backend/skills/atomic/android_bitmap_memory_per_process.skill.yaml",
@@ -909,6 +1025,111 @@
               "ts",
               "dur_ms",
               "uid"
+            ]
+          }
+        ]
+      },
+      {
+        "target": "android_heap_graph_class_growth",
+        "source_file": "backend/skills/atomic/android_heap_graph_class_growth.skill.yaml",
+        "modules": [
+          {
+            "name": "android.memory.heap_graph.heap_graph_class_aggregation",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/heap_graph_class_aggregation.sql"
+          },
+          {
+            "name": "android.memory.heap_graph.heap_graph_stats",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/memory/heap_graph/heap_graph_stats.sql"
+          }
+        ],
+        "steps": [
+          {
+            "id": "heap_class_table",
+            "sha256": "7415fc6f58b83c242d2dca25899715f2290fb59aed953d557a4d6351a86ff0d8",
+            "required_columns": [
+              "is_libcore_or_array",
+              "dominated_obj_count",
+              "dominated_bytes"
+            ]
+          },
+          {
+            "id": "class_growth_availability",
+            "sha256": "194fb6bde6ddb31f8c797696d1b9a473ab1eb25fd4dd852f16cf10f9209fcc3d",
+            "required_columns": [
+              "dump_count",
+              "process_count",
+              "max_dumps_per_process",
+              "incomplete_dump_count",
+              "dump_selector",
+              "process_identity",
+              "status"
+            ]
+          },
+          {
+            "id": "class_dump_inventory",
+            "sha256": "deab601fb55bd4bd34318fe3196d1dba38dc9ed9f5b3773ca712e0006fc38aa3",
+            "required_columns": [
+              "process_name",
+              "upid",
+              "graph_sample_ts",
+              "dump_index",
+              "selected_for_ranking",
+              "reachable_heap_bytes",
+              "reachable_obj_count",
+              "dump_completeness",
+              "process_identity"
+            ]
+          },
+          {
+            "id": "class_ranking",
+            "sha256": "0c0a80126cbb9443cd5c706a6406cce53658baf187f70ea71b9256f3378ebbe8",
+            "required_columns": [
+              "process_name",
+              "graph_sample_ts",
+              "class_category",
+              "class_name",
+              "reachable_obj_count",
+              "obj_count",
+              "reachable_size_bytes",
+              "dominated_obj_count",
+              "dominated_bytes",
+              "type_id_count",
+              "dump_completeness"
+            ]
+          },
+          {
+            "id": "requested_classes",
+            "sha256": "857d54b6cdb804ac7651f9d70758008cef6e1a618ceff1a89c960e84fdb33148",
+            "required_columns": [
+              "process_name",
+              "graph_sample_ts",
+              "class_name",
+              "present_in_dump",
+              "reachable_obj_count",
+              "obj_count",
+              "dominated_bytes",
+              "dump_completeness"
+            ]
+          },
+          {
+            "id": "class_growth_within_trace",
+            "sha256": "d75db8d487f9ff3135dbcd5bb0752c9d1bee280fff2e77b3594c5ef9f9333cfe",
+            "required_columns": [
+              "process_name",
+              "class_category",
+              "class_name",
+              "baseline_reachable_count",
+              "target_reachable_count",
+              "reachable_count_delta",
+              "baseline_dominated_bytes",
+              "target_dominated_bytes",
+              "dominated_delta_bytes",
+              "growth_signal",
+              "monotonic_growth",
+              "dump_count",
+              "comparability",
+              "baseline_ts",
+              "target_ts"
             ]
           }
         ]
@@ -1092,6 +1313,76 @@
               "observed_window_hours",
               "evidence_scope",
               "vitals_hint"
+            ]
+          }
+        ]
+      },
+      {
+        "target": "android_process_state_residency",
+        "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
+        "modules": [
+          {
+            "name": "android.process_state",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/process_state.sql"
+          }
+        ],
+        "steps": [
+          {
+            "id": "process_state_capability",
+            "sha256": "bad0a783ef6e495b32244c063db73ae0a28cbdf8920431fba5a61ee87f7ec700",
+            "required_columns": [
+              "runtime_has_process_state_table",
+              "runtime_has_process_state_module",
+              "status"
+            ]
+          },
+          {
+            "id": "process_state_data",
+            "sha256": "2b29d9065c14745a7b666f0f2053c88eef48b12b8b1eba5d8db8bc8e125c1175",
+            "required_columns": [
+              "state_event_count",
+              "process_count",
+              "matched_process_count",
+              "status"
+            ]
+          },
+          {
+            "id": "process_state_residency",
+            "sha256": "1f919a72d417138c48b7c86870eb4880d565a512448cafc52cf7743524dad76d",
+            "required_columns": [
+              "process_name",
+              "upid",
+              "state",
+              "state_rank",
+              "residency_ms",
+              "residency_pct",
+              "interval_count",
+              "first_entered_ts"
+            ]
+          },
+          {
+            "id": "process_state_transitions",
+            "sha256": "c82213a033f93cfc0f0bf956387c6383a9eecc152626686528ac307b519fd331",
+            "required_columns": [
+              "process_name",
+              "ts",
+              "prev_state",
+              "state",
+              "prev_state_ms",
+              "reason",
+              "lifecycle"
+            ]
+          },
+          {
+            "id": "process_state_last_observed",
+            "sha256": "3d407bbdcead21269d6c13fc57fca5d7b7ea99e79feb8fe0754b0069a079b919",
+            "required_columns": [
+              "process_name",
+              "upid",
+              "last_state",
+              "entered_ts",
+              "process_end_ts",
+              "lifecycle"
             ]
           }
         ]
@@ -9080,6 +9371,10 @@
         "source_file": "backend/skills/composite/lock_contention_analysis.skill.yaml",
         "modules": [
           {
+            "name": "android.lock_held",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/lock_held.sql"
+          },
+          {
             "name": "android.monitor_contention",
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/monitor_contention.sql"
           },
@@ -9196,6 +9491,49 @@
               "in_binder_txn",
               "contention_count",
               "avg_contention_ms"
+            ]
+          },
+          {
+            "id": "lock_held_capability",
+            "sha256": "0ea33c3cc41c5742f2ab68afaeba12c4d4aaa2ce377256b4b850fa8cebfdc5e1",
+            "required_columns": [
+              "lock_held_slice_count",
+              "lock_held_slice_count_in_scope",
+              "runtime_has_lock_held",
+              "status"
+            ]
+          },
+          {
+            "id": "lock_held_owner_summary",
+            "sha256": "5249b3d94193c60a11e2266085cfdd31e56641efb6157d4ecef436e7f5e00fa5",
+            "required_columns": [
+              "process_name",
+              "lock_name",
+              "hold_count",
+              "total_held_ms",
+              "max_held_ms",
+              "contended_hold_count",
+              "incomplete_hold_count",
+              "top_holder_thread",
+              "top_holder_held_ms",
+              "top_blocking_method"
+            ]
+          },
+          {
+            "id": "lock_held_long_holds",
+            "sha256": "351a5cc199e20a06bf4e87db4d7be828a3ec067f2c3fab44bc0b2983b4c33da2",
+            "required_columns": [
+              "process_name",
+              "lock_name",
+              "holder_thread",
+              "holder_tid",
+              "is_main_thread",
+              "ts",
+              "held_ms",
+              "full_held_ms",
+              "blocking_method",
+              "is_incomplete",
+              "slice_id"
             ]
           },
           {

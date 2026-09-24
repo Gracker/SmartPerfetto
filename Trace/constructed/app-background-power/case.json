@@ -1,0 +1,276 @@
+{
+  "schema_version": 1,
+  "id": "app-background-power",
+  "kind": "constructed",
+  "title": "App background power state layers",
+  "description": "BatteryStats app wakelocks, statsd standby bucket changes, and freezer intervals recorded both as statsd atoms and as Freeze/Unfreeze slices for one app.",
+  "scene": "power",
+  "tags": [
+    "android",
+    "constructed",
+    "power",
+    "wakelock",
+    "standby_bucket",
+    "freezer"
+  ],
+  "aliases": [],
+  "trace": {
+    "file": "trace.overlay.pftrace",
+    "format": "perfetto-protobuf",
+    "sha256": "04c1c61bd0d797384e53b2271b61b77010eff4fa4482d4a6bd3441a462f945c4",
+    "materialization": "base-plus-overlay"
+  },
+  "android": {
+    "release": "16",
+    "api_level": 36,
+    "device": "OPPO PKH110 base",
+    "build_fingerprint": null,
+    "compatibility": {
+      "min_api": 35,
+      "max_api": 36
+    }
+  },
+  "source": {
+    "origin": "SmartPerfetto deterministic trace generator",
+    "captured_at": null,
+    "imported_at": "2026-09-25T00:00:00.000Z",
+    "license": "AGPL-3.0-or-later",
+    "consent": "generated",
+    "privacy_review": "not-applicable",
+    "sanitization_review": "not-applicable",
+    "publication": "public",
+    "evidence_tier": "R3"
+  },
+  "analysis": {
+    "results": [
+      "analysis/expected.json"
+    ],
+    "logs": []
+  },
+  "construction": {
+    "base_case_id": "android-scroll-customer",
+    "scenario_file": "scenario.json",
+    "generator_version": 1,
+    "seed": "app-background-power-v1",
+    "output": "Trace/.generated/constructed/app-background-power/trace.pftrace",
+    "runtime_revision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
+  },
+  "coverage": {
+    "skills": [
+      "android_app_background_power_state"
+    ],
+    "strategies": [],
+    "expectations": [
+      {
+        "id": "app-wakelock-by-uid-and-tag",
+        "type": "skill",
+        "target": "android_app_background_power_state",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_app_background_power_state.skill.yaml",
+        "parameters": {
+          "package": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "power_state_capability",
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "required_sql_steps": [
+          "power_state_capability",
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "forced_sql_steps": [
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "app_wakelock_summary",
+        "required_columns": [
+          "uid",
+          "user_id",
+          "packages",
+          "tag",
+          "wakelock_count",
+          "total_held_ms",
+          "max_held_ms",
+          "source"
+        ],
+        "assertions": [
+          {
+            "column": "uid",
+            "operator": "eq",
+            "value": 10999
+          },
+          {
+            "column": "packages",
+            "operator": "contains",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "wakelock_count",
+            "operator": "eq",
+            "value": 2
+          },
+          {
+            "column": "total_held_ms",
+            "operator": "eq",
+            "value": 340
+          },
+          {
+            "column": "source",
+            "operator": "eq",
+            "value": "battery_stats_longwake"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::app-background-power"
+      },
+      {
+        "id": "standby-bucket-residency",
+        "type": "skill",
+        "target": "android_app_background_power_state",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_app_background_power_state.skill.yaml",
+        "parameters": {
+          "package": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "power_state_capability",
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "required_sql_steps": [
+          "power_state_capability",
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "forced_sql_steps": [
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "standby_bucket_residency",
+        "required_columns": [
+          "package_name",
+          "user_id",
+          "bucket",
+          "residency_ms",
+          "entry_count",
+          "last_main_reason",
+          "first_entered_ts"
+        ],
+        "assertions": [
+          {
+            "column": "bucket",
+            "operator": "eq",
+            "value": "BUCKET_ACTIVE"
+          },
+          {
+            "column": "residency_ms",
+            "operator": "eq",
+            "value": 300
+          },
+          {
+            "column": "last_main_reason",
+            "operator": "eq",
+            "value": "MAIN_USAGE"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::app-background-power"
+      },
+      {
+        "id": "frozen-interval-from-statsd",
+        "type": "skill",
+        "target": "android_app_background_power_state",
+        "mode": "semantic",
+        "source_file": "backend/skills/atomic/android_app_background_power_state.skill.yaml",
+        "parameters": {
+          "package": "com.smartperfetto.fixture"
+        },
+        "required_steps": [
+          "power_state_capability",
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "required_sql_steps": [
+          "power_state_capability",
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "forced_sql_steps": [
+          "app_wakelock_summary",
+          "app_wakelock_summary_battery_stats",
+          "standby_bucket_residency",
+          "freezer_summary",
+          "freezer_summary_slices"
+        ],
+        "isolated_sql_probes": [],
+        "expected_condition_skips": [],
+        "semantic_step": "freezer_summary",
+        "required_columns": [
+          "process_name",
+          "pid",
+          "freeze_count",
+          "total_frozen_ms",
+          "max_frozen_ms",
+          "top_unfreeze_reason",
+          "source"
+        ],
+        "assertions": [
+          {
+            "column": "process_name",
+            "operator": "eq",
+            "value": "com.smartperfetto.fixture"
+          },
+          {
+            "column": "freeze_count",
+            "operator": "eq",
+            "value": 1
+          },
+          {
+            "column": "total_frozen_ms",
+            "operator": "eq",
+            "value": 250
+          },
+          {
+            "column": "top_unfreeze_reason",
+            "operator": "eq",
+            "value": "UFR_BINDER_TXNS"
+          },
+          {
+            "column": "source",
+            "operator": "eq",
+            "value": "statsd_app_freeze_changed"
+          }
+        ],
+        "required_marker": "SmartPerfetto::CASE::app-background-power"
+      }
+    ]
+  }
+}

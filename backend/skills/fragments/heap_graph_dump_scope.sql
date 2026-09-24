@@ -23,13 +23,7 @@ heap_graph_dump_scope AS MATERIALIZED (
       h.ts AS graph_sample_ts,
       t.process_name,
       t.process_identity,
-      (
-        SELECT COUNT(*)
-        FROM heap_graph_object AS o
-        WHERE o.upid = h.upid
-          AND o.graph_sample_ts = h.ts
-          AND o.self_size = -1
-      ) AS placeholder_object_count,
+      COALESCE(ph.placeholder_object_count, 0) AS placeholder_object_count,
       (
         SELECT GROUP_CONCAT(s.name || '=' || s.value, ', ')
         FROM stats AS s
@@ -40,6 +34,15 @@ heap_graph_dump_scope AS MATERIALIZED (
       ) AS dump_issues
     FROM heap_graph AS h
     JOIN heap_target_process AS t USING (upid)
+    -- One pass over the object table for every dump, not one per dump.
+    LEFT JOIN (
+      SELECT upid, graph_sample_ts, COUNT(*) AS placeholder_object_count
+      FROM heap_graph_object
+      WHERE self_size = -1
+      GROUP BY upid, graph_sample_ts
+    ) AS ph
+      ON ph.upid = h.upid
+      AND ph.graph_sample_ts = h.ts
     WHERE ${graph_sample_ts} IS NULL OR h.ts = ${graph_sample_ts}
   ) AS d
 ),

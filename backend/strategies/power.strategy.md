@@ -294,7 +294,15 @@ invoke_skill("android_kernel_wakelock_summary")
 invoke_skill("suspend_wakeup_analysis")
 invoke_skill("screen_off_background_cpu_attribution", { package: "<包名>" })
 invoke_skill("modem_network_correlation_summary")
+invoke_skill("android_app_background_power_state", { package: "<包名>" })
 ```
+
+`android_app_background_power_state`（也是 `battery_drain_attribution` 的 `app_background_power` 步骤）是应用级的三层可选证据，先读 `power_state_capability` 再解读：
+- App wakelock（`app_wakelock_summary`，或旧 trace processor 上的 `app_wakelock_summary_battery_stats`）是 PowerManager 持锁，按 uid + tag；它和 `android_kernel_wakelock_summary` 的 kernel wakeup source 是两层，一个应用 wakelock 可以不对应任何可见的 kernel wakelock，不要相加或互相替代。
+- Standby bucket（`standby_bucket_residency`）说明配额环境：长时间 RARE/RESTRICTED 能解释 job/alarm/网络被推迟或合并，ACTIVE/WORKING_SET 下仍频繁唤醒则更可能是应用自身行为。
+- Freezer（`freezer_summary` 或 `freezer_summary_slices`，按有数据的来源二选一）：冻结期间进程不执行代码，频繁解冻（binder、广播、服务绑定等原因）会把后台 CPU 和唤醒带回来；statsd 与 slice 两种来源的解冻原因写法不同（`UFR_BINDER_TXNS` 与 `binder_txns`），引用时保留原文。
+- 需要确认应用当时是否真在后台时，用 `invoke_skill("android_process_state_residency", { process_name: "<包名>" })` 看 framework 进程状态驻留（TOP、FOREGROUND_SERVICE、CACHED_* 等）：前台服务期间的持锁和唤醒与 cached 状态下的持锁是两类问题。
+- `runtime_lacks_*` 表示 trace 有数据但 trace processor 早于对应模块，只能写数据存在和版本缺口；`no_*_data` 表示没采集（statsd atom `app_standby_bucket_changed` / `app_freeze_changed`、atrace `power`/`am`），写成采集建议。
 
 输出要明确标注：这是状态/事件链证据，能说明“是否频繁唤醒、是否无法进入 Doze、是否有 wakelock”，但不是 rail 级功耗量化。
 

@@ -142,6 +142,7 @@
           "doze_state",
           "wakelock_summary",
           "wakeup_frequency",
+          "app_background_power",
           "screen_off_cpu",
           "suspend_wakeup",
           "job_scheduler",

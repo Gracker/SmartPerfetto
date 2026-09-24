@@ -1,0 +1,304 @@
+{
+  "schema_version": 1,
+  "case_id": "lock-held-ownership",
+  "marker": "SmartPerfetto::CASE::lock-held-ownership",
+  "expectations": [
+    {
+      "id": "recursive-hold-truncated-by-successor",
+      "type": "skill",
+      "target": "lock_contention_analysis",
+      "mode": "semantic",
+      "source_file": "backend/skills/composite/lock_contention_analysis.skill.yaml",
+      "parameters": {
+        "process_name": "com.smartperfetto.fixture",
+        "min_duration_ms": 10
+      },
+      "required_steps": [
+        "data_check",
+        "owner_contention_events",
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "required_sql_steps": [
+        "data_check",
+        "owner_contention_events",
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "forced_sql_steps": [
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "lock_held_owner_summary",
+      "required_columns": [
+        "process_name",
+        "lock_name",
+        "hold_count",
+        "total_held_ms",
+        "max_held_ms",
+        "contended_hold_count",
+        "incomplete_hold_count",
+        "top_holder_thread",
+        "top_holder_held_ms",
+        "top_blocking_method"
+      ],
+      "assertions": [
+        {
+          "column": "lock_name",
+          "operator": "eq",
+          "value": "ProviderLock"
+        },
+        {
+          "column": "hold_count",
+          "operator": "eq",
+          "value": 3
+        },
+        {
+          "column": "total_held_ms",
+          "operator": "eq",
+          "value": 370
+        },
+        {
+          "column": "max_held_ms",
+          "operator": "eq",
+          "value": 300
+        },
+        {
+          "column": "contended_hold_count",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "top_holder_thread",
+          "operator": "eq",
+          "value": "binder:fixture_2"
+        },
+        {
+          "column": "top_blocking_method",
+          "operator": "eq",
+          "value": "com.smartperfetto.fixture.ContentStore.flush"
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::lock-held-ownership"
+    },
+    {
+      "id": "longest-hold-names-holder-and-method",
+      "type": "skill",
+      "target": "lock_contention_analysis",
+      "mode": "semantic",
+      "source_file": "backend/skills/composite/lock_contention_analysis.skill.yaml",
+      "parameters": {
+        "process_name": "com.smartperfetto.fixture",
+        "min_duration_ms": 10
+      },
+      "required_steps": [
+        "data_check",
+        "owner_contention_events",
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "required_sql_steps": [
+        "data_check",
+        "owner_contention_events",
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "forced_sql_steps": [
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "lock_held_long_holds",
+      "required_columns": [
+        "process_name",
+        "lock_name",
+        "holder_thread",
+        "holder_tid",
+        "is_main_thread",
+        "ts",
+        "held_ms",
+        "full_held_ms",
+        "blocking_method",
+        "is_incomplete",
+        "slice_id"
+      ],
+      "assertions": [
+        {
+          "column": "lock_name",
+          "operator": "eq",
+          "value": "ProviderLock"
+        },
+        {
+          "column": "holder_thread",
+          "operator": "eq",
+          "value": "binder:fixture_2"
+        },
+        {
+          "column": "held_ms",
+          "operator": "eq",
+          "value": 300
+        },
+        {
+          "column": "is_main_thread",
+          "operator": "eq",
+          "value": 0
+        },
+        {
+          "column": "blocking_method",
+          "operator": "eq",
+          "value": "com.smartperfetto.fixture.ContentStore.flush"
+        },
+        {
+          "column": "full_held_ms",
+          "operator": "eq",
+          "value": 300
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::lock-held-ownership"
+    },
+    {
+      "id": "holds-outside-requested-process-are-reported",
+      "type": "skill",
+      "target": "lock_contention_analysis",
+      "mode": "semantic",
+      "source_file": "backend/skills/composite/lock_contention_analysis.skill.yaml",
+      "parameters": {
+        "process_name": "com.android.systemui",
+        "min_duration_ms": 10
+      },
+      "required_steps": [
+        "data_check",
+        "owner_contention_events",
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "required_sql_steps": [
+        "data_check",
+        "owner_contention_events",
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_capability",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "forced_sql_steps": [
+        "contention_overview",
+        "main_thread_contentions",
+        "hot_locks",
+        "lock_chain_analysis",
+        "blocking_thread_state",
+        "blocking_functions",
+        "contention_binder_correlation",
+        "lock_held_owner_summary",
+        "lock_held_long_holds",
+        "root_cause_classification",
+        "fallback_no_data"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "lock_held_capability",
+      "required_columns": [
+        "lock_held_slice_count",
+        "lock_held_slice_count_in_scope",
+        "runtime_has_lock_held",
+        "status"
+      ],
+      "assertions": [
+        {
+          "column": "lock_held_slice_count",
+          "operator": "eq",
+          "value": 5
+        },
+        {
+          "column": "lock_held_slice_count_in_scope",
+          "operator": "eq",
+          "value": 0
+        },
+        {
+          "column": "status",
+          "operator": "eq",
+          "value": "no_lock_held_slices_for_process"
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::lock-held-ownership"
+    }
+  ]
+}

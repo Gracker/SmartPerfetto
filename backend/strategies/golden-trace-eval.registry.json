@@ -231,6 +231,62 @@
       ],
       "split": "holdout",
       "createdAt": "2026-09-22T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-heap-dump-class-growth-v1",
+      "catalogAlias": "heap-dump-class-growth",
+      "query": "Compare the Java heap dumps of com.smartperfetto.fixture in this trace: which classes grew between the first and the last dump, and what retains them?",
+      "analysisMode": "full",
+      "expectedScene": "memory",
+      "goldenPoints": [
+        "Compare the first and last heap dump per class on reachable instance counts and dominated bytes from the class aggregation, not on the total heap size.",
+        "Name the application class whose reachable instances grew across every dump as the leak candidate, and treat the growing byte[] and Object[] as its retained payload.",
+        "Report the holder whose instance count stayed flat while its retained set grew as the likely retention point, and keep the leak a candidate until a reference path confirms it."
+      ],
+      "split": "train",
+      "createdAt": "2026-09-25T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-lock-held-ownership-v1",
+      "catalogAlias": "lock-held-ownership",
+      "query": "Why was the main thread of com.smartperfetto.fixture blocked on a lock, and which thread held it for how long?",
+      "analysisMode": "full",
+      "expectedScene": "io",
+      "goldenPoints": [
+        "Tie the main-thread monitor contention to the owning thread and the method it held the lock in.",
+        "Read the holder's lock_held interval as one merged hold that ends when the waiter acquires the lock, not as the sum of its nested slices.",
+        "Separate the one contended hold from the short uncontended holds instead of treating every hold as blocking."
+      ],
+      "split": "validation",
+      "createdAt": "2026-09-25T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-process-state-residency-v1",
+      "catalogAlias": "process-state-residency",
+      "query": "How long did com.smartperfetto.fixture and its :sync process spend in each framework process state, and what state were they in at the end of the trace?",
+      "analysisMode": "full",
+      "expectedScene": "memory",
+      "goldenPoints": [
+        "Report per-state residency from the framework process-state data, keeping it separate from oom_score_adj.",
+        "Follow the app from TOP through LAST_ACTIVITY into CACHED_ACTIVITY with the OomAdjuster reasons for each change.",
+        "State that the :sync process ended the trace in CACHED_EMPTY without inventing a kill or LMK event the trace does not contain."
+      ],
+      "split": "holdout",
+      "createdAt": "2026-09-25T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-app-background-power-v1",
+      "catalogAlias": "app-background-power",
+      "query": "What kept com.smartperfetto.fixture active in the background: app wakelocks, its standby bucket, or freezer state?",
+      "analysisMode": "full",
+      "expectedScene": "power",
+      "goldenPoints": [
+        "Attribute the app wakelocks by uid and tag and keep them separate from kernel wakeup sources.",
+        "Explain the standby bucket move from ACTIVE to RARE as the quota context for deferred background work.",
+        "Report the frozen interval and its binder unfreeze reason from a single freezer source instead of adding the statsd and slice records."
+      ],
+      "split": "train",
+      "createdAt": "2026-09-25T00:00:00.000Z"
     }
   ]
 }

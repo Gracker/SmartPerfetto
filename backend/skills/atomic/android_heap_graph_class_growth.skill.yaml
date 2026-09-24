@@ -1,0 +1,614 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2024-2026 Gracker (Chris)
+# This file is part of SmartPerfetto. See LICENSE for details.
+
+# =============================================================================
+# Android Heap Graph Class Growth（原子 Skill）
+# =============================================================================
+# 转译 upstream heap_dump_diff 工作流：按 class 比较两次 Java heap dump。
+# - 同一 trace 内有多次 dump（continuous_dump_config）时，直接比较每个进程的
+#   第一次与最后一次 dump；
+# - 前后两份 trace 各有一次 dump 时，通过 compare_skill 在两侧各跑一次，
+#   对照 class 排名；排名有上限，某个 class 只出现在一侧时，用 class_names
+#   第二次调用拿到两侧对齐（含显式 0）的行。
+# 计量规则：
+# - 实例数与浅大小来自真实对象（self_size >= 0），不经 class_aggregation：
+#   不完整 dump 的占位对象（self_size = -1）以 type_id 0 挂在 heap_graph_class
+#   第一行名下，可能属于别的 dump 或进程，事后无法从聚合表里扣除。
+# - class 的 dominated（retained）大小只取 android_heap_graph_class_aggregation；
+#   它只累加支配链上最外层的同类实例，逐实例相加 dominated_size 会把自嵌套
+#   class 重复计数。任一 dump 不完整时 dominated 只是下界，增长行标为不可比。
+# - heap_graph_class 按 dump 建行，type_id 跨 dump 不同，只按 class 名对齐；
+#   同一 dump 内同名多 type_id（多个 ClassLoader）合并并标出 type_id_count。
+# - 增量用 reachable 实例数：heap graph 含未回收垃圾，总实例数会夸大增长。
+# - libcore/数组（java.*、原始类型数组、kotlinx.coroutines 等）与其他 class
+#   （app 与 android.* 框架）分开排名：前者通常是泄漏的载荷，不是原因。
+# 进程与 dump 范围来自 fragments/heap_target_process.sql 和
+# fragments/heap_graph_dump_scope.sql（.hprof 无进程名时按 upid + ts 回退）。
+
+name: android_heap_graph_class_growth
+version: "1.0"
+type: atomic
+category: memory
+tier: B
+
+meta:
+  display_name: "Java Heap Class 增长对比"
+  description: "按 class 对比 Java heap dump 的实例数与 dominated 大小：同 trace 多次 dump 比首尾，前后两份 trace 经 compare_skill 对照；app class 与 libcore/数组分开排名"
+  icon: "difference"
+  tags: [memory, heap_graph, heap_dump, leak, class_growth, comparison, upstream]
+
+triggers:
+  keywords:
+    zh: [heap dump 对比, 堆转储对比, Java 泄漏, 内存增长, class 增长, 实例增长, 前后对比]
+    en: [heap dump diff, heap dump comparison, class growth, instance growth, java leak, before after heap]
+  patterns:
+    - ".*(heap dump|heap graph).*(diff|compare|growth|对比|增长).*"
+    - ".*(堆转储|Java 堆).*(对比|增长|泄漏).*"
+
+prerequisites:
+  modules:
+    - android.memory.heap_graph.heap_graph_class_aggregation
+    - android.memory.heap_graph.heap_graph_stats
+
+inputs:
+  - name: process_name
+    type: string
+    required: false
+    description: "目标进程名（精确或 name:* 子进程）；留空使用全部有 heap dump 的进程；无匹配时回退到没有进程名的 dump（如 .hprof）"
+  - name: upid
+    type: integer
+    required: false
+    description: "可选的稳定进程身份；进程名不可用时（.hprof）用它限定 dump"
+  - name: graph_sample_ts
+    type: timestamp
+    required: false
+    description: "只看某一次 dump（trace 内的时间戳，compare_skill 时必须按侧分别传）；留空使用全部 dump"
+  - name: dump_selector
+    type: string
+    required: false
+    default: latest
+    description: "排名与指定 class 行使用哪些 dump：latest（每个进程最后一次，默认）、first 或 all；compare_skill 两侧用默认值即可，无需时间戳。首尾增长总是比较全部 dump"
+  - name: class_names
+    type: string
+    required: false
+    description: "逗号分隔的完整 class 名；给出时为每个 dump 输出这些 class 的对齐行（不存在的 class 输出 0），用于 compare_skill 两侧对齐"
+  - name: max_rows
+    type: integer
+    required: false
+    default: 20
+    description: "每个 dump 每个类别（app / libcore+数组）返回的 class 行数上限"
+
+steps:
+  - id: heap_class_table
+    type: atomic
+    name: "Heap class 聚合"
+    display:
+      level: hidden
+    sql: |
+      -- One table for every step below, one row per (process, dump, class
+      -- name). Counts and shallow sizes come from real objects only; the
+      -- stdlib aggregation groups placeholders by type_id 0, which belongs to
+      -- whichever class was inserted first, so it supplies dominated sizes
+      -- only. type_ids are per dump, so class names are the cross-dump key.
+      CREATE OR REPLACE PERFETTO TABLE __sp_heap_class_growth_classes AS
+      WITH per_type AS (
+        -- Integer keys first; class names are joined on the small result.
+        SELECT
+          upid,
+          graph_sample_ts,
+          type_id,
+          COUNT(*) AS obj_count,
+          SUM(self_size) AS size_bytes,
+          SUM(IIF(reachable, 1, 0)) AS reachable_obj_count,
+          SUM(IIF(reachable, self_size, 0)) AS reachable_size_bytes
+        FROM heap_graph_object
+        WHERE self_size >= 0
+        GROUP BY upid, graph_sample_ts, type_id
+      ),
+      objects AS (
+        SELECT
+          t.upid,
+          t.graph_sample_ts,
+          COALESCE(c.deobfuscated_name, c.name, '[unknown class]') AS class_name,
+          SUM(t.obj_count) AS obj_count,
+          SUM(t.size_bytes) AS size_bytes,
+          SUM(t.reachable_obj_count) AS reachable_obj_count,
+          SUM(t.reachable_size_bytes) AS reachable_size_bytes,
+          COUNT(*) AS type_id_count
+        FROM per_type AS t
+        JOIN heap_graph_class AS c ON c.id = t.type_id
+        GROUP BY t.upid, t.graph_sample_ts, class_name
+      ),
+      dominated AS (
+        SELECT
+          upid,
+          graph_sample_ts,
+          COALESCE(type_name, '[unknown class]') AS class_name,
+          SUM(dominated_obj_count) AS dominated_obj_count,
+          SUM(dominated_size_bytes + dominated_native_size_bytes) AS dominated_bytes
+        FROM android_heap_graph_class_aggregation
+        GROUP BY upid, graph_sample_ts, class_name
+      )
+      SELECT
+        o.*,
+        _is_libcore_or_array(o.class_name) AS is_libcore_or_array,
+        COALESCE(d.dominated_obj_count, 0) AS dominated_obj_count,
+        COALESCE(d.dominated_bytes, 0) AS dominated_bytes
+      FROM objects AS o
+      LEFT JOIN dominated AS d USING (upid, graph_sample_ts, class_name);
+
+      -- Later steps probe this table per (dump, class); real dumps have tens of
+      -- thousands of classes each.
+      CREATE OR REPLACE PERFETTO INDEX __sp_heap_class_growth_classes_idx
+      ON __sp_heap_class_growth_classes(upid, graph_sample_ts, class_name);
+
+      SELECT COUNT(*) AS class_row_count FROM __sp_heap_class_growth_classes
+    save_as: heap_class_table
+
+  - id: class_growth_availability
+    type: atomic
+    name: "Heap dump 对比可用性"
+    display:
+      level: key
+      layer: overview
+      title: "Heap dump 对比可用性"
+      columns:
+        - name: dump_count
+          label: "Dump 数"
+          type: number
+        - name: process_count
+          label: "进程数"
+          type: number
+        - name: max_dumps_per_process
+          label: "单进程最多 dump 数"
+          type: number
+        - name: incomplete_dump_count
+          label: "不完整 dump 数"
+          type: number
+        - name: dump_selector
+          label: "排名使用的 dump"
+          type: string
+        - name: process_identity
+          label: "进程身份"
+          type: string
+        - name: status
+          label: "状态"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
+      - fragments/heap_graph_selected_dumps.sql
+    sql: |
+      WITH per_process AS (
+        SELECT upid, COUNT(*) AS dumps FROM heap_graph_dump_scope GROUP BY upid
+      )
+      SELECT
+        (SELECT COUNT(*) FROM heap_graph_dump_scope) AS dump_count,
+        (SELECT COUNT(*) FROM per_process) AS process_count,
+        COALESCE((SELECT MAX(dumps) FROM per_process), 0) AS max_dumps_per_process,
+        (SELECT COUNT(*) FROM heap_graph_dump_scope WHERE dump_completeness = 'incomplete_dump') AS incomplete_dump_count,
+        (SELECT dump_selector FROM heap_graph_dump_selector) AS dump_selector,
+        COALESCE((SELECT GROUP_CONCAT(DISTINCT process_identity) FROM heap_graph_dump_scope), 'none') AS process_identity,
+        CASE
+          WHEN COALESCE((SELECT MAX(dumps) FROM per_process), 0) >= 2 THEN 'multiple_dumps'
+          WHEN EXISTS (SELECT 1 FROM heap_graph_dump_scope) THEN 'single_dump'
+          WHEN EXISTS (SELECT 1 FROM heap_graph) THEN 'no_heap_graph_for_requested_process'
+          ELSE 'no_heap_graph_data'
+        END AS status
+    save_as: class_growth_availability
+
+  - id: class_dump_inventory
+    type: atomic
+    name: "Heap dump 清单"
+    optional: true
+    display:
+      level: key
+      layer: list
+      title: "Heap dump 清单（总量平稳不代表没有泄漏）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: upid
+          label: "UPID"
+          type: number
+        - name: graph_sample_ts
+          label: "Dump 时间"
+          type: timestamp
+          unit: ns
+        - name: dump_index
+          label: "序号"
+          type: number
+        - name: selected_for_ranking
+          label: "用于排名"
+          type: number
+        - name: reachable_heap_bytes
+          label: "Reachable Heap"
+          type: bytes
+        - name: reachable_obj_count
+          label: "Reachable 对象数"
+          type: number
+        - name: dump_completeness
+          label: "Dump 完整性"
+          type: string
+        - name: process_identity
+          label: "进程身份"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
+      - fragments/heap_graph_selected_dumps.sql
+    sql: |
+      SELECT
+        d.process_name,
+        d.upid,
+        printf('%d', d.graph_sample_ts) AS graph_sample_ts,
+        d.dump_index,
+        d.selected_for_ranking,
+        SUM(c.reachable_size_bytes) AS reachable_heap_bytes,
+        SUM(c.reachable_obj_count) AS reachable_obj_count,
+        d.dump_completeness,
+        d.process_identity
+      FROM heap_graph_selected_dumps AS d
+      LEFT JOIN __sp_heap_class_growth_classes AS c
+        ON c.upid = d.upid
+        AND c.graph_sample_ts = d.graph_sample_ts
+      GROUP BY d.upid, d.graph_sample_ts
+      ORDER BY d.upid, d.graph_sample_ts
+    save_as: class_dump_inventory
+
+  # libcore/array classes are ranked apart from the rest: they are usually
+  # the payload another class retains, not the cause.
+  - id: class_ranking
+    type: atomic
+    name: "Class 排名"
+    optional: true
+    display:
+      level: key
+      layer: list
+      title: "所选 dump 的 class 按 dominated 大小排名（libcore/数组与其他 class 分开）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: graph_sample_ts
+          label: "Dump 时间"
+          type: timestamp
+          unit: ns
+        - name: class_category
+          label: "类别"
+          type: string
+        - name: class_name
+          label: "Class"
+          type: string
+        - name: reachable_obj_count
+          label: "Reachable 实例数"
+          type: number
+        - name: obj_count
+          label: "实例数（含不可达）"
+          type: number
+        - name: reachable_size_bytes
+          label: "Reachable 浅大小"
+          type: bytes
+        - name: dominated_obj_count
+          label: "Dominated 对象数"
+          type: number
+        - name: dominated_bytes
+          label: "Dominated 大小"
+          type: bytes
+        - name: type_id_count
+          label: "同名 type 数"
+          type: number
+        - name: dump_completeness
+          label: "Dump 完整性"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
+      - fragments/heap_graph_selected_dumps.sql
+    sql: |
+      WITH ranked AS (
+        SELECT
+          d.process_name,
+          d.dump_completeness,
+          c.*,
+          IIF(c.is_libcore_or_array, 'libcore_or_array', 'app_or_framework') AS class_category,
+          ROW_NUMBER() OVER (
+            PARTITION BY c.upid, c.graph_sample_ts, c.is_libcore_or_array
+            ORDER BY c.dominated_bytes DESC, c.reachable_obj_count DESC, c.class_name
+          ) AS class_rank
+        FROM __sp_heap_class_growth_classes AS c
+        JOIN heap_graph_selected_dumps AS d USING (upid, graph_sample_ts)
+        WHERE d.selected_for_ranking
+      )
+      SELECT
+        process_name,
+        printf('%d', graph_sample_ts) AS graph_sample_ts,
+        class_category,
+        class_name,
+        reachable_obj_count,
+        obj_count,
+        reachable_size_bytes,
+        dominated_obj_count,
+        dominated_bytes,
+        type_id_count,
+        dump_completeness
+      FROM ranked
+      WHERE class_rank <= COALESCE(${max_rows|20}, 20)
+      ORDER BY upid, graph_sample_ts, class_category = 'app_or_framework' DESC, class_rank
+    save_as: class_ranking
+
+  # compare_skill runs this Skill on each trace separately and matches steps,
+  # not rows, so a bounded ranking can omit a class on one side. A second call
+  # with class_names returns one row per requested class per selected dump on
+  # both sides, with explicit zero rows when the class is absent. With
+  # dump_selector=all it is also the per-dump series of a class within a
+  # trace. Without class_names the requested set, and this step, is empty.
+  - id: requested_classes
+    type: atomic
+    name: "指定 class 对齐行"
+    optional: true
+    display:
+      level: key
+      layer: list
+      title: "指定 class 在所选 dump 中的对齐行"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: graph_sample_ts
+          label: "Dump 时间"
+          type: timestamp
+          unit: ns
+        - name: class_name
+          label: "Class"
+          type: string
+        - name: present_in_dump
+          label: "存在"
+          type: number
+        - name: reachable_obj_count
+          label: "Reachable 实例数"
+          type: number
+        - name: obj_count
+          label: "实例数（含不可达）"
+          type: number
+        - name: dominated_bytes
+          label: "Dominated 大小"
+          type: bytes
+        - name: dump_completeness
+          label: "Dump 完整性"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
+      - fragments/heap_graph_selected_dumps.sql
+    sql: |
+      WITH RECURSIVE requested_split(rest, class_name) AS (
+        SELECT '${class_names|}' || ',', NULL
+        UNION ALL
+        SELECT
+          substr(rest, instr(rest, ',') + 1),
+          trim(substr(rest, 1, instr(rest, ',') - 1))
+        FROM requested_split
+        WHERE rest != ''
+      ),
+      requested AS (
+        SELECT DISTINCT class_name FROM requested_split
+        WHERE class_name IS NOT NULL AND class_name != ''
+      )
+      SELECT
+        d.process_name,
+        printf('%d', d.graph_sample_ts) AS graph_sample_ts,
+        r.class_name,
+        IIF(COALESCE(c.obj_count, 0) > 0, 1, 0) AS present_in_dump,
+        COALESCE(c.reachable_obj_count, 0) AS reachable_obj_count,
+        COALESCE(c.obj_count, 0) AS obj_count,
+        COALESCE(c.dominated_bytes, 0) AS dominated_bytes,
+        d.dump_completeness
+      FROM heap_graph_selected_dumps AS d
+      CROSS JOIN requested AS r
+      LEFT JOIN __sp_heap_class_growth_classes AS c
+        ON c.upid = d.upid
+        AND c.graph_sample_ts = d.graph_sample_ts
+        AND c.class_name = r.class_name
+      WHERE d.selected_for_ranking
+      ORDER BY d.upid, d.graph_sample_ts, r.class_name
+    save_as: requested_classes
+
+  - id: class_growth_within_trace
+    type: atomic
+    name: "同 trace 首尾 dump class 增长"
+    optional: true
+    condition: "class_growth_availability.data[0]?.status === 'multiple_dumps'"
+    display:
+      level: key
+      layer: list
+      title: "首次 → 末次 heap dump 的 class 增长（libcore/数组与其他 class 分开排名）"
+      columns:
+        - name: process_name
+          label: "进程"
+          type: string
+        - name: class_category
+          label: "类别"
+          type: string
+        - name: class_name
+          label: "Class"
+          type: string
+        - name: baseline_reachable_count
+          label: "首次 Reachable 实例"
+          type: number
+        - name: target_reachable_count
+          label: "末次 Reachable 实例"
+          type: number
+        - name: reachable_count_delta
+          label: "Reachable 实例增量"
+          type: number
+        - name: baseline_dominated_bytes
+          label: "首次 Dominated"
+          type: bytes
+        - name: target_dominated_bytes
+          label: "末次 Dominated"
+          type: bytes
+        - name: dominated_delta_bytes
+          label: "Dominated 增量"
+          type: bytes
+        - name: growth_signal
+          label: "增长信号"
+          type: string
+        - name: monotonic_growth
+          label: "逐次不减"
+          type: number
+        - name: dump_count
+          label: "Dump 数"
+          type: number
+        - name: comparability
+          label: "可比性"
+          type: string
+        - name: baseline_ts
+          label: "首次 Dump"
+          type: timestamp
+          unit: ns
+        - name: target_ts
+          label: "末次 Dump"
+          type: timestamp
+          unit: ns
+    sql_fragments:
+      - fragments/heap_target_process.sql
+      - fragments/heap_graph_dump_scope.sql
+    sql: |
+      WITH dump_pairs AS (
+        SELECT
+          upid,
+          MAX(process_name) AS process_name,
+          MIN(graph_sample_ts) AS baseline_ts,
+          MAX(graph_sample_ts) AS target_ts,
+          COUNT(*) AS dump_count,
+          IIF(
+            SUM(dump_completeness = 'incomplete_dump') > 0,
+            'incomplete_dump_lower_bound',
+            'all_dumps_complete'
+          ) AS comparability
+        FROM heap_graph_dump_scope
+        GROUP BY upid
+        HAVING COUNT(*) >= 2
+      ),
+      -- Every class seen in any dump of the process, on every dump, so a
+      -- class absent from a dump counts as zero instances there.
+      class_series AS (
+        SELECT
+          d.upid,
+          d.graph_sample_ts,
+          k.class_name,
+          k.is_libcore_or_array,
+          COALESCE(c.reachable_obj_count, 0) AS reachable_obj_count,
+          COALESCE(c.dominated_bytes, 0) AS dominated_bytes
+        FROM heap_graph_dump_scope AS d
+        JOIN dump_pairs AS p USING (upid)
+        JOIN (
+          SELECT DISTINCT c.upid, c.class_name, c.is_libcore_or_array
+          FROM __sp_heap_class_growth_classes AS c
+          JOIN heap_graph_dump_scope AS s USING (upid, graph_sample_ts)
+        ) AS k USING (upid)
+        LEFT JOIN __sp_heap_class_growth_classes AS c
+          ON c.upid = d.upid
+          AND c.graph_sample_ts = d.graph_sample_ts
+          AND c.class_name = k.class_name
+      ),
+      class_steps AS (
+        SELECT
+          upid,
+          class_name,
+          SUM(IIF(reachable_obj_count < previous_count, 1, 0)) AS decrease_count
+        FROM (
+          SELECT
+            upid,
+            class_name,
+            reachable_obj_count,
+            LAG(reachable_obj_count) OVER (
+              PARTITION BY upid, class_name ORDER BY graph_sample_ts
+            ) AS previous_count
+          FROM class_series
+        )
+        GROUP BY upid, class_name
+      ),
+      growth AS (
+        SELECT
+          p.process_name,
+          p.upid,
+          p.baseline_ts,
+          p.target_ts,
+          p.dump_count,
+          p.comparability,
+          b.class_name,
+          IIF(b.is_libcore_or_array, 'libcore_or_array', 'app_or_framework') AS class_category,
+          b.reachable_obj_count AS baseline_reachable_count,
+          t.reachable_obj_count AS target_reachable_count,
+          t.reachable_obj_count - b.reachable_obj_count AS reachable_count_delta,
+          b.dominated_bytes AS baseline_dominated_bytes,
+          t.dominated_bytes AS target_dominated_bytes,
+          t.dominated_bytes - b.dominated_bytes AS dominated_delta_bytes,
+          s.decrease_count
+        FROM dump_pairs AS p
+        JOIN class_series AS b
+          ON b.upid = p.upid AND b.graph_sample_ts = p.baseline_ts
+        JOIN class_series AS t
+          ON t.upid = p.upid AND t.graph_sample_ts = p.target_ts AND t.class_name = b.class_name
+        JOIN class_steps AS s
+          ON s.upid = p.upid AND s.class_name = b.class_name
+      ),
+      ranked AS (
+        SELECT
+          *,
+          ROW_NUMBER() OVER (
+            PARTITION BY upid, class_category
+            ORDER BY dominated_delta_bytes DESC, reachable_count_delta DESC, class_name
+          ) AS dominated_rank,
+          ROW_NUMBER() OVER (
+            PARTITION BY upid, class_category
+            ORDER BY reachable_count_delta DESC, dominated_delta_bytes DESC, class_name
+          ) AS count_rank
+        FROM growth
+        WHERE reachable_count_delta != 0 OR dominated_delta_bytes != 0
+      )
+      SELECT
+        process_name,
+        class_category,
+        class_name,
+        baseline_reachable_count,
+        target_reachable_count,
+        reachable_count_delta,
+        baseline_dominated_bytes,
+        target_dominated_bytes,
+        dominated_delta_bytes,
+        CASE
+          WHEN reachable_count_delta > 0 THEN 'instance_growth'
+          WHEN reachable_count_delta = 0 AND dominated_delta_bytes > 0 THEN 'retained_growth_only'
+          WHEN dominated_delta_bytes > 0 THEN 'retained_growth_fewer_instances'
+          ELSE 'shrink'
+        END AS growth_signal,
+        IIF(decrease_count = 0, 1, 0) AS monotonic_growth,
+        dump_count,
+        comparability,
+        printf('%d', baseline_ts) AS baseline_ts,
+        printf('%d', target_ts) AS target_ts
+      FROM ranked
+      WHERE dominated_rank <= COALESCE(${max_rows|20}, 20)
+        OR count_rank <= COALESCE(${max_rows|20}, 20)
+      ORDER BY upid, class_category = 'app_or_framework' DESC, dominated_delta_bytes DESC,
+        reachable_count_delta DESC, class_name
+    save_as: class_growth_within_trace
+
+output:
+  format: structured
+  fields:
+    - name: class_growth_availability
+      description: "Dump count and status: multiple_dumps enables first-vs-last growth; single_dump means compare against a reference trace with compare_skill"
+    - name: class_dump_inventory
+      description: "Every dump with its reachable heap size, completeness and whether dump_selector used it for ranking; a flat heap total does not rule out a class-level leak"
+    - name: class_ranking
+      description: "Selected dumps: classes ranked by dominated bytes from android_heap_graph_class_aggregation, libcore/array classes (usually retained payload) apart from application and framework classes; counts exclude placeholder objects"
+    - name: requested_classes
+      description: "Aligned rows for the requested class_names in each selected dump, with explicit zero rows, for cross-trace comparison or a per-dump series"
+    - name: class_growth_within_trace
+      description: "First-vs-last dump class growth per process on reachable instance counts and dominated bytes; instance_growth marks classes whose count grew, retained_growth_only marks holders whose dominated set grew with a flat count, retained_growth_fewer_instances marks fewer instances retaining more; monotonic_growth is 0 when any dump in between dropped"

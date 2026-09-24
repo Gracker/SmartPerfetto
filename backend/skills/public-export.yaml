@@ -143,6 +143,12 @@ sql_fragments:
   backend/skills/fragments/heap_graph_dump_scope.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/heap_graph_dump_scope.sql
+  backend/skills/fragments/heap_graph_selected_dumps.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/heap_graph_selected_dumps.sql
+  backend/skills/fragments/process_state_scoped_intervals.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/process_state_scoped_intervals.sql
   backend/skills/fragments/heap_profile_scope.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/heap_profile_scope.sql
@@ -200,6 +206,11 @@ skills:
     workflow: cpu-scheduling
     disposition: exported
     destination: references/generated/skills/thread_cpu_placement_timeline.md
+  android_app_background_power_state:
+    source: backend/skills/atomic/android_app_background_power_state.skill.yaml
+    workflow: power-thermal
+    disposition: exported
+    destination: references/generated/skills/android_app_background_power_state.md
   android_bitmap_memory_per_process:
     source: backend/skills/atomic/android_bitmap_memory_per_process.skill.yaml
     workflow: memory
@@ -215,6 +226,11 @@ skills:
     workflow: gpu-rendering
     disposition: exported
     destination: references/generated/skills/android_gpu_work_period_track.md
+  android_heap_graph_class_growth:
+    source: backend/skills/atomic/android_heap_graph_class_growth.skill.yaml
+    workflow: memory
+    disposition: exported
+    destination: references/generated/skills/android_heap_graph_class_growth.md
   android_heap_graph_leak_candidates:
     source: backend/skills/atomic/android_heap_graph_leak_candidates.skill.yaml
     workflow: memory
@@ -225,6 +241,11 @@ skills:
     workflow: memory
     disposition: exported
     destination: references/generated/skills/android_heap_graph_summary.md
+  android_process_state_residency:
+    source: backend/skills/atomic/android_process_state_residency.skill.yaml
+    workflow: memory
+    disposition: exported
+    destination: references/generated/skills/android_process_state_residency.md
   android_job_scheduler_events:
     source: backend/skills/atomic/android_job_scheduler_events.skill.yaml
     workflow: cpu-scheduling
