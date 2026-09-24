@@ -563,6 +563,24 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(mockAnalyze).not.toHaveBeenCalled();
   });
 
+  it('streams the final review start and finish to the CLI after the runtime handler detached', async () => {
+    const deadlineAt = Date.now() + 5 * 60_000;
+    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
+      input.onProgress?.({stage: 'final_review_started', deadlineAt});
+      input.onProgress?.({stage: 'final_review_finished', status: 'unavailable', reason: 'timeout'});
+      return {result: input.result};
+    });
+    const events: StreamingUpdate[] = [];
+    await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
+      onEvent: update => events.push(update)});
+    const reviews = events.filter(event => event.type === 'progress' && (event.content as any)?.phase === 'final_review');
+    expect(reviews.map(event => event.content)).toEqual([
+      expect.objectContaining({stage: 'started', deadlineAt, message: expect.stringContaining('分钟')}),
+      expect.objectContaining({stage: 'finished', outcome: 'unavailable', reason: 'timeout',
+        message: '结论复核未完成：语义复核超出时间预算'}),
+    ]);
+  });
+
   it('preserves the shared finalizer partial verdict across CLI result, session, report, and events', async () => {
     mockFinalizeAnalysisResult.mockImplementationOnce(async input => ({
       result: {...input.result, partial: true, confidence: 0.55, terminationMessage: '最终结果质量闸门',

@@ -76,7 +76,7 @@ function getSymbolIndex(): SymbolIndex {
 export function injectStdlibIncludes(sql: string): InjectionResult {
   if (!sql || typeof sql !== 'string') return { sql, injected: [] };
 
-  const analysis = analyzeSqlStdlibDependencies(sql);
+  const analysis = analyzeSqlStdlibDependencies(sql, {includeIntrospectedNames: true});
   if (analysis.requiredModules.length === 0) return { sql, injected: [] };
 
   const sorted = analysis.requiredModules;

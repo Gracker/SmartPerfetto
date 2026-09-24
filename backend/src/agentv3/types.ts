@@ -4,12 +4,12 @@
 
 import type { ArchitectureInfo } from '../agent/detectors/types';
 import type { Finding } from '../agent/types';
-import type { DetectedFocusApp } from './focusAppDetector';
+import type { FocusAppTarget } from '../agentRuntime/focusAppTarget';
 import type { SceneType } from './sceneClassifier';
 import type { OutputLanguage } from './outputLanguage';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
 import type {SourceUseStatus} from '../services/codebase/sourceUseDecision';
-import type {CapabilityManifestResolutionV1} from '../types/capabilityManifest';
+import type {CapabilityManifestResolutionV1, CapabilityUnprobedReasonCode} from '../types/capabilityManifest';
 import type {AnalysisRecoveryKind, AnalysisMissingReportSection} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
@@ -111,10 +111,10 @@ export interface ClaudeAnalysisContext {
    */
   preflight?: RuntimeTurnPolicy['preflight'];
   architecture?: ArchitectureInfo;
+  /** Effective package: `focusTarget.packageName` when the run resolved one. */
   packageName?: string;
-  focusApps?: DetectedFocusApp[];
-  /** Detection method used for focus apps — affects display labels */
-  focusMethod?: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none';
+  /** Provenance of `packageName` plus ranked focus-app candidates (resolveFocusAppTarget). */
+  focusTarget?: FocusAppTarget;
   previousFindings?: Finding[];
   conversationSummary?: string;
   /** Perfetto SQL knowledge context matched to the user query (from ExtendedSqlKnowledgeBase) */
@@ -196,8 +196,9 @@ export interface TracePairContext {
 export interface ComparisonContext {
   referenceTraceId: string;
   tracePairContext?: TracePairContext;
+  /** Reference-side effective package; always inferred (`referenceFocusTarget.source`). */
   referencePackageName?: string;
-  referenceFocusApps?: DetectedFocusApp[];
+  referenceFocusTarget?: FocusAppTarget;
   referenceArchitecture?: ArchitectureInfo;
   /** Intersection of stdlib capabilities available on both trace processors */
   commonCapabilities: string[];
@@ -237,6 +238,13 @@ export interface CapabilityProbeResult {
   primaryTable: string;
   /** Approximate row count (only when status is 'available' or 'insufficient_or_scene_absent') */
   rowEstimate?: number;
+  /**
+   * Set only when the probe could not determine the capability (a module or
+   * probe query did not finish). Such an entry sits in `missingConfig`, but it
+   * is not a probe that found the data absent. Routine causes stay implied by
+   * the bucket and `rowEstimate`, which keeps the prompt payload small.
+   */
+  reasonCode?: CapabilityUnprobedReasonCode;
   /** Human-readable reason when not available */
   reason?: string;
 }

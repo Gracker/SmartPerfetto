@@ -32,6 +32,7 @@ export {FINAL_SEMANTIC_INPUT_BYTE_LIMIT, FINAL_SEMANTIC_OUTPUT_BYTE_LIMIT} from 
 export const FINAL_SEMANTIC_RULE_VERSION = 'final_semantics@2';
 const SEMANTIC_LOCATION_CATALOG_ENTRY_LIMIT = 512;
 const SEMANTIC_LOCATION_CATALOG_BYTE_LIMIT = 64 * 1024;
+const SEMANTIC_RESPONSE_DEGRADATION_LIMIT = 24;
 
 export interface FinalSemanticSnapshot {
   /** Parent-owned privacy projection must preserve the entire review target. */
@@ -66,6 +67,11 @@ export interface FinalSemanticAssessmentInput {
   signal: AbortSignal;
   /** May only narrow the service's limits. Does not restart the run deadline. */
   limits?: {inputBytes?: number; outputBytes?: number};
+  /**
+   * Called once, immediately before the single provider request is sent. It
+   * carries the absolute deadline only; a throwing observer cannot affect the review.
+   */
+  onDispatch?: (info: {readonly deadlineMs: number}) => void;
 }
 
 export interface SemanticContentLocation {readonly start: number; readonly end: number}
@@ -376,6 +382,17 @@ function exactQuoteLocation(item: Record<string, unknown>, body: string): Semant
   return selected < 0 ? undefined : {start: selected, end: selected + item.text.length};
 }
 
+/**
+ * Short, copyable span ID: `L<line>.<6 hex of the body digest><4 hex of the line digest>`.
+ * The line ordinal makes an ID unique within one body; the digests only make a
+ * stale or foreign ID unlikely to resolve. Resolution stays an exact lookup in
+ * this request's own catalog, so neither digest grants any authority.
+ */
+function semanticLocationSpanId(ordinal: number, bodyDigest: string, lineText: string): string {
+  const lineDigest = createHash('sha256').update(lineText).digest('hex');
+  return `L${ordinal}.${bodyDigest.slice(0, 6)}${lineDigest.slice(0, 4)}`;
+}
+
 function buildSemanticLocationCatalog(body: string): SemanticLocationCatalog | undefined {
   const bodyDigest = createHash('sha256').update(body).digest('hex');
   const entries: Array<{spanId: string; text: string}> = [];
@@ -388,8 +405,7 @@ function buildSemanticLocationCatalog(body: string): SemanticLocationCatalog | u
     const text = body.slice(start, end);
     if (text.trim()) {
       if (entries.length >= SEMANTIC_LOCATION_CATALOG_ENTRY_LIMIT) return undefined;
-      const spanDigest = createHash('sha256').update(text).digest('hex');
-      const spanId = `line-${ordinal}-${bodyDigest}-${spanDigest}`;
+      const spanId = semanticLocationSpanId(ordinal, bodyDigest, text);
       if (hasOwn(locations, spanId)) return undefined;
       entries.push({spanId, text});
       locations[spanId] = Object.freeze({start, end});
@@ -496,6 +512,71 @@ function semanticResponseJsonText(raw: string): string {
   return payload.includes('```') ? text : payload;
 }
 
+const unknownClaim = (claimId: string): SemanticClaimAssessment =>
+  ({claimId, consistency: 'unknown', contentLocations: [], issues: []});
+
+type SemanticLocationFormat = 'offsets_with_text' | 'exact_quote' | 'catalog_or_exact_quote';
+
+/**
+ * One claim judgment, degraded rather than rejected. A contradiction survives a
+ * location the backend cannot resolve (the issue is kept without a location);
+ * any other judgment with an unusable location or a violated constraint becomes
+ * `unknown`, which can never verify a claim.
+ */
+/** Whether a declared claim carries typed semantics a `consistent` judgment can rest on. */
+function declarationHasTypedSemantics(
+  declaration: NonNullable<ConclusionContract['claims']>[number],
+  bindingEligibility: FinalSemanticSnapshot['declarationBindingEligibility'],
+): boolean {
+  return Boolean(bindingEligibility === 'eligible' && member(declaration.kind, [
+    'numeric', 'categorical', 'time_range', 'identity', 'causal', 'comparison', 'inference', 'recommendation',
+  ]) && declaration.semantics &&
+    parseClaimSemanticsDeclaration(declaration.semantics).semantics &&
+    !hasOwn(declaration, 'rawSemantics') && !declaration.semanticsParseIssues?.length);
+}
+
+function parseClaimItem(item: Record<string, unknown>, claimId: string, ordinal: number, context: {
+  body: string; locationFormat: SemanticLocationFormat; locationCatalog?: SemanticLocationCatalog;
+  /** `declarationHasTypedSemantics` of the claim's declaration. */
+  typedSemantics: boolean;
+  degrade(diagnostic: FinalSemanticResponseDiagnostic): void;
+}): SemanticClaimAssessment {
+  const {body, locationFormat, locationCatalog, typedSemantics, degrade} = context;
+  if (!keys(item, ['claimId', 'consistency', 'contentLocations', 'issues']) ||
+    !member(item.consistency, ['consistent', 'inconsistent', 'unknown']) || !Array.isArray(item.issues)) {
+    degrade({stage: 'claim', code: 'invalid_shape', ordinal});
+    return unknownClaim(claimId);
+  }
+  const locations = parseLocations(item.contentLocations, body, locationFormat, locationCatalog);
+  let locationValid = Boolean(locations);
+  const issues: Array<{code: SemanticIssueCode; contentLocations: SemanticContentLocation[]}> = [];
+  for (const issue of item.issues) {
+    if (!record(issue) || !keys(issue, ['code', 'contentLocations']) || !member(issue.code, SEMANTIC_ISSUE_CODES)) {
+      degrade({stage: 'claim', code: 'invalid_shape', ordinal});
+      continue;
+    }
+    const issueLocations = parseLocations(issue.contentLocations, body, locationFormat, locationCatalog);
+    const located = Boolean(issueLocations && (issue.code === 'declaration_not_expressed' ||
+      issue.code === 'unclear_semantics' || issueLocations.length));
+    if (!located) locationValid = false;
+    issues.push({code: issue.code, contentLocations: located ? issueLocations! : []});
+  }
+  if (!locationValid) degrade({stage: 'claim', code: 'invalid_location', ordinal});
+  if (item.consistency === 'inconsistent') {
+    if (issues.length) return {claimId, consistency: 'inconsistent', contentLocations: locations ?? [], issues};
+    degrade({stage: 'claim', code: 'invalid_constraint', ordinal});
+    return unknownClaim(claimId);
+  }
+  if (item.consistency === 'unknown') return {claimId, consistency: 'unknown', contentLocations: locations ?? [], issues};
+  if (!locationValid) return unknownClaim(claimId);
+  if (!locations!.length || item.issues.length) {
+    degrade({stage: 'claim', code: 'invalid_constraint', ordinal});
+    return unknownClaim(claimId);
+  }
+  return typedSemantics ? {claimId, consistency: 'consistent', contentLocations: locations!, issues: []}
+    : {claimId, consistency: 'unknown', contentLocations: locations!, issues: [{code: 'unclear_semantics', contentLocations: []}]};
+}
+
 function parseResponseStrict(
   raw: string, captured: CapturedSnapshot, binding: NonNullable<FinalSemanticAssessment['binding']>,
   locationCatalog?: SemanticLocationCatalog,
@@ -520,54 +601,58 @@ function parseResponseStrict(
     return invalidResponse('body_coverage', 'invalid_location');
   }
   const declarations = new Map((contract?.claims ?? []).map(claim => [claim.id!, claim]));
-  const claims: SemanticClaimAssessment[] = [];
-  const seenClaims = new Set<string>();
+  const eligibility = captured.snapshot.declarationBindingEligibility;
+  const typedSemantics = new Map([...declarations].map(([id, claim]) =>
+    [id, declarationHasTypedSemantics(claim, eligibility)]));
+  // Item-level defects degrade only the affected judgment; they never promote one.
+  const degradations: FinalSemanticResponseDiagnostic[] = [];
+  const degrade = (diagnostic: FinalSemanticResponseDiagnostic) => {
+    if (degradations.length < SEMANTIC_RESPONSE_DEGRADATION_LIMIT) degradations.push(diagnostic);
+  };
+  const parsedClaims = new Map<string, SemanticClaimAssessment>();
   for (const [index, item] of value.claims.entries()) {
-    if (!record(item) || !keys(item, ['claimId', 'consistency', 'contentLocations', 'issues']) ||
-      !nonempty(item.claimId) || !declarations.has(item.claimId) || seenClaims.has(item.claimId) ||
-      !member(item.consistency, ['consistent', 'inconsistent', 'unknown']) || !Array.isArray(item.issues)) {
-      return invalidResponse('claim', 'invalid_reference', {ordinal: index + 1});
+    const ordinal = index + 1;
+    const claimId = record(item) && nonempty(item.claimId) ? item.claimId : undefined;
+    if (!claimId || !declarations.has(claimId)) {
+      // A mis-copied or invented ID cannot judge any declared claim; the declared
+      // claim it may have meant stays unknown through the set check below.
+      degrade({stage: 'claim', code: 'invalid_reference', ordinal});
+      continue;
     }
-    const locations = parseLocations(item.contentLocations, body, locationFormat, locationCatalog);
-    if (!locations) return invalidResponse('claim', 'invalid_location', {ordinal: index + 1});
-    const issues: Array<{code: SemanticIssueCode; contentLocations: SemanticContentLocation[]}> = [];
-    for (const issue of item.issues) {
-      if (!record(issue) || !keys(issue, ['code', 'contentLocations']) || !member(issue.code, SEMANTIC_ISSUE_CODES)) {
-        return invalidResponse('claim', 'invalid_shape', {ordinal: index + 1});
-      }
-      const issueLocations = parseLocations(issue.contentLocations, body, locationFormat, locationCatalog);
-      if (!issueLocations || (issue.code !== 'declaration_not_expressed' && issue.code !== 'unclear_semantics' && !issueLocations.length)) {
-        return invalidResponse('claim', 'invalid_location', {ordinal: index + 1});
-      }
-      issues.push({code: issue.code, contentLocations: issueLocations});
+    const parsed = parseClaimItem(item as Record<string, unknown>, claimId, ordinal, {body, locationFormat, locationCatalog,
+      typedSemantics: typedSemantics.get(claimId)!, degrade});
+    const previous = parsedClaims.get(claimId);
+    if (previous) {
+      // Two judgments for one claim: a contradiction survives, anything else is unknown.
+      degrade({stage: 'claim', code: 'invalid_reference', ordinal});
+      const contradictions = [previous, parsed].filter(claim => claim.consistency === 'inconsistent');
+      parsedClaims.set(claimId, contradictions.length ? {claimId, consistency: 'inconsistent', contentLocations: [],
+        issues: contradictions.flatMap(claim => claim.issues)} : unknownClaim(claimId));
+      continue;
     }
-    if ((item.consistency === 'consistent' && (!locations.length || issues.length)) ||
-      (item.consistency === 'inconsistent' && !issues.length)) {
-      return invalidResponse('claim', 'invalid_constraint', {ordinal: index + 1});
-    }
-    const declaration = declarations.get(item.claimId)!;
-    const hasTypedSemantics = Boolean(captured.snapshot.declarationBindingEligibility === 'eligible' && member(declaration.kind, [
-      'numeric', 'categorical', 'time_range', 'identity', 'causal', 'comparison', 'inference', 'recommendation',
-    ]) && declaration.semantics &&
-      parseClaimSemanticsDeclaration(declaration.semantics).semantics &&
-      !hasOwn(declaration, 'rawSemantics') && !declaration.semanticsParseIssues?.length);
-    const consistency = item.consistency === 'consistent' && !hasTypedSemantics ? 'unknown' : item.consistency;
-    if (consistency === 'unknown' && item.consistency === 'consistent') {
-      issues.push({code: 'unclear_semantics', contentLocations: []});
-    }
-    seenClaims.add(item.claimId);
-    claims.push({claimId: item.claimId, consistency, contentLocations: locations, issues});
+    parsedClaims.set(claimId, parsed);
   }
-  if (seenClaims.size !== declarations.size) return invalidResponse('claim_set', 'set_mismatch', {
-    expectedCount: declarations.size, actualCount: seenClaims.size,
-  });
+  if (parsedClaims.size !== declarations.size) {
+    degrade({stage: 'claim_set', code: 'set_mismatch', expectedCount: declarations.size, actualCount: parsedClaims.size});
+  }
+  // Declaration order, one row per declared claim; a missing judgment is unknown.
+  const claims = [...declarations.keys()].map(id => parsedClaims.get(id) ?? unknownClaim(id));
   const omissions: Array<{code: 'undeclared_claim'; contentLocations: SemanticContentLocation[]}> = [];
+  // An omission that cannot be located is neither kept nor dismissed: the body
+  // review is then incomplete, so the answer can never pass on it.
+  let omissionUnlocated = false;
   for (const [index, item] of value.omissions.entries()) {
     if (!record(item) || !keys(item, ['code', 'contentLocations']) || item.code !== 'undeclared_claim') {
-      return invalidResponse('omission', 'invalid_shape', {ordinal: index + 1});
+      degrade({stage: 'omission', code: 'invalid_shape', ordinal: index + 1});
+      omissionUnlocated = true;
+      continue;
     }
     const locations = parseLocations(item.contentLocations, body, locationFormat, locationCatalog);
-    if (!locations?.length) return invalidResponse('omission', 'invalid_location', {ordinal: index + 1});
+    if (!locations?.length) {
+      degrade({stage: 'omission', code: 'invalid_location', ordinal: index + 1});
+      omissionUnlocated = true;
+      continue;
+    }
     omissions.push({code: 'undeclared_claim', contentLocations: locations});
   }
   const reportRequested = captured.intent.status === 'resolved' && captured.intent.deliverable === 'report';
@@ -602,7 +687,7 @@ function parseResponseStrict(
     !hasOwn(contract ?? {}, 'rawClaims') && !contract?.parseIssues?.length &&
     contract?.bindingEligibility !== 'ineligible' && claims.every(claim => claim.consistency !== 'unknown');
   const coverage: FinalSemanticAssessment['coverage'] = {
-    body: value.bodyCoverage.status,
+    body: omissionUnlocated ? 'incomplete' : value.bodyCoverage.status,
     claims: declarationCoverage ? 'complete' : 'incomplete',
     report: !reportRequested ? 'not_applicable' : requirements.some(requirement =>
       requirementMap.get(requirement.requirementId)?.required !== false &&
@@ -610,8 +695,15 @@ function parseResponseStrict(
       ? 'incomplete' : 'complete',
   };
   const incomplete = Object.values(coverage).includes('incomplete');
+  // A degraded item keeps the triage vocabulary of a rejected response without
+  // discarding the judgments that did parse. A dropped extra item that left every
+  // declared judgment intact is recorded but explains no missing coverage.
+  const degradation = !degradations.length ? {} : {responseDiagnostic: degradations[0], ...(incomplete ? {
+    reason: 'invalid_response' as const,
+    notCheckedDetail: [...new Set(degradations.map(item => `resp_${item.stage}_${item.code}`))].join(','),
+  } : {})};
   return freezeJson({schemaVersion: 'final_semantic_assessment@1', ruleVersion: FINAL_SEMANTIC_RULE_VERSION,
-    binding, status: incomplete ? 'coverage_incomplete' : 'checked',
+    binding, ...degradation, status: incomplete ? 'coverage_incomplete' : 'checked',
     consistency: omissions.length || claims.some(claim => claim.consistency === 'inconsistent') ? 'inconsistent' :
       incomplete ? 'unknown' : 'consistent', coverage, claims, omissions, requirements, investigation});
 }
@@ -745,6 +837,7 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
     const deadlineMs = context.deadlineMs;
     if (!Number.isFinite(deadlineMs)) return fail('not_checked', 'invalid_configuration');
     if (Date.now() >= deadlineMs) return fail('unavailable', 'timeout');
+    try { input.onDispatch?.({deadlineMs}); } catch { /* Observers never change the review. */ }
     try {
       const response = await context.dispatchText({prompt, systemPrompt: '', signal,
         deadlineMs, outputByteLimit: outputBytes});

@@ -598,6 +598,7 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     return this._httpPort;
   }
   private isDestroyed = false;
+  private portRetired = false;
   private serverReady = false;
   private _activeQueries = 0;
   private readonly sqlWorker: TraceProcessorSqlWorker;
@@ -1188,55 +1189,64 @@ export class WorkingTraceProcessor extends EventEmitter implements TraceProcesso
     this.status = 'error';
     this.sqlWorker.destroy();
 
-    if (this.process) {
-      try {
-        const processorKey = this.processorKey;
-        const proc = this.process;
-        let released = false;
-        const releasePortOnce = (): void => {
-          if (released) return;
-          released = true;
-          getPortPool().release(processorKey);
-        };
+    this.stopProcessAndRetirePort();
+    this.removeAllListeners();
+  }
 
-        // Force kill after timeout (fallback).
-        const killTimer = setTimeout(() => {
-          if (!proc.killed) {
-            try {
-              proc.kill('SIGKILL');
-            } catch {
-              // ignore
-            }
-          }
-          // Ensure port is eventually released even if close event is missed.
-          releasePortOnce();
-        }, traceProcessorConfig.killTimeoutMs);
-
-        // Release the port as soon as the process actually exits.
-        // Also clears the kill timer to avoid late callbacks/noisy logs in tests.
-        proc.once('close', () => {
-          clearTimeout(killTimer);
-          releasePortOnce();
-        });
-
-        // In Jest, don't let this timer keep the event loop alive.
-        if (IS_TEST_ENV && typeof (killTimer as any).unref === 'function') {
-          (killTimer as any).unref();
-        }
-
-        // Try graceful shutdown last (after handlers are registered)
-        proc.kill('SIGTERM');
-      } catch (e) {
-        // Process may already be dead, still release port
-        getPortPool().release(this.processorKey);
-      }
-      this.process = null;
-    } else {
-      // No process, but still release port
-      getPortPool().release(this.processorKey);
+  /**
+   * Stop the process and return this instance's port exactly once, and only
+   * the port it allocated.
+   *
+   * destroy() can run twice (initialize() failure, then the factory's cleanup)
+   * and the factory can allocate a retry or replacement under the same key
+   * before the killed process exits. The key is therefore detached at once,
+   * while the port itself stays reserved until the process has exited.
+   */
+  private stopProcessAndRetirePort(): void {
+    // Null when the key no longer owns this port (a repeated destroy, or a pool
+    // reset); the process is still stopped, but nothing is returned to the pool.
+    const finishRetirement = this.portRetired ? null : getPortPool().retire(this.processorKey, this._httpPort);
+    this.portRetired = true;
+    const releaseRetiredPort = (): void => {finishRetirement?.();};
+    const proc = this.process;
+    this.process = null;
+    if (!proc || proc.exitCode !== null || proc.signalCode !== null) {
+      releaseRetiredPort();
+      return;
     }
 
-    this.removeAllListeners();
+    try {
+      // Force kill after timeout (fallback).
+      const killTimer = setTimeout(() => {
+        if (!proc.killed) {
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            // ignore
+          }
+        }
+        // Ensure the port is eventually returned even if close event is missed.
+        releaseRetiredPort();
+      }, traceProcessorConfig.killTimeoutMs);
+
+      // Return the port as soon as the process actually exits.
+      // Also clears the kill timer to avoid late callbacks/noisy logs in tests.
+      proc.once('close', () => {
+        clearTimeout(killTimer);
+        releaseRetiredPort();
+      });
+
+      // In Jest, don't let this timer keep the event loop alive.
+      if (IS_TEST_ENV && typeof (killTimer as any).unref === 'function') {
+        (killTimer as any).unref();
+      }
+
+      // Try graceful shutdown last (after handlers are registered)
+      proc.kill('SIGTERM');
+    } catch {
+      // Process may already be dead; nothing else can hold the port.
+      releaseRetiredPort();
+    }
   }
 }
 
@@ -1354,16 +1364,14 @@ export class TraceProcessorFactory {
         this.processors.delete(processorKey);
 
         // Retry with a different port if the chosen port is already in use by another process.
+        // destroy() already detached this attempt's port from processorKey, so
+        // the next attempt allocates a different port. Never release by key
+        // here: that would free whatever a later attempt holds under the key.
         const msg = String(error?.message || '');
         if (msg.startsWith('PORT_IN_USE:')) {
-          const portStr = msg.split(':')[1];
-          const port = Number(portStr);
-          if (Number.isFinite(port)) {
-            getPortPool().blockPort(port);
-          } else {
-            // Fallback: release any allocation for this processor key so next attempt can allocate again.
-            getPortPool().release(processorKey);
-          }
+          const port = Number(msg.split(':')[1]);
+          // Another process owns it; keep it out of this pool for the process lifetime.
+          getPortPool().blockPort(Number.isInteger(port) ? port : processor.httpPort);
           continue;
         }
 

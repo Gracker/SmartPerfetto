@@ -25,7 +25,7 @@ import {loadPromptTemplate, renderTemplate} from '../../../agentv3/strategyLoade
 import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic,
   type CandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
 import {extractFindingsFromText} from '../../../agentv3/claudeFindingExtractor';
-import {detectFocusApps, focusAppTimeRangeFromSelection, type FocusAppDetectionResult} from '../../../agentv3/focusAppDetector';
+import {resolveFocusAppTarget} from '../../focusAppTarget';
 import {type SceneType} from '../../../agentv3/sceneClassifier';
 import {getExtendedKnowledgeBase} from '../../../services/sqlKnowledgeBase';
 import {analysisContextMemoryPartitionKey, analysisContextUsesPrivateKnowledge, assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
@@ -51,7 +51,7 @@ import {loadOpenAIConfig, type OpenAIAgentConfig} from './openAiConfig';
 import {buildOpenAIChatCompletionsTokenLimit} from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
 import {createOpenAIToolsFromMcpDefinitions} from './openAiToolAdapter';
-import {applyFinalResultQualityGate, type FinalResultComparisonIdentity} from '../../../services/finalResultQualityGate';
+import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
 import {verifyConclusion} from '../claude/claudeVerifier';
 import {SDK_SESSION_FRESHNESS_MS, buildQuickRunReceipt, buildEntityContext, buildRuntimeSessionMapKey, captureSkillDisplayEntities, collectRecentFindings, createRuntimeSkillNotesBudget, getLruCacheEntry, isFreshRuntimeEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
@@ -62,7 +62,11 @@ import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {countCompletedQuickConversationTurns} from '../../quickDirectResult';
-import {buildRuntimeTracePairComparisonContext} from '../../runtimePromptContext';
+import {
+  buildComparisonIdentity,
+  buildRuntimeTracePairComparisonContext,
+  detectRunFocusApps,
+} from '../../runtimePromptContext';
 import {createDeadlineRuntimeTimeout, createProgressAwareRunDeadline, createResettableRuntimeTimeout, resolveFullRequestTimeoutMs,
   serializedByteLength, summarizeExternalToolResult} from '../../runtimeLimits';
 
@@ -1436,13 +1440,12 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         throw error;
       }
     };
-    let effectivePackageName = options.packageName;
-    const focusResult: FocusAppDetectionResult = policy.preflight !== 'none'
-      ? await preflight('focus', () => detectFocusApps(this.traceProcessorService, traceId, {
-          timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
-        }))
-      : {apps: [], method: 'none', timeRange: focusAppTimeRangeFromSelection(options.selectionContext)};
-    effectivePackageName ??= focusResult.primaryApp;
+    const focusResult = await detectRunFocusApps({
+      traceProcessorService: this.traceProcessorService, traceId, preflight: policy.preflight,
+      selectionContext: options.selectionContext, measure: detect => preflight('focus', detect),
+    });
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
     const architecture = policy.preflight !== 'none'
       ? await preflight('architecture', () => this.detectArchitecture(traceId, effectivePackageName)) : undefined;
     const detectedVendor = policy.preflight !== 'none'
@@ -1488,7 +1491,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       conversationTraceAttached: options.assistantSurface === 'conversation' ? options.conversationTraceAttached === true : undefined,
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId, traceId, userQuery: query, traceProcessorService: this.traceProcessorService, skillExecutor,
-      packageName: effectivePackageName, emitUpdate: update => {
+      packageName: effectivePackageName, focusTarget, emitUpdate: update => {
         if (!executionLease?.signal.aborted && runtime.isActive?.() !== false) this.emitUpdate(update);
       },
       onSkillResult: result => {
@@ -1515,8 +1518,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // conversation turn with no attached trace read no trace facts and the
       // prompt must not advertise them.
       preflight: policy.preflight,
-      architecture, packageName: effectivePackageName,
-      focusApps: focusResult.apps.length ? focusResult.apps : undefined, focusMethod: focusResult.method,
+      architecture, packageName: effectivePackageName, focusTarget,
       knowledgeBaseContext, sceneType,
       selectionContext: options.selectionContext, comparison: comparisonContext, traceCompleteness,
       traceOs: traceInfo?.traceOs, traceFormat: traceInfo?.traceFormat,
@@ -1528,9 +1530,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       sessionContext, previousTurns: runtime.previousTurns, architecture, hypotheses,
       sessionMapKey: analysisRunSpec.identity.sessionMapKey,
       effectivePackageName, sourceUse: mcp.sourceUse,
-      ...(comparisonContext ? {comparisonIdentity: {
-        currentPackageName: effectivePackageName, referencePackageName: comparisonContext.referencePackageName,
-      } satisfies FinalResultComparisonIdentity} : {}),
+      ...(comparisonContext ? {comparisonIdentity: buildComparisonIdentity(focusTarget, comparisonContext)} : {}),
     };
   }
 

@@ -221,6 +221,36 @@ describe('OpenAI typed intent integration', () => {
     expect(toolNames).toContain('execute_sql');
     expect(toolNames).toEqual((mcp.mock.results[0].value as any).toolDefinitions.map((tool: any) => tool.name));
   });
+  // SP-CP-11: the effective package carries its provenance into the prompt
+  // and the tools; an ambiguous detection puts no package in effect at all.
+  it.each([
+    ['confident', {method: 'oom_adj', confidence: 'medium', primaryApp: 'com.tracedemo.stress',
+      apps: [{packageName: 'com.tracedemo.stress', totalDurationNs: 1, switchCount: 1, score: 19}]},
+      'com.tracedemo.stress', 'auto_detected'],
+    ['ambiguous', {method: 'oom_adj', confidence: 'ambiguous', apps: [
+      {packageName: 'com.example.a', totalDurationNs: 5, switchCount: 1, score: 25},
+      {packageName: 'com.example.b', totalDurationNs: 4, switchCount: 1, score: 24}]},
+      undefined, 'none'],
+  ] as const)('scopes tools and prompt to the %s focus target only through its provenance',
+    async (_label, focusResult, expectedPackage, expectedSource) => {
+      const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
+      const runtime = createOpenAiRuntimeForTest({query, getTrace: jest.fn()} as unknown as TraceProcessorService);
+      classify(decision);
+      const prompt = jest.spyOn(systemPrompt, 'buildSystemPrompt').mockReturnValue('typed prompt');
+      const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
+      jest.spyOn(focusDetector, 'detectFocusApps').mockResolvedValue(structuredClone(focusResult) as any);
+      const architecture = jest.spyOn(runtime, 'detectArchitecture').mockResolvedValue(undefined);
+      jest.spyOn(runtime, 'detectVendor').mockResolvedValue(null);
+      jest.spyOn(runtime, 'detectCompleteness').mockResolvedValue(undefined);
+      mockRun();
+      await runtime.analyze('why is it slow', `focus-${_label}`, 'trace', {analysisMode: 'full', providerId: null});
+
+      expect(mcp.mock.calls[0][0].packageName).toBe(expectedPackage);
+      expect(mcp.mock.calls[0][0].focusTarget).toMatchObject({source: expectedSource});
+      expect(architecture).toHaveBeenCalledWith('trace', expectedPackage);
+      expect(prompt.mock.calls[0][0]).toMatchObject({packageName: expectedPackage,
+        focusTarget: {source: expectedSource, confidence: focusResult.confidence}});
+    });
   it('preserves existing-artifact access while existing_only forbids all automatic collection', async () => {
     const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
     const runtime = createOpenAiRuntimeForTest({query, getTrace: jest.fn()} as unknown as TraceProcessorService);

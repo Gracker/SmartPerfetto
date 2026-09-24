@@ -104,6 +104,16 @@ export type TraceProcessorServiceQueryOptions = TraceProcessorQueryOptions & {
   leaseScope?: EnterpriseRepositoryScope;
 };
 
+/**
+ * The only SQL trace loading sends to the shared processor. It must stay within
+ * the pure-read grammar of `analyzeRawSqlDirectProjection`: anything outside it
+ * (a compound SELECT, an INCLUDE, a Perfetto function) taints native provenance
+ * before any analysis runs, and every later local-file run then reloads the
+ * trace into a private processor instead of sharing this one.
+ */
+export const TRACE_LOAD_METADATA_SQL =
+  'SELECT MIN(ts) AS startTime, MAX(ts) AS endTime, COUNT(*) AS numEvents FROM slice';
+
 export interface TraceProcessorAnalysisRunPolicy {
   sourceKind: 'local_file' | 'external_rpc' | 'unknown';
   requiresIsolation: boolean;
@@ -646,21 +656,7 @@ export class TraceProcessorService extends EventEmitter {
    */
   private async extractMetadata(processor: TraceProcessor): Promise<TraceInfo['metadata']> {
     try {
-      // Query basic trace information
-      const result = await processor.query(`
-        SELECT
-          MIN(ts) as startTime,
-          MAX(ts) as endTime,
-          COUNT(*) as numEvents
-        FROM slice
-        UNION ALL
-        SELECT
-          MIN(ts) as startTime,
-          MAX(ts) as endTime,
-          COUNT(*) as numEvents
-        FROM counter
-        LIMIT 1
-      `);
+      const result = await processor.query(TRACE_LOAD_METADATA_SQL);
 
       if (result.rows.length > 0) {
         const row = result.rows[0];

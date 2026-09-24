@@ -35,6 +35,9 @@ sql_fragments:
   backend/skills/fragments/android_input_events_normalized.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/android_input_events_normalized.sql
+  backend/skills/fragments/android_input_delivery_roles.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/android_input_delivery_roles.sql
   backend/skills/fragments/scene_input_facts.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/scene_input_facts.sql

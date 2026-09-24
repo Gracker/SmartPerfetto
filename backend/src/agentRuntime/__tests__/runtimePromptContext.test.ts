@@ -72,6 +72,30 @@ describe('runtime dual-trace comparison context', () => {
     expect(context?.capabilityDiff).toBeUndefined();
   });
 
+  it('keeps the reference package only for a confident inference and carries the candidates', async () => {
+    const detect = jest.spyOn(focusAppDetector, 'detectFocusApps');
+    jest.spyOn(architectureDetector, 'createArchitectureDetector').mockReturnValue({
+      detect: jest.fn(async () => undefined),
+    } as any);
+    const traceProcessorService = {query: jest.fn(async () => ({columns: ['name'], rows: [], durationMs: 1}))} as any;
+    detect.mockResolvedValueOnce({method: 'oom_adj', confidence: 'ambiguous', apps: [
+      {packageName: 'com.example.a', totalDurationNs: 5, switchCount: 1, score: 25},
+      {packageName: 'com.example.b', totalDurationNs: 4, switchCount: 1, score: 24},
+    ]});
+    const ambiguous = await buildRuntimeTracePairComparisonContext({traceProcessorService,
+      currentTraceId: 'trace-current', referenceTraceId: 'trace-reference'});
+    expect(ambiguous?.referencePackageName).toBeUndefined();
+    expect(ambiguous?.referenceFocusTarget).toMatchObject({source: 'none', confidence: 'ambiguous',
+      candidates: [{packageName: 'com.example.a'}, {packageName: 'com.example.b'}]});
+
+    detect.mockResolvedValueOnce({method: 'frame_timeline', confidence: 'high', primaryApp: 'com.example.reference',
+      apps: [{packageName: 'com.example.reference', totalDurationNs: 1, switchCount: 100, score: 50}]});
+    const confident = await buildRuntimeTracePairComparisonContext({traceProcessorService,
+      currentTraceId: 'trace-current', referenceTraceId: 'trace-reference-2'});
+    expect(confident?.referencePackageName).toBe('com.example.reference');
+    expect(confident?.referenceFocusTarget).toMatchObject({source: 'auto_detected', confidence: 'high'});
+  });
+
   it('keeps package, architecture, and disjoint capability differences deterministic', async () => {
     jest.spyOn(focusAppDetector, 'detectFocusApps').mockResolvedValue({
       apps: [],

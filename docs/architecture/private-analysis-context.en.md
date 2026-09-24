@@ -69,6 +69,14 @@ and RPC aliases do not expose dedicated connections. External RPC and unknown
 binaries cannot gain provenance through cloning; failed admission does not
 silently fall back to the shared processor.
 
+Loading a Trace sends only pure-read SQL (the metadata query stays inside the
+direct-projection grammar), so a freshly loaded local-file Trace whose port was
+never disclosed, including every CLI run, stays trusted and the run reuses the
+shared processor instead of loading the Trace again. Several runs can therefore
+share one instance until its first invalidation. Invalidation only downgrades
+and advances the epoch: an execution issued before it and completed after it
+gains no unit authority, and later runs isolate.
+
 This does not derive units for arbitrary SQL. Bounded questions skip unrelated
 prefetch under the actual runtime policy. Full-scene module loading can still
 invalidate native provenance; subsequent Skills use their own execution capture

@@ -357,7 +357,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
   - 不得仅因 `hasMore=true` 自动翻完所有页；原始 rows 用于验证具体帧，不替代已有的完整聚合。
   - 用户明确要求“不要 rows / 不读原始 rows / no raw rows”时，该约束适用于本轮所有 artifact，包括小表；只能使用 summary aggregate，缺字段就报告证据边界，不能以行数少为理由绕过。
   - “不分页”单独出现时只禁止机械翻页或读完整表；“不逐帧”单独出现时只禁止 per-frame 深钻，不自动禁止小型非逐帧 artifact rows。用户显式要求查看某个 row/table 时优先满足，除非同时明确禁止 row access。
-- 如果目标进程确实缺失，停止该目标的取证并说明身份缺口，不能改查无关进程。目标存在但 FrameTimeline/BufferTX 不可用时，只停止依赖帧源的统计和深钻，继续读取主线程工作证据；不得把帧源缺失写成主线程正常或不能分析任务。
+- 如果用户指定的目标进程确实缺失，停止该目标的取证并说明身份缺口，不能改查无关进程；运行时推断的焦点应用（`packageSource: auto_detected`）在窗口内没有帧或调度证据时，按焦点应用上下文规则改用有证据的候选，并在结论中说明切换及原因。目标存在但 FrameTimeline/BufferTX 不可用时，只停止依赖帧源的统计和深钻，继续读取主线程工作证据；不得把帧源缺失写成主线程正常或不能分析任务。
 - `vsync_source = default_60hz_no_trace_timing` 只是内部默认预算，不是 trace 实测刷新率；当帧数据源不可用时，不得把 60Hz 当作设备或本次场景事实交付。
 
 **Phase 1.3 — 全局上下文检查（基于 `global_context_flags` 结果，scrolling_analysis 自动输出）：**

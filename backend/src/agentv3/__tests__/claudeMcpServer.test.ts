@@ -278,6 +278,7 @@ import {
   requireToolDescription,
 } from '../claudeMcpServer';
 import {resolveRuntimeToolConcurrencyPolicy} from '../../agentRuntime/runtimeToolConcurrency';
+import {normalizeWaitChainSelectors} from '../../services/criticalPathSelectors';
 import {createJsonSchemaFromZodRawShape} from '../../agentRuntime/runtimeToolSpec';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../../agentRuntime/runtimeCandidateAdmission';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
@@ -311,6 +312,7 @@ import {
 } from '../../services/selfEvolution/evaluationInjectionContext';
 import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+import {resolveFocusAppTarget, type FocusAppTarget} from '../../agentRuntime/focusAppTarget';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -351,7 +353,9 @@ function createTestServer(options: {
   sessionId?: string;
   tracePairContext?: TracePairContext;
   packageName?: string;
+  focusTarget?: FocusAppTarget;
   referencePackageName?: string;
+  referenceFocusTarget?: FocusAppTarget;
   artifactStore?: any;
   outputLanguage?: OutputLanguage;
   runManifestAttributionSink?: RunManifestAttributionSink;
@@ -417,6 +421,7 @@ function createTestServer(options: {
     watchdogWarning,
     artifactStore,
     packageName: options.packageName,
+    focusTarget: options.focusTarget,
     emitUpdate: (u: any) => emittedUpdates.push(u),
     sceneType: options.sceneType,
     cachedArchitecture: options.cachedArchitecture,
@@ -448,6 +453,7 @@ function createTestServer(options: {
         referenceTraceId: options.referenceTraceId,
         ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
         ...(options.referencePackageName ? { referencePackageName: options.referencePackageName } : {}),
+        ...(options.referenceFocusTarget ? { referenceFocusTarget: options.referenceFocusTarget } : {}),
         commonCapabilities: ['slice'],
       },
     } : {}),
@@ -2288,6 +2294,80 @@ describe('createClaudeMcpServer', () => {
       }
     });
 
+    // SP-CP-11: an inferred package used to be injected silently, and an
+    // ambiguous detection had no way to say "no target is in effect".
+    describe('default process scoping provenance', () => {
+      const inferred = resolveFocusAppTarget({focusResult: {method: 'oom_adj', confidence: 'medium',
+        primaryApp: 'com.tracedemo.stress', apps: [
+          {packageName: 'com.tracedemo.stress', totalDurationNs: 11_000_000_000, switchCount: 3, score: 19},
+          {packageName: 'com.google.android.as', totalDurationNs: 10_000_000, switchCount: 1, score: 10},
+        ]}});
+      const ambiguous = resolveFocusAppTarget({focusResult: {method: 'oom_adj', confidence: 'ambiguous', apps: [
+        {packageName: 'com.example.a', totalDurationNs: 5, switchCount: 1, score: 25, pid: 10},
+        {packageName: 'com.example.b', totalDurationNs: 4, switchCount: 1, score: 24, pid: 11},
+      ]}});
+
+      it('reports an injected inferred package with its provenance', async () => {
+        const {tools, mockSkillExecutor} = createTestServer({packageName: inferred.packageName, focusTarget: inferred});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis', params: {}});
+
+        expect(result.appliedDefaultProcess).toEqual({packageName: 'com.tracedemo.stress',
+          source: 'auto_detected', confidence: 'medium'});
+        expect(mockSkillExecutor.prepareInvocation.mock.calls[0][2]).toMatchObject({package: 'com.tracedemo.stress'});
+      });
+
+      it('reports a user package as user-scoped', async () => {
+        const target = resolveFocusAppTarget({userPackageName: 'com.user.app'});
+        const {tools} = createTestServer({packageName: target.packageName, focusTarget: target});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis', params: {}});
+        expect(result.appliedDefaultProcess).toEqual({packageName: 'com.user.app', source: 'user'});
+      });
+
+      it('runs an optional-process Skill unscoped and says so when no package is in effect', async () => {
+        const {tools, mockSkillExecutor} = createTestServer({focusTarget: ambiguous});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis', params: {}});
+
+        expect(result.appliedDefaultProcess).toBeNull();
+        expect(mockSkillExecutor.prepareInvocation.mock.calls[0][2]).toEqual({});
+        expect(mockSkillExecutor.execute).toHaveBeenCalled();
+      });
+
+      it('adds no note when the model named the process itself', async () => {
+        const {tools} = createTestServer({packageName: inferred.packageName, focusTarget: inferred});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis',
+          params: {process_name: 'com.other.app'}});
+        expect(result).not.toHaveProperty('appliedDefaultProcess');
+      });
+
+      it('returns candidates instead of running a required-process Skill without a target', async () => {
+        const {tools, mockSkillExecutor} = createTestServer({focusTarget: ambiguous});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'blocking_chain_analysis',
+          params: {start_ts: 1, end_ts: 2}});
+
+        expect(result).toMatchObject({success: false, reason: 'process_selector_required',
+          action_required: 'retry_invoke_skill_with_process_selector',
+          candidates: [{packageName: 'com.example.a', pid: 10, score: 25},
+            {packageName: 'com.example.b', pid: 11, score: 24}]});
+        expect(mockSkillExecutor.prepareInvocation).not.toHaveBeenCalled();
+        expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+      });
+
+      it('marks inferred packages in the comparison context', async () => {
+        const reference = resolveFocusAppTarget({focusResult: {method: 'frame_timeline', confidence: 'high',
+          primaryApp: 'com.tracedemo.stress', apps: [
+            {packageName: 'com.tracedemo.stress', totalDurationNs: 1, switchCount: 100, score: 50}]}});
+        const {tools} = createTestServer({referenceTraceId: 'ref-trace-456', packageName: inferred.packageName,
+          focusTarget: inferred, referencePackageName: reference.packageName, referenceFocusTarget: reference});
+        const result = await callTool(tools, 'get_comparison_context');
+
+        expect(result.current).toMatchObject({packageName: 'com.tracedemo.stress', packageSource: 'auto_detected',
+          packageConfidence: 'medium'});
+        expect(result.reference).toMatchObject({packageName: 'com.tracedemo.stress', packageSource: 'auto_detected',
+          packageConfidence: 'high'});
+        expect(result).toMatchObject({packageAlignment: 'same', packageAlignmentBasis: 'inferred'});
+      });
+    });
+
     it('normalizes simple timestamp arithmetic expressions in skill params', async () => {
       const { tools, mockSkillExecutor } = createTestServer();
       await callTool(tools, 'submit_plan', {
@@ -3126,6 +3206,41 @@ describe('createClaudeMcpServer', () => {
       expect(progressMessages).toEqual(expect.arrayContaining([
         'SQL 查询未产出可用结果，已记录诊断信息供修正后重试。',
       ]));
+    });
+
+    it('execute_sql failure leads with the error and schema facts and counts repeats within the run', async () => {
+      const { tools, mockTpService } = createTestServer();
+      (mockTpService.query as any).mockResolvedValue({
+        columns: [], rows: [], rowCount: 0, durationMs: 1,
+        error: 'no such column: ts (line 2, col 8)',
+      });
+
+      const first = await callTool(tools, 'execute_sql', { sql: 'SELECT ts FROM android_binder_txns' });
+      const second = await callTool(tools, 'execute_sql', { sql: 'SELECT ts, 1 FROM android_binder_txns' });
+
+      expect(first.success).toBe(false);
+      expect(Object.keys(first).slice(0, 4)).toEqual(['success', 'error', 'schemaDiagnostic', 'diagnostic']);
+      expect(first.schemaDiagnostic).toMatchObject({
+        errorKind: 'missing_column',
+        absence: 'query_error_not_data_absence',
+        symbol: 'android_binder_txns',
+        column: 'ts',
+        stdlibModule: 'android.binder',
+        moduleInjected: true,
+        repeatCount: 1,
+      });
+      expect(first.schemaDiagnostic.availableColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
+      expect(first.schemaDiagnostic.closestColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
+      expect(second.schemaDiagnostic.repeatCount).toBe(2);
+
+      // A new server is a new run: its memory starts empty.
+      const next = createTestServer();
+      (next.mockTpService.query as any).mockResolvedValue({
+        columns: [], rows: [], rowCount: 0, durationMs: 1,
+        error: 'no such column: ts (line 2, col 8)',
+      });
+      const otherRun = await callTool(next.tools, 'execute_sql', { sql: 'SELECT ts FROM android_binder_txns' });
+      expect(otherRun.schemaDiagnostic.repeatCount).toBe(1);
     });
 
     it('invoke_skill emits sourced zero-row display results as auditable evidence', async () => {
@@ -4416,6 +4531,11 @@ describe('createClaudeMcpServer', () => {
       });
       expect(failedResult.diagnostic?.message).toContain('不是可引用的性能证据');
       expect(failedResult.error).toContain('bad sql');
+      expect(failedResult.schemaDiagnostic).toEqual({
+        errorKind: 'other',
+        absence: 'query_error_not_data_absence',
+        repeatCount: 1,
+      });
     });
 
     it('compare_skill executes both traces and emits pane-aware provenance envelopes', async () => {
@@ -9379,6 +9499,11 @@ describe('analyze_wait_chain', () => {
         threadName: 'com.example.app', processName: 'com.example.app',
       },
       totalMs: 10, blockingMs: 4, selfMs: 6, externalBlockingPercentage: 40,
+      attributableMs: 0, attributablePercentage: 0, eventWaitMs: 4, eventWaitPercentage: 40,
+      rootWait: {threadStateId: 1, state: 'S', startTs: 1_000, endTs: 4_001_000, durationMs: 4,
+        context: 'in_slice', enclosingSlice: {name: 'Choreographer#doFrame', startTs: 900, dur: 5_000_000, depth: 0}},
+      longestEventWait: {utid: 55, processName: 'com.example.app', threadName: 'OkHttp Dispatch', state: 'S',
+        durationMs: 4, wakeSourceClass: 'network_receive_candidate'},
       wakeupChain: [{
         startTs: 1_000, dur: 4_000_000, startOffsetMs: 0, durationMs: 4,
         utid: 55, tid: 1301, upid: 7, processName: 'com.example.app', threadName: 'OkHttp Dispatch',
@@ -9409,7 +9534,8 @@ describe('analyze_wait_chain', () => {
       ],
       directWaker: {threadStateId: null, utid: null, tid: null, threadName: null, processName: null,
         state: null, cpu: null, irqContext: true, kind: 'irq', hintCodes: [], hints: []},
-      totalsNs: {blocking: 4_000_000, chainWait: 5_000_000, waiting: 4_000_000},
+      totalsNs: {blocking: 4_000_000, chainWait: 5_000_000, waiting: 4_000_000,
+        work: 0, runnable: 0, deviceWait: 0, eventWait: 4_000_000, other: 0, attributable: 0},
       quantification: {counterfactual: {longestSegmentKey: 's1', longestSegmentDurMs: 4,
         bestCaseDurationMs: 6, maxSavingMs: 4, longestSegmentDurNs: 4_000_000, bestCaseDurationNs: 6_000_000,
         maxSavingNs: 4_000_000, noteCode: 'best_case_only', note: ''},
@@ -9485,9 +9611,19 @@ describe('analyze_wait_chain', () => {
     })]);
     // The ms figures come with the exact ns they were rounded from.
     expect(payload.exactNs).toEqual({
-      window: 10_000_000, blocking: 4_000_000, self: 6_000_000, waiting: 4_000_000,
-      chainWait: 5_000_000, bestCase: 6_000_000, maxSaving: 4_000_000,
+      window: 10_000_000, attributable: 0, eventWait: 4_000_000, blocking: 4_000_000, self: 6_000_000,
+      waiting: 4_000_000, chainWait: 5_000_000, bestCase: 6_000_000, maxSaving: 4_000_000,
     });
+    // The headline is attributable time; coverage and the chain-end leaf follow it.
+    const keys = Object.keys(payload);
+    expect(keys.indexOf('attributableMs')).toBeLessThan(keys.indexOf('blockingMs'));
+    expect(payload).toMatchObject({
+      attributableMs: 0, attributablePercentage: 0, eventWaitMs: 4, eventWaitPercentage: 40,
+      rootWait: {context: 'in_slice', state: 'S', durationMs: 4, enclosingSlice: 'Choreographer#doFrame'},
+      longestEventWait: {threadName: 'OkHttp Dispatch', wakeSourceClass: 'network_receive_candidate'},
+    });
+    // Every chain wait is a leaf: Perfetto has no waker past it.
+    expect(payload.topWaits[0]).toMatchObject({pathRole: 'event_wait', terminal: true});
     expect(payload.directWaker).toMatchObject({kind: 'irq', irqContext: true});
     // Best case and the most the longest segment can save; never an "upper bound".
     expect(payload.counterfactualBestCaseMs).toBe(6);
@@ -9510,6 +9646,10 @@ describe('analyze_wait_chain', () => {
     expect(summary.stepId).toBe('wait_summary');
     const cell = (column: string) => summary.data.rows[0][summary.data.columns.indexOf(column)];
     expect(cell('blocking_ms')).toBe(payload.blockingMs);
+    expect(cell('attributable_ns')).toBe(payload.exactNs.attributable);
+    expect(cell('event_wait_ns')).toBe(payload.exactNs.eventWait);
+    expect(cell('attributable_pct')).toBe(payload.attributablePercentage);
+    expect(stored.data.columns).toContain('path_role');
     expect(cell('waiting_ms')).toBe(payload.waitingMs);
     expect(cell('chain_wait_ns')).toBe(payload.exactNs.chainWait);
     expect(cell('best_case_ms')).toBe(payload.counterfactualBestCaseMs);
@@ -9732,5 +9872,127 @@ describe('analyze_wait_chain', () => {
       threadStateId: '9182',
     }));
     expect(analyze.mock.calls[0][2]).not.toHaveProperty('utid');
+  });
+
+  it('exposes its whole description: one over the runtime cap is cut to its first paragraph', () => {
+    // The previous description was 1146 characters, so the model saw only its
+    // opening sentence: no selectors, no unavailable reasons, no routing.
+    const {toolDefinitions} = createTestServer();
+    const description = toolDefinitions.find(def => def.name === 'analyze_wait_chain')?.shared.description;
+    expect(description).toBe(requireToolDescription('prompt-analyze-wait-chain-tool-description'));
+    expect(description).toContain('attributableMs');
+    expect(description).toContain('wait_open_at_trace_end');
+  });
+
+  describe('placeholders and selector conflicts', () => {
+    const OWNER_COLUMNS = ['thread_state_id', 'ts', 'end_ts', 'utid', 'tid', 'thread_name', 'thread_upid',
+      'is_main_thread', 'pid', 'process_name'];
+    /** thread_state 0 belongs to a kworker, as on the real device_io_main_thread trace. */
+    const kworkerOwner = () => ({columns: OWNER_COLUMNS,
+      rows: [[0, 500, 580, 56, 90, 'kworker/3:0H', 1, 1, 90, 'kworker/3:0H']], durationMs: 1} as any);
+
+    it('drops the placeholders strict schemas force a model to send', () => {
+      // Real arguments of a GLM call on device_lock_contention and rooted_anr_input.
+      expect(normalizeWaitChainSelectors({
+        thread_state_id: '0', utid: '630', upid: '599', pid: '2992', tid: '2992',
+        process_name: 'com.google.android.providers.media.module', thread_name: '', main_thread: true,
+        start_ts: '6627880696920', end_ts: '6639899437404',
+      })).toEqual({
+        threadStateId: '0', utid: '630', upid: '599', pid: '2992', tid: '2992',
+        processName: 'com.google.android.providers.media.module', mainThread: true,
+        startTs: '6627880696920', endTs: '6639899437404',
+      });
+      expect(normalizeWaitChainSelectors({
+        thread_state_id: '9712', utid: '0', tid: '0', upid: '3', process_name: 'com.tracedemo.stress',
+        main_thread: false, start_ts: '0', end_ts: '0',
+      })).toEqual({threadStateId: '9712', upid: '3', processName: 'com.tracedemo.stress'});
+      // `null` spelled as a string, and an empty window beside a row.
+      expect(normalizeWaitChainSelectors({
+        thread_state_id: 'null', utid: 42, start_ts: 5, end_ts: 9, thread_name: 'undefined',
+      })).toEqual({utid: 42, startTs: 5, endTs: 9});
+      expect(normalizeWaitChainSelectors({thread_state_id: 45402, start_ts: '66', end_ts: '66'}))
+        .toEqual({threadStateId: 45402});
+    });
+
+    it('answers the named thread and window when a placeholder row belongs elsewhere, and says so', async () => {
+      const analyze = spyAnalyzer();
+      const server = createTestServer();
+      server.mockTpService.query.mockImplementation(async (_traceId: string, sql: string) =>
+        (/FROM thread_state AS target/.test(sql) ? kworkerOwner() : threadResult([])));
+
+      const payload = await callTool(server.tools, 'analyze_wait_chain', {
+        thread_state_id: '0', utid: '684', tid: '4370', thread_name: 'roid.apps.scone', main_thread: false,
+        start_ts: '1000', end_ts: '10001000',
+      });
+
+      expect(payload.success).toBe(true);
+      const options = analyze.mock.calls[0][2] as Record<string, unknown>;
+      expect(options).toMatchObject({utid: 684, startTs: '1000', endTs: '10001000'});
+      expect(options).not.toHaveProperty('threadStateId');
+      expect(payload.warnings[0]).toContain('thread_state_id 0');
+    });
+
+    it('refuses a row that contradicts the requested process when no thread and window can replace it', async () => {
+      const analyze = spyAnalyzer();
+      const server = createTestServer();
+      server.mockTpService.query.mockImplementation(async (_traceId: string, sql: string) =>
+        (/FROM thread_state AS target/.test(sql) ? kworkerOwner() : threadResult([])));
+
+      const raw = await server.tools.get('analyze_wait_chain')!.handler({
+        thread_state_id: '0', upid: '599', process_name: 'com.google.android.providers.media.module',
+      }, undefined);
+      const payload = JSON.parse(raw.content[0].text);
+
+      expect(payload).toMatchObject({
+        success: false, error: 'selector_conflict', action_required: 'drop_thread_state_id_or_use_its_thread',
+        conflicts: ['upid', 'process_name'],
+        threadStateOwner: {threadStateId: 0, utid: 56, threadName: 'kworker/3:0H'},
+        requestedThread: {upid: '599', processName: 'com.google.android.providers.media.module'},
+      });
+      expect(isPolicyRefusalResult(raw)).toBe(true);
+      expect(analyze).not.toHaveBeenCalled();
+    });
+
+    it('keeps a row whose owner matches the requested process', async () => {
+      const analyze = spyAnalyzer();
+      const server = createTestServer();
+      server.mockTpService.query.mockImplementation(async (_traceId: string, sql: string) =>
+        (/FROM thread_state AS target/.test(sql)
+          ? {columns: OWNER_COLUMNS, rows: [[9712, 500, 900, 3, 11000, 'racedemo.stress', 3, 1, 11000,
+            'com.tracedemo.stress']], durationMs: 1} as any
+          : threadResult([])));
+
+      const payload = await callTool(server.tools, 'analyze_wait_chain', {
+        thread_state_id: '9712', upid: '3', process_name: 'com.tracedemo.stress', main_thread: true,
+      });
+
+      expect(payload.success).toBe(true);
+      expect(analyze.mock.calls[0][2]).toMatchObject({threadStateId: '9712'});
+    });
+
+    it('refuses a thread with no scheduling data in the window and names threads that have some', async () => {
+      spyAnalyzer(fakeAnalysis({
+        available: false, unavailableReason: 'no_thread_state_in_window', wakeupChain: [], slices: [],
+        task: {utid: 630, tid: null, upid: 599, startTs: 1_000, dur: 10_000_000, durationMs: 10, state: null},
+      }));
+      const server = createTestServer();
+      server.mockTpService.query.mockImplementation(async (_traceId: string, sql: string) =>
+        (/thread_state_rows/.test(sql)
+          ? {columns: [...THREAD_COLUMNS, 'thread_state_rows'],
+            rows: [[631, 2992, 'd.process.media', 599, 1, 2992, 'android.process.media', 57]], durationMs: 1} as any
+          : threadResult([])));
+
+      const raw = await server.tools.get('analyze_wait_chain')!.handler({utid: 630, start_ts: 1_000, end_ts: 10_001_000}, undefined);
+      const payload = JSON.parse(raw.content[0].text);
+
+      expect(payload).toMatchObject({
+        success: false, error: 'no_thread_state_in_window', action_required: 'choose_thread_with_sched_data',
+        processHasSchedData: true,
+        candidates: [{utid: 631, threadName: 'd.process.media', threadStateRows: 57}],
+      });
+      expect(isPolicyRefusalResult(raw)).toBe(true);
+      // Nothing about the empty thread is stored as evidence.
+      expect(payload).not.toHaveProperty('artifactId');
+    });
   });
 });

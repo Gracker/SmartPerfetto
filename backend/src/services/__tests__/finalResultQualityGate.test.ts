@@ -3141,6 +3141,39 @@ describe('final result quality gate', () => {
     })).toBeUndefined();
   });
 
+  // SP-CP-11: a runtime-inferred package is a hypothesis. Evidence resolving
+  // another process must not fail the identity gate, and an appended identity
+  // section must not present it as the authoritative target.
+  it('never enforces or presents an auto-detected package as an expected comparison identity', () => {
+    const resolution = (side: 'current' | 'reference', name: string) => ({
+      version: 'identity_contract@1' as const, identityRefId: `identity-${side}`, status: 'verified' as const,
+      target: {traceId: `trace-${side}`, traceSide: side, packageName: name, source: 'user_param' as const},
+      processes: [{upid: 1, packageName: name, matchSources: ['process' as const], confidence: 1}],
+      threads: [], warnings: [],
+    });
+    const identity = {currentTraceId: 'trace-current', referenceTraceId: 'trace-reference',
+      currentPackageName: 'com.inferred.current', referencePackageName: 'com.inferred.reference',
+      currentResolution: resolution('current', 'com.actual.current'),
+      referenceResolution: resolution('reference', 'com.actual.reference')};
+    const assess = (sources: {currentPackageSource?: 'user' | 'auto_detected'; referencePackageSource?: 'user' | 'auto_detected'}) =>
+      assessFinalResultQualityAssessment({result: result({conclusion: 'Left is slower.'}),
+        comparisonIdentity: {...identity, ...sources}}).assurance.identity;
+
+    expect(assess({currentPackageSource: 'auto_detected', referencePackageSource: 'auto_detected'})).toBe('passed');
+    expect(assess({currentPackageSource: 'user', referencePackageSource: 'auto_detected'})).toBe('failed');
+    // No provenance means an authoritative package (user or evidence pack).
+    expect(assess({})).toBe('failed');
+
+    const conclusion = completeFinalResultComparisonIdentity({
+      conclusion: '左侧明显慢于右侧。',
+      identity: {currentPackageName: 'com.user.app', referencePackageName: 'com.inferred.reference',
+        currentPackageSource: 'user', referencePackageSource: 'auto_detected'},
+      outputLanguage: 'zh-CN',
+    });
+    expect(conclusion).toContain('- 当前侧包名: `com.user.app`');
+    expect(conclusion).toContain('- 参考侧包名（运行时推断）: `com.inferred.reference`');
+  });
+
   it('leaves a complete dual-trace conclusion unchanged', () => {
     const conclusion = '# Report\n\ncom.example.heavy vs com.example.demo';
 
@@ -3391,6 +3424,8 @@ describe('a contradicted claim degrades full mode, not only quick mode', () => {
               message: 'no value was found for dur_ms in the referenced evidence',
             }],
           }],
+          issues: [{claimId: 'claim-dur', severity: 'error', code: 'claim_reference_missing',
+            message: 'no value was found for dur_ms in the referenced evidence'}],
         }) as never,
       }),
       query: '分析这个启动 trace',
@@ -3449,7 +3484,8 @@ describe('a contradicted claim degrades full mode, not only quick mode', () => {
     const text = failedDiagnostic({schemaVersion: 'claim_verifier@2', claimResults: [
       {claimId: 'bound', status: 'not_checked', referenceCells: [{status: 'missing'}, {status: 'value_mismatch'}]},
       {claimId: 'absent', status: 'unsupported', referenceCells: [{status: 'missing'}]},
-    ], issues: [{claimId: 'bound', severity: 'error', code: 'binding_ineligible', message: 'arbitrary'}]});
+    ], issues: [{claimId: 'bound', severity: 'error', code: 'binding_ineligible', message: 'arbitrary'},
+      {claimId: 'bound', severity: 'error', code: 'claim_reference_value_mismatch', message: 'arbitrary'}]});
     expect(text).toContain('1 条断言的声明或绑定无效');
     expect(text).toContain('1 条断言的引用未找到所需证据');
     expect(text).toContain('1 条断言的引用值与证据不符');
@@ -3470,6 +3506,27 @@ describe('a contradicted claim degrades full mode, not only quick mode', () => {
     const text = failedDiagnostic({schemaVersion: 'claim_verifier@2', claimResults: [{claimId: 'numeric', status: 'unsupported',
       referenceResults: [{status: 'value_mismatch'}, {status: 'value_mismatch'}]}]});
     expect(text).toBe('1 条断言的引用值与证据不符；不能作为已核验结论交付。');
+  });
+
+  it('keeps advisory reference findings out of the message and names only recorded failures', () => {
+    // rooted_anr_input_a1 shape: warning-level mismatches on partial claims plus an undeclared assertion.
+    const undeclaredOnly = failedDiagnostic({schemaVersion: 'claim_verifier@2', unsupportedClaimCount: 0, claimResults: [
+      {claimId: 'c1', status: 'partial', referenceCells: [{status: 'matched'}, {status: 'value_mismatch'}]},
+      {claimId: 'c2', status: 'partial', referenceCells: [{status: 'missing'}]},
+    ], issues: [
+      {claimId: 'c1', severity: 'warning', code: 'claim_reference_value_mismatch', message: 'value mismatch for ts'},
+      {claimId: 'c2', severity: 'warning', code: 'claim_reference_missing', message: 'no captured value'},
+      {claimId: '', severity: 'error', code: 'semantic_undeclared_claim', message: 'arbitrary'},
+    ]});
+    expect(undeclaredOnly).toBe('正文包含未声明的断言；不能作为已核验结论交付。');
+    // A semantic contradiction does not turn its advisory reference mismatch into an evidence mismatch.
+    const semantic = failedDiagnostic({schemaVersion: 'claim_verifier@2', claimResults: [
+      {claimId: 'c1', status: 'unsupported', referenceCells: [{status: 'value_mismatch'}]},
+    ], issues: [
+      {claimId: 'c1', severity: 'warning', code: 'claim_reference_value_mismatch', message: 'value mismatch for ts'},
+      {claimId: 'c1', severity: 'error', code: 'semantic_numeric_mismatch', message: 'arbitrary'},
+    ]});
+    expect(semantic).toBe('1 条断言的正文表述与其声明不一致；不能作为已核验结论交付。');
   });
 
   it('classifies semantic review inconsistencies per claim and body omissions', () => {

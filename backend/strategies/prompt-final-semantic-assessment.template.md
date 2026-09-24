@@ -38,7 +38,9 @@ unknown` must remain side-unknown: do not call it current, reference or foreign.
 For a bounded question that implicitly refers to the selected object or window,
 check whether the answer keeps that event/range as its primary target. Mark
 claims about a substituted event, process or window with `scope_mismatch` where
-the body exposes the mismatch. An explicit query about another target or the
+the body exposes the mismatch. A runtime-inferred focus app is not a selection or
+user target: an answer that discloses switching away from it is not a mismatch.
+An explicit query about another target or the
 whole trace takes precedence over a still-highlighted selection, and a pure
 acknowledgement needs no selected-event claim. Scene-wide work may expand beyond
 the selection without replacing the selected subject when the question retains
@@ -173,6 +175,7 @@ coverage field. If any input or review was incomplete, say so.
 Each claim result has exactly these fields:
 
 - `claimId`: one original nonempty ID; include every declared claim exactly once.
+  An omitted, repeated or unknown ID leaves that declared claim unknown.
 - `consistency`: `consistent`, `inconsistent` or `unknown`.
 - `contentLocations`: an array of exact locations defined below.
 - `issues`: an array of objects with exactly `code` and `contentLocations`.
@@ -212,6 +215,9 @@ or reuse IDs from another request. If the needed location is not represented,
 or the optional catalog is absent, use exactly `{"text":"..."}` with the exact
 quotation rules below. The backend resolves either form and retains only its
 half-open UTF-16 offsets. Never return `start` or `end` in these entries.
+Exception: for a `numeric_mismatch` issue, even when a catalog is supplied,
+quote only the displayed number with its unit (for example
+`{"text":"5,844.24 ms"}`, with `occurrence` when needed), not a catalog line.
 
 The quotation form's `text` is a nonempty, non-whitespace quotation copied
 exactly from `body`. Preserve spaces, line endings, punctuation and Unicode
@@ -224,8 +230,12 @@ appears twice in `banana`; the second match requires
 `{"text":"ana","occurrence":2}`. A unique quotation needs only `text`.
 An unknown or stale span ID, an absent, ambiguous or out-of-range quotation, a
 split surrogate pair, duplicate resolved locations, mixed ID/quotation/offset
-fields or any extra fields make the response invalid. This includes an ID and a
-quotation that resolve to the same range in one location collection.
+fields or any extra fields make that location collection invalid. This includes
+an ID and a quotation that resolve to the same range in one location collection.
+An invalid location certifies nothing: the backend records that claim judgment
+as unknown (an inconsistent judgment keeps its issue without the location) and
+an unlocatable omission as an incomplete body review. An invalid envelope, body
+coverage, report requirement row or investigation row invalidates the whole response.
 
 These location rules apply to claims, claim issues, omissions, report requirements
 and investigation requirements.

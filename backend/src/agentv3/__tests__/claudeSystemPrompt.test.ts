@@ -28,6 +28,7 @@ jest.mock('../strategyLoader', () => ({
     if (name === 'prompt-investigation-findings') return 'Investigation finding coverage fixture.';
     if (name === 'prompt-source-finding-binding') return 'Source finding binding fixture.';
     if (name === 'knowledge-perfetto-sql') return 'SQL discovery and units fixture.';
+    if (name === 'knowledge-focus-app-context') return 'Focus-app context fixture: inferred focus is a hypothesis.';
     if (name === 'prompt-turn-policy') return 'Typed turn protocol; scope, deliverable, and evidence access are server data.';
     if (name === 'prompt-conclusion-contract-schema') return '<!-- authoring note -->\n{{sidecarOpeningMarker}}\n```json\n{"schemaVersion":"conclusion_contract_v1","mode":"focused_answer","conclusions":[],"clusters":[],"evidenceChain":[],"uncertainties":[],"nextSteps":[]}\n```\n-->\n{{supportedProofRules}}';
     if (name === 'prompt-language-zh') return '## 输出语言\n\n所有面向用户的回答必须使用简体中文。';
@@ -56,6 +57,7 @@ import { buildQuickSystemPrompt, buildSystemPrompt, buildSystemPromptParts, esti
 import {loadPromptTemplate} from '../strategyLoader';
 import {CONCLUSION_CONTRACT_SIDECAR_MARKER, parseConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../../services/verifier/deterministicClaimVerifier';
+import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
 
 describe('source-use asset marker validation', () => {
   const sourceContext = {
@@ -463,7 +465,9 @@ describe('typed turn prompt assembly', () => {
     const context: ClaudeAnalysisContext = {...fixture(), packageName: 'com.fixture.app',
       architecture: {type: 'FLUTTER', confidence: 0.9, evidence: [],
         flutter: {engine: 'IMPELLER', surfaceType: 'TEXTUREVIEW'}},
-      focusApps: [{packageName: 'com.fixture.app', totalDurationNs: 100, switchCount: 2}],
+      focusTarget: resolveFocusAppTarget({userPackageName: 'com.fixture.app', focusResult: {
+        method: 'frame_timeline', confidence: 'high', primaryApp: 'com.fixture.app',
+        apps: [{packageName: 'com.fixture.app', totalDurationNs: 100, switchCount: 2}]}}),
       knowledgeBaseContext: 'SQL_SCHEMA_CANARY', patternContext: 'PATTERN_CANARY',
       negativePatternContext: 'NEGATIVE_CANARY', caseBackgroundContext: 'CASE_CANARY',
       conversationSummary: 'HISTORY_CANARY', previousFindings: [{id: 'f1', title: 'finding 1', description: 'observed delay', severity: 'critical'}],
@@ -472,7 +476,9 @@ describe('typed turn prompt assembly', () => {
     };
     const parts = buildSystemPromptParts(context);
     expect(segmentData(parts, 'trace_context')).toMatchObject({packageName: context.packageName,
-      architecture: context.architecture, focusApps: context.focusApps});
+      packageSource: 'user', architecture: context.architecture,
+      focusApp: {status: 'high', method: 'frame_timeline', candidates: [{packageName: 'com.fixture.app'}]}});
+    expect(segmentData(parts, 'trace_context').packageConfidence).toBeUndefined();
     expect(segmentData(parts, 'conversation_context')).toMatchObject({
       conversationSummary: context.conversationSummary, previousFindings: context.previousFindings,
       entityContext: context.entityContext});
@@ -480,6 +486,58 @@ describe('typed turn prompt assembly', () => {
       pattern_context: context.patternContext, negative_pattern_context: context.negativePatternContext,
       case_background_context: context.caseBackgroundContext, sql_error_pairs: context.sqlErrorFixPairs,
       available_agents: context.availableAgents})) expect(segmentData(parts, label)).toEqual(value);
+  });
+
+  // SP-CP-11: an inferred package was rendered exactly like a user target, so
+  // the model refused to leave it when it had no evidence.
+  it('renders an inferred package with its provenance and the focus-app guidance', () => {
+    const focusTarget = resolveFocusAppTarget({focusResult: {
+      method: 'oom_adj', confidence: 'medium', primaryApp: 'com.tracedemo.stress',
+      apps: [
+        {packageName: 'com.tracedemo.stress', totalDurationNs: 11_814_451_991, switchCount: 3, score: 25,
+          signals: {batteryTopNs: 0, launchCount: 0, frameCount: 0, foregroundNs: 11_814_451_991,
+            runningNs: 180_321_368, mainThreadRunningNs: 151_059_323, threadSliceCount: 165}, penalties: []},
+        {packageName: 'com.google.android.as', totalDurationNs: 10_135_213, switchCount: 1, score: 10},
+      ],
+      excludedNoActivity: [{packageName: 'com.android.media.module', upid: 599, reason: 'no_activity',
+        foregroundNs: 11_800_000_000, maxOomScore: -700}],
+    }});
+    const parts = buildSystemPromptParts({...fixture(), packageName: focusTarget.packageName, focusTarget});
+    const traceContext = segmentData(parts, 'trace_context');
+
+    expect(traceContext).toMatchObject({packageName: 'com.tracedemo.stress', packageSource: 'auto_detected',
+      packageConfidence: 'medium', focusApp: {status: 'medium', method: 'oom_adj', primary: 'com.tracedemo.stress',
+        excludedNoActivity: [{packageName: 'com.android.media.module', maxOomScore: -700}]}});
+    // Only non-zero signals reach the prompt.
+    expect(traceContext.focusApp.candidates[0].signals).toEqual({foregroundNs: 11_814_451_991,
+      runningNs: 180_321_368, mainThreadRunningNs: 151_059_323, threadSliceCount: 165});
+    expect(parts.segments.find(segment => segment.label === 'focus_app_guidance')?.content)
+      .toContain('Focus-app context fixture');
+  });
+
+  it('renders no package when focus detection is ambiguous, only candidates', () => {
+    const focusTarget = resolveFocusAppTarget({focusResult: {
+      method: 'oom_adj', confidence: 'ambiguous',
+      apps: [
+        {packageName: 'com.example.a', totalDurationNs: 5_000_000_000, switchCount: 1, score: 25},
+        {packageName: 'com.example.b', totalDurationNs: 4_800_000_000, switchCount: 1, score: 24},
+      ],
+    }});
+    const parts = buildSystemPromptParts({...fixture(), packageName: focusTarget.packageName, focusTarget});
+    const traceContext = segmentData(parts, 'trace_context');
+
+    expect(traceContext.packageName).toBeUndefined();
+    expect(traceContext.packageSource).toBeUndefined();
+    expect(traceContext.focusApp).toMatchObject({status: 'ambiguous',
+      candidates: [{packageName: 'com.example.a'}, {packageName: 'com.example.b'}]});
+    expect(traceContext.focusApp.primary).toBeUndefined();
+    expect(parts.segments.some(segment => segment.label === 'focus_app_guidance')).toBe(true);
+  });
+
+  it('does not load focus-app guidance when no detection data exists', () => {
+    const parts = buildSystemPromptParts({...fixture(), packageName: 'com.user.app'});
+    expect(segmentData(parts, 'trace_context')).toMatchObject({packageName: 'com.user.app', packageSource: 'user'});
+    expect(parts.segments.some(segment => segment.label === 'focus_app_guidance')).toBe(false);
   });
 
   it('keeps every supplied note instead of enforcing a presentation-only note cap', () => {

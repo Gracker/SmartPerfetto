@@ -27,7 +27,10 @@ function expectation() {
   return parseAgentSseExpectation(JSON.parse(args[args.indexOf('--expectation-json') + 1]));
 }
 
-async function withLoadedTrace(operation: (service: TraceProcessorService, traceId: string) => Promise<void>) {
+async function withLoadedTrace(
+  operation: (service: TraceProcessorService, traceId: string) => Promise<void>,
+  options: {taintShared?: boolean} = {},
+) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-native-oracle-'));
   const changes = {[ENTERPRISE_FEATURE_FLAG_ENV]: 'false', SMARTPERFETTO_ENTERPRISE_DB_PATH: path.join(root, 'enterprise.sqlite'),
     SMARTPERFETTO_DATA_DIR: path.join(root, 'data'), UPLOAD_DIR: path.join(root, 'uploads')};
@@ -39,8 +42,14 @@ async function withLoadedTrace(operation: (service: TraceProcessorService, trace
     const traceId = await service.loadTraceFromFilePath(path.resolve(process.cwd(),
       '../Trace/.generated/constructed/source-analysis-semantic/trace.pftrace'));
     expect(service.getTrace(traceId)?.status).toBe('ready');
-    // This state follows actual loading/metadata SQL, without seeding a policy or witness.
-    expect(service.getRunningNativeProcessorObservation(traceId)).toMatchObject({status: 'tainted', nativeSchemaEligible: true, analysisRunPrivate: false});
+    // This state follows actual loading/metadata SQL, without seeding a policy or witness:
+    // loading issues only pure reads, so the shared instance stays eligible for sharing.
+    expect(service.getRunningNativeProcessorObservation(traceId)).toMatchObject({status: 'trusted', nativeSchemaEligible: true, analysisRunPrivate: false});
+    if (options.taintShared) {
+      // An ordinary stdlib INCLUDE on the shared instance, as analysis prefetch performs.
+      await service.query(traceId, 'INCLUDE PERFETTO MODULE android.startup.startups');
+      expect(service.getRunningNativeProcessorObservation(traceId)).toMatchObject({status: 'tainted', analysisRunPrivate: false});
+    }
     await operation(service, traceId);
   } finally {
     jest.restoreAllMocks();
@@ -131,8 +140,12 @@ describe('real native oracle lease lifecycle', () => {
       expect(query.mock.calls.filter(call => call[1] === sql).map(call => call[0])).toEqual([traceId, referenceTraceId]);
       expect(result.rows.current_duration).toHaveLength(1);
       expect(result.rows.reference_duration).toHaveLength(1);
-      for (const entry of owned!.entries) expect(getTraceProcessorLeaseStore().getLeaseById(scope, entry.lease.id))
-        .toMatchObject({state: 'released', holderCount: 0});
+      // Both freshly loaded sides are still trusted, so the pair runs on their shared
+      // processors; a released shared lease idles for the viewer instead of draining.
+      for (const entry of owned!.entries) {
+        expect(entry).toMatchObject({privateProcessor: false, context: {mode: 'shared'}});
+        expect(getTraceProcessorLeaseStore().getLeaseById(scope, entry.lease.id)).toMatchObject({state: 'idle', holderCount: 0});
+      }
     });
   });
 
@@ -160,7 +173,7 @@ describe('real native oracle lease lifecycle', () => {
       expectReleased(owned!);
       expect(service.getRunningNativeProcessorObservation(traceId)?.instanceToken).toBe(shared.instanceToken);
       expect(service.getRunningNativeProcessorObservation(traceId)?.status).toBe('tainted');
-    });
+    }, {taintShared: true});
   });
 
   it('cancels and releases the real private group when the post-query pin check exceeds the original deadline', async () => {
@@ -196,6 +209,6 @@ describe('real native oracle lease lifecycle', () => {
         expect(prepare).toHaveBeenCalledTimes(1);
         expectReleased(owned!);
       } finally {completeLateIdentity?.(); owned?.release();}
-    });
+    }, {taintShared: true});
   });
 });

@@ -53,7 +53,7 @@ export function createOpenAIToolsFromMcpDefinitions(
       parameters: createJsonSchemaFromZodRawShape(shared.inputSchema) as any,
       strict: true,
       execute: async (args, runContext, details) => {
-        const normalizedArgs = normalizeRuntimeToolArgs(args) as Record<string, unknown>;
+        const normalizedArgs = normalizeRuntimeToolArgs(args, shared.inputSchema) as Record<string, unknown>;
         const contextSignal = (runContext?.context as { signal?: AbortSignal } | undefined)?.signal;
         const signal = details?.signal || contextSignal;
         const toolCallId = extractOpenAIToolCallId(details);

@@ -38,7 +38,7 @@ import {
 } from '../../../agentv3/claudeMcpServer';
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
-import { detectFocusApps, type DetectedFocusApp } from '../../../agentv3/focusAppDetector';
+import { resolveFocusAppTarget } from '../../focusAppTarget';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import {buildMaxTurnsTerminationMessage, estimateAnalysisConfidence} from '../../../agentv3/analysisTermination';
@@ -112,6 +112,7 @@ import { knowledgeScopeFromAnalysisOptions } from '../../runtimeScopes';
 import {
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
+  detectRunFocusApps,
 } from '../../runtimePromptContext';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
@@ -661,11 +662,34 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     let acquisitionOpen = true;
 
     sessionState.armMainBudget(maxTurns * (isQuickMode ? this.config.quickPerTurnMs : this.config.fullPerTurnMs));
-    const skipFocusDetection = policy.preflight === 'none';
     const skipTracePreflightDetection = policy.preflight === 'none';
-    const effectivePackageName = packageName;
     runtimePerformance.finishClassification(turnIntent.status === 'resolved' ? 'ok' : 'error');
     executionLease.throwIfAborted();
+
+    // Focus app detection precedes architecture detection: the effective
+    // package (user > confident inference > none) scopes both. Qoder alone
+    // accepts an explicit `timeRange` option; it overrides the selection.
+    const focusResult = await detectRunFocusApps({
+      traceProcessorService, traceId, preflight: policy.preflight,
+      selectionContext: options?.selectionContext,
+      timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined,
+      measure: async detect => {
+        const focusPhase = runtimePerformance.startPhase('focus');
+        try {
+          const result = await detect();
+          executionLease.throwIfAborted();
+          focusPhase.end('ok');
+          return result;
+        } catch (error) {
+          focusPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
+          executionLease.throwIfAborted();
+          return undefined; // Non-fatal
+        }
+      },
+    });
+    executionLease.throwIfAborted();
+    const focusTarget = resolveFocusAppTarget({userPackageName: packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
 
     // Architecture detection
     let architecture: ArchitectureInfo | undefined;
@@ -686,29 +710,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         architecturePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
         executionLease.throwIfAborted();
         // Non-fatal — architecture detection is optional
-      }
-    }
-    executionLease.throwIfAborted();
-
-    // Focus app detection
-    let focusApps: DetectedFocusApp[] = [];
-    let focusAppMethod: 'battery_stats' | 'oom_adj' | 'frame_timeline' | 'none' = 'none';
-    if (!skipFocusDetection) {
-      const focusPhase = runtimePerformance.startPhase('focus');
-      try {
-        const focusResult = await detectFocusApps(
-            traceProcessorService,
-            traceId,
-            { timeRange: options?.timeRange as { startNs: number; endNs: number } | undefined },
-          );
-        executionLease.throwIfAborted();
-        focusApps = focusResult.apps;
-        focusAppMethod = focusResult.method;
-        focusPhase.end('ok');
-      } catch (error) {
-        focusPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-        executionLease.throwIfAborted();
-        // Non-fatal
       }
     }
     executionLease.throwIfAborted();
@@ -803,10 +804,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       strategyRegistry: intentResolver.strategyRegistry,
       onDemandContext: policy.onDemandContext,
       packageName: effectivePackageName,
+      focusTarget,
       sceneType,
       architecture,
-      focusApps,
-      focusMethod: focusAppMethod,
       selectionContext: options?.selectionContext,
       outputLanguage,
       traceCompleteness,
@@ -1004,6 +1004,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       traceProcessorService,
       skillExecutor,
       packageName: effectivePackageName,
+      focusTarget,
       emitUpdate: emitToolUpdate,
       analysisNotes: notes,
       artifactStore,

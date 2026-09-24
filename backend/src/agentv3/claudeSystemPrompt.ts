@@ -10,6 +10,7 @@ import {resolveRuntimeTurnPolicy, type RuntimeTurnPolicy} from '../agentRuntime/
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
 import {CONCLUSION_CONTRACT_SIDECAR_MARKER} from '../agent/core/conclusionContract';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../services/verifier/deterministicClaimVerifier';
+import {buildFocusAppPromptData, packageProvenance} from '../agentRuntime/focusAppTarget';
 
 /**
  * Rough token estimate for mixed Chinese/English text.
@@ -238,11 +239,19 @@ function buildTypedTurnSystemPromptParts(
 
   // No architecture guidance, focus-app default target, or probe suggestion is
   // inferred from missing data. These are facts/hints already supplied by the run.
+  // The package carries its provenance: only `user` binds the target; an
+  // auto-detected package is a ranked hypothesis, and an ambiguous detection
+  // renders candidates without any package in effect.
+  const focusApp = buildFocusAppPromptData(context.focusTarget);
+  const currentPackage = packageProvenance(context.packageName, context.focusTarget);
   data(2, 'trace_context', {
-    packageName: context.packageName, architecture: context.architecture,
-    focusApps: context.focusApps, focusMethod: context.focusMethod,
-    traceOs: context.traceOs, traceFormat: context.traceFormat,
+    packageName: context.packageName, packageSource: currentPackage.source,
+    packageConfidence: currentPackage.confidence, architecture: context.architecture,
+    focusApp, traceOs: context.traceOs, traceFormat: context.traceFormat,
   }, true);
+  if (focusApp || currentPackage.source === 'auto_detected') {
+    push(2, 'focus_app_guidance', requiredAsset('knowledge-focus-app-context'), true);
+  }
   data(2, 'trace_completeness', context.traceCompleteness, true);
   data(2, 'knowledge_base', context.knowledgeBaseContext, true);
   data(3, 'available_agents', context.availableAgents, true);
@@ -253,6 +262,8 @@ function buildTypedTurnSystemPromptParts(
   if (context.comparison) {
     const comparison = context.comparison;
     const pair = comparison.tracePairContext;
+    const referencePackage = packageProvenance(comparison.referencePackageName, comparison.referenceFocusTarget,
+      {userMayName: false});
     data(4, 'comparison_identity', {
       referenceTraceId: comparison.referenceTraceId,
       tracePairContext: pair && {
@@ -266,8 +277,11 @@ function buildTypedTurnSystemPromptParts(
       capabilityProbeStatus: comparison.capabilityProbeStatus ?? 'not_checked',
     });
     data(4, 'comparison_details', {
-      currentPackageName: context.packageName, referencePackageName: comparison.referencePackageName,
-      referenceArchitecture: comparison.referenceArchitecture, referenceFocusApps: comparison.referenceFocusApps,
+      currentPackageName: context.packageName, currentPackageSource: currentPackage.source,
+      referencePackageName: comparison.referencePackageName,
+      referencePackageSource: referencePackage.source, referencePackageConfidence: referencePackage.confidence,
+      referenceArchitecture: comparison.referenceArchitecture,
+      referenceFocusApp: buildFocusAppPromptData(comparison.referenceFocusTarget),
       commonCapabilities: comparison.commonCapabilities, capabilityDiff: comparison.capabilityDiff,
       traceNames: pair?.panes.map(({traceSide, traceName}) => ({traceSide, traceName})),
       workspaceOpen: pair?.workspaceOpen, splitPercent: pair?.splitPercent,

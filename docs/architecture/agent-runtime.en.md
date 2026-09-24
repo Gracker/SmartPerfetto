@@ -292,7 +292,19 @@ Schema validation does not establish semantic correctness or widen permission.
 (`existing_only`) gathers nothing, `full` (resolved `scene_wide` read) adds
 memory-type prefetch, and `trace_facts` — a bounded question, or an unavailable
 classification — still detects focus app, architecture, vendor and trace
-completeness. Planning is on
+completeness. Focus detection scores candidate processes once over the
+analysis window (foreground time, frames, launches, battery `top`, CPU),
+excludes processes with no activity and reports `high`/`medium`/`ambiguous`
+confidence. All five runtimes resolve the effective package through
+`focusAppTarget`: a user-named package is `user`, a high/medium inference is
+`auto_detected`, and an ambiguous ranking sets no package, only candidates. Only
+`user` packages and selections bind the analysis target; an inferred package is a
+default Skill scope (reported as `appliedDefaultProcess`), never the expected
+identity of the comparison gate, and the answer may switch to a candidate with
+evidence when it says why. The completeness prober loads the defining stdlib
+module before checking a stdlib view (capabilities declare `requiredModules`
+statically, guarded by a test); a capability whose module or query failed carries
+a `reasonCode` meaning unprobed, not missing. Planning is on
 demand; completed phases require real successful evidence or an explicit valid
 disposition. Unfinished exploration plans and hypotheses retain their state;
 they neither trigger automatic continuation nor determine answer completeness alone.

@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it} from '@jest/globals';
+import {describe, expect, it, jest} from '@jest/globals';
 import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import type {AnalysisTurnIntent} from '../analysisTurnIntent';
 import {
@@ -75,6 +75,30 @@ describe('runtime native declaration completion', () => {
     expect(accept(`${body}\n\n${contract([claim('a')])}`)).toBeUndefined();
     expect(accept(`${body} Edited.\n\n${contract([claim('a'), claim('b')])}`)).toBeUndefined();
     expect(accept(`${body}\n\n${rejected}`)).toBeUndefined();
+  });
+
+  it('logs why a completion was rejected in closed vocabulary, never the model text', () => {
+    // rooted_lock_monitor: a valid 14-claim completion was dropped with no record of the reason.
+    const original = '决定性证据:SF 主线程阻塞 33ms,等待 HWC。';
+    const request = requestNativeDeclarationCompletion({intent: intent('investigation'), completion: {status: 'completed'},
+      candidate: original, remainingDeliveryTurns: 1})!;
+    const log = jest.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      const fullWidth = original.replace(':', '：').replace(',', '，');
+      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'completed'},
+        candidate: `${fullWidth}\n\n${contract([claim('a')])}`})).toBeUndefined();
+      expect(acceptNativeDeclarationCompletion({request, completion: {status: 'unknown'},
+        candidate: `${original}\n\n${contract([claim('a')])}`})).toBeUndefined();
+      const lines = log.mock.calls.map(call => String(call[0]));
+      expect(lines).toEqual([
+        '[DeclarationRepair] completion rejected: request=missing_declaration reason=body_changed ' +
+          `originalChars=${original.length} repairedChars=${original.length} firstDifference=5 nfkcEqual=true`,
+        '[DeclarationRepair] completion rejected: request=missing_declaration reason=completion_not_completed completion=unknown',
+      ]);
+      expect(lines.join('\n')).not.toContain('HWC');
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it.each(['en', 'zh-CN'] as const)('asks a %s repair to pass the full protocol, not only the listed fields', outputLanguage => {

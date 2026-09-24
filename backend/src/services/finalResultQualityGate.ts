@@ -13,6 +13,7 @@ import {verifySourceClaimBindingsForResult} from './codebase/sourceClaimVerifier
 import {isUnusedSourceDecision} from './codebase/sourceUseDecision';
 import {assessScrollingJankClaimBoundary} from './scrollingJankClaimBoundary';
 import {isSemanticClaimIssueCode, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
+import {claimReferences} from './analysisInvestigationPresentation';
 import type {IdentityResolutionV1} from '../types/identityContract';
 import {
   analysisDeliveryFingerprint,
@@ -58,6 +59,13 @@ export interface FinalResultComparisonIdentity {
   referenceTraceId?: string;
   currentPackageName?: string;
   referencePackageName?: string;
+  /**
+   * Where each package came from. `auto_detected` is a runtime focus-app
+   * hypothesis, never an expected identity; absent means an authoritative
+   * source (the user, or the comparison evidence pack).
+   */
+  currentPackageSource?: 'user' | 'auto_detected';
+  referencePackageSource?: 'user' | 'auto_detected';
   currentResolution?: IdentityResolutionV1;
   referenceResolution?: IdentityResolutionV1;
 }
@@ -85,11 +93,15 @@ export function completeFinalResultComparisonIdentity(input: {
     return input.conclusion;
   }
 
+  // An inferred package is labelled as such rather than presented as the
+  // comparison's authoritative target.
+  const inferred = (source: FinalResultComparisonIdentity['currentPackageSource']) =>
+    source === 'auto_detected' ? localize(input.outputLanguage, '（运行时推断）', ' (runtime-inferred)') : '';
   const identitySection = [
     `## ${localize(input.outputLanguage, '对比对象', 'Comparison targets')}`,
     '',
-    `- ${localize(input.outputLanguage, '当前侧包名', 'Current package')}: \`${currentPackageName}\``,
-    `- ${localize(input.outputLanguage, '参考侧包名', 'Reference package')}: \`${referencePackageName}\``,
+    `- ${localize(input.outputLanguage, '当前侧包名', 'Current package')}${inferred(input.identity?.currentPackageSource)}: \`${currentPackageName}\``,
+    `- ${localize(input.outputLanguage, '参考侧包名', 'Reference package')}${inferred(input.identity?.referencePackageSource)}: \`${referencePackageName}\``,
   ].join('\n');
   const conclusion = input.conclusion.trim();
   return conclusion ? `${conclusion}\n\n${identitySection}` : identitySection;
@@ -439,10 +451,23 @@ function describeContradictedClaims(
   const mismatchedIds = new Set<string>();
   const missingIds = new Set<string>();
   const rejectedPropositionIds = new Set<string>();
+  // A reference status is a failure only when the verifier recorded it as an
+  // error for that claim. Advisory (warning) mismatches stay out of the `!`
+  // message; a claim whose unsupported status no issue of its own explains
+  // (older shapes) still falls back to its reference statuses.
+  const errorCodesByClaim = new Map<string, Set<string>>();
+  for (const issue of verification.issues) {
+    if (issue.severity !== 'error' || !claimIds.has(issue.claimId)) continue;
+    const codes = errorCodesByClaim.get(issue.claimId) ?? new Set<string>();
+    codes.add(issue.code);
+    errorCodesByClaim.set(issue.claimId, codes);
+  }
+  const referenceFailureCounts = (claim: (typeof results)[number], status: 'value_mismatch' | 'missing') => {
+    const codes = errorCodesByClaim.get(claim.claimId);
+    return codes ? codes.has(`claim_reference_${status}`) : claim.status === 'unsupported';
+  };
   for (const claim of results) {
-    const references = verification.schemaVersion === 'claim_verifier@2'
-      ? claim.referenceCells ?? claim.referenceResults ?? []
-      : claim.referenceResults ?? claim.referenceCells ?? [];
+    const references = claimReferences(verification, claim);
     const proof = claim.deterministicProof;
     const bindingFailure = bindingIds.has(claim.claimId) || references.some(ref => ref.status === 'ineligible') ||
       (proof?.status === 'rejected' && proof.reason === 'binding_ineligible');
@@ -451,18 +476,23 @@ function describeContradictedClaims(
       else globalBindingFailure = true;
     }
     if (!claimIds.has(claim.claimId)) continue;
-    if (references.some(ref => ref.status === 'value_mismatch')) mismatchedIds.add(claim.claimId);
+    if (references.some(ref => ref.status === 'value_mismatch') && referenceFailureCounts(claim, 'value_mismatch')) {
+      mismatchedIds.add(claim.claimId);
+    }
     // A binding rejection can retain a compatibility "missing" reference; it
     // never establishes absence, nor hides a separate recorded value mismatch.
-    if (!bindingFailure && references.some(ref => ref.status === 'missing')) missingIds.add(claim.claimId);
+    if (!bindingFailure && references.some(ref => ref.status === 'missing') && referenceFailureCounts(claim, 'missing')) {
+      missingIds.add(claim.claimId);
+    }
     if (proof?.status === 'rejected' && proof.reason !== 'binding_ineligible') rejectedPropositionIds.add(claim.claimId);
   }
   for (const id of bindingIds) missingIds.delete(id);
   const semanticInconsistentIds = new Set(verification.issues
     .filter(issue => issue.severity === 'error' && isSemanticClaimIssueCode(issue.code) && claimIds.has(issue.claimId))
     .map(issue => issue.claimId));
-  const undeclaredAssertions = verification.issues.some(issue =>
-    issue.severity === 'error' && issue.code === SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE);
+  // A warning since undeclared assertions stopped failing the gate on their
+  // own; still named when another check fails.
+  const undeclaredAssertions = verification.issues.some(issue => issue.code === SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE);
   const details = [
     ...(bindingIds.size ? [`${bindingIds.size} 条断言的声明或绑定无效，相关断言未通过核验准入`] : []),
     ...(globalBindingFailure ? ['声明或绑定校验存在未关联到具体断言的错误'] : []),
@@ -1296,9 +1326,15 @@ function comparisonIdentityStatus(
   identity: FinalResultComparisonIdentity | undefined,
 ): AnalysisAssuranceStatus {
   if (!identity) return 'not_applicable';
+  // A runtime-inferred package is a hypothesis: evidence resolving a different
+  // process is not an identity failure. Only an authoritative package is expected.
+  const expected = (packageName: string | undefined, source: FinalResultComparisonIdentity['currentPackageSource']) =>
+    source === 'auto_detected' ? undefined : packageName;
   const sides = [
-    {role: 'current', traceId: identity.currentTraceId, expected: identity.currentPackageName, resolution: identity.currentResolution},
-    {role: 'reference', traceId: identity.referenceTraceId, expected: identity.referencePackageName, resolution: identity.referenceResolution},
+    {role: 'current', traceId: identity.currentTraceId,
+      expected: expected(identity.currentPackageName, identity.currentPackageSource), resolution: identity.currentResolution},
+    {role: 'reference', traceId: identity.referenceTraceId,
+      expected: expected(identity.referencePackageName, identity.referencePackageSource), resolution: identity.referenceResolution},
   ] as const;
   if (sides.some(side => side.resolution && side.resolution.status !== 'verified')) return 'failed';
   if (sides.some(side => !side.resolution || !side.traceId?.trim())) return 'not_checked';

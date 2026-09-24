@@ -12,6 +12,7 @@ import type {AnalysisAssuranceStatus} from '../types/analysisDelivery';
 import {parseAdaptiveRoutingReceipt} from '../agentRuntime/adaptiveEvidenceRouter';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
+import {summarizeClaimVerification} from './analysisInvestigationPresentation';
 import type {
   AnalysisReceipt,
   AnalysisReceiptGateStatus,
@@ -284,14 +285,19 @@ function buildClaimAudit(
         uncertainClaims: 0,
       };
     }
+    // The CLI/HTML status line's own counts, derived from the claim results.
+    const summary = summarizeClaimVerification(claimVerificationResult)!;
     return {
-      totalClaims: claimResults.length,
-      verifiedClaims: claimResults.filter(claim => claim.status === 'verified').length,
-      unsupportedClaims: claimVerificationResult.unsupportedClaimCount,
+      totalClaims: summary.totalClaimCount ?? 0,
+      verifiedClaims: summary.verifiedClaimCount ?? 0,
+      unsupportedClaims: summary.unsupportedClaimCount ?? 0,
       uncertainClaims: claimResults.filter(claim =>
         claim.status === 'partial' ||
         claim.status === 'inference' ||
         claim.status === 'not_checked').length,
+      referencesMatchedClaims: summary.referencesMatchedClaimCount ?? 0,
+      ...(summary.propositionProvedClaimCount !== undefined
+        ? {propositionProvedClaims: summary.propositionProvedClaimCount} : {}),
     };
   }
   const byLevel = new Map<EvidenceSupportLevel, number>();

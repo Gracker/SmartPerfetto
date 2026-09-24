@@ -46,7 +46,7 @@ import {
   buildSystemPrompt,
 } from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
-import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
+import { resolveFocusAppTarget } from '../../focusAppTarget';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import { formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt, toolResultIsFailure } from '../../../agentv3/toolNarration';
 import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
@@ -117,8 +117,10 @@ import {
 } from '../../runtimePerformance';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
+  buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
+  detectRunFocusApps,
 } from '../../runtimePromptContext';
 import {
   buildQuickRunReceipt,
@@ -879,7 +881,7 @@ export async function dispatchOpenCodeBridgeRequest(
     if (!definition) {
       return rpcError(id, RPC_ERROR_CODES.METHOD_NOT_FOUND, `Unknown tool '${params.name}'`);
     }
-    const args = normalizeRuntimeToolArgs(params.arguments ?? {}) as Record<string, unknown>;
+    const args = normalizeRuntimeToolArgs(params.arguments ?? {}, definition.shared.inputSchema) as Record<string, unknown>;
     const taskId = String(id ?? `${params.name}-${Date.now()}`);
     try {
       emitOpenCodeBridgeUpdateIfDeliverable(emitUpdate, options, {
@@ -3187,12 +3189,12 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() || [];
     const quickMode = turnPolicy.budgetMode === 'quick';
-    const focusResult = turnPolicy.preflight !== 'none'
-      ? await detectFocusApps(this.input.traceProcessorService, traceId, {
-          timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
-        })
-      : {apps: [], method: 'none' as const};
-    const effectivePackageName = options.packageName || focusResult.primaryApp;
+    const focusResult = await detectRunFocusApps({
+      traceProcessorService: this.input.traceProcessorService, traceId, preflight: turnPolicy.preflight,
+      selectionContext: options.selectionContext,
+    });
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
     const analysisRunSpec = createAnalysisRunSpec({
       history: analysisHistoryReader.getTurns(),
       query, sessionId, traceId, options, turnIntent,
@@ -3288,10 +3290,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     }) : buildRuntimeTracePairIdentityContext({
       referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext});
-    const comparisonIdentity = comparisonContext ? {
-      currentPackageName: effectivePackageName,
-      referencePackageName: comparisonContext.referencePackageName,
-    } : undefined;
+    const comparisonIdentity = buildComparisonIdentity(focusTarget, comparisonContext);
     const extraSystemPrompt = normalizeOptionalString(
       getProviderForSelection(this.selection, this.input.providerScope)?.connection.openCodeSystemPrompt,
     ) || normalizeOptionalString(this.env[OPENCODE_SYSTEM_PROMPT_ENV]);
@@ -3314,6 +3313,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       traceProcessorService: this.input.traceProcessorService,
       skillExecutor,
       packageName: effectivePackageName,
+      focusTarget,
       emitUpdate: update => this.emitUpdate(update),
       onSkillResult: (result) => {
         captureSkillDisplayEntities(result.displayResults, sessionContext.getEntityStore(), 'opencode');
@@ -3387,8 +3387,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           ...(comparisonContext ? {comparison: comparisonContext} : {}),
           architecture,
           packageName: effectivePackageName,
-          focusApps: focusResult.apps.length > 0 ? focusResult.apps : undefined,
-          focusMethod: focusResult.method,
+          focusTarget,
           selectionContext: options.selectionContext,
           quickMemoryContext,
           knowledgeBaseContext,
@@ -3426,8 +3425,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       query,
       architecture,
       packageName: effectivePackageName,
-      focusApps: focusResult.apps.length > 0 ? focusResult.apps : undefined,
-      focusMethod: focusResult.method,
+      focusTarget,
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors

@@ -163,18 +163,39 @@ export function acceptNativeDeclarationCompletion(input: {
   candidate: string;
   outputByteLimit?: number;
 }): string | undefined {
-  if (input.completion.status !== 'completed' ||
-      !nativeDeclarationCandidateFitsOutput(input.candidate, input.outputByteLimit)) return undefined;
+  // The rejected candidate reaches no report or snapshot, so a dropped repair is
+  // otherwise invisible: log the deciding facts in closed vocabulary and offsets
+  // only, never model text (rooted_lock_monitor delivered its undeclared first
+  // candidate after a valid 14-claim completion with no trace of why).
+  const reject = (reason: string, facts: Record<string, string | number | boolean> = {}): undefined => {
+    console.log(`[DeclarationRepair] completion rejected: request=${input.request.reason} reason=${reason}` +
+      Object.entries(facts).map(([key, value]) => ` ${key}=${value}`).join(''));
+    return undefined;
+  };
+  if (input.completion.status !== 'completed') return reject('completion_not_completed', {completion: input.completion.status});
+  if (!nativeDeclarationCandidateFitsOutput(input.candidate, input.outputByteLimit)) return reject('output_limit');
   const original = inspectCandidateProtocol(input.request.originalBody);
   const repaired = inspectCandidateProtocol(input.candidate);
-  if (original.status !== 'absent' || repaired.status !== 'valid' ||
-      repaired.canonicalBody.trim() !== original.canonicalBody.trim()) return undefined;
+  if (original.status !== 'absent') return reject('original_not_absent', {original: original.status});
+  if (repaired.status !== 'valid') return reject('declaration_not_valid', {repaired: repaired.status});
+  const originalBody = original.canonicalBody.trim();
+  const repairedBody = repaired.canonicalBody.trim();
+  if (repairedBody !== originalBody) {
+    let firstDifference = 0;
+    while (firstDifference < Math.min(originalBody.length, repairedBody.length) &&
+      originalBody[firstDifference] === repairedBody[firstDifference]) firstDifference += 1;
+    return reject('body_changed', {originalChars: originalBody.length, repairedChars: repairedBody.length, firstDifference,
+      nfkcEqual: originalBody.normalize('NFKC') === repairedBody.normalize('NFKC')});
+  }
   // A repair that drops declared claims turns an unverified answer into one with undeclared assertions.
   if (input.request.reason === INVALID_NATIVE_DECLARATION) {
     const claims = repaired.sidecar.contract?.claims ?? [];
     const ids = new Set(claims.map(claim => claim.id));
-    if (claims.length < (input.request.diagnostic.claimCount ?? 0) ||
-        input.request.declaredClaimIds?.some(id => !ids.has(id))) return undefined;
+    const droppedIds = input.request.declaredClaimIds?.filter(id => !ids.has(id)).length ?? 0;
+    if (claims.length < (input.request.diagnostic.claimCount ?? 0) || droppedIds) {
+      return reject('claims_dropped', {expectedClaims: input.request.diagnostic.claimCount ?? 0,
+        repairedClaims: claims.length, droppedIds});
+    }
   }
   return input.candidate;
 }

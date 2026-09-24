@@ -112,10 +112,17 @@ describe('captured.cell finite proof', () => {
   it.each([
     {actual: 'main', expected: 'Main'}, {actual: 'main', expected: ' main'},
     {actual: true, expected: 'true'}, {actual: null, expected: 'null'},
-    {actual: 1, expected: '1'},
+    {actual: 1, expected: '2'},
   ])('does not coerce or normalize $actual to $expected', ({actual, expected}) => {
     expect(verify(captured(actual, expected)).deterministicProof).toMatchObject({status: 'rejected'});
   });
+
+  it.each([{actual: 1, expected: '1'}, {actual: 858, expected: '858.0'}])(
+    'neither proves nor rejects the same number declared as string $expected', ({actual, expected}) => {
+      const output = verify(captured(actual, expected));
+      expect(output.deterministicProof).toMatchObject({status: 'candidate', reason: 'captured_value_type_mismatch'});
+      expect(output.status).not.toBe('unsupported');
+    });
 
   it('cannot use an observed reference value as an omitted proposition or bypass numeric units', () => {
     const missing = captured(null);
@@ -740,6 +747,21 @@ describe('prepared reference outcomes across capture, builder and verifier', () 
       reference: {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'value', value: 55}});
     expect(unknown.output.status).toBe('partial');
     expect(unknown.output.claimResults[0].deterministicProof.status).toBe('candidate');
+  });
+
+  it.each([
+    {declared: '858', status: 'candidate', reason: 'captured_value_type_mismatch', verdict: 'partial'},
+    {declared: '858.0', status: 'candidate', reason: 'captured_value_type_mismatch', verdict: 'partial'},
+    {declared: '859', status: 'rejected', reason: 'captured_cell_value_rejected', verdict: 'failed'},
+    {declared: '858 ms', status: 'rejected', reason: 'captured_cell_value_rejected', verdict: 'failed'},
+  ] as const)('treats captured string $declared against integer 858 by value, not by JSON type', async ({declared, status, reason, verdict}) => {
+    // rooted_lowmem_monkey_a1: a declared '858' against a captured 858 was the sole contradiction.
+    const {output} = await preparedFixture({categorical: true, rows: [[858]],
+      reference: {evidenceRefId: 'data:prepared', rowIndex: 0, column: 'value', value: declared}});
+    expect(output.claimResults[0].referenceCells[0].status).toBe('not_checked');
+    expect(output.claimResults[0].deterministicProof).toMatchObject({status, reason});
+    expect(output.status).toBe(verdict);
+    expect(output.issues.find(issue => issue.code === reason)?.severity).toBe(status === 'rejected' ? 'error' : 'warning');
   });
 
   it.each([

@@ -57,12 +57,13 @@ function directClaimReference(input: {
   envelope: DataEnvelope;
   column: string;
   value: string | number | boolean;
+  rowIndex?: number;
 }): ConclusionContractClaimReference {
   return {
     evidenceRefId: input.envelope.meta.evidenceRefId,
     sourceToolCallId: input.envelope.meta.sourceToolCallId,
     sourceRef: input.envelope.display?.title,
-    rowIndex: 0,
+    rowIndex: input.rowIndex ?? 0,
     column: input.column,
     value: input.value,
   };
@@ -142,6 +143,11 @@ export function buildQuickFocusAppDirectAnswer(input: {
 
   const outputLanguage = input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
   const index = columnIndex(envelope.data.columns);
+  if (cellText(rowValue(row, index, 'detection_confidence')) === 'ambiguous') {
+    return buildAmbiguousFocusAppAnswer({envelope, index, evidenceRefId, outputLanguage,
+      scoped: numericValue(rowValue(row, index, 'scope_start_ns')) !== undefined,
+      selectionContext: input.selectionContext});
+  }
   const packageName = cellText(rowValue(row, index, 'package_name'));
   const foregroundDurationNs = numericValue(rowValue(row, index, 'foreground_duration_ns'));
   const foregroundCount = numericValue(rowValue(row, index, 'foreground_count'));
@@ -165,17 +171,26 @@ export function buildQuickFocusAppDirectAnswer(input: {
   const scoped = scopeStartNs !== undefined && scopeEndNs !== undefined;
   if (input.selectionContext && !scoped) return undefined;
   const durationText = formatDurationNs(foregroundDurationNs);
+  const cpuDuration = cellText(rowValue(row, index, 'duration_source')) === 'cpu_running';
   const countLabel = countSource === 'frame_count'
     ? localize(outputLanguage, `共 ${foregroundCount ?? 0} 帧`, `${foregroundCount ?? 0} frames`)
-    : localize(outputLanguage, `前台切换 ${foregroundCount ?? 0} 次`, `${foregroundCount ?? 0} foreground switches`);
+    : countSource === 'none'
+      ? ''
+      : localize(outputLanguage, `前台切换 ${foregroundCount ?? 0} 次`, `${foregroundCount ?? 0} foreground switches`);
   const scopeText = scoped
     ? localize(outputLanguage, '当前选区/范围内的', 'the selected range')
     : localize(outputLanguage, '当前 trace 的', 'the current trace');
-  const statement = localize(
-    outputLanguage,
-    `${scopeText}焦点应用是 ${packageName}，前台时长 ${durationText}，${countLabel}。`,
-    `The focus app in ${scopeText} is ${packageName}, with ${durationText} foreground time and ${countLabel}.`,
-  );
+  const statement = cpuDuration
+    ? localize(
+      outputLanguage,
+      `${scopeText}焦点应用（按 CPU 活动推断）是 ${packageName}，CPU 运行时长 ${durationText}。`,
+      `The focus app in ${scopeText}, inferred from CPU activity, is ${packageName}, with ${durationText} of CPU running time.`,
+    )
+    : localize(
+      outputLanguage,
+      `${scopeText}焦点应用是 ${packageName}，前台时长 ${durationText}，${countLabel}。`,
+      `The focus app in ${scopeText} is ${packageName}, with ${durationText} foreground time and ${countLabel}.`,
+    );
   const sourceRef = envelope.display?.title ?? envelope.meta.source ?? 'runtime focus app detection';
   const references: ConclusionContractClaimReference[] = [
     directClaimReference({ envelope, column: 'package_name', value: packageName }),
@@ -220,5 +235,55 @@ export function buildQuickFocusAppDirectAnswer(input: {
       references,
     }),
     confidence: 1,
+  };
+}
+
+/** Ambiguous detection: no primary app, so the answer is the ranked candidate list. */
+function buildAmbiguousFocusAppAnswer(input: {
+  envelope: DataEnvelope;
+  index: ReturnType<typeof columnIndex>;
+  evidenceRefId: string;
+  outputLanguage: OutputLanguage;
+  scoped: boolean;
+  selectionContext?: SelectionContext;
+}): QuickFocusAppDirectAnswer | undefined {
+  if (input.selectionContext && !input.scoped) return undefined;
+  const rows = (input.envelope.data.rows ?? []).filter(Array.isArray).slice(0, 5);
+  const candidates = rows
+    .map((row, rowIndex) => ({rowIndex, packageName: cellText(rowValue(row, input.index, 'package_name'))}))
+    .filter(candidate => candidate.packageName && candidate.packageName !== '-');
+  if (candidates.length === 0) return undefined;
+  const names = candidates.map(candidate => candidate.packageName).join(', ');
+  const scopeText = input.scoped
+    ? localize(input.outputLanguage, '当前选区/范围内的', 'the selected range')
+    : localize(input.outputLanguage, '当前 trace 的', 'the current trace');
+  const statement = localize(
+    input.outputLanguage,
+    `${scopeText}焦点应用无法确定；按证据排序的候选为 ${names}。`,
+    `The focus app in ${scopeText} cannot be determined; candidates ranked by evidence: ${names}.`,
+  );
+  const sourceRef = input.envelope.display?.title ?? input.envelope.meta.source ?? 'runtime focus app detection';
+  const references = candidates.map(candidate => directClaimReference({
+    envelope: input.envelope, column: 'package_name', value: candidate.packageName, rowIndex: candidate.rowIndex,
+  }));
+  const contract = buildDirectConclusionContract({
+    statement,
+    evidenceText: `${sourceRef}: detection_confidence=ambiguous, candidates=${names}`,
+    references,
+  });
+  return {
+    conclusion: buildDirectConclusion({
+      statement,
+      evidenceRefId: input.evidenceRefId,
+      sourceRef,
+      rows: candidates.map(candidate => `row=${candidate.rowIndex}; column=\`package_name\`; value=\`${candidate.packageName}\``),
+      outputLanguage: input.outputLanguage,
+    }),
+    conclusionContract: {
+      ...contract,
+      conclusions: contract.conclusions.map(conclusion => ({...conclusion, confidencePercent: 50})),
+      metadata: {...contract.metadata, confidencePercent: 50},
+    },
+    confidence: 0.5,
   };
 }

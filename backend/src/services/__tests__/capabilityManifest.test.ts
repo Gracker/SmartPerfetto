@@ -451,6 +451,41 @@ describe('CapabilityManifest contract', () => {
     );
   });
 
+  it.each(['probe_module_unavailable', 'probe_query_failed'] as const)(
+    'maps an unprobed %s result to an unprobed source, not a missing schema',
+    reasonCode => {
+      const input = baseInput();
+      input.legacyProbe.missingConfig[1].reasonCode = reasonCode;
+      const entry = buildCapabilityManifest(input).content.capabilities
+        .find(capability => capability.id === 'startup');
+      expect(entry).toEqual({
+        id: 'startup',
+        displayName: 'Startup',
+        primaryTable: 'android_startups',
+        status: 'missing',
+        sourceState: 'unprobed',
+        reasonCode,
+      });
+    },
+  );
+
+  it('rejects a reason code that contradicts its bucket or row estimate', () => {
+    const routineCode = baseInput();
+    (routineCode.legacyProbe.missingConfig[1] as unknown as Record<string, unknown>).reasonCode = 'schema_missing';
+    expectErrorCode(routineCode, 'capability_manifest_invalid_reason_code:missingConfig:startup');
+
+    const wrongBucket = baseInput();
+    const [startup] = wrongBucket.legacyProbe.missingConfig.splice(1, 1);
+    wrongBucket.legacyProbe.insufficient.push({
+      ...startup, status: 'insufficient_or_scene_absent', rowEstimate: 1, reasonCode: 'probe_query_failed',
+    });
+    expectErrorCode(wrongBucket, 'capability_manifest_invalid_reason_code:insufficient:startup');
+
+    const unprobedWithRows = baseInput();
+    unprobedWithRows.legacyProbe.missingConfig[0].reasonCode = 'probe_query_failed';
+    expectErrorCode(unprobedWithRows, 'capability_manifest_invalid_row_estimate:missingConfig:frame_rendering');
+  });
+
   it('rejects a primary-table mismatch', () => {
     const input = baseInput();
     input.legacyProbe.missingConfig[0].primaryTable = 'wrong_table';

@@ -56,8 +56,16 @@ Session markers: `✓` delivered with checks passed or not applicable; `~`
 delivered but checks did not complete (for example an invalid conclusion
 declaration or a timed-out semantic review) — do not treat it as verified; `!`
 the run did not finish, or claims contradicted the evidence and quality checks
-failed; `✗` failed. The claim-verification line under the conclusion gives the
-verified count and reason. Without findings, confidence is a fixed baseline and
+failed; `✗` failed. The claim-verification line under the conclusion separates
+claims whose references matched the captured evidence, propositions a finite
+proof established, claims the whole review verified, contradicted claims and
+values rounded without an approximation marker (unverified, not contradicted);
+whole-answer issues such as undeclared assertions, which leave the answer
+unverified (`~`) rather than contradicted, follow `also:`, and the
+review's not-checked reason is kept in every status. The HTML report and the
+receipt's claim audit use the same counts. While the final semantic review runs,
+a `final_review` progress line shows its start (with its deadline) and outcome.
+Without findings, confidence is a fixed baseline and
 the text output omits it. JSON/NDJSON `complete` events carry `deliveryVerdict`
 (`completed`/`unverified`/`partial`/`failed`).
 

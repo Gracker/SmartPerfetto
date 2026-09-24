@@ -78,6 +78,7 @@ import {
 } from '../agent/core/conclusionSceneTemplates';
 import { DEEP_REASON_LABEL } from '../utils/analysisNarrative';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
+import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
 import { sanitizeNarrativeForClient } from './narrativeSanitizer';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
@@ -5341,6 +5342,9 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       dataEnvelopes: rawDataEnvelopes, comparisonReportSection: session.comparisonReportSection,
       comparisonIdentity,
       caseRetrieval,
+      // The semantic review can run for minutes after the answer stream ended.
+      onProgress: event => broadcastToAgentDrivenClients(sessionId,
+        finalReviewProgressUpdate(event, outputLanguage), runIdForAnalysis),
     });
     finalizationRun.assertCurrent();
     result = finalized.result;

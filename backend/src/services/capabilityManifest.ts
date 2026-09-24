@@ -18,6 +18,7 @@ import type {
 import {
   CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION,
   CAPABILITY_MANIFEST_SCHEMA_VERSION,
+  isCapabilityUnprobedReasonCode,
 } from '../types/capabilityManifest';
 import {
   canonicalContentHash,
@@ -440,6 +441,21 @@ function validateBucketResult(
   if (result.primaryTable !== definition.primaryTable) {
     throw new Error(`capability_manifest_primary_table_mismatch:${result.id}`);
   }
+  // Only an unprobed capability carries a reason code: it is a missingConfig
+  // entry with no row count, which the probe could not determine.
+  if (
+    result.reasonCode !== undefined &&
+    (bucket !== 'missingConfig' || !isCapabilityUnprobedReasonCode(result.reasonCode))
+  ) {
+    throw new Error(
+      `capability_manifest_invalid_reason_code:${bucket}:${result.id}`,
+    );
+  }
+  if (result.reasonCode !== undefined && result.rowEstimate !== undefined) {
+    throw new Error(
+      `capability_manifest_invalid_row_estimate:${bucket}:${result.id}`,
+    );
+  }
 
   const rowEstimate = result.rowEstimate;
   const validPositiveInteger =
@@ -549,6 +565,15 @@ function mapEntry(
     };
   }
   if (indexed.bucket === 'missingConfig') {
+    const reasonCode = indexed.result.reasonCode;
+    if (isCapabilityUnprobedReasonCode(reasonCode)) {
+      return {
+        ...shared,
+        status: 'missing',
+        sourceState: 'unprobed',
+        reasonCode,
+      };
+    }
     return indexed.result.rowEstimate === 0
       ? {
           ...shared,

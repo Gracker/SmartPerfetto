@@ -111,10 +111,49 @@ describe('formatToolResultNarration', () => {
     })).toBe('');
   });
 
+  it('says an idle wait is idle, and names the peer a chain ends in', () => {
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      result: mcpResult({success: true, available: true, waitingMs: 13596, topWaits: [{durationMs: 3002}],
+        anomalies: [{id: 'idle_wait', severity: 'info'}]}),
+    })).toBe('这段等待位于两个 slice 之间，更像线程空闲而不是卡顿耗时');
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      language: 'en',
+      result: mcpResult({success: true, available: true, waitingMs: 30, topWaits: [{durationMs: 25}],
+        anomalies: [{id: 'task_too_long', severity: 'critical'}, {id: 'peer_event_wait', severity: 'warning'}],
+        longestEventWait: {processName: 'com.demo', threadName: 'OkHttp Dispatch',
+          wakeSourceClass: 'network_receive_candidate'}}),
+    })).toBe('The chain ends in com.demo / OkHttp Dispatch waiting for an external event (network-receive candidate); that is the blocker to follow');
+  });
+
+  it.each([
+    ['selector_conflict', {}, 'thread_state_id 不属于指定的线程或区间，需要去掉它或改用它所属的线程'],
+    ['no_thread_state_in_window', {candidates: [{processName: 'com.demo', threadName: 'main'}]},
+      '该线程在区间内没有调度数据，需要换一个有数据的线程，如 com.demo / main'],
+    ['ambiguous_thread_selection', {}, '线程选择匹配到多个线程，需要用 tid 或 utid 指定其中一个'],
+    ['missing_window', {}, '缺少分析区间，需要同时给出 start_ts 和 end_ts'],
+  ])('says what a wait-chain refusal (%s) asks the caller to change', (error, extra, expected) => {
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      isError: true,
+      result: mcpResult({success: false, error, action_required: 'x', ...extra}),
+    })).toBe(expected);
+  });
+
+  it('keeps the generic failure line for a wait-chain failure that is not a refusal', () => {
+    expect(formatToolResultNarration({
+      toolName: 'analyze_wait_chain',
+      isError: true,
+      result: mcpResult({success: false, error: 'trace processor went away'}),
+    })).toBe('analyze_wait_chain 失败：trace processor went away');
+  });
+
   it.each([
     ['task_state_running', '该线程在这段区间一直在运行，没有等待链可追'],
     ['no_waiting_time', '所选区间内没有等待时间，没有等待链可追'],
     ['no_critical_path_stack', '这段区间取不到等待链，trace 可能缺少 sched_waking'],
+    ['wait_open_at_trace_end', '这段等待到 trace 结束都没有结束，没有唤醒者可追'],
   ])('reports an unavailable wait chain (%s), which sends the model elsewhere', (reason, expected) => {
     expect(formatToolResultNarration({
       toolName: 'analyze_wait_chain',

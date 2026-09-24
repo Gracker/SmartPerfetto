@@ -191,7 +191,8 @@ Keep these boundaries intact:
 - Claim verification separates "could not verify" from "contradicted". An
   ineligible declaration, and evidence the product could not read, stay
   `not_checked` with warnings; only reference errors, value mismatches, rejected
-  propositions and semantic inconsistencies are errors that fail the gate. The
+  propositions and semantic inconsistencies are errors that fail the gate (an
+  unmarked display rounding and an undeclared assertion are warnings; see below). The
   unreadable classification is a positive list in `evidenceReadView.ts`
   (`evidence_not_retained` stays an error: it cannot tell eviction from a never
   issued identifier) and must come from an issued mark set by the builder
@@ -238,6 +239,35 @@ Keep these boundaries intact:
   same progress-aware budget (`CLAUDE_MAX_RUN_TIMEOUT_MS`), without a timeout
   delivery call; non-scene Claude runs, Pi, OpenCode and Qoder still use fixed
   budgets.
+- The semantic review response degrades per item, never upward. Location ids
+  are short (`L<line>.<digest prefix>`) but still resolved exactly per request.
+  An item the parser cannot use becomes `unknown`; an `inconsistent` judgment
+  keeps its issue even without a location; an unlocatable omission leaves body
+  coverage incomplete. Only envelope, body-coverage, report and investigation
+  rows still reject the whole response. In the E2E corpus one bad location used
+  to discard 9 of 20 reviews outright. Finalization reports only review
+  started/finished progress; no heartbeat (it would evict SSE replay entries).
+- `analyze_wait_chain` headlines attributable time: other threads' work,
+  runnable and uninterruptible segments. Perfetto ends a critical path at IRQ,
+  swapper and io_wait wakes, so the external S/I segments it returns are chain
+  leaves (`event_wait`). They are reported apart, never recursed into, and never
+  read as idle on their own: idle needs the root wait between slices *and* low
+  attributable time, while an in-slice chain ending in a peer's event wait is a
+  `peer_event_wait` warning (a lock holder waiting on the network). Summing leaves
+  as blocking once reported 95% "external critical path" for a thread idly
+  waiting for input.
+- A semantic `numeric_mismatch` whose located text shows the declared exact
+  value rounded at its displayed precision (closed unit mapping, exact rational
+  arithmetic, every same-family number in the span must agree) is recorded as
+  the warning `semantic_numeric_display_rounding`: the claim stays unverified,
+  never contradicted. An undeclared assertion (`semantic_undeclared_claim`) is
+  likewise a warning that blocks passing and stays named in the claim line. Once
+  the review stopped failing to parse, these two produced `!` on 7 of 8 E2E runs
+  in which no value was actually contradicted (34 of 34 mismatches were faithful
+  roundings). The review quotes the number itself; the location only selects
+  it, and its whole line decides (ranges, signs, comparisons, units). A review
+  that quotes the wrong, correct-looking number is its own error; the check
+  cannot recover which value the claim meant.
 - One invalid claim makes the whole declaration ineligible, which skips the
   semantic review and fails a report's quality gate. The shared native
   declaration completion therefore also repairs a well-framed rejected

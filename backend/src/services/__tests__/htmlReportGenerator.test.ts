@@ -317,6 +317,10 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('分析回执');
     expect(html).toContain('Trace 证据');
     expect(html).toContain('Evidence refs');
+    // A receipt written before the reference/proof split renders without those rows.
+    expect(html).toContain('<span>断言总数</span><span>5</span>');
+    expect(html).toContain('<span>矛盾</span><span>1</span>');
+    expect(html).not.toContain('<span>引用匹配</span>');
     expect(html).toContain('report-receipt');
     expect(html).toContain('snapshot-receipt');
     expect(html).toContain('Capability Manifest');
@@ -376,7 +380,8 @@ describe('HTMLReportGenerator', () => {
           generatedAt: 1,
           traceEvidence: {sqlCount: 0, skillCount: 0, dataEnvelopeCount: 0, artifactCount: 0, evidenceRefCount: 0},
           nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
-          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
+          claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0,
+            referencesMatchedClaims: 0, propositionProvedClaims: 0},
           qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
           outputs: {},
           capabilityManifest: {
@@ -392,6 +397,8 @@ describe('HTMLReportGenerator', () => {
 
     expect(html).toContain(reason);
     expect(html).not.toContain('must_not_render');
+    expect(html).toContain('<span>引用匹配</span><span>0</span>');
+    expect(html).toContain('<span>命题证明</span><span>0</span>');
   });
 
   test('formats layered duration-like keys in ms only', () => {
@@ -614,7 +621,7 @@ describe('HTMLReportGenerator', () => {
     } as any;
 
     const html = new HTMLReportGenerator().generateAgentDrivenHTML(data);
-    expect(html).toContain('未核验原因：结论声明格式无效，断言未进入核验：invalid_relation_proposal:invalid_kind,invalid_semantics');
+    expect(html).toContain('断言核验: 未核验 — 无结构化断言（结论声明格式无效，断言未进入核验：invalid_relation_proposal:invalid_kind,invalid_semantics）');
   });
 
   test('keeps formal reference roles and complete values visible without raw diagnostic bundles', () => {

@@ -56,8 +56,10 @@ import type { ColumnDefinition } from '../types/dataContract';
 import {nsToMs} from '../utils/traceProcessorRowUtils';
 import {
   analyzeCriticalPath,
-  chainWaitTotals,
   classifySlice,
+  isChainLeafRole,
+  segmentPathRole,
+  waitClassTotalsMs,
   CRITICAL_PATH_DEFAULTS,
   CRITICAL_PATH_ENGINE_VERSION,
   CriticalPathInputError,
@@ -67,8 +69,16 @@ import {
 import { renderCriticalPathAnalysis } from '../services/criticalPathLocalization';
 import { buildDeterministicCriticalPathSummary } from '../services/criticalPathSummary';
 import {
+  normalizeWaitChainSelectors,
+  waitChainNamesThread,
+  waitChainWindow,
+} from '../services/criticalPathSelectors';
+import {
+  findThreadsWithSchedData,
+  loadThreadStateOwner,
   MAX_THREAD_CANDIDATES,
   resolveCriticalPathThread,
+  threadStateSelectorConflicts,
   type ResolvedCriticalPathThread,
 } from '../services/criticalPathThreadResolver';
 import type {
@@ -100,7 +110,8 @@ import {
   type TraceProcessorQueryProvenance,
   type TraceProcessorTraceSide,
 } from '../services/traceProcessorConnectionModel';
-import {getConsumableProcessIdentitySelectors, sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
+import {getConsumableProcessIdentitySelectors, getEffectiveIdentityConfig, sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
+import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from '../agentRuntime/focusAppTarget';
 import {hasProcessIdentitySelector, PROCESS_IDENTITY_SELECTORS} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
 import {getExactProcessScopeSupport} from '../services/skillEngine/processScopeSql';
@@ -110,6 +121,10 @@ import {captureEvidenceTable, captureRawSqlEvidence, evidenceCaptureHash, eviden
 import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
 import {assessScrollingJankClaimBoundary} from '../services/scrollingJankClaimBoundary';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
+import {
+  buildSqlSchemaDiagnostic,
+  SqlFailureRepeatMemory,
+} from './sqlSchemaDiagnostic';
 import { normalizeRawSql } from './rawSqlNormalizer';
 import {
   buildStrategyRegistrySnapshotFromDefinitions,
@@ -256,6 +271,7 @@ import {
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
 import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
+import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
   throwIfTraceProcessorQueryCancelled,
@@ -264,6 +280,7 @@ import type {
   CriticalPathAnalysis,
   CriticalPathInputErrorCode,
   CriticalPathSegment,
+  CriticalPathWarning,
   SliceKind,
   WakeSourceSummary,
 } from '../types/criticalPathContract';
@@ -443,14 +460,7 @@ function parseOptionalToolArrayInput<T>(value: unknown): T[] | null {
 }
 
 export function normalizeOptionalToolString(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  const normalized = trimmed.toLowerCase();
-  if (normalized === 'null' || normalized === 'undefined' || normalized === 'none') {
-    return undefined;
-  }
-  return trimmed;
+  return typeof value === 'string' && !isPlaceholderToolString(value) ? value.trim() : undefined;
 }
 
 function parseToolStringArrayInput(value: unknown): string[] {
@@ -1229,7 +1239,10 @@ export interface ClaudeMcpServerOptions {
   traceId: string;
   traceProcessorService: TraceProcessorService;
   skillExecutor: SkillExecutor;
+  /** Effective package for default Skill scoping; must equal `focusTarget.packageName` when both are set. */
   packageName?: string;
+  /** Provenance of `packageName` and the ranked focus-app candidates (resolveFocusAppTarget). */
+  focusTarget?: FocusAppTarget;
   /** Callback to emit StreamingUpdate events (e.g. DataEnvelopes from skill results) */
   emitUpdate?: (update: StreamingUpdate) => void;
   toolObserver?: RuntimeToolObserver;
@@ -1323,6 +1336,15 @@ export interface ClaudeMcpServerOptions {
   runManifestAttributionSink?: RunManifestAttributionSink;
 }
 
+function sidePackageProvenance(
+  packageName: string | undefined,
+  target: FocusAppTarget | undefined,
+  userMayName: boolean,
+): {packageSource?: string; packageConfidence?: string} {
+  const {source, confidence} = packageProvenance(packageName, target, {userMayName});
+  return {...(source ? {packageSource: source} : {}), ...(confidence ? {packageConfidence: confidence} : {})};
+}
+
 export interface SourceUseDecisionAccessor {
   getSourceUseDecision(): SourceUseDecisionV1 | undefined;
   /** Missing or invalidated scope cannot establish source non-applicability. */
@@ -1339,6 +1361,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const artifactAccessPolicy = resolveArtifactAccessPolicy(options.userQuery);
   const artifactSummaryState = new Map<string, { complete?: boolean }>();
   const recentSqlErrors: SqlErrorFixPair[] = options.recentSqlErrors || [];
+  // Owned by this server, which the runtimes build once per run: a repeat count
+  // never carries over from another run or session.
+  const sqlFailureMemory = new SqlFailureRepeatMemory();
   const watchdogRef = options.watchdogWarning;
   const skillNotesBudget = options.skillNotesBudget;
   const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
@@ -2125,6 +2150,35 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       : skillExecutor.execute(skillId, selectedTraceId, params, inherited);
   }
 
+  function skillAcceptsProcessIdentity(skill?: SkillDefinition): boolean {
+    return !skill || [...getConsumableProcessIdentitySelectors(skill)]
+      .some(key => key === 'process_name' || key === 'package');
+  }
+
+  /** A Skill that cannot run without naming its process. */
+  function skillRequiresProcessSelector(skill: SkillDefinition): boolean {
+    return getEffectiveIdentityConfig(skill).policy === 'required' ||
+      (skill.inputs ?? []).some(input => input.required === true &&
+        (input.name === 'package' || input.name === 'process_name'));
+  }
+
+  /**
+   * How the process scope of a Skill call was chosen, reported with its result
+   * so an unscoped or default-scoped run is never read as user-targeted:
+   * the injected effective package with its provenance, or null when the Skill
+   * accepts a process but runs unscoped. A model-supplied selector needs no note.
+   */
+  function appliedDefaultProcessField(
+    params: Record<string, any> | undefined,
+    normalized: Record<string, any>,
+    skill?: SkillDefinition,
+  ): {appliedDefaultProcess?: {packageName: string; source: string; confidence?: string} | null} {
+    if (!skillAcceptsProcessIdentity(skill) || hasProcessIdentitySelector(params)) return {};
+    if (!hasProcessIdentitySelector(normalized) || !packageName) return {appliedDefaultProcess: null};
+    const {source = 'user', confidence} = packageProvenance(packageName, options.focusTarget);
+    return {appliedDefaultProcess: {packageName, source, ...(confidence ? {confidence} : {})}};
+  }
+
   /** Normalize skill params while respecting the target Skill's declared inputs. */
   function normalizeSkillParams(
     params: Record<string, any> | undefined,
@@ -2138,8 +2192,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
     }
     const declaredNames = new Set((skill?.inputs ?? []).map(input => input.name));
-    const acceptsProcessIdentity = !skill || [...getConsumableProcessIdentitySelectors(skill)]
-      .some(key => key === 'process_name' || key === 'package');
+    const acceptsProcessIdentity = skillAcceptsProcessIdentity(skill);
     if (acceptsProcessIdentity && defaultPackage && !hasProcessIdentitySelector(p)) {
       p[declaredNames.has('process_name') && !declaredNames.has('package') ? 'process_name' : 'package'] = defaultPackage;
     }
@@ -2909,6 +2962,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
         } : buildSqlFailureToolPayload({
           error: result.error || localize(outputLanguage, 'SQL 执行失败', 'SQL execution failed'),
+          schemaDiagnosis: {error: result.error ?? '', sql: normalizedSql, memory: sqlFailureMemory},
           traceSide: traceProvenance.traceSide,
           traceId: traceProvenance.traceId,
           traceProvenance,
@@ -2949,6 +3003,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             paramsHash: producer.paramsHash,
             planPhaseId: producer.planPhaseId,
             error: errMsg,
+            schemaDiagnosis: {error: errMsg, sql, memory: sqlFailureMemory},
             executableSql: sql,
             outputLanguage,
           })) }],
@@ -3059,6 +3114,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (explicitInvalidParams.length) return createRuntimeToolResult({ success: false, skillId,
           invalidParams: explicitInvalidParams, error: `Undeclared Skill parameters: ${explicitInvalidParams.join(', ')}`,
           action_required: 'retry_invoke_skill_with_declared_params' });
+        // No package is in effect (none named, focus ambiguous or undetected):
+        // a Skill that must name its process gets the ranked candidates instead
+        // of a guess.
+        if (skillRequiresProcessSelector(skillDef) && !hasProcessIdentitySelector(normalizedParams)) {
+          return createRuntimeToolResult({ success: false, skillId, reason: 'process_selector_required',
+            error: localize(outputLanguage,
+              `Skill ${skillId} 需要指定目标进程（package / process_name / upid），当前没有确定的目标应用。`,
+              `Skill ${skillId} needs a target process (package / process_name / upid); no target app is in effect.`),
+            candidates: focusAppSelectorCandidates(options.focusTarget),
+            action_required: 'retry_invoke_skill_with_process_selector' });
+        }
+        const defaultProcessField = appliedDefaultProcessField(params, normalizedParams, skillDef);
         const prepared = await skillExecutor.prepareInvocation(skillId, traceId, normalizedParams,
           { __traceSide: 'current', __outputLanguage: outputLanguage, signal });
         if (!prepared.allowed) return createRuntimeToolResult({ success: false, skillId,
@@ -3405,6 +3472,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             success: result.success,
             skillId: result.skillId,
             partial: result.partial,
+            ...defaultProcessField,
             scopeLimitations: result.scopeLimitations,
             scopeProvenance: result.scopeProvenance,
             skillName: localizedSkillName,
@@ -3444,6 +3512,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           success: result.success,
           skillId: result.skillId,
           partial: result.partial,
+          ...defaultProcessField,
           scopeLimitations: result.scopeLimitations,
           scopeProvenance: result.scopeProvenance,
           skillName: localizedSkillName,
@@ -3704,11 +3773,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     async (input, extra) => {
       const signal = getRuntimeToolSignal(extra);
       throwIfTraceProcessorQueryCancelled(signal);
-      const {
-        planPhaseId, thread_state_id: threadStateId, utid, upid, pid, process_name: processName,
-        tid, thread_name: threadName, main_thread: mainThread, start_ts: startTs, end_ts: endTs,
-        max_segments: maxSegments, recursion_depth: recursionDepth,
-      } = input;
+      const {max_segments: maxSegments, recursion_depth: recursionDepth} = input;
+      const selectors = normalizeWaitChainSelectors(input);
+      const {utid, upid, pid, processName, tid, threadName, mainThread, startTs, endTs} = selectors;
       const producer = createEvidenceProducerContext(
         'analyze_wait_chain',
         input as Record<string, unknown>,
@@ -3729,13 +3796,59 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       try {
         let identity: ResolvedCriticalPathThread | undefined;
         let resolvedUtid: number | undefined;
+        let threadStateId = selectors.threadStateId;
+        let selectorWarning: CriticalPathWarning | undefined;
+        const requestedWindow = waitChainWindow(selectors);
+        const requestedThread = {
+          utid: utid ?? null, tid: tid ?? null, upid: upid ?? null, pid: pid ?? null,
+          processName: processName ?? null, threadName: threadName ?? null, mainThread: mainThread ?? false,
+        };
+        const namesThread = waitChainNamesThread(selectors);
+        const hasThreadSelector = namesThread
+          || upid !== undefined || pid !== undefined || processName !== undefined;
+
+        // A thread_state row given beside a thread or a window must belong to
+        // them: a filled-in `thread_state_id: "0"` once analyzed a kworker row
+        // while the caller asked about the app's main thread.
+        if (threadStateId !== undefined && (hasThreadSelector || requestedWindow)) {
+          const owner = await loadThreadStateOwner(traceProcessorService, traceId, threadStateId, {signal});
+          throwIfTraceProcessorQueryCancelled(signal);
+          const conflicts = owner
+            ? threadStateSelectorConflicts(owner, selectors, requestedWindow)
+            : [];
+          // With a named thread and a whole window there is a request to keep:
+          // answer it and say the row was set aside, rather than spend a model
+          // round trip on the refusal.
+          if ((conflicts.length > 0 || !owner) && namesThread && requestedWindow) {
+            selectorWarning = {
+              code: 'thread_state_id_ignored_conflict',
+              params: {threadStateId: String(threadStateId), ownerUtid: owner?.utid ?? null, conflicts: conflicts.join(',') || 'not_found'},
+            };
+            threadStateId = undefined;
+          } else if (owner && conflicts.length > 0) {
+            return refusal({
+              error: 'selector_conflict',
+              action_required: 'drop_thread_state_id_or_use_its_thread',
+              conflicts,
+              threadStateOwner: {
+                threadStateId: owner.threadStateId, utid: owner.utid, tid: owner.tid, threadName: owner.threadName,
+                upid: owner.upid, pid: owner.pid, processName: owner.processName,
+                startTs: owner.startTs, endTs: owner.endTs,
+              },
+              requestedThread,
+              ...(requestedWindow ? {requestedWindow} : {}),
+            });
+          }
+          // A row that does not exist, with nothing to fall back on, is left to
+          // the engine, which names it `thread_state_not_found`.
+        }
+
         if (threadStateId === undefined) {
           if (utid !== undefined) {
             resolvedUtid = Number(utid);
           } else {
-            const resolution = await resolveCriticalPathThread(traceProcessorService, traceId, {
-              upid, pid, processName, tid, threadName, mainThread,
-            }, {signal});
+            // utid is absent here, so the selectors name exactly what the resolver reads.
+            const resolution = await resolveCriticalPathThread(traceProcessorService, traceId, selectors, {signal});
             throwIfTraceProcessorQueryCancelled(signal);
             if (resolution.status === 'ambiguous') {
               return refusal({
@@ -3778,8 +3891,33 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           recursionEnabled: true,
           signal,
         };
-        const raw = await analyzeCriticalPath(traceProcessorService, traceId, analyzeOptions);
+        const engineResult = await analyzeCriticalPath(traceProcessorService, traceId, analyzeOptions);
         throwIfTraceProcessorQueryCancelled(signal);
+
+        // A thread with no scheduling data in the window is the wrong thread,
+        // not an idle one: refuse and name threads that do have data.
+        if (!engineResult.available && engineResult.unavailableReason === 'no_thread_state_in_window') {
+          const taskWindow = {
+            startTs: engineResult.task.startTs,
+            endTs: engineResult.task.startTs + engineResult.task.dur,
+          };
+          const found = await findThreadsWithSchedData(traceProcessorService, traceId, {
+            upid: engineResult.task.upid ?? identity?.upid ?? null,
+            ...taskWindow,
+          }, {signal});
+          throwIfTraceProcessorQueryCancelled(signal);
+          return refusal({
+            error: 'no_thread_state_in_window',
+            action_required: 'choose_thread_with_sched_data',
+            requestedThread: {...requestedThread, utid: engineResult.task.utid},
+            window: taskWindow,
+            processHasSchedData: found.processHasSchedData,
+            candidates: found.candidates,
+          });
+        }
+        const raw = selectorWarning
+          ? {...engineResult, warningCodes: [selectorWarning, ...engineResult.warningCodes]}
+          : engineResult;
         const analysis = renderCriticalPathAnalysis(raw, outputLanguage);
 
         // The summary row is captured first and the projection's headline
@@ -7092,6 +7230,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
         } : buildSqlFailureToolPayload({
           error: result.error || localize(outputLanguage, 'SQL 执行失败', 'SQL execution failed'),
+          schemaDiagnosis: {error: result.error ?? '', sql: normalizedSql, memory: sqlFailureMemory},
           trace: traceLabel,
           traceSide: trace,
           traceId: targetTraceId,
@@ -7124,6 +7263,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               paramsHash: producer.paramsHash,
               planPhaseId: producer.planPhaseId,
               error: e.message,
+              schemaDiagnosis: {error: e.message, sql, memory: sqlFailureMemory},
               executableSql: sql,
               outputLanguage,
             })),
@@ -7596,6 +7736,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           visualState: currentPane?.visualState,
           traceName: currentPane?.traceName,
           packageName: packageName || 'unknown',
+          ...sidePackageProvenance(packageName, options.focusTarget, true),
           architecture: options.cachedArchitecture?.type || 'unknown',
           focusApps: options.cachedArchitecture ? undefined : 'detect with detect_architecture',
         },
@@ -7605,12 +7746,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           visualState: referencePane?.visualState,
           traceName: referencePane?.traceName,
           packageName: ctx.referencePackageName || 'unknown',
+          ...sidePackageProvenance(ctx.referencePackageName, ctx.referenceFocusTarget, false),
           architecture: ctx.referenceArchitecture?.type || 'unknown',
         },
         tracePairContext: ctx.tracePairContext,
         packageAlignment: packageName && ctx.referencePackageName
           ? (packageName === ctx.referencePackageName ? 'same' : 'different')
           : 'unknown',
+        // Reference packages are always inferred; an alignment between two
+        // hypotheses is not an identity match.
+        ...(packageName && ctx.referencePackageName ? {packageAlignmentBasis:
+          packageProvenance(packageName, options.focusTarget).source === 'user'
+            ? 'user_vs_inferred' : 'inferred'} : {}),
         commonCapabilities: ctx.commonCapabilities,
         capabilityDiff: ctx.capabilityDiff,
       });
@@ -7937,18 +8084,23 @@ const waitChainIntLike = z.union([
 const WAIT_CHAIN_SEGMENT_COLUMNS = [
   'segment_index', 'start_ts', 'dur_ns', 'duration_ms', 'state', 'blocked_function', 'io_wait',
   'utid', 'process_name', 'thread_name', 'waker_kind', 'waker_thread', 'wake_source_class', 'modules',
+  'path_role',
 ] as const;
 
 /**
  * The one-row summary the tool's headline numbers are read from. `*_ns` cells
- * are the engine's exact integers; `*_ms`, the share and the count are the
+ * are the engine's exact integers; `*_ms`, the shares and the count are the
  * rounded display values and carry no semantics, so citing them never proves
- * or contradicts a claim.
+ * or contradicts a claim. `attributable_*` is the headline (other threads'
+ * work, runnable and uninterruptible time); `blocking_*` is path coverage and
+ * includes the `event_wait_*` leaves.
  */
 const WAIT_CHAIN_SUMMARY_COLUMNS = [
   'utid', 'window_start_ts', 'window_end_ts', 'window_dur_ns',
+  'attributable_ns', 'event_wait_ns',
   'blocking_ns', 'self_ns', 'waiting_ns', 'chain_wait_ns', 'best_case_ns', 'max_saving_ns',
-  'window_ms', 'blocking_ms', 'self_ms', 'waiting_ms', 'chain_wait_ms', 'external_blocking_pct',
+  'window_ms', 'attributable_ms', 'attributable_pct', 'event_wait_ms', 'event_wait_pct',
+  'blocking_ms', 'self_ms', 'waiting_ms', 'chain_wait_ms', 'external_blocking_pct',
   'best_case_ms', 'max_saving_ms', 'chain_segment_count',
 ] as const;
 type WaitChainSummaryColumn = typeof WAIT_CHAIN_SUMMARY_COLUMNS[number];
@@ -7988,6 +8140,8 @@ const WAIT_CHAIN_SUMMARY_FIELDS = nativeProducerFields('wait_summary', WAIT_CHAI
   window_start_ts: NS_START,
   window_end_ts: NS_END,
   window_dur_ns: NS_DURATION,
+  attributable_ns: NS_TOTAL,
+  event_wait_ns: NS_TOTAL,
   blocking_ns: NS_TOTAL,
   self_ns: NS_TOTAL,
   waiting_ns: NS_TOTAL,
@@ -8012,6 +8166,7 @@ const WAIT_CHAIN_SEGMENT_COLUMN_DEFS: ColumnDefinition[] = [
   {name: 'waker_thread', type: 'string'},
   {name: 'wake_source_class', type: 'string'},
   {name: 'modules', type: 'string'},
+  {name: 'path_role', type: 'string'},
 ];
 
 /**
@@ -8032,12 +8187,6 @@ const WAIT_CHAIN_MAX_ANOMALIES = 5;
 const WAIT_CHAIN_MAX_WARNINGS = 8;
 const WAIT_CHAIN_MAX_RECURSION = 6;
 const WAIT_CHAIN_MAX_SEGMENT_ROWS = 400;
-
-/** A sleeping or uninterruptible state, in the engine's own reading. */
-function isWaitState(state: string | null | undefined): boolean {
-  const kind = classifySlice(state);
-  return kind === 'sleeping' || kind === 'uninterruptible';
-}
 
 function flattenWaitChain(segments: readonly CriticalPathSegment[]): CriticalPathSegment[] {
   const flat: CriticalPathSegment[] = [];
@@ -8079,6 +8228,7 @@ function waitChainSegmentRows(segments: readonly CriticalPathSegment[]): unknown
       waker?.wakerThreadName ?? null,
       segment.wakeSourceClass ?? null,
       segment.modules.join(', ') || null,
+      segmentPathRole(segment),
     ];
   });
 }
@@ -8096,6 +8246,8 @@ function waitChainSummaryRow(analysis: CriticalPathAnalysis, flatSegments: numbe
     window_start_ts: analysis.task.startTs,
     window_end_ts: analysis.task.startTs + analysis.task.dur,
     window_dur_ns: analysis.task.dur,
+    attributable_ns: totals?.attributable ?? null,
+    event_wait_ns: totals?.eventWait ?? null,
     blocking_ns: totals?.blocking ?? null,
     self_ns: totals ? Math.max(0, analysis.task.dur - totals.blocking) : null,
     waiting_ns: totals?.waiting ?? null,
@@ -8103,6 +8255,10 @@ function waitChainSummaryRow(analysis: CriticalPathAnalysis, flatSegments: numbe
     best_case_ns: counterfactual?.bestCaseDurationNs ?? null,
     max_saving_ns: counterfactual?.maxSavingNs ?? null,
     window_ms: analysis.totalMs,
+    attributable_ms: analysis.attributableMs ?? null,
+    attributable_pct: analysis.attributablePercentage ?? null,
+    event_wait_ms: analysis.eventWaitMs ?? null,
+    event_wait_pct: analysis.eventWaitPercentage ?? null,
     blocking_ms: analysis.blockingMs,
     self_ms: analysis.selfMs,
     waiting_ms: totals ? nsToMs(totals.waiting) : null,
@@ -8151,7 +8307,7 @@ function waitChainRecursion(chain: readonly CriticalPathSegment[]): {entries: Wa
         omitted += 1;
         continue;
       }
-      const dominant = Object.entries(chainWaitTotals(children).waitClassTotalsMs)
+      const dominant = Object.entries(waitClassTotalsMs(children))
         .sort((a, b) => b[1] - a[1])[0];
       entries.push({
         level,
@@ -8189,7 +8345,8 @@ function projectWaitChainForModel(
     stateBreakdown[kind] = {ms: nsToMs(ns), percent: pct(ns, windowNs)};
   }
 
-  const waits = flat.filter(segment => isWaitState(segment.state));
+  // A sleeping or uninterruptible segment, in the engine's own reading: a chain leaf.
+  const waits = flat.filter(segment => isChainLeafRole(segmentPathRole(segment)));
 
   // Wait totals come from the engine over the whole chain. `wakeupChain`, and
   // so `waits`, holds only the displayed prefix, which still serves `topWaits`.
@@ -8205,6 +8362,11 @@ function projectWaitChainForModel(
         durationMs: segment.durationMs,
         state: segment.state ?? null,
         kind: classifySlice(segment.state),
+        pathRole: segmentPathRole(segment),
+        // Perfetto ends a chain at every S/I/D segment of another thread: its
+        // wake came from an interrupt, the idle task or an io_wait, so there
+        // is no further waker to follow from here.
+        terminal: true,
         blockedFunction: segment.blockedFunction ?? null,
         ioWait: segment.ioWait ?? null,
         processName: segment.processName ?? null,
@@ -8244,16 +8406,38 @@ function projectWaitChainForModel(
       windowMs: summary.window_ms,
     },
     totalMs: summary.window_ms,
+    // The headline: other threads' work, runnable and uninterruptible time,
+    // the part of the window another thread's execution accounts for.
+    attributableMs: summary.attributable_ms,
+    attributablePercentage: summary.attributable_pct,
+    // Other threads' interruptible sleeps that end the chain. Not cost by
+    // themselves: read them with rootWait and the peer_event_wait / idle_wait
+    // anomalies.
+    eventWaitMs: summary.event_wait_ms,
+    eventWaitPercentage: summary.event_wait_pct,
+    ...(analysis.rootWait ? {
+      rootWait: {
+        context: analysis.rootWait.context,
+        state: analysis.rootWait.state,
+        durationMs: analysis.rootWait.durationMs,
+        enclosingSlice: analysis.rootWait.enclosingSlice?.name ?? null,
+      },
+    } : {}),
+    ...(analysis.longestSegment ? {longestAttributable: analysis.longestSegment} : {}),
+    ...(analysis.longestEventWait ? {longestEventWait: analysis.longestEventWait} : {}),
+    // Path coverage: everything the chain covers, event-wait leaves included.
     blockingMs: summary.blocking_ms,
     selfMs: summary.self_ms,
     externalBlockingPercentage: summary.external_blocking_pct,
-    // The target thread's own S/D time, not the chain's: the chain also holds
-    // the waker tasks' waits, which belong to other threads.
+    // The target thread's own S/I/D time, not the chain's: the chain also
+    // holds the waker tasks' waits, which belong to other threads.
     waitingMs: summary.waiting_ms,
     chainWaitMs: summary.chain_wait_ms,
     // The exact values behind the ms figures, as captured in the summary row.
     exactNs: {
       window: summary.window_dur_ns,
+      attributable: summary.attributable_ns,
+      eventWait: summary.event_wait_ns,
       blocking: summary.blocking_ns,
       self: summary.self_ns,
       waiting: summary.waiting_ns,
@@ -8276,12 +8460,13 @@ function projectWaitChainForModel(
     recursion: recursion.entries,
     ...(recursion.omitted > 0 ? {recursionOmitted: recursion.omitted} : {}),
     anomalies: analysis.anomalies.slice(0, WAIT_CHAIN_MAX_ANOMALIES).map(anomaly => ({
+      id: anomaly.id,
       severity: anomaly.severity,
       title: anomaly.title,
       detail: anomaly.detail,
     })),
-    // Best case after removing the longest external segment, and the most that
-    // removal can save; another wait may become the bottleneck first.
+    // Best case after removing the longest attributable segment, and the most
+    // that removal can save; another wait may become the bottleneck first.
     counterfactualBestCaseMs: summary.best_case_ms,
     counterfactualMaxSavingMs: summary.max_saving_ms,
     segmentCount: summary.chain_segment_count,
@@ -8593,8 +8778,19 @@ interface SqlFailureToolPayloadInput {
   processIdentityWarning?: string;
   durationMs?: number;
   outputLanguage?: OutputLanguage;
+  /**
+   * What the schema diagnostic reads: the raw engine error, the SQL as the
+   * model wrote it (injected INCLUDEs arrive as `stdlibInjectedModules`), and
+   * this run's repeat memory. Required, so no failure path can omit it.
+   */
+  schemaDiagnosis: {error: string; sql: string; memory: SqlFailureRepeatMemory};
 }
 
+/**
+ * The failure, its schema facts and the no-evidence diagnostic lead the payload:
+ * the transported copy is cut at a fixed length, and provenance and the query
+ * review behind them are long.
+ */
 function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<string, unknown> {
   const outputLanguage = input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
   const queryReview = input.executableSql
@@ -8620,6 +8816,26 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
     : undefined;
   return {
     success: false,
+    error: input.error,
+    schemaDiagnostic: buildSqlSchemaDiagnostic({
+      error: input.schemaDiagnosis.error,
+      sql: input.schemaDiagnosis.sql,
+      injectedModules: input.stdlibInjectedModules,
+    }, input.schemaDiagnosis.memory),
+    diagnostic: {
+      type: 'sql_execution_failed',
+      citableEvidence: false,
+      message: localize(
+        outputLanguage,
+        'SQL 执行未产出可用表格；这不是可引用的性能证据。',
+        'SQL execution did not produce a usable table; this is not citable performance evidence.',
+      ),
+      retryHint: localize(
+        outputLanguage,
+        '修正 SQL 或改用 fetch_artifact / invoke_skill 后重试。不要把失败诊断作为结论证据。',
+        'Fix the SQL or retry with fetch_artifact / invoke_skill. Do not cite failed diagnostics as conclusion evidence.',
+      ),
+    },
     ...(input.trace ? { trace: input.trace } : {}),
     traceSide: input.traceSide,
     paneSide: input.paneSide ?? input.traceProvenance.paneSide,
@@ -8638,21 +8854,6 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
     ...(input.sqlRewrites && input.sqlRewrites.length > 0 ? { sqlRewrites: input.sqlRewrites } : {}),
     stdlibInjectedModules: input.stdlibInjectedModules || [],
     ...(input.processIdentityWarning ? { processIdentityWarning: input.processIdentityWarning } : {}),
-    error: input.error,
-    diagnostic: {
-      type: 'sql_execution_failed',
-      citableEvidence: false,
-      message: localize(
-        outputLanguage,
-        'SQL 执行未产出可用表格；这不是可引用的性能证据。',
-        'SQL execution did not produce a usable table; this is not citable performance evidence.',
-      ),
-      retryHint: localize(
-        outputLanguage,
-        '修正 SQL 或改用 fetch_artifact / invoke_skill 后重试。不要把失败诊断作为结论证据。',
-        'Fix the SQL or retry with fetch_artifact / invoke_skill. Do not cite failed diagnostics as conclusion evidence.',
-      ),
-    },
   };
 }
 

@@ -786,7 +786,7 @@ only at the edge: `presentationAnalysis` is the requested language. `analysis`
 is the same result rendered in zh-CN and is deprecated: it stays for existing
 clients and will be removed in a later release, so new clients read
 `presentationAnalysis` only. `longestSegment` names the
-longest external segment of the whole chain.
+longest attributable segment of the whole chain.
 `totalsNs` (`blocking`, `chainWait`, `waiting`, integer ns; the window is
 `task.dur` and self time is `task.dur - blocking`) and the
 counterfactual's `longestSegmentDurNs`, `bestCaseDurationNs` and `maxSavingNs`
@@ -801,6 +801,34 @@ on the Claude Agent SDK runtime, credentials are missing, the call times out, or
 the client disconnects. Raw model errors go only to the server log.
 Disabling AI never turns this route into a 403. A client disconnect cancels the
 in-flight model call and any pending trace query; no response is written then.
+
+Chain time is accounted by each segment's `pathRole`: `work` (Running),
+`runnable` (R/R+), `device_wait` (D/DK), `event_wait` (S/I) and `other`.
+Perfetto ends the wake chain at every S/I/D segment of another thread (that
+thread was woken from IRQ context, by the idle task or out of an io_wait, so no
+waker exists), so those segments are chain leaves and are never recursed into;
+recursion expands `work` segments only. The headline is `attributableMs` /
+`attributablePercentage` (other threads running, runnable or in uninterruptible
+wait); `blockingMs` / `externalBlockingPercentage` is path coverage and includes
+`eventWaitMs` / `eventWaitPercentage`, other threads' interruptible sleeps at the
+end of the chain. `totalsNs` adds `work`, `runnable`, `deviceWait`, `eventWait`,
+`other` and `attributable`, with `work + runnable + deviceWait + eventWait + other
+= blocking` and `chainWait = deviceWait + eventWait`. `longestSegment` and the
+counterfactual consider attributable segments only; `longestEventWait` names the
+longest chain-end wait and its wake-source class. `rootWait` places the selected
+thread's own wait (the selected row, or in range mode the longest waiting slice)
+relative to its slices: `in_slice` (with `enclosingSlice`), `between_slices`
+(slices before and after), or `no_slice_data` (no slices on one side, so idle
+time cannot be told apart). The `idle_wait` anomaly appears only for a
+`between_slices` wait with a low attributable share and means idle, not slow;
+`peer_event_wait` appears when chain-end waits cover at least half the window
+and the wait is not between slices, and points at the thread that waited for a
+network, timer or device event. `unavailableReason` also takes
+`no_thread_state_in_window` (the thread has no thread_state row in the range,
+which is not idleness) and `wait_open_at_trace_end` (the selected wait never
+ended before the trace did and there is no chain to follow); an open row
+(`dur = -1`) is read up to the end of the trace with a `wait_open_at_trace_end`
+warning. `threadStateId` 0 is a valid row id.
 
 Failures return `{success: false, code, error}` with a localized `error`:
 

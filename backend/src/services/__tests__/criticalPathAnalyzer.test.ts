@@ -294,16 +294,21 @@ describe('critical path analyzer', () => {
     });
   });
 
-  it('counterfactual best case is task.dur - longest external segment, never below zero', async () => {
+  it('counterfactual best case is task.dur - longest attributable segment, never below zero', async () => {
+    // The 22 ms Running segment is the longest attributable one; the longer
+    // event-wait leaf after it is another thread's sleep and is never the cost.
     const {tp} = sqliteTraceProcessor(
       `${BASE_THREADS}
-      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (106, 1, ${7000 * MS}, ${30 * MS}, 'S');
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (106, 1, ${7000 * MS}, ${60 * MS}, 'S');
       `,
       {rules: [
         {
           match: /FROM _critical_path_stack/i,
           responder: () =>
-            stackResult([{ts: 7000 * MS, dur: 22 * MS, utid: 2, state: 'S', thread: 'svc', process: 'svc_proc'}]),
+            stackResult([
+              {ts: 7000 * MS, dur: 22 * MS, utid: 2, state: 'Running', thread: 'svc', process: 'svc_proc'},
+              {ts: 7022 * MS, dur: 30 * MS, utid: 3, state: 'S', thread: 'RenderThread', process: 'com.demo'},
+            ]),
         },
       ]}
     );
@@ -313,7 +318,8 @@ describe('critical path analyzer', () => {
     const counterfactual = analysis.quantification?.counterfactual;
     expect(counterfactual?.longestSegmentKey).toBe(`2|${7000 * MS}|${7022 * MS}`);
     expect(counterfactual?.longestSegmentDurMs).toBeCloseTo(22, 1);
-    expect(counterfactual?.bestCaseDurationMs).toBeCloseTo(8, 1);
+    expect(counterfactual?.bestCaseDurationMs).toBeCloseTo(38, 1);
+    expect(analysis.longestSegment).toMatchObject({threadName: 'svc', durationMs: 22});
     expect(counterfactual?.maxSavingMs).toBeCloseTo(22, 1);
     expect(counterfactual).not.toHaveProperty('upperBoundMs');
     expect(counterfactual?.noteCode).toBe('best_case_only');
@@ -522,12 +528,12 @@ describe('critical path analyzer module classification', () => {
 });
 
 describe('critical path analyzer truncation and recursion', () => {
-  const chainOf = (count: number, startMs: number, durMs: number): StackSegment[] =>
+  const chainOf = (count: number, startMs: number, durMs: number, state = 'S'): StackSegment[] =>
     Array.from({length: count}, (_, index) => ({
       ts: (startMs + index * durMs) * MS,
       dur: durMs * MS,
       utid: 100 + index,
-      state: 'S',
+      state,
       thread: `worker-${index}`,
       process: 'com.demo',
     }));
@@ -602,7 +608,8 @@ describe('critical path analyzer truncation and recursion', () => {
   });
 
   it('still recurses into a chain of 16+ segments', async () => {
-    const chain = chainOf(18, 40000, 2);
+    // Only work segments are expanded; see the next test for the leaves.
+    const chain = chainOf(18, 40000, 2, 'Running');
     chain[5] = {...chain[5], dur: 8 * MS};
     for (let index = 6; index < chain.length; index += 1) chain[index] = {...chain[index], ts: chain[index].ts + 6 * MS};
     const {tp, sqls} = sqliteTraceProcessor(taskSetup(150, 40000, 60), {rules: [
@@ -622,14 +629,38 @@ describe('critical path analyzer truncation and recursion', () => {
     expect(stackCalls(sqls).map(stackRoot)).toEqual([1, 105]);
     expect(analysis.wakeupChain[5].children).toEqual([expect.objectContaining({utid: 900, threadName: 'upstream'})]);
     expect(analysis.warnings.some((warning) => warning.startsWith('critical path recursion'))).toBe(false);
-    // Wait totals cover the top-level chain only: the child covers the same wall
-    // time as its parent and must not be counted again.
+    // Totals cover the top-level chain only: the child (a 3 ms sleep) covers
+    // the same wall time as its parent and must not be counted again.
     expect(analysis.chainSegmentCount).toBe(18);
-    expect(analysis.chainWaitMs).toBeCloseTo(17 * 2 + 8, 2);
+    expect(analysis.chainWaitMs).toBe(0);
+    expect(analysis.totalsNs?.work).toBe((17 * 2 + 8) * MS);
+    expect(analysis.attributableMs).toBeCloseTo(17 * 2 + 8, 2);
+  });
+
+  it('never recurses into event-wait, device-wait or runnable segments: they end the chain', async () => {
+    const chain: StackSegment[] = [
+      {ts: 41000 * MS, dur: 10 * MS, utid: 101, state: 'S', thread: 'net', process: 'com.demo'},
+      {ts: 41010 * MS, dur: 10 * MS, utid: 102, state: 'D', thread: 'io', process: 'com.demo'},
+      {ts: 41020 * MS, dur: 10 * MS, utid: 103, state: 'R', thread: 'queued', process: 'com.demo'},
+      {ts: 41030 * MS, dur: 10 * MS, utid: 104, state: 'I', thread: 'kworker/1:1', process: 'kworker'},
+      {ts: 41040 * MS, dur: 6 * MS, utid: 105, state: 'Running', thread: 'owner', process: 'com.demo'},
+    ];
+    const {tp, sqls} = sqliteTraceProcessor(taskSetup(152, 41000, 50), {rules: [
+      {
+        match: /FROM _critical_path_stack/i,
+        responder: (sql) => (stackRoot(sql) === 1 ? stackResult(chain) : queryResult(STACK_COLUMNS, [])),
+      },
+    ]});
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 152, recursionDepth: 2});
+
+    expect(stackCalls(sqls).map(stackRoot)).toEqual([1, 105]);
+    expect(analysis.wakeupChain.map((segment) => segment.pathRole))
+      .toEqual(['event_wait', 'device_wait', 'runnable', 'event_wait', 'work']);
   });
 
   it('warns when a recursion stack is cut at its segment cap', async () => {
-    const chain = chainOf(2, 45000, 10);
+    const chain = chainOf(2, 45000, 10, 'Running');
     const {tp} = sqliteTraceProcessor(taskSetup(151, 45000, 30), {rules: [
       {
         match: /FROM _critical_path_stack/i,
@@ -650,7 +681,7 @@ describe('critical path analyzer truncation and recursion', () => {
   });
 
   it('warns when the recursion budget stops an expansion and when a recursion stack query fails', async () => {
-    const chain = chainOf(3, 50000, 10);
+    const chain = chainOf(3, 50000, 10, 'Running');
     const budget = sqliteTraceProcessor(taskSetup(160, 50000, 40), {rules: [
       {
         match: /FROM _critical_path_stack/i,
@@ -663,7 +694,7 @@ describe('critical path analyzer truncation and recursion', () => {
               ts: (50000 + index * 5) * MS,
               dur: 5 * MS,
               utid: root * 10 + index,
-              state: 'S',
+              state: 'Running',
               thread: `up-${root}-${index}`,
               process: 'svc',
             }))
@@ -972,5 +1003,189 @@ describe('wake-source attribution of S-state waits', () => {
     expect(segment?.modules).toEqual(['Binder / IPC', '网络收包等待候选']);
     expect(analysis.moduleBreakdown.find((item) => item.module === 'Binder / IPC')?.durationMs).toBe(30);
     expect(analysis.moduleBreakdown.some((item) => item.module === '网络收包等待候选')).toBe(false);
+  });
+});
+
+// Perfetto ends a wake chain at every S/I/D segment of another thread (its wake
+// came from an IRQ, the idle task or an io_wait), so those segments are the
+// waker's own interrupt-ended sleep: leaves, never cost by themselves.
+describe('attributable accounting of chain leaves', () => {
+  // The task (thread 1) sleeps 3010 ms; the chain is a 3000 ms S leaf of
+  // another thread plus 8 ms of work, runnable and device time.
+  const LEAF_CHAIN: StackSegment[] = [
+    {ts: 90000 * MS, dur: 3000 * MS, utid: 2, state: 'S', thread: 'binder:system', process: 'system_server'},
+    {ts: 93000 * MS, dur: 5 * MS, utid: 3, state: 'Running', thread: 'RenderThread', process: 'com.demo'},
+    {ts: 93005 * MS, dur: 1 * MS, utid: 3, state: 'R', thread: 'RenderThread', process: 'com.demo'},
+    {ts: 93006 * MS, dur: 2 * MS, utid: 5, state: 'D', thread: 'kworker/0', process: 'kworker'},
+  ];
+  const leafSetup = (extra = ''): string => `${BASE_THREADS}
+    INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (170, 1, ${90000 * MS}, ${3010 * MS}, 'S');
+    ${extra}
+  `;
+  const leafRules = (): SqlRule[] => [{
+    match: /FROM _critical_path_stack/i,
+    responder: (sql) => (stackRoot(sql) === 1 ? stackResult(LEAF_CHAIN) : queryResult(STACK_COLUMNS, [])),
+  }];
+
+  it('counts only work, runnable and device time as attributable and names the leaf separately', async () => {
+    const {tp, sqls} = sqliteTraceProcessor(leafSetup(), {rules: leafRules()});
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 170});
+    const totals = analysis.totalsNs!;
+
+    expect(totals).toMatchObject({
+      work: 5 * MS, runnable: 1 * MS, deviceWait: 2 * MS, eventWait: 3000 * MS, other: 0,
+      attributable: 8 * MS, blocking: 3008 * MS, chainWait: 3002 * MS,
+    });
+    // One accounting: the roles add up to the path coverage.
+    expect(totals.work + totals.runnable + totals.deviceWait + totals.eventWait + totals.other).toBe(totals.blocking);
+    expect(totals.deviceWait + totals.eventWait).toBe(totals.chainWait);
+    expect(analysis.blockingMs).toBe(3008);
+    expect(analysis.attributableMs).toBe(8);
+    expect(analysis.eventWaitMs).toBe(3000);
+    expect(analysis.longestEventWait).toMatchObject({utid: 2, threadName: 'binder:system', durationMs: 3000});
+    // The leaf is not the longest cost, nor what the counterfactual removes.
+    expect(analysis.longestSegment).toMatchObject({threadName: 'RenderThread', durationMs: 5});
+    expect(analysis.quantification?.counterfactual?.maxSavingMs).toBe(5);
+    const ids = analysis.anomalies.map((anomaly) => anomaly.id);
+    expect(ids).not.toContain('external_share_high');
+    // The thread has no slices at all: the trace cannot call the wait idle, so
+    // a chain that ends in a peer's sleep is reported as that peer's blocker.
+    expect(analysis.rootWait).toMatchObject({threadStateId: 170, context: 'no_slice_data', enclosingSlice: null});
+    expect(ids).toContain('peer_event_wait');
+    expect(analysis.anomalies.find((anomaly) => anomaly.id === 'peer_event_wait')).toMatchObject({
+      severity: 'warning', params: expect.objectContaining({thread: 'binder:system', leafMs: 3000}),
+    });
+    expect(analysis.recommendationIds).toContain('follow_peer_event_wait');
+    // Only the work segment is expanded; the leaves are never queried again.
+    expect(stackCalls(sqls).map(stackRoot)).toEqual([1, 3]);
+  });
+
+  it('calls a wait between the thread\'s own slices with little attributable time idle, and nothing else', async () => {
+    const {tp} = sqliteTraceProcessor(leafSetup(`
+      INSERT INTO thread_track(id, utid) VALUES (40, 1);
+      INSERT INTO slice(id, ts, dur, depth, name, track_id) VALUES
+        (1, ${89990 * MS}, ${5 * MS}, 0, 'doFrame', 40),
+        (2, ${93020 * MS}, ${5 * MS}, 0, 'dispatchInputEvent', 40);
+    `), {rules: leafRules()});
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 170});
+    const ids = analysis.anomalies.map((anomaly) => anomaly.id);
+
+    expect(analysis.rootWait).toMatchObject({context: 'between_slices', enclosingSlice: null});
+    expect(ids).toContain('idle_wait');
+    // An idle wait is long by nature: no duration finding, no peer blocker.
+    expect(ids).not.toContain('task_too_long');
+    expect(ids).not.toContain('peer_event_wait');
+    expect(analysis.recommendationIds).toContain('choose_active_window');
+    expect(analysis.summary).toContain('更像线程空闲');
+  });
+
+  it('keeps an in-slice wait whose chain ends in a peer\'s sleep a blocker, never idle', async () => {
+    const {tp} = sqliteTraceProcessor(leafSetup(`
+      INSERT INTO thread_track(id, utid) VALUES (40, 1);
+      INSERT INTO slice(id, ts, dur, depth, name, track_id) VALUES
+        (1, ${89990 * MS}, ${3100 * MS}, 0, 'Choreographer#doFrame', 40),
+        (2, ${89995 * MS}, ${3050 * MS}, 1, 'Lock contention on a monitor lock', 40);
+    `), {rules: leafRules()});
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 170});
+    const ids = analysis.anomalies.map((anomaly) => anomaly.id);
+
+    expect(analysis.rootWait).toMatchObject({
+      context: 'in_slice',
+      enclosingSlice: {name: 'Lock contention on a monitor lock', depth: 1},
+    });
+    expect(ids).toContain('peer_event_wait');
+    expect(ids).not.toContain('idle_wait');
+    expect(ids).toContain('task_too_long');
+  });
+
+  it('reads I as a sleep: an event wait, not an unknown state', async () => {
+    const {tp} = sqliteTraceProcessor(`${BASE_THREADS}
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES
+        (180, 1, ${95000 * MS}, ${4 * MS}, 'Running'),
+        (181, 1, ${95004 * MS}, ${6 * MS}, 'I');
+    `, {rules: [{match: /FROM _critical_path_stack/i, responder: () => queryResult(STACK_COLUMNS, [])}]});
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {utid: 1, startTs: 95000 * MS, dur: 10 * MS});
+
+    expect(analysis.slices?.map((slice) => slice.kind)).toEqual(['running', 'sleeping']);
+    // The I slice is the window's waiting time, so the range is analyzed.
+    expect(analysis.unavailableReason).toBe('no_critical_path_stack');
+    expect(analysis.totalsNs?.waiting).toBe(6 * MS);
+  });
+});
+
+describe('selected rows and windows the engine must not misread', () => {
+  it('treats thread_state id 0 as a real row, not as an absent selector', async () => {
+    const {tp, sqls} = sqliteTraceProcessor(`${BASE_THREADS}
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (0, 3, ${96000 * MS}, ${2 * MS}, 'Running');
+    `);
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: '0'});
+
+    expect(analysis.task).toMatchObject({threadStateId: 0, utid: 3});
+    expect(analysis.unavailableReason).toBe('task_state_running');
+    expect(sqls.some((sql) => /WHERE target\.id = 0\b/.test(sql))).toBe(true);
+  });
+
+  it('reads a wait still open at the end of the trace up to that end, and says so', async () => {
+    const stack = stackResult([
+      {ts: 97000 * MS, dur: 40 * MS, utid: 2, state: 'Running', thread: 'binder:system', process: 'system_server'},
+    ]);
+    const {tp} = sqliteTraceProcessor(`${BASE_THREADS}
+      UPDATE trace_bounds SET end_ts = ${97050 * MS};
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (190, 1, ${97000 * MS}, -1, 'S');
+    `, {rules: [{match: /FROM _critical_path_stack/i, responder: () => stack}]});
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 190});
+
+    expect(analysis.available).toBe(true);
+    expect(analysis.task.dur).toBe(50 * MS);
+    expect(analysis.warningCodes).toContainEqual({code: 'wait_open_at_trace_end', params: {ms: 50}});
+  });
+
+  it('names an open wait with no chain wait_open_at_trace_end, not a missing stack', async () => {
+    const {tp} = sqliteTraceProcessor(`${BASE_THREADS}
+      UPDATE trace_bounds SET end_ts = ${98050 * MS};
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES
+        (191, 1, ${98000 * MS}, -1, 'S'),
+        (192, 1, ${98050 * MS}, -1, 'S');
+    `, {rules: [{match: /FROM _critical_path_stack/i, responder: () => queryResult(STACK_COLUMNS, [])}]});
+
+    const open = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 191});
+    expect(open).toMatchObject({available: false, unavailableReason: 'wait_open_at_trace_end'});
+    expect(open.recommendationIds).toEqual(['inspect_unfinished_wait']);
+
+    // A row that opened exactly at the end of the trace has nothing to read,
+    // which is still not a caller error.
+    const atEnd = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 192});
+    expect(atEnd).toMatchObject({available: false, unavailableReason: 'wait_open_at_trace_end'});
+  });
+
+  it('answers a range with no thread_state rows no_thread_state_in_window, never no_waiting_time', async () => {
+    const {tp, sqls} = sqliteTraceProcessor(`${BASE_THREADS}
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (193, 1, ${99000 * MS}, ${5 * MS}, 'S');
+    `);
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {utid: 3, startTs: 99000 * MS, dur: 10 * MS});
+
+    expect(analysis).toMatchObject({available: false, unavailableReason: 'no_thread_state_in_window'});
+    expect(analysis.recommendationIds).toEqual(['choose_thread_with_sched_data']);
+    expect(analysis.anomalies[0].title).toBe('该线程在选区内没有调度数据');
+    expect(stackCalls(sqls)).toHaveLength(0);
+  });
+
+  it('includes a range row still open at the end of the trace', async () => {
+    const {tp} = sqliteTraceProcessor(`${BASE_THREADS}
+      UPDATE trace_bounds SET end_ts = ${99600 * MS};
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (194, 1, ${99500 * MS}, -1, 'S');
+    `, {rules: [{match: /FROM _critical_path_stack/i, responder: () => queryResult(STACK_COLUMNS, [])}]});
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {utid: 1, startTs: 99550 * MS, dur: 20 * MS});
+
+    expect(analysis.slices).toEqual([expect.objectContaining({threadStateId: 194, durationMs: 20})]);
+    expect(analysis.unavailableReason).toBe('wait_open_at_trace_end');
   });
 });
