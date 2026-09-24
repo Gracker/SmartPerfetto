@@ -1029,8 +1029,10 @@ describe('OpenCode native turn intent and delivery', () => {
       });
       expect(pair).toHaveBeenCalledTimes(1);
       expect(gate).toHaveBeenCalledTimes(1);
+      // The user named the current package; the reference package is always inferred.
       expect(gate.mock.calls[0][0].comparisonIdentity).toEqual({
         currentPackageName: 'com.current.app', referencePackageName: 'com.reference.app',
+        currentPackageSource: 'user', referencePackageSource: 'auto_detected',
       });
       expect(harness.traceProcessor.query).toHaveBeenCalled();
     } finally {

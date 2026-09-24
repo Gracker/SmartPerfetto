@@ -130,6 +130,38 @@ describe('quick focus app direct answer', () => {
     );
   });
 
+  it('lists ranked candidates instead of naming a focus app when detection is ambiguous', () => {
+    const evidence = buildFocusAppEvidencePayload({
+      method: 'oom_adj',
+      confidence: 'ambiguous',
+      apps: [
+        {packageName: 'com.example.a', totalDurationNs: 5_000_000_000, switchCount: 1},
+        {packageName: 'com.example.b', totalDurationNs: 4_800_000_000, switchCount: 1},
+      ],
+    }, 'trace-1');
+    expect(evidence.envelope?.data.rows?.map(row => (row as unknown[])[2])).toEqual([false, false]);
+
+    const answer = buildQuickFocusAppDirectAnswer({query: '当前应用是谁？', evidence, outputLanguage: 'zh-CN'});
+
+    expect(answer?.conclusion).toContain('焦点应用无法确定');
+    expect(answer?.conclusion).toContain('com.example.a, com.example.b');
+    expect(answer?.confidence).toBe(0.5);
+    expect(answer?.conclusionContract.claims?.[0]?.references.map(ref => ref.rowIndex)).toEqual([0, 1]);
+  });
+
+  it('describes a CPU-activity inference as such', () => {
+    const evidence = buildFocusAppEvidencePayload({
+      method: 'sched_activity',
+      confidence: 'medium',
+      primaryApp: 'com.tencent.mm',
+      apps: [{packageName: 'com.tencent.mm', totalDurationNs: 2_411_938_838, switchCount: 0}],
+    }, 'trace-1');
+    const answer = buildQuickFocusAppDirectAnswer({query: '当前应用是谁？', evidence, outputLanguage: 'zh-CN'});
+
+    expect(answer?.conclusion).toContain('按 CPU 活动推断');
+    expect(answer?.conclusion).not.toContain('前台时长');
+  });
+
   it('keeps non-identity focus app questions on the model path', () => {
     expect(shouldUseQuickFocusAppDirectAnswer({
       query: '当前应用是谁？',

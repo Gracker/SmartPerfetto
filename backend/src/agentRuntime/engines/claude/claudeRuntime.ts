@@ -80,7 +80,8 @@ import {
   resolveRuntimeConfig,
   type ClaudeAgentConfig,
 } from './claudeConfig';
-import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
+import type { FocusAppDetectionResult } from '../../../agentv3/focusAppDetector';
+import { formatFocusAppTargetProgress, resolveFocusAppTarget } from '../../focusAppTarget';
 import type {SceneType} from '../../../agentv3/sceneClassifier';
 import { buildComplexityClassifierInput } from '../../../agentv3/queryComplexityContext';
 import { buildAgentDefinitions } from './claudeAgentDefinitions';
@@ -143,7 +144,11 @@ import {
   type ProgressAwareRunDeadline,
   type RuntimeTimeoutKind,
 } from '../../runtimeLimits';
-import {buildRuntimeTracePairComparisonContext, buildRuntimeTracePairIdentityContext} from '../../runtimePromptContext';
+import {
+  buildRuntimeTracePairComparisonContext,
+  buildRuntimeTracePairIdentityContext,
+  detectRunFocusApps,
+} from '../../runtimePromptContext';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import { CLAUDE_AGENT_RUNTIME_KIND } from '../../runtimeKinds';
 
@@ -984,18 +989,21 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           },
         },
       };
-      const emptyFocusResult = {apps: [], primaryApp: undefined, method: 'none' as const,
-        timeRange: focusAppTimeRangeFromSelection(options.selectionContext)};
-      let focusResult: Awaited<ReturnType<typeof detectFocusApps>> = emptyFocusResult;
-      if (turnPolicy.preflight !== 'none') {
-        const phase = runtimePerformance.startPhase('focus');
-        try {
-          focusResult = await detectFocusApps(this.traceProcessorService, traceId, {timeRange: emptyFocusResult.timeRange});
-          phase.end(executionLease.signal.aborted ? 'cancelled' : 'ok');
-        } catch (error) {
-          phase.end(runtimeOutcomeFromError(error, executionLease.signal));
-        }
-      }
+      const focusResult = await detectRunFocusApps({
+        traceProcessorService: this.traceProcessorService, traceId, preflight: turnPolicy.preflight,
+        selectionContext: options.selectionContext,
+        measure: async detect => {
+          const phase = runtimePerformance.startPhase('focus');
+          try {
+            const result = await detect();
+            phase.end(executionLease.signal.aborted ? 'cancelled' : 'ok');
+            return result;
+          } catch (error) {
+            phase.end(runtimeOutcomeFromError(error, executionLease.signal));
+            return undefined;
+          }
+        },
+      });
       executionLease.throwIfAborted();
 
       const ctx = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
@@ -2383,7 +2391,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       turnPolicy: RuntimeTurnPolicy;
       strategyRegistry: ReadonlyStrategyRegistrySnapshot;
       runActivity?: {active: boolean};
-      focusResult?: Awaited<ReturnType<typeof detectFocusApps>>;
+      /** The run's focus detection (`detectRunFocusApps`); absent means nothing was detected. */
+      focusResult?: FocusAppDetectionResult;
       sessionContext?: ReturnType<typeof sessionContextManager.getOrCreate>;
       previousTurns?: any[];
       sceneType?: SceneType;
@@ -2475,31 +2484,18 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       console.log(`[ClaudeRuntime] Selection context received: kind=${sc.kind}, ${detail}`);
     }
 
-    // Phase 0.5: Detect focus apps from trace data (reuse precomputed if available)
-    let effectivePackageName = options.packageName;
-    const focusResult = precomputed.focusResult ?? (turnPolicy.preflight !== 'none'
-      ? await detectFocusApps(this.traceProcessorService, traceId, {
-          timeRange: focusAppTimeRangeFromSelection(options.selectionContext),
-        })
-      : {apps: [], primaryApp: undefined, method: 'none' as const});
-
-    if (focusResult.primaryApp) {
-      if (!effectivePackageName) {
-        effectivePackageName = focusResult.primaryApp;
-        console.log(`[ClaudeRuntime] Auto-detected focus app: ${effectivePackageName} (via ${focusResult.method})`);
-      } else {
-        console.log(`[ClaudeRuntime] User-provided packageName: ${effectivePackageName}, also detected: ${focusResult.apps.map(a => a.packageName).join(', ')}`);
-      }
+    // Phase 0.5: the focus detection the caller ran before this preparation.
+    // One effective-package decision (user > confident inference > none),
+    // shared with every other runtime and package consumer.
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult: precomputed.focusResult});
+    const effectivePackageName = focusTarget.packageName;
+    console.log(`[ClaudeRuntime] Focus target: ${effectivePackageName ?? '(none)'} source=${focusTarget.source} ` +
+      `confidence=${focusTarget.confidence ?? '-'} method=${focusTarget.method} candidates=${focusTarget.candidates.length}`);
+    const focusProgress = formatFocusAppTargetProgress(focusTarget, runtimeConfig.outputLanguage);
+    if (focusProgress) {
       this.emitUpdate({
         type: 'progress',
-        content: {
-          phase: 'starting',
-          message: localize(
-            runtimeConfig.outputLanguage,
-            `检测到焦点应用: ${focusResult.primaryApp} (${focusResult.method})`,
-            `Detected focus app: ${focusResult.primaryApp} (${focusResult.method})`,
-          ),
-        },
+        content: {phase: 'starting', message: focusProgress},
         timestamp: Date.now(),
       });
     }
@@ -2762,6 +2758,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       traceProcessorService: this.traceProcessorService,
       skillExecutor,
       packageName: effectivePackageName,
+      focusTarget,
       emitUpdate: (update) => {
         if (precomputed.runActivity?.active !== false && !executionLease?.signal.aborted) this.emitUpdate(update);
       },
@@ -2834,8 +2831,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       preflight: turnPolicy.preflight,
       architecture,
       packageName: effectivePackageName,
-      focusApps: focusResult.apps.length > 0 ? focusResult.apps : undefined,
-      focusMethod: focusResult.method,
+      focusTarget,
       knowledgeBaseContext,
       sceneType,
       availableAgents: agents ? Object.keys(agents) : undefined,

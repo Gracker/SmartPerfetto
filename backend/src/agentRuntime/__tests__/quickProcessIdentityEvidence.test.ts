@@ -157,6 +157,25 @@ describe('buildQuickProcessIdentityEvidence', () => {
     expect(payload.promptContext).toContain('com.example.app');
   });
 
+  it('skips resolver work when focus detection is ambiguous', async () => {
+    const execute = jest.fn<ExecuteSkill>(async () => resolverResult());
+    const payload = await buildQuickProcessIdentityEvidence({
+      skillExecutor: { execute },
+      traceId: 'trace-1',
+      focusResult: {
+        method: 'oom_adj',
+        confidence: 'ambiguous',
+        apps: [
+          {packageName: 'com.example.a', totalDurationNs: 5, switchCount: 1},
+          {packageName: 'com.example.b', totalDurationNs: 4, switchCount: 1},
+        ],
+      },
+    });
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(payload).toEqual({ envelopes: [] });
+  });
+
   it('skips resolver work when no package identity is known', async () => {
     const execute = jest.fn<ExecuteSkill>(async () => resolverResult());
     const payload = await buildQuickProcessIdentityEvidence({

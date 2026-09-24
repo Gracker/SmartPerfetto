@@ -67,7 +67,7 @@ import {
 } from '../../../agentv3/claudeMcpServer';
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
-import { detectFocusApps, focusAppTimeRangeFromSelection } from '../../../agentv3/focusAppDetector';
+import { resolveFocusAppTarget } from '../../focusAppTarget';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
 import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/scene/sceneRuntimeBinding';
@@ -123,8 +123,10 @@ import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtime
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import { canonicalRuntimeKind, createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
+  buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
+  detectRunFocusApps,
 } from '../../runtimePromptContext';
 import { loadPromptTemplate } from '../../../agentv3/strategyLoader';
 import {
@@ -2073,11 +2075,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() ?? [];
     const quickMode = policy.budgetMode === 'quick';
-    const focusResult = policy.preflight !== 'none'
-      ? await detectFocusApps(this.traceProcessorService, traceId, {timeRange: focusAppTimeRangeFromSelection(options.selectionContext)})
-      : {apps: [], method: 'none' as const, primaryApp: undefined};
+    const focusResult = await detectRunFocusApps({
+      traceProcessorService: this.traceProcessorService, traceId, preflight: policy.preflight,
+      selectionContext: options.selectionContext,
+    });
     executionLease.throwIfAborted();
-    const effectivePackageName = options.packageName || focusResult.primaryApp;
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
+    const effectivePackageName = focusTarget.packageName;
     const analysisRunSpec = createAnalysisRunSpec({
       history: analysisHistoryReader.getTurns(),
       query,
@@ -2232,6 +2236,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       traceProcessorService: this.traceProcessorService,
       skillExecutor,
       packageName: effectivePackageName,
+      focusTarget,
       emitUpdate: (update) => this.emit('update', update),
       onSkillResult: (result) => {
         captureSkillDisplayEntities(result.displayResults, entityStore, 'pi-agent-core');
@@ -2298,8 +2303,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       query, turnIntent, strategyRegistry, onDemandContext: policy.onDemandContext,
       architecture,
       packageName: effectivePackageName,
-      focusApps: focusResult.apps.length > 0 ? focusResult.apps : undefined,
-      focusMethod: focusResult.method,
+      focusTarget,
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors
@@ -2351,12 +2355,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       analysisRunSpec,
       sourceUse,
       artifactStore,
-      ...(comparisonContext ? {
-        comparisonIdentity: {
-          currentPackageName: effectivePackageName,
-          referencePackageName: comparisonContext.referencePackageName,
-        },
-      } : {}),
+      ...(comparisonContext ? {comparisonIdentity: buildComparisonIdentity(focusTarget, comparisonContext)} : {}),
     };
   }
 

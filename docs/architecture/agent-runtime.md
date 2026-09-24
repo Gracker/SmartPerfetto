@@ -194,7 +194,14 @@ scene 必须属于本 run 固定的 registry。声明通过 schema 校验不等�
 `RuntimeTurnPolicy.preflight` 分三档，与预算档无关：`existing_only` 为 `none`，什么都不取；
 已解析的 `scene_wide` 读取为 `full`，额外预取记忆类上下文（知识库、模式、案例、SQL 修复对）；
 bounded 问题和 unavailable 分类为 `trace_facts`，仍然检测焦点应用、架构、厂商和 trace 完整性——
-问题再窄，也是针对一份模型没见过的 trace 提出的。计划按需产生，阶段完成标记必须有真实成功证据或明确处置。
+问题再窄，也是针对一份模型没见过的 trace 提出的。
+焦点应用检测在分析窗口内对候选进程统一打分（前台时长、帧、启动、battery top、CPU），没有任何活动的进程
+直接排除，并给出 `high`/`medium`/`ambiguous` 置信度。五个 runtime 共用 `focusAppTarget` 决定生效包名：
+用户指定为 `user`，high/medium 推断为 `auto_detected`，ambiguous 不设包名，只给候选。只有 `user` 包名和选区
+约束分析目标；推断包名只作为 Skill 的默认范围（结果中的 `appliedDefaultProcess` 会注明），不作为对比身份门禁的
+期望值；答案说明理由后可以改看有证据的候选。
+完整性探测在检查 stdlib 视图前先加载其定义模块（能力定义静态声明 `requiredModules`，并由测试守住）；
+模块加载失败或查询未完成的能力带 `reasonCode`，表示“未探测”，不是“缺失”。计划按需产生，阶段完成标记必须有真实成功证据或明确处置。
 未结束的探索计划和假设保留原状态，不自动触发续跑，也不单独决定回答是否完整。
 
 ## 轮次预算与收尾

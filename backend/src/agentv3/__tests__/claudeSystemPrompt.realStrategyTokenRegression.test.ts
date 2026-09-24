@@ -25,6 +25,7 @@ import type {EvidenceAnchorV1} from '../../types/evidenceContract';
 import fs from 'fs';
 import path from 'path';
 import {loadSourceUseDecisionPrompt, loadSourceUseDecisionToolDescription} from '../../services/codebase/sourceUseDecision';
+import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
 
 describe('typed prompt with real strategy assets', () => {
   it.each(['startup', 'scrolling'] as const)('fits real typed %s comparison reports without trimming evidence obligations', sceneType => {
@@ -518,6 +519,26 @@ function makePlan(index: number): AnalysisPlanV3 {
   };
 }
 
+function makeWorstCaseFocusTarget(primary: string) {
+  const signals = (scale: number) => ({batteryTopNs: 12_600_000_000 * scale, launchCount: 1,
+    frameCount: Math.round(739 * scale), foregroundNs: 12_707_187_235 * scale, runningNs: 2_253_386_439 * scale,
+    mainThreadRunningNs: 1_723_137_953 * scale, threadSliceCount: Math.round(54_842 * scale)});
+  return resolveFocusAppTarget({focusResult: {
+    method: 'battery_stats', confidence: 'high', primaryApp: primary,
+    apps: [primary, 'com.example.secondary.app', 'com.example.tertiary.app:remote',
+      'com.vendor.persistent.service', 'com.example.background.sync'].map((packageName, index) => ({
+      packageName: packageName.split(':')[0], processName: packageName, pid: 10_000 + index, upid: 100 + index,
+      totalDurationNs: 12_600_000_000, switchCount: 3, score: 194.58 / (index + 1),
+      signals: signals(1 / (index + 1)), penalties: index >= 2 ? ['system_uid' as const, 'subprocess' as const] : [],
+    })),
+    excludedNoActivity: Array.from({length: 5}, (_, index) => ({
+      packageName: `com.vendor.persistent.idle${index}`, processName: `com.vendor.persistent.idle${index}`,
+      upid: 500 + index, pid: 2_000 + index, reason: 'no_activity' as const, foregroundNs: 19_000_000_000,
+      maxOomScore: -800,
+    })),
+  }});
+}
+
 function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysisContext {
   const registry = buildStrategyRegistrySnapshotFromDefinitions({
     definitions: getRegisteredScenes(), overlayGeneration: 'typed-worst-case-test',
@@ -532,12 +553,10 @@ function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysi
       : '分析这个 Flutter 滑动卡顿的根因，并对比参考 trace，结合源码线索给出建议',
     sceneType,
     architecture: makeArchitecture(),
+    // Worst case for the focus block: an inferred package, five ranked
+    // candidates with every signal, and five no-activity exclusions.
     packageName: 'com.example.smartperfetto.demo',
-    focusApps: [
-      { packageName: 'com.example.smartperfetto.demo', totalDurationNs: 8_500_000_000, switchCount: 180 },
-      { packageName: 'com.android.systemui', totalDurationNs: 1_100_000_000, switchCount: 12 },
-    ],
-    focusMethod: 'frame_timeline',
+    focusTarget: makeWorstCaseFocusTarget('com.example.smartperfetto.demo'),
     traceCompleteness: makeTraceCompleteness(),
     selectionContext: {
       kind: 'area',
@@ -556,6 +575,7 @@ function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysi
     comparison: {
       referenceTraceId: 'trace-reference-token-baseline',
       referencePackageName: 'com.example.smartperfetto.demo',
+      referenceFocusTarget: makeWorstCaseFocusTarget('com.example.smartperfetto.demo'),
       referenceArchitecture: { type: 'STANDARD', confidence: 0.82, evidence: [] },
       commonCapabilities: ['frame_timeline', 'startup', 'cpu_scheduling', 'binder_ipc'],
       capabilityDiff: {

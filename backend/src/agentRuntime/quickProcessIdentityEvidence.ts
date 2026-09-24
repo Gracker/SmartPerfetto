@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { FocusAppDetectionResult } from '../agentv3/focusAppDetector';
+import { resolveFocusAppTarget } from './focusAppTarget';
 import {
   DEFAULT_OUTPUT_LANGUAGE,
   localize,
@@ -202,7 +203,12 @@ function hasDisplayRows(result: SkillExecutionResult): boolean {
 export async function buildQuickProcessIdentityEvidence(
   input: QuickProcessIdentityEvidenceInput,
 ): Promise<QuickProcessIdentityEvidencePayload> {
-  const requestedName = input.packageName || input.focusResult.primaryApp;
+  // Same effective-package rule as every runtime: an ambiguous detection
+  // names no process to resolve.
+  const requestedName = resolveFocusAppTarget({
+    userPackageName: input.packageName,
+    focusResult: input.focusResult,
+  }).packageName;
   if (!requestedName) {
     return { envelopes: [] };
   }

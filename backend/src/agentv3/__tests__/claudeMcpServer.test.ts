@@ -312,6 +312,7 @@ import {
 } from '../../services/selfEvolution/evaluationInjectionContext';
 import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+import {resolveFocusAppTarget, type FocusAppTarget} from '../../agentRuntime/focusAppTarget';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -352,7 +353,9 @@ function createTestServer(options: {
   sessionId?: string;
   tracePairContext?: TracePairContext;
   packageName?: string;
+  focusTarget?: FocusAppTarget;
   referencePackageName?: string;
+  referenceFocusTarget?: FocusAppTarget;
   artifactStore?: any;
   outputLanguage?: OutputLanguage;
   runManifestAttributionSink?: RunManifestAttributionSink;
@@ -418,6 +421,7 @@ function createTestServer(options: {
     watchdogWarning,
     artifactStore,
     packageName: options.packageName,
+    focusTarget: options.focusTarget,
     emitUpdate: (u: any) => emittedUpdates.push(u),
     sceneType: options.sceneType,
     cachedArchitecture: options.cachedArchitecture,
@@ -449,6 +453,7 @@ function createTestServer(options: {
         referenceTraceId: options.referenceTraceId,
         ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
         ...(options.referencePackageName ? { referencePackageName: options.referencePackageName } : {}),
+        ...(options.referenceFocusTarget ? { referenceFocusTarget: options.referenceFocusTarget } : {}),
         commonCapabilities: ['slice'],
       },
     } : {}),
@@ -2287,6 +2292,80 @@ describe('createClaudeMcpServer', () => {
       } finally {
         if (previous) getSkillMock.mockImplementation(previous);
       }
+    });
+
+    // SP-CP-11: an inferred package used to be injected silently, and an
+    // ambiguous detection had no way to say "no target is in effect".
+    describe('default process scoping provenance', () => {
+      const inferred = resolveFocusAppTarget({focusResult: {method: 'oom_adj', confidence: 'medium',
+        primaryApp: 'com.tracedemo.stress', apps: [
+          {packageName: 'com.tracedemo.stress', totalDurationNs: 11_000_000_000, switchCount: 3, score: 19},
+          {packageName: 'com.google.android.as', totalDurationNs: 10_000_000, switchCount: 1, score: 10},
+        ]}});
+      const ambiguous = resolveFocusAppTarget({focusResult: {method: 'oom_adj', confidence: 'ambiguous', apps: [
+        {packageName: 'com.example.a', totalDurationNs: 5, switchCount: 1, score: 25, pid: 10},
+        {packageName: 'com.example.b', totalDurationNs: 4, switchCount: 1, score: 24, pid: 11},
+      ]}});
+
+      it('reports an injected inferred package with its provenance', async () => {
+        const {tools, mockSkillExecutor} = createTestServer({packageName: inferred.packageName, focusTarget: inferred});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis', params: {}});
+
+        expect(result.appliedDefaultProcess).toEqual({packageName: 'com.tracedemo.stress',
+          source: 'auto_detected', confidence: 'medium'});
+        expect(mockSkillExecutor.prepareInvocation.mock.calls[0][2]).toMatchObject({package: 'com.tracedemo.stress'});
+      });
+
+      it('reports a user package as user-scoped', async () => {
+        const target = resolveFocusAppTarget({userPackageName: 'com.user.app'});
+        const {tools} = createTestServer({packageName: target.packageName, focusTarget: target});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis', params: {}});
+        expect(result.appliedDefaultProcess).toEqual({packageName: 'com.user.app', source: 'user'});
+      });
+
+      it('runs an optional-process Skill unscoped and says so when no package is in effect', async () => {
+        const {tools, mockSkillExecutor} = createTestServer({focusTarget: ambiguous});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis', params: {}});
+
+        expect(result.appliedDefaultProcess).toBeNull();
+        expect(mockSkillExecutor.prepareInvocation.mock.calls[0][2]).toEqual({});
+        expect(mockSkillExecutor.execute).toHaveBeenCalled();
+      });
+
+      it('adds no note when the model named the process itself', async () => {
+        const {tools} = createTestServer({packageName: inferred.packageName, focusTarget: inferred});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'cpu_analysis',
+          params: {process_name: 'com.other.app'}});
+        expect(result).not.toHaveProperty('appliedDefaultProcess');
+      });
+
+      it('returns candidates instead of running a required-process Skill without a target', async () => {
+        const {tools, mockSkillExecutor} = createTestServer({focusTarget: ambiguous});
+        const result = await callTool(tools, 'invoke_skill', {skillId: 'blocking_chain_analysis',
+          params: {start_ts: 1, end_ts: 2}});
+
+        expect(result).toMatchObject({success: false, reason: 'process_selector_required',
+          action_required: 'retry_invoke_skill_with_process_selector',
+          candidates: [{packageName: 'com.example.a', pid: 10, score: 25},
+            {packageName: 'com.example.b', pid: 11, score: 24}]});
+        expect(mockSkillExecutor.prepareInvocation).not.toHaveBeenCalled();
+        expect(mockSkillExecutor.execute).not.toHaveBeenCalled();
+      });
+
+      it('marks inferred packages in the comparison context', async () => {
+        const reference = resolveFocusAppTarget({focusResult: {method: 'frame_timeline', confidence: 'high',
+          primaryApp: 'com.tracedemo.stress', apps: [
+            {packageName: 'com.tracedemo.stress', totalDurationNs: 1, switchCount: 100, score: 50}]}});
+        const {tools} = createTestServer({referenceTraceId: 'ref-trace-456', packageName: inferred.packageName,
+          focusTarget: inferred, referencePackageName: reference.packageName, referenceFocusTarget: reference});
+        const result = await callTool(tools, 'get_comparison_context');
+
+        expect(result.current).toMatchObject({packageName: 'com.tracedemo.stress', packageSource: 'auto_detected',
+          packageConfidence: 'medium'});
+        expect(result.reference).toMatchObject({packageName: 'com.tracedemo.stress', packageSource: 'auto_detected',
+          packageConfidence: 'high'});
+        expect(result).toMatchObject({packageAlignment: 'same', packageAlignmentBasis: 'inferred'});
+      });
     });
 
     it('normalizes simple timestamp arithmetic expressions in skill params', async () => {

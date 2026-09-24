@@ -59,6 +59,13 @@ export interface FinalResultComparisonIdentity {
   referenceTraceId?: string;
   currentPackageName?: string;
   referencePackageName?: string;
+  /**
+   * Where each package came from. `auto_detected` is a runtime focus-app
+   * hypothesis, never an expected identity; absent means an authoritative
+   * source (the user, or the comparison evidence pack).
+   */
+  currentPackageSource?: 'user' | 'auto_detected';
+  referencePackageSource?: 'user' | 'auto_detected';
   currentResolution?: IdentityResolutionV1;
   referenceResolution?: IdentityResolutionV1;
 }
@@ -86,11 +93,15 @@ export function completeFinalResultComparisonIdentity(input: {
     return input.conclusion;
   }
 
+  // An inferred package is labelled as such rather than presented as the
+  // comparison's authoritative target.
+  const inferred = (source: FinalResultComparisonIdentity['currentPackageSource']) =>
+    source === 'auto_detected' ? localize(input.outputLanguage, '（运行时推断）', ' (runtime-inferred)') : '';
   const identitySection = [
     `## ${localize(input.outputLanguage, '对比对象', 'Comparison targets')}`,
     '',
-    `- ${localize(input.outputLanguage, '当前侧包名', 'Current package')}: \`${currentPackageName}\``,
-    `- ${localize(input.outputLanguage, '参考侧包名', 'Reference package')}: \`${referencePackageName}\``,
+    `- ${localize(input.outputLanguage, '当前侧包名', 'Current package')}${inferred(input.identity?.currentPackageSource)}: \`${currentPackageName}\``,
+    `- ${localize(input.outputLanguage, '参考侧包名', 'Reference package')}${inferred(input.identity?.referencePackageSource)}: \`${referencePackageName}\``,
   ].join('\n');
   const conclusion = input.conclusion.trim();
   return conclusion ? `${conclusion}\n\n${identitySection}` : identitySection;
@@ -1314,9 +1325,15 @@ function comparisonIdentityStatus(
   identity: FinalResultComparisonIdentity | undefined,
 ): AnalysisAssuranceStatus {
   if (!identity) return 'not_applicable';
+  // A runtime-inferred package is a hypothesis: evidence resolving a different
+  // process is not an identity failure. Only an authoritative package is expected.
+  const expected = (packageName: string | undefined, source: FinalResultComparisonIdentity['currentPackageSource']) =>
+    source === 'auto_detected' ? undefined : packageName;
   const sides = [
-    {role: 'current', traceId: identity.currentTraceId, expected: identity.currentPackageName, resolution: identity.currentResolution},
-    {role: 'reference', traceId: identity.referenceTraceId, expected: identity.referencePackageName, resolution: identity.referenceResolution},
+    {role: 'current', traceId: identity.currentTraceId,
+      expected: expected(identity.currentPackageName, identity.currentPackageSource), resolution: identity.currentResolution},
+    {role: 'reference', traceId: identity.referenceTraceId,
+      expected: expected(identity.referencePackageName, identity.referencePackageSource), resolution: identity.referenceResolution},
   ] as const;
   if (sides.some(side => side.resolution && side.resolution.status !== 'verified')) return 'failed';
   if (sides.some(side => !side.resolution || !side.traceId?.trim())) return 'not_checked';

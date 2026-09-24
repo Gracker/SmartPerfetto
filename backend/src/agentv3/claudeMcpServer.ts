@@ -110,7 +110,8 @@ import {
   type TraceProcessorQueryProvenance,
   type TraceProcessorTraceSide,
 } from '../services/traceProcessorConnectionModel';
-import {getConsumableProcessIdentitySelectors, sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
+import {getConsumableProcessIdentitySelectors, getEffectiveIdentityConfig, sqlUsesProcessNameFilter} from '../services/processIdentity/identityGate';
+import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from '../agentRuntime/focusAppTarget';
 import {hasProcessIdentitySelector, PROCESS_IDENTITY_SELECTORS} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
 import {getExactProcessScopeSupport} from '../services/skillEngine/processScopeSql';
@@ -1238,7 +1239,10 @@ export interface ClaudeMcpServerOptions {
   traceId: string;
   traceProcessorService: TraceProcessorService;
   skillExecutor: SkillExecutor;
+  /** Effective package for default Skill scoping; must equal `focusTarget.packageName` when both are set. */
   packageName?: string;
+  /** Provenance of `packageName` and the ranked focus-app candidates (resolveFocusAppTarget). */
+  focusTarget?: FocusAppTarget;
   /** Callback to emit StreamingUpdate events (e.g. DataEnvelopes from skill results) */
   emitUpdate?: (update: StreamingUpdate) => void;
   toolObserver?: RuntimeToolObserver;
@@ -1330,6 +1334,15 @@ export interface ClaudeMcpServerOptions {
   analysisResultSnapshotRepository?: TraceSimilaritySnapshotRepository;
   /** Explicit per-run attribution boundary for detached/shared tool callbacks. */
   runManifestAttributionSink?: RunManifestAttributionSink;
+}
+
+function sidePackageProvenance(
+  packageName: string | undefined,
+  target: FocusAppTarget | undefined,
+  userMayName: boolean,
+): {packageSource?: string; packageConfidence?: string} {
+  const {source, confidence} = packageProvenance(packageName, target, {userMayName});
+  return {...(source ? {packageSource: source} : {}), ...(confidence ? {packageConfidence: confidence} : {})};
 }
 
 export interface SourceUseDecisionAccessor {
@@ -2137,6 +2150,35 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       : skillExecutor.execute(skillId, selectedTraceId, params, inherited);
   }
 
+  function skillAcceptsProcessIdentity(skill?: SkillDefinition): boolean {
+    return !skill || [...getConsumableProcessIdentitySelectors(skill)]
+      .some(key => key === 'process_name' || key === 'package');
+  }
+
+  /** A Skill that cannot run without naming its process. */
+  function skillRequiresProcessSelector(skill: SkillDefinition): boolean {
+    return getEffectiveIdentityConfig(skill).policy === 'required' ||
+      (skill.inputs ?? []).some(input => input.required === true &&
+        (input.name === 'package' || input.name === 'process_name'));
+  }
+
+  /**
+   * How the process scope of a Skill call was chosen, reported with its result
+   * so an unscoped or default-scoped run is never read as user-targeted:
+   * the injected effective package with its provenance, or null when the Skill
+   * accepts a process but runs unscoped. A model-supplied selector needs no note.
+   */
+  function appliedDefaultProcessField(
+    params: Record<string, any> | undefined,
+    normalized: Record<string, any>,
+    skill?: SkillDefinition,
+  ): {appliedDefaultProcess?: {packageName: string; source: string; confidence?: string} | null} {
+    if (!skillAcceptsProcessIdentity(skill) || hasProcessIdentitySelector(params)) return {};
+    if (!hasProcessIdentitySelector(normalized) || !packageName) return {appliedDefaultProcess: null};
+    const {source = 'user', confidence} = packageProvenance(packageName, options.focusTarget);
+    return {appliedDefaultProcess: {packageName, source, ...(confidence ? {confidence} : {})}};
+  }
+
   /** Normalize skill params while respecting the target Skill's declared inputs. */
   function normalizeSkillParams(
     params: Record<string, any> | undefined,
@@ -2150,8 +2192,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
     }
     const declaredNames = new Set((skill?.inputs ?? []).map(input => input.name));
-    const acceptsProcessIdentity = !skill || [...getConsumableProcessIdentitySelectors(skill)]
-      .some(key => key === 'process_name' || key === 'package');
+    const acceptsProcessIdentity = skillAcceptsProcessIdentity(skill);
     if (acceptsProcessIdentity && defaultPackage && !hasProcessIdentitySelector(p)) {
       p[declaredNames.has('process_name') && !declaredNames.has('package') ? 'process_name' : 'package'] = defaultPackage;
     }
@@ -3073,6 +3114,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (explicitInvalidParams.length) return createRuntimeToolResult({ success: false, skillId,
           invalidParams: explicitInvalidParams, error: `Undeclared Skill parameters: ${explicitInvalidParams.join(', ')}`,
           action_required: 'retry_invoke_skill_with_declared_params' });
+        // No package is in effect (none named, focus ambiguous or undetected):
+        // a Skill that must name its process gets the ranked candidates instead
+        // of a guess.
+        if (skillRequiresProcessSelector(skillDef) && !hasProcessIdentitySelector(normalizedParams)) {
+          return createRuntimeToolResult({ success: false, skillId, reason: 'process_selector_required',
+            error: localize(outputLanguage,
+              `Skill ${skillId} 需要指定目标进程（package / process_name / upid），当前没有确定的目标应用。`,
+              `Skill ${skillId} needs a target process (package / process_name / upid); no target app is in effect.`),
+            candidates: focusAppSelectorCandidates(options.focusTarget),
+            action_required: 'retry_invoke_skill_with_process_selector' });
+        }
+        const defaultProcessField = appliedDefaultProcessField(params, normalizedParams, skillDef);
         const prepared = await skillExecutor.prepareInvocation(skillId, traceId, normalizedParams,
           { __traceSide: 'current', __outputLanguage: outputLanguage, signal });
         if (!prepared.allowed) return createRuntimeToolResult({ success: false, skillId,
@@ -3419,6 +3472,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             success: result.success,
             skillId: result.skillId,
             partial: result.partial,
+            ...defaultProcessField,
             scopeLimitations: result.scopeLimitations,
             scopeProvenance: result.scopeProvenance,
             skillName: localizedSkillName,
@@ -3458,6 +3512,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           success: result.success,
           skillId: result.skillId,
           partial: result.partial,
+          ...defaultProcessField,
           scopeLimitations: result.scopeLimitations,
           scopeProvenance: result.scopeProvenance,
           skillName: localizedSkillName,
@@ -7681,6 +7736,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           visualState: currentPane?.visualState,
           traceName: currentPane?.traceName,
           packageName: packageName || 'unknown',
+          ...sidePackageProvenance(packageName, options.focusTarget, true),
           architecture: options.cachedArchitecture?.type || 'unknown',
           focusApps: options.cachedArchitecture ? undefined : 'detect with detect_architecture',
         },
@@ -7690,12 +7746,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           visualState: referencePane?.visualState,
           traceName: referencePane?.traceName,
           packageName: ctx.referencePackageName || 'unknown',
+          ...sidePackageProvenance(ctx.referencePackageName, ctx.referenceFocusTarget, false),
           architecture: ctx.referenceArchitecture?.type || 'unknown',
         },
         tracePairContext: ctx.tracePairContext,
         packageAlignment: packageName && ctx.referencePackageName
           ? (packageName === ctx.referencePackageName ? 'same' : 'different')
           : 'unknown',
+        // Reference packages are always inferred; an alignment between two
+        // hypotheses is not an identity match.
+        ...(packageName && ctx.referencePackageName ? {packageAlignmentBasis:
+          packageProvenance(packageName, options.focusTarget).source === 'user'
+            ? 'user_vs_inferred' : 'inferred'} : {}),
         commonCapabilities: ctx.commonCapabilities,
         capabilityDiff: ctx.capabilityDiff,
       });

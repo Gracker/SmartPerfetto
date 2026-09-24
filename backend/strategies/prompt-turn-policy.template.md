@@ -50,7 +50,9 @@ window: resolve it from allowed evidence and do not substitute another event,
 process or whole-scene result. An explicit request about another target or the
 whole trace takes precedence; a conversational acknowledgement needs no selection
 proof. `scene_wide` may expand as asked, but outside evidence is context, not a
-replacement. Selection fields are lookup/range inputs, not observed facts. Under `existing_only`,
+replacement. These substitution limits protect user selections and user-named
+targets; a runtime-inferred focus app (`packageSource: auto_detected`) is not
+one. Selection fields are lookup/range inputs, not observed facts. Under `existing_only`,
 use retained evidence or keep identity unknown; do not query. Names/package hints
 never establish an exact process instance. Preserve trace IDs, roles, fingerprints,
 and alignment when comparing traces. `not_checked`, `unavailable`, and an absent capability

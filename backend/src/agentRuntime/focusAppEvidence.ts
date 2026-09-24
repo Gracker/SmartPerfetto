@@ -37,6 +37,24 @@ const FOCUS_APP_SCOPE_COLUMNS = [
   'scope_end_ns',
 ];
 
+/** Present when the detector ranked candidates (results that carry a confidence). */
+const FOCUS_APP_CONFIDENCE_COLUMNS = [
+  'detection_confidence',
+  'duration_source',
+];
+
+function countSourceFor(method: FocusAppDetectionResult['method']): string {
+  if (method === 'frame_timeline') return 'frame_count';
+  if (method === 'sched_activity') return 'none';
+  return 'foreground_switch_count';
+}
+
+function durationSourceFor(method: FocusAppDetectionResult['method']): string {
+  if (method === 'battery_stats') return 'battery_top';
+  if (method === 'sched_activity') return 'cpu_running';
+  return 'oom_foreground';
+}
+
 function stableFocusAppHash(
   traceId: string,
   focusResult: FocusAppDetectionResult,
@@ -47,6 +65,7 @@ function stableFocusAppHash(
       traceId,
       traceSide,
       method: focusResult.method,
+      confidence: focusResult.confidence,
       timeRange: focusResult.timeRange,
       apps: focusResult.apps.map(app => ({
         packageName: app.packageName,
@@ -71,11 +90,14 @@ export function buildFocusAppEvidencePayload(
   const queryHash = stableFocusAppHash(traceId, focusResult, traceSide);
   const evidenceRefId = `data:focus_app:${traceSide}:${queryHash}`;
   const sourceToolCallId = `runtime-focus-app:${queryHash}`;
-  const countSource = focusResult.method === 'frame_timeline' ? 'frame_count' : 'foreground_switch_count';
+  const countSource = countSourceFor(focusResult.method);
   const scoped = !!focusResult.timeRange;
-  const columns = scoped
-    ? [...FOCUS_APP_COLUMNS, ...FOCUS_APP_SCOPE_COLUMNS]
-    : FOCUS_APP_COLUMNS;
+  const ranked = focusResult.confidence !== undefined;
+  const columns = [
+    ...FOCUS_APP_COLUMNS,
+    ...(scoped ? FOCUS_APP_SCOPE_COLUMNS : []),
+    ...(ranked ? FOCUS_APP_CONFIDENCE_COLUMNS : []),
+  ];
   const focusAppsWithEvidence: DetectedFocusApp[] = focusResult.apps.map((app, index) => ({
     ...app,
     evidenceRefId,
@@ -89,7 +111,8 @@ export function buildFocusAppEvidencePayload(
         const row: Array<string | number | boolean | undefined> = [
           index + 1,
           app.packageName,
-          index === 0,
+          // An ambiguous ranking has no primary app, only candidates.
+          index === 0 && (!ranked || focusResult.primaryApp === app.packageName),
           app.totalDurationNs,
           app.switchCount,
           countSource,
@@ -98,6 +121,7 @@ export function buildFocusAppEvidencePayload(
         if (scoped) {
           row.push(focusResult.timeRange?.startNs, focusResult.timeRange?.endNs);
         }
+        if (ranked) row.push(focusResult.confidence, durationSourceFor(focusResult.method));
         return row;
       }),
     },
@@ -117,6 +141,8 @@ export function buildFocusAppEvidencePayload(
         { name: 'detection_method', type: 'string' },
         { name: 'scope_start_ns', type: 'timestamp', unit: 'ns' },
         { name: 'scope_end_ns', type: 'timestamp', unit: 'ns' },
+        { name: 'detection_confidence', type: 'string' },
+        { name: 'duration_source', type: 'string' },
       ]),
       evidenceRefId,
       traceSide,

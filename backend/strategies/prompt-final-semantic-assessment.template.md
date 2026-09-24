@@ -38,7 +38,9 @@ unknown` must remain side-unknown: do not call it current, reference or foreign.
 For a bounded question that implicitly refers to the selected object or window,
 check whether the answer keeps that event/range as its primary target. Mark
 claims about a substituted event, process or window with `scope_mismatch` where
-the body exposes the mismatch. An explicit query about another target or the
+the body exposes the mismatch. A runtime-inferred focus app is not a selection or
+user target: an answer that discloses switching away from it is not a mismatch.
+An explicit query about another target or the
 whole trace takes precedence over a still-highlighted selection, and a pure
 acknowledgement needs no selected-event claim. Scene-wide work may expand beyond
 the selection without replacing the selected subject when the question retains

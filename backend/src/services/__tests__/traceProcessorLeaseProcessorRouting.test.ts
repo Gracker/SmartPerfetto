@@ -650,27 +650,33 @@ describe('TraceProcessorService lease restart supervisor', () => {
     db = null;
   });
 
-  it('blocks real focus-detector signal-less fallback SQL after its running holder is released', async () => {
+  it('blocks real focus-detector signal-less enrichment SQL after its running holder is released', async () => {
     const fixture = await activeFixture();
     const {tmpDir, service, store, lease, context, traceId} = fixture;
     try {
       const processor = fakeProcessor('cancelled-detector', traceId);
-      const firstQuery = deferred<QueryResult>();
-      const started = deferred<void>();
-      processor.query = jest.fn(async () => {started.resolve(); return firstQuery.promise;});
+      // The activity query completes; the first enrichment query is in flight
+      // when the holder is released.
+      const enrichment = deferred<QueryResult>();
+      const enrichmentStarted = deferred<void>();
+      processor.query = jest.fn<(sql: string) => Promise<QueryResult>>()
+        .mockResolvedValueOnce({columns: [], rows: []} as unknown as QueryResult)
+        .mockImplementationOnce(async () => {enrichmentStarted.resolve(); return enrichment.promise;});
       const create = jest.spyOn(TraceProcessorFactory, 'create').mockResolvedValue(processor as any);
       await service.ensureProcessorForLease(traceId, lease.id, lease.mode, scope);
       const query = jest.spyOn(service, 'query');
       const detection = service.runWithLease(context, () => detectFocusApps(service, traceId));
-      await started.promise;
+      await enrichmentStarted.promise;
       store.releaseHolder(scope, lease.id, 'agent_run', 'run-a');
       store.beginDraining(scope, lease.id);
       service.cleanupLeaseProcessor(traceId, lease.id, lease.mode);
-      firstQuery.reject(new Error('native query interrupted during cancellation'));
+      enrichment.reject(new Error('native query interrupted during cancellation'));
       await expect(detection).resolves.toMatchObject({method: 'none', apps: []});
-      expect(query).toHaveBeenCalledTimes(3); // Actual detector catches and attempts its two fallbacks.
+      // Activity, battery and startup queries were attempted; the startup query
+      // came after the release and never reached the processor.
+      expect(query).toHaveBeenCalledTimes(3);
       expect(query.mock.calls.every(call => call[2] === undefined)).toBe(true);
-      expect(processor.query).toHaveBeenCalledTimes(1);
+      expect(processor.query).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledTimes(1);
       expect((service as any).processors.has(`${traceId}:lease:${lease.id}`)).toBe(false);
       expect(TraceProcessorFactory.get(`${traceId}:lease:${lease.id}`)).toBeUndefined();

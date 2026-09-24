@@ -3141,6 +3141,39 @@ describe('final result quality gate', () => {
     })).toBeUndefined();
   });
 
+  // SP-CP-11: a runtime-inferred package is a hypothesis. Evidence resolving
+  // another process must not fail the identity gate, and an appended identity
+  // section must not present it as the authoritative target.
+  it('never enforces or presents an auto-detected package as an expected comparison identity', () => {
+    const resolution = (side: 'current' | 'reference', name: string) => ({
+      version: 'identity_contract@1' as const, identityRefId: `identity-${side}`, status: 'verified' as const,
+      target: {traceId: `trace-${side}`, traceSide: side, packageName: name, source: 'user_param' as const},
+      processes: [{upid: 1, packageName: name, matchSources: ['process' as const], confidence: 1}],
+      threads: [], warnings: [],
+    });
+    const identity = {currentTraceId: 'trace-current', referenceTraceId: 'trace-reference',
+      currentPackageName: 'com.inferred.current', referencePackageName: 'com.inferred.reference',
+      currentResolution: resolution('current', 'com.actual.current'),
+      referenceResolution: resolution('reference', 'com.actual.reference')};
+    const assess = (sources: {currentPackageSource?: 'user' | 'auto_detected'; referencePackageSource?: 'user' | 'auto_detected'}) =>
+      assessFinalResultQualityAssessment({result: result({conclusion: 'Left is slower.'}),
+        comparisonIdentity: {...identity, ...sources}}).assurance.identity;
+
+    expect(assess({currentPackageSource: 'auto_detected', referencePackageSource: 'auto_detected'})).toBe('passed');
+    expect(assess({currentPackageSource: 'user', referencePackageSource: 'auto_detected'})).toBe('failed');
+    // No provenance means an authoritative package (user or evidence pack).
+    expect(assess({})).toBe('failed');
+
+    const conclusion = completeFinalResultComparisonIdentity({
+      conclusion: '左侧明显慢于右侧。',
+      identity: {currentPackageName: 'com.user.app', referencePackageName: 'com.inferred.reference',
+        currentPackageSource: 'user', referencePackageSource: 'auto_detected'},
+      outputLanguage: 'zh-CN',
+    });
+    expect(conclusion).toContain('- 当前侧包名: `com.user.app`');
+    expect(conclusion).toContain('- 参考侧包名（运行时推断）: `com.inferred.reference`');
+  });
+
   it('leaves a complete dual-trace conclusion unchanged', () => {
     const conclusion = '# Report\n\ncom.example.heavy vs com.example.demo';
 
