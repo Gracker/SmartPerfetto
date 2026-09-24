@@ -546,19 +546,31 @@ describe('final semantic response protocol', () => {
     for (const assessment of assessments.slice(1)) expect(assessment).toEqual(assessments[0]);
   });
 
-  it.each(['missing_claim', 'extra_claim', 'duplicate_claim', 'extra_root', 'wrong_quote', 'bad_span', 'partial_full_span', 'extra_span_field'] as const)(
-    'rejects the entire malformed response: %s', async issue => {
-      const run = fixture();
-      if (issue === 'missing_claim') run.reply.claims = [];
-      if (issue === 'extra_claim') run.reply.claims[0].claimId = 'unbound';
-      if (issue === 'duplicate_claim') run.reply.claims.push(structuredClone(run.reply.claims[0]));
-      if (issue === 'extra_root') Object.assign(run.reply, {verified: true});
-      if (issue === 'wrong_quote') run.reply.claims[0].contentLocations[0].text = 'different statement';
-      if (issue === 'bad_span') run.reply.claims[0].contentLocations.push({start: 0, end: 999, text: 'outside'});
-      if (issue === 'partial_full_span') run.reply.bodyCoverage.reviewedSpans[0].end -= 1;
-      if (issue === 'extra_span_field') Object.assign(run.reply.claims[0].contentLocations[0], {evidenceStatus: 'verified'});
-      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response', consistency: 'unknown'});
-    });
+  it.each(['extra_root', 'partial_full_span'] as const)('rejects the entire malformed response framing: %s', async issue => {
+    const run = fixture();
+    if (issue === 'extra_root') Object.assign(run.reply, {verified: true});
+    if (issue === 'partial_full_span') run.reply.bodyCoverage.reviewedSpans[0].end -= 1;
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response', consistency: 'unknown'});
+  });
+
+  it.each([
+    ['missing_claim', 'claim_set'], ['extra_claim', 'claim'], ['duplicate_claim', 'claim'], ['wrong_quote', 'claim'],
+    ['bad_span', 'claim'], ['extra_span_field', 'claim'],
+  ] as const)('degrades only the affected claim for a malformed item: %s', async (issue, stage) => {
+    const run = fixture();
+    if (issue === 'missing_claim') run.reply.claims = [];
+    if (issue === 'extra_claim') run.reply.claims[0].claimId = 'unbound';
+    if (issue === 'duplicate_claim') run.reply.claims.push(structuredClone(run.reply.claims[0]));
+    if (issue === 'wrong_quote') run.reply.claims[0].contentLocations[0].text = 'different statement';
+    if (issue === 'bad_span') run.reply.claims[0].contentLocations.push({start: 0, end: 999, text: 'outside'});
+    if (issue === 'extra_span_field') Object.assign(run.reply.claims[0].contentLocations[0], {evidenceStatus: 'verified'});
+    const assessment = await assessFinalSemantics(run.input);
+    // Never promoted: the only declared claim is unknown, so nothing can verify.
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response', consistency: 'unknown',
+      coverage: {body: 'complete', claims: 'incomplete'}, claims: [{claimId: 'claim-a', consistency: 'unknown'}],
+      responseDiagnostic: {stage}});
+    expect(assessment.notCheckedDetail).toMatch(/^resp_claim/);
+  });
 
   it.each(['explanation_first', 'tail', 'opening_only', 'double_fence', 'closing_without_newline', 'four_backticks',
     'closing_then_text', 'multiple_json', 'body_internal_fence'] as const)('rejects non-whole JSON framing %s', async framing => {
@@ -586,12 +598,61 @@ describe('final semantic response protocol', () => {
     expect(await assessFinalSemantics(invalidSchema.input)).toMatchObject({reason: 'invalid_response',
       responseDiagnostic: {stage: 'envelope', code: 'invalid_shape'}});
 
+    // An omitted declared claim stays unknown; the judged claim is retained.
     const missingA2Claim = fixture();
     missingA2Claim.contract.claims!.push({...structuredClone(missingA2Claim.contract.claims![0]), id: 'rec.no_rt'});
     missingA2Claim.dispatch.mockImplementation(async () => ({status: 'ok',
       text: `${JSON.stringify(missingA2Claim.reply)}\r\n\`\`\``}));
-    expect(await assessFinalSemantics(missingA2Claim.input)).toMatchObject({reason: 'invalid_response',
+    expect(await assessFinalSemantics(missingA2Claim.input)).toMatchObject({status: 'coverage_incomplete',
+      reason: 'invalid_response', notCheckedDetail: 'resp_claim_set_set_mismatch',
+      claims: [{claimId: 'claim-a', consistency: 'consistent'}, {claimId: 'rec.no_rt', consistency: 'unknown'}],
       responseDiagnostic: {stage: 'claim_set', code: 'set_mismatch', expectedCount: 2, actualCount: 1}});
+  });
+
+  it('keeps a contradiction whose location cannot be resolved and degrades only the unlocatable consistent claim', async () => {
+    const run = fixture({body: 'Frame A took 9 ms. Frame B took 4 ms.'});
+    const second = {...structuredClone(run.contract.claims![0]), id: 'claim-b', text: 'Frame B took 4 ms.'};
+    const third = {...structuredClone(run.contract.claims![0]), id: 'claim-c', text: 'Frame A took 9 ms.'};
+    run.contract.claims!.push(second, third);
+    const body = run.input.snapshot.body;
+    run.reply.schemaVersion = 'final_semantic_response@2';
+    run.reply.claims = [
+      {claimId: 'claim-a', consistency: 'inconsistent', contentLocations: [{text: 'not in the body'}],
+        issues: [{code: 'numeric_mismatch', contentLocations: [{text: 'also not in the body'}]}]},
+      {claimId: 'claim-b', consistency: 'consistent', contentLocations: [{text: 'Frame B took 4 ms.'}], issues: []},
+      {claimId: 'claim-c', consistency: 'consistent', contentLocations: [{spanId: 'L9.0000000000'}], issues: []},
+      {claimId: 'invented', consistency: 'consistent', contentLocations: [{text: 'Frame B took 4 ms.'}], issues: []},
+    ] as any;
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', consistency: 'inconsistent', reason: 'invalid_response',
+      claims: [
+        {claimId: 'claim-a', consistency: 'inconsistent', contentLocations: [], issues: [{code: 'numeric_mismatch', contentLocations: []}]},
+        {claimId: 'claim-b', consistency: 'consistent', contentLocations: [{start: body.indexOf('Frame B'), end: body.length}]},
+        {claimId: 'claim-c', consistency: 'unknown'},
+      ],
+      responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1}});
+    expect(assessment.notCheckedDetail).toBe('resp_claim_invalid_location,resp_claim_invalid_reference');
+    expect(JSON.stringify(assessment)).not.toContain('invented');
+  });
+
+  it('records a dropped invented claim without reducing an otherwise complete review', async () => {
+    const run = fixture();
+    run.reply.claims.push({claimId: 'invented', consistency: 'consistent', contentLocations: [span(run.input.snapshot.body)], issues: []});
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'checked', consistency: 'consistent',
+      responseDiagnostic: {stage: 'claim', code: 'invalid_reference', ordinal: 2}});
+    expect(assessment).not.toHaveProperty('reason');
+  });
+
+  it.each(['bad_location', 'bad_shape'] as const)('never passes with an unlocatable omission: %s', async kind => {
+    const run = fixture();
+    run.reply.omissions = kind === 'bad_location'
+      ? [{code: 'undeclared_claim', contentLocations: [{start: 0, end: 999, text: 'outside'}]}]
+      : [{code: 'undeclared_claim'}];
+    const assessment = await assessFinalSemantics(run.input);
+    expect(assessment).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response', consistency: 'unknown',
+      coverage: {body: 'incomplete'}, omissions: [], claims: [{claimId: 'claim-a', consistency: 'consistent'}],
+      responseDiagnostic: {stage: 'omission', ordinal: 1}});
   });
 
   it('preserves an explicitly incomplete review instead of inferring success from full-looking spans', async () => {
@@ -761,7 +822,8 @@ describe('final semantic v2 exact quotation locations', () => {
     'rejects ambiguous or invalid repeated-text occurrence %s', async occurrence => {
       const run = quoteFixture({body: 'banana'});
       run.reply.claims[0].contentLocations = [{text: 'ana', ...(occurrence === undefined ? {} : {occurrence})}];
-      expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_response', claims: []});
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}]});
     });
 
   it.each([
@@ -791,7 +853,7 @@ describe('final semantic v2 exact quotation locations', () => {
   });
 
   it.each(['start', 'end', 'both', 'extra', 'duplicate', 'mixed', 'one_bad'] as const)(
-    'rejects the entire v2 response for %s location fields', async invalid => {
+    'never accepts a claim judged at invalid %s location fields', async invalid => {
       const run = quoteFixture();
       const quote = {text: run.input.snapshot.body};
       if (invalid === 'start') run.reply.claims[0].contentLocations = [{...quote, start: 0}];
@@ -801,7 +863,8 @@ describe('final semantic v2 exact quotation locations', () => {
       if (invalid === 'duplicate') run.reply.claims[0].contentLocations = [quote, {...quote, occurrence: 1}];
       if (invalid === 'mixed') run.reply.claims[0].contentLocations = [quote, span(quote.text)];
       if (invalid === 'one_bad') run.reply.claims[0].contentLocations = [quote, {text: 'not in body'}];
-      expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_response', claims: []});
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}]});
     });
 
   it.each(['missing_offsets', 'mixed_quote', 'occurrence'] as const)(
@@ -828,15 +891,25 @@ describe('final semantic v2 exact quotation locations', () => {
         if (collection === 'omission') run.reply.omissions = [{code: 'undeclared_claim', contentLocations: locations}];
         if (collection === 'requirement') run.reply.requirements[0].contentLocations = locations;
         const assessment = await assessFinalSemantics(run.input);
-        expect(assessment).toMatchObject(invalid ? {reason: 'invalid_response', claims: [], omissions: [], requirements: []}
-          : {status: 'checked', consistency: collection === 'issue' || collection === 'omission' ? 'inconsistent' : 'consistent'});
+        // Framing rows (report requirements) still reject the response; claim-side rows degrade
+        // without promotion: an unlocatable contradiction survives, anything else is unknown.
+        const expected = !invalid
+          ? {status: 'checked', consistency: collection === 'issue' || collection === 'omission' ? 'inconsistent' : 'consistent'}
+          : collection === 'requirement' ? {reason: 'invalid_response', claims: [], omissions: [], requirements: []}
+            : collection === 'issue' ? {status: 'checked', consistency: 'inconsistent',
+              responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1},
+              claims: [{claimId: 'claim-a', consistency: 'inconsistent', issues: [{code: 'numeric_mismatch', contentLocations: []}]}]}
+              : collection === 'omission' ? {status: 'coverage_incomplete', reason: 'invalid_response', omissions: [],
+                coverage: {body: 'incomplete'}}
+                : {status: 'coverage_incomplete', reason: 'invalid_response', claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}]};
+        expect(assessment).toMatchObject(expected);
         if (!invalid) expect(JSON.stringify(assessment)).not.toContain('"text":');
       }
     });
 
   it.each(['missing_claim', 'duplicate_claim', 'missing_omissions', 'empty_omission', 'missing_requirement',
     'duplicate_requirement', 'wrong_claim_ref', 'coverage_gap', 'coverage_quote', 'extra_coverage'] as const)(
-    'preserves the existing full-response rejection for %s', async invalid => {
+    'reports an invalid response for %s', async invalid => {
       const run = quoteFixture({requirements: [{id: 'observation', label: 'Observation', required: true}], scope: 'scene_wide'});
       if (invalid === 'missing_claim') run.reply.claims = [];
       if (invalid === 'duplicate_claim') run.reply.claims.push(structuredClone(run.reply.claims[0]));
@@ -872,7 +945,7 @@ describe('final semantic v4 body span locations', () => {
     const run = fixture({body});
     const entries = useV4(run);
     const entry = entries.find(item => item.text === target)!;
-    expect(entry.spanId).toMatch(/^line-2-[0-9a-f]{64}-[0-9a-f]{64}$/);
+    expect(entry.spanId).toMatch(/^L2\.[0-9a-f]{10}$/);
     run.reply.claims[0].contentLocations = [{spanId: entry.spanId}] as any;
     expect(await assessFinalSemantics(run.input)).toMatchObject({claims: [{contentLocations: [{
       start: body.indexOf(target), end: body.indexOf(target) + target.length,
@@ -899,7 +972,7 @@ describe('final semantic v4 body span locations', () => {
       const entry = useV4(run)[0];
       const stale = fixture({body: '**different body**'});
       const staleId = assembledPayload(stale).contentLocationCatalog.entries[0].spanId;
-      const bad: any[] = invalid === 'unknown' ? [{spanId: 'line-1-unknown-unknown'}]
+      const bad: any[] = invalid === 'unknown' ? [{spanId: 'L1.0000000000'}]
         : invalid === 'stale' ? [{spanId: staleId}]
           : invalid === 'digest' ? [{spanId: `${entry.spanId.slice(0, -1)}${entry.spanId.endsWith('0') ? '1' : '0'}`}]
             : invalid === 'mixed' ? [{spanId: entry.spanId, text: body}]
@@ -907,9 +980,23 @@ describe('final semantic v4 body span locations', () => {
                 : invalid === 'duplicate_id_quote' ? [{spanId: entry.spanId}, {text: body}]
                   : [{text: '\ud83d'}];
       run.reply.claims[0].contentLocations = bad;
-      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response',
+      expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+        claims: [{claimId: 'claim-a', consistency: 'unknown', contentLocations: []}],
         responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1}});
     });
+
+  it('issues short span IDs that are exact per request and never resolve for another body', async () => {
+    const body = '**first line**\n**second line**';
+    const run = fixture({body});
+    const entries = useV4(run);
+    expect(entries.map(entry => entry.spanId)).toEqual([expect.stringMatching(/^L1\.[0-9a-f]{10}$/),
+      expect.stringMatching(/^L2\.[0-9a-f]{10}$/)]);
+    expect(entries.every(entry => entry.spanId.length <= 16)).toBe(true);
+    const other = fixture({body: '**first line**\n**other line**'});
+    const otherIds = assembledPayload(other).contentLocationCatalog.entries.map((entry: any) => entry.spanId);
+    // Same line ordinal and text, different body: the body digest keeps the IDs apart.
+    expect(otherIds[0]).not.toBe(entries[0].spanId);
+  });
 
   it.each(['claim', 'issue', 'omission', 'report', 'investigation'] as const)(
     'uses the common span resolver for %s locations', async collection => {
@@ -968,7 +1055,8 @@ describe('final semantic v4 body span locations', () => {
     run.reply.claims[0].contentLocations = [{spanId: 'forged-span'}] as any;
     Object.assign(run.reply, {investigation: []});
     expect(assembledPayload(run)).not.toHaveProperty('contentLocationCatalog');
-    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'unavailable', reason: 'invalid_response',
+    expect(await assessFinalSemantics(run.input)).toMatchObject({status: 'coverage_incomplete', reason: 'invalid_response',
+      claims: [{claimId: 'claim-a', consistency: 'unknown'}],
       responseDiagnostic: {stage: 'claim', code: 'invalid_location', ordinal: 1}});
   });
 

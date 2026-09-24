@@ -1068,6 +1068,10 @@ export interface AnalysisReceiptBase {
     verifiedClaims: number;
     unsupportedClaims: number;
     uncertainClaims: number;
+    /** Claims whose every reference cell matched captured evidence. Absent in older receipts. */
+    referencesMatchedClaims?: number;
+    /** Claims whose typed proposition a finite proof established. Absent in older receipts and before verifier@2. */
+    propositionProvedClaims?: number;
   };
   qualityGates: {
     finalReportContract: AnalysisReceiptGateStatus;

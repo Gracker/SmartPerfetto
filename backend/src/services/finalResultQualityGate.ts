@@ -13,6 +13,7 @@ import {verifySourceClaimBindingsForResult} from './codebase/sourceClaimVerifier
 import {isUnusedSourceDecision} from './codebase/sourceUseDecision';
 import {assessScrollingJankClaimBoundary} from './scrollingJankClaimBoundary';
 import {isSemanticClaimIssueCode, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
+import {claimReferences} from './analysisInvestigationPresentation';
 import type {IdentityResolutionV1} from '../types/identityContract';
 import {
   analysisDeliveryFingerprint,
@@ -439,10 +440,23 @@ function describeContradictedClaims(
   const mismatchedIds = new Set<string>();
   const missingIds = new Set<string>();
   const rejectedPropositionIds = new Set<string>();
+  // A reference status is a failure only when the verifier recorded it as an
+  // error for that claim. Advisory (warning) mismatches stay out of the `!`
+  // message; a claim whose unsupported status no issue of its own explains
+  // (older shapes) still falls back to its reference statuses.
+  const errorCodesByClaim = new Map<string, Set<string>>();
+  for (const issue of verification.issues) {
+    if (issue.severity !== 'error' || !claimIds.has(issue.claimId)) continue;
+    const codes = errorCodesByClaim.get(issue.claimId) ?? new Set<string>();
+    codes.add(issue.code);
+    errorCodesByClaim.set(issue.claimId, codes);
+  }
+  const referenceFailureCounts = (claim: (typeof results)[number], status: 'value_mismatch' | 'missing') => {
+    const codes = errorCodesByClaim.get(claim.claimId);
+    return codes ? codes.has(`claim_reference_${status}`) : claim.status === 'unsupported';
+  };
   for (const claim of results) {
-    const references = verification.schemaVersion === 'claim_verifier@2'
-      ? claim.referenceCells ?? claim.referenceResults ?? []
-      : claim.referenceResults ?? claim.referenceCells ?? [];
+    const references = claimReferences(verification, claim);
     const proof = claim.deterministicProof;
     const bindingFailure = bindingIds.has(claim.claimId) || references.some(ref => ref.status === 'ineligible') ||
       (proof?.status === 'rejected' && proof.reason === 'binding_ineligible');
@@ -451,10 +465,14 @@ function describeContradictedClaims(
       else globalBindingFailure = true;
     }
     if (!claimIds.has(claim.claimId)) continue;
-    if (references.some(ref => ref.status === 'value_mismatch')) mismatchedIds.add(claim.claimId);
+    if (references.some(ref => ref.status === 'value_mismatch') && referenceFailureCounts(claim, 'value_mismatch')) {
+      mismatchedIds.add(claim.claimId);
+    }
     // A binding rejection can retain a compatibility "missing" reference; it
     // never establishes absence, nor hides a separate recorded value mismatch.
-    if (!bindingFailure && references.some(ref => ref.status === 'missing')) missingIds.add(claim.claimId);
+    if (!bindingFailure && references.some(ref => ref.status === 'missing') && referenceFailureCounts(claim, 'missing')) {
+      missingIds.add(claim.claimId);
+    }
     if (proof?.status === 'rejected' && proof.reason !== 'binding_ineligible') rejectedPropositionIds.add(claim.claimId);
   }
   for (const id of bindingIds) missingIds.delete(id);

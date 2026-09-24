@@ -44,6 +44,7 @@ import {projectSceneTimelineForOwner} from '../agent/scene/sceneTimelineProjecti
 import type {SceneScope} from '../agent/scene/sceneTimelineContract';
 import {issueSceneTimelinePublication, type SceneTimelinePublication} from '../agent/scene/sceneTimelinePublication';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
+import type {FinalizationProgressEvent, FinalizationProgressObserver} from './finalizationProgress';
 
 export interface AnalysisFinalizationOwner {
   runId: string;
@@ -66,6 +67,12 @@ export interface FinalizeAnalysisResultInput {
   conversation?: NonNullable<Parameters<typeof canonicalizeAnalysisResult>[1]>['conversation'];
   /** Issued product sidecar, separate from a provider's accepted body or result JSON. */
   scene?: {seal: SceneRuntimeSeal; scope: SceneScope; outputLanguage: OutputLanguage; providerId?: string | null};
+  /**
+   * Live progress for the one semantic review: `final_review_started` only when
+   * a provider request is actually sent, then exactly one `final_review_finished`.
+   * Observer failures are ignored; they never change finalization.
+   */
+  onProgress?: FinalizationProgressObserver;
 }
 
 export interface FinalizedAnalysisResult {
@@ -428,8 +435,19 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
         safeSnapshot = unsafe ?? templateUnavailable ?? best ?? smallestOverLimit?.snapshot ?? noLedgerFits;
       }
       assertOwner(owner);
-      semantic = await assessFinalSemantics({context, canonicalCandidate: candidate, snapshot: safeSnapshot, signal: owner.signal});
+      const report = (event: FinalizationProgressEvent) => {
+        try { input.onProgress?.(event); } catch { /* Progress observers never change finalization. */ }
+      };
+      let reviewDispatched = false;
+      semantic = await assessFinalSemantics({context, canonicalCandidate: candidate, snapshot: safeSnapshot, signal: owner.signal,
+        onDispatch: ({deadlineMs}) => {
+          reviewDispatched = true;
+          report({stage: 'final_review_started', deadlineAt: deadlineMs});
+        }});
       assertOwner(owner);
+      if (reviewDispatched) {
+        report({stage: 'final_review_finished', status: semantic.status, ...(semantic.reason ? {reason: semantic.reason} : {})});
+      }
     }
     const finiteProofs = applySourceLocationProofs({contract: validationContract, sourceUse,
       draft: draft.claimVerificationResult});

@@ -314,6 +314,16 @@ export function projectPrivateAnalysisReceipt(
   };
 }
 
+/**
+ * Projected claims are no longer the claims that were checked, so no check
+ * result (verification, finite proof or reference match) carries over.
+ */
+function withdrawClaimAuditVerification(audit: AnalysisReceipt['claimAudit']): AnalysisReceipt['claimAudit'] {
+  return {...audit, verifiedClaims: 0, uncertainClaims: audit.uncertainClaims + audit.verifiedClaims,
+    ...(audit.referencesMatchedClaims !== undefined ? {referencesMatchedClaims: 0} : {}),
+    ...(audit.propositionProvedClaims !== undefined ? {propositionProvedClaims: 0} : {})};
+}
+
 /** Historical JSON may be incomplete; it cannot supply missing audit counts. */
 function isCompleteAnalysisReceipt(value: unknown): value is AnalysisReceipt {
   if (!isPlainJsonObject(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return false;
@@ -688,8 +698,7 @@ export function projectPrivateAnalysisResult(
   if (analysisReceipt && (claimsChanged || identityChanged ||
       delivery.deliveryAssurance?.report === 'not_checked' || delivery.deliveryAssurance?.report === 'coverage_incomplete')) {
     analysisReceipt = {...analysisReceipt,
-      claimAudit: claimsChanged ? {...analysisReceipt.claimAudit, verifiedClaims: 0,
-        uncertainClaims: analysisReceipt.claimAudit.uncertainClaims + analysisReceipt.claimAudit.verifiedClaims} : analysisReceipt.claimAudit,
+      claimAudit: claimsChanged ? withdrawClaimAuditVerification(analysisReceipt.claimAudit) : analysisReceipt.claimAudit,
       qualityGates: {...analysisReceipt.qualityGates,
         ...(claimsChanged ? {claimVerification: 'partial' as const} : {}),
         ...(identityChanged ? {identityResolution: 'partial' as const} : {}),
@@ -792,8 +801,7 @@ export function copyAnalysisResultForSnapshot(result: AnalysisResult): AnalysisR
   if (stored.analysisReceipt && !isCompleteAnalysisReceipt(stored.analysisReceipt)) delete stored.analysisReceipt;
   if (stored.analysisReceipt && (claimsChanged || sourceChanged || reportInvalidated)) {
     stored.analysisReceipt = {...stored.analysisReceipt,
-      claimAudit: claimsChanged ? {...stored.analysisReceipt.claimAudit, verifiedClaims: 0,
-        uncertainClaims: stored.analysisReceipt.claimAudit.uncertainClaims + stored.analysisReceipt.claimAudit.verifiedClaims} : stored.analysisReceipt.claimAudit,
+      claimAudit: claimsChanged ? withdrawClaimAuditVerification(stored.analysisReceipt.claimAudit) : stored.analysisReceipt.claimAudit,
       qualityGates: {...stored.analysisReceipt.qualityGates, finalReportContract: 'partial',
         ...(claimsChanged ? {claimVerification: 'partial' as const} : {})}};
   }

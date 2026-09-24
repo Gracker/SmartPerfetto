@@ -290,8 +290,22 @@ function capturedCellProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): 
   if ('reason' in resolved) return proof(kind, 'candidate', resolved.reason);
   const {anchor, value} = resolved.value;
   const matched = exactPrimitiveMatch(subject.value, value);
+  if (!matched && losslessPrimitiveEncoding(subject.value, value)) {
+    // The same value in another JSON type ('858' vs 858) neither proves the
+    // declared string nor contradicts the captured value. The reference layer
+    // reports this pair as an unresolved type, not a mismatch (verifyAnchor).
+    return proof(kind, 'candidate', 'captured_value_type_mismatch', [anchor]);
+  }
   return proof(kind, matched ? 'proved' : 'rejected',
     matched ? 'captured_cell_value_proved' : 'captured_cell_value_rejected', [anchor]);
+}
+
+/** A declared string that is exactly the captured number's decimal value ('858' or '858.0' for 858). */
+function losslessPrimitiveEncoding(declared: unknown, actual: EvidenceScalar): boolean {
+  if (typeof declared !== 'string' || typeof actual !== 'number') return false;
+  const expected = exactNumber(declared);
+  const captured = exactNumber(actual);
+  return Boolean(expected && captured && compare(expected, captured) === 0);
 }
 
 function exactNanoseconds(value: EvidenceScalar, field: CapturedFieldSemantics): bigint | undefined {

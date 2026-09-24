@@ -22,6 +22,8 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import {createRuntimeEvidenceContext, type RuntimeEvidenceBinding, type RuntimeEvidenceContext} from '../../agentRuntime/runtimeEvidenceContext';
 import {finalizeAnalysisResult, type FinalizedAnalysisResult} from '../../services/finalizeAnalysisResult';
+import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
+import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {AnalysisNarrativeStreamProjection} from '../../services/analysisNarrativeStreamProjection';
 import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
 import {validateDataEnvelope, type DataEnvelope} from '../../types/dataContract';
@@ -134,7 +136,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
 
   private async finalizeRuntimeResult(result: AnalysisResult, input: ConversationRuntimeInput,
     state: ConversationExecution, dataEnvelopes: DataEnvelope[],
-    onRuntimeSettled?: () => void,
+    onRuntimeSettled?: () => void, outputLanguage: OutputLanguage = 'zh-CN',
   ): Promise<FinalizedAnalysisResult> {
     const context = takeFinalizationContext(result);
     let transferred = false;
@@ -149,6 +151,9 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           isCurrent: () => this.isCurrent(input, state), assertAuthorized: state.assertAuthorized},
         caseRetrieval: {status: 'not_checked', recommendations: []},
         conversation: {fallbackQuestion: input.query, evidence: projectEvidence(result)},
+        onProgress: event => {
+          if (this.isCurrent(input, state)) input.onUpdate?.(finalReviewProgressUpdate(event, outputLanguage));
+        },
       });
       this.assertActive(input, state);
       if (!finalized.conversationOutcome) throw new Error('conversation_finalization_outcome_missing');
@@ -236,7 +241,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
             this.assertActive(input, state);
             const tail = narrative.finish();
             if (tail) input.onUpdate?.(tail);
-          }))
+          }, outputLanguage))
         .finally(() => {
           evidenceBinding?.release();
           // Physical sessions are unique: late cleanup cannot touch a newer turn.

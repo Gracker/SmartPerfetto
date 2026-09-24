@@ -3391,6 +3391,8 @@ describe('a contradicted claim degrades full mode, not only quick mode', () => {
               message: 'no value was found for dur_ms in the referenced evidence',
             }],
           }],
+          issues: [{claimId: 'claim-dur', severity: 'error', code: 'claim_reference_missing',
+            message: 'no value was found for dur_ms in the referenced evidence'}],
         }) as never,
       }),
       query: '分析这个启动 trace',
@@ -3449,7 +3451,8 @@ describe('a contradicted claim degrades full mode, not only quick mode', () => {
     const text = failedDiagnostic({schemaVersion: 'claim_verifier@2', claimResults: [
       {claimId: 'bound', status: 'not_checked', referenceCells: [{status: 'missing'}, {status: 'value_mismatch'}]},
       {claimId: 'absent', status: 'unsupported', referenceCells: [{status: 'missing'}]},
-    ], issues: [{claimId: 'bound', severity: 'error', code: 'binding_ineligible', message: 'arbitrary'}]});
+    ], issues: [{claimId: 'bound', severity: 'error', code: 'binding_ineligible', message: 'arbitrary'},
+      {claimId: 'bound', severity: 'error', code: 'claim_reference_value_mismatch', message: 'arbitrary'}]});
     expect(text).toContain('1 条断言的声明或绑定无效');
     expect(text).toContain('1 条断言的引用未找到所需证据');
     expect(text).toContain('1 条断言的引用值与证据不符');
@@ -3470,6 +3473,27 @@ describe('a contradicted claim degrades full mode, not only quick mode', () => {
     const text = failedDiagnostic({schemaVersion: 'claim_verifier@2', claimResults: [{claimId: 'numeric', status: 'unsupported',
       referenceResults: [{status: 'value_mismatch'}, {status: 'value_mismatch'}]}]});
     expect(text).toBe('1 条断言的引用值与证据不符；不能作为已核验结论交付。');
+  });
+
+  it('keeps advisory reference findings out of the message and names only recorded failures', () => {
+    // rooted_anr_input_a1 shape: warning-level mismatches on partial claims plus an undeclared assertion.
+    const undeclaredOnly = failedDiagnostic({schemaVersion: 'claim_verifier@2', unsupportedClaimCount: 0, claimResults: [
+      {claimId: 'c1', status: 'partial', referenceCells: [{status: 'matched'}, {status: 'value_mismatch'}]},
+      {claimId: 'c2', status: 'partial', referenceCells: [{status: 'missing'}]},
+    ], issues: [
+      {claimId: 'c1', severity: 'warning', code: 'claim_reference_value_mismatch', message: 'value mismatch for ts'},
+      {claimId: 'c2', severity: 'warning', code: 'claim_reference_missing', message: 'no captured value'},
+      {claimId: '', severity: 'error', code: 'semantic_undeclared_claim', message: 'arbitrary'},
+    ]});
+    expect(undeclaredOnly).toBe('正文包含未声明的断言；不能作为已核验结论交付。');
+    // A semantic contradiction does not turn its advisory reference mismatch into an evidence mismatch.
+    const semantic = failedDiagnostic({schemaVersion: 'claim_verifier@2', claimResults: [
+      {claimId: 'c1', status: 'unsupported', referenceCells: [{status: 'value_mismatch'}]},
+    ], issues: [
+      {claimId: 'c1', severity: 'warning', code: 'claim_reference_value_mismatch', message: 'value mismatch for ts'},
+      {claimId: 'c1', severity: 'error', code: 'semantic_numeric_mismatch', message: 'arbitrary'},
+    ]});
+    expect(semantic).toBe('1 条断言的正文表述与其声明不一致；不能作为已核验结论交付。');
   });
 
   it('classifies semantic review inconsistencies per claim and body omissions', () => {

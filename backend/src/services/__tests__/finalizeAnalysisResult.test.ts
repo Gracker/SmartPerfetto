@@ -24,6 +24,7 @@ import {sanitizeSourceReference, type SourceUseDecisionV1} from '../codebase/sou
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../codebase/sourceClaimVerifier';
 import {canonicalizeAnalysisResult} from '../canonicalAnalysisResult';
 import {claimVerificationStatusLine, summarizeClaimVerification} from '../analysisInvestigationPresentation';
+import {finalReviewProgressUpdate, type FinalizationProgressEvent} from '../finalizationProgress';
 import type {AnalysisRunSelection} from '../../agentRuntime/analysisRunSpec';
 import {projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
 
@@ -139,6 +140,50 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); jest.useRealTimers();});
 
+describe('final review progress', () => {
+  const finalizeWithProgress = async (options: Parameters<typeof fixture>[0], observer?: () => void) => {
+    const run = fixture({currentRead: true, ...options});
+    const events: FinalizationProgressEvent[] = [];
+    const final = await finalizeAnalysisResult({result: run.result, context: run.context, owner: run.owner,
+      query: 'What is the captured value?', dataEnvelopes: [run.envelope],
+      onProgress: event => {events.push(event); observer?.();}});
+    return {final, events, run};
+  };
+
+  it('reports the one semantic review as started (with its deadline) and finished, in order, without provider text', async () => {
+    const deadlineMs = Date.now() + 120_000;
+    const {final, events, run} = await finalizeWithProgress({deadlineMs});
+    expect(events).toEqual([
+      {stage: 'final_review_started', deadlineAt: deadlineMs},
+      {stage: 'final_review_finished', status: 'checked'},
+    ]);
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
+    expect(final.result.deliveryAssurance?.claims).toBe('passed');
+    const updates = events.map(event => finalReviewProgressUpdate(event, 'zh-CN', deadlineMs - 90_000));
+    expect(updates.map(update => update.content)).toEqual([
+      {phase: 'final_review', stage: 'started', deadlineAt: deadlineMs, message: '正在复核结论正文与其声明是否一致（最长约 2 分钟）'},
+      {phase: 'final_review', stage: 'finished', outcome: 'checked', message: '结论复核已完成'},
+    ]);
+    expect(JSON.stringify(updates)).not.toContain('captured value');
+  });
+
+  it('names a failed review outcome and never reports a review that was not sent', async () => {
+    const timedOut = await finalizeWithProgress({dispatch: async () => ({status: 'unavailable', reason: 'timeout'})});
+    expect(timedOut.events.map(event => event.stage)).toEqual(['final_review_started', 'final_review_finished']);
+    expect(finalReviewProgressUpdate(timedOut.events[1], 'en').content).toMatchObject({outcome: 'unavailable', reason: 'timeout',
+      message: 'Final review did not complete: semantic review ran out of time'});
+    const skipped = await finalizeWithProgress({invalidDeclaration: true});
+    expect(skipped.run.dispatch).not.toHaveBeenCalled();
+    expect(skipped.events).toEqual([]);
+  });
+
+  it('ignores a throwing progress observer', async () => {
+    const {final, events} = await finalizeWithProgress({}, () => {throw new Error('renderer failed');});
+    expect(events).toHaveLength(2);
+    expect(final.result.deliveryAssurance?.claims).toBe('passed');
+  });
+});
+
 describe('current-run reference delivery diagnostics', () => {
   it.each([{capture: false}, {wrongReferenceValue: 99}])('delivers %j with an explicit unverified watermark', async options => {
     const final = await fixture({...options, currentRead: true}).run();
@@ -146,7 +191,7 @@ describe('current-run reference delivery diagnostics', () => {
     expect(final.result.claimVerificationResult?.status).toBe('partial');
     expect(final.result.claimVerificationResult?.claimResults[0].status).not.toBe('verified');
     expect(claimVerificationStatusLine(summarizeClaimVerification(final.result.claimVerificationResult), 'zh-CN'))
-      .toContain('未核验 0/1');
+      .toContain('已核验 0/1');
     expect(final.result.terminationReason).not.toBe('quality_gate_failed');
   });
 

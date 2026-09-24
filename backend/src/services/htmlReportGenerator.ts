@@ -15,7 +15,7 @@
 
 import markdownit from 'markdown-it';
 import {renderSceneTimelineHtml} from './sceneReport/sceneTimelineHtml';
-import {claimVerificationNotCheckedExplanation, investigationStatusLines} from './analysisInvestigationPresentation';
+import {claimAuditRows, claimVerificationStatusLine, investigationStatusLines, summarizeClaimVerification} from './analysisInvestigationPresentation';
 import {analysisConfidenceIsGrounded} from '../agentv3/analysisTermination';
 import {projectAnalysisEvidenceForDisplay} from './evidence/analysisEvidencePresentation';
 import {
@@ -5066,10 +5066,8 @@ export class HTMLReportGenerator {
         </div>
         <div class="receipt-card">
           <div class="receipt-card-title">${localize(outputLanguage, '声明审计', 'Claim Audit')}</div>
-          <div class="receipt-row"><span>Total</span><span>${receipt.claimAudit.totalClaims}</span></div>
-          <div class="receipt-row"><span>Verified</span><span>${receipt.claimAudit.verifiedClaims}</span></div>
-          <div class="receipt-row"><span>Unsupported</span><span>${receipt.claimAudit.unsupportedClaims}</span></div>
-          <div class="receipt-row"><span>Uncertain</span><span>${receipt.claimAudit.uncertainClaims}</span></div>
+          ${claimAuditRows(receipt.claimAudit, outputLanguage).map(([label, value]) => `
+          <div class="receipt-row"><span>${this.escapeHtml(label)}</span><span>${value}</span></div>`).join('')}
         </div>
         <div class="receipt-card">
           <div class="receipt-card-title">${localize(outputLanguage, '质量闸门', 'Quality Gates')}</div>
@@ -5816,10 +5814,11 @@ export class HTMLReportGenerator {
       supportCounts.set(status, (supportCounts.get(status) || 0) + 1);
     }
     const supportSummary = Array.from(supportCounts.entries())
-      .map(([key, count]) => `${this.escapeHtml(key)}: ${count}`)
+      .map(([key, count]) => `${key}: ${count}`)
       .join(' · ');
-    const status = verification?.status || 'not_checked';
-    const notCheckedExplanation = claimVerificationNotCheckedExplanation(verification, outputLanguage);
+    // The same claim-count line the CLI prints, then the raw per-status distribution as provenance.
+    const statusLine = claimVerificationStatusLine(summarizeClaimVerification(verification), outputLanguage) ??
+      localize(outputLanguage, '断言核验: 未核验', 'Claim verification: not checked');
     const supportById = this.uniqueReportClaimEntries(claimSupport ?? [], claim => claim.claimId);
     const issueRows = (verification?.issues || []).map(issue => `
       <tr>
@@ -5863,13 +5862,9 @@ export class HTMLReportGenerator {
     return `
     <div class="section">
       <h2 class="section-title">${localize(outputLanguage, '断言验证结果', 'Claim Verification')}</h2>
-      <div class="claim-source-note">
-        ${this.escapeHtml(localize(
-          outputLanguage,
-          `Verifier 状态: ${status}；检查断言 ${verification?.checkedClaimCount ?? 0} 条；不支持 ${verification?.unsupportedClaimCount ?? 0} 条${supportSummary ? `；支持级别 ${supportSummary}` : ''}${notCheckedExplanation ? `；未核验原因：${notCheckedExplanation}` : ''}`,
-          `Verifier status: ${status}; checked ${verification?.checkedClaimCount ?? 0} claims; unsupported ${verification?.unsupportedClaimCount ?? 0}${supportSummary ? `; support levels ${supportSummary}` : ''}${notCheckedExplanation ? `; not checked because ${notCheckedExplanation}` : ''}`,
-        ))}
-      </div>
+      <div class="claim-source-note">${this.escapeHtml(statusLine)}</div>
+      ${supportSummary ? `<div class="claim-source-note">${this.escapeHtml(localize(outputLanguage,
+        `服务器核验状态分布：${supportSummary}`, `Server verification status distribution: ${supportSummary}`))}</div>` : ''}
       ${claimDetails ? `<div class="claim-source-note">${localize(outputLanguage,
         '以下保留服务器提供的证据与核验记录。原生行身份元数据本身不构成命题或因果证明。',
         'The following are retained server evidence and verification records. Native row identity metadata alone does not prove a proposition or causality.')}</div>${claimDetails}` : ''}

@@ -131,6 +131,7 @@ import {
   projectOwnerAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
 import {registerPrivateAnalysisQueryForEcho} from '../../services/security/codeAwareOutputRegistry';
+import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
 import {buildSkillRegistryAttribution} from '../../services/selfEvolution/skillFingerprint';
 import {getEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import {
@@ -789,6 +790,15 @@ export class CliAnalyzeService {
             dataEnvelopes: session.dataEnvelopes as DataEnvelope[], comparisonReportSection: session.comparisonReportSection,
             ...(comparisonIdentity ? {comparisonIdentity} : {}),
             caseRetrieval: {status: 'not_checked', recommendations: []},
+            // The runtime update handler is already detached; report the review directly.
+            onProgress: event => {
+              try {
+                assertActive();
+                input.onEvent(finalReviewProgressUpdate(event, outputLanguage));
+              } catch (err) {
+                console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
+              }
+            },
           });
           assertActive();
           result = finalized.result;

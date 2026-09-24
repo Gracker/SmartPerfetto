@@ -173,6 +173,7 @@ coverage field. If any input or review was incomplete, say so.
 Each claim result has exactly these fields:
 
 - `claimId`: one original nonempty ID; include every declared claim exactly once.
+  An omitted, repeated or unknown ID leaves that declared claim unknown.
 - `consistency`: `consistent`, `inconsistent` or `unknown`.
 - `contentLocations`: an array of exact locations defined below.
 - `issues`: an array of objects with exactly `code` and `contentLocations`.
@@ -224,8 +225,12 @@ appears twice in `banana`; the second match requires
 `{"text":"ana","occurrence":2}`. A unique quotation needs only `text`.
 An unknown or stale span ID, an absent, ambiguous or out-of-range quotation, a
 split surrogate pair, duplicate resolved locations, mixed ID/quotation/offset
-fields or any extra fields make the response invalid. This includes an ID and a
-quotation that resolve to the same range in one location collection.
+fields or any extra fields make that location collection invalid. This includes
+an ID and a quotation that resolve to the same range in one location collection.
+An invalid location certifies nothing: the backend records that claim judgment
+as unknown (an inconsistent judgment keeps its issue without the location) and
+an unlocatable omission as an incomplete body review. An invalid envelope, body
+coverage, report requirement row or investigation row invalidates the whole response.
 
 These location rules apply to claims, claim issues, omissions, report requirements
 and investigation requirements.
