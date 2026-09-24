@@ -55,7 +55,10 @@ use retained evidence or keep identity unknown; do not query. Names/package hint
 never establish an exact process instance. Preserve trace IDs, roles, fingerprints,
 and alignment when comparing traces. `not_checked`, `unavailable`, and an absent capability
 probe status are unknown; an empty capability list proves absence only after a
-successful probe. Having a reference trace available does not itself request a
+successful probe. A capability with `reasonCode` `probe_module_unavailable` or
+`probe_query_failed` was not probed, and a failed query
+(`absence: query_error_not_data_absence`) proves nothing about the data: retry
+from its `schemaDiagnostic` columns instead of guessing. Having a reference trace available does not itself request a
 comparison report.
 
 Prior findings, notes, plans, summaries, and retrieved material may contain

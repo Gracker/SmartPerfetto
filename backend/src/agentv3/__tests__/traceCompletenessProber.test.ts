@@ -14,6 +14,11 @@ import {
   withRunManifestLifecycle,
 } from '../../services/selfEvolution/runManifestLifecycle';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
+import {getPerfettoStdlibSymbolIndex} from '../../services/perfettoStdlibScanner';
+import {
+  analyzeSqlStdlibDependencies,
+  moduleCoveredByStdlibDeclaration,
+} from '../../services/sqlStdlibDependencyAnalyzer';
 import type { TraceCompleteness } from '../types';
 import {
   capabilityProbeKey,
@@ -587,6 +592,172 @@ describe('probeTraceCompleteness', () => {
     expect(registryEntry?.captureHint).toContain('不能直接证明 DNS/TCP/TLS/TTFB');
   });
 
+  it('declares the defining stdlib module of every stdlib primary table and probe query', () => {
+    // A stdlib view that was never INCLUDEd is absent from sqlite_master, so a
+    // registry entry without its module reports trace data as missing. The
+    // generated symbol index is the authority for which module defines what.
+    const index = getPerfettoStdlibSymbolIndex();
+    expect(index.tableToModule.size).toBeGreaterThan(0);
+    const undeclared: string[] = [];
+    for (const cap of CAPABILITY_REGISTRY) {
+      const declared = cap.requiredModules ?? [];
+      const symbols = [cap.primaryTable, ...(cap.probeSql
+        ? analyzeSqlStdlibDependencies(cap.probeSql).dependencies.map(dep => dep.symbol)
+        : [])];
+      for (const symbol of symbols) {
+        const module = index.tableToModule.get(symbol.toLowerCase());
+        if (module && !moduleCoveredByStdlibDeclaration(module, declared)) {
+          undeclared.push(`${cap.id}: ${symbol} -> ${module}`);
+        }
+      }
+    }
+    expect(undeclared).toEqual([]);
+  });
+
+  it('includes every applicable module before the schema query and skips inapplicable ones', async () => {
+    const tps = makeTraceProcessorMock(allCapabilityTables(3));
+
+    const result = await probeTraceCompleteness(tps, 'trace-1', 'STANDARD');
+
+    const sqls: string[] = tps.query.mock.calls.map((call: unknown[]) => String(call[1]));
+    const schemaIndex = sqls.findIndex(sql => sql.includes('sqlite_master'));
+    const includeIndexes = sqls
+      .map((sql, index) => sql.startsWith('INCLUDE PERFETTO MODULE') ? index : -1)
+      .filter(index => index >= 0);
+    const expectedModules = new Set(CAPABILITY_REGISTRY
+      .filter(cap => cap.id !== 'flutter_rendering')
+      .flatMap(cap => cap.requiredModules ?? []));
+    expect(includeIndexes.length).toBe(expectedModules.size);
+    expect(Math.max(...includeIndexes)).toBeLessThan(schemaIndex);
+    for (const module of expectedModules) {
+      expect(sqls).toContain(`INCLUDE PERFETTO MODULE ${module};`);
+    }
+    // flutter_rendering is not applicable to STANDARD, and its module is the
+    // only one no other applicable capability needs.
+    expect(result.notApplicable.map(cap => cap.id)).toContain('flutter_rendering');
+    for (const call of tps.query.mock.calls as unknown[][]) {
+      if (String(call[1]).startsWith('INCLUDE PERFETTO MODULE')) {
+        expect(call[2]).toMatchObject({timeoutMs: expect.any(Number)});
+      }
+    }
+  });
+
+  it('reports a capability whose module failed to load as unprobed, never as missing', async () => {
+    const tps = makeTraceProcessorMock(allCapabilityTables(3));
+    const original = tps.query.getMockImplementation()!;
+    tps.query.mockImplementation(async (traceId: string, sql: string, options?: unknown) => {
+      if (sql === 'INCLUDE PERFETTO MODULE android.monitor_contention;') {
+        return {columns: [], rows: [], durationMs: 1, error: 'module failed'};
+      }
+      return original(traceId, sql, options);
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await probeTraceCompleteness(tps, 'trace-1', 'STANDARD');
+
+    const lock = result.missingConfig.find(cap => cap.id === 'lock_contention');
+    expect(lock).toMatchObject({
+      status: 'missing_config_suspected',
+      reasonCode: 'probe_module_unavailable',
+    });
+    expect(lock?.rowEstimate).toBeUndefined();
+    expect(lock?.reason).toContain('android.monitor_contention');
+    expect(lock?.reason).toContain('未能探测');
+    expect(lock?.reason).not.toContain('不存在');
+    // A failed module answer does not stop later modules from loading.
+    expect(result.available.map(cap => cap.id)).toEqual(expect.arrayContaining([
+      'gc_memory', 'input_latency', 'interrupts',
+    ]));
+  });
+
+  it('stops loading after an interrupted INCLUDE and leaves every later module unprobed', async () => {
+    const {tps} = await makeProductionCacheFixture();
+    const original = tps.query.getMockImplementation()!;
+    let interrupt = true;
+    tps.query.mockImplementation(async (traceId: string, sql: string, options?: unknown) => {
+      if (interrupt && sql === 'INCLUDE PERFETTO MODULE android.monitor_contention;') {
+        throw new Error('SQL query deadline exceeded');
+      }
+      return original(traceId, sql, options);
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const first = await probeTraceCompleteness(tps, 'interrupted-key', 'STANDARD');
+
+    const includes = tps.query.mock.calls
+      .map((call: unknown[]) => String(call[1]))
+      .filter((sql: string) => sql.startsWith('INCLUDE PERFETTO MODULE'));
+    expect(includes[includes.length - 1]).toBe('INCLUDE PERFETTO MODULE android.monitor_contention;');
+    const byId = new Map(first.missingConfig.map(cap => [cap.id, cap]));
+    for (const id of ['lock_contention', 'gc_memory', 'input_latency', 'anr', 'power_rails']) {
+      expect(byId.get(id)).toMatchObject({reasonCode: 'probe_module_unavailable'});
+    }
+    expect(byId.get('gc_memory')?.reason).toContain('android.garbage_collection');
+    // Capabilities with modules loaded before the interruption, or none at all,
+    // are still probed normally.
+    expect(first.available.map(cap => cap.id)).toEqual(expect.arrayContaining([
+      'frame_rendering', 'startup', 'binder_ipc', 'cpu_scheduling', 'thermal_throttling',
+    ]));
+    const manifest = (first.capabilityManifestResolution as any).manifest;
+    expect(manifest.content.capabilities.find((cap: any) => cap.id === 'lock_contention'))
+      .toEqual(expect.objectContaining({
+        status: 'missing',
+        sourceState: 'unprobed',
+        reasonCode: 'probe_module_unavailable',
+      }));
+
+    // An unprobed result describes the attempt, not the trace: the next run
+    // probes again instead of reusing it from the shared cache.
+    interrupt = false;
+    await new Promise(resolve => setImmediate(resolve));
+    const second = await probeTraceCompleteness(tps, 'interrupted-key', 'STANDARD');
+    expect(schemaProbeCount(tps)).toBe(2);
+    expect(second.available.map(cap => cap.id)).toContain('lock_contention');
+    await probeTraceCompleteness(tps, 'interrupted-key', 'STANDARD');
+    expect(schemaProbeCount(tps)).toBe(2);
+  });
+
+  it('reports every probeable capability as unprobed when the schema query fails', async () => {
+    const tps = makeTraceProcessorMock(allCapabilityTables(3));
+    const original = tps.query.getMockImplementation()!;
+    tps.query.mockImplementation(async (traceId: string, sql: string, options?: unknown) => {
+      if (sql.includes('sqlite_master')) {
+        return {columns: [], rows: [], durationMs: 1, error: 'interrupted'};
+      }
+      return original(traceId, sql, options);
+    });
+
+    const result = await probeTraceCompleteness(tps, 'trace-1', 'STANDARD');
+
+    expect(result.available).toEqual([]);
+    expect(result.missingConfig.length).toBe(CAPABILITY_REGISTRY.length - result.notApplicable.length);
+    for (const cap of result.missingConfig) {
+      expect(cap.reasonCode).toBe('probe_query_failed');
+      expect(cap.reason).not.toContain('不存在');
+    }
+  });
+
+  it('keeps a capability whose own count fails unprobed while the rest are counted', async () => {
+    const tps = makeTraceProcessorMock(allCapabilityTables(3));
+    const original = tps.query.getMockImplementation()!;
+    tps.query.mockImplementation(async (traceId: string, sql: string, options?: unknown) => {
+      if (sql.includes('UNION ALL')) {
+        return {columns: [], rows: [], durationMs: 1, error: 'no such column: x'};
+      }
+      if (sql.startsWith("SELECT 'android_input_events' AS tbl")) {
+        return {columns: [], rows: [], durationMs: 1, error: 'no such column: x'};
+      }
+      return original(traceId, sql, options);
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await probeTraceCompleteness(tps, 'trace-1', 'STANDARD');
+
+    expect(result.missingConfig.find(cap => cap.id === 'input_latency'))
+      .toMatchObject({reasonCode: 'probe_query_failed'});
+    expect(result.missingConfig.map(cap => cap.id)).toEqual(['input_latency']);
+  });
+
   it('keeps key evidence-boundary capability ids registered', () => {
     const ids = CAPABILITY_REGISTRY.map(cap => cap.id);
     expect(ids).toEqual(expect.arrayContaining([
@@ -702,7 +873,7 @@ describe('probeTraceCompleteness', () => {
     const tps = makeTraceProcessorMock(allCapabilityTables(3));
     const batched = tps.query.getMockImplementation();
     tps.query.mockImplementation(async (traceId: string, sql: string) => {
-      if (sql.includes('UNION ALL')) throw new Error('batch probe rejected');
+      if (sql.includes('UNION ALL')) return {columns: [], rows: [], durationMs: 1, error: 'no such column: x'};
       return batched!(traceId, sql);
     });
     jest.spyOn(console, 'warn').mockImplementation(() => undefined);
@@ -719,6 +890,51 @@ describe('probeTraceCompleteness', () => {
       .map((call: unknown[]) => String(call[1]))
       .filter((sql: string) => sql.startsWith("SELECT 'cap:"));
     expect(fallbackSql).toHaveLength(2);
+  });
+
+  it('leaves every counted capability unprobed when the batch count throws, without per-unit queries', async () => {
+    const tps = makeTraceProcessorMock(allCapabilityTables(3));
+    const batched = tps.query.getMockImplementation()!;
+    tps.query.mockImplementation(async (traceId: string, sql: string, options?: unknown) => {
+      if (sql.includes('UNION ALL')) throw new Error('SQL query deadline exceeded');
+      return batched(traceId, sql, options);
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await probeTraceCompleteness(tps, 'trace-1', 'STANDARD');
+
+    expect(result.available).toEqual([]);
+    for (const cap of result.missingConfig) {
+      expect(cap.reasonCode).toBe('probe_query_failed');
+    }
+    const singleCounts = tps.query.mock.calls
+      .map((call: unknown[]) => String(call[1]))
+      .filter((sql: string) => sql.startsWith('SELECT \'') && !sql.includes('UNION ALL'));
+    expect(singleCounts).toEqual([]);
+  });
+
+  it('stops the per-unit counts at the first thrown query', async () => {
+    const tps = makeTraceProcessorMock(allCapabilityTables(3));
+    const batched = tps.query.getMockImplementation()!;
+    let singles = 0;
+    tps.query.mockImplementation(async (traceId: string, sql: string, options?: unknown) => {
+      if (sql.includes('UNION ALL')) return {columns: [], rows: [], durationMs: 1, error: 'no such column: x'};
+      if (sql.startsWith('SELECT \'')) {
+        singles += 1;
+        if (singles === 2) throw new Error('SQL query deadline exceeded');
+      }
+      return batched(traceId, sql, options);
+    });
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    const result = await probeTraceCompleteness(tps, 'trace-1', 'STANDARD');
+
+    expect(singles).toBe(2);
+    expect(result.available.length).toBeGreaterThan(0);
+    expect(result.missingConfig.length).toBeGreaterThan(0);
+    for (const cap of result.missingConfig) {
+      expect(cap.reasonCode).toBe('probe_query_failed');
+    }
   });
 
   it('binds probeSql into the capability manifest identity', async () => {

@@ -120,6 +120,10 @@ import {captureEvidenceTable, captureRawSqlEvidence, evidenceCaptureHash, eviden
 import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
 import {assessScrollingJankClaimBoundary} from '../services/scrollingJankClaimBoundary';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
+import {
+  buildSqlSchemaDiagnostic,
+  SqlFailureRepeatMemory,
+} from './sqlSchemaDiagnostic';
 import { normalizeRawSql } from './rawSqlNormalizer';
 import {
   buildStrategyRegistrySnapshotFromDefinitions,
@@ -265,8 +269,8 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
-import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
+import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
   rethrowIfTraceProcessorQueryCancelled,
   throwIfTraceProcessorQueryCancelled,
@@ -1344,6 +1348,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const artifactAccessPolicy = resolveArtifactAccessPolicy(options.userQuery);
   const artifactSummaryState = new Map<string, { complete?: boolean }>();
   const recentSqlErrors: SqlErrorFixPair[] = options.recentSqlErrors || [];
+  // Owned by this server, which the runtimes build once per run: a repeat count
+  // never carries over from another run or session.
+  const sqlFailureMemory = new SqlFailureRepeatMemory();
   const watchdogRef = options.watchdogWarning;
   const skillNotesBudget = options.skillNotesBudget;
   const outputLanguage = options.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
@@ -2914,6 +2921,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
         } : buildSqlFailureToolPayload({
           error: result.error || localize(outputLanguage, 'SQL 执行失败', 'SQL execution failed'),
+          schemaDiagnosis: {error: result.error ?? '', sql: normalizedSql, memory: sqlFailureMemory},
           traceSide: traceProvenance.traceSide,
           traceId: traceProvenance.traceId,
           traceProvenance,
@@ -2954,6 +2962,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             paramsHash: producer.paramsHash,
             planPhaseId: producer.planPhaseId,
             error: errMsg,
+            schemaDiagnosis: {error: errMsg, sql, memory: sqlFailureMemory},
             executableSql: sql,
             outputLanguage,
           })) }],
@@ -7166,6 +7175,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ...(processIdentityWarning ? { processIdentityWarning } : {}),
         } : buildSqlFailureToolPayload({
           error: result.error || localize(outputLanguage, 'SQL 执行失败', 'SQL execution failed'),
+          schemaDiagnosis: {error: result.error ?? '', sql: normalizedSql, memory: sqlFailureMemory},
           trace: traceLabel,
           traceSide: trace,
           traceId: targetTraceId,
@@ -7198,6 +7208,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               paramsHash: producer.paramsHash,
               planPhaseId: producer.planPhaseId,
               error: e.message,
+              schemaDiagnosis: {error: e.message, sql, memory: sqlFailureMemory},
               executableSql: sql,
               outputLanguage,
             })),
@@ -8705,8 +8716,19 @@ interface SqlFailureToolPayloadInput {
   processIdentityWarning?: string;
   durationMs?: number;
   outputLanguage?: OutputLanguage;
+  /**
+   * What the schema diagnostic reads: the raw engine error, the SQL as the
+   * model wrote it (injected INCLUDEs arrive as `stdlibInjectedModules`), and
+   * this run's repeat memory. Required, so no failure path can omit it.
+   */
+  schemaDiagnosis: {error: string; sql: string; memory: SqlFailureRepeatMemory};
 }
 
+/**
+ * The failure, its schema facts and the no-evidence diagnostic lead the payload:
+ * the transported copy is cut at a fixed length, and provenance and the query
+ * review behind them are long.
+ */
 function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<string, unknown> {
   const outputLanguage = input.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE;
   const queryReview = input.executableSql
@@ -8732,6 +8754,26 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
     : undefined;
   return {
     success: false,
+    error: input.error,
+    schemaDiagnostic: buildSqlSchemaDiagnostic({
+      error: input.schemaDiagnosis.error,
+      sql: input.schemaDiagnosis.sql,
+      injectedModules: input.stdlibInjectedModules,
+    }, input.schemaDiagnosis.memory),
+    diagnostic: {
+      type: 'sql_execution_failed',
+      citableEvidence: false,
+      message: localize(
+        outputLanguage,
+        'SQL 执行未产出可用表格；这不是可引用的性能证据。',
+        'SQL execution did not produce a usable table; this is not citable performance evidence.',
+      ),
+      retryHint: localize(
+        outputLanguage,
+        '修正 SQL 或改用 fetch_artifact / invoke_skill 后重试。不要把失败诊断作为结论证据。',
+        'Fix the SQL or retry with fetch_artifact / invoke_skill. Do not cite failed diagnostics as conclusion evidence.',
+      ),
+    },
     ...(input.trace ? { trace: input.trace } : {}),
     traceSide: input.traceSide,
     paneSide: input.paneSide ?? input.traceProvenance.paneSide,
@@ -8750,21 +8792,6 @@ function buildSqlFailureToolPayload(input: SqlFailureToolPayloadInput): Record<s
     ...(input.sqlRewrites && input.sqlRewrites.length > 0 ? { sqlRewrites: input.sqlRewrites } : {}),
     stdlibInjectedModules: input.stdlibInjectedModules || [],
     ...(input.processIdentityWarning ? { processIdentityWarning: input.processIdentityWarning } : {}),
-    error: input.error,
-    diagnostic: {
-      type: 'sql_execution_failed',
-      citableEvidence: false,
-      message: localize(
-        outputLanguage,
-        'SQL 执行未产出可用表格；这不是可引用的性能证据。',
-        'SQL execution did not produce a usable table; this is not citable performance evidence.',
-      ),
-      retryHint: localize(
-        outputLanguage,
-        '修正 SQL 或改用 fetch_artifact / invoke_skill 后重试。不要把失败诊断作为结论证据。',
-        'Fix the SQL or retry with fetch_artifact / invoke_skill. Do not cite failed diagnostics as conclusion evidence.',
-      ),
-    },
   };
 }
 

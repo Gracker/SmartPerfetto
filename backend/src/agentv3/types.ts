@@ -9,7 +9,7 @@ import type { SceneType } from './sceneClassifier';
 import type { OutputLanguage } from './outputLanguage';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
 import type {SourceUseStatus} from '../services/codebase/sourceUseDecision';
-import type {CapabilityManifestResolutionV1} from '../types/capabilityManifest';
+import type {CapabilityManifestResolutionV1, CapabilityUnprobedReasonCode} from '../types/capabilityManifest';
 import type {AnalysisRecoveryKind, AnalysisMissingReportSection} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
@@ -237,6 +237,13 @@ export interface CapabilityProbeResult {
   primaryTable: string;
   /** Approximate row count (only when status is 'available' or 'insufficient_or_scene_absent') */
   rowEstimate?: number;
+  /**
+   * Set only when the probe could not determine the capability (a module or
+   * probe query did not finish). Such an entry sits in `missingConfig`, but it
+   * is not a probe that found the data absent. Routine causes stay implied by
+   * the bucket and `rowEstimate`, which keeps the prompt payload small.
+   */
+  reasonCode?: CapabilityUnprobedReasonCode;
   /** Human-readable reason when not available */
   reason?: string;
 }

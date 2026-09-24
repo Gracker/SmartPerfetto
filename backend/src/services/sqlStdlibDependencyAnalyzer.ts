@@ -5,7 +5,12 @@
 import { getPerfettoStdlibSymbolIndex } from './perfettoStdlibScanner';
 import { moduleCoveredByPerfettoSqlLineage } from './perfettoSqlDocs';
 
-export type SqlStdlibUsageKind = 'table' | 'function' | 'macro';
+/**
+ * How SQL uses a stdlib symbol. `introspection` is a schema lookup by exact
+ * string literal (`pragma_table_info('x')`, sqlite_master `name = 'x'`); it is
+ * reported only when a caller asks for it.
+ */
+export type SqlStdlibUsageKind = 'table' | 'function' | 'macro' | 'introspection';
 
 export interface SqlStdlibDependency {
   symbol: string;
@@ -20,6 +25,13 @@ export interface AnalyzeSqlStdlibDependenciesOptions {
    * earlier step creates a helper view/table consumed by a later step.
    */
   extraLocalSymbols?: Iterable<string>;
+  /**
+   * Also resolve names the SQL introspects by exact string literal. Raw SQL
+   * auto-INCLUDE enables this so the model's own existence check sees the view;
+   * Skill validation does not, because a Skill's sqlite_master gate is a
+   * deliberate presence test over modules it already declares.
+   */
+  includeIntrospectedNames?: boolean;
 }
 
 interface AnalyzeSingleSqlFragmentOptions extends AnalyzeSqlStdlibDependenciesOptions {
@@ -66,7 +78,7 @@ const FROM_CLAUSE_TERMINATORS = new Set([
   'SELECT', 'FROM',
 ]);
 
-function maskCommentsAndStrings(sql: string): string {
+function maskCommentsAndStrings(sql: string, keepStrings = false): string {
   let out = '';
   let i = 0;
   const len = sql.length;
@@ -94,22 +106,20 @@ function maskCommentsAndStrings(sql: string): string {
       continue;
     }
     if (c === "'") {
-      out += ' ';
+      const start = i;
       i++;
       while (i < len) {
         if (sql[i] === "'") {
           if (sql[i + 1] === "'") {
-            out += '  ';
             i += 2;
             continue;
           }
-          out += ' ';
           i++;
           break;
         }
-        out += sql[i] === '\n' ? '\n' : ' ';
         i++;
       }
+      out += keepStrings ? sql.slice(start, i) : sql.slice(start, i).replace(/[^\n]/g, ' ');
       continue;
     }
     out += c;
@@ -292,26 +302,35 @@ function skipBalancedParentheses(tokens: string[], openIndex: number): number {
   return i;
 }
 
-function skipOptionalAlias(tokens: string[], index: number): number {
+/** Skip an optional `[AS] alias` after a FROM/JOIN item; return the next index and the alias. */
+function readOptionalAlias(tokens: string[], index: number): {next: number; alias?: string} {
   let i = index;
   if (i < tokens.length && tokens[i].toUpperCase() === 'AS') {
     i++;
-    if (i < tokens.length && isIdentifierToken(tokens[i])) i++;
-    return i;
+    if (i < tokens.length && isIdentifierToken(tokens[i])) {
+      return {next: i + 1, alias: unquoteIdentifier(tokens[i]).toLowerCase()};
+    }
+    return {next: i};
   }
   if (
     i < tokens.length
     && isIdentifierToken(tokens[i])
     && !FROM_CLAUSE_TERMINATORS.has(tokens[i].toUpperCase())
   ) {
-    i++;
+    return {next: i + 1, alias: unquoteIdentifier(tokens[i]).toLowerCase()};
   }
-  return i;
+  return {next: i};
 }
 
-function extractFromJoinTables(maskedSql: string): string[] {
+/** A table read in FROM/JOIN position and the alias it is read under. */
+export interface SqlTableBinding {
+  table: string;
+  alias?: string;
+}
+
+function extractFromJoinBindings(maskedSql: string): SqlTableBinding[] {
   const tokens = maskedSql.match(TOKEN_REGEX) || [];
-  const tables: string[] = [];
+  const bindings: SqlTableBinding[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const upper = tokens[i].toUpperCase();
     if (upper !== 'FROM' && upper !== 'JOIN') {
@@ -321,17 +340,15 @@ function extractFromJoinTables(maskedSql: string): string[] {
     while (j < tokens.length) {
       const ident = tokens[j];
       if (ident === '(') {
-        j = skipBalancedParentheses(tokens, j);
-        j = skipOptionalAlias(tokens, j);
+        j = readOptionalAlias(tokens, skipBalancedParentheses(tokens, j)).next;
       } else if (isIdentifierToken(ident)) {
         const isTableValuedFunction = tokens[j + 1] === '(';
         if (isTableValuedFunction) {
-          j = skipBalancedParentheses(tokens, j + 1);
-          j = skipOptionalAlias(tokens, j);
+          j = readOptionalAlias(tokens, skipBalancedParentheses(tokens, j + 1)).next;
         } else {
-          tables.push(unquoteIdentifier(ident).toLowerCase());
-          j++;
-          j = skipOptionalAlias(tokens, j);
+          const {next, alias} = readOptionalAlias(tokens, j + 1);
+          bindings.push({table: unquoteIdentifier(ident).toLowerCase(), ...(alias ? {alias} : {})});
+          j = next;
         }
       } else {
         break;
@@ -343,7 +360,11 @@ function extractFromJoinTables(maskedSql: string): string[] {
       break;
     }
   }
-  return tables;
+  return bindings;
+}
+
+function extractFromJoinTables(maskedSql: string): string[] {
+  return extractFromJoinBindings(maskedSql).map(binding => binding.table);
 }
 
 /**
@@ -351,9 +372,23 @@ function extractFromJoinTables(maskedSql: string): string[] {
  * itself (CTEs, CREATE statements); subqueries and table functions are skipped.
  */
 export function extractExternalTableReferences(sql: string): string[] {
+  return [...new Set(extractExternalTableBindings(sql).map(binding => binding.table))];
+}
+
+/**
+ * {@link extractExternalTableReferences} with the alias each table is read
+ * under, in query order. A table read twice appears once per alias.
+ */
+export function extractExternalTableBindings(sql: string): SqlTableBinding[] {
   const masked = maskCommentsAndStrings(sql);
   const local = localSqlSymbolsFromMasked(masked);
-  return [...new Set(extractFromJoinTables(masked))].filter(table => !local.has(table));
+  const seen = new Set<string>();
+  return extractFromJoinBindings(masked).filter(binding => {
+    const key = `${binding.table}\n${binding.alias ?? ''}`;
+    if (local.has(binding.table) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function extractLocalSqlSymbols(sql: string): string[] {
@@ -388,6 +423,62 @@ function extractIncludes(maskedSql: string): string[] {
     includes.add(match[1].toLowerCase());
   }
   return [...includes].sort();
+}
+
+const STRING_LITERAL = String.raw`'((?:[^']|'')*)'`;
+const PRAGMA_TABLE_INFO_FUNCTION_REGEX = new RegExp(
+  String.raw`\bpragma_table_x?info\s*\(\s*${STRING_LITERAL}`,
+  'gi',
+);
+const PRAGMA_TABLE_INFO_STATEMENT_REGEX = new RegExp(
+  String.raw`\bPRAGMA\s+(?:[A-Za-z_]\w*\.)?table_x?info\s*\(\s*(?:${STRING_LITERAL}|"((?:[^"]|"")+)"|([A-Za-z_]\w*))\s*\)`,
+  'gi',
+);
+/** Cheap raw-text prefilter: every introspection form names one of these. */
+const INTROSPECTION_HINT_REGEX = /pragma|sqlite_(?:temp_)?(?:master|schema)/i;
+const SCHEMA_TABLE_REGEX = /\b(?:sqlite_master|sqlite_schema|sqlite_temp_master|sqlite_temp_schema)\b/i;
+const SCHEMA_NAME_EQUALS_REGEX = new RegExp(
+  String.raw`\b(?:[A-Za-z_]\w*\.)?(?:name|tbl_name)\s*(?:==?|\bIS\b)\s*${STRING_LITERAL}`,
+  'gi',
+);
+const SCHEMA_NAME_IN_REGEX = /\b(?:[A-Za-z_]\w*\.)?(?:name|tbl_name)\s+IN\s*\(([^)]*)\)/gi;
+const STRING_LITERAL_REGEX = new RegExp(STRING_LITERAL, 'g');
+
+function literalValue(raw: string): string {
+  return raw.replace(/''/g, "'").toLowerCase();
+}
+
+/**
+ * Names a statement asks the schema about by exact string literal:
+ * `pragma_table_info('x')`, `PRAGMA table_info(x)`, and `name = 'x'` /
+ * `name IN ('x', ...)` against sqlite_master. A stdlib view is invisible to
+ * both until its module is included, so the introspection itself returns
+ * nothing and reads as "the table does not exist". Patterns (`LIKE`, `GLOB`)
+ * name no single symbol and are not resolved.
+ */
+function extractIntrospectedNames(sql: string, maskedSql: string): string[] {
+  if (!INTROSPECTION_HINT_REGEX.test(sql)) return [];
+  // Comments blanked, string literals kept: the scan reads their values.
+  const text = maskCommentsAndStrings(sql, true);
+  const names = new Set<string>();
+  for (const match of text.matchAll(PRAGMA_TABLE_INFO_FUNCTION_REGEX)) {
+    names.add(literalValue(match[1]));
+  }
+  for (const match of text.matchAll(PRAGMA_TABLE_INFO_STATEMENT_REGEX)) {
+    const value = match[1] ?? match[2]?.replace(/""/g, '"') ?? match[3];
+    if (value) names.add(literalValue(value));
+  }
+  if (SCHEMA_TABLE_REGEX.test(maskedSql)) {
+    for (const match of text.matchAll(SCHEMA_NAME_EQUALS_REGEX)) {
+      names.add(literalValue(match[1]));
+    }
+    for (const match of text.matchAll(SCHEMA_NAME_IN_REGEX)) {
+      for (const literal of match[1].matchAll(STRING_LITERAL_REGEX)) {
+        names.add(literalValue(literal[1]));
+      }
+    }
+  }
+  return [...names];
 }
 
 function addReference(
@@ -461,8 +552,14 @@ function analyzeSingleSqlFragment(
     localSymbols.add(symbol.toLowerCase());
   }
 
+  const references = extractReferences(maskedSql);
+  if (options.includeIntrospectedNames) {
+    for (const name of extractIntrospectedNames(sql, maskedSql)) {
+      addReference(references, name, 'introspection');
+    }
+  }
   const dependencies = new Map<string, SqlStdlibDependency>();
-  for (const [symbol, usages] of extractReferences(maskedSql)) {
+  for (const [symbol, usages] of references) {
     if (localSymbols.has(symbol) || index.builtins.has(symbol)) continue;
     const module = index.tableToModule.get(symbol);
     if (!module) continue;
@@ -521,6 +618,7 @@ export function analyzeSqlStdlibDependencySequence(
       const analysis = analyzeSingleSqlFragment(statement, index, {
         extraLocalSymbols: localSymbolsForStatement,
         extraIncludedModules: previousIncludedModules,
+        includeIntrospectedNames: options.includeIntrospectedNames,
       });
 
       for (const include of analysis.includes) {

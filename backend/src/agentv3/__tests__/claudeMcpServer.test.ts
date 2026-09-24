@@ -3129,6 +3129,41 @@ describe('createClaudeMcpServer', () => {
       ]));
     });
 
+    it('execute_sql failure leads with the error and schema facts and counts repeats within the run', async () => {
+      const { tools, mockTpService } = createTestServer();
+      (mockTpService.query as any).mockResolvedValue({
+        columns: [], rows: [], rowCount: 0, durationMs: 1,
+        error: 'no such column: ts (line 2, col 8)',
+      });
+
+      const first = await callTool(tools, 'execute_sql', { sql: 'SELECT ts FROM android_binder_txns' });
+      const second = await callTool(tools, 'execute_sql', { sql: 'SELECT ts, 1 FROM android_binder_txns' });
+
+      expect(first.success).toBe(false);
+      expect(Object.keys(first).slice(0, 4)).toEqual(['success', 'error', 'schemaDiagnostic', 'diagnostic']);
+      expect(first.schemaDiagnostic).toMatchObject({
+        errorKind: 'missing_column',
+        absence: 'query_error_not_data_absence',
+        symbol: 'android_binder_txns',
+        column: 'ts',
+        stdlibModule: 'android.binder',
+        moduleInjected: true,
+        repeatCount: 1,
+      });
+      expect(first.schemaDiagnostic.availableColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
+      expect(first.schemaDiagnostic.closestColumns).toEqual(expect.arrayContaining(['client_ts', 'server_ts']));
+      expect(second.schemaDiagnostic.repeatCount).toBe(2);
+
+      // A new server is a new run: its memory starts empty.
+      const next = createTestServer();
+      (next.mockTpService.query as any).mockResolvedValue({
+        columns: [], rows: [], rowCount: 0, durationMs: 1,
+        error: 'no such column: ts (line 2, col 8)',
+      });
+      const otherRun = await callTool(next.tools, 'execute_sql', { sql: 'SELECT ts FROM android_binder_txns' });
+      expect(otherRun.schemaDiagnostic.repeatCount).toBe(1);
+    });
+
     it('invoke_skill emits sourced zero-row display results as auditable evidence', async () => {
       const { tools, emittedUpdates, mockSkillExecutor } = createTestServer();
       await callTool(tools, 'submit_plan', {
@@ -4417,6 +4452,11 @@ describe('createClaudeMcpServer', () => {
       });
       expect(failedResult.diagnostic?.message).toContain('不是可引用的性能证据');
       expect(failedResult.error).toContain('bad sql');
+      expect(failedResult.schemaDiagnostic).toEqual({
+        errorKind: 'other',
+        absence: 'query_error_not_data_absence',
+        repeatCount: 1,
+      });
     });
 
     it('compare_skill executes both traces and emits pane-aware provenance envelopes', async () => {

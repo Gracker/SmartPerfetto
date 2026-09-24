@@ -17,13 +17,35 @@ export type CapabilitySourceState =
   | 'present_with_data'
   | 'present_empty'
   | 'schema_missing'
-  | 'not_applicable';
+  | 'not_applicable'
+  /** The probe could not determine the source: a module or query did not finish. */
+  | 'unprobed';
+
+/**
+ * Reason codes for a capability the probe could not determine. They ride in the
+ * legacy `missingConfig` bucket and map to status `missing`, but never claim
+ * the schema or the data is absent.
+ */
+export const CAPABILITY_UNPROBED_REASON_CODES = [
+  'probe_module_unavailable',
+  'probe_query_failed',
+] as const;
+
+export type CapabilityUnprobedReasonCode =
+  typeof CAPABILITY_UNPROBED_REASON_CODES[number];
+
+export function isCapabilityUnprobedReasonCode(
+  code: unknown,
+): code is CapabilityUnprobedReasonCode {
+  return (CAPABILITY_UNPROBED_REASON_CODES as readonly unknown[]).includes(code);
+}
 
 export type CapabilityReasonCode =
   | 'schema_missing'
   | 'empty_or_scene_absent'
   | 'sparse_or_scene_absent'
-  | 'not_applicable';
+  | 'not_applicable'
+  | CapabilityUnprobedReasonCode;
 
 export interface CapabilityManifestCapabilityDefinition {
   id: string;
@@ -51,6 +73,11 @@ export interface CapabilityManifestLegacyProbeResult {
     | 'insufficient_or_scene_absent';
   primaryTable: string;
   rowEstimate?: number;
+  /**
+   * Only on a `missingConfig` result the probe could not determine; routine
+   * causes are derived from the bucket and `rowEstimate`.
+   */
+  reasonCode?: CapabilityUnprobedReasonCode;
   reason?: string;
 }
 
