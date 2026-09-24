@@ -1357,7 +1357,9 @@ steps:
       binding: native_upid
       context_fields:
         global_context: [frame_budget_ms]
-    sql_fragments: [fragments/android_input_events_normalized.sql]
+    sql_fragments:
+      - fragments/android_input_events_normalized.sql
+      - fragments/android_input_delivery_roles.sql
     sql: |
       WITH
       vsync_intervals AS (
@@ -1389,7 +1391,7 @@ steps:
       ),
       scoped_events AS (
         SELECT *
-        FROM android_input_events_normalized
+        FROM android_input_event_deliveries
         WHERE (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
           AND (
           ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
@@ -1399,11 +1401,14 @@ steps:
           AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
           AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       ),
+      -- 同一物理事件的 monitor 副本不算应用投递；显式 upid/package 已在 scoped_events 收窄候选。
       ranked_processes AS (
         SELECT
           upid, process_name,
-          COUNT(*) as event_count,
-          ROW_NUMBER() OVER (ORDER BY COUNT(*) DESC, MAX(total_latency_dur) DESC) as rn
+          ROW_NUMBER() OVER (ORDER BY
+            SUM(delivery_role = 'action') DESC,
+            COUNT(DISTINCT unresolved_event_key) DESC,
+            MAX(total_latency_dur) DESC, upid) as rn
         FROM scoped_events
         GROUP BY upid, process_name
       ),

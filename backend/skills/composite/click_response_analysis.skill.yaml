@@ -151,23 +151,33 @@ steps:
           label: "事件数"
           type: number
           format: compact
+        - name: app_delivery_events
+          label: "应用投递"
+          type: number
+          format: compact
         - name: max_total_ms
           label: "最大延迟"
           type: duration
           format: duration_ms
           unit: ms
-    sql_fragments: [fragments/android_input_events_normalized.sql]
+    # 按应用投递排序而非行数：monitor 副本会让系统进程行数更多。
+    sql_fragments:
+      - fragments/android_input_events_normalized.sql
+      - fragments/android_input_delivery_roles.sql
     sql: |
       SELECT
         process_name,
         COUNT(*) as event_count,
+        SUM(delivery_role = 'action') as app_delivery_events,
         ROUND(MAX(total_latency_dur) / 1e6, 2) as max_total_ms
-      FROM android_input_events_normalized
+      FROM android_input_event_deliveries
       WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
         AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
         AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       GROUP BY process_name
-      ORDER BY event_count DESC, max_total_ms DESC
+      ORDER BY app_delivery_events DESC,
+        COUNT(DISTINCT unresolved_event_key) DESC,
+        MAX(total_latency_dur) DESC, process_name
       LIMIT 1
     save_as: target_process
     condition: input_check.data[0]?.status === 'available'

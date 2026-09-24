@@ -759,6 +759,89 @@ describe('scrolling_analysis skill schema', () => {
     }
   });
 
+  // One physical touch is delivered to the app window and to monitor channels;
+  // only the app's row carries the action (surface-view trace, runtime 99234d73fe).
+  type InputDelivery = readonly [
+    upid: number, processName: string, channel: string, eventId: string, action: string | null, latency: number,
+  ];
+  const createMonitorCopyInputFixture = (deliveries: readonly InputDelivery[]): Database.Database => {
+    const db = createScopedSqlFixture();
+    db.exec(`
+      CREATE TABLE counter_track(id INTEGER, name TEXT);
+      CREATE TABLE counter(track_id INTEGER, ts INTEGER);
+      CREATE TABLE android_input_events(
+        upid INTEGER, process_name TEXT, event_channel TEXT, input_event_id TEXT,
+        event_action TEXT, total_latency_dur INTEGER,
+        dispatch_ts INTEGER, receive_ts INTEGER, receive_dur INTEGER
+      );
+    `);
+    const insert = db.prepare('INSERT INTO android_input_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, 10)');
+    deliveries.forEach(([upid, processName, channel, eventId, action, latency], index) =>
+      insert.run(upid, processName, channel, eventId, action, latency, 100 * (index + 1), 100 * (index + 1)));
+    completeAndroidInputEventsFixture(db);
+    return db;
+  };
+
+  const monitorCopyDeliveries: InputDelivery[] = [
+    ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].flatMap((action, index): InputDelivery[] => [
+      [1, 'com.example.app', 'app (server)', String(index + 1), action, 1000000],
+      [2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', String(index + 1), null, 3000000],
+      [3, 'system_server', 'PointerEventDispatcher0 (server)', String(index + 1), null, 2000000],
+    ]),
+    [2, 'com.android.systemui', 'NavigationBar0 (server)', '1', null, 3000000],
+  ];
+
+  it('selects the input latency target by application deliveries, not monitor copies', () => {
+    const db = createMonitorCopyInputFixture(monitorCopyDeliveries);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', '')).get() as {
+        target_process: string;
+        total_input_events: number;
+        move_events: number;
+      };
+
+      expect(row.target_process).toBe('com.example.app');
+      expect(row.total_input_events).toBe(3);
+      expect(row.move_events).toBe(1);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps an explicit package authoritative when its input rows are all monitor copies', () => {
+    const db = createMonitorCopyInputFixture(monitorCopyDeliveries);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', 'com.android.systemui')).get() as {
+        target_process: string;
+        total_input_events: number;
+      };
+
+      expect(row.target_process).toBe('com.android.systemui');
+      expect(row.total_input_events).toBe(4);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('ranks action-free input by physical events, so extra monitor channels do not win', () => {
+    // No receiver carries an action (runtimes that resolve none): the app has
+    // more distinct events, systemui more rows through two channels.
+    const db = createMonitorCopyInputFixture([
+      ...['1', '2', '3', '4'].map((eventId): InputDelivery => [1, 'com.example.app', 'app (server)', eventId, null, 1000000]),
+      ...['1', '2', '3'].flatMap((eventId): InputDelivery[] => [
+        [2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', eventId, null, 3000000],
+        [2, 'com.android.systemui', 'NavigationBar0 (server)', eventId, null, 3000000],
+      ]),
+    ]);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', '')).get() as {target_process: string};
+
+      expect(row.target_process).toBe('com.example.app');
+    } finally {
+      db.close();
+    }
+  });
+
   it('counts similar-prefix CPU work as non-app background interference', () => {
     const cte = extractMarkedCtes(
       String(getStep('global_context_flags').sql),

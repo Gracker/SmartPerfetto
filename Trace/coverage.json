@@ -7389,10 +7389,11 @@
           },
           {
             "id": "get_process",
-            "sha256": "0bf97a026dddc952e4d37287b0a284b37e6fc35b742053e6e2fb4c893fc32e97",
+            "sha256": "75f894e997d2d0c1c74ab4748789999c0899c391efecb46cfdb79bd10074bffc",
             "required_columns": [
               "process_name",
               "event_count",
+              "app_delivery_events",
               "max_total_ms"
             ]
           },
@@ -10846,7 +10847,7 @@
           },
           {
             "id": "input_latency_summary",
-            "sha256": "5960cfc2f0b32ada4aba48a130ed02b18ebac190d0c08a6455ca99ba17fc0687",
+            "sha256": "dbe4f6a9fb9eea32596f55edbbd28718ff2b11087f5c735ca4c8c58db5a3802b",
             "required_columns": [
               "target_process",
               "total_input_events",

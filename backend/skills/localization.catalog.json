@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1366,
-    "explicitColumnCount": 4976
+    "explicitColumnCount": 4977
   },
   "skills": {
     "ams_module": {
@@ -8474,6 +8474,12 @@
               "label": {
                 "zh-CN": "事件数",
                 "en": "Event Count"
+              }
+            },
+            "app_delivery_events": {
+              "label": {
+                "zh-CN": "应用投递",
+                "en": "App Delivery Events"
               }
             },
             "max_total_ms": {
