@@ -69,10 +69,10 @@ function scrollingEvidence() {
 
 function inputEvidence() {
   return createDataEnvelope({
-    columns: ['frame_id', 'event_ts', 'event_end_ts', 'main_bottleneck', 'severity', 'total_ms'],
+    columns: ['frame_id', 'event_ts', 'event_end_ts', 'main_bottleneck', 'severity', 'total_ms', 'frame_association'],
     rows: [
-      ['301', '1000', '2000', '应用处理', 'critical', 250],
-      ['302', '3000', '4000', 'unknown', 'warning', 150],
+      ['301', '1000', '2000', '应用处理', 'critical', 250, 'exact'],
+      ['302', '3000', '4000', 'unknown', 'warning', 150, 'exact'],
     ],
   }, {
     type: 'skill_result', source: 'click_response_analysis', title: 'slow input events',

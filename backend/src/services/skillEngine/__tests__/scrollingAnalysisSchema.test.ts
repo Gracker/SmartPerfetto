@@ -760,8 +760,9 @@ describe('scrolling_analysis skill schema', () => {
     }
   });
 
-  it('counts input backlog only from exact frame associations', () => {
-    const summarize = (rows: Array<[frameId: number, speculative: number | null]>) => {
+  it('reads frame linkage, backlog and input-to-present only from exact frame associations', () => {
+    type Row = [frameId: number | null, speculative: number | null, e2eNs: number | null];
+    const run = (stepId: string, rows: Row[]) => {
       const db = createScopedSqlFixture();
       try {
         db.exec(`
@@ -771,29 +772,37 @@ describe('scrolling_analysis skill schema', () => {
         `);
         const insert = db.prepare(`
           INSERT INTO android_input_events(process_name, upid, event_action, dispatch_ts, receive_ts, receive_dur,
-            handling_latency_dur, total_latency_dur, frame_id, is_speculative_frame)
-          VALUES ('com.example.app', 1, 'MOVE', ?, ?, 10, 100000, 1000000, ?, ?)
+            handling_latency_dur, total_latency_dur, frame_id, is_speculative_frame, end_to_end_latency_dur)
+          VALUES ('com.example.app', 1, 'MOVE', ?, ?, 10, 100000, 1000000, ?, ?, ?)
         `);
-        rows.forEach(([frameId, speculative], index) => insert.run(100 + index * 100, 100 + index * 100, frameId, speculative));
-        return db.prepare(renderScrollingSql('input_latency_summary')).get() as {
-          input_backlog_frames: number;
-          speculative_frame_matches: number;
-          max_e2e_ms: number | null;
-        };
+        rows.forEach(([frameId, speculative, e2e], index) =>
+          insert.run(100 + index * 100, 100 + index * 100, frameId, speculative, e2e));
+        return db.prepare(renderScrollingSql(stepId)).get() as Record<string, unknown>;
       } finally {
         db.close();
       }
     };
 
-    // A whole gesture speculatively matched to the one doFrame after it is not a backlog.
-    expect(summarize(Array(18).fill([7, 1]))).toMatchObject({
+    // A whole gesture speculatively matched to the one doFrame after it: no
+    // backlog, no measured input-to-present, and frame linkage is not available.
+    const speculativeOnly: Row[] = Array(18).fill([7, 1, 50_000_000]);
+    expect(run('input_latency_summary', speculativeOnly)).toMatchObject({
       input_backlog_frames: 0, speculative_frame_matches: 18, max_e2e_ms: null,
     });
-    expect(summarize([[7, 0], [7, 0], [7, 0], [8, 1]])).toMatchObject({
-      input_backlog_frames: 1, speculative_frame_matches: 1,
+    expect(run('input_data_check', speculativeOnly)).toMatchObject({
+      input_data_status: 'speculative_only', frame_matched_events: 0,
     });
-    // Runtimes that do not report the flag keep their association as exact.
-    expect(summarize([[7, null], [7, null], [7, null]])).toMatchObject({input_backlog_frames: 1});
+
+    const mixed: Row[] = [[7, 0, 10_000_000], [7, 0, 12_000_000], [7, 0, 11_000_000], [8, 1, 90_000_000]];
+    expect(run('input_latency_summary', mixed)).toMatchObject({
+      input_backlog_frames: 1, speculative_frame_matches: 1, max_e2e_ms: 12,
+    });
+    expect(run('input_data_check', mixed)).toMatchObject({input_data_status: 'available', frame_matched_events: 3});
+
+    // A frame without the speculative flag is not assumed exact.
+    expect(run('input_latency_summary', [[7, null, 10_000_000], [7, null, 10_000_000], [7, null, 10_000_000]]))
+      .toMatchObject({input_backlog_frames: 0, max_e2e_ms: null});
+    expect(run('input_data_check', [[null, null, null]])).toMatchObject({input_data_status: 'no_frame_match'});
   });
 
   // One physical touch is delivered to the app window and to monitor channels;

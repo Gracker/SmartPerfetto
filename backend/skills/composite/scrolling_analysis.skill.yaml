@@ -1263,14 +1263,16 @@ steps:
           AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       )
       SELECT
+        -- frame_matched_events: exact association only (see fragments/android_input_events_normalized.sql); speculative_only = frames matched only speculatively.
         CASE
           WHEN COUNT(*) = 0 THEN 'unavailable'
-          WHEN COALESCE(SUM(CASE WHEN frame_id IS NOT NULL THEN 1 ELSE 0 END), 0) = 0 THEN 'no_frame_match'
-          ELSE 'available'
+          WHEN COUNT(exact_frame_id) > 0 THEN 'available'
+          WHEN COUNT(frame_id) > 0 THEN 'speculative_only'
+          ELSE 'no_frame_match'
         END as input_data_status,
         COUNT(*) as total_input_events,
         COALESCE(SUM(CASE WHEN event_action = 'MOVE' THEN 1 ELSE 0 END), 0) as move_events,
-        COALESCE(SUM(CASE WHEN frame_id IS NOT NULL THEN 1 ELSE 0 END), 0) as frame_matched_events,
+        COUNT(exact_frame_id) as frame_matched_events,
         COUNT(DISTINCT upid) as target_processes
       FROM scoped_events
     save_as: input_data
@@ -1422,13 +1424,12 @@ steps:
         FROM scoped_events e
         JOIN target t ON e.upid = t.upid
       ),
-      -- A speculative association is only the next doFrame on the receiving
-      -- thread, not proof the frame consumed the event; backlog counts exact ones.
+      -- Backlog: exact association only (see fragments/android_input_events_normalized.sql).
       frame_backlog AS (
-        SELECT frame_id, COUNT(*) as event_count
+        SELECT exact_frame_id, COUNT(*) as event_count
         FROM target_events
-        WHERE frame_id IS NOT NULL AND COALESCE(is_speculative_frame, 0) = 0
-        GROUP BY frame_id
+        WHERE exact_frame_id IS NOT NULL
+        GROUP BY exact_frame_id
       )
       SELECT
         (SELECT process_name FROM target) as target_process,
@@ -1441,13 +1442,13 @@ steps:
         ROUND(MAX(handling_latency_dur) / 1e6, 2) as max_handling_ms,
         ROUND(AVG(ack_latency_dur) / 1e6, 2) as avg_ack_ms,
         ROUND(MAX(ack_latency_dur) / 1e6, 2) as max_ack_ms,
-        ROUND(AVG(end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
-        ROUND(MAX(end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
+        ROUND(AVG(exact_end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
+        ROUND(MAX(exact_end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
         SUM(CASE
           WHEN handling_latency_dur > (SELECT vsync_period_ns FROM timing_config) * ${input_handling_budget_ratio|0.5}
           THEN 1 ELSE 0 END) as slow_handling_events,
         (SELECT COUNT(*) FROM frame_backlog WHERE event_count >= ${input_event_backlog_threshold|3}) as input_backlog_frames,
-        SUM(CASE WHEN is_speculative_frame = 1 THEN 1 ELSE 0 END) as speculative_frame_matches,
+        SUM(CASE WHEN frame_association = 'speculative' THEN 1 ELSE 0 END) as speculative_frame_matches,
         ROUND((SELECT vsync_period_ns FROM timing_config) / 1e6, 2) as frame_budget_ms,
         CASE
           WHEN COUNT(*) = 0 THEN '无 input 事件'
@@ -3905,8 +3906,10 @@ steps:
           ROUND(MAX(ie.dispatch_latency_dur) / 1e6, 2) as input_dispatch_ms,
           ROUND(MAX(ie.ack_latency_dur) / 1e6, 2) as input_ack_ms,
           ROUND(MAX(ie.total_latency_dur) / 1e6, 2) as input_total_ms,
-          ROUND(MAX(ie.end_to_end_latency_dur) / 1e6, 2) as input_e2e_ms,
-          SUM(CASE WHEN ie.is_speculative_frame = 1 THEN 1 ELSE 0 END) as input_speculative_events
+          -- Input→Present: exact association only (see fragments/android_input_events_normalized.sql); NULL = unmeasured.
+          ROUND(MAX(ie.exact_end_to_end_latency_dur) / 1e6, 2) as input_e2e_ms,
+          SUM(CASE WHEN ie.frame_association = 'speculative' THEN 1 ELSE 0 END) as input_speculative_events,
+          COUNT(ie.exact_frame_id) as input_exact_events
         FROM jank_frame_list fl
         JOIN android_input_events_normalized ie ON ie.upid = fl.upid
           AND fl.timeline_frame_id IS NOT NULL
@@ -3988,8 +3991,8 @@ steps:
             ROUND(ie.dispatch_latency_dur / 1e6, 2) as dispatch_ms,
             ROUND(ie.ack_latency_dur / 1e6, 2) as ack_ms,
             ROUND(ie.total_latency_dur / 1e6, 2) as total_ms,
-            ROUND(ie.end_to_end_latency_dur / 1e6, 2) as e2e_ms,
-            CASE WHEN ie.is_speculative_frame = 1 THEN 1 ELSE 0 END as speculative,
+            ROUND(ie.exact_end_to_end_latency_dur / 1e6, 2) as e2e_ms,
+            CASE WHEN ie.frame_association = 'speculative' THEN 1 ELSE 0 END as speculative,
             printf('%d', ie.dispatch_ts) as input_ts,
             ROW_NUMBER() OVER (PARTITION BY fl.frame_key ORDER BY ie.handling_latency_dur DESC) as rn
           FROM jank_frame_list fl
@@ -4099,8 +4102,9 @@ steps:
           COALESCE(pfie.input_dispatch_ms, 0) as input_dispatch_ms,
           COALESCE(pfie.input_ack_ms, 0) as input_ack_ms,
           COALESCE(pfie.input_total_ms, 0) as input_total_ms,
-          COALESCE(pfie.input_e2e_ms, 0) as input_e2e_ms,
+          pfie.input_e2e_ms as input_e2e_ms,
           COALESCE(pfie.input_speculative_events, 0) as input_speculative_events,
+          COALESCE(pfie.input_exact_events, 0) as input_exact_events,
           COALESCE(pfis.input_slice_ms, 0) as input_slice_ms,
           COALESCE(pfis.input_slice_count, 0) as input_slice_count,
           COALESCE(pfis.input_slice_max_ms, 0) as input_slice_max_ms,
@@ -4169,14 +4173,14 @@ steps:
             WHEN gc_count >= 3 AND gc_overlap_ms > 0.5
               THEN 'gc_pressure_cascade'
             -- P1.7: App input stage 慢。只使用 App 责任/隐形掉帧帧；android.input
-            -- handling 或主线程 input slice 都可作为直接证据，同帧事件堆积只是辅助信号，
-            -- 且只计精确帧关联（推测关联只是接收线程的下一个 doFrame）。
+            -- handling 或主线程 input slice 都可作为直接证据，同帧事件堆积只是辅助信号
+            -- （只计精确帧关联）。
             WHEN jank_responsibility IN ('APP', 'HIDDEN')
               AND (
                 input_handling_ms > frame_budget_ms * ${input_handling_budget_ratio|0.5}
                 OR input_slice_ms > frame_budget_ms * ${input_handling_budget_ratio|0.5}
                 OR (
-                  input_event_count - input_speculative_events >= ${input_event_backlog_threshold|3}
+                  input_exact_events >= ${input_event_backlog_threshold|3}
                   AND input_handling_ms > frame_budget_ms * 0.25
                 )
               )

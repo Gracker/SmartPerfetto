@@ -10,12 +10,18 @@ const COLUMNS = [
   'frame_id', 'event_ts', 'event_end_ts', 'main_bottleneck', 'severity', 'total_ms', 'diagnosis',
 ];
 
+// The Skill labels every slow input row with its frame association; rows here
+// are exact unless a test passes frame_association itself.
 function envelope(
   rows: unknown[][],
   overrides: Record<string, unknown> = {},
   columns = COLUMNS,
 ): DataEnvelope {
-  return createDataEnvelope({columns, rows}, {
+  const labelled = columns.includes('frame_association');
+  return createDataEnvelope({
+    columns: labelled ? columns : [...columns, 'frame_association'],
+    rows: labelled ? rows : rows.map(row => [...row, 'exact']),
+  }, {
     type: 'skill_result', source: 'click_response_analysis', title: 'slow input events',
     skillId: 'click_response_analysis', stepId: 'slow_input_events', executionStatus: 'observed',
     evidenceRefId: 'data:input', sourceToolCallId: 'invoke_skill:input',
@@ -83,6 +89,22 @@ describe('inputRelationCandidateProducer', () => {
     ])).toHaveLength(1);
   });
 
+  it('links a frame only when the stdlib association is exact', () => {
+    const columns = ['frame_id', 'event_ts', 'event_end_ts', 'main_bottleneck', 'frame_association'];
+    for (const association of ['speculative', 'unknown', 'none']) {
+      expect(produceInputRelationCandidates([
+        envelope([['1', '100', '200', 'ACK', association]], {}, columns),
+      ])).toEqual([]);
+    }
+    // A row without the label is not assumed exact.
+    const unlabelled = createDataEnvelope({columns: columns.slice(0, 4), rows: [['1', '100', '200', 'ACK']]},
+      envelope([]).meta as any);
+    expect(produceInputRelationCandidates([unlabelled])).toEqual([]);
+    expect(produceInputRelationCandidates([
+      envelope([['1', '100', '200', 'ACK', 'exact']], {}, columns),
+    ])).toHaveLength(1);
+  });
+
   it.each([
     ['leading-zero frame', ['01', '100', '200', 'ACK']],
     ['negative frame', ['-1', '100', '200', 'ACK']],
@@ -120,7 +142,8 @@ describe('inputRelationCandidateProducer', () => {
 
   it('accepts object rows, caps output at 50, and orders candidates independently of envelope order', () => {
     const objectEnvelope = createDataEnvelope({
-      rows: [{frame_id: '2', event_ts: '10', event_end_ts: '20', main_bottleneck: '应用处理'}] as any,
+      rows: [{frame_id: '2', event_ts: '10', event_end_ts: '20', main_bottleneck: '应用处理',
+        frame_association: 'exact'}] as any,
     }, {
       type: 'skill_result', source: 'click_response_analysis', title: 'slow input events',
       skillId: 'click_response_analysis', stepId: 'slow_input_events', executionStatus: 'observed',

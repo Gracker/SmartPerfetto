@@ -342,7 +342,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
   - `jank_type_stats`：掉帧类型分布，**注意 real_jank_count（真实掉帧）vs false_positive（假阳性）**
   - `scroll_sessions`：滑动区间列表
   - `input_data_check` / `input_latency_summary`：可选的 android.input 证据源检测和输入分发/处理/ACK/跟手度概览。缺数据时只能说明 trace 未包含完整 input event 链路，不可据此否定输入延迟问题
-    - dispatch/handling/ACK 按事件精确测量。`speculative_frame_matches` 计的是只推测关联到同一 UI 线程下一个 `Choreographer#doFrame` 的事件：该帧未经证实消费了事件，只是候选；`input_backlog_frames` 只按精确关联计数。画面不由该线程产出（如 Flutter SurfaceView）或全部事件都是推测关联时，跟手度结论只能是候选或不可测量。
+    - dispatch/handling/ACK 按事件精确测量。`speculative_frame_matches` 计的是只推测关联到同一 UI 线程下一个 `Choreographer#doFrame` 的事件：该帧未经证实消费了事件，只是候选；`input_backlog_frames`、`frame_matched_events` 和 `max_e2e_ms` 只按精确关联计算；`input_data_status = speculative_only` 表示只有推测关联，帧关联不可用。画面不由该线程产出（如 Flutter SurfaceView）或全部事件都是推测关联时，跟手度结论只能是候选或不可测量。
     - `max_e2e_ms` 等 Input→Present 字段为空表示未测量，不是 0ms 或正常；`input_latency_rating` 只按 App 处理耗时评级，不代表上屏延迟。
   - `batch_frame_root_cause`（主掉帧列表）：已选择掉帧帧的**完整逐帧分析**（frame_id + start_ts + jank_type + jank_responsibility + vsync_missed + reason_code + 四象限 MainThread/RenderThread + CPU 频率 + Binder/GC 重叠 + Input 处理证据 + 根因分类）。先读 `root_cause_analysis_scope` 和 X/Y coverage；默认每 Session 最多 200 帧，截断时它是代表性严重帧样本，不是全量 reason_code 分布
     - 特别注意 `App Resynced Jitter` / `Choreographer#doFrame - resynced...`：它们只能说明 App doFrame 相位重同步；如果要声称 SF 未合成，必须补充 consumer/SF 侧证据

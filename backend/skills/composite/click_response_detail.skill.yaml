@@ -375,7 +375,8 @@ steps:
       SELECT
         e.input_event_id as input_id,
         e.event_channel as channel,
-        ROUND(e.end_to_end_latency_dur / 1e6, 2) as total_latency_ms,
+        -- dispatch-to-ACK，与列标签一致；end-to-end 上屏延迟不在这张表里。
+        ROUND(e.total_latency_dur / 1e6, 2) as total_latency_ms,
         CASE WHEN e.read_time IS NOT NULL THEN printf('%d', e.read_time) END as reader_ts,
         ROUND(s_read.dur / 1e6, 2) as reader_ms,
         CASE WHEN e.dispatch_ts IS NOT NULL THEN printf('%d', e.dispatch_ts) END as dispatch_ts,

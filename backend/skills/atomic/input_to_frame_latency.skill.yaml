@@ -12,7 +12,7 @@
 # - 从 android_input_event_dispatch (proto) 迁移到 android_input_events (slice-based)
 # - 帧关联从时间窗口子查询改为 frame_id 精确 JOIN
 # - 新增 dispatch/handling/ack 管线分解
-# - 新增 is_speculative_frame 帧关联置信度
+# - 帧关联只用精确关联（exact_frame_id）；推测关联单独计数
 # - 采样率检测迁移到 android_input_events
 #
 # 用于跟手度分析，而非首帧响应速度（scroll_response_latency）。
@@ -97,13 +97,6 @@ display:
       label: "帧耗时"
       type: duration
       format: duration_ms
-    - name: frame_to_present_ms
-      label: "Frame→Present"
-      type: duration
-      format: duration_ms
-    - name: is_speculative
-      label: "推测帧"
-      type: boolean
     - name: rating
       label: "评级"
       type: string
@@ -236,13 +229,6 @@ steps:
           label: "帧耗时(ms)"
           type: duration
           format: duration_ms
-        - name: frame_to_present_ms
-          label: "Frame→Present(ms)"
-          type: duration
-          format: duration_ms
-        - name: is_speculative
-          label: "推测帧"
-          type: boolean
         - name: rating
           label: "评级"
           type: string
@@ -270,15 +256,14 @@ steps:
           ie.dispatch_latency_dur,
           ie.handling_latency_dur,
           ie.ack_latency_dur,
-          ie.end_to_end_latency_dur,
-          ie.is_speculative_frame,
-          -- 用 frame_id 精确 JOIN 帧表获取帧内分解
+          ie.exact_end_to_end_latency_dur,
+          -- exact association only (see fragments/android_input_events_normalized.sql)
           f.ts as frame_ts,
           f.dur as frame_dur,
           f.ts + f.dur as frame_present_ts
         FROM android_input_events_normalized ie
         LEFT JOIN actual_frame_timeline_slice f
-          ON ie.frame_id = f.surface_frame_token
+          ON ie.exact_frame_id = f.surface_frame_token
           AND ie.upid = f.upid
         WHERE (('${package}' = '' OR ie.process_name = '${package}' OR ie.process_name GLOB '${package}:*') OR '${package}' = '')
           AND (ie.event_action = 'MOVE'
@@ -286,13 +271,13 @@ steps:
           AND (${start_ts} IS NULL OR ie.dispatch_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR ie.dispatch_ts <= ${end_ts})
       ),
-      -- 预计算 e2e 延迟，避免重复 COALESCE（优先用 stdlib 的 end_to_end，fallback 到手动计算）
+      -- 预计算 e2e 延迟（优先用 stdlib 的 end_to_end，fallback 到精确关联帧的结束时间）
       with_latency AS (
         SELECT
           *,
-          COALESCE(end_to_end_latency_dur, frame_present_ts - input_ts) as e2e_ns
+          COALESCE(exact_end_to_end_latency_dur, frame_present_ts - input_ts) as e2e_ns
         FROM input_with_frame
-        WHERE (end_to_end_latency_dur IS NOT NULL OR frame_present_ts IS NOT NULL)
+        WHERE (exact_end_to_end_latency_dur IS NOT NULL OR frame_present_ts IS NOT NULL)
       )
       SELECT
         printf('%d', input_ts) as input_ts,
@@ -303,8 +288,6 @@ steps:
         ROUND(handling_latency_dur / 1e6, 2) as handling_ms,
         ROUND(ack_latency_dur / 1e6, 2) as ack_ms,
         ROUND(frame_dur / 1e6, 2) as frame_dur_ms,
-        ROUND((frame_present_ts - frame_ts - COALESCE(frame_dur, 0)) / 1e6, 2) as frame_to_present_ms,
-        is_speculative_frame as is_speculative,
         CASE
           WHEN e2e_ns / 1e6 < 2 * (SELECT period_ns FROM vsync_cfg) / 1e6 THEN '优秀'
           WHEN e2e_ns / 1e6 < 3 * (SELECT period_ns FROM vsync_cfg) / 1e6 THEN '良好'
@@ -346,16 +329,20 @@ steps:
         FROM vsync_intervals
         WHERE interval_ns BETWEEN 5500000 AND 50000000
       ),
-      valid AS (
-        SELECT end_to_end_latency_dur as latency_ns
+      scoped AS (
+        SELECT exact_end_to_end_latency_dur, frame_association
         FROM android_input_events_normalized
         WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
           AND event_action = 'MOVE'
           AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})
-          AND end_to_end_latency_dur IS NOT NULL
-          AND end_to_end_latency_dur > 0
-          AND end_to_end_latency_dur < 500000000
+      ),
+      -- exact association only (see fragments/android_input_events_normalized.sql); speculative counted separately.
+      valid AS (
+        SELECT exact_end_to_end_latency_dur as latency_ns
+        FROM scoped
+        WHERE exact_end_to_end_latency_dur > 0
+          AND exact_end_to_end_latency_dur < 500000000
       )
       SELECT 'P50' as metric, ROUND(PERCENTILE(latency_ns, 50) / 1e6, 2) as value_ms FROM valid
       UNION ALL
@@ -368,6 +355,8 @@ steps:
       SELECT '标准差', ROUND(SQRT(AVG(latency_ns * latency_ns) - AVG(latency_ns) * AVG(latency_ns)) / 1e6, 2) FROM valid
       UNION ALL
       SELECT '样本数', CAST(COUNT(*) AS REAL) FROM valid
+      UNION ALL
+      SELECT '推测关联事件数', CAST(COUNT(*) AS REAL) FROM scoped WHERE frame_association = 'speculative'
       UNION ALL
       SELECT 'VSync周期(ms)', ROUND((SELECT period_ns FROM vsync_cfg) / 1e6, 2) FROM valid LIMIT 1
 
@@ -396,30 +385,24 @@ steps:
         - name: spike_ratio
           label: "飙升倍数"
           type: number
-        - name: is_speculative
-          label: "推测帧"
-          type: boolean
     sql_fragments: [fragments/android_input_events_normalized.sql]
     sql: |
       WITH latencies AS (
         SELECT
           dispatch_ts as input_ts,
-          end_to_end_latency_dur as latency_ns,
-          is_speculative_frame
+          exact_end_to_end_latency_dur as latency_ns
         FROM android_input_events_normalized
         WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
           AND event_action = 'MOVE'
           AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})
-          AND end_to_end_latency_dur IS NOT NULL
-          AND end_to_end_latency_dur > 0
-          AND end_to_end_latency_dur < 500000000
+          AND exact_end_to_end_latency_dur > 0
+          AND exact_end_to_end_latency_dur < 500000000
       ),
       with_prev AS (
         SELECT
           input_ts,
           latency_ns,
-          is_speculative_frame,
           LAG(latency_ns) OVER (ORDER BY input_ts) as prev_latency_ns
         FROM latencies
       )
@@ -427,8 +410,7 @@ steps:
         printf('%d', input_ts) as input_ts,
         ROUND(latency_ns / 1e6, 2) as latency_ms,
         ROUND(prev_latency_ns / 1e6, 2) as prev_latency_ms,
-        ROUND(CAST(latency_ns AS REAL) / MAX(prev_latency_ns, 1), 1) as spike_ratio,
-        is_speculative_frame as is_speculative
+        ROUND(CAST(latency_ns AS REAL) / MAX(prev_latency_ns, 1), 1) as spike_ratio
       FROM with_prev
       WHERE prev_latency_ns IS NOT NULL
         AND latency_ns > prev_latency_ns * 2

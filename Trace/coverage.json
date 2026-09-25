@@ -3490,7 +3490,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "572e2a08bc687271e3101212d4472aaf81929c4a874461e424001e24be99f801",
+            "sha256": "366fb03aaf84d31c9a2aaa469e6f29c99d7993eeb85846cca5bb3e4e27da996b",
             "required_columns": [
               "event_ts",
               "event_type",
@@ -3500,6 +3500,7 @@
               "ack_latency_ms",
               "total_latency_ms",
               "e2e_latency_ms",
+              "frame_association",
               "process_name",
               "normalized_channel",
               "dispatch_status"
@@ -3536,7 +3537,7 @@
           },
           {
             "id": "per_frame_latency",
-            "sha256": "c60d927e6b10c271ad4afb3f21b0ad427f0b1d76fcbbf1d8cb25518bcff62c3f",
+            "sha256": "0ce35d2e845509cbd8a259282f6327f80ca90f198b00547a5a7b732a4b968713",
             "required_columns": [
               "input_ts",
               "process_name",
@@ -3546,14 +3547,12 @@
               "handling_ms",
               "ack_ms",
               "frame_dur_ms",
-              "frame_to_present_ms",
-              "is_speculative",
               "rating"
             ]
           },
           {
             "id": "latency_statistics",
-            "sha256": "3a6ad79a7abffaec51aff7dfba33f3a1d01568fd386e3c88b076fb50e837151f",
+            "sha256": "6080459f95f2102ce15c8f9066cc4412d4ec009c52c00ddebed101a67832761a",
             "required_columns": [
               "metric",
               "value_ms"
@@ -3561,13 +3560,12 @@
           },
           {
             "id": "latency_spikes",
-            "sha256": "b83ffe87d283169286955fdcb6d64d2fed699d41731fffea8c799839d32b2970",
+            "sha256": "ae7c96f03ea284dc6ebaf9586dc7652ff6095e7836a55bb722952fe468eeadfb",
             "required_columns": [
               "input_ts",
               "latency_ms",
               "prev_latency_ms",
-              "spike_ratio",
-              "is_speculative"
+              "spike_ratio"
             ]
           }
         ]
@@ -7403,7 +7401,7 @@
           },
           {
             "id": "input_latency_overview",
-            "sha256": "3bc71f3c1aa21a0516811d8d21905baeaf47d44f4b0591f86bdbaaf683448f72",
+            "sha256": "2cd3ce0a70b533c55ab9fc0f319f777e431fc26d96a616aa0dbc5be53c475a23",
             "required_columns": [
               "total_events",
               "avg_dispatch_ms",
@@ -7415,6 +7413,7 @@
               "max_total_ms",
               "avg_e2e_ms",
               "max_e2e_ms",
+              "speculative_frame_events",
               "rating"
             ]
           },
@@ -7445,7 +7444,7 @@
           },
           {
             "id": "slow_input_events",
-            "sha256": "74c86615fee3f69b9a47a7ccca4d9bb57c9d3d08143c489238e2bf8d94141261",
+            "sha256": "f14cb5566024f8b58b1e00ad9dfb06dd42f11ff3719835465bce9ab5216e9650",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7459,6 +7458,7 @@
               "thread_name",
               "process_name",
               "frame_id",
+              "frame_association",
               "event_ts",
               "event_end_ts",
               "perfetto_start",
@@ -7497,7 +7497,7 @@
           },
           {
             "id": "input_to_frame",
-            "sha256": "be8a54cb6434257c4e787703eef1d05aba98857733996411292fc7275397488a",
+            "sha256": "4577be3abbe7a417d40cf278da57570539804280d0687b1cc9516d978c8308ae",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7576,7 +7576,7 @@
           },
           {
             "id": "input_pipeline_lifecycle",
-            "sha256": "acae41815f1abec8c4e659e8b893242f179d2628ffd9f7830f3b48a5bbc69dce",
+            "sha256": "7e226f9d35139c25edd3b48b7c27e502c583642712c45b991df1ca025b033ca2",
             "required_columns": [
               "input_id",
               "channel",
@@ -10840,7 +10840,7 @@
           },
           {
             "id": "input_data_check",
-            "sha256": "fba47eecd4a1274ad86c4e4850af5032e38748420e43cf32318ad32f4d142c55",
+            "sha256": "910d4a3e817f3b74b3d98d5ecb951424f99cc5239d093eaa68e8ecaaf99f0418",
             "required_columns": [
               "input_data_status",
               "total_input_events",
@@ -10851,7 +10851,7 @@
           },
           {
             "id": "input_latency_summary",
-            "sha256": "2f8b262121230b7378ba0e0bc144037347cdbd09a27971cddb77affe2155a148",
+            "sha256": "74105880dd82d4b84b84623a3d861711f6e585b40f573778302a54bdb9e8c9a4",
             "required_columns": [
               "target_process",
               "total_input_events",
@@ -10973,7 +10973,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "a74f8a97074d407b868e9fdca5dfda724e14ee146537a2ec379dc7c52d9bdc5d",
+            "sha256": "846864df4a5e9d4a0efae8a2c7f6cfb46aa292d885e1dd30c3393c840787d52b",
             "required_columns": [
               "system_evidence_json",
               "frame_id",

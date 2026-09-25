@@ -4205,6 +4205,7 @@
               "ack_latency_ms",
               "total_latency_ms",
               "e2e_latency_ms",
+              "frame_association",
               "process_name",
               "normalized_channel",
               "dispatch_status"

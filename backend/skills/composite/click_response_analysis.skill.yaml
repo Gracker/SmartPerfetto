@@ -258,6 +258,10 @@ steps:
           type: duration
           format: duration_ms
           unit: ms
+        - name: speculative_frame_events
+          label: "推测帧关联事件"
+          type: number
+          format: compact
         - name: rating
           label: "评级"
           type: string
@@ -276,9 +280,10 @@ steps:
         -- dispatch-to-ACK 总延迟
         ROUND(AVG(total_latency_dur) / 1e6, 2) as avg_total_ms,
         ROUND(MAX(total_latency_dur) / 1e6, 2) as max_total_ms,
-        -- 输入到关联帧延迟（需要 frame_id/FrameTimeline）
-        ROUND(AVG(end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
-        ROUND(MAX(end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
+        -- Input→Frame: exact association only (see fragments/android_input_events_normalized.sql); speculative counted separately, NULL = unmeasured.
+        ROUND(AVG(exact_end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
+        ROUND(MAX(exact_end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
+        SUM(CASE WHEN frame_association = 'speculative' THEN 1 ELSE 0 END) as speculative_frame_events,
         -- 评级
         CASE
           WHEN AVG(total_latency_dur) / 1e6 < 50 THEN '优秀 (<50ms)'
@@ -499,6 +504,9 @@ steps:
         - name: frame_id
           label: "帧 ID"
           type: number
+        - name: frame_association
+          label: "帧关联"
+          type: string
         - name: event_ts
           label: "事件时间"
           type: timestamp
@@ -540,6 +548,7 @@ steps:
         thread_name,
         process_name,
         frame_id,
+        frame_association,
         -- 时间戳用于详细分析
         printf('%d', dispatch_ts) as event_ts,
         printf('%d', receive_ts + receive_dur) as event_end_ts,
@@ -759,26 +768,27 @@ steps:
       SELECT
         ie.event_type,
         ie.event_action,
-        ie.end_to_end_latency_dur / 1e6 as e2e_latency_ms,
-        ie.frame_id,
+        ie.exact_end_to_end_latency_dur / 1e6 as e2e_latency_ms,
+        ie.exact_frame_id as frame_id,
         -- 关联帧信息
         af.dur / 1e6 as frame_dur_ms,
         ie.total_latency_dur / 1e6 as input_latency_ms,
         -- 输入到关联帧的延迟
         CASE
-          WHEN ie.end_to_end_latency_dur / 1e6 > ${critical_event_threshold_ms|200} THEN 'critical'
-          WHEN ie.end_to_end_latency_dur / 1e6 > ${slow_event_threshold_ms|100} THEN 'warning'
-          WHEN ie.end_to_end_latency_dur / 1e6 > ${thread_state_min_dur_ms|50} THEN 'notice'
+          WHEN ie.exact_end_to_end_latency_dur / 1e6 > ${critical_event_threshold_ms|200} THEN 'critical'
+          WHEN ie.exact_end_to_end_latency_dur / 1e6 > ${slow_event_threshold_ms|100} THEN 'warning'
+          WHEN ie.exact_end_to_end_latency_dur / 1e6 > ${thread_state_min_dur_ms|50} THEN 'notice'
           ELSE 'good'
         END as rating
       FROM android_input_events_normalized ie
-      LEFT JOIN android_frames af ON ie.frame_id = af.frame_id
+      -- exact association only (see fragments/android_input_events_normalized.sql)
+      LEFT JOIN android_frames af ON ie.exact_frame_id = af.frame_id
       WHERE ie.process_name = '${target_process.data[0].process_name}'
         AND (${start_ts} IS NULL OR ie.receive_ts + ie.receive_dur > ${start_ts})
         AND (${end_ts} IS NULL OR ie.dispatch_ts < ${end_ts})
-        AND ie.frame_id IS NOT NULL
-        AND ie.end_to_end_latency_dur > 0
-      ORDER BY ie.end_to_end_latency_dur DESC
+        AND ie.exact_frame_id IS NOT NULL
+        AND ie.exact_end_to_end_latency_dur > 0
+      ORDER BY ie.exact_end_to_end_latency_dur DESC
       LIMIT 20
     save_as: input_to_frame
     condition: input_check.data[0]?.status === 'available' && target_process.data.length > 0

@@ -91,6 +91,9 @@ display:
       label: "Input→Frame 延迟"
       type: duration
       format: duration_ms
+    - name: frame_association
+      label: "帧关联"
+      type: string
     - name: process_name
       label: "目标进程"
       type: string
@@ -111,7 +114,9 @@ sql: |
     ROUND(handling_latency_dur / 1e6, 2) as handling_latency_ms,
     ROUND(ack_latency_dur / 1e6, 2) as ack_latency_ms,
     ROUND(total_latency_dur / 1e6, 2) as total_latency_ms,
+    -- Raw stdlib value, labelled by frame_association.
     ROUND(end_to_end_latency_dur / 1e6, 2) as e2e_latency_ms,
+    frame_association,
     process_name,
     normalized_event_channel as normalized_channel,
     CASE

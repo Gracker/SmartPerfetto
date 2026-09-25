@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1366,
-    "explicitColumnCount": 4981
+    "explicitColumnCount": 4979
   },
   "skills": {
     "ams_module": {
@@ -8626,6 +8626,12 @@
                 "en": "Max E2e ms"
               }
             },
+            "speculative_frame_events": {
+              "label": {
+                "zh-CN": "推测帧关联事件",
+                "en": "Speculative Frame Events"
+              }
+            },
             "rating": {
               "label": {
                 "zh-CN": "评级",
@@ -9022,6 +9028,12 @@
               "label": {
                 "zh-CN": "帧 ID",
                 "en": "Frame Id"
+              }
+            },
+            "frame_association": {
+              "label": {
+                "zh-CN": "帧关联",
+                "en": "Frame Association"
               }
             },
             "event_ts": {
@@ -20411,6 +20423,12 @@
                 "en": "E2e Latency ms"
               }
             },
+            "frame_association": {
+              "label": {
+                "zh-CN": "帧关联",
+                "en": "Frame Association"
+              }
+            },
             "process_name": {
               "label": {
                 "zh-CN": "目标进程",
@@ -20583,12 +20601,6 @@
                 "zh-CN": "飙升倍数",
                 "en": "Spike Ratio"
               }
-            },
-            "is_speculative": {
-              "label": {
-                "zh-CN": "推测帧",
-                "en": "Is Speculative"
-              }
             }
           },
           "synthesizeLabels": {}
@@ -20668,18 +20680,6 @@
                 "en": "Frame Dur ms"
               }
             },
-            "frame_to_present_ms": {
-              "label": {
-                "zh-CN": "帧ToPresentms",
-                "en": "Frame→Present(ms)"
-              }
-            },
-            "is_speculative": {
-              "label": {
-                "zh-CN": "推测帧",
-                "en": "Is Speculative"
-              }
-            },
             "rating": {
               "label": {
                 "zh-CN": "评级",
@@ -20735,18 +20735,6 @@
               "label": {
                 "zh-CN": "帧耗时",
                 "en": "Frame Dur ms"
-              }
-            },
-            "frame_to_present_ms": {
-              "label": {
-                "zh-CN": "帧ToPresentms",
-                "en": "Frame→Present"
-              }
-            },
-            "is_speculative": {
-              "label": {
-                "zh-CN": "推测帧",
-                "en": "Is Speculative"
               }
             },
             "rating": {

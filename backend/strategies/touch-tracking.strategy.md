@@ -99,6 +99,7 @@ invoke_skill("input_to_frame_latency", { package: "<包名>" })
 
 **写任何跟手度数值前，先判读证据可用性：**
 - `is_speculative=1`（stdlib `is_speculative_frame`）表示没有 doFrame 与该事件的投递相交，stdlib 只取了同一 UI 线程上之后的下一个 `Choreographer#doFrame`（不限间隔）。该帧未经证实消费了事件，只是候选：不能据此确认逐帧跟手延迟、帧关联、同帧输入堆积或上屏时间，由它推出的 input-to-display 也只是候选值。只有该线程就是出图线程且间隔很短时它才是可信的候选帧；许多事件落到同一个推测帧时，画面由其他线程产出则只说明该 UI 线程在手势期间没有出帧，标准 HWUI 上要结合主线程当时是否被占用判断。
+- `input_to_frame_latency` 的逐帧延迟、分位数和飙升点只用精确关联，推测关联只计入“推测关联事件数”。
 - `end_to_end_latency_dur`、`input_to_display_ms` 或统计值为 NULL、表为空，含义是“未测量”，不是 0ms，也不是“极佳/正常”；此时不给 P50/P90/P99 或评级。
 - dispatch/handling/ACK 按事件精确测量，不受帧关联是否推测影响，可以照常报告，但它们不是上屏延迟。
 - 画面不在接收输入的 UI 线程上产出的管线（Flutter SurfaceView 的 1.raster、GLSurfaceView/游戏引擎、独立 SurfaceView producer）：目标进程没有 app 层 FrameTimeline/present 链接时，跟手度在本 trace 中**不可测量**。分别报告 dispatch/handling/ACK、producer 帧节奏（如 `flutter_scrolling_analysis`）和 SF present 等已有证据，不把它们拼成端到端延迟。

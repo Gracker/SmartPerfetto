@@ -77,6 +77,9 @@ function exactRows(envelope: DataEnvelope): SlowInputRow[] {
   if (!admittedEnvelope(envelope)) return [];
   const meta = envelope.meta;
   return rowsAsObjects(envelope).slice(0, MAX_CANDIDATES).flatMap((row, rowIndex) => {
+    // Only an exact association says which frame consumed the input; a
+    // speculative one is the receiving thread's next doFrame, a candidate.
+    if (row.frame_association !== 'exact') return [];
     const frameId = canonicalInt64(row.frame_id);
     const range = deriveExactEvidenceTimeRangeNs({event_ts: row.event_ts, event_end_ts: row.event_end_ts});
     const mainBottleneck = typeof row.main_bottleneck === 'string' && BOTTLENECKS.has(row.main_bottleneck)
