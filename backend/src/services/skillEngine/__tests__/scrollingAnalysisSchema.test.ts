@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import {describe, it, expect} from '@jest/globals';
 import {androidInputEventsTableDdl, completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
 import {withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
+import {builtInSkillFragment} from '../skillFragments';
 
 // Execute maintained SQL fragments in the legacy named fixtures as well.
 function createScopedSqlFixture(): Database.Database {
@@ -2231,6 +2232,9 @@ describe('single-frame exact UPID SQL semantics', () => {
       },
     });
     db.function('STR_SPLIT', (value: string, separator: string, index: number) => value.split(separator)[index] ?? null);
+    // trace_processor intrinsic; NULL like a trace without clock snapshots,
+    // so fragments/cpu_cluster_load.sql uses the wall-clock window.
+    db.function('to_monotonic', (_ts: unknown) => null);
     db.exec(`
       CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT);
       INSERT INTO process VALUES (42,700,'com.example.app'),(43,700,'com.example.app'),
@@ -2374,10 +2378,11 @@ describe('single-frame exact UPID SQL semantics', () => {
       const timeline = db.prepare(sqlFor('cpu_freq_timeline', 42)).all();
       expect(timeline).toHaveLength(4);
       expect(db.prepare(sqlFor('cpu_freq_timeline', 43)).all()).toEqual(timeline);
-      const cluster = rootCtes('cluster_core_counts', 'gc_frame_overlap', 42);
-      const systemSched = fs.readFileSync(path.join(process.cwd(), 'skills/fragments/system_sched_spans.sql'), 'utf8');
-      expect(db.prepare(`WITH system_windows(window_id,window_start_ts,window_end_ts) AS (VALUES('frame',0,100000000)),
-        ${systemSched}, ${cluster} SELECT * FROM cluster_load`).get()).toEqual({big_load_pct: 50, little_load_pct: 60});
+      // Same definition as the cpu_cluster_load_in_range table (fragments/cpu_cluster_load.sql).
+      const cluster = rootCtes('cluster_load', 'gc_frame_overlap', 42);
+      const clusterFragment = render(builtInSkillFragment('cpu_cluster_load.sql'), 42);
+      expect(db.prepare(`WITH ${clusterFragment}, ${cluster} SELECT * FROM cluster_load`).get())
+        .toEqual({big_load_pct: 50, little_load_pct: 60});
       const root = db.prepare(sqlFor('root_cause_summary', 42)).get() as Record<string, unknown>;
       expect(root).toMatchObject({slice_name: 'target_main', slice_dur: 20, frame_budget_ms: 16.67,
         frame_dur_ms: 100, main_io_block_ms: 2, reason_code: 'binder_sync_blocking'});

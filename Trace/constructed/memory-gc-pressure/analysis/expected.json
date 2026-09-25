@@ -32,7 +32,9 @@
       "required_columns": [
         "process_name",
         "bitmap_count",
-        "total_bytes"
+        "total_bytes",
+        "peak_ts",
+        "process_identity"
       ],
       "required_marker": "SmartPerfetto::CASE::memory-gc-pressure"
     },

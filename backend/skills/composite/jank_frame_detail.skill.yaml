@@ -2,9 +2,12 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
+# v2.1: root_cause_summary 的 big/little_load_pct 改用 fragments/cpu_cluster_load.sql，
+#   与 cpu_cluster_load 簇表同一定义（_cpu_topology 全部核心 × 非挂起时长）；
+#   根因因此依赖 init_cpu_topology 物化的 _cpu_topology
 # v2.0: Replaced inline CPU topology CTEs with shared _cpu_topology VIEW
 name: jank_frame_detail
-version: "2.0"
+version: "2.1"
 type: composite
 category: rendering
 tier: S
@@ -1047,6 +1050,7 @@ steps:
       - fragments/vsync_config.sql
       - fragments/target_threads.sql
       - fragments/thread_states_quadrant.sql
+      - fragments/cpu_cluster_load.sql
     display:
       level: key
       layer: deep
@@ -1442,19 +1446,17 @@ steps:
                OR s.name GLOB '*Pipeline*Create*'
                OR s.name GLOB '*programCache*')
       ),
-      -- 9. CPU 簇负载检测（动态核心计数，适配所有 SoC 拓扑）
-      cluster_core_counts AS (
-        SELECT SUM(CASE WHEN core_type IN ('prime','big','medium') THEN 1 ELSE 0 END) AS big_cores,
-          SUM(CASE WHEN core_type='little' THEN 1 ELSE 0 END) AS little_cores
-        FROM system_cpu_topology
-      ),
+      -- 9. CPU 簇负载：与 cpu_cluster_load 步骤的簇表同一定义（fragments/cpu_cluster_load.sql），
+      -- 大核 = 超大核+大核+中核合计，小核 = 小核簇；拓扑无法分级时为 NULL。
+      -- 依赖 init_cpu_topology 物化的 _cpu_topology：它不存在时本步骤失败，
+      -- 而不是静默算出与簇表不同的负载
       cluster_load AS (
         SELECT
-          ROUND(100.0*SUM(CASE WHEN sched_span.core_type IN ('prime','big','medium') AND t.is_idle=0 THEN sched_span.dur_ns ELSE 0 END)
-            /NULLIF((${end_ts}-${start_ts})*(SELECT big_cores FROM cluster_core_counts),0),1) AS big_load_pct,
-          ROUND(100.0*SUM(CASE WHEN sched_span.core_type='little' AND t.is_idle=0 THEN sched_span.dur_ns ELSE 0 END)
-            /NULLIF((${end_ts}-${start_ts})*(SELECT little_cores FROM cluster_core_counts),0),1) AS little_load_pct
-        FROM system_sched_spans sched_span LEFT JOIN thread t ON t.utid=sched_span.utid WHERE sched_span.window_id='frame'
+          ROUND(100.0*SUM(CASE WHEN core_type IN ('prime','big','medium') THEN running_ns ELSE 0 END)
+            /NULLIF(MAX(awake_ns)*SUM(CASE WHEN core_type IN ('prime','big','medium') THEN core_count ELSE 0 END),0),1) AS big_load_pct,
+          ROUND(100.0*SUM(CASE WHEN core_type='little' THEN running_ns ELSE 0 END)
+            /NULLIF(MAX(awake_ns)*SUM(CASE WHEN core_type='little' THEN core_count ELSE 0 END),0),1) AS little_load_pct
+        FROM cpu_cluster_load_by_tier
       ),
       -- 10. GC 事件与帧窗口重叠检测
       -- android_garbage_collection_events view 由 prerequisites 中的
@@ -2203,6 +2205,14 @@ steps:
         suggestions:
           - "超大核资源严重不足，关键线程可能被迫落到大核或更小的核"
           - "检查是否有后台密集计算任务占用超大核"
+
+      - condition: "cluster_load_data?.data?.find(c => c.cluster === '中核簇')?.load_pct > 90"
+        severity: warning
+        diagnosis: "中核簇负载 ${cluster_load_data.data.find(c => c.cluster === '中核簇')?.load_pct}%，接近跑满"
+        confidence: high
+        suggestions:
+          - "中核簇跑满时从大核迁出的任务无处可去，调度会继续挤压大核或落到小核"
+          - "检查是否有后台密集计算任务占用中核"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '小核簇')?.load_pct > 95"
         severity: warning

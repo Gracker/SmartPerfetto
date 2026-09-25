@@ -85,6 +85,7 @@ const heapGraphSchema = `
   CREATE TABLE _excluded_refs(id INTEGER);
   CREATE TABLE stats(name TEXT, idx INTEGER, severity TEXT, value INTEGER);
   CREATE TABLE heap_graph(upid INTEGER, ts INTEGER);
+  CREATE TABLE process_counter_track(id INTEGER, upid INTEGER, name TEXT);
   CREATE TABLE heap_profile_allocation(upid INTEGER, heap_name TEXT, callsite_id INTEGER, size INTEGER, count INTEGER);
 `;
 
@@ -398,6 +399,7 @@ describeWithSqlite('heap profile skill SQL semantics', () => {
   const heapProfileSchema = `
     CREATE TABLE process(upid INTEGER, name TEXT, pid INTEGER);
     CREATE TABLE heap_graph(upid INTEGER, ts INTEGER);
+    CREATE TABLE process_counter_track(id INTEGER, upid INTEGER, name TEXT);
     CREATE TABLE stats(name TEXT, idx INTEGER, severity TEXT, value INTEGER);
     CREATE TABLE stack_profile_mapping(id INTEGER, name TEXT);
     CREATE TABLE _callstack_spc_forest(
@@ -537,6 +539,7 @@ describe('android_memory_v57_ai_diagnostics heap profile scope', () => {
       CREATE TABLE process(upid INTEGER, name TEXT, pid INTEGER);
       CREATE TABLE stats(name TEXT, idx INTEGER, severity TEXT, value INTEGER);
       CREATE TABLE heap_graph(upid INTEGER, ts INTEGER);
+      CREATE TABLE process_counter_track(id INTEGER, upid INTEGER, name TEXT);
       CREATE TABLE heap_graph_object(id INTEGER, upid INTEGER, graph_sample_ts INTEGER, self_size INTEGER);
       CREATE TABLE android_heap_graph_stats(upid INTEGER);
       CREATE TABLE android_heap_graph_class_summary_tree(upid INTEGER);
@@ -576,5 +579,90 @@ describe('android_memory_v57_ai_diagnostics heap profile scope', () => {
       ?.rawResults?.heap_profile_inventory?.data ?? [];
     expect(unscopedInventory.map((row: any) => row.upid).sort()).toEqual([1, 2]);
     db.close();
+  });
+});
+
+describeWithSqlite('android_bitmap_memory_per_process scope (fragments/heap_target_process.sql)', () => {
+  const skillPath = 'skills/atomic/android_bitmap_memory_per_process.skill.yaml';
+  const bitmapSchema = `
+    CREATE TABLE process(upid INTEGER, name TEXT);
+    CREATE TABLE heap_graph(upid INTEGER, ts INTEGER);
+    CREATE TABLE heap_profile_allocation(upid INTEGER);
+    CREATE TABLE process_counter_track(id INTEGER, upid INTEGER, name TEXT);
+    CREATE TABLE android_bitmap_counters_per_process(
+      upid INTEGER, process_name TEXT, ts INTEGER, dur INTEGER, bitmap_memory INTEGER, bitmap_count INTEGER
+    );
+    CREATE TABLE heap_graph_bitmaps(
+      upid INTEGER, self_size INTEGER, native_size INTEGER, reachable INTEGER, width INTEGER, height INTEGER,
+      bitmap_storage_type TEXT, source_id INTEGER, source_pid INTEGER, source_process_name TEXT,
+      source_storage_type TEXT
+    );
+  `;
+  // Bitmap counters only (atrace "view"), no heap dump: the counter processes
+  // are the candidates. com.example.apps shares a prefix with com.example.app.
+  const counterFixture = `
+    INSERT INTO process VALUES (1, 'com.example.app'), (2, 'com.example.app:remote'), (3, 'com.example.apps');
+    INSERT INTO process_counter_track VALUES (10, 1, 'Bitmap Memory'), (20, 2, 'Bitmap Memory'), (30, 3, 'Bitmap Memory');
+    INSERT INTO android_bitmap_counters_per_process VALUES
+      (1, 'com.example.app', 100, 10, 4000, 4),
+      (1, 'com.example.app', 110, 10, 9000, 7),
+      (1, 'com.example.app', 120, 10, 6000, 5),
+      (2, 'com.example.app:remote', 100, 10, 2000, 1),
+      (3, 'com.example.apps', 100, 10, 8000, 3);
+  `;
+  const run = (stepId: string, fixture: string, params: Record<string, string> = {}): Array<Record<string, any>> =>
+    runSqliteJson(`${bitmapSchema}\n${fixture}\n${replaceParams(
+      loadStepSql(skillPath, stepId),
+      {...heapScopeParams, ...params}
+    )};`);
+
+  it('reports one row per process at its peak sample, all processes when unscoped', () => {
+    expect(run('bitmap_memory', counterFixture)).toEqual([
+      {process_name: 'com.example.app', bitmap_count: 7, total_bytes: 9000, peak_ts: 110, process_identity: 'all_heap_processes'},
+      {process_name: 'com.example.apps', bitmap_count: 3, total_bytes: 8000, peak_ts: 100, process_identity: 'all_heap_processes'},
+      {process_name: 'com.example.app:remote', bitmap_count: 1, total_bytes: 2000, peak_ts: 100, process_identity: 'all_heap_processes'},
+    ]);
+  });
+
+  it('matches process_name or package exactly or as name:*, never by prefix', () => {
+    const names = (params: Record<string, string>) => run('bitmap_memory', counterFixture, params).map(row => row.process_name);
+    // process_name alone used to be ignored: the package clause was always true.
+    expect(names({'${process_name|}': 'com.example.app'})).toEqual(['com.example.app', 'com.example.app:remote']);
+    expect(names({'${package|}': 'com.example.app'})).toEqual(['com.example.app', 'com.example.app:remote']);
+    expect(names({'${process_name|}': 'com.example'})).toEqual([]);
+    expect(names({'${upid}': '3'})).toEqual(['com.example.apps']);
+    // An unnamed counter-only process is not an .hprof dump: no upid fallback.
+    const unnamedCounter = `${counterFixture}
+      INSERT INTO process VALUES (4, NULL);
+      INSERT INTO process_counter_track VALUES (40, 4, 'Bitmap Memory');
+      INSERT INTO android_bitmap_counters_per_process VALUES (4, NULL, 100, 10, 1000, 1);`;
+    expect(run('bitmap_memory', unnamedCounter, {'${package|}': 'com.other'})).toEqual([]);
+  });
+
+  it('falls back to the unnamed .hprof dump for heap graph Bitmaps', () => {
+    const hprofFixture = `
+      INSERT INTO process VALUES (5, NULL);
+      INSERT INTO heap_graph VALUES (5, 1000);
+      INSERT INTO heap_graph_bitmaps VALUES
+        (5, 100, 4096, 1, 64, 64, 'ashmem', 7, 900, 'com.sender', 'ashmem'),
+        (5, -1, 0, 1, NULL, NULL, NULL, NULL, NULL, NULL, NULL);
+    `;
+    expect(run('heap_bitmap_metadata', hprofFixture, {'${package|}': 'com.example.app'})).toEqual([
+      expect.objectContaining({
+        process_name: 'upid:5',
+        bitmap_object_count: 1,
+        total_bytes: 4196,
+        process_identity: 'process_name_unavailable_upid_fallback',
+      }),
+    ]);
+    expect(run('heap_bitmap_sender_attribution', hprofFixture, {'${package|}': 'com.example.app'})).toEqual([
+      expect.objectContaining({
+        receiver_process: 'upid:5',
+        source_process: 'com.sender',
+        process_identity: 'process_name_unavailable_upid_fallback',
+      }),
+    ]);
+    // A named match wins over the unnamed dump.
+    expect(run('heap_bitmap_metadata', `${hprofFixture}\n${counterFixture}`, {'${package|}': 'com.example.app'})).toEqual([]);
   });
 });

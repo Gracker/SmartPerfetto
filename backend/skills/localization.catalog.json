@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1366,
-    "explicitColumnCount": 4977
+    "explicitColumnCount": 4981
   },
   "skills": {
     "ams_module": {
@@ -499,14 +499,26 @@
             },
             "bitmap_count": {
               "label": {
-                "zh-CN": "Bitmap 数量",
+                "zh-CN": "峰值时 Bitmap 数量",
                 "en": "Bitmap Count"
               }
             },
             "total_bytes": {
               "label": {
-                "zh-CN": "总字节",
+                "zh-CN": "Bitmap 内存峰值",
                 "en": "Total bytes"
+              }
+            },
+            "peak_ts": {
+              "label": {
+                "zh-CN": "峰值时刻",
+                "en": "Peak Ts"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
               }
             }
           },
@@ -585,6 +597,12 @@
                 "zh-CN": "存储类型",
                 "en": "Storage Types"
               }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "进程身份",
+                "en": "Process Identity"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -629,6 +647,12 @@
               "label": {
                 "zh-CN": "来源端存储",
                 "en": "Source Storage Types"
+              }
+            },
+            "process_identity": {
+              "label": {
+                "zh-CN": "接收进程身份",
+                "en": "Process Identity"
               }
             }
           },

@@ -941,11 +941,13 @@
         "steps": [
           {
             "id": "bitmap_memory",
-            "sha256": "1ad60b14378437cd5a5a992695d247c5ad9858c6801efd29a4650b3c3a21c9c1",
+            "sha256": "554891443f7dc1bc35d9016df3b3aefa5e155e4d7a0489e77bdf8da5230d8a2e",
             "required_columns": [
               "process_name",
               "bitmap_count",
-              "total_bytes"
+              "total_bytes",
+              "peak_ts",
+              "process_identity"
             ]
           },
           {
@@ -957,7 +959,7 @@
           },
           {
             "id": "heap_bitmap_metadata",
-            "sha256": "7d275c59a44afd54bcc29cf022e8fdcc322721adf92dcf585fe7caf68140d38c",
+            "sha256": "6994de1bc7fdc4ce5dbb241972011a47f4702da3dfef6a08f1935c058b995ac0",
             "required_columns": [
               "process_name",
               "bitmap_object_count",
@@ -968,19 +970,21 @@
               "known_dimension_count",
               "max_width",
               "max_height",
-              "storage_types"
+              "storage_types",
+              "process_identity"
             ]
           },
           {
             "id": "heap_bitmap_sender_attribution",
-            "sha256": "5e7b9a5d6afde2c624f5f98f4e3093e7e19a7b1d25bb0e88ffd974d12d7dbbad",
+            "sha256": "0be6bbc35667240be608dc48e7f7508663a54513fbfa13bde2708bb7b8deead5",
             "required_columns": [
               "receiver_process",
               "source_process",
               "bitmap_count",
               "total_bytes",
               "receiver_storage_types",
-              "source_storage_types"
+              "source_storage_types",
+              "process_identity"
             ]
           }
         ]
@@ -2225,7 +2229,7 @@
         "steps": [
           {
             "id": "cluster_load",
-            "sha256": "6948f6f24dd6c774eff8b6d2d068d7a6b4d790d5e4f0575e9104bfd8cac9dc49",
+            "sha256": "4279001092a6b65a1c5f0527034858ff8ddbcf3cd3c99b8120ac480a6c66f249",
             "required_columns": [
               "cluster",
               "core_count",
@@ -9226,7 +9230,7 @@
           },
           {
             "id": "root_cause_summary",
-            "sha256": "478e970a8cd5ff91c1c26049f9565662f5d19c4d19711dce1726349148ac145f",
+            "sha256": "b0a56177b67966bc6212cb6c9dd089d98c3778b3f172c044170310691957934b",
             "required_columns": [
               "primary_cause",
               "deep_reason",

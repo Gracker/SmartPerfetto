@@ -155,6 +155,9 @@ sql_fragments:
   backend/skills/fragments/heap_profile_scope.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/heap_profile_scope.sql
+  backend/skills/fragments/cpu_cluster_load.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/cpu_cluster_load.sql
 vendor_overrides:
   backend/skills/vendors/honor/startup.override.yaml:
     disposition: exported

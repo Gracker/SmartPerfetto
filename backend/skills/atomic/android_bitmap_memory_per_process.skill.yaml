@@ -8,9 +8,14 @@
 # 使用 android.bitmaps counter 模块统计每进程 Bitmap 内存占用；当 trace
 # 包含 ART heap graph 时，再使用 upstream android.memory.heap_graph.bitmap
 # 补充 Bitmap width/height/density/storage/source attribution。
+#
+# v1.2: 进程范围改用 fragments/heap_target_process.sql（与其它堆 Skill 同一规则：
+#   upid 优先；进程名精确或 name:* 子进程，不做前缀匹配；无匹配时退回无进程名的
+#   dump 并标 process_name_unavailable_upid_fallback）。旧过滤在 package 为空时恒真，
+#   process_name 不生效。counter 表是时间序列，bitmap_memory 改为每进程一行（峰值采样）。
 
 name: android_bitmap_memory_per_process
-version: "1.1"
+version: "1.2"
 type: atomic
 category: memory
 tier: B
@@ -30,11 +35,15 @@ inputs:
   - name: process_name
     type: string
     required: false
-    description: "目标进程名（可选，前缀匹配）"
+    description: "目标进程名（精确或 name:* 子进程，见 fragments/heap_target_process.sql）；为空则统计全部进程；无匹配时回退到没有进程名的 dump（如 .hprof）"
   - name: package
     type: string
     required: false
-    description: "目标包名（可选，前缀匹配）"
+    description: "目标包名（精确或 name:* 子进程）；process_name 为空时使用"
+  - name: upid
+    type: integer
+    required: false
+    description: "可选的稳定进程身份；进程名不可用时（.hprof）用它限定进程"
 
 steps:
   - id: bitmap_memory
@@ -49,25 +58,44 @@ steps:
           label: "进程"
           type: string
         - name: bitmap_count
-          label: "Bitmap 数量"
+          label: "峰值时 Bitmap 数量"
           type: number
           format: compact
         - name: total_bytes
-          label: "总字节"
+          label: "Bitmap 内存峰值"
           type: bytes
           format: compact
+        - name: peak_ts
+          label: "峰值时刻"
+          type: timestamp
+        - name: process_identity
+          label: "进程身份"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
+    # android_bitmap_counters_per_process 是按 ts 的时间序列，每进程取内存峰值那一个采样
     sql: |
+      WITH ranked AS (
+        SELECT
+          t.process_name,
+          t.process_identity,
+          c.ts,
+          c.bitmap_count,
+          c.bitmap_memory,
+          ROW_NUMBER() OVER (PARTITION BY c.upid ORDER BY c.bitmap_memory DESC, c.ts) AS rn
+        FROM android_bitmap_counters_per_process c
+        JOIN heap_target_process t USING (upid)
+        WHERE c.bitmap_memory IS NOT NULL
+      )
       SELECT
         process_name,
         bitmap_count,
-        bitmap_memory AS total_bytes
-      FROM android_bitmap_counters_per_process
-      WHERE (
-        ('${process_name}' = '' AND '${package}' = '')
-        OR process_name GLOB '${process_name}*'
-        OR ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
-      )
-      ORDER BY bitmap_memory DESC
+        bitmap_memory AS total_bytes,
+        ts AS peak_ts,
+        process_identity
+      FROM ranked
+      WHERE rn = 1
+      ORDER BY total_bytes DESC
       LIMIT 30
 
   - id: heap_bitmap_availability
@@ -133,20 +161,21 @@ steps:
         - name: storage_types
           label: "存储类型"
           type: string
+        - name: process_identity
+          label: "进程身份"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
     sql: |
       WITH bitmap_rows AS (
         SELECT
-          COALESCE(p.name, printf('upid:%d', b.upid)) AS process_name,
+          t.process_name,
+          t.process_identity,
           b.*
         FROM heap_graph_bitmaps b
-        LEFT JOIN process p ON p.upid = b.upid
+        JOIN heap_target_process t USING (upid)
         -- self_size = -1 marks a placeholder of an incomplete dump, not a Bitmap.
         WHERE COALESCE(b.self_size, 0) >= 0
-          AND (
-            ('${process_name}' = '' AND '${package}' = '')
-            OR p.name GLOB '${process_name}*'
-            OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
-          )
       )
       SELECT
         process_name,
@@ -158,9 +187,10 @@ steps:
         SUM(CASE WHEN width IS NOT NULL AND height IS NOT NULL THEN 1 ELSE 0 END) AS known_dimension_count,
         MAX(width) AS max_width,
         MAX(height) AS max_height,
-        GROUP_CONCAT(DISTINCT COALESCE(bitmap_storage_type, 'unknown')) AS storage_types
+        GROUP_CONCAT(DISTINCT COALESCE(bitmap_storage_type, 'unknown')) AS storage_types,
+        process_identity
       FROM bitmap_rows
-      GROUP BY process_name
+      GROUP BY upid, process_name, process_identity
       ORDER BY total_bytes DESC
       LIMIT 30
 
@@ -194,21 +224,22 @@ steps:
         - name: source_storage_types
           label: "来源端存储"
           type: string
+        - name: process_identity
+          label: "接收进程身份"
+          type: string
+    sql_fragments:
+      - fragments/heap_target_process.sql
     sql: |
       WITH bitmap_rows AS (
         SELECT
-          COALESCE(receiver.name, printf('upid:%d', b.upid)) AS receiver_process,
+          t.process_name AS receiver_process,
+          t.process_identity,
           COALESCE(b.source_process_name, printf('pid:%d', b.source_pid), 'unknown') AS source_process,
           b.*
         FROM heap_graph_bitmaps b
-        LEFT JOIN process receiver ON receiver.upid = b.upid
+        JOIN heap_target_process t USING (upid)
         WHERE b.source_id IS NOT NULL
           AND COALESCE(b.self_size, 0) >= 0
-          AND (
-            ('${process_name}' = '' AND '${package}' = '')
-            OR receiver.name GLOB '${process_name}*'
-            OR ('${package}' = '' OR receiver.name = '${package}' OR receiver.name GLOB '${package}:*')
-          )
       )
       SELECT
         receiver_process,
@@ -216,8 +247,9 @@ steps:
         COUNT(*) AS bitmap_count,
         SUM(COALESCE(native_size, 0) + COALESCE(self_size, 0)) AS total_bytes,
         GROUP_CONCAT(DISTINCT COALESCE(bitmap_storage_type, 'unknown')) AS receiver_storage_types,
-        GROUP_CONCAT(DISTINCT COALESCE(source_storage_type, 'unknown')) AS source_storage_types
+        GROUP_CONCAT(DISTINCT COALESCE(source_storage_type, 'unknown')) AS source_storage_types,
+        process_identity
       FROM bitmap_rows
-      GROUP BY receiver_process, source_process
+      GROUP BY upid, receiver_process, source_process, process_identity
       ORDER BY total_bytes DESC, bitmap_count DESC
       LIMIT 50
