@@ -137,7 +137,7 @@ steps:
         s.ts AS start_ts
       FROM android_startups s
       LEFT JOIN android_startup_time_to_display ttd USING (startup_id)
-      WHERE s.package LIKE '%${package}%'
+      WHERE ('${package}' = '' OR s.package = '${package}')
       ORDER BY s.ts DESC
       LIMIT 10
     display:
@@ -189,8 +189,8 @@ steps:
         CAST(dur / 1e6 AS REAL) AS dur_ms,
         ts
       FROM _android_broadcasts_minsdk_u
-      WHERE ts >= (SELECT ts FROM android_startups WHERE package LIKE '%${package}%' ORDER BY ts DESC LIMIT 1)
-        AND ts <= (SELECT ts + dur FROM android_startups WHERE package LIKE '%${package}%' ORDER BY ts DESC LIMIT 1)
+      WHERE ts >= (SELECT ts FROM android_startups WHERE ('${package}' = '' OR package = '${package}') ORDER BY ts DESC LIMIT 1)
+        AND ts <= (SELECT ts + dur FROM android_startups WHERE ('${package}' = '' OR package = '${package}') ORDER BY ts DESC LIMIT 1)
       ORDER BY dur DESC
       LIMIT 10
     display:

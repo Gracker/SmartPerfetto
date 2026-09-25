@@ -205,7 +205,7 @@
       "mode": "semantic",
       "source_file": "backend/skills/atomic/android_process_state_residency.skill.yaml",
       "parameters": {
-        "process_name": "com.smartperfetto.absent"
+        "process_name": "com.android.se"
       },
       "required_steps": [
         "process_state_capability",

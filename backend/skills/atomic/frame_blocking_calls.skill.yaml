@@ -117,7 +117,7 @@ sql: |
       a.jank_type
     FROM actual_frame_timeline_slice a
     LEFT JOIN process p ON a.upid = p.upid
-    WHERE (p.name GLOB '${process_name}*' OR '${process_name}' = '')
+    WHERE ('${process_name}' = '' OR p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
       AND COALESCE(a.jank_type, 'None') != 'None'
       AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR a.ts < ${end_ts})
@@ -142,7 +142,7 @@ sql: |
     FROM _android_critical_blocking_calls bc
     LEFT JOIN thread t ON t.utid = bc.utid
     LEFT JOIN process p ON p.upid = bc.upid
-    WHERE (bc.process_name GLOB '${process_name}*' OR '${process_name}' = '')
+    WHERE ('${process_name}' = '' OR bc.process_name = '${process_name}' OR bc.process_name GLOB '${process_name}:*')
   )
   SELECT
     printf('%d', jf.frame_id) as frame_id,

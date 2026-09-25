@@ -157,7 +157,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND (s.name GLOB '*read*'
              OR s.name GLOB '*Read*'
              OR s.name GLOB '*write*'
@@ -205,7 +205,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND t.tid = p.pid  -- Main thread: tid == pid
         AND (s.name GLOB '*read*'
              OR s.name GLOB '*Read*'
@@ -245,7 +245,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         -- Slice names are heuristic attribution only. Require a database
         -- namespace/product signal; generic "query"/"transaction" names are
         -- common outside storage and must not be promoted as DB evidence.
@@ -279,7 +279,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         -- apply/commit are generic method names; only accept an explicit
         -- SharedPreferences namespace in the trace slice.
         AND (LOWER(s.name) GLOB '*sharedpreferences*'
@@ -309,7 +309,7 @@ steps:
       FROM thread_state ts
       JOIN thread t USING (utid)
       JOIN process p USING (upid)
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND ts.state IN ('D', 'DK')  -- Uninterruptible sleep; io_wait/function pattern required for IO attribution
         AND (
           COALESCE(ts.io_wait, 0) = 1
@@ -346,7 +346,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND (s.name GLOB '*read*'
              OR s.name GLOB '*write*'
              OR s.name GLOB '*sqlite*'

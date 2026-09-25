@@ -288,7 +288,7 @@ steps:
       JOIN thread_track tt ON s.track_id = tt.id
       JOIN thread t ON tt.utid = t.utid
       JOIN process p ON t.upid = p.upid
-      WHERE p.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
         AND (s.name GLOB '*draw*'
              OR s.name GLOB '*finishDrawing*'
              OR s.name GLOB '*performDraw*'

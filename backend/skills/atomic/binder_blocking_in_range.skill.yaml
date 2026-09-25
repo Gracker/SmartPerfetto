@@ -41,7 +41,7 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标进程名（支持 GLOB 匹配）"
+    description: "目标进程名（精确匹配，含 name:* 子进程）"
 
 display:
   level: detail

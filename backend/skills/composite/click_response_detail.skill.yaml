@@ -275,7 +275,7 @@ steps:
         JOIN thread_track tt ON s.track_id = tt.id
         JOIN thread t ON tt.utid = t.utid
         JOIN process p ON t.upid = p.upid
-        WHERE p.name GLOB '${process_name}*'
+        WHERE ('${process_name}' = '' OR p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (s.name GLOB '*deliverInput*' OR s.name GLOB 'aq:pending:deliver*' OR s.name GLOB '*InputEvent*')
           AND s.ts >= (${event_ts} - 10000000)
           AND s.ts <= (${event_end_ts} + 10000000)

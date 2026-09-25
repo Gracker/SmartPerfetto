@@ -186,7 +186,7 @@ steps:
       JOIN process ON thread.upid = process.upid
       WHERE (slice.name LIKE '%GC%' OR slice.name LIKE '%garbage%')
         AND thread.name = 'main'
-        AND process.name LIKE '%${package}%'
+        AND ('${package}' = '' OR process.name = '${package}' OR process.name GLOB '${package}:*')
       ORDER BY slice.dur DESC
       LIMIT 20
     display:

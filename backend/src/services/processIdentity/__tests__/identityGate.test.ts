@@ -2,7 +2,11 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { IdentityGate, getEffectiveIdentityConfig, sqlUsesProcessNameFilter } from '../identityGate';
+import fs from 'fs';
+import path from 'path';
+import yaml from 'js-yaml';
+import { IdentityGate, collectSkillSqlUnits, getEffectiveIdentityConfig, sqlUsesProcessNameFilter } from '../identityGate';
+import { normalizeSkillDefinition } from '../../skillEngine/skillLoader';
 import type { SkillDefinition } from '../../skillEngine/types';
 import type { ProcessIdentityResolution } from '../types';
 import {assertEffectiveProcessScope, verifiedIdentityForScope} from '../effectiveProcessScope';
@@ -67,6 +71,61 @@ describe('IdentityGate', () => {
     expect(sqlUsesProcessNameFilter("SELECT * FROM process WHERE name = 'surfaceflinger'")).toBe(true);
     expect(sqlUsesProcessNameFilter("SELECT * FROM android_binder_txns WHERE client_process GLOB 'com.example*'")).toBe(true);
     expect(sqlUsesProcessNameFilter("SELECT * FROM thread_slice s WHERE s.process_name NOT GLOB 'com.android*'")).toBe(true);
+  });
+
+  it('reads the fragments a step declares, including exact_sql, and skips label-only fragments', () => {
+    const fragments: Record<string, string> = {
+      'fragments/filter.sql': "target AS (SELECT upid FROM process WHERE name = '${process_name}')",
+      'fragments/labels.sql': "-- process-identity: label-only\nlabels AS (SELECT CASE WHEN p.name = '${package}' THEN 'target' END FROM process p)",
+    };
+    const resolve = (fragmentPath: string) => fragments[fragmentPath];
+    const collectSkillSql = (definition: SkillDefinition, resolver: (fragmentPath: string) => string | undefined) =>
+      collectSkillSqlUnits(definition, resolver).join('\n');
+    const skill = (step: Record<string, unknown>) => ({name: 'fragment_skill', steps: [{id: 's', ...step}]}) as unknown as SkillDefinition;
+
+    expect(sqlUsesProcessNameFilter(collectSkillSql(skill({sql: 'SELECT 1', sql_fragments: ['fragments/filter.sql']}), resolve))).toBe(true);
+    expect(sqlUsesProcessNameFilter(collectSkillSql(skill({sql: 'SELECT 1', exact_sql: {sql: 'SELECT 1',
+      sql_fragments: ['fragments/filter.sql']}}), resolve))).toBe(true);
+    expect(sqlUsesProcessNameFilter(collectSkillSql(skill({sql: 'SELECT 1', sql_fragments: ['fragments/labels.sql']}), resolve))).toBe(false);
+    expect(sqlUsesProcessNameFilter(collectSkillSql(skill({sql: 'SELECT 1', sql_fragments: ['fragments/missing.sql']}), resolve))).toBe(false);
+  });
+
+  it('pins the Skills whose identity policy moved when detection became per statement with fragments', () => {
+    // Before, detection read only step SQL, concatenated across steps. Fragment
+    // filters were missed (these Skills ran with policy none), and a process
+    // read in one step plus a bare name comparison in another counted as a
+    // filter. Both lists are pinned so any further change is reviewed.
+    const walk = (dir: string): string[] => fs.readdirSync(dir, {withFileTypes: true}).flatMap(entry =>
+      entry.isDirectory() ? (entry.name === '_template' ? [] : walk(path.join(dir, entry.name)))
+        : entry.name.endsWith('.skill.yaml') ? [path.join(dir, entry.name)] : []);
+    const gained: string[] = [];
+    const lost: string[] = [];
+    for (const file of walk(path.join(process.cwd(), 'skills'))) {
+      let skill: SkillDefinition | null = null;
+      try {
+        skill = normalizeSkillDefinition(yaml.load(fs.readFileSync(file, 'utf8')), file);
+      } catch {
+        continue; // comment-only or template files are not Skills
+      }
+      if (!skill?.name || skill.identity?.policy) continue;
+      const before = sqlUsesProcessNameFilter(collectSkillSqlUnits(skill, () => undefined).join('\n'));
+      const after = getEffectiveIdentityConfig(skill).policy === 'verify_if_present';
+      if (after && !before) gained.push(skill.name);
+      if (before && !after) lost.push(skill.name);
+    }
+    expect(gained.sort()).toEqual([
+      'android_bitmap_memory_per_process',
+      'android_heap_dominator_path_extract',
+      'android_heap_graph_class_growth',
+      'android_heap_graph_leak_candidates',
+      'android_heap_graph_summary',
+      'android_memory_v57_ai_diagnostics',
+      'android_process_state_residency',
+      'flutter_scrolling_analysis',
+    ]);
+    // Its own SQL never filters by process; package only reaches child Skills,
+    // which verify it themselves.
+    expect(lost).toEqual(['scroll_session_analysis']);
   });
 
   it('does not treat thread/slice/counter name filters as process identity filters', () => {

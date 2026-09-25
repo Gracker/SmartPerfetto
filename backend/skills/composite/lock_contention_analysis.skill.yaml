@@ -95,7 +95,7 @@ steps:
       FROM android_monitor_contention
       WHERE
         CASE WHEN '${process_name}' != ''
-             THEN process_name GLOB '*${process_name}*'
+             THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
              ELSE 1 END
         AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -252,7 +252,7 @@ steps:
         ON ros.event_key = c.event_key
         AND ros.rn = 1
       WHERE CASE WHEN '${process_name}' != ''
-                 THEN c.process_name GLOB '*${process_name}*'
+                 THEN (c.process_name = '${process_name}' OR c.process_name GLOB '${process_name}:*')
                  ELSE 1 END
         AND c.dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
         AND (${start_ts} IS NULL OR c.ts + c.dur > ${start_ts})
@@ -330,7 +330,7 @@ steps:
       FROM android_monitor_contention
       WHERE
         CASE WHEN '${process_name}' != ''
-             THEN process_name GLOB '*${process_name}*'
+             THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
              ELSE 1 END
         AND dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
         AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
@@ -417,7 +417,7 @@ steps:
       FROM android_monitor_contention
       WHERE is_blocked_thread_main = 1
         AND CASE WHEN '${process_name}' != ''
-                 THEN process_name GLOB '*${process_name}*'
+                 THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
                  ELSE 1 END
         AND dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
         AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
@@ -470,7 +470,7 @@ steps:
         MAX(waiter_count) AS max_waiters
       FROM android_monitor_contention
       WHERE CASE WHEN '${process_name}' != ''
-                 THEN process_name GLOB '*${process_name}*'
+                 THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
                  ELSE 1 END
         AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -527,7 +527,7 @@ steps:
       FROM android_monitor_contention_chain c
       WHERE (c.parent_id IS NOT NULL OR c.child_id IS NOT NULL)
         AND CASE WHEN '${process_name}' != ''
-                 THEN c.process_name GLOB '*${process_name}*'
+                 THEN (c.process_name = '${process_name}' OR c.process_name GLOB '${process_name}:*')
                  ELSE 1 END
         AND (${start_ts} IS NULL OR c.ts + c.dur > ${start_ts})
         AND (${end_ts} IS NULL OR c.ts < ${end_ts})
@@ -659,7 +659,7 @@ steps:
         ROUND(AVG(c.dur) / 1e6, 2) AS avg_contention_ms
       FROM android_monitor_contention c
       WHERE CASE WHEN '${process_name}' != ''
-                 THEN c.process_name GLOB '*${process_name}*'
+                 THEN (c.process_name = '${process_name}' OR c.process_name GLOB '${process_name}:*')
                  ELSE 1 END
         AND c.dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
         AND (${start_ts} IS NULL OR c.ts + c.dur > ${start_ts})
@@ -709,7 +709,7 @@ steps:
           (SELECT COUNT(*) FROM held) AS lock_held_slice_count,
           (
             SELECT COUNT(*) FROM held
-            WHERE '${process_name}' = '' OR process_name GLOB '*${process_name}*'
+            WHERE '${process_name}' = '' OR (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
           ) AS lock_held_slice_count_in_scope,
           EXISTS (
             SELECT 1 FROM sqlite_master WHERE name = 'android_lock_held'
@@ -789,7 +789,7 @@ steps:
         LEFT JOIN process AS p USING (upid)
         WHERE
           CASE WHEN '${process_name}' != ''
-               THEN p.name GLOB '*${process_name}*'
+               THEN (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
                ELSE 1 END
           AND (${start_ts} IS NULL OR h.ts + h.dur > ${start_ts})
           AND (${end_ts} IS NULL OR h.ts < ${end_ts})
@@ -912,7 +912,7 @@ steps:
       LEFT JOIN process AS p USING (upid)
       WHERE
         CASE WHEN '${process_name}' != ''
-             THEN p.name GLOB '*${process_name}*'
+             THEN (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
              ELSE 1 END
         AND h.dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
         AND (${start_ts} IS NULL OR h.ts + h.dur > ${start_ts})
@@ -973,7 +973,7 @@ steps:
         FROM android_monitor_contention
         WHERE is_blocked_thread_main = 1
           AND CASE WHEN '${process_name}' != ''
-                   THEN process_name GLOB '*${process_name}*'
+                   THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
                    ELSE 1 END
           AND dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
           AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
@@ -991,7 +991,7 @@ steps:
             COUNT(DISTINCT blocked_utid) AS unique_waiters
           FROM android_monitor_contention
           WHERE CASE WHEN '${process_name}' != ''
-                     THEN process_name GLOB '*${process_name}*'
+                     THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
                      ELSE 1 END
             AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
             AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -1005,7 +1005,7 @@ steps:
         FROM android_monitor_contention_chain c
         WHERE (c.parent_id IS NOT NULL AND c.child_id IS NOT NULL)
           AND CASE WHEN '${process_name}' != ''
-                   THEN c.process_name GLOB '*${process_name}*'
+                   THEN (c.process_name = '${process_name}' OR c.process_name GLOB '${process_name}:*')
                    ELSE 1 END
           AND (${start_ts} IS NULL OR c.ts + c.dur > ${start_ts})
           AND (${end_ts} IS NULL OR c.ts < ${end_ts})
@@ -1018,7 +1018,7 @@ steps:
         FROM android_monitor_contention
         WHERE binder_reply_tid IS NOT NULL
           AND CASE WHEN '${process_name}' != ''
-                   THEN process_name GLOB '*${process_name}*'
+                   THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
                    ELSE 1 END
           AND dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
           AND (${start_ts} IS NULL OR ts + dur > ${start_ts})
@@ -1031,7 +1031,7 @@ steps:
           COALESCE(SUM(dur) / 1e6, 0) AS total_blocked_ms
         FROM android_monitor_contention
         WHERE CASE WHEN '${process_name}' != ''
-                   THEN process_name GLOB '*${process_name}*'
+                   THEN (process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
                    ELSE 1 END
           AND dur / 1e6 >= COALESCE(${min_duration_ms|10}, 10)
           AND (${start_ts} IS NULL OR ts + dur > ${start_ts})

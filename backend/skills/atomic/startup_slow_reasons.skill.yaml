@@ -139,7 +139,7 @@ steps:
           COALESCE(sp.upid, (
             SELECT p2.upid
             FROM process p2
-            WHERE p2.name GLOB s.package || '*'
+            WHERE (p2.name = s.package OR p2.name GLOB s.package || ':*')
             ORDER BY p2.start_ts DESC
             LIMIT 1
           )) as upid
@@ -689,7 +689,7 @@ steps:
         WHERE p2.start_ts IS NOT NULL
           AND p2.start_ts >= si.ts - 5000000000
           AND p2.start_ts <= si.ts + si.dur + 5000000000
-          AND p2.name NOT GLOB (si.package || '*')
+          AND NOT (p2.name = si.package OR p2.name GLOB si.package || ':*')
           AND p2.name != 'system_server'
           AND p2.name != 'Zygote'
           AND p2.name NOT GLOB 'zygote*'

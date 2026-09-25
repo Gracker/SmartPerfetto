@@ -81,7 +81,7 @@ steps:
         SELECT DISTINCT
           a.layer_name,
           CASE
-            WHEN '${process_name}' != '' AND a.layer_name GLOB '*${process_name}*' THEN 'app'
+            WHEN '${process_name}' != '' AND (a.layer_name GLOB '${process_name}[/#]*' OR a.layer_name GLOB '*[ [(/]${process_name}[/#]*') THEN 'app'
             WHEN a.layer_name GLOB '*StatusBar*' OR a.layer_name GLOB '*NavigationBar*'
               OR a.layer_name GLOB '*Wallpaper*' OR a.layer_name GLOB '*InputMethod*'
               OR a.layer_name GLOB '*SystemUI*' THEN 'system'
@@ -138,7 +138,7 @@ steps:
       SELECT
         a.layer_name,
         CASE
-          WHEN '${process_name}' != '' AND a.layer_name GLOB '*${process_name}*' THEN 'app'
+          WHEN '${process_name}' != '' AND (a.layer_name GLOB '${process_name}[/#]*' OR a.layer_name GLOB '*[ [(/]${process_name}[/#]*') THEN 'app'
           WHEN a.layer_name GLOB '*StatusBar*' OR a.layer_name GLOB '*NavigationBar*'
             OR a.layer_name GLOB '*Wallpaper*' OR a.layer_name GLOB '*InputMethod*'
             OR a.layer_name GLOB '*SystemUI*' THEN 'system'

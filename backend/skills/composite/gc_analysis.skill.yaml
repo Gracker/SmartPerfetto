@@ -57,7 +57,7 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标应用包名（支持 GLOB），留空分析所有 GC 事件"
+    description: "目标应用包名（精确匹配，含 name:* 子进程），留空分析所有 GC 事件"
   - name: min_gc_dur_ms
     type: number
     required: false
@@ -86,7 +86,7 @@ steps:
         CASE WHEN EXISTS (
           SELECT 1 FROM android_garbage_collection_events
           WHERE CASE WHEN '${package}' != ''
-                     THEN process_name GLOB '*${package}*'
+                     THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                      ELSE 1 END
             AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
             AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -95,7 +95,7 @@ steps:
         CASE WHEN EXISTS (
           SELECT 1 FROM android_garbage_collection_events
           WHERE CASE WHEN '${package}' != ''
-                     THEN process_name GLOB '*${package}*'
+                     THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                      ELSE 1 END
             AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
             AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -194,7 +194,7 @@ steps:
         ROUND(AVG(reclaimed_mb), 2) AS avg_reclaimed_mb
       FROM android_garbage_collection_events
       WHERE CASE WHEN '${package}' != ''
-                 THEN process_name GLOB '*${package}*'
+                 THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                  ELSE 1 END
         AND gc_dur / 1e6 >= COALESCE(${min_gc_dur_ms|5}, 5)
         AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
@@ -268,7 +268,7 @@ steps:
         ROUND(SUM(gc_dur) / 1e6, 2) AS total_wall_ms
       FROM android_garbage_collection_events
       WHERE CASE WHEN '${package}' != ''
-                 THEN process_name GLOB '*${package}*'
+                 THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                  ELSE 1 END
         AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
         AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -342,7 +342,7 @@ steps:
         ROUND(min_heap_mb, 2) AS min_heap_mb
       FROM android_garbage_collection_events
       WHERE CASE WHEN '${package}' != ''
-                 THEN process_name GLOB '*${package}*'
+                 THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                  ELSE 1 END
         AND gc_dur / 1e6 >= COALESCE(${min_gc_dur_ms|5}, 5) * 2
         AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
@@ -383,7 +383,7 @@ steps:
           upid
         FROM android_garbage_collection_events
         WHERE CASE WHEN '${package}' != ''
-                   THEN process_name GLOB '*${package}*'
+                   THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                    ELSE 1 END
           AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
           AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -485,7 +485,7 @@ steps:
       FROM _android_garbage_collection_process_stats s
       JOIN process ON s.upid = process.upid
       WHERE CASE WHEN '${package}' != ''
-                 THEN process.name GLOB '*${package}*'
+                 THEN (process.name = '${package}' OR process.name GLOB '${package}:*')
                  ELSE 1 END
       ORDER BY gc_cpu_sec DESC
     save_as: process_gc_stats
@@ -527,7 +527,7 @@ steps:
         ROUND(SUM(reclaimed_mb), 2) AS reclaimed_mb
       FROM android_garbage_collection_events
       WHERE CASE WHEN '${package}' != ''
-                 THEN process_name GLOB '*${package}*'
+                 THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                  ELSE 1 END
         AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
         AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -592,7 +592,7 @@ steps:
           ) AS gc_per_second
         FROM android_garbage_collection_events
         WHERE CASE WHEN '${package}' != ''
-                   THEN process_name GLOB '*${package}*'
+                   THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                    ELSE 1 END
           AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
           AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -606,7 +606,7 @@ steps:
           AND f.ts + f.dur > gc.gc_ts
         WHERE f.jank_type != 'None'
           AND CASE WHEN '${package}' != ''
-                   THEN gc.process_name GLOB '*${package}*'
+                   THEN (gc.process_name = '${package}' OR gc.process_name GLOB '${package}:*')
                    ELSE 1 END
           AND (${start_ts} IS NULL OR gc.gc_ts + gc.gc_dur > ${start_ts})
           AND (${end_ts} IS NULL OR gc.gc_ts < ${end_ts})
@@ -616,7 +616,7 @@ steps:
           CASE
             WHEN (SELECT COUNT(*) FROM android_garbage_collection_events
                   WHERE CASE WHEN '${package}' != ''
-                             THEN process_name GLOB '*${package}*'
+                             THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                              ELSE 1 END
                     AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
                     AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -627,7 +627,7 @@ steps:
                   SELECT max_heap_mb, ROW_NUMBER() OVER (ORDER BY gc_ts DESC) AS rn
                   FROM android_garbage_collection_events
                   WHERE CASE WHEN '${package}' != ''
-                             THEN process_name GLOB '*${package}*'
+                             THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                              ELSE 1 END
                     AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
                     AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -635,7 +635,7 @@ steps:
                 WHERE rn <= (
                   SELECT COUNT(*) / 4 FROM android_garbage_collection_events
                   WHERE CASE WHEN '${package}' != ''
-                             THEN process_name GLOB '*${package}*'
+                             THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                              ELSE 1 END
                     AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
                     AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -647,7 +647,7 @@ steps:
                   SELECT max_heap_mb, ROW_NUMBER() OVER (ORDER BY gc_ts ASC) AS rn
                   FROM android_garbage_collection_events
                   WHERE CASE WHEN '${package}' != ''
-                             THEN process_name GLOB '*${package}*'
+                             THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                              ELSE 1 END
                     AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
                     AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
@@ -655,7 +655,7 @@ steps:
                 WHERE rn <= (
                   SELECT COUNT(*) / 4 FROM android_garbage_collection_events
                   WHERE CASE WHEN '${package}' != ''
-                             THEN process_name GLOB '*${package}*'
+                             THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                              ELSE 1 END
                     AND (${start_ts} IS NULL OR gc_ts + gc_dur > ${start_ts})
                     AND (${end_ts} IS NULL OR gc_ts < ${end_ts})

@@ -68,7 +68,7 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标应用包名（支持 GLOB），留空分析所有 LMK 事件"
+    description: "目标应用包名（精确匹配，含 name:* 子进程），留空分析所有 LMK 事件"
   - name: oom_adj_threshold
     type: number
     required: false
@@ -96,7 +96,7 @@ steps:
         CASE WHEN EXISTS (
           SELECT 1 FROM android_lmk_events
           WHERE CASE WHEN '${package}' != ''
-                     THEN process_name GLOB '*${package}*'
+                     THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                      ELSE 1 END
             AND (${start_ts} IS NULL OR ts > ${start_ts})
             AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -106,7 +106,7 @@ steps:
           SELECT 1 FROM android_lmk_events
           WHERE oom_score_adj <= 200
             AND CASE WHEN '${package}' != ''
-                     THEN process_name GLOB '*${package}*'
+                     THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                      ELSE 1 END
             AND (${start_ts} IS NULL OR ts > ${start_ts})
             AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -176,7 +176,7 @@ steps:
         MIN(oom_score_adj) AS min_oom_adj
       FROM android_lmk_events
       WHERE CASE WHEN '${package}' != ''
-                 THEN process_name GLOB '*${package}*'
+                 THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                  ELSE 1 END
         AND (${start_ts} IS NULL OR ts > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -238,7 +238,7 @@ steps:
         END AS process_priority
       FROM android_lmk_events
       WHERE CASE WHEN '${package}' != ''
-                 THEN process_name GLOB '*${package}*'
+                 THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                  ELSE 1 END
         AND CASE WHEN ${oom_adj_threshold} IS NOT NULL
                  THEN oom_score_adj <= ${oom_adj_threshold}
@@ -351,7 +351,7 @@ steps:
         SELECT ts, process_name, kill_reason
         FROM android_lmk_events
         WHERE CASE WHEN '${package}' != ''
-                   THEN process_name GLOB '*${package}*'
+                   THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                    ELSE 1 END
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -418,7 +418,7 @@ steps:
         ROUND(AVG(oom_score_adj), 0) AS avg_oom_adj
       FROM android_lmk_events
       WHERE CASE WHEN '${package}' != ''
-                 THEN process_name GLOB '*${package}*'
+                 THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                  ELSE 1 END
         AND (${start_ts} IS NULL OR ts > ${start_ts})
         AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -456,7 +456,7 @@ steps:
         SELECT ts AS kill_ts, process_name, pid
         FROM android_lmk_events
         WHERE CASE WHEN '${package}' != ''
-                   THEN process_name GLOB '*${package}*'
+                   THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                    ELSE 1 END
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -536,7 +536,7 @@ steps:
           SUM(CASE WHEN kill_reason = 'PRESSURE_AFTER_KILL' THEN 1 ELSE 0 END) AS pressure_after_kill_count
         FROM android_lmk_events
         WHERE CASE WHEN '${package}' != ''
-                   THEN process_name GLOB '*${package}*'
+                   THEN (process_name = '${package}' OR process_name GLOB '${package}:*')
                    ELSE 1 END
           AND (${start_ts} IS NULL OR ts > ${start_ts})
           AND (${end_ts} IS NULL OR ts < ${end_ts})
@@ -552,7 +552,7 @@ steps:
           FROM android_lmk_events le
           JOIN process p ON p.name = le.process_name AND p.start_ts > le.ts
           WHERE CASE WHEN '${package}' != ''
-                     THEN le.process_name GLOB '*${package}*'
+                     THEN (le.process_name = '${package}' OR le.process_name GLOB '${package}:*')
                      ELSE 1 END
             AND (${start_ts} IS NULL OR le.ts > ${start_ts})
             AND (${end_ts} IS NULL OR le.ts < ${end_ts})

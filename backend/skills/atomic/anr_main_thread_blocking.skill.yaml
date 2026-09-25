@@ -141,7 +141,7 @@ steps:
         SELECT t.utid, t.tid, p.upid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE '${process_name}' != '' AND p.name GLOB '${process_name}*'
+        WHERE '${process_name}' != '' AND (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (t.is_main_thread = 1 OR t.tid = p.pid)
         LIMIT 1
       ),
@@ -244,7 +244,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE '${process_name}' != '' AND p.name GLOB '${process_name}*'
+        WHERE '${process_name}' != '' AND (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (t.is_main_thread = 1 OR t.tid = p.pid)
         LIMIT 1
       )
@@ -451,7 +451,7 @@ steps:
         AND bt.is_sync = 1
         AND bt.client_upid = (
           SELECT p.upid FROM process p
-          WHERE '${process_name}' != '' AND p.name GLOB '${process_name}*'
+          WHERE '${process_name}' != '' AND (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           LIMIT 1
         )
         AND bt.client_ts >= aw.w_start
@@ -509,7 +509,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE '${process_name}' != '' AND p.name GLOB '${process_name}*'
+        WHERE '${process_name}' != '' AND (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (t.is_main_thread = 1 OR t.tid = p.pid)
         LIMIT 1
       ),

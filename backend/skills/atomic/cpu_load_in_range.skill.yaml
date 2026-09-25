@@ -32,6 +32,11 @@ inputs:
     type: timestamp
     required: true
 
+# A per-machine sched coverage measure (system_sched_spans busy time over
+# system_cpu_topology cores and the wall-clock window). The cluster load in
+# cpu_cluster_load_in_range / jank_frame_detail (fragments/cpu_cluster_load.sql)
+# counts every _cpu_topology tier core over awake time; the two answer different
+# questions and are not interchangeable.
 steps:
   - id: cpu_utilization
     type: atomic

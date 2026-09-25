@@ -132,7 +132,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}*')
+        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (t.is_main_thread = 1 OR t.tid = p.pid)
         ORDER BY
           (p.name = '${process_name}') DESC,
@@ -262,7 +262,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}*')
+        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (t.is_main_thread = 1 OR t.tid = p.pid)
         ORDER BY
           (p.name = '${process_name}') DESC,
@@ -362,7 +362,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}*')
+        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (t.is_main_thread = 1 OR t.tid = p.pid)
         ORDER BY
           (p.name = '${process_name}') DESC,
@@ -472,7 +472,7 @@ steps:
         SELECT t.utid
         FROM thread t
         JOIN process p ON t.upid = p.upid
-        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}*')
+        WHERE (p.name = '${process_name}' OR p.name GLOB '${process_name}:*')
           AND (t.is_main_thread = 1 OR t.tid = p.pid)
         ORDER BY
           (p.name = '${process_name}') DESC,

@@ -136,7 +136,7 @@ steps:
       FROM sched_slice
       JOIN thread USING (utid)
       JOIN process USING (upid)
-      WHERE process.name LIKE '%${package}%'
+      WHERE ('${package}' = '' OR process.name = '${package}' OR process.name GLOB '${package}:*')
       GROUP BY thread.utid
       HAVING cpu_time_ms > 1
       ORDER BY cpu_time_ms DESC
@@ -163,12 +163,12 @@ steps:
       SELECT
         state,
         CAST(SUM(dur) / 1e6 AS INTEGER) AS dur_ms,
-        ROUND(SUM(dur) * 100.0 / (SELECT SUM(dur) FROM thread_state ts2 JOIN thread t2 USING (utid) JOIN process p2 USING (upid) WHERE t2.name = 'main' AND p2.name LIKE '%${package}%'), 1) AS pct
+        ROUND(SUM(dur) * 100.0 / (SELECT SUM(dur) FROM thread_state ts2 JOIN thread t2 USING (utid) JOIN process p2 USING (upid) WHERE t2.name = 'main' AND ('${package}' = '' OR p2.name = '${package}' OR p2.name GLOB '${package}:*')), 1) AS pct
       FROM thread_state
       JOIN thread USING (utid)
       JOIN process USING (upid)
       WHERE thread.name = 'main'
-        AND process.name LIKE '%${package}%'
+        AND ('${package}' = '' OR process.name = '${package}' OR process.name GLOB '${package}:*')
       GROUP BY state
       ORDER BY dur_ms DESC
     display:
@@ -193,7 +193,7 @@ steps:
       JOIN thread ON thread_track.utid = thread.utid
       JOIN process ON thread.upid = process.upid
       WHERE thread.name = 'main'
-        AND process.name LIKE '%${package}%'
+        AND ('${package}' = '' OR process.name = '${package}' OR process.name GLOB '${package}:*')
         AND slice.dur > 5000000
         AND slice.depth < 3
       ORDER BY slice.dur DESC
@@ -216,7 +216,7 @@ steps:
       JOIN thread USING (utid)
       JOIN process USING (upid)
       WHERE thread.name = 'RenderThread'
-        AND process.name LIKE '%${package}%'
+        AND ('${package}' = '' OR process.name = '${package}' OR process.name GLOB '${package}:*')
       GROUP BY state
       ORDER BY dur_ms DESC
     display:

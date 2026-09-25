@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { SkillDefinition, SkillStep } from '../skillEngine/types';
+import { builtInSkillFragment } from '../skillEngine/skillFragments';
 import type { IdentityTraceSide } from '../../types/identityContract';
 import { assertEffectiveProcessScope, createEffectiveProcessScope, verifiedIdentityForScope, type EffectiveProcessScope } from './effectiveProcessScope';
 import {
@@ -106,38 +107,82 @@ export function sqlUsesProcessNameFilter(sql: string): boolean {
   return identityColumnRe.test(stripped);
 }
 
-function collectStepSql(step: SkillStep | any, out: string[]): void {
+/**
+ * Resolves a declared `fragments/<file>.sql` to its text. Self-Evolution copies
+ * base fragments unchanged, so the built-in file is what every registry holds;
+ * an unknown fragment contributes nothing.
+ */
+type SkillFragmentResolver = (fragmentPath: string) => string | undefined;
+
+const LABEL_ONLY_FRAGMENT = /^\s*--\s*process-identity:\s*label-only\b/m;
+
+function builtInFragmentText(fragmentPath: string): string | undefined {
+  try {
+    return builtInSkillFragment(fragmentPath.replace(/^fragments\//, ''));
+  } catch {
+    return undefined;
+  }
+}
+
+/** One executable statement: a SQL text plus the fragments injected into it. */
+function sqlUnit(source: any, resolveFragment: SkillFragmentResolver): string | undefined {
+  if (!source || typeof source !== 'object' || typeof source.sql !== 'string') return undefined;
+  const parts = [source.sql];
+  for (const fragmentPath of Array.isArray(source.sql_fragments) ? source.sql_fragments : []) {
+    const text = typeof fragmentPath === 'string' ? resolveFragment(fragmentPath) : undefined;
+    // A fragment that only labels processes (declared in its header) does not
+    // select target evidence, so its name comparisons are not a process filter.
+    if (text && !LABEL_ONLY_FRAGMENT.test(text)) parts.push(text);
+  }
+  return parts.join('\n');
+}
+
+function collectStepSql(step: SkillStep | any, out: string[], resolveFragment: SkillFragmentResolver): void {
   if (!step || typeof step !== 'object') return;
-  if (typeof step.sql === 'string') out.push(step.sql);
+  for (const unit of [sqlUnit(step, resolveFragment), sqlUnit(step.exact_sql, resolveFragment)]) {
+    if (unit !== undefined) out.push(unit);
+  }
 
   if (Array.isArray(step.steps)) {
-    for (const nested of step.steps) collectStepSql(nested, out);
+    for (const nested of step.steps) collectStepSql(nested, out, resolveFragment);
   }
 
   if (Array.isArray(step.conditions)) {
     for (const branch of step.conditions) {
       if (branch?.then && typeof branch.then === 'object') {
-        collectStepSql(branch.then, out);
+        collectStepSql(branch.then, out, resolveFragment);
       }
     }
   }
 
   if (step.else && typeof step.else === 'object') {
-    collectStepSql(step.else, out);
+    collectStepSql(step.else, out, resolveFragment);
   }
 }
 
-export function collectSkillSql(skill: SkillDefinition): string {
-  const sql: string[] = [];
-  if (typeof skill.sql === 'string') sql.push(skill.sql);
+/**
+ * Every statement a Skill can execute, each with the fragments injected into
+ * it. Detection runs per statement: a process table read in one step and a
+ * bare `name =` in another are not a process-name filter.
+ */
+export function collectSkillSqlUnits(
+  skill: SkillDefinition,
+  resolveFragment: SkillFragmentResolver = builtInFragmentText,
+): string[] {
+  const units: string[] = [];
+  const root = sqlUnit(skill, resolveFragment);
+  if (root !== undefined) units.push(root);
   if (Array.isArray(skill.steps)) {
-    for (const step of skill.steps) collectStepSql(step, sql);
+    for (const step of skill.steps) collectStepSql(step, units, resolveFragment);
   }
-  return sql.join('\n');
+  return units;
 }
 
-export function skillUsesProcessNameFilter(skill: SkillDefinition): boolean {
-  return sqlUsesProcessNameFilter(collectSkillSql(skill));
+export function skillUsesProcessNameFilter(
+  skill: SkillDefinition,
+  resolveFragment: SkillFragmentResolver = builtInFragmentText,
+): boolean {
+  return collectSkillSqlUnits(skill, resolveFragment).some(sqlUsesProcessNameFilter);
 }
 
 export function getEffectiveIdentityConfig(skill: SkillDefinition): SkillIdentityConfig {

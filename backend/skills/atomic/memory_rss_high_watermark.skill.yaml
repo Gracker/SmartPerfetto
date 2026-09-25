@@ -57,6 +57,6 @@ steps:
         process_name,
         ROUND(rss_high_watermark / 1024.0, 2) AS rss_high_watermark_kb
       FROM memory_rss_high_watermark_per_process
-      WHERE (process_name GLOB '${process_name}*' OR '${process_name}' = '')
+      WHERE ('${process_name}' = '' OR process_name = '${process_name}' OR process_name GLOB '${process_name}:*')
       ORDER BY rss_high_watermark DESC
       LIMIT ${top_n|30}

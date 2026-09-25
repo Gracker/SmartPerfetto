@@ -57,7 +57,7 @@ steps:
         FROM process
         WHERE upid IS NOT NULL
           AND name IS NOT NULL
-          AND (name GLOB '${process_name}*' OR '${process_name}' = '')
+          AND ('${process_name}' = '' OR name = '${process_name}' OR name GLOB '${process_name}:*')
       ), samples AS (
         SELECT
           p.process_name,

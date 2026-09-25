@@ -101,7 +101,7 @@ steps:
                aidl_name, client_process, server_process
         FROM android_binder_txns
         WHERE is_sync = 1
-          AND (client_process GLOB '${process_name}*' OR '${process_name}' = '')
+          AND ('${process_name}' = '' OR client_process = '${process_name}' OR client_process GLOB '${process_name}:*')
           AND client_dur > ${min_dur_ms|1} * 1000000
           AND (${start_ts} IS NULL OR client_ts >= ${start_ts})
           AND (${end_ts} IS NULL OR client_ts < ${end_ts})
@@ -177,7 +177,7 @@ steps:
       JOIN android_binder_txns bt ON bd.binder_txn_id = bt.binder_txn_id
         AND bd.binder_reply_id = bt.binder_reply_id
       WHERE bt.is_sync = 1
-        AND (bt.client_process GLOB '${process_name}*' OR '${process_name}' = '')
+        AND ('${process_name}' = '' OR bt.client_process = '${process_name}' OR bt.client_process GLOB '${process_name}:*')
         AND bt.client_dur > ${min_dur_ms|1} * 1000000
         AND (${start_ts} IS NULL OR bt.client_ts >= ${start_ts})
         AND (${end_ts} IS NULL OR bt.client_ts < ${end_ts})

@@ -36,7 +36,7 @@ inputs:
   - name: package
     type: string
     required: false
-    description: "目标进程名（支持 GLOB）"
+    description: "目标进程名（精确匹配，含 name:* 子进程）"
   - name: start_ts
     type: timestamp
     required: false
