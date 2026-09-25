@@ -59,7 +59,9 @@ function rowCountFromDisplayResult(displayResult: DisplayResult): number | undef
 }
 
 export function buildSkillQueryReview(input: BuildSkillQueryReviewInput): QueryReviewV1 | undefined {
-  if (input.producer?.sourceToolCallId?.startsWith('compare_skill') || input.displayResult.executionStatus === 'unavailable') return undefined;
+  const status = input.displayResult.executionStatus;
+  // Nothing ran for an unavailable or condition-skipped step, so there is no query to review.
+  if (input.producer?.sourceToolCallId?.startsWith('compare_skill') || status === 'unavailable' || status === 'skipped') return undefined;
 
   const outputLanguage = input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const executableSql = typeof input.displayResult.sql === 'string' ? input.displayResult.sql : undefined;

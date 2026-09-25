@@ -11,6 +11,7 @@
 
 import { scopeMetadata, type EvidenceScopeProvenanceV1 } from '../../types/identityContract';
 import { resultScopeProvenance } from './scopeEvidence';
+import { nonObservedStepState } from './stepExecutionState';
 import { TraceProcessorService } from '../traceProcessorService';
 import { DEFAULT_PROCESS_IDENTITY_ALIASES } from '../processIdentity/types';
 import { SkillExecutor, createSkillExecutor, LayeredResult } from './skillExecutor';
@@ -703,8 +704,7 @@ export class SkillAnalysisAdapter {
         const dr = {
           stepId,
           ...scopeMetadata(resultScopeProvenance(stepResult)),
-          executionStatus: stepResult.code === 'exact_scope_unavailable' ? 'unavailable' as const : undefined,
-          executionMessage: stepResult.code === 'exact_scope_unavailable' ? stepResult.error : undefined,
+          ...nonObservedStepState(stepResult),
           sql: stepResult.sql,
           title: stepResult.display?.title || stepId,
           level: stepResult.display?.level || 'detail',
@@ -739,6 +739,7 @@ export class SkillAnalysisAdapter {
           displayResults.push({
             stepId: `${sessionId}_${stepId}`,
             ...scopeMetadata(resultScopeProvenance(stepResult)),
+            ...nonObservedStepState(stepResult),
             sql: stepResult.sql,
             title: stepResult.display?.title || `[${sessionId}] ${stepId}`,
             level: stepResult.display?.level || 'detail',
@@ -766,6 +767,7 @@ export class SkillAnalysisAdapter {
           const dr = {
             stepId: `${sessionId}_${frameId}`,
             ...scopeMetadata(resultScopeProvenance(stepResult)),
+            ...nonObservedStepState(stepResult),
             sql: stepResult.sql,
             title: stepResult.display?.title || `[${sessionId}] ${frameId}`,
             level: stepResult.display?.level || 'detail',

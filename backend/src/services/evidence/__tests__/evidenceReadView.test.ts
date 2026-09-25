@@ -12,7 +12,7 @@ import {runDeterministicClaimVerifier} from '../../verifier/deterministicClaimVe
 import {SkillExecutor} from '../../skillEngine/skillExecutor';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedEvidenceMatchesInput, evidenceReferenceKey,
   preparedIdentityResolutions, type PreparedClaimEvidence} from '../claimEvidencePreparation';
-import {bindReadResolutionToAnchor, isIssuedEvidenceReadResolution, type EvidenceReadView, type EvidenceReadViewOptions} from '../evidenceReadView';
+import {bindReadResolutionToAnchor, evidenceReadFailureIsUnreadable, isIssuedEvidenceReadResolution, type EvidenceReadView, type EvidenceReadViewOptions} from '../evidenceReadView';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
 import {runClaimVerification, collectVerifiedTraceOccurrenceRefIdsByClaimId} from '../../verifier/claimVerificationRunner';
 import type {ConclusionContract, ConclusionContractClaimReference} from '../../../agent/core/conclusionContract';
@@ -174,6 +174,26 @@ describe('runtime execution evidence read view', () => {
     expect((await read(store.createEvidenceReadView({...readOptions, budget: {maxCells: 0}}), ref))[0].status).toBe('incomplete');
     expect((await read(store.createEvidenceReadView({...readOptions, budget: {maxElapsedMs: 0}}), ref))[0].status).toBe('incomplete');
     expect((await read(store.createEvidenceReadView({...readOptions, budget: {maxBytes: 0}}), ref))[0].status).toBe('incomplete');
+  });
+
+  it('reports a condition-skipped step as not observed with its own reason', async () => {
+    const statusRead = async (executionStatus: 'skipped' | 'unavailable', witnessReason?: string) => {
+      const store = new ArtifactStore();
+      const data = {columns: ['id', 'metric'], rows: [[1, 2]] as unknown[][]};
+      const id = store.store({skillId: 'fixture', stepId: 'table', title: 'Table', data, executionStatus,
+        sourceToolCallId: 'invoke:table', traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}),
+        scopeProvenance: targetScope, identityResolution: identity});
+      store.registerEvidenceCapture(id, captureEvidenceTable(witnessReason ? undefined : data, {metric: field}, witnessReason),
+        {evidenceRefId: `evidence:${id}`});
+      return (await read(store.createEvidenceReadView(readOptions), {artifactId: id, rowIndex: 0, column: 'metric'}))[0];
+    };
+    expect(await statusRead('skipped')).toMatchObject({status: 'missing', reason: 'execution_skipped'});
+    // The witness a skipped DisplayResult actually carries yields the same reason.
+    expect(await statusRead('skipped', 'execution_skipped')).toMatchObject({status: 'missing', reason: 'execution_skipped'});
+    expect(await statusRead('unavailable')).toMatchObject({status: 'missing', reason: 'execution_unavailable'});
+    // Nothing was captured, so a claim citing it stays unverified rather than contradicted.
+    expect(evidenceReadFailureIsUnreadable('execution_skipped')).toBe(true);
+    expect(evidenceReadFailureIsUnreadable('execution_unavailable')).toBe(false);
   });
 
   it('binds the capture generation set when the view is created and still observes eviction', async () => {

@@ -61,10 +61,11 @@ describe('scene SSE verification gate', () => {
     input.observation.revisions.unshift({revision: 1, event: 0, acquisitions: 0, fingerprint: 'earlier'});
     expect(evaluateSceneSseVerification(input).passed).toBe(true);
   });
-  it('does not count progress, foreign traces, failed outputs or replayed data as fresh acquisition', () => {
+  it('does not count progress, foreign traces, failed or skipped outputs or replayed data as fresh acquisition', () => {
     const state = createSceneSseObservation();
     recordSceneSseEvent(state, 'data', {meta: {...fact().meta, traceId: 'other'}}, scope);
     recordSceneSseEvent(state, 'data', {meta: {...fact().meta, executionStatus: 'optional_error'}}, scope);
+    recordSceneSseEvent(state, 'data', {meta: {...fact('skipped').meta, executionStatus: 'skipped'}}, scope);
     recordSceneSseEvent(state, 'progress', fact(), scope);
     recordSceneSseEvent(state, 'data', fact(), scope); recordSceneSseEvent(state, 'data', fact(), scope);
     expect(state.acquisitions).toBe(1);

@@ -1143,6 +1143,44 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('无数据');
   });
 
+  test('renders skipped and failed steps as not observed instead of an empty table', () => {
+    const generator = new HTMLReportGenerator();
+    const tableEnvelope = (stepId: string, meta: Partial<DataEnvelope['meta']>): DataEnvelope => ({
+      meta: {type: 'skill_result', version: '2.0.0', source: 'click_response_analysis', timestamp: Date.now(),
+        skillId: 'click_response_analysis', stepId, ...meta},
+      display: {layer: 'list', format: 'table', title: stepId},
+      data: {columns: ['event_count'], rows: []},
+    });
+    const render = (outputLanguage: 'zh-CN' | 'en') => generator.generateAgentDrivenHTML({
+      traceId: 'trace-skip',
+      query: '分析点击响应',
+      timestamp: Date.now(),
+      hypotheses: [],
+      dialogue: [],
+      agentResponses: [],
+      outputLanguage,
+      dataEnvelopes: [
+        tableEnvelope('input_events', {executionStatus: 'skipped',
+          executionMessage: 'Step skipped: its condition was not met (${has_input} > 0)'}),
+        tableEnvelope('optional_probe', {executionStatus: 'optional_error', executionError: 'no such table: android_input_events'}),
+      ],
+      result: {sessionId: 'session-skip', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+        confidence: 0.8, rounds: 1, totalDurationMs: 1000},
+    });
+
+    const zh = render('zh-CN');
+    expect(zh).toContain('未执行：条件不满足');
+    expect(zh).toContain('${has_input} &gt; 0');
+    expect(zh).toContain('查询失败');
+    expect(zh).toContain('no such table: android_input_events');
+    expect(zh).not.toContain('>无数据<');
+    expect(zh).not.toContain('0 行');
+    const en = render('en');
+    expect(en).toContain('Not run: condition not met');
+    expect(en).toContain('Query failed');
+    expect(en).not.toContain('>No data<');
+  });
+
   test('renders generic SQL DataEnvelope with an explanatory report title and purpose', () => {
     const generator = new HTMLReportGenerator();
     const html = generator.generateAgentDrivenHTML({

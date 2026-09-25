@@ -109,12 +109,13 @@ import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 // =============================================================================
 
 import { DisplayLayer } from './types';
+import { nonObservedStepState, type StepExecutionState } from './stepExecutionState';
 
 /**
  * Synthesize Data - 标记为 synthesize 的步骤数据
  * 用于最终总结时的数据聚合
  */
-export interface SynthesizeData extends EvidenceScopeMetadata {
+export interface SynthesizeData extends EvidenceScopeMetadata, StepExecutionState {
   /** 步骤 ID */
   stepId: string;
   /** 步骤名称 */
@@ -3034,6 +3035,7 @@ export class SkillExecutor {
           data: isOptional ? [] : undefined,
           error: isOptional ? undefined : 'Condition not met',
           code: 'condition_not_met',
+          skippedCondition: conditionStr,
           executionTimeMs: Date.now() - startTime,
         };
       }
@@ -4314,6 +4316,8 @@ export class SkillExecutor {
       displayData = { text: String(data) };
     }
 
+    const executionState = this.stepExecutionState(stepResult, data);
+    const skipped = executionState.executionStatus === 'skipped';
     const displayResult: DisplayResult = {
       stepId,
       title: config.title || title,
@@ -4322,13 +4326,10 @@ export class SkillExecutor {
       format: config.format || 'table',
       data: displayData,
       ...scopeMetadata(resultScopeProvenance(this.extractSelectedStepResult(stepResult))),
-      executionStatus: stepResult.code === 'exact_scope_unavailable' ? 'unavailable' : stepResult.code === 'optional_query_error'
-        ? 'optional_error'
-        : (Array.isArray(data) && data.length === 0 ? 'empty' : 'observed'),
-      executionMessage: stepResult.code === 'exact_scope_unavailable' ? stepResult.error : stepResult.emptyMessage,
-      executionError: stepResult.code === 'exact_scope_unavailable' ? undefined : stepResult.error,
+      ...executionState,
       highlight: config.highlight,
-      sql: this.extractSelectedStepResult(stepResult).sql || sql,
+      // A skipped step never ran its query; showing the authored SQL would imply it did.
+      sql: skipped ? undefined : this.extractSelectedStepResult(stepResult).sql || sql,
       expandable: config.expandable,           // 是否支持展开查看详细分析
       metadataFields: config.metadataFields,   // 提取到元数据的字段
       hidden_columns: config.hidden_columns,   // 隐藏的列
@@ -4343,8 +4344,16 @@ export class SkillExecutor {
       Array.isArray(displayData.rows) && displayData.rows.length === table.rows.length &&
       Array.isArray(displayData.columns) && displayData.columns.every((column: string) => table.columns.includes(column));
     attachEvidenceTable(displayResult, directMapping && witness ? witness :
-      captureEvidenceTable(undefined, {}, 'display_transformation_unmapped'));
+      captureEvidenceTable(undefined, {}, skipped ? 'execution_skipped' : 'display_transformation_unmapped'));
     return displayResult;
+  }
+
+  private stepExecutionState(stepResult: StepResult, data: unknown): StepExecutionState {
+    return nonObservedStepState(stepResult) ?? {
+      executionStatus: Array.isArray(data) && data.length === 0 ? 'empty' : 'observed',
+      executionMessage: stepResult.emptyMessage,
+      executionError: stepResult.error,
+    };
   }
 
   /** Carry a raw atomic table to its synthesize view without serializing authority. */
@@ -4358,6 +4367,8 @@ export class SkillExecutor {
       data: stepResult.data,
       ...scopeMetadata(resultScopeProvenance(stepResult)),
       success: stepResult.success,
+      // A failed step has no execution state beyond success=false and its error.
+      ...(stepResult.success ? this.stepExecutionState(stepResult, stepResult.data) : nonObservedStepState(stepResult)),
       config,
     };
     // Only this atomic execution object can identify its original table. Nested
@@ -4382,8 +4393,10 @@ export class SkillExecutor {
   private buildSynthesizeSummaryDisplayResult(synthesizeData: SynthesizeData[]): DisplayResult | null {
     if (!Array.isArray(synthesizeData) || synthesizeData.length === 0) return null;
 
+    // A condition-skipped step has no rows to summarize; it is not an empty result.
     const keyRoleItems = synthesizeData.filter(item =>
       item?.success === true &&
+      item.executionStatus !== 'skipped' &&
       item?.config &&
       typeof item.config === 'object' &&
       ['overview', 'conclusion', 'list', 'clusters'].includes(String((item.config as any).role))

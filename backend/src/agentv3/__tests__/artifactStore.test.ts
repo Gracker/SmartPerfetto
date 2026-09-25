@@ -238,6 +238,28 @@ describe('ArtifactStore', () => {
     });
   });
 
+  it('keeps a condition-skipped step skipped in summaries and fetch results', () => {
+    const store = new ArtifactStore();
+    const executionMessage = 'Step skipped: its condition was not met (${has_input} > 0)';
+    const artifactId = store.store({
+      skillId: 'click_response_analysis',
+      stepId: 'input_events',
+      title: 'Input events',
+      data: { columns: ['event_count'], rows: [] },
+      executionStatus: 'skipped',
+      executionMessage,
+    });
+
+    const expected = { executionStatus: 'skipped', executionMessage };
+    expect(store.generateSummary(artifactId)).toMatchObject(expected);
+    expect(store.generateCompactSummary(artifactId)).toMatchObject(expected);
+    for (const detail of ['summary', 'rows', 'full'] as const) {
+      const fetched = store.fetch(artifactId, detail) as Record<string, unknown>;
+      expect(fetched).toMatchObject(expected);
+      expect(fetched.executionError).toBeUndefined();
+    }
+  });
+
   it('adds bounded aggregates only to explicit summary fetches', () => {
     const store = new ArtifactStore();
     const longPrefix = 'x'.repeat(90);

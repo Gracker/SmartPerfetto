@@ -79,6 +79,8 @@ const UNREADABLE_EVIDENCE_REASONS: ReadonlySet<string> = new Set([
   // the capture exists but carries no readable table for this output shape
   'execution_witness_unavailable', 'unmapped_evidence_shape', 'invalid_evidence_columns',
   'unmapped_evidence_columns', 'display_transformation_unmapped', 'unsupported_raw_cell',
+  // the step's condition was not met, so its query never ran and captured nothing
+  'execution_skipped',
 ]);
 
 export function evidenceReadFailureIsUnreadable(reason: string | undefined): boolean {
@@ -193,6 +195,7 @@ export function createEvidenceReadView(records: () => readonly EvidenceReadRecor
       const table = capturedEvidenceTable(witness);
       if (!table || table.unavailableReason) {fail('missing', table?.unavailableReason || 'execution_witness_unavailable'); continue;}
       if (record.meta.executionStatus === 'unavailable' || record.meta.executionStatus === 'optional_error') {fail('missing', 'execution_unavailable'); continue;}
+      if (record.meta.executionStatus === 'skipped') {fail('missing', 'execution_skipped'); continue;}
       if (new Set(table.columns).size !== table.columns.length) {fail('ambiguous', 'duplicate_evidence_columns'); continue;}
       const ref = request.reference;
       if (request.metadataOnly) {

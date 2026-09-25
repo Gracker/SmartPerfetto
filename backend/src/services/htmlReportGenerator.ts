@@ -6267,12 +6267,16 @@ export class HTMLReportGenerator {
     if (planPhaseId || planPhaseTitle) {
       metaParts.push(`${this.escapeHtml(localize(outputLanguage, '阶段', 'Phase'))}: ${this.escapeHtml([planPhaseId, planPhaseTitle].filter(Boolean).join(' '))}`);
     }
-    if (rowCount !== undefined) {
+    const executionStateHtml = this.renderEnvelopeNotObservedState(envelope, outputLanguage);
+    // A step that did not run or failed returned no rows to count.
+    if (rowCount !== undefined && !executionStateHtml) {
       metaParts.push(this.escapeHtml(localize(outputLanguage, `${rowCount} 行`, `${rowCount} rows`)));
     }
 
     let bodyHtml: string;
-    if (envelope.display?.format === 'summary') {
+    if (executionStateHtml) {
+      bodyHtml = executionStateHtml;
+    } else if (envelope.display?.format === 'summary') {
       bodyHtml = this.generateSummaryFromEnvelope(envelope, outputLanguage);
     } else if (envelope.display?.format === 'text') {
       bodyHtml = this.generateTextFromEnvelope(envelope, outputLanguage);
@@ -6296,6 +6300,28 @@ export class HTMLReportGenerator {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Skipped, failed and unavailable steps produced no observation. Rendering
+   * their declared-but-empty table as "no data" would read as an observed
+   * empty result, so state why nothing was observed instead.
+   */
+  private renderEnvelopeNotObservedState(envelope: DataEnvelope, outputLanguage: OutputLanguage): string | undefined {
+    const {executionStatus, executionMessage, executionError} = envelope.meta || {};
+    const label = executionStatus === 'skipped'
+      ? localize(outputLanguage, '未执行：条件不满足', 'Not run: condition not met')
+      : executionStatus === 'optional_error'
+        ? localize(outputLanguage, '查询失败', 'Query failed')
+        : executionStatus === 'unavailable'
+          ? localize(outputLanguage, '数据不可用', 'Data unavailable')
+          : undefined;
+    if (!label) return undefined;
+    const details = [executionMessage, executionError]
+      .filter((detail): detail is string => typeof detail === 'string' && detail.trim().length > 0)
+      .map(detail => `<div>${this.escapeHtml(detail)}</div>`)
+      .join('');
+    return `<div class="empty-state execution-state-${executionStatus}"><strong>${this.escapeHtml(label)}</strong>${details}</div>`;
   }
 
   private normalizeReportTraceSide(value: unknown): ReportTraceSide | undefined {

@@ -535,6 +535,8 @@ export interface StepResult extends EvidenceScopeMetadata {
   code?: string;
   /** Authored explanation for a successful query that returned no rows. */
   emptyMessage?: string;
+  /** The `condition` expression that evaluated false when code is `condition_not_met`. */
+  skippedCondition?: string;
   executionTimeMs: number;
   display?: DisplayConfig;
   sql?: string;
@@ -613,8 +615,8 @@ export interface DisplayResult extends EvidenceScopeMetadata {
       }>;
     };
   };
-  /** Public execution state; keeps successful-empty distinct from optional query failure. */
-  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable';
+  /** Public execution state; keeps successful-empty distinct from optional query failure and condition skips. */
+  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable' | 'skipped';
   executionMessage?: string;
   executionError?: string;
   highlight?: HighlightRule[];

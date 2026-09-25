@@ -52,8 +52,11 @@ interface DataEnvelope<T = DataPayload> {
 - `empty`: the query succeeded with no matching rows;
 - `optional_error`: an optional query was unavailable or failed.
 - `unavailable`: current data cannot be obtained and is not a successful observation.
+- `skipped`: the step's `condition` was not met and its query never ran;
+  `executionMessage` carries the condition text, no `sql` is attached, and it
+  must not be read as an empty result.
 
-Do not collapse `empty` and `optional_error` into "no issue." Comparison
+Do not collapse `empty`, `skipped`, and `optional_error` into "no issue." Comparison
 envelopes also preserve `traceSide`, pane, trace id, query hash, and evidence
 references. Process/thread evidence may carry an identity sidecar, and
 plan-driven evidence may carry phase attribution. Those fields must remain

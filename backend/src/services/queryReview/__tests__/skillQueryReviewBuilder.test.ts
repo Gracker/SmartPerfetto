@@ -61,4 +61,17 @@ describe('skillQueryReviewBuilder', () => {
 
     expect(reviews.size).toBe(0);
   });
+
+  it('builds no review for a step whose query never ran', () => {
+    const review = (overrides: Partial<DisplayResult>) => buildSkillQueryReview({
+      skillId: 'click_response_analysis',
+      displayResult: displayResult({data: {columns: ['event_count'], rows: []}, ...overrides}),
+      producer: {sourceToolCallId: 'invoke_skill:1'},
+    });
+
+    expect(review({executionStatus: 'skipped', sql: undefined,
+      executionMessage: 'Step skipped: its condition was not met (${has_input} > 0)'})).toBeUndefined();
+    expect(review({executionStatus: 'unavailable'})).toBeUndefined();
+    expect(review({executionStatus: 'empty'})).toBeDefined();
+  });
 });

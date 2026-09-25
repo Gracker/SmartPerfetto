@@ -176,6 +176,29 @@ describe('adaptive routing runtime projection', () => {
     expect(JSON.stringify(post)).not.toContain('private');
   });
 
+  it('does not treat a designed condition skip as schema uncertainty', () => {
+    const previous = buildAdaptiveRoutingPreflight({
+      requestedMode: 'auto',
+      resolvedMode: 'quick',
+      classifierSource: 'hard_rule',
+      quickAcknowledgementDirectAnswer: false,
+      directEvidenceAvailable: true,
+      hasReferenceTrace: false,
+      privateContext: false,
+    });
+    const schemaStatus = (meta: Partial<DataEnvelope['meta']>) => buildAdaptiveRoutingPostEvidence({
+      previous,
+      result: result(),
+      dataEnvelopes: [envelope(), envelope(meta)],
+    }).evidence?.schemaStatus;
+
+    expect(schemaStatus({
+      executionStatus: 'skipped',
+      executionMessage: 'Step skipped: its condition was not met (${has_input} > 0)',
+    })).toBe('ready');
+    expect(schemaStatus({executionStatus: 'optional_error'})).toBe('uncertain');
+  });
+
   it('records the selected light model for quick and primary model for full', () => {
     for (const [resolvedMode, expectedModel] of [
       ['quick', 'flash-model'],

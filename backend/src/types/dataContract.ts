@@ -311,8 +311,12 @@ export interface DataEnvelopeMeta extends EvidenceScopeMetadata {
   /** Optional step ID within a skill */
   stepId?: string;
 
-  /** Query execution state retained across Agent, report, snapshot, and UI projections. */
-  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable';
+  /**
+   * Query execution state retained across Agent, report, snapshot, and UI projections.
+   * `skipped` means the step's condition was not met and its query never ran;
+   * it is not an observation and must not be read as an empty result.
+   */
+  executionStatus?: 'observed' | 'empty' | 'optional_error' | 'unavailable' | 'skipped';
   executionMessage?: string;
   executionError?: string;
 

@@ -4502,6 +4502,68 @@ describe('SkillExecutor - authored deep and empty/error semantics', () => {
       executionError: 'missing optional table',
     });
   });
+
+  it('marks a condition-skipped optional step as skipped, distinct from an executed zero-row step', async () => {
+    mockTraceProcessor.query.mockResolvedValueOnce({ columns: ['event_count'], rows: [] });
+    const skill: SkillDefinition = {
+      name: 'condition_skip_contract',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Condition skip contract'),
+      steps: [
+        {
+          id: 'executed_empty',
+          type: 'atomic',
+          sql: 'SELECT COUNT(*) AS event_count FROM slice WHERE 0',
+          display: { show: true, level: 'summary', columns: [{ name: 'event_count', type: 'number' }] },
+          synthesize: { role: 'overview', fields: [{ key: 'event_count', label: 'Events' }] },
+        } as any,
+        {
+          id: 'input_events',
+          type: 'atomic',
+          sql: 'SELECT COUNT(*) AS event_count FROM android_input_events',
+          optional: true,
+          condition: '${has_input} > 0',
+          display: { show: true, level: 'summary', columns: [{ name: 'event_count', type: 'number' }] },
+          synthesize: { role: 'overview', fields: [{ key: 'event_count', label: 'Input events' }] },
+        } as any,
+      ],
+    };
+    executor.registerSkill(skill);
+
+    const result = await executor.execute('condition_skip_contract', 'trace-1', { has_input: 0 });
+
+    expect(result.success).toBe(true);
+    expect(mockTraceProcessor.query).toHaveBeenCalledTimes(1);
+    expect(result.rawResults?.input_events).toMatchObject({
+      success: true, code: 'condition_not_met', skippedCondition: '${has_input} > 0',
+    });
+    expect(result.rawResults?.input_events?.error).toBeUndefined();
+
+    const executed = result.displayResults.find(item => item.stepId === 'executed_empty');
+    expect(executed).toMatchObject({ executionStatus: 'empty', sql: expect.stringContaining('FROM slice') });
+    const skipped = result.displayResults.find(item => item.stepId === 'input_events');
+    expect(skipped?.executionStatus).toBe('skipped');
+    expect(skipped?.executionMessage).toContain('${has_input} > 0');
+    expect(skipped?.sql).toBeUndefined();
+    expect(skipped?.executionError).toBeUndefined();
+    expect(capturedEvidenceTable(evidenceTableFor(skipped!)!)?.unavailableReason).toBe('execution_skipped');
+
+    const envelopes = SkillExecutor.toDataEnvelopes(result);
+    expect(envelopes.find(item => item.meta.stepId === 'executed_empty')?.meta.executionStatus).toBe('empty');
+    const skippedMeta = envelopes.find(item => item.meta.stepId === 'input_events')?.meta;
+    expect(skippedMeta?.executionStatus).toBe('skipped');
+    expect(skippedMeta?.executionMessage).toContain('${has_input} > 0');
+    expect(skippedMeta?.executionError).toBeUndefined();
+
+    const synthesize = result.synthesizeData as SynthesizeData[];
+    expect(synthesize.find(item => item.stepId === 'executed_empty')?.executionStatus).toBe('empty');
+    expect(synthesize.find(item => item.stepId === 'input_events')).toMatchObject({
+      success: true, executionStatus: 'skipped', executionMessage: expect.stringContaining('${has_input} > 0'),
+    });
+    const summary = result.displayResults.find(item => item.stepId === '__synthesize_summary__');
+    expect(JSON.stringify(summary ?? {})).not.toContain('Input events');
+  });
 });
 
 describe('scrolling main-thread task delivery', () => {

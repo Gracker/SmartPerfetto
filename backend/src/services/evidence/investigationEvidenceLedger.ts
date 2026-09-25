@@ -287,7 +287,7 @@ function buildScanRecords(captures: readonly EvidenceReadRecord[], options: Evid
         !allowed.has(`current:${record.meta.traceId}`)) continue;
     if (binding.traceId !== record.meta.traceId ||
         !record.meta.sourceToolCallId || record.captureId !== witness.captureId || !table || table.unavailableReason ||
-        ['optional_error', 'unavailable'].includes(record.meta.executionStatus || '') ||
+        ['optional_error', 'unavailable', 'skipped'].includes(record.meta.executionStatus || '') ||
         new Set(table.columns).size !== table.columns.length) {
       scanIssues.add('scan_scope_or_summary_unavailable'); continue;
     }
@@ -325,7 +325,7 @@ function buildScanRecords(captures: readonly EvidenceReadRecord[], options: Evid
       let returned: number | undefined;
       if (sibling && resultBinding && resultTable) {
         if (sibling.record.captureId !== sibling.witness.captureId || resultTable.unavailableReason ||
-            ['optional_error', 'unavailable'].includes(sibling.record.meta.executionStatus || '') ||
+            ['optional_error', 'unavailable', 'skipped'].includes(sibling.record.meta.executionStatus || '') ||
             new Set(resultTable.columns).size !== resultTable.columns.length) issues.add('scan_result_unavailable');
         else if (!resultTable.columns.includes(resultBinding.declaration.window.start) ||
             !resultTable.columns.includes(resultBinding.declaration.window.end)) issues.add('scan_result_window_columns_missing');
@@ -389,6 +389,7 @@ export function buildInvestigationEvidenceSnapshot(captures: readonly EvidenceRe
     if (meta.executionStatus === 'unavailable' || meta.executionStatus === 'optional_error') {
       incomplete('capture_execution_unavailable'); continue;
     }
+    if (meta.executionStatus === 'skipped') {incomplete('capture_execution_skipped'); continue;}
     const observation = meta.sourceToolCallId ? toolStates.get(`${record.originRunId || ''}:${meta.sourceToolCallId}`) : undefined;
     const toolChecked = observation?.phase === 'completed' && !observation.failed;
     if (!toolChecked) incomplete('capture_tool_observation_missing');

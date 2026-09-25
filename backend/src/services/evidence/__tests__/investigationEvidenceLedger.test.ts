@@ -27,7 +27,8 @@ const observation = (phase: 'started' | 'completed' | 'failed', toolCallId = 'ca
 } as RuntimeToolInvocationEvent);
 
 async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; declared?: boolean; originRunId?: string;
-  declaration?: InvestigationEvidenceDeclaration; extraColumns?: string[]} = {}) {
+  declaration?: InvestigationEvidenceDeclaration; extraColumns?: string[];
+  executionStatus?: 'optional_error' | 'unavailable' | 'skipped'} = {}) {
   const executor = new SkillExecutor({query: async () => ({columns: ['start', 'end', 'upid', 'utid', 'freq', 'status', 'coverage', 'denominator', ...(settings.extraColumns || [])],
     rows, durationMs: 1})});
   executor.registerSkill({name: 'ledger_fixture', version: '1', type: 'atomic',
@@ -43,7 +44,7 @@ async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; 
     store.observeInvestigationTool(observation('started'), originRunId);
     store.observeInvestigationTool(observation('completed'), originRunId);
   }
-  const artifactId = store.store({skillId: result.skillId, data: display.data,
+  const artifactId = store.store({skillId: result.skillId, data: display.data, executionStatus: settings.executionStatus,
     traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}), sourceToolCallId: 'call'});
   store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture', originRunId});
   return {store, artifactId, display};
@@ -249,6 +250,15 @@ describe('trusted investigation evidence ledger', () => {
       .investigationEvidence!().records).toEqual([]);
     const empty = await fixture([]);
     expect(empty.store.createEvidenceReadView(options).investigationEvidence!()).toMatchObject({records: [], complete: false});
+  });
+
+  it('never records a condition-skipped capture and reports it apart from unavailable execution', async () => {
+    const skipped = (await fixture([row], {executionStatus: 'skipped'})).store.createEvidenceReadView(options).investigationEvidence!();
+    expect(skipped).toMatchObject({records: [], complete: false});
+    expect(skipped.issues).toContain('capture_execution_skipped');
+    expect(skipped.issues).not.toContain('capture_execution_unavailable');
+    const unavailable = (await fixture([row], {executionStatus: 'unavailable'})).store.createEvidenceReadView(options).investigationEvidence!();
+    expect(unavailable.issues).toContain('capture_execution_unavailable');
   });
 });
 

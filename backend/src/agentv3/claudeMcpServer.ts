@@ -52,7 +52,7 @@ import { createArchitectureDetector } from '../agent/detectors/architectureDetec
 import {resolveRegisteredDrillDownSkillParams} from '../agent/core/drillDownEntityResolver';
 import {findDrillDownSkillConfig} from '../agent/config/drillDownRegistry';
 import { createDataEnvelope, displayResultToEnvelope } from '../types/dataContract';
-import type { ColumnDefinition } from '../types/dataContract';
+import type { ColumnDefinition, DataEnvelopeMeta } from '../types/dataContract';
 import {nsToMs} from '../utils/traceProcessorRowUtils';
 import {
   analyzeCriticalPath,
@@ -1168,8 +1168,11 @@ function normalizeSynthesizeDataForStorage(data: any): { columns: string[]; rows
     return { columns: data.columns, rows: data.rows };
   }
 
+  // An empty array is zero rows, not a single empty object row.
+  if (Array.isArray(data) && data.length === 0) return { columns: [], rows: [] };
+
   // Array of objects
-  if (Array.isArray(data) && data.length > 0) {
+  if (Array.isArray(data)) {
     const first = data[0];
     // Iterator format: flatten item + result
     if (first && typeof first === 'object' && 'itemIndex' in first && 'result' in first) {
@@ -3229,7 +3232,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         // evidence meta can carry the same artifact ids that the model sees.
         let artifacts: SkillArtifactSummaryForModel[] | undefined;
         let diagnosticsArtifactId: string | undefined;
-        let synthesizeArtifacts: Array<{ artifactId: string; stepId: string; rowCount: number; columns: string[] }> | undefined;
+        let synthesizeArtifacts: Array<{ artifactId: string; stepId: string; rowCount: number; columns: string[];
+          executionStatus?: DataEnvelopeMeta['executionStatus'] }> | undefined;
         const artifactIdsByDisplayIndex: Array<string | undefined> = [];
         const queryReviewsByDisplayIndex: Array<QueryReviewV1 | undefined> = [];
         const modelDisplayProjections = (result.displayResults || []).map(dr =>
@@ -3333,6 +3337,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
                 layer: sd.layer || 'synthesize',
                 title: sd.stepName || sd.stepId,
                 data: normalizedData,
+                executionStatus: sd.executionStatus,
+                executionMessage: sd.executionMessage,
+                executionError: sd.executionError,
                 planPhaseId: producer.planPhaseId,
                 planPhaseTitle: producer.planPhaseTitle,
                 planPhaseGoal: producer.planPhaseGoal,
@@ -3346,19 +3353,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               // Keep their locators distinct without changing existing display IDs.
               const evidenceRefId = `${stableSkillEvidenceRefId(result.skillId || skillId, sd.stepId,
                 sd.stepName || sd.stepId, normalizedData, skillTraceProvenance, producer, sd.scopeProvenance)}:artifact:${artId}`;
-              // The normalizer flattens iterator-shaped rows and rewrites empty
-              // arrays. Only its plain object-row branch preserves this table.
+              // The normalizer flattens iterator-shaped rows and drops the columns
+              // of an empty array. Only its plain object-row branch preserves this table.
               const firstRow = Array.isArray(sd.data) ? sd.data[0] : undefined;
               const directRows = firstRow && typeof firstRow === 'object' &&
                 !('itemIndex' in firstRow && 'result' in firstRow);
-              const witness = (directRows && evidenceTableFor(sd)) ||
-                captureEvidenceTable(undefined, {}, 'synthesize_transformation_unmapped');
+              const witness = (directRows && evidenceTableFor(sd)) || captureEvidenceTable(undefined, {},
+                sd.executionStatus === 'skipped' ? 'execution_skipped' : 'synthesize_transformation_unmapped');
               artifactStore.registerEvidenceCapture?.(artId, witness, {evidenceRefId});
               return {
                 artifactId: artId,
                 stepId: sd.stepId,
                 rowCount: normalizedData.rows?.length ?? 0,
                 columns: normalizedData.columns ?? [],
+                // rowCount 0 alone would read as an empty result for a step that never ran.
+                ...(sd.executionStatus === 'skipped' ? { executionStatus: sd.executionStatus } : {}),
               };
             });
         }

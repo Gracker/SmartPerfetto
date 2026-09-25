@@ -3297,6 +3297,54 @@ describe('createClaudeMcpServer', () => {
       expect(envelope?.meta?.producerReason).toContain('startup_analysis');
     });
 
+    it('invoke_skill keeps a condition-skipped step skipped on artifacts, envelopes and synthesize artifacts', async () => {
+      const { tools, emittedUpdates, mockSkillExecutor } = createTestServer();
+      const skippedMessage = 'Step skipped: its condition was not met (${has_input} > 0); the query did not run, so this is not an empty result.';
+      (mockSkillExecutor.execute as any).mockResolvedValueOnce({
+        skillId: 'click_response_analysis',
+        success: true,
+        displayResults: [{
+          stepId: 'input_events',
+          title: 'Input events',
+          layer: 'list',
+          format: 'table',
+          data: { rows: [], columns: ['event_count'] },
+          executionStatus: 'skipped',
+          executionMessage: skippedMessage,
+        }],
+        synthesizeData: [{
+          stepId: 'input_events',
+          stepName: 'Input events',
+          stepType: 'atomic',
+          success: true,
+          data: [],
+          executionStatus: 'skipped',
+          executionMessage: skippedMessage,
+        }],
+        diagnostics: [],
+        executionTimeMs: 5,
+      });
+
+      const result = await callTool(tools, 'invoke_skill', { skillId: 'click_response_analysis', params: {} });
+      const envelope = emittedUpdates
+        .filter((u: any) => u.type === 'data')
+        .flatMap((u: any) => u.content ?? [])
+        .find((env: any) => env.meta?.stepId === 'input_events');
+
+      expect(result.artifacts?.[0]).toMatchObject({ executionStatus: 'skipped', executionMessage: skippedMessage });
+      expect(result.artifacts?.[0]?.executionError).toBeUndefined();
+      expect(envelope?.meta).toMatchObject({ executionStatus: 'skipped', executionMessage: skippedMessage });
+      expect(envelope?.sql).toBeUndefined();
+      expect(result.synthesizeArtifacts).toEqual([
+        expect.objectContaining({ stepId: 'input_events', rowCount: 0, executionStatus: 'skipped' }),
+      ]);
+      const fetched = await callTool(tools, 'fetch_artifact', {
+        artifactId: result.synthesizeArtifacts[0].artifactId,
+        detail: 'summary',
+      });
+      expect(fetched).toMatchObject({ executionStatus: 'skipped', executionMessage: skippedMessage });
+    });
+
     it('execute_sql should warn when raw SQL bypasses process identity gate', async () => {
       const { tools } = createTestServer();
       await callTool(tools, 'submit_plan', {

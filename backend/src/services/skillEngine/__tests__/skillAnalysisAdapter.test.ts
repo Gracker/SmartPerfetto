@@ -24,6 +24,36 @@ describe('SkillAnalysisAdapter layered conversion', () => {
     expect((adapter as any).convertDisplayResultsToSections(display).frequency.scopeProvenance).toEqual(scopeProvenance);
   });
 
+  it('maps condition-skipped, failed and unavailable steps on every layer', () => {
+    const adapter = new SkillAnalysisAdapter({ query: jest.fn() } as any);
+    const display = { show: true, level: 'summary', format: 'table' };
+    const step = (stepId: string, extra: Record<string, unknown>) => ({ stepId, stepType: 'atomic', executionTimeMs: 0, display, ...extra });
+    const skipped = step('input', { success: true, data: [], code: 'condition_not_met', skippedCondition: '${has_input} > 0' });
+    const results = (adapter as any).convertLayeredResultToDisplayResults({
+      layers: {
+        list: {
+          input: skipped,
+          probe: step('probe', { success: true, data: [], code: 'optional_query_error', error: 'no such table', sql: 'SELECT 1' }),
+          scoped: step('scoped', { success: false, code: 'exact_scope_unavailable', error: 'exact scope unavailable' }),
+          rows: step('rows', { success: true, data: [], sql: 'SELECT 2' }),
+        },
+        session: { s1: { input: skipped } },
+        deep: { s1: { f1: skipped } },
+      },
+      defaultExpanded: [], metadata: { skillName: 'status_test', version: '1', executedAt: '' },
+    }) as Array<Record<string, any>>;
+    const byId = new Map(results.map(result => [result.stepId, result]));
+
+    for (const id of ['input', 's1_input', 's1_f1']) {
+      expect(byId.get(id)).toMatchObject({ executionStatus: 'skipped', executionMessage: expect.stringContaining('${has_input} > 0') });
+      expect(byId.get(id)?.sql).toBeUndefined();
+      expect(byId.get(id)?.executionError).toBeUndefined();
+    }
+    expect(byId.get('probe')).toMatchObject({ executionStatus: 'optional_error', executionError: 'no such table' });
+    expect(byId.get('scoped')).toMatchObject({ executionStatus: 'unavailable', executionMessage: 'exact scope unavailable' });
+    expect(byId.get('rows')?.executionStatus).toBeUndefined();
+  });
+
   it.each([false, true])('preserves explicit selectors with layered=%s when packageName is a default', async layered => {
     const registry = new SkillRegistry();
     const definition = { name: 'selector_test', version: '1', type: 'atomic',

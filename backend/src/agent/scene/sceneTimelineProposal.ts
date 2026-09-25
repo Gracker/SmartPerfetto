@@ -16,7 +16,7 @@ export const SCENE_FINITE_RULE_VERSION = 'scene_finite@1';
 const SAFE_REFERENCE_FAILURE_REASONS = new Set([
   'multiple_evidence_records', 'identifier_conflict', 'evidence_not_retained', 'execution_witness_mismatch',
   'trace_capture_mismatch', 'trace_outside_read_scope', 'execution_witness_unavailable', 'execution_unavailable',
-  'duplicate_evidence_columns', 'invalid_metadata_locator', 'invalid_row_index', 'invalid_row_selector',
+  'execution_skipped', 'duplicate_evidence_columns', 'invalid_metadata_locator', 'invalid_row_index', 'invalid_row_selector',
   'row_selector_not_unique', 'row_selector_not_found', 'row_index_selector_conflict', 'row_locator_required',
   'row_index_out_of_range', 'required_column_missing', 'unsupported_raw_cell',
 ]);
@@ -143,6 +143,7 @@ const REFERENCE_REPAIR: Readonly<Record<string, string>> = {
   invalid_row_index: 'rowIndex is artifact-wide: use sampleRowIndices or page offset + position',
   row_locator_required: 'supply the artifact-wide rowIndex of the cited row',
   required_column_missing: 'cite an existing column, query a real end column, or mark the boundary inferred',
+  execution_skipped: 'the step was skipped because its condition was not met and observed nothing; cite a result whose query ran',
 };
 function referenceFailureDetail(read: Extract<EvidenceReadResolution, {reason: string}>, requiredColumns: readonly string[]): string {
   const safe = SAFE_REFERENCE_FAILURE_REASONS.has(read.reason);
