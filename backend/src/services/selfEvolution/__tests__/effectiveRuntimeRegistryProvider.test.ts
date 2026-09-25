@@ -3,7 +3,15 @@
 
 import {jest} from '@jest/globals';
 
-import {buildStrategyRegistrySnapshot} from '../../../agentv3/strategyLoader';
+import {
+  buildStrategyRegistrySnapshot,
+  fingerprintStrategyDefinition,
+  type StrategyRegistryContribution,
+} from '../../../agentv3/strategyLoader';
+import {
+  extractStrategySkillCalls,
+  strategySkillCallTexts,
+} from '../../../agentv3/strategySkillCalls';
 import type {SkillDefinition} from '../../skillEngine/types';
 import {getWorkspaceSkillRegistry} from '../../skillPacks/workspaceSkillRegistryProvider';
 import {
@@ -76,36 +84,37 @@ function overlay(
 }
 
 function mockWorkspace(base: SkillDefinition): void {
-  const referencedSkillIds = new Set<string>();
+  // Each referenced Skill declares the keys the shipped strategies pass, which
+  // validate:strategies holds to the Skill's real inputs.
+  const referencedInputs = new Map<string, Set<string>>();
   const strategies = buildStrategyRegistrySnapshot({
     scope: scopeA,
     overlayGeneration: 'test:base',
   }).getAllStrategies();
   for (const strategy of strategies) {
-    for (const content of [
-      strategy.content,
-      ...strategy.detailSections.map(section => section.content),
-      ...strategy.phaseHints.map(hint => hint.constraints),
-    ]) {
-      for (const match of content.matchAll(
-        /invoke_skill\(\s*["']([^"']+)["']/g,
-      )) {
-        referencedSkillIds.add(match[1]);
+    for (const [, content] of strategySkillCallTexts(strategy)) {
+      for (const call of extractStrategySkillCalls(content)) {
+        const inputs = referencedInputs.get(call.skillId) ?? new Set();
+        call.argKeys.forEach(key => inputs.add(key));
+        referencedInputs.set(call.skillId, inputs);
       }
     }
   }
-  referencedSkillIds.delete(base.name);
+  referencedInputs.delete(base.name);
   const definitions = [
     base,
-    ...[...referencedSkillIds].sort().map((name): SkillDefinition => ({
-      name,
-      version: '1',
-      type: 'pipeline_definition',
-      meta: {
-        display_name: `Referenced ${name}`,
-        description: 'Strategy-reference test fixture.',
-      },
-    })),
+    ...[...referencedInputs].sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, inputs]): SkillDefinition => ({
+        name,
+        version: '1',
+        type: 'pipeline_definition',
+        meta: {
+          display_name: `Referenced ${name}`,
+          description: 'Strategy-reference test fixture.',
+        },
+        inputs: [...inputs].sort().map(input =>
+          ({name: input, type: 'string', required: false})),
+      })),
   ];
   const registry = {
     isInitialized: () => true,
@@ -237,6 +246,46 @@ describe('effective runtime registry provider', () => {
       scope: scopeA,
       skillOverlays: [invalid],
     })).rejects.toThrow('effective_skill_validation_failed');
+  });
+
+  it('warns on, but still composes, a published strategy contribution with an undeclared example key', async () => {
+    const base = baseSkill();
+    mockWorkspace(base);
+    const general = buildStrategyRegistrySnapshot({
+      scope: scopeA,
+      overlayGeneration: 'test:base',
+    }).getStrategy('general')!;
+    const contribution = (content: string): StrategyRegistryContribution => ({
+      contributionId: 'contribution-general',
+      scope: scopeA,
+      scene: 'general',
+      baseStrategyFingerprint: fingerprintStrategyDefinition(general),
+      createdAt: '2026-09-24T00:00:00.000Z',
+      operations: [{op: 'append_core', operationId: 'append-core', content}],
+    });
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const snapshot = await buildEffectiveRuntimeRegistrySnapshot({
+        scope: scopeA,
+        strategyContributions: [
+          contribution('invoke_skill("base_analysis", { process_name: "x" })'),
+        ],
+      });
+      expect(snapshot.strategyRegistry.getStrategy('general')!.content)
+        .toContain('process_name');
+      expect(warn.mock.calls).toEqual([[expect.stringContaining(
+        'effective_strategy_validation_warning:general:strategy_skill_param_undeclared:content',
+      )]]);
+    } finally {
+      warn.mockRestore();
+    }
+
+    await expect(buildEffectiveRuntimeRegistrySnapshot({
+      scope: scopeA,
+      strategyContributions: [contribution('invoke_skill("missing_skill")')],
+    })).rejects.toThrow(
+      'effective_strategy_validation_failed:general:strategy_skill_reference_missing',
+    );
   });
 
   it('accepts metadata overlays on metadata-only pipeline definitions', async () => {

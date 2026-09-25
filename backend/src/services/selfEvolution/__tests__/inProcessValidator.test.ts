@@ -4,9 +4,6 @@
 
 import type {SkillDefinition} from '../../skillEngine/types';
 import {
-  extractReferencedSkillIdsFromStrategyText,
-  extractStrategySkillCalls,
-  undeclaredStrategySkillCallParams,
   validateStrategyDefinitionsInProcess,
   validateSkillDefinitionsInProcess,
 } from '../inProcessValidator';
@@ -172,12 +169,14 @@ describe('in-process effective Skill validator', () => {
     const selected = validateStrategyDefinitionsInProcess({
       definitions: [invalid],
       affectedScenes: [],
-      knownSkillIds: new Set(),
+      skills: new Map(),
+      undeclaredSkillParamSeverity: 'error',
     });
     const affected = validateStrategyDefinitionsInProcess({
       definitions: [invalid],
       affectedScenes: ['general'],
-      knownSkillIds: new Set(),
+      skills: new Map(),
+      undeclaredSkillParamSeverity: 'error',
     });
 
     expect(selected.valid).toBe(true);
@@ -189,35 +188,57 @@ describe('in-process effective Skill validator', () => {
       }),
     ]));
   });
-});
 
-describe('strategy invoke_skill examples', () => {
-  const text = [
-    'Run `invoke_skill("jank_frame_detail", { start_ts, end_ts, process_name: "<包名, 或 a:b>" })` first.',
-    "invoke_skill('pipeline_key_slices_overlay', {",
-    '  slice_names: "\'DrawFrame\',\'syncFrameState\'",',
-    '  package: <package hint>',
-    '})',
-    'invoke_skill("cpu_analysis") then invoke_skill("bad-name")',
-  ].join('\n');
+  it('reports undeclared invoke_skill example keys at the caller-chosen severity', () => {
+    const base = loadStrategies().get('general')!;
+    const withAlias = {
+      ...base,
+      content: 'invoke_skill("jank_frame_detail", { start_ts, process_name: "a" })',
+      detailSections: [{
+        id: 'drill',
+        ref: 'general:drill',
+        title: 'Drill',
+        keywords: [],
+        default: false,
+        content: 'intro\ninvoke_skill("jank_frame_detail", { package, pid })',
+      }],
+      phaseHints: [],
+    };
+    const skills = new Map([[
+      'jank_frame_detail',
+      {inputs: ['start_ts', 'package'].map(name =>
+        ({name, type: 'string' as const, required: false}))},
+    ]]);
+    const gate = validateStrategyDefinitionsInProcess({
+      definitions: [withAlias],
+      affectedScenes: ['general'],
+      skills,
+      undeclaredSkillParamSeverity: 'error',
+    });
+    const reconcile = validateStrategyDefinitionsInProcess({
+      definitions: [withAlias],
+      affectedScenes: ['general'],
+      skills,
+      undeclaredSkillParamSeverity: 'warning',
+    });
 
-  it('parses names, flat argument keys and lines like the portable exporter', () => {
-    expect(extractStrategySkillCalls(text)).toEqual([
-      {skillId: 'jank_frame_detail', argKeys: ['start_ts', 'end_ts', 'process_name'], line: 1},
-      {skillId: 'pipeline_key_slices_overlay', argKeys: ['slice_names', 'package'], line: 2},
-      {skillId: 'cpu_analysis', argKeys: [], line: 6},
-      {skillId: 'bad-name', argKeys: [], line: 6},
+    expect(gate.validatorVersion).toBe('2');
+    expect(gate.valid).toBe(false);
+    expect(gate.issues).toEqual([
+      expect.objectContaining({
+        severity: 'error',
+        code: 'strategy_skill_param_undeclared',
+        scene: 'general',
+        path: 'content',
+        message: expect.stringContaining('line 1: invoke_skill("jank_frame_detail") passes process_name,'),
+      }),
+      expect.objectContaining({
+        severity: 'error',
+        path: 'detailSections.drill',
+        message: expect.stringContaining('line 2: invoke_skill("jank_frame_detail") passes pid,'),
+      }),
     ]);
-    expect([...extractReferencedSkillIdsFromStrategyText(text)]).toEqual([
-      'jank_frame_detail', 'pipeline_key_slices_overlay', 'cpu_analysis', 'bad-name',
-    ]);
-  });
-
-  it('rejects identity aliases the Skill accepts only through the identity gate', () => {
-    const [call] = extractStrategySkillCalls(text);
-    const inputs = ['start_ts', 'end_ts', 'package'].map(name => ({name, type: 'string' as const, required: false}));
-    expect(undeclaredStrategySkillCallParams(call, {inputs})).toEqual(['process_name']);
-    expect(undeclaredStrategySkillCallParams(call, {})).toEqual(['end_ts', 'process_name', 'start_ts']);
-    expect(undeclaredStrategySkillCallParams({skillId: 'cpu_analysis', argKeys: [], line: 6}, {})).toEqual([]);
+    expect(reconcile.valid).toBe(true);
+    expect(reconcile.issues.map(issue => issue.severity)).toEqual(['warning', 'warning']);
   });
 });

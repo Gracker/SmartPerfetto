@@ -18,9 +18,16 @@ import {
   DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
 } from '../sqlGuardrailAnalyzer';
 import type {StrategyDefinition} from '../../agentv3/strategyLoader';
+import {
+  checkStrategySkillCalls,
+  extractStrategySkillCalls,
+  formatUndeclaredStrategySkillParams,
+  strategySkillCallTexts,
+  type StrategySkillInputs,
+} from '../../agentv3/strategySkillCalls';
 import {validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '1';
+export const IN_PROCESS_VALIDATOR_VERSION = '2';
 
 export type InProcessValidationSeverity = 'error' | 'warning';
 
@@ -53,7 +60,7 @@ export interface InProcessStrategyValidationResult {
   affectedScenes: string[];
   valid: boolean;
   issues: Array<{
-    severity: 'error';
+    severity: InProcessValidationSeverity;
     code: string;
     scene: string;
     path: string;
@@ -353,60 +360,16 @@ export function validateSkillDefinitionsInProcess(
   };
 }
 
-export interface StrategySkillCall {
-  skillId: string;
-  /** Top-level keys of a flat `{...}` argument literal; empty when the call has none. */
-  argKeys: string[];
-  line: number;
-}
-
-// Argument grammar matches the Perfetto-Skills exporter (`SKILL_CALL` /
-// `object_keys` in tools/export_from_smartperfetto.py). Names stay broader than
-// its `\w+` so a malformed name is reported missing instead of skipped.
-const STRATEGY_SKILL_CALL = /\binvoke_skill\(\s*(["'])([^"'\n]+)\1(?:\s*,\s*(\{[^{}]*\}))?/g;
-
-function objectKeys(literal: string): string[] {
-  const unquoted = literal.replace(/"[^"]*"|'[^']*'/g, '""');
-  return [...new Set([...unquoted.matchAll(/[{,]\s*(\w+)\s*(?=[:,}])/g)].map(key => key[1]))];
-}
-
-export function extractStrategySkillCalls(content: string): StrategySkillCall[] {
-  const calls: StrategySkillCall[] = [];
-  let line = 1;
-  let scanned = 0;
-  for (const match of content.matchAll(STRATEGY_SKILL_CALL)) {
-    for (; scanned < match.index; scanned++) if (content[scanned] === '\n') line++;
-    calls.push({skillId: match[2], argKeys: match[3] ? objectKeys(match[3]) : [], line});
-  }
-  return calls;
-}
-
-/**
- * Keys a strategy example passes that the Skill does not declare as inputs.
- *
- * Deliberately stricter than `invoke_skill`, which also admits process-identity
- * aliases through the identity gate: that rewrite only binds after a verified
- * resolution, and the exported portable runner binds declared inputs only, so
- * an example written with an alias runs unscoped there.
- */
-export function undeclaredStrategySkillCallParams(
-  call: StrategySkillCall,
-  skill: Pick<SkillDefinition, 'inputs'>,
-): string[] {
-  const declared = new Set((skill.inputs ?? []).map(input => input.name));
-  return call.argKeys.filter(key => !declared.has(key)).sort();
-}
-
-export function extractReferencedSkillIdsFromStrategyText(
-  content: string,
-): Set<string> {
-  return new Set(extractStrategySkillCalls(content).map(call => call.skillId));
-}
-
 export function validateStrategyDefinitionsInProcess(input: {
   definitions: readonly StrategyDefinition[];
   affectedScenes?: readonly string[];
-  knownSkillIds: ReadonlySet<string>;
+  skills: ReadonlyMap<string, StrategySkillInputs>;
+  /**
+   * The proposal gate rejects an undeclared example key; reconciling an
+   * already-published overlay only warns, because `invoke_skill` still admits
+   * identity aliases after verified resolution and the overlay predates the rule.
+   */
+  undeclaredSkillParamSeverity: InProcessValidationSeverity;
   knownScenes?: ReadonlySet<string>;
 }): InProcessStrategyValidationResult {
   const byScene = new Map(
@@ -433,27 +396,34 @@ export function validateStrategyDefinitionsInProcess(input: {
       });
       continue;
     }
-    const referenced = new Set<string>();
-    for (const content of [
-      definition.content,
-      ...definition.detailSections.map(section => section.content),
-      ...definition.phaseHints.map(hint => hint.constraints),
-    ]) {
-      for (const skillId of extractReferencedSkillIdsFromStrategyText(content)) {
-        referenced.add(skillId);
-      }
-    }
-    for (const skillId of [...referenced].sort()) {
-      if (!input.knownSkillIds.has(skillId)) {
+    const missing = new Set<string>();
+    for (const [path, content] of strategySkillCallTexts(definition)) {
+      for (const finding of checkStrategySkillCalls(
+        extractStrategySkillCalls(content),
+        input.skills,
+      )) {
+        if (finding.kind === 'skill_missing') {
+          missing.add(finding.call.skillId);
+          continue;
+        }
         issues.push({
-          severity: 'error',
-          code: 'strategy_skill_reference_missing',
+          severity: input.undeclaredSkillParamSeverity,
+          code: 'strategy_skill_param_undeclared',
           scene,
-          path: 'content',
-          message:
-            `invoke_skill("${skillId}") is not present in the effective Skill registry.`,
+          path,
+          message: formatUndeclaredStrategySkillParams(finding),
         });
       }
+    }
+    for (const skillId of [...missing].sort()) {
+      issues.push({
+        severity: 'error',
+        code: 'strategy_skill_reference_missing',
+        scene,
+        path: 'content',
+        message:
+          `invoke_skill("${skillId}") is not present in the effective Skill registry.`,
+      });
     }
     for (const pattern of definition.verifierMisdiagnosisPatterns) {
       for (const referencedScene of pattern.scenes) {
@@ -473,7 +443,7 @@ export function validateStrategyDefinitionsInProcess(input: {
   return {
     validatorVersion: IN_PROCESS_VALIDATOR_VERSION,
     affectedScenes,
-    valid: issues.length === 0,
+    valid: issues.every(entry => entry.severity !== 'error'),
     issues,
   };
 }

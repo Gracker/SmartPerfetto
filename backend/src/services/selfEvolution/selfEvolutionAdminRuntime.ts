@@ -58,6 +58,7 @@ import {
 import {EvolutionOverlayArtifactStore} from './evolutionOverlayArtifactStore';
 import {EvolutionOverlayRegistry} from './evolutionOverlayRegistry';
 import {PublicFeedbackCurationSource} from './feedbackEventStore';
+import {IN_PROCESS_VALIDATOR_VERSION} from './inProcessValidator';
 import {OverlayReconciler} from './overlayReconciler';
 import {
   ProposalApplicationService,
@@ -248,6 +249,7 @@ implements SelfEvolutionAdminDependencies {
         validationPolicyFingerprint: canonicalContentHash({
           schemaVersion: 1,
           validator: 'self-evolution-admin-gate-v1',
+          inProcessValidatorVersion: IN_PROCESS_VALIDATOR_VERSION,
           skillRegistryFingerprint:
             snapshot.skillRegistry.registryFingerprint,
           strategyRegistryFingerprint:
@@ -261,8 +263,9 @@ implements SelfEvolutionAdminDependencies {
         },
         strategySnapshot: {
           existingContributions: [],
-          knownSkillIds: new Set(
-            snapshot.skillRegistry.getAllSkills().map(skill => skill.name),
+          skills: new Map(
+            snapshot.skillRegistry.getAllSkills()
+              .map(skill => [skill.name, skill]),
           ),
         },
       };

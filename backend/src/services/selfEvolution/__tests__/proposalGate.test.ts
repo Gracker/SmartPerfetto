@@ -21,6 +21,7 @@ import {
 } from '../proposalContainmentGate';
 import {
   assertProposalEligibleForApply,
+  createProposalCandidateMaterializationV1,
   createProposalPairedReplayProofV1,
   createProposalMaterializationPlanV1,
   parseProposalMaterializationPlanV1,
@@ -35,6 +36,16 @@ import {proposalPairedReplayGateTesting} from '../proposalPairedReplayGate';
 import {proposalSqlRegressionTesting} from '../proposalSqlRegression';
 import {ProposalStore} from '../proposalStore';
 import {serializeProposalCandidateContent} from '../proposalSemanticGate';
+import {validateProposalStatic} from '../proposalStaticGate';
+import {
+  buildStrategyRegistrySnapshot,
+  fingerprintStrategyDefinition,
+  type StrategyRegistryContribution,
+} from '../../../agentv3/strategyLoader';
+import {
+  extractStrategySkillCalls,
+  strategySkillCallTexts,
+} from '../../../agentv3/strategySkillCalls';
 
 const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a'};
 const baseContentHash = canonicalContentHash('skill-a');
@@ -701,6 +712,117 @@ describe('M7 containment', () => {
       'new_skill_draft',
       'retire_injection',
     ]));
+  });
+});
+
+describe('M7 static gate strategy_section Skill calls', () => {
+  const base = buildStrategyRegistrySnapshot({
+    scope,
+    overlayGeneration: 'builtin:registry-a',
+  });
+  // Declare every key the shipped strategies pass: they are held to the same
+  // rule by validate:strategies, so this registry isolates the candidate.
+  const skills = new Map<string, {inputs: Array<{name: string; type: 'string'; required: boolean}>}>();
+  for (const definition of base.getAllStrategies()) {
+    for (const [, content] of strategySkillCallTexts(definition)) {
+      for (const call of extractStrategySkillCalls(content)) {
+        const inputs = skills.get(call.skillId)?.inputs ?? [];
+        for (const name of call.argKeys) {
+          if (!inputs.some(input => input.name === name)) {
+            inputs.push({name, type: 'string', required: false});
+          }
+        }
+        skills.set(call.skillId, {inputs});
+      }
+    }
+  }
+  skills.set('probe_skill', {inputs: [{name: 'package', type: 'string', required: false}]});
+
+  function contribution(
+    scene: string,
+    content: string,
+  ): StrategyRegistryContribution {
+    return {
+      contributionId: `contribution-${scene}`,
+      scope,
+      scene,
+      baseStrategyFingerprint:
+        fingerprintStrategyDefinition(base.getStrategy(scene)!),
+      createdAt: '2026-09-24T00:00:00.000Z',
+      operations: [{op: 'append_core', operationId: `append-${scene}`, content}],
+    };
+  }
+
+  async function gate(
+    candidate: StrategyRegistryContribution,
+    existingContributions: StrategyRegistryContribution[] = [],
+  ) {
+    const proposal = draftProposal({
+      kind: 'strategy_section',
+      tier: 'T2',
+      deltas: [{
+        op: 'add',
+        targetKind: 'strategy_overlay',
+        targetId: 'general',
+        operationId: 'append-general',
+        anchor:
+          'strategies[scene="general"].sections[operationId="append-general"]',
+        baseContentHash,
+        after: canonicalJsonString(candidate),
+      }],
+    });
+    const existing = buildStrategyRegistrySnapshot({
+      scope,
+      overlayGeneration: proposal.expectedOverlayGeneration,
+      contributions: existingContributions,
+    });
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-general',
+        targetKind: 'strategy_overlay',
+        serializedContent: canonicalJsonString(candidate),
+      }),
+      base: {
+        targetId: 'general',
+        contentHash: baseContentHash,
+        registryFingerprint,
+        skillRegistryFingerprint: registryFingerprint,
+        strategyRegistryFingerprint: existing.registryFingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration,
+      },
+      gateAttempt: {
+        attemptId: 'attempt-1',
+        ordinal: 1,
+        gatePolicyFingerprint: canonicalContentHash('gate-policy'),
+      },
+      options: {
+        ...staticValidation(),
+        strategySnapshot: {existingContributions, skills},
+      },
+    });
+  }
+
+  it('rejects an invoke_skill example key the Skill does not declare', async () => {
+    const proof = await gate(contribution(
+      'general',
+      'invoke_skill("probe_skill", { process_name: "com.example" })',
+    ));
+    expect(proof.verdict).toBe('failed');
+    expect(proof.validatorCodes).toEqual(['strategy_skill_param_undeclared']);
+  });
+
+  it('does not charge a published contribution in another scene to the candidate', async () => {
+    const proof = await gate(
+      contribution('general', 'invoke_skill("probe_skill", { package: "com.example" })'),
+      [contribution('startup', 'invoke_skill("probe_skill", { process_name: "legacy" })')],
+    );
+    expect(proof.validatorCodes).toEqual([]);
+    expect(proof.verdict).toBe('passed');
   });
 });
 

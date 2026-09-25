@@ -134,6 +134,8 @@ export class EffectiveRuntimeRegistryManager {
   }
 }
 
+const reportedStrategyValidationWarnings = new Set<string>();
+
 export const effectiveRuntimeRegistryManager =
   new EffectiveRuntimeRegistryManager();
 
@@ -686,12 +688,25 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
     const validation = validateStrategyDefinitionsInProcess({
       definitions: effectiveStrategySnapshot.getAllStrategies(),
       affectedScenes,
-      knownSkillIds: new Set(
-        composition.skills.map(definition => definition.name),
+      skills: new Map(
+        composition.skills.map(definition => [definition.name, definition]),
       ),
+      // Published overlays may predate the rule; the proposal gate rejects new ones.
+      undeclaredSkillParamSeverity: 'warning',
     });
+    for (const warning of validation.issues) {
+      if (warning.severity !== 'warning') continue;
+      const line =
+        `[SelfEvolution] effective_strategy_validation_warning:${warning.scene}:`
+        + `${warning.code}:${warning.path}: ${warning.message}`;
+      // Snapshots are rebuilt per replay/reconcile; report each finding once.
+      if (reportedStrategyValidationWarnings.has(line)) continue;
+      reportedStrategyValidationWarnings.add(line);
+      console.warn(line);
+    }
     if (!validation.valid) {
-      const firstIssue = validation.issues[0];
+      const firstIssue = validation.issues.find(issue =>
+        issue.severity === 'error');
       throw new Error([
         'effective_strategy_validation_failed',
         firstIssue?.scene,
@@ -816,4 +831,5 @@ export function resolveEffectiveSkillRegistryForRuntime(
 
 export function clearEffectiveRuntimeRegistrySnapshotsForTests(): void {
   effectiveRuntimeRegistryManager.clearForTests();
+  reportedStrategyValidationWarnings.clear();
 }

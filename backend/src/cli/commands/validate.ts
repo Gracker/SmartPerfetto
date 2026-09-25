@@ -24,11 +24,13 @@ import {
   formatDisplayContractIssue,
   validateSkillDisplayContract,
 } from '../../services/skillEngine/displayContractValidator';
+import { validateSkillDefinitionInProcess } from '../../services/selfEvolution/inProcessValidator';
 import {
+  checkStrategySkillCalls,
   extractStrategySkillCalls,
-  undeclaredStrategySkillCallParams,
-  validateSkillDefinitionInProcess,
-} from '../../services/selfEvolution/inProcessValidator';
+  formatUndeclaredStrategySkillParams,
+  type StrategySkillInputs,
+} from '../../agentv3/strategySkillCalls';
 import {readSkillFragmentFile, skillFragmentKey} from '../../services/skillEngine/skillFragments';
 import {
   analyzeSqlGuardrails,
@@ -1103,7 +1105,7 @@ function validateStrategySkillReferences(): number {
   }
 
   // Build the skill input registry from YAML files on disk (no runtime loader needed)
-  const skills = new Map<string, Pick<SkillDefinition, 'inputs'>>();
+  const skills = new Map<string, StrategySkillInputs>();
   const skillDirs = ['atomic', 'composite', 'deep', 'system', 'comparison', 'modules', 'pipelines'];
   for (const dir of skillDirs) {
     const dirPath = path.join(SKILLS_DIR, dir);
@@ -1162,20 +1164,15 @@ function validateStrategySkillReferences(): number {
     const content = strategyContents.get(file) || '';
     const frontmatterErrors = validateStrategyFrontmatter(content, file, frontmatterValidationContext);
 
-    // Extract skill calls through the shared in-process validator.
+    // Same Strategy → Skill call contract the Self-Evolution validator enforces.
     const calls = extractStrategySkillCalls(content);
     const referencedSkills = new Set(calls.map(call => call.skillId));
-
-    const missing = [...referencedSkills].filter(name => !skills.has(name));
-    const undeclaredParams = calls.flatMap(call => {
-      const skill = skills.get(call.skillId);
-      if (!skill) return [];
-      const undeclared = undeclaredStrategySkillCallParams(call, skill);
-      return undeclared.length === 0 ? [] : [
-        `line ${call.line}: invoke_skill("${call.skillId}") passes ${undeclared.join(', ')}, ` +
-        `not declared in its inputs [${(skill.inputs ?? []).map(input => input.name).join(', ')}]`,
-      ];
-    });
+    const findings = checkStrategySkillCalls(calls, skills);
+    const missing = [...new Set(findings
+      .filter(finding => finding.kind === 'skill_missing')
+      .map(finding => finding.call.skillId))];
+    const undeclaredParams = findings.flatMap(finding =>
+      finding.kind === 'param_undeclared' ? [formatUndeclaredStrategySkillParams(finding)] : []);
     if (missing.length > 0 || undeclaredParams.length > 0 || frontmatterErrors.length > 0) {
       console.log(`${colors.red('FAIL')} ${file}`);
       for (const name of missing) {

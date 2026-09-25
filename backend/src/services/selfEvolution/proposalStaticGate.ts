@@ -8,6 +8,7 @@ import {
   buildStrategyRegistrySnapshot,
   type StrategyRegistryContribution,
 } from '../../agentv3/strategyLoader';
+import type {StrategySkillInputs} from '../../agentv3/strategySkillCalls';
 import type {
   CurationProposalV1,
   ProposalCandidateMaterializationV1,
@@ -68,7 +69,7 @@ export interface ProposalStaticGateOptions {
   };
   strategySnapshot?: {
     existingContributions?: readonly StrategyRegistryContribution[];
-    knownSkillIds: ReadonlySet<string>;
+    skills: ReadonlyMap<string, StrategySkillInputs>;
   };
   sqlRegression?: {
     repoRoot: string;
@@ -158,6 +159,9 @@ export async function validateProposalStatic(input: {
       errors.add('static_effective_strategy_snapshot_unavailable');
     } else {
       try {
+        const contribution = JSON.parse(
+          candidate.serializedContent,
+        ) as StrategyRegistryContribution;
         const existing = buildStrategyRegistrySnapshot({
           scope: proposal.scope,
           overlayGeneration: proposal.expectedOverlayGeneration,
@@ -168,7 +172,7 @@ export async function validateProposalStatic(input: {
           overlayGeneration: proposal.expectedOverlayGeneration,
           contributions: [
             ...(snapshot.existingContributions ?? []),
-            JSON.parse(candidate.serializedContent),
+            contribution,
           ],
         });
         if (
@@ -179,11 +183,18 @@ export async function validateProposalStatic(input: {
         } else {
           effectiveRegistryFingerprint =
             candidateSnapshot.registryFingerprint;
+          // The candidate changes only its own scene; a published
+          // contribution elsewhere is not this proposal's to fix, and
+          // runtime composition still validates it.
           const validation = validateStrategyDefinitionsInProcess({
             definitions: candidateSnapshot.getAllStrategies(),
-            knownSkillIds: snapshot.knownSkillIds,
+            affectedScenes: [contribution.scene],
+            skills: snapshot.skills,
+            undeclaredSkillParamSeverity: 'error',
           });
-          for (const issue of validation.issues) errors.add(issue.code);
+          for (const issue of validation.issues) {
+            (issue.severity === 'error' ? errors : warnings).add(issue.code);
+          }
         }
       } catch {
         errors.add('static_effective_strategy_composition_invalid');
