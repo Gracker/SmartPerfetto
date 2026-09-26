@@ -10504,7 +10504,7 @@
           },
           {
             "id": "full_session_stats",
-            "sha256": "bb1e26318096086e40f968f8b229cf02df9d8ca3c1ef5bd043f3e43add2b6997",
+            "sha256": "c6ef5561c850169387017001613540644052f4d9e05f1cc6ae67c54af1034b64",
             "required_columns": [
               "session_id",
               "total_frames",
@@ -10519,7 +10519,7 @@
           },
           {
             "id": "touch_phase_stats",
-            "sha256": "4d360c946ab1ac7b0b39789f77fd3607fe54a250a6bd4a22d4c92eb6c5d5b81d",
+            "sha256": "354c33772a6fc97a244e5d84fc622e19033f55b0e09c584ea1515081e12e6d55",
             "required_columns": [
               "phase",
               "frame_count",
@@ -10533,7 +10533,7 @@
           },
           {
             "id": "fling_phase_stats",
-            "sha256": "84dd98196bc51b9fa47015a9c5fb7907b8e261b920221fd3c338cc7b071c2586",
+            "sha256": "e21927ba2bd014b9e331b73a5e78f909c85bca115a9aaed39651590915422bfe",
             "required_columns": [
               "phase",
               "frame_count",
@@ -10547,7 +10547,7 @@
           },
           {
             "id": "identify_janky_frames",
-            "sha256": "9cda8f341d3658c81fea9914089bbfce92a28cb4521b49b084bd488d092972a0",
+            "sha256": "57ddd1f01c7b90f04ea165de75d14ca6ca19f9c15a5d2719c24af06fe24d99da",
             "required_columns": [
               "frame_number",
               "phase",

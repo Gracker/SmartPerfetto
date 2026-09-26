@@ -414,7 +414,8 @@ export class ExtendExecutor implements AnalysisExecutor {
             session_id: 'sessionId',
             start_ts: 'startTs',
             end_ts: 'endTs',
-            process_name: 'processName',
+            // scroll_session_analysis scopes its frames by the package input.
+            package: 'processName',
           },
     };
 

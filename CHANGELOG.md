@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Commit prefixes follow [Conventional Commits](https://www.conventionalcommits.org/).
 Detailed commit-level history is available via `git log`.
 
+## [Unreleased]
+
+### Fixed
+- `scroll_session_analysis` counts frames of the target app only (issued
+  process scope, else the exact package or its `name:*` subprocesses) instead
+  of every main thread's `doFrame`.
+
 ## [1.14.0] - 2026-09-24
 
 ### Added

@@ -123,9 +123,7 @@ describe('IdentityGate', () => {
       'android_process_state_residency',
       'flutter_scrolling_analysis',
     ]);
-    // Its own SQL never filters by process; package only reaches child Skills,
-    // which verify it themselves.
-    expect(lost).toEqual(['scroll_session_analysis']);
+    expect(lost).toEqual([]);
   });
 
   it('does not treat thread/slice/counter name filters as process identity filters', () => {

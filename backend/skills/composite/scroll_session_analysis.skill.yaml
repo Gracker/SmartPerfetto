@@ -9,6 +9,7 @@
 #
 # 一次完整滑动 = 按压滑动阶段(Touch) + Fling阶段
 # 分别统计两个阶段的 FPS 和掉帧情况
+# 帧统计只取目标进程：有签发的 upid 时按 upid，否则按 package（精确名或 name:*）。
 
 name: scroll_session_analysis
 version: "1.0"
@@ -23,6 +24,10 @@ meta:
   tags: [scroll, jank, interaction, composite]
 
 inputs:
+  - name: package
+    type: string
+    required: false
+    description: "目标应用包名（精确匹配，含 name:* 子进程）；为空且无进程作用域时统计所有进程"
   - name: session_id
     type: number
     required: true
@@ -63,7 +68,6 @@ inputs:
     required: false
 
 context:
-  - package
   - vsync_period_ns
   - refresh_rate_hz
 
@@ -122,6 +126,9 @@ steps:
   # ========== 完整区间帧统计 ==========
   - id: full_session_stats
     type: atomic
+    process_scope:
+      role: target
+      binding: native_upid
     name: "完整区间统计"
     display:
       level: summary
@@ -182,6 +189,9 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE (s.name GLOB '*doFrame*' OR s.name GLOB '*Choreographer#doFrame*')
           AND t.tid = p.pid
+          AND (${__process_scope.upid} IS NULL OR p.upid = ${__process_scope.upid})
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND s.ts >= ${start_ts}
           AND s.ts <= ${end_ts}
       )
@@ -201,6 +211,9 @@ steps:
   # ========== 按压滑动阶段统计 ==========
   - id: touch_phase_stats
     type: atomic
+    process_scope:
+      role: target
+      binding: native_upid
     name: "按压滑动阶段统计"
     display:
       level: detail
@@ -256,6 +269,9 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE (s.name GLOB '*doFrame*' OR s.name GLOB '*Choreographer#doFrame*')
           AND t.tid = p.pid
+          AND (${__process_scope.upid} IS NULL OR p.upid = ${__process_scope.upid})
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND s.ts >= ${touch_start_ts}
           AND s.ts <= ${touch_end_ts}
       )
@@ -276,6 +292,9 @@ steps:
   # ========== Fling 阶段统计 ==========
   - id: fling_phase_stats
     type: atomic
+    process_scope:
+      role: target
+      binding: native_upid
     name: "Fling 阶段统计"
     display:
       level: detail
@@ -331,6 +350,9 @@ steps:
         JOIN process p ON t.upid = p.upid
         WHERE (s.name GLOB '*doFrame*' OR s.name GLOB '*Choreographer#doFrame*')
           AND t.tid = p.pid
+          AND (${__process_scope.upid} IS NULL OR p.upid = ${__process_scope.upid})
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND s.ts >= ${fling_start_ts}
           AND s.ts <= ${fling_end_ts}
       )
@@ -351,6 +373,9 @@ steps:
   # ========== 识别掉帧 ==========
   - id: identify_janky_frames
     type: atomic
+    process_scope:
+      role: target
+      binding: native_upid
     name: "识别掉帧"
     display:
       level: detail
@@ -382,18 +407,24 @@ steps:
     sql: |
       WITH frames AS (
         SELECT
-          ts,
-          dur,
-          dur / 1e6 AS dur_ms,
+          s.ts,
+          s.dur,
+          s.dur / 1e6 AS dur_ms,
           CASE
-            WHEN ts < ${touch_end_ts} THEN 'touch'
+            WHEN s.ts < ${touch_end_ts} THEN 'touch'
             ELSE 'fling'
           END AS phase,
-          ROW_NUMBER() OVER (ORDER BY ts) AS frame_number
-        FROM slice
-        WHERE (name GLOB '*doFrame*' OR name GLOB '*Choreographer#doFrame*' OR name GLOB '*DrawFrame*')
-          AND ts >= ${start_ts}
-          AND ts <= ${end_ts}
+          ROW_NUMBER() OVER (ORDER BY s.ts) AS frame_number
+        FROM slice s
+        JOIN thread_track tt ON s.track_id = tt.id
+        JOIN thread t ON tt.utid = t.utid
+        JOIN process p ON t.upid = p.upid
+        WHERE (s.name GLOB '*doFrame*' OR s.name GLOB '*Choreographer#doFrame*' OR s.name GLOB '*DrawFrame*')
+          AND s.ts >= ${start_ts}
+          AND s.ts <= ${end_ts}
+          AND (${__process_scope.upid} IS NULL OR p.upid = ${__process_scope.upid})
+          AND (${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+            OR p.name = '${package}' OR p.name GLOB '${package}:*')
       )
       SELECT
         frame_number,
