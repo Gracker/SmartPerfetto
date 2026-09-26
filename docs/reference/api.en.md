@@ -743,7 +743,6 @@ should prefer the `/api/workspaces/:workspaceId/*` paths above:
 - `/api/reports/*`; prefer `/api/workspaces/:workspaceId/reports/*`
 - `/api/agent/v1/*`; workspace products should prefer `/api/workspaces/:workspaceId/agent/*`
 - `/api/v1/providers/*`; prefer `/api/workspaces/:workspaceId/providers/*`
-- `/api/perfetto-sql/*`
 - `/api/template-analysis/*`
 
 Maintained auxiliary APIs include `/api/flamegraph/*`, `/api/critical-path/*`,
@@ -752,7 +751,7 @@ Maintained auxiliary APIs include `/api/flamegraph/*`, `/api/critical-path/*`,
 specific product or admin surfaces; confirm the relevant feature/auth state
 before integrating against them.
 
-The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`.
+The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API.
 
 ### Critical-path wait chain
 

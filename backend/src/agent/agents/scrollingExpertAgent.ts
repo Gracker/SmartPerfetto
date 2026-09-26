@@ -9,7 +9,7 @@ const SCROLLING_EXPERT_CONFIG: ExpertAgentConfig = {
   name: 'ScrollingExpert',
   domain: 'scrolling_performance',
   description: 'Analyzes scrolling performance, frame drops, jank causes, and rendering issues',
-  tools: ['execute_sql', 'analyze_frame', 'calculate_stats'],
+  tools: ['execute_sql', 'calculate_stats'],
   maxIterations: 3, // Reduced from 10 - initial queries should provide most info
   confidenceThreshold: 0.7, // Lower threshold to conclude faster
 };

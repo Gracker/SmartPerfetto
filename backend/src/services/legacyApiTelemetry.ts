@@ -23,6 +23,7 @@ type AuthSubjectCounters = {
   lastPath: string;
 };
 
+const MAX_PATHS = 500;
 const MAX_CALLERS = 200;
 const MAX_AUTH_SUBJECTS = 500;
 const pathStats = new Map<string, PathCounters>();
@@ -93,15 +94,19 @@ export function recordLegacyApiUsage(req: Request): void {
   const requestPath = getRequestPath(req);
   const pathKey = `${method} ${requestPath}`;
 
-  const pathCounter = pathStats.get(pathKey) ?? {
-    count: 0,
-    lastSeenAt: now,
-    methods: new Map<string, number>(),
-  };
-  pathCounter.count += 1;
-  pathCounter.lastSeenAt = now;
-  pathCounter.methods.set(method, (pathCounter.methods.get(method) ?? 0) + 1);
-  pathStats.set(pathKey, pathCounter);
+  // Removed APIs answer any suffix under their prefix, so the path table is
+  // capped like the caller table: new paths past the cap are counted only in
+  // the total.
+  const pathCounter = pathStats.get(pathKey)
+    ?? (pathStats.size < MAX_PATHS
+      ? { count: 0, lastSeenAt: now, methods: new Map<string, number>() }
+      : undefined);
+  if (pathCounter) {
+    pathCounter.count += 1;
+    pathCounter.lastSeenAt = now;
+    pathCounter.methods.set(method, (pathCounter.methods.get(method) ?? 0) + 1);
+    pathStats.set(pathKey, pathCounter);
+  }
 
   const callerKey = getCallerLabel(req);
   const callerCounter = callerStats.get(callerKey);

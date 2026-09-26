@@ -7,7 +7,6 @@ export * from './toolRegistry';
 export {
   registerCoreTools,
   sqlExecutorTool,
-  frameAnalyzerTool,
   dataStatsTool,
   skillInvokerTool,
   getAvailableSkillIds,

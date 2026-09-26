@@ -7,11 +7,8 @@ import path from 'path';
 import {spawnSync} from 'child_process';
 import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
-import {describe, expect, it, jest} from '@jest/globals';
+import {describe, expect, it} from '@jest/globals';
 import {builtInSkillFragment, injectFragmentCtes} from '../skillFragments';
-import {PerfettoSqlSkill} from '../../perfettoSqlSkill';
-import {frameAnalyzerTool} from '../../../agent/tools/frameAnalyzer';
-import {sqlExecutorTool} from '../../../agent/tools/sqlExecutor';
 
 const loadSkillYaml = (relativePath: string): any => {
   const skillPath = path.join(process.cwd(), relativePath);
@@ -24,9 +21,6 @@ const loadCreateTopologySql = (): string => {
   expect(step?.sql).toBeTruthy();
   return step.sql;
 };
-
-const loadText = (relativePath: string): string =>
-  fs.readFileSync(path.join(process.cwd(), relativePath), 'utf-8');
 
 const sqlite3Available = spawnSync('sqlite3', ['-version'], {encoding: 'utf-8'}).status === 0;
 const describeWithSqlite = sqlite3Available ? describe : describe.skip;
@@ -61,35 +55,6 @@ const runTopologyFixture = (fixtureSql: string): Array<Record<string, unknown>> 
   `;
   const result = spawnSync('sqlite3', ['-json', ':memory:'], {
     input: `${schemaSql}\n${fixtureSql}\n${createTopologySql};\n${selectSql}\n`,
-    encoding: 'utf-8',
-  });
-
-  expect(result.status).toBe(0);
-  expect(result.stderr).toBe('');
-  return JSON.parse(result.stdout.trim() || '[]') as Array<Record<string, unknown>>;
-};
-
-const extractInlineTopologyCte = (relativePath: string): string => {
-  const source = loadText(relativePath);
-  const match = source.match(/const CPU_TOPOLOGY_CTE = `([\s\S]*?)`;/);
-  expect(match?.[1]).toBeTruthy();
-  return match?.[1] ?? '';
-};
-
-const runInlineTopologyFixture = (
-  relativePath: string,
-  fixtureSql: string
-): Array<Record<string, unknown>> => {
-  const cte = extractInlineTopologyCte(relativePath);
-  const schemaSql = `
-    CREATE TABLE sched_slice(cpu INTEGER);
-    CREATE TABLE thread_state(cpu INTEGER, state TEXT);
-    CREATE TABLE cpu(id INTEGER, cpu INTEGER, machine_id INTEGER, capacity INTEGER);
-    CREATE TABLE cpu_counter_track(id INTEGER, cpu INTEGER, name TEXT);
-    CREATE TABLE counter(track_id INTEGER, value REAL);
-  `;
-  const result = spawnSync('sqlite3', ['-json', ':memory:'], {
-    input: `${schemaSql}\n${fixtureSql}\nWITH ${cte}\nSELECT cpu_id, core_type, capacity, max_freq, scale_value, topology_source, cluster_rank FROM cpu_topology ORDER BY cpu_id;\n`,
     encoding: 'utf-8',
   });
 
@@ -145,26 +110,6 @@ describe('cpu_topology_view SQL', () => {
     expect(sql).toContain("WHEN sc.cluster_count <= 1 THEN 'unknown'");
     expect(sql).not.toContain("_uniform_four_little");
     expect(sql).toContain("cs.topology_source || '_uniform'");
-  });
-
-  it('keeps TypeScript inline topology copies aligned with the same invariants', () => {
-    for (const source of [
-      loadText('src/agent/tools/frameAnalyzer.ts'),
-      loadText('src/services/perfettoSqlSkill.ts'),
-    ]) {
-      expect(source).toContain('observed_sched_cpus AS');
-      expect(source).toContain("WHERE cpu IS NOT NULL AND state = 'Running'");
-      expect(source).toContain('observed_counter_cpus AS');
-      expect(source).toContain('AND c.value > 0');
-      expect(source).toContain('cpu_table_fallback_no_observed');
-      expect(source).toContain('ROUND(rs.scale_value * 20.0');
-      expect(source).not.toContain("_uniform_four_little");
-      expect(source).not.toContain("'freq_rank'");
-      expect(source).toContain("WHEN sc.cluster_count = 2 AND sc.cluster_rank = sc.cluster_count THEN 'big'");
-      expect(source).not.toMatch(/cpu\s*>?=\s*4/);
-      expect(source).not.toMatch(/cpu\s*<\s*4/);
-      expect(source).not.toMatch(/capacity\s*>=\s*(1000|500)/);
-    }
   });
 
   it('keeps the public cpu_topology_detection skill delegated to the shared topology view', () => {
@@ -330,204 +275,54 @@ describeWithSqlite('cpu_topology_view fixture behavior', () => {
     expect(new Set(rows.map(row => row.universe_source))).toEqual(new Set(['cpu_table_fallback_no_observed']));
     expect(new Set(rows.map(row => row.core_type))).toEqual(new Set(['unknown']));
   });
-
-  it('keeps TypeScript inline topology behavior aligned for stale metadata and common layouts', () => {
-    for (const sourcePath of [
-      'src/agent/tools/frameAnalyzer.ts',
-      'src/services/perfettoSqlSkill.ts',
-    ]) {
-      const staleRows = runInlineTopologyFixture(sourcePath, `
-        INSERT INTO cpu(cpu, capacity) VALUES
-          (0, 100), (1, 100), (2, 100), (3, 100),
-          (4, 300), (5, 300), (6, 300), (7, 300);
-        INSERT INTO sched_slice(cpu) VALUES (0), (1), (2), (3);
-        INSERT INTO cpu_counter_track(id, cpu, name) VALUES
-          (10, 0, 'cpufreq'), (11, 1, 'cpufreq'), (12, 2, 'cpufreq'), (13, 3, 'cpufreq'),
-          (14, 4, 'cpufreq'), (15, 5, 'cpufreq'), (16, 6, 'cpufreq'), (17, 7, 'cpufreq');
-        INSERT INTO counter(track_id, value) VALUES
-          (10, 1000000), (11, 1000000), (12, 1000000), (13, 1000000),
-          (14, 2000000), (15, 2000000), (16, 2000000), (17, 2000000);
-      `);
-      expect(staleRows.map(row => row.cpu_id)).toEqual([0, 1, 2, 3]);
-
-      const layoutRows = runInlineTopologyFixture(sourcePath, `
-        INSERT INTO cpu(cpu, capacity) VALUES
-          (0, 100), (1, 100), (2, 100), (3, 100),
-          (4, 300), (5, 300), (6, 300), (7, 500);
-        INSERT INTO sched_slice(cpu) VALUES (0), (1), (2), (3), (4), (5), (6), (7);
-      `);
-      expect(layoutRows.map(row => row.core_type)).toEqual([
-        'little', 'little', 'little', 'little', 'big', 'big', 'big', 'prime',
-      ]);
-    }
-  });
 });
 
-
-describeWithSqlite('topology evidence authority across all three SQL producers', () => {
-  const producers = [
-    {name: 'atomic Skill', run: runTopologyFixture},
-    ...['src/agent/tools/frameAnalyzer.ts', 'src/services/perfettoSqlSkill.ts'].map(source => ({
-      name: source,
-      run: (fixture: string) => runInlineTopologyFixture(source, fixture),
-    })),
-  ];
-  for (const producer of producers) {
-    describe(producer.name, () => {
-      it('uses local CPU metadata even when universal CPU IDs differ', () => {
-        const rows = producer.run(`
-          INSERT INTO cpu(id, cpu, machine_id, capacity) VALUES (91, 0, 8, 100), (3, 1, 8, 300);
-          INSERT INTO sched_slice(cpu) VALUES (0), (1);
-        `);
-        expect(rows.map(row => [row.cpu_id, row.capacity, row.core_type])).toEqual([
-          [0, 100, 'little'], [1, 300, 'big'],
-        ]);
-      });
-      it.each([false, true])('never classifies from frequency with partial capacity=%s', partial => {
-        const rows = producer.run(`
-          INSERT INTO cpu(id, cpu, capacity) VALUES (7, 0, ${partial ? 100 : 'NULL'}), (9, 1, NULL);
-          INSERT INTO sched_slice(cpu) VALUES (0), (1);
-          INSERT INTO cpu_counter_track(id, cpu, name) VALUES (10, 0, 'cpufreq'), (11, 1, 'cpufreq');
-          INSERT INTO counter(track_id, value) VALUES (10, 800000), (11, 3000000);
-        `);
-        expect(rows.map(row => row.max_freq)).toEqual([800000, 3000000]);
-        expect(rows.every(row => row.core_type === 'unknown' && row.scale_value === null && row.cluster_rank === null)).toBe(true);
-      });
-      it.each([true, false])('collapses duplicate local CPUs across machines with sched observed=%s', observed => {
-        const rows = producer.run(`
-          INSERT INTO cpu(id, cpu, machine_id, capacity) VALUES
-            (0, 0, NULL, 100), (1, 1, NULL, 300), (2, 0, 2, 400), (3, 1, 2, 900);
-          ${observed ? 'INSERT INTO sched_slice(cpu) VALUES (0), (1), (0), (1);' : ''}
-          INSERT INTO cpu_counter_track(id, cpu, name) VALUES (10,0,'cpufreq'),(11,0,'cpufreq'),(12,1,'cpufreq');
-          INSERT INTO counter(track_id,value) VALUES (10,1000000),(11,3000000),(12,2000000);
-        `);
-        expect(rows.map(row => row.cpu_id)).toEqual([0, 1]);
-        expect(rows.every(row => row.core_type === 'unknown' && row.capacity === null && row.scale_value === null && row.max_freq === null && row.topology_source === 'multi_machine_unresolved')).toBe(true);
-      });
-      it('does not infer a single machine from disjoint local CPU numbers', () => {
-        const rows = producer.run(`
-          INSERT INTO cpu(id, cpu, machine_id, capacity) VALUES (0, 0, 1, 100), (1, 1, 2, 300);
-          INSERT INTO sched_slice(cpu) VALUES (0), (1);
-        `);
-        expect(rows.every(row => row.capacity === null && row.core_type === 'unknown' && row.topology_source === 'multi_machine_unresolved')).toBe(true);
-      });
-      it('does not multiply ambiguous metadata on one machine', () => {
-        const rows = producer.run(`
-          INSERT INTO cpu(id, cpu, capacity) VALUES (0, 0, 100), (1, 0, 300), (2, 1, 500);
-          INSERT INTO sched_slice(cpu) VALUES (0), (1);
-        `);
-        expect(rows.map(row => row.cpu_id)).toEqual([0, 1]);
-        expect(rows[0].capacity).toBeNull();
-        expect(rows.every(row => row.core_type === 'unknown' && row.topology_source === 'ambiguous_cpu_metadata')).toBe(true);
-      });
-    });
-  }
-});
-
-describe('startup core distribution coverage', () => {
-  const analyze = async (rows: unknown[][]) => {
-    const service = Object.create(PerfettoSqlSkill.prototype) as any;
-    service.traceProcessor = {
-      query: async (_traceId: string, sql: string) => sql.includes('SUM(sched.clipped_dur) / 1e6 as total_dur_ms')
-        ? {columns: ['cpu', 'core_type', 'total_dur_ms'], rows}
-        : {columns: [], rows: []},
-    };
-    return service.analyzeOneStartup('fixture', 0, 100000000, 'com.fixture', 'cold', 100, 1, 1);
-  };
-  it('keeps unknown Running time in the denominator and visible summary', async () => {
-    const result = await analyze([[0, 'big', 20], [1, 'little', 30], [2, 'unknown', 50]]);
-    expect(result.sections.cpuCoreDistribution.summary).toMatchObject({
-      bigCorePercent: '20.0', littleCorePercent: '30.0', unknownCorePercent: '50.0',
-      totalCoreTime: '100.00', classificationCoveragePercent: '50.0', classificationStatus: 'partial',
-    });
-    expect(result.summary).toContain('未分类运行时间: 50.00ms (50.0%)');
+describeWithSqlite('topology evidence authority', () => {
+  it('uses local CPU metadata even when universal CPU IDs differ', () => {
+    const rows = runTopologyFixture(`
+      INSERT INTO cpu(id, cpu, machine_id, capacity) VALUES (91, 0, 8, 100), (3, 1, 8, 300);
+      INSERT INTO sched_slice(cpu) VALUES (0), (1);
+    `);
+    expect(rows.map(row => [row.cpu_id, row.capacity, row.core_type])).toEqual([
+      [0, 100, 'little'], [1, 300, 'big'],
+    ]);
   });
-  it('renders unavailable classification explicitly instead of a 0/0 split', async () => {
-    const result = await analyze([[0, 'unknown', 80]]);
-    expect(result.sections.cpuCoreDistribution.summary).toMatchObject({
-      unknownCoreTime: '80.00', unknownCorePercent: '100.0', classificationCoveragePercent: '0.0', classificationStatus: 'unknown',
-    });
-    expect(result.summary).toContain('核心类型未知');
-    expect(result.summary).not.toContain('大核运行时间:');
-    expect(result.summary).not.toContain('小核运行时间:');
+  it.each([false, true])('never classifies from frequency with partial capacity=%s', partial => {
+    const rows = runTopologyFixture(`
+      INSERT INTO cpu(id, cpu, capacity) VALUES (7, 0, ${partial ? 100 : 'NULL'}), (9, 1, NULL);
+      INSERT INTO sched_slice(cpu) VALUES (0), (1);
+      INSERT INTO cpu_counter_track(id, cpu, name) VALUES (10, 0, 'cpufreq'), (11, 1, 'cpufreq');
+      INSERT INTO counter(track_id, value) VALUES (10, 800000), (11, 3000000);
+    `);
+    expect(rows.map(row => row.max_freq)).toEqual([800000, 3000000]);
+    expect(rows.every(row => row.core_type === 'unknown' && row.scale_value === null && row.cluster_rank === null)).toBe(true);
   });
-});
-
-
-describeWithSqlite('direct consumer topology and interval behavior', () => {
-  const runConsumerSql = (sql: string, fixture: string) => {
-    const result = spawnSync('sqlite3', ['-json', ':memory:'], {
-      input: `
-        CREATE TABLE cpu(id INTEGER, cpu INTEGER, machine_id INTEGER, capacity INTEGER);
-        CREATE TABLE sched_slice(cpu INTEGER, utid INTEGER, ts INTEGER, dur INTEGER);
-        CREATE TABLE thread_state(cpu INTEGER, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT);
-        CREATE TABLE cpu_counter_track(id INTEGER, cpu INTEGER, name TEXT);
-        CREATE TABLE counter(track_id INTEGER, value REAL);
-        CREATE TABLE thread(utid INTEGER, tid INTEGER, upid INTEGER, name TEXT);
-        CREATE TABLE process(upid INTEGER, pid INTEGER, name TEXT);
-        CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
-        INSERT INTO thread VALUES (1, 100, 10, 'main');
-        INSERT INTO process VALUES (10, 100, 'com.fixture');
-        ${fixture}
-        ${sql};
-      `,
-      encoding: 'utf-8',
-    });
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe('');
-    const objects: Record<string, unknown>[] = JSON.parse(result.stdout.trim() || '[]');
-    const columns = Object.keys(objects[0] ?? {});
-    return {columns, rows: objects.map(row => columns.map(column => row[column]))};
-  };
-
-  it('returns unknown Running percentage through actual quadrant SQL and output mapping', async () => {
-    const spy = jest.spyOn(sqlExecutorTool, 'execute').mockImplementation(async params => {
-      const data = runConsumerSql(params.sql, `
-        INSERT INTO cpu(id, cpu, capacity) VALUES (90, 0, NULL);
-        INSERT INTO thread_state VALUES
-          (0, 1, 0, 60000000, 'Running'), (NULL, 1, 60000000, 20000000, 'R'),
-          (NULL, 1, 80000000, 20000000, 'S');
-      `);
-      return {success: true, data: {...data, rowCount: data.rows.length}, executionTimeMs: 0};
-    });
-    try {
-      const result = await frameAnalyzerTool.execute({
-        start_ts: '0', end_ts: '100000000', package: 'com.fixture', include_quadrants: true,
-      }, {} as any);
-      expect(result.success).toBe(true);
-      expect(result.data?.quadrants).toEqual([{
-        thread_type: 'MainThread', q1_pct: 0, q2_pct: 0, q3_pct: 20, q4_pct: 20, q_unknown_pct: 60,
-      }]);
-    } finally {
-      spy.mockRestore();
-    }
+  it.each([true, false])('collapses duplicate local CPUs across machines with sched observed=%s', observed => {
+    const rows = runTopologyFixture(`
+      INSERT INTO cpu(id, cpu, machine_id, capacity) VALUES
+        (0, 0, NULL, 100), (1, 1, NULL, 300), (2, 0, 2, 400), (3, 1, 2, 900);
+      ${observed ? 'INSERT INTO sched_slice(cpu) VALUES (0), (1), (0), (1);' : ''}
+      INSERT INTO cpu_counter_track(id, cpu, name) VALUES (10,0,'cpufreq'),(11,0,'cpufreq'),(12,1,'cpufreq');
+      INSERT INTO counter(track_id,value) VALUES (10,1000000),(11,3000000),(12,2000000);
+    `);
+    expect(rows.map(row => row.cpu_id)).toEqual([0, 1]);
+    expect(rows.every(row => row.core_type === 'unknown' && row.capacity === null && row.scale_value === null && row.max_freq === null && row.topology_source === 'multi_machine_unresolved')).toBe(true);
   });
-
-  it.each([[90000000, -1], [150000000, -1], [150000000, 40000000]])('clips startup Running to both boundaries with trace end=%s and tail duration=%s', (traceEnd, tailDuration) => {
-    const service = Object.create(PerfettoSqlSkill.prototype) as any;
-    service.traceProcessor = {
-      query: async (_id: string, sql: string) => sql.includes('SUM(sched.clipped_dur) / 1e6 as total_dur_ms')
-        ? runConsumerSql(sql, `
-          INSERT INTO trace_bounds VALUES (0, ${traceEnd});
-          INSERT INTO cpu(id, cpu, capacity) VALUES (91, 0, NULL), (92, 1, NULL);
-          INSERT INTO sched_slice VALUES
-            (0, 1, 5000000, 10000000), (0, 1, 15000000, 65000000),
-            (1, 1, 80000000, ${tailDuration}), (0, 1, 0, 10000000),
-            (0, 1, 100000000, 10000000), (0, 1, 90000000, 0);
-        `)
-        : {columns: [], rows: []},
-    };
-    return service.analyzeOneStartup('fixture', 10000000, 100000000, 'com.fixture', 'cold', 90, 1, 1)
-      .then((result: any) => {
-        const distribution = result.sections.cpuCoreDistribution;
-        expect(distribution.data).toEqual([
-          {cpu: 0, core_type: 'unknown', total_dur_ms: 70, slice_count: 2, avg_dur_ms: 35},
-          {cpu: 1, core_type: 'unknown', total_dur_ms: traceEnd === 90000000 ? 10 : 20,
-            slice_count: 1, avg_dur_ms: traceEnd === 90000000 ? 10 : 20},
-        ]);
-        expect(distribution.summary.totalCoreTime).toBe(traceEnd === 90000000 ? '80.00' : '90.00');
-        expect(distribution.summary.unknownCorePercent).toBe('100.0');
-      });
+  it('does not infer a single machine from disjoint local CPU numbers', () => {
+    const rows = runTopologyFixture(`
+      INSERT INTO cpu(id, cpu, machine_id, capacity) VALUES (0, 0, 1, 100), (1, 1, 2, 300);
+      INSERT INTO sched_slice(cpu) VALUES (0), (1);
+    `);
+    expect(rows.every(row => row.capacity === null && row.core_type === 'unknown' && row.topology_source === 'multi_machine_unresolved')).toBe(true);
+  });
+  it('does not multiply ambiguous metadata on one machine', () => {
+    const rows = runTopologyFixture(`
+      INSERT INTO cpu(id, cpu, capacity) VALUES (0, 0, 100), (1, 0, 300), (2, 1, 500);
+      INSERT INTO sched_slice(cpu) VALUES (0), (1);
+    `);
+    expect(rows.map(row => row.cpu_id)).toEqual([0, 1]);
+    expect(rows[0].capacity).toBeNull();
+    expect(rows.every(row => row.core_type === 'unknown' && row.topology_source === 'ambiguous_cpu_metadata')).toBe(true);
   });
 });
 

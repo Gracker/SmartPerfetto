@@ -735,7 +735,6 @@ backend-unaware static directory.
 MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
-PERFETTO_PATH=/path/to/perfetto
 ```
 
 `TRACE_PROCESSOR_PATH` usually does not need manual configuration.

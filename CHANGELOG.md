@@ -13,6 +13,20 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+### Removed
+- `/api/perfetto-sql/*` now answers 410 in every deployment mode. It had no
+  product caller; its fallback analyses interpolated the request package name
+  into SQL unescaped, matching it as a prefix and as a substring of its last
+  segment, and `/sql` ran caller-supplied SQL without a trace ownership check.
+  Scene endpoints map to `POST /api/skills/execute/<skillId>` with the same
+  `{traceId, packageName}` body (for example `/startup` to `startup_analysis`;
+  in enterprise deployments that route is workspace-scoped too); the response
+  names the successor. `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`,
+  `/input`, `/buffer-flow` and `/systemserver` have no direct successor. The
+  unused `analyze_frame` legacy agent tool, which built the same kind of query,
+  and the SQL knowledge-base code that only these paths read are gone too,
+  including the `PERFETTO_PATH` setting.
+
 ### Fixed
 - `scroll_session_analysis` counts frames of the target app only (issued
   process scope, else the exact package or its `name:*` subprocesses) instead

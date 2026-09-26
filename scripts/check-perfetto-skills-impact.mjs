@@ -30,7 +30,6 @@ export const TRIGGERS = Object.freeze([
   'backend/src/types/claimVerification.ts',
   'backend/src/types/evidenceContract.ts',
   'backend/src/types/identityContract.ts',
-  'backend/src/types/perfettoSql.ts',
   'backend/src/types/multiTraceComparison.ts',
   'backend/src/services/sqlValidator.ts',
   'backend/data/perfettoStdlibSymbols.json',
