@@ -722,7 +722,14 @@ export type DisplayFormat = typeof VALID_DISPLAY_FORMATS[number];
  * - conclusion: Provisional answer (`ProvisionalConclusionEventData`) emitted once
  *   when the final semantic review is dispatched. The body is final; the verdict is
  *   pending and arrives only with analysis_completed, which replaces the same message.
- *   The runtime's own raw conclusion/answer_token events are not forwarded.
+ *   When no review is dispatched, the finalized answer arrives once without
+ *   `provisional`, still before analysis_completed.
+ *   The runtime's own raw conclusion is not forwarded.
+ * - answer_token / answer_segment_reset: display-only answer draft from a
+ *   draft-capable runtime (`EngineCapabilities.draftAnswerStreaming`), each
+ *   carrying runId + attempt. Live only: sent without an SSE id, never in the
+ *   replay buffer or the durable store. A reset revokes the draft; the
+ *   provisional or final conclusion replaces it.
  * - analysis_completed: Final result with report URL
  */
 export const SSE_EVENT_TYPES = [
@@ -740,6 +747,8 @@ export const SSE_EVENT_TYPES = [
   'analysis_completed',
   'thought',
   'tool_call',
+  'answer_token',
+  'answer_segment_reset',
   'conclusion',
   'scene_detected',
   'track_data',

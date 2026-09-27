@@ -581,6 +581,24 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     ]);
   });
 
+  it('prints no pending cue when no review ran and returns the run performance receipt', async () => {
+    const performance = {schemaVersion: 1 as const, phases: [], tools: [], sql: [],
+      finalReview: {necessity: 'not_required' as const, triggers: [], declaredClaimCount: 0}};
+    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
+      // A review that is not required sends nothing: no provisional answer, no progress.
+      mockRunManifestLifecycles[mockRunManifestLifecycles.length - 1].sealOnceAndPersist.mockReturnValueOnce({
+        runManifestId: 'manifest-cli-test', runId: input.owner.runId, capabilityManifest, performance});
+      return {result: input.result};
+    });
+    const events: StreamingUpdate[] = [];
+    const provisional: string[] = [];
+    const output = await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: 'trace 时长',
+      onEvent: update => events.push(update), onProvisionalAnswer: ({conclusion}) => provisional.push(conclusion)});
+    expect(provisional).toEqual([]);
+    expect(events.some(event => (event.content as any)?.phase === 'final_review')).toBe(false);
+    expect(output.runtimePerformance).toEqual(performance);
+  });
+
   it('hands the provisional answer to its own callback and leaves the event stream unchanged', async () => {
     mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
       input.onProvisionalAnswer?.({conclusion: 'Answer body.'});
@@ -611,6 +629,24 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     const started = machineEvents.find(event => (event.content as any)?.phase === 'final_review');
     expect(started?.content).not.toHaveProperty('answerReadable');
     expect((started?.content as any)?.message).toBe('正在核验结论与其声明是否一致');
+  });
+
+  it('passes the review-only stop signal to the finalizer and still returns the turn for commit', async () => {
+    const reviewStop = new AbortController();
+    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
+      input.onProvisionalAnswer?.({conclusion: 'Answer body.'});
+      const stop = input.reviewStopSignal!;
+      await new Promise(resolve => stop.aborted ? resolve(undefined) : stop.addEventListener('abort', resolve, {once: true}));
+      return {result: {...input.result, claimVerificationResult: {schemaVersion: 'claim_verifier@2', policy: 'record_only',
+        status: 'not_checked', passed: false, checkedClaimCount: 0, unsupportedClaimCount: 0, claimResults: [],
+        issues: [], notCheckedReason: 'cancelled_by_user'}}};
+    });
+    const output = await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
+      reviewStopSignal: reviewStop.signal, onEvent: () => undefined,
+      onProvisionalAnswer: () => reviewStop.abort()});
+    expect(mockFinalizeAnalysisResult.mock.calls[mockFinalizeAnalysisResult.mock.calls.length - 1]?.[0])
+      .toEqual(expect.objectContaining({reviewStopSignal: reviewStop.signal}));
+    expect(output.result.claimVerificationResult?.notCheckedReason).toBe('cancelled_by_user');
   });
 
   it('preserves the shared finalizer partial verdict across CLI result, session, report, and events', async () => {

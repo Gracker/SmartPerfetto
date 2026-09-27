@@ -58,6 +58,17 @@ function ledgerApplicability(requirement: AnalysisInvestigationRequirement,
 }
 
 /**
+ * Whether only the final semantic review can assess this requirement. The one
+ * exemption the ledger alone determines is an evidence condition it resolves as
+ * not met; every other requirement (no condition, a semantic condition, or an
+ * evidence metric the run never observed) still needs the review.
+ */
+export function investigationRequirementNeedsReview(requirement: AnalysisInvestigationRequirement,
+  ledger: InvestigationEvidenceSnapshot | undefined): boolean {
+  return ledgerApplicability(requirement, ledger).applicability !== 'not_applicable';
+}
+
+/**
  * Acquisition coverage read straight from the ledger.
  *
  * This deliberately answers one narrow question — did the run acquire the

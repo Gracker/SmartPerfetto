@@ -280,6 +280,10 @@ function writeAnalysisQualitySidecars(
   writeJsonFile(sp, `${turnPrefix}.analysis-receipt.json`, result.result.analysisReceipt || null);
   writeJsonFile(sp, path.join(sp.dir, 'ui-action-proposals.json'), result.result.uiActionProposals || []);
   writeJsonFile(sp, `${turnPrefix}.ui-action-proposals.json`, result.result.uiActionProposals || []);
+  // Internal timing receipt only (no content): the CLI manifest store is not durable.
+  if (result.runtimePerformance) {
+    writeJsonFile(sp, `${turnPrefix}.runtime-performance.json`, result.runtimePerformance);
+  }
   writeSourceProvenanceSidecars(sp, turnPrefix, sourceProvenance);
 }
 

@@ -452,6 +452,7 @@ export function getOpenCodeEngineCapabilities(
     production: publicRuntime,
     publicRuntime,
     promptCache: { systemPromptDynamicBoundary: false },
+    draftAnswerStreaming: false,
   };
 }
 

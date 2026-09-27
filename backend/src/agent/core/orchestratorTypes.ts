@@ -223,7 +223,9 @@ export type AnalysisTerminationReason =
   | 'execution_error'
   | 'timeout'
   | 'quality_gate_failed'
-  | 'plan_incomplete';
+  | 'plan_incomplete'
+  /** A delivered answer whose review stop did not settle in time; stored unverified. */
+  | 'review_not_finished';
 
 export interface AnalysisResult {
   sessionId: string;
@@ -519,6 +521,7 @@ export interface StreamingEventPayloads {
     terminationReason?: AnalysisTerminationReason;
   };
   answer_token: AnswerTokenPayload;
+  answer_segment_reset: {runId: string; attempt: number};
   stage_transition: {
     stageIndex: number;
     totalStages: number;
@@ -627,13 +630,16 @@ export interface IncrementalScopePayload {
 }
 
 /**
- * Payload for answer_token event.
- * Streams final answer text incrementally to the frontend.
+ * Payload for answer_token event: display-only answer draft text. Runtimes
+ * with draft streaming stamp each token with its run and segment (see
+ * agentRuntime/answerDraftStream.ts); tokens without them are not forwarded.
  */
 export interface AnswerTokenPayload {
   token?: string;
   done?: boolean;
   totalChars?: number;
+  runId?: string;
+  attempt?: number;
 }
 
 type StreamingEventType = StreamingUpdate['type'];

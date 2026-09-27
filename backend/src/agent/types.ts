@@ -328,7 +328,8 @@ export interface StreamingUpdate {
    * - 'tool_call': Tool invocation
    * - 'finding': Diagnostic finding
    * - 'progress': Progress update
-   * - 'answer_token': Incremental final answer text stream
+   * - 'answer_token': Display-only answer draft text (runId + attempt)
+   * - 'answer_segment_reset': Revokes the current answer draft segment
    * - 'conclusion': Analysis conclusion
    * - 'error': Error message
    * - 'conversation_step': Strictly ordered conversational timeline event
@@ -342,7 +343,7 @@ export interface StreamingUpdate {
    * - 'synthesis_complete': Feedback synthesis complete
    * - 'strategy_decision': Next iteration strategy decided
    */
-  type: 'data' | 'thought' | 'tool_call' | 'finding' | 'progress' | 'answer_token' | 'conclusion' | 'error' | 'scene_detected' | 'track_data' | 'skill_layered_result' | 'worker_thought' | 'architecture_detected'
+  type: 'data' | 'thought' | 'tool_call' | 'finding' | 'progress' | 'answer_token' | 'answer_segment_reset' | 'conclusion' | 'error' | 'scene_detected' | 'track_data' | 'skill_layered_result' | 'worker_thought' | 'architecture_detected'
     | 'conversation_step'
     | 'hypothesis_generated' | 'agent_task_dispatched' | 'agent_dialogue' | 'agent_response' | 'round_start' | 'synthesis_complete' | 'strategy_decision'
     | 'degraded' | 'stage_transition' | 'circuit_breaker'

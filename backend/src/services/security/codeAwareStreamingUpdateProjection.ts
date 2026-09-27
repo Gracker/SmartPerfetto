@@ -6,7 +6,12 @@ import type {StreamingUpdate} from '../../agent/types';
 import type {VerificationIssue} from '../../agentv3/types';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {localize} from '../../agentv3/outputLanguage';
-import {sanitizeCodeAwareText, sanitizeCodeAwareStructuredText, withOwnerCodeAwareProjection} from './codeAwareOutputRegistry';
+import {
+  sanitizeCodeAwareStructuredText,
+  sanitizeCodeAwareStructuredTextWithReceipt,
+  sanitizeCodeAwareText,
+  withOwnerCodeAwareProjection,
+} from './codeAwareOutputRegistry';
 import {projectPrivateDataEnvelope, projectPrivateStructuredValue} from './privateAnalysisProjection';
 import {validateDataEnvelope} from '../../types/dataContract';
 import {formatToolCallNarration, formatToolResultNarration, readPrivateToolResultNarrationReceipt} from '../../agentv3/toolNarration';
@@ -28,6 +33,8 @@ const PRIVATE_EVENT_POLICIES: Record<StreamingUpdate['type'], PrivateEventPolicy
   track_data: 'deterministic',
   architecture_detected: 'deterministic',
   answer_token: 'answer',
+  // Carries only the run id and a segment counter.
+  answer_segment_reset: 'deterministic',
   conclusion: 'conclusion',
   error: 'error',
   thought: 'suppress',
@@ -307,6 +314,11 @@ export function projectOwnerCodeAwareStreamingUpdate(
     // Tool acquisition payloads belong to evidence artifacts, not the process timeline.
     if (update.type === 'skill_data' || update.type === 'skill_layered_result' ||
         update.type === 'sql_generated') return null;
+    // A draft token the private guard could not vouch for is reported
+    // structurally (no update), never as a placeholder string in display text.
+    const token = update.type === 'answer_token' ? (update.content as {token?: unknown} | undefined)?.token : undefined;
+    if (typeof token === 'string' &&
+      sanitizeCodeAwareStructuredTextWithReceipt(sessionId, token).disposition === 'replaced') return null;
     const content = sanitizeCodeAwareStructuredText(sessionId, update.content);
     return {...update, content: projectPrivateStructuredValue(sessionId, content)};
   });

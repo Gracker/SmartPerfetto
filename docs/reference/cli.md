@@ -497,6 +497,9 @@ REPL 内部命令：
 | `/clear` | 清屏 |
 | `/exit` | 退出 |
 
+回合运行期间 Ctrl-C 归该回合：结论打印后的第一次只停止核验，本轮照常保存；之后再按，或结论出现
+之前的第一次，会中止本轮且不保存并回到提示符；继续按则以 130 退出。没有回合在运行时，1.5 秒内连按两次 Ctrl-C 退出。
+
 ## 系统调查输出
 
 CLI 将系统调查覆盖与系统证据覆盖分别输出；缺失的历史字段显示尚未核验。机器输出的结论记录包含 `investigationAssurance`，不改变原始 conclusion 或 native completion。每轮额外保存 `NNN.investigation-assessment.json` 和 `NNN.delivery-assurance.json`，保留维度状态与证据引用，HTML 报告显示相同调查范围。恢复历史结果不会自动补采证据。

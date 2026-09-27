@@ -6,6 +6,7 @@ import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIProvider, Runner, RunContext, tool, withTrace} from '@openai/agents';
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
+import {createAnswerDraftStream} from '../../agentRuntime/answerDraftStream';
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import type {OpenAIAgentConfig} from '../../agentRuntime/engines/openai/openAiConfig';
@@ -39,6 +40,8 @@ import {createAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryR
 import {applyFinalResultQualityGate} from '../../services/finalResultQualityGate';
 import {createRuntimeSourceFinalizationFixture, SOURCE_FINALIZATION_CANARY, SOURCE_FINALIZATION_RAW_SOURCE} from '../../agentRuntime/__tests__/sourceFinalizationFixture';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
+import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
+import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 
 const runtimes: OpenAIRuntime[] = [];
 const privacySessions: string[] = [];
@@ -120,8 +123,9 @@ function phase(id: string, status: PlanPhase['status']): PlanPhase {
 function plan(phases: PlanPhase[]): AnalysisPlanV3 {
   return {phases, successCriteria: 'Evidence is sufficient', submittedAt: Date.now(), toolCallLog: []};
 }
-function streamContext(sessionId: string, quickMode: boolean) {
+function streamContext(sessionId: string, quickMode: boolean, runtime?: {emitUpdate(update: unknown): void}) {
   return {sessionId, quickMode, answerStreamFilter: __testing.createOpenAiReasoningFilterState(),
+    answerDraft: createAnswerDraftStream(`${sessionId}-run`, update => runtime?.emitUpdate(update)),
     toolInputsByTaskId: new Map<string, {toolName: string; args: Record<string, unknown>}>()};
 }
 
@@ -804,6 +808,14 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(result.completion).toMatchObject({status: 'completed'});
     expect(JSON.stringify(updates)).toContain('INITIAL_VISIBLE');
     expect(JSON.stringify(updates)).not.toContain('REPAIR_MUST_NOT_STREAM');
+    // The continuation replaces the streamed body: the draft is revoked before it starts.
+    const drafts = updates.filter(update => (update.type === 'answer_token' && update.content.token) ||
+      update.type === 'answer_segment_reset');
+    expect(drafts.map(update => [update.type, update.content.token ?? null, update.content.attempt])).toEqual([
+      ['answer_token', 'INITIAL_VISIBLE', 0],
+      ['answer_segment_reset', null, 1],
+    ]);
+    expect(new Set(drafts.map(update => update.content.runId)).size).toBe(1);
   });
 
   it('retains the original undeclared candidate when completion changes its body', async () => {
@@ -892,9 +904,18 @@ describe('OpenAI bounded output-limit recovery', () => {
     const recoveryHistory = run.mock.calls[1][1] as Array<{role?: string; content?: unknown}>;
     const recoveryPrompt = String(recoveryHistory[recoveryHistory.length - 1].content);
     if (kind === 'invalid-schema') {
-      expect(recoveryPrompt).toContain('"field":"$.mode"');
-      expect(recoveryPrompt).toContain('"reason":"invalid_enum"');
-      expect(recoveryPrompt).not.toContain('invalid-mode');
+      // A well-framed rejected declaration gets the declaration-only repair: the
+      // body is data to echo, the rejected declaration is quoted separately, and
+      // the closed diagnostic names the failing field without its value.
+      expect(recoveryPrompt).toContain('`invalid_declaration`');
+      expect(recoveryPrompt).toContain('"kind":"rejected_declaration"');
+      const diagnosticLine = recoveryPrompt.trim().split('\n').pop()!;
+      expect(diagnosticLine).toContain('"field":"$.mode"');
+      expect(diagnosticLine).toContain('"reason":"invalid_enum"');
+      expect(diagnosticLine).not.toContain('invalid-mode');
+    } else {
+      // A declaration without a body is a full-answer continuation, not a repair.
+      expect(recoveryPrompt).toContain('empty_body');
     }
   });
 
@@ -920,8 +941,11 @@ describe('OpenAI bounded output-limit recovery', () => {
     const recoveryPrompt = String(recoveryHistory[recoveryHistory.length - 1].content);
     expect(recoveryPrompt).toContain('proofBindings');
     expect(recoveryPrompt).toContain('endpointColumn');
-    expect(recoveryPrompt).toContain('"reason":"unknown_field"');
-    expect(recoveryPrompt).not.toContain('PRIVATE_RELATION_');
+    expect(recoveryPrompt).toContain('`invalid_declaration`');
+    // The rejected declaration is quoted as data; the closed diagnostic carries no value.
+    const diagnosticLine = recoveryPrompt.split('\n').find(line => line.includes('candidate_protocol_diagnostic@1'))!;
+    expect(diagnosticLine).toContain('"reason":"unknown_field"');
+    expect(diagnosticLine).not.toContain('PRIVATE_RELATION_');
     const context = finalization.takeFinalizationContext(result)!;
     finalizationContexts.push(context);
     expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(complete);
@@ -938,9 +962,12 @@ describe('OpenAI bounded output-limit recovery', () => {
     const history = run.mock.calls[1][1] as Array<{content?: unknown}>;
     const prompt = String(history[history.length - 1].content);
     const native = updates.find(update => update.content?.candidateProtocolDiagnostic?.stage === 'native').content.candidateProtocolDiagnostic;
-    expect(JSON.parse(prompt.trim().split('\n').pop()!)).toEqual(native);
-    expect(prompt).toContain('"field":"$.mode"');
-    expect(prompt).not.toContain('PRIVATE_RECOVERY_STRUCTURE_CANARY');
+    const diagnosticLine = prompt.trim().split('\n').pop()!;
+    expect(JSON.parse(diagnosticLine)).toEqual(native);
+    expect(diagnosticLine).toContain('"field":"$.mode"');
+    // Only the quoted rejected declaration carries model values; the schema feedback stays value-free.
+    expect(diagnosticLine).not.toContain('PRIVATE_RECOVERY_STRUCTURE_CANARY');
+    expect(prompt).toContain('"kind":"rejected_declaration"');
     expect(prompt).not.toContain('{{candidate_protocol_diagnostic}}');
     expect((run.mock.calls[1][0] as any).tools).toEqual([]);
     expect(result.completion.status).toBe('completed');
@@ -1128,6 +1155,99 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(run).toHaveBeenCalledTimes(2);
     expect(updates.some(update => update.type === 'conclusion')).toBe(false);
     expect(runtime.sessionMap.size).toBe(0);
+  });
+
+  describe('declaration-only repair of a rejected declaration', () => {
+    const body = 'The marker is present.';
+    const claimed = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
+      evidenceChain: [], uncertainties: [], nextSteps: [],
+      claims: [{id: 'marker', kind: 'inference', text: body, references: []}]} as unknown as ConclusionContract;
+    const declared = (contract: ConclusionContract = claimed, text = body) => `${text}\n${renderConclusionContractSidecar(contract)}`;
+    const rejected = declared({...claimed, mode: 'bad-mode'} as unknown as ConclusionContract);
+    const recoveryPrompt = (run: ReturnType<typeof mockRun>) => {
+      const history = run.mock.calls[1][1] as Array<{content?: unknown}>;
+      return String(history[history.length - 1].content);
+    };
+    const nativeRaw = (result: any) => {
+      const context = finalization.takeFinalizationContext(result)!;
+      finalizationContexts.push(context);
+      return context.getNativeDeclaration(result, new AbortController().signal)?.raw;
+    };
+
+    it('accepts a corrected declaration around the unchanged body', async () => {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const run = mockRun().mockResolvedValueOnce(recoverableStream(rejected, 'completed'))
+        .mockResolvedValueOnce(recoverableStream(declared(), 'completed'));
+      const result = await runtime.analyze('query', 'declaration-repair-accepted', 'trace', {providerId: null});
+      expect(run).toHaveBeenCalledTimes(2);
+      expect((run.mock.calls[1][0] as any).tools).toEqual([]);
+      expect(run.mock.calls[1][2]).toMatchObject({maxTurns: 1});
+      expect(recoveryPrompt(run)).toContain('`invalid_declaration`');
+      expect(recoveryPrompt(run)).toContain(JSON.stringify({schemaVersion: 1, kind: 'original_native_candidate', body}));
+      expect(nativeRaw(result)).toBe(declared());
+      expect(result.completion).toMatchObject({status: 'completed'});
+    });
+
+    it.each([
+      ['changes the body', () => declared(claimed, 'The marker is absent.')],
+      ['drops a declared claim', () => declared({...claimed, claims: []} as ConclusionContract)],
+      ['is rejected again', () => rejected],
+    ])('restores the rejected candidate when the repair %s, without a second recovery', async (_label, second) => {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const run = mockRun().mockResolvedValueOnce(recoverableStream(rejected, 'completed'))
+        .mockResolvedValueOnce(recoverableStream(second(), 'completed'));
+      const result = await runtime.analyze('query', `declaration-repair-restored-${_label}`, 'trace', {providerId: null});
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(nativeRaw(result)).toBe(rejected);
+      expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
+      expect(result.completion).toMatchObject({status: 'completed', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
+    });
+
+    it('keeps the full-answer continuation for an output limit before any declaration repair', async () => {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const run = mockRun().mockResolvedValueOnce(recoverableStream(rejected, 'incomplete'))
+        .mockResolvedValueOnce(recoverableStream(declared(), 'completed'));
+      await runtime.analyze('query', 'declaration-repair-output-limit', 'trace', {providerId: null});
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(recoveryPrompt(run)).toContain('output_limit');
+      expect(recoveryPrompt(run)).not.toContain('`invalid_declaration`');
+    });
+
+    it('keeps the full-answer continuation for a duplicate declaration marker', async () => {
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      const duplicated = `${declared()}\n${renderConclusionContractSidecar(claimed)}`;
+      const run = mockRun().mockResolvedValueOnce(recoverableStream(duplicated, 'completed'))
+        .mockResolvedValueOnce(recoverableStream(declared(), 'completed'));
+      await runtime.analyze('query', 'declaration-repair-duplicate-marker', 'trace', {providerId: null});
+      expect(run).toHaveBeenCalledTimes(2);
+      expect(recoveryPrompt(run)).toContain('invalid_protocol');
+      expect(recoveryPrompt(run)).not.toContain('`invalid_declaration`');
+    });
+
+    it('records each model call with its purpose in the internal performance receipt', async () => {
+      const recorder = createRuntimePerformanceRecorder();
+      const sink = {identity: {runId: 'perf-run', sessionId: 'perf-session', scope: {tenantId: 't', workspaceId: 'w'}},
+        runtimePerformanceRecorder: recorder, recordScene: jest.fn(), recordRuntime: jest.fn(), recordMode: jest.fn(),
+        recordAdaptiveRouting: jest.fn(), recordCapabilityManifest: jest.fn(), recordSkillRegistry: jest.fn(),
+        startSkillInvocation: jest.fn(() => 'skill-invocation'), finishSkillInvocation: jest.fn(),
+        recordUnknownSkillInvocation: jest.fn(), recordSqlStatement: jest.fn(), recordPromptTemplate: jest.fn(),
+        recordInjection: jest.fn(), recordToolAllowlist: jest.fn(), recordTurn: jest.fn(),
+      } as unknown as RunManifestAttributionSink;
+      const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+      mockRun().mockResolvedValueOnce(recoverableStream(rejected, 'completed'))
+        .mockResolvedValueOnce(recoverableStream(declared(), 'completed'));
+      await runtime.analyze('query', 'declaration-repair-performance', 'trace', {providerId: null,
+        runManifestAttributionSink: sink});
+      const calls = recorder.seal().modelCalls ?? [];
+      expect(calls.map(call => [call.purpose, call.trigger])).toEqual([
+        ['classification', undefined], ['answer_turn', undefined], ['declaration_repair', 'invalid_declaration'],
+      ]);
+      expect(calls[0]).toMatchObject({model: 'pinned-light', outcome: 'ok'});
+      const bodyChars = inspectCandidateProtocol(rejected).canonicalBody.length;
+      expect(calls[1]).toMatchObject({model: 'pinned-light', reasoning: 'provider_default', outcome: 'ok',
+        output: {bodyChars, sidecarChars: rejected.length - bodyChars}});
+      expect(calls[2].output?.bodyChars).toBe(inspectCandidateProtocol(declared()).canonicalBody.length);
+    });
   });
 });
 
@@ -1327,8 +1447,28 @@ describe('OpenAI shared tool receipt and private projection', () => {
   it('streams current assistant text before an optional plan is submitted', () => {
     const {runtime, updates} = createRuntimeWithUpdates();
     const text = '自然回答无需等待 submit_plan';
-    runtime.handleStreamEvent({type: 'raw_model_stream_event', data: {type: 'output_text_delta', delta: text}}, 'zh-CN', streamContext('no-plan', false));
+    runtime.handleStreamEvent({type: 'raw_model_stream_event', data: {type: 'output_text_delta', delta: text}}, 'zh-CN',
+      streamContext('no-plan', false, runtime));
     expect(updates.filter(update => update.type === 'answer_token').map(update => update.content.token)).toEqual([text]);
+  });
+
+  it('revokes answer text that preceded a tool call in the same response', async () => {
+    const {runtime, updates} = createRuntimeWithUpdates(); prepareStub(runtime);
+    mockRun(sdkStream('Final answer', {events: [
+      {type: 'raw_model_stream_event', data: {type: 'output_text_delta', delta: 'Let me check the trace.'}},
+      {type: 'run_item_stream_event', name: 'tool_called', item: {rawItem: {type: 'function_call', callId: 'call-1',
+        name: 'execute_sql', arguments: '{"sql":"select 1"}'}}},
+      {type: 'raw_model_stream_event', data: {type: 'response_started'}},
+      {type: 'raw_model_stream_event', data: {type: 'output_text_delta', delta: 'Final answer'}},
+    ]}));
+    await runtime.analyze('query', 'answer-then-tool', 'trace', {providerId: null, runId: 'draft-run'});
+    const drafts = updates.filter(update => (update.type === 'answer_token' && update.content.token) ||
+      update.type === 'answer_segment_reset');
+    expect(drafts.map(update => [update.type, update.content.token ?? null, update.content.runId, update.content.attempt])).toEqual([
+      ['answer_token', 'Let me check the trace.', 'draft-run', 0],
+      ['answer_segment_reset', null, 'draft-run', 1],
+      ['answer_token', 'Final answer', 'draft-run', 1],
+    ]);
   });
 });
 

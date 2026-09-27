@@ -162,8 +162,9 @@ Each user question starts a fresh physical model context. Within the same logica
 session, owner, trace, provider, and source authorization checks precede a bounded
 preview of recent conclusions, gaps, and evidence locators. `read_session_history`
 pages older records without creating current-run verification witnesses. A single
-database transaction persists the logical descriptor and full turn records, so
-page reopening and backend restart share one recovery path. The CLI reuses the
+database transaction persists the logical descriptor and full turn records, once
+per run (a second terminal write is refused), so page reopening and backend
+restart share one recovery path. The CLI reuses the
 same typed history contract. See [Agent Runtime Architecture](agent-runtime.en.md).
 
 ## Main Analysis Data Flow
@@ -225,8 +226,14 @@ metadata-only visibility.
 
 5. Backend streams output
    SDK events -> runtime bridge -> privacy/narrative projection -> SSE
-      -> frontend renders progress, tables, thoughts (conversation mode also answer tokens)
+      -> frontend renders progress, tables, thoughts
+   draftAnswerStreaming runtime (Claude/OpenAI) -> answer_token draft + answer_segment_reset
+      -> owner projection + narrative projection + coalescing -> live only (never replayed or persisted), replaced by conclusion
    finalizeAnalysisResult dispatches the semantic review -> provisional conclusion (final body, verdict pending)
+   no review required -> plain conclusion after finalization, before report/snapshot generation (no pending cue)
+   stop after the provisional conclusion -> review-only (answered at once), run still commits `~`;
+      second stop -> wait up to the review-stop watchdog, then abort; no commit in time ->
+      read body stored as an unverified partial turn (not for private knowledge / revoked authority)
 
 6. Finish and report
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata
@@ -346,7 +353,14 @@ valid declarations are not truth or authorization. `existing_only` prohibits
 new acquisition, and `read_new` still respects request permissions. Planning and
 source access are on demand. The finalizer preserves original propositions and
 performs at most one no-tool semantic review under the original deadline, pinned
-provider and owner/authorization checks. The finite proof catalog is defined in
+provider and owner/authorization checks, and sends it only when `✓` is still
+reachable or an obligation needs it: a report, a selection, source access or
+source declarations, an investigation requirement the evidence ledger does not
+rule out, a claim that could still reach `✓` under a perfect review, or a
+zero-claim pure acknowledgement. Every other answer records the not-checked
+reason `not_required` and ends `~` (an accepted residual: a contradiction only
+the review would find goes undetected; a finite-proof `unsupported` still
+yields `!`). The finite proof catalog is defined in
 source; general causality and unknown fields cannot be presented as proved.
 
 Conversation may retain original captures within a logical session's exact

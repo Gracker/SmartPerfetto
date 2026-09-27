@@ -1755,12 +1755,6 @@ strategies:
   backend/strategies/prompt-final-report-quality-issue-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration
-  backend/strategies/prompt-plan-completion-continuation-en.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime plan-completion orchestration
-  backend/strategies/prompt-plan-completion-continuation-zh.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime plan-completion orchestration
   backend/strategies/prompt-recent-sql-results.template.md:
     disposition: product-only
     reason: SmartPerfetto runtime, session, case, language, or codebase orchestration

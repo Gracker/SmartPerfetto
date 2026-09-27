@@ -207,6 +207,22 @@ describe('external issue reporting services', () => {
     ).toEqual(['evidence-1']);
   });
 
+  it('does not triage the by-design partial claims of an answer whose review was not required', () => {
+    const [baseClaim] = source().completedData.claimSupport as Array<Record<string, unknown>>;
+    const partialClaim = {...baseClaim, claimId: 'claim-partial', supportLevel: 'partial'};
+    const verification = (notCheckedReason: string) => ({schemaVersion: 'claim_verifier@2', policy: 'record_only',
+      status: 'partial', passed: false, checkedClaimCount: 1, unsupportedClaimCount: 0, issues: [],
+      claimResults: [{claimId: 'claim-partial', status: 'partial'}], notCheckedReason});
+    const run = (notCheckedReason: string) => detectExternalIssueOpportunity(source({
+      completedData: {...source().completedData, claimSupport: [partialClaim],
+        claimVerificationResult: verification(notCheckedReason)},
+    })).signals.map(item => item.kind);
+    expect(run('not_required')).not.toContain('uncertain_claim');
+    expect(run('not_required')).not.toContain('partial_quality_gate');
+    // An unfinished review is still a triage signal.
+    expect(run('timeout')).toEqual(expect.arrayContaining(['uncertain_claim', 'partial_quality_gate']));
+  });
+
   it('turns durable negative feedback into an Agent-triage opportunity', () => {
     const invokedSkill = {
       ...manifest().skills[0],

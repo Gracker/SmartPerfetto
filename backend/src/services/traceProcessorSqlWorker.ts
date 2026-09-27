@@ -26,7 +26,7 @@ import {
   throwIfTraceProcessorQueryCancelled,
 } from './traceProcessorCancellation';
 import type { QueryResult } from './workingTraceProcessor';
-import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
+import {currentRuntimePerformanceRecorder} from './selfEvolution/runManifestLifecycle';
 import {beginRawSqlNativeQuery, invalidateRawSqlNativeProvenance, sealRawSqlNativeQuery,
   type RawSqlBootstrapCapability, type RawSqlNativeProvenance, type RawSqlNativeQuery} from './evidence/rawSqlNativeProvenance';
 
@@ -364,8 +364,7 @@ export class TraceProcessorSqlWorker {
         maxResponseBytes: options.maxResponseBytes,
         sqlOrigin,
         queuedAtMs: nodePerformance.now(),
-        runtimePerformanceRecorder:
-          currentRunManifestAttributionSink()?.runtimePerformanceRecorder,
+        runtimePerformanceRecorder: currentRuntimePerformanceRecorder(),
         resolve,
         reject,
       };

@@ -21,6 +21,7 @@ export {
   getProviderTypesForRuntime,
   isProductionAgentRuntimeKind,
   listProductionRuntimeKinds,
+  runtimeSupportsDraftAnswerStreaming,
   supportsRuntimeProviderType,
   type AgentRuntimeKind,
 } from './runtimeDescriptors';

@@ -44,6 +44,7 @@ import { getSkillAnalysisAdapter } from '../../../services/skillEngine/skillAnal
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
 import type { StreamingUpdate, Finding } from '../../../agent/types';
+import {createAnswerDraftStream, type AnswerDraftStream} from '../../answerDraftStream';
 import type { Hypothesis as ProtocolHypothesis } from '../../../agent/types/agentProtocol';
 import type { AnalysisResult, AnalysisOptions, IOrchestrator } from '../../../agent/core/orchestratorTypes';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
@@ -776,6 +777,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const runId = options.runId ?? options.runManifestAttributionSink?.identity.runId ?? randomUUID();
     let turnIntent: AnalysisTurnIntent | undefined;
     let attemptNumber = 0;
+    let answerDraft: AnswerDraftStream | undefined;
     let acceptedAttemptId = `${runId}:main:0`;
     let acceptedOrigin: AnalysisOutputOrigin = 'runtime_fallback';
     let acceptedRawBody: string | undefined;
@@ -1026,6 +1028,15 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       sourceUse = ctx.sourceUse;
       executionLease.throwIfAborted();
 
+      // Display-only draft: the bridge revokes it at each main-agent
+      // message_start and at a tool_use after answer text; a retry, closeout or
+      // correction below revokes it before replacing the candidate.
+      const runAnswerDraft = createAnswerDraftStream(runId, update => {
+        if (!runActivity.active || executionLease.signal.aborted) return;
+        if (update.type === 'answer_token') runtimePerformance.recordFirstOutput();
+        this.emitUpdate(update);
+      });
+      answerDraft = runAnswerDraft;
       const {
         handleMessage: bridge,
         getAccumulatedAnswer,
@@ -1056,7 +1067,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             // Not a skill result — ignore
           }
         }
-      }, outputLanguage, {
+      }, runAnswerDraft, outputLanguage, {
         tracePairContext: ctx.analysisContextForRebuild.comparison?.tracePairContext,
       }, ((options.codeAwareMode && options.codeAwareMode !== 'off') || options.knowledgeSourceIds?.length)
         ? createCodeAwareStreamingTextProjection(sessionId, 'claude-full-answer', 'owner')
@@ -1153,6 +1164,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           onAttempt: () => {
             assertAuthorized();
             flushPendingAnswer();
+            answerDraft?.reset();
             attemptStreamOffset = getAccumulatedAnswer().length;
             acceptedRawBody = undefined;
             acceptedAttemptId = `${runId}:main:${++attemptNumber}`;
@@ -1777,6 +1789,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         if (prompt) {
           // This is the reserved delivery attempt, including failed dispatches.
           rounds = observedRunTurns() + 1;
+          answerDraft?.reset();
           let directory: string | undefined;
           try {
             directory = await fs.promises.mkdtemp(path.join(tmpdir(), 'smartperfetto-claude-closeout-'));
@@ -1892,6 +1905,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             projectedCandidate.deliveryContext.completion?.status === 'completed' &&
             remainingTurns > 0 && Date.now() < requestDeadline) {
           assertAuthorized();
+          answerDraft?.reset();
           const correctionAttemptId = `${runId}:correction:1`;
           const {stream, close} = sdkQueryWithRetry({
             prompt: declarationRequest

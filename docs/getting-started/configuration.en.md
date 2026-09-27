@@ -569,6 +569,13 @@ call also times out, the run ends without a deliverable conclusion.
 retained across continuations or sessions. It does not truncate Artifacts,
 DataEnvelopes, reports, or evidence provenance.
 
+`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` (default 15000, never below 10000, above
+the 5 s SQLite busy timeout) bounds how long a run may take to save its answer
+after the user stops its verification (Web, conversation, or CLI Ctrl-C). It
+starts only at such a stop. When it elapses, the answer the user read is kept as
+an unverified, incomplete turn (except for private knowledge or revoked
+authorization) and the run is stopped; the CLI stops the turn without saving.
+
 | Mode | Behavior | Use case |
 |---|---|---|
 | `fast` | Default 50 turns (`AGENT_QUICK_MAX_TURNS` or a runtime-specific quick override), request-shaped lightweight tools | Package, process, simple facts |

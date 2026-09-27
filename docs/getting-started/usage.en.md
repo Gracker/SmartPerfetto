@@ -29,9 +29,21 @@ The answer appears as soon as its text is final, marked "Answer ready;
 verification in progress". The one no-tool semantic review keeps running, and
 its verdict then completes the same message without rewriting the text. Stop
 during that review ends only the review: the answer is still saved, with its
-verification recorded as stopped at the user's request (unverified). If the run
-fails or disconnects before the verdict, the answer stays and is marked as not
-verified.
+verification recorded as stopped at the user's request (unverified). Pressing
+Stop again forces the run to end; SmartPerfetto still waits a few seconds for
+the answer to be saved. If saving does not finish in that time, the answer you
+read is kept as an unverified, incomplete turn (for registered source or
+knowledge, it is not kept). If the run fails or disconnects before the verdict,
+the answer stays and is marked as not verified.
+
+In the CLI (`smp run`, `smp ask`, `smp compare`, `smp capture --analyze` and the
+REPL), Ctrl-C works the same way per turn. After the text answer has been
+printed, the first Ctrl-C stops only its verification and the turn is saved.
+Before that answer, or on the next Ctrl-C, the turn is aborted and not saved
+(exit code 130; the REPL returns to its prompt). A further Ctrl-C, or a turn
+that has not stopped within about 2 seconds, exits immediately with 130.
+`--format json`/`ndjson` print no early answer, so their first Ctrl-C aborts.
+Once the turn is saved, Ctrl-C no longer applies to it.
 
 Auto mode first returns a scene inventory for mixed-action traces. The timeline lists detected startup, scrolling, click, navigation, device-state, ANR, and related scenes, then shows scope buttons. Select all scenes or one scene family before SmartPerfetto runs the matching startup, scrolling, click, or other deep-dive analysis.
 

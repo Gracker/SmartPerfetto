@@ -11,6 +11,7 @@ import { withConsoleLogToStderr } from '../io/stdio';
 import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { startSession } from '../services/turnRunner';
+import { CLI_INTERRUPTED_EXIT_CODE, isTurnInterrupted, processInterruptSource } from '../services/turnInterrupt';
 import {
   addAtraceCategories,
   getCapturePreset,
@@ -142,7 +143,7 @@ export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs):
     await withConsoleLogToStderr(renderer.format !== 'text', async () => {
       const service = new CliAnalyzeService();
       lifecycle.service = service;
-      const turn = await startSession({ paths, service, renderer }, {
+      const turn = await startSession({ paths, service, renderer, interruptSource: processInterruptSource() }, {
         tracePath: capture.out,
         query,
         analysisMode: args.analysisMode,
@@ -159,7 +160,7 @@ export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs):
     return exitCode;
   } catch (err) {
     printError(format, (err as Error).message);
-    return 1;
+    return isTurnInterrupted(err) ? CLI_INTERRUPTED_EXIT_CODE : 1;
   } finally {
     await lifecycle.service?.shutdown();
   }

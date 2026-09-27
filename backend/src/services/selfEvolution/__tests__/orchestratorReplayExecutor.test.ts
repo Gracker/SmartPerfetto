@@ -43,6 +43,7 @@ import {
   resolveEvaluationRoleVariant,
 } from '../evaluationTreatment';
 import {RunManifestStore} from '../runManifestStore';
+import * as finalization from '../../finalizeAnalysisResult';
 
 const persistenceUnavailable: SelfEvolutionPersistenceCapability = {
   persistence: 'unavailable',
@@ -151,6 +152,10 @@ describe('OrchestratorReplayExecutor', () => {
   });
 
   it('runs real role-scoped orchestration over a verified trace copy', async () => {
+    // Replay scores the runtime's own claim_verifier@1 result. It never enters the
+    // product finalizer, so the finalizer's review-necessity decision cannot change
+    // a replay score.
+    const finalize = jest.spyOn(finalization, 'finalizeAnalysisResult');
     const traceSource = path.join(directory, 'source.pftrace');
     const traceBytes = Buffer.from('verified replay trace');
     fs.writeFileSync(traceSource, traceBytes);
@@ -388,5 +393,7 @@ describe('OrchestratorReplayExecutor', () => {
       deleted: 2,
     });
     expect(fs.existsSync(path.join(directory, 'current.pftrace'))).toBe(false);
+    expect(finalize).not.toHaveBeenCalled();
+    expect(candidate.artifacts.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@1', passed: true});
   });
 });

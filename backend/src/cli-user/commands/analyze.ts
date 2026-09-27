@@ -16,6 +16,7 @@ import { bootstrap } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { startSession } from '../services/turnRunner';
+import { CLI_INTERRUPTED_EXIT_CODE, isTurnInterrupted, processInterruptSource } from '../services/turnInterrupt';
 import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 import { withConsoleLogToStderr } from '../io/stdio';
 import type {CodeAwareMode} from '../../services/codebase/codeAwareFeature';
@@ -50,7 +51,7 @@ export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<numbe
       const service = new CliAnalyzeService();
       lifecycle.service = service;
       assertAnalysisRuntimeReady();
-      const turn = await startSession({ paths, service, renderer }, {
+      const turn = await startSession({ paths, service, renderer, interruptSource: processInterruptSource() }, {
         tracePath,
         query: args.query,
         analysisMode: args.analysisMode,
@@ -63,7 +64,7 @@ export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<numbe
     return exitCode;
   } catch (err) {
     renderer.printError((err as Error).message);
-    return 1;
+    return isTurnInterrupted(err) ? CLI_INTERRUPTED_EXIT_CODE : 1;
   } finally {
     await lifecycle.service?.shutdown();
   }

@@ -110,6 +110,27 @@ Keep these boundaries intact:
   owner/authorization checks. Its semantic review has no tools and cannot
   restart acquisition, extend the deadline, or rewrite the answer to repair
   style. Missing evidence/review remains explicit.
+- The one semantic review is skipped only when `✓` is unreachable and no
+  obligation needs it. That is an accepted residual, not a claim that the
+  review could not matter: a contradiction only the review would find (`~` to
+  `!`) then goes undetected, while a deterministic `unsupported` from finite
+  proof still yields `!`. `finalizeAnalysisResult` decides after finite proof
+  (`prepareClaimEvidence`, the draft `runClaimVerification` and
+  `applySourceLocationProofs`) and before any semantic snapshot projection: it
+  is required for a report deliverable, a present selection (a scope mismatch is
+  an error), source access or any source field in the raw declaration, a
+  resolved investigation requirement the ledger does not rule out
+  (`investigationRequirementNeedsReview`), at least one declared claim for which
+  the real `joinClaimVerification` against a hypothetical perfect review yields
+  `passed` (never returned or persisted), or a zero-claim pure acknowledgement
+  (`eligible`/`legacy_unchecked`, and not an evidence-rendered acknowledgement,
+  whose claims are already `not_applicable`). Otherwise no review is sent: the
+  assessment is `not_checked` / `not_required` bound to the candidate and the
+  decision inputs, claim verification is `partial`, and the answer ends `~`,
+  never `✓`. An ineligible declaration keeps `invalid_declarations`. The
+  decision and its trigger names go to the internal
+  `RunManifest.performance.finalReview`; Self-Evolution replay scores the
+  runtime's own `claim_verifier@1` and never enters the finalizer.
 - Deliver first, verify after. The semantic review cannot rewrite the body, so
   `finalizeAnalysisResult` hands the canonical body to `onProvisionalAnswer`
   once, in the tick the review is dispatched (never for scene runs, a review
@@ -118,22 +139,68 @@ Keep these boundaries intact:
   (`provisional: true, verification: 'pending'`) that private sessions keep out
   of the durable event store; conversations publish `provisional_answer`; the
   CLI prints the body through a separate callback, leaving ndjson unchanged.
-  On the Web agent route the runtime's own `conclusion`/`answer_token` stay
-  suppressed; the conversation adapter drops only the raw `conclusion` and
-  still forwards framed, display-only `answer_token`. A surface returns
+  The Web route and the conversation drop the runtime's own `conclusion`; its
+  `answer_token` reaches them only as the answer draft below. A surface returns
   `false` from the callback when it did not deliver, so the review-started line
   claims "answer readable" only when it is true. Verdicts and `!`/`~` come only
-  from the finalized result. Once a run's provisional answer is out, the first
-  cancel stops only the review (`reviewStopSignal`): the review resolves
-  `not_checked` / `cancelled_by_user`, finalization and persistence continue,
-  run cancellation and supersession stay fatal, and the Web cancel answers
-  `review_stop_requested`. The first cancel after the provisional answer is
-  review-only even if the review already finished (a no-op; the verdict stays);
-  a second cancel is an explicit escalation and takes the full cancel, like a
-  stop before the provisional answer. The conversation side waits `cancelSettleTimeoutMs` and
-  then falls back to the full cancel; that turn is then absent from backend
-  history while the client keeps its text as unverified. CLI Ctrl-C remains a
-  full abort, and only the text renderer receives the provisional answer.
+  from the finalized result.
+- Stops follow one state machine, `services/reviewStopHandle.ts`
+  (`ReviewStopHandle`: signal, `markDelivered()`, `requestStop()` →
+  `review` | `full` | `noop`), used inside each existing single-active owner:
+  the agent route's `HttpFinalizationRun`, the conversation service (the signal
+  reaches the adapter as `reviewStopSignal` in the run input) and the CLI turn
+  controller (`cli-user/services/turnInterrupt.ts`). Before a provisional
+  answer (draft only, no candidate) a stop is the full cancel and nothing but
+  the cancel marker is stored. After it, the first stop is review-only and is
+  answered at once (`review_stop_requested`, even if the review already
+  finished): the review resolves `not_checked` / `cancelled_by_user` and the
+  run commits its normal `~` turn (report deliverables `!`). A second stop
+  forces: it waits for that commit up to the watchdog, then aborts. The
+  watchdog (`resolveReviewStopWatchdogMs`, `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`,
+  default 15 s, floor 10 s above the SQLite busy timeout) starts only at a stop
+  request, since "finalization settles in milliseconds" is an expectation, not
+  a premise. If it elapses without a commit, the owner stores the provisional
+  body as a partial turn (`buildReviewNotFinishedResult`: `partial`,
+  `terminationReason: review_not_finished`, claim verification `not_checked`)
+  through its normal commit path, with the run's own pins (source partition,
+  owner projection), then aborts; excluded — plain cancel, body live-only —
+  are private-knowledge runs, revoked authorization, and a run that lost its
+  current owner or session. History preview and `read_session_history` show
+  such a turn as incomplete. A run that lost currency (replaced session or
+  run) never commits, whatever its outcome.
+- One terminal write per run. The conversation service commits outcome,
+  history and `onRunSettled` (descriptor + turn in one `.immediate()`
+  transaction whose store refuses a turn already terminal) in one synchronous
+  `commitRun`; the first writer wins and a run that is no longer current writes
+  nothing. For a provisional-delivered run a finalized outcome that reaches the
+  commit wins over a stop. Its cancel never blocks on a review; the start route
+  and `steer` use `supersedeRun`, which waits at most one watchdog bound. The
+  watchdog fallback is the one deliberate exception to "ownership is retained
+  until the outer execution settles": its partial commit clears `activeRun`
+  while the stuck finalization is still unwinding, so a new turn may start
+  beside it. It applies only after the watchdog elapsed; the old run is then
+  cancelled and no longer current, so its late result, callbacks, draft and
+  cleanup are dropped by the per-run guards, and its runtime session, evidence
+  binding and output guards are run-scoped and isolated from the successor. The
+  agent route claims terminal ownership (`finalized` or `review_not_finished`)
+  before generating report and snapshot and publishing `analysis_completed`,
+  which keeps its report metadata; a force stop that finds the run committed
+  answers `200` `status: completed` with `outcome: committed` (its normal turn)
+  or `outcome: review_not_finished` (the fallback commit). CLI Ctrl-C: the first
+  press after the printed text answer is review-only and the turn commits;
+  before it, or the second press, the turn aborts through its signal and is not
+  saved; a third press, or a turn not unwound within ~2 s, exits 130 (json and
+  ndjson print no provisional answer, so their first press aborts); a review
+  stop not committed within the watchdog becomes the abort; once the turn is
+  committed (`markCommitted()`) Ctrl-C no longer belongs to it. One-shot commands listen to process SIGINT
+  only while a turn runs; the REPL routes readline SIGINT to the running turn.
+  Only the text renderer receives the provisional answer.
+- When no review is sent there is no provisional answer and no review
+  progress: the Web agent route broadcasts the finalized body as a plain
+  `conclusion` (no `provisional`/`verification`, same owner projection and
+  private live-only rule) right after finalization and before report/snapshot
+  generation; the conversation publishes `run_completed`; the CLI prints the
+  result as usual.
 - Finite proof reads issued, immutable execution captures whose original values
   were retained before display or transport truncation. Units and field semantics
   need producer authority;
@@ -182,12 +249,15 @@ Keep these boundaries intact:
   will not be caught — the run wastes its retries as before. That is the
   acceptable direction: a false positive corrupts a legitimate analysis, a
   false negative only costs what today already costs.
-- Guard the whole retry decision, not the predicate inside it. Every OpenAI
-  route back into the provider needs the guard: the final-report continuation
-  is a disjunction (`shouldRequest… || (canRequest… && qualityIssue)`) whose
-  second term fires on its own, and the plan continuation is reached *before*
-  the plan-complete branch — an unfinished plan is exactly what a dead provider
-  leaves behind.
+- The OpenAI runtime makes at most one recovery call per run, inside the
+  original turn budget and deadline, with tools disabled, from the complete
+  current-run transcript and never from `previousResponseId`. Its reason is
+  chosen in order: `output_limit`, then the declaration request
+  (`missing_declaration` or `invalid_declaration`, a declaration-only repair of
+  the unchanged body), then `invalid_protocol` (framing failures such as a
+  duplicate marker) and `empty_body` as full-answer continuations. A recovery
+  that changes the body, drops declared claims, stays invalid or fails restores
+  the original candidate.
 - `plan_phase_updated` is emitted from nine sites across five files. Build its
   payload with `planPhaseUpdatedContent(...)` so `origin` (`auto` vs `model`) is
   always present: the process view shows automatic transitions, which nothing
@@ -222,7 +292,9 @@ Keep these boundaries intact:
   issued identifier) and must come from an issued mark set by the builder
   (`markUnreadableEvidenceAnchor`), never from a copied reason string. The CLI
   marker comes from `deriveDeliveryVerdict`: `~` is a delivered but unverified
-  answer, `!` an unfinished run or a contradicted claim.
+  answer (including `not_required`, whose uncontradicted claims external issue
+  triage does not report as uncertain), `!` an unfinished run or a contradicted
+  claim.
 - Each runtime reserves one no-tool delivery call inside a turn budget above
   one. Admit closeout only after actual investigation exhaustion, under the
   original deadline, selected model, provider, authorization and explicit cost
@@ -295,16 +367,16 @@ Keep these boundaries intact:
 - One invalid claim makes the whole declaration ineligible, which skips the
   semantic review and fails a report's quality gate. The shared native
   declaration completion therefore also repairs a well-framed rejected
-  declaration (`repairInvalid`, Claude/OpenCode/Qoder/Pi) in the same single
+  declaration (`repairInvalid`, all five runtimes) in the same single
   delivery turn: the model receives the sidecar-free body and the rejected
   declaration separately, with `claimDiagnostics` naming each failing claim's
   position and schema field (the first failing field per claim, at most 24
   entries, so the prompt asks for a declaration that passes the full
   protocol). The repair is accepted only if the body is unchanged and it keeps
   every declared claim id and at least as many claims; for Pi it replaces the
-  former full-answer correction of such a declaration. Framing failures keep
-  the existing path. OpenAI keeps its full-answer continuation for an invalid
-  protocol and receives the same diagnostics.
+  former full-answer correction of such a declaration, and for OpenAI its
+  `invalid_protocol` continuation. Framing failures keep the existing
+  full-answer path.
 - Scene runs pace acquisition at the shared registry, after scope and
   lifecycle guards, through `RuntimeAcquisitionPolicy`: a reminder, then a
   first-revision pause lifted by any segment-bearing attempt, and a monotone
@@ -323,14 +395,39 @@ Keep these boundaries intact:
   silently degrades plan phase attribution to semantic inference and leaves
   tool success unknown. Pass `resultFacts` from `readToolResultFacts(...)` at
   the runtime call site; `resultText` is a fallback, not a source of truth.
-- Model text written before a plan is complete is reasoning, not the answer.
-  The OpenAI runtime already classifies it that way (`shouldExposeOpenAiAnswerDelta`)
-  but only accumulated it for conclusion recovery, so it never reached a user
-  surface; it now also feeds `ReasoningThoughtBuffer` and is emitted as one
-  `thought` at the next tool call. Whether any appears depends on the provider:
-  DeepSeek and GLM emit no prose between tool calls, so a run can legitimately
-  show none. Project it the same way as the Responses-API reasoning branch —
-  this is a public SSE surface.
+- Answer drafts are display-only and capability-gated. A runtime may stream
+  answer text before finalization only under `agentRuntime/answerDraftStream.ts`:
+  every `answer_token` carries `runId` + a monotone `attempt`, and an
+  `answer_segment_reset` revokes shown text at every model response start,
+  at a tool call after answer text in the same response, and before any
+  continuation, recovery or retry. Only runtimes whose
+  `EngineCapabilities.draftAnswerStreaming` is true (Claude, OpenAI) get drafts
+  forwarded; Pi, OpenCode and Qoder text never reaches a draft surface. The
+  OpenAI runtime streams visible `output_text` after the reasoning filter and
+  owner projection (recovery attempts never stream); the Claude bridge resets
+  at each main-agent `message_start` and at `tool_use` in answer mode, and only
+  `parent_tool_use_id == null` messages can become answer text — sub-agent text
+  is a `thought`, never draft or accumulated answer. Each surface creates one
+  relay per run through `createAnswerDraftRelay`, which returns none for a
+  runtime without the capability and for any private-knowledge or source-access
+  session: there the owner projection redacts fragment by fragment, so a
+  secret split across tokens could be shown before the whole body is
+  redacted; those sessions see only the projected body at finalization. In the
+  remaining sessions both the draft projection and the final projection are
+  the identity. The relay applies the owner projection, then
+  `AnalysisNarrativeStreamProjection`, then coalescing (200 ms / 256 visible
+  characters); a reset drops the unflushed buffer, stale-attempt and
+  foreign-run events are dropped, and a projection failure, a structurally
+  suppressed token, or a throwing delivery (for example a revoked
+  authorization on a timer flush) withdraws the draft; nothing escapes the
+  relay. The agent route broadcasts drafts `liveOnly`: no SSE id, no ring
+  buffer, no durable event store, and disposes the relay the first time the
+  run loses currency. The conversation service publishes them as live-only
+  `runtime_update` events with no `seqId` and no SSE `id:` line, outside the
+  run's replay events, and stops once the provisional answer is out. The CLI never shows drafts. The runtime's
+  `conclusion` stays dropped; the provisional or final conclusion replaces the
+  draft. Whether pre-tool prose appears depends on the provider: DeepSeek and
+  GLM emit none between tool calls.
 - A policy refusal is not a tool malfunction. Around thirty MCP handlers answer
   a disallowed call with `{success: false, action_required: '<what to do
   instead>'}`; `isPolicyRefusalResult` recognises them by that field, which no
@@ -394,8 +491,16 @@ Tool visibility is request-shaped:
   must work with no candidates admitted.
 
 `RuntimePerformance` is internal RunManifest data. Record real phase spans,
-first output, tool scheduling, and SQL queue/execution timing without exposing
-raw SQL, processor identifiers, secrets, or unbounded provider content. Do not
+first output, tool scheduling, SQL queue/execution timing, one record per model
+call (purpose `classification`/`answer_turn`/`declaration_repair`/
+`continuation`/`review`, trigger, reported model, reasoning control, duration,
+time to first output, body vs declaration characters, provider token counts)
+and the finalizer's review decision, without exposing raw SQL, processor
+identifiers, secrets, or unbounded provider content. Classification and the
+review are recorded for every runtime through the shared transport wrappers;
+per-response answer calls are recorded by the OpenAI runtime. The CLI, whose
+manifest store is not durable, writes the sealed receipt to
+`turns/NNN.runtime-performance.json`. Do not
 add model, provider snapshot, usage, or performance fields to public SSE as an
 incidental benchmark shortcut; any public contract expansion needs its own
 privacy and compatibility review.
@@ -492,7 +597,9 @@ signal, not an automatic quick/full decision.
 - Transactions on the shared SQLite files that read before they write run with
   `.immediate()`; `busy_timeout` cannot save a deferred upgrade once another
   process commits (see `openEnterpriseDb`).
-- Conversation descriptor and finalized turn writes are atomic. Recovery checks
+- Conversation descriptor and finalized turn writes are atomic and single: the
+  store refuses a second terminal write for the same run
+  (`conversation_recovery_turn_already_terminal`). Recovery checks
   tenant/workspace/current owner before loading content, validates provider and
   source pins, and settles interrupted runs without recreating their execution.
   Save failure must be observable. Browser logical locators are unambiguous

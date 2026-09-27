@@ -152,7 +152,11 @@ export function claimVerificationNotCheckedExplanation(
       case 'invalid_response': return localize(language, '语义复核结果无法完整解析', 'the semantic review response could not be fully parsed');
       case 'invalid_snapshot': return localize(language, '核验输入不完整', 'the verification input was incomplete');
       case 'cancelled_by_user': return localize(language, '已按用户要求停止语义复核', 'the semantic review was stopped at the user\'s request');
+      case 'review_not_finished': return localize(language, '停止后语义复核未能按时结束，回答按未核验保存',
+        'the semantic review did not end in time after the stop, so the answer was saved unverified');
       case 'complete_proposition_review_unavailable': return localize(language, '完整命题复核不可用', 'complete proposition review was unavailable');
+      case 'not_required': return localize(language, '本轮回答无需语义复核，仅保留确定性核验结果',
+        'no semantic review was needed for this answer; only deterministic checks apply');
       default: return notCheckedReason;
     }
   })();

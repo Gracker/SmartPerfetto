@@ -116,7 +116,7 @@ export interface FinalSemanticAssessment {
   readonly reason?: 'invalid_snapshot' | 'snapshot_changed' | 'input_projection_incomplete' | 'input_projection_limit' |
     'input_limit' | 'output_limit' | 'invalid_response' | 'missing_template' |
     'missing_transport' | 'timeout' | 'provider_error' | 'incomplete_output' |
-    'invalid_configuration' | 'tool_use' | 'invalid_declarations' | 'cancelled_by_user';
+    'invalid_configuration' | 'tool_use' | 'invalid_declarations' | 'cancelled_by_user' | 'not_required';
   /**
    * Closed-vocabulary triage detail for the reason above: declaration parse
    * issue codes, or transport facts (`http_429`, `attempts_2`). Never raw
@@ -242,6 +242,17 @@ function emptyAssessment(
     ...(notCheckedDetail ? {notCheckedDetail} : {}), consistency: 'unknown',
     coverage: {body: 'incomplete', claims: 'incomplete', report: 'incomplete'},
     claims: [], omissions: [], requirements: []});
+}
+
+/**
+ * The finalizer decided no review could change a typed outcome, so none was
+ * sent. The result is an ordinary unchecked assessment bound to the current
+ * candidate and to the inputs of that decision; it certifies nothing.
+ */
+export function semanticReviewNotRequired(
+  canonicalCandidate: AnalysisCandidateIdentity, decisionFingerprint: string,
+): FinalSemanticAssessment {
+  return emptyAssessment('not_checked', 'not_required', {snapshotFingerprint: decisionFingerprint, canonicalCandidate});
 }
 
 /**

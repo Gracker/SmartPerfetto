@@ -7,6 +7,7 @@ import { bootstrap } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { startSession } from '../services/turnRunner';
+import { CLI_INTERRUPTED_EXIT_CODE, isTurnInterrupted, processInterruptSource } from '../services/turnInterrupt';
 import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 import { withConsoleLogToStderr } from '../io/stdio';
 import type {CliAnalysisMode} from '../types';
@@ -36,7 +37,7 @@ export async function runCompareCommand(args: CompareCommandArgs): Promise<numbe
       const service = new CliAnalyzeService();
       lifecycle.service = service;
       assertAnalysisRuntimeReady({ aiFeature: 'agent_analyze' });
-      const turn = await startSession({ paths, service, renderer }, {
+      const turn = await startSession({ paths, service, renderer, interruptSource: processInterruptSource() }, {
         tracePath: currentTracePath,
         referenceTracePath,
         query: args.query.trim(),
@@ -47,7 +48,7 @@ export async function runCompareCommand(args: CompareCommandArgs): Promise<numbe
     return exitCode;
   } catch (err) {
     renderer.printError((err as Error).message);
-    return 1;
+    return isTurnInterrupted(err) ? CLI_INTERRUPTED_EXIT_CODE : 1;
   } finally {
     await lifecycle.service?.shutdown();
   }

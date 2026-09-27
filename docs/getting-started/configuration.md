@@ -502,6 +502,11 @@ OpenAI runtime 的 `maxTurns × per-turn timeout`（full 模式再受上面的�
 `AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制跨 continuation/session 持有的
 provider history；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
 
+`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`（默认 15000，不低于 10000，高于 SQLite 5 秒 busy
+timeout）限制用户停止核验（Web、对话或 CLI Ctrl-C）之后 run 保存结论可用的时间，只在这类停止时
+启动。到时仍未保存时，用户读到的结论作为未核验、不完整的回合保留（私有知识或授权已撤销时除外），
+然后停止 run；CLI 则停止本轮且不保存。
+
 分析模式由请求体 `options.analysisMode` 控制：
 
 | 模式 | 行为 | 适用场景 |

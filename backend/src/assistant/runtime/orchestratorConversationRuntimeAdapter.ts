@@ -23,10 +23,9 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import {createRuntimeEvidenceContext, type RuntimeEvidenceBinding, type RuntimeEvidenceContext} from '../../agentRuntime/runtimeEvidenceContext';
 import {finalizeAnalysisResult, type FinalizedAnalysisResult} from '../../services/finalizeAnalysisResult';
-import {reviewStoppedByUser} from '../../services/finalSemanticAssessment';
 import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
-import {AnalysisNarrativeStreamProjection} from '../../services/analysisNarrativeStreamProjection';
+import {createAnswerDraftRelay} from '../../services/answerDraftRelay';
 import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
 import {validateDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import {
@@ -43,6 +42,12 @@ import type {
 
 export interface OrchestratorConversationRuntimeOptions {
   analysisOptions?: Omit<AnalysisOptions, 'analysisMode' | 'runId'>;
+  /**
+   * The pinned runtime. Only one that implements the answer-draft reset
+   * contract (EngineCapabilities.draftAnswerStreaming) forwards answer text
+   * before the finalized answer.
+   */
+  runtimeKind?: string;
 }
 
 function projectEvidence(result: Awaited<ReturnType<IOrchestrator['analyze']>>): ConversationEvidenceRef[] {
@@ -59,8 +64,6 @@ interface ConversationExecution {
   runId: string;
   runtimeSessionId: string;
   controller: AbortController;
-  /** Stops the semantic review only; finalization still returns the outcome. */
-  reviewStop: AbortController;
   assertAuthorized(): void;
   release(): void;
   abortRuntime(): Promise<void>;
@@ -105,7 +108,6 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     const abort = () => { void abortRuntime(); };
     controller.signal.addEventListener('abort', abort, {once: true});
     const state: ConversationExecution = {runId, runtimeSessionId, controller, abortRuntime,
-      reviewStop: new AbortController(),
       analysisContextFingerprint: analysisOptions.analysisContextFingerprint,
       assertAuthorized: () => assertCurrentAnalysisContextAuthorization(selection, scope, expectedFingerprint),
       release: () => controller.signal.removeEventListener('abort', abort)};
@@ -159,7 +161,8 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         onProgress: event => {
           if (this.isCurrent(input, state)) input.onUpdate?.(finalReviewProgressUpdate(event, outputLanguage));
         },
-        reviewStopSignal: state.reviewStop.signal,
+        // The session service owns the stop state; this only forwards its signal.
+        ...(input.reviewStopSignal ? {reviewStopSignal: input.reviewStopSignal} : {}),
         // Same owner projection as the terminal message, applied while this
         // run's output guards are still registered.
         onProvisionalAnswer: answer => {
@@ -196,7 +199,10 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       },
     });
     const traceId = input.traceContext.kind === 'attached' ? input.traceContext.traceId : `conversation-no-trace:${input.sessionId}`;
-    const narrative = new AnalysisNarrativeStreamProjection();
+    const answerDraft = createAnswerDraftRelay({runtimeKind: this.options.runtimeKind, runId: input.runId,
+      projectionSessionId: runtimeSessionId, privateKnowledge, outputLanguage,
+      deliver: update => { if (this.isCurrent(input, state)) input.onAnswerDraft?.(update); },
+    });
     let evidenceBinding: RuntimeEvidenceBinding | undefined;
     let evidenceContext: RuntimeEvidenceContext | undefined;
     const dataEnvelopes: DataEnvelope[] = [];
@@ -211,11 +217,16 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           Boolean(value && typeof value === 'object' && validateDataEnvelope(value).length === 0)));
       }
       this.assertActive(input, state);
-      const safeUpdate = projectOwnerCodeAwareStreamingUpdate(runtimeSessionId, update, privateKnowledge, outputLanguage);
-      const projected = safeUpdate ? narrative.project(safeUpdate) : null;
+      // Answer text before finalization is only a live-only, revocable draft.
+      if (update.type === 'answer_token' || update.type === 'answer_segment_reset') {
+        answerDraft?.accept(update);
+        return;
+      }
       // The answer reaches clients only as provisional_answer and run_completed;
       // the runtime's own conclusion would be a second, unfinalized source.
-      if (projected && projected.type !== 'conclusion') input.onUpdate?.(projected);
+      if (update.type === 'conclusion') return;
+      const safeUpdate = projectOwnerCodeAwareStreamingUpdate(runtimeSessionId, update, privateKnowledge, outputLanguage);
+      if (safeUpdate) input.onUpdate?.(safeUpdate);
     };
     this.orchestrator.on('update', onUpdate);
     try {
@@ -254,8 +265,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           () => {
             this.orchestrator.off('update', onUpdate);
             this.assertActive(input, state);
-            const tail = narrative.finish();
-            if (tail) input.onUpdate?.(tail);
+            answerDraft?.settle();
           }, outputLanguage, privateKnowledge))
         .finally(() => {
           evidenceBinding?.release();
@@ -289,20 +299,12 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     } finally {
       this.orchestrator.off('update', onUpdate);
       evidenceBinding?.release();
-      narrative.reset();
+      answerDraft?.dispose();
       revokeCodeAwareOutputGuards(runtimeSessionId);
       state.release();
       if (this.runtimeSessions.get(input.runId) === state) this.runtimeSessions.delete(input.runId);
       if (this.currentSessionRuns.get(input.sessionId) === state) this.currentSessionRuns.delete(input.sessionId);
     }
-  }
-
-  stopReview(sessionId: string, runId: string): boolean {
-    const state = this.runtimeSessions.get(runId) ?? this.currentSessionRuns.get(sessionId);
-    // The session service decides that the answer was delivered; this only stops a live run's review.
-    if (state?.runId !== runId || state.controller.signal.aborted) return false;
-    state.reviewStop.abort(reviewStoppedByUser());
-    return true;
   }
 
   async cancel(sessionId: string, runId: string): Promise<void> {

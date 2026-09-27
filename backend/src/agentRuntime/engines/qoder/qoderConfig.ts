@@ -66,6 +66,7 @@ export function getQoderEngineCapabilities(
     production: true,
     publicRuntime: true,
     promptCache: { systemPromptDynamicBoundary: false },
+    draftAnswerStreaming: false,
   };
 }
 

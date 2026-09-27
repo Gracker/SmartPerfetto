@@ -228,6 +228,9 @@ describe('commitTurnOutputs', () => {
       },
     };
 
+    const runtimePerformance = {schemaVersion: 1 as const, phases: [], tools: [], sql: [],
+      modelCalls: [{purpose: 'answer_turn' as const, startOffsetMs: 1, durationMs: 2, outcome: 'ok' as const}]};
+    result.runtimePerformance = runtimePerformance;
     try {
       commitTurnOutputs({
         paths,
@@ -261,6 +264,8 @@ describe('commitTurnOutputs', () => {
 
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.investigation-assessment.json'), 'utf-8'))).toBeNull();
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.delivery-assurance.json'), 'utf-8'))).toBeNull();
+      expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.runtime-performance.json'), 'utf-8')))
+        .toEqual(runtimePerformance);
       const latest = JSON.parse(fs.readFileSync(path.join(sp.dir, 'analysis-receipt.json'), 'utf-8'));
       const turn = JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.analysis-receipt.json'), 'utf-8'));
       const latestActions = JSON.parse(fs.readFileSync(path.join(sp.dir, 'ui-action-proposals.json'), 'utf-8'));

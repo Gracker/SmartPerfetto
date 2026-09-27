@@ -1053,11 +1053,13 @@ describe('final result quality gate', () => {
     expect(verified.claimSupport[0].relationEvaluation).toBe('candidate');
     expect(verified.claimVerificationResult.claimResults[0]).toMatchObject({status: 'inference',
       deterministicProof: {kind: 'none', status: 'candidate', reason: 'unsupported_predicate'}});
-    // Even a complete, agreeing semantic response cannot turn an overlap into a causal proof.
+    // Even a complete, agreeing semantic response cannot turn an overlap into a causal
+    // proof: the finalizer asks the join what a perfect review would yield, finds no
+    // reachable ✓, and sends no review at all.
     const finalized = await finalizeWithConsistentSemanticFixture(result({
       conclusion: body, conclusionContract,
     }), envelope, evidenceReadView);
-    expect(finalized.semanticAssessment?.coverage).toMatchObject({body: 'complete', claims: 'complete'});
+    expect(finalized.semanticAssessment).toMatchObject({status: 'not_checked', reason: 'not_required'});
     expect(finalized.result.claimSupport?.[0].relationEvaluation).toBe('candidate');
     expect(finalized.result.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@2', passed: false,
       status: 'partial', claimResults: [{claimId: 'claim-overlap-is-cause', status: 'partial',

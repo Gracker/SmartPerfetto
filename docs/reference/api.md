@@ -285,15 +285,35 @@ Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路
 
 四个 `/conversation` 接口都要求 `agent:run`，并在每次访问时重验 tenant、workspace、
 user owner。`POST /conversation` 返回 `sessionId` 和精确 `runId`；同一 session 的新消息
-会先取消旧 run，再占用新 run。没有 `traceId` 时 runtime 不暴露 Trace 工具；传入
+会先停止旧 run 并至多等待一个复核停止看门狗时长（见下文）让它提交，再占用新 run。没有 `traceId` 时 runtime 不暴露 Trace 工具；传入
 codebase/knowledge source 仍须通过与 `/analyze` 相同的权限、注册根目录、权利确认和
 provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放或持久化前完成投影。
 
 语义复核一旦发出，流先发送一次 `provisional_answer`（`message` 为经 owner 投影的最终正文，
 `verification: "pending"`）：正文已定稿、可以阅读，但核验结论尚未产生；客户端应保持 run
-活跃，不写入历史，等 `run_completed` 用同一条消息补上结论。答案出现后再取消（包括同一
-session 发送新消息）只停止复核：`cancel` 在该 run 带着 `cancelled_by_user` 未核验原因完成
-并持久化后才返回，响应带 `reviewStopped: true`；因此历史与用户读到的正文一致。
+活跃，不写入历史，等 `run_completed` 用同一条消息补上结论。答案出现后的第一次取消只停止
+复核并立即返回 `{success: true, sessionId, runId, status: "review_stop_requested"}`；随后
+run 带着 `cancelled_by_user` 未核验原因提交本轮，流以 `run_completed` 送达，历史与用户读到
+的正文一致。第二次取消是强制停止：在同一看门狗时限内等待该提交，然后返回已落定的结果类型
+（`status: "answered"` 等，或 `"cancelled"`）。答案出现前的取消是完整取消，返回
+`status: "cancelled"`，除取消标记外不保存任何内容。看门狗
+（`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`，默认 15000，不低于 10000）只在这类停止时启动；
+到时 run 仍未提交时，把用户读到的正文存为不完整回合（`completion.status: incomplete`、
+`terminationReason: "review_not_finished"`、断言核验 `not_checked`），沿用该 run 自己的来源
+分区，然后中止 run。私有知识 run、授权已被撤销或已失去 session 的 run 不保存该正文，直接取消。
+历史读取与预览把这种回合呈现为不完整。每个 run 只有一次终态写入：descriptor 与本轮记录在同一个
+SQLite 事务中提交，已是终态的回合不会被再次写入。
+只有 `✓` 仍可达或有义务需要复核时才会发出复核（见下文 `/analyze` 的说明）；不需要复核时不发送
+`provisional_answer`，也没有复核进度，答案直接随 `run_completed` 出现。
+
+runtime 声明 `draftAnswerStreaming` 能力（当前为 Claude 与 OpenAI）时，定稿前模型正在写的答案
+会以 `runtime_update` 形式实时发送：`update.type` 为 `answer_token`（`content` 为
+`{token, runId, attempt}`，已剥离声明 sidecar、经 owner 投影、按约 200 ms / 256 字合并）或
+`answer_segment_reset`（`{runId, attempt}`，撤回此前显示的草稿，例如模型随后调用了工具、
+续写或重试）。草稿只供显示：客户端丢弃 `attempt` 更旧的事件，`provisional_answer` 或
+`run_completed` 在同一条消息上替换它，停止时草稿换成取消提示；它不进入重放缓冲、历史或
+任何持久化，断线重连不会重放。其他 runtime 不发送草稿。进度标签只来自 `progress` 类型的
+`runtime_update`。
 
 `run_completed` 表示主回答已经完成并可立即展示；它包含 `enrichmentPending`。该值为
 `false` 时流立即结束，为 `true` 时流继续发送 `source_enrichment_started`，并在
@@ -366,16 +386,45 @@ curl -X POST http://localhost:3000/api/agent/v1/<sessionId>/cancel \
 结论和 `!`/`~` 等终态标记只来自 `analysis_completed`。客户端应保持 run 活跃（加载态、
 停止按钮、会话锁），在收到 `analysis_completed` 时替换同一条消息；若在此之前收到
 `error`、`analysis_cancelled` 或断流，保留正文并标为未完成核验。runtime 自身的
-`conclusion`/`answer_token` 不再转发。私有知识 session 的这条事件只进内存重放缓冲，不写入
+`conclusion` 不再转发。私有知识 session 的这条事件只进内存重放缓冲，不写入
 持久化事件库。scene 运行不发送它。
+
+答案草稿：runtime 具备 `draftAnswerStreaming` 能力（当前为 Claude 与 OpenAI）时，定稿前
+流会发送只供显示的 `answer_token`（`data` 为 `{token, runId, attempt}`，已剥离声明 sidecar、
+经 owner 投影、按约 200 ms / 256 字合并）和 `answer_segment_reset`（`{runId, attempt}`：
+撤回已显示的草稿，发生在模型响应开始、同一响应里已写出文字后又调用工具、以及续写/重试之前）。
+客户端丢弃 `attempt` 更旧或属于其他 run 的事件，收到 reset 时清空草稿；临时或最终
+`conclusion` 在同一条消息上替换草稿，停止、错误或断流时草稿被丢弃（停止时换成取消提示），
+草稿本身从不写入浏览器存储。所有 session 的草稿事件都不带 SSE `id`、不进内存重放缓冲，也不
+写入持久化事件库，重连不会重放；使用注册源码或知识库的 session 完全不发送草稿（其 owner 投影
+按片段脱敏，被拆开的密钥可能在整体正文脱敏前显示），在最终化时收到投影后的正文。其他
+runtime 不发送草稿。
+
+复核只在 `✓` 仍可达或有义务需要它时才发出：报告型交付、存在选区、有源码访问或声明里
+有源码字段、调查要求已解析且至少一条不能由证据台账直接判为不适用、至少一条声明断言在
+"复核完美通过"的假设下能得到 `passed`（即 `✓` 仍可达），或零断言的纯确认回合。其余回答
+（包括没有声明、零断言的事实回答、断言无法得到有限证明的回答）不发复核：断言核验记为
+`partial`，未核验原因为 `not_required`，终态为 `~`，不会是 `✓`。这是接受的残余风险：只有复核
+才能发现的矛盾此时不会被发现（答案保持 `~` 而不是 `!`）；有限证明得出的 `unsupported` 仍给出 `!`。此时流不发送临时
+`conclusion` 和复核进度，而是在最终化完成后、报告与快照生成前发送一次普通 `conclusion`
+（`data` 只有 `conclusion`，没有 `provisional`/`verification`），结论判定仍只随
+`analysis_completed` 到达；客户端立即按最终答案显示它（没有待核验标记），但同样保持 run
+活跃直到 `analysis_completed`；私有知识 session 同样只进内存重放缓冲。声明不合格时复核同样
+不发送，未核验原因保持 `invalid_declarations`。
 
 `conclusion` 之后对同一 `runId` 的取消只停止复核：返回 `200`，`status` 为非终态的
 `review_stop_requested`，`runStatus: "running"`；run 继续完成，复核记为
 `not_checked` / `cancelled_by_user`（非报告回合为 `~`，报告回合因
 `report_assessment_not_checked` 为 `!`），并照常发送 `analysis_completed` 与持久化。
 "停止并改问"应等待该 `analysis_completed` 后再发送新问题。临时答案之后的第一次取消总是只停核验
-（复核已结束时为空操作，结论照常保留）；对同一 `runId` 的第二次取消视为强制停止，走完整取消
-（`analysis_cancelled`）。
+（复核已结束时为空操作，结论照常保留）；对同一 `runId` 的第二次取消视为强制停止：先在第一次
+取消启动的复核停止看门狗时限内等待 run 提交，再走完整取消（`analysis_cancelled`）。若 run 在
+这段时间内提交，强制停止返回 `200`、`status: "completed"`、`outcome: "committed"`；
+若未提交，非私有且授权仍有效的 run 把用户读到的正文存为未核验的不完整回合
+（`terminationReason: "review_not_finished"`，随 `analysis_completed` 及报告发布），取消返回
+`200`、`status: "completed"`、`outcome: "review_not_finished"`；否则完整取消。两种 `completed`
+情况下该回合都随 `analysis_completed` 送达。没有第二次取消时
+看门狗同样生效。
 
 终态 `analysis_completed` 事件可能携带 `analysisReceipt`、
 `uiActionProposals` 和经安全投影的 `conclusionContract.sourceUseDecision` /

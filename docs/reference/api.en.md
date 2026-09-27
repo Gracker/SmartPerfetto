@@ -305,8 +305,9 @@ tracked by legacy telemetry with a migration target.
 
 All four `/conversation` endpoints require `agent:run` and revalidate tenant,
 workspace, and user ownership on every request. `POST /conversation` returns a
-`sessionId` and exact `runId`. A new turn in the same session cancels the older
-run before reserving the new run. Without `traceId`, the runtime exposes no
+`sessionId` and exact `runId`. A new turn in the same session stops the older
+run before reserving the new run, waiting at most one review-stop watchdog
+bound (see below) for it to commit. Without `traceId`, the runtime exposes no
 trace tools. Codebase and knowledge-source selections still use the same
 permission, registered-root, rights, and provider-send authorization as
 `/analyze`. Private queries, tool bodies, and errors are projected before SSE
@@ -316,11 +317,41 @@ When the semantic review is dispatched, the stream first sends one
 `provisional_answer` (`message` is the owner-projected final body,
 `verification: "pending"`): the text is final and readable, but its verdict does
 not exist yet. Clients keep the run active, write no history, and let
-`run_completed` complete the same message with the verdict. A cancel after the
-answer appeared (including a new message in the same session) stops only the
-review: `cancel` returns after the run completed and persisted with the
-`cancelled_by_user` not-checked reason, and its response includes
-`reviewStopped: true`, so history matches what the user read.
+`run_completed` complete the same message with the verdict. The first cancel
+after the answer appeared stops only the review and answers at once with
+`{success: true, sessionId, runId, status: "review_stop_requested"}`; the run
+then commits its turn with the `cancelled_by_user` not-checked reason and the
+stream carries it as `run_completed`, so history matches what the user read. A
+second cancel is a force stop: it waits for that commit up to the same
+watchdog and then answers with the settled outcome kind (`status: "answered"`,
+…, or `"cancelled"`). A cancel before the answer appeared is the full cancel
+and answers `status: "cancelled"`; nothing but the cancelled marker is stored.
+The watchdog (`SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`, default 15000, never below
+10000) starts only at such a stop. If the run has not committed when it
+elapses, the body the user read is stored as a partial turn
+(`completion.status: incomplete`, `terminationReason: "review_not_finished"`,
+claim verification `not_checked`) with the run's own source partition, and the
+run is aborted. Private-knowledge runs, runs whose authorization was revoked
+and runs that lost their session keep that body live-only and are cancelled.
+History readers and the preview present such a turn as incomplete. Each run
+has one terminal write: the descriptor and its turn commit in one SQLite
+transaction that refuses a turn already terminal.
+A review is sent only when `✓` is still reachable or an obligation needs it
+(see `/analyze` below). When none is required there is no `provisional_answer` and no review
+progress; the answer arrives with `run_completed`.
+
+When the runtime declares the `draftAnswerStreaming` capability (currently
+Claude and OpenAI), the answer the model is writing before finalization streams
+live as `runtime_update`: `update.type` is `answer_token` (`content` is
+`{token, runId, attempt}`, sidecar-free, owner-projected, coalesced at about
+200 ms / 256 characters) or `answer_segment_reset` (`{runId, attempt}`, which
+revokes the draft shown so far, for example because the model then called a
+tool, continued or retried). The draft is display-only: clients drop events of
+an older `attempt`, `provisional_answer` or `run_completed` replaces it on the
+same message, and a stop turns it into the cancelled notice. It never enters the
+replay buffer, history or any persistence, so a reconnect does not replay it.
+Other runtimes send no draft. The loading label comes only from `progress`
+runtime updates.
 
 `run_completed` means the primary answer is ready for immediate display and
 contains `enrichmentPending`. When it is `false`, the stream closes. When it is
@@ -406,9 +437,46 @@ markers such as `!`/`~` come only from `analysis_completed`. Clients keep the
 run active (loading, stop control, session lock) and replace the same message
 when `analysis_completed` arrives; on `error`, `analysis_cancelled`, or a lost
 stream before that, they keep the text and mark it unverified. The runtime's own
-`conclusion`/`answer_token` events are not forwarded. For private-knowledge
+`conclusion` is not forwarded. For private-knowledge
 sessions the event stays in the in-memory replay buffer and is never written to
 the durable event store. Scene runs do not send it.
+
+Answer draft: for a runtime with the `draftAnswerStreaming` capability
+(currently Claude and OpenAI) the stream sends display-only `answer_token`
+events before finalization (`data` is `{token, runId, attempt}`, sidecar-free,
+owner-projected, coalesced at about 200 ms / 256 characters) and
+`answer_segment_reset` (`{runId, attempt}`), which revokes the draft shown so
+far: at a model response start, at a tool call after text in the same response,
+and before any continuation or retry. Clients drop events of an older `attempt`
+or another run and clear the draft on a reset; a provisional or final
+`conclusion` replaces it on the same message, and a stop, error or lost stream
+discards it (a stop shows the cancelled notice). The draft is never written to
+browser storage. For every session draft events carry no SSE `id`, never enter
+the in-memory replay buffer or the durable event store, and are not replayed on
+reconnect. Sessions with registered source or knowledge send no draft at all
+(their owner projection redacts per fragment, so a split secret could show
+before the final body is redacted); they receive the projected body at
+finalization. Other runtimes send no draft.
+
+The review is sent only when `✓` is still reachable or an obligation needs it:
+a report deliverable, a selection, source access or source fields in the
+declaration, a resolved investigation requirement the evidence ledger does not
+rule out, at least one declared claim for which a hypothetical perfect review
+would yield `passed` (`✓` is still reachable), or a zero-claim pure
+acknowledgement. Every other answer (no declaration, a zero-claim factual
+answer, claims no finite proof can establish) gets no review: claim
+verification is `partial` with the not-checked reason `not_required`, and the
+terminal marker is `~`, never `✓`. This skip is an accepted residual: a
+contradiction only the review would find is then not detected (the answer
+stays `~` instead of `!`); a deterministic `unsupported` from finite proof still
+yields `!`. The stream then sends no provisional
+`conclusion` and no review progress; right after finalization, before report and
+snapshot generation, it sends one plain `conclusion` whose `data` holds only
+`conclusion` (no `provisional`/`verification`), and the verdict still arrives
+only with `analysis_completed`. Clients show it at once as the final answer (no
+pending cue) but keep the run active until `analysis_completed` as well.
+Private-knowledge sessions keep it in the in-memory replay buffer as well. An ineligible declaration sends no review
+either and keeps the not-checked reason `invalid_declarations`.
 
 After that `conclusion`, a cancel for the same `runId` stops only the review:
 it returns `200` with the non-terminal `status: "review_stop_requested"` and
@@ -419,7 +487,17 @@ deliverables through `report_assessment_not_checked`), then publishes
 `analysis_completed` before sending the next question. The first cancel after the
 provisional answer is review-only even when the review already finished (then a
 no-op); a second cancel for the same `runId` is a force stop and takes the full
-cancellation (`analysis_cancelled`).
+cancellation (`analysis_cancelled`) only after waiting, up to the review-stop
+watchdog started by the first cancel, for the run to commit. If it committed in
+that window the force stop answers `200` with `status: "completed"`,
+`outcome: "committed"`; if it did not, a non-private run whose authorization
+still holds keeps the body the user read as an unverified partial turn
+(`terminationReason: "review_not_finished"`, published with
+`analysis_completed` and its report) and the cancel answers `200` with
+`status: "completed"`, `outcome: "review_not_finished"`; otherwise the run is
+fully cancelled. In both `completed` cases `analysis_completed` carries the
+turn. The watchdog also applies when no second cancel
+arrives.
 
 The terminal `analysis_completed` event can include `analysisReceipt`,
 `uiActionProposals`, and safely projected

@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe('conversation route deliver first, verify after', () => {
-  it('stops only the review after the provisional answer and settles the answered turn before responding', async () => {
+  it('answers a review-only stop at once, then settles the answered turn', async () => {
     factory.mockImplementation(() => {
       const emitter = new EventEmitter() as unknown as IOrchestrator;
       emitter.reset = jest.fn();
@@ -98,11 +98,62 @@ describe('conversation route deliver first, verify after', () => {
     const cancelled = await request(app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
       .send({runId: started.body.runId});
     expect(cancelled.status).toBe(200);
-    expect(cancelled.body).toMatchObject({success: true, runId: started.body.runId, status: 'answered', reviewStopped: true});
-    const snapshot = await request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
+    expect(cancelled.body).toEqual({success: true, sessionId: started.body.sessionId, runId: started.body.runId,
+      status: 'review_stop_requested'});
+    let snapshot = await request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
+    for (let attempt = 0; snapshot.body.activeRunId && attempt < 50; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+      snapshot = await request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
+    }
     expect(snapshot.body.activeRunId).toBeUndefined();
     expect(snapshot.body.history.map((message: {content: string}) => message.content))
       .toEqual(['trace 时长', 'Trace duration is 12.3 s.']);
+  });
+});
+
+describe('conversation live-only drafts', () => {
+  it('sends an answer draft without an SSE id or seqId, while replayable events keep theirs', async () => {
+    const runtimeKind = resolveProviderRuntimeSnapshot(getProviderService(), null, undefined, owner).snapshot.runtimeKind;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {release = resolve;});
+    factory.mockImplementation(() => {
+      const emitter = new EventEmitter() as unknown as IOrchestrator;
+      emitter.reset = jest.fn();
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, sessionId, _traceId, options) => {
+        await gate;
+        emitter.emit('update', {type: 'answer_token', timestamp: 1,
+          content: {token: 'Draft text', runId: options!.runId, attempt: 0}});
+        return {sessionId: sessionId!, success: true, findings: [], hypotheses: [], conclusion: 'Final answer.',
+          confidence: 1, rounds: 1, totalDurationMs: 1};
+      });
+      return emitter;
+    });
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      input.context?.dispose();
+      return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
+    });
+    const started = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    expect(started.status).toBe(202);
+    const stream = request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}/stream`)
+      .query({runId: started.body.runId}).buffer(true).parse((res, done) => {
+        let text = '';
+        res.on('data', (chunk: Buffer) => { text += chunk.toString(); });
+        res.on('end', () => done(null, text));
+      });
+    const response = stream.then(value => value);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    release();
+    const frames = String((await response).body).split('\n\n').filter(frame => frame.includes('event: runtime_update'));
+    const draftFrames = frames.filter(frame => frame.includes('Draft text'));
+    // The default pinned runtime streams drafts; otherwise this test would prove nothing.
+    expect(['claude-agent-sdk', 'openai-agents-sdk']).toContain(runtimeKind);
+    expect(draftFrames).toHaveLength(1);
+    expect(draftFrames[0]).not.toMatch(/^id: /m);
+    const data = JSON.parse(draftFrames[0].split('\n').find(line => line.startsWith('data: '))!.slice(6));
+    expect(data).toMatchObject({type: 'runtime_update', liveOnly: true, update: {type: 'answer_token'}});
+    expect(data).not.toHaveProperty('seqId');
+    const completed = String((await response).body).split('\n\n').find(frame => frame.includes('event: run_completed'))!;
+    expect(completed).toMatch(/^id: \d+$/m);
   });
 });
 

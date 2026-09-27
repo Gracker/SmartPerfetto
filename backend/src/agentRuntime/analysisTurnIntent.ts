@@ -13,7 +13,9 @@ import {
   currentEffectiveRuntimeRegistrySnapshot,
   type ReadonlyStrategyRegistrySnapshot,
 } from '../services/selfEvolution/effectiveRuntimeRegistryContext';
-import type {IntentTransportInput, IntentTransportResult, IntentTransportUnavailableReason} from './intentTransport';
+import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTransportResult,
+  type IntentTransportUnavailableReason} from './intentTransport';
+import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {resolveSceneProductScope} from '../agent/scene/sceneRuntimeBinding';
 
@@ -175,8 +177,10 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     if (Buffer.byteLength(prompt, 'utf8') > PROMPT_BYTE_LIMIT) return unavailable('context_limit');
     let result: IntentTransportResult;
     try {
-      result = await dispatch({prompt, systemPrompt: '', signal,
-        deadlineMs, outputByteLimit: OUTPUT_BYTE_LIMIT});
+      const recorder = (product?.options.runManifestAttributionSink ?? currentRunManifestAttributionSink())
+        ?.runtimePerformanceRecorder;
+      result = await dispatchWithModelCallRecord(recorder, {purpose: 'classification'}, {prompt, systemPrompt: '', signal,
+        deadlineMs, outputByteLimit: OUTPUT_BYTE_LIMIT}, dispatch);
     } catch {
       throwIfCancelled();
       return unavailable('provider_error');

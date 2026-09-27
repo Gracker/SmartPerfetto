@@ -14,6 +14,7 @@ import { formatToolCallNarration, formatToolResultNarration, issuePrivateToolRes
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import type {CodeAwareStreamingTextProjection} from '../../../services/security/codeAwareOutputRegistry';
 import {summarizeExternalToolResult} from '../../runtimeLimits';
+import type {AnswerDraftStream} from '../../answerDraftStream';
 
 export type UpdateEmitter = (update: StreamingUpdate) => void;
 
@@ -66,12 +67,22 @@ export interface SseBridge {
   dispose: () => void;
 }
 
+/** A sub-agent's messages carry the Task tool_use id they run under. */
+function isSubAgentMessage(msg: any): boolean {
+  return msg?.parent_tool_use_id != null;
+}
+
 /**
  * Creates a bridge function that translates Agent SDK messages into
  * SmartPerfetto StreamingUpdate events for SSE forwarding to the frontend.
  */
 export function createSseBridge(
   emit: UpdateEmitter,
+  /**
+   * Run-scoped answer draft. Tokens carry runId + attempt; the bridge revokes
+   * them at each message_start and at a tool_use that follows answer text.
+   */
+  answerDraft: AnswerDraftStream,
   language: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
   narrationOptions: ToolNarrationOptions = {},
   textProjection?: CodeAwareStreamingTextProjection,
@@ -149,16 +160,20 @@ export function createSseBridge(
     return textProjection?.projectComplete(text) ?? text;
   }
 
+  function emitAnswerToken(text: string, timestamp: number): void {
+    answerDraft.token(text, timestamp);
+  }
+
   function emitAnswerChunk(text: string, timestamp: number): void {
     if (!text || disposed) return;
     accumulatedAnswerText += text;
     const projected = textProjection?.write(text) ?? text;
-    if (projected) emit({type: 'answer_token', content: {token: projected}, timestamp});
+    if (projected) emitAnswerToken(projected, timestamp);
   }
 
   function flushProjectedAnswer(timestamp = Date.now()): void {
     const projected = textProjection?.flush() ?? '';
-    if (projected) emit({type: 'answer_token', content: {token: projected}, timestamp});
+    if (projected) emitAnswerToken(projected, timestamp);
   }
 
   function cancelBufferTimer(): void {
@@ -187,6 +202,23 @@ export function createSseBridge(
       textBuffer = '';
     }
     streamingAsAnswer = true;
+  }
+
+  function emitToolDispatch(block: any, timestamp: number): void {
+    if (typeof block.id === 'string' && block.id.trim() && block.id !== 'unknown' &&
+      (completedToolUseIds.has(block.id) || toolUseIdToName.has(block.id))) return;
+    if (typeof block.id === 'string' && typeof block.name === 'string') {
+      setBoundedTaskName(toolUseIdToName, block.id, block.name);
+      // Result narration needs the call target: most tool results do not
+      // echo the skill id, artifact id, or SQL they were asked for.
+      setBoundedTaskEntry(toolUseIdToArgs, block.id, block.input);
+    }
+    const friendlyMsg = formatToolCallNarration(block.name, block.input, language, narrationOptions);
+    emit({
+      type: 'agent_task_dispatched',
+      content: { taskId: block.id, toolName: block.name, args: block.input, message: friendlyMsg },
+      timestamp,
+    });
   }
 
   function handleSdkMessage(msg: any): void {
@@ -230,7 +262,14 @@ export function createSseBridge(
     }
 
     if (msg.type === 'stream_event') {
+      // A sub-agent's partial output is never the answer, and its turns must
+      // not disturb the main agent's classification state. Its complete
+      // messages are narrated below.
+      if (isSubAgentMessage(msg)) return;
       const event = msg.event;
+      // Each main-agent response starts a new draft segment: text a previous
+      // response showed is revoked (it preceded a tool call, or a retry).
+      if (event?.type === 'message_start') answerDraft.reset(now);
       if (event?.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
         if (currentTurnHasToolUse) {
           // Already know this turn has tools — buffer text and flush as
@@ -262,13 +301,30 @@ export function createSseBridge(
         // appearing before tool calls is visually acceptable.
         if (streamingAsAnswer) {
           // Answer text was misclassified as conclusion — it was actually
-          // intermediate reasoning before tool calls. Clear accumulated text.
+          // intermediate reasoning before tool calls. Clear accumulated text
+          // and revoke the draft that showed it.
           accumulatedAnswerText = '';
+          answerDraft.reset(now);
           const projectedTail = textProjection?.flush() ?? '';
           if (projectedTail) {
             emit({type: 'thought', content: {thought: projectedTail}, timestamp: now});
           }
           streamingAsAnswer = false;
+        }
+      }
+      return;
+    }
+
+    if (msg.type === 'assistant' && isSubAgentMessage(msg)) {
+      const content = msg.message?.content;
+      if (!Array.isArray(content)) return;
+      // Sub-agent turns are evidence collection for the main agent: narrate
+      // their tool calls and text as process, never as answer or draft.
+      for (const block of content) {
+        if (block.type === 'tool_use') {
+          emitToolDispatch(block, now);
+        } else if (block.type === 'text' && block.text?.trim().length > 0) {
+          emit({type: 'thought', content: {thought: projectCompleteText(block.text)}, timestamp: now});
         }
       }
       return;
@@ -298,20 +354,7 @@ export function createSseBridge(
 
       for (const block of content) {
         if (block.type === 'tool_use') {
-          if (typeof block.id === 'string' && block.id.trim() && block.id !== 'unknown' &&
-            (completedToolUseIds.has(block.id) || toolUseIdToName.has(block.id))) continue;
-          if (typeof block.id === 'string' && typeof block.name === 'string') {
-            setBoundedTaskName(toolUseIdToName, block.id, block.name);
-            // Result narration needs the call target: most tool results do not
-            // echo the skill id, artifact id, or SQL they were asked for.
-            setBoundedTaskEntry(toolUseIdToArgs, block.id, block.input);
-          }
-          const friendlyMsg = formatToolCallNarration(block.name, block.input, language, narrationOptions);
-          emit({
-            type: 'agent_task_dispatched',
-            content: { taskId: block.id, toolName: block.name, args: block.input, message: friendlyMsg },
-            timestamp: now,
-          });
+          emitToolDispatch(block, now);
         } else if (block.type === 'text' && block.text?.trim().length > 0 && !textAlreadyStreamed) {
           if (hasToolUse) {
             // Intermediate reasoning — emit as thought so frontend can distinguish from system progress

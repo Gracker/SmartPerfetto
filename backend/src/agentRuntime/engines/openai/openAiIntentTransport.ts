@@ -186,6 +186,9 @@ async function dispatchOneRequest(
   const endpoint = config.protocol === 'responses' ? 'responses' : 'chat/completions';
   const url = new URL(endpoint, config.baseURL.replace(/\/?$/, '/'));
   const purposeOptions = buildOpenAITextRequestPurposeOptions({requestUrl: url, protocol: config.protocol, purpose: input.purpose});
+  try {
+    input.observer?.reasoning?.('thinking' in purposeOptions || 'reasoning' in purposeOptions ? 'disabled' : 'provider_default');
+  } catch { /* Observers never change the request. */ }
   const body = config.protocol === 'responses' ? {
     model: config.lightModel,
     instructions: input.systemPrompt,
@@ -218,9 +221,10 @@ async function dispatchOneRequest(
   // A gateway that ignores `stream` still answers with one JSON body.
   if (response.headers.get('content-type')?.includes('text/event-stream')) {
     if (!response.body) return {status: 'unavailable', reason: 'invalid_response'};
+    const onFirstOutput = input.observer?.firstOutput ? () => input.observer?.firstOutput?.() : undefined;
     const streamed = config.protocol === 'responses'
-      ? await readResponsesStream(response.body, input.outputByteLimit)
-      : await readChatCompletionStream(response.body, input.outputByteLimit);
+      ? await readResponsesStream(response.body, input.outputByteLimit, onFirstOutput)
+      : await readChatCompletionStream(response.body, input.outputByteLimit, onFirstOutput);
     if (streamed.kind === 'unavailable') return {status: 'unavailable', reason: streamed.reason};
     output = streamed.body;
   } else {
@@ -228,5 +232,8 @@ async function dispatchOneRequest(
   }
   scope.throwIfInactive();
   if (!output || output.error != null) return {status: 'unavailable', reason: 'provider_error'};
+  if (output.usage !== undefined) {
+    try { input.observer?.usage?.(output.usage); } catch { /* Usage observers never change the reply. */ }
+  }
   return config.protocol === 'responses' ? responsesResult(output, input) : chatResult(output, input);
 }

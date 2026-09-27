@@ -46,6 +46,7 @@ import {
   type PersistedAnalysisRunStatus,
 } from '../../services/analysisRunStore';
 import {finalizeAnalysisResult, type ProvisionalAnalysisAnswer} from '../../services/finalizeAnalysisResult';
+import type {RuntimePerformanceReceiptV1} from '../../agentRuntime/runtimePerformance';
 import {resolveCapturedComparisonIdentity} from '../../services/comparisonAppendixService';
 import type {FinalResultQualityIssue} from '../../services/finalResultQualityGate';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
@@ -179,6 +180,12 @@ function recordCliAnalysisRunState(
 export interface RunTurnInput {
   /** Cancels runtime execution and finalization until the turn is committed. */
   signal?: AbortSignal;
+  /**
+   * Ends only the semantic review of an answer already handed to
+   * onProvisionalAnswer: the review resolves `cancelled_by_user` and the turn
+   * still finalizes and returns for commit.
+   */
+  reviewStopSignal?: AbortSignal;
   tracePath?: string;
   traceId?: string;
   referenceTraceId?: string;
@@ -238,6 +245,12 @@ export interface RunTurnOutput {
   sourceSupplement?: AnalysisSourceSupplementOutcome;
   /** Internal continuation that lets the caller commit the primary output first. */
   sourceSupplementTask?: Promise<AnalysisSourceSupplementOutcome | undefined>;
+  /**
+   * The sealed RunManifest's internal performance receipt (timings, model-call
+   * purposes, token counts). The CLI keeps it as a local turn artifact because
+   * its manifest store is not durable; it never enters the event stream.
+   */
+  runtimePerformance?: RuntimePerformanceReceiptV1;
 }
 
 export function resolveEffectiveCliCodeAwareMode(input: Pick<
@@ -344,8 +357,9 @@ export function envelopesFromStreamingUpdate(update: StreamingUpdate): DataEnvel
     Boolean(item && typeof item === 'object' && validateDataEnvelope(item).length === 0));
 }
 
+/** The CLI prints only the finalized answer; runtime answer drafts and their resets stay internal. */
 export function shouldExposeLiveStreamingUpdate(update: StreamingUpdate): boolean {
-  return update.type !== 'conclusion' && update.type !== 'answer_token';
+  return update.type !== 'conclusion' && update.type !== 'answer_token' && update.type !== 'answer_segment_reset';
 }
 
 /**
@@ -808,6 +822,7 @@ export class CliAnalyzeService {
                 console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
               }
             },
+            ...(input.reviewStopSignal ? {reviewStopSignal: input.reviewStopSignal} : {}),
             // The finalizer treats a throwing observer as "not delivered".
             ...(onProvisionalAnswer ? {onProvisionalAnswer: (answer: ProvisionalAnalysisAnswer) => {
               assertActive();
@@ -1001,6 +1016,7 @@ export class CliAnalyzeService {
           codeAwareMode: effectiveCodeAwareMode,
           privateKnowledge: primaryPrivateKnowledge,
           analysisContextFingerprint,
+          ...(runManifest.performance ? {runtimePerformance: runManifest.performance} : {}),
         };
       }));
       recordCliAnalysisRunState(openRunScope, 'completed');

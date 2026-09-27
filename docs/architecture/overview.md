@@ -138,7 +138,7 @@ cookie credentials，也不会把非 OIDC 401 当作 OIDC authority 失效。本
 每个用户问题使用新的物理模型上下文。同一逻辑会话经 owner、Trace、provider 和源码
 授权检查后，默认继承有界的近轮结论、缺口与证据定位；更早记录由 `read_session_history`
 分页读取。历史定位不产生本轮核验凭据。逻辑会话描述与完整轮次在同一数据库事务中
-持久化，网页重新打开和后端重启使用同一恢复路径，CLI 复用相同 typed history 合同。
+持久化，每个 run 只写一次终态（重复的终态写入会被拒绝），网页重新打开和后端重启使用同一恢复路径，CLI 复用相同 typed history 合同。
 详见[Agent Runtime 架构](agent-runtime.md)。
 
 ## 主分析数据流
@@ -198,8 +198,14 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 
 5. 后端流式输出
    SDK/server events -> runtime bridge -> privacy/narrative projection -> SSE
-      -> frontend renders progress, tables, thought（对话模式另有 answer tokens）
+      -> frontend renders progress, tables, thought
+   draftAnswerStreaming runtime（Claude/OpenAI）-> answer_token 草稿 + answer_segment_reset
+      -> owner 投影 + narrative 投影 + 合并 -> 仅实时发送（不重放、不持久化），由 conclusion 替换
    finalizeAnalysisResult 发出语义复核时 -> provisional conclusion（正文定稿，核验待定）
+   无需复核时 -> 最终化后、报告/快照生成前发送普通 conclusion（无待核验提示）
+   provisional conclusion 之后停止 -> 只停复核（立即应答），run 照常提交 `~` 回合；
+      第二次停止 -> 在复核停止看门狗时限内等待提交再中止；到时未提交 ->
+      把已读正文存为未核验的不完整回合（私有知识或授权撤销时不存）
 
 6. 结束与报告
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata
@@ -297,7 +303,10 @@ SmartPerfetto 的最终回答不是单一 Markdown 字符串，而是一组共�
 typed intent 的预算、范围、交付物和证据访问彼此独立，声明有效不等于真实或已授权。
 `existing_only` 严禁新采集，`read_new` 仍受原请求权限限制；计划和源码访问按需进行。
 finalizer 保留原命题，在原 deadline、pinned provider 和 owner/授权约束内最多执行一次
-无工具语义审核。有限证明目录以源码为准，不能把一般因果关系或未知字段解释成已证明。
+无工具语义审核，且只在 `✓` 仍可达或有义务需要时才发出：报告、选区、源码访问或源码声明、
+未被证据台账排除的调查要求、“完美审核”假设下仍可达 `✓` 的断言，或零断言的纯确认回合；
+其余回答记为未核验原因 `not_required`，终态 `~`（接受的残余：只有审核能发现的矛盾不会被发现，
+有限证明的 `unsupported` 仍给出 `!`）。有限证明目录以源码为准，不能把一般因果关系或未知字段解释成已证明。
 
 Conversation 可以在同一逻辑 session 的精确 trace/授权/owner scope 内保留原始采集，
 而每轮物理 run/session 保持唯一。模型只得到有界 artifact 定位目录；旧取消、回调和

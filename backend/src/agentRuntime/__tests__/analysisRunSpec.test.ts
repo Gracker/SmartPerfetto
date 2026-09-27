@@ -253,6 +253,7 @@ describe('AnalysisRunSpec shadow mode', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: true,
     });
   });
 

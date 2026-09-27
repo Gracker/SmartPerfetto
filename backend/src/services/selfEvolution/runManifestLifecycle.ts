@@ -5,6 +5,7 @@
 import {AsyncLocalStorage} from 'async_hooks';
 
 import type {AgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import type {RuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import type {
   RunManifestAttributionSink,
   RunManifestIdentity,
@@ -245,6 +246,11 @@ export function currentRunManifestAttributionSink():
   | RunManifestAttributionSink
   | undefined {
   return context.getStore();
+}
+
+/** The current run's internal performance recorder, when one is in scope. */
+export function currentRuntimePerformanceRecorder(): RuntimePerformanceRecorder | undefined {
+  return context.getStore()?.runtimePerformanceRecorder;
 }
 
 export function resolveRunManifestAttributionSink(

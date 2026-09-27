@@ -10,7 +10,8 @@ import type {DataEnvelope} from '../types/dataContract';
 import type {EvidenceReadRequest, EvidenceReadResolution, EvidenceReadView} from '../services/evidence/evidenceReadView';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
 import {validateAnalysisRunSelection, type AnalysisRunSelection} from './analysisRunSpec';
-import type {IntentTransportInput, IntentTransportResult} from './intentTransport';
+import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTransportResult} from './intentTransport';
+import {currentRuntimePerformanceRecorder} from '../services/selfEvolution/runManifestLifecycle';
 import {readConclusionProtocolProjection, releaseConclusionProtocolProjection,
   claimConclusionProtocolProjection,
   type IssuedConclusionProtocolProjection, type NativeConclusionDeclaration} from '../services/security/conclusionProtocolProjection';
@@ -251,8 +252,11 @@ export function takeFinalizationContext(result: AnalysisResult): RuntimeFinaliza
       if (Date.now() >= deadlineMs) return {status: 'unavailable', reason: 'timeout'};
       const dispatch = value.dispatchText;
       try {
+        // The finalizer runs inside the run's manifest scope; its one review is a model call of that run.
+        const recorder = currentRuntimePerformanceRecorder();
         return await boundedOperation({signal: input.signal, lifetimeSignal: state.controller.signal,
-          deadlineMs, execute: signal => dispatch({...input, signal, deadlineMs})});
+          deadlineMs, execute: signal => dispatchWithModelCallRecord(recorder, {purpose: 'review'},
+            {...input, signal, deadlineMs}, dispatch)});
       } catch (error) {
         if (!(error instanceof FinalizationDeadlineError)) throw error;
         return {status: 'unavailable', reason: 'timeout'};

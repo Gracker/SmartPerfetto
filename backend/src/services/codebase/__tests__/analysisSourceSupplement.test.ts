@@ -59,6 +59,9 @@ function runtimeResult(sessionId: string, runId: string, options: {
       taskKind: 'fact', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick',
       deliverable: 'answer', evidenceAccess: 'read_new'},
     providerQuery: options.providerQuery,
+    // The supplement always runs with source access, which is what requires its semantic review.
+    sourceScope: {codeAwareMode: 'provider_send', selectedCodebaseIds: ['app'], hasCodebaseAccess: true,
+      analysisContextFingerprint: options.providerQuery?.analysisContextFingerprint ?? 'source-auth-1'},
     deliveryContext: {entry: 'runtime_draft', acceptedCandidate: candidate, outputOrigin: 'sdk_final',
       completion: {...candidate, schemaVersion: 1, runtimeKind: 'qoder-agent-sdk',
         status: options.completionStatus ?? (options.success === false ? 'failed' : 'completed'),

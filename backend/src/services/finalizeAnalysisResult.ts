@@ -19,8 +19,8 @@ import {prepareAnalysisRelations} from './evidence/analysisRelationPreparation';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedIdentityResolutions} from './evidence/claimEvidencePreparation';
 import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId,
   collectVerifiedTraceOccurrenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
-import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT,
-  type FinalSemanticAssessment, type FinalSemanticSnapshot} from './finalSemanticAssessment';
+import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT, FINAL_SEMANTIC_RULE_VERSION,
+  semanticReviewNotRequired, type FinalSemanticAssessment, type FinalSemanticSnapshot} from './finalSemanticAssessment';
 import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
 import {locatedNumbersShowDeclaredRounding} from './finalSemanticNumericDisplay';
 import {appendTerminationMessage, applyFinalResultQualityGate, type FinalResultComparisonIdentity,
@@ -36,7 +36,8 @@ import {isUnusedSourceDecision, type SourceExecutionScopeV1, type SourceUseDecis
 import {projectOwnerClaimVerification, projectOwnerClaimSupport,
   projectOwnerConclusionContract} from './security/privateAnalysisProjection';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
-import {assessInvestigationAcquisition, assessLedgerAcquisition} from './finalInvestigationContractGate';
+import {assessInvestigationAcquisition, assessLedgerAcquisition,
+  investigationRequirementNeedsReview} from './finalInvestigationContractGate';
 import type {ResolvedAnalysisInvestigationRequirements} from '../types/analysisInvestigation';
 import type {FinalInvestigationAssessment} from '../types/analysisInvestigationAssessment';
 import {consumeSceneRuntimeSeal, type SceneRuntimeSeal} from '../agent/scene/sceneRuntimeBinding';
@@ -46,6 +47,8 @@ import type {SceneScope} from '../agent/scene/sceneTimelineContract';
 import {issueSceneTimelinePublication, type SceneTimelinePublication} from '../agent/scene/sceneTimelinePublication';
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
 import type {FinalizationProgressEvent, FinalizationProgressObserver} from './finalizationProgress';
+import {currentRuntimePerformanceRecorder} from './selfEvolution/runManifestLifecycle';
+import {recordRuntimeFinalReview, type RuntimeFinalReviewTrigger} from '../agentRuntime/runtimePerformance';
 
 export interface AnalysisFinalizationOwner {
   runId: string;
@@ -244,6 +247,68 @@ function joinClaimVerification(input: {
       : !passed && !failed && !complete ? {notCheckedReason: 'complete_proposition_review_unavailable'} : {})};
 }
 
+/**
+ * Why the one semantic review must run; empty when `✓` is unreachable and no
+ * obligation (report, selection, source, investigation, acknowledgement) needs
+ * it. That skip is an accepted residual: a contradiction only the review would
+ * find (`~` becoming `!`) then goes undetected, while a deterministic
+ * `unsupported` from finite proof still yields `!`. The review is the only check of the whole body against
+ * the declarations, the obligations and the selection (G2), so it runs when a
+ * report, a selection, source access or declarations, or a resolved
+ * investigation obligation gives it something to decide, and when a verified
+ * (`✓`) verdict is still reachable. That last test asks the real join what a
+ * perfect review would yield, so it covers inference and recommendation claims
+ * exactly as the verdict does; the hypothetical review is never returned or
+ * persisted. A zero-claim answer can reach `✓` only through a review, and only
+ * a non-factual acknowledgement asks for one; every other zero-claim answer
+ * stays `~` without a review.
+ */
+function semanticReviewTriggers(input: {
+  context: RuntimeFinalizationContext;
+  delivery: AnalysisDeliveryContext;
+  selectionPresent: boolean;
+  sourceScope?: Readonly<SourceExecutionScopeV1>;
+  rawDeclaration: unknown;
+  investigationRequirements?: ResolvedAnalysisInvestigationRequirements;
+  contract?: ConclusionContract;
+  finiteProofs: ClaimVerificationResult;
+  candidate: AnalysisCandidateIdentity;
+  body: string;
+  bindingEligibility: ConclusionBindingEligibility;
+}): RuntimeFinalReviewTrigger[] {
+  const {context, delivery, contract, candidate, body} = input;
+  const intent = context.turnIntent;
+  const triggers: RuntimeFinalReviewTrigger[] = [];
+  if (intent.status === 'resolved' && intent.deliverable === 'report') triggers.push('report');
+  if (input.selectionPresent) triggers.push('selection');
+  // Read the raw declaration: a malformed source field is still a source declaration.
+  if (input.sourceScope?.hasCodebaseAccess ||
+    (input.rawDeclaration !== undefined && input.rawDeclaration !== null && !hasNoSourceDeclarations(input.rawDeclaration))) {
+    triggers.push('source');
+  }
+  const investigation = input.investigationRequirements;
+  if (investigation?.status === 'resolved' && investigation.requirements.some(requirement =>
+    investigationRequirementNeedsReview(requirement, context.investigationEvidence))) triggers.push('investigation');
+  const declarations = contract?.claims ?? [];
+  if (declarations.length > 0) {
+    const perfectReview: FinalSemanticAssessment = {schemaVersion: 'final_semantic_assessment@1',
+      ruleVersion: FINAL_SEMANTIC_RULE_VERSION, binding: {snapshotFingerprint: 'hypothetical_review', canonicalCandidate: candidate},
+      status: 'checked', consistency: 'consistent',
+      coverage: {body: 'complete', claims: 'complete', report: 'not_applicable'},
+      claims: declarations.map(claim => ({claimId: claim.id ?? '', consistency: 'consistent', contentLocations: [], issues: []})),
+      omissions: [], requirements: []};
+    if (joinClaimVerification({contract, draft: input.finiteProofs, semantic: perfectReview, candidate, body,
+      bindingEligibility: input.bindingEligibility}).passed) triggers.push('claims_verifiable');
+  } else if (intent.status === 'resolved' && intent.taskKind === 'acknowledgement' &&
+    (input.bindingEligibility === 'eligible' || input.bindingEligibility === 'legacy_unchecked') &&
+    // An acknowledgement rendered from its own proof already has claims not_applicable.
+    !(delivery.entry === 'new_finalization' && delivery.outputOrigin === 'evidence_rendered' &&
+      delivery.evidenceRenderedProof?.kind === 'acknowledgement')) {
+    triggers.push('acknowledgement');
+  }
+  return triggers;
+}
+
 function semanticReportAssessment(input: {
   candidate: AnalysisCandidateIdentity; result: AnalysisResult; context: RuntimeFinalizationContext;
   evidenceFingerprint: string; requirements?: PinnedAnalysisReportRequirements;
@@ -403,10 +468,29 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     const requirements = context ? pinnedRequirements(context) : undefined;
     const investigationRequirements = context ? resolveAnalysisInvestigationRequirements({
       intent: context.turnIntent, strategyRegistry: context.strategyRegistry}) : undefined;
+    const finiteProofs = applySourceLocationProofs({contract: validationContract, sourceUse,
+      draft: draft.claimVerificationResult});
     let semantic: FinalSemanticAssessment | undefined;
+    const selectionScope = context?.getSelection(owner.signal);
+    const declaredClaimCount = validationContract?.claims?.length ?? 0;
+    // An ineligible declaration keeps its own unchecked reason; its review is never sent.
+    const reviewTriggers = context && canonical.bindingEligibility !== 'ineligible' ? semanticReviewTriggers({
+      context, delivery, selectionPresent: selectionScope?.present === true, sourceScope, rawDeclaration,
+      investigationRequirements, contract: validationContract, finiteProofs, candidate, body: result.conclusion,
+      bindingEligibility: canonical.bindingEligibility}) : undefined;
     if (context) {
+      recordRuntimeFinalReview(currentRuntimePerformanceRecorder(), {
+        necessity: !reviewTriggers ? 'declaration_ineligible' : reviewTriggers.length ? 'required' : 'not_required',
+        triggers: reviewTriggers ?? [], declaredClaimCount});
+    }
+    if (context && reviewTriggers?.length === 0) {
+      // Bound to the candidate and every input of the necessity decision, hashed once.
+      semantic = semanticReviewNotRequired(candidate, analysisDeliveryFingerprint({decision: 'not_required',
+        candidate, bindingEligibility: canonical.bindingEligibility, declaredClaimCount,
+        turnIntent: context.turnIntent, hasCodebaseAccess: sourceScope?.hasCodebaseAccess === true,
+        investigationRequirements: investigationRequirements ?? null, finiteProofs}));
+    } else if (context) {
       const diagnostics = canonical.protocolDiagnostics;
-      const selectionScope = context.getSelection(owner.signal);
       const snapshot: FinalSemanticSnapshot = {inputCoverage: 'complete', declarationBindingEligibility: canonical.bindingEligibility,
         query: providerQuery?.text ?? query,
         body: result.conclusion, conclusionContract: validationContract, evidenceSnapshot, sourceUse,
@@ -496,8 +580,6 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
         report({stage: 'final_review_finished', status: semantic.status, ...(semantic.reason ? {reason: semantic.reason} : {})});
       }
     }
-    const finiteProofs = applySourceLocationProofs({contract: validationContract, sourceUse,
-      draft: draft.claimVerificationResult});
     result.claimVerificationResult = joinClaimVerification({contract: validationContract, draft: finiteProofs,
       semantic, candidate, body: result.conclusion, bindingEligibility: canonical.bindingEligibility});
     const statusByClaim = new Map(result.claimVerificationResult.claimResults.map(claim => [claim.claimId, claim.status]));

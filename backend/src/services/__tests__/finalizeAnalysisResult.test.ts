@@ -29,6 +29,9 @@ import {proposeSceneTimeline} from '../../agent/scene/sceneTimelineProposal';
 import {resolveRuntimeEvidenceStore} from '../../agentRuntime/runtimeEvidenceContext';
 import {finalReviewProgressUpdate, type FinalizationProgressEvent} from '../finalizationProgress';
 import type {AnalysisRunSelection} from '../../agentRuntime/analysisRunSpec';
+import type {AnalysisInvestigationRequirement} from '../../types/analysisInvestigation';
+import {investigationRequirementNeedsReview} from '../finalInvestigationContractGate';
+import {createRunManifestLifecycle, withRunManifestLifecycle, clearRunManifestLifecyclesForTests} from '../selfEvolution/runManifestLifecycle';
 import {projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
 
 const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'final-result-test'});
@@ -45,6 +48,14 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   currentRead?: boolean;
   runId?: string;
   wrongReferenceValue?: number;
+  taskKind?: 'fact' | 'investigation' | 'acknowledgement';
+  claimKind?: 'inference';
+  /** No declaration at all: the canonical result is `legacy_unchecked`. */
+  absentDeclaration?: boolean;
+  /** Pin a strategy whose investigation contract has this one requirement. */
+  investigationRequirement?: AnalysisInvestigationRequirement;
+  /** Deliver the body as an evidence-rendered acknowledgement with its proof. */
+  evidenceRenderedAcknowledgement?: boolean;
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>} = {}) {
   const runId = options.runId ?? 'run';
   const body = options.body ?? (options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
@@ -52,7 +63,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     value: options.source ? options.source.declaredMarker ?? options.source.marker : options.wrongReferenceValue ?? 49};
   const declared: ConclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
     conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
-    claims: options.claim === false ? [] : [{id: 'count', kind: options.source?.hypothetical ? 'inference' : options.source ? 'identity' : 'numeric', text: body, references: [ref],
+    claims: options.claim === false ? [] : [{id: 'count', kind: options.source?.hypothetical || options.claimKind === 'inference'
+      ? 'inference' : options.source ? 'identity' : 'numeric', text: body, references: [ref],
       semantics: {schemaVersion: 'claim_semantics@1', predicate: options.source ? 'identity.marker' : 'numeric.cell', polarity: 'affirmed',
         discourse: options.source?.hypothetical ? 'hypothetical' : 'asserted', quantifier: 'one',
         modality: options.source?.hypothetical ? 'possible' : 'certain',
@@ -92,10 +104,29 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
       JSON.stringify({...declared, verified: true}) + '\n```\n-->';
     delete result.conclusionContract;
   }
+  if (options.absentDeclaration) delete result.conclusionContract;
   const candidate = {runId, attemptId: 'attempt', candidateRef: 'candidate',
     conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)};
-  const nativeDelivery = {entry: 'runtime_draft' as const, acceptedCandidate: candidate, outputOrigin: 'sdk_final' as const,
-    completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const, status: 'completed' as const}};
+  const investigationStrategy: StrategyDefinition | undefined = options.investigationRequirement ? {scene: 'general',
+    classificationDescription: 'General.', strategyKind: 'normal', priority: 1, effort: 'low', keywords: [],
+    requiredCapabilities: [], optionalCapabilities: [], phaseHints: [], planTemplate: null, verifierMisdiagnosisPatterns: [],
+    content: 'General.', detailSections: [], sourcePath: '/fixture/general.strategy.md',
+    investigationContract: {schemaVersion: 1, profileRefs: [], requirements: [options.investigationRequirement]},
+    finalReportContract: null} : undefined;
+  const pinnedRegistryForIntent = investigationStrategy
+    ? buildStrategyRegistrySnapshotFromDefinitions({definitions: [investigationStrategy], overlayGeneration: 'investigation-test'})
+    : undefined;
+  const taskKind = options.taskKind ?? 'fact';
+  const intentFor = (fingerprint: string) => ({schemaVersion: 1 as const, status: 'resolved' as const, source: 'semantic' as const,
+    registryFingerprint: fingerprint, taskKind, sceneId: 'general',
+    scope: options.report || taskKind === 'investigation' ? 'scene_wide' as const : 'bounded_question' as const,
+    recommendedComplexity: 'quick' as const, deliverable: options.report ? 'report' as const : 'answer' as const,
+    evidenceAccess: 'existing_only' as const});
+  const nativeDelivery = {entry: 'runtime_draft' as const, acceptedCandidate: candidate,
+    outputOrigin: options.evidenceRenderedAcknowledgement ? 'evidence_rendered' as const : 'sdk_final' as const,
+    completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const, status: 'completed' as const},
+    ...(options.evidenceRenderedAcknowledgement ? {evidenceRenderedProof: {kind: 'acknowledgement' as const, candidate,
+      intentFingerprint: analysisDeliveryFingerprint(intentFor(registry.registryFingerprint)), evidence: 'not_applicable' as const}} : {})};
   const projection = sourceUse ? finalizeOwnerSourceAwareAnalysisResultWithProjection(result,
     {getSourceUseDecision: () => sourceUse!}, {context: nativeDelivery}) : undefined;
   const semanticBody = canonicalizeAnalysisResult(result).result.conclusion;
@@ -119,8 +150,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     detailSections: [], sourcePath: '/fixture/general.strategy.md', finalReportContract: {requiredSections: [{
       id: 'detail', label: 'Detail', required: true, triggerPatterns: [], patterns: [], patternGroups: [], recoveryText: {zh: [], en: []},
     }]}};
-  const pinnedRegistry = options.report
-    ? buildStrategyRegistrySnapshotFromDefinitions({definitions: [reportStrategy], overlayGeneration: 'report-test'}) : registry;
+  const pinnedRegistry = pinnedRegistryForIntent ?? (options.report
+    ? buildStrategyRegistrySnapshotFromDefinitions({definitions: [reportStrategy], overlayGeneration: 'report-test'}) : registry);
   attachFinalizationContext(result, {runId, sessionId: result.sessionId, deadlineMs: options.deadlineMs ?? Date.now() + 10_000,
     strategyRegistry: pinnedRegistry, traceIdentity: {currentTraceId: 'trace'},
     selection: options.selection,
@@ -129,9 +160,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
       rows: Array.from({length: options.capabilityRows}, () => [options.capabilityCell ?? 0])},
       {type: 'sql_result', source: 'capability_fixture', title: 'Capabilities'})] : undefined,
     sourceUse, protocolProjection: projection?.protocolProjection,
-    turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: pinnedRegistry.registryFingerprint,
-      taskKind: 'fact', sceneId: 'general', scope: options.report ? 'scene_wide' : 'bounded_question', recommendedComplexity: 'quick',
-      deliverable: options.report ? 'report' : 'answer', evidenceAccess: 'existing_only'},
+    turnIntent: intentFor(pinnedRegistry.registryFingerprint),
     deliveryContext: projection?.deliveryContext ?? nativeDelivery,
     evidenceReadView: store.createEvidenceReadView({allowedTraces: [{traceId: 'trace', traceSide: 'current'}], ownerKey: 'run',
       ...(options.currentRead ? {currentRunId: runId} : {})}),
@@ -141,7 +170,135 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     run: () => finalizeAnalysisResult({result, context, owner, query: 'What is the captured value?', dataEnvelopes: [envelope]})};
 }
 
-afterEach(() => {clearAllCodeAwareOutputGuards(); jest.useRealTimers();});
+afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
+
+const areaSelection: AnalysisRunSelection = {present: true, kind: 'area', context: {kind: 'area', source: 'area_selection',
+  startNs: 10, endNs: 20, tracks: [{uri: 'track://main', upid: 921}]},
+sideResolution: {status: 'resolved', traceSide: 'current', traceId: 'trace'}};
+
+describe('semantic review necessity', () => {
+  const finalize = async (options: Parameters<typeof fixture>[0]) => {
+    const run = fixture({currentRead: true, ...options});
+    const events: FinalizationProgressEvent[] = [];
+    const provisional = jest.fn((_answer: {conclusion: string}) => true);
+    const final = await finalizeAnalysisResult({result: run.result, context: run.context, owner: run.owner,
+      query: 'What is the captured value?', dataEnvelopes: [run.envelope],
+      onProgress: event => events.push(event), onProvisionalAnswer: provisional});
+    return {final, run, events, provisional};
+  };
+  const expectNotRequired = ({final, run, events, provisional}: Awaited<ReturnType<typeof finalize>>) => {
+    expect(run.dispatch).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(provisional).not.toHaveBeenCalled();
+    expect(final.semanticAssessment).toMatchObject({status: 'not_checked', reason: 'not_required',
+      binding: {canonicalCandidate: expect.objectContaining({runId: 'run'})}});
+    expect(final.result.claimVerificationResult).toMatchObject({status: 'partial', passed: false, notCheckedReason: 'not_required'});
+    expect(final.result.deliveryAssurance?.claims).toBe('coverage_incomplete');
+    expect(deriveDeliveryVerdict(final.result)).toBe('unverified');
+  };
+  const expectReviewed = ({run, events, provisional}: Awaited<ReturnType<typeof finalize>>) => {
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
+    expect(events.map(event => event.stage)).toEqual(['final_review_started', 'final_review_finished']);
+    expect(provisional).toHaveBeenCalledTimes(1);
+  };
+
+  it('sends no review for an answer without a declaration', async () => {
+    expectNotRequired(await finalize({absentDeclaration: true}));
+  });
+
+  it('keeps a zero-claim factual answer unverified (~, never ✓) without a review', async () => {
+    const outcome = await finalize({claim: false, body: 'The trace is 12 seconds long.'});
+    expectNotRequired(outcome);
+    expect(claimVerificationStatusLine(summarizeClaimVerification(outcome.final.result.claimVerificationResult), 'en'))
+      .toContain('no semantic review was needed');
+  });
+
+  it('keeps an ineligible declaration on its own unchecked reason without a review', async () => {
+    const {final, run, events, provisional} = await finalize({invalidDeclaration: true});
+    expect(run.dispatch).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(provisional).not.toHaveBeenCalled();
+    expect(final.semanticAssessment).toMatchObject({status: 'not_checked', reason: 'invalid_declarations'});
+  });
+
+  it('reviews when every declared claim is proved, so ✓ stays reachable', async () => {
+    const outcome = await finalize({});
+    expectReviewed(outcome);
+    expect(deriveDeliveryVerdict(outcome.final.result)).toBe('completed');
+  });
+
+  it('reviews an inference claim whose ✓ is reachable without a finite proof', async () => {
+    const outcome = await finalize({claimKind: 'inference', wrongReferenceValue: 99});
+    expectReviewed(outcome);
+    expect(outcome.final.result.claimVerificationResult?.claimResults[0].status).toBe('inference');
+  });
+
+  it('skips the review when no declared claim can reach ✓', async () => {
+    expectNotRequired(await finalize({wrongReferenceValue: 99}));
+  });
+
+  it.each([
+    ['a selection', {selection: areaSelection}],
+    ['a report deliverable', {report: true}],
+    ['a source declaration', {source: {marker: 'source_marker'}}],
+    ['a resolved investigation requirement', {taskKind: 'investigation' as const,
+      investigationRequirement: {id: 'cpu', domain: 'cpu', description: 'Describe CPU.', required: true}}],
+  ])('reviews an unprovable answer when %s gives the review something to decide', async (_label, options) => {
+    const outcome = await finalize({wrongReferenceValue: 99, ...options});
+    expect(outcome.run.dispatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not review for an investigation requirement the pin leaves unresolved', async () => {
+    // A factual turn is exempt from investigation obligations.
+    expectNotRequired(await finalize({wrongReferenceValue: 99,
+      investigationRequirement: {id: 'cpu', domain: 'cpu', description: 'Describe CPU.', required: true}}));
+  });
+
+  it('treats only a requirement the ledger rules out as determinably exempt', () => {
+    const requirement: AnalysisInvestigationRequirement = {id: 'cpu', domain: 'cpu', description: 'Describe CPU.', required: true,
+      condition: {kind: 'evidence', description: 'Only when throttled.', metricId: 'cpu.throttled', operator: 'gt', value: 0}};
+    const ledger = (value: number) => ({records: [{metricId: 'cpu.throttled', status: 'observed', value}]}) as never;
+    expect(investigationRequirementNeedsReview(requirement, ledger(0))).toBe(false);
+    expect(investigationRequirementNeedsReview(requirement, ledger(3))).toBe(true);
+    // An unobserved metric is unknown, never cleared.
+    expect(investigationRequirementNeedsReview(requirement, undefined)).toBe(true);
+    expect(investigationRequirementNeedsReview({...requirement, condition: undefined}, ledger(0))).toBe(true);
+    expect(investigationRequirementNeedsReview({...requirement,
+      condition: {kind: 'semantic', description: 'When the answer discusses CPU.'}}, ledger(0))).toBe(true);
+  });
+
+  it('reviews a zero-claim acknowledgement without a declaration (legacy_unchecked)', async () => {
+    const outcome = await finalize({absentDeclaration: true, claim: false, taskKind: 'acknowledgement', body: 'Acknowledged.'});
+    expectReviewed(outcome);
+    expect(outcome.final.result.claimVerificationResult?.passed).toBe(true);
+  });
+
+  it('skips the review for an evidence-rendered acknowledgement, whose claims are not applicable', async () => {
+    const outcome = await finalize({absentDeclaration: true, claim: false, taskKind: 'acknowledgement', body: 'Acknowledged.',
+      evidenceRenderedAcknowledgement: true});
+    expect(outcome.run.dispatch).not.toHaveBeenCalled();
+    expect(outcome.final.semanticAssessment?.reason).toBe('not_required');
+    expect(outcome.final.result.deliveryAssurance).toMatchObject({completion: 'passed', claims: 'not_applicable'});
+    expect(deriveDeliveryVerdict(outcome.final.result)).toBe('completed');
+  });
+
+  it('records the decision and the review call in the run performance receipt', async () => {
+    const lifecycle = createRunManifestLifecycle({runId: 'run', sessionId: 'final-result-test',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}, runtime: 'openai-agents-sdk', outputLanguage: 'en',
+      analysisMode: 'fast', skillRegistry: {registryFingerprint: 'registry', evolutionOverlayGeneration: 'builtin', skills: []} as never});
+    const recorder = lifecycle.builder.runtimePerformanceRecorder;
+    await withRunManifestLifecycle(lifecycle, () => finalize({}));
+    expect(recorder.seal()).toMatchObject({finalReview: {necessity: 'required', triggers: ['claims_verifiable'], declaredClaimCount: 1},
+      modelCalls: [{purpose: 'review', outcome: 'ok'}]});
+    const second = createRunManifestLifecycle({runId: 'run-2', sessionId: 'final-result-test',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}, runtime: 'openai-agents-sdk', outputLanguage: 'en',
+      analysisMode: 'fast', skillRegistry: {registryFingerprint: 'registry', evolutionOverlayGeneration: 'builtin', skills: []} as never});
+    const skipped = second.builder.runtimePerformanceRecorder;
+    await withRunManifestLifecycle(second, () => finalize({claim: false}));
+    expect(skipped.seal()).toMatchObject({finalReview: {necessity: 'not_required', triggers: [], declaredClaimCount: 0}});
+    expect(skipped.seal().modelCalls).toBeUndefined();
+  });
+});
 
 describe('final review progress', () => {
   const finalizeWithProgress = async (options: Parameters<typeof fixture>[0], observer?: () => void) => {
@@ -308,8 +465,10 @@ describe('current-run reference delivery diagnostics', () => {
   });
 
   it('does not let an advisory reference hide a canonical semantic rejection', async () => {
+    // The advisory reference leaves no reachable ✓, so only a review another
+    // obligation requires (here the selection) can find the contradiction.
     const final = await fixture({currentRead: true, wrongReferenceValue: 99, inconsistent: true,
-      body: 'The captured value is 50.'}).run();
+      body: 'The captured value is 50.', selection: areaSelection}).run();
     expect(final.result.deliveryAssurance?.claims).toBe('failed');
     expect(final.result.claimVerificationResult?.claimResults[0].status).toBe('unsupported');
   });
@@ -916,12 +1075,18 @@ describe('shared final analysis boundary', () => {
   });
 
   it('requires full semantics before an empty declaration set can represent a non-factual answer', async () => {
-    const noFacts = fixture({body: 'Acknowledged.', claim: false});
+    const noFacts = fixture({body: 'Acknowledged.', claim: false, taskKind: 'acknowledgement'});
     expect((await noFacts.run()).result.claimVerificationResult?.passed).toBe(true);
-    const omitted = fixture({claim: false, omissions: true});
+    const omitted = fixture({claim: false, omissions: true, taskKind: 'acknowledgement'});
     expect((await omitted.run()).result.claimVerificationResult).toMatchObject({status: 'partial', passed: false});
-    const unavailable = fixture({claim: false, dispatch: async () => ({status: 'unavailable', reason: 'provider_error'})});
+    const unavailable = fixture({claim: false, taskKind: 'acknowledgement',
+      dispatch: async () => ({status: 'unavailable', reason: 'provider_error'})});
     expect((await unavailable.run()).result.claimVerificationResult?.passed).toBe(false);
+    // A factual turn with no declared claim never reaches ✓, so no review is sent.
+    const factual = fixture({body: 'Acknowledged.', claim: false});
+    expect((await factual.run()).result.claimVerificationResult).toMatchObject({status: 'partial', passed: false,
+      notCheckedReason: 'not_required'});
+    expect(factual.dispatch).not.toHaveBeenCalled();
   });
 
   it.each([1, 2])('does not convert %i invalid machine declarations into a verified empty claim set', async count => {

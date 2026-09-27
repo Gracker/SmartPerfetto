@@ -1283,6 +1283,7 @@ describe('experimental OpenCode runtime contract', () => {
       production: false,
       publicRuntime: false,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
   });
 

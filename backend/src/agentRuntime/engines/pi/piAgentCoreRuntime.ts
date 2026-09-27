@@ -605,6 +605,7 @@ export function getPiAgentCoreEngineCapabilities(
     production: publicRuntime,
     publicRuntime,
     promptCache: { systemPromptDynamicBoundary: false },
+    draftAnswerStreaming: false,
   };
 }
 

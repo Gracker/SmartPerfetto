@@ -763,7 +763,13 @@ const PHASE_NAMES = new Set<string>(CANDIDATE_TARGET_PHASES.task4
 function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefined {
   if (value === undefined) return undefined;
   const record = asRecord(value, 'benchmark_runtime_performance_invalid');
-  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'truncated'], 'benchmark_runtime_performance_unknown_field');
+  // Per-call model records and the review decision are diagnostic receipt fields;
+  // the latency scorer does not read them, so they are accepted and dropped.
+  assertKnownFields(record, ['schemaVersion', 'firstOutputMs', 'phases', 'tools', 'sql', 'modelCalls', 'finalReview', 'truncated'],
+    'benchmark_runtime_performance_unknown_field');
+  if (record.modelCalls !== undefined && !Array.isArray(record.modelCalls)) {
+    throw new Error('benchmark_runtime_performance_arrays_invalid');
+  }
   if (record.schemaVersion !== 1) throw new Error('benchmark_runtime_performance_version_invalid');
   if (!Array.isArray(record.phases) || !Array.isArray(record.tools) || !Array.isArray(record.sql)) {
     throw new Error('benchmark_runtime_performance_arrays_invalid');
@@ -824,7 +830,7 @@ function parsePerformance(value: unknown): RuntimePerformanceReceiptV1 | undefin
   let truncated: RuntimePerformanceReceiptV1['truncated'];
   if (record.truncated !== undefined) {
     const raw = asRecord(record.truncated, 'benchmark_runtime_truncated_invalid');
-    assertKnownFields(raw, ['phases', 'tools', 'sql'], 'benchmark_runtime_truncated_unknown_field');
+    assertKnownFields(raw, ['phases', 'tools', 'sql', 'modelCalls'], 'benchmark_runtime_truncated_unknown_field');
     truncated = {
       phases: nonnegativeInteger(raw.phases, 'benchmark_runtime_truncated_phases_invalid'),
       tools: nonnegativeInteger(raw.tools, 'benchmark_runtime_truncated_tools_invalid'),

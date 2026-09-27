@@ -11,6 +11,8 @@ import {ConversationSessionStore, type ConversationSessionDescriptor} from '../c
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {openEnterpriseDb, ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../analysisRunStore';
+import {buildReviewNotFinishedResult} from '../reviewStopHandle';
+import {createAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../agentRuntime/analysisHistory';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 let tmpDir: string;
@@ -43,6 +45,33 @@ afterEach(() => {
 });
 
 describe('logical conversation durability', () => {
+  it('writes one terminal turn per run and keeps a review-not-finished body incomplete for later readers', () => {
+    const store = new ConversationSessionStore(db);
+    store.save(descriptor(), turn());
+    const done = {...descriptor(), status: 'completed' as const, lastActivityAt: 200,
+      lastRun: {...descriptor().lastRun, status: 'completed' as const, completedAt: 200}};
+    const partial = toAnalysisHistoryTurn({id: 'run-a', turnIndex: 0, query: 'why?', traceId: 'trace-a', timestamp: 200,
+      analysisContextFingerprint: 'auth-a', result: buildReviewNotFinishedResult({sessionId: scope.sessionId,
+        conclusion: 'Main thread waited 80 ms on binder.', outputLanguage: 'en'})});
+    store.save(done, partial);
+    expect(() => store.save(done, {...partial, answer: 'a second terminal write'}))
+      .toThrow('conversation_recovery_turn_already_terminal');
+
+    const restored = store.listTurns(store.load(owner, scope.sessionId)!);
+    expect(restored).toEqual([expect.objectContaining({answer: 'Main thread waited 80 ms on binder.', partial: true,
+      completionStatus: 'incomplete', terminationReason: 'review_not_finished',
+      terminationMessage: 'The semantic review did not finish: this answer is unverified.',
+      analysisContextFingerprint: 'auth-a'})]);
+    const reader = createAnalysisHistoryReader({getTurns: () => restored, assertActive: () => undefined});
+    expect(reader.read({})).toMatchObject({entries: [expect.objectContaining({partial: true,
+      completionStatus: 'incomplete', terminationReason: 'review_not_finished'})]});
+    expect(reader.read({turnId: 'run-a'})).toMatchObject({partial: true, completionStatus: 'incomplete',
+      text: expect.stringContaining('this answer is unverified')});
+    const preview = renderAnalysisHistoryContext(restored, {outputLanguage: 'en'})!;
+    expect(preview).toContain('"completionStatus":"incomplete"');
+    expect(preview).toContain('"terminationReason":"review_not_finished"');
+  });
+
   it('holds the write lock across its owner and descriptor reads', () => {
     // A deferred save lost its read snapshot to any commit before its first write
     // and failed at once with SQLITE_BUSY_SNAPSHOT, which busy_timeout cannot wait out.

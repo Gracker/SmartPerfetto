@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import express from 'express';
 import {EventEmitter} from 'events';
 import {attachFinalizationContext, takeFinalizationContext, type RuntimeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
@@ -16,6 +16,7 @@ import type {EvidenceReadView} from '../../services/evidence/evidenceReadView';
 import * as finalization from '../../services/finalizeAnalysisResult';
 import * as persistence from '../../services/persistAgentSession';
 import * as agentEventStore from '../../services/agentEventStore';
+import * as streamingProjection from '../../services/security/codeAwareStreamingUpdateProjection';
 import {projectOwnerConclusion} from '../../services/security/privateAnalysisProjection';
 import * as summary from '../../services/managedTraceSummary';
 import * as comparison from '../../services/comparisonAppendixService';
@@ -381,6 +382,8 @@ describe('agent analyze cancellation races', () => {
   });
 
   describe('deliver first, verify after', () => {
+    beforeEach(() => agentRoutesCancellationTestSeam.setReviewStopWatchdogMs(25));
+    afterEach(() => agentRoutesCancellationTestSeam.setReviewStopWatchdogMs(15_000));
     const selection = {codeAwareMode: 'off' as const};
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'};
     const liveSession = (sessionId: string, extra: Record<string, unknown> = {}) => {
@@ -396,7 +399,7 @@ describe('agent analyze cancellation races', () => {
         logger: {info: jest.fn(), warn: jest.fn(), error: jest.fn()}, ...extra} as any;
       agentRoutesCancellationTestSeam.setSession(sessionId, session);
       const finalizationRun = agentRoutesCancellationTestSeam.createHttpFinalizationRun(session, runId, selection,
-        scope, 'fingerprint');
+        scope, contextAuthorization.buildAnalysisContextAuthorizationFingerprint(selection, scope));
       return {session, runId, run, finalizationRun, abortSession};
     };
 
@@ -405,9 +408,8 @@ describe('agent analyze cancellation races', () => {
       const persist = jest.spyOn(agentEventStore, 'persistSerializedAgentEvent').mockImplementation(() => undefined as never);
       const {session, runId, run, finalizationRun, abortSession} = liveSession('session-provisional-review-stop');
       try {
-        agentRoutesCancellationTestSeam.broadcastProvisionalAnswer(session,
-          {conclusion: 'Trace 时长为 12.3 秒。'}, finalizationRun, 'zh-CN');
-        expect(finalizationRun.provisionalDelivered).toBe(true);
+        agentRoutesCancellationTestSeam.broadcastAnswer(session, 'Trace 时长为 12.3 秒。', finalizationRun, 'zh-CN', {provisional: true});
+        expect(finalizationRun.stop.provisionalDelivered).toBe(true);
         const conclusion = session.sseEventBuffer.find((event: any) => event.eventType === 'conclusion');
         expect(JSON.parse(conclusion.eventData)).toMatchObject({type: 'conclusion', runId,
           data: {conclusion: 'Trace 时长为 12.3 秒。', provisional: true, verification: 'pending'}});
@@ -415,7 +417,7 @@ describe('agent analyze cancellation races', () => {
 
         const result = await agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId);
         expect(result).toMatchObject({outcome: 'review_stop_requested', runStatus: 'running'});
-        expect(finalizationRun.reviewStop.signal.aborted).toBe(true);
+        expect(finalizationRun.stop.signal.aborted).toBe(true);
         // The run is not cancelled: it keeps ownership, finalizes and persists its verdict.
         expect(finalizationRun.controller.signal.aborted).toBe(false);
         expect(finalizationRun.owner.isCurrent()).toBe(true);
@@ -514,16 +516,200 @@ describe('agent analyze cancellation races', () => {
       }
     });
 
-    it('keeps the first stop review-only and escalates only the second', async () => {
+    it('keeps the read body as an unverified partial turn when a force stop outlives the watchdog', async () => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-provisional-fallback-http-'));
+      let sessionId: string | undefined;
+      let db: ReturnType<typeof openEnterpriseDb> | undefined;
+      try {
+        const traceId = 'provisional-http-trace';
+        const tracePath = path.join(tmpDir, 'provisional.trace');
+        await fs.writeFile(tracePath, 'fixture trace');
+        delete process.env.SMARTPERFETTO_API_KEY;
+        process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+        process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+        process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+        process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
+        process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+        process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+        process.env.SMARTPERFETTO_AI_ENABLED = 'true';
+        db = openEnterpriseDb();
+        db.prepare(`INSERT INTO organizations (id, name, status, plan, created_at, updated_at)
+          VALUES ('tenant-a', 'Tenant A', 'active', 'enterprise', 100, 100)`).run();
+        db.prepare(`INSERT INTO users (id, tenant_id, email, display_name, idp_subject, created_at, updated_at)
+          VALUES ('analyst-user', 'tenant-a', 'analyst@example.test', 'Analyst', 'idp-a', 100, 100)`).run();
+        const service = new TraceProcessorService(process.env.UPLOAD_DIR);
+        const trace = service.registerStoredTrace({id: traceId, filename: 'provisional.trace', size: 13, filePath: tracePath});
+        await writeTraceMetadata({id: traceId, filename: trace.filename, size: trace.size,
+          uploadedAt: new Date().toISOString(), status: 'ready', path: tracePath,
+          tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'});
+        jest.spyOn(service, 'getOrLoadTrace').mockResolvedValue(trace);
+        jest.spyOn(service, 'ensureProcessorForLease').mockImplementation(async id => readyProcessor(id));
+        jest.spyOn(service, 'runWithLease').mockImplementation(async (_context, callback) => callback());
+        jest.spyOn(service, 'runWithLeases').mockImplementation(async (_contexts, callback) => callback());
+        jest.spyOn(service, 'cleanupLeaseProcessor').mockReturnValue(true);
+        setTraceProcessorServiceForTests(service);
+        const body = 'Trace duration is 12.3 s.';
+        jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (_query, id, _traceId, options) => ({
+          sessionId: id!, success: true, findings: [], hypotheses: [], conclusion: body, confidence: 1,
+          rounds: 1, totalDurationMs: 1, completion: {schemaVersion: 1, runtimeKind: 'claude-agent-sdk',
+            status: 'completed', runId: options!.runId!, attemptId: 'attempt', candidateRef: 'candidate',
+            conclusionFingerprint: analysisDeliveryFingerprint(body)}}));
+        jest.spyOn(ClaudeRuntime.prototype, 'cleanupSession').mockImplementation(() => undefined);
+        let provisionalSent!: () => void;
+        const provisional = new Promise<void>(resolve => {provisionalSent = resolve;});
+        const finalize = jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+          input.owner.assertAuthorized();
+          input.onProvisionalAnswer?.({conclusion: input.result.conclusion});
+          provisionalSent();
+          // A finalization that ignores the review stop and never settles on its own.
+          const owner = input.owner.signal;
+          await new Promise(resolve => owner.aborted ? resolve(undefined) : owner.addEventListener('abort', resolve, {once: true}));
+          input.context?.dispose();
+          throw owner.reason;
+        });
+        const app = makeApp();
+        const response = await analystHeaders(request(app).post('/api/agent/v1/analyze')).send({traceId, query: 'trace 时长'});
+        if (response.status !== 200) throw new Error(JSON.stringify(response.body));
+        sessionId = response.body.sessionId;
+        const runId = response.body.runId;
+        await provisional;
+        expect(finalize.mock.calls[0][0]).toEqual(expect.objectContaining({reviewStopSignal: expect.any(Object),
+          onProvisionalAnswer: expect.any(Function)}));
+        const stopped = await analystHeaders(request(app).post(`/api/agent/v1/${sessionId}/cancel`)).send({runId});
+        expect(stopped.body).toMatchObject({success: true, runId, status: 'review_stop_requested', runStatus: 'running'});
+        const forced = await analystHeaders(request(app).post(`/api/agent/v1/${sessionId}/cancel`)).send({runId});
+        expect(forced.status).toBe(200);
+        expect(forced.body).toMatchObject({success: true, runId, status: 'completed', outcome: 'review_not_finished'});
+        expect(finalize.mock.calls[0][0].owner.signal.aborted).toBe(true);
+        let status: request.Response | undefined;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          status = await analystHeaders(request(app).get(`/api/agent/v1/${sessionId}/status`));
+          if (['completed', 'failed', 'cancelled'].includes(status.body.status)) break;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(status!.body.status).toBe('completed');
+        const turns = new AnalysisHistoryStore(db).list({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+          userId: 'analyst-user', sessionId: sessionId!, traceId, runId});
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatchObject({answer: body, partial: true, completionStatus: 'incomplete',
+          terminationReason: 'review_not_finished'});
+        const events = (agentRoutesCancellationTestSeam.getSession(sessionId!) as any).sseEventBuffer as any[];
+        const types = events.map(event => event.eventType);
+        expect(types).toContain('analysis_completed');
+        expect(types).not.toContain('analysis_cancelled');
+        expect(types).not.toContain('error');
+      } finally {
+        if (sessionId) { agentRoutesCancellationTestSeam.deleteSession(sessionId); sessionContextManager.remove(sessionId); }
+        getTraceProcessorLeaseStore().close(); setTraceProcessorLeaseStoreForTests(null);
+        resetAnalysisHistoryStoreForTests(); resetAnalysisRunStoreForTests(); resetAgentEventStoreForTests();
+        db?.close();
+        await fs.rm(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('broadcasts the final answer without a pending cue when no review was dispatched', () => {
+      const {session, runId, finalizationRun} = liveSession('session-finalized-no-review');
+      try {
+        expect(agentRoutesCancellationTestSeam.broadcastAnswer(session, 'Trace 时长为 12.3 秒。',
+          finalizationRun, 'zh-CN', {provisional: false})).toBe(true);
+        const conclusion = session.sseEventBuffer.find((event: any) => event.eventType === 'conclusion');
+        const data = JSON.parse(conclusion.eventData);
+        expect(data).toMatchObject({type: 'conclusion', runId, data: {conclusion: 'Trace 时长为 12.3 秒。'}});
+        expect(data.data).not.toHaveProperty('provisional');
+        expect(data.data).not.toHaveProperty('verification');
+        // Not a provisional answer: a stop is still the full cancel.
+        expect(finalizationRun.stop.provisionalDelivered).toBe(false);
+        expect(agentRoutesCancellationTestSeam.broadcastAnswer(session, '  ', finalizationRun, 'en', {provisional: false})).toBe(false);
+      } finally {
+        finalizationRun.release();
+        agentRoutesCancellationTestSeam.deleteSession(session.sessionId);
+      }
+    });
+
+    it('sends the final answer before report generation when finalization dispatched no review', async () => {
+      const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-no-review-http-'));
+      let sessionId: string | undefined;
+      let db: ReturnType<typeof openEnterpriseDb> | undefined;
+      try {
+        const traceId = 'no-review-http-trace';
+        const tracePath = path.join(tmpDir, 'no-review.trace');
+        await fs.writeFile(tracePath, 'fixture trace');
+        delete process.env.SMARTPERFETTO_API_KEY;
+        process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+        process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+        process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+        process.env[ENTERPRISE_DATA_DIR_ENV] = path.join(tmpDir, 'data');
+        process.env.UPLOAD_DIR = path.join(tmpDir, 'uploads');
+        process.env.SMARTPERFETTO_AGENT_RUNTIME = 'claude-agent-sdk';
+        process.env.SMARTPERFETTO_AI_ENABLED = 'true';
+        db = openEnterpriseDb();
+        db.prepare(`INSERT INTO organizations (id, name, status, plan, created_at, updated_at)
+          VALUES ('tenant-a', 'Tenant A', 'active', 'enterprise', 100, 100)`).run();
+        db.prepare(`INSERT INTO users (id, tenant_id, email, display_name, idp_subject, created_at, updated_at)
+          VALUES ('analyst-user', 'tenant-a', 'analyst@example.test', 'Analyst', 'idp-a', 100, 100)`).run();
+        const service = new TraceProcessorService(process.env.UPLOAD_DIR);
+        const trace = service.registerStoredTrace({id: traceId, filename: 'no-review.trace', size: 13, filePath: tracePath});
+        await writeTraceMetadata({id: traceId, filename: trace.filename, size: trace.size,
+          uploadedAt: new Date().toISOString(), status: 'ready', path: tracePath,
+          tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'});
+        jest.spyOn(service, 'getOrLoadTrace').mockResolvedValue(trace);
+        jest.spyOn(service, 'ensureProcessorForLease').mockImplementation(async id => readyProcessor(id));
+        jest.spyOn(service, 'runWithLease').mockImplementation(async (_context, callback) => callback());
+        jest.spyOn(service, 'runWithLeases').mockImplementation(async (_contexts, callback) => callback());
+        jest.spyOn(service, 'cleanupLeaseProcessor').mockReturnValue(true);
+        setTraceProcessorServiceForTests(service);
+        const body = 'Trace duration is 12.3 s.';
+        jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (_query, id, _traceId, options) => ({
+          sessionId: id!, success: true, findings: [], hypotheses: [], conclusion: body, confidence: 1,
+          rounds: 1, totalDurationMs: 1, completion: {schemaVersion: 1, runtimeKind: 'claude-agent-sdk',
+            status: 'completed', runId: options!.runId!, attemptId: 'attempt', candidateRef: 'candidate',
+            conclusionFingerprint: analysisDeliveryFingerprint(body)}}));
+        jest.spyOn(ClaudeRuntime.prototype, 'cleanupSession').mockImplementation(() => undefined);
+        const finalize = jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+          input.context?.dispose();
+          return {result: {...input.result, claimVerificationResult: {schemaVersion: 'claim_verifier@2', policy: 'record_only',
+            status: 'partial', passed: false, checkedClaimCount: 0, unsupportedClaimCount: 0, claimResults: [],
+            issues: [], notCheckedReason: 'not_required'}}};
+        });
+        const app = makeApp();
+        const response = await analystHeaders(request(app).post('/api/agent/v1/analyze')).send({traceId, query: 'trace 时长'});
+        if (response.status !== 200) throw new Error(JSON.stringify(response.body));
+        sessionId = response.body.sessionId;
+        let status: request.Response | undefined;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          status = await analystHeaders(request(app).get(`/api/agent/v1/${sessionId}/status`));
+          if (['completed', 'failed', 'cancelled'].includes(status.body.status)) break;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(status!.body.status).toBe('completed');
+        expect(finalize).toHaveBeenCalledTimes(1);
+        const events = (agentRoutesCancellationTestSeam.getSession(sessionId!) as any).sseEventBuffer as any[];
+        const types = events.map(event => event.eventType);
+        expect(types).toContain('conclusion');
+        expect(types.indexOf('conclusion')).toBeLessThan(types.indexOf('analysis_completed'));
+        const conclusions = events.filter(event => event.eventType === 'conclusion').map(event => JSON.parse(event.eventData).data);
+        expect(conclusions).toEqual([{conclusion: body}]);
+        expect(events.some(event => event.eventType === 'progress' &&
+          JSON.parse(event.eventData).data?.phase === 'final_review')).toBe(false);
+      } finally {
+        if (sessionId) { agentRoutesCancellationTestSeam.deleteSession(sessionId); sessionContextManager.remove(sessionId); }
+        getTraceProcessorLeaseStore().close(); setTraceProcessorLeaseStoreForTests(null);
+        resetAnalysisHistoryStoreForTests(); resetAnalysisRunStoreForTests(); resetAgentEventStoreForTests();
+        db?.close();
+        await fs.rm(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('keeps the first stop review-only and lets a force stop fall back to a cancel without a fallback body', async () => {
         const {session, runId, finalizationRun, abortSession} = liveSession('session-provisional-force-stop');
         try {
-          agentRoutesCancellationTestSeam.broadcastProvisionalAnswer(session, {conclusion: 'body'},
-            finalizationRun, 'en');
+          agentRoutesCancellationTestSeam.broadcastAnswer(session, 'body', finalizationRun, 'en', {provisional: true});
           // The first stop is review-only whatever the review's state (a finished
           // review keeps its verdict and the turn persists); only the next is a force stop.
           await expect(agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId))
             .resolves.toMatchObject({outcome: 'review_stop_requested'});
           expect(finalizationRun.controller.signal.aborted).toBe(false);
+          // The force stop first waits (up to the watchdog) for the run to commit.
           const forced = await agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId);
           expect(forced).toMatchObject({outcome: 'cancelled', runStatus: 'cancelled'});
           expect(finalizationRun.controller.signal.aborted).toBe(true);
@@ -536,13 +722,85 @@ describe('agent analyze cancellation races', () => {
         }
       });
 
+    it('lets a finalized commit that lands during a force stop win over the stop', async () => {
+      agentRoutesCancellationTestSeam.setReviewStopWatchdogMs(5_000);
+      const {session, runId, run, finalizationRun, abortSession} = liveSession('session-provisional-force-commit');
+      try {
+        agentRoutesCancellationTestSeam.broadcastAnswer(session, 'body', finalizationRun, 'en', {provisional: true});
+        await agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId);
+        const forced = agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId);
+        // The review finished just before the save: the run claims and commits its turn.
+        expect(finalizationRun.claimTerminal('finalized')).toBe(true);
+        (run as {status: string}).status = 'completed';
+        session.status = 'completed';
+        finalizationRun.release();
+        await expect(forced).resolves.toMatchObject({outcome: 'committed', runStatus: 'completed'});
+        expect(finalizationRun.controller.signal.aborted).toBe(false);
+        expect(abortSession).not.toHaveBeenCalled();
+        expect(session.sseEventBuffer.map((event: any) => event.eventType)).not.toContain('analysis_cancelled');
+      } finally {
+        finalizationRun.release();
+        agentRoutesCancellationTestSeam.deleteSession(session.sessionId);
+      }
+    });
+
+    it('runs the fallback commit once when the watchdog elapses after a review-only stop', async () => {
+      const {session, runId, run, finalizationRun, abortSession} = liveSession('session-provisional-watchdog');
+      // Stands in for the executing run's commit (covered end to end over HTTP below).
+      const commit = jest.fn(() => {
+        if (!finalizationRun.claimTerminal('review_not_finished')) return false;
+        (run as {status: string}).status = 'completed';
+        session.status = 'completed';
+        return true;
+      });
+      finalizationRun.commitReviewNotFinished = commit;
+      try {
+        agentRoutesCancellationTestSeam.broadcastAnswer(session, 'body', finalizationRun, 'en', {provisional: true});
+        await agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId);
+        await new Promise(resolve => setTimeout(resolve, 60));
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(finalizationRun.terminal).toBe('review_not_finished');
+        await expect(agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId))
+          .resolves.toMatchObject({outcome: 'run_not_cancellable', runStatus: 'completed'});
+        expect(abortSession).not.toHaveBeenCalled();
+      } finally {
+        finalizationRun.release();
+        agentRoutesCancellationTestSeam.deleteSession(session.sessionId);
+      }
+    });
+
+    it.each([
+      ['private knowledge', {codeAwareMode: 'provider_send', codebaseIds: ['app-source']}, false],
+      ['revoked authorization', {}, true],
+    ] as const)('keeps the body live-only for %s: the watchdog becomes the full cancel', async (_label, extra, revoke) => {
+      const {session, runId, finalizationRun, abortSession} = liveSession(`session-provisional-excluded-${revoke}`, extra);
+      const commit = jest.fn(() => true);
+      finalizationRun.commitReviewNotFinished = commit;
+      try {
+        agentRoutesCancellationTestSeam.broadcastAnswer(session, 'body', finalizationRun, 'en', {provisional: true});
+        await agentRoutesCancellationTestSeam.cancelSessionRun(session.sessionId, runId);
+        if (revoke) {
+          jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
+            throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+          });
+        }
+        await new Promise(resolve => setTimeout(resolve, 60));
+        expect(commit).not.toHaveBeenCalled();
+        expect(finalizationRun.controller.signal.aborted).toBe(true);
+        expect(abortSession).toHaveBeenCalled();
+        expect(session.status).toBe('cancelled');
+      } finally {
+        finalizationRun.release();
+        agentRoutesCancellationTestSeam.deleteSession(session.sessionId);
+      }
+    });
+
     it('does not deliver a provisional answer for a deleted or superseded session', () => {
       const {session, runId, finalizationRun} = liveSession('session-provisional-deleted');
       try {
         agentRoutesCancellationTestSeam.deleteSession(session.sessionId);
-        expect(agentRoutesCancellationTestSeam.broadcastProvisionalAnswer(session, {conclusion: 'body'},
-          finalizationRun, 'en')).toBe(false);
-        expect(finalizationRun.provisionalDelivered).toBe(false);
+        expect(agentRoutesCancellationTestSeam.broadcastAnswer(session, 'body', finalizationRun, 'en', {provisional: true})).toBe(false);
+        expect(finalizationRun.stop.provisionalDelivered).toBe(false);
         expect(session.sseEventBuffer).toEqual([]);
       } finally {
         finalizationRun.release();
@@ -570,8 +828,7 @@ describe('agent analyze cancellation races', () => {
         {codeAwareMode: 'provider_send', codebaseIds: ['app-source']});
       try {
         const body = 'The source marker explains the wait.';
-        agentRoutesCancellationTestSeam.broadcastProvisionalAnswer(session, {conclusion: body},
-          finalizationRun, 'en');
+        agentRoutesCancellationTestSeam.broadcastAnswer(session, body, finalizationRun, 'en', {provisional: true});
         const conclusion = session.sseEventBuffer.find((event: any) => event.eventType === 'conclusion');
         expect(JSON.parse(conclusion.eventData).data).toEqual({provisional: true, verification: 'pending',
           conclusion: projectOwnerConclusion({sessionId: session.sessionId, conclusion: body, success: true, language: 'en'})});
@@ -586,9 +843,8 @@ describe('agent analyze cancellation races', () => {
       const {session, runId, finalizationRun} = liveSession('session-provisional-stale');
       try {
         session.activeRun = {...session.activeRun, runId: `${session.sessionId}:2`};
-        agentRoutesCancellationTestSeam.broadcastProvisionalAnswer(session, {conclusion: 'late body'},
-          finalizationRun, 'en');
-        expect(finalizationRun.provisionalDelivered).toBe(false);
+        agentRoutesCancellationTestSeam.broadcastAnswer(session, 'late body', finalizationRun, 'en', {provisional: true});
+        expect(finalizationRun.stop.provisionalDelivered).toBe(false);
         expect(session.sseEventBuffer).toEqual([]);
       } finally {
         finalizationRun.release();
@@ -1223,6 +1479,93 @@ describe('HTTP shared finalization ownership', () => {
       } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
     },
   );
+
+  describe('display-only answer draft', () => {
+    const drafts = (writes: string[]) => writes.join('').split('\n\n').filter(Boolean).flatMap(frame => {
+      const type = /^event: (.+)$/m.exec(frame)?.[1];
+      if (type !== 'answer_token' && type !== 'answer_segment_reset') return [];
+      return [{type, hasId: /^id: /m.test(frame), data: JSON.parse(/^data: (.+)$/m.exec(frame)![1])}];
+    });
+
+    async function runWithDrafts(id: string, extra: {runtimeKind?: string; options?: Record<string, unknown>} = {}) {
+      const f = fixture(id);
+      f.session.runtimeKind = extra.runtimeKind ?? 'openai-agents-sdk';
+      f.attach();
+      const writes: string[] = [];
+      f.session.sseClients.push({write: (chunk: string) => { writes.push(chunk); return true; }});
+      f.analyze.mockImplementation(async () => {
+        const emit = (type: string, content: unknown) => f.orchestrator.emit('update', {type, content, timestamp: Date.now()});
+        emit('answer_token', {token: 'Pre-tool text', runId: f.runId, attempt: 0});
+        emit('answer_segment_reset', {runId: f.runId, attempt: 1});
+        emit('answer_token', {token: 'Answer body', runId: f.runId, attempt: 1});
+        emit('answer_token', {token: 'LATE_OLD_SEGMENT', runId: f.runId, attempt: 0});
+        emit('answer_token', {token: 'FOREIGN_RUN', runId: 'another-run', attempt: 1});
+        emit('conclusion', {conclusion: 'RAW_RUNTIME_CONCLUSION'});
+        return f.native;
+      });
+      jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+        input.context?.dispose();
+        return {result: input.result};
+      });
+      await agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'fact', 'trace-a', {
+        runContext: f.session.activeRun, traceProcessorService: {query: jest.fn()}, generateTracks: false,
+        ...(extra.options ?? {}),
+      });
+      return {f, writes};
+    }
+
+    it('streams drafts live only: coalesced, reset-ordered, never buffered for replay', async () => {
+      const id = 'http-draft-live';
+      try {
+        const {f, writes} = await runWithDrafts(id);
+        const delivered = drafts(writes);
+        expect(delivered.map(event => [event.type, event.data.data.token ?? null, event.data.data.attempt])).toEqual([
+          ['answer_segment_reset', null, 1],
+          ['answer_token', 'Answer body', 1],
+        ]);
+        expect(delivered.every(event => !event.hasId && event.data.runId === f.runId)).toBe(true);
+        // A reconnect replays the ring buffer and the durable store; neither holds a draft.
+        const replayable = f.session.sseEventBuffer.map((event: any) => event.eventType);
+        expect(replayable).not.toContain('answer_token');
+        expect(replayable).not.toContain('answer_segment_reset');
+        expect(JSON.stringify(f.session.sseEventBuffer)).not.toContain('RAW_RUNTIME_CONCLUSION');
+        expect(writes.join('')).not.toContain('Pre-tool text');
+      } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+    });
+
+    it('streams no draft for a runtime without the reset contract', async () => {
+      const id = 'http-draft-incapable';
+      try {
+        const {writes} = await runWithDrafts(id, {runtimeKind: 'opencode'});
+        expect(drafts(writes)).toEqual([]);
+      } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+    });
+
+    it('streams no draft for a session with source access: its owner projection redacts per fragment', async () => {
+      const id = 'http-draft-private';
+      const project = jest.spyOn(streamingProjection, 'projectOwnerCodeAwareStreamingUpdate');
+      try {
+        const {f, writes} = await runWithDrafts(id, {options: {codeAwareMode: 'provider_send', codebaseIds: ['app-source']}});
+        expect(project).not.toHaveBeenCalledWith(id, expect.objectContaining({type: 'answer_token'}), true, expect.any(String));
+        expect(drafts(writes)).toEqual([]);
+        expect(JSON.stringify(f.session.sseEventBuffer)).not.toContain('Answer body');
+      } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+    });
+
+    it('streams no draft for a private session whose owner projection fails', async () => {
+      const id = 'http-draft-private-failure';
+      const actual = streamingProjection.projectOwnerCodeAwareStreamingUpdate;
+      jest.spyOn(streamingProjection, 'projectOwnerCodeAwareStreamingUpdate').mockImplementation((...args) => {
+        if (args[1].type === 'answer_token') throw new Error('private guard unavailable');
+        return actual(...args);
+      });
+      try {
+        const {writes} = await runWithDrafts(id, {options: {codeAwareMode: 'provider_send', codebaseIds: ['app-source']}});
+        expect(drafts(writes).filter(event => event.type === 'answer_token')).toEqual([]);
+        expect(writes.join('')).not.toContain('Answer body');
+      } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+    });
+  });
 
   it('does not retire or delete a replacement session after authorization cleanup yields', async () => {
     const id = 'http-authorization-replacement'; const f = fixture(id); f.attach();

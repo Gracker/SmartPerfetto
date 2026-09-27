@@ -570,6 +570,11 @@ REPL commands:
 | `/clear` | Clear the terminal |
 | `/exit` | Exit |
 
+While a turn runs, Ctrl-C belongs to that turn: the first press after a printed
+answer stops only its verification and the turn is saved; the next press, or
+the first one before the answer, aborts the turn without saving and returns to
+the prompt; a further press exits with 130. With no turn running, press Ctrl-C twice within 1.5 s to exit.
+
 ## System investigation output
 
 The CLI reports system investigation coverage separately from system evidence coverage, with Not checked for missing historical fields. Machine-readable conclusion records include `investigationAssurance` without changing the original conclusion or native completion. Each turn also saves `NNN.investigation-assessment.json` and `NNN.delivery-assurance.json` with dimension statuses and evidence references. The HTML report shows the same investigation scope. Restoring historical results does not automatically acquire missing evidence.

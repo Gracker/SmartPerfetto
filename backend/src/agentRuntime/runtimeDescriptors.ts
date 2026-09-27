@@ -41,7 +41,8 @@ const CUSTOM_ONLY_PROVIDER_TYPES = ['custom'] as const;
 function createCapabilities<K extends AgentRuntimeKind>(
   kind: K,
   displayName: string,
-  systemPromptDynamicBoundary: boolean,
+  {systemPromptDynamicBoundary = false, draftAnswerStreaming = false}:
+    {systemPromptDynamicBoundary?: boolean; draftAnswerStreaming?: boolean} = {},
 ): RuntimeEngineDescriptor<K>['capabilities'] {
   return {
     kind,
@@ -49,6 +50,7 @@ function createCapabilities<K extends AgentRuntimeKind>(
     production: true,
     publicRuntime: true,
     promptCache: { systemPromptDynamicBoundary },
+    draftAnswerStreaming,
   };
 }
 
@@ -59,7 +61,7 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
     production: true,
     publicRuntime: true,
     providerTypes: CLAUDE_PROVIDER_TYPES,
-    capabilities: createCapabilities(CLAUDE_AGENT_RUNTIME_KIND, 'Claude Agent SDK', true),
+    capabilities: createCapabilities(CLAUDE_AGENT_RUNTIME_KIND, 'Claude Agent SDK', {systemPromptDynamicBoundary: true, draftAnswerStreaming: true}),
     createOrchestrator: ({ traceProcessorService, selection }) => {
       // Lazy load to keep providerManager runtime matrix imports cycle-free.
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -82,7 +84,7 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
     production: true,
     publicRuntime: true,
     providerTypes: OPENAI_PROVIDER_TYPES,
-    capabilities: createCapabilities(OPENAI_AGENT_RUNTIME_KIND, 'OpenAI Agents SDK', false),
+    capabilities: createCapabilities(OPENAI_AGENT_RUNTIME_KIND, 'OpenAI Agents SDK', {draftAnswerStreaming: true}),
     createOrchestrator: ({ traceProcessorService, selection }) => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { createOpenAIRuntime } = require('./engines/openai') as typeof import('./engines/openai');
@@ -103,7 +105,7 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
     production: true,
     publicRuntime: true,
     providerTypes: CUSTOM_ONLY_PROVIDER_TYPES,
-    capabilities: createCapabilities(PI_AGENT_CORE_RUNTIME_KIND, 'Pi Agent Core', false),
+    capabilities: createCapabilities(PI_AGENT_CORE_RUNTIME_KIND, 'Pi Agent Core'),
     createOrchestrator: input => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { createPiAgentCoreRuntime } = require('./engines/pi/piAgentCoreRuntime') as typeof import('./engines/pi/piAgentCoreRuntime');
@@ -121,7 +123,7 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
     production: true,
     publicRuntime: true,
     providerTypes: CUSTOM_ONLY_PROVIDER_TYPES,
-    capabilities: createCapabilities(OPENCODE_RUNTIME_KIND, 'OpenCode', false),
+    capabilities: createCapabilities(OPENCODE_RUNTIME_KIND, 'OpenCode'),
     createOrchestrator: input => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { OpenCodeRuntime } = require('./engines/opencode/openCodeRuntime') as typeof import('./engines/opencode/openCodeRuntime');
@@ -139,7 +141,7 @@ export const PRODUCTION_RUNTIME_DESCRIPTORS = [
     production: true,
     publicRuntime: true,
     providerTypes: CUSTOM_ONLY_PROVIDER_TYPES,
-    capabilities: createCapabilities(QODER_AGENT_RUNTIME_KIND, 'Qoder Agent SDK', false),
+    capabilities: createCapabilities(QODER_AGENT_RUNTIME_KIND, 'Qoder Agent SDK'),
     createOrchestrator: input => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       const { QoderRuntime } = require('./engines/qoder/qoderRuntime') as typeof import('./engines/qoder/qoderRuntime');
@@ -176,6 +178,12 @@ export function getProductionEngineCapabilities(kind: string): EngineCapabilitie
     throw new Error(`Unsupported agent runtime capabilities: ${kind}`);
   }
   return getProductionRuntimeDescriptor(kind).capabilities;
+}
+
+/** Unknown or unpinned runtimes stream no draft. */
+export function runtimeSupportsDraftAnswerStreaming(kind: string | undefined): boolean {
+  return kind !== undefined && isProductionAgentRuntimeKind(kind) &&
+    getProductionEngineCapabilities(kind).draftAnswerStreaming;
 }
 
 export function getProviderTypesForRuntime(kind: AgentRuntimeKind): readonly string[] {

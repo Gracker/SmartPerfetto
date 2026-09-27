@@ -10,6 +10,7 @@ import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {getConversationSessionStore, type ConversationSessionDescriptor} from '../services/conversationSessionStore';
 import {
   ConversationSessionService,
+  conversationRunUsesPrivateKnowledge,
   type ConversationRun,
   type ConversationSession,
   type ConversationTraceContext,
@@ -76,20 +77,7 @@ export function shouldCloseConversationStream(input: {
     input.eventType === 'source_enrichment_cancelled';
 }
 
-export function conversationRunUsesPrivateKnowledge(
-  session: Pick<ConversationSession, 'codeAwareMode' | 'codebaseIds' | 'knowledgeSourceIds'>,
-  run: Pick<ConversationRun, 'sourceUseMode'>,
-): boolean {
-  return Boolean(
-    session.knowledgeSourceIds?.length ||
-    (
-      run.sourceUseMode === 'explicit' &&
-      session.codeAwareMode &&
-      session.codeAwareMode !== 'off' &&
-      session.codebaseIds?.length
-    ),
-  );
-}
+export {conversationRunUsesPrivateKnowledge};
 
 function configuredOutputLanguage(): OutputLanguage {
   return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -186,6 +174,7 @@ const conversationSessionService = new ConversationSessionService({
       providerScope,
     });
     return new OrchestratorConversationRuntimeAdapter(orchestrator, {
+      runtimeKind: input.runtimeKind,
       analysisOptions: {
         ...input.runtimeOptions,
         providerId: input.providerId,
@@ -394,7 +383,8 @@ async function startConversation(req: express.Request, res: express.Response): P
       return;
     }
     if (existing?.activeRun) {
-      await conversationSessionService.cancelRun(existing.sessionId, existing.activeRun.runId);
+      // At most one watchdog bound: a delivered answer commits its turn first.
+      await conversationSessionService.supersedeRun(existing.sessionId, existing.activeRun.runId);
     }
     if (existing) {
       await conversationSessionService.cancelSourceEnrichments(existing.sessionId);
@@ -640,6 +630,12 @@ async function streamConversation(req: express.Request, res: express.Response): 
   };
   const unsubscribe = conversationSessionService.subscribe(session.sessionId, event => {
     if (event.runId !== runId) return;
+    if ('liveOnly' in event) {
+      // No `id:` line: a live-only draft is never a reconnect cursor. One
+      // missed during replay is simply not shown.
+      if (!replaying) send(event.type, event);
+      return;
+    }
     if (replaying) {
       pendingLiveEvents.push(event);
       return;
@@ -689,10 +685,11 @@ async function cancelConversation(req: express.Request, res: express.Response): 
       res.status(400).json({success: false, code: 'RUN_ID_REQUIRED', error: 'runId is required'});
       return;
     }
-    // After a provisional answer, cancel stops only the review; the run settles
-    // with its verdict before this responds (the stream carries run_completed).
-    const {kind, reviewStopped} = await conversationSessionService.cancelRun(session.sessionId, runId);
-    res.json({success: true, sessionId: session.sessionId, runId, status: kind, ...(reviewStopped ? {reviewStopped} : {})});
+    // After a provisional answer the first cancel ends only the review and
+    // answers at once; the stream then carries run_completed with the turn.
+    const result = await conversationSessionService.cancelRun(session.sessionId, runId);
+    res.json({success: true, sessionId: session.sessionId, runId,
+      status: result.status === 'review_stop_requested' ? result.status : result.outcome.kind});
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     res.status(/not found/i.test(message) ? 404 : 409).json({success: false, error: message});

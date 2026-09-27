@@ -60,7 +60,7 @@ AI analysis output is consumed through several surfaces:
 
 | Surface | Typical path | Notes |
 | --- | --- | --- |
-| Live chat / AI panel | SSE provisional `conclusion` / conversation `provisional_answer`, then `analysis_completed` / `run_completed` | Should be readable and avoid raw SQL/audit noise; the answer shows as soon as the review starts, marked pending, and only the terminal event carries the verdict |
+| Live chat / AI panel | SSE `answer_token` / `answer_segment_reset` drafts (draft-capable runtimes only), then provisional or final `conclusion` / conversation `provisional_answer`, then `analysis_completed` / `run_completed` | Should be readable and avoid raw SQL/audit noise; a live-only, revocable draft shows while the model writes (never stored or replayed), the finished body replaces it — marked pending while the review runs — and only the terminal event carries the verdict |
 | HTML report | `/api/reports/*`, report export | Keeps evidence, claim verification, identities, and appendix detail |
 | CLI turn artifacts | `~/.smartperfetto/` session/report files | Used by `smp run`, `smp ask`, `smp capture --analyze`, and `smp report` |
 | Analysis-result snapshot | snapshot services and frontend comparison state | Used for multi-result comparison and later review |

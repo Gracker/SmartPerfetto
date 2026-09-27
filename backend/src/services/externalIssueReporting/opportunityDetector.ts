@@ -48,6 +48,11 @@ export function detectExternalIssueOpportunity(
   const language = parseOutputLanguage(source.manifest.outputLanguage);
   const signals: ExternalIssueSignalV1[] = [];
   const claims = readClaimSupport(source);
+  const verification = readClaimVerification(source);
+  // A semantic review that was not required leaves every uncontradicted claim
+  // partial by design; that is the answer's delivered `~` state, not a defect
+  // an external issue could report. Contradictions are still signals.
+  const reviewNotRequired = verification?.notCheckedReason === 'not_required';
   for (const claim of claims) {
     if (claim.supportLevel === 'unsupported') {
       signals.push(signal({
@@ -61,7 +66,7 @@ export function detectExternalIssueOpportunity(
         ),
         references: claimReferences(claim),
       }));
-    } else if (isUncertainSupport(claim.supportLevel)) {
+    } else if (isUncertainSupport(claim.supportLevel) && !reviewNotRequired) {
       signals.push(signal({
         kind: 'uncertain_claim',
         severity: 'info',
@@ -76,7 +81,6 @@ export function detectExternalIssueOpportunity(
     }
   }
 
-  const verification = readClaimVerification(source);
   for (const issue of verification?.issues ?? []) {
     const existing = signals.some(
       item =>
@@ -102,6 +106,7 @@ export function detectExternalIssueOpportunity(
 
   for (const [gate, status] of Object.entries(source.receipt.qualityGates)) {
     if (status !== 'partial') continue;
+    if (gate === 'claimVerification' && reviewNotRequired && verification?.status === 'partial') continue;
     signals.push(signal({
       kind: 'partial_quality_gate',
       severity: 'warning',

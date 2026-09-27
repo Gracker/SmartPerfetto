@@ -430,6 +430,10 @@ describe('agent runtime latency benchmark contracts', () => {
       performance: undefined,
     })).toThrow('benchmark_cell_terminal_before_accept');
     expect(() => parseRuntimeBenchmarkCell({...cell(), apiKey: 'secret'})).toThrow('benchmark_cell_unknown_field');
+    // Per-call model records and the review decision are accepted, and dropped from scoring input.
+    expect(parseRuntimeBenchmarkCell({...cell(), performance: {...basePerformance,
+      modelCalls: [{purpose: 'answer_turn', startOffsetMs: 0, durationMs: 10, outcome: 'ok'}],
+      finalReview: {necessity: 'not_required', triggers: [], declaredClaimCount: 0}}})).toEqual(cell());
     expect(() => parseRuntimeBenchmarkCell({
       ...cell(),
       performance: {

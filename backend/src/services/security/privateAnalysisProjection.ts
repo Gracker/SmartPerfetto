@@ -51,6 +51,7 @@ const SAFE_TERMINATION_REASONS = new Set([
   'timeout',
   'quality_gate_failed',
   'plan_incomplete',
+  'review_not_finished',
 ]);
 const MAX_PRIVATE_PROVENANCE_IDS = 100;
 const MAX_PRIVATE_SOURCE_GENERATIONS = 20;

@@ -160,14 +160,14 @@ describe('Conversation evidence and stream consumer boundaries', () => {
             scope: {population: 'cited_rows', subjectRefs: [reference]}, numeric: {operator: 'eq', value: 7, unit: 'count'}}}]};
       const marker = renderConclusionContractSidecar(contract);
       for (const token of [body, marker.slice(0, 19), marker.slice(19)]) {
-        emitter.emit('update', {type: 'answer_token', content: {token}, timestamp: Date.now()});
+        emitter.emit('update', {type: 'answer_token', content: {token, runId: options.runId, attempt: 0}, timestamp: Date.now()});
       }
       const value = result(body + marker, sessionId);
       rawResults.push(value);
       attachStoreContext(value, options, traceId, store, body, ['metric']);
       return value;
     });
-    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk'});
     const first = await adapter.run({sessionId: 'conversation', runId: 'first', query: 'Observe the metric', history: [],
       traceContext: {kind: 'attached', traceId: 'trace-1'}});
     expect(query).toHaveBeenCalled();
@@ -175,7 +175,7 @@ describe('Conversation evidence and stream consumer boundaries', () => {
     const updates: unknown[] = [];
     const second = await adapter.run({sessionId: 'conversation', runId: 'second', query: 'Use the previous observation',
       history: [{role: 'assistant', content: first.message}], traceContext: {kind: 'attached', traceId: 'trace-1'},
-      onUpdate: update => updates.push(update)});
+      onUpdate: update => updates.push(update), onAnswerDraft: update => updates.push(update)});
     expect(physicalSessions).toEqual(['conversation:first', 'conversation:second']);
     expect(query).not.toHaveBeenCalled();
     expect(second.message).toBe('The retained metric is 7.\n');
@@ -196,17 +196,50 @@ describe('Conversation evidence and stream consumer boundaries', () => {
   it('flushes an ordinary withheld prefix at settlement without inventing native completion', async () => {
     const emitter = createOrchestrator(async () => {
       await nextImmediate();
-      emitter.emit('update', {type: 'answer_token', content: {token: 'Visible\n<', totalChars: 9}, timestamp: Date.now(), id: 'last-sdk-event'});
+      emitter.emit('update', {type: 'answer_token', content: {token: 'Visible\n<', totalChars: 9, runId: 'tail', attempt: 0},
+        timestamp: Date.now(), id: 'last-sdk-event'});
       return result('Visible\n<');
     });
-    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk'});
     const updates: unknown[] = [];
     await adapter.run({sessionId: 'conversation', runId: 'tail', query: 'question', history: [], traceContext: {kind: 'none'},
-      onUpdate: update => updates.push(update)});
+      onUpdate: update => updates.push(update), onAnswerDraft: update => updates.push(update)});
     expect(updates.map(text).join('')).toBe('Visible\n<');
     expect(updates[updates.length - 1]).not.toHaveProperty('id');
     expect(updates[updates.length - 1]).not.toHaveProperty('content.done');
     await adapter.dispose();
+  });
+
+  it('forwards answer drafts only for a draft-capable runtime, as live drafts rather than runtime updates', async () => {
+    const run = async (draftAnswerStreaming: boolean) => {
+      const emitter = createOrchestrator(async () => {
+        await nextImmediate();
+        emitter.emit('update', {type: 'answer_token', content: {token: 'Draft text', runId: 'r', attempt: 0}, timestamp: 1});
+        emitter.emit('update', {type: 'answer_segment_reset', content: {runId: 'r', attempt: 1}, timestamp: 2});
+        emitter.emit('update', {type: 'answer_token', content: {token: 'Answer', runId: 'r', attempt: 1}, timestamp: 3});
+        // A string payload without the contract never becomes a draft.
+        emitter.emit('update', {type: 'answer_token', content: 'untyped', timestamp: 4});
+        emitter.emit('update', {type: 'progress', content: {message: 'Working'}, timestamp: 5});
+        return result('Answer');
+      });
+      const adapter = new OrchestratorConversationRuntimeAdapter(emitter,
+        {runtimeKind: draftAnswerStreaming ? 'openai-agents-sdk' : 'pi-agent-core'});
+      const updates: unknown[] = [];
+      const drafts: unknown[] = [];
+      await adapter.run({sessionId: 'conversation', runId: 'r', query: 'question', history: [], traceContext: {kind: 'none'},
+        onUpdate: update => updates.push(update), onAnswerDraft: update => drafts.push(update)});
+      await adapter.dispose();
+      return {updates, drafts};
+    };
+    const capable = await run(true);
+    expect(capable.updates.map(update => updateRecord(update).type)).toEqual(['progress']);
+    expect(capable.drafts).toEqual([
+      expect.objectContaining({type: 'answer_segment_reset', content: {runId: 'r', attempt: 1}}),
+      expect.objectContaining({type: 'answer_token', content: {token: 'Answer', runId: 'r', attempt: 1}}),
+    ]);
+    const incapable = await run(false);
+    expect(incapable.updates.map(update => updateRecord(update).type)).toEqual(['progress']);
+    expect(incapable.drafts).toEqual([]);
   });
 
   it('rejects old producer events and delayed abort/cleanup while a replacement physical run is active', async () => {
@@ -224,7 +257,8 @@ describe('Conversation evidence and stream consumer boundaries', () => {
       const old = options.runId === 'old';
       (old ? startedOld : startedNew).resolve();
       await (old ? finishOld : finishNew).promise;
-      emitter.emit('update', {type: 'answer_token', content: {token: old ? 'OLD_EVENT_CANARY' : 'New answer'}, timestamp: Date.now()});
+      emitter.emit('update', {type: 'answer_token', content: {token: old ? 'OLD_EVENT_CANARY' : 'New answer',
+        runId: options.runId, attempt: 0}, timestamp: Date.now()});
       emitter.emit('update', {type: 'data', content: createDataEnvelope({columns: ['run'], rows: [[old ? 'old' : 'new']]},
         {type: 'sql_result', source: 'fixture', title: old ? 'Old envelope' : 'New envelope'}), timestamp: Date.now()});
       const value = result(old ? 'Old answer' : 'New answer', sessionId);
@@ -233,14 +267,14 @@ describe('Conversation evidence and stream consumer boundaries', () => {
       else attachStoreContext(value, options, traceId, store, 'New answer');
       return value;
     });
-    const adapter = new OrchestratorConversationRuntimeAdapter(emitter);
+    const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk'});
     const old = adapter.run({sessionId: 'conversation', runId: 'old', query: 'first', history: [], traceContext: {kind: 'attached', traceId: 'trace-1'}});
     await startedOld.promise;
     await adapter.cancel('conversation', 'old');
     await expect(old).resolves.toEqual({kind: 'cancelled', message: ''});
     const updates: unknown[] = [];
     const current = adapter.run({sessionId: 'conversation', runId: 'new', query: 'second', history: [], traceContext: {kind: 'attached', traceId: 'trace-1'},
-      onUpdate: update => updates.push(update)});
+      onUpdate: update => updates.push(update), onAnswerDraft: update => updates.push(update)});
     await startedNew.promise;
     await adapter.cancel('conversation', 'old');
     finishOld.resolve();
@@ -866,7 +900,7 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
       } finally {input.context?.dispose();}
     });
 
-    it('forwards the provisional answer once and stops only the review', async () => {
+    it('forwards the provisional answer once and the session-owned review stop signal', async () => {
       const seen: {stopSignal?: AbortSignal} = {};
       reviewPendingFinalizer(seen);
       const orchestrator = createOrchestrator(async () => result('Trace duration is 12.3 s.'));
@@ -874,15 +908,15 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
       const provisional: string[] = [];
       let delivered!: () => void;
       const deliveredPromise = new Promise<void>(resolve => {delivered = resolve;});
-      expect(adapter.stopReview('conversation', 'run')).toBe(false);
+      const reviewStop = new AbortController();
       const completion = adapter.run({sessionId: 'conversation', runId: 'run', query: 'trace 时长', history: [],
-        traceContext: {kind: 'none'}, onProvisionalAnswer: ({message}) => {provisional.push(message); delivered();}});
+        traceContext: {kind: 'none'}, reviewStopSignal: reviewStop.signal,
+        onProvisionalAnswer: ({message}) => {provisional.push(message); delivered();}});
       await deliveredPromise;
       expect(provisional).toEqual(['Trace duration is 12.3 s.']);
-      expect(adapter.stopReview('conversation', 'other-run')).toBe(false);
-      expect(adapter.stopReview('conversation', 'run')).toBe(true);
+      expect(seen.stopSignal).toBe(reviewStop.signal);
+      reviewStop.abort();
       await expect(completion).resolves.toMatchObject({kind: 'answered', message: 'Trace duration is 12.3 s.'});
-      expect(seen.stopSignal?.aborted).toBe(true);
       expect(orchestrator.abortSession).not.toHaveBeenCalled();
     });
 
@@ -895,13 +929,35 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
       const provisional: string[] = [];
       let delivered!: () => void;
       const deliveredPromise = new Promise<void>(resolve => {delivered = resolve;});
+      const reviewStop = new AbortController();
       const completion = adapter.run({sessionId: 'private-provisional', runId: 'private-provisional-run', query: privateQuery,
-        history: [], traceContext: {kind: 'none'},
+        history: [], traceContext: {kind: 'none'}, reviewStopSignal: reviewStop.signal,
         onProvisionalAnswer: ({message}) => {provisional.push(message); delivered();}});
       await deliveredPromise;
-      adapter.stopReview('private-provisional', 'private-provisional-run');
+      reviewStop.abort();
       const outcome = await completion;
       expect(provisional).toEqual([outcome.message]);
+    });
+
+    it('shows no pending cue and sends no review when the review is not required', async () => {
+      mockFinalize.mockImplementation(jest.requireActual<typeof import('../../../services/finalizeAnalysisResult')>(
+        '../../../services/finalizeAnalysisResult').finalizeAnalysisResult);
+      const dispatchText = jest.fn(async () => ({status: 'ok' as const, text: '{}'}));
+      const orchestrator = createOrchestrator(async options => {
+        const value = result('Trace duration is 12.3 s.');
+        attachContext(value, options.runId!, {}, {dispatchText});
+        return value;
+      });
+      const provisional = jest.fn(() => true);
+      const updates: unknown[] = [];
+      const outcome = await new OrchestratorConversationRuntimeAdapter(orchestrator).run({sessionId: 'conversation',
+        runId: 'no-review', query: 'trace 时长', history: [], traceContext: {kind: 'none'},
+        onProvisionalAnswer: provisional, onUpdate: update => updates.push(update)});
+      expect(dispatchText).not.toHaveBeenCalled();
+      expect(provisional).not.toHaveBeenCalled();
+      expect(JSON.stringify(updates)).not.toContain('final_review');
+      expect(outcome).toMatchObject({kind: 'answered', message: 'Trace duration is 12.3 s.'});
+      expect(outcome.finalResult?.claimVerificationResult?.notCheckedReason).toBe('not_required');
     });
 
     it('does not forward the runtime raw conclusion as a second answer source', async () => {

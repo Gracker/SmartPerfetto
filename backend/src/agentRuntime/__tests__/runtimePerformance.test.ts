@@ -3,12 +3,16 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createHash} from 'crypto';
-import {describe, expect, it} from '@jest/globals';
+import {describe, expect, it, jest} from '@jest/globals';
 
 import {
   createRuntimePerformanceRecorder,
   createRuntimePerformanceRun,
+  normalizeModelCallUsage,
+  recordRuntimeFinalReview,
+  startRuntimeModelCall,
 } from '../runtimePerformance';
+import {dispatchWithModelCallRecord} from '../intentTransport';
 
 function expectedRuntimeHash(value: string, salt = ''): string {
   return `sha256:${createHash('sha256')
@@ -395,5 +399,66 @@ describe('runtime performance receipt', () => {
       'verification',
     ]);
     expect(JSON.stringify(receipt)).not.toContain('SELECT');
+  });
+
+  it('records each model call with purpose, time to first output and provider usage', () => {
+    let now = 0;
+    const recorder = createRuntimePerformanceRecorder({now: () => now});
+    const run = createRuntimePerformanceRun({runtimePerformanceRecorder: recorder});
+    now = 10;
+    const call = run.startModelCall({purpose: 'declaration_repair', trigger: 'invalid_declaration',
+      model: 'requested-model', reasoning: 'provider_default'});
+    now = 25;
+    call.recordFirstOutput();
+    now = 30;
+    call.recordFirstOutput();
+    now = 40;
+    call.markDone({inputTokens: 100, outputTokens: 20, outputTokensDetails: {reasoning_tokens: 5},
+      inputTokensDetails: {cached_tokens: 64}});
+    now = 90;
+    call.end({model: 'provider-model', output: {bodyChars: 12, sidecarChars: 300}});
+    call.end({outcome: 'error'});
+
+    expect(recorder.seal().modelCalls).toEqual([{purpose: 'declaration_repair', trigger: 'invalid_declaration',
+      model: 'provider-model', reasoning: 'provider_default', startOffsetMs: 10, durationMs: 30, firstOutputMs: 15,
+      outcome: 'ok', output: {bodyChars: 12, sidecarChars: 300},
+      usage: {inputTokens: 100, outputTokens: 20, reasoningTokens: 5, cachedInputTokens: 64}}]);
+  });
+
+  it('reads raw Chat Completions usage and ignores anything that is not a token count', () => {
+    expect(normalizeModelCallUsage({prompt_tokens: 7, completion_tokens: 3,
+      completion_tokens_details: {reasoning_tokens: 2}, prompt_tokens_details: {cached_tokens: 1}}))
+      .toEqual({inputTokens: 7, outputTokens: 3, reasoningTokens: 2, cachedInputTokens: 1});
+    expect(normalizeModelCallUsage({prompt_tokens: -1, completion_tokens: 'many'})).toBeUndefined();
+    expect(normalizeModelCallUsage('usage')).toBeUndefined();
+  });
+
+  it('records the first final review decision once and never throws once sealed', () => {
+    const recorder = createRuntimePerformanceRecorder();
+    recordRuntimeFinalReview(recorder, {necessity: 'not_required',
+      triggers: ['report', 'report'], declaredClaimCount: 2});
+    recordRuntimeFinalReview(recorder, {necessity: 'required', triggers: ['source'], declaredClaimCount: 5});
+    expect(recorder.seal().finalReview).toEqual({necessity: 'not_required', triggers: ['report'], declaredClaimCount: 2});
+    expect(() => recordRuntimeFinalReview(recorder, {necessity: 'required', triggers: [], declaredClaimCount: 0})).not.toThrow();
+    const late = startRuntimeModelCall(recorder, {purpose: 'review'});
+    expect(() => {late.recordFirstOutput(); late.markDone(); late.end();}).not.toThrow();
+    expect(recorder.seal().modelCalls).toBeUndefined();
+  });
+
+  it('passes a transport request through unchanged without a recorder and observes it with one', async () => {
+    const input = {prompt: 'p', systemPrompt: '', deadlineMs: Date.now() + 1_000, outputByteLimit: 10};
+    const dispatch = jest.fn(async (request: typeof input & {observer?: any}) => {
+      request.observer?.reasoning?.('disabled');
+      request.observer?.firstOutput?.();
+      request.observer?.usage?.({input_tokens: 4, output_tokens: 2});
+      return {status: 'ok' as const, text: '{}', actualModel: 'light-reported'};
+    });
+    await dispatchWithModelCallRecord(undefined, {purpose: 'classification'}, input, dispatch);
+    expect(dispatch.mock.calls[0][0]).toBe(input);
+
+    const recorder = createRuntimePerformanceRecorder();
+    await dispatchWithModelCallRecord(recorder, {purpose: 'review'}, input, dispatch);
+    expect(recorder.seal().modelCalls).toEqual([expect.objectContaining({purpose: 'review', model: 'light-reported',
+      reasoning: 'disabled', outcome: 'ok', firstOutputMs: expect.any(Number), usage: {inputTokens: 4, outputTokens: 2}})]);
   });
 });

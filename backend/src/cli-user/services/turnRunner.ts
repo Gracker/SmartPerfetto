@@ -41,16 +41,41 @@ import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {privateAnalysisQueryMessage} from '../../services/security/privateAnalysisProjection';
 import {toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
+import {isTurnInterrupted, TurnInterruptController, TurnInterruptedError, type InterruptSource} from './turnInterrupt';
 
 /**
  * Text output shows the answer while its semantic review runs. json/ndjson keep
- * their exact event stream, so they never receive it (nor "answer readable").
+ * their exact event stream, so they never receive it (nor "answer readable"),
+ * and their first Ctrl-C is therefore always the full abort.
  */
-function provisionalAnswerOption(renderer: Renderer): Pick<RunTurnInput, 'onProvisionalAnswer'> {
+function provisionalAnswerOption(renderer: Renderer,
+  interrupt?: TurnInterruptController): Pick<RunTurnInput, 'onProvisionalAnswer'> {
   // Only the text renderer implements printProvisionalConclusion.
   return renderer.printProvisionalConclusion
-    ? {onProvisionalAnswer: ({conclusion}) => renderer.printProvisionalConclusion?.(conclusion)}
+    ? {onProvisionalAnswer: ({conclusion}) => {
+        renderer.printProvisionalConclusion?.(conclusion);
+        // From now on the user has read the answer: a stop ends only its review.
+        interrupt?.markProvisionalDelivered();
+      }}
     : {};
+}
+
+/** The turn's stop signals; full abort surfaces as TurnInterruptedError. */
+function interruptOptions(interrupt?: TurnInterruptController): Pick<RunTurnInput, 'signal' | 'reviewStopSignal'> {
+  return interrupt ? {signal: interrupt.signal, reviewStopSignal: interrupt.reviewStopSignal} : {};
+}
+
+async function withTurnInterrupt<T>(ctx: TurnRunnerContext,
+  run: (interrupt?: TurnInterruptController) => Promise<T>): Promise<T> {
+  const interrupt = ctx.interruptSource ? new TurnInterruptController({source: ctx.interruptSource}) : undefined;
+  try {
+    return await run(interrupt);
+  } catch (error) {
+    if (interrupt?.interrupted && !isTurnInterrupted(error)) throw new TurnInterruptedError();
+    throw error;
+  } finally {
+    interrupt?.dispose();
+  }
 }
 
 const CLI_LEVEL3_LINEAGE_REASON = 'cli-level3-degraded' as const;
@@ -59,6 +84,11 @@ export interface TurnRunnerContext {
   paths: CliPaths;
   service: CliAnalyzeService;
   renderer: Renderer;
+  /**
+   * Ctrl-C source for the running turn (process SIGINT for one-shot commands,
+   * readline for the REPL). Without it the turn has no interrupt handling.
+   */
+  interruptSource?: InterruptSource;
 }
 
 export interface TurnResult {
@@ -78,16 +108,26 @@ export interface TurnResult {
  */
 export async function startSession(
   ctx: TurnRunnerContext,
-  input: {
-    tracePath: string;
-    query: string;
-    referenceTracePath?: string;
-    analysisMode?: CliAnalysisMode;
-    codeAwareMode?: CodeAwareMode;
-    codebaseIds?: string[];
-    knowledgeSourceIds?: string[];
-    capture?: TraceCaptureResult;
-  },
+  input: StartSessionInput,
+): Promise<TurnResult> {
+  return withTurnInterrupt(ctx, interrupt => runStartSession(ctx, input, interrupt));
+}
+
+interface StartSessionInput {
+  tracePath: string;
+  query: string;
+  referenceTracePath?: string;
+  analysisMode?: CliAnalysisMode;
+  codeAwareMode?: CodeAwareMode;
+  codebaseIds?: string[];
+  knowledgeSourceIds?: string[];
+  capture?: TraceCaptureResult;
+}
+
+async function runStartSession(
+  ctx: TurnRunnerContext,
+  input: StartSessionInput,
+  interrupt?: TurnInterruptController,
 ): Promise<TurnResult> {
   const tracePath = path.resolve(input.tracePath);
   logText(ctx, `Loading trace: ${tracePath}`);
@@ -154,7 +194,8 @@ export async function startSession(
       ctx.renderer.onEvent(update);
       if (streamFile) appendStreamEvent(streamFile, update);
     },
-    ...provisionalAnswerOption(ctx.renderer),
+    ...provisionalAnswerOption(ctx.renderer, interrupt),
+    ...interruptOptions(interrupt),
   });
   const persistedQuery = result.privateKnowledge
     ? privateAnalysisQueryMessage(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
@@ -215,6 +256,8 @@ export async function startSession(
       status: result.result.success ? 'completed' : 'failed',
     },
   });
+  // The turn is saved: Ctrl-C no longer belongs to it.
+  interrupt?.markCommitted();
   await completeSourceSupplement(ctx, sp, resolvedSessionId, result, 1, analysisEvidence);
 
   return {
@@ -245,6 +288,14 @@ function escapeHtml(value: string): string {
 export async function continueSession(
   ctx: TurnRunnerContext,
   input: { sessionId: string; query: string },
+): Promise<TurnResult> {
+  return withTurnInterrupt(ctx, interrupt => runContinueSession(ctx, input, interrupt));
+}
+
+async function runContinueSession(
+  ctx: TurnRunnerContext,
+  input: { sessionId: string; query: string },
+  interrupt?: TurnInterruptController,
 ): Promise<TurnResult> {
   const userSessionId = input.sessionId;
   const sp = sessionPaths(ctx.paths, userSessionId);
@@ -323,7 +374,8 @@ export async function continueSession(
       ctx.renderer.onEvent(update);
       appendStreamEvent(streamFile, update);
     },
-    ...provisionalAnswerOption(ctx.renderer),
+    ...provisionalAnswerOption(ctx.renderer, interrupt),
+    ...interruptOptions(interrupt),
   };
   let result: RunTurnOutput;
   try {
@@ -397,6 +449,8 @@ export async function continueSession(
       status: result.result.success ? 'completed' : 'failed',
     },
   });
+  // The turn is saved: Ctrl-C no longer belongs to it.
+  interrupt?.markCommitted();
   await completeSourceSupplement(ctx, sp, userSessionId, result, nextTurn, analysisEvidence);
 
   if (degraded) {

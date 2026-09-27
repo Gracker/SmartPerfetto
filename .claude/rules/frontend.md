@@ -95,10 +95,27 @@ npm run generate:frontend-types
 
 The plugin talks to `/api/agent/v1/*`.
 
+- Draft, provisional and final are three states of one answer message.
+  `answer_token` / `answer_segment_reset` (runtimes with
+  `draftAnswerStreaming` only) are a display-only draft owned by
+  `sse_event_handlers` `streamingAnswer`: every event carries `runId` +
+  `attempt` (no identity, no draft), events of an older attempt or another run
+  are dropped (one pure rule, `reduceAnswerDraft` in `answer_draft.ts`, used
+  by both draft owners), a reset
+  clears the draft, and a draft message carries `answerDraft: true`.
 - `conclusion` with `provisional: true` is the finished answer while its one
   semantic review runs: render it with a pending-verification cue on the same
-  message, but keep the run active (loading, stop control, session lock). A
-  legacy conclusion without the flag is still near terminal.
+  message. A `conclusion` without the flag is the final answer of a run with no
+  review: render it without a cue. Either replaces the draft in place and
+  finalizes it (later draft events are ignored), and either keeps the run active
+  (loading, stop control, session lock) until `analysis_completed`; a legacy
+  stream that ends without it stops on `end`.
+- A message still in draft state is never stored (`isStorableMessage` in
+  `session_manager`); a stop during the draft is a full cancel that replaces it
+  with the cancelled notice (in conversation mode only after the cancel
+  response says so: a `review_stop_requested` answer means the provisional
+  answer was already on the way, so the stream stays attached), and an error, stream end or a verdict without a
+  body discards it.
 - `analysis_completed` is terminal: it replaces that message with the verdict,
   report generation has finished and report metadata is available. Error,
   cancellation, or a stream end without it keeps the text and marks it
@@ -106,7 +123,10 @@ The plugin talks to `/api/agent/v1/*`.
 - Conversation mode receives the same answer as `provisional_answer` and then
   `run_completed`; both use the deterministic
   `conversation-<sessionId>-<runId>-assistant` id, and the conversation store is
-  written only with the verdict.
+  written only with the verdict. Its answer draft arrives as live-only
+  `runtime_update` answer events and is rendered by `ai_panel` into that same
+  message; the loading label is read only
+  from `progress` updates, never from an answer or string payload.
 - Mode/provider changes that alter SDK context must start a fresh backend agent
   session instead of reusing a session with incompatible turn budgets or
   provider state.
@@ -142,10 +162,20 @@ even when no answer tokens were streamed.
   review: the cancel answers the non-terminal `review_stop_requested`, the SSE
   stream stays attached, and the composer is released on `analysis_completed`.
   While that run is still loading, the stop control reads "force stop" and a
-  second press is the full cancel. A `review_stop_requested` that arrives after
-  the verdict (loading already ended) is a no-op.
-  In conversation mode a new message first stops that review and waits for the
-  previous run to settle, so its answer precedes the new question in history.
+  second press forces: the backend waits (up to its review-stop watchdog) for
+  the run to commit, then answers `cancelled` (full cancel), or `completed`
+  with `outcome: committed` (its verdict) or `outcome: review_not_finished`
+  (the read answer kept as an unverified partial turn); those outcomes
+  reattach the stream like `review_stop_requested` and let
+  `analysis_completed` land (a `review_not_finished` verdict keeps the
+  unfinished cue). A `review_stop_requested` that arrives after the verdict
+  (loading already ended) is a no-op.
+  In conversation mode the cancel never blocks: the first stop after the
+  provisional answer returns `review_stop_requested` at once and the verdict
+  arrives with `run_completed`. A new message first stops that review and waits
+  (bounded) for the previous run to settle, so its answer precedes the new
+  question in history. A turn stored as `terminationReason: review_not_finished`
+  renders with the same unfinished cue, live and restored.
 
 ## Run Conflicts
 

@@ -360,6 +360,30 @@ describe('OpenAI native intent transport streaming', () => {
     model: 'm', status, error: null, incomplete_details: null, output: [{type: 'message', role: 'assistant', status: 'completed',
       content: [{type: 'output_text', text}]}], ...extra}});
 
+  it('reports first output, usage and the reasoning control to an observer without changing the result', async () => {
+    const seen: string[] = [];
+    const usage: unknown[] = [];
+    const observer = {firstOutput: () => seen.push('first'), usage: (value: unknown) => usage.push(value),
+      reasoning: (policy: string) => seen.push(policy)};
+    const chatFetch = once(sse([chat({role: 'assistant'}), chat({reasoning_content: 'thinking'}), chat({content: 'fine'}, 'stop'),
+      'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":2}}\n\n', 'data: [DONE]\n\n']));
+    const plain = await runOpenAiIntentTransport(input('chat_completions', once(sse([chat({content: 'fine'}, 'stop'),
+      'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":2}}\n\n', 'data: [DONE]\n\n']))));
+    const observed = await runOpenAiIntentTransport({...input('chat_completions', chatFetch), observer});
+    expect(observed).toEqual(plain);
+    expect(seen).toEqual(['provider_default', 'first']);
+    expect(usage).toEqual([{prompt_tokens: 9, completion_tokens: 2}]);
+
+    const responsesSeen: string[] = [];
+    const responsesFetch = once(sse([event({type: 'response.output_text.delta', item_id: 'm', delta: '{}'}),
+      final('completed', {usage: {input_tokens: 5, output_tokens: 1}})]));
+    const responsesUsage: unknown[] = [];
+    await runOpenAiIntentTransport({...input('responses', responsesFetch),
+      observer: {firstOutput: () => responsesSeen.push('first'), usage: (value: unknown) => responsesUsage.push(value)}});
+    expect(responsesSeen).toEqual(['first']);
+    expect(responsesUsage).toEqual([{input_tokens: 5, output_tokens: 1}]);
+  });
+
   it('asks both protocols to stream', async () => {
     for (const protocol of ['chat_completions', 'responses'] as const) {
       const fetchImpl = once(new Response('{}', {status: 200}));

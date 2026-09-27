@@ -481,6 +481,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       production: false,
       publicRuntime: false,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
   });
 
@@ -792,6 +793,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       production: true,
       publicRuntime: true,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
   });
 

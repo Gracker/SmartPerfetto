@@ -128,6 +128,11 @@ export class ConversationSessionStore {
         (finalizedTurn && descriptor.lastRun.status !== 'running' && previous.lastRun.runId !== descriptor.lastRun.runId))) {
         throw new Error('conversation_recovery_stale_run');
       }
+      // One terminal write per run: a turn that already settled is never rewritten.
+      if (previous && finalizedTurn && descriptor.lastRun.status !== 'running' &&
+        previous.lastRun.runId === descriptor.lastRun.runId && previous.lastRun.status !== 'running') {
+        throw new Error('conversation_recovery_turn_already_terminal');
+      }
       if (finalizedTurn) {
         if (finalizedTurn.id !== descriptor.lastRun.runId || finalizedTurn.turnIndex !== descriptor.lastRun.turnIndex) {
           throw new Error('conversation_recovery_turn_identity_mismatch');

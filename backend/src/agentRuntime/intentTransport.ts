@@ -2,6 +2,13 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {
+  runtimeOutcomeFromError,
+  startRuntimeModelCall,
+  type RuntimeModelCallStart,
+  type RuntimePerformanceRecorder,
+} from './runtimePerformance';
+
 export interface IntentTransportInput {
   prompt: string;
   systemPrompt: string;
@@ -9,6 +16,17 @@ export interface IntentTransportInput {
   /** Absolute epoch milliseconds, shared by setup and the one provider call. */
   deadlineMs: number;
   outputByteLimit: number;
+  /** Timing and usage observer for internal performance receipts; never changes the result. */
+  observer?: IntentTransportObserver;
+}
+
+export interface IntentTransportObserver {
+  /** Whether the request carried a reasoning control (`disabled`) or left the provider default. */
+  reasoning?(policy: 'provider_default' | 'disabled'): void;
+  /** The first provider output of the reply (text, reasoning or tool call). */
+  firstOutput?(): void;
+  /** Provider-reported usage object, exactly as returned. */
+  usage?(usage: unknown): void;
 }
 
 export type IntentTransportUnavailableReason =
@@ -148,4 +166,36 @@ export function intentTransportTextResult(
     return {status: 'unavailable', reason: 'output_limit'};
   }
   return {status: 'ok', text, ...receipt};
+}
+
+/**
+ * Dispatch one transport request inside an internal model-call record. Without
+ * a recorder the request is passed through unchanged; with one, the only
+ * addition is an observer that never changes the result.
+ */
+export async function dispatchWithModelCallRecord(
+  recorder: RuntimePerformanceRecorder | undefined,
+  call: RuntimeModelCallStart,
+  input: IntentTransportInput,
+  dispatch: (input: IntentTransportInput) => Promise<IntentTransportResult>,
+): Promise<IntentTransportResult> {
+  if (!recorder) return dispatch(input);
+  const span = startRuntimeModelCall(recorder, call);
+  let reasoning: 'provider_default' | 'disabled' | undefined;
+  let usage: unknown;
+  const observer: IntentTransportObserver = {
+    firstOutput: () => span.recordFirstOutput(),
+    usage: value => { usage = value; },
+    reasoning: policy => { reasoning = policy; },
+  };
+  try {
+    const result = await dispatch({...input, observer});
+    span.end({outcome: result.status === 'ok' ? 'ok' : input.signal?.aborted ? 'cancelled' : 'error',
+      ...(result.status === 'ok' && result.actualModel ? {model: result.actualModel} : {}),
+      ...(reasoning ? {reasoning} : {}), usage});
+    return result;
+  } catch (error) {
+    span.end({outcome: runtimeOutcomeFromError(error, input.signal), ...(reasoning ? {reasoning} : {}), usage});
+    throw error;
+  }
 }

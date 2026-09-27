@@ -12,6 +12,7 @@ import {toAnalysisHistoryTurn, renderAnalysisHistoryContext, createAnalysisHisto
 import type { CliAnalyzeService, RunTurnOutput } from '../cliAnalyzeService';
 import type { Renderer } from '../../repl/renderer';
 import type { CliSessionConfig } from '../../types';
+import { ForwardingInterruptSource, TurnInterruptedError } from '../turnInterrupt';
 
 describe('truncateAtBoundary', () => {
   test('returns text unchanged when shorter than max', () => {
@@ -317,6 +318,103 @@ describe('continueSession Level-3 lineage', () => {
     expect(result.degraded).toBe(false);
     expect(turnMarkdown).toContain('此会话因 trace 重载已从原会话降级续接');
     expect(turnMarkdown).toContain('backend-original');
+  });
+
+  describe('Ctrl-C', () => {
+    /** A turn that prints its answer, then finalizes only when the review is stopped. */
+    function reviewingService(options: {deliver?: boolean; ignoreReviewStop?: boolean; supplement?: Promise<any>} = {}) {
+      let provisionalShown!: () => void;
+      const shown = new Promise<void>(resolve => {provisionalShown = resolve;});
+      const service = {
+        reloadTraceById: jest.fn(async () => true),
+        runTurn: jest.fn(async (input: any) => {
+          input.onSessionReady?.('backend-old');
+          if (options.deliver !== false) input.onProvisionalAnswer?.({conclusion: 'provisional body'});
+          provisionalShown();
+          await new Promise<void>((resolve, reject) => {
+            input.signal.addEventListener('abort', () => reject(input.signal.reason), {once: true});
+            if (!options.ignoreReviewStop) input.reviewStopSignal.addEventListener('abort', () => resolve(), {once: true});
+          });
+          return {...makeRunTurnOutput('backend-old', 'trace-old'),
+            ...(options.supplement ? {sourceSupplementTask: options.supplement} : {})};
+        }),
+      } as unknown as CliAnalyzeService;
+      return {service, shown};
+    }
+    const textRenderer = () => ({...makeRenderer(), printProvisionalConclusion: jest.fn()});
+
+    it('text: the first press after the printed answer stops only the review and the turn is saved', async () => {
+      const sp = seedSession();
+      const source = new ForwardingInterruptSource();
+      const {service, shown} = reviewingService();
+      const turn = continueSession({paths, service, renderer: textRenderer(), interruptSource: source},
+        {sessionId: 'agent-1', query: '继续分析'});
+      await shown;
+      expect(source.interrupt()).toBe(true);
+      await expect(turn).resolves.toMatchObject({turn: 2});
+      expect(fs.existsSync(path.join(sp.turnsDir, '002.md'))).toBe(true);
+      const runInput = (service.runTurn as any).mock.calls[0][0];
+      expect(runInput.reviewStopSignal.aborted).toBe(true);
+      expect(runInput.signal.aborted).toBe(false);
+      // The turn released Ctrl+C.
+      expect(source.interrupt()).toBe(false);
+    });
+
+    it('text: a press before the answer is the full abort and nothing is saved', async () => {
+      const sp = seedSession();
+      const source = new ForwardingInterruptSource();
+      const {service, shown} = reviewingService({deliver: false});
+      const turn = continueSession({paths, service, renderer: textRenderer(), interruptSource: source},
+        {sessionId: 'agent-1', query: '继续分析'});
+      await shown;
+      source.interrupt();
+      await expect(turn).rejects.toBeInstanceOf(TurnInterruptedError);
+      expect(fs.existsSync(path.join(sp.turnsDir, '002.md'))).toBe(false);
+      expect(JSON.parse(fs.readFileSync(sp.config, 'utf-8')).turnCount).toBe(1);
+    });
+
+    it('text: a second press forces the abort when the review stop does not settle', async () => {
+      const sp = seedSession();
+      const source = new ForwardingInterruptSource();
+      const {service, shown} = reviewingService({ignoreReviewStop: true});
+      const turn = continueSession({paths, service, renderer: textRenderer(), interruptSource: source},
+        {sessionId: 'agent-1', query: '继续分析'});
+      await shown;
+      source.interrupt();
+      source.interrupt();
+      await expect(turn).rejects.toBeInstanceOf(TurnInterruptedError);
+      expect(fs.existsSync(path.join(sp.turnsDir, '002.md'))).toBe(false);
+    });
+
+    it.each(['json', 'ndjson'] as const)('%s: the first press is the full abort', async format => {
+      seedSession();
+      const source = new ForwardingInterruptSource();
+      const {service, shown} = reviewingService();
+      const turn = continueSession({paths, service, renderer: {...makeRenderer(), format}, interruptSource: source},
+        {sessionId: 'agent-1', query: '继续分析'});
+      await shown;
+      source.interrupt();
+      await expect(turn).rejects.toBeInstanceOf(TurnInterruptedError);
+    });
+
+    it('releases Ctrl-C once the turn is committed, before the source supplement', async () => {
+      const sp = seedSession();
+      const source = new ForwardingInterruptSource();
+      let finishSupplement!: (value: undefined) => void;
+      const supplement = new Promise<undefined>(resolve => {finishSupplement = resolve;});
+      const {service, shown} = reviewingService({supplement});
+      const turn = continueSession({paths, service, renderer: textRenderer(), interruptSource: source},
+        {sessionId: 'agent-1', query: '继续分析'});
+      await shown;
+      source.interrupt();
+      for (let attempt = 0; attempt < 50 && !fs.existsSync(path.join(sp.turnsDir, '002.md')); attempt++) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(fs.existsSync(path.join(sp.turnsDir, '002.md'))).toBe(true);
+      expect(source.interrupt()).toBe(false);
+      finishSupplement(undefined);
+      await expect(turn).resolves.toMatchObject({turn: 2});
+    });
   });
 
   it('writes the runtime-resolved code-aware mode back to resumed session config', async () => {

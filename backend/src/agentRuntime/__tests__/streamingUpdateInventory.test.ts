@@ -14,6 +14,7 @@ const STREAMING_UPDATE_TYPES = [
   'finding',
   'progress',
   'answer_token',
+  'answer_segment_reset',
   'conclusion',
   'error',
   'scene_detected',
@@ -72,6 +73,8 @@ const SSE_DATA_CONTRACT_STREAMING_EVENTS = [
   'error',
   'thought',
   'tool_call',
+  'answer_token',
+  'answer_segment_reset',
   'conclusion',
   'scene_detected',
   'track_data',
@@ -103,6 +106,7 @@ describe('StreamingUpdate public event inventory', () => {
       'finding',
       'progress',
       'answer_token',
+      'answer_segment_reset',
       'conclusion',
       'error',
       'scene_detected',
@@ -170,6 +174,7 @@ describe('StreamingUpdate public event inventory', () => {
   it('documents CLI live-stream filtering for final-answer events', () => {
     expect(shouldExposeLiveStreamingUpdate(update('conclusion'))).toBe(false);
     expect(shouldExposeLiveStreamingUpdate(update('answer_token'))).toBe(false);
+    expect(shouldExposeLiveStreamingUpdate(update('answer_segment_reset'))).toBe(false);
     expect(shouldExposeLiveStreamingUpdate(update('tool_call'))).toBe(true);
     expect(shouldExposeLiveStreamingUpdate(update('data'))).toBe(true);
   });

@@ -7,14 +7,22 @@ import { createSseBridge, extractSdkToolResultBlocks, isSdkToolResultFailure } f
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
 import {__testing as claudeRuntimeTesting} from '../../agentRuntime/engines/claude/claudeRuntime';
 import type { StreamingUpdate } from '../../agent/types';
+import {createAnswerDraftStream} from '../../agentRuntime/answerDraftStream';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {clearCodeAwareOutputGuards, createCodeAwareStreamingTextProjection, registerCodeAwareCanary}
   from '../../services/security/codeAwareOutputRegistry';
 
+/** A bridge whose draft tokens go to the same emitter as its other updates. */
+function bridgeFor(emit: (update: StreamingUpdate) => unknown,
+  ...rest: Parameters<typeof createSseBridge> extends [unknown, unknown, ...infer Rest] ? Rest : never) {
+  const deliver = (update: StreamingUpdate) => { emit(update); };
+  return createSseBridge(deliver, createAnswerDraftStream('run-test', deliver), ...rest);
+}
+
 describe('createSseBridge', () => {
   it.each([false, true])('retains private source outcomes before transport truncation (body=%s)', includeBody => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge(update => updates.push(update));
+    const bridge = bridgeFor(update => updates.push(update));
     const result = {success: true, matches: Array.from({length: 20}, (_, i) => ({
       referenceId: `source-reference-${i}`, codebaseId: 'codebase-a',
       filePath: `src/PRIVATE_SOURCE_PATH_${i}.kt`, lineRange: {start: 1, end: 20},
@@ -40,7 +48,7 @@ describe('createSseBridge', () => {
 
   it('does not guess tool identity for unknown results or emit duplicate responses', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge(update => updates.push(update));
+    const bridge = bridgeFor(update => updates.push(update));
     const dispatch = {type: 'assistant', message: {content: [
       {type: 'tool_use', id: 'call-a', name: 'read_codebase_file', input: {}},
       {type: 'tool_use', id: 'call-b', name: 'execute_sql', input: {}},
@@ -96,7 +104,7 @@ describe('createSseBridge', () => {
 
   it('does not emit a terminal error for SDK max-turn results', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
 
     bridge.handleMessage({
       type: 'result',
@@ -128,7 +136,7 @@ describe('createSseBridge', () => {
 
   it('still emits errors for non-recoverable SDK result failures', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
 
     bridge.handleMessage({
       type: 'result',
@@ -147,7 +155,7 @@ describe('createSseBridge', () => {
 
   it('localizes max-turn progress messages in English', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update), 'en');
+    const bridge = bridgeFor((update) => updates.push(update), 'en');
 
     bridge.handleMessage({
       type: 'result',
@@ -173,7 +181,7 @@ describe('createSseBridge', () => {
   it('handles SDK status and rate-limit control messages without unhandled log noise', () => {
     const updates: StreamingUpdate[] = [];
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
 
     try {
       bridge.handleMessage({
@@ -213,7 +221,7 @@ describe('createSseBridge', () => {
 
   it('logs only the shape of unhandled SDK messages', () => {
     const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
-    const bridge = createSseBridge(() => {});
+    const bridge = bridgeFor(() => {});
 
     try {
       bridge.handleMessage({
@@ -234,7 +242,7 @@ describe('createSseBridge', () => {
 
   it('can flush pending streamed answer text when a stream is cancelled before assistant/result', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
 
     bridge.handleMessage({
       type: 'stream_event',
@@ -250,13 +258,13 @@ describe('createSseBridge', () => {
     expect(bridge.getAccumulatedAnswer()).toBe('完整修正报告');
     expect(updates).toContainEqual(expect.objectContaining({
       type: 'answer_token',
-      content: { token: '完整修正报告' },
+      content: { token: '完整修正报告', runId: 'run-test', attempt: 0 },
     }));
   });
 
   it('maps parallel tool results back to their SDK tool_use_id', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
 
     bridge.handleMessage({
       type: 'assistant',
@@ -299,7 +307,7 @@ describe('createSseBridge', () => {
 
   it('bounds externally projected tool results without changing the source payload', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
     const sourcePayload = {success: true, rows: ['x'.repeat(10_000)]};
 
     bridge.handleMessage({
@@ -330,7 +338,7 @@ describe('createSseBridge', () => {
 
   it('retains complete multi-chunk answers beyond the former 256 KiB limit, including after dispose', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge(update => updates.push(update));
+    const bridge = bridgeFor(update => updates.push(update));
     const chunks = ['a'.repeat(150_000), '汉'.repeat(150_000), '\nComplete final answer tail.'];
     for (const text of chunks) {
       bridge.handleMessage({type: 'stream_event', event: {
@@ -358,7 +366,7 @@ describe('createSseBridge', () => {
     const split = Math.floor(canary.length / 2);
     registerCodeAwareCanary(sessionId, canary);
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge(update => updates.push(update), 'en', {},
+    const bridge = bridgeFor(update => updates.push(update), 'en', {},
       createCodeAwareStreamingTextProjection(sessionId, 'answer'));
     try {
       const prefix = 'a'.repeat(256 * 1024 - split);
@@ -387,7 +395,7 @@ describe('createSseBridge', () => {
   });
 
   it('clears a large misclassified answer when tool use is discovered and accumulates the next answer', () => {
-    const bridge = createSseBridge(() => {});
+    const bridge = bridgeFor(() => {});
     bridge.handleMessage({type: 'stream_event', event: {
       type: 'content_block_delta', delta: {type: 'text_delta', text: 'intermediate '.repeat(30_000)},
     }});
@@ -403,11 +411,75 @@ describe('createSseBridge', () => {
     expect(bridge.getAccumulatedAnswer()).toBe('Actual final answer');
   });
 
+  describe('answer draft segments', () => {
+    const draftEvents = (updates: StreamingUpdate[]) => updates
+      .filter(update => update.type === 'answer_token' || update.type === 'answer_segment_reset')
+      .map(update => [update.type, update.content.token ?? null, update.content.runId, update.content.attempt]);
+    const delta = (text: string, parent: string | null = null) => ({type: 'stream_event', parent_tool_use_id: parent,
+      event: {type: 'content_block_delta', delta: {type: 'text_delta', text}}});
+    const messageStart = (parent: string | null = null) => ({type: 'stream_event', parent_tool_use_id: parent,
+      event: {type: 'message_start', message: {}}});
+
+    it('revokes the draft at a tool_use after answer text and at the next message_start', () => {
+      jest.useFakeTimers();
+      try {
+        const updates: StreamingUpdate[] = [];
+        const bridge = createSseBridge(update => updates.push(update),
+          createAnswerDraftStream('run-c', update => updates.push(update)), 'en', {}, undefined);
+        bridge.handleMessage(messageStart());
+        bridge.handleMessage(delta('Looks like the answer'));
+        jest.advanceTimersByTime(250);
+        bridge.handleMessage({type: 'stream_event', parent_tool_use_id: null, event: {
+          type: 'content_block_start', content_block: {type: 'tool_use', id: 'tool-1', name: 'query'},
+        }});
+        bridge.handleMessage({type: 'user', message: {content: [{type: 'tool_result', tool_use_id: 'tool-1', content: '{}'}]}});
+        bridge.handleMessage(messageStart());
+        bridge.handleMessage(delta('Final answer'));
+        jest.advanceTimersByTime(250);
+        // A retry of the same response starts over.
+        bridge.handleMessage(messageStart());
+        expect(draftEvents(updates)).toEqual([
+          ['answer_token', 'Looks like the answer', 'run-c', 0],
+          ['answer_segment_reset', null, 'run-c', 1],
+          ['answer_token', 'Final answer', 'run-c', 1],
+          ['answer_segment_reset', null, 'run-c', 2],
+        ]);
+        bridge.dispose();
+      } finally {jest.useRealTimers();}
+    });
+
+    it('never lets a sub-agent final turn into the draft or the accumulated answer', () => {
+      jest.useFakeTimers();
+      try {
+        const updates: StreamingUpdate[] = [];
+        const bridge = createSseBridge(update => updates.push(update),
+          createAnswerDraftStream('run-c', update => updates.push(update)), 'en', {}, undefined);
+        bridge.handleMessage(messageStart('task-1'));
+        bridge.handleMessage(delta('SUB_AGENT_SUMMARY', 'task-1'));
+        jest.advanceTimersByTime(250);
+        bridge.handleMessage({type: 'assistant', parent_tool_use_id: 'task-1',
+          message: {content: [{type: 'text', text: 'SUB_AGENT_SUMMARY'}]}});
+        expect(draftEvents(updates)).toEqual([]);
+        expect(bridge.getAccumulatedAnswer()).toBe('');
+        expect(updates).toContainEqual(expect.objectContaining({type: 'thought',
+          content: {thought: 'SUB_AGENT_SUMMARY'}}));
+        bridge.handleMessage(messageStart());
+        bridge.handleMessage(delta('Main answer'));
+        jest.advanceTimersByTime(250);
+        bridge.handleMessage({type: 'assistant', parent_tool_use_id: null,
+          message: {content: [{type: 'text', text: 'Main answer'}]}});
+        expect(draftEvents(updates)).toEqual([['answer_token', 'Main answer', 'run-c', 0]]);
+        expect(bridge.getAccumulatedAnswer()).toBe('Main answer');
+        bridge.dispose();
+      } finally {jest.useRealTimers();}
+    });
+  });
+
   it('disposes pending timers without emitting buffered text', () => {
     jest.useFakeTimers();
     try {
       const updates: StreamingUpdate[] = [];
-      const bridge = createSseBridge(update => updates.push(update));
+      const bridge = bridgeFor(update => updates.push(update));
       bridge.handleMessage({type: 'stream_event', event: {
         type: 'content_block_delta', delta: {type: 'text_delta', text: 'must not flush after dispose'},
       }});
@@ -420,7 +492,7 @@ describe('createSseBridge', () => {
 
   it('projects private wiki tool results before emitting agent_response', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
     bridge.handleMessage({
       type: 'assistant',
       message: {content: [{
@@ -463,7 +535,7 @@ describe('createSseBridge', () => {
 
   it('does not republish an unassociated replay result as a new tool response', () => {
     const updates: StreamingUpdate[] = [];
-    const bridge = createSseBridge((update) => updates.push(update));
+    const bridge = bridgeFor((update) => updates.push(update));
     const privateResult = JSON.stringify({result: {
       query: 'Handler',
       probed: ['android_internals_wiki'],

@@ -2956,6 +2956,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       production: false,
       publicRuntime: false,
       promptCache: { systemPromptDynamicBoundary: false },
+      draftAnswerStreaming: false,
     });
 
     expect(sdkPrompt).toBe('stable\n\nvolatile');
