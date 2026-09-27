@@ -10,7 +10,7 @@ import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseD
   type ConclusionContractDeclarationParseResult, type ConclusionContractSidecarParseResult,
   MAX_CONCLUSION_STRUCTURE_DETAILS, isConclusionContractStructureDetail,
   MAX_RELATION_PROPOSAL_DIAGNOSTICS, isConclusionRelationProposalDiagnostic, CONCLUSION_PARSE_ISSUE_CODES,
-  MAX_CLAIM_DIAGNOSTICS, isConclusionClaimDiagnostic,
+  MAX_CLAIM_DIAGNOSTICS, isConclusionClaimDiagnostic, copyConclusionClaimDiagnostic,
   type ConclusionContractStructureDetail, type ConclusionContractParseIssue,
   type ConclusionRelationProposalDiagnostic, type ConclusionClaimDiagnostic} from '../agent/core/conclusionContract';
 import {parseConversationResponseWithProjection, type ConversationEvidenceRef,
@@ -139,7 +139,7 @@ export function sanitizeCandidateProtocolDiagnostic(value: unknown): CandidatePr
     ...(data.details ? {details: data.details.map(detail => ({...detail}))} : {}),
     ...(data.relationProposalDiagnostics ? {relationProposalDiagnostics:
       data.relationProposalDiagnostics.map(detail => ({...detail}))} : {}),
-    ...(data.claimDiagnostics ? {claimDiagnostics: data.claimDiagnostics.map(detail => ({...detail}))} : {})};
+    ...(data.claimDiagnostics ? {claimDiagnostics: data.claimDiagnostics.map(copyConclusionClaimDiagnostic)} : {})};
 }
 
 export function buildCandidateProtocolDiagnostic(
@@ -184,7 +184,7 @@ export function buildCandidateProtocolDiagnostic(
     if (isConclusionClaimDiagnostic(claimDetail) && claimDetail.code === issue.code &&
         !seenClaimDiagnostics.has(claimDiagnosticKey(claimDetail)) && claimDiagnostics.length < MAX_CLAIM_DIAGNOSTICS) {
       seenClaimDiagnostics.add(claimDiagnosticKey(claimDetail));
-      claimDiagnostics.push({ordinal: claimDetail.ordinal, code: claimDetail.code, field: claimDetail.field});
+      claimDiagnostics.push(copyConclusionClaimDiagnostic(claimDetail));
     }
   }
   return {

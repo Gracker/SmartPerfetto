@@ -1,0 +1,186 @@
+{
+  "captured": {
+    "id": "identity:package_name",
+    "text": "该 trace 的应用包名为 com.tracedemo.stress。",
+    "kind": "identity",
+    "references": [
+      {
+        "evidenceRefId": "data:sql_table:current:3fec5ce28b81:5eed83efa53f:e94d94f0",
+        "rowIndex": 0,
+        "column": "process_name",
+        "value": "com.tracedemo.stress"
+      }
+    ],
+    "semantics": {
+      "schemaVersion": "claim_semantics@1",
+      "predicate": "captured.cell",
+      "polarity": "affirmed",
+      "discourse": "asserted",
+      "quantifier": "one",
+      "modality": "certain",
+      "scope": {
+        "subjectRefs": [
+          {
+            "evidenceRefId": "data:sql_table:current:3fec5ce28b81:5eed83efa53f:e94d94f0",
+            "rowIndex": 0,
+            "column": "process_name",
+            "value": "com.tracedemo.stress"
+          }
+        ],
+        "population": "cited_rows"
+      }
+    }
+  },
+  "numeric_toolcall": {
+    "id": "proc:thread_count",
+    "text": "该进程包含 28 个线程。",
+    "kind": "numeric",
+    "references": [
+      {
+        "rowIndex": 0,
+        "column": "thread_count",
+        "value": 28,
+        "sourceToolCallId": "execute_sql:1:f8541fd7"
+      }
+    ],
+    "semantics": {
+      "schemaVersion": "claim_semantics@1",
+      "predicate": "numeric.cell",
+      "polarity": "affirmed",
+      "discourse": "asserted",
+      "quantifier": "one",
+      "modality": "certain",
+      "scope": {
+        "subjectRefs": [
+          {
+            "rowIndex": 0,
+            "column": "thread_count",
+            "value": 28,
+            "sourceToolCallId": "execute_sql:1:f8541fd7"
+          }
+        ],
+        "population": "cited_rows"
+      },
+      "numeric": {
+        "operator": "eq",
+        "value": 28,
+        "unit": "count"
+      }
+    }
+  },
+  "subject_ne_refs": {
+    "id": "proc:main_process",
+    "text": "主要进程为 com.tracedemo.stress,pid=11077,upid=3。",
+    "kind": "identity",
+    "references": [
+      {
+        "rowIndex": 0,
+        "column": "pid",
+        "value": 11077,
+        "sourceToolCallId": "execute_sql:1:f8541fd7"
+      },
+      {
+        "rowIndex": 0,
+        "column": "upid",
+        "value": 3,
+        "sourceToolCallId": "execute_sql:1:f8541fd7"
+      }
+    ],
+    "semantics": {
+      "schemaVersion": "claim_semantics@1",
+      "predicate": "captured.cell",
+      "polarity": "affirmed",
+      "discourse": "asserted",
+      "quantifier": "one",
+      "modality": "certain",
+      "scope": {
+        "subjectRefs": [
+          {
+            "rowIndex": 0,
+            "column": "pid",
+            "value": 11077,
+            "sourceToolCallId": "execute_sql:1:f8541fd7"
+          }
+        ],
+        "population": "cited_rows"
+      }
+    }
+  },
+  "cond_rel": {
+    "id": "claim:running_ratio",
+    "text": "主线程运行态时长占整个 trace 窗口的比例约为 4.99%（由 750,758,864 ÷ 15,055,456,628 计算，约 4.987%），即其余约 95% 的时间未在 CPU 上运行。",
+    "kind": "inference",
+    "references": [
+      {
+        "evidenceRefId": "data:sql_table:current:bdc1add81488:2c7f84501985:e62ff819",
+        "rowIndex": 0,
+        "column": "total_running_ns",
+        "value": 750758864,
+        "sourceToolCallId": "execute_sql:1:e62ff819"
+      },
+      {
+        "evidenceRefId": "data:sql_table:current:bdc1add81488:2deea43e4ffc:3c186f5a",
+        "rowIndex": 0,
+        "column": "window_ns",
+        "value": 15055456628,
+        "sourceToolCallId": "execute_sql:2:3c186f5a"
+      }
+    ],
+    "relationRefs": [
+      "proposal:running_ratio"
+    ],
+    "semantics": {
+      "schemaVersion": "claim_semantics@1",
+      "predicate": "inference.computed_ratio",
+      "polarity": "affirmed",
+      "discourse": "asserted",
+      "quantifier": "one",
+      "modality": "certain",
+      "conditions": [
+        "ratio = total_running_ns / trace_window_ns",
+        "rounded for display: 约 4.99%"
+      ],
+      "scope": {
+        "population": "trace",
+        "timeRangeNs": {
+          "start": "5075955543372",
+          "end": "5091011000000"
+        }
+      }
+    }
+  },
+  "interval": {
+    "id": "trace:window",
+    "text": "trace 时间窗口从 40918196364721 ns 到 40922469009255 ns。",
+    "kind": "time_range",
+    "references": [
+      {
+        "evidenceRefId": "data:sql_table:current:648353d9e8ef:2a9c70fbf025:dddc9e33",
+        "rowIndex": 0,
+        "column": "start_ts",
+        "value": 40918196364721
+      },
+      {
+        "evidenceRefId": "data:sql_table:current:648353d9e8ef:2a9c70fbf025:dddc9e33",
+        "rowIndex": 0,
+        "column": "end_ts",
+        "value": 40922469009255
+      }
+    ],
+    "semantics": {
+      "schemaVersion": "claim_semantics@1",
+      "predicate": "interval.bounds",
+      "polarity": "affirmed",
+      "discourse": "asserted",
+      "quantifier": "one",
+      "modality": "certain",
+      "scope": {
+        "population": "trace",
+        "timeRangeNs": {
+          "start": "40918196364721",
+          "end": "40922469009255"
+        }
+      }
+    }
+  }
+}

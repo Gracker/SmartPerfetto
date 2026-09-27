@@ -1894,7 +1894,8 @@ describe('versioned conclusion declaration sidecar', () => {
     expect(result.issues).toEqual(expect.arrayContaining([
       {code: 'untrusted_parser_metadata', path: '$'},
       {code: 'invalid_semantics', path: 'claims[0].semantics',
-        claimDiagnostic: {ordinal: 1, code: 'invalid_semantics', field: 'semantics.schemaVersion'}},
+        // The omitted schema version is the canonical default, so the first real failure is polarity.
+        claimDiagnostic: {ordinal: 1, code: 'invalid_semantics', field: 'semantics.polarity'}},
     ]));
   });
 

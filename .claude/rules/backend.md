@@ -372,11 +372,29 @@ Keep these boundaries intact:
   declaration separately, with `claimDiagnostics` naming each failing claim's
   position and schema field (the first failing field per claim, at most 24
   entries, so the prompt asks for a declaration that passes the full
-  protocol). The repair is accepted only if the body is unchanged and it keeps
-  every declared claim id and at least as many claims; for Pi it replaces the
-  former full-answer correction of such a declaration, and for OpenAI its
+  protocol; a `semantics.numeric` failure adds the closed `subreason`
+  `shape|operator|value|unit`). The repair is accepted only if the body is
+  unchanged and it keeps every declared claim id and at least as many
+  claims; for Pi it replaces the former full-answer correction of such a
+  declaration, and for OpenAI its
   `invalid_protocol` continuation. Framing failures keep the existing
   full-answer path.
+- Declaration wire forms are canonicalized, never interpreted. The prompt keeps
+  teaching the full verbose declaration: in a same-window GLM A/B (9 questions ×
+  2 per arm), asking for minified JSON and showing examples without the nested
+  `schemaVersion` cut the sidecar by 12 % but produced 5 recoveries instead of 0
+  (2 missing declarations) and 14 % fewer declared claims, so a lighter
+  declaration is a parser tolerance, not a prompt instruction. The claim-semantics and relation-proposal `schemaVersion`
+  (each with one supported value) may be omitted: the item validators accept
+  the omission and the valid clone inserts it as the first key, so the
+  declaration parser, the legacy JSON branch and every direct item parser
+  agree. A `scope.timeRangeNs` bound of valid semantics may be a safe integer
+  and is stored as its decimal string. A valid declaration's canonical contract
+  and every `analysisDeliveryFingerprint` equal the verbose declaration's
+  (`conclusionDeclarationCanonicalization.test.ts`); invalid semantics and
+  proposals keep exactly what the model wrote. Protocol detection never reads
+  a nested version; the root `schemaVersion`, the root arrays and claim
+  `references` stay required.
 - Scene runs pace acquisition at the shared registry, after scope and
   lifecycle guards, through `RuntimeAcquisitionPolicy`: a reminder, then a
   first-revision pause lifted by any segment-bearing attempt, and a monotone
