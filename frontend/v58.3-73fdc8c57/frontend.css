@@ -6427,6 +6427,15 @@ kbd.pf-keycap.pf-spacing-large {
   font-size: 12px;
 }
 
+.ai-answer-verification-cue {
+  margin-bottom: 8px;
+  color: var(--chat-text-secondary);
+  font-size: 12px;
+}
+.ai-answer-verification-cue.ai-answer-verification-unfinished {
+  color: var(--chat-warning, #b26a00);
+}
+
 .ai-conversation-sources {
   margin-top: 10px;
   color: var(--chat-text-secondary);
