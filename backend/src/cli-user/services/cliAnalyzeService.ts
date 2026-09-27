@@ -45,7 +45,7 @@ import {
   type AnalysisRunPersistenceScope,
   type PersistedAnalysisRunStatus,
 } from '../../services/analysisRunStore';
-import {finalizeAnalysisResult} from '../../services/finalizeAnalysisResult';
+import {finalizeAnalysisResult, type ProvisionalAnalysisAnswer} from '../../services/finalizeAnalysisResult';
 import {resolveCapturedComparisonIdentity} from '../../services/comparisonAppendixService';
 import type {FinalResultQualityIssue} from '../../services/finalResultQualityGate';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
@@ -129,6 +129,7 @@ import {
   projectOwnerAnalysisError,
   privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
+  projectOwnerProvisionalConclusion,
 } from '../../services/security/privateAnalysisProjection';
 import {registerPrivateAnalysisQueryForEcho} from '../../services/security/codeAwareOutputRegistry';
 import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
@@ -200,6 +201,13 @@ export interface RunTurnInput {
   resolveCliTurnPath: (sessionId: string, turn: number) => string;
   /** Receives every StreamingUpdate from the orchestrator in real time. */
   onEvent: (update: StreamingUpdate) => void;
+  /**
+   * The finished answer (owner-projected for private runs) while its semantic
+   * review still runs. Kept apart from onEvent so the ndjson event stream is
+   * unchanged; the verdict arrives with the committed turn. Only the text
+   * renderer passes it, so json/ndjson progress never reads "answer readable".
+   */
+  onProvisionalAnswer?: (answer: {conclusion: string}) => void;
   /**
    * Fires once after `prepareSession` resolves, before `analyze()` starts
    * streaming events. Lets callers create the session folder + switch to
@@ -781,6 +789,7 @@ export class CliAnalyzeService {
             : undefined;
           assertActive();
           contextTransferred = true;
+          const onProvisionalAnswer = input.onProvisionalAnswer;
           const finalized = await finalizeAnalysisResult({result, context, query: input.query,
             owner: {runId: run.runId, signal: run.controller.signal,
               ...(primaryOptions.analysisContextFingerprint !== undefined
@@ -799,6 +808,12 @@ export class CliAnalyzeService {
                 console.error('[CliAnalyzeService] onEvent handler threw:', (err as Error).message);
               }
             },
+            // The finalizer treats a throwing observer as "not delivered".
+            ...(onProvisionalAnswer ? {onProvisionalAnswer: (answer: ProvisionalAnalysisAnswer) => {
+              assertActive();
+              onProvisionalAnswer({conclusion: projectOwnerProvisionalConclusion(primaryPrivateKnowledge, sessionId,
+                answer.conclusion, outputLanguage)});
+            }} : {}),
           });
           assertActive();
           result = finalized.result;

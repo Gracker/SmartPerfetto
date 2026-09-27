@@ -575,10 +575,42 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       onEvent: update => events.push(update)});
     const reviews = events.filter(event => event.type === 'progress' && (event.content as any)?.phase === 'final_review');
     expect(reviews.map(event => event.content)).toEqual([
-      expect.objectContaining({stage: 'started', deadlineAt, message: expect.stringContaining('分钟')}),
+      expect.objectContaining({stage: 'started', deadlineAt, message: '正在核验结论与其声明是否一致'}),
       expect.objectContaining({stage: 'finished', outcome: 'unavailable', reason: 'timeout',
         message: '结论复核未完成：语义复核超出时间预算'}),
     ]);
+  });
+
+  it('hands the provisional answer to its own callback and leaves the event stream unchanged', async () => {
+    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
+      input.onProvisionalAnswer?.({conclusion: 'Answer body.'});
+      input.onProgress?.({stage: 'final_review_started', deadlineAt: Date.now() + 60_000, answerReadable: true});
+      return {result: input.result};
+    });
+    const events: StreamingUpdate[] = [];
+    const provisional: string[] = [];
+    await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
+      onEvent: update => events.push(update), onProvisionalAnswer: ({conclusion}) => provisional.push(conclusion)});
+    expect(provisional).toEqual(['Answer body.']);
+    expect(events.some(event => event.type === 'conclusion')).toBe(false);
+    expect(mockFinalizeAnalysisResult.mock.calls[mockFinalizeAnalysisResult.mock.calls.length - 1]?.[0]).toEqual(expect.objectContaining({
+      onProvisionalAnswer: expect.any(Function)}));
+
+    // json/ndjson callers pass no callback: the finalizer then reports the review
+    // start without answerReadable, so the machine stream never gains that field.
+    const machineEvents: StreamingUpdate[] = [];
+    mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
+      const delivered = input.onProvisionalAnswer?.({conclusion: 'Answer body.'}) === true;
+      input.onProgress?.({stage: 'final_review_started', deadlineAt: Date.now() + 60_000,
+        ...(delivered ? {answerReadable: true} : {})});
+      return {result: input.result};
+    });
+    await new CliAnalyzeService().runTurn({...cliTurnBinding, traceId: 'trace-cli', query: '分析启动慢',
+      onEvent: update => machineEvents.push(update)});
+    expect(mockFinalizeAnalysisResult.mock.calls[mockFinalizeAnalysisResult.mock.calls.length - 1]?.[0]).not.toHaveProperty('onProvisionalAnswer');
+    const started = machineEvents.find(event => (event.content as any)?.phase === 'final_review');
+    expect(started?.content).not.toHaveProperty('answerReadable');
+    expect((started?.content as any)?.message).toBe('正在核验结论与其声明是否一致');
   });
 
   it('preserves the shared finalizer partial verdict across CLI result, session, report, and events', async () => {

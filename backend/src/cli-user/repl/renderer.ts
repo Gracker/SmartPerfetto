@@ -86,6 +86,11 @@ interface ConclusionMetadata {
 export interface Renderer {
   format: OutputFormat;
   onEvent(update: StreamingUpdate): void;
+  /**
+   * The finished answer while its semantic review still runs (text mode only).
+   * printConclusion then adds the verdict without repeating an unchanged body.
+   */
+  printProvisionalConclusion?(conclusion: string): void;
   /** Called once after the SDK result arrives — prints the conclusion block. */
   printConclusion(conclusion: string, meta: ConclusionMetadata): void;
   /** Called on fatal errors that abort the run. */
@@ -207,19 +212,43 @@ export function createRenderer(opts: RendererOptions): Renderer {
     }
   }
 
+  // Body already shown while the review ran; printConclusion does not repeat it.
+  let provisionalBody: string | undefined;
+
+  function printConclusionHeader(title: string, subtitle?: string): void {
+    const bar = '─'.repeat(Math.min(60, (process.stdout.columns || 80) - 4));
+    console.log(`\n${cyan(bar)}`);
+    console.log(subtitle ? `${bold(title)} ${dim(subtitle)}` : bold(title));
+    console.log(cyan(bar));
+  }
+
+  function printProvisionalConclusion(conclusion: string): void {
+    if (!conclusion.trim()) return;
+    closeAnswerStream();
+    const language = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
+    printConclusionHeader(localize(language, '结论', 'Conclusion'), localize(language,
+      '· 正在核验，核验结果随后给出', '· verification in progress; the verdict follows'));
+    console.log(conclusion);
+    provisionalBody = conclusion;
+  }
+
   function printConclusion(
     conclusion: string,
     meta: ConclusionMetadata,
   ): void {
     closeAnswerStream();
+    const language = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const bar = '─'.repeat(Math.min(60, (process.stdout.columns || 80) - 4));
-    console.log(`\n${cyan(bar)}`);
-    console.log(bold('结论'));
-    console.log(cyan(bar));
-    console.log(conclusion.trim() ? conclusion : dim(localize(
-      parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE),
-      '未生成可交付结论。', 'No deliverable conclusion was generated.',
-    )));
+    const bodyShown = provisionalBody !== undefined && provisionalBody.trim() === conclusion.trim();
+    provisionalBody = undefined;
+    if (bodyShown) {
+      printConclusionHeader(localize(language, '结论核验', 'Conclusion verification'));
+    } else {
+      printConclusionHeader('结论');
+      console.log(conclusion.trim() ? conclusion : dim(localize(
+        language, '未生成可交付结论。', 'No deliverable conclusion was generated.',
+      )));
+    }
     if (meta.analysisEvidence) {
       console.log('');
       console.log(renderCliAnalysisEvidence(
@@ -235,7 +264,6 @@ export function createRenderer(opts: RendererOptions): Renderer {
     if (meta.rounds !== undefined) bits.push(`${meta.rounds} rounds`);
     if (meta.durationMs !== undefined) bits.push(`${Math.round(meta.durationMs / 100) / 10}s`);
     if (bits.length) console.log(dim(bits.join(' · ')));
-    const language = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const claimLine = claimVerificationStatusLine(meta.claimVerification, language);
     if (claimLine) console.log(dim(claimLine));
     for (const line of investigationStatusLines(meta.investigationAssurance, language)) console.log(dim(line));
@@ -287,7 +315,7 @@ export function createRenderer(opts: RendererOptions): Renderer {
     console.log(dim(`\n  open ${meta.reportPath}  ·  smp ask ${meta.sessionId} "..."  ·  smp repl --resume ${meta.sessionId}`));
   }
 
-  return { format, onEvent, printConclusion, printError, printCompletion };
+  return { format, onEvent, printProvisionalConclusion, printConclusion, printError, printCompletion };
 }
 
 function createMachineRenderer(format: 'json' | 'ndjson'): Renderer {

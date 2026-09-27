@@ -25,7 +25,7 @@ import type { CliPaths, SessionPaths } from '../io/paths';
 import { ensureSessionLayout, sessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
 import type { CliSessionConfig, CliSessionLineage, CliTranscriptTurn } from '../types';
-import type { CliAnalyzeService, RunTurnOutput } from './cliAnalyzeService';
+import type { CliAnalyzeService, RunTurnInput, RunTurnOutput } from './cliAnalyzeService';
 import {commitSourceSupplementOutput, commitTurnOutputs} from './turnPersistence';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {analysisConfidenceIsGrounded} from '../../agentv3/analysisTermination';
@@ -41,6 +41,17 @@ import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {privateAnalysisQueryMessage} from '../../services/security/privateAnalysisProjection';
 import {toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
+
+/**
+ * Text output shows the answer while its semantic review runs. json/ndjson keep
+ * their exact event stream, so they never receive it (nor "answer readable").
+ */
+function provisionalAnswerOption(renderer: Renderer): Pick<RunTurnInput, 'onProvisionalAnswer'> {
+  // Only the text renderer implements printProvisionalConclusion.
+  return renderer.printProvisionalConclusion
+    ? {onProvisionalAnswer: ({conclusion}) => renderer.printProvisionalConclusion?.(conclusion)}
+    : {};
+}
 
 const CLI_LEVEL3_LINEAGE_REASON = 'cli-level3-degraded' as const;
 
@@ -143,6 +154,7 @@ export async function startSession(
       ctx.renderer.onEvent(update);
       if (streamFile) appendStreamEvent(streamFile, update);
     },
+    ...provisionalAnswerOption(ctx.renderer),
   });
   const persistedQuery = result.privateKnowledge
     ? privateAnalysisQueryMessage(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
@@ -311,6 +323,7 @@ export async function continueSession(
       ctx.renderer.onEvent(update);
       appendStreamEvent(streamFile, update);
     },
+    ...provisionalAnswerOption(ctx.renderer),
   };
   let result: RunTurnOutput;
   try {

@@ -198,7 +198,8 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
 
 5. 后端流式输出
    SDK/server events -> runtime bridge -> privacy/narrative projection -> SSE
-      -> frontend renders progress, tables, thought, answer tokens
+      -> frontend renders progress, tables, thought（对话模式另有 answer tokens）
+   finalizeAnalysisResult 发出语义复核时 -> provisional conclusion（正文定稿，核验待定）
 
 6. 结束与报告
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata

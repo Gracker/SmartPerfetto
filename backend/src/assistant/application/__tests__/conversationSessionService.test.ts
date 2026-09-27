@@ -219,6 +219,100 @@ describe('ConversationSessionService', () => {
     });
   });
 
+  describe('deliver first, verify after', () => {
+    const reviewingAdapter = (events: string[]) => {
+      const reviewed = deferred<ConversationRuntimeOutcome>();
+      let runCount = 0;
+      const adapter: ConversationRuntimeAdapter = {
+        run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+          runCount++;
+          events.push(`run:${input.query}`);
+          if (runCount > 1) return {kind: 'answered', message: 'second answer'};
+          input.onProvisionalAnswer?.({message: 'first answer'});
+          return reviewed.promise;
+        }),
+        stopReview: jest.fn((_sessionId: string, runId: string) => {
+          events.push(`stopReview:${runId}`);
+          // The review ends and finalization completes the same answer with its verdict.
+          queueMicrotask(() => reviewed.resolve({kind: 'answered', message: 'first answer'}));
+          return true;
+        }),
+        cancel: jest.fn(async (_sessionId: string, runId: string) => {events.push(`cancel:${runId}`);}),
+      };
+      return {adapter, reviewed};
+    };
+
+    it('publishes the provisional answer, then stops only the review and settles the answered turn', async () => {
+      const events: string[] = [];
+      const {adapter} = reviewingAdapter(events);
+      const service = createService(adapter);
+      const published: string[] = [];
+      const first = service.startTurn({query: 'trace 时长'});
+      service.subscribe(first.sessionId, event => published.push(event.type));
+      await Promise.resolve();
+      const session = service.getSession(first.sessionId)!;
+      expect(session.activeRun?.provisionalDelivered).toBe(true);
+      expect(session.activeRun?.events.map(event => event.type)).toEqual(['run_started', 'provisional_answer']);
+      expect(session.activeRun?.events[1]).toMatchObject({message: 'first answer', verification: 'pending'});
+
+      const outcome = await service.cancelRun(first.sessionId, first.runId);
+      expect(outcome).toMatchObject({kind: 'answered', message: 'first answer'});
+      expect(adapter.cancel).not.toHaveBeenCalled();
+      expect(published).toContain('run_completed');
+      expect(session.runs[0]).toMatchObject({status: 'completed'});
+      expect(session.history.map(message => [message.role, message.content])).toEqual([
+        ['user', 'trace 时长'], ['assistant', 'first answer']]);
+    });
+
+    it('a new turn waits for the provisional run to settle with its verdict before starting', async () => {
+      const events: string[] = [];
+      const {adapter} = reviewingAdapter(events);
+      const service = createService(adapter);
+      const first = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      const replacement = await service.steer({sessionId: first.sessionId, query: '应用包名'});
+      await replacement.completion;
+      expect(events).toEqual(['run:trace 时长', `stopReview:${first.runId}`, 'run:应用包名']);
+      expect(service.getSession(first.sessionId)!.history.map(message => message.content))
+        .toEqual(['trace 时长', 'first answer', '应用包名', 'second answer']);
+    });
+
+    it('falls back to a full cancel after stopReview when the run does not settle in time', async () => {
+      const first = deferred<ConversationRuntimeOutcome>();
+      const calls: string[] = [];
+      const adapter: ConversationRuntimeAdapter = {
+        run: jest.fn(async (input: ConversationRuntimeInput) => {
+          input.onProvisionalAnswer?.({message: 'answer'});
+          return first.promise;
+        }),
+        stopReview: jest.fn(() => {calls.push('stopReview'); return true;}),
+        cancel: jest.fn(async () => {calls.push('cancel'); first.resolve({kind: 'cancelled', message: ''});}),
+      };
+      let sequence = 0;
+      const service = new ConversationSessionService({createRuntime: () => adapter,
+        createId: prefix => `${prefix}-${++sequence}`, cancelSettleTimeoutMs: 5});
+      const turn = service.startTurn({query: 'trace 时长'});
+      await Promise.resolve();
+      await expect(service.cancelRun(turn.sessionId, turn.runId)).resolves.toMatchObject({kind: 'cancelled'});
+      expect(calls).toEqual(['stopReview', 'cancel']);
+      expect(service.getSession(turn.sessionId)!.runs[0].status).toBe('cancelled');
+    });
+
+    it('falls back to a full cancel before the provisional answer or when the review cannot be stopped', async () => {
+      const first = deferred<ConversationRuntimeOutcome>();
+      const adapter: ConversationRuntimeAdapter = {
+        run: jest.fn(async () => first.promise),
+        stopReview: jest.fn(() => false),
+        cancel: jest.fn(async () => {first.resolve({kind: 'cancelled', message: ''});}),
+      };
+      const service = createService(adapter);
+      const turn = service.startTurn({query: 'trace 时长'});
+      await expect(service.cancelRun(turn.sessionId, turn.runId)).resolves.toMatchObject({kind: 'cancelled'});
+      expect(adapter.stopReview).not.toHaveBeenCalled();
+      expect(adapter.cancel).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('stores a structured full-analysis handoff without auto-upgrading', async () => {
     const adapter: ConversationRuntimeAdapter = {
       run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({

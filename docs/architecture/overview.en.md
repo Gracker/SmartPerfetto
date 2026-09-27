@@ -225,7 +225,8 @@ metadata-only visibility.
 
 5. Backend streams output
    SDK events -> runtime bridge -> privacy/narrative projection -> SSE
-      -> frontend renders progress, tables, thoughts, answer tokens
+      -> frontend renders progress, tables, thoughts (conversation mode also answer tokens)
+   finalizeAnalysisResult dispatches the semantic review -> provisional conclusion (final body, verdict pending)
 
 6. Finish and report
    finalized result -> analysis_completed -> canonical safe source/CodeRef/patch metadata

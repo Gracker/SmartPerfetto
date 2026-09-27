@@ -262,6 +262,35 @@ describe('continueSession Level-3 lineage', () => {
     expect(turnMarkdown).toContain('backend-old');
   });
 
+  it.each(['text', 'json', 'ndjson'] as const)(
+    'passes the provisional answer only to the text renderer (%s)', async format => {
+      seedSession();
+      const printProvisionalConclusion = jest.fn();
+      const service = {
+        reloadTraceById: jest.fn(async () => true),
+        runTurn: jest.fn(async (input: any) => {
+          input.onSessionReady?.('backend-old');
+          input.onProvisionalAnswer?.({conclusion: 'provisional body'});
+          return makeRunTurnOutput('backend-old', 'trace-old');
+        }),
+      } as unknown as CliAnalyzeService;
+      await continueSession(
+        // Like the real renderers, only the text renderer implements printProvisionalConclusion.
+        {paths, service, renderer: {...makeRenderer(), format,
+          ...(format === 'text' ? {printProvisionalConclusion} : {})}},
+        {sessionId: 'agent-1', query: '继续分析'},
+      );
+      const runInput = (service.runTurn as any).mock.calls[0][0];
+      if (format === 'text') {
+        expect(printProvisionalConclusion).toHaveBeenCalledWith('provisional body');
+      } else {
+        // Without the callback the finalizer never marks the review line
+        // readable, so json/ndjson progress carries no answerReadable.
+        expect(runInput).not.toHaveProperty('onProvisionalAnswer');
+        expect(printProvisionalConclusion).not.toHaveBeenCalled();
+      }
+    });
+
   it('keeps showing the lineage notice on later resumes after the degraded bridge exists', async () => {
     const sp = seedSession({
       lineage: {

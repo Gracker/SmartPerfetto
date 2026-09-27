@@ -312,6 +312,16 @@ permission, registered-root, rights, and provider-send authorization as
 `/analyze`. Private queries, tool bodies, and errors are projected before SSE
 replay or durable persistence.
 
+When the semantic review is dispatched, the stream first sends one
+`provisional_answer` (`message` is the owner-projected final body,
+`verification: "pending"`): the text is final and readable, but its verdict does
+not exist yet. Clients keep the run active, write no history, and let
+`run_completed` complete the same message with the verdict. A cancel after the
+answer appeared (including a new message in the same session) stops only the
+review: `cancel` returns after the run completed and persisted with the
+`cancelled_by_user` not-checked reason, and its response includes
+`reviewStopped: true`, so history matches what the user read.
+
 `run_completed` means the primary answer is ready for immediate display and
 contains `enrichmentPending`. When it is `false`, the stream closes. When it is
 `true`, the stream continues with `source_enrichment_started` and closes after
@@ -386,6 +396,30 @@ The cancellation terminal may return before the runtime has fully settled. A
 new run in the same session receives `409 CANCELLATION_IN_PROGRESS` until the
 cancelled runtime exits, preventing old-run cleanup or continuity state from
 affecting the replacement run.
+
+Deliver first, verify after: when the semantic review is dispatched the stream
+sends one `conclusion` whose `data` is
+`{conclusion, provisional: true, verification: "pending"}`. Its body equals the
+later `analysis_completed` body (the review cannot rewrite it; the terminal
+result may only append completeness notices), but the verdict and terminal
+markers such as `!`/`~` come only from `analysis_completed`. Clients keep the
+run active (loading, stop control, session lock) and replace the same message
+when `analysis_completed` arrives; on `error`, `analysis_cancelled`, or a lost
+stream before that, they keep the text and mark it unverified. The runtime's own
+`conclusion`/`answer_token` events are not forwarded. For private-knowledge
+sessions the event stays in the in-memory replay buffer and is never written to
+the durable event store. Scene runs do not send it.
+
+After that `conclusion`, a cancel for the same `runId` stops only the review:
+it returns `200` with the non-terminal `status: "review_stop_requested"` and
+`runStatus: "running"`; the run still completes with the review recorded as
+`not_checked` / `cancelled_by_user` (`~` for answers, `!` for report
+deliverables through `report_assessment_not_checked`), then publishes
+`analysis_completed` and persists as usual. Stop-and-redirect waits for that
+`analysis_completed` before sending the next question. The first cancel after the
+provisional answer is review-only even when the review already finished (then a
+no-op); a second cancel for the same `runId` is a force stop and takes the full
+cancellation (`analysis_cancelled`).
 
 The terminal `analysis_completed` event can include `analysisReceipt`,
 `uiActionProposals`, and safely projected

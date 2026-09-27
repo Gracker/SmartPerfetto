@@ -289,6 +289,12 @@ user owner。`POST /conversation` 返回 `sessionId` 和精确 `runId`；同一 
 codebase/knowledge source 仍须通过与 `/analyze` 相同的权限、注册根目录、权利确认和
 provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放或持久化前完成投影。
 
+语义复核一旦发出，流先发送一次 `provisional_answer`（`message` 为经 owner 投影的最终正文，
+`verification: "pending"`）：正文已定稿、可以阅读，但核验结论尚未产生；客户端应保持 run
+活跃，不写入历史，等 `run_completed` 用同一条消息补上结论。答案出现后再取消（包括同一
+session 发送新消息）只停止复核：`cancel` 在该 run 带着 `cancelled_by_user` 未核验原因完成
+并持久化后才返回，响应带 `reviewStopped: true`；因此历史与用户读到的正文一致。
+
 `run_completed` 表示主回答已经完成并可立即展示；它包含 `enrichmentPending`。该值为
 `false` 时流立即结束，为 `true` 时流继续发送 `source_enrichment_started`，并在
 `source_enrichment_completed`、`source_enrichment_failed` 或
@@ -353,6 +359,23 @@ curl -X POST http://localhost:3000/api/agent/v1/<sessionId>/cancel \
 
 取消终态可以先返回给客户端，但同一 session 的下一轮会在被取消的 runtime 真正退出前返回
 `409 CANCELLATION_IN_PROGRESS`，避免旧 run 的清理或会话状态污染新 run。
+
+先交付、后核验：语义复核发出时，流发送一次 `conclusion`，`data` 为
+`{conclusion, provisional: true, verification: "pending"}`。正文与之后
+`analysis_completed` 的正文一致（复核不能改写正文，终态只会追加完整性提示），但核验
+结论和 `!`/`~` 等终态标记只来自 `analysis_completed`。客户端应保持 run 活跃（加载态、
+停止按钮、会话锁），在收到 `analysis_completed` 时替换同一条消息；若在此之前收到
+`error`、`analysis_cancelled` 或断流，保留正文并标为未完成核验。runtime 自身的
+`conclusion`/`answer_token` 不再转发。私有知识 session 的这条事件只进内存重放缓冲，不写入
+持久化事件库。scene 运行不发送它。
+
+`conclusion` 之后对同一 `runId` 的取消只停止复核：返回 `200`，`status` 为非终态的
+`review_stop_requested`，`runStatus: "running"`；run 继续完成，复核记为
+`not_checked` / `cancelled_by_user`（非报告回合为 `~`，报告回合因
+`report_assessment_not_checked` 为 `!`），并照常发送 `analysis_completed` 与持久化。
+"停止并改问"应等待该 `analysis_completed` 后再发送新问题。临时答案之后的第一次取消总是只停核验
+（复核已结束时为空操作，结论照常保留）；对同一 `runId` 的第二次取消视为强制停止，走完整取消
+（`analysis_cancelled`）。
 
 终态 `analysis_completed` 事件可能携带 `analysisReceipt`、
 `uiActionProposals` 和经安全投影的 `conclusionContract.sourceUseDecision` /

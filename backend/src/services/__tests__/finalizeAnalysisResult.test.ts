@@ -23,7 +23,10 @@ import {clearAllCodeAwareOutputGuards, registerCodeAwareCanary,
 import {sanitizeSourceReference, type SourceUseDecisionV1} from '../codebase/sourceUseDecision';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../codebase/sourceClaimVerifier';
 import {canonicalizeAnalysisResult} from '../canonicalAnalysisResult';
-import {claimVerificationStatusLine, summarizeClaimVerification} from '../analysisInvestigationPresentation';
+import {claimVerificationStatusLine, deriveDeliveryVerdict, summarizeClaimVerification} from '../analysisInvestigationPresentation';
+import {activateSceneRuntime, createSceneRunDispatchBinding, sceneRunOwnerKey} from '../../agent/scene/sceneRuntimeBinding';
+import {proposeSceneTimeline} from '../../agent/scene/sceneTimelineProposal';
+import {resolveRuntimeEvidenceStore} from '../../agentRuntime/runtimeEvidenceContext';
 import {finalReviewProgressUpdate, type FinalizationProgressEvent} from '../finalizationProgress';
 import type {AnalysisRunSelection} from '../../agentRuntime/analysisRunSpec';
 import {projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
@@ -161,7 +164,7 @@ describe('final review progress', () => {
     expect(final.result.deliveryAssurance?.claims).toBe('passed');
     const updates = events.map(event => finalReviewProgressUpdate(event, 'zh-CN', deadlineMs - 90_000));
     expect(updates.map(update => update.content)).toEqual([
-      {phase: 'final_review', stage: 'started', deadlineAt: deadlineMs, message: '正在复核结论正文与其声明是否一致（最长约 2 分钟）'},
+      {phase: 'final_review', stage: 'started', deadlineAt: deadlineMs, message: '正在核验结论与其声明是否一致'},
       {phase: 'final_review', stage: 'finished', outcome: 'checked', message: '结论复核已完成'},
     ]);
     expect(JSON.stringify(updates)).not.toContain('captured value');
@@ -181,6 +184,115 @@ describe('final review progress', () => {
     const {final, events} = await finalizeWithProgress({}, () => {throw new Error('renderer failed');});
     expect(events).toHaveLength(2);
     expect(final.result.deliveryAssurance?.claims).toBe('passed');
+  });
+});
+
+describe('deliver first, verify after', () => {
+  const pendingReview = (input: IntentTransportInput): Promise<IntentTransportResult> =>
+    new Promise((_resolve, reject) => {
+      const signal = input.signal!;
+      if (signal.aborted) reject(signal.reason);
+      signal.addEventListener('abort', () => reject(signal.reason), {once: true});
+    });
+
+  it('delivers the canonical body once, as the review is dispatched, before the started progress', async () => {
+    const run = fixture({currentRead: true});
+    const log: string[] = [];
+    const answers: Array<{conclusion: string}> = [];
+    const final = await finalizeAnalysisResult({result: run.result, context: run.context, owner: run.owner,
+      query: 'What is the captured value?', dataEnvelopes: [run.envelope],
+      onProvisionalAnswer: answer => {answers.push({...answer}); log.push('provisional');},
+      onProgress: event => log.push(event.stage)});
+    expect(log).toEqual(['provisional', 'final_review_started', 'final_review_finished']);
+    expect(answers).toEqual([{conclusion: 'The captured value is 49.'}]);
+    // The review cannot rewrite the body: the delivered text is the finalized body.
+    expect(final.result.conclusion).toBe(answers[0].conclusion);
+    expect(final.result.deliveryAssurance?.claims).toBe('passed');
+  });
+
+  it('marks the started line readable only when the answer was delivered, and keeps the deadline', () => {
+    const deadlineAt = Date.now() + 30 * 60_000;
+    expect(finalReviewProgressUpdate({stage: 'final_review_started', deadlineAt, answerReadable: true}, 'zh-CN').content)
+      .toEqual({phase: 'final_review', stage: 'started', deadlineAt, answerReadable: true,
+        message: '结论已可阅读，正在核验结论与其声明是否一致'});
+    const english = finalReviewProgressUpdate({stage: 'final_review_started', deadlineAt, answerReadable: true}, 'en');
+    expect(english.content.message).toBe('The answer is ready to read; checking it against its declared claims');
+    expect(JSON.stringify(english)).not.toMatch(/min|分钟/);
+  });
+
+  it('does not call the answer readable when the surface reports it did not deliver it', async () => {
+    const run = fixture({currentRead: true});
+    const events: FinalizationProgressEvent[] = [];
+    await finalizeAnalysisResult({result: run.result, context: run.context, owner: run.owner, query: 'q',
+      dataEnvelopes: [run.envelope], onProvisionalAnswer: () => false, onProgress: event => events.push(event)});
+    expect(events[0]).toEqual({stage: 'final_review_started', deadlineAt: expect.any(Number)});
+  });
+
+  it('never delivers when no review is dispatched or the observer throws', async () => {
+    const skipped = fixture({currentRead: true, invalidDeclaration: true});
+    const onProvisionalAnswer = jest.fn((_answer: {conclusion: string}) => true);
+    await finalizeAnalysisResult({result: skipped.result, context: skipped.context, owner: skipped.owner,
+      query: 'q', dataEnvelopes: [skipped.envelope], onProvisionalAnswer});
+    expect(skipped.dispatch).not.toHaveBeenCalled();
+    expect(onProvisionalAnswer).not.toHaveBeenCalled();
+
+    const throwing = fixture({currentRead: true});
+    const final = await finalizeAnalysisResult({result: throwing.result, context: throwing.context, owner: throwing.owner,
+      query: 'q', dataEnvelopes: [throwing.envelope], onProvisionalAnswer: () => {throw new Error('renderer failed');}});
+    expect(final.result.deliveryAssurance?.claims).toBe('passed');
+  });
+
+  it('never delivers a scene run, whose committed timeline owns terminal delivery', async () => {
+    const run = fixture({currentRead: true});
+    const scope = {runId: 'run', sessionId: run.result.sessionId, traceId: 'trace', ownerKey: sceneRunOwnerKey({})};
+    const binding = createSceneRunDispatchBinding({scope, signal: new AbortController().signal, assertCurrent: () => {}});
+    try {
+      const options = binding.bindOptions({runId: scope.runId});
+      const artifactStore = resolveRuntimeEvidenceStore(options, scope, () => {throw new Error('unexpected fallback');});
+      const sceneContext = await activateSceneRuntime(options, {...scope, artifactStore, deadlineMs: Date.now() + 60_000,
+        traceProcessorService: {query: (async () => ({columns: ['start_ns', 'end_ns'], rows: [['0', '100']]})) as never}});
+      await proposeSceneTimeline(sceneContext!, {baseRevision: 0, proposalId: 'one', segments: [{id: 'unknown',
+        startNs: '0', endNs: '100', object: {kind: 'device', key: 'unknown'}, userAction: 'Unknown',
+        deviceState: 'Unknown', appResponse: 'Unknown', evidenceRefs: [],
+        boundaries: {start: {source: 'trace_bound'}, end: {source: 'trace_bound'}}}]});
+      const onProvisionalAnswer = jest.fn((_answer: {conclusion: string}) => true);
+      await finalizeAnalysisResult({result: run.result, context: run.context, owner: run.owner, query: 'q',
+        dataEnvelopes: [run.envelope], onProvisionalAnswer,
+        scene: {seal: binding.seal()!, scope, outputLanguage: 'en'}});
+      expect(run.dispatch).toHaveBeenCalledTimes(1);
+      expect(onProvisionalAnswer).not.toHaveBeenCalled();
+    } finally {binding.release();}
+  });
+
+  it.each([
+    {report: false, verdict: 'unverified'},
+    {report: true, verdict: 'partial'},
+  ])('a review-only stop still finalizes the delivered answer (report=$report -> $verdict)', async ({report, verdict}) => {
+    const run = fixture({currentRead: true, report, dispatch: pendingReview});
+    const stop = new AbortController();
+    const events: FinalizationProgressEvent[] = [];
+    const final = await finalizeAnalysisResult({result: run.result, context: run.context, owner: run.owner,
+      query: 'q', dataEnvelopes: [run.envelope], reviewStopSignal: stop.signal,
+      onProvisionalAnswer: () => queueMicrotask(() => stop.abort()),
+      onProgress: event => events.push(event)});
+    expect(events[events.length - 1]).toEqual({stage: 'final_review_finished', status: 'not_checked', reason: 'cancelled_by_user'});
+    expect(final.semanticAssessment).toMatchObject({status: 'not_checked', reason: 'cancelled_by_user'});
+    expect(final.result.conclusion).toBe('The captured value is 49.');
+    expect(final.result.claimVerificationResult?.notCheckedReason).toBe('cancelled_by_user');
+    expect(deriveDeliveryVerdict(final.result)).toBe(verdict);
+    expect(claimVerificationStatusLine(summarizeClaimVerification(final.result.claimVerificationResult), 'zh-CN'))
+      .toContain('已按用户要求停止语义复核');
+    expect(finalReviewProgressUpdate(events[events.length - 1], 'en').content.message)
+      .toBe('Final review did not complete: the semantic review was stopped at the user\'s request');
+  });
+
+  it('keeps a run cancellation fatal even when a review stop is wired', async () => {
+    const run = fixture({currentRead: true, dispatch: pendingReview});
+    const stop = new AbortController();
+    await expect(finalizeAnalysisResult({result: run.result, context: run.context, owner: run.owner,
+      query: 'q', dataEnvelopes: [run.envelope], reviewStopSignal: stop.signal,
+      onProvisionalAnswer: () => queueMicrotask(() => run.controller.abort(new DOMException('cancelled', 'AbortError')))}))
+      .rejects.toMatchObject({name: 'AbortError'});
   });
 });
 

@@ -20,6 +20,7 @@ import {getConversationSessionStore, resetConversationSessionStoreForTests,
 import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../../services/analysisRunStore';
 import {ENTERPRISE_DB_PATH_ENV} from '../../services/enterpriseDb';
 import {registerAgentConversationRoutes} from '../agentConversationRoutes';
+import * as finalization from '../../services/finalizeAnalysisResult';
 
 const previousPath = process.env[ENTERPRISE_DB_PATH_ENV];
 const owner = {tenantId: 'recovery-tenant', workspaceId: 'recovery-workspace', userId: 'recovery-owner'};
@@ -67,6 +68,42 @@ afterEach(() => {
   jest.restoreAllMocks(); resetConversationSessionStoreForTests(); resetAnalysisRunStoreForTests();
   if (previousPath === undefined) delete process.env[ENTERPRISE_DB_PATH_ENV]; else process.env[ENTERPRISE_DB_PATH_ENV] = previousPath;
   fs.rmSync(tmp, {recursive: true, force: true});
+});
+
+describe('conversation route deliver first, verify after', () => {
+  it('stops only the review after the provisional answer and settles the answered turn before responding', async () => {
+    factory.mockImplementation(() => {
+      const emitter = new EventEmitter() as unknown as IOrchestrator;
+      emitter.reset = jest.fn();
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, sessionId) => ({sessionId: sessionId!,
+        success: true, findings: [], hypotheses: [], conclusion: 'Trace duration is 12.3 s.', confidence: 1,
+        rounds: 1, totalDurationMs: 1}));
+      return emitter;
+    });
+    let provisionalSent!: () => void;
+    const provisional = new Promise<void>(resolve => {provisionalSent = resolve;});
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      try {
+        expect(input.onProvisionalAnswer?.({conclusion: input.result.conclusion})).toBe(true);
+        provisionalSent();
+        const stop = input.reviewStopSignal!;
+        await new Promise(resolve => stop.aborted ? resolve(undefined) : stop.addEventListener('abort', resolve, {once: true}));
+        input.owner.signal.throwIfAborted();
+        return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
+      } finally {input.context?.dispose();}
+    });
+    const started = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    expect(started.status).toBe(202);
+    await provisional;
+    const cancelled = await request(app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
+      .send({runId: started.body.runId});
+    expect(cancelled.status).toBe(200);
+    expect(cancelled.body).toMatchObject({success: true, runId: started.body.runId, status: 'answered', reviewStopped: true});
+    const snapshot = await request(app()).get(`/api/agent/v1/conversation/${started.body.sessionId}`);
+    expect(snapshot.body.activeRunId).toBeUndefined();
+    expect(snapshot.body.history.map((message: {content: string}) => message.content))
+      .toEqual(['trace 时长', 'Trace duration is 12.3 s.']);
+  });
 });
 
 describe('conversation routes authorized recovery', () => {

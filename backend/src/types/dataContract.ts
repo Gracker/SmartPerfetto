@@ -719,6 +719,10 @@ export type DisplayFormat = typeof VALID_DISPLAY_FORMATS[number];
  * - progress: Phase/step progress update
  * - error: Error message
  * - snapshot_created: Analysis result snapshot persisted for comparison
+ * - conclusion: Provisional answer (`ProvisionalConclusionEventData`) emitted once
+ *   when the final semantic review is dispatched. The body is final; the verdict is
+ *   pending and arrives only with analysis_completed, which replaces the same message.
+ *   The runtime's own raw conclusion/answer_token events are not forwarded.
  * - analysis_completed: Final result with report URL
  */
 export const SSE_EVENT_TYPES = [
@@ -756,6 +760,18 @@ export const SSE_EVENT_TYPES = [
   'scene_story_smart_eta_refined',
 ] as const;
 export type SSEEventType = typeof SSE_EVENT_TYPES[number];
+
+/**
+ * `conclusion` payload (`data` field). Consumers keep the run active: the stop
+ * control then stops only the review (cancel answers `review_stop_requested`), and
+ * error/cancel/disconnect without analysis_completed leaves the answer unverified.
+ */
+export interface ProvisionalConclusionEventData {
+  /** Owner-projected canonical body, identical to what the review checks. */
+  conclusion: string;
+  provisional: true;
+  verification: 'pending';
+}
 
 /**
  * Unified Data Event - v2.0 SSE event format

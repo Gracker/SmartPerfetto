@@ -42,6 +42,11 @@ export interface ConversationRuntimeInput {
   traceContext: ConversationTraceContext;
   selectionContext?: AnalysisOptions['selectionContext'];
   onUpdate?(update: unknown): void;
+  /**
+   * The finished answer, owner-projected, while its semantic review runs. At
+   * most once per run; `run_completed` carries the same answer with its verdict.
+   */
+  onProvisionalAnswer?(answer: {message: string}): boolean | void;
 }
 
 export interface ConversationSourceEnrichmentRuntimeInput extends ConversationRuntimeInput {
@@ -59,6 +64,12 @@ export interface ConversationRuntimeAdapter {
     input: ConversationSourceEnrichmentRuntimeInput,
   ): Promise<ConversationSourceEnrichmentOutcome>;
   cancelSourceEnrichment?(sessionId: string, runId: string): Promise<void>;
+  /**
+   * Stop only the semantic review of a run whose provisional answer was
+   * delivered. Returns false when there is no such review to stop; the caller
+   * then falls back to a full cancel.
+   */
+  stopReview?(sessionId: string, runId: string): boolean;
   cancel(sessionId: string, runId: string): Promise<void>;
   dispose?(): void | Promise<void>;
 }
@@ -66,6 +77,7 @@ export interface ConversationRuntimeAdapter {
 type ConversationSessionEventPayload =
   | {type: 'run_started'; sessionId: string; runId: string}
   | {type: 'runtime_update'; sessionId: string; runId: string; update: unknown}
+  | {type: 'provisional_answer'; sessionId: string; runId: string; message: string; verification: 'pending'}
   | {
       type: 'run_completed';
       sessionId: string;
@@ -94,6 +106,8 @@ export interface ConversationRun {
   sourceUseMode?: PrimaryConversationSourceUse;
   sourceEnrichmentPending?: boolean;
   sourceEnrichment?: ConversationSourceEnrichmentState;
+  /** The user has read this run's answer; a stop now ends only its review. */
+  provisionalDelivered?: boolean;
 }
 
 export interface ConversationSession extends ManagedAssistantSession {
@@ -138,6 +152,9 @@ export interface StartConversationTurnInput {
   runtimeOptions?: Omit<AnalysisOptions, 'analysisMode' | 'assistantSurface' | 'runId'>;
   analysisContextFingerprint?: string;
 }
+
+/** `reviewStopped`: the stop ended only the review and the answered turn settled with its verdict. */
+export type ConversationCancelOutcome = ConversationRuntimeOutcome & {reviewStopped?: boolean};
 
 export interface ConversationTurnReceipt {
   sessionId: string;
@@ -437,6 +454,16 @@ export class ConversationSessionService {
         if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return;
         this.publish(session!.sessionId, {type: 'runtime_update', sessionId: session!.sessionId, runId, update});
       },
+      onProvisionalAnswer: ({message: answer}) => {
+        if (!answer.trim() || run.provisionalDelivered) return false;
+        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return false;
+        this.runAuthorizationChecks.get(run)?.();
+        if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return false;
+        run.provisionalDelivered = true;
+        this.publish(session!.sessionId, {type: 'provisional_answer', sessionId: session!.sessionId, runId,
+          message: answer, verification: 'pending'});
+        return true;
+      },
     };
     const run: ConversationRun = {
       runId,
@@ -561,7 +588,7 @@ export class ConversationSessionService {
     return this.startTurn(input);
   }
 
-  async cancelRun(sessionId: string, runId: string): Promise<ConversationRuntimeOutcome> {
+  async cancelRun(sessionId: string, runId: string): Promise<ConversationCancelOutcome> {
     const session = this.sessions.getSession(sessionId);
     if (!session) throw new Error(`Conversation session not found: ${sessionId}`);
     const run = session.activeRun;
@@ -577,23 +604,42 @@ export class ConversationSessionService {
       }
       throw new Error(`Active conversation run not found: ${runId}`);
     }
+    if (run.provisionalDelivered && session.runtime.stopReview?.(sessionId, runId)) {
+      // The answer is already on screen: let the run settle and persist with its
+      // verdict (`cancelled_by_user`) so history equals what the user read.
+      const settled = await this.settlesInTime(run.completion);
+      if (settled || !this.isCurrentRun(session, run)) {
+        const outcome: ConversationRuntimeOutcome = run.outcome ?? {kind: 'cancelled', message: ''};
+        return {...outcome, reviewStopped: settled && outcome.kind !== 'cancelled'};
+      }
+      // The review did not stop in time; fall back to a full cancel.
+    }
     this.cancellationRequested.add(run);
-    const cancellation = Promise.resolve().then(() => session.runtime.cancel(sessionId, runId));
+    const cancellation = Promise.resolve().then(() => session.runtime.cancel(sessionId, runId))
+      .then(() => run.completion);
+    try {
+      if (!await this.settlesInTime(cancellation)) {
+        throw new Error(`Conversation cancellation did not settle within ${this.cancelSettleTimeoutMs}ms`);
+      }
+      return await cancellation;
+    } finally {
+      if (this.isCurrentRun(session, run)) this.settleCancelledRun(session, run);
+    }
+  }
+
+  /** True when the promise settled (resolved or rejected) within the cancel budget. */
+  private async settlesInTime(promise: Promise<unknown>): Promise<boolean> {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        cancellation.then(() => run.completion),
-        new Promise<never>((_, reject) => {
-          timeout = setTimeout(
-            () => reject(new Error(`Conversation cancellation did not settle within ${this.cancelSettleTimeoutMs}ms`)),
-            this.cancelSettleTimeoutMs,
-          );
+        promise.then(() => true, () => true),
+        new Promise<boolean>(resolve => {
+          timeout = setTimeout(() => resolve(false), this.cancelSettleTimeoutMs);
           timeout.unref?.();
         }),
       ]);
     } finally {
       if (timeout) clearTimeout(timeout);
-      if (this.isCurrentRun(session, run)) this.settleCancelledRun(session, run);
     }
   }
 

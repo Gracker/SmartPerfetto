@@ -13,6 +13,7 @@ import {
 import {projectOwnerCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {
   projectOwnerAnalysisError,
+  projectOwnerProvisionalConclusion,
   projectOwnerStructuredValue,
   projectOwnerAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
@@ -22,6 +23,7 @@ import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import {createRuntimeEvidenceContext, type RuntimeEvidenceBinding, type RuntimeEvidenceContext} from '../../agentRuntime/runtimeEvidenceContext';
 import {finalizeAnalysisResult, type FinalizedAnalysisResult} from '../../services/finalizeAnalysisResult';
+import {reviewStoppedByUser} from '../../services/finalSemanticAssessment';
 import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {AnalysisNarrativeStreamProjection} from '../../services/analysisNarrativeStreamProjection';
@@ -57,6 +59,8 @@ interface ConversationExecution {
   runId: string;
   runtimeSessionId: string;
   controller: AbortController;
+  /** Stops the semantic review only; finalization still returns the outcome. */
+  reviewStop: AbortController;
   assertAuthorized(): void;
   release(): void;
   abortRuntime(): Promise<void>;
@@ -101,6 +105,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     const abort = () => { void abortRuntime(); };
     controller.signal.addEventListener('abort', abort, {once: true});
     const state: ConversationExecution = {runId, runtimeSessionId, controller, abortRuntime,
+      reviewStop: new AbortController(),
       analysisContextFingerprint: analysisOptions.analysisContextFingerprint,
       assertAuthorized: () => assertCurrentAnalysisContextAuthorization(selection, scope, expectedFingerprint),
       release: () => controller.signal.removeEventListener('abort', abort)};
@@ -136,7 +141,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
 
   private async finalizeRuntimeResult(result: AnalysisResult, input: ConversationRuntimeInput,
     state: ConversationExecution, dataEnvelopes: DataEnvelope[],
-    onRuntimeSettled?: () => void, outputLanguage: OutputLanguage = 'zh-CN',
+    onRuntimeSettled?: () => void, outputLanguage: OutputLanguage = 'zh-CN', privateKnowledge = false,
   ): Promise<FinalizedAnalysisResult> {
     const context = takeFinalizationContext(result);
     let transferred = false;
@@ -153,6 +158,14 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         conversation: {fallbackQuestion: input.query, evidence: projectEvidence(result)},
         onProgress: event => {
           if (this.isCurrent(input, state)) input.onUpdate?.(finalReviewProgressUpdate(event, outputLanguage));
+        },
+        reviewStopSignal: state.reviewStop.signal,
+        // Same owner projection as the terminal message, applied while this
+        // run's output guards are still registered.
+        onProvisionalAnswer: answer => {
+          if (!this.isCurrent(input, state) || !input.onProvisionalAnswer) return false;
+          return input.onProvisionalAnswer({message: projectOwnerProvisionalConclusion(privateKnowledge,
+            state.runtimeSessionId, answer.conclusion, outputLanguage)}) !== false;
         },
       });
       this.assertActive(input, state);
@@ -200,7 +213,9 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       this.assertActive(input, state);
       const safeUpdate = projectOwnerCodeAwareStreamingUpdate(runtimeSessionId, update, privateKnowledge, outputLanguage);
       const projected = safeUpdate ? narrative.project(safeUpdate) : null;
-      if (projected) input.onUpdate?.(projected);
+      // The answer reaches clients only as provisional_answer and run_completed;
+      // the runtime's own conclusion would be a second, unfinalized source.
+      if (projected && projected.type !== 'conclusion') input.onUpdate?.(projected);
     };
     this.orchestrator.on('update', onUpdate);
     try {
@@ -241,7 +256,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
             this.assertActive(input, state);
             const tail = narrative.finish();
             if (tail) input.onUpdate?.(tail);
-          }, outputLanguage))
+          }, outputLanguage, privateKnowledge))
         .finally(() => {
           evidenceBinding?.release();
           // Physical sessions are unique: late cleanup cannot touch a newer turn.
@@ -280,6 +295,14 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       if (this.runtimeSessions.get(input.runId) === state) this.runtimeSessions.delete(input.runId);
       if (this.currentSessionRuns.get(input.sessionId) === state) this.currentSessionRuns.delete(input.sessionId);
     }
+  }
+
+  stopReview(sessionId: string, runId: string): boolean {
+    const state = this.runtimeSessions.get(runId) ?? this.currentSessionRuns.get(sessionId);
+    // The session service decides that the answer was delivered; this only stops a live run's review.
+    if (state?.runId !== runId || state.controller.signal.aborted) return false;
+    state.reviewStop.abort(reviewStoppedByUser());
+    return true;
   }
 
   async cancel(sessionId: string, runId: string): Promise<void> {

@@ -909,6 +909,15 @@ export function projectOwnerAnalysisResult(...args: Parameters<typeof projectPri
 export function projectOwnerConclusion(...args: Parameters<typeof projectPrivateConclusion>): string {
   return withOwnerCodeAwareProjection(() => projectPrivateConclusion(...args));
 }
+/**
+ * A provisional answer uses exactly the projection its terminal conclusion will
+ * get: owner projection for private-knowledge runs, the canonical body otherwise.
+ */
+export function projectOwnerProvisionalConclusion(
+  privateKnowledge: boolean, sessionId: string, conclusion: string, language: OutputLanguage,
+): string {
+  return privateKnowledge ? projectOwnerConclusion({sessionId, conclusion, success: true, language}) : conclusion;
+}
 export function projectOwnerTerminationMessage(...args: Parameters<typeof projectPrivateTerminationMessage>): string | undefined {
   return withOwnerCodeAwareProjection(() => projectPrivateTerminationMessage(...args));
 }

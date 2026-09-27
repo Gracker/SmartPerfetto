@@ -423,6 +423,18 @@ describe('owned SSE verifier lifecycle', () => {
     expect(summary.analysisCompletedPartial).toBe(true);
   });
 
+  it('counts a provisional conclusion apart from the terminal conclusion payload', async () => {
+    const events = 'event: conclusion\ndata: {"data":{"conclusion":"Final body","provisional":true,"verification":"pending"}}\n\n' +
+      'event: analysis_completed\ndata: {"success":true,"conclusion":"Final body"}\n\n';
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(events));
+    const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
+      {requiredText: [], forbiddenText: []}, {runId: 'run'});
+    expect(summary.provisionalConclusionCount).toBe(1);
+    expect(summary.firstProvisionalConclusionMs).toEqual(expect.any(Number));
+    expect(summary.conclusionCount).toBe(0);
+    expect(summary.analysisCompletedConclusionChars).toBe('Final body'.length);
+  });
+
   it('turns a stalled owned stream into a typed timeout and releases its reader', async () => {
     jest.spyOn(globalThis, 'fetch').mockImplementation(async (_url, options) => new Response(new ReadableStream({
       start(controller) {

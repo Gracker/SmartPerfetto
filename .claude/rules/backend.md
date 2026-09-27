@@ -110,6 +110,30 @@ Keep these boundaries intact:
   owner/authorization checks. Its semantic review has no tools and cannot
   restart acquisition, extend the deadline, or rewrite the answer to repair
   style. Missing evidence/review remains explicit.
+- Deliver first, verify after. The semantic review cannot rewrite the body, so
+  `finalizeAnalysisResult` hands the canonical body to `onProvisionalAnswer`
+  once, in the tick the review is dispatched (never for scene runs, a review
+  that is not sent, or an empty body). Each surface applies the projector it
+  uses for its terminal answer: the Web route broadcasts a `conclusion`
+  (`provisional: true, verification: 'pending'`) that private sessions keep out
+  of the durable event store; conversations publish `provisional_answer`; the
+  CLI prints the body through a separate callback, leaving ndjson unchanged.
+  On the Web agent route the runtime's own `conclusion`/`answer_token` stay
+  suppressed; the conversation adapter drops only the raw `conclusion` and
+  still forwards framed, display-only `answer_token`. A surface returns
+  `false` from the callback when it did not deliver, so the review-started line
+  claims "answer readable" only when it is true. Verdicts and `!`/`~` come only
+  from the finalized result. Once a run's provisional answer is out, the first
+  cancel stops only the review (`reviewStopSignal`): the review resolves
+  `not_checked` / `cancelled_by_user`, finalization and persistence continue,
+  run cancellation and supersession stay fatal, and the Web cancel answers
+  `review_stop_requested`. The first cancel after the provisional answer is
+  review-only even if the review already finished (a no-op; the verdict stays);
+  a second cancel is an explicit escalation and takes the full cancel, like a
+  stop before the provisional answer. The conversation side waits `cancelSettleTimeoutMs` and
+  then falls back to the full cancel; that turn is then absent from backend
+  history while the client keeps its text as unverified. CLI Ctrl-C remains a
+  full abort, and only the text renderer receives the provisional answer.
 - Finite proof reads issued, immutable execution captures whose original values
   were retained before display or transport truncation. Units and field semantics
   need producer authority;

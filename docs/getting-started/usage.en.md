@@ -25,6 +25,14 @@ SmartPerfetto works best with Android 12+ traces, especially traces that include
 5. Ask a natural-language question.
 6. Wait for SSE streaming output, table evidence, and the final conclusion.
 
+The answer appears as soon as its text is final, marked "Answer ready;
+verification in progress". The one no-tool semantic review keeps running, and
+its verdict then completes the same message without rewriting the text. Stop
+during that review ends only the review: the answer is still saved, with its
+verification recorded as stopped at the user's request (unverified). If the run
+fails or disconnects before the verdict, the answer stays and is marked as not
+verified.
+
 Auto mode first returns a scene inventory for mixed-action traces. The timeline lists detected startup, scrolling, click, navigation, device-state, ANR, and related scenes, then shows scope buttons. Select all scenes or one scene family before SmartPerfetto runs the matching startup, scrolling, click, or other deep-dive analysis.
 
 Incomplete CLI results show the reason and available diagnostics, distinguishing

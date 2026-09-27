@@ -74,6 +74,30 @@ export interface FinalizeAnalysisResultInput {
    * Observer failures are ignored; they never change finalization.
    */
   onProgress?: FinalizationProgressObserver;
+  /**
+   * Deliver first, verify after. Called at most once, synchronously, at the
+   * moment the single semantic review is dispatched, with the canonical body
+   * exactly as the review sees it. The review cannot rewrite that body, so a
+   * surface may show it at once as an answer whose verdict is pending; the
+   * verdict and any appended notices arrive with the finalized result. Never
+   * called for scene runs, when no review is dispatched, or for an empty body.
+   * The payload is unprojected: each surface applies its own owner projection.
+   * Return `false` when the surface did not actually deliver it (for example the
+   * run no longer owns its stream); the review-started progress then does not
+   * claim the answer is readable. Observer failures count as not delivered.
+   */
+  onProvisionalAnswer?: (answer: ProvisionalAnalysisAnswer) => boolean | void;
+  /**
+   * Stops the semantic review only. Finalization continues and records the
+   * review as `not_checked` / `cancelled_by_user`; `owner.signal` still cancels
+   * the whole finalization.
+   */
+  reviewStopSignal?: AbortSignal;
+}
+
+export interface ProvisionalAnalysisAnswer {
+  /** Canonical, sidecar-free body; the review is bound to exactly this text. */
+  readonly conclusion: string;
 }
 
 export interface FinalizedAnalysisResult {
@@ -452,11 +476,20 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       const report = (event: FinalizationProgressEvent) => {
         try { input.onProgress?.(event); } catch { /* Progress observers never change finalization. */ }
       };
+      const deliverProvisional = (): boolean => {
+        const onProvisionalAnswer = input.onProvisionalAnswer;
+        if (!onProvisionalAnswer || input.scene || !result.conclusion.trim()) return false;
+        try {
+          assertOwner(owner);
+          return onProvisionalAnswer({conclusion: result.conclusion}) !== false;
+        } catch { return false; /* Delivery observers never change finalization. */ }
+      };
       let reviewDispatched = false;
       semantic = await assessFinalSemantics({context, canonicalCandidate: candidate, snapshot: safeSnapshot, signal: owner.signal,
+        ...(input.reviewStopSignal ? {stopSignal: input.reviewStopSignal} : {}),
         onDispatch: ({deadlineMs}) => {
           reviewDispatched = true;
-          report({stage: 'final_review_started', deadlineAt: deadlineMs});
+          report({stage: 'final_review_started', deadlineAt: deadlineMs, ...(deliverProvisional() ? {answerReadable: true} : {})});
         }});
       assertOwner(owner);
       if (reviewDispatched) {

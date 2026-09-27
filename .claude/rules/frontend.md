@@ -95,9 +95,18 @@ npm run generate:frontend-types
 
 The plugin talks to `/api/agent/v1/*`.
 
-- `conclusion` is near terminal: show the answer as soon as it arrives.
-- `analysis_completed` is terminal: report generation has finished and report
-  metadata is available.
+- `conclusion` with `provisional: true` is the finished answer while its one
+  semantic review runs: render it with a pending-verification cue on the same
+  message, but keep the run active (loading, stop control, session lock). A
+  legacy conclusion without the flag is still near terminal.
+- `analysis_completed` is terminal: it replaces that message with the verdict,
+  report generation has finished and report metadata is available. Error,
+  cancellation, or a stream end without it keeps the text and marks it
+  unfinished; a stored message is never `pending` (`projectMessageForStorage`).
+- Conversation mode receives the same answer as `provisional_answer` and then
+  `run_completed`; both use the deterministic
+  `conversation-<sessionId>-<runId>-assistant` id, and the conversation store is
+  written only with the verdict.
 - Mode/provider changes that alter SDK context must start a fresh backend agent
   session instead of reusing a session with incompatible turn budgets or
   provider state.
@@ -129,7 +138,14 @@ even when no answer tokens were streamed.
   focuses the composer only after the backend confirms the matching `runId`
   reached a terminal state. Cancellation can still be waiting on run identity,
   and a failed stop restores the SSE stream, so focusing earlier would invite
-  input against a live run.
+  input against a live run. After a provisional answer a stop ends only the
+  review: the cancel answers the non-terminal `review_stop_requested`, the SSE
+  stream stays attached, and the composer is released on `analysis_completed`.
+  While that run is still loading, the stop control reads "force stop" and a
+  second press is the full cancel. A `review_stop_requested` that arrives after
+  the verdict (loading already ended) is a no-op.
+  In conversation mode a new message first stops that review and waits for the
+  previous run to settle, so its answer precedes the new question in history.
 
 ## Run Conflicts
 

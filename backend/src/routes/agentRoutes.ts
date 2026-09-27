@@ -40,7 +40,8 @@ import {
   resolveCapturedComparisonIdentity,
 } from '../services/comparisonAppendixService';
 import type {FinalResultQualityIssue} from '../services/finalResultQualityGate';
-import {finalizeAnalysisResult, type AnalysisFinalizationOwner} from '../services/finalizeAnalysisResult';
+import {finalizeAnalysisResult, type AnalysisFinalizationOwner, type ProvisionalAnalysisAnswer} from '../services/finalizeAnalysisResult';
+import {reviewStoppedByUser} from '../services/finalSemanticAssessment';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {AnalysisCaseRetrievalState} from '../types/analysisDelivery';
@@ -214,6 +215,7 @@ import {
   copyAnalysisResultForSnapshot,
   projectOwnerFindings,
   projectOwnerConclusion,
+  projectOwnerProvisionalConclusion,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
@@ -258,7 +260,7 @@ import type {
   RunManifestV1,
   RunManifestScope,
 } from '../types/selfEvolution';
-import type {AnalysisReceipt} from '../types/dataContract';
+import type {AnalysisReceipt, ProvisionalConclusionEventData} from '../types/dataContract';
 import type {CapabilityManifestAttributionV1} from '../types/capabilityManifest';
 
 function configuredOutputLanguage(): OutputLanguage {
@@ -573,6 +575,14 @@ function isSessionRunCancelled(
 interface HttpFinalizationRun {
   owner: AnalysisFinalizationOwner;
   controller: AbortController;
+  /** Stops the semantic review only; the run and its persistence continue. */
+  reviewStop: AbortController;
+  /**
+   * Set in the same tick the provisional answer is broadcast. From then on a
+   * cancel for this run stops only the review, so the turn still settles and
+   * persists with its verdict and history equals what the user read.
+   */
+  provisionalDelivered: boolean;
   assertCurrent(): void;
   release(): void;
 }
@@ -614,7 +624,7 @@ function createHttpFinalizationRun(
     assertAuthorized: () => assertCurrentAnalysisContextAuthorization(selection, scope, fingerprint),
   };
   const run: HttpFinalizationRun = {
-    owner, controller,
+    owner, controller, reviewStop: new AbortController(), provisionalDelivered: false,
     assertCurrent: () => {
       controller.signal.throwIfAborted();
       if (!owner.isCurrent()) throw new DOMException('Analysis superseded', 'AbortError');
@@ -926,6 +936,7 @@ type CancelSessionRunResult = {
   outcome:
     | 'cancelled'
     | 'source_enrichment_cancelled'
+    | 'review_stop_requested'
     | 'already_cancelled'
     | 'run_not_found'
     | 'run_not_active'
@@ -960,6 +971,31 @@ async function cancelSessionRun(
       runId,
       runStatus: targetRun.status,
       outcome: 'source_enrichment_cancelled',
+      reason,
+    };
+  }
+  const finalizationRun = httpFinalizationRuns.get(session)?.get(runId);
+  // The first stop after the provisional answer is review-only, even when the
+  // review has already finished (the stop is then a no-op and the turn still
+  // persists). A second stop is an explicit escalation ("force stop") and takes
+  // the full cancellation below.
+  if (
+    finalizationRun?.provisionalDelivered &&
+    !finalizationRun.reviewStop.signal.aborted &&
+    isCurrentRunOwner(session, runId) &&
+    !isSessionRunCancelled(session, runId) &&
+    (targetRun.status === 'pending' || targetRun.status === 'running')
+  ) {
+    // The user already holds the finished answer; stop only its review. The
+    // run keeps session ownership, finalizes with `cancelled_by_user` and
+    // publishes analysis_completed. A review that already ended ignores this.
+    finalizationRun.reviewStop.abort(reviewStoppedByUser());
+    session.lastActivityAt = Date.now();
+    return {
+      session,
+      runId,
+      runStatus: 'running',
+      outcome: 'review_stop_requested',
       reason,
     };
   }
@@ -1058,6 +1094,18 @@ function projectCancelSessionRunResult(result: CancelSessionRunResult): {status:
         runId,
         status: 'source_enrichment_cancelled',
         primaryRunStatus: runStatus,
+        sessionStatus: session.status,
+        outcome,
+        reason,
+      }};
+    case 'review_stop_requested':
+      // Not terminal: analysis_completed still follows with the verdict.
+      return {status: 200, body: {
+        success: true,
+        sessionId: session.sessionId,
+        runId,
+        status: 'review_stop_requested',
+        runStatus,
         sessionStatus: session.status,
         outcome,
         reason,
@@ -5076,9 +5124,10 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     }
     finalizationRun.assertCurrent();
 
-    // Final narrative is emitted through analysis_completed after deterministic
-    // evidence/claim verification has run. Suppress early conclusion events so
-    // clients do not render an unverified terminal answer.
+    // The runtime's raw conclusion/answer_token events were dropped above. The
+    // answer reaches clients once, from finalization: a provisional conclusion
+    // when the semantic review is dispatched, then analysis_completed with the
+    // verdict (see onProvisionalAnswer below).
     broadcastToAgentDrivenClients(sessionId, normalizedUpdate, runIdForAnalysis);
 
     // Also derive a conversation_step for the timeline/observability layer.
@@ -5343,8 +5392,15 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       comparisonIdentity,
       caseRetrieval,
       // The semantic review can run for minutes after the answer stream ended.
-      onProgress: event => broadcastToAgentDrivenClients(sessionId,
-        finalReviewProgressUpdate(event, outputLanguage), runIdForAnalysis),
+      onProgress: event => {
+        broadcastToAgentDrivenClients(sessionId, finalReviewProgressUpdate(event, outputLanguage), runIdForAnalysis);
+      },
+      // Scene runs own their terminal delivery; the finalizer also refuses them.
+      ...(options.sceneRunBinding ? {} : {
+        reviewStopSignal: finalizationRun.reviewStop.signal,
+        onProvisionalAnswer: (answer: ProvisionalAnalysisAnswer) =>
+          broadcastProvisionalAnswer(session, answer, finalizationRun, outputLanguage),
+      }),
     });
     finalizationRun.assertCurrent();
     result = finalized.result;
@@ -5730,9 +5786,37 @@ function dataEnvelopeDedupKey(envelope: DataEnvelope): string | undefined {
 }
 
 /**
+ * Deliver first, verify after: the canonical body, owner-projected exactly as
+ * analysis_completed will project it, marked as awaiting its verdict. Private
+ * sessions keep it live-only (ring buffer, never the durable event store), so a
+ * restart replays no unverified private body; clients then downgrade the cue.
+ */
+function broadcastProvisionalAnswer(
+  session: AnalysisSession,
+  answer: ProvisionalAnalysisAnswer,
+  run: HttpFinalizationRun,
+  outputLanguage: OutputLanguage,
+): boolean {
+  const runId = run.owner.runId;
+  if (!isCurrentRunOwner(session, runId) || assistantAppService.getSession(session.sessionId) !== session) return false;
+  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  const content: ProvisionalConclusionEventData = {provisional: true, verification: 'pending',
+    conclusion: projectOwnerProvisionalConclusion(privateKnowledge, session.sessionId, answer.conclusion, outputLanguage)};
+  run.provisionalDelivered = true;
+  broadcastToAgentDrivenClients(session.sessionId, {type: 'conclusion', content, timestamp: Date.now()},
+    runId, {persist: !privateKnowledge});
+  return true;
+}
+
+/**
  * Broadcast update to all SSE clients for an agent-driven session
  */
-function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdate, runId?: string) {
+function broadcastToAgentDrivenClients(
+  sessionId: string,
+  update: StreamingUpdate,
+  runId?: string,
+  delivery: {persist?: boolean} = {},
+) {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
   if (runId && !isCurrentRunOwner(session, runId)) return;
@@ -5752,7 +5836,7 @@ function broadcastToAgentDrivenClients(sessionId: string, update: StreamingUpdat
       if (event.eventType === 'scene_timeline_updated') session.sceneTimelineReplay = event;
       // In-progress scene witnesses are live-only. Persist the final archived
       // revision, rather than storing repeated full candidate manifests on disk.
-      else persistBufferedAgentEvent(
+      else if (delivery.persist !== false) persistBufferedAgentEvent(
         session,
         {
           cursor: event.seqId,
@@ -7950,6 +8034,7 @@ export const agentRoutesCancellationTestSeam = {
   createHttpFinalizationRun,
   startAnalysisSourceEnrichment,
   abortHttpFinalizationRuns,
+  broadcastProvisionalAnswer,
   setSession: (sessionId: string, session: AnalysisSession) =>
     assistantAppService.setSession(sessionId, session),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),

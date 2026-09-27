@@ -72,6 +72,17 @@ export interface FinalSemanticAssessmentInput {
    * carries the absolute deadline only; a throwing observer cannot affect the review.
    */
   onDispatch?: (info: {readonly deadlineMs: number}) => void;
+  /**
+   * User stop for this review only. It never cancels the run: an aborted review
+   * resolves as `not_checked` / `cancelled_by_user`, while `signal` (run
+   * cancellation or supersession) still rejects.
+   */
+  stopSignal?: AbortSignal;
+}
+
+/** Abort reason for a user stop that ends only the semantic review, never the run. */
+export function reviewStoppedByUser(): DOMException {
+  return new DOMException('Final review stopped by user', 'AbortError');
 }
 
 export interface SemanticContentLocation {readonly start: number; readonly end: number}
@@ -105,7 +116,7 @@ export interface FinalSemanticAssessment {
   readonly reason?: 'invalid_snapshot' | 'snapshot_changed' | 'input_projection_incomplete' | 'input_projection_limit' |
     'input_limit' | 'output_limit' | 'invalid_response' | 'missing_template' |
     'missing_transport' | 'timeout' | 'provider_error' | 'incomplete_output' |
-    'invalid_configuration' | 'tool_use' | 'invalid_declarations';
+    'invalid_configuration' | 'tool_use' | 'invalid_declarations' | 'cancelled_by_user';
   /**
    * Closed-vocabulary triage detail for the reason above: declaration parse
    * issue codes, or transport facts (`http_429`, `attempts_2`). Never raw
@@ -837,11 +848,16 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
     const deadlineMs = context.deadlineMs;
     if (!Number.isFinite(deadlineMs)) return fail('not_checked', 'invalid_configuration');
     if (Date.now() >= deadlineMs) return fail('unavailable', 'timeout');
+    const stopSignal = input.stopSignal;
+    const stopped = () => fail('not_checked', 'cancelled_by_user');
+    if (stopSignal?.aborted) return stopped();
     try { input.onDispatch?.({deadlineMs}); } catch { /* Observers never change the review. */ }
     try {
-      const response = await context.dispatchText({prompt, systemPrompt: '', signal,
-        deadlineMs, outputByteLimit: outputBytes});
+      const response = await context.dispatchText({prompt, systemPrompt: '', deadlineMs, outputByteLimit: outputBytes,
+        signal: stopSignal ? AbortSignal.any([signal, stopSignal]) : signal});
       signal.throwIfAborted();
+      // A review that finished before the stop is kept; a stopped call is not a provider failure.
+      if (response.status !== 'ok' && stopSignal?.aborted) return stopped();
       if (Date.now() >= deadlineMs) return fail('unavailable', 'timeout');
       if (response.status !== 'ok') {
         const transportDetail = transportFailureDetail(response);
@@ -858,6 +874,7 @@ export function assessFinalSemantics(input: FinalSemanticAssessmentInput): Promi
           undefined, parsed.diagnostic && `resp_${parsed.diagnostic.stage}_${parsed.diagnostic.code}`);
     } catch {
       signal.throwIfAborted();
+      if (stopSignal?.aborted) return stopped();
       return fail('unavailable', Date.now() >= deadlineMs ? 'timeout' : 'provider_error');
     }
   });

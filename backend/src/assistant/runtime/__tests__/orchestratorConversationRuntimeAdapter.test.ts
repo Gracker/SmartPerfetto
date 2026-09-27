@@ -311,6 +311,10 @@ describe('Conversation evidence and stream consumer boundaries', () => {
   });
 });
 
+function updateType(update: unknown): unknown {
+  return update && typeof update === 'object' ? (update as {type?: unknown}).type : undefined;
+}
+
 function createOrchestrator(
   analyze: (options: AnalysisOptions) => Promise<AnalysisResult>,
 ): IOrchestrator {
@@ -849,6 +853,68 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     await adapter.run(input);
     expect(mockFinalize).toHaveBeenCalledTimes(1);
     expect(emitter.analyze).toHaveBeenCalledTimes(1);
+  });
+
+  describe('deliver first, verify after', () => {
+    const reviewPendingFinalizer = (seen: {stopSignal?: AbortSignal}) => mockFinalize.mockImplementationOnce(async input => {
+      try {
+        seen.stopSignal = input.reviewStopSignal;
+        input.onProvisionalAnswer?.({conclusion: input.result.conclusion});
+        await new Promise(resolve => input.reviewStopSignal!.addEventListener('abort', resolve, {once: true}));
+        input.owner.signal.throwIfAborted();
+        return {result: input.result, conversationOutcome: {kind: 'answered', message: input.result.conclusion}};
+      } finally {input.context?.dispose();}
+    });
+
+    it('forwards the provisional answer once and stops only the review', async () => {
+      const seen: {stopSignal?: AbortSignal} = {};
+      reviewPendingFinalizer(seen);
+      const orchestrator = createOrchestrator(async () => result('Trace duration is 12.3 s.'));
+      const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator);
+      const provisional: string[] = [];
+      let delivered!: () => void;
+      const deliveredPromise = new Promise<void>(resolve => {delivered = resolve;});
+      expect(adapter.stopReview('conversation', 'run')).toBe(false);
+      const completion = adapter.run({sessionId: 'conversation', runId: 'run', query: 'trace 时长', history: [],
+        traceContext: {kind: 'none'}, onProvisionalAnswer: ({message}) => {provisional.push(message); delivered();}});
+      await deliveredPromise;
+      expect(provisional).toEqual(['Trace duration is 12.3 s.']);
+      expect(adapter.stopReview('conversation', 'other-run')).toBe(false);
+      expect(adapter.stopReview('conversation', 'run')).toBe(true);
+      await expect(completion).resolves.toMatchObject({kind: 'answered', message: 'Trace duration is 12.3 s.'});
+      expect(seen.stopSignal?.aborted).toBe(true);
+      expect(orchestrator.abortSession).not.toHaveBeenCalled();
+    });
+
+    it('owner-projects a private provisional answer like the terminal message', async () => {
+      const privateQuery = '请看源码确认 PRIVATE_PROVISIONAL_CANARY 为什么返回空';
+      const seen: {stopSignal?: AbortSignal} = {};
+      reviewPendingFinalizer(seen);
+      const adapter = new OrchestratorConversationRuntimeAdapter(createOrchestrator(async () =>
+        result(`Answer repeats ${privateQuery}`)), {analysisOptions: {codeAwareMode: 'metadata_only', codebaseIds: ['private-app']}});
+      const provisional: string[] = [];
+      let delivered!: () => void;
+      const deliveredPromise = new Promise<void>(resolve => {delivered = resolve;});
+      const completion = adapter.run({sessionId: 'private-provisional', runId: 'private-provisional-run', query: privateQuery,
+        history: [], traceContext: {kind: 'none'},
+        onProvisionalAnswer: ({message}) => {provisional.push(message); delivered();}});
+      await deliveredPromise;
+      adapter.stopReview('private-provisional', 'private-provisional-run');
+      const outcome = await completion;
+      expect(provisional).toEqual([outcome.message]);
+    });
+
+    it('does not forward the runtime raw conclusion as a second answer source', async () => {
+      const emitter = createOrchestrator(async () => {
+        emitter.emit('update', {type: 'conclusion', content: {conclusion: 'raw runtime conclusion'}, timestamp: Date.now()});
+        emitter.emit('update', {type: 'progress', content: {phase: 'x', message: 'still narrated'}, timestamp: Date.now()});
+        return result('final');
+      });
+      const updates: unknown[] = [];
+      await new OrchestratorConversationRuntimeAdapter(emitter).run({sessionId: 'conversation', runId: 'raw', query: 'q',
+        history: [], traceContext: {kind: 'none'}, onUpdate: update => updates.push(update)});
+      expect(updates.map(update => updateType(update))).toEqual(['progress']);
+    });
   });
 
   it('projects a private final result with its failed @2 status intact and keeps the shell body consistent', async () => {

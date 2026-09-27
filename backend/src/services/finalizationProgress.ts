@@ -11,9 +11,11 @@ import type {FinalSemanticAssessment} from './finalSemanticAssessment';
  * The one no-tool semantic review can take minutes after the answer finished
  * streaming. These two events say that it started (and its deadline) and how it
  * ended. They carry no provider text and no byte or token counts.
+ * `answerReadable` is true when the surface already received the provisional
+ * answer, so the line tells the reader the text is final and only the verdict waits.
  */
 export type FinalizationProgressEvent =
-  | {readonly stage: 'final_review_started'; readonly deadlineAt: number}
+  | {readonly stage: 'final_review_started'; readonly deadlineAt: number; readonly answerReadable?: boolean}
   | {readonly stage: 'final_review_finished'; readonly status: FinalSemanticAssessment['status'];
     readonly reason?: FinalSemanticAssessment['reason']};
 
@@ -26,12 +28,16 @@ export function finalReviewProgressUpdate(
   now = Date.now(),
 ): StreamingUpdate {
   if (event.stage === 'final_review_started') {
-    const minutes = Math.max(1, Math.ceil((event.deadlineAt - now) / 60_000));
+    // The deadline is the run's hard budget, not an estimate; it stays in the
+    // payload for clients but is not read out as an expected wait.
     return {type: 'progress', timestamp: now, content: {
       phase: 'final_review', stage: 'started', deadlineAt: event.deadlineAt,
-      message: localize(language,
-        `正在复核结论正文与其声明是否一致（最长约 ${minutes} 分钟）`,
-        `Reviewing the answer against its declared claims (up to about ${minutes} min)`),
+      ...(event.answerReadable ? {answerReadable: true} : {}),
+      message: event.answerReadable
+        ? localize(language, '结论已可阅读，正在核验结论与其声明是否一致',
+          'The answer is ready to read; checking it against its declared claims')
+        : localize(language, '正在核验结论与其声明是否一致',
+          'Checking the answer against its declared claims'),
     }};
   }
   const explanation = claimVerificationNotCheckedExplanation({notCheckedReason: event.reason}, language);

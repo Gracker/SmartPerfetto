@@ -689,8 +689,10 @@ async function cancelConversation(req: express.Request, res: express.Response): 
       res.status(400).json({success: false, code: 'RUN_ID_REQUIRED', error: 'runId is required'});
       return;
     }
-    const outcome = await conversationSessionService.cancelRun(session.sessionId, runId);
-    res.json({success: true, sessionId: session.sessionId, runId, status: outcome.kind});
+    // After a provisional answer, cancel stops only the review; the run settles
+    // with its verdict before this responds (the stream carries run_completed).
+    const {kind, reviewStopped} = await conversationSessionService.cancelRun(session.sessionId, runId);
+    res.json({success: true, sessionId: session.sessionId, runId, status: kind, ...(reviewStopped ? {reviewStopped} : {})});
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     res.status(/not found/i.test(message) ? 404 : 409).json({success: false, error: message});

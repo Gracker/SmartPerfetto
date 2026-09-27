@@ -178,7 +178,16 @@ export interface SseSummary {
   agentTaskDispatchedCount: number;
   agentResponseCount: number;
   answerTokenCount: number;
+  /** Non-provisional conclusion events; the answer's terminal payload. */
   conclusionCount: number;
+  /**
+   * Deliver first, verify after: `conclusion` events with `provisional: true`,
+   * sent when the semantic review starts. They carry the final body but no
+   * verdict, so they never count as a terminal conclusion payload.
+   */
+  provisionalConclusionCount: number;
+  /** Milliseconds from stream start to the first provisional answer (latency measurement). */
+  firstProvisionalConclusionMs?: number;
   dataEnvelopeCount: number;
   planSubmittedCount: number;
   /**
@@ -2469,6 +2478,7 @@ export async function collectSseSummary(
   textChecks: TextChecks,
   options: { runId?: string; observeEvent?: (event: string, payload: unknown) => void | Promise<void>; readUntilClose?: boolean; terminalObservationMs?: number } = {},
 ): Promise<SseSummary> {
+  const streamStartedAt = Date.now();
   const summary: SseSummary = {
     candidateProtocolDiagnostics: [],
     totalEvents: 0,
@@ -2477,6 +2487,7 @@ export async function collectSseSummary(
     agentResponseCount: 0,
     answerTokenCount: 0,
     conclusionCount: 0,
+    provisionalConclusionCount: 0,
     dataEnvelopeCount: 0,
     planSubmittedCount: 0,
     conversationStepCount: 0,
@@ -2662,6 +2673,12 @@ export async function collectSseSummary(
               summary.planPhaseUpdatedCount += 1;
               break;
             case 'conclusion':
+              if (payload?.provisional === true) {
+                summary.provisionalConclusionCount += 1;
+                summary.firstProvisionalConclusionMs ??= Date.now() - streamStartedAt;
+                if (typeof payload.conclusion === 'string') recordTextChecks(summary, payload.conclusion, textChecks);
+                break;
+              }
               summary.conclusionCount += 1;
               if (typeof payload?.conclusion === 'string') {
                 recordTextChecks(summary, payload.conclusion, textChecks);
