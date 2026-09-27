@@ -45,7 +45,7 @@ Agent wants a tool call
 
 | Tool | Purpose | Notes |
 |---|---|---|
-| `execute_sql` | Run Perfetto SQL on the current trace | Supports summary mode and artifact pagination/truncation |
+| `execute_sql` | Run Perfetto SQL on the current trace | Supports summary mode and artifact pagination/truncation. Summary results (explicit, or automatic above 50 rows when an artifact store exists) list `sampleRows` as `{rowIndex, values}` in interest order, where `rowIndex` is the row's zero-based index in the complete result, and carry `rowShape: "indexed_rows@1"`; smaller raw results, and any result without an artifact store, keep plain `rows` in result order from row 0 (at most the first 200) |
 | `invoke_skill` | Run a YAML Skill analysis pipeline | Preferred evidence path; returns DataEnvelope / artifacts |
 | `list_skills` | List available Skills | Filterable by category; count comes from the file tree |
 | `detect_architecture` | Detect rendering architecture for the trace | Guides strategy and pipeline analysis |
@@ -90,7 +90,7 @@ sidecars. See [Android Internals Knowledge Pack And Private Knowledge](../gettin
 | `resolve_hypothesis` | Mark a hypothesis confirmed, rejected, or unresolved |
 | `flag_uncertainty` | Mark uncertainty or missing evidence explicitly |
 | `write_analysis_note` | Persist session analysis notes when configured |
-| `fetch_artifact` | Page through large SQL/Skill artifacts when an artifact store exists |
+| `fetch_artifact` | Page through large SQL/Skill artifacts when an artifact store exists. `detail="rows"` returns `rows` as `{rowIndex, values}` with `rowIndex = offset + position` (artifact-wide) and `rowShape: "indexed_rows@1"`; `detail="full"` keeps the original structure |
 | `lookup_strategy_detail` | Read scene strategy details by detail ref returned from plan tools; informational fallback only and does not satisfy expectedCalls |
 
 These tools enforce investigation discipline and reduce context size. Artifact summaries are not a reason to discard full DataEnvelope evidence from frontend, reports, CLI artifacts, or snapshots.
@@ -150,7 +150,7 @@ GitNexus is an independent optional third-party tool. Its [official project](htt
 
 | Tool | Purpose |
 |---|---|
-| `execute_sql_on` | Run SQL on the baseline or comparison trace; compatibility values remain current/reference |
+| `execute_sql_on` | Run SQL on the baseline or comparison trace; compatibility values remain current/reference. Its summary results nest the indexed `sampleRows` and `rowShape: "indexed_rows@1"` inside `summary` |
 | `compare_skill` | Run a Skill on both traces and compare results |
 | `get_comparison_context` | Fetch trace-pair metadata, left/right or top/bottom pane mapping, and comparison context |
 

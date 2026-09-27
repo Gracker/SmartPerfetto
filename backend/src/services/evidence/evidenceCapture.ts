@@ -58,6 +58,29 @@ export interface ModelEvidenceProjectionStatus {
   truncatedCellsOmitted?: number;
 }
 
+/**
+ * Marker for model-visible results whose rows carry their own artifact-wide
+ * index. A reordered sample or a page from a non-zero offset cannot be cited
+ * by its position, so each row states the index a reference must name.
+ */
+export const INDEXED_ROW_SHAPE = 'indexed_rows@1';
+
+/** A model-visible row with its zero-based index in the complete captured result. */
+export interface IndexedEvidenceRow {
+  rowIndex: number;
+  values: unknown[];
+}
+
+/** Index a contiguous page whose first row is `firstRowIndex` in the complete result. */
+export function indexEvidenceRows(page: readonly unknown[][], firstRowIndex: number): IndexedEvidenceRow[] {
+  return page.map((values, position) => ({rowIndex: firstRowIndex + position, values}));
+}
+
+/** Pick rows of the complete result by index, in the given order (e.g. a reordered sample). */
+export function indexEvidenceRowsAt(rows: readonly unknown[][], indices: readonly number[]): IndexedEvidenceRow[] {
+  return indices.map(rowIndex => ({rowIndex, values: rows[rowIndex]}));
+}
+
 export interface ModelEvidenceProjection<T = unknown> {
   data: T;
   modelProjection: ModelEvidenceProjectionStatus;

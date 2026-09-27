@@ -12,7 +12,8 @@
  *
  * Supports 3 detail levels via fetch_artifact:
  * - summary: compact metadata + bounded column aggregates
- * - rows: paginated rows (offset/limit) with totalRows + hasMore metadata
+ * - rows: paginated rows (offset/limit) with totalRows + hasMore metadata; each
+ *   row carries its artifact-wide rowIndex (offset + position)
  * - full: complete original data structure
  */
 
@@ -21,7 +22,7 @@ import {randomUUID} from 'crypto';
 import type {RuntimeToolInvocationEvent} from '../agentRuntime/runtimeToolObserver';
 import {captureInvestigationToolObservation, type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
 import {createDataEnvelope} from '../types/dataContract';
-import {capturedEvidenceTable, freezeEvidenceValue, type EvidenceTableWitness,
+import {capturedEvidenceTable, freezeEvidenceValue, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
   type ModelEvidenceProjectionUnavailableReason,
   projectEvidenceColumnUnitsForModel} from '../services/evidence/evidenceCapture';
@@ -798,7 +799,8 @@ export class ArtifactStore {
         return {
           id: artifact.id,
           columns: artifact.data?.columns || [],
-          rows: pagedRows,
+          rowShape: INDEXED_ROW_SHAPE,
+          rows: indexEvidenceRows(pagedRows, effectiveOffset),
           totalRows,
           offset: effectiveOffset,
           limit: effectiveLimit,

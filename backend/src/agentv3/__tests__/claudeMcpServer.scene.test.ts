@@ -191,6 +191,30 @@ describe('shared scene proposal capability', () => {
     expect(keys((sceneTimelineSegmentToolSchema.shape.evidenceRefs as any).element.shape))
       .toEqual(keys((sceneEvidenceReferenceSchema as any).shape ?? (sceneEvidenceReferenceSchema as any)._def.schema.shape));
   });
+  it('commits a proposal that cites the inline rowIndex of a fetched artifact page', async () => {
+    const f = fixture();
+    const rows = Array.from({length: 60}, (_, index) => [String(index * 1000), String(index * 1000 + 500), `event-${index}`]);
+    f.query.mockImplementation((async (_traceId: string, sql: string) => sql.includes('scene_events')
+      ? {columns: ['start_ns', 'end_ns', 'name'], rows, durationMs: 0}
+      : {columns: ['start_ns', 'end_ns'], rows: [['0', '100000']], durationMs: 0}) as any);
+    const capability = (await f.activate())!;
+    const tools = f.server(capability).toolDefinitions;
+    const call = async (name: string, args: Record<string, unknown>) =>
+      (await tools.find(tool => tool.name === name)!.shared.handler(args, {})).structuredContent as any;
+    const summary = await call('execute_sql', {sql: 'SELECT start_ns, end_ns, name FROM scene_events'});
+    expect(summary).toMatchObject({mode: 'summary', rowShape: 'indexed_rows@1'});
+    const page = await call('fetch_artifact', {artifactId: summary.artifactId, detail: 'rows', offset: 50, limit: 2});
+    const cited = page.rows[1];
+    expect(cited).toEqual({rowIndex: 51, values: ['51000', '51500', 'event-51']});
+    const cite = (rowIndex: number) => ({...segment('s'), startNs: cited.values[0], endNs: cited.values[1],
+      evidenceRefs: [{artifactId: summary.artifactId, rowIndex, column: 'name', value: cited.values[2]}]});
+    // The page position (1) names another row, so the old arithmetic-free citation is rejected.
+    expect(await call('propose_scene_timeline', {baseRevision: 0, proposalId: 'position', segments: [cite(1)]}))
+      .toMatchObject({accepted: false, revision: 0,
+        rejectedGroups: [{segmentIds: ['s'], diagnostics: [{code: 'evidence_value_mismatch'}]}]});
+    expect(await call('propose_scene_timeline', {baseRevision: 0, proposalId: 'inline', segments: [cite(cited.rowIndex)]}))
+      .toMatchObject({accepted: true, revision: 1});
+  });
   it('refuses acquisition once the scene run is released even if the runtime still admits tools', async () => {
     const f = fixture();
     const capability = (await f.activate())!;

@@ -135,12 +135,13 @@ function boundedDetail(parts: readonly string[]): string {
   const text = parts.filter(Boolean).join('; ');
   return text.length <= MAX_DETAIL_CHARS ? text : `${text.slice(0, MAX_DETAIL_CHARS - 1)}…`;
 }
+const ROW_INDEX_REPAIR = 'copy the rowIndex printed with the cited row, never its sample or page position; unindexed row lists count from 0';
 const REFERENCE_REPAIR: Readonly<Record<string, string>> = {
   identifier_conflict: 'cite exactly one identifier (evidenceRefId or artifactId) from the same tool result',
   multiple_evidence_records: 'cite the evidenceRefId of the specific result',
   evidence_not_retained: 'evicted from bounded retention or never issued; reacquire current-run evidence with a narrower query',
-  row_index_out_of_range: 'rowIndex is artifact-wide: use sampleRowIndices or page offset + position',
-  invalid_row_index: 'rowIndex is artifact-wide: use sampleRowIndices or page offset + position',
+  row_index_out_of_range: ROW_INDEX_REPAIR,
+  invalid_row_index: ROW_INDEX_REPAIR,
   row_locator_required: 'supply the artifact-wide rowIndex of the cited row',
   required_column_missing: 'cite an existing column, query a real end column, or mark the boundary inferred',
   execution_skipped: 'the step was skipped because its condition was not met and observed nothing; cite a result whose query ran',

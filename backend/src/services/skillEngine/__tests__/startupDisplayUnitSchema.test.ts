@@ -582,6 +582,7 @@ describe('startup display unit contracts', () => {
         expect(data.rows).toHaveLength(rawRows[source].length);
         expect(fetched.rows).toHaveLength(rawRows[source].length);
         for (const [index, raw] of rawRows[source].entries()) {
+          expect(fetched.rows[index].rowIndex).toBe(index);
           for (const [column, value] of Object.entries(raw)) {
             expect(data.columns).toContain(column);
             expect(fetched.columns).toContain(column);
@@ -589,7 +590,7 @@ describe('startup display unit contracts', () => {
             // evidence status survives so unavailable never means numeric zero.
             const displayedValue = value === null ? '-' : value;
             expect(data.rows[index][data.columns.indexOf(column)]).toBe(displayedValue);
-            expect(fetched.rows[index][fetched.columns.indexOf(column)]).toBe(displayedValue);
+            expect(fetched.rows[index].values[fetched.columns.indexOf(column)]).toBe(displayedValue);
           }
         }
       }

@@ -1074,7 +1074,7 @@ describe('QoderRuntime', () => {
         try {
           const secondStore = (mockCreateClaudeMcpServer.mock.calls[1][0] as {artifactStore: ArtifactStore}).artifactStore;
           expect(secondStore).not.toBe(firstStore);
-          expect(secondStore.fetch(artifactId, 'rows')).toMatchObject({rows: [[7]]});
+          expect(secondStore.fetch(artifactId, 'rows')).toMatchObject({rows: [{rowIndex: 0, values: [7]}]});
           expect(() => firstStore.clear()).toThrow();
           const reads = await finalization!.resolveReferences([
             {key: 'prior', reference: {artifactId, rowIndex: 0, column: 'metric'}, requiredColumns: ['metric']},

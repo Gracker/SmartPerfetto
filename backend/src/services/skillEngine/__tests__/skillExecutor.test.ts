@@ -4631,7 +4631,7 @@ describe('scrolling main-thread task delivery', () => {
     const sourceId = store.store({skillId: source.name, stepId: sourceDisplay.stepId, data: sourceDisplay.data});
     const sourceFetch = ArtifactStore.fromSnapshot(JSON.parse(JSON.stringify(store.serialize()))).fetch(sourceId, 'rows');
     for (const [key, value] of Object.entries(sourceRow)) {
-      expect(sourceFetch.rows[0][sourceFetch.columns.indexOf(key)]).toBe(value);
+      expect(sourceFetch.rows[0].values[sourceFetch.columns.indexOf(key)]).toBe(value);
     }
   });
 });
@@ -4682,7 +4682,7 @@ describe('main-thread production SQL substitution', () => {
       const store = new ArtifactStore();
       const artifactId = store.store({skillId:source.name,stepId:sourceDisplay.stepId,data:sourceDisplay.data});
       const fetched = store.fetch(artifactId,'rows');
-      expect(fetched.rows[0][fetched.columns.indexOf('source_slice_id')]).toBe(42);
+      expect(fetched.rows[0].values[fetched.columns.indexOf('source_slice_id')]).toBe(42);
     } finally { db.close(); }
   });
 });

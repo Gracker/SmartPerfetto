@@ -2889,11 +2889,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             success: true,
             mode: 'summary',
             autoSummarized: !summary && !!sqlArtifact,
-            totalRows: summaryResult.totalRows,
-            columns: summaryResult.columns,
-            columnStats: summaryResult.columnStats,
-            sampleRows: summaryResult.sampleRows,
-            sampleRowIndices: summaryResult.sampleRowIndices,
+            ...summaryResult,
             ...(columnUnits ? {columnUnits} : {}),
             ...(sqlArtifact ? {
               artifactId: sqlArtifact.artifactId,
@@ -8697,7 +8693,8 @@ function emitSqlSummaryDataEnvelope(
   const { evidenceRefId, queryHash } = stableSqlEvidenceRefId(
     sql,
     summary.columns,
-    summary.sampleRows,
+    // Hash the plain sample values, as before rows were indexed, so evidenceRefId stays stable.
+    summary.sampleRows.map(sample => sample.values),
     traceProvenance,
     producer,
     'summary',

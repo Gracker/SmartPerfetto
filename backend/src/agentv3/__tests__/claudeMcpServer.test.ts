@@ -219,7 +219,8 @@ jest.mock('../sqlSummarizer', () => ({
     totalRows: rows.length,
     columns,
     columnStats: {},
-    sampleRows: rows.slice(0, 10),
+    rowShape: 'indexed_rows@1',
+    sampleRows: rows.slice(0, 10).map((values, rowIndex) => ({rowIndex, values})),
   })),
 }));
 
@@ -2951,6 +2952,8 @@ describe('createClaudeMcpServer', () => {
       expect(result.mode).toBe('summary');
       expect(result.autoSummarized).toBe(true);
       expect(result.rows).toBeUndefined();
+      expect(result.rowShape).toBe('indexed_rows@1');
+      expect(result.sampleRows[0]).toEqual({rowIndex: 0, values: [0, 'slice-0']});
       expect(result.artifactId).toBe('art-1');
       expect(result.rowsAvailableViaArtifact).toBe(true);
       expect(result.hint).toContain('Use the current summary first');
@@ -3622,6 +3625,8 @@ describe('createClaudeMcpServer', () => {
       expect(result.mode).toBe('summary');
       expect(result.autoSummarized).toBe(true);
       expect(result.rows).toBeUndefined();
+      expect(result.summary.rowShape).toBe('indexed_rows@1');
+      expect(result.summary.sampleRows[0]).toEqual({rowIndex: 0, values: [0, 0]});
       expect(result.artifactId).toBe('art-1');
       expect(result.artifact.traceSide).toBe('reference');
       expect(result.artifact.traceId).toBe('ref-trace-456');
@@ -9371,7 +9376,7 @@ describe('MCP exact scope with real execution and artifact persistence', () => {
       aggregate: {columns: expect.arrayContaining([
         expect.objectContaining({column: 'enabled', observedType: 'boolean'}),
       ])}});
-    expect(rows).toMatchObject({rows: [[null, false, long, 1912.2, 68.1, 0.3]],
+    expect(rows).toMatchObject({rowShape: 'indexed_rows@1', rows: [{rowIndex: 0, values: [null, false, long, 1912.2, 68.1, 0.3]}],
       modelProjection: {status: 'exact'}, columnUnits: {ttid_ms: 'ms', busy_pct: '%'}});
     expect(full).toMatchObject({data: {rows: [[null, false, long, 1912.2, 68.1, 0.3]]},
       modelProjection: {status: 'exact'}, columnUnits: {ttid_ms: 'ms', busy_pct: '%'}});
@@ -9382,6 +9387,47 @@ describe('MCP exact scope with real execution and artifact persistence', () => {
     expect(JSON.stringify(store.serialize())).not.toContain('columnUnits');
     if (previousExists) existsMock.mockImplementation(previousExists);
     else existsMock.mockReset();
+  });
+
+  it('resolves a non-zero-offset page of an ordinary Skill display artifact by its inline rowIndex', async () => {
+    const {ArtifactStore: RealArtifactStore} = jest.requireActual<typeof import('../artifactStore')>('../artifactStore');
+    const {attachEvidenceTable, captureEvidenceTable} = jest.requireActual<typeof import('../../services/evidence/evidenceCapture')>('../../services/evidence/evidenceCapture');
+    const {parseConclusionContractDeclaration} = await import('../../agent/core/conclusionContract');
+    const {prepareClaimEvidence} = await import('../../services/evidence/claimEvidencePreparation');
+    const {runClaimVerification} = await import('../../services/verifier/claimVerificationRunner');
+    const store = new RealArtifactStore();
+    const existsMock = jest.mocked(fs.existsSync);
+    const previousExists = existsMock.getMockImplementation();
+    existsMock.mockImplementation(jest.requireActual<typeof fs>('fs').existsSync);
+    try {
+      const server = createTestServer({lightweight: true, artifactStore: store});
+      const table = {columns: ['thread_name', 'slice_count'],
+        rows: Array.from({length: 60}, (_, index) => [`thread-${index}`, index])};
+      const displayResult: any = {stepId: 'threads', title: 'Threads', layer: 'list', format: 'table',
+        data: structuredClone(table)};
+      attachEvidenceTable(displayResult, captureEvidenceTable(table));
+      server.mockSkillExecutor.execute.mockResolvedValueOnce({skillId: 'cpu_analysis', success: true,
+        displayResults: [displayResult], diagnostics: [], executionTimeMs: 1});
+      const artifactId = (await callTool(server.tools, 'invoke_skill', {skillId: 'cpu_analysis'})).artifacts[0].id;
+      const page = await callTool(server.tools, 'fetch_artifact', {artifactId, detail: 'rows', offset: 50, limit: 1});
+      expect(page.rows[0]).toEqual({rowIndex: 50, values: ['thread-50', 50]});
+      const reference = {artifactId, rowIndex: page.rows[0].rowIndex, column: 'thread_name', value: 'thread-50'};
+      const conclusionContract = parseConclusionContractDeclaration({schemaVersion: 'conclusion_contract_v1',
+        mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+        claims: [{id: 'thread', kind: 'identity', text: 'The row names thread-50.', references: [reference],
+          semantics: {schemaVersion: 'claim_semantics@1', predicate: 'captured.cell', polarity: 'affirmed',
+            discourse: 'asserted', quantifier: 'one', modality: 'certain',
+            scope: {population: 'cited_rows', subjectRefs: [reference]}}}],
+      }).contract!;
+      const evidenceReadView = store.createEvidenceReadView({ownerKey: 'skill-page-owner',
+        allowedTraces: [{traceId: 'test-trace-123', traceSide: 'current'}]});
+      const preparedEvidence = await prepareClaimEvidence({conclusionContract, evidenceReadView});
+      const claim = runClaimVerification({conclusionContract, preparedEvidence}).claimVerificationResult.claimResults[0];
+      expect(claim.referenceResults?.[0]?.status).toBe('matched');
+    } finally {
+      if (previousExists) existsMock.mockImplementation(previousExists);
+      else existsMock.mockReset();
+    }
   });
 
   it('uses the same typed projection in the non-artifact tool response', async () => {
@@ -9461,7 +9507,10 @@ describe('MCP synthesize capture with real execution', () => {
       const unmapped = result.synthesizeArtifacts.find((entry: any) => entry.stepId === 'unmapped');
       const fetched = await callTool(server.tools, 'fetch_artifact', {artifactId: hidden.artifactId,
         detail: 'rows', offset: 59, limit: 1, purpose: 'Inspect the final sample metric'});
-      expect(fetched.rows).toEqual([[59, 59.25, longText, null]]);
+      // The page starts at offset 59; the row states its artifact-wide index.
+      expect(fetched.rowShape).toBe('indexed_rows@1');
+      expect(fetched.rows).toEqual([{rowIndex: 59, values: [59, 59.25, longText, null]}]);
+      const citedRowIndex: number = fetched.rows[0].rowIndex;
       const options = {ownerKey: 'synthesize-test-run',
         allowedTraces: [{traceId: 'test-trace-123', traceSide: 'current' as const}]};
       const view = store.createEvidenceReadView(options);
@@ -9469,7 +9518,7 @@ describe('MCP synthesize capture with real execution', () => {
         artifactId: unmapped.artifactId, rowIndex: 59}, requiredColumns: ['itemIndex']}]))[0])
         .toEqual({key: 'flattened', status: 'missing', reason: 'synthesize_transformation_unmapped'});
       const requests = [hidden, shown].map((entry: any) => ({key: entry.stepId,
-        reference: {artifactId: entry.artifactId, rowIndex: 59}, requiredColumns: ['id', 'metric', 'note', 'empty']}));
+        reference: {artifactId: entry.artifactId, rowIndex: citedRowIndex}, requiredColumns: ['id', 'metric', 'note', 'empty']}));
       const captured = await view.resolveReferences(requests);
       if (retainWitness) {
         for (let index = 0; index < captured.length; index++) {

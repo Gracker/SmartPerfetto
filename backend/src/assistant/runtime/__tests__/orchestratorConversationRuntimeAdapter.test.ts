@@ -148,7 +148,7 @@ describe('Conversation evidence and stream consumer boundaries', () => {
         // Select the locator from the actual prompt, not from test-owned history.
         const fetched = await invoke('fetch_artifact', {artifactId: catalog.artifacts[0].artifactId,
           detail: 'rows', offset: 300, limit: 1});
-        expect(fetched).toMatchObject({structuredContent: {success: true, rows: [[300, 7]]}});
+        expect(fetched).toMatchObject({structuredContent: {success: true, rowShape: 'indexed_rows@1', rows: [{rowIndex: 300, values: [300, 7]}]}});
       }
       const body = 'The retained metric is 7.\n';
       const reference = {artifactId: artifactId!, rowIndex: 300, column: 'metric', value: 7};

@@ -231,7 +231,10 @@ describe('canonical system evidence primitives', () => {
         expect(new Set(display.columns)).toEqual(new Set(columns));
         const store=new ArtifactStore();const id=store.store({skillId:name,stepId:'root',data:display});
         const restored=ArtifactStore.fromSnapshot(JSON.parse(JSON.stringify(store.serialize()))).fetch(id,'rows');
-        expect(restored.columns).toEqual(display.columns);expect(restored.rows).toEqual(display.rows);
+        expect(restored.columns).toEqual(display.columns);
+        // fetch_artifact rows carry their artifact-wide index (rowShape indexed_rows@1).
+        expect(restored.rows.map((row: {values: unknown[]}) => row.values)).toEqual(display.rows);
+        expect(restored.rows.map((row: {rowIndex: number}) => row.rowIndex)).toEqual(display.rows.map((_: unknown, index: number) => index));
         expect(restored.rows).toHaveLength(raw.length);
       }
     } finally {db.close();}

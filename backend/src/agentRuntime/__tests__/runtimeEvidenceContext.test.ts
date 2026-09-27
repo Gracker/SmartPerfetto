@@ -95,7 +95,7 @@ describe('product-owned live evidence continuity', () => {
     const second = bind(context, 'second');
     expect(second.sessionId).not.toBe(first.sessionId);
     expect(second.store).not.toBe(first.store);
-    expect(second.store.fetch(id, 'rows', 5001, 1)).toMatchObject({rows: [[5001, 7]], totalRows: 5002});
+    expect(second.store.fetch(id, 'rows', 5001, 1)).toMatchObject({rows: [{rowIndex: 5001, values: [5001, 7]}], totalRows: 5002});
     const [resolved] = await read(second.store.createEvidenceReadView(readOptions), id);
     expect(resolved).toMatchObject({status: 'resolved', originalRowIndex: 5001, row: {metric: 7}});
     expect(isIssuedEvidenceReadResolution(resolved)).toBe(true);
@@ -195,7 +195,7 @@ describe('product-owned live evidence continuity', () => {
     expect(Reflect.ownKeys(first.store)).not.toContain('executionCaptures');
     first.binding.release();
     const second = bind(context, 'second');
-    expect(second.store.fetch(id, 'rows', 0, 1).rows).toEqual([[0, 7]]);
+    expect(second.store.fetch(id, 'rows', 0, 1).rows).toEqual([{rowIndex: 0, values: [0, 7]}]);
     expect((await read(second.store.createEvidenceReadView(readOptions), id))[0]).toMatchObject({row: {metric: 7}});
   });
 
@@ -326,7 +326,7 @@ describe('product-owned live evidence continuity', () => {
     const second = bind(context, 'second');
     const mcp = makeMcp(second, false);
     const fetched = await invoke(mcp, 'fetch_artifact', {artifactId: artifact!.id, detail: 'rows', offset: 300, limit: 1});
-    expect(fetched).toMatchObject({structuredContent: {success: true, rows: [[300, 7]], totalRows: 301}});
+    expect(fetched).toMatchObject({structuredContent: {success: true, rowShape: 'indexed_rows@1', rows: [{rowIndex: 300, values: [300, 7]}], totalRows: 301}});
     expect(query).not.toHaveBeenCalled();
     const [resolved] = await second.store.createEvidenceReadView(readOptions).resolveReferences([
       {key: 'prior', reference: {artifactId: artifact!.id, rowIndex: 300, column: 'metric'}, requiredColumns: ['metric']},

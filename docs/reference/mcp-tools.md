@@ -47,7 +47,7 @@ Full mode 中，`execute_sql` 和 `invoke_skill` 仍要求先提交分析计划�
 
 | Tool | 作用 | 备注 |
 |---|---|---|
-| `execute_sql` | 对当前 trace 执行 Perfetto SQL | 支持 summary 模式；大结果会截断或通过 artifact 分页 |
+| `execute_sql` | 对当前 trace 执行 Perfetto SQL | 支持 summary 模式；大结果会截断或通过 artifact 分页。摘要结果（显式请求，或在有 artifact store 时超过 50 行自动）按关注度顺序给出 `sampleRows: {rowIndex, values}`，`rowIndex` 是该行在完整结果中从 0 起的行号，并带 `rowShape: "indexed_rows@1"`；较小的原始结果以及没有 artifact store 时的结果，仍是按结果顺序从第 0 行开始的普通 `rows`（最多前 200 行） |
 | `invoke_skill` | 执行 YAML Skill 分析管线 | 首选证据收集路径，返回 DataEnvelope / artifacts |
 | `list_skills` | 列出可用 Skills | 可按 category 过滤；Skill 数量以文件树为准 |
 | `detect_architecture` | 检测当前 trace 的渲染架构 | 影响策略和渲染管线分析 |
@@ -91,7 +91,7 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 | `resolve_hypothesis` | 标记假设为 confirmed / rejected / unresolved |
 | `flag_uncertainty` | 显式记录不确定性或缺失证据 |
 | `write_analysis_note` | 写入 session 分析笔记，按配置启用 |
-| `fetch_artifact` | 分页读取大型 SQL/Skill artifact，按 artifact store 启用 |
+| `fetch_artifact` | 分页读取大型 SQL/Skill artifact，按 artifact store 启用。`detail="rows"` 返回 `rows: {rowIndex, values}`，`rowIndex = offset + 位置`（整个 artifact 内的行号），并带 `rowShape: "indexed_rows@1"`；`detail="full"` 保持原始结构 |
 | `lookup_strategy_detail` | 按 plan 工具返回的 detail ref 读取场景策略细节；仅作 informational fallback，不满足 expectedCalls |
 
 这些工具服务于分析纪律和上下文压缩。不要把 artifact 摘要当作完整证据删除；完整 DataEnvelope 仍可进入前端、报告、CLI 或 snapshot。
@@ -145,7 +145,7 @@ GitNexus 是独立的第三方可选工具，其[官方项目](https://github.co
 
 | Tool | 作用 |
 |---|---|
-| `execute_sql_on` | 在基线或对比 trace 上执行 SQL；兼容参数值为 current/reference |
+| `execute_sql_on` | 在基线或对比 trace 上执行 SQL；兼容参数值为 current/reference。其摘要结果把带行号的 `sampleRows` 与 `rowShape: "indexed_rows@1"` 放在 `summary` 内 |
 | `compare_skill` | 对基线/对比并行执行同一 Skill；兼容角色为 current/reference |
 | `get_comparison_context` | 获取 trace pair 元数据、左右/上下窗格映射和 comparison context |
 

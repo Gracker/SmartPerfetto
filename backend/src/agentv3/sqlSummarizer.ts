@@ -10,6 +10,8 @@
  * The full data is still sent to the frontend via DataEnvelope for interactive tables.
  */
 
+import {INDEXED_ROW_SHAPE, indexEvidenceRowsAt, type IndexedEvidenceRow} from '../services/evidence/evidenceCapture';
+
 export interface ColumnStat {
   column: string;
   type: 'numeric' | 'string';
@@ -29,12 +31,9 @@ export interface ColumnStat {
 export interface SqlSummary {
   totalRows: number;
   columnStats: ColumnStat[];
-  sampleRows: any[][];
-  /**
-   * Original row index of each sample row. Samples are re-ordered by interest,
-   * so their position is not the row a citation must name.
-   */
-  sampleRowIndices: number[];
+  rowShape: typeof INDEXED_ROW_SHAPE;
+  /** Sample rows in interest order, each with its original row index. */
+  sampleRows: IndexedEvidenceRow[];
   columns: string[];
 }
 
@@ -48,13 +47,11 @@ export function summarizeSqlResult(
   rows: any[][],
 ): SqlSummary {
   const columnStats = columns.map((col, colIdx) => computeColumnStat(col, colIdx, rows));
-  const sampleRowIndices = selectSampleRowIndices(columns, rows, 10);
-
   return {
     totalRows: rows.length,
     columnStats,
-    sampleRows: sampleRowIndices.map(index => rows[index]),
-    sampleRowIndices,
+    rowShape: INDEXED_ROW_SHAPE,
+    sampleRows: indexEvidenceRowsAt(rows, selectSampleRowIndices(columns, rows, 10)),
     columns,
   };
 }
