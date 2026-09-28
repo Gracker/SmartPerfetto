@@ -216,6 +216,7 @@ import {
   SOURCE_FINALIZATION_CANARY,
   SOURCE_FINALIZATION_RAW_SOURCE,
 } from '../../../__tests__/sourceFinalizationFixture';
+import {resolveFocusPackageCell} from '../../../__tests__/focusEvidenceFixture';
 import {createRuntimePerformanceRecorder} from '../../../runtimePerformance';
 import type {RunManifestAttributionSink} from '../../../../types/selfEvolution';
 import {McpToolRegistry} from '../../../../agentv3/mcpToolRegistry';
@@ -1303,6 +1304,23 @@ describe('QoderRuntime', () => {
   });
 
   describe('MCP context passing', () => {
+    it('renders an issued current-side focus-app evidence locator the run store resolves', async () => {
+      (detectFocusApps as jest.Mock<(...args: any[]) => any>).mockResolvedValueOnce({
+        method: 'oom_adj', confidence: 'high', primaryApp: 'com.example.qoder',
+        apps: [{packageName: 'com.example.qoder', totalDurationNs: 10, switchCount: 1, score: 40}],
+      });
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: 'done'},
+      ]));
+      await createRuntime().analyze('which app', 'session-focus-evidence', 'trace-1', {analysisMode: 'full'});
+      const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
+      expect((readPromptContext(systemPrompt, 'trace_context') as any)?.focusApp?.evidence).toMatchObject({rowIndex: 0,
+        row: {package_name: 'com.example.qoder', detection_method: 'oom_adj', detection_confidence: 'high'}});
+      const resolution = await resolveFocusPackageCell((mockCreateClaudeMcpServer.mock.calls[0][0] as any).artifactStore,
+        systemPrompt, 'trace-1');
+      expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.qoder'}});
+    });
+
     it('passes full context in full mode', async () => {
       mockBuildComparisonContext.mockResolvedValueOnce({
         referenceTraceId: 'ref-trace',

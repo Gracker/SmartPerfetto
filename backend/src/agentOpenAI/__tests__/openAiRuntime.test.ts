@@ -39,6 +39,7 @@ import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryReader} from '../../agentRuntime/analysisHistory';
 import {applyFinalResultQualityGate} from '../../services/finalResultQualityGate';
 import {createRuntimeSourceFinalizationFixture, SOURCE_FINALIZATION_CANARY, SOURCE_FINALIZATION_RAW_SOURCE} from '../../agentRuntime/__tests__/sourceFinalizationFixture';
+import {resolveFocusPackageCell} from '../../agentRuntime/__tests__/focusEvidenceFixture';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
@@ -254,6 +255,17 @@ describe('OpenAI typed intent integration', () => {
       expect(architecture).toHaveBeenCalledWith('trace', expectedPackage);
       expect(prompt.mock.calls[0][0]).toMatchObject({packageName: expectedPackage,
         focusTarget: {source: expectedSource, confidence: focusResult.confidence}});
+      // Only a confident primary becomes a citable current-run evidence row.
+      const evidence = prompt.mock.calls[0][0].focusTarget?.evidence;
+      if (expectedPackage) {
+        expect(evidence).toMatchObject({rowIndex: 0,
+          row: {package_name: expectedPackage, detection_method: 'oom_adj', detection_confidence: 'medium'}});
+        await expect(resolveFocusPackageCell(mcp.mock.calls[0][0].artifactStore!, evidence!.evidenceRefId, 'trace'))
+          .resolves.toMatchObject({status: 'resolved', row: {package_name: expectedPackage}});
+      } else {
+        expect(evidence).toBeUndefined();
+      }
+      expect(mcp.mock.calls[0][0].focusTarget?.evidence).toBeUndefined();
     });
   it('preserves existing-artifact access while existing_only forbids all automatic collection', async () => {
     const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));

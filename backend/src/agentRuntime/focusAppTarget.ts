@@ -49,6 +49,24 @@ export interface FocusAppTarget {
   method: FocusAppDetectionMethod;
   candidates: FocusAppCandidate[];
   excludedNoActivity: FocusAppExcludedProcess[];
+  /**
+   * Issued current-run locator of the detector's primary app, set only by
+   * `registerFocusAppEvidence` after the capture was registered. Never set for
+   * a reference trace or an ambiguous detection.
+   */
+  evidence?: FocusAppEvidenceLocator;
+}
+
+/** Columns of the captured focus-app row: the detector's discrete output only. */
+export const FOCUS_APP_EVIDENCE_COLUMNS = ['package_name', 'detection_method', 'detection_confidence'] as const;
+export type FocusAppEvidenceColumn = typeof FOCUS_APP_EVIDENCE_COLUMNS[number];
+
+/** Where a claim cites the detector's primary app: one row, string cells, no unit. */
+export interface FocusAppEvidenceLocator {
+  evidenceRefId: string;
+  sourceToolCallId: string;
+  rowIndex: 0;
+  row: Readonly<Record<FocusAppEvidenceColumn, string>>;
 }
 
 function nonZeroSignals(signals: FocusAppSignals | undefined): Partial<FocusAppSignals> | undefined {
@@ -148,6 +166,7 @@ export function buildFocusAppPromptData(target: FocusAppTarget | undefined): Rec
     status: target.confidence ?? (target.candidates.length ? 'unknown' : 'none'),
     method: target.method,
     ...(target.source === 'auto_detected' && target.packageName ? {primary: target.packageName} : {}),
+    ...(target.evidence ? {evidence: target.evidence} : {}),
     candidates: target.candidates,
     ...(target.excludedNoActivity.length ? {
       excludedNoActivity: target.excludedNoActivity.map(({packageName, processName, pid, maxOomScore}) => ({

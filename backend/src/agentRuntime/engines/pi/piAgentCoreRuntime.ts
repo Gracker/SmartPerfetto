@@ -68,6 +68,7 @@ import {
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
 import { resolveFocusAppTarget } from '../../focusAppTarget';
+import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
 import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/scene/sceneRuntimeBinding';
@@ -2191,6 +2192,8 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
       () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
     this.artifactStores.set(sessionId, artifactStore);
+    // The detector's primary app becomes citable current-run evidence.
+    const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
 
     let notes = this.sessionNotes.get(sessionId);
     if (!notes) {
@@ -2304,7 +2307,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       query, turnIntent, strategyRegistry, onDemandContext: policy.onDemandContext,
       architecture,
       packageName: effectivePackageName,
-      focusTarget,
+      focusTarget: citedFocusTarget,
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors

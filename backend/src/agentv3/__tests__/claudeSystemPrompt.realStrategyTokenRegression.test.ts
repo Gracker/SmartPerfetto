@@ -554,9 +554,13 @@ function makeWorstCaseContext(sceneType: 'startup' | 'scrolling'): ClaudeAnalysi
     sceneType,
     architecture: makeArchitecture(),
     // Worst case for the focus block: an inferred package, five ranked
-    // candidates with every signal, and five no-activity exclusions.
+    // candidates with every signal, five no-activity exclusions and the
+    // issued evidence locator of the current side.
     packageName: 'com.example.smartperfetto.demo',
-    focusTarget: makeWorstCaseFocusTarget('com.example.smartperfetto.demo'),
+    focusTarget: {...makeWorstCaseFocusTarget('com.example.smartperfetto.demo'), evidence: {
+      evidenceRefId: 'data:focus_app:current:0123456789ab', sourceToolCallId: 'runtime-focus-app:0123456789ab',
+      rowIndex: 0, row: {package_name: 'com.example.smartperfetto.demo', detection_method: 'battery_stats',
+        detection_confidence: 'high'}}},
     traceCompleteness: makeTraceCompleteness(),
     selectionContext: {
       kind: 'area',

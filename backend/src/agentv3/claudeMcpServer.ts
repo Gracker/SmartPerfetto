@@ -115,9 +115,9 @@ import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from
 import {hasProcessIdentitySelector, PROCESS_IDENTITY_SELECTORS} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
 import {getExactProcessScopeSupport} from '../services/skillEngine/processScopeSql';
-import {captureEvidenceTable, captureRawSqlEvidence, evidenceCaptureHash, evidenceTableFor,
+import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativeProducerFields,
   projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel,
-  type CapturedFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
+  type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
 import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
 import {assessScrollingJankClaimBoundary} from '../services/scrollingJankClaimBoundary';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
@@ -8111,8 +8111,6 @@ const WAIT_CHAIN_SUMMARY_COLUMNS = [
 type WaitChainSummaryColumn = typeof WAIT_CHAIN_SUMMARY_COLUMNS[number];
 type WaitChainSummaryRow = Record<WaitChainSummaryColumn, number | null>;
 
-type DeclaredFieldSemantics = Omit<CapturedFieldSemantics, 'origin'>;
-
 const NS_START: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'start', clock: 'trace_monotonic'};
 const NS_END: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'end', clock: 'trace_monotonic'};
 const NS_DURATION: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'duration', clock: 'trace_monotonic'};
@@ -8121,26 +8119,23 @@ const UTID_IDENTITY: DeclaredFieldSemantics = {identityRole: 'utid'};
 
 /**
  * Producer semantics for one table, fingerprinted by what defines them: the
- * engine version, the table's columns and the declarations themselves. A
- * change to any of them yields a new fingerprint.
+ * engine version, the table's columns and the declarations themselves.
  */
-function nativeProducerFields(
+function waitChainFields(
   table: string,
   columns: readonly string[],
   declared: Record<string, DeclaredFieldSemantics>,
 ): Record<string, CapturedFieldSemantics> {
-  const definitionFingerprint = evidenceCaptureHash({
+  return nativeProducerFields({
     producer: 'analyze_wait_chain', table, engine: CRITICAL_PATH_ENGINE_VERSION, columns, fields: declared,
-  });
-  return Object.fromEntries(Object.entries(declared).map(([column, field]) =>
-    [column, {...field, origin: {kind: 'native_producer' as const, definitionFingerprint}}]));
+  }, declared);
 }
 
-const WAIT_CHAIN_SEGMENT_FIELDS = nativeProducerFields('wait_segments', WAIT_CHAIN_SEGMENT_COLUMNS, {
+const WAIT_CHAIN_SEGMENT_FIELDS = waitChainFields('wait_segments', WAIT_CHAIN_SEGMENT_COLUMNS, {
   start_ts: NS_START, dur_ns: NS_DURATION, utid: UTID_IDENTITY,
 });
 
-const WAIT_CHAIN_SUMMARY_FIELDS = nativeProducerFields('wait_summary', WAIT_CHAIN_SUMMARY_COLUMNS, {
+const WAIT_CHAIN_SUMMARY_FIELDS = waitChainFields('wait_summary', WAIT_CHAIN_SUMMARY_COLUMNS, {
   utid: UTID_IDENTITY,
   window_start_ts: NS_START,
   window_end_ts: NS_END,

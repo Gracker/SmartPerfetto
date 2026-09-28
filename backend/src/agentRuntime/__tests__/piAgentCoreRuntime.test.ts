@@ -43,6 +43,8 @@ import type {AnalysisTurnIntentDecision} from '../analysisTurnIntent';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../agentv3/strategyLoader';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
+import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
 import * as sourceProjectionModule from '../../services/codebase/sourceClaimVerifier';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
@@ -3159,6 +3161,23 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(result.quickRun).toBeUndefined();
       expect(result.partial).not.toBe(true);
     } finally { buildPrompt.mockRestore(); }
+  });
+
+  it('renders an issued focus-app evidence locator that the run store resolves', async () => {
+    passVerification();
+    FakePiAgent.promptMessages = [{role: 'assistant', content: [{type: 'text', text: 'Focus answer'}]}];
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps').mockResolvedValue({
+      method: 'frame_timeline', confidence: 'medium', primaryApp: 'com.example.pi',
+      apps: [{packageName: 'com.example.pi', totalDurationNs: 10, switchCount: 3, score: 30}],
+    });
+    try {
+      const runtime = typedRuntime();
+      await withEffectiveRuntimeRegistrySnapshot(createEffectiveRuntimeRegistrySnapshot(), () => runtime.analyze(
+        '哪个应用在前台', 'typed-pi-focus-evidence', 'trace-pi', {analysisMode: 'full', runId: 'run-pi-focus'}));
+      const resolution = await resolveFocusPackageCell((runtime as any).artifactStores.get('typed-pi-focus-evidence'),
+        FakePiAgent.instances[0].state.systemPrompt, 'trace-pi', 'run-pi-focus');
+      expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.pi'}});
+    } finally { focus.mockRestore(); }
   });
 
   it('uses the same pinned healthy main model after an unavailable classifier without memory prefetch', async () => {

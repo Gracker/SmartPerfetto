@@ -83,6 +83,7 @@ import {
 } from './claudeConfig';
 import type { FocusAppDetectionResult } from '../../../agentv3/focusAppDetector';
 import { formatFocusAppTargetProgress, resolveFocusAppTarget } from '../../focusAppTarget';
+import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import type {SceneType} from '../../../agentv3/sceneClassifier';
 import { buildComplexityClassifierInput } from '../../../agentv3/queryComplexityContext';
 import { buildAgentDefinitions } from './claudeAgentDefinitions';
@@ -2501,7 +2502,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 0.5: the focus detection the caller ran before this preparation.
     // One effective-package decision (user > confident inference > none),
     // shared with every other runtime and package consumer.
-    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult: precomputed.focusResult});
+    const {focusResult} = precomputed;
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
     const effectivePackageName = focusTarget.packageName;
     console.log(`[ClaudeRuntime] Focus target: ${effectivePackageName ?? '(none)'} source=${focusTarget.source} ` +
       `confidence=${focusTarget.confidence ?? '-'} method=${focusTarget.method} candidates=${focusTarget.candidates.length}`);
@@ -2689,6 +2691,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
       () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
     this.artifactStores.set(sessionId, artifactStore);
+    // The detector's primary app becomes citable current-run evidence.
+    const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
     // Notes restored from SessionStateSnapshot on resume — no separate disk I/O.
     let notes = this.sessionNotes.get(sessionId);
     if (!notes) {
@@ -2845,7 +2849,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       preflight: turnPolicy.preflight,
       architecture,
       packageName: effectivePackageName,
-      focusTarget,
+      focusTarget: citedFocusTarget,
       knowledgeBaseContext,
       sceneType,
       availableAgents: agents ? Object.keys(agents) : undefined,
