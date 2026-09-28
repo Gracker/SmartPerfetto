@@ -1404,11 +1404,13 @@ steps:
           AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       ),
       -- 同一物理事件的 monitor 副本不算应用投递；显式 upid/package 已在 scoped_events 收窄候选。
+      -- 无 action 时先比本进程所属窗口上的事件：monitor 看到全屏触摸，事件数可比应用多（见 fragment）。
       ranked_processes AS (
         SELECT
           upid, process_name,
           ROW_NUMBER() OVER (ORDER BY
             SUM(delivery_role = 'action') DESC,
+            COUNT(DISTINCT unresolved_window_event_key) DESC,
             COUNT(DISTINCT unresolved_event_key) DESC,
             MAX(total_latency_dur) DESC, upid) as rn
         FROM scoped_events

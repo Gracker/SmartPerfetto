@@ -888,6 +888,38 @@ describe('scrolling_analysis skill schema', () => {
     }
   });
 
+  // Action-free input where monitors see as many or more physical events than
+  // the app: only the receiver of a '<hash> <package>/<component>' window owns it.
+  const appWindow = '32c6ecb com.tencent.mm/com.tencent.mm.plugin.lite.ui.WxaLiteAppLiteUI (server)';
+
+  it('ranks action-free input by owned window events before monitor event counts', () => {
+    // v58.2 runtime on the surface-view trace: equal counts, monitors slower.
+    const tied = createMonitorCopyInputFixture(['1', '2', '3'].flatMap((eventId): InputDelivery[] => [
+      [1, 'com.tencent.mm', appWindow, eventId, null, 1000000],
+      [2, 'com.android.systemui', '[Gesture Monitor] swipe-to-screenshot (server)', eventId, null, 3000000],
+      [3, 'system_server', 'PointerEventDispatcher0 (server)', eventId, null, 2000000],
+    ]));
+    // A child process on its package window; the monitor also saw a touch elsewhere.
+    const childProcess = createMonitorCopyInputFixture([
+      ...['1', '2'].map((eventId): InputDelivery =>
+        [1, 'com.tencent.mm:appbrand0', 'a1 com.tencent.mm/com.tencent.mm.plugin.appbrand.ui.AppBrandUI00 (server)', eventId, null, 1000000]),
+      ...['1', '2', '3'].map((eventId): InputDelivery =>
+        [2, 'system_server', '[Gesture Monitor] OplusExInputReceiver1', eventId, null, 3000000]),
+    ]);
+    try {
+      const target = (db: Database.Database, packageName: string) =>
+        (db.prepare(renderScrollingSql('input_latency_summary', packageName)).get() as {target_process: string})
+          .target_process;
+
+      expect(target(tied, '')).toBe('com.tencent.mm');
+      expect(target(tied, 'com.android.systemui')).toBe('com.android.systemui');
+      expect(target(childProcess, '')).toBe('com.tencent.mm:appbrand0');
+    } finally {
+      tied.close();
+      childProcess.close();
+    }
+  });
+
   it('counts similar-prefix CPU work as non-app background interference', () => {
     const cte = extractMarkedCtes(
       String(getStep('global_context_flags').sql),
