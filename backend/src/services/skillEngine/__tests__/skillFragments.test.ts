@@ -21,6 +21,35 @@ describe('substituteSqlPlaceholders', () => {
       {match: '${d | 5}', path: 'd', defaultValue: '5', insideQuotes: false},
     ]);
   });
+
+  const quoting = (sql: string) => {
+    const seen: Record<string, boolean> = {};
+    substituteSqlPlaceholders(sql, ({path, insideQuotes}) => {
+      seen[path] = insideQuotes;
+      return 'v';
+    });
+    return seen;
+  };
+
+  it('ignores apostrophes in line and block comments', () => {
+    expect(quoting([
+      "-- the target process's deliveries",
+      'WHERE (${start_ts} IS NULL OR ts >= ${start_ts})',
+      "  AND name = '${package}' /* it's the app */ AND ${end_ts} > 0",
+      "/* a block comment's",
+      "   spanning lines */ AND upid = ${upid}",
+    ].join('\n'))).toEqual({start_ts: false, package: true, end_ts: false, upid: false});
+  });
+
+  it('does not start a comment inside a string literal', () => {
+    expect(quoting("SELECT '--', ${a}, '/*', ${b}, 'x -- y ${c}', '--''s ${d}'"))
+      .toEqual({a: false, b: false, c: true, d: true});
+  });
+
+  it('reads a placeholder inside a comment as unquoted, and an unterminated comment as running to the end', () => {
+    expect(quoting("SELECT 1 -- it's ${a}\n/* it's ${b} */ /* it's ${c}"))
+      .toEqual({a: false, b: false, c: false});
+  });
 });
 
 describe('injectFragmentCtes', () => {
