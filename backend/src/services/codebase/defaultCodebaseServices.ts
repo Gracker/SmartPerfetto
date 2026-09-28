@@ -5,13 +5,19 @@
 import {backendLogPath} from '../../runtimePaths';
 import {CodebaseRegistry} from './codebaseRegistry';
 
-export const CODEBASE_REGISTRY_PATH = backendLogPath('codebase_registry.json');
+let cachedRegistry: {path: string; registry: CodebaseRegistry} | null = null;
 
-let cachedRegistry: CodebaseRegistry | null = null;
-
+/**
+ * Resolved on use, never at import: the CLI sets its log root in bootstrap,
+ * after its modules are imported, and a fixed import-time path would read a
+ * different registry than `smp codebase register` writes.
+ */
 export function getDefaultCodebaseRegistry(): CodebaseRegistry {
-  if (!cachedRegistry) cachedRegistry = new CodebaseRegistry(CODEBASE_REGISTRY_PATH);
-  return cachedRegistry;
+  const registryPath = backendLogPath('codebase_registry.json');
+  if (cachedRegistry?.path !== registryPath) {
+    cachedRegistry = {path: registryPath, registry: new CodebaseRegistry(registryPath)};
+  }
+  return cachedRegistry.registry;
 }
 
 export function resetDefaultCodebaseRegistryForTests(): void {

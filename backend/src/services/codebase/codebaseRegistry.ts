@@ -26,7 +26,11 @@ import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
 import {buildSourceSelectionIR, sourceExtensionsForKind} from './sourceSelectionPolicy';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
-export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker';
+/**
+ * How a registered root was authorized. `native_picker` and `local_cli` roots were
+ * chosen by the local user through that channel; see `channelAuthorizedRoots`.
+ */
+export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker' | 'local_cli';
 const CODEBASE_KINDS: readonly CodebaseKind[] = ['app_source', 'aosp', 'kernel_source', 'oem_sdk'];
 const DEFAULT_TENANT_ID = 'default-dev-tenant';
 const DEFAULT_WORKSPACE_ID = 'default-workspace';
@@ -418,6 +422,36 @@ export function codebaseHasActiveIndex(
   return (ref.lifecycleState ?? 'active') === 'active' &&
     ref.activeIndexState === 'active' &&
     Boolean(ref.activeGeneration && ref.contentFingerprint && (ref.chunkCount ?? 0) > 0);
+}
+
+/** Registration channels this process trusts in place of the configured allowlist. */
+let trustedRootChannels: ReadonlySet<CodebaseRootAuthorization> = new Set(['native_picker']);
+/** Channel assumed for records written before registration recorded one; unset on the server. */
+let unrecordedRootChannel: CodebaseRootAuthorization | undefined;
+
+/**
+ * The CLI trusts roots its local user registered, including records written
+ * before registration recorded the channel. The server never calls this, so a
+ * `local_cli` record it reads still needs the configured allowlist.
+ */
+export function trustLocalCliRegistrations(): void {
+  trustedRootChannels = new Set(['native_picker', 'local_cli']);
+  unrecordedRootChannel = 'local_cli';
+}
+
+export function resetRegistrationChannelTrustForTests(): void {
+  trustedRootChannels = new Set(['native_picker']);
+  unrecordedRootChannel = undefined;
+}
+
+/** Gate options for a root authorized by its registration channel rather than the allowlist. */
+export function channelAuthorizedRoots(
+  ref: Pick<CodebaseRef, 'rootAuthorization' | 'rootRealpath'>,
+): {additionalAllowlistRoots: string[]} | undefined {
+  const channel = ref.rootAuthorization ?? unrecordedRootChannel;
+  return channel && trustedRootChannels.has(channel)
+    ? {additionalAllowlistRoots: [ref.rootRealpath]}
+    : undefined;
 }
 
 export function codebaseRootAvailable(

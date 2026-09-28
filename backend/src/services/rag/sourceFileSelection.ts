@@ -7,7 +7,7 @@ import {createHash} from 'crypto';
 import {execFile} from 'child_process';
 import {promisify} from 'util';
 
-import type {CodebaseRef, IndexCoverage} from '../codebase/codebaseRegistry';
+import {channelAuthorizedRoots, type CodebaseRef, type IndexCoverage} from '../codebase/codebaseRegistry';
 import {
   sourceSelectionAdmits,
   sourceSelectionForRef,
@@ -71,9 +71,7 @@ export async function enumerateRegisteredCodebaseRoot(
     policy: sourceSelectionForRef(ref, gate.getSourceReadLimits().maxFileBytes),
     gate,
     expectedRootRealpath: ref.rootRealpath,
-    ...(ref.rootAuthorization === 'native_picker'
-      ? {additionalAllowlistRoots: [ref.rootRealpath]}
-      : {}),
+    ...channelAuthorizedRoots(ref),
   });
   return result;
 }

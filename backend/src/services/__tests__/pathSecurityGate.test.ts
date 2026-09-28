@@ -199,4 +199,19 @@ describe('PathSecurityGate', () => {
     expect(() => readAcceptedTextFileSync(registeredRoot, 'Main.kt'))
       .toThrow('codebase_root_realpath_drift');
   });
+
+  it('reports filesystem failures as codes that never name the registered root', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(tmpDir, 'registered-')));
+    const failureOf = (rootPath: string, relativePath: string): string => {
+      try {
+        readAcceptedTextFileSync(rootPath, relativePath);
+      } catch (error) {
+        return (error as Error).message;
+      }
+      throw new Error('expected the read to fail');
+    };
+
+    expect(failureOf(root, 'Missing.kt')).toBe('source_file_not_found');
+    expect(failureOf(path.join(root, 'gone'), 'Main.kt')).toBe('codebase_root_unavailable');
+  });
 });

@@ -8,7 +8,11 @@ import * as path from 'path';
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
-import {CodebaseRegistry} from '../codebase/codebaseRegistry';
+import {
+  CodebaseRegistry,
+  resetRegistrationChannelTrustForTests,
+  trustLocalCliRegistrations,
+} from '../codebase/codebaseRegistry';
 import {
   OnDemandSourceAccessService,
   codebaseOnDemandAvailability,
@@ -47,7 +51,7 @@ afterEach(() => {
   fs.rmSync(tmpDir, {recursive: true, force: true});
 });
 
-function register(sendToProvider = true) {
+function register(sendToProvider = true, rootAuthorization?: 'local_cli' | 'native_picker') {
   return registry.register({
     kind: 'app_source',
     displayName: 'Demo App',
@@ -55,14 +59,15 @@ function register(sendToProvider = true) {
     pathFilters: ['app/src'],
     excludeGlobs: ['**/generated/**'],
     sendToProvider,
+    rootAuthorization,
     ...scope,
   });
 }
 
-function service(ripgrepPath = 'rg') {
+function service(ripgrepPath = 'rg', allowlistRoots = [tmpDir]) {
   return new OnDemandSourceAccessService({
     registry,
-    gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+    gate: new PathSecurityGate({allowlistRoots}),
     ripgrepPath,
   });
 }
@@ -249,9 +254,12 @@ describe('OnDemandSourceAccessService', () => {
       mode: 'metadata_only',
     });
 
+    // A finished Node walk covers every selected file; only its speed and
+    // ignore-file semantics are degraded relative to ripgrep.
     expect(search.backend).toBe('node');
-    expect(search.coverageComplete).toBe(false);
-    expect(search.searchIncompleteReason).toBe('backend_degraded');
+    expect(search.coverageComplete).toBe(true);
+    expect(search.searchIncompleteReason).toBeUndefined();
+    expect(search.backendFidelity).toBe('degraded');
     expect(search.matches).toEqual([
       expect.objectContaining({filePath: 'SourceCase/WindowsCase.kt'}),
     ]);
@@ -308,7 +316,7 @@ describe('OnDemandSourceAccessService', () => {
       scope,
       filePath: 'app/src/main.dart',
       mode: 'provider_send',
-    })).rejects.toThrow('source_path_outside_provider_grant');
+    })).resolves.toMatchObject({success: false, unsupportedReason: 'source_path_outside_provider_grant'});
   });
 
   it('evaluates a frozen provider grant once for a large rejected candidate set', async () => {
@@ -445,7 +453,7 @@ describe('OnDemandSourceAccessService', () => {
       startLine: 1,
       maxLines: 10,
       mode: 'provider_send',
-    })).rejects.toThrow('source_path_invalid');
+    })).resolves.toMatchObject({success: false, unsupportedReason: 'source_path_invalid'});
     await expect(access.search({
       codebaseId: ref.codebaseId,
       scope,
@@ -899,5 +907,44 @@ describe('OnDemandSourceAccessService', () => {
       available: false,
       reason: 'codebase_root_unavailable',
     });
+  });
+});
+
+describe('registration-channel root authorization', () => {
+  const readWithoutAllowlist = (codebaseId: string) => service('rg', []).read({codebaseId, scope,
+    filePath: 'app/src/MainActivity.kt', mode: 'provider_send'});
+
+  afterEach(() => resetRegistrationChannelTrustForTests());
+
+  it('reads a native-picker root without a configured allowlist', async () => {
+    await expect(readWithoutAllowlist(register(true, 'native_picker').codebaseId)).resolves.toMatchObject({success: true});
+  });
+
+  it('requires the configured allowlist for local_cli and unrecorded roots until the CLI opts in', async () => {
+    const cli = register(true, 'local_cli');
+    const legacy = register(true);
+    await expect(readWithoutAllowlist(cli.codebaseId)).rejects.toThrow('root_outside_allowlist');
+    await expect(readWithoutAllowlist(legacy.codebaseId)).rejects.toThrow('root_outside_allowlist');
+    trustLocalCliRegistrations();
+    await expect(readWithoutAllowlist(cli.codebaseId)).resolves.toMatchObject({success: true});
+    await expect(readWithoutAllowlist(legacy.codebaseId)).resolves.toMatchObject({success: true});
+  });
+});
+
+describe('file-level read failures', () => {
+  it('reports a missing file without the registered absolute root', async () => {
+    const ref = register();
+    const read = await service().read({codebaseId: ref.codebaseId, scope,
+      filePath: 'app/src/Missing.kt', mode: 'provider_send'});
+    expect(read).toMatchObject({success: false, unsupportedReason: 'source_file_not_found'});
+    expect(JSON.stringify(read)).not.toContain(root);
+  });
+
+  it('returns the file length when the requested start line is past the end', async () => {
+    const ref = register();
+    const read = await service().read({codebaseId: ref.codebaseId, scope,
+      filePath: 'app/src/MainActivity.kt', startLine: 99, mode: 'provider_send'});
+    expect(read).toMatchObject({success: false, unsupportedReason: 'source_line_out_of_range',
+      window: {totalLines: 7}});
   });
 });

@@ -6,11 +6,11 @@ import * as path from 'path';
 
 import {bootstrap} from '../bootstrap';
 import {withConsoleLogToStderr} from '../io/stdio';
+import {cliCodebaseRegistry} from '../services/cliCodebaseRegistry';
 import {backendLogPath} from '../../runtimePaths';
 import {RagStore} from '../../services/ragStore';
 import {
   codebaseRegistrationRequirements,
-  CodebaseRegistry,
   resolveCodebaseScope,
   type CodebaseScope,
 } from '../../services/codebase/codebaseRegistry';
@@ -28,7 +28,6 @@ import {KernelSourceIngester} from '../../services/rag/kernelSourceIngester';
 import {SymbolResolver} from '../../services/symbol/symbolResolver';
 import type {CodebaseKind} from '../../services/codebase/codebaseRegistry';
 
-const registryPath = () => backendLogPath('codebase_registry.json');
 const ragStorePath = () => backendLogPath('rag_store.json');
 
 export interface CodebaseCommandBaseArgs {
@@ -46,7 +45,7 @@ function managementContext(
 ): {service: CodebaseManagementService; scope: Required<CodebaseScope>} {
   const scope = resolveCodebaseScope();
   const service = args.managementService ?? new CodebaseManagementService({
-    registry: new CodebaseRegistry(registryPath()),
+    registry: cliCodebaseRegistry(),
     store: new RagStore(ragStorePath()),
     gate: allowlistRoot
       ? new PathSecurityGate({allowlistRoots: [allowlistRoot]})
@@ -239,13 +238,14 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
     }, null, 2));
     return 0;
   }
-  const registry = new CodebaseRegistry(registryPath());
+  const registry = cliCodebaseRegistry();
   const ref = registry.register({
     kind,
     displayName: args.name ?? path.basename(rootPath),
     rootPath,
     rootRealpath,
     sendToProvider: Boolean(args.sendToProvider),
+    rootAuthorization: 'local_cli',
     pathFilters: args.pathFilters,
     excludeGlobs: args.excludeGlobs,
     ...(args.vendor ? {vendor: args.vendor} : {}),
@@ -480,7 +480,7 @@ export async function runCodebaseDeleteCommand(args: CodebaseCommandBaseArgs & {
 
 export async function runCodebaseReindexCommand(args: CodebaseCommandBaseArgs & {codebaseId: string}): Promise<number> {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
-  const registry = new CodebaseRegistry(registryPath());
+  const registry = cliCodebaseRegistry();
   const ref = registry.get(args.codebaseId);
   if (!ref) {
     console.error(`Codebase not found: ${args.codebaseId}`);
@@ -502,7 +502,7 @@ export async function runCodebaseSymbolsCommand(args: CodebaseCommandBaseArgs & 
   symbol: string;
 }): Promise<number> {
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
-  const registry = new CodebaseRegistry(registryPath());
+  const registry = cliCodebaseRegistry();
   const ref = args.codebaseId ? registry.get(args.codebaseId) : undefined;
   const resolver = new SymbolResolver(
     new RagStore(ragStorePath()),

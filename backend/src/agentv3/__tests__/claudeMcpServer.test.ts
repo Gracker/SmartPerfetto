@@ -7916,7 +7916,7 @@ describe('createClaudeMcpServer', () => {
           referenceId: `lookup-${input.query}-${i}`, codebaseId: input.codebaseId,
           filePath: `src/Batch${input.query}File${i}.kt`, lineRange: {start: 1, end: 1}, text: `class Batch${input.query}File${i}`,
         })), truncated: false, coverageComplete: true, backend: 'node' as const,
-        enumerationBackend: 'node-walk' as const, backendFidelity: 'exact' as const,
+        enumerationBackend: 'node-walk' as const, backendFidelity: 'degraded' as const,
       }))};
       const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a', 'app-b'],
         onDemandSourceAccess: sourceAccess});
@@ -8774,21 +8774,11 @@ describe('createClaudeMcpServer', () => {
             text: '  fun installTracing() = Unit',
           })],
         }));
-        if (search.backendFidelity === 'exact') {
-          expect(search).toEqual(expect.objectContaining({
-            backend: 'ripgrep',
-            coverageComplete: true,
-            enumerationBackend: 'ripgrep',
-          }));
-        } else {
-          expect(search).toEqual(expect.objectContaining({
-            backend: 'node',
-            coverageComplete: false,
-            enumerationBackend: 'node-walk',
-            backendFidelity: 'degraded',
-            searchIncompleteReason: 'backend_degraded',
-          }));
-        }
+        // Either backend covers every selected file; only fidelity differs.
+        expect(search).toEqual(expect.objectContaining({coverageComplete: true}));
+        expect(search).not.toHaveProperty('searchIncompleteReason');
+        expect([search.backend, search.enumerationBackend, search.backendFidelity]).toEqual(
+          search.backendFidelity === 'exact' ? ['ripgrep', 'ripgrep', 'exact'] : ['node', 'node-walk', 'degraded']);
         expect(read).toEqual(expect.objectContaining({
           success: true,
           dataTrust: 'untrusted_retrieved_data',
@@ -10086,6 +10076,16 @@ describe('analyze_wait_chain', () => {
       const payload = JSON.parse(raw.content[0].text);
 
       expect(payload).toMatchObject({
+        success: false, error: 'no_thread_state_in_window', action_required: 'choose_thread_with_sched_data',
+        processHasSchedData: true,
+        candidates: [{utid: 631, threadName: 'd.process.media', threadStateRows: 57}],
+      });
+      expect(isPolicyRefusalResult(raw)).toBe(true);
+      // Nothing about the empty thread is stored as evidence.
+      expect(payload).not.toHaveProperty('artifactId');
+    });
+  });
+});
 
 describe('model-facing tool descriptions', () => {
   it('keep template authoring and SPDX comments out of every description', () => {
@@ -10099,15 +10099,5 @@ describe('model-facing tool descriptions', () => {
     for (const definition of toolDefinitions) {
       expect(definition.shared.description).not.toMatch(/<!--|SPDX|Copyright \(C\)/);
     }
-  });
-});
-        success: false, error: 'no_thread_state_in_window', action_required: 'choose_thread_with_sched_data',
-        processHasSchedData: true,
-        candidates: [{utid: 631, threadName: 'd.process.media', threadStateRows: 57}],
-      });
-      expect(isPolicyRefusalResult(raw)).toBe(true);
-      // Nothing about the empty thread is stored as evidence.
-      expect(payload).not.toHaveProperty('artifactId');
-    });
   });
 });

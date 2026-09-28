@@ -13,8 +13,7 @@ import {
   PENDING_GENERATION_TTL_MS,
   codebaseRegistrationRequirements,
   CodebaseRegistry,
-  isCodebaseKind,
-} from '../codebase/codebaseRegistry';
+  isCodebaseKind, channelAuthorizedRoots, resetRegistrationChannelTrustForTests, trustLocalCliRegistrations} from '../codebase/codebaseRegistry';
 
 let tmpDir: string;
 
@@ -583,6 +582,24 @@ describe('CodebaseRegistry', () => {
     });
     expect(reloaded.list()[0]).not.toHaveProperty('rootPath');
     expect(reloaded.list()[0]).not.toHaveProperty('rootRealpath');
+  });
+
+  it('trusts local_cli and unrecorded channels only in a process that opted in', () => {
+    const root = {rootRealpath: tmpDir};
+    try {
+      expect(channelAuthorizedRoots({...root, rootAuthorization: 'native_picker'}))
+        .toEqual({additionalAllowlistRoots: [tmpDir]});
+      // The server reads CLI records without trusting them.
+      expect(channelAuthorizedRoots({...root, rootAuthorization: 'local_cli'})).toBeUndefined();
+      expect(channelAuthorizedRoots(root)).toBeUndefined();
+      trustLocalCliRegistrations();
+      expect(channelAuthorizedRoots({...root, rootAuthorization: 'local_cli'}))
+        .toEqual({additionalAllowlistRoots: [tmpDir]});
+      expect(channelAuthorizedRoots(root)).toEqual({additionalAllowlistRoots: [tmpDir]});
+      expect(channelAuthorizedRoots({...root, rootAuthorization: 'configured_allowlist'})).toBeUndefined();
+    } finally {
+      resetRegistrationChannelTrustForTests();
+    }
   });
 
   it('deletes a registration only while holding its ingest lease', async () => {

@@ -92,7 +92,7 @@ import {
   codebaseRootAvailable,
   resolveCodebaseScope,
 } from '../../services/codebase/codebaseRegistry';
-import {getDefaultCodebaseRegistry} from '../../services/codebase/defaultCodebaseServices';
+import {cliCodebaseRegistry} from './cliCodebaseRegistry';
 import {
   externalKnowledgeSourceHasActiveIndex,
   getDefaultExternalKnowledgeSourceRegistry,
@@ -298,7 +298,7 @@ function validateCliAnalysisContext(input: RunTurnInput, scope: KnowledgeScope):
     ));
   }
 
-  const codebaseRegistry = getDefaultCodebaseRegistry();
+  const codebaseRegistry = cliCodebaseRegistry();
   for (const codebaseId of codebaseIds) {
     const ref = codebaseRegistry.get(codebaseId, scope);
     if (!ref) {

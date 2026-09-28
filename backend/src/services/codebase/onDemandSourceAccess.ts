@@ -10,6 +10,7 @@ import {StringDecoder} from 'string_decoder';
 
 import type {CodeAwareMode} from './codeAwareFeature';
 import {
+  channelAuthorizedRoots,
   codebaseRootAvailable,
   type CodebaseRef,
   type CodebaseRegistry,
@@ -50,8 +51,7 @@ export type SourceSearchIncompleteReason =
   | 'enumeration_budget'
   | 'time_budget'
   | 'output_budget'
-  | 'traversal_error'
-  | 'backend_degraded';
+  | 'traversal_error';
 
 interface SourceSearchBackendResult {
   matches: OnDemandSourceReference[];
@@ -248,9 +248,7 @@ export class OnDemandSourceAccessService {
   private async validateRoot(ref: RegisteredCodebase): Promise<string> {
     const root = await this.gate.validateRoot(
       ref.rootRealpath,
-      ref.rootAuthorization === 'native_picker'
-        ? {additionalAllowlistRoots: [ref.rootRealpath]}
-        : undefined,
+      channelAuthorizedRoots(ref),
     );
     assertCodebaseRootIdentity(ref.rootRealpath, root, this.platform);
     return root;
@@ -418,7 +416,9 @@ export class OnDemandSourceAccessService {
           truncated: result.truncated,
           backend: 'node',
           coverageComplete: result.coverageComplete,
-          searchIncompleteReason: result.searchIncompleteReason ?? 'backend_degraded',
+          ...(result.searchIncompleteReason
+            ? {searchIncompleteReason: result.searchIncompleteReason}
+            : {}),
           enumerationBackend: 'node-walk',
           backendFidelity: 'degraded',
         };
@@ -436,70 +436,75 @@ export class OnDemandSourceAccessService {
     maxLines?: number;
     mode: CodeAwareMode;
   }): Promise<OnDemandSourceReadResult> {
+    const failed = (
+      unsupportedReason: string,
+      window?: OnDemandSourceReadResult['window'],
+    ): OnDemandSourceReadResult => ({
+      success: false,
+      codebaseId: input.codebaseId,
+      ...(window ? {window} : {}),
+      truncated: false,
+      unsupportedReason,
+    });
     const ref = this.resolveRef(input.codebaseId, input.scope);
-    if (input.mode === 'off') {
-      return {
-        success: false,
-        codebaseId: input.codebaseId,
-        truncated: false,
-        unsupportedReason: 'code_aware_disabled_for_session',
-      };
-    }
-    if (input.mode === 'provider_send') {
-      const consentFailure = this.consentFailure(ref, input.mode);
-      if (consentFailure) {
-        return {
-          success: false,
-          codebaseId: input.codebaseId,
-          truncated: false,
-          unsupportedReason: consentFailure,
-        };
-      }
-    }
+    if (input.mode === 'off') return failed('code_aware_disabled_for_session');
+    const consentFailure = this.consentFailure(ref, input.mode);
+    if (consentFailure) return failed(consentFailure);
     const root = await this.validateRoot(ref);
-    const filePath = this.gate.validateRelativeSourcePath(
-      input.filePath,
-      {enforceConfiguredExcludes: false},
-    );
-    const selectionPolicy = sourceSelectionForRef(
-      ref,
-      this.gate.getSourceReadLimits().maxFileBytes,
-    );
-    if (!codebaseSourcePathMatches(
-      ref,
-      filePath,
-      undefined,
-      this.platform,
-      selectionPolicy,
-    )) {
-      throw new Error('source_path_outside_registered_filters');
+    let filePath: string;
+    let startLine: number;
+    let maxLines: number;
+    let content: string;
+    try {
+      filePath = this.gate.validateRelativeSourcePath(
+        input.filePath,
+        {enforceConfiguredExcludes: false},
+      );
+      const selectionPolicy = sourceSelectionForRef(
+        ref,
+        this.gate.getSourceReadLimits().maxFileBytes,
+      );
+      if (!codebaseSourcePathMatches(
+        ref,
+        filePath,
+        undefined,
+        this.platform,
+        selectionPolicy,
+      )) {
+        throw new Error('source_path_outside_registered_filters');
+      }
+      const providerPathAllowed = input.mode === 'provider_send'
+        ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+        : undefined;
+      if (providerPathAllowed && !providerPathAllowed(filePath)) {
+        throw new Error('source_path_outside_provider_grant');
+      }
+      startLine = boundedPositiveInteger(input.startLine, 1, Number.MAX_SAFE_INTEGER, 'start_line');
+      maxLines = boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines');
+      content = readAcceptedTextFileSync(
+        root,
+        filePath,
+        this.gate.getSourceReadLimits().maxFileBytes,
+      );
+    } catch (error) {
+      // A file-level failure is a result the model can act on. Every check
+      // above throws a path-free code; anything else stays generic.
+      const code = error instanceof Error ? error.message : '';
+      return failed(/^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : 'source_read_failed');
     }
-    const providerPathAllowed = input.mode === 'provider_send'
-      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
-      : undefined;
-    if (providerPathAllowed && !providerPathAllowed(filePath)) {
-      throw new Error('source_path_outside_provider_grant');
-    }
-    const startLine = boundedPositiveInteger(input.startLine, 1, Number.MAX_SAFE_INTEGER, 'start_line');
-    const maxLines = boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines');
-    const content = readAcceptedTextFileSync(
-      root,
-      filePath,
-      this.gate.getSourceReadLimits().maxFileBytes,
-    );
     const lines = content.split(/\r?\n/);
-    if (startLine > lines.length) throw new Error('source_line_out_of_range');
+    if (startLine > lines.length) {
+      return failed('source_line_out_of_range', {
+        totalLines: lines.length,
+        omittedBefore: lines.length,
+        omittedAfter: 0,
+        nextStartLine: null,
+        symbolCoverage: 'not_assessed',
+      });
+    }
     const selected = lines.slice(startLine - 1, startLine - 1 + maxLines);
     const endLine = startLine + selected.length - 1;
     const projected = sourceTextForMode(selected.join('\n'), input.mode);
-    if (selected.length === 0) {
-      return {
-        success: false,
-        codebaseId: input.codebaseId,
-        truncated: false,
-        unsupportedReason: 'source_line_out_of_range',
-      };
-    }
     return {
       success: true,
       codebaseId: input.codebaseId,
@@ -825,11 +830,14 @@ export class OnDemandSourceAccessService {
         traversalError = true;
       }
     }
+    // A finished walk visits every selected file (it applies no ignore files),
+    // so only a traversal error leaves coverage incomplete; speed and ignore
+    // semantics are reported separately as backendFidelity.
     return {
       matches,
       truncated: false,
-      coverageComplete: false,
-      searchIncompleteReason: traversalError ? 'traversal_error' : 'backend_degraded',
+      coverageComplete: !traversalError,
+      ...(traversalError ? {searchIncompleteReason: 'traversal_error' as const} : {}),
     };
   }
 }

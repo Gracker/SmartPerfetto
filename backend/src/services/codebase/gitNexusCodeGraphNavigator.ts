@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  channelAuthorizedRoots,
   type CodebaseRef,
   type CodebaseRegistry,
   type CodebaseScope,
@@ -322,9 +323,7 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
     try {
       root = await this.gate.validateRoot(
         ref.rootRealpath,
-        ref.rootAuthorization === 'native_picker'
-          ? {additionalAllowlistRoots: [ref.rootRealpath]}
-          : undefined,
+        channelAuthorizedRoots(ref),
       );
       assertCodebaseRootIdentity(ref.rootRealpath, root);
     } catch {

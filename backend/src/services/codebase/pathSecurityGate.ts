@@ -228,13 +228,42 @@ export function readOpenedTextFileBoundedSync(
 /**
  * Revalidate and read one previewed file without following a swapped symlink.
  * Callers should keep the portable relative path returned by preview().
+ *
+ * Every failure is a path-free code. Native filesystem messages name the
+ * registered absolute root, and these reads feed model-facing tool results
+ * and persisted ingest status.
  */
 export function readAcceptedTextFileSync(
   rootRealpath: string,
   relativePath: string,
   maxFileBytes = DEFAULT_SOURCE_MAX_FILE_BYTES,
 ): string {
-  const canonicalRoot = fs.realpathSync(rootRealpath);
+  try {
+    return readRevalidatedTextFileSync(rootRealpath, relativePath, maxFileBytes);
+  } catch (error) {
+    // The checks below throw their own codes; only native errors carry one.
+    const code = (error as NodeJS.ErrnoException | undefined)?.code;
+    if (typeof code !== 'string') throw error;
+    if (code === 'ENOENT' || code === 'ENOTDIR') throw new Error('source_file_not_found');
+    if (code === 'EACCES' || code === 'EPERM') throw new Error('source_file_unreadable');
+    throw new Error('source_read_failed');
+  }
+}
+
+function realpathOfRegisteredRootSync(rootRealpath: string): string {
+  try {
+    return fs.realpathSync(rootRealpath);
+  } catch {
+    throw new Error('codebase_root_unavailable');
+  }
+}
+
+function readRevalidatedTextFileSync(
+  rootRealpath: string,
+  relativePath: string,
+  maxFileBytes: number,
+): string {
+  const canonicalRoot = realpathOfRegisteredRootSync(rootRealpath);
   const normalizedRegisteredRoot = path.resolve(rootRealpath);
   const normalizeIdentity = (value: string): string => process.platform === 'win32'
     ? value.toLocaleLowerCase('en-US')
@@ -272,7 +301,7 @@ export function readAcceptedTextFileSync(
     // after fstat; reading at most max+1 both caps allocation and detects that
     // race before any source text reaches the indexing pipeline.
     const content = readOpenedTextFileBoundedSync(descriptor, stat, maxFileBytes);
-    const afterRootRealPath = fs.realpathSync(rootRealpath);
+    const afterRootRealPath = realpathOfRegisteredRootSync(rootRealpath);
     if (normalizeIdentity(afterRootRealPath) !== normalizeIdentity(canonicalRoot)) {
       throw new Error('codebase_root_realpath_drift');
     }

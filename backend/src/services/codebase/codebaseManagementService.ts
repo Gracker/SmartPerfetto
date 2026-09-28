@@ -8,6 +8,7 @@ import {
   codebaseRegistrationRequirements,
   codebaseRootAvailable,
   PENDING_GENERATION_TTL_MS,
+  channelAuthorizedRoots,
   type CodebaseKind,
   type CodebaseRef,
   type CodebaseRefSummary,
@@ -392,8 +393,7 @@ export class CodebaseManagementService {
     try {
       const ref = this.requireCodebase(id, scope);
       if (!codebaseRootAvailable(ref)) return false;
-      const root = await this.gate.validateRoot(ref.rootRealpath,
-        ref.rootAuthorization === 'native_picker' ? {additionalAllowlistRoots: [ref.rootRealpath]} : undefined);
+      const root = await this.gate.validateRoot(ref.rootRealpath, channelAuthorizedRoots(ref));
       assertCodebaseRootIdentity(ref.rootRealpath, root);
       if (!(await stat(root)).isDirectory()) return false;
       await access(root, fsConstants.R_OK | fsConstants.X_OK);
