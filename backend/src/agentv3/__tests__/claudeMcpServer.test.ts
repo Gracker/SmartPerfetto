@@ -314,6 +314,7 @@ import {
 import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {resolveFocusAppTarget, type FocusAppTarget} from '../../agentRuntime/focusAppTarget';
+import {createAnalysisHistoryReader, type AnalysisHistoryReader} from '../../agentRuntime/analysisHistory';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -360,6 +361,7 @@ function createTestServer(options: {
   artifactStore?: any;
   outputLanguage?: OutputLanguage;
   runManifestAttributionSink?: RunManifestAttributionSink;
+  analysisHistoryReader?: AnalysisHistoryReader;
   sourceUsePolicy?: {
     phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
     maxSearchCalls?: number;
@@ -442,6 +444,7 @@ function createTestServer(options: {
     sessionId: options.sessionId,
     outputLanguage: options.outputLanguage,
     runManifestAttributionSink: options.runManifestAttributionSink,
+    analysisHistoryReader: options.analysisHistoryReader,
     conversationTraceAttached: options.conversationTraceAttached,
     sourceUsePolicy: options.sourceUsePolicy,
     allowNewEvidence: options.allowNewEvidence,
@@ -10083,6 +10086,21 @@ describe('analyze_wait_chain', () => {
       const payload = JSON.parse(raw.content[0].text);
 
       expect(payload).toMatchObject({
+
+describe('model-facing tool descriptions', () => {
+  it('keep template authoring and SPDX comments out of every description', () => {
+    const {toolDefinitions} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a'],
+      knowledgeSourceIds: ['kb-a'], knowledgeScope: {tenantId: 't', workspaceId: 'w', userId: 'u'},
+      referenceTraceId: 'reference-trace',
+      analysisHistoryReader: createAnalysisHistoryReader({getTurns: () => [], assertActive: () => {}})});
+    // Conditionally registered tools render their descriptions separately.
+    expect(toolDefinitions.map(definition => definition.name))
+      .toEqual(expect.arrayContaining(['read_session_history', 'compare_skill']));
+    for (const definition of toolDefinitions) {
+      expect(definition.shared.description).not.toMatch(/<!--|SPDX|Copyright \(C\)/);
+    }
+  });
+});
         success: false, error: 'no_thread_state_in_window', action_required: 'choose_thread_with_sched_data',
         processHasSchedData: true,
         candidates: [{utid: 631, threadName: 'd.process.media', threadStateRows: 57}],

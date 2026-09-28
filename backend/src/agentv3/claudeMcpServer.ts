@@ -1403,11 +1403,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     ? []
     : Array.from(new Set(options.codebaseIds ?? [])).filter(Boolean);
   const knowledgeSourceIds = Array.from(new Set(options.knowledgeSourceIds ?? [])).filter(Boolean);
-  const retrievedContextSafety = loadPromptTemplate('retrieved-context-tool-safety');
-  if (!retrievedContextSafety) {
-    throw new Error('Missing required retrieved-context-safety prompt template');
-  }
-  const retrievedContextToolBoundary = retrievedContextSafety.replace(/\s+/g, ' ').trim();
+  const retrievedContextToolBoundary = requireToolDescription('retrieved-context-tool-safety').replace(/\s+/g, ' ');
   const retrievedData = <T extends Record<string, unknown>>(payload: T): T & {
     dataTrust: 'untrusted_retrieved_data';
   } => ({...payload, dataTrust: 'untrusted_retrieved_data'});
