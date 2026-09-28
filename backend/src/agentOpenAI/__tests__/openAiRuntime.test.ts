@@ -2183,3 +2183,51 @@ describe('OpenAI snapshot compatibility', () => {
     expect(runtime.getSdkSessionId('s1', 'trace-b')).toBe('resp_compare_restored');
   });
 });
+
+describe('OpenAI parallel tool call identity', () => {
+  const calls = [
+    {name: 'execute_sql', args: {sql: 'SELECT 1'}},
+    {name: 'search_codebase', args: {query: 'initializeOnMainThread'}},
+    {name: 'invoke_skill', args: {skillId: 'startup_analysis'}},
+  ];
+
+  // The Chat Completions converter stamps every function call of a response
+  // with the response id (or FAKE_ID); only callId identifies a call.
+  it.each([
+    ['chat completions share the response id', (turn: number) => `chatcmpl-${turn}`],
+    ['chat completions without a provider id', () => 'FAKE_ID'],
+    ['Responses API items carry their own id', (turn: number, index: number) => `fc_${turn}_${index}`],
+  ])('dispatches and records every parallel call once: %s', (_label, idFor) => {
+    const {runtime, updates} = createRuntimeWithUpdates();
+    runtime.sessionPlans.set('parallel-calls', {current: plan([phase('p1', 'in_progress')]), history: []});
+    const context = streamContext('parallel-calls', false);
+    for (let turn = 0; turn < 2; turn += 1) {
+      calls.forEach((call, index) => runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_called',
+        item: {rawItem: {type: 'function_call', id: idFor(turn, index), callId: `call_${turn}_${index}`,
+          name: call.name, arguments: JSON.stringify(call.args)}}}, 'en', context));
+      calls.forEach((call, index) => runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_output',
+        item: {output: '{"success":true}', rawItem: {type: 'function_call_result', id: idFor(turn, index),
+          callId: `call_${turn}_${index}`, name: call.name, status: 'completed',
+          output: {type: 'text', text: '{"success":true}'}}}}, 'en', context));
+    }
+    const expected = [0, 1].flatMap(turn => calls.map((call, index) => [`call_${turn}_${index}`, call.name]));
+    const summarize = (type: string) => updates.filter(update => update.type === type)
+      .map(update => [update.content.taskId, update.content.toolName]);
+    expect(summarize('agent_task_dispatched')).toEqual(expected);
+    expect(summarize('agent_response')).toEqual(expected);
+    expect(runtime.sessionPlans.get('parallel-calls')?.dispatchedToolCallCount).toBe(expected.length);
+    expect(context.toolInputsByTaskId.size).toBe(0);
+  });
+
+  it('records a result whose dispatch was never observed under its own tool name', () => {
+    const {runtime, updates} = createRuntimeWithUpdates();
+    runtime.sessionPlans.set('unseen-dispatch', {current: plan([phase('p1', 'in_progress')]), history: []});
+    const context = streamContext('unseen-dispatch', false);
+    runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_output', item: {output: '{"success":true}',
+      rawItem: {type: 'function_call_result', callId: 'call-unseen', name: 'read_codebase_file', status: 'completed',
+        output: {type: 'text', text: '{"success":true}'}}}}, 'en', context);
+    expect(updates.find(update => update.type === 'agent_response')?.content)
+      .toMatchObject({taskId: 'call-unseen', toolName: 'read_codebase_file'});
+    expect(runtime.sessionPlans.get('unseen-dispatch')?.dispatchedToolCallCount).toBe(1);
+  });
+});

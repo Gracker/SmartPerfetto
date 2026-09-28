@@ -28,12 +28,23 @@ function getSharedToolSpec(definition: McpToolDefinition): SharedToolSpec {
   }
 }
 
+/**
+ * The identity of one tool call. The SDK's Chat Completions converter stamps
+ * every function call of a response with the same `id` (the response id, or
+ * FAKE_ID when the provider sends none); only `callId` tells parallel calls
+ * apart, so `id` is a fallback for items that carry no call id at all.
+ */
+export function openAiToolCallKey(item: unknown): string | undefined {
+  const record = item && typeof item === 'object' ? item as Record<string, unknown> : {};
+  for (const candidate of [record.callId, record.call_id, record.id]) {
+    if (typeof candidate === 'string' && candidate.trim() && candidate !== 'unknown') return candidate;
+  }
+  return undefined;
+}
+
 function extractOpenAIToolCallId(details: unknown): string | undefined {
-  const value = details as {
-    toolCall?: { id?: unknown };
-    toolCallId?: unknown;
-  } | undefined;
-  const candidate = value?.toolCall?.id ?? value?.toolCallId;
+  const value = details as {toolCall?: unknown; toolCallId?: unknown} | undefined;
+  const candidate = openAiToolCallKey(value?.toolCall) ?? value?.toolCallId;
   return typeof candidate === 'string' && candidate.trim() ? candidate : undefined;
 }
 

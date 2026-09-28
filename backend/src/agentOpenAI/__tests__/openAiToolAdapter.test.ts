@@ -114,6 +114,24 @@ describe('createOpenAIToolsFromMcpDefinitions', () => {
     );
   });
 
+  it('passes the per-call id, not the response id Chat Completions shares across parallel calls', async () => {
+    const handler = jest.fn(async (_args: Record<string, unknown>, _extra: any) => ({
+      content: [{ type: 'text', text: '{}' }],
+    }));
+    const [adapted] = createOpenAIToolsFromMcpDefinitions([
+      {
+        name: 'invoke_skill',
+        tool: {name: 'invoke_skill', description: 'Invoke a SmartPerfetto skill', inputSchema: {skillId: z.string()}, handler},
+        exposure: 'core',
+      },
+    ] as any);
+    for (const callId of ['call-1', 'call-2']) {
+      await (adapted as any).invoke({} as any, JSON.stringify({skillId: 'startup_analysis'}),
+        {toolCall: {type: 'function_call', id: 'chatcmpl-shared', callId, name: 'invoke_skill', arguments: '{}'}});
+    }
+    expect(handler.mock.calls.map(([, extra]) => extra.toolCallId)).toEqual(['call-1', 'call-2']);
+  });
+
   it('rethrows cancellation errors instead of returning model-visible JSON', async () => {
     const [adapted] = createOpenAIToolsFromMcpDefinitions([
       {

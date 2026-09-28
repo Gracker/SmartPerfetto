@@ -51,7 +51,7 @@ import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
 import {loadOpenAIConfig, type OpenAIAgentConfig} from './openAiConfig';
 import {buildOpenAIChatCompletionsTokenLimit} from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
-import {createOpenAIToolsFromMcpDefinitions} from './openAiToolAdapter';
+import {createOpenAIToolsFromMcpDefinitions, openAiToolCallKey} from './openAiToolAdapter';
 import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
 import {verifyConclusion} from '../claude/claudeVerifier';
 import {SDK_SESSION_FRESHNESS_MS, buildQuickRunReceipt, buildEntityContext, buildRuntimeSessionMapKey, captureSkillDisplayEntities, collectRecentFindings, createRuntimeSkillNotesBudget, getLruCacheEntry, isFreshRuntimeEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
@@ -1735,27 +1735,22 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const rawItem = (event.item as any)?.rawItem;
     if (event.name === 'tool_called') {
       const args = parseJsonObject(rawItem?.arguments) || {};
-      const taskIds = [rawItem?.callId, rawItem?.call_id, rawItem?.id]
-        .filter((id): id is string => typeof id === 'string' && id.trim().length > 0 && id !== 'unknown');
-      if (taskIds.some(id => streamContext.toolInputsByTaskId.has(id) || streamContext.processedToolResultIds?.has(id))) return '';
+      const toolName: string = rawItem?.name || 'unknown';
+      const callKey = openAiToolCallKey(rawItem);
+      if (callKey && (streamContext.toolInputsByTaskId.has(callKey) || streamContext.processedToolResultIds?.has(callKey))) return '';
       streamContext.onToolCalled?.();
       // Text this response already streamed preceded a tool call, so it was
       // not the answer: revoke the draft and whatever the projection withheld.
       streamContext.answerDraft.reset(now);
       streamContext.answerTextProjection?.flush();
-      for (const taskId of taskIds) {
-        streamContext.toolInputsByTaskId.set(taskId, {
-          toolName: rawItem?.name || 'unknown',
-          args,
-        });
-      }
+      if (callKey) streamContext.toolInputsByTaskId.set(callKey, {toolName, args});
       this.emitUpdate({
         type: 'agent_task_dispatched',
         content: {
-          taskId: rawItem?.callId || rawItem?.id || 'unknown',
-          toolName: rawItem?.name || 'unknown',
+          taskId: callKey ?? 'unknown',
+          toolName,
           args,
-          message: formatToolCallNarration(rawItem?.name || 'unknown', args, outputLanguage, {
+          message: formatToolCallNarration(toolName, args, outputLanguage, {
             tracePairContext: streamContext.tracePairContext,
           }),
         },
@@ -1763,15 +1758,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       });
     } else if (event.name === 'tool_output') {
       const rawOutput = (event.item as any)?.output ?? rawItem?.output;
-      const taskIds = [rawItem?.callId, rawItem?.call_id, rawItem?.id]
-        .filter((id): id is string => typeof id === 'string' && id.length > 0);
-      const realTaskIds = taskIds.filter(id => id !== 'unknown');
-      if (realTaskIds.some(id => streamContext.processedToolResultIds?.has(id))) return '';
-      realTaskIds.forEach(id => streamContext.processedToolResultIds?.add(id));
+      const callKey = openAiToolCallKey(rawItem);
+      if (callKey && streamContext.processedToolResultIds?.has(callKey)) return '';
+      if (callKey) streamContext.processedToolResultIds?.add(callKey);
       streamContext.onToolOutput?.();
-      const cached = taskIds
-        .map(taskId => streamContext.toolInputsByTaskId.get(taskId))
-        .find(Boolean);
+      const cached = callKey ? streamContext.toolInputsByTaskId.get(callKey) : undefined;
       const toolName = cached?.toolName || rawItem?.name || 'unknown';
       // Read failure from the raw result: projection replaces a sensitive
       // tool's payload with a rejection envelope that has no success field.
@@ -1790,31 +1781,30 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         isError: resultIsFailure,
         language: outputLanguage,
       });
-      if (cached) {
-        const codeReferences = extractSourceLookupCodeReferences(cached.toolName, rawOutput);
+      // Plan evidence must not depend on having observed the dispatch event.
+      if (toolName !== 'unknown') {
+        const codeReferences = extractSourceLookupCodeReferences(toolName, rawOutput);
         recordPlanOrPrePlanToolCall(this.sessionPlans.get(streamContext.sessionId), {
-          toolName: cached.toolName,
-          toolCallId: realTaskIds[0],
+          toolName,
+          toolCallId: callKey,
           onPhaseAutoCompleted: phase => this.emitUpdate({
             type: 'plan_phase_updated',
             content: planPhaseUpdatedContent({phaseId: phase.id, phaseName: phase.name, status: 'completed', summary: phase.summary, origin: 'auto'}),
             timestamp: Date.now(),
           }),
-          input: cached.args,
+          input: cached?.args,
           resultText,
           // Read before truncation: planPhaseId and success sit after the body.
           resultFacts: readToolResultFacts(rawOutput),
           returnedCodeReferences: codeReferences.length > 0,
           returnedCodeReferenceHints: codeReferences,
         });
-        for (const taskId of taskIds) {
-          streamContext.toolInputsByTaskId.delete(taskId);
-        }
       }
+      if (callKey) streamContext.toolInputsByTaskId.delete(callKey);
       this.emitUpdate({
         type: 'agent_response',
         content: {
-          taskId: rawItem?.callId || rawItem?.id || 'unknown',
+          taskId: callKey ?? 'unknown',
           toolName,
           result: resultText,
           resultNarration,
