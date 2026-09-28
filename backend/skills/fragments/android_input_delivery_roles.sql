@@ -23,6 +23,15 @@
 -- whose delivery the stdlib cannot resolve (substr, not GLOB: the owner is
 -- channel text). Rankers read it right after the action count, because a
 -- monitor sees touches aimed at every window and can out-count the app.
+-- monitor_observation marks rows that observe an event rather than deliver it
+-- to the application: every monitor_copy, and an unresolved row on a receiving
+-- channel (upid + event_channel) that never carries an action but does carry
+-- monitor copies. A process can own both its app window and a gesture monitor
+-- (a launcher's "[Gesture Monitor] swipe-up"); when an event's action is
+-- unresolved on every receiver, the channel's history is what still separates
+-- the monitor's row from the window's. Channels are judged from data, never
+-- from their names. fragments/android_input_scoped_deliveries.sql turns this
+-- into the rows a caller analyzes inside its window.
 -- Classified over the whole relation, never inside a caller's time window, so a
 -- window edge cannot separate a copy from its action-bearing sibling.
 -- scene_input_facts.sql applies the same "the action-bearing receiver is
@@ -32,6 +41,14 @@ android_input_action_event_ids AS (
   SELECT DISTINCT input_event_id
   FROM android_input_events_normalized
   WHERE event_action IS NOT NULL AND input_event_id IS NOT NULL
+),
+android_input_monitor_channels AS (
+  SELECT e.upid, e.event_channel
+  FROM android_input_events_normalized AS e
+  LEFT JOIN android_input_action_event_ids AS a ON a.input_event_id = e.input_event_id
+  WHERE e.event_channel IS NOT NULL
+  GROUP BY e.upid, e.event_channel
+  HAVING COUNT(e.event_action) = 0 AND COUNT(a.input_event_id) > 0
 ),
 android_input_event_deliveries AS NOT MATERIALIZED (
   SELECT d.*,
@@ -45,6 +62,8 @@ android_input_event_deliveries AS NOT MATERIALIZED (
         ELSE 'unresolved' END AS delivery_role,
       CASE WHEN e.event_action IS NULL AND a.input_event_id IS NULL
         THEN COALESCE(e.input_event_id, 'dispatch:' || e.dispatch_ts) END AS unresolved_event_key,
+      (e.event_action IS NULL
+        AND (a.input_event_id IS NOT NULL OR m.upid IS NOT NULL)) AS monitor_observation,
       -- Second word of the channel, cut at its first '/'.
       CASE WHEN instr(e.event_channel, ' ') > 0 THEN substr(
         replace(substr(e.event_channel, instr(e.event_channel, ' ') + 1), '/', ' '), 1,
@@ -52,5 +71,7 @@ android_input_event_deliveries AS NOT MATERIALIZED (
       END AS window_owner
     FROM android_input_events_normalized AS e
     LEFT JOIN android_input_action_event_ids AS a ON a.input_event_id = e.input_event_id
+    LEFT JOIN android_input_monitor_channels AS m
+      ON m.upid = e.upid AND m.event_channel = e.event_channel
   ) AS d
 )

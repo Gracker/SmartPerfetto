@@ -1362,6 +1362,7 @@ steps:
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
+      - fragments/android_input_scoped_deliveries.sql
     sql: |
       WITH
       vsync_intervals AS (
@@ -1393,18 +1394,17 @@ steps:
       ),
       scoped_events AS (
         SELECT *
-        FROM android_input_event_deliveries
+        FROM android_input_scoped_deliveries
         WHERE (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
           AND (
           ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
           OR process_name = '${package}'
           OR process_name GLOB '${package}:*'
         )
-          AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
-          AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       ),
       -- 同一物理事件的 monitor 副本不算应用投递；显式 upid/package 已在 scoped_events 收窄候选。
       -- 无 action 时先比本进程所属窗口上的事件：monitor 看到全屏触摸，事件数可比应用多（见 fragment）。
+      -- 目标自带的 monitor 通道只在它没有应用侧行时才计入（analyzed_for_upid）。
       ranked_processes AS (
         SELECT
           upid, process_name,
@@ -1425,6 +1425,7 @@ steps:
         SELECT e.*
         FROM scoped_events e
         JOIN target t ON e.upid = t.upid
+        WHERE e.analyzed_for_upid
       ),
       -- Backlog: exact association only (see fragments/android_input_events_normalized.sql).
       frame_backlog AS (
