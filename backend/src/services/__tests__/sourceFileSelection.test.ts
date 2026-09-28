@@ -19,6 +19,7 @@ import {
   selectCodebasePreviewFiles,
   selectEnumeratedSourceFiles,
 } from '../rag/sourceFileSelection';
+import {installGitFsmonitorCanary} from './gitFsmonitorCanary';
 
 const ref: CodebaseRef = {
   codebaseId: 'cb-test',
@@ -124,17 +125,8 @@ describe('selectCodebasePreviewFiles', () => {
   it('does not execute repository-controlled core.fsmonitor while reading git provenance', async () => {
     if (process.platform === 'win32') return;
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'source-generation-git-'));
-    const marker = path.join(root, 'fsmonitor-marker');
-    const fsmonitor = path.join(root, 'fsmonitor.sh');
     try {
       fs.writeFileSync(path.join(root, 'Main.kt'), 'class Main\n');
-      fs.writeFileSync(fsmonitor, [
-        '#!/bin/sh',
-        `touch '${marker}'`,
-        'exit 0',
-        '',
-      ].join('\n'));
-      fs.chmodSync(fsmonitor, 0o700);
       execFileSync('git', ['init', '-q'], {cwd: root});
       execFileSync('git', ['add', 'Main.kt'], {cwd: root});
       execFileSync(
@@ -142,7 +134,7 @@ describe('selectCodebasePreviewFiles', () => {
         ['-c', 'user.name=SmartPerfetto Test', '-c', 'user.email=test@smartperfetto.local', 'commit', '-qm', 'fixture'],
         {cwd: root},
       );
-      execFileSync('git', ['config', 'core.fsmonitor', fsmonitor], {cwd: root});
+      const fsmonitor = installGitFsmonitorCanary(root);
 
       await inspectSourceGeneration(
         root,
@@ -150,7 +142,7 @@ describe('selectCodebasePreviewFiles', () => {
         (_sourceRoot, relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8'),
       );
 
-      expect(fs.existsSync(marker)).toBe(false);
+      expect(fsmonitor.executed()).toBe(false);
     } finally {
       fs.rmSync(root, {recursive: true, force: true});
     }

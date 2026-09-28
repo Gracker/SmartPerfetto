@@ -14,6 +14,7 @@ import {
   type CodebaseScope,
 } from './codebaseRegistry';
 import {PathSecurityGate} from './pathSecurityGate';
+import {hardenedGitEnvironment, hardenedGitPrefixArguments} from './subprocessHardening';
 import {
   assertCodebaseRootIdentity,
   codebaseSourcePathMatches,
@@ -141,18 +142,18 @@ function sanitizedEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-function execFileUtf8(
-  command: string,
+/** Git on a registered checkout never runs its repository-controlled helpers. */
+function execGitUtf8(
+  root: string,
   args: readonly string[],
-  options: {cwd?: string; timeout: number; maxBuffer: number},
+  options: {timeout: number; maxBuffer: number},
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
-      command,
-      [...args],
+      'git',
+      [...hardenedGitPrefixArguments(root), ...args],
       {
-        cwd: options.cwd,
-        env: sanitizedEnv(),
+        env: hardenedGitEnvironment(),
         encoding: 'utf8',
         timeout: options.timeout,
         maxBuffer: options.maxBuffer,
@@ -405,16 +406,16 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
     }
     if (!indexedRevision) return 'unknown';
     try {
-      const dirty = await execFileUtf8(
-        'git',
-        ['-C', root, 'status', '--porcelain=v1', '--untracked-files=all', '--', '.'],
+      const dirty = await execGitUtf8(
+        root,
+        ['status', '--porcelain=v1', '--untracked-files=all', '--', '.'],
         {
           timeout: 1_000,
           maxBuffer: 128 * 1024,
         },
       );
       if (dirty.trim()) return 'stale';
-      const head = (await execFileUtf8('git', ['-C', root, 'rev-parse', 'HEAD'], {
+      const head = (await execGitUtf8(root, ['rev-parse', 'HEAD'], {
         timeout: 1_000,
         maxBuffer: 1024,
       })).trim();

@@ -12,6 +12,7 @@ import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {GitNexusCodeGraphNavigator} from '../codebase/gitNexusCodeGraphNavigator';
 import {PathSecurityGate} from '../codebase/pathSecurityGate';
+import {installGitFsmonitorCanary} from './gitFsmonitorCanary';
 
 const scope = {
   tenantId: 'tenant-a',
@@ -232,6 +233,26 @@ describe('GitNexusCodeGraphNavigator', () => {
       freshness: 'stale',
       verificationRequired: true,
     });
+  });
+
+  it('checks index freshness without running repository-controlled core.fsmonitor', async () => {
+    if (process.platform === 'win32') return;
+    const ref = register();
+    const fsmonitor = installGitFsmonitorCanary(root);
+    const command = fakeGitNexus({results: [{filePath: 'app/src/StartupHooks.kt', line: 1}]});
+
+    const result = await service(command).query({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'StartupHooks',
+    });
+
+    expect(result.graph).toEqual({
+      engine: 'gitnexus',
+      freshness: 'current',
+      verificationRequired: true,
+    });
+    expect(fsmonitor.executed()).toBe(false);
   });
 
   it('returns structured fallback for missing index and missing binary', async () => {

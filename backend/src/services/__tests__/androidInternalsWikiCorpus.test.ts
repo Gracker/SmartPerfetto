@@ -4,6 +4,7 @@
 
 import * as fs from 'fs';
 import * as os from 'os';
+import * as childProcess from 'child_process';
 import * as path from 'path';
 
 import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
@@ -14,6 +15,7 @@ import {
 } from '../androidInternalsWiki/androidInternalsWikiCorpus';
 import {auditAndroidInternalsWiki} from '../androidInternalsWiki/androidInternalsWikiAudit';
 import * as wikiAuditModule from '../androidInternalsWiki/androidInternalsWikiAudit';
+import {installGitFsmonitorCanary} from './gitFsmonitorCanary';
 
 let tmpDir: string;
 
@@ -298,5 +300,22 @@ describe('Android Internals Wiki corpus', () => {
     expect(assertions.has(
       'backend/skills/public-fixtures.yaml#fixture-a:startup_slow_reasons/startup_overview',
     )).toBe(true);
+  });
+});
+
+describe('Android Internals Wiki identity subprocess', () => {
+  it('does not execute repository-controlled core.fsmonitor while reading git identity', () => {
+    if (process.platform === 'win32') return;
+    write('src/a.md', article('A', 'finalized', ['binder'], 'body'));
+    const git = (...args: string[]) => childProcess.execFileSync('git', args, {cwd: tmpDir});
+    git('init', '-q');
+    git('add', 'src/a.md');
+    git('-c', 'user.name=SmartPerfetto Test', '-c', 'user.email=test@smartperfetto.local', 'commit', '-qm', 'fixture');
+    const fsmonitor = installGitFsmonitorCanary(tmpDir);
+
+    const identity = inspectAndroidInternalsWikiIdentity(scanAndroidInternalsWiki(tmpDir, ['src/a.md']));
+
+    expect(identity.dirty).toBe(false);
+    expect(fsmonitor.executed()).toBe(false);
   });
 });

@@ -9,6 +9,8 @@ import * as path from 'path';
 
 import yaml from 'js-yaml';
 
+import {hardenedGitEnvironment, hardenedGitPrefixArguments} from '../codebase/subprocessHardening';
+
 import {
   DEFAULT_SOURCE_MAX_FILE_BYTES,
   DEFAULT_SOURCE_MAX_TOTAL_BYTES,
@@ -175,13 +177,18 @@ export function scanAndroidInternalsWiki(
   };
 }
 
+const GIT_IDENTITY_TIMEOUT_MS = 10_000;
+
 export function inspectAndroidInternalsWikiIdentity(
   corpus: AndroidInternalsWikiCorpus,
 ): AndroidInternalsWikiCorpusIdentity {
+  // A registered knowledge root is untrusted: repo-local config must not run
+  // fsmonitor or hook commands, and a stuck git must not hold the request.
   const git = (args: string[]): string => execFileSync(
     'git',
-    ['-C', corpus.rootPath, ...args],
-    {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']},
+    [...hardenedGitPrefixArguments(corpus.rootPath), ...args],
+    {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: hardenedGitEnvironment(),
+      timeout: GIT_IDENTITY_TIMEOUT_MS},
   );
   const isPotentialArticlePath = (relativePath: string): boolean => {
     const normalized = relativePath.split('\\').join('/');
