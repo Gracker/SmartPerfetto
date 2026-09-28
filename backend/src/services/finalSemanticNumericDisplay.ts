@@ -3,10 +3,11 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 // Whether the number a `numeric_mismatch` points at is the declared exact value
-// rounded at its displayed precision. The semantic review reports a bare
-// rounding (`5,844.24 ms` for a declared `5844240564 ns`) as a mismatch; that is
-// a presentation defect, not a contradicted value, so finalization records it
-// apart from real mismatches.
+// shown faithfully at its displayed precision: rounded half-up, or truncated
+// toward zero (`61.99 ms` for a declared `61.995675 ms`). The semantic review
+// reports such a display (`5,844.24 ms` for a declared `5844240564 ns`) as a
+// mismatch; that is a presentation defect, not a contradicted value, so
+// finalization records it apart from real mismatches.
 //
 // The location only selects the number. It is judged in its whole line: a
 // quote of `45 ms` inside `145 ms`, `60–45 ms`, `超过 45 ms` or `−45 ms` must
@@ -123,6 +124,12 @@ function roundedScaled(value: Rational, decimals: number): bigint {
   return negative ? -rounded : rounded;
 }
 
+/** Truncation of `value` toward zero at `decimals`, scaled by 10^decimals. */
+function truncatedScaled(value: Rational, decimals: number): bigint {
+  // BigInt division truncates toward zero; denominators are positive.
+  return (value.numerator * pow(10n, decimals)) / value.denominator;
+}
+
 /** The clause around [start, end): from the previous clause break to the next. */
 function clauseAround(line: string, start: number, end: number): string {
   let from = start;
@@ -136,9 +143,9 @@ const overlaps = (start: number, end: number, from: number, to: number): boolean
 
 /**
  * True when every number the locations select that belongs to the declared
- * unit's family is the declared exact `eq` value rounded half-up at its
- * displayed decimal places, at least one such number exists, and nothing in
- * its line could change the proposition.
+ * unit's family is the declared exact `eq` value rounded half-up or truncated
+ * toward zero at its displayed decimal places, at least one such number
+ * exists, and nothing in its line could change the proposition.
  */
 export function locatedNumbersShowDeclaredRounding(
   body: string,
@@ -184,7 +191,8 @@ export function locatedNumbersShowDeclaredRounding(
       const displayed = roundedScaled(token.rational, token.decimals);
       // A non-zero value displayed as 0 asserts absence, not a rounding.
       if (displayed === 0n && declared.numerator !== 0n) return false;
-      if (roundedScaled(shown, token.decimals) !== displayed) return false;
+      if (roundedScaled(shown, token.decimals) !== displayed &&
+        truncatedScaled(shown, token.decimals) !== displayed) return false;
       matched += 1;
     }
   }

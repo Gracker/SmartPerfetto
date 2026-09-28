@@ -29,6 +29,17 @@ describe('locatedNumbersShowDeclaredRounding', () => {
     expect(quote('| cpu0 585,089.89 kHz（cpu1–3 约 5 成） |', '585,089.89 kHz', eq('585089.8868793148', 'kHz'))).toBe(true);
   });
 
+  // Baseline E2E: `61.99 ms` shown for a declared 61.995675 ms truncates the
+  // last digit instead of rounding it to 62.00; both are faithful displays.
+  it('accepts a display truncated toward zero, and nothing further from the value', () => {
+    expect(line('SqliteLoad self 61.99 ms', eq(61.995675, 'ms'))).toBe(true);
+    expect(line('SqliteLoad self 62.00 ms', eq(61.995675, 'ms'))).toBe(true);
+    expect(line('SqliteLoad self 62.01 ms', eq(61.995675, 'ms'))).toBe(false);
+    expect(line('SqliteLoad self 61.98 ms', eq(61.995675, 'ms'))).toBe(false);
+    expect(line('偏差 -3.45 ms', eq(-3456000, 'ns'))).toBe(true);
+    expect(line('偏差 -3.44 ms', eq(-3456000, 'ns'))).toBe(false);
+  });
+
   it('keeps the mismatch for a wrong digit, a wrong half-up rounding or a wrong unit family', () => {
     expect(line('5,844.25 ms', eq(5844240564, 'ns'))).toBe(false);
     expect(line('301.9 ms', eq(301839437, 'ns'))).toBe(false);
