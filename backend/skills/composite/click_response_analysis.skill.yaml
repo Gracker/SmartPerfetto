@@ -161,6 +161,7 @@ steps:
           format: duration_ms
           unit: ms
     # 按应用投递排序而非行数：monitor 副本会让系统进程行数更多。
+    # 无 action 时先比本进程所属窗口上的事件，monitor 看到全屏触摸、事件数可更多（见 fragment）。
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
@@ -176,6 +177,7 @@ steps:
         AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       GROUP BY process_name
       ORDER BY app_delivery_events DESC,
+        COUNT(DISTINCT unresolved_window_event_key) DESC,
         COUNT(DISTINCT unresolved_event_key) DESC,
         MAX(total_latency_dur) DESC, process_name
       LIMIT 1

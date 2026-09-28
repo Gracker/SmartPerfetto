@@ -7391,7 +7391,7 @@
           },
           {
             "id": "get_process",
-            "sha256": "75f894e997d2d0c1c74ab4748789999c0899c391efecb46cfdb79bd10074bffc",
+            "sha256": "8f3eac606d6d1250787ac0eb87e6c988614e61c850746ab081a57cf02db4d758",
             "required_columns": [
               "process_name",
               "event_count",
@@ -10851,7 +10851,7 @@
           },
           {
             "id": "input_latency_summary",
-            "sha256": "74105880dd82d4b84b84623a3d861711f6e585b40f573778302a54bdb9e8c9a4",
+            "sha256": "9cb8b82013d251937375924e38932266f78986aeabc1f9240f8dd382333f8c44",
             "required_columns": [
               "target_process",
               "total_input_events",

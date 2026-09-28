@@ -45,9 +45,7 @@ describe('click_response_analysis target process selection', () => {
     return db.prepare(sql).all() as Array<{process_name: string; event_count: number; app_delivery_events: number; max_total_ms: number}>;
   };
 
-  // The tapped app gets the actioned row of each physical event; systemui
-  // observes each one on a gesture monitor plus once on the navigation bar.
-  const createFixture = (): Database.Database => {
+  const createInputFixture = (rows: string): Database.Database => {
     const db = new Database(':memory:');
     db.exec(`
       CREATE TABLE android_input_events (
@@ -55,16 +53,20 @@ describe('click_response_analysis target process selection', () => {
         event_action TEXT, total_latency_dur INTEGER,
         dispatch_ts INTEGER, receive_ts INTEGER, receive_dur INTEGER
       );
-      INSERT INTO android_input_events VALUES
-        (1, 'com.example.app', 'app (server)', '1', 'ACTION_DOWN', 1000000, 100, 110, 10),
-        (1, 'com.example.app', 'app (server)', '2', 'ACTION_UP', 1000000, 200, 210, 10),
-        (2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', '1', NULL, 3000000, 100, 110, 10),
-        (2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', '2', NULL, 3000000, 200, 210, 10),
-        (2, 'com.android.systemui', 'NavigationBar0 (server)', '1', NULL, 3000000, 100, 110, 10);
+      INSERT INTO android_input_events VALUES ${rows};
     `);
     completeAndroidInputEventsFixture(db);
     return db;
   };
+
+  // The tapped app gets the actioned row of each physical event; systemui
+  // observes each one on a gesture monitor plus once on the navigation bar.
+  const createFixture = () => createInputFixture(`
+    (1, 'com.example.app', 'app (server)', '1', 'ACTION_DOWN', 1000000, 100, 110, 10),
+    (1, 'com.example.app', 'app (server)', '2', 'ACTION_UP', 1000000, 200, 210, 10),
+    (2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', '1', NULL, 3000000, 100, 110, 10),
+    (2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', '2', NULL, 3000000, 200, 210, 10),
+    (2, 'com.android.systemui', 'NavigationBar0 (server)', '1', NULL, 3000000, 100, 110, 10)`);
 
   it('ranks application deliveries above monitor copies with more rows', () => {
     const db = createFixture();
@@ -99,6 +101,74 @@ describe('click_response_analysis target process selection', () => {
       expect(selectTarget(db, 'com.android.systemui')).toEqual([
         {process_name: 'com.android.systemui', event_count: 3, app_delivery_events: 0, max_total_ms: 3},
       ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  // No receiver carries an action (pre-sync runtime on the surface-view trace,
+  // no `view` atrace, or a multi-process app the stdlib cannot join). Timing
+  // is irrelevant to ranking, so every row shares it.
+  const unresolved = (upid: number, processName: string, channel: string, eventId: string, latency = 1) =>
+    `(${upid}, '${processName}', '${channel}', '${eventId}', NULL, ${latency}, 100, 110, 10)`;
+  const appWindow = '32c6ecb com.tencent.mm/com.tencent.mm.plugin.lite.ui.WxaLiteAppLiteUI (server)';
+
+  it('derives the stdlib window owner and keeps unresolved events only on owned windows', () => {
+    const db = createInputFixture([
+      unresolved(1, 'com.tencent.mm', appWindow, '1'),
+      unresolved(2, 'com.tencent.mm:appbrand0', 'a1 com.tencent.mm/com.tencent.mm.plugin.appbrand.ui.AppBrandUI00', '2'),
+      unresolved(3, 'com.tencent.mmx', 'b2 com.tencent.mm/com.tencent.mm.Other', '3'),
+      unresolved(4, 'com.android.systemui', 'f4033a5 com.android.systemui.wallpapers.ImageWallpaper', '4'),
+      unresolved(4, 'com.android.systemui', 'e620163 NavigationBar0 (server)', '4'),
+      unresolved(4, 'com.android.systemui', '[Gesture Monitor] swipe-to-screenshot (server)', '4'),
+      unresolved(5, 'system_server', 'PointerEventDispatcher0 (server)', '4'),
+      unresolved(5, 'system_server', 'PointerEventDispatcher0', '4'),
+    ].join(','));
+    try {
+      const rows = db.prepare(withStepFragments(
+        'SELECT process_name, window_owner, unresolved_window_event_key FROM android_input_event_deliveries ORDER BY upid, event_channel',
+        getProcess.sql_fragments,
+      )).all();
+
+      expect(rows).toEqual([
+        {process_name: 'com.tencent.mm', window_owner: 'com.tencent.mm', unresolved_window_event_key: '1'},
+        {process_name: 'com.tencent.mm:appbrand0', window_owner: 'com.tencent.mm', unresolved_window_event_key: '2'},
+        {process_name: 'com.tencent.mmx', window_owner: 'com.tencent.mm', unresolved_window_event_key: null},
+        {process_name: 'com.android.systemui', window_owner: 'Monitor]', unresolved_window_event_key: null},
+        {process_name: 'com.android.systemui', window_owner: 'NavigationBar0', unresolved_window_event_key: null},
+        {process_name: 'com.android.systemui', window_owner: 'com.android.systemui.wallpapers.ImageWallpaper', unresolved_window_event_key: null},
+        {process_name: 'system_server', window_owner: null, unresolved_window_event_key: null},
+        {process_name: 'system_server', window_owner: '(server)', unresolved_window_event_key: null},
+      ]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('prefers the window owner over monitors that tie on unresolved events and lead on latency', () => {
+    // Surface-view trace on the v58.2 runtime: every receiver sees the same events.
+    const db = createInputFixture(['1', '2'].flatMap(eventId => [
+      unresolved(1, 'com.tencent.mm', appWindow, eventId, 1000000),
+      unresolved(2, 'com.android.systemui', '[Gesture Monitor] swipe-to-screenshot (server)', eventId, 3000000),
+      unresolved(3, 'system_server', 'PointerEventDispatcher0 (server)', eventId, 2000000),
+    ]).join(','));
+    try {
+      expect(selectTarget(db, '')).toMatchObject([{process_name: 'com.tencent.mm', app_delivery_events: 0}]);
+      expect(selectTarget(db, 'com.android.systemui')).toMatchObject([{process_name: 'com.android.systemui'}]);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('prefers a child process on its package window over a monitor that saw more events', () => {
+    // The monitor also sees the navigation-bar touch the app never received.
+    const appBrandWindow = 'a1 com.tencent.mm/com.tencent.mm.plugin.appbrand.ui.AppBrandUI00 (server)';
+    const db = createInputFixture([
+      ...['1', '2'].map(eventId => unresolved(1, 'com.tencent.mm:appbrand0', appBrandWindow, eventId, 1000000)),
+      ...['1', '2', '3'].map(eventId => unresolved(2, 'system_server', '[Gesture Monitor] OplusExInputReceiver1', eventId, 3000000)),
+    ].join(','));
+    try {
+      expect(selectTarget(db, '')).toMatchObject([{process_name: 'com.tencent.mm:appbrand0'}]);
     } finally {
       db.close();
     }
