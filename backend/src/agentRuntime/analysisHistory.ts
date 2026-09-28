@@ -6,6 +6,7 @@ import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {renderRequiredLocalizedStrategyTemplate} from '../agentv3/localizedStrategyTemplate';
 import {AnalysisHistoryStore, parseAnalysisHistoryEvidenceLocator, type AnalysisHistoryScope} from '../services/analysisHistoryStore';
+import {sessionUsesPrivateKnowledge} from '../services/security/privateAnalysisProjection';
 
 /** Historical declarations and locators, never execution witnesses or verification authority. */
 export interface AnalysisHistoryEvidenceLocator {
@@ -204,9 +205,9 @@ export function createRuntimeAnalysisHistoryReader(input: {
     ? {tenantId, workspaceId, userId, sessionId: input.sessionId, traceId: input.traceId} : undefined;
   const fingerprint = input.options.analysisContextFingerprint;
   const binding = resolveHistoryBinding(input.options);
-  const defaultActivation = input.includeSourceDerived ?? Boolean(input.options.sourceUsePolicy &&
-    ((input.options.codeAwareMode && input.options.codeAwareMode !== 'off' && input.options.codebaseIds?.length) ||
-      input.options.knowledgeSourceIds?.length));
+  // A run with authorized source or private knowledge reads its own derived
+  // history; the exact fingerprint below is what partitions it.
+  const defaultActivation = input.includeSourceDerived ?? sessionUsesPrivateKnowledge(input.options);
   // A product's explicit activation survives physical runtime wrappers. A later
   // wrapper can restrict it, but cannot turn a dormant product run into source use.
   const includeSourceDerived = binding?.includeSourceDerived !== undefined

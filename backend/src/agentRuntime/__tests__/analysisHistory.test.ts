@@ -48,15 +48,34 @@ describe('typed analysis history', () => {
     expect(() => runtime.read({turnId: source.id})).toThrow('product_revoked');
   });
 
-  it('does not recreate product activation or a reader from serialized options', () => {
+  it('does not recreate an issued reader or its restriction from serialized options', () => {
     const source = {...turn(), sourceDerived: true, analysisContextFingerprint: 'scope-A'};
-    const bound = withAnalysisHistoryReader({analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send' as const,
-      codebaseIds: ['A']}, createAnalysisHistoryReader({getTurns: () => [source], assertActive: () => {}}), {includeSourceDerived: true});
+    const productOnly = {...turn(1), sourceDerived: true, analysisContextFingerprint: 'scope-A', answer: 'PRODUCT_READER_ONLY'};
+    const selection = {analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send' as const, codebaseIds: ['A']};
+    const bound = withAnalysisHistoryReader(selection,
+      createAnalysisHistoryReader({getTurns: () => [productOnly], assertActive: () => {}}), {includeSourceDerived: false});
     const json = JSON.parse(JSON.stringify(bound));
-    // Ordinary string keys are neither the issued reader nor the product decision.
-    const runtime = createRuntimeAnalysisHistoryReader({options: {...json, includeSourceDerived: true},
+    // Ordinary string keys are neither the issued reader nor its restriction:
+    // the runtime reads its own turns, activated by the authorized selection.
+    const runtime = createRuntimeAnalysisHistoryReader({options: {...json, includeSourceDerived: false},
       sessionId: 's', traceId: 'trace', getTurns: () => [source], assertActive: () => {}});
-    expect(runtime.getTurns()).toEqual([]);
+    expect(runtime.getTurns()).toEqual([source]);
+  });
+
+  it('activates source-derived history from the authorized selection, partitioned by exact fingerprint', () => {
+    const scopeA = {...turn(0), sourceDerived: true, analysisContextFingerprint: 'scope-A', answer: 'SCOPE_A'};
+    const scopeB = {...turn(1), sourceDerived: true, analysisContextFingerprint: 'scope-B', answer: 'SCOPE_B'};
+    const unscoped = {...turn(2), sourceDerived: true, answer: 'NO_FINGERPRINT'};
+    const publicTurn = turn(3);
+    const read = (options: object) => createRuntimeAnalysisHistoryReader({options, sessionId: 'run', traceId: 'trace',
+      getTurns: () => [scopeA, scopeB, unscoped, publicTurn], assertActive: () => {}}).getTurns();
+    // Web and CLI analyze runs bind no reader; the selection alone activates.
+    expect(read({analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send', codebaseIds: ['A']}))
+      .toEqual([scopeA, publicTurn]);
+    expect(read({analysisContextFingerprint: 'scope-A', knowledgeSourceIds: ['kb']})).toEqual([scopeA, publicTurn]);
+    for (const inactive of [{}, {codeAwareMode: 'off', codebaseIds: ['A']}, {codeAwareMode: 'provider_send', codebaseIds: []}]) {
+      expect(read({analysisContextFingerprint: 'scope-A', ...inactive})).toEqual([publicTurn]);
+    }
   });
 
   it('retains canonical artifactRefs and row selectors through conversion, persistence parsing and full pages', () => {
