@@ -50,16 +50,29 @@ export interface SqlPlaceholder {
   insideQuotes: boolean;
 }
 
-/** True when `offset` in `sql` lies inside a single-quoted literal (`''` escapes a quote). */
+/**
+ * True when `offset` in `sql` lies inside a single-quoted literal (`''` escapes
+ * a quote). Outside a literal, `--` line comments and `/* *\/` block comments
+ * are skipped, so an apostrophe in comment prose ("process's") does not flip
+ * the state for every later placeholder. A placeholder inside a comment reads
+ * as unquoted.
+ */
 function insideSingleQuotes(sql: string, offset: number): boolean {
   let inSingle = false;
   for (let i = 0; i < offset; i++) {
-    if (sql[i] !== "'") continue;
-    if (inSingle && sql[i + 1] === "'") {
-      i++;
-      continue;
+    const ch = sql[i];
+    if (inSingle) {
+      if (ch !== "'") continue;
+      if (sql[i + 1] === "'") i++;
+      else inSingle = false;
+    } else if (ch === "'") {
+      inSingle = true;
+    } else if (sql.startsWith('--', i) || sql.startsWith('/*', i)) {
+      const close = ch === '-' ? '\n' : '*/';
+      const end = sql.indexOf(close, i + 2);
+      if (end < 0 || end + close.length > offset) return false;
+      i = end + close.length - 1;
     }
-    inSingle = !inSingle;
   }
   return inSingle;
 }
