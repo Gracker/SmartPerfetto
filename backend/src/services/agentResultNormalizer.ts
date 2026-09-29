@@ -43,7 +43,6 @@ import {analysisDeliveryFingerprint, type AnalysisDeliveryEntry} from '../types/
 
 interface ConclusionContractDeriveOptions {
   mode?: ConclusionOutputMode;
-  singleFrameDrillDown?: boolean;
   sceneId?: string;
 }
 

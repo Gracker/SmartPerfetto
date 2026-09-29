@@ -76,39 +76,12 @@ export interface AgentThought {
   confidence: number;
 }
 
-export interface AgentAction {
-  type: 'tool_call' | 'delegate' | 'conclude';
-  toolName?: string;
-  toolParams?: Record<string, any>;
-  delegateTo?: string;
-  conclusion?: string;
-}
-
-export interface AgentState {
-  query: string;
-  context: AnalysisContext;
-  thoughts: AgentThought[];
-  toolResults: ToolResult[];
-  findings: string[];
-  currentStep: number;
-  isComplete: boolean;
-}
-
 export interface AnalysisContext {
   traceId: string;
   package?: string;
   timeRange?: { start: string; end: string };
   previousFindings?: string[];
   userPreferences?: Record<string, any>;
-}
-
-export interface ExpertAgentConfig {
-  name: string;
-  domain: string;
-  description: string;
-  tools: string[];
-  maxIterations: number;
-  confidenceThreshold: number;
 }
 
 export interface ExpertResult {
@@ -280,39 +253,6 @@ export interface ToolRegistry {
   getToolDescriptionsForLLM(): string;
 }
 
-export interface AgentRegistry {
-  registerExpert(agent: ExpertAgent): void;
-  getExpert(name: string): ExpertAgent | undefined;
-  listExperts(): ExpertAgentConfig[];
-  getExpertForDomain(domain: string): ExpertAgent | undefined;
-}
-
-// =============================================================================
-// Agent Interfaces
-// =============================================================================
-
-export interface ExpertAgent {
-  config: ExpertAgentConfig;
-  analyze(context: AnalysisContext): Promise<ExpertResult>;
-  canHandle(intent: Intent): boolean;
-}
-
-export interface OrchestratorAgent {
-  handleQuery(query: string, traceId: string, options?: OrchestratorOptions): Promise<OrchestratorResult>;
-  understandIntent(query: string): Promise<Intent>;
-  planAnalysis(intent: Intent, context: AnalysisContext): Promise<AnalysisPlan>;
-  selectExpert(task: AnalysisTask): ExpertAgent | undefined;
-  synthesize(results: ExpertResult[], intent: Intent): Promise<string>;
-}
-
-export interface OrchestratorOptions {
-  maxDuration?: number;
-  maxLLMCalls?: number;
-  maxExpertIterations?: number;
-  confidenceThreshold?: number;
-  streamingCallback?: (update: StreamingUpdate) => void;
-}
-
 export interface StreamingUpdate {
   /**
    * Event type for streaming updates
@@ -376,69 +316,6 @@ export interface StreamingUpdate {
   id?: string;
 }
 
-// =============================================================================
-// Agent Phase and Checkpoint Types
-// =============================================================================
-
-/**
- * Agent execution phase enum
- *
- * Provides type-safe phase values for agent checkpoints.
- */
-export enum AgentPhase {
-  IDLE = 'idle',
-  PLANNING = 'planning',
-  EXECUTING = 'executing',
-  EVALUATING = 'evaluating',
-  REFINING = 'refining',
-  AWAITING_USER = 'awaiting_user',
-  COMPLETED = 'completed',
-  FAILED = 'failed',
-}
-
-export interface Checkpoint {
-  id: string;
-  stageId: string;
-  timestamp: number;
-  phase: AgentPhase;
-  agentState: SerializedAgentState;
-  stageResults: StageResult[];
-  findings: Finding[];
-  canResume: boolean;
-}
-
-export interface SerializedAgentState {
-  query: string;
-  traceId: string;
-  intent?: Intent;
-  plan?: AnalysisPlan;
-  expertResults: ExpertResult[];
-  iterationCount: number;
-  metadata: Record<string, any>;
-}
-
-// =============================================================================
-// Pipeline Types (新架构)
-// =============================================================================
-
-export interface PipelineStage {
-  id: string;
-  name: string;
-  description: string;
-  agentType: 'planner' | 'worker' | 'evaluator' | 'synthesizer';
-  dependencies: string[];
-  canParallelize: boolean;
-  timeout: number;
-  maxRetries: number;
-  /** 阶段元数据，用于配置额外选项如分析类型 */
-  metadata?: {
-    /** 决策树分析类型 (scrolling/launch/memory 等) */
-    analysisType?: string;
-    /** 其他自定义配置 */
-    [key: string]: any;
-  };
-}
-
 export interface StageResult {
   stageId: string;
   success: boolean;
@@ -448,41 +325,6 @@ export interface StageResult {
   startTime: number;
   endTime: number;
   retryCount: number;
-}
-
-export interface PipelineConfig {
-  stages: PipelineStage[];
-  maxTotalDuration: number;
-  enableParallelization: boolean;
-  onStageComplete?: (stage: PipelineStage, result: StageResult) => void;
-  onStageError?: (stage: PipelineStage, error: Error) => PipelineErrorDecision;
-}
-
-export type PipelineErrorDecision = 'retry' | 'skip' | 'abort' | 'ask_user';
-
-export interface PipelineResult {
-  success: boolean;
-  stageResults: StageResult[];
-  totalDuration: number;
-  completedStages: string[];
-  failedStages: string[];
-  pausedAt?: string;
-  error?: string;
-}
-
-export interface PipelineCallbacks {
-  onStageComplete: (stage: PipelineStage, result: StageResult) => void;
-  onStageStart: (stage: PipelineStage) => void;
-  onError: (stage: PipelineStage, error: Error) => Promise<PipelineErrorDecision>;
-  onProgress: (progress: PipelineProgress) => void;
-}
-
-export interface PipelineProgress {
-  currentStage: string;
-  completedStages: number;
-  totalStages: number;
-  elapsedMs: number;
-  estimatedRemainingMs: number;
 }
 
 // =============================================================================
@@ -546,21 +388,6 @@ export interface EnsembleResult {
   agreementScore: number;
   totalCost: number;
   totalLatencyMs: number;
-}
-
-// =============================================================================
-// SubAgent Types (新架构)
-// =============================================================================
-
-export interface SubAgentConfig {
-  id: string;
-  name: string;
-  type: 'planner' | 'worker' | 'evaluator' | 'synthesizer';
-  description: string;
-  preferredModel?: TaskType;
-  tools: string[];
-  maxIterations: number;
-  confidenceThreshold: number;
 }
 
 export interface SubAgentContext {
@@ -658,13 +485,6 @@ export interface EvaluationFeedback {
   priorityActions: string[];
 }
 
-export interface EvaluationCriteria {
-  minQualityScore: number;
-  minCompletenessScore: number;
-  maxContradictions: number;
-  requiredAspects: string[];
-}
-
 // =============================================================================
 // Master Orchestrator Types (新架构)
 // =============================================================================
@@ -689,22 +509,6 @@ export interface ModelUsageSummary {
   totalOutputTokens: number;
   totalCost: number;
   modelBreakdown: Record<string, { calls: number; tokens: number; cost: number }>;
-}
-
-// =============================================================================
-// Session & Recovery Types (新架构)
-// =============================================================================
-
-export interface SessionInfo {
-  sessionId: string;
-  traceId: string;
-  query: string;
-  phase: AgentPhase;
-  createdAt: number;
-  updatedAt: number;
-  canResume: boolean;
-  lastCheckpointId?: string;
-  error?: string;
 }
 
 // =============================================================================

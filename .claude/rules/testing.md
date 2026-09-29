@@ -112,10 +112,16 @@ the legacy executor/strategy orchestrator under `agent/core`, which a
 2026-09-26 fix still patched before it was deleted.
 
 Reachability is per module, not per export. A module stays reachable while any
-live module imports it for one symbol, and a barrel such as `agent/index.ts`
-keeps every re-exported module reachable whether or not anything uses the
-symbol. After deleting an orphan root, check each export it consumed with
-`rg -w` for a remaining non-test caller; the check reports none of them.
+live module imports it for one symbol, and a barrel keeps every re-exported
+module reachable whether or not anything uses the symbol: `agent/index.ts` once
+kept the legacy domain agents, decision trees, experts and pipeline executor
+alive while its importers used six symbols. Keep a barrel to what its importers
+use. Every module under `src/scripts/` and every `*Cli.ts` counts as an
+entrypoint, so an unreferenced manual script does the same for whatever it
+imports. After deleting an orphan root, check each export it consumed with
+`rg -w` for a remaining non-test caller, and confirm a hit imports it from that
+module: a same-named local function elsewhere hides a dead export. The check
+reports none of them.
 
 `scripts/orphaned-modules-baseline.json` records the modules already in this
 state. They are accepted debt, not blessed: each is behaviour the product does

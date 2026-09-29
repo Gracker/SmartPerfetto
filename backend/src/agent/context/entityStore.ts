@@ -25,9 +25,6 @@
 /** String ID to avoid BigInt precision loss */
 export type EntityId = string;
 
-/** Supported entity types */
-export type EntityType = 'frame' | 'session' | 'cpu_slice' | 'binder' | 'gc' | 'memory' | 'generic';
-
 /**
  * Base entity interface - all entities share these fields
  */
@@ -167,11 +164,6 @@ export interface GenericEntity extends BaseEntity {
   /** Arbitrary additional data */
   data?: Record<string, any>;
 }
-
-/**
- * Union type for all entity types
- */
-export type AnyEntity = FrameEntity | SessionEntity | CpuSliceEntity | BinderEntity | GcEntity | MemoryEntity | GenericEntity;
 
 /**
  * Serializable snapshot for persistence

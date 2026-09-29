@@ -28,7 +28,6 @@ test('covers dotfile rules and shared runtime/report surfaces', () => {
     'backend/src/services/processIdentity/identityGate.ts',
     'backend/src/services/perfettoService.ts',
     'backend/src/services/renderingPipelineDetectionSkillGenerator.ts',
-    'backend/src/agent/decision/skillExecutorAdapter.ts',
     'backend/data/perfettoStdlibSymbols.json',
     'perfetto',
   ]) {

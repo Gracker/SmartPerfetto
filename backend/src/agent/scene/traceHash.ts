@@ -56,17 +56,3 @@ export async function computeTraceContentHash(
     });
   });
 }
-
-/**
- * Quick boolean: does this trace have a backing file on disk?
- *
- * Used by callers that only need to pick a cache strategy (disk vs memory)
- * and don't actually need the hash. Cheaper than `computeTraceContentHash`
- * because it doesn't read the file.
- */
-export function isFileBackedTrace(
-  tps: TraceProcessorService,
-  traceId: string,
-): boolean {
-  return fs.existsSync(tps.getTraceFilePath(traceId));
-}

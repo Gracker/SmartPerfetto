@@ -4,7 +4,7 @@
 
 import fs from 'fs';
 import path from 'path';
-import { OrchestratorTrace, AgentTrace, ToolCall, AgentThought } from './types';
+import { OrchestratorTrace } from './types';
 
 export interface RecordedTrace {
   id: string;
@@ -170,8 +170,4 @@ export function getAgentTraceRecorder(config?: Partial<TraceRecorderConfig>): Ag
     globalRecorder.loadTracesFromDisk();
   }
   return globalRecorder;
-}
-
-export function resetAgentTraceRecorder(): void {
-  globalRecorder = null;
 }

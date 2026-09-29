@@ -3,7 +3,6 @@
   "generated": "2026-09-29",
   "orphaned": [
     "src/agentRuntime/adaptiveRoutingAdmission.ts",
-    "src/agentRuntime/finalReportSceneResolution.ts",
     "src/agentv3/selfImprove/reviewAgentSdk.ts",
     "src/agentv3/selfImprove/reviewWorker.ts",
     "src/routes/agent/stateTimelineRunProjection.ts",

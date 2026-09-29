@@ -117,20 +117,6 @@ export interface ArchitectureInfo {
 }
 
 /**
- * 单个检测器的结果
- */
-export interface DetectorResult {
-  /** 检测到的架构类型 */
-  type: RenderingArchitectureType;
-  /** 置信度 */
-  confidence: number;
-  /** 检测证据 */
-  evidence: DetectionEvidence[];
-  /** 附加信息 */
-  metadata?: Record<string, any>;
-}
-
-/**
  * 检测上下文
  */
 export interface DetectorContext {
@@ -141,15 +127,4 @@ export interface DetectorContext {
   /** 可选的包名过滤 */
   packageName?: string;
   signal?: AbortSignal;
-}
-
-/**
- * 基础检测器接口
- */
-export interface IArchitectureDetector {
-  /** 检测器名称 */
-  readonly name: string;
-
-  /** 执行检测 */
-  detect(context: DetectorContext): Promise<DetectorResult>;
 }

@@ -12,7 +12,7 @@
  * This module exports all components needed to build and run cross-domain experts.
  */
 
-// Types - explicitly export to avoid naming conflicts with base expert types
+// Types
 export type {
   CrossDomainType,
   CrossDomainExpertConfig,
@@ -34,9 +34,6 @@ export type {
   CrossDomainEvent,
   AIService,
 } from './types';
-
-// Re-export with alias to avoid conflict with base ExpertConclusion
-export { ExpertConclusion as CrossDomainExpertConclusion } from './types';
 
 // Core components
 export { BaseCrossDomainExpert } from './baseCrossDomainExpert';

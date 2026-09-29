@@ -12,8 +12,3 @@ export function getSharedModelRouter(): ModelRouter {
   }
   return modelRouterInstance;
 }
-
-export function resetSharedModelRouterForTests(): void {
-  modelRouterInstance?.removeAllListeners();
-  modelRouterInstance = null;
-}

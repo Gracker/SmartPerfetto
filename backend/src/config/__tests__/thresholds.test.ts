@@ -8,21 +8,16 @@
  * Tests for the centralized thresholds configuration module.
  * Covers:
  * 1. VSync period inference with various inputs
- * 2. Frame time threshold generation for different refresh rates
- * 3. Edge cases and boundary conditions
- * 4. Default value consistency
+ * 2. Edge cases and boundary conditions
+ * 3. Default value consistency
  */
 
 import { describe, it, expect } from '@jest/globals';
 import {
   inferVsyncPeriodNs,
-  getFrameTimeThresholdsForHz,
   VSYNC_PERIODS_NS,
   DEFAULT_VSYNC_PERIOD_NS,
-  DEFAULT_JANK_THRESHOLDS,
   DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS,
-  SQL_VSYNC_THRESHOLD_NS,
-  SQL_JANK_THRESHOLD_NS,
 } from '../thresholds';
 
 // =============================================================================
@@ -133,73 +128,6 @@ describe('inferVsyncPeriodNs', () => {
 });
 
 // =============================================================================
-// getFrameTimeThresholdsForHz Tests
-// =============================================================================
-
-describe('getFrameTimeThresholdsForHz', () => {
-  describe('有效刷新率', () => {
-    it('应该为 60Hz 生成正确的阈值', () => {
-      const result = getFrameTimeThresholdsForHz(60);
-      expect(result.avgWarningMs).toBeCloseTo(16.67, 1);
-      expect(result.avgCriticalMs).toBeCloseTo(33.33, 1);
-      expect(result.maxWarningMs).toBeCloseTo(33.33, 1);
-      expect(result.maxCriticalMs).toBe(100);
-    });
-
-    it('应该为 120Hz 生成正确的阈值', () => {
-      const result = getFrameTimeThresholdsForHz(120);
-      expect(result.avgWarningMs).toBeCloseTo(8.33, 1);
-      expect(result.avgCriticalMs).toBeCloseTo(16.67, 1);
-      expect(result.maxWarningMs).toBeCloseTo(16.67, 1);
-      expect(result.maxCriticalMs).toBe(100);
-    });
-
-    it('应该为 90Hz 生成正确的阈值', () => {
-      const result = getFrameTimeThresholdsForHz(90);
-      expect(result.avgWarningMs).toBeCloseTo(11.11, 1);
-      expect(result.avgCriticalMs).toBeCloseTo(22.22, 1);
-    });
-
-    it('应该为 144Hz 生成正确的阈值', () => {
-      const result = getFrameTimeThresholdsForHz(144);
-      expect(result.avgWarningMs).toBeCloseTo(6.94, 1);
-    });
-  });
-
-  describe('边界情况', () => {
-    it('应该为 0 返回默认阈值', () => {
-      const result = getFrameTimeThresholdsForHz(0);
-      expect(result).toEqual(DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS);
-    });
-
-    it('应该为负数返回默认阈值', () => {
-      const result = getFrameTimeThresholdsForHz(-60);
-      expect(result).toEqual(DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS);
-    });
-
-    it('应该为 NaN 返回默认阈值', () => {
-      const result = getFrameTimeThresholdsForHz(NaN);
-      expect(result).toEqual(DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS);
-    });
-
-    it('应该为 Infinity 返回默认阈值', () => {
-      const result = getFrameTimeThresholdsForHz(Infinity);
-      expect(result).toEqual(DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS);
-    });
-
-    it('应该为超过 500Hz 返回默认阈值', () => {
-      const result = getFrameTimeThresholdsForHz(600);
-      expect(result).toEqual(DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS);
-    });
-
-    it('应该为 500Hz 正常工作', () => {
-      const result = getFrameTimeThresholdsForHz(500);
-      expect(result.avgWarningMs).toBe(2); // 1000 / 500 = 2ms
-    });
-  });
-});
-
-// =============================================================================
 // Default Values Consistency Tests
 // =============================================================================
 
@@ -215,27 +143,6 @@ describe('默认值一致性', () => {
 
     it('DEFAULT_VSYNC_PERIOD_NS 应该等于 120Hz (现代旗舰设备)', () => {
       expect(DEFAULT_VSYNC_PERIOD_NS).toBe(VSYNC_PERIODS_NS[120]);
-    });
-  });
-
-  describe('SQL 阈值', () => {
-    it('SQL_JANK_THRESHOLD_NS 应该是 2 倍 vsync', () => {
-      expect(SQL_JANK_THRESHOLD_NS).toBe(SQL_VSYNC_THRESHOLD_NS * 2);
-    });
-
-    it('SQL_VSYNC_THRESHOLD_NS 应该接近 60Hz', () => {
-      expect(SQL_VSYNC_THRESHOLD_NS / 1_000_000).toBeCloseTo(16.67, 1);
-    });
-  });
-
-  describe('Jank 阈值', () => {
-    it('critical 阈值应该大于 warning 阈值', () => {
-      expect(DEFAULT_JANK_THRESHOLDS.criticalRate).toBeGreaterThan(
-        DEFAULT_JANK_THRESHOLDS.warningRate
-      );
-      expect(DEFAULT_JANK_THRESHOLDS.criticalCount).toBeGreaterThan(
-        DEFAULT_JANK_THRESHOLDS.warningCount
-      );
     });
   });
 

@@ -6,7 +6,6 @@ import {
   buildTriadStatement,
   LEGACY_TO_PLAIN_PHRASE_RULES,
   parseTriadParts,
-  stripTriadPrefix,
   TRIAD_LABELS,
 } from '../analysisNarrative';
 
@@ -49,11 +48,5 @@ describe('analysisNarrative', () => {
     expect(output).toContain('资源问题: Y');
     expect(output).toContain('放大因素: Z');
     expect(output).toContain('负载主导（资源问题弱）');
-  });
-
-  test('stripTriadPrefix removes triad prefixes while keeping content', () => {
-    expect(stripTriadPrefix('触发因子: 主线程长耗时')).toBe('主线程长耗时');
-    expect(stripTriadPrefix('资源问题: 调度延迟')).toBe('调度延迟');
-    expect(stripTriadPrefix('放大路径: SF 背压')).toBe('SF 背压');
   });
 });

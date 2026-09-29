@@ -19,7 +19,7 @@ import {
   CrossDomainEvent,
   CrossDomainOutput,
   CrossDomainInput,
-} from '../agent/experts';
+} from '../agent/experts/crossDomain';
 
 // Colors for console output
 const colors = {

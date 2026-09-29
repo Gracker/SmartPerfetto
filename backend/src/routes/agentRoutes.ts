@@ -78,11 +78,6 @@ import { sessionContextManager, EnhancedSessionContext } from '../agent/context/
 import { registerCoreTools, StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
 import { getSharedModelRouter } from '../agent/core/modelRouterSingleton';
 import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core/orchestratorTypes';
-import {
-  deriveConclusionSceneAspectsFromSkillIds,
-  resolveConclusionScene,
-} from '../agent/core/conclusionSceneTemplates';
-import { DEEP_REASON_LABEL } from '../utils/analysisNarrative';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
@@ -181,7 +176,7 @@ import type { IdentityResolutionV1 } from '../types/identityContract';
 import { SkillExecutor } from '../services/skillEngine/skillExecutor';
 import { composeFragmentSql } from '../services/skillEngine/skillFragments';
 import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skillEngine/skillLoader';
-import type { ConversationTurn, Finding, Intent } from '../agent/types';
+import type { ConversationTurn } from '../agent/types';
 import {
   validateFeedbackInput,
 } from '../agentv3/selfImprove/feedbackEnricher';
@@ -2439,69 +2434,6 @@ function recoverResultForSessionIfNeeded(
   const resolved = resolveSessionContextForReview(sessionId);
   const recovered = resolved ? buildRecoveredResultFromContext(sessionId, resolved.context) : null;
   return recovered && belongsToRun(recovered) ? recovered : null;
-}
-
-function buildFallbackIntentFromQuery(query?: string): Intent | null {
-  const primaryGoal = String(query || '').trim();
-  if (!primaryGoal) return null;
-
-  return {
-    primaryGoal,
-    aspects: [],
-    expectedOutputType: 'summary',
-    complexity: 'simple',
-    followUpType: 'initial',
-  };
-}
-
-export function resolveConclusionSceneIdHint(params: {
-  sessionId: string;
-  query?: string;
-  findings?: Finding[];
-  intent?: Intent;
-  dataEnvelopes?: DataEnvelope[];
-  currentTurn?: number;
-}): string | undefined {
-  const findings = Array.isArray(params.findings) ? params.findings : [];
-  let intent = params.intent;
-
-  if (!intent) {
-    const resolved = resolveSessionContextForReview(params.sessionId);
-    const turn = resolved ? getLastCompletedTurn(resolved.context) : null;
-    if (turn?.intent) {
-      intent = turn.intent;
-    }
-  }
-
-  if (!intent) {
-    intent = buildFallbackIntentFromQuery(params.query) || undefined;
-  }
-
-  if (!intent) return undefined;
-
-  const sceneEnvelopes = params.currentTurn === undefined
-    ? params.dataEnvelopes || []
-    : (params.dataEnvelopes || []).filter(envelope => {
-        const envelopeTurn = Number((envelope.meta as any)?.turn);
-        if (Number.isFinite(envelopeTurn)) return envelopeTurn === params.currentTurn;
-        return params.currentTurn === 1;
-      });
-  const evidenceAspects = deriveConclusionSceneAspectsFromSkillIds(
-    sceneEnvelopes.map(envelope => envelope.meta?.skillId),
-  );
-  const routedIntent = evidenceAspects.length > 0
-    ? {...intent, aspects: evidenceAspects}
-    : intent;
-
-  try {
-    return resolveConclusionScene({
-      intent: routedIntent,
-      findings,
-      deepReasonLabel: DEEP_REASON_LABEL,
-    }).selectedTemplate.id;
-  } catch {
-    return undefined;
-  }
 }
 
 function conclusionContractDeriveOptionsForSession(

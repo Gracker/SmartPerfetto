@@ -389,30 +389,3 @@ export interface SceneInsight {
   /** DisplayedScene.id references */
   relatedDisplayedSceneIds: string[];
 }
-
-// =============================================================================
-// SSE Event Types — registered into StreamingUpdate.type union in agent/types.ts
-// =============================================================================
-
-/**
- * Scene Story pipeline SSE event types.
- *
- * Prefix convention: `scene_story_` strictly distinguishes these events
- * from the legacy `scene_detected` / `track_data` names so that
- * singular-vs-plural event-listener collisions cannot happen.
- *
- * Emitted directly via broadcastToAgentDrivenClients — these do NOT pass
- * through claudeSseBridge, which is reserved for SDK message translation.
- */
-export type SceneStreamEventType =
-  | 'scene_story_detected'           // Stage1 完成,displayedScenes 就绪
-  | 'scene_story_selection_ready'    // Smart preview 完成,等待用户选择深钻范围
-  | 'scene_story_queued'             // 某 job 入 JobRunner 队列
-  | 'scene_story_started'            // 某 job 开始执行
-  | 'scene_story_retrying'           // 某 job 失败进入 retry (attempt → 1)
-  | 'scene_story_completed'          // 某 job 成功完成
-  | 'scene_story_failed'             // 某 job retry 后仍失败
-  | 'scene_story_cancelled'          // 某 job 在 queued 状态被 cancel
-  | 'scene_story_dropped'            // 某 job 结果在 cancel 后迟到 (仅日志)
-  | 'scene_story_report_ready'       // 最终 SceneReport 持久化完成
-  | 'scene_story_smart_eta_refined'; // Smart Stage1 后成本预估升级

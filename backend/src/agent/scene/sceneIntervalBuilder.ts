@@ -28,8 +28,8 @@ import {
   DomainManifest,
   SceneRouteProfile,
   SceneReconstructionRouteRule,
+  findSceneReconstructionRoute,
   getSceneReconstructionRoutes,
-  matchesSceneReconstructionRoute,
 } from '../config/domainManifest';
 import {
   AnalysisInterval,
@@ -270,7 +270,7 @@ export function buildAnalysisIntervals(
   const intervals: AnalysisInterval[] = [];
   for (const { scene, priority } of scored) {
     if (intervals.length >= options.cap) break;
-    const route = findMatchingRoute(scene.sceneType, routes);
+    const route = findSceneReconstructionRoute(scene.sceneType, routes);
     if (!route) continue;
     intervals.push({
       displayedSceneId: scene.id,
@@ -1303,16 +1303,6 @@ function aggregateJankFramesToIntervals(rows: Array<Record<string, any>>): JankI
 // ---------------------------------------------------------------------------
 // Route resolution
 // ---------------------------------------------------------------------------
-
-function findMatchingRoute(
-  sceneType: string,
-  routes: SceneReconstructionRouteRule[],
-): SceneReconstructionRouteRule | null {
-  for (const route of routes) {
-    if (matchesSceneReconstructionRoute(sceneType, route)) return route;
-  }
-  return null;
-}
 
 function resolveParams(
   route: SceneReconstructionRouteRule,
