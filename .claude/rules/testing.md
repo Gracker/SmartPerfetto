@@ -113,7 +113,9 @@ script) and delete one you do not. Unregistered scripts used to count by path, a
 scripts kept the whole `agent/experts/crossDomain` tree reachable for eight
 months after the runtime stopped using it. Data or fixtures only a suite reads
 belong under `backend/tests/`, not in `src/`. `knip.json` follows the same
-rule: it takes backend entrypoints from `package.json`, not from a directory.
+rule: its backend production entries (`!`) are these entrypoints, listed by
+path rather than by directory, and `check:unused-exports` fails when the two
+drift apart.
 
 Orphaned means not reachable from an entrypoint: imported only by tests, by
 nothing, or only by other orphans (including cycles). An importer count cannot
@@ -127,16 +129,29 @@ live module imports it for one symbol, and a barrel keeps every re-exported
 module reachable whether or not anything uses the symbol: `agent/index.ts` once
 kept the legacy domain agents, decision trees, experts and pipeline executor
 alive while its importers used six symbols. Keep a barrel to what its importers
-use. After deleting an orphan root, check each export it consumed with
-`rg -w` for a remaining non-test caller, and confirm a hit imports it from that
-module: a same-named local function elsewhere hides a dead export. The check
-reports none of them.
+use. The orphan check sees none of the dead exports this leaves inside a live
+module; the export-level gate does:
 
-`scripts/orphaned-modules-baseline.json` records the modules already in this
-state. They are accepted debt, not blessed: each is behaviour the product does
-not run, and any suite over it vouches for nothing. Shrink the list by restoring the call site
-or deleting the module with its suite; `--update-baseline` grows it only with a
-justification in the same commit.
+```bash
+npm run check:unused-exports
+```
+
+It resolves symbols with knip in production mode, so an export only tests
+import is unused, and a same-named local elsewhere cannot hide it. Text search
+could not tell them apart: `rg -w` let `createHypothesisId` and `isStringArray`
+survive a sweep. A use inside the declaring file counts, so a test seam into
+live code passes; one that production never touches can be tagged
+`/** @internal */`. Exports of entrypoints themselves are not checked, since
+build tooling may read them as text. Run it again after deleting an orphan
+root: the exports it alone consumed surface only then, as `skillExecutor`'s
+module-expert extractors did once `agent/experts/crossDomain` went.
+
+`scripts/orphaned-modules-baseline.json` and
+`scripts/unused-exports-baseline.json` record the modules and exports already
+in this state. They are accepted debt, not blessed: each is behaviour the
+product does not run, and any suite over it vouches for nothing. Shrink a list
+by restoring the call site or deleting the code with its suite;
+`--update-baseline` grows it only with a justification in the same commit.
 
 Suites that no focused tier owns live in `test:unit-sweep` (about 40s).
 Prefer the tier that matches the change; the sweep is the home for everything
@@ -152,7 +167,7 @@ contain at least one test".
 | Change type | Required verification |
 | --- | --- |
 | Docs-only, not runtime-read | `git diff --check` |
-| Removing a call site or a module | `npm run check:orphaned-modules` plus the owning `test:*` tier |
+| Removing a call site, an export or a module | `npm run check:orphaned-modules`, `npm run check:unused-exports`, plus the owning `test:*` tier |
 | Docs that define commands, release/package workflow, or runtime-read paths | `git diff --check` plus the smallest command/path smoke that proves the doc did not drift |
 | Build/type fix | `cd backend && npm run typecheck` plus affected tests |
 | Contract/type-only change | `cd backend && npx tsc --noEmit` plus relevant contract tests |
