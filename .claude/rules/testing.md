@@ -39,10 +39,18 @@ Trace SQL regression, and the 6-trace scene regression gate.
 
 `test:core`, `test:architecture`, and `test:self-evolution` enumerate their
 targets; new subsystems may use a directory-scoped gate such as
-`test:external-issue-reporting`. `tsconfig.json` excludes
-`src/**/__tests__/**` and `src/**/*.test.ts`.
-Therefore `npm run typecheck` cannot catch a type break inside a test file, and
-an unregistered suite never runs in `verify:pr`.
+`test:external-issue-reporting`. An unregistered suite never runs in
+`verify:pr`.
+
+Jest does not type-check: `tsconfig.json` sets `isolatedModules`, so ts-jest
+transpiles each file on its own. `npm run typecheck` checks `src/` and
+`tests/`, test files included, as one program through
+`tsconfig.typecheck.json`; the build `tsconfig.json` still excludes tests from
+emit. Per-file type checking inside ts-jest cost most of the `verify:pr` wall
+clock, because every suite rebuilt a language service over the imports it
+shared with every other suite. `isolatedModules` also makes `tsc` reject code
+that per-file transpilation cannot compile, such as re-exporting a type
+without `export type`.
 
 When adding a test file, register it in the matching `test:*` script in the same
 change, and make sure that script is reachable from `test:gate`. For a new

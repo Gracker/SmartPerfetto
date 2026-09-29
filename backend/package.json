@@ -64,7 +64,7 @@
     "knowledge-pack:fetch": "node scripts/fetch-aiw-knowledge-pack.cjs",
     "knowledge-pack:verify": "node scripts/fetch-aiw-knowledge-pack.cjs --verify-only",
     "prepack": "npm run knowledge-pack:fetch && npm run build",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "jest",
     "test:case-evolution": "jest --runInBand src/services/caseEvolution/__tests__ src/routes/__tests__/agentRoutes.caseEvolution.test.ts src/routes/__tests__/strategyAdminRoutes.caseEvolution.test.ts",
     "test:self-evolution": "jest --runInBand --forceExit src/services/selfEvolution src/services/evolutionLifecycle src/routes/__tests__/selfEvolutionAdminRoutes.test.ts src/__tests__/runtimeEnvironment.test.ts src/__tests__/runtimePaths.test.ts src/services/__tests__/analysisReceiptBuilder.test.ts src/agentv3/__tests__/strategyRegistrySnapshot.test.ts src/agentv3/__tests__/strategySkillCalls.test.ts src/agentv3/__tests__/claudeMcpServer.test.ts src/agentRuntime/__tests__/analysisRunSpec.test.ts src/services/__tests__/sqlValidator.test.ts src/agentv3/selfImprove src/cli-user/__tests__/bootstrap.test.ts",
