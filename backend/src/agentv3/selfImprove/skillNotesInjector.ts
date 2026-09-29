@@ -24,8 +24,12 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { readSkillNotesFile, type SkillNotesFile, type PersistedSkillNote } from './skillNotesWriter';
-import { backendLogPath } from '../../runtimePaths';
+import {
+  readSkillNotesFile,
+  runtimeSkillNotesDir,
+  type SkillNotesFile,
+  type PersistedSkillNote,
+} from './skillNotesWriter';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {currentEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {currentRunManifestAttributionSink} from '../../services/selfEvolution/runManifestLifecycle';
@@ -46,7 +50,6 @@ export const FULL_PATH_PER_SKILL_TOKENS = 200;
 export const QUICK_PATH_DEFAULT_TOTAL_TOKENS = 0;
 export const QUICK_PATH_MAX_TOTAL_TOKENS = 100;
 
-const DEFAULT_RUNTIME_NOTES_DIR = backendLogPath('skill_notes');
 const DEFAULT_CURATED_NOTES_DIR = path.join(__dirname, '..', '..', '..', 'skills', 'curated_skill_notes');
 
 /**
@@ -245,7 +248,7 @@ export function loadSkillNotesFromSources(
   skillId: string,
   opts: NoteSourceOptions = {},
 ): PersistedSkillNote[] {
-  const runtimeDir = opts.runtimeDir ?? DEFAULT_RUNTIME_NOTES_DIR;
+  const runtimeDir = opts.runtimeDir ?? runtimeSkillNotesDir();
   const curatedDir = opts.curatedDir ?? DEFAULT_CURATED_NOTES_DIR;
 
   const merged: PersistedSkillNote[] = [];
@@ -355,7 +358,6 @@ function applyEvaluationSkillNoteDeltas(
 export const __testing = {
   estimateTokens,
   renderNote,
-  DEFAULT_RUNTIME_NOTES_DIR,
   DEFAULT_CURATED_NOTES_DIR,
   skillNoteContentHash,
 };

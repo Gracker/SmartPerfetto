@@ -58,6 +58,8 @@ import {loadPromptTemplate} from '../strategyLoader';
 import {CONCLUSION_CONTRACT_SIDECAR_MARKER, parseConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {SUPPORTED_DETERMINISTIC_CLAIM_RULES} from '../../services/verifier/deterministicClaimVerifier';
 import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
+import {registerFocusAppEvidence} from '../../agentRuntime/focusAppEvidence';
+import {ArtifactStore} from '../artifactStore';
 
 describe('source-use asset marker validation', () => {
   const sourceContext = {
@@ -513,6 +515,41 @@ describe('typed turn prompt assembly', () => {
       runningNs: 180_321_368, mainThreadRunningNs: 151_059_323, threadSliceCount: 165});
     expect(parts.segments.find(segment => segment.label === 'focus_app_guidance')?.content)
       .toContain('Focus-app context fixture');
+  });
+
+  it('renders the issued focus-app evidence locator on the current side only', () => {
+    const detected = resolveFocusAppTarget({focusResult: {method: 'oom_adj', confidence: 'high', primaryApp: 'com.detected.app',
+      apps: [{packageName: 'com.detected.app', totalDurationNs: 1, switchCount: 1, score: 30}]}});
+    const evidence = {evidenceRefId: 'data:focus_app:current:0123456789ab', sourceToolCallId: 'runtime-focus-app:0123456789ab',
+      rowIndex: 0 as const, row: {package_name: 'com.detected.app', detection_method: 'oom_adj', detection_confidence: 'high'}};
+    // A user-named target keeps the detector's own row citable: the cell is the detector's primary, not the target.
+    const userNamed = {...resolveFocusAppTarget({userPackageName: 'com.user.app', focusResult: {method: 'oom_adj',
+      confidence: 'high', primaryApp: 'com.detected.app', apps: [{packageName: 'com.detected.app', totalDurationNs: 1,
+        switchCount: 1, score: 30}]}}), evidence};
+    for (const focusTarget of [{...detected, evidence}, userNamed]) {
+      const parts = buildSystemPromptParts({...fixture(), packageName: focusTarget.packageName, focusTarget,
+        comparison: {referenceTraceId: 'reference', commonCapabilities: [], referenceFocusTarget: detected}});
+      expect(segmentData(parts, 'trace_context').focusApp.evidence).toEqual(evidence);
+      expect(segmentData(parts, 'comparison_details').referenceFocusApp).toMatchObject({primary: 'com.detected.app'});
+      expect(segmentData(parts, 'comparison_details').referenceFocusApp.evidence).toBeUndefined();
+    }
+  });
+
+  it('renders byte-identical cacheable trace context for the same detection in another run', () => {
+    const focusResult = {method: 'oom_adj' as const, confidence: 'high' as const, primaryApp: 'com.detected.app',
+      apps: [{packageName: 'com.detected.app', totalDurationNs: 9, switchCount: 2, score: 30},
+        {packageName: 'com.other.app', totalDurationNs: 1, switchCount: 1, score: 5}]};
+    const render = () => {
+      const focusTarget = registerFocusAppEvidence({store: new ArtifactStore(), traceId: 'trace', focusResult,
+        focusTarget: resolveFocusAppTarget({focusResult})});
+      expect(focusTarget.evidence).toBeDefined();
+      return buildSystemPromptParts({...fixture(), packageName: focusTarget.packageName, focusTarget});
+    };
+    const [first, second] = [render(), render()];
+    const traceContext = (parts: ReturnType<typeof buildSystemPromptParts>) =>
+      parts.segments.find(segment => segment.label === 'trace_context')!.content;
+    expect(traceContext(second)).toBe(traceContext(first));
+    expect(second.stablePrefix).toBe(first.stablePrefix);
   });
 
   it('renders no package when focus detection is ambiguous, only candidates', () => {

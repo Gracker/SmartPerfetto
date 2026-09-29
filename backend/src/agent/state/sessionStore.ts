@@ -22,7 +22,7 @@ import {
 } from '../types';
 
 // 默认会话存储目录
-const DEFAULT_SESSION_DIR = path.join(process.cwd(), 'agent-sessions');
+const defaultSessionDir = () => path.join(process.cwd(), 'agent-sessions');
 
 // 会话保留时间（默认 7 天）
 const DEFAULT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -52,7 +52,7 @@ export class SessionStore extends EventEmitter {
   constructor(config: SessionStoreConfig = {}) {
     super();
     this.config = {
-      sessionDir: config.sessionDir || DEFAULT_SESSION_DIR,
+      sessionDir: config.sessionDir || defaultSessionDir(),
       retentionMs: config.retentionMs || DEFAULT_RETENTION_MS,
       maxActiveSessions: config.maxActiveSessions || 100,
     };

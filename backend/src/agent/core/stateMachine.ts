@@ -33,7 +33,7 @@ import {
 } from '../types';
 
 // 默认持久化路径
-const DEFAULT_PERSIST_PATH = path.join(process.cwd(), 'agent-state');
+const defaultPersistPath = () => path.join(process.cwd(), 'agent-state');
 
 // 状态转换规则定义
 const STATE_TRANSITIONS: Record<AgentPhase, AgentPhase[]> = {
@@ -70,7 +70,7 @@ export class AgentStateMachine extends EventEmitter {
     super();
     this.config = {
       ...config,
-      persistPath: config.persistPath || DEFAULT_PERSIST_PATH,
+      persistPath: config.persistPath || defaultPersistPath(),
       autoSave: config.autoSave ?? true,
       autoSaveIntervalMs: config.autoSaveIntervalMs || 5000,
     };
@@ -566,7 +566,7 @@ export class AgentStateMachine extends EventEmitter {
    * 列出所有可恢复的会话
    */
   static async listRecoverableSessions(persistPath?: string): Promise<string[]> {
-    const dir = persistPath || DEFAULT_PERSIST_PATH;
+    const dir = persistPath || defaultPersistPath();
 
     try {
       const files = await fs.promises.readdir(dir);

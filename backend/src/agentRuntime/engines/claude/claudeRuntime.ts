@@ -83,6 +83,7 @@ import {
 } from './claudeConfig';
 import type { FocusAppDetectionResult } from '../../../agentv3/focusAppDetector';
 import { formatFocusAppTargetProgress, resolveFocusAppTarget } from '../../focusAppTarget';
+import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import type {SceneType} from '../../../agentv3/sceneClassifier';
 import { buildComplexityClassifierInput } from '../../../agentv3/queryComplexityContext';
 import { buildAgentDefinitions } from './claudeAgentDefinitions';
@@ -219,7 +220,7 @@ import {
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
 
-const SESSION_MAP_FILE = backendLogPath('claude_session_map.json');
+const sessionMapFile = () => backendLogPath('claude_session_map.json');
 /** Max age for session map entries before pruning (24 hours). */
 const SESSION_MAP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -239,8 +240,9 @@ function legacySessionMapWritesEnabled(): boolean {
 
 function loadPersistedSessionMap(): Map<string, SessionMapEntry> {
   try {
-    if (fs.existsSync(SESSION_MAP_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SESSION_MAP_FILE, 'utf-8'));
+    const file = sessionMapFile();
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
       const map = new Map<string, SessionMapEntry>();
       for (const [key, value] of Object.entries(data)) {
         // Migration: old format stored plain string, new format stores {sdkSessionId, updatedAt}
@@ -297,7 +299,8 @@ function savePersistedSessionMap(map: Map<string, SessionMapEntry>): void {
 /** Immediate save — used by debounce timer and for critical operations (session removal). */
 function savePersistedSessionMapSync(map: Map<string, SessionMapEntry>): void {
   try {
-    const dir = path.dirname(SESSION_MAP_FILE);
+    const file = sessionMapFile();
+    const dir = path.dirname(file);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     // Prune stale entries before saving
@@ -308,9 +311,9 @@ function savePersistedSessionMapSync(map: Map<string, SessionMapEntry>): void {
       }
     }
 
-    const tmpFile = SESSION_MAP_FILE + '.tmp';
+    const tmpFile = file + '.tmp';
     fs.writeFileSync(tmpFile, JSON.stringify(Object.fromEntries(map)));
-    fs.renameSync(tmpFile, SESSION_MAP_FILE);
+    fs.renameSync(tmpFile, file);
   } catch (err) {
     console.warn('[ClaudeRuntime] Failed to persist session map:', diagnosticLogIdentity((err as Error).message));
   }
@@ -2501,7 +2504,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 0.5: the focus detection the caller ran before this preparation.
     // One effective-package decision (user > confident inference > none),
     // shared with every other runtime and package consumer.
-    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult: precomputed.focusResult});
+    const {focusResult} = precomputed;
+    const focusTarget = resolveFocusAppTarget({userPackageName: options.packageName, focusResult});
     const effectivePackageName = focusTarget.packageName;
     console.log(`[ClaudeRuntime] Focus target: ${effectivePackageName ?? '(none)'} source=${focusTarget.source} ` +
       `confidence=${focusTarget.confidence ?? '-'} method=${focusTarget.method} candidates=${focusTarget.candidates.length}`);
@@ -2689,6 +2693,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
       () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
     this.artifactStores.set(sessionId, artifactStore);
+    // The detector's primary app becomes citable current-run evidence.
+    const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
     // Notes restored from SessionStateSnapshot on resume — no separate disk I/O.
     let notes = this.sessionNotes.get(sessionId);
     if (!notes) {
@@ -2845,7 +2851,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       preflight: turnPolicy.preflight,
       architecture,
       packageName: effectivePackageName,
-      focusTarget,
+      focusTarget: citedFocusTarget,
       knowledgeBaseContext,
       sceneType,
       availableAgents: agents ? Object.keys(agents) : undefined,

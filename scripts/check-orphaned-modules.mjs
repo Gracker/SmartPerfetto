@@ -4,11 +4,11 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 /**
- * Reports backend modules that only their own tests import.
+ * Reports backend modules the product no longer runs.
  *
  * This is the mirror of `check-test-registration.mjs`. That check asks which
  * suites the gate cannot run; this one asks which modules the product no
- * longer runs while a registered suite still tests them. Both failures look
+ * longer runs while a registered suite may still test them. Both failures look
  * identical from `verify:pr` — everything green — and the second is the more
  * misleading, because a passing suite reads as proof that the behaviour works.
  *
@@ -17,9 +17,24 @@
  * site. The strategy field it served kept accepting authored content, and
  * Self-Evolution kept proposing patches to it, with no runtime effect.
  *
- * Deliberate exemptions:
- *   - re-export shims kept so documented import paths keep working
- *   - entrypoints a script or bin invokes rather than imports
+ * A module is orphaned when no live module imports it. That covers three
+ * shapes, and the first alone hid the other two:
+ *   - imported only by tests;
+ *   - imported by nothing at all;
+ *   - imported only by other orphans. An importer count cannot see this: a
+ *     dead root keeps its whole subtree looking alive, and a suite over any
+ *     module in that subtree still passes.
+ * Liveness is reachability from the entrypoints, so modules that only import
+ * each other in a cycle are orphaned too.
+ *
+ * Entrypoints: modules a script or bin invokes rather than imports, and
+ * modules build tooling under `backend/scripts/` imports. Harnesses and
+ * helpers under `backend/tests/` count as tests. A sibling that names
+ * `<stem>.js` or `<stem>.ts` (a worker or child process loaded by path) is
+ * treated as importing that module, so a dead loader does not keep it alive.
+ * Re-export shims (short files of nothing but `export ... from`) kept so
+ * documented import paths keep working are never reported, but only a live
+ * shim keeps its target alive.
  * A module is matched by its own source path, never by basename: a registered
  * *test* path in package.json would otherwise make its dead subject look alive,
  * which is exactly how the original instance stayed hidden.
@@ -36,8 +51,32 @@ const BASELINE_PATH = join(REPO_ROOT, 'scripts', 'orphaned-modules-baseline.json
 
 /** A file this small that only re-exports is a compatibility shim, not logic. */
 const SHIM_MAX_LINES = 12;
+const COMMENT_RE = /\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+const RE_EXPORT_RE = /export\s+(?:type\s+)?(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*from\s*['"][^'"]+['"]\s*;?/g;
+const isShim = source => source.split('\n').length <= SHIM_MAX_LINES
+  && source.replace(COMMENT_RE, '').replace(RE_EXPORT_RE, '').trim() === '';
 
-const isTestPath = path => path.includes('__tests__/') || path.endsWith('.test.ts');
+const isTestPath = path => path.startsWith('tests/')
+  || path.includes('__tests__/')
+  || path.includes('__mocks__/')
+  || path.endsWith('.test.ts');
+
+function listFiles(backendDir, root, accept) {
+  const files = [];
+  function visit(relative) {
+    for (const entry of readdirSync(join(backendDir, relative), { withFileTypes: true })) {
+      const path = `${relative}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules') continue;
+        visit(path);
+      } else if (entry.isFile() && !entry.name.endsWith('.d.ts') && accept(entry.name)) {
+        files.push(path);
+      }
+    }
+  }
+  if (existsSync(join(backendDir, root))) visit(root);
+  return files.sort();
+}
 
 /**
  * Only `src`, matching `listTestFiles`. Vendored trees and agent-runtime
@@ -45,71 +84,84 @@ const isTestPath = path => path.includes('__tests__/') || path.endsWith('.test.t
  * the report with dependencies this repository does not own.
  */
 export function listModules(backendDir = BACKEND) {
-  const modules = [];
-  function visit(relative) {
-    for (const entry of readdirSync(join(backendDir, relative), { withFileTypes: true })) {
-      const path = `${relative}/${entry.name}`;
-      if (entry.isDirectory()) {
-        if (entry.name === 'node_modules') continue;
-        visit(path);
-      } else if (entry.isFile() && entry.name.endsWith('.ts') && !entry.name.endsWith('.d.ts')) {
-        modules.push(path);
-      }
-    }
-  }
-  visit('src');
-  return modules.sort();
+  return listFiles(backendDir, 'src', name => name.endsWith('.ts'));
 }
 
-/**
- * Relative specifiers only: a package import cannot reach a repository module.
- * `import\s+` covers side-effect imports (`import './envEntry';`), whose module
- * is used for what it does on evaluation rather than for a binding.
- */
+/** Relative specifiers only: a package import cannot reach a repository module. */
 const IMPORT_RE = /(?:from\s+|import\s+|import\s*\(\s*|require\s*\(\s*)['"](\.[^'"]+)['"]/g;
 
 function resolve(fromFile, specifier, moduleSet) {
   const base = join(dirname(fromFile), specifier).replace(/\\/g, '/');
-  for (const candidate of [base, `${base}/index`]) {
-    for (const suffix of ['.ts', '']) {
-      const path = `${candidate}${suffix}`;
-      if (moduleSet.has(path)) return path;
-      if (moduleSet.has(`${candidate}.ts`)) return `${candidate}.ts`;
-    }
-  }
-  return undefined;
+  return [base, `${base}.ts`, `${base}/index.ts`].find(path => moduleSet.has(path));
 }
 
-export function findOrphans(modules, scripts, backendDir = BACKEND) {
+const append = (map, key, value) => {
+  if (map.has(key)) map.get(key).push(value);
+  else map.set(key, [value]);
+};
+
+/** A quoted `<stem>.js` / `<stem>.ts`: a sibling module loaded by path. */
+const PATH_LOAD_RE = /['"]([^'"/\\]+)\.[jt]s['"]/g;
+
+/**
+ * Returns each orphaned module with the reason it is unreachable:
+ * `tests-only`, `unreferenced`, or `orphaned-importers` (with `importers`).
+ */
+export function analyzeOrphans(modules, scripts, backendDir = BACKEND) {
   const moduleSet = new Set(modules);
-  const productionImporters = new Map();
-  const testImporters = new Map();
-  for (const module of modules) {
-    const source = readFileSync(join(backendDir, module), 'utf8');
-    const fromTest = isTestPath(module);
-    for (const match of source.matchAll(IMPORT_RE)) {
-      const target = resolve(module, match[1], moduleSet);
-      if (!target || target === module) continue;
-      const bucket = fromTest ? testImporters : productionImporters;
-      bucket.set(target, (bucket.get(target) ?? 0) + 1);
-    }
-  }
+  const tooling = ['scripts', 'tests'].flatMap(root => listFiles(backendDir, root, name => /\.[cm]?[jt]s$/.test(name)));
   // Match the module's own path, not its basename: a test path in a script
   // body must never vouch for the module it tests.
   const scriptBodies = Object.values(scripts).join(' ');
-  const invokedByScript = module => scriptBodies.includes(module);
+  const roots = modules.filter(module => !isTestPath(module) && (scriptBodies.includes(module)
+    || module.startsWith('src/scripts/')
+    || module.endsWith('Cli.ts')));
 
-  return modules.filter(module => {
-    if (isTestPath(module)) return false;
-    if (productionImporters.get(module)) return false;
-    if (!testImporters.get(module)) return false;
-    if (invokedByScript(module)) return false;
-    if (module.startsWith('src/scripts/') || module.endsWith('Cli.ts')) return false;
-    const lines = readFileSync(join(backendDir, module), 'utf8').split('\n').length;
-    if (lines <= SHIM_MAX_LINES) return false;
-    return true;
-  });
+  const importedBy = new Map();
+  const imports = new Map();
+  const testImported = new Set();
+  const shims = new Set();
+  for (const file of [...modules, ...tooling]) {
+    const source = readFileSync(join(backendDir, file), 'utf8');
+    const fromModule = moduleSet.has(file);
+    if (fromModule && isShim(source)) shims.add(file);
+    const targets = Array.from(source.matchAll(IMPORT_RE), match => resolve(file, match[1], moduleSet));
+    if (fromModule && !isTestPath(file)) {
+      for (const match of source.matchAll(PATH_LOAD_RE)) targets.push(`${dirname(file)}/${match[1]}.ts`);
+    }
+    for (const target of targets) {
+      if (!target || target === file || !moduleSet.has(target)) continue;
+      if (isTestPath(file)) testImported.add(target);
+      else if (!fromModule) roots.push(target);
+      else {
+        append(importedBy, target, file);
+        append(imports, file, target);
+      }
+    }
+  }
+
+  const live = new Set(roots);
+  for (const pending = [...live]; pending.length > 0;) {
+    for (const target of imports.get(pending.pop()) ?? []) {
+      if (!live.has(target)) { live.add(target); pending.push(target); }
+    }
+  }
+
+  const report = new Map();
+  for (const module of modules) {
+    if (live.has(module) || isTestPath(module) || shims.has(module)) continue;
+    const importers = Array.from(new Set(importedBy.get(module))).sort();
+    if (importers.length > 0) report.set(module, { reason: 'orphaned-importers', importers });
+    else report.set(module, { reason: testImported.has(module) ? 'tests-only' : 'unreferenced' });
+  }
+  return report;
 }
+
+const describe = ({ reason, importers }) => {
+  if (reason === 'tests-only') return 'imported only by tests';
+  if (reason === 'unreferenced') return 'imported by nothing';
+  return `imported only by orphaned ${importers.map(path => `backend/${path}`).join(', ')}`;
+};
 
 function readBaseline() {
   if (!existsSync(BASELINE_PATH)) return { orphaned: [] };
@@ -125,11 +177,12 @@ function main(argv) {
 
   const scripts = JSON.parse(readFileSync(join(BACKEND, 'package.json'), 'utf8')).scripts ?? {};
   const modules = listModules();
-  const orphans = findOrphans(modules, scripts);
+  const report = analyzeOrphans(modules, scripts);
+  const orphans = Array.from(report.keys());
 
   if (values['update-baseline']) {
     writeFileSync(BASELINE_PATH, `${JSON.stringify({
-      note: 'Backend modules only their own tests import. Each entry is behaviour the product does not run while a suite still vouches for it. Shrink this list; do not grow it.',
+      note: 'Backend modules no live module imports: imported only by tests, by nothing, or only by other orphans. Each entry is behaviour the product does not run, and any suite over it vouches for nothing. Shrink this list; do not grow it.',
       generated: new Date().toISOString().slice(0, 10),
       orphaned: orphans,
     }, null, 2)}\n`);
@@ -139,16 +192,16 @@ function main(argv) {
 
   const baseline = new Set(readBaseline().orphaned ?? []);
   const newlyOrphaned = orphans.filter(module => !baseline.has(module));
-  const revived = Array.from(baseline).filter(module => !orphans.includes(module));
+  const revived = Array.from(baseline).filter(module => !report.has(module));
 
   if (values.json) {
     console.log(JSON.stringify({ totalModules: modules.length, orphaned: orphans.length, newlyOrphaned, baselineEntriesNowImported: revived }, null, 2));
   } else {
-    console.log(`Backend modules: ${modules.length} total, ${orphans.length} imported only by their own tests.`);
+    console.log(`Backend modules: ${modules.length} total, ${orphans.length} not imported by any live module.`);
     if (revived.length > 0) console.log(`\n${revived.length} baseline entries are imported again. Run with --update-baseline to record the progress.`);
     if (newlyOrphaned.length > 0) {
-      console.log('\nThese modules are new debt — production no longer imports them, but a suite still tests them:');
-      for (const module of newlyOrphaned) console.log(`  backend/${module}`);
+      console.log('\nThese modules are new debt — no live module imports them:');
+      for (const module of newlyOrphaned) console.log(`  backend/${module} (${describe(report.get(module))})`);
       console.log('\nEither restore the call site, or delete the module and its suite.');
       console.log('A green suite over an unreachable module reports behaviour the product does not have.');
     }
@@ -157,6 +210,6 @@ function main(argv) {
   return newlyOrphaned.length > 0 ? 1 : 0;
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.exit(main(process.argv.slice(2)));
 }

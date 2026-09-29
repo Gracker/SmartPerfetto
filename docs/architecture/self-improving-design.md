@@ -22,7 +22,7 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 | Curated/runtime Skill Notes 注入 | 已接入，默认关闭 | `SELF_IMPROVE_NOTES_INJECT_ENABLED=1`；quick path 预算默认 0 |
 | Case Evolution capture/review/retrieve | 已接入，全部默认关闭 | 后端启动时读取 `CASE_EVOLUTION_*`；依赖关系校验失败时会降级或拒绝 |
 | Legacy ReviewWorker | 组件和单测存在，未接入应用启动 | `SELF_IMPROVE_REVIEW_ENABLED` 只影响已显式构造的 worker |
-| Strategy auto-patch | 组件和单测存在，未接入应用启动 | 不读取 `SELF_IMPROVE_AUTOPATCH_ENABLED`，不能作为产品能力启用 |
+| Strategy auto-patch | 已删除 | 只能生成不参与运行时的 `phase_hints`；`SELF_IMPROVE_AUTOPATCH_ENABLED` 没有读取点 |
 | Skill SQL auto-patch | 不支持 | 没有生产入口，不允许模型直接修改 Skill SQL |
 | Self-Evolution manifest / feedback / eval corpus | 已接入，默认关闭 | `SELF_EVOLUTION_ENABLED=true`；private feedback 与 public curation 物理隔离 |
 | 显式策展与提案生命周期 | 已接入，默认关闭 | 只处理 effective public feedback；每次人工触发最多生成一个有界提案 |
@@ -185,17 +185,18 @@ marker 可以共享 failure identity，但各自保留来源、scope 和状态�
 
 ## 组件级 Review 与 Patch 边界
 
-`backend/src/agentv3/selfImprove/` 仍包含 outbox、review SDK、strategy fingerprint、
-supersede、phase-hint renderer 和 worktree runner。这些是可测试组件，不代表生产启动：
+`backend/src/agentv3/selfImprove/` 仍包含 outbox、review SDK、strategy fingerprint 和
+supersede。这些是可测试组件，不代表生产启动：
 
 - Legacy `ReviewWorker` 没有在 `backend/src/index.ts` 构造；
-- `SELF_IMPROVE_NOTES_WRITE_ENABLED` 和 `SELF_IMPROVE_AUTOPATCH_ENABLED` 没有生产读取点；
-- Strategy patch 只允许模板化 `phase_hints`，模型不能提交任意 YAML；
-  注意 `phase_hints` 当前不参与分析运行时：提案、门控、应用、对账都会成功，
+- `SELF_IMPROVE_NOTES_WRITE_ENABLED` 没有生产读取点；
+- 组件级 strategy patch（phase-hint renderer、patch applier、worktree runner）已删除：
+  它只能生成 `phase_hints`，而 `phase_hints` 不参与分析运行时。Self-Evolution 的
+  `phaseHints` 注入同理：提案、门控、应用、对账都会成功，
   但注入结果不改变任何一次分析的行为。需要影响运行时的注入请用 `skillNotes`
   （由五个 runtime 消费），需要绑定实际取证的义务请用场景的
   `investigation_contract`；`phase_hints` 的持久化结构保留是为了兼容既有 overlay；
-- worktree、内容扫描、fingerprint 和测试通过也只生成候选变更，永不自动 merge；
+- 内容扫描、fingerprint 和测试通过也只生成候选变更，永不自动 merge；
 - Skill SQL patch 没有可用入口。
 
 要启用任何组件级路径，必须先补齐应用生命周期、凭据、资源上限、workspace/RBAC、
@@ -211,7 +212,7 @@ supersede、phase-hint renderer 和 worktree runner。这些是可测试组件�
 | Case Evolution outbox | `backend/data/self_improve/case_evolution.db` | 生产生命周期可选 worker |
 | Runtime Skill Notes | backend runtime logs/data path | 不进 git |
 | Curated Skill Notes | `backend/skills/curated_skill_notes/` | 人工晋升并随代码评审 |
-| Phase hint templates | `backend/strategies/phase_hint_templates/` | 受控模板，不是自由 YAML patch |
+| Phase hint templates | `backend/strategies/phase_hint_templates/` | 渲染器已删除，无运行时读取；仍在 Perfetto-Skills 公共导出清单中 |
 | Run manifests | user data `self_improve/run_manifests.db` | scope/run 身份与 pinned runtime 事实源 |
 | Feedback event/index | user data `self_improve/` 下的 public/private 日志与 `feedback_index.db` | append-only 事件；private 目录不进入策展 |
 | Eval corpus | user data `self_improve/eval.db` 与 `eval-corpus/` | immutable case artifact 与 split 元数据 |

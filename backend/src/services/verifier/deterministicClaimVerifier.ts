@@ -23,6 +23,7 @@ import {
 import {evidenceReferenceKey} from '../evidence/claimEvidencePreparation';
 import {compareRationals as compare, exactNumber, type Rational} from '../../utils/exactDecimal';
 import {referenceBindingFailureIsAdvisory} from '../evidence/evidenceReadView';
+import {classifyComparisonSides} from '../evidence/comparisonSides';
 
 export interface DeterministicClaimVerifierInput {
   claimSupport?: ClaimSupportV1[];
@@ -378,9 +379,11 @@ function comparisonProof(claim: ClaimSupportV1, semantics: ClaimSemanticsV1): De
   const left = current.value;
   const right = reference.value;
   const anchors = [left.anchor, right.anchor];
-  if (left.anchor.context.traceSide !== 'current' || right.anchor.context.traceSide !== 'reference') {
-    return proof(kind, 'rejected', 'comparison_side_mismatch', anchors);
-  }
+  // A missing trace id on a current/reference pair keeps going: the cells'
+  // captured field semantics below decide it, as before the shared rule.
+  const sides = classifyComparisonSides(left.anchor.context, right.anchor.context);
+  if (sides === 'comparison_not_cross_trace') return proof(kind, 'candidate', sides, anchors);
+  if (sides === 'comparison_side_mismatch') return proof(kind, 'rejected', sides, anchors);
   if (!trustedField(left.field) || !trustedField(right.field)) return proof(kind, 'candidate', 'comparison_metric_authority_unknown', anchors);
   for (const key of ['metricId', 'aggregation', 'populationKey'] as const) {
     if (!left.field[key] || !right.field[key]) return proof(kind, 'candidate', `comparison_${key}_unknown`, anchors);

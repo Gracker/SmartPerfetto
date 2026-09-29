@@ -921,6 +921,37 @@ describe('evidenceContractBuilder', () => {
     expect(built.anchors.find(anchor => anchor.anchorId === wrongValue.objectAnchorId)?.cells?.[0].actualValue).toBe(100);
   });
 
+  it('keeps a within-trace delta candidate, so a causal claim citing it is not made unsupported', () => {
+    const envelope = (evidenceRefId: string, traceId: string, traceSide: 'current' | 'reference') =>
+      createDataEnvelope({columns: ['blocked_ms'], rows: [[10]]}, {type: 'sql_result', source: 'execute_sql',
+        title: evidenceRefId, evidenceRefId, traceId, traceSide});
+    const ref = (evidenceRefId: string) => ({evidenceRefId, rowIndex: 0, column: 'blocked_ms'});
+    const delta = (id: string, subject: string, object: string) => ({schemaVersion: 'evidence_relation_candidate@1', id,
+      kind: 'comparison_delta', direction: 'subject_to_object', deltaDirection: 'current_minus_reference',
+      subject: ref(subject), object: ref(object), metricColumn: 'blocked_ms', value: 0, unit: 'ms'});
+    const citing = (relationRef: string): ConclusionContract => ({schemaVersion: 'conclusion_contract_v1',
+      mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+      claims: [{id: 'causal', kind: 'causal', text: 'the first wait causes the second',
+        references: [ref('data:a')], relationRefs: [relationRef]}]});
+    const build = (relationRef: string) => buildEvidenceContract({
+      dataEnvelopes: [envelope('data:a', 'trace', 'current'), envelope('data:b', 'trace', 'current'),
+        envelope('data:other', 'trace-other', 'current')],
+      relationCandidates: [delta('relation:within', 'data:a', 'data:b'), delta('relation:other', 'data:a', 'data:other')],
+      conclusionContract: citing(relationRef),
+    } as any);
+
+    const within = build('relation:within');
+    expect(within.relations.find(relation => relation.id === 'relation:within')).toMatchObject({
+      verificationStatus: 'candidate', reasonCode: 'comparison_not_cross_trace'});
+    expect(within.claimSupport[0]).toMatchObject({relationEvaluation: 'candidate'});
+    expect(within.claimSupport[0].supportLevel).not.toBe('unsupported');
+    // Current cells of two different traces remain a side contradiction.
+    const other = build('relation:other');
+    expect(other.relations.find(relation => relation.id === 'relation:other')).toMatchObject({
+      verificationStatus: 'rejected', reasonCode: 'comparison_side_mismatch'});
+    expect(other.claimSupport[0]).toMatchObject({relationEvaluation: 'rejected', supportLevel: 'unsupported'});
+  });
+
   it('excludes hostile candidates, conflicting duplicate ids, and invalid envelopes defensively', () => {
     const valid = createDataEnvelope({columns: ['ts', 'dur'], rows: [[0, 10]]}, {
       type: 'sql_result',

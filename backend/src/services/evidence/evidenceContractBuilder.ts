@@ -36,6 +36,7 @@ import type {
   TraceTimestampNs,
 } from '../../types/evidenceContract';
 import { evidenceValuesMatch } from './valueComparison';
+import { classifyComparisonSides } from './comparisonSides';
 import {copyScopeProvenance, scopeProvenanceForFields,
   type EvidenceScopeProvenanceV1} from '../../types/identityContract';
 import {evidenceReferenceKey, preparedReferenceResolution, preparedEvidenceBindingEligibility, preparedEvidenceMatchesInput,
@@ -1019,13 +1020,11 @@ function evaluateComparisonDelta(
   if (subject.missing || !object || object.missing) {
     return {status: 'candidate', reasonCode: 'relation_anchor_missing'};
   }
-  if (subject.context.traceSide !== 'current' || object.context.traceSide !== 'reference') {
-    return {status: 'rejected', reasonCode: 'comparison_side_mismatch'};
-  }
-  if (!subject.context.traceId || subject.context.traceId === 'unknown' ||
-    !object.context.traceId || object.context.traceId === 'unknown') {
-    return {status: 'candidate', reasonCode: 'trace_context_missing'};
-  }
+  const sides = classifyComparisonSides(subject.context, object.context);
+  // A within-trace difference is outside the cross-trace rule, not a
+  // contradiction, so a causal claim citing it is not made unsupported.
+  if (sides === 'comparison_side_mismatch') return {status: 'rejected', reasonCode: sides};
+  if (sides !== 'applies') return {status: 'candidate', reasonCode: sides};
   // Arithmetic alone is not a captured metric/population definition. Typed
   // comparison proof is evaluated once by the finite claim verifier.
   return {status: 'candidate', reasonCode: 'comparison_metric_missing'};

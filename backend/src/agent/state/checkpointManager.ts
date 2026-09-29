@@ -25,7 +25,7 @@ import {
 } from '../types';
 
 // 默认检查点目录
-const DEFAULT_CHECKPOINT_DIR = path.join(process.cwd(), 'agent-checkpoints');
+const defaultCheckpointDir = () => path.join(process.cwd(), 'agent-checkpoints');
 
 // 检查点保留时间（默认 24 小时）
 const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -45,7 +45,7 @@ export class CheckpointManager {
 
   constructor(config: CheckpointManagerConfig = {}) {
     this.config = {
-      checkpointDir: config.checkpointDir || DEFAULT_CHECKPOINT_DIR,
+      checkpointDir: config.checkpointDir || defaultCheckpointDir(),
       retentionMs: config.retentionMs || DEFAULT_RETENTION_MS,
       maxCheckpointsPerSession: config.maxCheckpointsPerSession || 10,
     };
