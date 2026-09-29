@@ -77,7 +77,7 @@ export type WriteRejectReason =
   | 'invalid_skill_id'
   | 'io_error';
 
-/** Match the worktreeRunner whitelist style — keeps file names safe. */
+/** Whitelisted characters only — keeps file names safe. */
 const SKILL_ID_RE = /^[a-zA-Z0-9_]{1,80}$/;
 const MAX_EVIDENCE_CHARS = 600;
 const MAX_CONSTRAINTS_CHARS = 400;
