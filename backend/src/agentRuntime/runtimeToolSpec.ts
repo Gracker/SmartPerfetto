@@ -12,6 +12,7 @@ import type { McpToolExposure } from '../types/sparkContracts';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {runtimeOutcomeFromError} from './runtimePerformance';
 import {normalizeRuntimeToolResult, readRuntimeToolReceipt, runtimeToolReceiptMetadata} from './runtimeToolResult';
+import {describeRuntimeToolFailure, describeRuntimeToolResultHandoff} from './runtimeToolResultAudit';
 import {
   currentRunManifestAttributionSink,
   resolveRunManifestAttributionSink,
@@ -333,19 +334,34 @@ export function withRuntimeToolConcurrency(
     const runManifestAttributionSink = timingSinkResolution.kind === 'resolved'
       ? timingSinkResolution.sink
       : undefined;
-    return coordinator.run({
-      toolName: timedSpec.name,
-      policy: timedSpec.concurrency,
-      signal: normalizedExtra.signal,
-      execute: scheduling => timedHandler(args, {
-        ...normalizedExtra,
-        ...(timingSinkResolution.kind === 'suppressed'
-          ? {[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]: true}
-          : {}),
-        runManifestAttributionSink,
-        runtimeToolScheduling: scheduling,
-      }),
-    });
+    // The outermost shared boundary: every product wrapper, including pacing
+    // reminders, has already shaped the result the adapter receives.
+    const auditRecorder = runManifestAttributionSink?.toolResultAuditRecorder;
+    const toolCallId = normalizedExtra.toolCallId;
+    try {
+      const result = await coordinator.run({
+        toolName: timedSpec.name,
+        policy: timedSpec.concurrency,
+        signal: normalizedExtra.signal,
+        execute: scheduling => timedHandler(args, {
+          ...normalizedExtra,
+          ...(timingSinkResolution.kind === 'suppressed'
+            ? {[RUNTIME_TOOL_TIMING_SUPPRESSED_EXTRA_KEY]: true}
+            : {}),
+          runManifestAttributionSink,
+          runtimeToolScheduling: scheduling,
+        }),
+      });
+      auditRecorder?.record(() => describeRuntimeToolResultHandoff(timedSpec.name, result, {
+        toolCallId, cancelled: normalizedExtra.signal?.aborted === true,
+      }));
+      return result;
+    } catch (error) {
+      auditRecorder?.record(() => describeRuntimeToolFailure(timedSpec.name, {
+        toolCallId, cancelled: runtimeOutcomeFromError(error, normalizedExtra.signal) === 'cancelled',
+      }));
+      throw error;
+    }
   };
   coordinatedHandler[TIMED_SHARED_TOOL_HANDLER] = true;
   return {...timedSpec, handler: coordinatedHandler};

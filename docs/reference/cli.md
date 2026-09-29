@@ -506,3 +506,5 @@ REPL 内部命令：
 ## 系统调查输出
 
 CLI 将系统调查覆盖与系统证据覆盖分别输出；缺失的历史字段显示尚未核验。机器输出的结论记录包含 `investigationAssurance`，不改变原始 conclusion 或 native completion。每轮额外保存 `NNN.investigation-assessment.json` 和 `NNN.delivery-assurance.json`，保留维度状态与证据引用，HTML 报告显示相同调查范围。恢复历史结果不会自动补采证据。
+
+`stream.jsonl` 里的工具结果是截断过的传输副本。每轮额外保存的 `NNN.tool-results.json` 按调用记录交给 runtime 的内容：工具名、调用 id、结果状态、文本字符数与字节数，以及 `vendorOverride` 等受审计字段是否逐字出现在交给模型的文本里。这个文件不含任何 payload 值；私有知识运行还会去掉 Skill id。

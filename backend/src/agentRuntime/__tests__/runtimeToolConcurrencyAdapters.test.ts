@@ -5,7 +5,7 @@
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {z} from 'zod';
 
-import {McpToolRegistry, type McpToolDefinition} from '../../agentv3/mcpToolRegistry';
+import {McpToolRegistry, type McpToolDefinition, type RuntimeAcquisitionPolicy} from '../../agentv3/mcpToolRegistry';
 import {createOpenAIToolsFromMcpDefinitions} from '../engines/openai/openAiToolAdapter';
 import {createPiAgentCoreToolFromSharedSpec} from '../engines/pi/piAgentCoreRuntime';
 import {dispatchOpenCodeBridgeRequest} from '../engines/opencode/openCodeRuntime';
@@ -19,6 +19,8 @@ import {
   SMARTPERFETTO_SAFE_TOOL_CONCURRENCY_ENV,
 } from '../runtimeToolConcurrency';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+import {createRuntimeToolResult} from '../runtimeToolResult';
+import {RuntimeToolResultAuditRecorder} from '../runtimeToolResultAudit';
 
 const originalAdmission = process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES;
 
@@ -773,4 +775,102 @@ describe('runtime tool concurrency adapter boundaries', () => {
       await expect(modules).resolves.toEqual(expect.anything());
     },
   );
+});
+
+describe('tool-result handoff audit at the outermost registry boundary', () => {
+  const REMINDER = 'Pacing reminder: submit the scene timeline soon.';
+
+  function createAuditedRegistry(handler: SharedToolSpec['handler']) {
+    const toolResultAuditRecorder = new RuntimeToolResultAuditRecorder();
+    const sink = {...createNoopAttributionSink(), toolResultAuditRecorder};
+    const acquisitionPolicy: RuntimeAcquisitionPolicy = {
+      admit: () => undefined,
+      complete: (_toolName, result) => ({
+        ...result,
+        content: (result.content as Array<{type: 'text'; text: string}>).map(block => ({
+          ...block, text: `${block.text}\n\n${REMINDER}`,
+        })),
+      }),
+    };
+    const registry = new McpToolRegistry({runManifestAttributionSink: sink, acquisitionPolicy} as any);
+    registry.registerShared({
+      name: 'invoke_skill',
+      description: 'audited acquisition tool',
+      exposure: 'public',
+      inputSchema: {skillId: z.string().optional()},
+      evidenceEffect: 'acquire',
+      handler,
+    });
+    return {registry, definitions: registry.list(), toolResultAuditRecorder};
+  }
+
+  const skillResult = () => createRuntimeToolResult({
+    success: true,
+    skillId: 'startup_analysis',
+    rows: 'x'.repeat(4_000),
+    vendorOverride: {vendor: 'xiaomi', displayName: 'Xiaomi', additionalStepIds: ['a']},
+  }, {facts: {success: true, planPhaseId: 'p1'}});
+
+  const invokers: Array<[string, (definitions: readonly McpToolDefinition[], registry: McpToolRegistry,
+    signal?: AbortSignal) => Promise<unknown>]> = [
+    ['Claude SDK MCP', (_definitions, registry, signal) =>
+      sdkToolsByName(registry).invoke_skill.handler({skillId: 'startup_analysis'}, {signal, toolCallId: 'call-claude'})],
+    ['Qoder SDK MCP', (_definitions, registry, signal) =>
+      sdkToolsByName(registry).invoke_skill.handler({skillId: 'startup_analysis'},
+        {signal, runtime: 'qoder-agent-sdk', toolCallId: 'call-qoder'})],
+    ['OpenAI function tools', (definitions, _registry, signal) => {
+      const tool = (createOpenAIToolsFromMcpDefinitions(definitions) as any[])[0];
+      return tool.invoke({context: {signal}}, '{"skillId":"startup_analysis"}', {signal, toolCall: {id: 'call-openai'}});
+    }],
+    ['Pi Agent Core', (definitions, _registry, signal) => createPiAgentCoreToolFromSharedSpec(definitions[0].shared, {
+      allowedToolNames: new Set(['invoke_skill']),
+      runtimeKind: 'pi-agent-core',
+    }).execute('call-pi', {skillId: 'startup_analysis'}, signal)],
+    ['OpenCode bridge', (definitions, _registry, signal) => dispatchOpenCodeBridgeRequest(definitions, {
+      jsonrpc: '2.0',
+      id: 'call-opencode',
+      method: 'tools/call',
+      params: {name: 'invoke_skill', arguments: {skillId: 'startup_analysis'}},
+    }, undefined, {getSignal: () => signal})],
+  ];
+
+  it.each(invokers)('records one %s handoff that includes wrapper-added text', async (_name, invoke) => {
+    const {registry, definitions, toolResultAuditRecorder} = createAuditedRegistry(async () => skillResult());
+    await invoke(definitions, registry);
+
+    const {results} = toolResultAuditRecorder.seal();
+    expect(results).toHaveLength(1);
+    const expectedText = `${skillResult().content[0].text}\n\n${REMINDER}`;
+    expect(results[0]).toEqual({
+      toolName: 'invoke_skill',
+      toolCallId: expect.stringMatching(/^call-/),
+      skillId: 'startup_analysis',
+      outcome: 'returned',
+      facts: {success: true, planPhaseIdPresent: true},
+      content: {textBlocks: 1, otherBlocks: 0, chars: expectedText.length, bytes: expectedText.length},
+      payloadFields: {vendorOverride: 'verbatim'},
+      vendorOverride: {vendor: 'xiaomi', additionalStepCount: 1},
+    });
+  });
+
+  it('records a cancelled call and a throwing call without a result', async () => {
+    const abort = new AbortController();
+    const cancelled = createAuditedRegistry(async () => {
+      abort.abort();
+      return skillResult();
+    });
+    await sdkToolsByName(cancelled.registry).invoke_skill.handler({}, {signal: abort.signal, toolCallId: 'call-c'})
+      .catch(() => undefined);
+    expect(cancelled.toolResultAuditRecorder.seal().results).toEqual([
+      expect.objectContaining({toolName: 'invoke_skill', toolCallId: 'call-c', outcome: 'cancelled'}),
+    ]);
+
+    const throwing = createAuditedRegistry(async () => {
+      throw new Error('handler exploded');
+    });
+    await expect(sdkToolsByName(throwing.registry).invoke_skill.handler({}, {toolCallId: 'call-t'}))
+      .rejects.toThrow('handler exploded');
+    expect(throwing.toolResultAuditRecorder.seal().results)
+      .toEqual([{toolName: 'invoke_skill', toolCallId: 'call-t', outcome: 'threw'}]);
+  });
 });

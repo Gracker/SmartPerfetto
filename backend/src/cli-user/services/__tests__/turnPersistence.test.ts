@@ -231,6 +231,11 @@ describe('commitTurnOutputs', () => {
     const runtimePerformance = {schemaVersion: 1 as const, phases: [], tools: [], sql: [],
       modelCalls: [{purpose: 'answer_turn' as const, startOffsetMs: 1, durationMs: 2, outcome: 'ok' as const}]};
     result.runtimePerformance = runtimePerformance;
+    const toolResultAudit = {schemaVersion: 1 as const, results: [{
+      toolName: 'invoke_skill', skillId: 'startup_analysis', outcome: 'returned' as const,
+      payloadFields: {vendorOverride: 'verbatim' as const}, vendorOverride: {vendor: 'xiaomi', additionalStepCount: 1},
+    }]};
+    result.toolResultAudit = toolResultAudit;
     try {
       commitTurnOutputs({
         paths,
@@ -266,6 +271,8 @@ describe('commitTurnOutputs', () => {
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.delivery-assurance.json'), 'utf-8'))).toBeNull();
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.runtime-performance.json'), 'utf-8')))
         .toEqual(runtimePerformance);
+      expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.tool-results.json'), 'utf-8')))
+        .toEqual(toolResultAudit);
       const latest = JSON.parse(fs.readFileSync(path.join(sp.dir, 'analysis-receipt.json'), 'utf-8'));
       const turn = JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.analysis-receipt.json'), 'utf-8'));
       const latestActions = JSON.parse(fs.readFileSync(path.join(sp.dir, 'ui-action-proposals.json'), 'utf-8'));
@@ -629,6 +636,10 @@ describe('commitTurnOutputs', () => {
         },
         uiActionProposals: [{title: canary}] as any,
       },
+      // A user-defined skill pack id can carry private names.
+      toolResultAudit: {schemaVersion: 1, results: [
+        {toolName: 'invoke_skill', skillId: canary, outcome: 'returned', facts: {planPhaseIdPresent: true}},
+      ]},
     };
 
     const renderer = rendererStub();
@@ -671,6 +682,10 @@ describe('commitTurnOutputs', () => {
       ].join('\n');
       expect(persistedText).not.toContain(canary);
       expect(JSON.stringify(jest.mocked(renderer.printCompletion).mock.calls)).not.toContain(canary);
+      expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.tool-results.json'), 'utf-8'))).toEqual({
+        schemaVersion: 1,
+        results: [{toolName: 'invoke_skill', outcome: 'returned', facts: {planPhaseIdPresent: true}}],
+      });
       expect(renderer.printCompletion).toHaveBeenCalledWith(expect.objectContaining({terminationMessage: expect.any(String)}));
       expect(persistedText).toMatch(/原始内容未持久化|original content not persisted/);
       const privateReceipt = JSON.parse(

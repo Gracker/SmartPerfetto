@@ -179,7 +179,25 @@ describe('RunManifestBuilder', () => {
     const builder = createBuilder();
     recordEmptyRegistry(builder);
 
-    expect(builder.seal()).not.toHaveProperty('performance');
+    const manifest = builder.seal();
+    expect(manifest).not.toHaveProperty('performance');
+    expect(manifest).not.toHaveProperty('toolResults');
+  });
+
+  it('seals the tool-result handoff receipt and ignores later calls', () => {
+    const builder = createBuilder();
+    recordEmptyRegistry(builder);
+    builder.toolResultAuditRecorder.record(() => ({toolName: 'invoke_skill', outcome: 'returned',
+      payloadFields: {vendorOverride: 'verbatim'}}));
+
+    const manifest = builder.seal();
+    builder.toolResultAuditRecorder.record(() => ({toolName: 'late_tool', outcome: 'threw'}));
+
+    expect(manifest.toolResults).toEqual({
+      schemaVersion: 1,
+      results: [{toolName: 'invoke_skill', outcome: 'returned', payloadFields: {vendorOverride: 'verbatim'}}],
+    });
+    expect(builder.seal()).toBe(manifest);
   });
 
   it('seals a privacy-safe immutable performance receipt before the run manifest closes', () => {

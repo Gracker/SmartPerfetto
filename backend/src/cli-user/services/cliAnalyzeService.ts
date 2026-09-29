@@ -47,6 +47,7 @@ import {
 } from '../../services/analysisRunStore';
 import {finalizeAnalysisResult, type ProvisionalAnalysisAnswer} from '../../services/finalizeAnalysisResult';
 import type {RuntimePerformanceReceiptV1} from '../../agentRuntime/runtimePerformance';
+import type {RuntimeToolResultAuditReceiptV1} from '../../agentRuntime/runtimeToolResultAudit';
 import {resolveCapturedComparisonIdentity} from '../../services/comparisonAppendixService';
 import type {FinalResultQualityIssue} from '../../services/finalResultQualityGate';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
@@ -251,6 +252,12 @@ export interface RunTurnOutput {
    * its manifest store is not durable; it never enters the event stream.
    */
   runtimePerformance?: RuntimePerformanceReceiptV1;
+  /**
+   * The sealed RunManifest's tool-result handoff receipt: what each tool call
+   * handed to the runtime for the model, before the event stream's transport
+   * truncation. Kept as a local turn artifact for the same reason.
+   */
+  toolResultAudit?: RuntimeToolResultAuditReceiptV1;
 }
 
 export function resolveEffectiveCliCodeAwareMode(input: Pick<
@@ -1017,6 +1024,7 @@ export class CliAnalyzeService {
           privateKnowledge: primaryPrivateKnowledge,
           analysisContextFingerprint,
           ...(runManifest.performance ? {runtimePerformance: runManifest.performance} : {}),
+          ...(runManifest.toolResults ? {toolResultAudit: runManifest.toolResults} : {}),
         };
       }));
       recordCliAnalysisRunState(openRunScope, 'completed');

@@ -413,6 +413,16 @@ Keep these boundaries intact:
   silently degrades plan phase attribution to semantic inference and leaves
   tool success unknown. Pass `resultFacts` from `readToolResultFacts(...)` at
   the runtime call site; `resultText` is a fallback, not a source of truth.
+  The same cap hides whether the model ever received a trailing hint such as
+  `vendorOverride`. `RunManifest.toolResults` (`runtimeToolResultAudit.ts`)
+  answers that: `withRuntimeToolConcurrency`, the outermost shared tool
+  boundary after every product wrapper including pacing reminders, records
+  per call the tool, call id, outcome, receipt facts (plan phase id presence
+  only), handed-off text size, and for each field in
+  `RUNTIME_TOOL_RESULT_AUDITED_FIELDS` whether its serialized key and value sit
+  verbatim in that text. It copies no payload values; add a new model-steering
+  payload field to that list. It proves the handoff to the runtime adapter,
+  not what the provider tokenized: runtime-native caps are outside its view.
 - Answer drafts are display-only and capability-gated. A runtime may stream
   answer text before finalization only under `agentRuntime/answerDraftStream.ts`:
   every `answer_token` carries `runId` + a monotone `attempt`, and an
@@ -518,7 +528,8 @@ identifiers, secrets, or unbounded provider content. Classification and the
 review are recorded for every runtime through the shared transport wrappers;
 per-response answer calls are recorded by the OpenAI runtime. The CLI, whose
 manifest store is not durable, writes the sealed receipt to
-`turns/NNN.runtime-performance.json`. Do not
+`turns/NNN.runtime-performance.json` and the tool-result handoff receipt to
+`turns/NNN.tool-results.json` (skill ids dropped for private runs). Do not
 add model, provider snapshot, usage, or performance fields to public SSE as an
 incidental benchmark shortcut; any public contract expansion needs its own
 privacy and compatibility review.

@@ -111,6 +111,7 @@ for the user-visible contract.
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | Private finalization context, original deadline, authorized capture reads and cross-turn leases |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | Maintainer-owned concurrency-candidate admission boundary |
 | `backend/src/agentRuntime/runtimePerformance.ts` | Internal RunManifest phase, tool, and SQL queue/execution timing receipt |
+| `backend/src/agentRuntime/runtimeToolResultAudit.ts` | Internal RunManifest tool-result handoff receipt: text size each call handed to its runtime and whether audited fields sit verbatim in it |
 | `backend/src/agentRuntime/runtimeToolConcurrency.ts` | Request-scoped fair read/write scheduling with an exclusive default |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto tool implementation and composition |
 | `backend/src/agentv3/mcpToolRegistry.ts` | Tool descriptors, exposure levels, and allowlists |
@@ -173,6 +174,18 @@ queue/execution timing in the internal `RunManifest.performance` field. This
 also does not expose admission-grade model, provider snapshot, provider usage,
 or performance fields. The receipt supports internal attribution and controlled
 benchmarks; by itself it does not prove real-provider speed or accuracy.
+
+Tool results in SSE and session logs are cut to 2000 characters, so they cannot
+show whether the model received a trailing hint such as `vendorOverride`. The
+internal `RunManifest.toolResults` receipt answers that. It records what each
+call handed to its runtime at the outermost shared tool boundary: after every
+product wrapper, including pacing reminders, and before transport truncation.
+Each entry holds the tool name, call id, outcome, receipt facts (plan phase id
+presence only), and handed-off text size. For each field in
+`RUNTIME_TOOL_RESULT_AUDITED_FIELDS`, it also records whether the field's
+serialized key and value appear verbatim in that text. No payload values are
+copied. The receipt proves the handoff to the runtime adapter. Runtime-native
+output caps are outside the product's view.
 
 Performance branches are controlled by the strict maintainer-only
 `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` boundary and default to no admitted
