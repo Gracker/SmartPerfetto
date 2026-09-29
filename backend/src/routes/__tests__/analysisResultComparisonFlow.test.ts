@@ -27,6 +27,7 @@ import analysisResultRoutes from '../analysisResultRoutes';
 import comparisonRoutes from '../comparisonRoutes';
 import { reportStore } from '../reportRoutes';
 import workspaceWindowRoutes from '../workspaceWindowRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const originalComparisonAiDisabled = process.env.SMARTPERFETTO_COMPARISON_AI_DISABLED;
@@ -94,6 +95,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot>): AnalysisResultSna
     runId: 'run-current',
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: id,
     userQuery: 'analyze startup',

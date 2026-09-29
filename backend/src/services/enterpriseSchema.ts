@@ -1191,6 +1191,24 @@ const MIGRATIONS: MigrationStep[] = [
       );
     },
   },
+  {
+    version: 18,
+    up: (db) => {
+      // Private-context marker (services/security/analysisPrivateContext.ts):
+      // bit flags written with the row, NULL for rows that predate it. NULL is
+      // restricted like a marked row, so existing rows need no backfill.
+      for (const table of [
+        'analysis_runs',
+        'report_artifacts',
+        'analysis_result_snapshots',
+        'multi_trace_comparison_runs',
+      ]) {
+        if (tableHasColumn(db, table, 'id')) {
+          addColumnIfMissing(db, table, 'private_context', 'INTEGER');
+        }
+      }
+    },
+  },
 ];
 
 export function applyEnterpriseMinimalSchema(db: Database.Database): void {

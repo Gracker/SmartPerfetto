@@ -17,6 +17,11 @@ import {
 } from '../types/multiTraceComparison';
 import { openEnterpriseDb } from './enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from './analysisResultSnapshotStore';
+import { insertAnalysisRunIfMissing } from './analysisRunStore';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
@@ -69,8 +74,11 @@ export interface CompletedAnalysisSnapshotInput extends AnalysisDeliveryFields {
   traceSummary?: import('../types/traceSummaryAttribution').TraceSummaryAttributionV1;
   uiActionProposals?: import('../types/dataContract').UiActionProposalV1[];
   createdAt?: number;
-  /** Apply the non-resumable private-source persistence projection. */
-  privateKnowledge?: boolean;
+  /**
+   * The run's authorized private material. It is stored with the snapshot and
+   * decides both its audience and the non-resumable persistence projection.
+   */
+  privateContext: AnalysisPrivateContextMarker;
   /** Language pinned to the originating analysis session. */
   outputLanguage?: OutputLanguage;
   /** Canonical scene derived before any private query/evidence projection. */
@@ -536,6 +544,7 @@ export function buildCompletedAnalysisResultSnapshot(
     ...(input.reportId ? { reportId: input.reportId } : {}),
     ...(input.userId ? { createdBy: input.userId } : {}),
     visibility: 'private',
+    privateContext: input.privateContext,
     sceneType,
     title: `${sceneType} analysis - ${input.traceLabel || input.traceId}`,
     userQuery: input.query,
@@ -630,22 +639,20 @@ function ensureSnapshotParentGraph(
     now,
   );
 
-  db.prepare(`
-    INSERT OR IGNORE INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at, heartbeat_at, updated_at)
-    VALUES
-      (?, ?, ?, ?, 'agent', 'completed', ?, ?, ?, ?, ?)
-  `).run(
-    input.runId,
-    input.tenantId,
-    input.workspaceId,
-    input.sessionId,
-    input.query,
-    now,
-    now,
-    now,
-    now,
-  );
+  insertAnalysisRunIfMissing(db, {
+    id: input.runId,
+    tenantId: input.tenantId,
+    workspaceId: input.workspaceId,
+    sessionId: input.sessionId,
+    mode: 'agent',
+    status: 'completed',
+    question: input.query,
+    startedAt: now,
+    completedAt: now,
+    heartbeatAt: now,
+    updatedAt: now,
+    privateContext: input.privateContext,
+  });
 }
 
 export function persistCompletedAnalysisResultSnapshot(
@@ -653,7 +660,8 @@ export function persistCompletedAnalysisResultSnapshot(
 ): AnalysisResultSnapshot | null {
   const outputLanguage = input.outputLanguage
     ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-  const privateResult = input.privateKnowledge ? projectOwnerAnalysisResult(input.sessionId, {
+  const privateKnowledge = privateContextRestrictsAudience(input.privateContext);
+  const privateResult = privateKnowledge ? projectOwnerAnalysisResult(input.sessionId, {
     sessionId: input.sessionId, success: input.success ?? true,
     findings: [], hypotheses: [], conclusion: input.conclusion ?? '',
     confidence: input.confidence ?? 0, rounds: 0, totalDurationMs: 0,
@@ -669,7 +677,7 @@ export function persistCompletedAnalysisResultSnapshot(
   }, outputLanguage) : undefined;
   const {turnIntent: _intent, completion: _completion, outputOrigin: _origin, runtimeAppendix: _appendix,
     reportAssessment: _assessment, investigationAssessment: _investigation, deliveryAssurance: _assurance, ...inputWithoutDelivery} = input;
-  const durableInput: CompletedAnalysisSnapshotInput = input.privateKnowledge
+  const durableInput: CompletedAnalysisSnapshotInput = privateKnowledge
     ? {
         ...inputWithoutDelivery,
         query: privateAnalysisQueryMessage(outputLanguage),

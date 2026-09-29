@@ -4,6 +4,7 @@
 
 import type Database from 'better-sqlite3';
 import type { RequestContext } from '../middleware/auth';
+import { isLocalDevRequestContext } from './resourceOwnership';
 
 type SqliteBindValue = string | number | bigint | Buffer | null;
 
@@ -11,6 +12,12 @@ export interface EnterpriseRepositoryScope {
   tenantId: string;
   workspaceId: string;
   userId?: string;
+  /**
+   * The request is the local single-user identity, which alone may claim an
+   * artifact with no recorded creator (isRecordedCreatorOf). A trusted SSO
+   * header can carry any user id, so stores cannot infer this from userId.
+   */
+  localDevIdentity?: boolean;
 }
 
 export type EnterpriseWorkspaceScopedTable =
@@ -86,6 +93,7 @@ export function repositoryScopeFromRequestContext(context: RequestContext): Ente
     tenantId: context.tenantId,
     workspaceId: context.workspaceId,
     userId: context.userId,
+    ...(isLocalDevRequestContext(context) ? {localDevIdentity: true} : {}),
   };
 }
 

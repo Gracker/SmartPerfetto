@@ -18,6 +18,7 @@ import agentRoutes from '../agentRoutes';
 import providerRoutes from '../providerRoutes';
 import reportRoutes, { reportStore } from '../reportRoutes';
 import traceRoutes from '../simpleTraceRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
@@ -155,6 +156,7 @@ describe('workspace resource routes', () => {
     reportStore.set('report-b', {
       html: '<html><body>workspace b report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'session-b',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-b',

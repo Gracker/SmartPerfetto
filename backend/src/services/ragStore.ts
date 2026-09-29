@@ -146,11 +146,8 @@ export type RagStoreStats = Record<
   {chunkCount: number; lastIndexedAt?: number}
 >;
 
-/** Tokenize Unicode words and emit overlapping Han bigrams so Chinese queries
- * can match a phrase embedded in a longer sentence without a segmenter or
- * provider dependency. The token set is intersected with the query token set
- * to score chunks. */
-function isPrivateKnowledgeChunk(chunk: RagChunk): boolean {
+/** Registered private material: a user's codebase chunks or private knowledge. */
+export function isPrivateKnowledgeChunk(chunk: {kind?: unknown; registryOrigin?: unknown}): boolean {
   return chunk.kind === 'android_internals_wiki' || chunk.registryOrigin === 'codebase_registry';
 }
 

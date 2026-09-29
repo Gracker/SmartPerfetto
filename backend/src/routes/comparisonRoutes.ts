@@ -17,6 +17,8 @@ import { generateAiComparisonConclusion } from '../services/comparisonAiConclusi
 import {
   persistComparisonHtmlReport,
   renderComparisonHtmlReport,
+  type PersistComparisonHtmlReportInput,
+  type PersistedComparisonHtmlReport,
 } from '../services/comparisonHtmlReportService';
 import { reportStore } from './reportRoutes';
 import { clientDisconnectSignal } from './clientDisconnect';
@@ -38,7 +40,7 @@ import type {
 } from '../types/multiTraceComparison';
 import type { AnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
 import type { MultiTraceComparisonRunRepository } from '../services/multiTraceComparisonStore';
-import type { EnterpriseRepositoryScope } from '../services/enterpriseRepository';
+import { repositoryScopeFromRequestContext, type EnterpriseRepositoryScope } from '../services/enterpriseRepository';
 
 const router = express.Router();
 
@@ -203,6 +205,24 @@ async function backfillSnapshotMetrics(
   }
 }
 
+/**
+ * A comparison stands without its report when the report cannot be saved: the
+ * export endpoint renders the report from the stored result instead.
+ */
+function tryPersistComparisonReport(
+  input: PersistComparisonHtmlReportInput,
+): PersistedComparisonHtmlReport | undefined {
+  try {
+    return persistComparisonHtmlReport(input);
+  } catch (error) {
+    console.warn('[ComparisonRoutes] Failed to persist comparison report:', {
+      comparisonId: input.comparison.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return undefined;
+  }
+}
+
 async function completeComparisonRun(
   input: {
     db: ReturnType<typeof openEnterpriseDb>;
@@ -229,15 +249,17 @@ async function completeComparisonRun(
     providerScope: input.scope,
     ...(input.signal ? {signal: input.signal} : {}),
   });
-  const report = persistComparisonHtmlReport({
+  const report = tryPersistComparisonReport({
     comparison: input.comparison,
     result,
     scope: input.scope,
   });
-  result.reportId = report.reportId;
-  result.reportUrl = report.reportUrl;
-  result.reportExportUrl = `${report.reportUrl}/export`;
-  const persistedReportId = reportArtifactExists(input.db, report.reportId)
+  if (report) {
+    result.reportId = report.reportId;
+    result.reportUrl = report.reportUrl;
+    result.reportExportUrl = `${report.reportUrl}/export`;
+  }
+  const persistedReportId = report && reportArtifactExists(input.db, report.reportId)
     ? report.reportId
     : undefined;
   return input.repository.updateRun(input.scope, input.comparison.id, {
@@ -276,11 +298,7 @@ router.post('/', async (req, res) => {
   const db = openEnterpriseDb();
   try {
     const snapshotRepository = createAnalysisResultSnapshotRepository(db);
-    const scope = {
-      tenantId: context.tenantId,
-      workspaceId: context.workspaceId,
-      userId: context.userId,
-    };
+    const scope = repositoryScopeFromRequestContext(context);
     const snapshots: AnalysisResultSnapshot[] = [];
     for (const snapshotId of inputSnapshotIds) {
       const snapshot = snapshotRepository.getSnapshot(scope, snapshotId);
@@ -382,11 +400,7 @@ router.patch('/:comparisonId/baseline', async (req, res) => {
 
   const db = openEnterpriseDb();
   try {
-    const scope = {
-      tenantId: context.tenantId,
-      workspaceId: context.workspaceId,
-      userId: context.userId,
-    };
+    const scope = repositoryScopeFromRequestContext(context);
     const repository = createMultiTraceComparisonRunRepository(db);
     const comparison = repository.getRun(scope, comparisonId);
     if (!comparison) {
@@ -472,11 +486,7 @@ router.get('/:comparisonId/report/export', (req, res) => {
   try {
     const repository = createMultiTraceComparisonRunRepository(db);
     const comparison = repository.getRun(
-      {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      },
+      repositoryScopeFromRequestContext(context),
       comparisonId,
     );
     if (!comparison?.result) {
@@ -534,11 +544,7 @@ router.get('/:comparisonId', (req, res) => {
   try {
     const repository = createMultiTraceComparisonRunRepository(db);
     const comparison = repository.getRun(
-      {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      },
+      repositoryScopeFromRequestContext(context),
       comparisonId,
     );
     if (!comparison) {
@@ -583,11 +589,7 @@ router.get('/:comparisonId/stream', (req, res) => {
   try {
     const repository = createMultiTraceComparisonRunRepository(db);
     const comparison = repository.getRun(
-      {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      },
+      repositoryScopeFromRequestContext(context),
       comparisonId,
     );
     if (!comparison) {

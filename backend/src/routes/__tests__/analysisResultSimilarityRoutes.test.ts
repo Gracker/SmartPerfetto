@@ -29,6 +29,7 @@ import {
 } from '../../types/multiTraceComparison';
 import type { CaseNode, RagChunk } from '../../types/sparkContracts';
 import analysisResultRoutes from '../analysisResultRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const originalLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
@@ -117,6 +118,7 @@ function snapshot(id: string, overrides: Partial<AnalysisResultSnapshot> = {}): 
     runId: `${id}-trace-run`,
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'scrolling',
     title: id,
     userQuery: 'analyze scrolling',

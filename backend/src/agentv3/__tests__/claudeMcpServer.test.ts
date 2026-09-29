@@ -45,6 +45,7 @@ import {verifySourceClaimBindings} from '../../services/codebase/sourceClaimVeri
 import * as resolvedAnalysisContext from '../../services/resolvedAnalysisContext';
 import * as criticalPathAnalyzer from '../../services/criticalPathAnalyzer';
 import {isPolicyRefusalResult} from '../toolNarration';
+import {NO_PRIVATE_CONTEXT, privateContextRestrictsAudience} from '../../services/security/analysisPrivateContext';
 
 // ── Mock dependencies ────────────────────────────────────────────────────
 
@@ -640,6 +641,7 @@ function analysisSnapshot(
     runId: `${id}-trace-run`,
     createdBy: 'user-a',
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'scrolling',
     title: id,
     userQuery: 'analyze scrolling',
@@ -826,6 +828,39 @@ describe('createClaudeMcpServer', () => {
         allowedUse: 'navigation_hint_only',
       });
       expect(result.hints[0].limitations.length).toBeGreaterThan(0);
+    });
+
+    it('keeps restricted snapshots out of a run that has no private context', async () => {
+      const snapshots = new Map([
+        ['current', analysisSnapshot('current')],
+        ['private-source', analysisSnapshot('private-source', {traceId: 'private-trace', sessionId: 'private-session',
+          runId: 'private-run', privateContext: {codebase: true, knowledge: false}})],
+      ]);
+      const visible = (snapshot: AnalysisResultSnapshot, excludeRestricted?: boolean) =>
+        !excludeRestricted || !privateContextRestrictsAudience(snapshot.privateContext);
+      const repository: TraceSimilaritySnapshotRepository = {
+        getSnapshot(_scope, snapshotId, options) {
+          const snapshot = snapshots.get(snapshotId);
+          return snapshot && visible(snapshot, options?.excludeRestricted) ? snapshot : null;
+        },
+        listSnapshots(_scope, filters) {
+          return [...snapshots.values()].filter(snapshot => visible(snapshot, filters?.excludeRestricted));
+        },
+      };
+      const knowledgeScope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+
+      // A public run's artifacts are shareable: its model must not read the
+      // owner's private snapshot, neither directly nor as a candidate.
+      const publicRun = createTestServer({knowledgeScope, analysisResultSnapshotRepository: repository});
+      expect(await callTool(publicRun.tools, 'recall_similar_result', {snapshot_id: 'private-source'}))
+        .toMatchObject({success: false});
+      const publicHints = await callTool(publicRun.tools, 'recall_similar_result', {snapshot_id: 'current'});
+      expect(publicHints.hints.map((hint: {sourceId: string}) => hint.sourceId)).not.toContain('private-source');
+
+      const privateRun = createTestServer({knowledgeScope, knowledgeSourceIds: ['kb-a'],
+        analysisResultSnapshotRepository: repository});
+      expect(await callTool(privateRun.tools, 'recall_similar_result', {snapshot_id: 'private-source'}))
+        .toMatchObject({success: true, snapshotId: 'private-source'});
     });
 
     it('reports missing analysis-result snapshots without fabricating hints', async () => {

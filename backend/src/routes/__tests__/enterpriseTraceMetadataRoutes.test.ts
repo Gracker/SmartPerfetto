@@ -36,6 +36,7 @@ import * as traceMetadataStore from '../../services/traceMetadataStore';
 import {TRACE_PROCESSOR_CAPABILITY_SECRET_ENV} from '../../services/traceProcessorProxyCapability';
 import {setPublicHttpDownloadForTests} from '../../services/publicHttpDownload';
 import traceRoutes from '../simpleTraceRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -488,7 +489,8 @@ describe('enterprise trace metadata routes', () => {
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
     const metadata = {id: 'placeholder-backing', filename: 'capture.trace', size: 24,
       uploadedAt: new Date(0).toISOString(), status: 'ready', ...source()};
-    persistAnalysisRunState({...scope, traceId: metadata.id, sessionId: 'conversation-1', runId: 'run-1'}, 'completed');
+    persistAnalysisRunState({...scope, traceId: metadata.id, sessionId: 'conversation-1', runId: 'run-1',
+      privateContext: NO_PRIVATE_CONTEXT}, 'completed');
     expect(readTraceAsset(metadata.id)).toMatchObject({status: 'metadata_only', size_bytes: 0});
 
     ensureTraceProcessorLeaseBackingMetadata(metadata, scope);

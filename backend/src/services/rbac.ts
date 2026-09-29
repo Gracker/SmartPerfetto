@@ -6,9 +6,19 @@ import type { Response } from 'express';
 import type { RequestContext } from '../middleware/auth';
 import {
   isOwnedByContext,
+  isRecordedCreatorOf,
   normalizeResourceOwner,
   type ResourceOwnerFields,
 } from './resourceOwnership';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
+
+/** A derived artifact whose audience its analysis's private context may restrict. */
+type PrivateContextResourceFields = ResourceOwnerFields & {
+  privateContext: AnalysisPrivateContextMarker;
+};
 
 export type RbacPermission =
   | 'trace:read'
@@ -181,10 +191,12 @@ export function canDeleteTraceResource(
 }
 
 export function canReadReportResource(
-  resource: ResourceOwnerFields | null | undefined,
+  resource: PrivateContextResourceFields | null | undefined,
   context: RequestContext,
 ): boolean {
-  return sharesWorkspaceWithContext(resource, context) && hasRbacPermission(context, 'report:read');
+  if (!sharesWorkspaceWithContext(resource, context)) return false;
+  if (!hasRbacPermission(context, 'report:read')) return false;
+  return !privateContextRestrictsAudience(resource?.privateContext) || isRecordedCreatorOf(resource, context);
 }
 
 export function canDeleteReportResource(
@@ -194,16 +206,6 @@ export function canDeleteReportResource(
   if (!sharesWorkspaceWithContext(resource, context)) return false;
   if (hasRbacPermission(context, 'report:delete')) return true;
   return isOwnedByContext(resource, context) && hasRbacPermission(context, 'report:delete');
-}
-
-export function canReadAnalysisResultResource(
-  resource: (ResourceOwnerFields & { visibility?: string | null }) | null | undefined,
-  context: RequestContext,
-): boolean {
-  if (!sharesWorkspaceWithContext(resource, context)) return false;
-  if (!hasRbacPermission(context, 'analysis_result:read')) return false;
-  if (resource?.visibility === 'workspace') return true;
-  return isOwnedByContext(resource, context);
 }
 
 export function canCreateAnalysisResultResource(context: RequestContext): boolean {

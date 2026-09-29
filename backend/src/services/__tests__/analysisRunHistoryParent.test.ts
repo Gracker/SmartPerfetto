@@ -11,6 +11,7 @@ import {AnalysisHistoryStore, resetAnalysisHistoryStoreForTests, type AnalysisHi
 import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../analysisRunStore';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 // The existing history-store suite builds its run parent with hand-written SQL,
 // and the persistence suite mocks `append` outright. Both stayed green while no
@@ -48,14 +49,16 @@ describe('finalized history requires a registered run parent', () => {
 
   it('accepts the turn once the same owner registered the run', () => {
     persistAnalysisRunState({tenantId: scope.tenantId, workspaceId: scope.workspaceId, userId: scope.userId,
-      sessionId: scope.sessionId, runId: scope.runId!, traceId: scope.traceId, query: '分析启动性能', mode: 'fast'}, 'running');
+      sessionId: scope.sessionId, runId: scope.runId!, traceId: scope.traceId, query: '分析启动性能', mode: 'fast',
+      privateContext: NO_PRIVATE_CONTEXT}, 'running');
     expect(() => new AnalysisHistoryStore().append(scope, turn())).not.toThrow();
     expect(new AnalysisHistoryStore().list(scope)).toEqual([turn()]);
   });
 
   it('keeps a run registered under one owner unusable by another', () => {
     persistAnalysisRunState({tenantId: scope.tenantId, workspaceId: scope.workspaceId, userId: 'someone-else',
-      sessionId: scope.sessionId, runId: scope.runId!, traceId: scope.traceId, mode: 'fast'}, 'running');
+      sessionId: scope.sessionId, runId: scope.runId!, traceId: scope.traceId, mode: 'fast',
+      privateContext: NO_PRIVATE_CONTEXT}, 'running');
     expect(() => new AnalysisHistoryStore().append(scope, turn()))
       .toThrow('analysis_history_parent_not_authorized');
   });

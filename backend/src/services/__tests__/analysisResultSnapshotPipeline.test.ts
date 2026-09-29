@@ -31,6 +31,7 @@ import {
   createSourceAuthoredAnalysisResult,
   SOURCE_FINALIZATION_CANARY,
 } from '../../agentRuntime/__tests__/sourceFinalizationFixture';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 const tmpDirs: string[] = [];
@@ -99,7 +100,7 @@ describe('analysis result snapshot pipeline', () => {
     const sourceVerification = {schemaVersion: 'source_claim_verifier@1' as const, status: 'failed' as const,
       bindings: contract.sourceClaimBindings!, issues: [{severity: 'error' as const, code: 'source_claim_missing' as const, message: 'No current source proof.'}]};
     try {
-      const result = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+      const result = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
         traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a', query: 'a narrow question',
         conclusion, conclusionContract: contract, completion, outputOrigin: 'sdk_final',
         sourceClaimVerificationResult: sourceVerification,
@@ -121,7 +122,7 @@ describe('analysis result snapshot pipeline', () => {
     registerCodeAwareCanary(sessionId, conclusion);
     try {
       const stored = persistCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
-        traceId: 'trace-a', sessionId, runId: 'run-a', query: 'private query', privateKnowledge: true,
+        traceId: 'trace-a', sessionId, runId: 'run-a', query: 'private query', privateContext: {codebase: true, knowledge: false},
         conclusion, completion: {schemaVersion: 1, runtimeKind: 'openai-agents-sdk', status: 'failed', reason: 'provider_error',
           candidateRef: 'candidate-a', runId: 'run-a', attemptId: 'attempt-a', conclusionFingerprint: analysisDeliveryFingerprint(conclusion)},
         deliveryAssurance: {schemaVersion: 1, entry: 'new_finalization', completion: 'failed', claims: 'passed',
@@ -135,7 +136,7 @@ describe('analysis result snapshot pipeline', () => {
 
   test('legacy snapshot safety projection invalidates old claim, source and report positives together', () => {
     const conclusion = 'An unchanged historical statement';
-    const snapshot = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
       sessionId: 'session-a', traceId: 'trace-a', runId: 'run-a', query: 'old query', conclusion,
       conclusionContract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
         claims: [{id: 'claim-a', text: conclusion, references: []}], uncertainties: [], nextSteps: [],
@@ -160,7 +161,7 @@ describe('analysis result snapshot pipeline', () => {
       taskKind: 'fact' as const, sceneId: 'general', scope: 'bounded_question' as const, recommendedComplexity: 'quick' as const,
       deliverable: 'answer' as const, evidenceAccess: 'existing_only' as const, registryFingerprint: 'registry-a'};
     const candidate = {candidateRef: 'candidate-a', runId: 'run-a', attemptId: 'attempt-a', conclusionFingerprint: analysisDeliveryFingerprint(conclusion)};
-    const snapshot = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-a', workspaceId: 'workspace-a',
       traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a', query: 'current query', conclusion, conclusionContract: contract, turnIntent: intent,
       completion: {...candidate, schemaVersion: 1, runtimeKind: 'pi-agent-core', status: 'completed'},
       analysisReceipt: {schemaVersion: 1, runId: 'run-a', sessionId: 'session-a', traceId: 'trace-a', mode: 'fast', resolvedMode: 'quick', providerId: null, generatedAt: 1,
@@ -208,7 +209,7 @@ describe('analysis result snapshot pipeline', () => {
     expect(verification.claimVerificationResult.claimResults[0].referenceCells).toEqual([
       expect.objectContaining({status: 'value_mismatch'}),
     ]);
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a',
       traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a', query: '核对 TTID',
       conclusion, conclusionContract: normalized, dataEnvelopes: [data],
@@ -247,7 +248,7 @@ describe('analysis result snapshot pipeline', () => {
       resultDigestSha256: '4'.repeat(64),
       availableMetricIds: ['metric_a'], missingMetricIds: [],
     };
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -380,7 +381,7 @@ describe('analysis result snapshot pipeline', () => {
       resolution: {status: 'failed', reason: 'capability_manifest_build_failed'},
       probeCache: {hits: 0, misses: 0, bypasses: 1},
     };
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -412,7 +413,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('returns null when tenant, workspace, or run metadata is missing', () => {
-    expect(buildCompletedAnalysisResultSnapshot({
+    expect(buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       traceId: 'trace-a',
       sessionId: 'session-a',
       query: 'analyze',
@@ -420,7 +421,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('extracts startup metrics from structured DataEnvelope rows', () => {
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -455,7 +456,7 @@ describe('analysis result snapshot pipeline', () => {
 
   test('preserves runtime partial warning even when startup metrics are present', () => {
     const message = '最终结果质量闸门发现 provider 没有产出可独立交付的完整结论';
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -483,7 +484,7 @@ describe('analysis result snapshot pipeline', () => {
   });
 
   test('extracts scrolling metrics and normalizes fractional jank rate to percent', () => {
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -572,7 +573,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     };
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -651,7 +652,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     };
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -705,7 +706,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     }));
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -763,7 +764,7 @@ describe('analysis result snapshot pipeline', () => {
       },
     }));
 
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       traceId: 'trace-a',
@@ -796,7 +797,7 @@ describe('analysis result snapshot pipeline', () => {
   test('persists snapshot when the parent run graph does not exist yet', () => {
     useTempEnterpriseDb();
 
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -971,7 +972,7 @@ describe('analysis result snapshot pipeline', () => {
           } as any,
         },
         uiActionProposals: [{title: canary}] as any,
-        privateKnowledge: true,
+        privateContext: {codebase: true, knowledge: false},
         outputLanguage: 'en',
         sceneType: 'startup',
       });
@@ -1056,7 +1057,7 @@ describe('analysis result snapshot pipeline', () => {
         partial: result.partial,
         terminationReason: result.terminationReason,
         terminationMessage: result.terminationMessage,
-        privateKnowledge: true,
+        privateContext: {codebase: true, knowledge: false},
         outputLanguage: 'en',
       });
 
@@ -1101,7 +1102,7 @@ describe('analysis result snapshot pipeline', () => {
         snippet: 'raw-source-canary',
       } as any],
     };
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -1193,7 +1194,7 @@ describe('analysis result snapshot pipeline', () => {
       metadata: {legacy: true},
     };
 
-    const snapshot = persistCompletedAnalysisResultSnapshot({
+    const snapshot = persistCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -1240,7 +1241,7 @@ describe('analysis result snapshot pipeline', () => {
       usedCodebaseIds: ['app-source'],
       references: [bodyReference],
     };
-    const snapshot = buildCompletedAnalysisResultSnapshot({
+    const snapshot = buildCompletedAnalysisResultSnapshot({privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-metadata-only',
       workspaceId: 'workspace-metadata-only',
       traceId: 'trace-metadata-only',
@@ -1293,7 +1294,7 @@ test('persists bound system investigation without new acquisition and preserves 
     requirements: [{requirementId: 'scheduler', domain: 'thread_state', applicability: 'applicable', coverage: 'covered',
       evidenceStatus: 'insufficient', acquisition: 'insufficient', scopeMatch: 'matched',
       contentLocations: [{start: 0, end: conclusion.length}], evidenceRecordIds: ['capture-system']}]};
-  const input = {tenantId: 'tenant-system', workspaceId: 'workspace-system', traceId: 'trace-system',
+  const input = {privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-system', workspaceId: 'workspace-system', traceId: 'trace-system',
     sessionId: 'session-system', runId: 'run-system', query: 'Why did the task wait?', conclusion};
   const snapshot = buildCompletedAnalysisResultSnapshot({...input, investigationAssessment,
     deliveryAssurance: {schemaVersion: 1, entry: 'new_finalization', completion: 'passed', claims: 'not_checked',
@@ -1309,7 +1310,7 @@ describe('scene archive references in comparison snapshots', () => {
   const reference = () => ({schemaVersion: 'scene_report_ref@1' as const, reportId: 'scene-v3-report',
     traceId: 'trace-scene', sessionId: 'session-scene', runId: 'run-scene', revision: 7,
     expiresAt: 1_800_000_000_000, manifestSha256: 'a'.repeat(64)});
-  const input = () => ({tenantId: 'tenant-scene', workspaceId: 'workspace-scene',
+  const input = () => ({privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-scene', workspaceId: 'workspace-scene',
     traceId: 'trace-scene', sessionId: 'session-scene', runId: 'run-scene', query: 'reconstruct',
     sceneType: 'scene_reconstruction', sceneReport: reference(), sceneTimelineRevision: 7});
 

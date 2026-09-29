@@ -132,6 +132,10 @@ import {
   projectOwnerAnalysisResult,
   projectOwnerProvisionalConclusion,
 } from '../../services/security/privateAnalysisProjection';
+import {
+  privateContextRestrictsAudience,
+  resolveAnalysisPrivateContext,
+} from '../../services/security/analysisPrivateContext';
 import {registerPrivateAnalysisQueryForEcho} from '../../services/security/codeAwareOutputRegistry';
 import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
 import {buildSkillRegistryAttribution} from '../../services/selfEvolution/skillFingerprint';
@@ -151,7 +155,7 @@ import {
  */
 function cliAnalysisRunScope(
   session: {tenantId?: string; workspaceId?: string; userId?: string},
-  identity: {sessionId: string; runId: string; traceId: string; query: string; mode: string},
+  identity: Omit<AnalysisRunPersistenceScope, 'tenantId' | 'workspaceId' | 'userId'>,
 ): AnalysisRunPersistenceScope | undefined {
   const {tenantId, workspaceId, userId} = session;
   return tenantId && workspaceId && userId
@@ -563,10 +567,8 @@ export class CliAnalyzeService {
       knowledgeSourceIds: input.knowledgeSourceIds,
       analysisContextFingerprint,
     }, sourceActivation);
-    const primaryPrivateKnowledge = Boolean(
-      (primaryOptions.codeAwareMode !== 'off' && primaryOptions.codebaseIds?.length) ||
-      primaryOptions.knowledgeSourceIds?.length
-    );
+    const primaryPrivateContext = resolveAnalysisPrivateContext(primaryOptions);
+    const primaryPrivateKnowledge = privateContextRestrictsAudience(primaryPrivateContext);
     const { sessionId, session } = this.analyzeService.prepareSession({
       traceId,
       query: input.query,
@@ -661,6 +663,7 @@ export class CliAnalyzeService {
       traceId,
       query: primaryPrivateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : input.query,
       mode: requestedAnalysisMode,
+      privateContext: primaryPrivateContext,
     });
     const runtimeRegistrySnapshot = await getEffectiveRuntimeRegistrySnapshot({
       scope: resolvedScope,

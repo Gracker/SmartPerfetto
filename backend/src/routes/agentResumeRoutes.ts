@@ -29,6 +29,7 @@ import {
   requireAiEnabledForHttp,
   sendAiDisabledErrorIfPresent,
 } from './aiCapabilityPolicyHttp';
+import { decodePrivateContextJson } from '../services/security/analysisPrivateContext';
 
 interface AssistantSessionStore {
   getSession(sessionId: string): any;
@@ -240,9 +241,14 @@ export function registerAgentResumeRoutes(
             startedAt: latestTurn?.timestamp || persistedSession.createdAt,
             completedAt: persistedSession.updatedAt,
             status: 'completed',
+            privateContext: 'unknown',
           }
         : undefined;
-      const restoredRun = (snapshot?.lastRun || snapshot?.activeRun || fallbackRestoredRun) as AnalyzeSessionRunContext | undefined;
+      const snapshotRunContext = (snapshot?.lastRun || snapshot?.activeRun) as AnalyzeSessionRunContext | undefined;
+      // A run serialized before markers existed carries none: it is unknown.
+      const restoredRun = snapshotRunContext
+        ? {...snapshotRunContext, privateContext: decodePrivateContextJson(snapshotRunContext.privateContext)}
+        : fallbackRestoredRun;
       const restoredStatus = restoredSessionStatus(restoredRun, Boolean(recoveredResult));
       const owner = normalizeResourceOwner(persistedSession.metadata);
 

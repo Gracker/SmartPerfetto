@@ -31,6 +31,10 @@ import {
   type ExternalIssueReviewV1,
   type ExternalIssueUserAnswerV1,
 } from '../types/externalIssueReporting';
+import {
+  repositoryScopeFromRequestContext,
+  type EnterpriseRepositoryScope,
+} from '../services/enterpriseRepository';
 
 interface AgentExternalIssueRoutesDeps {
   getSessionOwner: (sessionId: string) => ResourceOwnerFields | null | undefined;
@@ -258,6 +262,7 @@ function authorize(
     workspaceId: string;
     userId: string;
   };
+  artifactScope: EnterpriseRepositoryScope;
 } | null {
   const context = requireRequestContext(req);
   const owner = deps.getSessionOwner(routeParam(req.params.sessionId));
@@ -275,29 +280,16 @@ function authorize(
       workspaceId: context.workspaceId,
       userId: context.userId,
     },
+    artifactScope: repositoryScopeFromRequestContext(context),
   };
 }
 
 function resolveSource(
   request: ExternalIssueSourceRunRequest,
-  authorized: {
-    providerScope: {
-      tenantId: string;
-      workspaceId: string;
-      userId: string;
-    };
-  },
+  authorized: {artifactScope: EnterpriseRepositoryScope},
   deps: AgentExternalIssueRoutesDeps,
 ) {
-  return (deps.resolveSourceRun ?? resolveExternalIssueSourceRun)(
-    request,
-    {
-      tenantId: authorized.providerScope.tenantId,
-      workspaceId: authorized.providerScope.workspaceId,
-      userId: authorized.providerScope.userId,
-      auditActorUserId: authorized.providerScope.userId,
-    },
-  );
+  return (deps.resolveSourceRun ?? resolveExternalIssueSourceRun)(request, authorized.artifactScope);
 }
 
 function readSourceRequest(

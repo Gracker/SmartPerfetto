@@ -19,6 +19,7 @@ import { CaseLibrary } from '../../caseLibrary';
 import { openEnterpriseDb } from '../../enterpriseDb';
 import { RagStore } from '../../ragStore';
 import { createTraceSimilarityService } from '../similarityService';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 
@@ -84,6 +85,7 @@ function snapshot(id: string, overrides: Partial<AnalysisResultSnapshot> = {}): 
     runId: `${id}-trace-run`,
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'scrolling',
     title: id,
     userQuery: 'analyze scrolling',

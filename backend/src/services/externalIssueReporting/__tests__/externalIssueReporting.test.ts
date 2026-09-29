@@ -17,6 +17,7 @@ import {buildDeterministicExternalIssueReview} from '../deterministicFallback';
 import {resolveExternalIssueProviderPin} from '../providerPin';
 import {buildExternalIssueTriagePrompt} from '../triagePrompt';
 import {runExternalIssueTriage} from '../triageRunner';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 function manifest(
   overrides: Partial<RunManifestV1> = {},
@@ -854,6 +855,7 @@ describe('external issue reporting services', () => {
         getCompletedEvent: () => event,
         getManifest: () => run.manifest,
         hasNegativeFeedback: () => false,
+        getRunPrivateContext: () => NO_PRIVATE_CONTEXT,
       },
     );
     expect(resolved.ok).toBe(true);
@@ -872,6 +874,7 @@ describe('external issue reporting services', () => {
         getCompletedEvent: () => event,
         getManifest: () => run.manifest,
         hasNegativeFeedback: () => false,
+        getRunPrivateContext: () => NO_PRIVATE_CONTEXT,
       },
     );
     expect(mismatch).toEqual(expect.objectContaining({
@@ -898,11 +901,26 @@ describe('external issue reporting services', () => {
         }),
         getManifest: () => run.manifest,
         hasNegativeFeedback: () => false,
+        // The older event witness still refuses, whatever the run marker says.
+        getRunPrivateContext: () => NO_PRIVATE_CONTEXT,
       },
     );
     expect(privateResult).toEqual(expect.objectContaining({
       ok: false,
       code: 'private_analysis',
     }));
+
+    const request = {sessionId: 'session-1', runId: 'run-1', runManifestId: 'manifest-1'};
+    const scope = {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'};
+    for (const runPrivateContext of [{codebase: false, knowledge: true}, 'unknown' as const]) {
+      // A marked run, and a run written before markers existed, are refused
+      // even when the completed event carries no projection flag.
+      expect(resolveExternalIssueSourceRun(request, scope, {
+        getCompletedEvent: () => event,
+        getManifest: () => run.manifest,
+        hasNegativeFeedback: () => false,
+        getRunPrivateContext: () => runPrivateContext,
+      })).toEqual(expect.objectContaining({ok: false, code: 'private_analysis'}));
+    }
   });
 });

@@ -241,6 +241,8 @@ export function persistComparisonHtmlReport(
     workspaceId: input.scope.workspaceId,
     userId: input.scope.userId,
     visibility: 'private',
+    // The report embeds the input snapshots, so it inherits their audience.
+    privateContext: input.comparison.privateContext,
   });
 
   return {

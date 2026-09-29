@@ -105,9 +105,10 @@ async function seedTenantExportFixture(): Promise<void> {
     `).run(now, now);
     db.prepare(`
       INSERT INTO analysis_runs
-        (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at, error_json, heartbeat_at, updated_at)
+        (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at, error_json, heartbeat_at, updated_at,
+         private_context)
       VALUES
-        ('run-a', 'tenant-a', 'workspace-a', 'session-a', 'quick', 'completed', 'Why jank?', ?, ?, NULL, ?, ?)
+        ('run-a', 'tenant-a', 'workspace-a', 'session-a', 'quick', 'completed', 'Why jank?', ?, ?, NULL, ?, ?, 0)
     `).run(now, now + 100, now + 50, now + 100);
     db.prepare(`
       INSERT INTO conversation_turns
@@ -117,9 +118,10 @@ async function seedTenantExportFixture(): Promise<void> {
     `).run(now + 10);
     db.prepare(`
       INSERT INTO report_artifacts
-        (id, tenant_id, workspace_id, session_id, run_id, local_path, content_hash, visibility, created_by, created_at, expires_at)
+        (id, tenant_id, workspace_id, session_id, run_id, local_path, content_hash, visibility, created_by, created_at, expires_at,
+         private_context)
       VALUES
-        ('report-a', 'tenant-a', 'workspace-a', 'session-a', 'run-a', ?, 'hash-report-a', 'private', 'user-a', ?, NULL)
+        ('report-a', 'tenant-a', 'workspace-a', 'session-a', 'run-a', ?, 'hash-report-a', 'private', 'user-a', ?, NULL, 0)
     `).run(path.join(reportDir, 'report.html'), now);
     db.prepare(`
       INSERT INTO memory_entries
@@ -162,6 +164,63 @@ afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
 
+async function seedRestrictedContentFixture(): Promise<void> {
+  const now = 1_800_000_000_000;
+  const reportPaths: Record<string, string> = {};
+  for (const [reportId, body] of [['report-private', 'PRIVATE_REPORT'], ['report-legacy', 'LEGACY_REPORT']]) {
+    const dir = path.join(tmpDir, 'data', 'tenant-a', 'workspace-a', 'reports', reportId);
+    await fs.mkdir(dir, {recursive: true});
+    await fs.writeFile(path.join(dir, 'report.html'), `<html><body>${body}</body></html>`);
+    await fs.writeFile(path.join(dir, 'report.json'), JSON.stringify({title: body}));
+    reportPaths[reportId] = path.join(dir, 'report.html');
+  }
+  const db = openEnterpriseDb(dbPath);
+  try {
+    const insertRun = db.prepare(`
+      INSERT INTO analysis_runs
+        (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at, error_json,
+         heartbeat_at, updated_at, private_context)
+      VALUES (?, 'tenant-a', 'workspace-a', 'session-a', 'full', 'failed', ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insertRun.run('run-private', 'PRIVATE_QUESTION', now, now, '{"message":"PRIVATE_ERROR"}', now, now, 1);
+    // Written before markers existed: nothing proves it read no private material.
+    insertRun.run('run-legacy', 'LEGACY_QUESTION', now, now, '{"message":"LEGACY_ERROR"}', now, now, null);
+    const insertTurn = db.prepare(`
+      INSERT INTO conversation_turns (id, tenant_id, workspace_id, session_id, run_id, role, content_json, created_at)
+      VALUES (?, 'tenant-a', 'workspace-a', 'session-a', ?, 'assistant', ?, ?)
+    `);
+    insertTurn.run('turn-private', 'run-private', '{"text":"PRIVATE_TURN"}', now);
+    insertTurn.run('turn-legacy', 'run-legacy', '{"text":"LEGACY_TURN"}', now);
+    const insertReport = db.prepare(`
+      INSERT INTO report_artifacts
+        (id, tenant_id, workspace_id, session_id, run_id, local_path, content_hash, visibility, created_by, created_at,
+         expires_at, private_context)
+      VALUES (?, 'tenant-a', 'workspace-a', 'session-a', ?, ?, ?, 'private', 'user-a', ?, NULL, ?)
+    `);
+    insertReport.run('report-private', 'run-private', reportPaths['report-private'], 'hash-private', now, 2);
+    insertReport.run('report-legacy', 'run-legacy', reportPaths['report-legacy'], 'hash-legacy', now, null);
+    const insertMemory = db.prepare(`
+      INSERT INTO memory_entries
+        (id, tenant_id, workspace_id, scope, source_run_id, content_json, embedding_ref, created_at, updated_at)
+      VALUES (?, 'tenant-a', 'workspace-a', ?, ?, ?, NULL, ?, ?)
+    `);
+    const chunk = (kind: string, text: string, registryOrigin?: string) => JSON.stringify({
+      kind: 'rag_chunk', externalId: `${kind}-chunk`,
+      record: {chunkId: `${kind}-chunk`, kind, snippet: text, ...(registryOrigin ? {registryOrigin} : {})},
+    });
+    insertMemory.run('memory-private-run', 'baseline', 'run-private',
+      '{"kind":"baseline","externalId":"b","record":{"note":"PRIVATE_MEMORY"}}', now, now);
+    insertMemory.run('memory-unlinked', 'baseline', null,
+      '{"kind":"baseline","externalId":"u","record":{"note":"UNLINKED_MEMORY"}}', now, now);
+    insertMemory.run('chunk-private-source', 'rag:app_source', null,
+      chunk('app_source', 'PRIVATE_SOURCE_CHUNK', 'codebase_registry'), now, now);
+    insertMemory.run('chunk-public-blog', 'rag:androidperformance.com', null,
+      chunk('androidperformance.com', 'PUBLIC_BLOG_CHUNK'), now, now);
+  } finally {
+    db.close();
+  }
+}
+
 describe('enterprise tenant export route', () => {
   it('exports a tenant bundle with reports, manifests, identity proof, and no secrets', async () => {
     await seedTenantExportFixture();
@@ -180,6 +239,7 @@ describe('enterprise tenant export route', () => {
       generatedBy: 'user-a',
       workspaceIds: ['workspace-a', 'workspace-b'],
     }));
+    expect(res.body.bundle.schemaVersion).toBe(2);
     expect(res.body.bundle.manifest).toEqual(expect.objectContaining({
       traceFilesIncluded: false,
       traceCount: 1,
@@ -191,6 +251,8 @@ describe('enterprise tenant export route', () => {
       auditEventCount: 1,
       providerCredentialCount: 1,
       providerSnapshotCount: 1,
+      contentPolicy: 'public_context_only',
+      contentOmitted: {reports: 0, runs: 0, turns: 0, memoryRecords: 0},
     }));
     expect(res.body.bundle.traces[0]).toEqual(expect.objectContaining({
       id: 'trace-a',
@@ -227,6 +289,39 @@ describe('enterprise tenant export route', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('keeps content a private or unknown context may have derived out of the compliance bundle', async () => {
+    await seedTenantExportFixture();
+    await seedRestrictedContentFixture();
+
+    const res = await ssoHeaders(request(makeApp()).get('/api/export/tenant'));
+
+    expect(res.status).toBe(200);
+    const bundle = res.body.bundle;
+    const serialized = JSON.stringify(bundle);
+    for (const secret of ['PRIVATE_QUESTION', 'PRIVATE_ERROR', 'PRIVATE_TURN', 'PRIVATE_REPORT', 'PRIVATE_MEMORY',
+      'LEGACY_QUESTION', 'LEGACY_ERROR', 'LEGACY_TURN', 'LEGACY_REPORT', 'UNLINKED_MEMORY', 'PRIVATE_SOURCE_CHUNK']) {
+      expect(serialized).not.toContain(secret);
+    }
+    // Public material keeps its content.
+    expect(serialized).toContain('PUBLIC_BLOG_CHUNK');
+    expect(serialized).toContain('Why jank?');
+    expect(serialized).toContain('tenant report');
+
+    const byId = (records: Array<{id: string}>, id: string) => records.find(record => record.id === id);
+    expect(byId(bundle.runs, 'run-private')).toMatchObject({question: null, error: null,
+      privateContext: {codebase: true, knowledge: false}, contentOmitted: 'private_context'});
+    expect(byId(bundle.runs, 'run-legacy')).toMatchObject({question: null, privateContext: 'unknown',
+      contentOmitted: 'private_context'});
+    expect(byId(bundle.reports, 'report-private')).toMatchObject({html: null, json: null,
+      privateContext: {codebase: false, knowledge: true}, contentOmitted: 'private_context', contentHash: 'hash-private'});
+    expect(byId(bundle.reports, 'report-legacy')).toMatchObject({html: null, privateContext: 'unknown'});
+    expect(byId(bundle.turns, 'turn-legacy')).toMatchObject({content: null, contentOmitted: 'private_context'});
+    expect(byId(bundle.knowledge.memoryEntries, 'chunk-public-blog')).not.toHaveProperty('contentOmitted');
+    expect(bundle.manifest.contentOmitted).toEqual({reports: 2, runs: 2, turns: 2, memoryRecords: 3});
+    expect(bundle.manifest).toEqual(expect.objectContaining({runCount: 3, turnCount: 3, reportCount: 3,
+      memoryRecordCount: 5}));
   });
 
   it('requires tenant export privileges', async () => {

@@ -46,6 +46,7 @@ import * as defaultCodebaseServices from '../../services/codebase/defaultCodebas
 import * as externalKnowledgeServices from '../../services/externalKnowledgeSourceRegistry';
 import {getProviderService, resetProviderService} from '../../services/providerManager';
 import agentRoutes, {resolveConclusionSceneIdHint} from '../agentRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalSsoTrustedHeaders = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
@@ -1559,6 +1560,7 @@ describe('agent route RBAC', () => {
         runId,
         traceId,
         query: 'analyze this trace',
+        privateContext: NO_PRIVATE_CONTEXT,
       }, {
         cursor: 99,
         eventType: 'analysis_completed',

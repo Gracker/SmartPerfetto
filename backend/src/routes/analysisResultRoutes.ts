@@ -6,6 +6,7 @@ import express from 'express';
 import { requireRequestContext } from '../middleware/auth';
 import { backendLogPath } from '../runtimePaths';
 import { openEnterpriseDb } from '../services/enterpriseDb';
+import { repositoryScopeFromRequestContext } from '../services/enterpriseRepository';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
 import { CaseLibrary } from '../services/caseLibrary';
 import { getDefaultRagStore } from '../services/ragStore';
@@ -98,11 +99,7 @@ router.get('/', (req, res) => {
   try {
     const repository = createAnalysisResultSnapshotRepository(db);
     const results = repository.listSnapshots(
-      {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      },
+      repositoryScopeFromRequestContext(context),
       {
         traceId: optionalString(req.query.traceId),
         sceneType: sceneType as AnalysisResultSceneType | undefined,
@@ -169,11 +166,7 @@ router.post('/:snapshotId/similarity', (req, res) => {
         : {}),
     });
     const result = service.findSimilarAnalysisResult({
-      scope: {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      },
+      scope: repositoryScopeFromRequestContext(context),
       knowledgeScope: knowledgeScopeFromRequestContext(context),
       snapshotId,
       includeCases,
@@ -222,11 +215,7 @@ router.get('/:snapshotId', (req, res) => {
   try {
     const repository = createAnalysisResultSnapshotRepository(db);
     const snapshot = repository.getSnapshot(
-      {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      },
+      repositoryScopeFromRequestContext(context),
       snapshotId,
     );
     if (!snapshot) {
@@ -275,14 +264,8 @@ router.patch('/:snapshotId', (req, res) => {
   const db = openEnterpriseDb();
   try {
     const repository = createAnalysisResultSnapshotRepository(db);
-    const existing = repository.getSnapshot(
-      {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      },
-      snapshotId,
-    );
+    const scope = repositoryScopeFromRequestContext(context);
+    const existing = repository.getSnapshot(scope, snapshotId);
     if (!existing) {
       res.status(404).json({
         success: false,
@@ -300,17 +283,16 @@ router.patch('/:snapshotId', (req, res) => {
       return;
     }
 
-    const updated = repository.updateVisibility(
-      {
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-        auditActorUserId: context.userId,
-      },
-      snapshotId,
-      visibility as AnalysisResultVisibility,
-    );
-    if (!updated) {
+    const updated = repository.updateVisibility(scope, snapshotId, visibility as AnalysisResultVisibility);
+    if (updated.status === 'private_context_not_shareable') {
+      res.status(409).json({
+        success: false,
+        code: 'PRIVATE_CONTEXT_NOT_SHAREABLE',
+        error: 'An analysis that read private source or knowledge stays with its creator',
+      });
+      return;
+    }
+    if (updated.status === 'not_found') {
       res.status(404).json({
         success: false,
         error: 'Analysis result snapshot not found',
@@ -320,7 +302,7 @@ router.patch('/:snapshotId', (req, res) => {
 
     res.json({
       success: true,
-      snapshot: updated,
+      snapshot: updated.snapshot,
     });
   } catch (error) {
     console.error('[AnalysisResultRoutes] Failed to update analysis result:', error);

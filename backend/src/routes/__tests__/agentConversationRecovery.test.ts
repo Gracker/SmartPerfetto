@@ -21,6 +21,7 @@ import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../../serv
 import {ENTERPRISE_DB_PATH_ENV} from '../../services/enterpriseDb';
 import {registerAgentConversationRoutes} from '../agentConversationRoutes';
 import * as finalization from '../../services/finalizeAnalysisResult';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const previousPath = process.env[ENTERPRISE_DB_PATH_ENV];
 const owner = {tenantId: 'recovery-tenant', workspaceId: 'recovery-workspace', userId: 'recovery-owner'};
@@ -41,7 +42,8 @@ function storeSnapshot(overrides: Partial<ConversationSessionDescriptor> = {},
   turnOverrides: Partial<ReturnType<typeof toAnalysisHistoryTurn>> = {}) {
   descriptor = {...descriptor, ...overrides};
   const traceId = `conversation-no-trace:${descriptor.sessionId}`;
-  persistAnalysisRunState({...owner, sessionId: descriptor.sessionId, runId: descriptor.lastRun.runId, traceId}, 'running');
+  persistAnalysisRunState({...owner, sessionId: descriptor.sessionId, runId: descriptor.lastRun.runId, traceId,
+    privateContext: NO_PRIVATE_CONTEXT}, 'running');
   getConversationSessionStore().save(descriptor, {...toAnalysisHistoryTurn({id: descriptor.lastRun.runId,
     turnIndex: 0, traceId, query: descriptor.lastRun.query, timestamp: 100,
     result: {conclusion: 'Final retained answer', partial: true, terminationReason: 'max_turns',

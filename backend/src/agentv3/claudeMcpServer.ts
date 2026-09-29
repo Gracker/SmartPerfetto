@@ -5886,6 +5886,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           snapshotId,
           includeCases: include_cases ?? false,
           limit: top_k,
+          excludeRestricted: !privateAnalysisContext,
         });
         if (!result) {
           return {

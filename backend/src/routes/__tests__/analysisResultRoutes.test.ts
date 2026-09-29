@@ -24,6 +24,7 @@ import { openEnterpriseDb } from '../../services/enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from '../../services/analysisResultSnapshotStore';
 import analysisResultRoutes from '../analysisResultRoutes';
 import {getRegisteredScenes} from '../../agentv3/strategyLoader';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 
@@ -54,6 +55,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot>): AnalysisResultSna
     runId: 'run-a',
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: id,
     userQuery: 'analyze startup',
@@ -230,6 +232,31 @@ describe('analysis result routes', () => {
     expect(response.body.success).toBe(true);
     expect(response.body.snapshot.visibility).toBe('workspace');
     expect(response.body.snapshot.id).toBe('snapshot-a');
+  });
+
+  test('refuses to share a snapshot whose analysis read private source or knowledge', async () => {
+    const db = openEnterpriseDb(dbPath);
+    try {
+      createAnalysisResultSnapshotRepository(db).createSnapshot(snapshot({
+        id: 'snapshot-private', privateContext: {codebase: true, knowledge: false},
+      }));
+    } finally {
+      db.close();
+    }
+
+    const refused = await request(app())
+      .patch('/api/workspaces/workspace-a/analysis-results/snapshot-private')
+      .set('x-tenant-id', DEFAULT_TENANT_ID)
+      .send({ visibility: 'workspace' })
+      .expect(409);
+    expect(refused.body).toMatchObject({success: false, code: 'PRIVATE_CONTEXT_NOT_SHAREABLE'});
+
+    const read = await request(app())
+      .get('/api/workspaces/workspace-a/analysis-results/snapshot-private')
+      .set('x-tenant-id', DEFAULT_TENANT_ID)
+      .expect(200);
+    expect(read.body.snapshot).toMatchObject({visibility: 'private',
+      privateContext: {codebase: true, knowledge: false}});
   });
 
   test('rejects invalid visibility updates', async () => {

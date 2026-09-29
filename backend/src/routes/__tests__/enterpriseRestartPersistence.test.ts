@@ -29,6 +29,7 @@ import {
 import agentRoutes from '../agentRoutes';
 import reportRoutes, { persistReport, reportStore } from '../reportRoutes';
 import traceRoutes from '../simpleTraceRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -124,6 +125,7 @@ async function seedRestartState(): Promise<void> {
     workspaceId: WORKSPACE_ID,
     userId: USER_ID,
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
   });
 
   const persistence = SessionPersistenceService.getInstance();
@@ -164,6 +166,7 @@ async function seedRestartState(): Promise<void> {
     traceId: TRACE_ID,
     query: 'restart interrupted running run',
     mode: 'agent',
+    privateContext: NO_PRIVATE_CONTEXT,
   }, 'running', { now: GENERATED_AT + 2000 });
 }
 

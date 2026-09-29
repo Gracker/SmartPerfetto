@@ -22,6 +22,13 @@ import type {
 } from '../types/multiTraceComparison';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
+import { restrictableArtifactAudienceParams, restrictableArtifactAudienceSql } from './resourceOwnership';
+import {
+  decodePrivateContextColumn,
+  encodePrivateContextColumn,
+  privateContextRestrictsAudience,
+  unrestrictedPrivateContextSql,
+} from './security/analysisPrivateContext';
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
@@ -50,6 +57,7 @@ interface SnapshotRow {
   schema_version: AnalysisResultSnapshot['schemaVersion'];
   created_at: number;
   expires_at: number | null;
+  private_context: number | null;
 }
 
 interface MetricRow {
@@ -72,7 +80,16 @@ interface EvidenceRow {
   ref_json: string;
 }
 
-export interface AnalysisResultSnapshotListFilters {
+export interface SnapshotReadOptions {
+  /**
+   * Leave out snapshots of private or unknown context, even the caller's own:
+   * a run without private context must not carry their content into its own
+   * shareable artifacts.
+   */
+  excludeRestricted?: boolean;
+}
+
+export interface AnalysisResultSnapshotListFilters extends SnapshotReadOptions {
   traceId?: string;
   sceneType?: AnalysisResultSceneType;
   visibility?: AnalysisResultVisibility;
@@ -85,6 +102,11 @@ export interface AnalysisResultSnapshotListFilters {
 export interface SnapshotAccessScope extends EnterpriseRepositoryScope {
   auditActorUserId?: string;
 }
+
+export type SnapshotVisibilityUpdate =
+  | {status: 'updated'; snapshot: AnalysisResultSnapshot}
+  | {status: 'not_found'}
+  | {status: 'private_context_not_shareable'};
 
 function parseJson<T>(value: string, fallback: T): T {
   try {
@@ -136,6 +158,7 @@ function snapshotSelectColumns(alias = 's', includeConclusionContract = true): s
     `${alias}.schema_version`,
     `${alias}.created_at`,
     `${alias}.expires_at`,
+    `${alias}.private_context`,
   ].join(', ');
 }
 
@@ -151,25 +174,23 @@ function boundedLimit(limit: number | undefined): number {
   return limit;
 }
 
-function readableClause(scope: SnapshotAccessScope, alias = 's'): {
+function readableClause(scope: SnapshotAccessScope, options: SnapshotReadOptions = {}): {
   sql: string;
   params: Record<string, string | number | null>;
 } {
-  const params: Record<string, string | number | null> = {
-    tenantId: scope.tenantId,
-    workspaceId: scope.workspaceId,
-    userId: scope.userId ?? null,
-  };
-  const ownerClause = scope.userId
-    ? `${alias}.created_by = @userId`
-    : `${alias}.created_by IS NULL`;
   return {
     sql: [
-      `${alias}.tenant_id = @tenantId`,
-      `${alias}.workspace_id = @workspaceId`,
-      `(${alias}.visibility = 'workspace' OR ${alias}.created_by IS NULL OR ${ownerClause})`,
+      's.tenant_id = @tenantId',
+      's.workspace_id = @workspaceId',
+      // Workspace visibility and owner-less rows widen only an unrestricted snapshot.
+      restrictableArtifactAudienceSql('s.', "(s.visibility = 'workspace' OR s.created_by IS NULL)"),
+      ...(options.excludeRestricted ? [unrestrictedPrivateContextSql('s.private_context')] : []),
     ].join(' AND '),
-    params,
+    params: {
+      tenantId: scope.tenantId,
+      workspaceId: scope.workspaceId,
+      ...restrictableArtifactAudienceParams(scope),
+    },
   };
 }
 
@@ -202,6 +223,7 @@ function mapSnapshot(row: SnapshotRow, metrics: NormalizedMetricValue[], evidenc
     ...(row.report_id ? { reportId: row.report_id } : {}),
     ...(row.created_by ? { createdBy: row.created_by } : {}),
     visibility: row.visibility,
+    privateContext: decodePrivateContextColumn(row.private_context),
     sceneType: row.scene_type,
     title: row.title,
     userQuery: row.user_query,
@@ -279,12 +301,14 @@ export class AnalysisResultSnapshotRepository {
           (id, tenant_id, workspace_id, trace_id, session_id, run_id, report_id, created_by,
            visibility, scene_type, title, user_query, trace_label, trace_metadata_json,
            summary_json, conclusion_contract_json, claim_support_json, claim_verification_json,
-           identity_resolutions_json, capability_manifest_json, status, schema_version, created_at, expires_at)
+           identity_resolutions_json, capability_manifest_json, status, schema_version, created_at, expires_at,
+           private_context)
         VALUES
           (@id, @tenantId, @workspaceId, @traceId, @sessionId, @runId, @reportId, @createdBy,
            @visibility, @sceneType, @title, @userQuery, @traceLabel, @traceMetadataJson,
            @summaryJson, @conclusionContractJson, @claimSupportJson, @claimVerificationJson,
-           @identityResolutionsJson, @capabilityManifestJson, @status, @schemaVersion, @createdAt, @expiresAt)
+           @identityResolutionsJson, @capabilityManifestJson, @status, @schemaVersion, @createdAt, @expiresAt,
+           @privateContext)
       `).run({
         id: snapshot.id,
         tenantId: snapshot.tenantId,
@@ -320,6 +344,7 @@ export class AnalysisResultSnapshotRepository {
         schemaVersion: snapshot.schemaVersion,
         createdAt: snapshot.createdAt,
         expiresAt: snapshot.expiresAt ?? null,
+        privateContext: encodePrivateContextColumn(snapshot.privateContext),
       });
 
       const insertMetric = this.db.prepare(`
@@ -386,8 +411,12 @@ export class AnalysisResultSnapshotRepository {
     return snapshot;
   }
 
-  getSnapshot(scope: SnapshotAccessScope, snapshotId: string): AnalysisResultSnapshot | null {
-    const where = readableClause(scope);
+  getSnapshot(
+    scope: SnapshotAccessScope,
+    snapshotId: string,
+    options: SnapshotReadOptions = {},
+  ): AnalysisResultSnapshot | null {
+    const where = readableClause(scope, options);
     const row = this.db.prepare<unknown[], SnapshotRow>(`
       SELECT ${snapshotSelectColumns('s', true)}
       FROM analysis_result_snapshots s
@@ -410,7 +439,7 @@ export class AnalysisResultSnapshotRepository {
     scope: SnapshotAccessScope,
     filters: AnalysisResultSnapshotListFilters = {},
   ): AnalysisResultSnapshot[] {
-    const where = readableClause(scope);
+    const where = readableClause(scope, filters);
     const clauses = [where.sql];
     const params: Record<string, string | number | null> = {
       ...where.params,
@@ -454,23 +483,34 @@ export class AnalysisResultSnapshotRepository {
     scope: SnapshotAccessScope,
     snapshotId: string,
     visibility: AnalysisResultVisibility,
-  ): AnalysisResultSnapshot | null {
+  ): SnapshotVisibilityUpdate {
     const where = writableOwnerClause(scope);
-    const result = this.db.prepare(`
-      UPDATE analysis_result_snapshots AS s
-      SET visibility = @visibility
-      WHERE ${where.sql}
-        AND s.id = @snapshotId
-        AND (s.expires_at IS NULL OR s.expires_at > @now)
-    `).run({
-      ...where.params,
-      snapshotId,
-      visibility,
-      now: Date.now(),
-    });
-    if (result.changes === 0) return null;
+    const params = {...where.params, snapshotId, visibility, now: Date.now()};
+    const update = this.db.transaction((): SnapshotVisibilityUpdate['status'] => {
+      const row = this.db.prepare<unknown[], {private_context: number | null}>(`
+        SELECT s.private_context
+        FROM analysis_result_snapshots AS s
+        WHERE ${where.sql}
+          AND s.id = @snapshotId
+          AND (s.expires_at IS NULL OR s.expires_at > @now)
+      `).get(params);
+      if (!row) return 'not_found';
+      // Withdrawing to private is always allowed; sharing a restricted one never.
+      if (visibility !== 'private' && privateContextRestrictsAudience(decodePrivateContextColumn(row.private_context))) {
+        return 'private_context_not_shareable';
+      }
+      this.db.prepare(`
+        UPDATE analysis_result_snapshots AS s
+        SET visibility = @visibility
+        WHERE ${where.sql}
+          AND s.id = @snapshotId
+      `).run(params);
+      return 'updated';
+    }).immediate();
+    if (update !== 'updated') return {status: update};
     this.recordReadAudit(scope, snapshotId, 'analysis_result.visibility_updated', { visibility });
-    return this.getSnapshot(scope, snapshotId);
+    const snapshot = this.getSnapshot(scope, snapshotId);
+    return snapshot ? {status: 'updated', snapshot} : {status: 'not_found'};
   }
 
   upsertMetrics(

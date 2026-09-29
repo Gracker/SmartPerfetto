@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../enterpriseDb';
+import { persistAnalysisRunState } from '../analysisRunStore';
 import {
   CLAUDE_SESSION_MAP_RUNTIME_TYPE,
   deleteClaudeSessionMapRuntimeSnapshot,
@@ -13,6 +14,7 @@ import {
   loadClaudeSessionMapFromRuntimeSnapshots,
   saveClaudeSessionMapToRuntimeSnapshots,
 } from '../runtimeSnapshotStore';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 
@@ -66,8 +68,32 @@ afterEach(async () => {
 });
 
 describe('runtime snapshot store', () => {
+  it('fixes the run marker when a runtime snapshot creates the run row before its lifecycle', () => {
+    saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: {codebase: false, knowledge: true},
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+      userId: 'user-a',
+      sessionId: 'session-order',
+      runId: 'run-order',
+      traceId: 'trace-a',
+    }, 'session-order', {sdkSessionId: 'sdk-order', updatedAt: 1_700_000_000_000});
+    persistAnalysisRunState({tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a',
+      sessionId: 'session-order', runId: 'run-order', traceId: 'trace-a',
+      privateContext: {codebase: false, knowledge: true}}, 'completed');
+
+    const db = openEnterpriseDb(dbPath);
+    try {
+      expect(db.prepare('SELECT private_context, status FROM analysis_runs WHERE id = ?').get('run-order'))
+        .toEqual({private_context: 2, status: 'completed'});
+    } finally {
+      db.close();
+    }
+  });
+
   it('stores Claude session maps in runtime_snapshots with enterprise graph rows', () => {
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -108,6 +134,7 @@ describe('runtime snapshot store', () => {
 
   it('loads the latest non-stale entry per session map key', () => {
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       sessionId: 'session-a',
@@ -118,6 +145,7 @@ describe('runtime snapshot store', () => {
       updatedAt: 1_700_000_000_000,
     });
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       sessionId: 'session-a',
@@ -128,6 +156,7 @@ describe('runtime snapshot store', () => {
       updatedAt: 1_700_000_010_000,
     });
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       sessionId: 'session-stale',
@@ -153,6 +182,7 @@ describe('runtime snapshot store', () => {
 
   it('deletes all Claude session map rows for a SmartPerfetto session', () => {
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       sessionId: 'session-a',
@@ -163,6 +193,7 @@ describe('runtime snapshot store', () => {
       updatedAt: 1_700_000_000_000,
     });
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       sessionId: 'session-a',
@@ -179,6 +210,7 @@ describe('runtime snapshot store', () => {
 
   it('deletes only one Claude session map row by session map key', () => {
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       sessionId: 'session-a',
@@ -189,6 +221,7 @@ describe('runtime snapshot store', () => {
       updatedAt: 1_700_000_000_000,
     });
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       sessionId: 'session-a',

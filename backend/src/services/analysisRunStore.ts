@@ -5,6 +5,11 @@
 import type Database from 'better-sqlite3';
 import { openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
+import {
+  decodePrivateContextColumn,
+  encodePrivateContextColumn,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
 
 export type PersistedAnalysisRunStatus =
   | 'pending'
@@ -21,6 +26,11 @@ export interface AnalysisRunPersistenceScope extends EnterpriseRepositoryScope {
   traceId: string;
   query?: string;
   mode?: string;
+  /**
+   * The run's authorized private material, written with the run row by
+   * whichever store creates it first and never rewritten.
+   */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 export interface AnalysisRunLifecycle {
@@ -76,6 +86,57 @@ export function resetAnalysisRunStoreForTests(): void {
   singletonDb?.close();
   singletonDb = null;
   singletonDbPath = null;
+}
+
+export interface AnalysisRunRowSeed {
+  id: string;
+  tenantId: string;
+  workspaceId: string;
+  sessionId: string;
+  mode: string;
+  status: string;
+  question: string;
+  startedAt: number;
+  completedAt?: number | null;
+  heartbeatAt?: number | null;
+  updatedAt?: number | null;
+  privateContext: AnalysisPrivateContextMarker;
+}
+
+/**
+ * The one writer of new analysis_runs rows. Several stores may create a run's
+ * row first; whichever does fixes its private-context marker, which nothing
+ * rewrites afterwards.
+ */
+export function insertAnalysisRunIfMissing(db: Database.Database, row: AnalysisRunRowSeed): void {
+  db.prepare(`
+    INSERT OR IGNORE INTO analysis_runs
+      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at,
+       heartbeat_at, updated_at, private_context)
+    VALUES
+      (@id, @tenantId, @workspaceId, @sessionId, @mode, @status, @question, @startedAt, @completedAt,
+       @heartbeatAt, @updatedAt, @privateContext)
+  `).run({
+    ...row,
+    completedAt: row.completedAt ?? null,
+    heartbeatAt: row.heartbeatAt ?? null,
+    updatedAt: row.updatedAt ?? null,
+    privateContext: encodePrivateContextColumn(row.privateContext),
+  });
+}
+
+/** The run's marker; a missing run is unknown. */
+export function getAnalysisRunPrivateContext(
+  scope: EnterpriseRepositoryScope,
+  runId: string,
+): AnalysisPrivateContextMarker {
+  const row = getAnalysisRunDb().prepare<unknown[], {private_context: number | null}>(`
+    SELECT private_context
+    FROM analysis_runs
+    WHERE tenant_id = ? AND workspace_id = ? AND id = ?
+    LIMIT 1
+  `).get(scope.tenantId, scope.workspaceId, runId);
+  return decodePrivateContextColumn(row?.private_context);
 }
 
 function isTerminalStatus(status: string): boolean {
@@ -143,22 +204,19 @@ function ensureAnalysisRunGraph(
     now,
   );
 
-  db.prepare(`
-    INSERT OR IGNORE INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at, heartbeat_at, updated_at)
-    VALUES
-      (?, ?, ?, ?, ?, 'running', ?, ?, NULL, ?, ?)
-  `).run(
-    scope.runId,
-    scope.tenantId,
-    scope.workspaceId,
-    scope.sessionId,
-    scope.mode ?? 'agent',
-    scope.query ?? '',
-    now,
-    now,
-    now,
-  );
+  insertAnalysisRunIfMissing(db, {
+    id: scope.runId,
+    tenantId: scope.tenantId,
+    workspaceId: scope.workspaceId,
+    sessionId: scope.sessionId,
+    mode: scope.mode ?? 'agent',
+    status: 'running',
+    question: scope.query ?? '',
+    startedAt: now,
+    heartbeatAt: now,
+    updatedAt: now,
+    privateContext: scope.privateContext,
+  });
 }
 
 export function persistAnalysisRunState(

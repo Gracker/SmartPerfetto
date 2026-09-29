@@ -6,12 +6,16 @@ import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
+import { insertAnalysisRunIfMissing } from './analysisRunStore';
+import type { AnalysisPrivateContextMarker } from './security/analysisPrivateContext';
 
 export interface AgentEventPersistenceScope extends EnterpriseRepositoryScope {
   sessionId: string;
   runId: string;
   traceId: string;
   query?: string;
+  /** Written with the run row by whichever store creates it first. */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 export interface SerializedAgentEvent {
@@ -108,19 +112,17 @@ function ensureAgentEventGraph(
     now,
   );
 
-  db.prepare(`
-    INSERT OR IGNORE INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at)
-    VALUES
-      (?, ?, ?, ?, 'agent', 'running', ?, ?, NULL)
-  `).run(
-    scope.runId,
-    scope.tenantId,
-    scope.workspaceId,
-    scope.sessionId,
-    scope.query ?? '',
-    now,
-  );
+  insertAnalysisRunIfMissing(db, {
+    id: scope.runId,
+    tenantId: scope.tenantId,
+    workspaceId: scope.workspaceId,
+    sessionId: scope.sessionId,
+    mode: 'agent',
+    status: 'running',
+    question: scope.query ?? '',
+    startedAt: now,
+    privateContext: scope.privateContext,
+  });
 }
 
 function terminalStatusForEvent(eventType: string, eventData?: string): 'completed' | 'failed' | 'cancelled' | 'quota_exceeded' | null {

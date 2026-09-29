@@ -17,6 +17,7 @@ import {
   resetAgentEventStoreForTests,
   type AgentEventPersistenceScope,
 } from '../agentEventStore';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 
@@ -39,6 +40,7 @@ function scope(overrides: Partial<AgentEventPersistenceScope> = {}): AgentEventP
     runId: 'run-a',
     traceId: 'trace-a',
     query: 'why is this trace slow?',
+    privateContext: NO_PRIVATE_CONTEXT,
     ...overrides,
   };
 }
@@ -116,6 +118,23 @@ describe('agent event store', () => {
       expect(db.prepare('SELECT status FROM analysis_sessions WHERE id = ?').get('session-a')).toEqual({
         status: 'completed',
       });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('writes the run\'s private-context marker when an event creates the run row', () => {
+    persistSerializedAgentEvent(scope({runId: 'run-knowledge', privateContext: {codebase: false, knowledge: true}}), {
+      cursor: 1,
+      eventType: 'progress',
+      eventData: JSON.stringify({message: 'started'}),
+      createdAt: 1_777_000_001_000,
+    });
+
+    const db = openEnterpriseDb();
+    try {
+      expect(db.prepare('SELECT private_context FROM analysis_runs WHERE id = ?').get('run-knowledge'))
+        .toEqual({private_context: 2});
     } finally {
       db.close();
     }

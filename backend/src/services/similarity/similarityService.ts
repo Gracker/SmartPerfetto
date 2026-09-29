@@ -15,6 +15,7 @@ import type {
 import type {
   AnalysisResultSnapshotListFilters,
   SnapshotAccessScope,
+  SnapshotReadOptions,
 } from '../analysisResultSnapshotStore';
 import type { CaseLibrary } from '../caseLibrary';
 import {
@@ -35,11 +36,15 @@ export interface TraceSimilarityServiceDeps {
 }
 
 export interface TraceSimilaritySnapshotRepository {
-  getSnapshot(scope: SnapshotAccessScope, snapshotId: string): AnalysisResultSnapshot | null;
+  getSnapshot(
+    scope: SnapshotAccessScope,
+    snapshotId: string,
+    options?: SnapshotReadOptions,
+  ): AnalysisResultSnapshot | null;
   listSnapshots(scope: SnapshotAccessScope, filters?: AnalysisResultSnapshotListFilters): AnalysisResultSnapshot[];
 }
 
-export interface FindTraceSimilarityInput {
+export interface FindTraceSimilarityInput extends SnapshotReadOptions {
   scope: SnapshotAccessScope;
   knowledgeScope?: KnowledgeScope;
   snapshotId: string;
@@ -65,12 +70,13 @@ export function createTraceSimilarityService(
 } {
   return {
     findSimilarAnalysisResult(input: FindTraceSimilarityInput): TraceSimilarityResultV1 | null {
-      const currentSnapshot = deps.snapshotRepository.getSnapshot(input.scope, input.snapshotId);
+      const readOptions = {excludeRestricted: input.excludeRestricted};
+      const currentSnapshot = deps.snapshotRepository.getSnapshot(input.scope, input.snapshotId, readOptions);
       if (!currentSnapshot) return null;
       const limit = boundedSimilarityLimit(input.limit);
       const outputLanguage = input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
       const signature = buildTraceSimilaritySignature(currentSnapshot);
-      const candidates = collectCandidateSnapshots(deps.snapshotRepository, input.scope, currentSnapshot);
+      const candidates = collectCandidateSnapshots(deps.snapshotRepository, input.scope, currentSnapshot, readOptions);
       const snapshotHints = rankSnapshotSimilarityHints({
         currentSnapshot,
         currentSignature: signature,
@@ -109,12 +115,14 @@ function collectCandidateSnapshots(
   repository: TraceSimilaritySnapshotRepository,
   scope: SnapshotAccessScope,
   currentSnapshot: AnalysisResultSnapshot,
+  readOptions: SnapshotReadOptions,
 ): AnalysisResultSnapshot[] {
   const byId = new Map<string, AnalysisResultSnapshot>();
   for (const candidate of repository.listSnapshots(scope, {
     sceneType: currentSnapshot.sceneType,
     includeConclusionContract: true,
     limit: SNAPSHOT_CANDIDATE_LIMIT,
+    ...readOptions,
   })) {
     byId.set(candidate.id, candidate);
   }
@@ -122,6 +130,7 @@ function collectCandidateSnapshots(
     for (const candidate of repository.listSnapshots(scope, {
       includeConclusionContract: true,
       limit: SNAPSHOT_CANDIDATE_LIMIT,
+      ...readOptions,
     })) {
       byId.set(candidate.id, candidate);
     }

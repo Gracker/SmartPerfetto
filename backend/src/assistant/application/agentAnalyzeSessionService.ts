@@ -45,6 +45,7 @@ import {
   registerSessionBackgroundKnowledgeReferences,
 } from '../../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
 import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
+import type {AnalysisPrivateContextMarker} from '../../services/security/analysisPrivateContext';
 
 export interface AnalyzeSessionConversationStep {
   eventId: string;
@@ -79,6 +80,12 @@ export interface AnalyzeSessionRunContext {
   completedAt?: number;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'quota_exceeded';
   error?: string;
+  /**
+   * Fixed at admission from the selection this run was authorized with. The
+   * session's selection moves on with the next run; artifacts of this run do not.
+   * A run restored without a recorded marker is 'unknown'.
+   */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 export interface AnalyzeManagedSession extends ManagedAssistantSession {

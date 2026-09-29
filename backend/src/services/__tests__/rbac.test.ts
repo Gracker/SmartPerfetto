@@ -2,16 +2,22 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { RequestContext } from '../../middleware/auth';
+import {
+  DEFAULT_DEV_USER_ID,
+  DEFAULT_TENANT_ID,
+  DEFAULT_WORKSPACE_ID,
+  type RequestContext,
+} from '../../middleware/auth';
 import {
   canCreateAnalysisResultResource,
-  canReadAnalysisResultResource,
   canShareAnalysisResultResource,
   canDeleteTraceResource,
+  canReadReportResource,
   canReadTraceResource,
   hasRbacPermission,
   sharesWorkspaceWithContext,
 } from '../rbac';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 function context(role: string, scopes: string[] = []): RequestContext {
   return {
@@ -124,17 +130,44 @@ describe('enterprise RBAC matrix', () => {
       userId: 'peer-user',
       visibility: 'private',
     };
-    const peerWorkspaceResult = {
-      ...peerPrivateResult,
-      visibility: 'workspace',
-    };
 
     expect(canCreateAnalysisResultResource(analyst)).toBe(true);
     expect(canCreateAnalysisResultResource(viewer)).toBe(false);
-    expect(canReadAnalysisResultResource(ownPrivateResult, analyst)).toBe(true);
-    expect(canReadAnalysisResultResource(peerPrivateResult, analyst)).toBe(false);
-    expect(canReadAnalysisResultResource(peerWorkspaceResult, viewer)).toBe(true);
     expect(canShareAnalysisResultResource(ownPrivateResult, analyst)).toBe(true);
     expect(canShareAnalysisResultResource(peerPrivateResult, analyst)).toBe(false);
+  });
+
+  test('keeps reports of private or unknown analysis context with their creator', () => {
+    const analyst = context('analyst');
+    const viewer = context('viewer');
+    const own = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: analyst.userId};
+    const peer = {...own, userId: 'peer-user'};
+    for (const privateContext of [{codebase: true, knowledge: false}, {codebase: false, knowledge: true},
+      'unknown' as const]) {
+      expect(canReadReportResource({...peer, privateContext}, viewer)).toBe(false);
+      expect(canReadReportResource({...own, privateContext}, analyst)).toBe(true);
+    }
+    expect(canReadReportResource({...peer, privateContext: NO_PRIVATE_CONTEXT}, viewer)).toBe(true);
+    expect(canReadReportResource({...peer, privateContext: NO_PRIVATE_CONTEXT, tenantId: 'tenant-b'}, viewer)).toBe(false);
+  });
+
+  test('treats a local artifact without a recorded creator as the local user\'s own', () => {
+    const local: RequestContext = {tenantId: DEFAULT_TENANT_ID, workspaceId: DEFAULT_WORKSPACE_ID,
+      userId: DEFAULT_DEV_USER_ID, authType: 'dev', roles: ['org_admin'], scopes: ['*'], requestId: 'req-local'};
+    // No owner fields at all: a report or snapshot written before accounts existed.
+    const legacy = {};
+    expect(canReadReportResource({...legacy, privateContext: 'unknown'}, local)).toBe(true);
+  });
+
+  test('admits no account to a restricted artifact whose creator is unknown', () => {
+    const admin = context('org_admin', ['*']);
+    // Never recorded, or nulled when the creating user was deleted.
+    const orphan = {tenantId: 'tenant-a', workspaceId: 'workspace-a'};
+    expect(canReadReportResource({...orphan, privateContext: {codebase: true, knowledge: false}}, admin)).toBe(false);
+    // An account named like the local user is not the local identity.
+    const impostor = {...context('analyst'), userId: DEFAULT_DEV_USER_ID};
+    expect(canReadReportResource({...orphan, privateContext: 'unknown'}, impostor)).toBe(false);
+    // Unrestricted artifacts keep their existing owner-less behaviour.
+    expect(canReadReportResource({...orphan, privateContext: NO_PRIVATE_CONTEXT}, admin)).toBe(true);
   });
 });

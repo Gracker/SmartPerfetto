@@ -9,6 +9,7 @@ import {
   type AnalysisResultSnapshot,
 } from '../../../types/multiTraceComparison';
 import { buildTraceSimilaritySignature } from '../traceSimilaritySignature';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 function snapshot(overrides: Partial<AnalysisResultSnapshot> = {}): AnalysisResultSnapshot {
   return {
@@ -19,6 +20,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot> = {}): AnalysisResu
     sessionId: 'session-a',
     runId: 'run-a',
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'scrolling',
     title: 'Scrolling analysis',
     userQuery: 'why scrolling janks',

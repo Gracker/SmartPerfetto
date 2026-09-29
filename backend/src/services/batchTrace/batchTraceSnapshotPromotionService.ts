@@ -13,6 +13,8 @@ import {
 } from '../../types/multiTraceComparison';
 import type { EnterpriseRepositoryScope } from '../enterpriseRepository';
 import type { AnalysisResultSnapshotRepository } from '../analysisResultSnapshotStore';
+import { insertAnalysisRunIfMissing } from '../analysisRunStore';
+import { NO_PRIVATE_CONTEXT } from '../security/analysisPrivateContext';
 import { toPromotableNormalizedMetrics } from './batchTraceMetricExtractor';
 import type {
   BatchTraceResultV1,
@@ -107,20 +109,20 @@ function ensureBatchSnapshotSession(input: {
     title: `Batch Skill ${input.run.input.skillId}`,
     now: input.now,
   });
-  input.db.prepare(`
-    INSERT OR IGNORE INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question,
-       started_at, completed_at, error_json, heartbeat_at, updated_at)
-    VALUES
-      (@analysisRunId, @tenantId, @workspaceId, @sessionId, 'batch_skill',
-       'completed', @question, @now, @now, NULL, @now, @now)
-  `).run({
-    analysisRunId: input.analysisRunId,
+  insertAnalysisRunIfMissing(input.db, {
+    id: input.analysisRunId,
     tenantId: input.scope.tenantId,
     workspaceId: input.scope.workspaceId,
     sessionId: input.sessionId,
+    mode: 'batch_skill',
+    status: 'completed',
     question: `Batch Skill ${input.run.input.skillId}`,
-    now: input.now,
+    startedAt: input.now,
+    completedAt: input.now,
+    heartbeatAt: input.now,
+    updatedAt: input.now,
+    // A batch runs one Skill over traces and never reads source or knowledge.
+    privateContext: NO_PRIVATE_CONTEXT,
   });
 }
 
@@ -147,6 +149,7 @@ function createSnapshot(input: {
     runId: input.analysisRunId,
     createdBy: input.scope.userId,
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: inferSceneType(input.run.input.skillId),
     title: `Batch Skill result for ${traceLabel}`,
     userQuery: `Batch Skill ${input.run.input.skillId}`,

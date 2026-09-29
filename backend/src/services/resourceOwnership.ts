@@ -9,6 +9,8 @@ import {
   DEFAULT_WORKSPACE_ID,
   type RequestContext,
 } from '../middleware/auth';
+import type { EnterpriseRepositoryScope } from './enterpriseRepository';
+import { unrestrictedPrivateContextSql } from './security/analysisPrivateContext';
 
 export interface ResourceOwnerFields {
   tenantId?: string;
@@ -52,6 +54,47 @@ export function isOwnedByContext(
   return owner.tenantId === context.tenantId
     && owner.workspaceId === context.workspaceId
     && owner.userId === context.userId;
+}
+
+/**
+ * The local single-user identity, which owns everything written without an
+ * account. Only it may claim an artifact whose creator was never recorded.
+ */
+export function isLocalDevRequestContext(context: RequestContext): boolean {
+  return context.authType === 'dev' && context.userId === DEFAULT_DEV_USER_ID;
+}
+
+/**
+ * Creator check for an artifact whose audience is restricted to its creator.
+ * Unlike isOwnedByContext, a missing creator is not read as the dev user:
+ * under accounts it means unknown (never recorded, or the user was deleted
+ * and the reference nulled), and an unknown creator admits no one.
+ */
+export function isRecordedCreatorOf(
+  resource: ResourceOwnerFields | null | undefined,
+  context: RequestContext,
+): boolean {
+  const recorded = Boolean(normalizeOwnerId(resource?.userId ?? resource?.ownerUserId));
+  return isOwnedByContext(resource, context) && (recorded || isLocalDevRequestContext(context));
+}
+
+/**
+ * SQL audience of an artifact a private context can restrict: its recorded
+ * creator (isRecordedCreatorOf) always, and whoever the artifact's own rule
+ * admits only while it is known to be unrestricted (`private_context = 0`).
+ * Scope the statement to the tenant and workspace separately.
+ */
+export function restrictableArtifactAudienceSql(columnPrefix: string, unrestrictedAudienceSql: string): string {
+  const createdBy = `${columnPrefix}created_by`;
+  return `(${createdBy} = @userId OR (${createdBy} IS NULL AND @localDevIdentity = 1) ` +
+    `OR (${unrestrictedPrivateContextSql(`${columnPrefix}private_context`)} AND ${unrestrictedAudienceSql}))`;
+}
+
+export function restrictableArtifactAudienceParams(scope: EnterpriseRepositoryScope): {
+  userId: string | null;
+  localDevIdentity: 0 | 1;
+} {
+  return {userId: scope.userId ?? null, localDevIdentity: scope.localDevIdentity ? 1 : 0};
 }
 
 export function ownersMatch(

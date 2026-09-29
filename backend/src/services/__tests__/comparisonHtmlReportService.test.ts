@@ -8,6 +8,7 @@ import {
 } from '../../types/multiTraceComparison';
 import { renderComparisonHtmlReport } from '../comparisonHtmlReportService';
 import { buildDeterministicComparisonResult } from '../comparisonResultService';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 function snapshot(id: string, startupMs: number): AnalysisResultSnapshot {
   return {
@@ -19,6 +20,7 @@ function snapshot(id: string, startupMs: number): AnalysisResultSnapshot {
     runId: `run-${id}`,
     createdBy: 'user-a',
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: `${id}<script>`,
     userQuery: 'analyze',

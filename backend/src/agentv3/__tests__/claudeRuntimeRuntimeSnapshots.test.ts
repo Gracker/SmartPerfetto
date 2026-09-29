@@ -65,6 +65,7 @@ import {renderConclusionContractSidecar} from '../../agent/core/conclusionContra
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 function declaredCandidate(body: string): string {
   return `${body}\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
@@ -382,6 +383,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
   it('loads SDK session mappings from runtime_snapshots on construction', () => {
     const now = Date.now();
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -410,6 +412,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
   it('does not expose stale SDK session mappings for persistence', () => {
     const now = 1_700_000_000_000;
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -437,6 +440,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
 
   it('removes enterprise runtime_snapshots rows during session cleanup', () => {
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -461,6 +465,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
 
   it('starts fresh without deleting saved provider metadata for this session or its comparison', async () => {
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
@@ -473,6 +478,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       mode: 'full',
     });
     saveClaudeSessionMapToRuntimeSnapshots({
+      privateContext: NO_PRIVATE_CONTEXT,
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',

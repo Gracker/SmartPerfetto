@@ -303,6 +303,7 @@ describe('source provenance output surface matrix', () => {
         sessionId: result.sessionId,
         runId: 'run-source-surfaces',
         traceId: 'trace-source-surfaces',
+        privateContext: {codebase: true, knowledge: false},
       });
 
       const paths = computePaths(cliHome);
@@ -401,7 +402,7 @@ describe('source provenance output surface matrix', () => {
         claimVerificationResult: result.claimVerificationResult,
         identityResolutions: result.identityResolutions,
         dataEnvelopes: [envelope],
-        privateKnowledge: true,
+        privateContext: {codebase: true, knowledge: false},
         outputLanguage: 'en',
         confidence: result.confidence,
       });

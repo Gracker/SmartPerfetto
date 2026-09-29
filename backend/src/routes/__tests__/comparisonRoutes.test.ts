@@ -25,9 +25,12 @@ import { openEnterpriseDb } from '../../services/enterpriseDb';
 import { createAnalysisResultSnapshotRepository } from '../../services/analysisResultSnapshotStore';
 import comparisonRoutes from '../comparisonRoutes';
 import { reportStore } from '../reportRoutes';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import { backendLogPath } from '../../runtimePaths';
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const originalComparisonAiDisabled = process.env.SMARTPERFETTO_COMPARISON_AI_DISABLED;
+const originalLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
 
 let tempDir: string;
 let dbPath: string;
@@ -118,6 +121,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot>): AnalysisResultSna
     runId: 'run-a',
     createdBy: DEFAULT_DEV_USER_ID,
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: id,
     userQuery: 'analyze startup',
@@ -198,6 +202,8 @@ beforeEach(async () => {
   dbPath = path.join(tempDir, 'enterprise.db');
   process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH = dbPath;
   process.env.SMARTPERFETTO_COMPARISON_AI_DISABLED = 'true';
+  // Comparison reports land in the backend log directory; keep them in this test's directory.
+  process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(tempDir, 'logs');
   reportStore.clear();
   seedGraph();
 });
@@ -205,11 +211,45 @@ beforeEach(async () => {
 afterEach(async () => {
   restoreEnvValue('SMARTPERFETTO_ENTERPRISE_DB_PATH', originalDbPath);
   restoreEnvValue('SMARTPERFETTO_COMPARISON_AI_DISABLED', originalComparisonAiDisabled);
+  restoreEnvValue('SMARTPERFETTO_BACKEND_LOG_DIR', originalLogDir);
   reportStore.clear();
   await fs.rm(tempDir, { recursive: true, force: true });
 });
 
 describe('comparison routes', () => {
+  test('carries a private input snapshot\'s audience to the comparison and its report', async () => {
+    const db = openEnterpriseDb(dbPath);
+    try {
+      createAnalysisResultSnapshotRepository(db).createSnapshot(snapshot({
+        id: 'snapshot-private',
+        traceId: 'trace-b',
+        sessionId: 'session-b',
+        runId: 'run-b',
+        privateContext: {codebase: false, knowledge: true},
+        metrics: metrics({ startupMs: 900, fps: 60, jankRate: 3 }),
+      }));
+    } finally {
+      db.close();
+    }
+
+    const createResponse = await request(app())
+      .post('/api/workspaces/workspace-a/comparisons')
+      .set('x-tenant-id', DEFAULT_TENANT_ID)
+      .send({baselineSnapshotId: 'snapshot-a', candidateSnapshotIds: ['snapshot-private'], query: 'compare'})
+      .expect(201);
+
+    const comparison = createResponse.body.comparison;
+    expect(comparison.privateContext).toEqual({codebase: false, knowledge: true});
+    expect(reportStore.get(comparison.result.reportId)?.privateContext).toEqual({codebase: false, knowledge: true});
+    const stored = openEnterpriseDb(dbPath);
+    try {
+      expect(stored.prepare('SELECT private_context FROM multi_trace_comparison_runs WHERE id = ?')
+        .get(comparison.id)).toEqual({private_context: 2});
+    } finally {
+      stored.close();
+    }
+  });
+
   test('creates completed startup/fps/jank comparison result for two readable snapshots', async () => {
     const createResponse = await request(app())
       .post('/api/workspaces/workspace-a/comparisons')
@@ -591,6 +631,41 @@ describe('comparison routes', () => {
     expect(exportResponse.text).toContain(`data-comparison-id="${comparisonId}"`);
     expect(exportResponse.text).toContain('Metric Delta Matrix');
     expect(exportResponse.text).toContain('export this comparison');
+  });
+
+  test('completes the comparison without a report when the report cannot be saved', async () => {
+    // The module object itself: reportRoutes reads its namespace binding at call time.
+    const nodeFs = require('fs') as typeof import('fs');
+    const realOpen = nodeFs.openSync;
+    const spy = jest.spyOn(nodeFs, 'openSync').mockImplementation(((file: unknown, ...rest: unknown[]) => {
+      if (/comparison-report-.*\.html$/u.test(String(file))) throw new Error('disk full');
+      return (realOpen as (...args: unknown[]) => number)(file, ...rest);
+    }) as typeof nodeFs.openSync);
+    let createResponse: request.Response;
+    try {
+      createResponse = await request(app())
+        .post('/api/workspaces/workspace-a/comparisons')
+        .set('x-tenant-id', DEFAULT_TENANT_ID)
+        .send({baselineSnapshotId: 'snapshot-a', candidateSnapshotIds: ['snapshot-b'], query: 'compare without report'})
+        .expect(201);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const comparison = createResponse.body.comparison;
+    expect(comparison.status).toBe('completed');
+    expect(comparison.result.matrix.rows.length).toBeGreaterThan(0);
+    expect(comparison.result).not.toHaveProperty('reportId');
+    expect(comparison.result).not.toHaveProperty('reportUrl');
+    // The failed write left nothing claiming a report id.
+    expect(nodeFs.readdirSync(backendLogPath('reports'))
+      .filter(file => file.startsWith(`comparison-report-${comparison.id}-`))).toEqual([]);
+
+    const exportResponse = await request(app())
+      .get(`/api/workspaces/workspace-a/comparisons/${comparison.id}/report/export`)
+      .set('x-tenant-id', DEFAULT_TENANT_ID)
+      .expect(200);
+    expect(exportResponse.text).toContain('compare without report');
   });
 
   test('rejects baseline switch outside comparison inputs', async () => {

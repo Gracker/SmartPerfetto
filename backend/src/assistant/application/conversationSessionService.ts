@@ -23,6 +23,10 @@ import {
 } from './conversationSourceEnrichmentCoordinator';
 import type {PrimaryConversationSourceUse} from '../runtime/conversationSourcePolicy';
 import {buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
+import {
+  resolveAnalysisPrivateContext,
+  type AnalysisPrivateContextMarker,
+} from '../../services/security/analysisPrivateContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {
   buildReviewNotFinishedResult,
@@ -126,6 +130,8 @@ export interface ConversationRun {
   sourceUseMode?: PrimaryConversationSourceUse;
   sourceEnrichmentPending?: boolean;
   sourceEnrichment?: ConversationSourceEnrichmentState;
+  /** Fixed at admission from the selection this run was authorized with; restored runs are 'unknown'. */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 export interface ConversationSession extends ManagedAssistantSession {
@@ -359,7 +365,7 @@ export class ConversationSessionService {
       turnIndex: descriptor.lastRun.turnIndex, status: descriptor.lastRun.status === 'cancelled' ? 'cancelled' : 'completed',
       sourceUseMode: descriptor.lastRun.sourceDerived ? 'explicit' : 'dormant',
       startedAt: descriptor.lastRun.startedAt, completedAt: descriptor.lastRun.completedAt, outcome,
-      completion: Promise.resolve(outcome), lifecycleSettled: true, events: []});
+      completion: Promise.resolve(outcome), lifecycleSettled: true, events: [], privateContext: 'unknown'});
     this.sessions.setSession(session.sessionId, session);
     return session;
   }
@@ -538,6 +544,7 @@ export class ConversationSessionService {
       completion: Promise.resolve({kind: 'cancelled', message: ''}),
       events: [],
       sourceUseMode,
+      privateContext: resolveAnalysisPrivateContext(session),
     };
     const authorizationSelection = {codeAwareMode: session.codeAwareMode,
       codebaseIds: session.codebaseIds ? [...session.codebaseIds] : undefined,

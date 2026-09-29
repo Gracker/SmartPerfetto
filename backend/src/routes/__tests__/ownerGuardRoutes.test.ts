@@ -19,6 +19,7 @@ import {
   registerCodeAwareCanary,
   registerPrivateAnalysisQueryForEcho,
 } from '../../services/security/codeAwareOutputRegistry';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalUploadDir = process.env.UPLOAD_DIR;
@@ -245,6 +246,7 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('own-report', {
       html: '<html><body>own report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'own-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
@@ -253,6 +255,7 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('other-report', {
       html: '<html><body>other report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'other-session',
       tenantId: 'tenant-b',
       workspaceId: 'workspace-a',
@@ -278,6 +281,7 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set(escapedId, {
       html: '<html><body>must not escape</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'unsafe-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
@@ -303,6 +307,7 @@ describe('owner guard for trace and report routes', () => {
       persistReport('../escaped-report', {
         html: '<html><body>must not persist</body></html>',
         generatedAt: Date.now(),
+        privateContext: NO_PRIVATE_CONTEXT,
         sessionId: 'unsafe-session',
       }),
     ).toThrow('Unsafe report id');
@@ -314,6 +319,7 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('report-no-read', {
       html: '<html><body>restricted report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'restricted-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
@@ -337,6 +343,7 @@ describe('owner guard for trace and report routes', () => {
     reportStore.set('peer-report', {
       html: '<html><body>peer report</body></html>',
       generatedAt: Date.now(),
+      privateContext: NO_PRIVATE_CONTEXT,
       sessionId: 'peer-session',
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',

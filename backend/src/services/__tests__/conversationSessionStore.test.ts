@@ -13,12 +13,14 @@ import {openEnterpriseDb, ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import {persistAnalysisRunState, resetAnalysisRunStoreForTests} from '../analysisRunStore';
 import {buildReviewNotFinishedResult} from '../reviewStopHandle';
 import {createAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../agentRuntime/analysisHistory';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 let tmpDir: string;
 let db: Database.Database;
 const owner = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
-const scope = {...owner, sessionId: 'conversation-a', traceId: 'trace-a', runId: 'run-a'};
+const scope = {...owner, sessionId: 'conversation-a', traceId: 'trace-a', runId: 'run-a',
+  privateContext: NO_PRIVATE_CONTEXT};
 function descriptor(): ConversationSessionDescriptor {
   return {version: 1, ...owner, sessionId: scope.sessionId, traceContext: {kind: 'attached', traceId: scope.traceId},
     providerId: 'provider-a', providerFollowsActive: false, runtimeKind: 'openai-agents-sdk', providerSnapshotHash: 'hash-a',

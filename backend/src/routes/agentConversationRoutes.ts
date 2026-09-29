@@ -113,6 +113,7 @@ function runScope(
       ? privateAnalysisQueryMessage(session.outputLanguage ?? configuredOutputLanguage())
       : run.query,
     mode: 'conversation',
+    privateContext: run.privateContext,
   };
 }
 

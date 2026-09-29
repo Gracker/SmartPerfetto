@@ -14,6 +14,7 @@ import {createDataEnvelope} from '../../types/dataContract';
 import {buildEvidenceContract} from '../evidence/evidenceContractBuilder';
 import {runDeterministicClaimVerifier} from '../verifier/deterministicClaimVerifier';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const capabilityManifest: CapabilityManifestAttributionV1 = {
   schemaVersion: 'capability_manifest_attribution@1',
@@ -104,6 +105,7 @@ function snapshot(overrides: Partial<AnalysisResultSnapshot>): AnalysisResultSna
     runId: 'run-a',
     createdBy: 'user-a',
     visibility: 'private',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: id,
     userQuery: 'analyze startup',
@@ -610,12 +612,12 @@ describe('AnalysisResultSnapshotRepository', () => {
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-b',
-    }, 'snapshot-a', 'workspace')).toBeNull();
+    }, 'snapshot-a', 'workspace')).toEqual({status: 'not_found'});
     expect(repo.updateVisibility({
       tenantId: 'tenant-a',
       workspaceId: 'workspace-a',
       userId: 'user-a',
-    }, 'snapshot-a', 'workspace')?.visibility).toBe('workspace');
+    }, 'snapshot-a', 'workspace')).toMatchObject({status: 'updated', snapshot: {visibility: 'workspace'}});
   });
 });
 
@@ -638,5 +640,68 @@ describe('scene report reference JSON round-trip', () => {
       const row = db.prepare('SELECT summary_json FROM analysis_result_snapshots WHERE id = ?').get(value.id) as {summary_json: string};
       expect(JSON.parse(row.summary_json).sceneReport).toEqual(sceneReport);
     } finally {db.close();}
+  });
+});
+
+describe('private-context snapshot audience', () => {
+  const userA = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+  const userB = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-b'};
+  const localDev = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'dev-user-123', localDevIdentity: true};
+  let db: Database.Database;
+  let repo: ReturnType<typeof createAnalysisResultSnapshotRepository>;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    applyEnterpriseMinimalSchema(db);
+    seedGraph(db);
+    repo = createAnalysisResultSnapshotRepository(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  test('keeps a private snapshot with its creator whatever its visibility', () => {
+    repo.createSnapshot(snapshot({id: 'private-source', privateContext: {codebase: true, knowledge: false}}));
+    repo.createSnapshot(snapshot({id: 'public-shared', visibility: 'workspace'}));
+    // A row shared before markers existed: its visibility no longer widens it.
+    repo.createSnapshot(snapshot({id: 'legacy-shared', visibility: 'workspace', privateContext: 'unknown'}));
+    expect(db.prepare('SELECT private_context FROM analysis_result_snapshots WHERE id = ?').get('legacy-shared'))
+      .toEqual({private_context: null});
+
+    expect(repo.getSnapshot(userA, 'private-source')?.privateContext).toEqual({codebase: true, knowledge: false});
+    expect(repo.getSnapshot(userB, 'private-source')).toBeNull();
+    expect(repo.getSnapshot(userB, 'legacy-shared')).toBeNull();
+    expect(repo.getSnapshot(userB, 'public-shared')?.privateContext).toEqual(NO_PRIVATE_CONTEXT);
+    expect(repo.listSnapshots(userB).map(item => item.id)).toEqual(['public-shared']);
+    expect(repo.listSnapshots(userA).map(item => item.id).sort())
+      .toEqual(['legacy-shared', 'private-source', 'public-shared']);
+    // A run without private context reads none of them, not even its owner's.
+    expect(repo.listSnapshots(userA, {excludeRestricted: true}).map(item => item.id)).toEqual(['public-shared']);
+    expect(repo.getSnapshot(userA, 'private-source', {excludeRestricted: true})).toBeNull();
+  });
+
+  test('refuses to share a restricted snapshot but always allows withdrawing one', () => {
+    repo.createSnapshot(snapshot({id: 'private-knowledge', privateContext: {codebase: false, knowledge: true}}));
+    repo.createSnapshot(snapshot({id: 'public-private', visibility: 'private'}));
+
+    expect(repo.updateVisibility(userA, 'private-knowledge', 'workspace'))
+      .toEqual({status: 'private_context_not_shareable'});
+    expect(repo.getSnapshot(userA, 'private-knowledge')?.visibility).toBe('private');
+    expect(repo.updateVisibility(userA, 'private-knowledge', 'private')).toMatchObject({status: 'updated'});
+    expect(repo.updateVisibility(userB, 'private-knowledge', 'workspace')).toEqual({status: 'not_found'});
+    expect(repo.updateVisibility(userA, 'public-private', 'workspace'))
+      .toMatchObject({status: 'updated', snapshot: {visibility: 'workspace'}});
+  });
+
+  test('lets only the local identity claim a restricted snapshot with no recorded creator', () => {
+    repo.createSnapshot(snapshot({id: 'orphan-private', createdBy: undefined, privateContext: 'unknown'}));
+    repo.createSnapshot(snapshot({id: 'orphan-public', createdBy: undefined, visibility: 'private'}));
+
+    expect(repo.getSnapshot(userA, 'orphan-private')).toBeNull();
+    expect(repo.getSnapshot({...userA, userId: 'dev-user-123'}, 'orphan-private')).toBeNull();
+    expect(repo.getSnapshot(localDev, 'orphan-private')?.id).toBe('orphan-private');
+    // An unrestricted owner-less row keeps its existing workspace readability.
+    expect(repo.getSnapshot(userB, 'orphan-public')?.id).toBe('orphan-public');
   });
 });

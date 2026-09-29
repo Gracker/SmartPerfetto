@@ -17,6 +17,7 @@ import {SessionPersistenceService} from '../../../services/sessionPersistenceSer
 import {getDefaultAndroidInternalsPackResolver} from '../../../services/androidInternalsPack/androidInternalsPackResolver';
 import {assertAiFeatureEnabled} from '../../../services/aiCapabilityPolicy';
 import type {SessionLogger} from '../../../services/sessionLogger';
+import {resolveAnalysisPrivateContext} from '../../../services/security/analysisPrivateContext';
 
 type Deps = AnalysisRunDispatchDependencies<AnalysisDispatchSession>;
 
@@ -59,7 +60,7 @@ function fixture(entry: AnalysisRunDispatchInput['entry'] = 'analysis') {
     startSessionRun: jest.fn<Deps['startSessionRun']>((value, query, requestId) => {
       const sequence = ++runSequence;
       const run = {runId: sequence === 1 ? 'run' : `run-${sequence}`, sequence, query, requestId,
-        startedAt: Date.now(), status: 'pending' as const};
+        startedAt: Date.now(), status: 'pending' as const, privateContext: resolveAnalysisPrivateContext(value)};
       value.activeRun = run;
       return run;
     }),

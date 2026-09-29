@@ -125,6 +125,7 @@ import {
   createCodeAwareStreamingTextProjection,
   sanitizeOwnerCodeAwareStructuredTextWithReceipt,
 } from '../../../services/security/codeAwareOutputRegistry';
+import {resolveAnalysisPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -727,6 +728,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         sessionId,
         runId: options.runId,
         traceId,
+        privateContext: resolveAnalysisPrivateContext(options),
       }, sessionMapKey, entry);
     } catch (err) {
       console.warn('[ClaudeRuntime] Failed to persist session map to runtime_snapshots:', diagnosticLogIdentity((err as Error).message));

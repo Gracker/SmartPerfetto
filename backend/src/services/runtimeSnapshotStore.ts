@@ -6,6 +6,8 @@ import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import { openEnterpriseDb } from './enterpriseDb';
 import { createEnterpriseWorkspaceRepository } from './enterpriseRepository';
+import { insertAnalysisRunIfMissing } from './analysisRunStore';
+import type { AnalysisPrivateContextMarker } from './security/analysisPrivateContext';
 
 export const CLAUDE_SESSION_MAP_RUNTIME_TYPE = 'claude-session-map';
 
@@ -24,6 +26,8 @@ export interface RuntimeSnapshotScope {
   sessionId: string;
   runId?: string;
   traceId?: string;
+  /** The run's marker: this store can create the run row before its lifecycle does. */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 interface RuntimeSnapshotRow extends Record<string, unknown> {
@@ -161,18 +165,17 @@ function ensureRuntimeSnapshotGraph(
     now,
     now,
   );
-  db.prepare(`
-    INSERT OR IGNORE INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at)
-    VALUES
-      (?, ?, ?, ?, 'agent', 'running', '', ?, NULL)
-  `).run(
-    runId,
+  insertAnalysisRunIfMissing(db, {
+    id: runId,
     tenantId,
     workspaceId,
     sessionId,
-    now,
-  );
+    mode: 'agent',
+    status: 'running',
+    question: '',
+    startedAt: now,
+    privateContext: scope.privateContext,
+  });
 
   return { tenantId, workspaceId, userId, sessionId, traceId, runId };
 }

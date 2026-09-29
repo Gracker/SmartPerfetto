@@ -19,6 +19,7 @@ import {
   resetAnalysisRunStoreForTests,
   type AnalysisRunPersistenceScope,
 } from '../analysisRunStore';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 const originalDbPath = process.env[ENTERPRISE_DB_PATH_ENV];
 let tmpDir: string;
@@ -40,6 +41,7 @@ function scope(overrides: Partial<AnalysisRunPersistenceScope> = {}): AnalysisRu
     runId: 'run-a',
     traceId: 'trace-a',
     query: 'why is this trace slow?',
+    privateContext: NO_PRIVATE_CONTEXT,
     ...overrides,
   };
 }
@@ -74,6 +76,21 @@ describe('analysis run store', () => {
       expect(db.prepare('SELECT email, display_name, updated_at FROM users WHERE id = ?').get(runScope.userId))
         .toEqual({email: 'real@example.test', display_name: 'Real profile', updated_at: 1500});
     } finally { db.close(); }
+  });
+
+  it('fixes the private-context marker when the run row is created', () => {
+    persistAnalysisRunState(scope({runId: 'run-private', privateContext: {codebase: true, knowledge: true}}), 'running');
+    // A later writer, such as settling from a changed session selection, cannot rewrite it.
+    persistAnalysisRunState(scope({runId: 'run-private', privateContext: NO_PRIVATE_CONTEXT}), 'completed');
+    persistAnalysisRunState(scope({runId: 'run-public'}), 'completed');
+    const db = openEnterpriseDb();
+    try {
+      const marker = (id: string) => db.prepare('SELECT private_context FROM analysis_runs WHERE id = ?').get(id);
+      expect(marker('run-private')).toEqual({private_context: 3});
+      expect(marker('run-public')).toEqual({private_context: 0});
+    } finally {
+      db.close();
+    }
   });
 
   it('persists run lifecycle and heartbeat with workspace scope', () => {

@@ -8,6 +8,7 @@ import {
 } from '../../types/multiTraceComparison';
 import { backfillStandardMetrics } from '../standardMetricBackfillService';
 import type { QueryResult } from '../traceProcessorService';
+import {NO_PRIVATE_CONTEXT} from '../security/analysisPrivateContext';
 
 function snapshot(): AnalysisResultSnapshot {
   return {
@@ -19,6 +20,7 @@ function snapshot(): AnalysisResultSnapshot {
     runId: 'run-a',
     createdBy: 'user-a',
     visibility: 'workspace',
+    privateContext: NO_PRIVATE_CONTEXT,
     sceneType: 'startup',
     title: 'snapshot-a',
     userQuery: 'analyze',

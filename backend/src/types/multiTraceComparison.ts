@@ -246,6 +246,11 @@ export interface AnalysisResultSnapshot {
   reportId?: string;
   createdBy?: string;
   visibility: AnalysisResultVisibility;
+  /**
+   * Fixed when the snapshot is written. A private or unknown context keeps it
+   * with its creator and ignores `visibility: 'workspace'`.
+   */
+  privateContext: import('../services/security/analysisPrivateContext').AnalysisPrivateContextMarker;
   sceneType: AnalysisResultSceneType;
   title: string;
   userQuery: string;
@@ -384,6 +389,8 @@ export interface MultiTraceComparisonRun {
   createdBy?: string;
   inputSnapshotIds: string[];
   baselineSnapshotId?: string;
+  /** Union of the input snapshots' markers, fixed when the comparison is created. */
+  privateContext: import('../services/security/analysisPrivateContext').AnalysisPrivateContextMarker;
   query: string;
   metricKeys?: ComparisonMetricKey[];
   status: MultiTraceComparisonRunStatus;

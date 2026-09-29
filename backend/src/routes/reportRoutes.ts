@@ -48,6 +48,13 @@ import {
   sendForbidden,
   sharesWorkspaceWithContext,
 } from '../services/rbac';
+import {
+  decodePrivateContextColumn,
+  decodePrivateContextJson,
+  encodePrivateContextColumn,
+  type AnalysisPrivateContextMarker,
+} from '../services/security/analysisPrivateContext';
+import { insertAnalysisRunIfMissing } from '../services/analysisRunStore';
 
 const router = express.Router();
 
@@ -139,7 +146,12 @@ type PersistedReport = ResourceOwnerFields & {
   traceId?: string;
   visibility?: string;
   expiresAt?: number | null;
+  /** Fixed when the report is written; decides who may read it. */
+  privateContext: AnalysisPrivateContextMarker;
 };
+
+/** What a store records about a report, without its content. */
+type ReportRecord = Omit<PersistedReport, 'html'>;
 
 const REPORT_CACHE_MAX_ENTRIES = 64;
 const REPORT_CACHE_MAX_BYTES = 32 * 1024 * 1024;
@@ -164,13 +176,14 @@ interface ReportArtifactRow {
   created_by: string | null;
   created_at: number;
   expires_at: number | null;
+  private_context: number | null;
 }
 
 function recordReportAudit(
   context: RequestContext,
   action: 'report.read' | 'report.exported' | 'report.deleted',
   reportId: string,
-  report: PersistedReport,
+  report: ReportRecord,
 ): void {
   recordEnterpriseAuditEventForContext(context, {
     action,
@@ -186,6 +199,14 @@ function recordReportAudit(
 }
 
 const SAFE_REPORT_ID_RE = /^[a-zA-Z0-9._:-]+$/;
+
+function legacyReportMetaPath(reportId: string): string {
+  return path.join(reportsDir(), `${reportId}.meta.json`);
+}
+
+function legacyReportHtmlPath(reportId: string): string {
+  return path.join(reportsDir(), `${reportId}.html`);
+}
 
 function isSafeReportSegment(value: string): boolean {
   return SAFE_REPORT_ID_RE.test(value) && value !== '.' && value !== '..';
@@ -210,8 +231,8 @@ function assertSafeReportSegment(value: string, label: string): string {
   return value;
 }
 
-function reportContentHash(html: string): string {
-  return crypto.createHash('sha256').update(html).digest('hex');
+function reportContentHash(content: string | Buffer): string {
+  return crypto.createHash('sha256').update(content).digest('hex');
 }
 
 function withEnterpriseReportDb<T>(fn: (db: Database.Database) => T): T {
@@ -223,14 +244,17 @@ function withEnterpriseReportDb<T>(fn: (db: Database.Database) => T): T {
   }
 }
 
-function enterpriseReportDir(reportId: string, entry: PersistedReport): string {
-  if (!entry.tenantId || !entry.workspaceId) {
+function enterpriseReportDir(
+  reportId: string,
+  owner: Pick<ResourceOwnerFields, 'tenantId' | 'workspaceId'>,
+): string {
+  if (!owner.tenantId || !owner.workspaceId) {
     throw new Error('Enterprise report persistence requires tenantId and workspaceId');
   }
   return path.join(
     resolveEnterpriseDataRoot(),
-    assertSafeReportSegment(entry.tenantId, 'tenant id'),
-    assertSafeReportSegment(entry.workspaceId, 'workspace id'),
+    assertSafeReportSegment(owner.tenantId, 'tenant id'),
+    assertSafeReportSegment(owner.workspaceId, 'workspace id'),
     'reports',
     assertSafeReportSegment(reportId, 'report id'),
   );
@@ -244,7 +268,7 @@ function fallbackRunId(entry: PersistedReport): string {
   return entry.runId || `run-${entry.sessionId}-report`;
 }
 
-function isReportExpired(entry: PersistedReport, now = Date.now()): boolean {
+function isReportExpired(entry: Pick<ReportRecord, 'expiresAt'>, now = Date.now()): boolean {
   return typeof entry.expiresAt === 'number' && entry.expiresAt <= now;
 }
 
@@ -319,98 +343,225 @@ function ensureEnterpriseReportGraph(
     entry.generatedAt || now,
     now,
   );
-  db.prepare(`
-    INSERT OR IGNORE INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at)
-    VALUES
-      (?, ?, ?, ?, 'report', 'completed', '', ?, ?)
-  `).run(
-    runId,
+  insertAnalysisRunIfMissing(db, {
+    id: runId,
     tenantId,
     workspaceId,
-    entry.sessionId,
-    entry.generatedAt || now,
-    entry.generatedAt || now,
-  );
+    sessionId: entry.sessionId,
+    mode: 'report',
+    status: 'completed',
+    question: '',
+    startedAt: entry.generatedAt || now,
+    completedAt: entry.generatedAt || now,
+    privateContext: entry.privateContext,
+  });
 
   return { traceId, runId };
 }
 
-function persistEnterpriseReport(reportId: string, entry: PersistedReport): void {
-  const reportDir = enterpriseReportDir(reportId, entry);
-  const htmlPath = path.join(reportDir, 'report.html');
-  const metadataPath = path.join(reportDir, 'report.json');
-  fs.mkdirSync(reportDir, { recursive: true });
-  fs.writeFileSync(htmlPath, entry.html, 'utf-8');
-
-  withEnterpriseReportDb((db) => {
-    const { runId } = ensureEnterpriseReportGraph(db, reportId, entry);
-    const createdAt = entry.generatedAt || Date.now();
-    const visibility = entry.visibility || 'private';
-    const contentHash = reportContentHash(entry.html);
-    const expiresAt = resolveEnterpriseRetentionExpiresAt(
-      db,
-      {
-        tenantId: entry.tenantId!,
-        workspaceId: entry.workspaceId!,
-        ...(entry.userId ? { userId: entry.userId } : {}),
-      },
-      'report',
-      createdAt,
-    );
-    entry.expiresAt = expiresAt;
-    db.prepare(`
-      INSERT INTO report_artifacts
-        (id, tenant_id, workspace_id, session_id, run_id, local_path, content_hash, visibility, created_by, created_at, expires_at)
-      VALUES
-        (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET
-        tenant_id = excluded.tenant_id,
-        workspace_id = excluded.workspace_id,
-        session_id = excluded.session_id,
-        run_id = excluded.run_id,
-        local_path = excluded.local_path,
-        content_hash = excluded.content_hash,
-        visibility = excluded.visibility,
-        created_by = excluded.created_by,
-        expires_at = excluded.expires_at
-    `).run(
-      reportId,
-      entry.tenantId,
-      entry.workspaceId,
-      entry.sessionId,
-      runId,
-      htmlPath,
-      contentHash,
-      visibility,
-      entry.userId ?? null,
-      createdAt,
-      expiresAt,
-    );
-
-    fs.writeFileSync(metadataPath, JSON.stringify({
-      reportId,
-      generatedAt: createdAt,
-      sessionId: entry.sessionId,
-      runId,
-      traceId: fallbackTraceId(entry),
-      tenantId: entry.tenantId,
-      workspaceId: entry.workspaceId,
-      userId: entry.userId,
-      visibility,
-      contentHash,
-      expiresAt,
-    }, null, 2));
-  });
+/** Reports are write-once: a second write under an id is refused. */
+export class ReportIdTakenError extends Error {
+  constructor(reportId: string) {
+    super(`report_id_taken:${reportId}`);
+  }
 }
 
-function persistLegacyReport(reportId: string, entry: PersistedReport): void {
-  const dir = reportsDir();
-  fs.mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `${reportId}.html`);
-  fs.writeFileSync(filePath, entry.html, 'utf-8');
-  const metaPath = path.join(dir, `${reportId}.meta.json`);
-  fs.writeFileSync(metaPath, JSON.stringify({
+function isPrimaryKeyConflict(error: unknown): boolean {
+  return (error as {code?: unknown} | null)?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY';
+}
+
+/**
+ * Exclusive create: an existing file means the report id is already taken.
+ * Returns the file's identity. The exclusive open makes the file this
+ * writer's own, so a write that fails partway removes what it left rather
+ * than leaving it to hold the id.
+ */
+function writeNewReportFile(reportId: string, filePath: string, content: string): bigint {
+  let fd: number;
+  try {
+    fd = fs.openSync(filePath, 'wx');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') throw new ReportIdTakenError(reportId);
+    throw error;
+  }
+  let identity: bigint | undefined;
+  try {
+    try {
+      identity = fs.fstatSync(fd, { bigint: true }).ino;
+      fs.writeFileSync(fd, content, 'utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (error) {
+    releaseQuietly(reportId, () => removeOwnFile(filePath, identity));
+    throw error;
+  }
+  return identity;
+}
+
+/**
+ * Removes a file only while it is still the one this writer created: a path
+ * can be deleted and created again by another writer in the meantime.
+ */
+function removeOwnFile(filePath: string, identity: bigint | undefined): void {
+  if (identity !== undefined && fs.statSync(filePath, { bigint: true, throwIfNoEntry: false })?.ino === identity) {
+    fs.rmSync(filePath, { force: true });
+  }
+}
+
+/**
+ * Undo a partial write; a failed undo must not hide the failure that caused
+ * it. The warning names the report, so leftovers can be traced and removed.
+ */
+function releaseQuietly(reportId: string, release: () => unknown): void {
+  try {
+    release();
+  } catch (error) {
+    console.warn(`[ReportRoutes] Failed to release a partial write of report ${reportId}:`, (error as Error).message);
+  }
+}
+
+/**
+ * The content a record authorizes. The file's bytes must hash to the record,
+ * so a partial write, or an id deleted and re-created under a reader, is never
+ * served. Records from before hashes were kept carry none; any value present
+ * must match. Null when the file is missing or is not the record's own.
+ */
+function readContentOfRecord(filePath: string, recordedHash: unknown): string | null {
+  let bytes: Buffer;
+  try {
+    bytes = fs.readFileSync(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw error;
+  }
+  if (recordedHash !== undefined && recordedHash !== null && recordedHash !== reportContentHash(bytes)) {
+    return null;
+  }
+  return bytes.toString('utf-8');
+}
+
+function removeDirIfEmpty(dir: string): void {
+  try {
+    fs.rmdirSync(dir);
+  } catch { /* not empty, or already gone */ }
+}
+
+/** One write's own directory, then the report's directory once no write is left in it. */
+function removeWriteDir(contentDir: string, reportDir: string): void {
+  fs.rmSync(contentDir, { recursive: true, force: true });
+  removeDirIfEmpty(reportDir);
+}
+
+/** Removes the row only while it still publishes the write whose content is at `localPath`. */
+function unpublishReportRow(db: Database.Database, reportId: string, localPath: string): void {
+  db.prepare('DELETE FROM report_artifacts WHERE id = ? AND local_path = ?').run(reportId, localPath);
+}
+
+/**
+ * Removes the files an enterprise row points at: the directory of the write
+ * that produced them, or only the known files when the row has another
+ * layout. A directory is never removed on the strength of a path this module
+ * did not lay out. Throws when the content cannot be removed.
+ */
+function removeEnterpriseReportFiles(row: ReportArtifactRow): void {
+  const contentDir = path.dirname(row.local_path);
+  let reportDir: string | undefined;
+  try {
+    reportDir = enterpriseReportDir(row.id, { tenantId: row.tenant_id, workspaceId: row.workspace_id });
+  } catch { /* unsafe segments: not a layout this module created */ }
+  if (reportDir !== undefined && path.dirname(contentDir) === reportDir) {
+    removeWriteDir(contentDir, reportDir);
+    return;
+  }
+  fs.rmSync(row.local_path, { force: true });
+  // Reports written before per-write directories kept their files directly in the report directory.
+  if (contentDir === reportDir) {
+    fs.rmSync(path.join(contentDir, 'report.json'), { force: true });
+    removeDirIfEmpty(contentDir);
+  }
+}
+
+/**
+ * Each write keeps its files in a directory of its own, and the row that
+ * claims the id is inserted, with the rows it hangs from, only once they are
+ * complete: a row is a published report, no two writes of an id share a path,
+ * and the row's path identifies the write that owns it. Returns the withdrawal
+ * of this write, for a later store's failure.
+ */
+function persistEnterpriseReport(reportId: string, entry: PersistedReport): () => void {
+  const reportDir = enterpriseReportDir(reportId, entry);
+  const contentDir = path.join(reportDir, crypto.randomUUID());
+  const htmlPath = path.join(contentDir, 'report.html');
+  const createdAt = entry.generatedAt || Date.now();
+  const visibility = entry.visibility || 'private';
+  const contentHash = reportContentHash(entry.html);
+  const expiresAt = entry.expiresAt ?? null;
+
+  withEnterpriseReportDb((db) => {
+    try {
+      fs.mkdirSync(contentDir, { recursive: true });
+      fs.writeFileSync(path.join(contentDir, 'report.json'), JSON.stringify({
+        reportId,
+        generatedAt: createdAt,
+        sessionId: entry.sessionId,
+        runId: fallbackRunId(entry),
+        traceId: fallbackTraceId(entry),
+        tenantId: entry.tenantId,
+        workspaceId: entry.workspaceId,
+        userId: entry.userId,
+        visibility,
+        contentHash,
+        expiresAt,
+      }, null, 2));
+      fs.writeFileSync(htmlPath, entry.html, 'utf-8');
+      db.transaction(() => {
+        const { runId } = ensureEnterpriseReportGraph(db, reportId, entry);
+        db.prepare(`
+          INSERT INTO report_artifacts
+            (id, tenant_id, workspace_id, session_id, run_id, local_path, content_hash, visibility, created_by, created_at, expires_at, private_context)
+          VALUES
+            (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(
+          reportId,
+          entry.tenantId,
+          entry.workspaceId,
+          entry.sessionId,
+          runId,
+          htmlPath,
+          contentHash,
+          visibility,
+          entry.userId ?? null,
+          createdAt,
+          expiresAt,
+          encodePrivateContextColumn(entry.privateContext),
+        );
+      }).immediate();
+    } catch (error) {
+      releaseQuietly(reportId, () => removeWriteDir(contentDir, reportDir));
+      if (isPrimaryKeyConflict(error)) throw new ReportIdTakenError(reportId);
+      throw error;
+    }
+  });
+  return () => {
+    // The write was reported failed, so it must not become readable in any phase. Either step
+    // alone ensures that: without its row, or without its content. Each is attempted even when
+    // the other fails.
+    releaseQuietly(reportId, () => withEnterpriseReportDb((db) => unpublishReportRow(db, reportId, htmlPath)));
+    releaseQuietly(reportId, () => removeWriteDir(contentDir, reportDir));
+  };
+}
+
+/**
+ * The metadata file, which carries the marker and the content hash, claims the
+ * id first; the content file is written last. Returns the withdrawal of this
+ * write, for a later store's failure.
+ */
+function persistLegacyReport(reportId: string, entry: PersistedReport): () => void {
+  fs.mkdirSync(reportsDir(), { recursive: true });
+  const metaPath = legacyReportMetaPath(reportId);
+  const htmlPath = legacyReportHtmlPath(reportId);
+  const metaIdentity = writeNewReportFile(reportId, metaPath, JSON.stringify({
     generatedAt: entry.generatedAt,
     sessionId: entry.sessionId,
     runId: entry.runId,
@@ -420,38 +571,58 @@ function persistLegacyReport(reportId: string, entry: PersistedReport): void {
     userId: entry.userId,
     visibility: entry.visibility,
     expiresAt: entry.expiresAt,
+    privateContext: entry.privateContext,
+    contentHash: reportContentHash(entry.html),
   }));
+  let htmlIdentity: bigint;
+  try {
+    htmlIdentity = writeNewReportFile(reportId, htmlPath, entry.html);
+  } catch (error) {
+    releaseQuietly(reportId, () => removeOwnFile(metaPath, metaIdentity));
+    throw error;
+  }
+  return () => {
+    removeOwnFile(htmlPath, htmlIdentity);
+    removeOwnFile(metaPath, metaIdentity);
+  };
+}
+
+function readEnterpriseReportRow(db: Database.Database, reportId: string): ReportArtifactRow | undefined {
+  return db.prepare<unknown[], ReportArtifactRow>(`
+    SELECT *
+    FROM report_artifacts
+    WHERE id = ?
+      AND (expires_at IS NULL OR expires_at > ?)
+  `).get(reportId, Date.now());
+}
+
+function enterpriseReportRecord(row: ReportArtifactRow): ReportRecord {
+  return {
+    generatedAt: row.created_at,
+    sessionId: row.session_id,
+    runId: row.run_id,
+    tenantId: row.tenant_id,
+    workspaceId: row.workspace_id,
+    ...(row.created_by ? { userId: row.created_by } : {}),
+    visibility: row.visibility,
+    expiresAt: row.expires_at,
+    privateContext: decodePrivateContextColumn(row.private_context),
+  };
 }
 
 function loadEnterpriseReport(reportId: string): PersistedReport | null {
-  if (!isSafeReportSegment(reportId)) return null;
-  try {
-    return withEnterpriseReportDb((db) => {
-      const row = db.prepare<unknown[], ReportArtifactRow>(`
-        SELECT *
-        FROM report_artifacts
-        WHERE id = ?
-          AND (expires_at IS NULL OR expires_at > ?)
-      `).get(reportId, Date.now());
-      if (!row || !fs.existsSync(row.local_path)) return null;
-      const html = fs.readFileSync(row.local_path, 'utf-8');
-      const entry: PersistedReport = {
-        html: upgradeLegacyReportHtml(html),
-        generatedAt: row.created_at,
-        sessionId: row.session_id,
-        runId: row.run_id,
-        tenantId: row.tenant_id,
-        workspaceId: row.workspace_id,
-        ...(row.created_by ? { userId: row.created_by } : {}),
-        visibility: row.visibility,
-        expiresAt: row.expires_at,
-      };
-      reportStore.set(reportId, entry);
-      return entry;
-    });
-  } catch {
-    return null;
-  }
+  return withEnterpriseReportDb((db) => {
+    const row = readEnterpriseReportRow(db, reportId);
+    const html = row ? readContentOfRecord(row.local_path, row.content_hash) : null;
+    return row && html !== null ? { ...enterpriseReportRecord(row), html: upgradeLegacyReportHtml(html) } : null;
+  });
+}
+
+function loadEnterpriseReportRecord(reportId: string): ReportRecord | null {
+  return withEnterpriseReportDb((db) => {
+    const row = readEnterpriseReportRow(db, reportId);
+    return row ? enterpriseReportRecord(row) : null;
+  });
 }
 
 const LEGACY_MERMAID_UPGRADE_CSS = REPORT_CAUSAL_MAP_CSS;
@@ -583,128 +754,205 @@ router.get('/assets/mermaid.min.js', (_req, res) => {
   });
 });
 
-/** Save a report to disk. Called externally when reports are generated. */
+interface ReportStoreAccess {
+  /** Writes the report; returns the withdrawal of this write, for a later store's failure. */
+  persist(reportId: string, entry: PersistedReport): () => void;
+  /**
+   * Removes the report's content, then its record. Throws on failure, keeping the record so a
+   * retry can finish; the content may already be gone.
+   */
+  remove(reportId: string): boolean;
+  /** The report, when its content is the record's own and it has not expired. */
+  load(reportId: string): PersistedReport | null;
+  /** The record alone, without reading content. */
+  loadRecord(reportId: string): ReportRecord | null;
+}
+
+const ENTERPRISE_REPORT_STORE: ReportStoreAccess = {
+  persist: persistEnterpriseReport,
+  remove: deleteEnterpriseReport,
+  load: loadEnterpriseReport,
+  loadRecord: loadEnterpriseReportRecord,
+};
+
+const LEGACY_REPORT_STORE: ReportStoreAccess = {
+  persist: persistLegacyReport,
+  remove: deleteLegacyReport,
+  load: loadLegacyReport,
+  loadRecord: loadLegacyReportRecord,
+};
+
+/** The store readers use; the migration phase decides it. */
+function readAuthorityStore(): ReportStoreAccess {
+  return enterpriseReportStoreEnabled() ? ENTERPRISE_REPORT_STORE : LEGACY_REPORT_STORE;
+}
+
+/**
+ * Enabled report stores in commit order. Readers use only the read-authority
+ * store, and it comes last: a write makes a report readable at one point, once
+ * every other store holds it, and a deletion removes the other copies first,
+ * so a failed deletion never leaves a copy that only a later phase would read.
+ */
+function reportStoresInCommitOrder(): ReportStoreAccess[] {
+  const authority = readAuthorityStore();
+  const enabled = [
+    ...(enterpriseReportDbWritesEnabled() ? [ENTERPRISE_REPORT_STORE] : []),
+    ...(legacyReportWritesEnabled() ? [LEGACY_REPORT_STORE] : []),
+  ];
+  return [...enabled.filter(store => store !== authority), ...enabled.filter(store => store === authority)];
+}
+
+/**
+ * Retention is a policy of the report, not of one store: every store and the
+ * cache record the same expiry. Only the enterprise database holds policies.
+ */
+function resolveReportExpiresAt(entry: PersistedReport): PersistedReport['expiresAt'] {
+  if (!enterpriseReportDbWritesEnabled() || !entry.tenantId || !entry.workspaceId) return entry.expiresAt;
+  const scope = {
+    tenantId: entry.tenantId,
+    workspaceId: entry.workspaceId,
+    ...(entry.userId ? { userId: entry.userId } : {}),
+  };
+  return withEnterpriseReportDb((db) =>
+    resolveEnterpriseRetentionExpiresAt(db, scope, 'report', entry.generatedAt || Date.now()));
+}
+
+/**
+ * Save a generated report. Reports are write-once: an id is claimed exactly
+ * once in every enabled store, so no reader can pair a report's content with
+ * the audience of a different write. The report lands in every enabled store
+ * or in none; a failure is thrown to the caller after the stores already
+ * written are withdrawn.
+ */
 export function persistReport(reportId: string, entry: PersistedReport): void {
   const safeReportId = assertSafeReportSegment(reportId, 'report id');
-  reportStore.set(safeReportId, entry);
+  const report: PersistedReport = { ...entry, expiresAt: resolveReportExpiresAt(entry) };
+  const withdrawals: Array<() => void> = [];
   try {
-    if (legacyReportWritesEnabled()) {
-      persistLegacyReport(safeReportId, entry);
-    }
-    if (enterpriseReportDbWritesEnabled()) {
-      persistEnterpriseReport(safeReportId, entry);
-    }
-  } catch (err) {
-    console.warn('[ReportRoutes] Failed to persist report to disk:', (err as Error).message);
+    for (const store of reportStoresInCommitOrder()) withdrawals.unshift(store.persist(safeReportId, report));
+  } catch (error) {
+    for (const withdraw of withdrawals) releaseQuietly(safeReportId, withdraw);
+    throw error;
   }
+  reportStore.set(safeReportId, report);
 }
 
 /** Load a report from disk if not in memory cache. */
 function loadReportFromDisk(reportId: string): PersistedReport | null {
-  if (enterpriseReportStoreEnabled()) {
-    return loadEnterpriseReport(reportId);
-  }
-  return loadLegacyReportFromDisk(reportId);
-}
-
-function loadLegacyReportFromDisk(reportId: string): PersistedReport | null {
   if (!isSafeReportSegment(reportId)) return null;
   try {
-    const dir = reportsDir();
-    const filePath = path.join(dir, `${reportId}.html`);
-    if (!fs.existsSync(filePath)) return null;
-
-    const html = fs.readFileSync(filePath, 'utf-8');
-    const metaPath = path.join(dir, `${reportId}.meta.json`);
-    let generatedAt = Date.now();
-    let sessionId = '';
-    let runId: string | undefined;
-    let traceId: string | undefined;
-    let visibility: string | undefined;
-    let expiresAt: number | undefined;
-    let owner: ResourceOwnerFields = {};
-    if (fs.existsSync(metaPath)) {
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-      generatedAt = meta.generatedAt || generatedAt;
-      sessionId = meta.sessionId || '';
-      runId = meta.runId;
-      traceId = meta.traceId;
-      visibility = meta.visibility;
-      expiresAt = typeof meta.expiresAt === 'number' ? meta.expiresAt : undefined;
-      owner = {
-        tenantId: meta.tenantId,
-        workspaceId: meta.workspaceId,
-        userId: meta.userId,
-        ownerUserId: meta.ownerUserId,
-      };
-      if (typeof expiresAt === 'number' && expiresAt <= Date.now()) {
-        return null;
-      }
-    }
-
-    const entry = {
-      html: upgradeLegacyReportHtml(html),
-      generatedAt,
-      sessionId,
-      ...(runId ? { runId } : {}),
-      ...(traceId ? { traceId } : {}),
-      ...(visibility ? { visibility } : {}),
-      ...(typeof expiresAt === 'number' ? { expiresAt } : {}),
-      ...owner,
-    };
+    const report = readAuthorityStore().load(reportId);
     // Cache in memory for subsequent access
-    reportStore.set(reportId, entry);
-    return entry;
+    if (report) reportStore.set(reportId, report);
+    return report;
   } catch {
     return null;
   }
 }
 
+/**
+ * The stored record alone. Deletion is authorized on the record, so a report
+ * whose content cannot be served (a partial write left by a crash) can still
+ * be removed by whoever may delete it.
+ */
+function loadReportRecordFromDisk(reportId: string): ReportRecord | null {
+  if (!isSafeReportSegment(reportId)) return null;
+  try {
+    return readAuthorityStore().loadRecord(reportId);
+  } catch {
+    return null;
+  }
+}
+
+interface LegacyReportRecord {
+  record: ReportRecord;
+  contentHash?: unknown;
+  /** The metadata exists but cannot be read, so no content can be shown to be its own. */
+  unreadable?: true;
+}
+
+/**
+ * A legacy report's record and the content hash it claims; the content itself
+ * is not read. Unreadable metadata (a crash during its write) still yields an
+ * ownerless record, so the report remains deletable and ages out.
+ */
+function readLegacyReportRecord(reportId: string): LegacyReportRecord | null {
+  const metaPath = legacyReportMetaPath(reportId);
+  if (!fs.existsSync(metaPath)) {
+    // Content saved before metadata files existed.
+    return fs.existsSync(legacyReportHtmlPath(reportId))
+      ? { record: { generatedAt: Date.now(), sessionId: '', privateContext: 'unknown' } }
+      : null;
+  }
+  let meta;
+  try {
+    meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
+  } catch {
+    return {
+      record: { generatedAt: fs.statSync(metaPath).mtimeMs, sessionId: '', privateContext: 'unknown' },
+      unreadable: true,
+    };
+  }
+  return {
+    record: {
+      generatedAt: meta.generatedAt || Date.now(),
+      sessionId: meta.sessionId || '',
+      ...(meta.runId ? { runId: meta.runId } : {}),
+      ...(meta.traceId ? { traceId: meta.traceId } : {}),
+      ...(meta.visibility ? { visibility: meta.visibility } : {}),
+      ...(typeof meta.expiresAt === 'number' ? { expiresAt: meta.expiresAt } : {}),
+      tenantId: meta.tenantId,
+      workspaceId: meta.workspaceId,
+      userId: meta.userId,
+      ownerUserId: meta.ownerUserId,
+      privateContext: decodePrivateContextJson(meta.privateContext),
+    },
+    contentHash: meta.contentHash,
+  };
+}
+
+function loadLegacyReport(reportId: string): PersistedReport | null {
+  const stored = readLegacyReportRecord(reportId);
+  if (!stored || stored.unreadable || isReportExpired(stored.record)) return null;
+  const html = readContentOfRecord(legacyReportHtmlPath(reportId), stored.contentHash);
+  return html === null ? null : { ...stored.record, html: upgradeLegacyReportHtml(html) };
+}
+
+function loadLegacyReportRecord(reportId: string): ReportRecord | null {
+  const stored = readLegacyReportRecord(reportId);
+  return stored && !isReportExpired(stored.record) ? stored.record : null;
+}
+
+/** Content first and the claiming metadata last: a failure leaves the record to retry from. */
 function deleteLegacyReport(reportId: string): boolean {
   if (!isSafeReportSegment(reportId)) return false;
-  try {
-    const dir = reportsDir();
-    const htmlPath = path.join(dir, `${reportId}.html`);
-    const metaPath = path.join(dir, `${reportId}.meta.json`);
-    const existed = fs.existsSync(htmlPath) || fs.existsSync(metaPath);
-    if (fs.existsSync(htmlPath)) fs.unlinkSync(htmlPath);
-    if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
-    return existed;
-  } catch {
-    return false;
-  }
+  const htmlPath = legacyReportHtmlPath(reportId);
+  const metaPath = legacyReportMetaPath(reportId);
+  const existed = fs.existsSync(htmlPath) || fs.existsSync(metaPath);
+  fs.rmSync(htmlPath, { force: true });
+  fs.rmSync(metaPath, { force: true });
+  return existed;
 }
 
+/** Content first and the row last: a failure leaves the record to retry from. */
 function deleteEnterpriseReport(reportId: string): boolean {
   if (!isSafeReportSegment(reportId)) return false;
-  try {
-    return withEnterpriseReportDb((db) => {
-      const row = db.prepare<unknown[], ReportArtifactRow>(
-        'SELECT * FROM report_artifacts WHERE id = ?',
-      ).get(reportId);
-      if (!row) return false;
-      db.prepare('DELETE FROM report_artifacts WHERE id = ?').run(reportId);
-      try {
-        const reportDir = path.dirname(row.local_path);
-        const metadataPath = path.join(reportDir, 'report.json');
-        if (fs.existsSync(row.local_path)) fs.unlinkSync(row.local_path);
-        if (fs.existsSync(metadataPath)) fs.unlinkSync(metadataPath);
-        fs.rmSync(reportDir, { recursive: true, force: true });
-      } catch { /* non-fatal */ }
-      return true;
-    });
-  } catch {
-    return false;
-  }
+  return withEnterpriseReportDb((db) => {
+    const row = db.prepare<unknown[], ReportArtifactRow>(
+      'SELECT * FROM report_artifacts WHERE id = ?',
+    ).get(reportId);
+    if (!row) return false;
+    removeEnterpriseReportFiles(row);
+    unpublishReportRow(db, reportId, row.local_path);
+    return true;
+  });
 }
 
+/** Throws when a store cannot remove the report's content; the read-authority copy goes last. */
 function deletePersistedReport(reportId: string): boolean {
   let deleted = false;
-  if (enterpriseReportDbWritesEnabled()) {
-    deleted = deleteEnterpriseReport(reportId) || deleted;
-  }
-  if (legacyReportWritesEnabled()) {
-    deleted = deleteLegacyReport(reportId) || deleted;
+  for (const store of reportStoresInCommitOrder()) {
+    deleted = store.remove(reportId) || deleted;
   }
   return deleted;
 }
@@ -842,15 +1090,10 @@ const reportCleanupInterval = setInterval(() => {
       const files = fs.readdirSync(dir);
       for (const file of files) {
         if (!file.endsWith('.meta.json')) continue;
-        const metaPath = path.join(dir, file);
+        const reportId = file.replace('.meta.json', '');
         try {
-          const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
-          if (meta.generatedAt && now - meta.generatedAt > maxAge) {
-            const reportId = file.replace('.meta.json', '');
-            fs.unlinkSync(metaPath);
-            const htmlPath = path.join(dir, `${reportId}.html`);
-            if (fs.existsSync(htmlPath)) fs.unlinkSync(htmlPath);
-          }
+          const stored = readLegacyReportRecord(reportId);
+          if (stored && now - stored.record.generatedAt > maxAge) deleteLegacyReport(reportId);
         } catch { /* skip individual file errors */ }
       }
     } catch { /* non-fatal */ }
@@ -965,7 +1208,7 @@ router.delete('/:reportId', (req, res) => {
     }
 
     const context = requireRequestContext(req);
-    const report = reportStore.get(reportId) || loadReportFromDisk(reportId);
+    const report = reportStore.get(reportId) || loadReportRecordFromDisk(reportId);
     if (!report || !sharesWorkspaceWithContext(report, context)) {
       return sendResourceNotFound(res, 'Report not found');
     }

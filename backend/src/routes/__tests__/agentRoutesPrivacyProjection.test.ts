@@ -395,6 +395,33 @@ describe('agent route private projections', () => {
     }));
   });
 
+  it('keeps each run on the private context it was admitted with after the session moves on', () => {
+    const session = {
+      sessionId: 'marker-run-binding',
+      traceId: 'trace-marker',
+      tenantId: 'tenant-marker',
+      workspaceId: 'workspace-marker',
+      userId: 'user-marker',
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['cb-private'],
+      knowledgeSourceIds: undefined,
+      conversationSteps: [],
+      logger: {warn: () => undefined, setMetadata: () => undefined},
+    } as any;
+    const first = agentRoutesPrivacyProjectionTestSeam.startSessionRun(session, 'first', 'request-first')!;
+    // The next run is admitted with a public selection; the first run's artifacts are not.
+    session.codeAwareMode = 'off';
+    session.codebaseIds = undefined;
+    const second = agentRoutesPrivacyProjectionTestSeam.startSessionRun(session, 'second', 'request-second')!;
+
+    expect(first.privateContext).toEqual({codebase: true, knowledge: false});
+    expect(second.privateContext).toEqual({codebase: false, knowledge: false});
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, first.runId)?.privateContext)
+      .toEqual({codebase: true, knowledge: false});
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, second.runId)?.privateContext)
+      .toEqual({codebase: false, knowledge: false});
+  });
+
   it('reports private feedback as locally stored without public projection', () => {
     expect(agentRoutesPrivacyProjectionTestSeam.privateFeedbackResponse({
       durable: true,
@@ -647,6 +674,7 @@ describe('agent route private projections', () => {
         query: `run query ${canary}`,
         startedAt: 1,
         status: 'running',
+        privateContext: {codebase: true, knowledge: false},
       },
       logger: {warn: () => undefined},
     } as any;
@@ -675,6 +703,8 @@ describe('agent route private projections', () => {
 
       const db = openEnterpriseDb();
       try {
+        expect(db.prepare('SELECT private_context FROM analysis_runs WHERE id = ?').get('run-private-runtime'))
+          .toEqual({private_context: 1});
         const graph = {
           run: db.prepare('SELECT question, error_json FROM analysis_runs WHERE id = ?')
             .get('run-private-runtime'),

@@ -227,6 +227,10 @@ import {
   sessionUsesPrivateKnowledge,
 } from '../services/security/privateAnalysisProjection';
 import {
+  privateContextRestrictsAudience,
+  resolveAnalysisPrivateContext,
+} from '../services/security/analysisPrivateContext';
+import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
   buildAnalysisContextAuthorizationFingerprint,
@@ -483,6 +487,8 @@ function startSessionRun(
     query,
     startedAt: Date.now(),
     status: 'pending',
+    // The session's selection was set for this run just before admission.
+    privateContext: resolveAnalysisPrivateContext(session),
   };
   session.activeRun = run;
   session.lastRun = run;
@@ -1537,6 +1543,7 @@ function baseAgentEventScopeFromSession(
     query: sessionUsesPrivateKnowledge(session)
       ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
       : run.query || session.query,
+    privateContext: run.privateContext,
   };
 }
 
@@ -3420,7 +3427,8 @@ router.post('/:sessionId/feedback', async (req, res) => {
 
   let store: FeedbackEventStore | null = null;
   try {
-    if (sessionUsesPrivateKnowledge(session)) {
+    // Feedback follows the run it is about, not the session's current selection.
+    if (privateContextRestrictsAudience(targetRun.privateContext)) {
       const persistence =
         getSelfEvolutionLifecycleSnapshot().persistence.persistence ===
         'available';
@@ -7514,6 +7522,8 @@ function ensureCompletedAnalysisFinalArtifacts(
     runId,
   );
   const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  // This run's own marker: a later run may already have moved the session on.
+  const privateContext = resolveSessionRun(session, runId)?.privateContext ?? 'unknown';
   const outputLanguage = sessionOutputLanguage(session);
   const durableResultForClient = privateKnowledge
     ? projectOwnerAnalysisResult(session.sessionId, input.resultForClient, outputLanguage)
@@ -7618,6 +7628,7 @@ function ensureCompletedAnalysisFinalArtifacts(
         workspaceId: session.workspaceId,
         userId: session.userId,
         visibility: 'private',
+        privateContext,
       });
 
       finalArtifacts.reportId = reportId;
@@ -7710,7 +7721,7 @@ function ensureCompletedAnalysisFinalArtifacts(
           : snapshotReceipt,
         traceSummary: session.traceSummary,
         uiActionProposals: durableResultForClient.uiActionProposals,
-        privateKnowledge,
+        privateContext,
         outputLanguage,
       });
       finalArtifacts.resultSnapshotId = resultSnapshot?.id;
@@ -8151,6 +8162,8 @@ const sessionCleanupInterval = setInterval(() => {
 sessionCleanupInterval.unref?.();
 
 export const agentRoutesPrivacyProjectionTestSeam = {
+  startSessionRun,
+  baseAgentEventScopeFromSession,
   ensureCompletedAnalysisSseEvents,
   recoverResultForSessionIfNeeded,
   ensureCompletedAnalysisResultPayload,
