@@ -27,7 +27,6 @@
         "package.json",
         "src/index.ts",
         "src/cli-user/bin.ts",
-        "src/scripts/**/*.ts",
         "src/**/*.test.ts",
         "src/**/__tests__/**/*.ts",
         "tests/**/*.ts"

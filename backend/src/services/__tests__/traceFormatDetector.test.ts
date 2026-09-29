@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import {classifyTraceHead, detectTraceFormat, TRACE_HEAD_SCAN_BYTES} from '../traceFormatDetector';
-import {resolveTraceCase} from '../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../tests/helpers/traceCorpus';
 
 const tempDirs: string[] = [];
 

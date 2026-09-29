@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {createDataEnvelope, type DataEnvelope} from '../../../types/dataContract';
-import {resolveTraceCase} from '../../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../../tests/helpers/traceCorpus';
 import {SkillEvaluator} from '../../../../tests/skill-eval/runner';
 import {produceAnrRelationCandidates} from '../anrRelationCandidateProducer';
 

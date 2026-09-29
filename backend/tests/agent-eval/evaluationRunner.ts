@@ -28,7 +28,7 @@ import { loadScenarios, loadAllScenarios, LoadOptions } from './scenarioLoader';
 import { CodeGrader } from './codeGrader';
 import { ModelGrader, ModelGraderOptions } from './modelGrader';
 import { ProcessGrader } from './processGrader';
-import { resolveTraceCase } from '../../src/utils/traceCorpus';
+import { resolveTraceCase } from '../helpers/traceCorpus';
 
 // Sentinel for catalog-backed default fixture resolution.
 const DEFAULT_TRACE_DIR = path.resolve(__dirname, '../../..');

@@ -4,9 +4,9 @@
 
 import fs from 'fs';
 import path from 'path';
-import { ENTERPRISE_SECURITY_AUDIT_CHECKLIST } from '../enterpriseSecurityAuditChecklist';
+import { ENTERPRISE_SECURITY_AUDIT_CHECKLIST } from './enterpriseSecurityAuditChecklist';
 
-const REPO_ROOT = path.resolve(__dirname, '../../../..');
+const REPO_ROOT = path.resolve(__dirname, '../../..');
 
 const EXPECTED_IDS = [
   'id-enumeration-trace-session-report',

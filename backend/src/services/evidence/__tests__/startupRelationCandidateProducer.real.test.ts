@@ -5,7 +5,7 @@
 import {createDataEnvelope, type DataEnvelope} from '../../../types/dataContract';
 import {parseTypedConclusionContractJson} from '../../../agent/core/conclusionContract';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
-import {resolveTraceCase} from '../../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../../tests/helpers/traceCorpus';
 import {SkillEvaluator} from '../../../../tests/skill-eval/runner';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
 import {runClaimVerification} from '../../verifier/claimVerificationRunner';
