@@ -61,8 +61,12 @@ export function listModules(backendDir = BACKEND) {
   return modules.sort();
 }
 
-/** Relative specifiers only: a package import cannot reach a repository module. */
-const IMPORT_RE = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)['"](\.[^'"]+)['"]/g;
+/**
+ * Relative specifiers only: a package import cannot reach a repository module.
+ * `import\s+` covers side-effect imports (`import './envEntry';`), whose module
+ * is used for what it does on evaluation rather than for a binding.
+ */
+const IMPORT_RE = /(?:from\s+|import\s+|import\s*\(\s*|require\s*\(\s*)['"](\.[^'"]+)['"]/g;
 
 function resolve(fromFile, specifier, moduleSet) {
   const base = join(dirname(fromFile), specifier).replace(/\\/g, '/');

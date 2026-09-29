@@ -9,7 +9,7 @@ import {
   parseOutputLanguage,
   type OutputLanguage,
 } from '../../agentv3/outputLanguage';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import type { OutputFormat } from '../repl/renderer';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { withConsoleLogToStderr } from '../io/stdio';
@@ -54,7 +54,7 @@ function parseConcurrency(raw: string | undefined): number | undefined {
 
 function traceListPaths(traceList: string | undefined): string[] {
   if (!traceList?.trim()) return [];
-  const filePath = path.resolve(traceList);
+  const filePath = resolveInvocationPath(traceList);
   const content = fs.readFileSync(filePath, 'utf-8');
   return content
     .split(/\r?\n/)
@@ -66,7 +66,7 @@ function resolveTraceInputs(traces: string[], traceList: string | undefined): Ba
   const seen = new Set<string>();
   const paths: string[] = [];
   for (const trace of [...traces, ...traceListPaths(traceList)]) {
-    const resolved = path.resolve(trace);
+    const resolved = resolveInvocationPath(trace);
     if (seen.has(resolved)) continue;
     seen.add(resolved);
     paths.push(resolved);
@@ -169,8 +169,8 @@ export async function runBatchSkillCommand(args: BatchSkillCommandArgs): Promise
     const runWithArtifacts = writeBatchTraceArtifacts({
       run,
       directory: defaultBatchDirectory(bootstrapResult.paths.home, run.id),
-      ...(args.out ? { htmlPath: path.resolve(args.out) } : {}),
-      ...(args.jsonOut ? { jsonPath: path.resolve(args.jsonOut) } : {}),
+      ...(args.out ? { htmlPath: resolveInvocationPath(args.out) } : {}),
+      ...(args.jsonOut ? { jsonPath: resolveInvocationPath(args.jsonOut) } : {}),
       outputLanguage,
     });
     writeRunOutput(format, runWithArtifacts, outputLanguage);

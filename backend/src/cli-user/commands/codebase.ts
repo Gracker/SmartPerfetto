@@ -4,7 +4,7 @@
 
 import * as path from 'path';
 
-import {bootstrap} from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import {withConsoleLogToStderr} from '../io/stdio';
 import {backendLogPath} from '../../runtimePaths';
 import {RagStore} from '../../services/ragStore';
@@ -157,7 +157,7 @@ export async function runCodebasePreviewCommand(args: CodebaseCommandBaseArgs & 
   pathFilters?: string[];
   excludeGlobs?: string[];
 }): Promise<number> {
-  const rootPath = path.resolve(args.rootPath);
+  const rootPath = resolveInvocationPath(args.rootPath);
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const kind = args.kind ?? 'app_source';
   const {service, scope} = managementContext(args, rootPath);
@@ -188,7 +188,7 @@ export async function runCodebaseRegisterCommand(args: CodebaseCommandBaseArgs &
   licenseTag?: string;
   dryRun?: boolean;
 }): Promise<number> {
-  const rootPath = path.resolve(args.rootPath);
+  const rootPath = resolveInvocationPath(args.rootPath);
   bootstrap({envFile: args.envFile, sessionDir: args.sessionDir});
   const kind = args.kind ?? 'app_source';
   const requirements = codebaseRegistrationRequirements(kind);

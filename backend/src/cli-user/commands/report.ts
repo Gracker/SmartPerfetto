@@ -13,7 +13,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import { loadSession, turnReportPath } from '../io/sessionStore';
 import { openPath } from '../io/openFile';
 import {parseOutputLanguage} from '../../agentv3/outputLanguage';
@@ -73,7 +73,7 @@ export async function runReportCommand(args: ReportCommandArgs): Promise<number>
 }
 
 export async function runReportExportCommand(args: ReportExportCommandArgs): Promise<number> {
-  const outPath = path.resolve(args.out);
+  const outPath = resolveInvocationPath(args.out);
   const { paths } = bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir, requireLlm: false });
   const { sp, config } = loadSession(paths, args.sessionId);
 

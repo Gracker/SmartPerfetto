@@ -33,6 +33,17 @@ test('reports a module that only its own test imports', () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('a side-effect import is a production import', () => {
+  const root = fixture({
+    'src/envEntry.ts': longBody('process.env.READY = "1";\n'),
+    'src/bin.ts': longBody("import './envEntry';\n"),
+    'src/__tests__/envEntry.test.ts': "require('../envEntry');\n",
+  });
+  try {
+    assert.deepEqual(findOrphans(listModules(root), {}, root), []);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // The original instance hid exactly here: the dead module's *test* was
 // registered in a gate script, so any basename match would have cleared it.
 test('a registered test path does not vouch for the module it tests', () => {

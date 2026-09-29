@@ -24,6 +24,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
+import { resolveInvocationPath } from '../bootstrap';
 import type { CliPaths, SessionPaths } from '../io/paths';
 import { sessionPaths } from '../io/paths';
 import type { Renderer } from './renderer';
@@ -306,5 +307,5 @@ function expandPath(p: string): string {
   if (p.startsWith('~/')) {
     return path.join(process.env.HOME || '', p.slice(2));
   }
-  return path.resolve(p);
+  return resolveInvocationPath(p);
 }

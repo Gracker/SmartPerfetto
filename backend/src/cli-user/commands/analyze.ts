@@ -11,8 +11,7 @@
  * (via continueSession) and the REPL.
  */
 
-import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { startSession } from '../services/turnRunner';
@@ -37,10 +36,9 @@ export interface AnalyzeCommandArgs {
 }
 
 export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<number> {
-  // Resolve tracePath against the *user's* cwd before bootstrap runs — bootstrap
-  // pins cwd to the backend root for consistent service-layer path resolution,
-  // which would otherwise change how a relative trace argument gets interpreted.
-  const tracePath = path.resolve(args.trace);
+  // cwd is the backend root by now (see bootstrap.ts); resolve the trace
+  // argument against the directory the user invoked the CLI from.
+  const tracePath = resolveInvocationPath(args.trace);
   const renderer = createRenderer({ verbose: args.verbose, useColor: !args.noColor, format: args.format });
   const lifecycle: { service?: CliAnalyzeService } = {};
   let exitCode = 0;

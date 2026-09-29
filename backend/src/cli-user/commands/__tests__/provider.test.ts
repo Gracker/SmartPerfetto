@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { runProviderTestCommand } from '../provider';
 import { resetProviderService } from '../../../services/providerManager';
+import { resetCliEnvironmentForTesting } from '../../bootstrap';
 
 describe('provider CLI command', () => {
   const originalEnv = { ...process.env };
@@ -38,6 +39,7 @@ describe('provider CLI command', () => {
     delete process.env.SMARTPERFETTO_AI_ENABLED;
     delete process.env.SMARTPERFETTO_QODER_SDK_MODULE_PATH;
     resetProviderService();
+    resetCliEnvironmentForTesting();
     consoleLogSpy = jest.spyOn(console, 'log').mockImplementation(() => undefined);
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => undefined);
   });

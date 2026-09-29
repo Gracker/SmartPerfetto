@@ -156,7 +156,11 @@ usually `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads:
 1. `backend/.env` from the package or source backend directory.
 2. `~/.smartperfetto/env`, which overrides earlier values.
 
-If you pass `--env-file /path/to/env`, the CLI reads only that file. Enable only
+If you pass `--env-file /path/to/env`, the CLI reads only that file. These env
+files are loaded before any module evaluates, so startup settings such as
+`LOG_LEVEL` and trace processor ports or timeouts can live there too. Relative
+paths in commands (traces, `--out`, `--config`, ...) always resolve against the
+directory you ran `smp` from. Enable only
 one CLI provider source for first setup: an active profile already present in
 the current CLI store, one Claude-compatible env block, or one OpenAI-compatible
 env block. `smp provider list` and `smp provider test <providerId>` inspect that

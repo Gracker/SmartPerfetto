@@ -2,8 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { createRenderer, type OutputFormat } from '../repl/renderer';
 import { startSession } from '../services/turnRunner';
@@ -25,8 +24,8 @@ export interface CompareCommandArgs {
 }
 
 export async function runCompareCommand(args: CompareCommandArgs): Promise<number> {
-  const currentTracePath = path.resolve(args.currentTrace);
-  const referenceTracePath = path.resolve(args.referenceTrace);
+  const currentTracePath = resolveInvocationPath(args.currentTrace);
+  const referenceTracePath = resolveInvocationPath(args.referenceTrace);
   const renderer = createRenderer({ verbose: args.verbose, useColor: !args.noColor, format: args.format });
   const lifecycle: { service?: CliAnalyzeService } = {};
   let exitCode = 0;

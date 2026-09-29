@@ -136,7 +136,10 @@ CLI 配置与 Web UI 配置默认彼此独立。CLI Provider store 位于
 1. 包内或源码目录的 `backend/.env`。
 2. `~/.smartperfetto/env`，覆盖前面的值。
 
-如果传了 `--env-file /path/to/env`，CLI 只读取这个文件。首次配置只启用一个 CLI
+如果传了 `--env-file /path/to/env`，CLI 只读取这个文件。这些 env 文件在任何
+模块加载前生效，因此日志级别（`LOG_LEVEL`）、trace processor 端口和超时等启动期
+配置同样可以写在里面。命令里的相对路径（trace、`--out`、`--config` 等）始终相对
+执行 `smp` 的目录解析。首次配置只启用一个 CLI
 provider 来源：当前 CLI store 中已有的 active profile、一个 Claude-compatible env
 block，或一个 OpenAI-compatible env block。`smp provider list` 和
 `smp provider test <providerId>` 只检查该 CLI store；CLI 当前不提供 profile 的
