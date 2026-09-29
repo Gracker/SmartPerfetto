@@ -180,8 +180,9 @@ show whether the model received a trailing hint such as `vendorOverride`. The
 internal `RunManifest.toolResults` receipt answers that. It records what each
 call handed to its runtime at the outermost shared tool boundary: after every
 product wrapper, including pacing reminders, and before transport truncation.
-Each entry holds the tool name, call id, outcome, receipt facts (plan phase id
-presence only), and handed-off text size. For each field in
+Each entry holds the tool name, the call id when the adapter supplies one
+(OpenAI, Pi, OpenCode), outcome, receipt facts (plan phase id presence only),
+and the text size before adapter serialization. For each field in
 `RUNTIME_TOOL_RESULT_AUDITED_FIELDS`, it also records whether the field's
 serialized key and value appear verbatim in that text. No payload values are
 copied. The receipt proves the handoff to the runtime adapter. Runtime-native

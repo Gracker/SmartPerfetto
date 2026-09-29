@@ -417,8 +417,9 @@ Keep these boundaries intact:
   `vendorOverride`. `RunManifest.toolResults` (`runtimeToolResultAudit.ts`)
   answers that: `withRuntimeToolConcurrency`, the outermost shared tool
   boundary after every product wrapper including pacing reminders, records
-  per call the tool, call id, outcome, receipt facts (plan phase id presence
-  only), handed-off text size, and for each field in
+  per call the tool, the call id when the adapter supplies one (OpenAI, Pi,
+  OpenCode), outcome, receipt facts (plan phase id presence only), text size
+  before adapter serialization, and for each field in
   `RUNTIME_TOOL_RESULT_AUDITED_FIELDS` whether its serialized key and value sit
   verbatim in that text. It copies no payload values; add a new model-steering
   payload field to that list. It proves the handoff to the runtime adapter,

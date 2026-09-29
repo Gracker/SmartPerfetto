@@ -37,13 +37,19 @@ export type RuntimeToolResultFieldVisibility = 'verbatim' | 'unproven' | 'not_ch
  * the outermost shared tool boundary, after every product wrapper (including
  * pacing reminders) and before any transport truncation. It describes the
  * handoff, not what a provider tokenized: runtime-native output caps are
- * outside the product's view, so `content.chars` is what an auditor compares
- * against them. `returned` means the adapter received the result; an adapter
- * may still discard it, e.g. OpenCode after its bridge closed.
+ * outside the product's view. `content` measures the text blocks before any
+ * adapter serialization; OpenAI and Pi re-wrap them as escaped JSON with the
+ * receipt, so the string their SDK receives is longer. `returned` means the
+ * adapter received the result; an adapter may still discard it, e.g.
+ * OpenCode after its bridge closed.
  */
 export interface RuntimeToolResultAuditEntryV1 {
   toolName: string;
-  /** Runtime tool-call id when the adapter supplied one; joins the SSE `taskId`. */
+  /**
+   * Tool-call id when the adapter put one in the tool extra (OpenAI, Pi and
+   * OpenCode do); it joins the SSE `taskId`. Without it, entries join by
+   * tool name and completion order.
+   */
   toolCallId?: string;
   skillId?: string;
   outcome: 'returned' | 'cancelled' | 'threw';

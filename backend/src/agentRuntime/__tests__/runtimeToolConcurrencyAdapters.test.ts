@@ -811,6 +811,7 @@ describe('tool-result handoff audit at the outermost registry boundary', () => {
     vendorOverride: {vendor: 'xiaomi', displayName: 'Xiaomi', additionalStepIds: ['a']},
   }, {facts: {success: true, planPhaseId: 'p1'}});
 
+  // Claude and Qoder ids are injected here; their in-process SDK handlers may not supply one.
   const invokers: Array<[string, (definitions: readonly McpToolDefinition[], registry: McpToolRegistry,
     signal?: AbortSignal) => Promise<unknown>]> = [
     ['Claude SDK MCP', (_definitions, registry, signal) =>
