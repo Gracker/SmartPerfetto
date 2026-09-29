@@ -3490,7 +3490,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "366fb03aaf84d31c9a2aaa469e6f29c99d7993eeb85846cca5bb3e4e27da996b",
+            "sha256": "7934a5e9e6bead25f21b983dedda8345f17006a11dd611c98f43b79deea4db0e",
             "required_columns": [
               "event_ts",
               "event_type",
@@ -6013,7 +6013,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "8a6423c236a00ef3569cac555786ede7aa7485ac0d627b7b9d2ca44be12d7c78",
+            "sha256": "01dd7d9d6b473a833e10aa7f8d07e36f871d0a2b59effd610fde46cc84235489",
             "required_columns": [
               "input_ts",
               "process_name",

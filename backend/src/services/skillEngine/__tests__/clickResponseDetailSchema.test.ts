@@ -8,7 +8,10 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import {describe, expect, it} from '@jest/globals';
 import yaml from 'js-yaml';
-import {completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
+import {
+  completeAndroidInputEventsFixture,
+  createOwnMonitorInputFixture,
+} from '../../../../tests/helpers/androidInputEventsFixture';
 import {renderStepSql, withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
 
 const skillPath = path.join(
@@ -178,35 +181,7 @@ describe('click_response_analysis target process selection', () => {
       db.close();
     }
   });
-  // A launcher owns its activity window and its own gesture monitor. Events 1-3
-  // resolve an action on the window and are copied to the monitor; events 4-5
-  // resolve no action anywhere and reach both channels; event 6 (FOCUS) reaches
-  // only the window. systemui observes 1-5 on its own monitor.
-  const createOwnMonitorFixture = (): Database.Database => {
-    const db = new Database(':memory:');
-    db.exec(`
-      CREATE TABLE android_input_events (
-        upid INTEGER, process_name TEXT, event_channel TEXT, normalized_event_channel TEXT, input_event_id TEXT,
-        event_type TEXT, event_action TEXT, total_latency_dur INTEGER,
-        dispatch_ts INTEGER, receive_ts INTEGER, receive_dur INTEGER
-      );
-    `);
-    const insert = db.prepare('INSERT INTO android_input_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 10)');
-    const deliver = (upid: number, processName: string, channel: string, id: number,
-      eventType: string, action: string | null, latencyMs: number) =>
-      insert.run(upid, processName, channel, channel, String(id), eventType, action, latencyMs * 1_000_000,
-        id * 100, id * 100 + 5);
-    const launcher = 'com.example.launcher';
-    ['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].forEach((action, index) =>
-      deliver(1, launcher, 'Launcher (server)', index + 1, 'MOTION', action, 2));
-    [4, 5].forEach(id => deliver(1, launcher, 'Launcher (server)', id, 'MOTION', null, 4));
-    deliver(1, launcher, 'Launcher (server)', 6, 'FOCUS', null, 1);
-    [1, 2, 3, 4, 5].forEach(id => deliver(1, launcher, '[Gesture Monitor] swipe-up (server)', id, 'MOTION', null, 9));
-    [1, 2, 3, 4, 5].forEach(id =>
-      deliver(2, 'com.android.systemui', '[Gesture Monitor] edge-swipe (server)', id, 'MOTION', null, 3));
-    completeAndroidInputEventsFixture(db);
-    return db;
-  };
+  const createOwnMonitorFixture = () => createOwnMonitorInputFixture().db;
 
   it('analyzes only the target application channel when it also owns a monitor', () => {
     const db = createOwnMonitorFixture();

@@ -15,6 +15,9 @@
 # - 新增 is_speculative_frame 帧关联置信度标记
 #
 # 数据源依赖：trace 需包含 input atrace category（sendMessage/receiveMessage slices）
+#
+# 每个接收通道一行；进程自带的 monitor 通道不重复计入，行与区间口径见
+# fragments/android_input_scoped_deliveries.sql（analyzed_for_name）。
 
 name: touch_to_display_latency
 version: "2.0"
@@ -40,11 +43,11 @@ inputs:
   - name: start_ts
     type: timestamp
     required: false
-    description: "分析起始时间戳(ns)"
+    description: "分析起始时间戳(ns)，保留 receive 结束晚于它的事件"
   - name: end_ts
     type: timestamp
     required: false
-    description: "分析结束时间戳(ns)"
+    description: "分析结束时间戳(ns)，保留 dispatch 早于它的事件"
   - name: event_type
     type: string
     required: false
@@ -99,7 +102,10 @@ display:
       label: "评级"
       type: string
 
-sql_fragments: [fragments/android_input_events_normalized.sql]
+sql_fragments:
+  - fragments/android_input_events_normalized.sql
+  - fragments/android_input_delivery_roles.sql
+  - fragments/android_input_scoped_deliveries.sql
 sql: |
   SELECT
     printf('%d', dispatch_ts) as input_ts,
@@ -120,10 +126,10 @@ sql: |
       WHEN total_latency_dur / 1e6 < 150 THEN '需优化'
       ELSE '严重'
     END as rating
-  FROM android_input_events_normalized
-  WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
-    AND (${start_ts} IS NULL OR dispatch_ts >= ${start_ts})
-    AND (${end_ts} IS NULL OR dispatch_ts <= ${end_ts})
+  FROM android_input_scoped_deliveries
+  -- package 按名字匹配（含 name:* 子进程），故用 analyzed_for_name。
+  WHERE analyzed_for_name
+    AND ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
     AND ('${event_type}' = '' OR event_type = '${event_type}')
   ORDER BY total_latency_dur DESC
 
