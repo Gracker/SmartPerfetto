@@ -21,7 +21,6 @@ import {finalizeAnalysisResult} from '../finalizeAnalysisResult';
 import {assessFinalReportContract} from '../finalReportContractGate';
 import {applyFinalResultQualityGate, assessFinalResultQualityAssessment} from '../finalResultQualityGate';
 import * as qualityGate from '../finalResultQualityGate';
-import {normalizeResultForReport} from '../agentResultNormalizer';
 import {sanitizeSourceReference, type SourceExecutionScopeV1, type SourceUseDecisionV1} from '../codebase/sourceUseDecision';
 
 type FinalContext = Extract<AnalysisDeliveryContext, {entry: 'new_finalization'}>;
@@ -291,7 +290,6 @@ describe('server-owned analysis delivery assessment', () => {
     Object.defineProperty(target, 'conclusion', {get: () => {throw new Error('historical body was inspected');}});
     Object.freeze(target);
     expect(applyFinalResultQualityGate({result: target, context: {entry: 'historical_restore'}})).toBeUndefined();
-    expect(normalizeResultForReport(target, {entry: 'historical_restore'})).toBe(target);
     expect(target.terminationMessage).toBe('Persisted verdict');
   });
 

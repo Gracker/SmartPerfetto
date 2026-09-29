@@ -5,13 +5,17 @@
 import {compactSemanticEvidenceSnapshot, expandSemanticEvidenceSnapshot} from '../evidence/semanticEvidenceSnapshot';
 import {compactSemanticSourceSnapshot, expandSemanticSourceSnapshot} from '../evidence/semanticSourceSnapshot';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
-import {renderConclusionContractSidecar, parseConclusionContractDeclaration, type ConclusionContract} from '../../agent/core/conclusionContract';
+import {renderConclusionContractSidecar, parseConclusionContractDeclaration, type ConclusionContract,
+  type ConclusionContractClaimItem} from '../../agent/core/conclusionContract';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliveryContext} from '../../types/analysisDelivery';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection, inspectCandidateProtocol,
   buildCandidateProtocolDiagnostic, sanitizeCandidateProtocolDiagnostic} from '../canonicalAnalysisResult';
 import {assessFinalResultQualityAssessment} from '../finalResultQualityGate';
 import {runClaimVerification} from '../verifier/claimVerificationRunner';
-import {createDataEnvelope} from '../../types/dataContract';
+import {createDataEnvelope, type DataEnvelope} from '../../types/dataContract';
+import {ArtifactStore} from '../../agentv3/artifactStore';
+import {captureEvidenceTable} from '../evidence/evidenceCapture';
+import {runPreparedAnalysisClaimVerification} from '../evidence/analysisRelationPreparation';
 import {finalizeSourceAwareAnalysisResultWithProjection} from '../codebase/sourceClaimVerifier';
 import {claimConclusionProtocolProjection, readConclusionProtocolProjection, releaseConclusionProtocolProjection,
   projectConclusionSemanticInput} from '../security/conclusionProtocolProjection';
@@ -31,15 +35,15 @@ function result(conclusion: string): AnalysisResult {
     confidence: 0.8, rounds: 1, totalDurationMs: 10};
 }
 
-function contextFor(source: AnalysisResult, status: AnalysisCompletion['status'] = 'completed'):
-  Extract<AnalysisDeliveryContext, {entry: 'new_finalization'}> {
+function contextFor(source: AnalysisResult, status: AnalysisCompletion['status'] = 'completed',
+  deliverable: 'answer' | 'report' = 'answer'): Extract<AnalysisDeliveryContext, {entry: 'new_finalization'}> {
   const acceptedCandidate = {candidateRef: 'native-a', runId: 'run-a', attemptId: 'attempt-a',
     conclusionFingerprint: analysisDeliveryFingerprint(source.conclusion)};
   return {entry: 'new_finalization', acceptedCandidate, outputOrigin: 'sdk_final',
     completion: {...acceptedCandidate, schemaVersion: 1, runtimeKind: 'openai-agents-sdk', status},
     turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: 'registry-a',
       taskKind: 'fact', sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick',
-      deliverable: 'answer', evidenceAccess: 'read_new'}};
+      deliverable, evidenceAccess: 'read_new'}};
 }
 
 const control = '<!-- smartperfetto:conversation-control {"kind":"needs_user_input","question":"Which trace?"} -->';
@@ -824,5 +828,260 @@ describe('lossless final semantic source transport', () => {
       {...compacted, conclusionContract: {...compacted.conclusionContract, sourceReferences: []}},
       {...compacted, sourceUse: {...compacted.sourceUse, references: 'invalid'}},
     ]) expect(expandSemanticSourceSnapshot(value)).toBeUndefined();
+  });
+});
+
+describe('legacy narrative derivation at the canonical boundary', () => {
+  // Legacy bodies carry no sidecar or native declaration, so canonicalization
+  // derives the contract from the prose or keeps the producer's contract.
+  const legacyContract = (conclusion: string, conclusionContract?: ConclusionContract) =>
+    canonicalizeAnalysisResult({...result(conclusion), ...(conclusionContract ? {conclusionContract} : {})}).validationContract;
+  const skillTable = (evidenceRefId: string, title: string, columns: string[], rows: unknown[][],
+    meta: Partial<DataEnvelope['meta']> = {}): DataEnvelope => {
+    const envelope = createDataEnvelope({columns, rows}, {type: 'skill_result', source: title, title, evidenceRefId,
+      traceId: 'trace-1', traceSide: 'current'});
+    return {...envelope, meta: {...envelope.meta, ...meta}};
+  };
+  const narrativeWithEvClaim = [
+    '快速回答：帧耗时 45.6ms（ev_deadbeef1234）。',
+    '',
+    '## 逐句数据引用（结构化来源）',
+    '- Q1 / C1: 帧耗时 45.6ms',
+    '  - evidence_ref_id=ev_deadbeef1234; source_ref=表 1; row_index=0; column=dur_ms; value=45.6',
+  ].join('\n');
+
+  it('derives claim provenance from the original body, leaving evidence-id stripping to display', () => {
+    const canonical = canonicalizeAnalysisResult(result(narrativeWithEvClaim));
+    expect(canonical.validationContract?.claims?.[0]?.references?.[0]).toMatchObject({
+      evidenceRefId: 'ev_deadbeef1234', sourceRef: '表 1'});
+    expect(canonical.result.conclusion).toContain('ev_deadbeef1234');
+  });
+
+  it('takes a derived contract mode from the current typed deliverable, never from result metadata', () => {
+    const source = result(narrativeWithEvClaim);
+    expect(canonicalizeAnalysisResult(source, {context: contextFor(source, 'completed', 'answer')}).validationContract?.mode)
+      .toBe('focused_answer');
+    expect(canonicalizeAnalysisResult(source, {context: contextFor(source, 'completed', 'report')}).validationContract?.mode)
+      .toBe('initial_report');
+    const metadataOnly = {...source, turnIntent: contextFor(source).turnIntent};
+    expect(canonicalizeAnalysisResult(metadataOnly).validationContract?.mode).toBe('initial_report');
+  });
+
+  describe('original claim fidelity', () => {
+    const envelope = createDataEnvelope(
+      {columns: ['ttid_ms'], rows: [[1912]]},
+      {type: 'skill_result', source: 'startup_analysis', title: '启动概览',
+        skillId: 'startup_analysis', stepId: 'get_startups', executionStatus: 'observed',
+        evidenceRefId: 'data:startup-original', traceId: 'trace-original', traceSide: 'current'},
+    );
+    const originalContract = (claims: NonNullable<ConclusionContract['claims']>): ConclusionContract & {claims: NonNullable<ConclusionContract['claims']>} => ({
+      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+      conclusions: [{rank: 1, statement: '启动耗时待核验'}],
+      clusters: [], evidenceChain: [], claims, uncertainties: [], nextSteps: [],
+    });
+    const numericClaim = (id: string, value: number, text = `TTID=${value}ms`): ConclusionContractClaimItem => {
+      const reference = {evidenceRefId: 'data:startup-original', rowIndex: 0, column: 'ttid_ms', value};
+      return {id, text, kind: 'numeric', references: [reference],
+        semantics: {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
+          discourse: 'asserted', quantifier: 'one', modality: 'certain',
+          scope: {population: 'cited_rows', subjectRefs: [reference]}, numeric: {operator: 'eq', value, unit: 'ms'}}};
+    };
+    const parsedOriginal = (claims: NonNullable<ConclusionContract['claims']>): ConclusionContract => {
+      const parsed = parseConclusionContractDeclaration(originalContract(claims));
+      expect(parsed.issues).toEqual([]);
+      if (!parsed.contract) throw new Error('Expected a valid fixture declaration');
+      return parsed.contract;
+    };
+    const verifyCaptured = async (conclusionContract: ConclusionContract | null | undefined) => {
+      const store = new ArtifactStore();
+      store.registerStandaloneEvidenceCapture(captureEvidenceTable(envelope.data, {
+        ttid_ms: {unit: 'ms', origin: {kind: 'skill_literal', skillId: 'startup_analysis',
+          stepId: 'get_startups', definitionFingerprint: 'startup-original-fixture'}},
+      }), {meta: envelope.meta, display: envelope.display});
+      const preparedEvidence = await prepareClaimEvidence({conclusionContract,
+        evidenceReadView: store.createEvidenceReadView({ownerKey: 'original-claims',
+          allowedTraces: [{traceId: 'trace-original', traceSide: 'current'}]})});
+      return runPreparedAnalysisClaimVerification({conclusionContract, dataEnvelopes: [envelope], preparedEvidence});
+    };
+
+    it('keeps a contradicted claim failed when unrelated prose contains the true evidence value', async () => {
+      const original = parsedOriginal([numericClaim('wrong-ttid', 9999)]);
+      const canonical = legacyContract('启动概览：TTID=9999ms，事件计数1912次。', original);
+      const verified = await verifyCaptured(canonical);
+
+      expect(canonical).toBe(original);
+      expect(verified.claimVerificationResult.status).toBe('failed');
+      expect(verified.claimVerificationResult.claimResults[0]).toMatchObject({claimId: 'wrong-ttid', status: 'unsupported',
+        referenceCells: [{status: 'value_mismatch'}],
+        deterministicProof: {status: 'rejected', reason: 'numeric_operator_rejected'}});
+    });
+
+    it('preserves mixed supported, contradicted and unreferenced claims', async () => {
+      const original = parsedOriginal([
+        numericClaim('supported', 1912),
+        numericClaim('contradicted', 9999),
+        {id: 'no-reference', text: 'The delay may come from initialization.', kind: 'inference', references: []},
+      ]);
+      const canonical = legacyContract('启动概览：TTID=9999ms，事件计数1912次。', original);
+      const verified = await verifyCaptured(canonical);
+
+      expect(canonical?.claims).toEqual(original.claims);
+      expect(verified.claimVerificationResult.status).toBe('failed');
+      expect(verified.claimVerificationResult.claimResults).toMatchObject([
+        {claimId: 'supported', status: 'partial', deterministicProof: {status: 'proved'}, propositionCoverage: {status: 'complete'}},
+        {claimId: 'contradicted', status: 'unsupported', referenceCells: [{status: 'value_mismatch'}]},
+        {claimId: 'no-reference', status: 'inference', referenceCells: []},
+      ]);
+    });
+
+    it('reads typed JSON before display conversion can discard causal kind or relation references', () => {
+      const original = originalContract([{
+        id: 'cause', text: 'No evidence yet proves that initialization caused the delay.', kind: 'causal',
+        relationRefs: ['relation-candidate'],
+        references: [{evidenceRefId: 'data:startup-original', rowIndex: 0, column: 'ttid_ms', value: 1912}],
+      }]);
+      expect(legacyContract(JSON.stringify(original))?.claims)
+        .toEqual(original.claims.map(claim => ({...claim, conclusionId: 'C1'})));
+    });
+
+    it('retains explicit JSON claims whose references are absent, malformed or relation-only', () => {
+      const raw = originalContract([
+        {id: 'missing', text: 'Initialization may be slow.', kind: 'inference', references: []},
+        {id: 'relation-only', text: 'The dependency blocks initialization.', kind: 'causal', references: [], relationRefs: ['relation-1']},
+        {id: 'malformed', text: 'TTID=9999ms', kind: 'numeric', references: [{}]},
+      ]);
+      const parsed = legacyContract(JSON.stringify(raw));
+      expect(parsed?.claims?.map(claim => ({id: claim.id, text: claim.text, kind: claim.kind})))
+        .toEqual(raw.claims.map(claim => ({id: claim.id, text: claim.text, kind: claim.kind})));
+      expect(parsed?.claims?.[1].relationRefs).toEqual(['relation-1']);
+      expect(runClaimVerification({conclusionContract: parsed, dataEnvelopes: [envelope]}).claimVerificationResult.passed).toBe(false);
+    });
+
+    it('retains explicit Markdown claims without references as unverified statements', () => {
+      const parsed = legacyContract([
+        '## 逐句数据引用（结构化来源）',
+        '- Q-missing / C1: 初始化耗时尚未得到证据支持。',
+      ].join('\n'));
+      expect(parsed?.claims).toEqual([{id: 'Q-missing', conclusionId: 'C1', text: '初始化耗时尚未得到证据支持。', references: []}]);
+      expect(runClaimVerification({conclusionContract: parsed}).claimVerificationResult.passed).toBe(false);
+    });
+
+    it('does not create claims merely because narrative and evidence contain the same number', () => {
+      const parsed = legacyContract('事件计数1912次。');
+      expect(parsed?.claims ?? []).toEqual([]);
+      expect(runClaimVerification({conclusionContract: parsed, dataEnvelopes: [envelope]}).claimVerificationResult)
+        .toMatchObject({status: 'not_checked', passed: false, checkedClaimCount: 0});
+    });
+
+    it('does not silently truncate explicitly supplied claims before verification', async () => {
+      const claims = Array.from({length: 51}, (_, index) => numericClaim(
+        `Q${index + 1}`, index === 50 ? 9999 : 1912, `TTID observation ${index + 1}`,
+      ));
+      const parsed = legacyContract(JSON.stringify(originalContract(claims)));
+      expect(parsed?.claims?.map(({id, references, semantics}) => ({id, references, semantics})))
+        .toEqual(claims.map(({id, references, semantics}) => ({id, references, semantics})));
+      const verified = await verifyCaptured(parsed);
+      expect(verified.claimVerificationResult.status).toBe('failed');
+      expect(verified.claimVerificationResult.claimResults).toHaveLength(51);
+      expect(verified.claimVerificationResult.claimResults.slice(0, 50).every(claim =>
+        claim.status === 'partial' && claim.deterministicProof?.status === 'proved')).toBe(true);
+      expect(verified.claimVerificationResult.claimResults[50]).toMatchObject({claimId: 'Q51',
+        status: 'unsupported', referenceCells: [{status: 'value_mismatch'}]});
+    });
+
+    it.each([{}, {id: 'empty', references: []}, {text: '   ', references: []}])(
+      'does not fabricate a statement for an empty claim entry: %j',
+      entry => {
+        const parsed = legacyContract(JSON.stringify({...originalContract([]), claims: [entry]}));
+        expect(parsed?.claims ?? []).toEqual([]);
+        expect(runClaimVerification({conclusionContract: parsed, dataEnvelopes: [envelope]}).claimVerificationResult)
+          .toMatchObject({status: 'not_checked', passed: false, checkedClaimCount: 0});
+      },
+    );
+  });
+
+  it('keeps rich reports without explicit claims unverified despite matching evidence', () => {
+    const envelopes = [
+      skillTable('data:skill:startup_analysis:get_startups:current:abc', '检测到的启动事件',
+        ['package', 'startup_type', 'dur_ms', 'ttid_ms'], [['com.example.launch.aosp.heavy', 'cold', 1339, 1912]],
+        {artifactId: 'art-2'}),
+      skillTable('data:skill:startup_detail:actionable_hotspots:current:def', '可操作热点',
+        ['slice_name', 'self_ms', 'self_percent'], [['ChaosTask', 456, 34.1], ['LoadSimulator_ActivityInit', 249.8, 18.7]],
+        {artifactId: 'art-30'}),
+    ];
+    const contract = legacyContract([
+      '# 启动性能分析报告',
+      '',
+      '## 综合结论',
+      '',
+      '冷启动 TTID=1912ms，dur=1339ms，主因是 ChaosTask self=456ms 和 LoadSimulator_ActivityInit self=249.8ms。',
+      '',
+      '## 关键证据链',
+      '',
+      '- 启动事件与热点表均已采集。',
+    ].join('\n'));
+    expect(contract?.claims ?? []).toEqual([]);
+    expect(contract?.metadata?.derivedFromNarrativeEvidenceMatch).not.toBe(true);
+    expect(runClaimVerification({conclusionContract: contract, dataEnvelopes: envelopes, policy: 'record_only'})
+      .claimVerificationResult).toMatchObject({status: 'not_checked', checkedClaimCount: 0});
+  });
+
+  it('preserves unresolvable references rather than replacing claims with matching data', () => {
+    const envelopes = [skillTable('data:skill:scrolling_analysis:jank_type_stats:current:abc', '掉帧类型分布',
+      ['jank_type', 'count', 'real_jank_count', 'false_positive'], [['App Deadline Missed', 6, 6, 0]], {artifactId: 'art-6'})];
+    const parsed = {
+      schemaVersion: 'conclusion_contract_v1', mode: 'initial_report', conclusions: [], clusters: [], evidenceChain: [],
+      claims: [{id: 'Q1', text: 'App Deadline Missed 有 6 帧', kind: 'numeric', references: [{
+        evidenceRefId: 'missing-artifact', sourceRef: 'jank_type_stats', rowIndex: 0, column: 'count', value: 6}]}],
+      uncertainties: [], nextSteps: [],
+    } as ConclusionContract;
+    const contract = legacyContract(
+      '# 滑动性能分析报告\n\n## 概览\n\nApp Deadline Missed 有 6 帧，real_jank_count=6，false_positive=0。', parsed);
+    expect(contract).toBe(parsed);
+    expect(runClaimVerification({conclusionContract: contract, dataEnvelopes: envelopes, policy: 'record_only'})
+      .claimVerificationResult.passed).toBe(false);
+  });
+
+  it('preserves conflicting artifact references for the verifier to reject', () => {
+    const envelopes = [
+      skillTable('data:skill:scrolling_analysis:performance_summary:current:abc', '滑动性能概览',
+        ['total_frames', 'perceived_jank_frames', 'jank_rate'], [[347, 7, 2.02]], {artifactId: 'art-4'}),
+      skillTable('data:skill:scrolling_analysis:batch_frame_root_cause:current:def', '掉帧列表',
+        ['dur_ms', 'vsync_missed'], [[18.66, 2], [62.73, 7]], {artifactId: 'art-9'}),
+    ];
+    const parsed = {
+      schemaVersion: 'conclusion_contract_v1', mode: 'initial_report', conclusions: [], clusters: [], evidenceChain: [],
+      claims: [
+        {id: 'Q1', text: '总帧数 347，真实掉帧 7 帧，掉帧率 2.02%', kind: 'numeric', references: [
+          {evidenceRefId: 'data:art-4', sourceRef: '滑动性能概览', rowIndex: 0, column: 'total_frames', value: 347}]},
+        {id: 'Q2', text: '最长帧 62.73ms，最长连续丢帧 7 VSync', kind: 'numeric', references: [
+          {evidenceRefId: 'data:art-14', sourceRef: '掉帧列表', rowIndex: 1, column: 'dur_ms', value: 62.73}]},
+      ],
+      uncertainties: [], nextSteps: [],
+    } as ConclusionContract;
+    const contract = legacyContract(
+      '# 滑动性能分析报告\n\n## 概览\n\n总帧数 347，真实掉帧 7 帧，掉帧率 2.02%。最长帧 62.73ms，最长连续丢帧 7 VSync。', parsed);
+    expect(contract).toBe(parsed);
+    expect(runClaimVerification({conclusionContract: contract, dataEnvelopes: envelopes, policy: 'record_only'})
+      .claimVerificationResult.passed).toBe(false);
+  });
+
+  it('does not invent cell expectations for row-only identity claims', () => {
+    const envelopes = [skillTable('data:skill:process_identity_resolver:current:identity', '进程身份候选',
+      ['process_name', 'package_name', 'pid', 'upid', 'confidence_score'],
+      [['com.example.wechatfriendforcustomscroller', 'com.example.wechatfriendforcustomscroller', 13534, 885, 100]],
+      {identityStatus: 'verified', identityRefId: 'identity:trace-1:current:process:885'})];
+    const parsed: ConclusionContract = {
+      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
+      claims: [{id: 'C2', text: '主要进程名为 com.example.wechatfriendforcustomscroller，PID 为 13534，UPID 为 885',
+        kind: 'identity', references: [{evidenceRefId: 'data:skill:process_identity_resolver:current:identity',
+          sourceRef: '进程身份候选', rowIndex: 0}]}],
+      uncertainties: [], nextSteps: [],
+    };
+    const contract = legacyContract(
+      '这个 trace 的主要进程名为 com.example.wechatfriendforcustomscroller，PID 为 13534，UPID 为 885。', parsed);
+    expect(contract).toBe(parsed);
+    expect(runClaimVerification({conclusionContract: contract, dataEnvelopes: envelopes, policy: 'record_only'})
+      .claimVerificationResult.status).toBe('not_checked');
   });
 });

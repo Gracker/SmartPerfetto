@@ -39,10 +39,18 @@ Trace SQL regression, and the 6-trace scene regression gate.
 
 `test:core`, `test:architecture`, and `test:self-evolution` enumerate their
 targets; new subsystems may use a directory-scoped gate such as
-`test:external-issue-reporting`. `tsconfig.json` excludes
-`src/**/__tests__/**` and `src/**/*.test.ts`.
-Therefore `npm run typecheck` cannot catch a type break inside a test file, and
-an unregistered suite never runs in `verify:pr`.
+`test:external-issue-reporting`. An unregistered suite never runs in
+`verify:pr`.
+
+Jest does not type-check: `tsconfig.json` sets `isolatedModules`, so ts-jest
+transpiles each file on its own. `npm run typecheck` checks `src/` and
+`tests/`, test files included, as one program through
+`tsconfig.typecheck.json`; the build `tsconfig.json` still excludes tests from
+emit. Per-file type checking inside ts-jest cost most of the `verify:pr` wall
+clock, because every suite rebuilt a language service over the imports it
+shared with every other suite. `isolatedModules` also makes `tsc` reject code
+that per-file transpilation cannot compile, such as re-exporting a type
+without `export type`.
 
 When adding a test file, register it in the matching `test:*` script in the same
 change, and make sure that script is reachable from `test:gate`. For a new
@@ -465,7 +473,7 @@ cd backend
 npx jest src/agentRuntime/__tests__/runtimeSelection.test.ts
 npx jest src/agentOpenAI/__tests__/openAiConfig.test.ts src/agentOpenAI/__tests__/openAiRuntime.test.ts src/agentOpenAI/__tests__/openAiToolAdapter.test.ts
 npx jest src/assistant/application/__tests__/agentAnalyzeSessionService.test.ts
-npx jest src/services/__tests__/agentResultNormalizer.test.ts src/services/__tests__/finalResultQualityGate.test.ts
+npx jest src/services/__tests__/canonicalAnalysisResult.test.ts src/services/__tests__/finalResultQualityGate.test.ts
 npx jest src/services/verifier/__tests__/claimVerificationRunner.test.ts src/services/__tests__/analysisResultSnapshotStore.test.ts
 npx jest src/cli-user/services/__tests__/cliAnalyzeService.runTurn.test.ts src/cli-user/services/__tests__/cliAnalyzeService.test.ts
 npx jest src/services/providerManager/__tests__/providerService.test.ts src/services/providerManager/__tests__/providerRoutes.test.ts
