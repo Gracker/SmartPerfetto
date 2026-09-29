@@ -11,7 +11,7 @@ investigation_contract:
   requirements:
     - id: startup_critical_path
       domain: critical_path
-      description: "Bind the exact launch, UPID and startup interval; distinguish TTID, TTFD and framework completion. Explain material launch phases and critical tasks individually with time ranges, exclusive self time, execution/wait states, dependencies and relevant system effects. Keep pre-launch work, launch-window work and the tail to first display separate; explain residual intervals or their specific evidence gaps. Clip contributions to the declared window and preserve parent/child overlap: a parent's self time excludes its children. A phase table or dominant hotspot alone is insufficient."
+      description: "Bind the exact launch, UPID and startup interval; distinguish TTID, TTFD and framework completion. Explain material launch phases and critical tasks individually with time ranges, exclusive self time, execution/wait states, dependencies and relevant system effects. Keep pre-launch work, launch-window work and the tail to first display separate; explain residual intervals or their specific evidence gaps. Clip contributions to the declared window and preserve parent/child overlap: a parent's self time excludes its children. A phase table or dominant hotspot alone is insufficient. A container slice (bindApplication, activityStart, performCreate) names a phase, not a cause: attribute its inner work or state the instrumentation gap."
     - id: startup_dependencies
       domain: dependency_chain
       description: "Use launch phase, Binder, lock, GC, IO and render dependencies when supported. Explain each relevant phase's App work, system contribution and observed anomaly with adjacent evidence; identify the actual critical task beyond the main thread when needed. Distinguish trace facts from source mechanisms and unresolved alternatives. Preserve full root-cause details and unavailable fields; startup duration and hotspot names alone do not explain the launch."
@@ -291,6 +291,8 @@ invoke_skill("startup_analysis", { enable_startup_details: false })
 2. 用 `execute_sql` 锚定启动触发点，锚点必须是实际观测到的 slice，不得从包名或猜测的时间点出发：主线程首次进入持续忙碌的转换，如 `receiveMessage(... type=MOTION/KEY)` 输入事件、`activityStart`/`performCreate:*`/`inflate` 首个 slice 簇、首个 `Choreographer#doFrame` 簇。锚点 slice 不存在时不得硬选，改报告窗口无法锚定。
 3. 分析窗口写成**推断窗口 [锚点证据, 边界证据]**：边界取首个 doFrame 簇结束、主线程输入/渲染活动沉寂点或用户问题所指区间。窗口起点之前的主线程空闲 sleep 属于启动前等待，不计入启动阻塞（忙/闲分期见根因诊断决策树第 1.5 步）。
 4. 后续 Phase 全部使用该推断窗口并保持"推断窗口"口径；TTID/TTFD 写"框架启动指标不可用（无框架启动事件）"。
+
+用户问的是 App 内打开新页面（点击后跳转、Activity 切换）时，该推断窗口按 `interaction:navigation` detail 的分段方法和 `navigation_analysis` 使用边界解释。
 
 ⚠️ **数据质量门禁特别注意：**
 - **R008_TTID_GT_DUR**（TTID > 启动时长）：不要只说"TTID 不可信"或"建议在 Perfetto UI 中查看"。先从同一 `startup_id` 的 `android_startups.ts` 与 `android_startup_time_to_display.time_to_initial_display` 取得原始整数纳秒，令框架完成点为 `startup.ts + startup.dur`、TTID 绝对终点为 `startup.ts + time_to_initial_display`；仅当 TTID 终点更晚时，分析半开尾窗 `[框架完成点, TTID 终点)`。不要用任意 `DrawFrame` 的开始或结束替代 TTID，也不要用显示用的浮点毫秒反算边界。
@@ -633,7 +635,7 @@ execute_sql("SELECT name AS slice_name, dur / 1e6 AS dur_ms, thread_name FROM th
    - ✅ 正确：`activityStart (832ms wall) → performCreate (827ms) → inflate (710ms)`
    - ❌ 错误：将 activityStart (62%)、performCreate (61%)、inflate (53%) 作为独立根因并列
 3. **优化收益须有依赖关系、可消除工作或对照实验支持**。不能直接把 self_ms 或互不重叠 self 总量称为“可回收时间”“收益上限”；未知时只报告观测成本和待验证方向，也不能把父子 wall time 相加。
-4. **检查切片嵌套及埋点覆盖**：self_ms ≈ total_ms 只能说明记录到的子切片占时很少，不代表内部没有其他工作；逐事件状态和实现证据决定如何归因。
+4. **检查切片嵌套及埋点覆盖**：self_ms ≈ total_ms 只能说明记录到的子切片占时很少，不代表内部没有其他工作；逐事件状态和实现证据决定如何归因。`bindApplication`、`activityStart`、`performCreate:*`、`activityResume`（及 trace 中存在的 `clientTransactionExecuted` 等事务包裹）是框架容器：其名称只说明所处阶段，不能作为最终根因或"直接原因"。沿子 slice 下钻到 App 可归属的具体工作（某个 ContentProvider、SDK 初始化、inflate、数据加载）；子 slice 缺失时，归因写成"该容器内 App 初始化（埋点未细分）"，给出该区间的运行/等待分解并说明埋点缺口，不根据名称虚构内部工作。
 
 ### 启动阶段划分（必须覆盖）
 

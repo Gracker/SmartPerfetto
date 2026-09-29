@@ -22,7 +22,7 @@ The main thread is single-threaded for UI work. A synchronous binder call on the
 - Input events queue up (touch latency increases)
 - Animations freeze
 
-The blocking duration depends entirely on the server side -- the client has no control over how long the server takes to respond.
+The blocking duration is set by delivery and the server side -- the client has no control over how long the call takes once issued.
 
 ## Common Slow Servers
 
@@ -48,6 +48,19 @@ Server-side blame reasons from `android_binder_client_server_breakdown`:
 - **io** -- server performing disk or network I/O while handling the call
 - **memory_reclaim** -- kernel reclaiming memory during the call
 - **art_lock_contention** -- ART runtime internal lock contention
+
+## Attributing a Slow Call
+
+Split every slow synchronous call before naming a side. `android_binder_txns` records the client's blocked duration (`client_dur`), the server's reply execution (`server_dur`) and, from `server_ts - client_ts`, the dispatch delay before a server thread starts; the `binder_blocking_in_range` Skill reports client and server totals per server interface.
+
+| Observation | Candidate | Evidence still needed |
+|-------------|-----------|-----------------------|
+| `client_dur` close to `server_dur` | The server's execution is the wait | Server-thread states and blame reasons during the reply; a nested binder call the server makes while replying moves the question one hop further |
+| High dispatch delay (`client_dur` much longer than `server_dur`) | Delivery, server-thread wakeup/Runnable delay, or no free binder thread (pool saturation) | Server thread state before the reply starts, and whether every pool thread was busy then; pool size or utilisation alone does not prove queueing |
+| Many short calls adding up | Call frequency, not a slow server | Per-call count and total inside the critical window |
+| `oneway` (async) transaction | No client-side block | Only server-side queue ordering matters |
+
+Name the server process, interface and method when available. The calling app owns the choice to make the call synchronously on a latency-critical thread; the length of the wait belongs to the delivery and server path.
 
 ## Typical Solutions
 
