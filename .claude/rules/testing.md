@@ -82,8 +82,8 @@ rather than blessing it.
 ## Dead Code Must Not Keep A Green Suite
 
 `check:test-registration` asks which suites the gate cannot run.
-`check:orphaned-modules` asks the mirror question: which modules production no
-longer imports while a registered suite still tests them. Both failures look
+`check:orphaned-modules` asks the mirror question: which modules no live module
+imports while a registered suite may still test them. Both failures look
 the same from `verify:pr` — everything green — and the second is worse, because
 a passing suite reads as proof the behaviour works.
 
@@ -98,12 +98,22 @@ proposing patches to it, with no effect on any analysis.
 
 The check matches a module by its own source path, never by basename: the test
 path was itself registered in `package.json`, so a basename match would have
-cleared the very module that was dead. Re-export shims and script-invoked
-entrypoints are exempt.
+cleared the very module that was dead. Entrypoints are script-invoked modules
+and modules `backend/scripts/` imports; imports from `backend/tests/` count as
+tests, and a sibling naming `<stem>.js` counts as importing the worker it
+loads. Re-export shims are never reported, but only a live shim keeps its
+target alive.
 
-`scripts/orphaned-modules-baseline.json` records 36 modules already in this
+Orphaned means not reachable from an entrypoint: imported only by tests, by
+nothing, or only by other orphans (including cycles). An importer count cannot
+see the last shape, because a dead root keeps its whole subtree looking alive.
+Counting importers and skipping untested files missed 52 modules, among them
+the legacy executor/strategy orchestrator under `agent/core` that a 2026-09-26
+fix still patched.
+
+`scripts/orphaned-modules-baseline.json` records 71 modules already in this
 state. They are accepted debt, not blessed: each is behaviour the product does
-not run while a suite vouches for it. Shrink the list by restoring the call site
+not run, and any suite over it vouches for nothing. Shrink the list by restoring the call site
 or deleting the module with its suite; `--update-baseline` grows it only with a
 justification in the same commit.
 

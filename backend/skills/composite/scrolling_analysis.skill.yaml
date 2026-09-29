@@ -1248,19 +1248,23 @@ steps:
     process_scope:
       role: target
       binding: native_upid
-    sql_fragments: [fragments/android_input_events_normalized.sql]
+    # 事件数按物理事件（input_event_id）计，只读下游实际分析的行（analyzed_for_upid，见 fragment）。
+    # 进程数只计收到应用投递的进程，范围内没有应用投递时才计全部接收进程。
+    sql_fragments:
+      - fragments/android_input_events_normalized.sql
+      - fragments/android_input_delivery_roles.sql
+      - fragments/android_input_scoped_deliveries.sql
     sql: |
       WITH scoped_events AS (
-        SELECT *
-        FROM android_input_events_normalized
-        WHERE (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
+        SELECT *, COALESCE(input_event_id, 'dispatch:' || dispatch_ts) AS event_key
+        FROM android_input_scoped_deliveries
+        WHERE analyzed_for_upid
+          AND (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
           AND (
           ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
           OR process_name = '${package}'
           OR process_name GLOB '${package}:*'
         )
-          AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
-          AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
       )
       SELECT
         -- frame_matched_events: exact association only (see fragments/android_input_events_normalized.sql); speculative_only = frames matched only speculatively.
@@ -1270,10 +1274,12 @@ steps:
           WHEN COUNT(frame_id) > 0 THEN 'speculative_only'
           ELSE 'no_frame_match'
         END as input_data_status,
-        COUNT(*) as total_input_events,
-        COALESCE(SUM(CASE WHEN event_action = 'MOVE' THEN 1 ELSE 0 END), 0) as move_events,
-        COUNT(exact_frame_id) as frame_matched_events,
-        COUNT(DISTINCT upid) as target_processes
+        COUNT(DISTINCT event_key) as total_input_events,
+        COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN event_key END) as move_events,
+        COUNT(DISTINCT CASE WHEN exact_frame_id IS NOT NULL THEN event_key END) as frame_matched_events,
+        COALESCE(
+          NULLIF(COUNT(DISTINCT CASE WHEN monitor_observation = 0 THEN upid END), 0),
+          COUNT(DISTINCT upid)) as target_processes
       FROM scoped_events
     save_as: input_data
 
