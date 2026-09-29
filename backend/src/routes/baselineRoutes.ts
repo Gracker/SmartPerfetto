@@ -29,13 +29,11 @@ import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore
 import type {BaselineRecord} from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
 
-/** Default storage path. Lives under `backend/logs/` next to the other
+/** Default store lives under the backend log root next to the other
  * long-lived agent-state JSON files. */
-const DEFAULT_STORAGE_PATH = backendLogPath('baselines.json');
-
 let cachedStore: BaselineStore | null = null;
 function getDefaultStore(): BaselineStore {
-  if (!cachedStore) cachedStore = new BaselineStore(DEFAULT_STORAGE_PATH);
+  if (!cachedStore) cachedStore = new BaselineStore(backendLogPath('baselines.json'));
   return cachedStore;
 }
 

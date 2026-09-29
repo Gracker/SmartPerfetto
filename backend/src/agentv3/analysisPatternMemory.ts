@@ -57,9 +57,6 @@ import {
 import { bucketPackageDomain } from '../services/caseEvolution/domainBucket';
 import type {EffectiveFeedbackV1} from '../types/selfEvolution';
 
-const PATTERNS_FILE = backendLogPath('analysis_patterns.json');
-const NEGATIVE_PATTERNS_FILE = backendLogPath('analysis_negative_patterns.json');
-const QUICK_PATTERNS_FILE = backendLogPath('analysis_quick_patterns.json');
 const PATTERN_BUCKET_KNOWLEDGE_KIND = 'analysis_pattern_bucket';
 const PATTERN_BUCKET_ROW_SCOPE_PREFIX = 'pattern-memory:';
 const MAX_PATTERNS = 200;
@@ -115,11 +112,14 @@ class Mutex {
 interface PatternStoreCache<T> {
   lastGood: T[];
   retainLastGoodOnMissing?: boolean;
+  /** Store the entries were read from; another root never inherits them. */
+  filePath?: string;
 }
 
 interface PatternBucketSpec<T> {
   externalId: 'positive' | 'negative' | 'quick';
-  filePath: string;
+  /** Resolved on each read: the CLI sets its log root after import. */
+  readonly filePath: string;
   label: string;
   cache: PatternStoreCache<T>;
 }
@@ -201,6 +201,11 @@ function loadPatternStore<T>(
   label: string,
   cache: PatternStoreCache<T>,
 ): T[] {
+  if (cache.filePath !== filePath) {
+    cache.filePath = filePath;
+    cache.lastGood = [];
+    cache.retainLastGoodOnMissing = false;
+  }
   if (!fs.existsSync(filePath)) {
     if (cache.retainLastGoodOnMissing && cache.lastGood.length > 0) {
       return cloneStoreEntries(cache.lastGood);
@@ -458,19 +463,19 @@ function patternMatchesKnowledgeScope(
 
 const POSITIVE_PATTERN_BUCKET: PatternBucketSpec<AnalysisPatternEntry> = {
   externalId: 'positive',
-  filePath: PATTERNS_FILE,
+  get filePath() { return backendLogPath('analysis_patterns.json'); },
   label: 'analysis patterns',
   cache: positivePatternCache,
 };
 const NEGATIVE_PATTERN_BUCKET: PatternBucketSpec<NegativePatternEntry> = {
   externalId: 'negative',
-  filePath: NEGATIVE_PATTERNS_FILE,
+  get filePath() { return backendLogPath('analysis_negative_patterns.json'); },
   label: 'negative analysis patterns',
   cache: negativePatternCache,
 };
 const QUICK_PATTERN_BUCKET: PatternBucketSpec<AnalysisPatternEntry> = {
   externalId: 'quick',
-  filePath: QUICK_PATTERNS_FILE,
+  get filePath() { return backendLogPath('analysis_quick_patterns.json'); },
   label: 'quick analysis patterns',
   cache: quickPatternCache,
 };
@@ -532,16 +537,17 @@ async function mutatePatternBucket<T, TResult>(
     let databaseWritten = false;
 
     if (legacyKnowledgeFilesystemWritesEnabled()) {
+      const filePath = spec.filePath;
       filesystemResult = await withFilesystemRegistryLockAsync(
-        spec.filePath,
+        filePath,
         'analysis_pattern_store_busy',
         async lease => {
           lease.assertHeld();
-          const allEntries = loadPatternStore(spec.filePath, spec.label, spec.cache);
+          const allEntries = loadPatternStore(filePath, spec.label, spec.cache);
           const currentScope = selectPatternBucketScope(allEntries, scope);
           const outcome = mutate(cloneStoreEntries(currentScope));
           const nextEntries = replacePatternBucketScope(allEntries, scope, outcome.entries);
-          await writePatternStore(spec.filePath, spec.label, nextEntries, spec.cache);
+          await writePatternStore(filePath, spec.label, nextEntries, spec.cache);
           lease.assertHeld();
           return outcome.result;
         },

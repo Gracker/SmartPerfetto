@@ -9,7 +9,7 @@ import { requireRequestContext } from '../middleware/auth';
 import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 import { getSessionLoggerManager } from '../services/sessionLogger';
 import { getLogLevel, setLogLevel, type LogLevel } from '../utils/logger';
-import { METRICS_DIR, type SessionMetrics } from '../agentv3/agentMetrics';
+import { metricsDir, type SessionMetrics } from '../agentv3/agentMetrics';
 
 export function registerAgentLogsRoutes(router: express.Router): void {
   router.use('/logs', (_req, res, next) => {
@@ -134,9 +134,10 @@ export function registerAgentLogsRoutes(router: express.Router): void {
     const maxAgeDays = parseInt(days as string, 10) || 7;
 
     try {
+      const dir = metricsDir();
       let files: string[];
       try {
-        files = fs.readdirSync(METRICS_DIR).filter(f => f.endsWith('_metrics.json'));
+        files = fs.readdirSync(dir).filter(f => f.endsWith('_metrics.json'));
       } catch {
         return res.json({ success: true, sessions: 0, summary: null });
       }
@@ -145,7 +146,7 @@ export function registerAgentLogsRoutes(router: express.Router): void {
       const allMetrics: SessionMetrics[] = [];
       for (const file of files) {
         try {
-          const filePath = `${METRICS_DIR}/${file}`;
+          const filePath = `${dir}/${file}`;
           const stat = fs.statSync(filePath);
           if (stat.mtimeMs < cutoff) continue;
           const data = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as SessionMetrics;

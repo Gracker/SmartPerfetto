@@ -19,10 +19,11 @@
 
 import type { TraceProcessorQueryProvenance } from '../services/traceProcessorConnectionModel';
 import {randomUUID} from 'crypto';
+import {isDeepStrictEqual} from 'util';
 import type {RuntimeToolInvocationEvent} from '../agentRuntime/runtimeToolObserver';
 import {captureInvestigationToolObservation, type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
 import {createDataEnvelope} from '../types/dataContract';
-import {capturedEvidenceTable, freezeEvidenceValue, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
+import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
   type ModelEvidenceProjectionUnavailableReason,
   projectEvidenceColumnUnitsForModel} from '../services/evidence/evidenceCapture';
@@ -305,6 +306,8 @@ const DEFAULT_RETAINED_EVIDENCE_CELLS = 1_000_000;
  * that floor rather than equal to it.
  */
 export const RETAINED_EVIDENCE_CAPTURE_CEILING = 8 * MAX_EVIDENCE_READ_REFERENCES;
+/** Store key prefix of captures registered without an artifact. */
+const STANDALONE_CAPTURE_KEY_PREFIX = 'capture:';
 
 function resolveRetainedEvidenceCells(env: NodeJS.ProcessEnv = process.env): number {
   const configured = env[EVIDENCE_RETENTION_CELLS_ENV]?.trim();
@@ -315,6 +318,13 @@ function resolveRetainedEvidenceCells(env: NodeJS.ProcessEnv = process.env): num
 
 function capturedCellCount(record: EvidenceReadRecord['record'] | undefined): number {
   return record ? record.totalRowCount * Math.max(1, record.columns.length) : 0;
+}
+
+/** Same columns, cells and field semantics; only then is a re-issued capture the same evidence. */
+function sameCapturedTable(left: CapturedEvidenceTable | undefined, right: CapturedEvidenceTable): boolean {
+  // Structural, not serialized: JSON would equate a missing cell with null.
+  return Boolean(left) && !left!.unavailableReason && !right.unavailableReason &&
+    isDeepStrictEqual([left!.columns, left!.rows, left!.fields], [right.columns, right.rows, right.fields]);
 }
 
 export class ArtifactStore {
@@ -421,7 +431,19 @@ export class ArtifactStore {
   registerStandaloneEvidenceCapture(witness: EvidenceTableWitness,
     descriptor: {meta: DataEnvelopeMeta; display: import('../types/dataContract').DataEnvelope['display']; sourceRefs?: readonly string[]; originRunId?: string}): boolean {
     if (!capturedEvidenceTable(witness) || !descriptor.meta.evidenceRefId) return false;
-    this.captureRecord(`capture:${randomUUID()}`, witness, descriptor.meta, descriptor.display, descriptor.sourceRefs, descriptor.originRunId);
+    // A producer that derives its locator from its content (the run's focus
+    // detection) re-issues the same one in a later run. An identical retained
+    // capture is kept as it is: its captureId, origin run and every read view
+    // already issued stay valid, and the locator stays unique. Different
+    // content under one locator is registered beside it and resolves as
+    // ambiguous rather than rewriting what an earlier turn cited.
+    const table = capturedEvidenceTable(witness)!;
+    for (const [key, retained] of this.executionCaptures) {
+      if (key.startsWith(STANDALONE_CAPTURE_KEY_PREFIX) && retained.record.meta.evidenceRefId === descriptor.meta.evidenceRefId &&
+          retained.record.meta.sourceToolCallId === descriptor.meta.sourceToolCallId &&
+          sameCapturedTable(capturedEvidenceTable(retained.witness), table)) return true;
+    }
+    this.captureRecord(`${STANDALONE_CAPTURE_KEY_PREFIX}${randomUUID()}`, witness, descriptor.meta, descriptor.display, descriptor.sourceRefs, descriptor.originRunId);
     return true;
   }
 

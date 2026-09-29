@@ -37,17 +37,14 @@ import type {
 } from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
 
-const DEFAULT_LIBRARY_PATH = backendLogPath('case_library.json');
-const DEFAULT_GRAPH_PATH = backendLogPath('case_graph.json');
-
 let cachedLibrary: CaseLibrary | null = null;
 let cachedGraph: CaseGraph | null = null;
 function getDefaultLibrary(): CaseLibrary {
-  if (!cachedLibrary) cachedLibrary = new CaseLibrary(DEFAULT_LIBRARY_PATH);
+  if (!cachedLibrary) cachedLibrary = new CaseLibrary(backendLogPath('case_library.json'));
   return cachedLibrary;
 }
 function getDefaultGraph(): CaseGraph {
-  if (!cachedGraph) cachedGraph = new CaseGraph(DEFAULT_GRAPH_PATH);
+  if (!cachedGraph) cachedGraph = new CaseGraph(backendLogPath('case_graph.json'));
   return cachedGraph;
 }
 

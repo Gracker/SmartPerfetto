@@ -38,11 +38,9 @@ import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore
 import type {MemoryPromotionPolicy} from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
 
-const DEFAULT_STORAGE_PATH = backendLogPath('analysis_project_memory.json');
-
 let cachedMemory: ProjectMemory | null = null;
 function getDefaultMemory(): ProjectMemory {
-  if (!cachedMemory) cachedMemory = new ProjectMemory(DEFAULT_STORAGE_PATH);
+  if (!cachedMemory) cachedMemory = new ProjectMemory(backendLogPath('analysis_project_memory.json'));
   return cachedMemory;
 }
 

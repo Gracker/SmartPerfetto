@@ -45,6 +45,8 @@ import * as claudeMcpModule from '../../agentv3/claudeMcpServer';
 import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
+import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import * as traceCompletenessProber from '../../agentv3/traceCompletenessProber';
 import * as runtimePromptContext from '../runtimePromptContext';
 import * as finalResultQualityGate from '../../services/finalResultQualityGate';
@@ -972,6 +974,24 @@ describe('OpenCode native turn intent and delivery', () => {
         expect(prompts[1].body.system).toContain('"context":"turn_policy"');
       }
     } finally { quick.mockRestore(); full.mockRestore(); }
+  }));
+
+  it('renders an issued focus-app evidence locator in both prompt variants', async () => withBackendDataDir(async () => {
+    const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps').mockResolvedValue({
+      method: 'battery_stats', confidence: 'high', primaryApp: 'com.example.opencode',
+      apps: [{packageName: 'com.example.opencode', totalDurationNs: 10, switchCount: 2, score: 50}],
+    });
+    try {
+      for (const [label, decision] of [['bounded', undefined],
+        ['wide', {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}]] as const) {
+        const harness = createNativeIntentHarness(decision ? {decision} : undefined);
+        const sessionId = `focus-evidence-${label}`;
+        await harness.runtime.analyze('which app', sessionId, 'trace-opencode', {analysisMode: 'full', runId: `run-${label}`});
+        const resolution = await resolveFocusPackageCell((harness.runtime as any).artifactStores.get(sessionId),
+          harness.prompts[1].body.system, 'trace-opencode', `run-${label}`);
+        expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.opencode'}});
+      }
+    } finally { focus.mockRestore(); }
   }));
 
   // The completeness probe runs for every `preflight !== 'none'` turn, so a

@@ -56,6 +56,49 @@ describe('ArtifactStore evidence retention', () => {
     expect(resolved).toMatchObject({status: 'missing'});
   });
 
+  it('keeps the retained capture when an identical standalone capture is re-issued under its locator', async () => {
+    // The cell travels in a one-element array so an explicit undefined is not replaced by a default.
+    const registerStandalone = (store: ArtifactStore, sourceToolCallId: string, [value]: [number | null | undefined] = [1]) =>
+      store.registerStandaloneEvidenceCapture(captureEvidenceTable({columns: ['v'], rows: [[value]]}), {
+        meta: {type: 'sql_result', version: '2.0', source: 'producer', timestamp: 0, evidenceRefId: 'data:reissued',
+          sourceToolCallId, traceId: 'trace', traceSide: 'current'}, display: {layer: 'list', format: 'table', title: 'x'},
+        originRunId: sourceToolCallId === 'producer:same' ? 'run-a' : undefined});
+    const reference = {evidenceRefId: 'data:reissued', rowIndex: 0, column: 'v'};
+    const store = new ArtifactStore();
+    expect(registerStandalone(store, 'producer:same')).toBe(true);
+    const earlierView = readView(store);
+    const [first] = await earlierView.resolveReferences([{key: 'k', reference, requiredColumns: []}]);
+    expect(store.registerStandaloneEvidenceCapture(captureEvidenceTable({columns: ['v'], rows: [[1]]}), {
+      meta: {type: 'sql_result', version: '2.0', source: 'producer', timestamp: 0, evidenceRefId: 'data:reissued',
+        sourceToolCallId: 'producer:same', traceId: 'trace', traceSide: 'current'},
+      display: {layer: 'list', format: 'table', title: 'x'}, originRunId: 'run-b'})).toBe(true);
+    // The earlier view and a new one see the same record, still owned by its first run.
+    const [again] = await earlierView.resolveReferences([{key: 'k', reference, requiredColumns: []}]);
+    const [fresh] = await readView(store).resolveReferences([{key: 'k', reference, requiredColumns: []}]);
+    expect(first).toMatchObject({status: 'resolved', record: {originRunId: 'run-a'}});
+    for (const resolution of [again, fresh]) {
+      expect(resolution).toMatchObject({status: 'resolved', record: {originRunId: 'run-a'}});
+      if (resolution.status === 'resolved' && first.status === 'resolved') expect(resolution.record.captureId).toBe(first.record.captureId);
+    }
+
+    // Different content under one locator never rewrites the retained record: it is ambiguous.
+    const changed = new ArtifactStore();
+    registerStandalone(changed, 'producer:same', [1]);
+    registerStandalone(changed, 'producer:same', [2]);
+    // A missing cell and a null cell are different evidence, even though JSON prints both as null.
+    const missing = new ArtifactStore();
+    registerStandalone(missing, 'producer:same', [undefined]);
+    registerStandalone(missing, 'producer:same', [null]);
+    // And a different producer call under the same identifier is not a re-issue.
+    const calls = new ArtifactStore();
+    registerStandalone(calls, 'producer:one');
+    registerStandalone(calls, 'producer:two');
+    for (const ambiguous of [changed, missing, calls]) {
+      expect((await readView(ambiguous).resolveReferences([{key: 'k', reference, requiredColumns: []}]))[0])
+        .toMatchObject({status: 'ambiguous'});
+    }
+  });
+
   it('accounts for width, so wide captures evict sooner than narrow ones', async () => {
     // 300 cells of budget: three 10-cell captures fit, one 200-cell capture of
     // the same row count does not. A row-based bound would not tell them apart.
