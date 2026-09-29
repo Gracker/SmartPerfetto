@@ -23,7 +23,6 @@
  */
 
 import { DataEnvelope } from '../../types/dataContract';
-import { payloadToObjectRows } from '../strategies/helpers';
 import {
   DEFAULT_DOMAIN_MANIFEST,
   DomainManifest,
@@ -1382,6 +1381,41 @@ function severityFor(
 
 function displayNameOf(sceneType: string): string {
   return displaySceneType(sceneType, 'zh-CN');
+}
+
+// ---------------------------------------------------------------------------
+// Row helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Convert columnar payload ({ columns, rows }) or array-of-objects to
+ * a normalized array of row objects.
+ *
+ * Handles three formats:
+ * 1. Already an array of objects → passthrough
+ * 2. { columns: string[], rows: any[][] } → zip into objects
+ * 3. Anything else → empty array
+ */
+function payloadToObjectRows(payload: any): Array<Record<string, any>> {
+  if (!payload) return [];
+
+  // Already array of objects
+  if (Array.isArray(payload) && payload.length > 0 && typeof payload[0] === 'object' && !Array.isArray(payload[0])) {
+    return payload as Array<Record<string, any>>;
+  }
+
+  // Columnar format
+  const columns: string[] | undefined = payload.columns;
+  const rows: any[][] | undefined = payload.rows;
+  if (!Array.isArray(columns) || !Array.isArray(rows)) return [];
+
+  return rows.map((row) => {
+    const obj: Record<string, any> = {};
+    for (let i = 0; i < columns.length; i++) {
+      obj[columns[i]] = row[i];
+    }
+    return obj;
+  });
 }
 
 // ---------------------------------------------------------------------------

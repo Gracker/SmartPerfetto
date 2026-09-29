@@ -101,16 +101,6 @@ export const VSYNC_PERIODS_NS: Record<number, bigint> = {
 export const DEFAULT_VSYNC_PERIOD_NS = VSYNC_PERIODS_NS[120];
 
 /**
- * Number of VSync periods to use when estimating frame end time
- * from start time (when end_ts and dur_ms are both unavailable).
- *
- * Value of 2 accounts for:
- * - 1 vsync for the frame itself
- * - 1 vsync buffer for display latency
- */
-export const DEFAULT_VSYNC_PERIODS_FOR_FRAME_ESTIMATION = 2;
-
-/**
  * Infer VSync period from trace context or use default.
  *
  * Resolution order:
@@ -198,73 +188,6 @@ export function getVRRJankMultiplier(vrr: VRRIndicators): number {
 
   return 1.2; // Default VRR adjustment: 20% more lenient
 }
-
-// =============================================================================
-// Circuit Breaker Thresholds
-// =============================================================================
-
-/**
- * Circuit breaker configuration for user intervention handling.
- */
-export interface CircuitBreakerThresholds {
-  /** Max times user can force-close per session */
-  maxForceCloseCount: number;
-  /** Cooldown period between force-closes (ms) */
-  forceCloseCooldownMs: number;
-  /** Timeout waiting for user response (ms) */
-  userResponseTimeoutMs: number;
-  /** Number of successes needed to transition HALF_OPEN → CLOSED */
-  halfOpenSuccessThreshold: number;
-}
-
-/**
- * Default circuit breaker thresholds.
- */
-export const DEFAULT_CIRCUIT_BREAKER_THRESHOLDS: CircuitBreakerThresholds = {
-  maxForceCloseCount: 5,
-  forceCloseCooldownMs: 30_000, // 30 seconds
-  userResponseTimeoutMs: 5 * 60 * 1000, // 5 minutes
-  halfOpenSuccessThreshold: 3,
-};
-
-// =============================================================================
-// Execution Concurrency
-// =============================================================================
-
-/**
- * Default concurrency limit for DirectSkillExecutor.
- *
- * This limits how many skills can execute in parallel to avoid
- * overwhelming trace_processor_shell with concurrent queries.
- */
-export const DEFAULT_DIRECT_SKILL_CONCURRENCY = 6;
-
-// =============================================================================
-// Analysis Depth Limits
-// =============================================================================
-
-/**
- * Maximum number of frames to analyze per session in deep analysis.
- *
- * This prevents runaway analysis on traces with many jank frames.
- * Can be overridden via skill parameters.
- */
-export const DEFAULT_MAX_FRAMES_PER_SESSION = 8;
-
-/**
- * Maximum number of frames per session when cluster-first full analysis is required.
- *
- * Used by scrolling strategy stage-2 frame list extraction so we can analyze
- * significantly more frames (e.g., 50+) and produce actionable K1/K2/K3 clusters.
- */
-export const DEFAULT_CLUSTERING_MAX_FRAMES_PER_SESSION = 200;
-
-/**
- * Maximum number of sessions to analyze in overview stage.
- *
- * This limits the scope of analysis for very long traces.
- */
-export const DEFAULT_MAX_SESSIONS_TO_ANALYZE = 10;
 
 // =============================================================================
 // Jank List Severity (for UI display)
@@ -443,17 +366,9 @@ export const ROOT_CAUSE_THRESHOLDS = {
 
 export const ANALYSIS_THRESHOLDS = {
   jank: DEFAULT_JANK_THRESHOLDS,
-  circuitBreaker: DEFAULT_CIRCUIT_BREAKER_THRESHOLDS,
   vsync: {
     periods: VSYNC_PERIODS_NS,
     default: DEFAULT_VSYNC_PERIOD_NS,
-    framesForEstimation: DEFAULT_VSYNC_PERIODS_FOR_FRAME_ESTIMATION,
-  },
-  execution: {
-    directSkillConcurrency: DEFAULT_DIRECT_SKILL_CONCURRENCY,
-    maxFramesPerSession: DEFAULT_MAX_FRAMES_PER_SESSION,
-    clusteringMaxFramesPerSession: DEFAULT_CLUSTERING_MAX_FRAMES_PER_SESSION,
-    maxSessionsToAnalyze: DEFAULT_MAX_SESSIONS_TO_ANALYZE,
   },
   confidence: {
     threshold: DEFAULT_CONFIDENCE_THRESHOLD,
