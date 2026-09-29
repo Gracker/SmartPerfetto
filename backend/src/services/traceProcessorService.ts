@@ -45,7 +45,10 @@ export interface TraceInfo {
   lastAccessTime?: Date; // Track last query/access time for smart cleanup
   status: 'uploading' | 'processing' | 'ready' | 'error';
   error?: string;
-  /** Detected trace OS — determines knowledge injection and vendor detection */
+  /**
+   * OS detected from the file head by `traceFormatDetector`; `unknown` without
+   * positive evidence. The prompt carries it as `trace_context` metadata.
+   */
   traceOs?: 'android' | 'harmonyos' | 'unknown';
   /** Detected trace format */
   traceFormat?: 'perfetto_protobuf' | 'systrace_text' | 'atrace_text' | 'unknown';
@@ -563,6 +566,9 @@ export class TraceProcessorService extends EventEmitter {
       // Detect trace format and OS before creating processor
       const filePath = this.getTraceFilePath(traceId);
       if (filePath && fs.existsSync(filePath)) {
+        // Inline, not the shared helper: the upload path must not add a
+        // microtask between detection and processor creation (the deletion and
+        // reload races in traceProcessorLeaseProcessorRouting depend on it).
         try {
           const { detectTraceFormat } = await import('./traceFormatDetector');
           const formatInfo = await detectTraceFormat(filePath);
@@ -570,7 +576,7 @@ export class TraceProcessorService extends EventEmitter {
           trace.traceFormat = formatInfo.format;
           console.log(`[TraceProcessorService] Detected trace: os=${formatInfo.os}, format=${formatInfo.format} (${formatInfo.reason})`);
         } catch (detectError: any) {
-          console.warn(`[TraceProcessorService] Format detection failed:`, detectError.message);
+          console.warn(`[TraceProcessorService] Format detection failed:`, detectError?.message);
           trace.traceOs = 'unknown';
           trace.traceFormat = 'unknown';
         }
@@ -1128,6 +1134,24 @@ export class TraceProcessorService extends EventEmitter {
    * Load trace from disk if it exists but is not in memory
    * This is useful after server restart when traces are on disk but not loaded
    */
+  /**
+   * Sets OS and format from the file itself. Detection failure resets both to
+   * `unknown`; no earlier or persisted value survives it.
+   */
+  private async applyDetectedTraceFormat(trace: TraceInfo, filePath: string): Promise<void> {
+    try {
+      const { detectTraceFormat } = await import('./traceFormatDetector');
+      const formatInfo = await detectTraceFormat(filePath);
+      trace.traceOs = formatInfo.os;
+      trace.traceFormat = formatInfo.format;
+      console.log(`[TraceProcessorService] Detected trace: os=${formatInfo.os}, format=${formatInfo.format} (${formatInfo.reason})`);
+    } catch (detectError: any) {
+      console.warn(`[TraceProcessorService] Format detection failed:`, detectError?.message);
+      trace.traceOs = 'unknown';
+      trace.traceFormat = 'unknown';
+    }
+  }
+
   public async loadTraceFromDisk(traceId: string): Promise<TraceInfo | undefined> {
     if (this.traceDeletionInProgress.has(traceId)) return undefined;
     // Already in memory
@@ -1158,8 +1182,6 @@ export class TraceProcessorService extends EventEmitter {
           filePath: tracePath,
           uploadTime: new Date(metadata.uploadedAt || Date.now()),
           status: 'ready',
-          traceOs: metadata.traceOs,
-          traceFormat: metadata.traceFormat,
           metadata: metadata.metadata,
         };
       } else {
@@ -1175,16 +1197,9 @@ export class TraceProcessorService extends EventEmitter {
         };
       }
 
-      // Detect trace format if not already known
-      if (!traceInfo.traceOs) {
-        try {
-          const { detectTraceFormat } = await import('./traceFormatDetector');
-          const formatInfo = await detectTraceFormat(tracePath);
-          traceInfo.traceOs = formatInfo.os;
-          traceInfo.traceFormat = formatInfo.format;
-          console.log(`[TraceProcessorService] Detected trace from disk: os=${formatInfo.os}, format=${formatInfo.format}`);
-        } catch { /* default to unknown */ }
-      }
+      // The file is the only authority for OS and format: a persisted value
+      // may come from an older, looser detector.
+      await this.applyDetectedTraceFormat(traceInfo, tracePath);
 
       // Register in memory
       this.storeTraceInfo(traceInfo, 'local_file');

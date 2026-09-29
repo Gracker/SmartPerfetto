@@ -145,7 +145,7 @@ export interface ClaudeAnalysisContext {
   comparison?: ComparisonContext;
   /** Trace data completeness diagnosis — injected at session init, informs data gap guidance */
   traceCompleteness?: TraceCompleteness;
-  /** Detected trace OS — determines knowledge injection and SQL dialect */
+  /** Detected trace OS (`unknown` without positive evidence), rendered into `trace_context` */
   traceOs?: 'android' | 'harmonyos' | 'unknown';
   /** Detected trace format */
   traceFormat?: 'perfetto_protobuf' | 'systrace_text' | 'atrace_text' | 'unknown';

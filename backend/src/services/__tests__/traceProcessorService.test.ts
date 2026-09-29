@@ -34,6 +34,7 @@ import {
   supportsTraceProcessorCorsOriginsFlag,
 } from '../workingTraceProcessor';
 import { isTraceProcessorQueryCancelledError } from '../traceProcessorCancellation';
+import * as traceFormatDetector from '../traceFormatDetector';
 import { listTraceCases, resolveTraceCase } from '../../utils/traceCorpus';
 
 // =============================================================================
@@ -562,6 +563,61 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
       await service.cleanup(1 * 60 * 60 * 1000, 1);
 
       expect(service.getTrace(traceId)).toBeDefined();
+    });
+  });
+
+  describe('Load Trace From Disk', () => {
+    const androidTrace = Buffer.concat([
+      Buffer.from([0x0a, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x12, 0x51]),
+      Buffer.from('google/raven_beta/raven:CinnamonBun/CP31.260508.005.A1/15421647:user/release-keys', 'latin1'),
+    ]);
+
+    // Older metadata may carry an OS label from the former substring detector.
+    function persistLegacyTrace(traceId: string): void {
+      fs.writeFileSync(path.join(uploadDir, `${traceId}.trace`), androidTrace);
+      fs.writeFileSync(path.join(uploadDir, `${traceId}.json`), JSON.stringify({
+        filename: 'legacy.trace',
+        size: androidTrace.length,
+        uploadedAt: new Date().toISOString(),
+        traceOs: 'harmonyos',
+        traceFormat: 'atrace_text',
+      }));
+    }
+
+    beforeEach(() => {
+      jest.spyOn(TraceProcessorFactory, 'create').mockImplementation(async (traceId: string) => ({
+        id: `processor-${traceId}`,
+        traceId,
+        status: 'ready',
+        activeQueries: 0,
+        query: jest.fn(async () => ({columns: [], rows: [], durationMs: 0})),
+        queryRaw: jest.fn(async (body: Buffer) => body),
+        destroy: jest.fn(),
+      }) as unknown as WorkingTraceProcessor);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('re-detects OS and format from the file instead of trusting persisted values', async () => {
+      persistLegacyTrace('legacy-harmony-label');
+
+      await expect(service.loadTraceFromDisk('legacy-harmony-label')).resolves.toMatchObject({
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      });
+    });
+
+    it('resets both detection fields to unknown when detection fails', async () => {
+      persistLegacyTrace('legacy-detection-failure');
+      jest.spyOn(traceFormatDetector, 'detectTraceFormat').mockRejectedValue(new Error('forced read failure'));
+      jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(service.loadTraceFromDisk('legacy-detection-failure')).resolves.toMatchObject({
+        traceOs: 'unknown',
+        traceFormat: 'unknown',
+      });
     });
   });
 
