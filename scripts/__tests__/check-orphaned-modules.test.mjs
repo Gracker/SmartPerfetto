@@ -8,17 +8,17 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
-import { analyzeOrphans, listModules, readEntrypointCommands } from '../check-orphaned-modules.mjs';
+import { analyzeModuleGraph, analyzeOrphans, compareWithBaseline, listModules, readEntrypointCommands } from '../check-orphaned-modules.mjs';
 
-/** Analyzes a throwaway backend tree built from `files`. */
-function analyze(files, commands = []) {
+/** Runs `analyzer` over a throwaway backend tree built from `files`. */
+function analyze(files, commands = [], analyzer = analyzeOrphans) {
   const root = mkdtempSync(join(tmpdir(), 'orphan-'));
   try {
     for (const [path, body] of Object.entries(files)) {
       mkdirSync(join(root, dirname(path)), { recursive: true });
       writeFileSync(join(root, path), body);
     }
-    return analyzeOrphans(listModules(root), commands, root);
+    return analyzer(listModules(root), commands, root);
   } finally { rmSync(root, { recursive: true, force: true }); }
 }
 
@@ -158,6 +158,34 @@ test('path-loaded workers, build tooling and test harnesses are classified by th
   assert.deepEqual(orphans(report), ['src/deadPool.ts', 'src/deadWorker.ts', 'src/harnessOnly.ts']);
   assert.deepEqual(report.get('src/harnessOnly.ts'), { reason: 'tests-only' });
   assert.deepEqual(report.get('src/deadWorker.ts'), { reason: 'orphaned-importers', importers: ['src/deadPool.ts'] });
+});
+
+// check-unused-exports.mjs requires knip.json to mark each of these as a
+// production entry, naming the file whose presence makes it one.
+test('lists entrypoints with the file that establishes each, including live path-loaded workers', () => {
+  const { entrypoints } = analyze({
+    'src/pool.ts': longBody("const entry = path.join(__dirname, 'worker.js');\nexport default entry;\n"),
+    'src/worker.ts': longBody('export default 1;\n'),
+    'src/deadPool.ts': longBody("const entry = path.join(__dirname, 'deadWorker.ts');\nexport default entry;\n"),
+    'src/deadWorker.ts': longBody('export default 1;\n'),
+    'src/generated.ts': longBody('export const generated = 1;\n'),
+    'src/scripts/verify.ts': longBody('export default 1;\n'),
+    'scripts/generate.ts': "import {generated} from '../src/generated';\nconsole.log(generated);\n",
+    'scripts/run-e2e.cjs': "const entry = path.join(backendRoot, 'src/scripts/verify.ts');\n",
+  }, ['tsx src/pool.ts'], analyzeModuleGraph);
+  assert.deepEqual(Object.fromEntries(entrypoints), {
+    'src/pool.ts': { reason: 'named by a backend/package.json command', via: 'src/pool.ts' },
+    'src/scripts/verify.ts': { reason: 'named by backend/scripts/run-e2e.cjs', via: 'src/scripts/verify.ts' },
+    'src/generated.ts': { reason: 'imported by backend/scripts/generate.ts', via: 'scripts/generate.ts' },
+    'src/worker.ts': { reason: 'loaded by path from backend/src/pool.ts', via: 'src/worker.ts' },
+  });
+});
+
+test('only findings outside the baseline are new debt', () => {
+  assert.deepEqual(compareWithBaseline(['src/a.ts', 'src/b.ts'], ['src/a.ts', 'src/gone.ts']), {
+    added: ['src/b.ts'],
+    resolved: ['src/gone.ts'],
+  });
 });
 
 test('can be imported without a script path in argv', () => {

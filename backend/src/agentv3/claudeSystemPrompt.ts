@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {ClaudeAnalysisContext} from './types';
+import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
 import {getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
 import {loadSourceUseDecisionPrompt} from '../services/codebase/sourceUseDecision';
 import {DEFAULT_OUTPUT_LANGUAGE} from './outputLanguage';
@@ -122,6 +122,19 @@ function narrowerPreflight(
 ): RuntimeTurnPolicy['preflight'] {
   if (requested === undefined) return policy;
   return PREFLIGHT_WIDTH[requested] < PREFLIGHT_WIDTH[policy] ? requested : policy;
+}
+
+/**
+ * The capability buckets and capture loss the model reasons with. The probe's
+ * shadow capability manifest and its diagnosis time stay out: the manifest is
+ * a provenance snapshot consumers intentionally ignore (hashes, lease and
+ * processor identity, RPC endpoint), and both change between calls on the same
+ * trace, which would make this cacheable prompt tier differ on every run.
+ */
+function traceCompletenessForPrompt(completeness: TraceCompleteness | undefined) {
+  if (!completeness) return undefined;
+  const {capabilityManifestResolution: _manifest, diagnosedAt: _diagnosedAt, ...forPrompt} = completeness;
+  return forPrompt;
 }
 
 /**
@@ -252,7 +265,7 @@ function buildTypedTurnSystemPromptParts(
   if (focusApp || currentPackage.source === 'auto_detected') {
     push(2, 'focus_app_guidance', requiredAsset('knowledge-focus-app-context'), true);
   }
-  data(2, 'trace_completeness', context.traceCompleteness, true);
+  data(2, 'trace_completeness', traceCompletenessForPrompt(context.traceCompleteness), true);
   data(2, 'knowledge_base', context.knowledgeBaseContext, true);
   data(3, 'available_agents', context.availableAgents, true);
 
