@@ -14,7 +14,7 @@ import fs from 'fs';
 import {randomUUID} from 'crypto';
 import {WorkingTraceProcessor} from '../workingTraceProcessor';
 import type {TraceProcessorService} from '../traceProcessorService';
-import {resolveTraceCase} from '../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../tests/helpers/traceCorpus';
 import {analyzeCriticalPath, CriticalPathInputError} from '../criticalPathAnalyzer';
 import {CRITICAL_PATH_HYPOTHESIS_IDS, type CriticalPathAnalysis} from '../../types/criticalPathContract';
 

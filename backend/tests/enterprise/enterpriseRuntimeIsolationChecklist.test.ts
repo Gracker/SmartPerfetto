@@ -5,9 +5,9 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import { RUNTIME_ISOLATION_CHECKLIST } from '../enterpriseRuntimeIsolationChecklist';
+import { RUNTIME_ISOLATION_CHECKLIST } from './enterpriseRuntimeIsolationChecklist';
 
-const REPO_ROOT = path.resolve(__dirname, '../../../..');
+const REPO_ROOT = path.resolve(__dirname, '../../..');
 
 const EXPECTED_IDS = [
   'proxy-status-websocket-query',

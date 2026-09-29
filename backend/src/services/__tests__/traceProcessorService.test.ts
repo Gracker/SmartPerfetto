@@ -35,7 +35,7 @@ import {
 } from '../workingTraceProcessor';
 import { isTraceProcessorQueryCancelledError } from '../traceProcessorCancellation';
 import * as traceFormatDetector from '../traceFormatDetector';
-import { listTraceCases, resolveTraceCase } from '../../utils/traceCorpus';
+import { listTraceCases, resolveTraceCase } from '../../../tests/helpers/traceCorpus';
 
 // =============================================================================
 // Test Environment Detection

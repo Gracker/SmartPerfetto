@@ -13,7 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import {randomUUID} from 'crypto';
 import {TraceProcessorFactory, WorkingTraceProcessor} from '../../workingTraceProcessor';
-import {resolveTraceCase} from '../../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../../tests/helpers/traceCorpus';
 import {
   clearTraceVendorCacheForTests,
   resolveTraceVendor,

@@ -9,4 +9,3 @@ export type {
   IOrchestrator,
 } from './core/orchestratorTypes';
 export { registerCoreTools } from './tools';
-export { getAgentTraceRecorder } from './traceRecorder';

@@ -13,7 +13,7 @@ import fs from 'fs';
 import {randomUUID} from 'crypto';
 import {WorkingTraceProcessor} from '../../services/workingTraceProcessor';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
-import {resolveTraceCase} from '../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../tests/helpers/traceCorpus';
 import {
   CAPABILITY_REGISTRY,
   clearTraceCompletenessProbeCache,

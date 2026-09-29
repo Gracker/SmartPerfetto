@@ -98,11 +98,22 @@ proposing patches to it, with no effect on any analysis.
 
 The check matches a module by its own source path, never by basename: the test
 path was itself registered in `package.json`, so a basename match would have
-cleared the very module that was dead. Entrypoints are script-invoked modules
-and modules `backend/scripts/` imports; imports from `backend/tests/` count as
-tests, and a sibling naming `<stem>.js` counts as importing the worker it
-loads. Re-export shims are never reported, but only a live shim keeps its
-target alive.
+cleared the very module that was dead. Entrypoints are the modules a
+`backend/package.json` script or bin, or tooling under `backend/scripts/`,
+names by path (a `dist/<path>.js` command names `src/<path>.ts`) and modules
+that tooling imports; imports from
+`backend/tests/` count as tests, and a sibling naming `<stem>.js` counts as
+importing the worker it loads. Re-export shims are never reported, but only a
+live shim keeps its target alive.
+
+Location makes nothing an entrypoint. A maintainer script under `src/scripts/`
+or a `*Cli.ts` is live only while a `package.json` script or build tooling
+runs it, so register a tool you keep (CI and docs invoke it through that
+script) and delete one you do not. Unregistered scripts used to count by path, and two January ad hoc
+scripts kept the whole `agent/experts/crossDomain` tree reachable for eight
+months after the runtime stopped using it. Data or fixtures only a suite reads
+belong under `backend/tests/`, not in `src/`. `knip.json` follows the same
+rule: it takes backend entrypoints from `package.json`, not from a directory.
 
 Orphaned means not reachable from an entrypoint: imported only by tests, by
 nothing, or only by other orphans (including cycles). An importer count cannot
@@ -116,9 +127,7 @@ live module imports it for one symbol, and a barrel keeps every re-exported
 module reachable whether or not anything uses the symbol: `agent/index.ts` once
 kept the legacy domain agents, decision trees, experts and pipeline executor
 alive while its importers used six symbols. Keep a barrel to what its importers
-use. Every module under `src/scripts/` and every `*Cli.ts` counts as an
-entrypoint, so an unreferenced manual script does the same for whatever it
-imports. After deleting an orphan root, check each export it consumed with
+use. After deleting an orphan root, check each export it consumed with
 `rg -w` for a remaining non-test caller, and confirm a hit imports it from that
 module: a same-named local function elsewhere hides a dead export. The check
 reports none of them.
@@ -671,6 +680,11 @@ current cross-runtime E2E artifact does not provide a common provider-reported
 input/output/cache/reasoning-token, TTFT, or cost receipt. Treat mode/model cost
 comparison as `NOT CONFIGURED` until those fields and the actual selected model
 are recorded; a 21/21 functional matrix is not an accuracy or token benchmark.
+For the Claude runtime alone, `npm --prefix backend run metrics:session-baseline --
+--stage <label> --since-mins <n> --out <path>` aggregates the per-session
+metrics it writes under `backend/logs/metrics/` (turns, tool calls, input and
+cache-read tokens, reported cost) so two builds can be compared on the same
+queries; other runtimes write no such file.
 
 ## Code-Aware Semantic Delta
 
