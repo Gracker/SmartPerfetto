@@ -57,8 +57,6 @@ export interface DetectedFocusApp {
   score?: number;
   scopeStartNs?: number;
   scopeEndNs?: number;
-  evidenceRefId?: string;
-  evidenceRowIndex?: number;
 }
 
 /** A process that looked foreground-like but did nothing observable in the window. */
@@ -740,11 +738,4 @@ async function detectFocusAppsUncached(
     traceProcessorService, traceId, buildFocusAppStartupSql(timeRange), 'android_startups',
     row => toNumber(row[1]));
   return rankFocusAppCandidates({processes, batteryTop, launches, timeRange});
-}
-
-/** Human-readable duration for system prompt (e.g. "2.3s", "145ms") */
-export function formatDurationNs(ns: number): string {
-  if (ns >= 1_000_000_000) return `${(ns / 1_000_000_000).toFixed(1)}s`;
-  if (ns >= 1_000_000) return `${(ns / 1_000_000).toFixed(0)}ms`;
-  return `${(ns / 1_000).toFixed(0)}us`;
 }
