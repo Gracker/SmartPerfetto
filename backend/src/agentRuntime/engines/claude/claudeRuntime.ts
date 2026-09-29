@@ -219,7 +219,7 @@ import {
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
 
-const SESSION_MAP_FILE = backendLogPath('claude_session_map.json');
+const sessionMapFile = () => backendLogPath('claude_session_map.json');
 /** Max age for session map entries before pruning (24 hours). */
 const SESSION_MAP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
@@ -239,8 +239,9 @@ function legacySessionMapWritesEnabled(): boolean {
 
 function loadPersistedSessionMap(): Map<string, SessionMapEntry> {
   try {
-    if (fs.existsSync(SESSION_MAP_FILE)) {
-      const data = JSON.parse(fs.readFileSync(SESSION_MAP_FILE, 'utf-8'));
+    const file = sessionMapFile();
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
       const map = new Map<string, SessionMapEntry>();
       for (const [key, value] of Object.entries(data)) {
         // Migration: old format stored plain string, new format stores {sdkSessionId, updatedAt}
@@ -297,7 +298,8 @@ function savePersistedSessionMap(map: Map<string, SessionMapEntry>): void {
 /** Immediate save — used by debounce timer and for critical operations (session removal). */
 function savePersistedSessionMapSync(map: Map<string, SessionMapEntry>): void {
   try {
-    const dir = path.dirname(SESSION_MAP_FILE);
+    const file = sessionMapFile();
+    const dir = path.dirname(file);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
     // Prune stale entries before saving
@@ -308,9 +310,9 @@ function savePersistedSessionMapSync(map: Map<string, SessionMapEntry>): void {
       }
     }
 
-    const tmpFile = SESSION_MAP_FILE + '.tmp';
+    const tmpFile = file + '.tmp';
     fs.writeFileSync(tmpFile, JSON.stringify(Object.fromEntries(map)));
-    fs.renameSync(tmpFile, SESSION_MAP_FILE);
+    fs.renameSync(tmpFile, file);
   } catch (err) {
     console.warn('[ClaudeRuntime] Failed to persist session map:', diagnosticLogIdentity((err as Error).message));
   }

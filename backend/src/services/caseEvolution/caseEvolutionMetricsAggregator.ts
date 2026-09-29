@@ -24,8 +24,8 @@ import {
   type KnowledgeScope,
 } from '../scopedKnowledgeStore';
 
-const DEFAULT_DB_PATH = backendDataPath('self_improve', 'case_evolution.db');
-const DEFAULT_SIDECAR_DIR = backendLogPath('case_candidates');
+const defaultDbPath = () => backendDataPath('self_improve', 'case_evolution.db');
+const defaultSidecarDir = () => backendLogPath('case_candidates');
 
 export interface CaseEvolutionMetrics {
   collectedAt: number;
@@ -91,7 +91,7 @@ export function collectCaseEvolutionMetrics(
   const flags = loadCaseEvolutionConfig(opts.env as NodeJS.ProcessEnv | undefined);
   const now = Date.now();
   const outbox = opts.outbox ?? openOutboxIfPresent(
-    opts.dbPath ?? DEFAULT_DB_PATH,
+    opts.dbPath ?? defaultDbPath(),
     warnings,
   );
   const closeOutbox = !opts.outbox && !!outbox;
@@ -133,7 +133,7 @@ export function collectCaseEvolutionMetrics(
     }
   }
 
-  const sidecars = countSidecars(opts.sidecarDir ?? DEFAULT_SIDECAR_DIR, warnings);
+  const sidecars = countSidecars(opts.sidecarDir ?? defaultSidecarDir(), warnings);
   const learnedCounts = countLearnedCases(
     opts.caseLibrary,
     opts.caseLibraryPath ?? backendLogPath('case_library.json'),

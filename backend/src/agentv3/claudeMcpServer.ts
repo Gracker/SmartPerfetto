@@ -321,11 +321,10 @@ function getRuntimeToolSignal(extra: unknown): AbortSignal | undefined {
 /** Process-wide BaselineStore singleton (Plan 50). Storage lives next
  * to the other long-lived JSON files so operators have one mental
  * model for agent state. */
-const BASELINE_STORE_PATH = backendLogPath('baselines.json');
 let cachedBaselineStore: BaselineStore | null = null;
 function getBaselineStore(): BaselineStore {
   if (!cachedBaselineStore)
-    cachedBaselineStore = new BaselineStore(BASELINE_STORE_PATH);
+    cachedBaselineStore = new BaselineStore(backendLogPath('baselines.json'));
   return cachedBaselineStore;
 }
 
@@ -944,21 +943,19 @@ function normalizeTimestampExpression(value: unknown): unknown {
 
 /** Process-wide ProjectMemory singleton (Plan 44). Independent of the
  * existing `analysisPatternMemory.ts` session-scope store. */
-const PROJECT_MEMORY_PATH = backendLogPath('analysis_project_memory.json');
 let cachedProjectMemory: ProjectMemory | null = null;
 function getProjectMemory(): ProjectMemory {
   if (!cachedProjectMemory)
-    cachedProjectMemory = new ProjectMemory(PROJECT_MEMORY_PATH);
+    cachedProjectMemory = new ProjectMemory(backendLogPath('analysis_project_memory.json'));
   return cachedProjectMemory;
 }
 
 /** Process-wide CaseLibrary singleton (Plan 54). Storage path matches
  * the other long-lived agent-state JSON files. */
-const CASE_LIBRARY_PATH = backendLogPath('case_library.json');
 let cachedCaseLibrary: CaseLibrary | null = null;
 function getCaseLibrary(): CaseLibrary {
   if (!cachedCaseLibrary)
-    cachedCaseLibrary = new CaseLibrary(CASE_LIBRARY_PATH);
+    cachedCaseLibrary = new CaseLibrary(backendLogPath('case_library.json'));
   return cachedCaseLibrary;
 }
 
@@ -1003,7 +1000,7 @@ function sqlContentTokens(sql: string): Set<string> {
   );
 }
 
-const SQL_ERROR_LOG_DIR = backendLogPath('sql_learning');
+const sqlErrorLogDir = () => backendLogPath('sql_learning');
 
 interface SqlErrorFixPair {
   errorSql: string;
@@ -1032,11 +1029,11 @@ export const MIN_PHASE_SUMMARY_CHARS = 15;
 
 function sqlErrorLogFile(scope?: KnowledgeScope): string {
   if (!enterpriseKnowledgeStoreEnabled() && !scope) {
-    return path.join(SQL_ERROR_LOG_DIR, 'error_fix_pairs.json');
+    return path.join(sqlErrorLogDir(), 'error_fix_pairs.json');
   }
   const resolved = resolveKnowledgeScope(scope);
   return path.join(
-    SQL_ERROR_LOG_DIR,
+    sqlErrorLogDir(),
     resolved.tenantId,
     resolved.workspaceId,
     'error_fix_pairs.json',

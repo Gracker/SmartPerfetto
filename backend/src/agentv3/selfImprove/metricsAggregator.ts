@@ -25,6 +25,7 @@ import {
   type SupersedeState,
 } from './supersedeStore';
 import { runSnapshots } from './strategyFingerprint';
+import { runtimeSkillNotesDir } from './skillNotesWriter';
 import type { JobState } from './reviewOutbox';
 import type { AnalysisPatternEntry, NegativePatternEntry, PatternStatus } from '../types';
 import { backendLogPath } from '../../runtimePaths';
@@ -47,11 +48,6 @@ import {
   type KnowledgeScope,
 } from '../../services/scopedKnowledgeStore';
 
-const PATTERNS_FILE = backendLogPath('analysis_patterns.json');
-const NEGATIVE_PATTERNS_FILE = backendLogPath('analysis_negative_patterns.json');
-const QUICK_PATTERNS_FILE = backendLogPath('analysis_quick_patterns.json');
-const FEEDBACK_FILE = backendLogPath('feedback', 'feedback.jsonl');
-const SKILL_NOTES_DIR = backendLogPath('skill_notes');
 const CURATED_SKILL_NOTES_DIR = path.resolve(__dirname, '..', '..', '..', 'skills', 'curated_skill_notes');
 
 export interface PatternMetrics {
@@ -116,9 +112,9 @@ export function collectSelfImproveMetrics(opts: {
 } = {}): SelfImproveMetrics {
   const warnings: string[] = [];
 
-  const positives = readJson<AnalysisPatternEntry>(opts.patternsFile ?? PATTERNS_FILE, warnings);
-  const negatives = readJson<NegativePatternEntry>(opts.negativePatternsFile ?? NEGATIVE_PATTERNS_FILE, warnings);
-  const quicks = readJson<AnalysisPatternEntry>(opts.quickPatternsFile ?? QUICK_PATTERNS_FILE, warnings);
+  const positives = readJson<AnalysisPatternEntry>(opts.patternsFile ?? backendLogPath('analysis_patterns.json'), warnings);
+  const negatives = readJson<NegativePatternEntry>(opts.negativePatternsFile ?? backendLogPath('analysis_negative_patterns.json'), warnings);
+  const quicks = readJson<AnalysisPatternEntry>(opts.quickPatternsFile ?? backendLogPath('analysis_quick_patterns.json'), warnings);
 
   const outboxMetrics = readStore(
     () => openReviewOutboxReadOnly({dbPath: opts.reviewOutboxDbPath}),
@@ -146,7 +142,7 @@ export function collectSelfImproveMetrics(opts: {
   );
 
   const skillNotes = countSkillNotes(
-    opts.skillNotesDir ?? SKILL_NOTES_DIR,
+    opts.skillNotesDir ?? runtimeSkillNotesDir(),
     opts.curatedSkillNotesDir ?? CURATED_SKILL_NOTES_DIR,
     warnings,
   );
@@ -212,7 +208,7 @@ function countEffectiveFeedback(
   warnings: string[],
 ): FeedbackMetrics {
   if (!injectedStore && !fs.existsSync(publicFeedbackIndexPath())) {
-    return countFeedback(FEEDBACK_FILE, warnings);
+    return countFeedback(backendLogPath('feedback', 'feedback.jsonl'), warnings);
   }
   let store = injectedStore;
   const close = !store;

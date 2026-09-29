@@ -51,7 +51,7 @@ import {
 
 const router = express.Router();
 
-const REPORTS_DIR = backendLogPath('reports');
+const reportsDir = () => backendLogPath('reports');
 export const REPORT_DOCUMENT_CSP = [
   "sandbox allow-scripts",
   "default-src 'none'",
@@ -126,11 +126,6 @@ function setReportDocumentSecurityHeaders(res: express.Response): void {
   res.setHeader('Content-Security-Policy', REPORT_DOCUMENT_CSP);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
-}
-
-// Ensure reports directory exists
-if (!fs.existsSync(REPORTS_DIR)) {
-  fs.mkdirSync(REPORTS_DIR, { recursive: true });
 }
 
 router.use(attachRequestContext);
@@ -410,9 +405,11 @@ function persistEnterpriseReport(reportId: string, entry: PersistedReport): void
 }
 
 function persistLegacyReport(reportId: string, entry: PersistedReport): void {
-  const filePath = path.join(REPORTS_DIR, `${reportId}.html`);
+  const dir = reportsDir();
+  fs.mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `${reportId}.html`);
   fs.writeFileSync(filePath, entry.html, 'utf-8');
-  const metaPath = path.join(REPORTS_DIR, `${reportId}.meta.json`);
+  const metaPath = path.join(dir, `${reportId}.meta.json`);
   fs.writeFileSync(metaPath, JSON.stringify({
     generatedAt: entry.generatedAt,
     sessionId: entry.sessionId,
@@ -613,11 +610,12 @@ function loadReportFromDisk(reportId: string): PersistedReport | null {
 function loadLegacyReportFromDisk(reportId: string): PersistedReport | null {
   if (!isSafeReportSegment(reportId)) return null;
   try {
-    const filePath = path.join(REPORTS_DIR, `${reportId}.html`);
+    const dir = reportsDir();
+    const filePath = path.join(dir, `${reportId}.html`);
     if (!fs.existsSync(filePath)) return null;
 
     const html = fs.readFileSync(filePath, 'utf-8');
-    const metaPath = path.join(REPORTS_DIR, `${reportId}.meta.json`);
+    const metaPath = path.join(dir, `${reportId}.meta.json`);
     let generatedAt = Date.now();
     let sessionId = '';
     let runId: string | undefined;
@@ -665,8 +663,9 @@ function loadLegacyReportFromDisk(reportId: string): PersistedReport | null {
 function deleteLegacyReport(reportId: string): boolean {
   if (!isSafeReportSegment(reportId)) return false;
   try {
-    const htmlPath = path.join(REPORTS_DIR, `${reportId}.html`);
-    const metaPath = path.join(REPORTS_DIR, `${reportId}.meta.json`);
+    const dir = reportsDir();
+    const htmlPath = path.join(dir, `${reportId}.html`);
+    const metaPath = path.join(dir, `${reportId}.meta.json`);
     const existed = fs.existsSync(htmlPath) || fs.existsSync(metaPath);
     if (fs.existsSync(htmlPath)) fs.unlinkSync(htmlPath);
     if (fs.existsSync(metaPath)) fs.unlinkSync(metaPath);
@@ -839,16 +838,17 @@ const reportCleanupInterval = setInterval(() => {
 
   if (legacyReportWritesEnabled()) {
     try {
-      const files = fs.readdirSync(REPORTS_DIR);
+      const dir = reportsDir();
+      const files = fs.readdirSync(dir);
       for (const file of files) {
         if (!file.endsWith('.meta.json')) continue;
-        const metaPath = path.join(REPORTS_DIR, file);
+        const metaPath = path.join(dir, file);
         try {
           const meta = JSON.parse(fs.readFileSync(metaPath, 'utf-8'));
           if (meta.generatedAt && now - meta.generatedAt > maxAge) {
             const reportId = file.replace('.meta.json', '');
             fs.unlinkSync(metaPath);
-            const htmlPath = path.join(REPORTS_DIR, `${reportId}.html`);
+            const htmlPath = path.join(dir, `${reportId}.html`);
             if (fs.existsSync(htmlPath)) fs.unlinkSync(htmlPath);
           }
         } catch { /* skip individual file errors */ }
