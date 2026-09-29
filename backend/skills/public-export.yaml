@@ -1650,10 +1650,6 @@ strategies:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/overview.strategy.md
-  backend/strategies/phase_hint_templates/misdiagnosis_vsync_vrr.template.yaml:
-    workflow: trace-overview
-    disposition: exported
-    destination: references/generated/strategies/misdiagnosis_vsync_vrr.template.yaml.md
   backend/strategies/pipeline.strategy.md:
     workflow: rendering-pipeline
     disposition: exported

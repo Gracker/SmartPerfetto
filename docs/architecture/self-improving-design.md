@@ -212,7 +212,6 @@ supersede。这些是可测试组件，不代表生产启动：
 | Case Evolution outbox | `backend/data/self_improve/case_evolution.db` | 生产生命周期可选 worker |
 | Runtime Skill Notes | backend runtime logs/data path | 不进 git |
 | Curated Skill Notes | `backend/skills/curated_skill_notes/` | 人工晋升并随代码评审 |
-| Phase hint templates | `backend/strategies/phase_hint_templates/` | 渲染器已删除，无运行时读取；仍在 Perfetto-Skills 公共导出清单中 |
 | Run manifests | user data `self_improve/run_manifests.db` | scope/run 身份与 pinned runtime 事实源 |
 | Feedback event/index | user data `self_improve/` 下的 public/private 日志与 `feedback_index.db` | append-only 事件；private 目录不进入策展 |
 | Eval corpus | user data `self_improve/eval.db` 与 `eval-corpus/` | immutable case artifact 与 split 元数据 |
