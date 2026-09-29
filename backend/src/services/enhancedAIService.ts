@@ -355,4 +355,4 @@ if (require.main === module) {
 }
 
 export default EnhancedAIService;
-export { GenerateSqlRequest, GenerateSqlResponse };
+export type { GenerateSqlRequest, GenerateSqlResponse };

@@ -20,7 +20,7 @@
  *   3. Diff the JSON files for cache-read ratio, cost, and so on.
  *
  * Usage:
- *   tsx src/scripts/captureContextEngineeringBaseline.ts \
+ *   npm run metrics:session-baseline -- \
  *     --stage current \
  *     --since-mins 30 \
  *     --out test-output/baseline-current.json
@@ -85,7 +85,7 @@ function defaultMetricsDir(): string {
 const DEFAULT_SINCE_MINS = 30;
 
 function printUsage(): void {
-  console.log('Usage: tsx src/scripts/captureContextEngineeringBaseline.ts [options]');
+  console.log('Usage: npm run metrics:session-baseline -- [options]');
   console.log('');
   console.log('Options:');
   console.log('  --stage <name>       Baseline stage label (current / post-P0 / post-v2.1) — required');

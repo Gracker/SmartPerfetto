@@ -45,6 +45,29 @@ describe('typed prompt with real strategy assets', () => {
       truncatedLabels: parts.truncatedLabels}));
   });
 
+  it.each(['startup', 'scrolling'] as const)('spends no %s prompt budget on the shadow capability manifest', sceneType => {
+    const plain = buildSystemPromptParts(makeWorstCaseContext(sceneType));
+    const context = makeWorstCaseContext(sceneType);
+    // A ready manifest the size the probe really attaches: every capability again, plus identities.
+    context.traceCompleteness = {...context.traceCompleteness!, capabilityManifestResolution: {
+      status: 'ready',
+      manifest: {
+        content: {schemaVersion: 'capability_manifest@1',
+          traceProcessor: {source: 'bundled', gitRevision: 'b'.repeat(40)},
+          trace: {fingerprintSha256: 'a'.repeat(64), fingerprintKind: 'trace_bytes_sha256', traceSide: 'current'},
+          capabilities: Array.from({length: 24}, (_, index) => ({id: `capability_${index}`, status: 'available',
+            evidence: {primaryTable: `table_${index}`, rowEstimate: index, contentHash: 'd'.repeat(64)}}))},
+        provenance: {traceId: 'trace-1', processorKey: 'processor-1', leaseId: 'lease-1',
+          rpcEndpoint: 'http://127.0.0.1:9731', diagnosedAt: 1, generatedAt: 2},
+        manifestId: `capability_manifest:${'c'.repeat(64)}`, contentHash: 'c'.repeat(64),
+      },
+    } as any};
+    const withManifest = buildSystemPromptParts(context);
+    expect(withManifest.fullPrompt).toBe(plain.fullPrompt);
+    expect(estimatePromptTokens(withManifest.fullPrompt)).toBe(estimatePromptTokens(plain.fullPrompt));
+    expect(withManifest.droppedLabels).toEqual([]);
+  });
+
   it.each(['zh-CN', 'en'] as const)('allows authorized source quotations in the actual %s prompt and tool description', outputLanguage => {
     const input = {codeAwareMode: 'provider_send' as const, codebaseIds: ['selected-source'], outputLanguage};
     for (const text of [loadSourceUseDecisionPrompt(input), loadSourceUseDecisionToolDescription(input)]) {

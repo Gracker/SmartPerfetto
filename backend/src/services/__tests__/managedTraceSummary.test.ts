@@ -6,7 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import {resolveTraceCase} from '../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../tests/helpers/traceCorpus';
 import {
   executeManagedTraceSummaryV1,
   type ManagedTraceSummaryExecutor,

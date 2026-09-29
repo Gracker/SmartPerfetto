@@ -24,7 +24,7 @@ import {
 
 // Import services
 import { TraceProcessorService, getTraceProcessorService } from '../../src/services/traceProcessorService';
-import { resolveTraceCase } from '../../src/utils/traceCorpus';
+import { resolveTraceCase } from '../helpers/traceCorpus';
 import {
   deleteTraceMetadata,
   writeTraceMetadata,

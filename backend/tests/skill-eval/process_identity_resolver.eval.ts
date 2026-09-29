@@ -9,7 +9,7 @@ import { describe, expect, it, beforeAll } from '@jest/globals';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../src/services/skillEngine/skillLoader';
 import { createSkillExecutor, SkillExecutor } from '../../src/services/skillEngine/skillExecutor';
 import { getTraceProcessorService, TraceProcessorService } from '../../src/services/traceProcessorService';
-import { resolveTraceCase } from '../../src/utils/traceCorpus';
+import { resolveTraceCase } from '../helpers/traceCorpus';
 
 const TRACE_CASES = [
   { file: 'lacunh_heavy.pftrace', expectedTop: /^com\.example\./ },

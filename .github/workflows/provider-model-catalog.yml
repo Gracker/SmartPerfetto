@@ -50,9 +50,8 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
           set +e
-          ./backend/node_modules/.bin/tsx \
-            backend/src/scripts/checkProviderModelCatalog.ts \
-            --output provider-model-catalog-report.md
+          npm --prefix backend run check:provider-model-catalog -- \
+            --output "$GITHUB_WORKSPACE/provider-model-catalog-report.md"
           status=$?
           echo "exit_code=$status" >> "$GITHUB_OUTPUT"
           cat provider-model-catalog-report.md >> "$GITHUB_STEP_SUMMARY"

@@ -20,9 +20,9 @@ type StepResultLike = {
 type TraceCase = {
   file: string;
   label: string;
-  minCounts?: Partial<Record<string, number>>;
+  minCounts?: Record<string, number>;
   maxUnlockEvents?: number;
-  minMaxDurationMs?: Partial<Record<string, number>>;
+  minMaxDurationMs?: Record<string, number>;
 };
 
 const TRACE_CASES: TraceCase[] = [

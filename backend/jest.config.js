@@ -11,6 +11,9 @@ module.exports = {
     '/node_modules/',
     '/src/cli/commands/',
   ],
+  // tsconfig.json sets isolatedModules, so ts-jest transpiles each file
+  // without a per-file type check; `npm run typecheck` checks src and tests
+  // as one program instead.
   transform: {
     '^.+\.ts$': 'ts-jest',
   },

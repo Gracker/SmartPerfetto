@@ -8,7 +8,7 @@ import os from 'os';
 import path from 'path';
 import { promisify } from 'util';
 import { getTraceProcessorPath } from '../../services/workingTraceProcessor';
-import { resolveTraceCase } from '../../utils/traceCorpus';
+import { resolveTraceCase } from '../../../tests/helpers/traceCorpus';
 
 const backendRoot = path.resolve(__dirname, '../../..');
 const wrapperPath = path.join(backendRoot, 'scripts/run-quick-agent-e2e.cjs');
