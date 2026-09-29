@@ -8,7 +8,7 @@ import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import {describe, it, expect} from '@jest/globals';
 import {androidInputEventsTableDdl, completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
-import {withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
+import {renderStepSql, withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
 import {builtInSkillFragment} from '../skillFragments';
 
 // Execute maintained SQL fragments in the legacy named fixtures as well.
@@ -864,6 +864,105 @@ describe('scrolling_analysis skill schema', () => {
 
       expect(row.target_process).toBe('com.android.systemui');
       expect(row.total_input_events).toBe(4);
+    } finally {
+      db.close();
+    }
+  });
+
+  it('leaves out the target\'s own monitor channel once it has application deliveries', () => {
+    // The launcher owns its window and a gesture monitor: 1-3 resolve an action
+    // on the window and are copied to the monitor, 4-5 resolve none and reach
+    // both, 6 reaches only the window.
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 1000000]),
+      ...['4', '5', '6'].map((eventId): InputDelivery => [1, launcher, 'Launcher (server)', eventId, null, 1000000]),
+      ...['1', '2', '3', '4', '5'].map((eventId): InputDelivery =>
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+    ]);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', '')).get() as {
+        target_process: string;
+        total_input_events: number;
+        move_events: number;
+      };
+
+      expect(row).toMatchObject({target_process: launcher, total_input_events: 6, move_events: 1});
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps a pinned instance that only observed input when a same-named instance has deliveries', () => {
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 1000000]),
+      ...['1', '2', '3'].map((eventId): InputDelivery =>
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+      ...['1', '2'].map((eventId): InputDelivery =>
+        [3, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+    ]);
+    try {
+      const render = (upid: string) =>
+        renderScrollingSql('input_latency_summary', launcher).split('${__process_scope.upid}').join(upid);
+      expect(db.prepare(render('NULL')).get()).toMatchObject({total_input_events: 3});
+      expect(db.prepare(render('3')).get()).toMatchObject({target_process: launcher, total_input_events: 2});
+    } finally {
+      db.close();
+    }
+  });
+
+  it('counts the input precheck in physical events of the rows the analysis reads', () => {
+    // The launcher owns its window and a gesture monitor: 1-3 resolve an action
+    // on the window and are copied to the monitor, 4-5 resolve none and reach
+    // both, 6 (FOCUS) reaches only the window. 7 is a touch on another app's
+    // window that both monitors also observe. systemui observes 1-5 and 7.
+    // Rows: launcher 12, app 1, systemui 6; physical events: 7.
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 2000000]),
+      ...['4', '5', '6'].map((eventId): InputDelivery => [1, launcher, 'Launcher (server)', eventId, null, 4000000]),
+      [3, 'com.example.app', 'app (server)', '7', 'ACTION_DOWN', 2000000],
+      ...['1', '2', '3', '4', '5', '7'].flatMap((eventId): InputDelivery[] => [
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000],
+        [2, 'com.android.systemui', '[Gesture Monitor] edge-swipe (server)', eventId, null, 3000000],
+      ]),
+    ]);
+    try {
+      const run = (stepId: string, scope: {upid?: number; packageName?: string}) => {
+        const step = getStep(stepId);
+        return db.prepare(renderStepSql(String(step.sql), step.sql_fragments, {
+          '__process_scope.upid': scope.upid ?? 'NULL',
+          package: scope.packageName ?? '',
+          start_ts: 'NULL',
+          end_ts: 'NULL',
+        })).get() as Record<string, unknown>;
+      };
+
+      // Selected app: its own monitor channel adds no events (not even 7, which
+      // only it saw), and the count is what input_latency_summary then reads.
+      for (const scope of [{packageName: launcher}, {upid: 1}]) {
+        expect(run('input_data_check', scope)).toMatchObject({
+          input_data_status: 'no_frame_match', total_input_events: 6, move_events: 1, target_processes: 1,
+        });
+        expect(run('input_latency_summary', scope)).toMatchObject({target_process: launcher, total_input_events: 6});
+      }
+      // Unscoped: each physical event once; the observer is not an input target.
+      expect(run('input_data_check', {})).toMatchObject({
+        input_data_status: 'no_frame_match', total_input_events: 7, move_events: 1, target_processes: 2,
+      });
+      // An explicitly chosen observer still returns its observations.
+      for (const scope of [{packageName: 'com.android.systemui'}, {upid: 2}]) {
+        expect(run('input_data_check', scope)).toMatchObject({
+          input_data_status: 'no_frame_match', total_input_events: 6, move_events: 0, target_processes: 1,
+        });
+      }
+      expect(run('input_data_check', {packageName: 'com.example.absent'})).toMatchObject({
+        input_data_status: 'unavailable', total_input_events: 0, target_processes: 0,
+      });
     } finally {
       db.close();
     }

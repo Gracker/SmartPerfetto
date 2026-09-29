@@ -47,6 +47,7 @@ import {
 } from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
 import { resolveFocusAppTarget } from '../../focusAppTarget';
+import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import { formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt, toolResultIsFailure } from '../../../agentv3/toolNarration';
 import { estimateAnalysisConfidence } from '../../../agentv3/analysisTermination';
@@ -3254,6 +3255,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
       () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
     this.artifactStores.set(sessionId, artifactStore);
+    // The detector's primary app becomes citable current-run evidence.
+    const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
 
     let notes = this.sessionNotes.get(sessionId);
     if (!notes) {
@@ -3388,7 +3391,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           ...(comparisonContext ? {comparison: comparisonContext} : {}),
           architecture,
           packageName: effectivePackageName,
-          focusTarget,
+          focusTarget: citedFocusTarget,
           selectionContext: options.selectionContext,
           quickMemoryContext,
           knowledgeBaseContext,
@@ -3426,7 +3429,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       query,
       architecture,
       packageName: effectivePackageName,
-      focusTarget,
+      focusTarget: citedFocusTarget,
       knowledgeBaseContext,
       sceneType,
       sqlErrorFixPairs: recentSqlErrors

@@ -59,6 +59,7 @@ import {
   SOURCE_FINALIZATION_CANARY,
   SOURCE_FINALIZATION_RAW_SOURCE,
 } from '../../agentRuntime/__tests__/sourceFinalizationFixture';
+import {resolveFocusPackageCell} from '../../agentRuntime/__tests__/focusEvidenceFixture';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
@@ -1645,6 +1646,40 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       registrySpy.mockRestore();
       knowledgeSpy.mockRestore();
       comparisonSpy.mockRestore();
+      sessionContextManager.remove(sessionId);
+    }
+  });
+
+  it('registers a confident focus detection as citable current-run evidence and renders its locator', async () => {
+    const traceId = 'trace-claude-focus-evidence';
+    const sessionId = 'session-claude-focus-evidence';
+    const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: [], durationMs: 1})), getTrace: jest.fn(() => undefined)};
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const spies = [
+      jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized').mockResolvedValue(undefined),
+      jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase').mockResolvedValue({getContextForAI: () => undefined} as any),
+      jest.spyOn(architectureDetector, 'createArchitectureDetector')
+        .mockReturnValue({detect: jest.fn(async () => undefined)} as any),
+      jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter').mockReturnValue({
+        ensureInitialized: jest.fn(async () => undefined), detectVendor: jest.fn(async () => ({vendor: 'aosp'})),
+      } as any),
+      jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness').mockResolvedValue(undefined as any),
+    ];
+    try {
+      const prepared = await (runtime as any).prepareAnalysisContext('分析启动性能', sessionId, traceId,
+        {analysisMode: 'full', runId: 'run-claude-focus'}, {
+          ...typedPreparation(),
+          focusResult: {method: 'oom_adj', confidence: 'high', primaryApp: 'com.example.focus',
+            apps: [{packageName: 'com.example.focus', totalDurationNs: 10, switchCount: 1, score: 40}]},
+          previousTurns: [], sceneType: 'startup',
+        });
+      expect(prepared.systemPrompt).toContain('focusApp.evidence');
+      const resolution = await resolveFocusPackageCell((runtime as any).artifactStores.get(sessionId),
+        prepared.systemPrompt, traceId, 'run-claude-focus');
+      expect(resolution).toMatchObject({status: 'resolved', row: {package_name: 'com.example.focus'},
+        record: {meta: {traceSide: 'current', traceId}}});
+    } finally {
+      spies.forEach(spy => spy.mockRestore());
       sessionContextManager.remove(sessionId);
     }
   });

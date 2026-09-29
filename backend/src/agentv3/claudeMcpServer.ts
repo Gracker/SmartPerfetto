@@ -115,9 +115,9 @@ import {focusAppSelectorCandidates, packageProvenance, type FocusAppTarget} from
 import {hasProcessIdentitySelector, PROCESS_IDENTITY_SELECTORS} from '../services/processIdentity/types';
 import type {EffectiveProcessScope} from '../services/processIdentity/effectiveProcessScope';
 import {getExactProcessScopeSupport} from '../services/skillEngine/processScopeSql';
-import {captureEvidenceTable, captureRawSqlEvidence, evidenceCaptureHash, evidenceTableFor,
+import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativeProducerFields,
   projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel,
-  type CapturedFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
+  type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
 import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
 import {assessScrollingJankClaimBoundary} from '../services/scrollingJankClaimBoundary';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
@@ -321,11 +321,10 @@ function getRuntimeToolSignal(extra: unknown): AbortSignal | undefined {
 /** Process-wide BaselineStore singleton (Plan 50). Storage lives next
  * to the other long-lived JSON files so operators have one mental
  * model for agent state. */
-const BASELINE_STORE_PATH = backendLogPath('baselines.json');
 let cachedBaselineStore: BaselineStore | null = null;
 function getBaselineStore(): BaselineStore {
   if (!cachedBaselineStore)
-    cachedBaselineStore = new BaselineStore(BASELINE_STORE_PATH);
+    cachedBaselineStore = new BaselineStore(backendLogPath('baselines.json'));
   return cachedBaselineStore;
 }
 
@@ -944,21 +943,19 @@ function normalizeTimestampExpression(value: unknown): unknown {
 
 /** Process-wide ProjectMemory singleton (Plan 44). Independent of the
  * existing `analysisPatternMemory.ts` session-scope store. */
-const PROJECT_MEMORY_PATH = backendLogPath('analysis_project_memory.json');
 let cachedProjectMemory: ProjectMemory | null = null;
 function getProjectMemory(): ProjectMemory {
   if (!cachedProjectMemory)
-    cachedProjectMemory = new ProjectMemory(PROJECT_MEMORY_PATH);
+    cachedProjectMemory = new ProjectMemory(backendLogPath('analysis_project_memory.json'));
   return cachedProjectMemory;
 }
 
 /** Process-wide CaseLibrary singleton (Plan 54). Storage path matches
  * the other long-lived agent-state JSON files. */
-const CASE_LIBRARY_PATH = backendLogPath('case_library.json');
 let cachedCaseLibrary: CaseLibrary | null = null;
 function getCaseLibrary(): CaseLibrary {
   if (!cachedCaseLibrary)
-    cachedCaseLibrary = new CaseLibrary(CASE_LIBRARY_PATH);
+    cachedCaseLibrary = new CaseLibrary(backendLogPath('case_library.json'));
   return cachedCaseLibrary;
 }
 
@@ -1003,7 +1000,7 @@ function sqlContentTokens(sql: string): Set<string> {
   );
 }
 
-const SQL_ERROR_LOG_DIR = backendLogPath('sql_learning');
+const sqlErrorLogDir = () => backendLogPath('sql_learning');
 
 interface SqlErrorFixPair {
   errorSql: string;
@@ -1032,11 +1029,11 @@ export const MIN_PHASE_SUMMARY_CHARS = 15;
 
 function sqlErrorLogFile(scope?: KnowledgeScope): string {
   if (!enterpriseKnowledgeStoreEnabled() && !scope) {
-    return path.join(SQL_ERROR_LOG_DIR, 'error_fix_pairs.json');
+    return path.join(sqlErrorLogDir(), 'error_fix_pairs.json');
   }
   const resolved = resolveKnowledgeScope(scope);
   return path.join(
-    SQL_ERROR_LOG_DIR,
+    sqlErrorLogDir(),
     resolved.tenantId,
     resolved.workspaceId,
     'error_fix_pairs.json',
@@ -8107,8 +8104,6 @@ const WAIT_CHAIN_SUMMARY_COLUMNS = [
 type WaitChainSummaryColumn = typeof WAIT_CHAIN_SUMMARY_COLUMNS[number];
 type WaitChainSummaryRow = Record<WaitChainSummaryColumn, number | null>;
 
-type DeclaredFieldSemantics = Omit<CapturedFieldSemantics, 'origin'>;
-
 const NS_START: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'start', clock: 'trace_monotonic'};
 const NS_END: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'end', clock: 'trace_monotonic'};
 const NS_DURATION: DeclaredFieldSemantics = {unit: 'ns', timeRole: 'duration', clock: 'trace_monotonic'};
@@ -8117,26 +8112,23 @@ const UTID_IDENTITY: DeclaredFieldSemantics = {identityRole: 'utid'};
 
 /**
  * Producer semantics for one table, fingerprinted by what defines them: the
- * engine version, the table's columns and the declarations themselves. A
- * change to any of them yields a new fingerprint.
+ * engine version, the table's columns and the declarations themselves.
  */
-function nativeProducerFields(
+function waitChainFields(
   table: string,
   columns: readonly string[],
   declared: Record<string, DeclaredFieldSemantics>,
 ): Record<string, CapturedFieldSemantics> {
-  const definitionFingerprint = evidenceCaptureHash({
+  return nativeProducerFields({
     producer: 'analyze_wait_chain', table, engine: CRITICAL_PATH_ENGINE_VERSION, columns, fields: declared,
-  });
-  return Object.fromEntries(Object.entries(declared).map(([column, field]) =>
-    [column, {...field, origin: {kind: 'native_producer' as const, definitionFingerprint}}]));
+  }, declared);
 }
 
-const WAIT_CHAIN_SEGMENT_FIELDS = nativeProducerFields('wait_segments', WAIT_CHAIN_SEGMENT_COLUMNS, {
+const WAIT_CHAIN_SEGMENT_FIELDS = waitChainFields('wait_segments', WAIT_CHAIN_SEGMENT_COLUMNS, {
   start_ts: NS_START, dur_ns: NS_DURATION, utid: UTID_IDENTITY,
 });
 
-const WAIT_CHAIN_SUMMARY_FIELDS = nativeProducerFields('wait_summary', WAIT_CHAIN_SUMMARY_COLUMNS, {
+const WAIT_CHAIN_SUMMARY_FIELDS = waitChainFields('wait_summary', WAIT_CHAIN_SUMMARY_COLUMNS, {
   utid: UTID_IDENTITY,
   window_start_ts: NS_START,
   window_end_ts: NS_END,

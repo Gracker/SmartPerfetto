@@ -28,9 +28,6 @@ import {
   FAILURE_CATEGORIES,
 } from './failureTaxonomy';
 
-const PATTERNS_FILE = backendLogPath('analysis_patterns.json');
-const NEGATIVE_PATTERNS_FILE = backendLogPath('analysis_negative_patterns.json');
-
 export interface MigrationReport {
   total: number;
   alreadyHashed: number;
@@ -182,24 +179,26 @@ function atomicWrite(file: string, data: unknown): void {
 
 async function main(): Promise<void> {
   const apply = process.argv.includes('--apply');
+  const patternsFile = backendLogPath('analysis_patterns.json');
+  const negativePatternsFile = backendLogPath('analysis_negative_patterns.json');
 
-  const positives = readJsonArray<AnalysisPatternEntry>(PATTERNS_FILE);
-  const negatives = readJsonArray<NegativePatternEntry>(NEGATIVE_PATTERNS_FILE);
+  const positives = readJsonArray<AnalysisPatternEntry>(patternsFile);
+  const negatives = readJsonArray<NegativePatternEntry>(negativePatternsFile);
 
   const positiveResult = backfillPatternEntries(positives);
   const negativeResult = backfillNegativeEntries(negatives);
 
-  console.log(formatReport(`positive patterns (${PATTERNS_FILE})`, positiveResult.report));
-  console.log(formatReport(`negative patterns (${NEGATIVE_PATTERNS_FILE})`, negativeResult.report));
+  console.log(formatReport(`positive patterns (${patternsFile})`, positiveResult.report));
+  console.log(formatReport(`negative patterns (${negativePatternsFile})`, negativeResult.report));
 
   if (apply) {
     if (positiveResult.report.newlyHashed > 0) {
-      atomicWrite(PATTERNS_FILE, positiveResult.entries);
-      console.log(`\n[applied] wrote ${positiveResult.entries.length} entries to ${PATTERNS_FILE}`);
+      atomicWrite(patternsFile, positiveResult.entries);
+      console.log(`\n[applied] wrote ${positiveResult.entries.length} entries to ${patternsFile}`);
     }
     if (negativeResult.report.newlyHashed > 0) {
-      atomicWrite(NEGATIVE_PATTERNS_FILE, negativeResult.entries);
-      console.log(`[applied] wrote ${negativeResult.entries.length} entries to ${NEGATIVE_PATTERNS_FILE}`);
+      atomicWrite(negativePatternsFile, negativeResult.entries);
+      console.log(`[applied] wrote ${negativeResult.entries.length} entries to ${negativePatternsFile}`);
     }
   } else {
     console.log('\n(dry-run — pass --apply to write changes back to disk)');

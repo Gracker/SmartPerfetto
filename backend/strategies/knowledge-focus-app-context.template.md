@@ -24,3 +24,7 @@ it explicitly as the process selector, and say which one you chose and why; if
 the choice would change the answer and the signals cannot decide it, ask.
 Processes in `excludedNoActivity` did nothing observable in the window; skip
 them unless the user asks about them.
+
+`focusApp.evidence`, when present, is a citable current-run row of the
+detector's own output. Its cells mean "the detector's primary app for this
+window", not the user's target and not a duration.

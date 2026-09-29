@@ -18,10 +18,13 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { readSkillNotesFile, type SkillNotesFile, type PersistedSkillNote } from './skillNotesWriter';
-import { backendLogPath } from '../../runtimePaths';
+import {
+  readSkillNotesFile,
+  runtimeSkillNotesDir,
+  type SkillNotesFile,
+  type PersistedSkillNote,
+} from './skillNotesWriter';
 
-const RUNTIME_DIR = backendLogPath('skill_notes');
 const CURATED_DIR = path.resolve(__dirname, '..', '..', '..', 'skills', 'curated_skill_notes');
 
 export interface PromoteResult {
@@ -45,7 +48,7 @@ export function promoteSkillNote(
     dryRun?: boolean;
   } = {},
 ): PromoteResult {
-  const runtimeDir = opts.runtimeDir ?? RUNTIME_DIR;
+  const runtimeDir = opts.runtimeDir ?? runtimeSkillNotesDir();
   const curatedDir = opts.curatedDir ?? CURATED_DIR;
   const runtimeFile = path.join(runtimeDir, `${skillId}.notes.json`);
   const curatedFile = path.join(curatedDir, `${skillId}.notes.json`);

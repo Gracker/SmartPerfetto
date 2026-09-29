@@ -26,6 +26,7 @@ import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic, sanitizeCand
   type CandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
 import {extractFindingsFromText} from '../../../agentv3/claudeFindingExtractor';
 import {resolveFocusAppTarget} from '../../focusAppTarget';
+import {registerFocusAppEvidence} from '../../focusAppEvidence';
 import {type SceneType} from '../../../agentv3/sceneClassifier';
 import {getExtendedKnowledgeBase} from '../../../services/sqlKnowledgeBase';
 import {analysisContextMemoryPartitionKey, analysisContextUsesPrivateKnowledge, assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
@@ -1513,6 +1514,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     await preflight('skill_registry', () => ensureSkillRegistryInitialized());
     executionLease?.throwIfAborted();
     const {artifactStore, notes, analysisPlan, previousPlan, hypotheses, uncertaintyFlags} = this.resetAnalysisSessionState(sessionId, traceId, options);
+    // The detector's primary app becomes citable current-run evidence.
+    const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
     const sqlErrorPartition = analysisContextMemoryPartitionKey(options);
     if (this.sessionSqlErrorPartitions.get(sessionId) !== sqlErrorPartition) {
       this.sessionSqlErrors.delete(sessionId);
@@ -1567,7 +1570,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       // conversation turn with no attached trace read no trace facts and the
       // prompt must not advertise them.
       preflight: policy.preflight,
-      architecture, packageName: effectivePackageName, focusTarget,
+      architecture, packageName: effectivePackageName, focusTarget: citedFocusTarget,
       knowledgeBaseContext, sceneType,
       selectionContext: options.selectionContext, comparison: comparisonContext, traceCompleteness,
       traceOs: traceInfo?.traceOs, traceFormat: traceInfo?.traceFormat,

@@ -108,10 +108,8 @@ export function computeStrategyContentHash(scene: string): string {
  * lower-case strings + array sort keep the hash stable across cosmetic
  * reordering of the same content.
  *
- * Intentionally excludes `id` (it is derived from the fingerprint —
- * including it would be circular) so that a freshly-rendered auto-patch
- * by `phaseHintsRenderer` produces the *same* fingerprint that
- * `detectDrift` computes off the on-disk hint after the patch lands.
+ * Intentionally excludes `id`: auto-generated hint ids were derived from
+ * the fingerprint, so including it would be circular.
  */
 export function computePatchFingerprint(hint: PhaseHint): string {
   return computeHintFingerprint({
