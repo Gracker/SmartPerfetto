@@ -635,8 +635,8 @@ export function rankFocusAppCandidates(input: FocusAppRankingInput): FocusAppDet
 /**
  * Focus detection is several queries with no cheaper form, so a bounded turn
  * that asks two questions about one trace would run them twice. Architecture
- * and vendor already cache per trace; this closes the remaining preflight that
- * did not.
+ * already caches per trace (vendor resolution has its own shared cache in
+ * services/traceVendor); this closes the remaining preflight that did not.
  *
  * The key is the processor service (a different service is a different trace
  * world, and it keeps one test's mock out of the next one), the trace, and the

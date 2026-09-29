@@ -12,7 +12,6 @@ import type {TraceProcessorService} from '../../../services/traceProcessorServic
 import {createSkillExecutor} from '../../../services/skillEngine/skillExecutor';
 import {ensureSkillRegistryInitialized, skillRegistry} from '../../../services/skillEngine/skillLoader';
 import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
-import {getSkillAnalysisAdapter} from '../../../services/skillEngine/skillAnalysisAdapter';
 import {createArchitectureDetector} from '../../../agent/detectors/architectureDetector';
 import {sessionContextManager} from '../../../agent/context/enhancedSessionContext';
 import type {ConversationTurn, StreamingUpdate, Finding} from '../../../agent/types';
@@ -577,7 +576,6 @@ export const __testing = {
 export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   private readonly traceProcessorService: TraceProcessorService;
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
-  private readonly vendorCache = new Map<string, string>();
   private readonly artifactStores = new Map<string, ArtifactStore>();
   private readonly sessionNotes = new Map<string, AnalysisNote[]>();
   private readonly sessionSqlErrors = new Map<string, Array<{ errorSql: string; errorMessage: string; timestamp: number; fixedSql?: string }>>();
@@ -1255,7 +1253,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     this.executionGuard.clear();
     this.abortAllSessions();
     this.architectureCache.clear();
-    this.vendorCache.clear();
     this.artifactStores.clear();
     this.sessionNotes.clear();
     this.sessionSqlErrors.clear();
@@ -1498,8 +1495,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const effectivePackageName = focusTarget.packageName;
     const architecture = policy.preflight !== 'none'
       ? await preflight('architecture', () => this.detectArchitecture(traceId, effectivePackageName)) : undefined;
-    const detectedVendor = policy.preflight !== 'none'
-      ? await this.detectVendor(traceId) : null;
     executionLease?.throwIfAborted();
     const traceCompleteness = policy.preflight !== 'none'
       ? await preflight('completeness', () => this.detectCompleteness(traceId, architecture)) : undefined;
@@ -1551,7 +1546,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           this.captureEntitiesFromSkillDisplayResults(result.displayResults, entityStore);
         }
       },
-      analysisNotes: notes, artifactStore, cachedArchitecture: architecture, cachedVendor: detectedVendor,
+      analysisNotes: notes, artifactStore, cachedArchitecture: architecture,
       recentSqlErrors: sqlErrors, analysisPlan, watchdogWarning: {current: null}, hypotheses, sceneType, uncertaintyFlags,
       referenceTraceId: options.referenceTraceId, comparisonContext,
       allowNewEvidence: policy.allowNewEvidence, strategyRegistry: runtime.strategyRegistry,
@@ -1646,23 +1641,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       throw new Error('Reference trace comparison context was not created');
     }
     return comparisonContext;
-  }
-
-  private async detectVendor(traceId: string): Promise<string | null> {
-    const cached = getLruCacheEntry(this.vendorCache, traceId);
-    if (cached) return cached;
-    try {
-      const adapter = getSkillAnalysisAdapter(this.traceProcessorService);
-      await adapter.ensureInitialized();
-      const result = await adapter.detectVendor(traceId);
-      if (result.vendor && result.vendor !== 'aosp') {
-        setLruCacheEntry(this.vendorCache, traceId, result.vendor);
-      }
-      return result.vendor;
-    } catch (error) {
-      console.warn('[OpenAIRuntime] Vendor detection failed:', (error as Error).message);
-      return null;
-    }
   }
 
   private async detectCompleteness(

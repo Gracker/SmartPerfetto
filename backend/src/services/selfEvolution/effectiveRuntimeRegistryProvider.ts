@@ -375,6 +375,9 @@ function buildReadonlySkillRegistry(input: {
       return [...(vendorOverrides.get(skillId) ?? [])]
         .map(override => frozenJsonClone(override));
     },
+    hasVendorOverrides(skillId: string): boolean {
+      return (vendorOverrides.get(skillId)?.length ?? 0) > 0;
+    },
     getVendorOverrideLoadIssues() {
       return vendorOverrideLoadIssues.map(issue => frozenJsonClone(issue));
     },

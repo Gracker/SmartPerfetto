@@ -614,6 +614,30 @@ Base path: `/api/skills`
 | `POST` | `/detect-intent` | Intent detection |
 | `POST` | `/detect-vendor` | Vendor detection |
 
+`POST /detect-vendor` (body `{traceId}`) resolves the device identity from the
+trace `metadata`, never from slice names, and caches the result per trace
+identity. The response uses schema `trace_vendor@1`:
+
+| Field | Meaning |
+|---|---|
+| `schemaVersion` | `trace_vendor@1` |
+| `vendor` | `pixel`, `xiaomi`, `oppo`, `vivo`, `honor`, `huawei`, `samsung`, `aosp`, `other`, `unknown` |
+| `brand` | Only when `vendor` is `other`: the normalized brand (for example `nubia`) |
+| `confidence` | Number: high 0.9, medium 0.7, low 0.4; 0 when `vendor` is `unknown` or the query failed |
+| `vendorConfidence` | `high`, `medium`, `low` |
+| `soc` | `qualcomm`, `mtk`, `google_tensor`, `samsung_exynos`, `unknown` |
+| `os` | `android`, `harmonyos`, `unknown` |
+| `source` | `metadata_manufacturer`, `metadata_fingerprint`, `soc_model`, `trace_os`, `none`, `query_failed` |
+| `evidence` | The manufacturer, fingerprint brand, SoC model and SDK used, plus conflict flags (`manufacturerBrandMismatch`, `osConflict`; for conflicting device identities, `scopeConflict` with each scope's `scopeIdentities`) |
+
+Contract change: `aosp` now means an AOSP or generic build only. A trace with
+no identity returns `unknown` (earlier versions returned `aosp`), and a failed
+query returns `unknown` with `source: query_failed`. `harmonyos` is no longer a
+`vendor` value; it appears only in `os`, and only when format detection says
+HarmonyOS and no scope of the trace carries Android identity.
+`POST /execute/:skillId` and `POST /analyze` include `vendor` only when an OEM
+was identified (`vendor` is not `aosp`, `unknown` or `other`).
+
 Admin path: `/api/admin`
 
 | Method | Path | Purpose |

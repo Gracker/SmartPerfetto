@@ -551,13 +551,15 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
   }
 
   // Lint rule 5 — skill-vendor-override-runtime-conformant
-  // Per docs/reference/skill-system.md: claudeMcpServer.ts:708 silently skips
-  // overrides whose `additional_steps.length === 0`, so empty overrides are
-  // dead diff. detectVendor() also requires at least one signature pattern to
-  // ever match. These are now errors (was warnings).
+  // Per docs/reference/skill-system.md: the invoke_skill hint skips overrides
+  // whose `additional_steps.length === 0`, so empty overrides are dead diff.
+  // The runtime does not match `vendor_detection.signatures`: the trace vendor
+  // resolver reads device metadata, and an override is selected by its
+  // directory name / `meta.vendor`. The signatures remain required metadata
+  // that documents the vendor's trace markers; the rule stays an error.
   const signatures = override.vendor_detection?.signatures;
   if (signatures === undefined) {
-    errors.push('vendor_detection.signatures: required (lint rule 5 — overrides without signatures never match at runtime)');
+    errors.push('vendor_detection.signatures: required (lint rule 5 — documents the vendor\'s trace markers; the runtime selects overrides by directory / meta.vendor, not by these patterns)');
   } else if (!Array.isArray(signatures)) {
     errors.push('vendor_detection.signatures must be an array');
   } else if (signatures.length === 0) {

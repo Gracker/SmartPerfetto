@@ -42,6 +42,7 @@ import {runOpenCodeIntentTransport} from '../engines/opencode/openCodeIntentTran
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
 import * as claudeMcpModule from '../../agentv3/claudeMcpServer';
+import {expectRuntimeVendorHintParity} from './vendorHintParityFixture';
 import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
@@ -1032,6 +1033,18 @@ describe('OpenCode native turn intent and delivery', () => {
       mcp.mockRestore();
       resolver.mockRestore();
     }
+  }));
+
+  it('gives invoke_skill the shared best-effort vendor hint from its own MCP options', async () => withBackendDataDir(async () => {
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
+    let runtimeOptions: Parameters<typeof createClaudeMcpServer>[0];
+    try {
+      const harness = createNativeIntentHarness();
+      await harness.runtime.analyze('分析启动性能', 'opencode-vendor-hint', 'trace-opencode');
+      runtimeOptions = mcp.mock.calls[0][0];
+    } finally { mcp.mockRestore(); }
+    await expectRuntimeVendorHintParity({
+      createMcpServer: createClaudeMcpServer, runtimeOptions});
   }));
 
   it.each(['fast', 'full'] as const)('preserves known pair package identities for bounded %s answers', async analysisMode => withBackendDataDir(async () => {

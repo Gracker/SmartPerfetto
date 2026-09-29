@@ -291,8 +291,11 @@ Schema validation does not establish semantic correctness or widen permission.
 `RuntimeTurnPolicy.preflight` is three-valued and independent of budget: `none`
 (`existing_only`) gathers nothing, `full` (resolved `scene_wide` read) adds
 memory-type prefetch, and `trace_facts` — a bounded question, or an unavailable
-classification — still detects focus app, architecture, vendor and trace
-completeness. Focus detection scores candidate processes once over the
+classification — still detects focus app, architecture and trace
+completeness. Vendor is not a preflight phase: `invoke_skill` resolves it only
+for a Skill with vendor overrides, after that Skill's own queries, through the
+shared cached `traceVendorResolver` (trace metadata only) with a bounded wait,
+and attaches a `vendorOverride` hint; the rule is the same in all five runtimes. Focus detection scores candidate processes once over the
 analysis window (foreground time, frames, launches, battery `top`, CPU),
 excludes processes with no activity and reports `high`/`medium`/`ambiguous`
 confidence. All five runtimes resolve the effective package through

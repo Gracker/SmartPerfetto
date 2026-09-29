@@ -40,7 +40,6 @@ import type { TraceProcessorService } from '../../../services/traceProcessorServ
 import { createSkillExecutor } from '../../../services/skillEngine/skillExecutor';
 import { ensureSkillRegistryInitialized, skillRegistry } from '../../../services/skillEngine/skillLoader';
 import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
-import { getSkillAnalysisAdapter } from '../../../services/skillEngine/skillAnalysisAdapter';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';
 import type { StreamingUpdate, Finding } from '../../../agent/types';
@@ -637,8 +636,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   private sessionMap: Map<string, SessionMapEntry>;
   /** Cache architecture detection results per traceId (deterministic per trace). */
   private architectureCache: Map<string, ArchitectureInfo> = new Map();
-  /** Cache vendor detection results per traceId (deterministic per trace). */
-  private vendorCache: Map<string, string> = new Map();
   /** Per-session artifact stores — persist across turns within a session. */
   private artifactStores: Map<string, ArtifactStore> = new Map();
   /** Per-session analysis notes — persist across turns within a session. */
@@ -2368,7 +2365,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.executionGuard.clear();
     this.abortAllSessions();
     this.architectureCache.clear();
-    this.vendorCache.clear();
     // Also clear all session-scoped stores to prevent unbounded growth
     this.artifactStores.clear();
     this.sessionNotes.clear();
@@ -2593,27 +2589,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       return architecture;
     }) : Promise.resolve(getLruCacheEntry(this.architectureCache, traceId));
 
-    // Phase 2.5: Vendor detection (LRU cached per traceId, reuses SkillAnalysisAdapter.detectVendor)
-    const detectedVendorPromise = turnPolicy.preflight !== 'none' ? schedulePreflight(async () => {
-      await architecturePromise;
-      executionLease?.throwIfAborted();
-      let detectedVendor = getLruCacheEntry(this.vendorCache, traceId) ?? null;
-      if (!detectedVendor) {
-        try {
-          const adapter = getSkillAnalysisAdapter(this.traceProcessorService);
-          await adapter.ensureInitialized();
-          const vendorResult = await adapter.detectVendor(traceId);
-          detectedVendor = vendorResult.vendor;
-          if (detectedVendor && detectedVendor !== 'aosp') {
-            setLruCacheEntry(this.vendorCache, traceId, detectedVendor);
-          }
-        } catch (err) {
-          console.warn('[ClaudeRuntime] Vendor detection failed:', diagnosticLogIdentity((err as Error).message));
-        }
-      }
-      return detectedVendor;
-    }) : Promise.resolve(getLruCacheEntry(this.vendorCache, traceId) ?? null);
-
     // Phase 2.9: Trace data completeness probe (identity-safe shared cache)
     const traceCompletenessPromise = turnPolicy.preflight !== 'none' ? runPreflightPhase('completeness', async () => {
       const architecture = await architecturePromise;
@@ -2630,14 +2605,12 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }) : Promise.resolve(undefined);
 
     let architecture: Awaited<typeof architecturePromise>;
-    let detectedVendor: Awaited<typeof detectedVendorPromise>;
     let traceCompleteness: Awaited<typeof traceCompletenessPromise>;
     let comparisonContext: Awaited<ReturnType<typeof buildRuntimeTracePairComparisonContext>> | undefined;
     let knowledgeBaseContext: Awaited<typeof knowledgeBaseContextPromise>;
     try {
-      [architecture, detectedVendor, traceCompleteness, comparisonContext, knowledgeBaseContext] = await Promise.all([
+      [architecture, traceCompleteness, comparisonContext, knowledgeBaseContext] = await Promise.all([
         architecturePromise,
-        detectedVendorPromise,
         traceCompletenessPromise,
         comparisonContextPromise ?? Promise.resolve(undefined),
         knowledgeBaseContextPromise,
@@ -2791,7 +2764,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       analysisNotes: notes,
       artifactStore,
       cachedArchitecture: architecture,
-      cachedVendor: detectedVendor,
       recentSqlErrors: sqlErrors,
       analysisPlan,
       watchdogWarning,

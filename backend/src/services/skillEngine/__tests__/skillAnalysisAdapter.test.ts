@@ -4,6 +4,15 @@
 
 import {describe, expect, it, jest} from '@jest/globals';
 import {SkillAnalysisAdapter} from '../skillAnalysisAdapter';
+import {
+  clearTraceVendorCacheForTests,
+  TRACE_VENDOR_METADATA_SQL,
+} from '../../traceVendor/traceVendorResolver';
+import {
+  metadataQueryResult,
+  vendorQueryServiceDouble,
+  XIAOMI_METADATA,
+} from '../../traceVendor/__tests__/traceVendorFixture';
 import {LayeredResult} from '../skillExecutor';
 import {SkillRegistry} from '../skillLoader';
 
@@ -64,8 +73,8 @@ describe('SkillAnalysisAdapter layered conversion', () => {
       packId: 'test-pack',
     });
     (registry as any).initialized = true;
-    const adapter = new SkillAnalysisAdapter({ query: jest.fn() } as any, undefined, { registry });
-    jest.spyOn(adapter, 'detectVendor').mockResolvedValue({ vendor: 'aosp', confidence: 1 });
+    const traceProcessor = vendorQueryServiceDouble(jest.fn(async () => metadataQueryResult([])));
+    const adapter = new SkillAnalysisAdapter(traceProcessor as any, undefined, { registry });
     jest.spyOn(adapter as any, 'hasLayeredOutput').mockReturnValue(layered);
     const executor = (adapter as any).executor;
     const execute = jest.spyOn(executor, layered ? 'executeCompositeSkill' : 'execute').mockResolvedValue(layered ? {
@@ -309,33 +318,32 @@ describe('SkillAnalysisAdapter layered conversion', () => {
     }));
   });
 
-  it('maps detected vendor ids consistently with available vendor profiles', async () => {
-    const queryMock = jest.fn() as any;
-    queryMock.mockResolvedValueOnce({rows: []});
-    queryMock.mockResolvedValueOnce({
-      rows: [['pixel']],
-    });
-    const traceProcessorMock = {
-      query: queryMock,
-    };
-    const adapter = new SkillAnalysisAdapter(traceProcessorMock as any);
+  it('delegates vendor detection to the metadata resolver and keeps a numeric confidence', async () => {
+    clearTraceVendorCacheForTests();
+    const queryMock = jest.fn(async () => XIAOMI_METADATA);
+    const adapter = new SkillAnalysisAdapter(vendorQueryServiceDouble(queryMock) as any);
 
     const detected = await adapter.detectVendor('trace-1');
-    expect(queryMock).toHaveBeenCalled();
-    expect(detected.vendor).toBe('pixel');
-    expect(detected.confidence).toBeGreaterThan(0.5);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect((queryMock.mock.calls[0] as unknown[])[1]).toBe(TRACE_VENDOR_METADATA_SQL);
+    expect(detected).toEqual({
+      schemaVersion: 'trace_vendor@1', vendor: 'xiaomi', confidence: 0.9, vendorConfidence: 'high',
+      soc: 'qualcomm', os: 'android', source: 'metadata_manufacturer',
+      evidence: {manufacturer: 'Xiaomi', fingerprintBrand: 'Xiaomi', socModel: 'SM8850', sdk: 36},
+    });
+    // Cached per trace identity: a second detection issues no query.
+    await adapter.detectVendor('trace-1');
+    expect(queryMock).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back to aosp when vendor detection query fails', async () => {
-    const queryMock = jest.fn() as any;
-    queryMock.mockRejectedValue(new Error('query failed'));
-    const traceProcessorMock = {
-      query: queryMock,
-    };
-    const adapter = new SkillAnalysisAdapter(traceProcessorMock as any);
+  it('reports unknown with confidence 0, not aosp, when the vendor query fails', async () => {
+    clearTraceVendorCacheForTests();
+    const queryMock = jest.fn(async () => { throw new Error('query failed'); });
+    const adapter = new SkillAnalysisAdapter(vendorQueryServiceDouble(queryMock) as any);
 
-    const detected = await adapter.detectVendor('trace-1');
-    expect(detected).toEqual({ vendor: 'aosp', confidence: 0.5 });
+    await expect(adapter.detectVendor('trace-1')).resolves.toMatchObject({
+      vendor: 'unknown', confidence: 0, vendorConfidence: 'low', source: 'query_failed', soc: 'unknown', os: 'unknown',
+    });
   });
 
   it('preserves external-pack metadata and reports authored localization', async () => {

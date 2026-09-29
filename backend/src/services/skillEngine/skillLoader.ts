@@ -777,6 +777,11 @@ export class SkillRegistry {
     return this.vendorOverrides.get(skillId) || [];
   }
 
+  /** Whether any vendor override extends this Skill, keyed like `getVendorOverride`. */
+  hasVendorOverrides(skillId: string): boolean {
+    return (this.vendorOverrides.get(skillId)?.length ?? 0) > 0;
+  }
+
   /**
    * 获取所有已加载的 vendor override 数量
    */

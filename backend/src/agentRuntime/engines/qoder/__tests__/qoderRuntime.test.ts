@@ -4,6 +4,7 @@
 
 import { describe, expect, it, jest, beforeEach } from '@jest/globals';
 import type {CodeAwareTextProjectionReceipt} from '../../../../services/security/codeAwareOutputRegistry';
+import {expectRuntimeVendorHintParity} from '../../../__tests__/vendorHintParityFixture';
 
 const mockInterrupt = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
 const mockClose = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
@@ -380,6 +381,17 @@ describe('QoderRuntime', () => {
       expect(mockCreateClaudeMcpServer.mock.calls[0][0]).toEqual(expect.objectContaining({
         toolObserver: expect.any(Function),
       }));
+    });
+
+    it('gives invoke_skill the shared best-effort vendor hint from its own MCP options', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
+      ]));
+      await createRuntime().analyze('分析启动性能', 'session-1', 'trace-1', {analysisMode: 'full'});
+      const runtimeOptions = mockCreateClaudeMcpServer.mock.calls[0][0] as Record<string, unknown>;
+      const actualMcp = jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>('../../../../agentv3/claudeMcpServer');
+      await expectRuntimeVendorHintParity({
+        createMcpServer: actualMcp.createClaudeMcpServer, runtimeOptions});
     });
 
     it('records actual SDK descriptor outcomes once with intact receipts and auto-phase events', async () => {

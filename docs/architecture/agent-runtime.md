@@ -193,8 +193,10 @@ scene 必须属于本 run 固定的 registry。声明通过 schema 校验不等�
 请求权限。`existing_only` 只读已保留证据；`read_new` 仍受授权限制。bounded/unavailable
 `RuntimeTurnPolicy.preflight` 分三档，与预算档无关：`existing_only` 为 `none`，什么都不取；
 已解析的 `scene_wide` 读取为 `full`，额外预取记忆类上下文（知识库、模式、案例、SQL 修复对）；
-bounded 问题和 unavailable 分类为 `trace_facts`，仍然检测焦点应用、架构、厂商和 trace 完整性——
-问题再窄，也是针对一份模型没见过的 trace 提出的。
+bounded 问题和 unavailable 分类为 `trace_facts`，仍然检测焦点应用、架构和 trace 完整性——
+问题再窄，也是针对一份模型没见过的 trace 提出的。厂商不是预检阶段：`invoke_skill` 只在 Skill 有厂商
+override 时、在其自身查询完成后，经共享缓存的 `traceVendorResolver`（只读 trace metadata）
+有上限地等待解析结果，并挂上 `vendorOverride` 提示；五个 runtime 规则相同。
 焦点应用检测在分析窗口内对候选进程统一打分（前台时长、帧、启动、battery top、CPU），没有任何活动的进程
 直接排除，并给出 `high`/`medium`/`ambiguous` 置信度。五个 runtime 共用 `focusAppTarget` 决定生效包名：
 用户指定为 `user`，high/medium 推断为 `auto_detected`，ambiguous 不设包名，只给候选。只有 `user` 包名和选区

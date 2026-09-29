@@ -92,6 +92,7 @@ jest.mock('../../services/skillEngine/skillLoader', () => ({
       origin: name.endsWith('_identity_skill') ? 'external_pack' : 'built_in',
     })),
     getVendorOverride: jest.fn(() => undefined),
+    hasVendorOverrides: jest.fn(() => false),
     getAllSkills: jest.fn(() => [
       { name: 'scrolling_analysis', type: 'composite', description: 'Scrolling analysis' },
       { name: 'cpu_analysis', type: 'atomic', description: 'CPU analysis' },
@@ -314,6 +315,7 @@ import {
 import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {resolveFocusAppTarget, type FocusAppTarget} from '../../agentRuntime/focusAppTarget';
+import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendorHintParityFixture';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -526,6 +528,7 @@ function createRuntimeRegistrySnapshotForTest() {
       getFragmentCache: jest.fn(() => new Map()),
       getSkill: jest.fn(() => undefined),
       getVendorOverride: jest.fn(() => undefined),
+      hasVendorOverrides: jest.fn(() => false),
     },
     strategyRegistry: {} as never,
   };
@@ -673,6 +676,14 @@ function analysisSnapshot(
 // ── Tests ────────────────────────────────────────────────────────────────
 
 describe('createClaudeMcpServer', () => {
+  it.each([
+    ['artifact results', {}],
+    ['inline results', {artifactStore: undefined, lightweight: true}],
+  ] as const)('adds the vendor override hint only after the Skill queries and only within the wait bound (%s)',
+    async (_label, runtimeOptions) => {
+      await expectRuntimeVendorHintParity({
+        createMcpServer: createClaudeMcpServer, runtimeOptions: runtimeOptions as never});
+    });
   it('does not accept a model-supplied backend evidence completion marker', async () => {
     const {tools, analysisPlan} = createTestServer();
     const result = await callTool(tools, 'submit_plan', {
@@ -932,6 +943,7 @@ describe('createClaudeMcpServer', () => {
         getFragmentCache: jest.fn(() => new Map([['fragments/external.sql', 'external AS (SELECT 1 AS value)']])),
         getSkill: jest.fn(() => ({ type: 'atomic', name: 'external_skill' })),
         getVendorOverride: jest.fn(() => undefined),
+        hasVendorOverrides: jest.fn(() => false),
         getSkillOrigin: jest.fn(() => ({
           origin: 'external_pack',
           packId: 'local-pack',
@@ -5450,6 +5462,7 @@ describe('createClaudeMcpServer', () => {
               getFragmentCache: jest.fn(() => new Map()),
               getSkill: jest.fn(() => undefined),
               getVendorOverride: jest.fn(() => undefined),
+              hasVendorOverrides: jest.fn(() => false),
             },
             registryFingerprint: 'deferred-registry',
             enabledPacks: [],

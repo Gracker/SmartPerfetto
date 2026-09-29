@@ -13,6 +13,7 @@
  * - 展示控制（display）
  */
 
+import type {OemVendorId} from '../traceVendor/traceVendorResolver';
 import type { ColumnDefinition } from '../../types/dataContract';
 import type { IdentityResolutionV1, EvidenceScopeMetadata, EvidenceScopeProvenanceV1, EvidenceScopeRole } from '../../types/identityContract';
 import type { EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
@@ -713,13 +714,13 @@ export interface AIResponseEvent extends SkillEvent {
 // Vendor Types
 // =============================================================================
 
-export type VendorType = 'oppo' | 'vivo' | 'xiaomi' | 'honor' | 'transsion' | 'mtk' | 'qualcomm' | 'samsung' | 'aosp' | 'unknown';
-
-export interface VendorDetectionResult {
-  vendor: VendorType;
-  confidence: ConfidenceLevel;
-  matchedPatterns?: string[];
-}
+/**
+ * Vendor ids: the OEM values the trace vendor resolver reports
+ * (`services/traceVendor/traceVendorResolver.ts`) plus the SoC / legacy ids
+ * that name `backend/skills/vendors/<id>` override directories. `aosp` means an
+ * AOSP or generic build; `unknown` means the trace carries no identity.
+ */
+export type VendorType = OemVendorId | 'transsion' | 'mtk' | 'qualcomm';
 
 // =============================================================================
 // Module Expert Types (Phase 1 - Cross-Domain Expert System)

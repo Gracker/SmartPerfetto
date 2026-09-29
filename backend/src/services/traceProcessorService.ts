@@ -349,9 +349,37 @@ export class TraceProcessorService extends EventEmitter {
     return lease;
   }
 
-  private requireActiveQueryLease(traceId: string, options: TraceProcessorServiceQueryOptions): void {
+  private requireActiveQueryLease(
+    traceId: string,
+    options: TraceProcessorServiceQueryOptions,
+  ): TraceProcessorLeaseQueryContext | undefined {
     throwIfTraceProcessorQueryCancelled(options.signal);
-    this.requireActiveLease(traceId, this.resolveLeaseQueryContext(traceId, options));
+    const context = this.resolveLeaseQueryContext(traceId, options);
+    this.requireActiveLease(traceId, context);
+    return context;
+  }
+
+  /**
+   * For a caller that answers from its own cache instead of issuing a query:
+   * runs the same lease check `query()` runs (throwing the query layer's
+   * cancellation error when the caller's lease is no longer active) and
+   * returns the identity under which the caller may share cached answers.
+   *
+   * - `'unleased'` with no lease context, or a key for an unscoped offline
+   *   isolation lease (never checked against the lease store);
+   * - a holder-exact key for a scoped lease checked for this exact holder;
+   * - `null` for a scoped lease without a holder: its check accepts any valid
+   *   holder, so it cannot vouch for one owner and must bypass the cache.
+   */
+  public leaseCacheIdentity(traceId: string, options: TraceProcessorServiceQueryOptions = {}): string | null {
+    const context = this.requireActiveQueryLease(traceId, options);
+    if (!context) return 'unleased';
+    const lease = [context.leaseId, String(context.mode)];
+    if (!context.leaseScope) return JSON.stringify(['unscoped', ...lease]);
+    if (!context.holder) return null;
+    const {tenantId, workspaceId, userId} = context.leaseScope;
+    return JSON.stringify(['scoped', tenantId, workspaceId, userId ?? null, ...lease,
+      context.holder.holderType, context.holder.holderRef]);
   }
 
   /**

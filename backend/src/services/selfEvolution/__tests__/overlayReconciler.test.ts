@@ -80,6 +80,7 @@ describe('OverlayReconciler', () => {
         getFragmentCache: () => new Map<string, string>(),
         getSkillOrigin: () => ({origin: 'built_in' as const}),
         getVendorOverride: () => undefined,
+        hasVendorOverrides: () => false,
         getVendorOverridesForSkill: () => [],
         getVendorOverrideLoadIssues: () => [],
         findMatchingSkill: () => undefined,

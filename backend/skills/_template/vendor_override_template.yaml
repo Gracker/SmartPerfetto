@@ -11,9 +11,12 @@
 #
 # 运行时合同（详见 docs/reference/skill-system.md 的 Skill tier 与校验规则）:
 # - SkillRegistry.loadVendorOverrides() 加载文件 → 按 extends 索引
-# - claudeRuntime.detectVendor() 探测 trace 的 vendor → 缓存到 vendorCache
-# - claudeMcpServer.ts:702-717 在 invoke_skill 响应里挂 vendorOverrideHint
-# - **空 additional_steps 在 line 708 被守卫静默跳过 → 不要加空文件！**
+# - services/traceVendor/traceVendorResolver.ts 从 trace metadata（厂商、build
+#   fingerprint、SoC 型号）解析 OEM / SoC，按 trace 身份共享缓存；不扫描 slice
+# - invoke_skill 在 Skill 自身查询完成后按 [OEM, SoC] 顺序查找 override，
+#   在响应里挂 vendorOverride 提示（等待有上限，超时则不挂）
+# - 选中 override 的键是目录名 / meta.vendor，不是 vendor_detection.signatures
+# - **空 additional_steps 会被守卫静默跳过 → 不要加空文件！**
 #
 # Lint rule 5 (skill-vendor-override-runtime-conformant) 强制要求:
 # 1. additional_steps.length ≥ 1
@@ -33,8 +36,8 @@ meta:
   vendor: {{OEM_LOWER}}                 # pixel / qualcomm / mtk / ... 必须 lowercase
   platform: "{{Platform Name}}"         # MediaTek / Qualcomm / Google Tensor / ...
 
-# Vendor 识别规则 — claudeRuntime.detectVendor() 用这些 patterns 匹配 trace metadata
-# 规则 5 强制 ≥1 条
+# Vendor 特征说明 — 记录该厂商在 trace 里的标志性事件，供作者和审阅者参考。
+# 运行时不用这些 patterns 识别厂商（识别来自 trace metadata）；规则 5 仍强制 ≥1 条
 vendor_detection:
   signatures:
     - pattern: "{{*OEM_KEYWORD*}}"     # GLOB pattern
@@ -42,7 +45,8 @@ vendor_detection:
     - pattern: "{{*ALT_KEYWORD*}}"
       confidence: medium
 
-# 额外的 OEM 特化分析步骤 — 当 vendor 探测命中时，作为 hint ID 推给 Claude
+# 额外的 OEM 特化分析步骤 — 当 trace metadata 解析出的 OEM / SoC 与本目录 vendor
+# 一致时，作为 vendorOverride 提示里的步骤 ID 挂在 invoke_skill 结果上（不自动执行）
 # **必须 ≥1 步骤**，每步必须有 id + name + sql
 additional_steps:
   - id: {{oem_specific_step_1}}

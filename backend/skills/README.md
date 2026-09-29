@@ -347,7 +347,7 @@ npx tsx src/cli/index.ts test startup_analysis --trace /path/to/trace.perfetto -
 | POST | `/api/skills/execute/:skillId` | 执行指定 Skill |
 | POST | `/api/skills/analyze` | 自动检测意图并执行 |
 | POST | `/api/skills/detect-intent` | 检测问题对应的 Skill |
-| POST | `/api/skills/detect-vendor` | 检测 Trace 厂商 |
+| POST | `/api/skills/detect-vendor` | 从 trace metadata 解析厂商 / SoC / OS（`trace_vendor@1`） |
 
 #### 执行 Skill 示例
 
@@ -595,6 +595,20 @@ thresholds:
       excellent: { max: 400 }  # OPPO 优化后标准更高
 ```
 
+### 厂商识别
+
+厂商由 `backend/src/services/traceVendor/traceVendorResolver.ts` 从 trace 的
+`metadata`（`android_device_manufacturer`、`android_build_fingerprint` 的 brand、
+`android_soc_model`）按封闭映射表解析，不扫描 slice 名称，结果按 trace 身份缓存。
+`invoke_skill` 在 Skill 自身查询完成后，按 `[OEM, SoC]` 顺序（例如 `xiaomi`、
+`qualcomm`）查找本目录下的 override，把 `vendorOverride` 作为提示挂在结果上；
+override 的步骤不会自动执行，等待有上限，超时或失败时不挂提示。override 由目录名
+/ `meta.vendor` 选中，`vendor_detection.signatures` 只是记录厂商 trace 特征的元数据。
+
+`vendor` 取值：`pixel`、`xiaomi`、`oppo`、`vivo`、`honor`、`huawei`、`samsung`、
+`aosp`（AOSP / generic 构建）、`other`（识别到品牌但不在映射表中，如 nubia）、
+`unknown`（trace 没有设备身份信息）。HarmonyOS 是 OS 而不是厂商。
+
 ### 厂商特有 Trace Tag
 
 | 厂商 | 常见 Trace Tag | 用途 |
@@ -615,7 +629,7 @@ thresholds:
 | `${package}` | 目标应用包名 | `com.example.app` |
 | `${item.xxx}` | for_each 循环中的当前项 | `${item.startup_id}` |
 | `${prev.xxx}` | 上一步骤的结果 | `${prev.dur_ms}` |
-| `${vendor}` | 检测到的厂商 | `oppo` |
+| `${vendor}` | 解析出的厂商 id（仅 REST `/api/skills/execute`、`/api/skills/analyze` 传入；`invoke_skill` 不传，当前也没有 Skill 引用） | `oppo` |
 | `${result.xxx.yyy}` | 之前步骤的结果引用 | `${result.startups.0.startup_id}` |
 
 **重要提示**:
@@ -671,9 +685,10 @@ const url = `...?ts=${ts_str}&dur=${dur_str}&visStart=${startNs}&visEnd=${endNs}
 2. 加载 `composite/` 目录下的组合 Skills
 3. 加载 `deep/` 目录下的深度分析 Skills
 4. 加载 `modules/` 目录下的模块专家 Skills
-5. 检测设备厂商（通过 trace 内容）
-6. 加载对应厂商的 override Skills (`vendors/`)
-7. 加载 `custom/` 目录下的自定义 Skills（如果存在）
+5. 加载 `vendors/` 下全部厂商 override（按 `extends` 的 base Skill 索引；与具体 trace 无关）
+6. 加载 `custom/` 目录下的自定义 Skills（如果存在）
+
+厂商识别发生在分析时而非加载时，见上文“厂商识别”。
 
 ## 最佳实践
 

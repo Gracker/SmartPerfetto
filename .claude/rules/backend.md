@@ -591,8 +591,11 @@ Important whitelisted examples:
   for a resolved `scene_wide` read, also prefetches memory-type context
   (knowledge base, patterns, cases, SQL fix pairs); `trace_facts`, for a bounded
   question or an unavailable classification, still detects the focus app,
-  architecture, vendor and trace completeness, because a narrow question is
-  still asked about a trace the model has never seen. `allowAutomaticPrefetch`
+  architecture and trace completeness, because a narrow question is
+  still asked about a trace the model has never seen. The device vendor is not
+  a preflight step: `services/traceVendor/traceVendorResolver.ts` reads it from
+  trace `metadata` (never slice names) only when an `invoke_skill` target has a
+  vendor override, after that Skill's own queries. `allowAutomaticPrefetch`
   now means the memory tier only. Planning is on demand; an explicitly submitted
   plan remains binding.
 

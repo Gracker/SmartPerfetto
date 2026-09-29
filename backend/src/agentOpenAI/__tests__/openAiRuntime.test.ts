@@ -40,6 +40,8 @@ import {createAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryR
 import {applyFinalResultQualityGate} from '../../services/finalResultQualityGate';
 import {createRuntimeSourceFinalizationFixture, SOURCE_FINALIZATION_CANARY, SOURCE_FINALIZATION_RAW_SOURCE} from '../../agentRuntime/__tests__/sourceFinalizationFixture';
 import {resolveFocusPackageCell} from '../../agentRuntime/__tests__/focusEvidenceFixture';
+import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendorHintParityFixture';
+import {TRACE_VENDOR_METADATA_SQL} from '../../services/traceVendor/traceVendorResolver';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
@@ -207,7 +209,6 @@ describe('OpenAI typed intent integration', () => {
     const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
     const focus = jest.spyOn(focusDetector, 'detectFocusApps');
     const architecture = jest.spyOn(runtime, 'detectArchitecture');
-    const vendor = jest.spyOn(runtime, 'detectVendor');
     const completeness = jest.spyOn(runtime, 'detectCompleteness');
     const run = mockRun();
     const result = await runtime.analyze('compare selected facts', 'fast-pair', 'current', {
@@ -215,7 +216,7 @@ describe('OpenAI typed intent integration', () => {
     });
     expect(result.quickRun.requestedMode).toBe('fast');
     expect(focus).toHaveBeenCalled(); expect(architecture).toHaveBeenCalled();
-    expect(vendor).toHaveBeenCalled(); expect(completeness).toHaveBeenCalled();
+    expect(completeness).toHaveBeenCalled();
     expect(prompt.mock.calls[0][0].knowledgeBaseContext).toBeUndefined();
     expect(mcp.mock.calls[0][0]).toMatchObject({referenceTraceId: 'reference', knowledgeSourceIds: ['kb-a'], allowNewEvidence: true,
       comparisonContext: {referenceTraceId: 'reference', capabilityProbeStatus: 'not_checked'}});
@@ -225,6 +226,23 @@ describe('OpenAI typed intent integration', () => {
     expect(toolNames).toContain('fetch_artifact');
     expect(toolNames).toContain('execute_sql');
     expect(toolNames).toEqual((mcp.mock.results[0].value as any).toolDefinitions.map((tool: any) => tool.name));
+  });
+  // The same best-effort vendor hint as every other runtime: built from the
+  // options this runtime passes to the shared MCP factory.
+  it('gives invoke_skill the shared best-effort vendor hint without a vendor preflight', async () => {
+    const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
+    const runtime = createOpenAiRuntimeForTest({query, getTrace: jest.fn()} as unknown as TraceProcessorService);
+    classify(decision);
+    jest.spyOn(systemPrompt, 'buildSystemPrompt').mockReturnValue('typed prompt');
+    const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
+    mockRun();
+    await runtime.analyze('分析启动性能', 'vendor-hint', 'trace', {analysisMode: 'full', providerId: null});
+    const runtimeOptions = mcp.mock.calls[0][0];
+    expect(query.mock.calls.some(call => String((call as unknown[])[1]).includes(TRACE_VENDOR_METADATA_SQL))).toBe(false);
+    await expectRuntimeVendorHintParity({
+      createMcpServer: jest.requireActual<typeof mcpModule>('../../agentv3/claudeMcpServer').createClaudeMcpServer,
+      runtimeOptions,
+    });
   });
   // SP-CP-11: the effective package carries its provenance into the prompt
   // and the tools; an ambiguous detection puts no package in effect at all.
@@ -245,7 +263,6 @@ describe('OpenAI typed intent integration', () => {
       const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
       jest.spyOn(focusDetector, 'detectFocusApps').mockResolvedValue(structuredClone(focusResult) as any);
       const architecture = jest.spyOn(runtime, 'detectArchitecture').mockResolvedValue(undefined);
-      jest.spyOn(runtime, 'detectVendor').mockResolvedValue(null);
       jest.spyOn(runtime, 'detectCompleteness').mockResolvedValue(undefined);
       mockRun();
       await runtime.analyze('why is it slow', `focus-${_label}`, 'trace', {analysisMode: 'full', providerId: null});
@@ -288,14 +305,13 @@ describe('OpenAI typed intent integration', () => {
     const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
     const focus = jest.spyOn(focusDetector, 'detectFocusApps');
     const architecture = jest.spyOn(runtime, 'detectArchitecture');
-    const vendor = jest.spyOn(runtime, 'detectVendor');
     const completeness = jest.spyOn(runtime, 'detectCompleteness');
     const run = mockRun();
     const result = await runtime.analyze('question without trace', 'no-trace-conversation', 'no-trace', {
       assistantSurface: 'conversation', conversationTraceAttached: false, analysisMode: 'full', providerId: null,
     });
     expect(query).not.toHaveBeenCalled(); expect(focus).not.toHaveBeenCalled();
-    expect(architecture).not.toHaveBeenCalled(); expect(vendor).not.toHaveBeenCalled(); expect(completeness).not.toHaveBeenCalled();
+    expect(architecture).not.toHaveBeenCalled(); expect(completeness).not.toHaveBeenCalled();
     expect(mcp.mock.calls[0][0]).toMatchObject({conversationTraceAttached: false, allowNewEvidence: true});
     expect(run).toHaveBeenCalledTimes(1); expect(result.completion.status).toBe('completed');
   });
