@@ -565,6 +565,29 @@ describe('finite comparison.delta proof', () => {
     expect(verify(comparison(prior, current)).deterministicProof.reason).toBe('comparison_side_mismatch');
   });
 
+  it('keeps a within-trace difference of two current cells candidate, never a contradiction', () => {
+    const [current] = pair();
+    const sibling = metric({id: 'sibling', fields: {value: comparable()}});
+    const output = verify(comparison(current, sibling));
+    expect(output.deterministicProof).toMatchObject({kind: 'comparison_delta', status: 'candidate',
+      reason: 'comparison_not_cross_trace'});
+    expect(output.status).not.toBe('unsupported');
+  });
+
+  it('rejects current cells of two different traces as a side contradiction', () => {
+    const [current] = pair();
+    const otherTrace = metric({id: 'other', trace: 'trace-other', fields: {value: comparable()}});
+    expect(verify(comparison(current, otherTrace)).deterministicProof).toMatchObject({status: 'rejected',
+      reason: 'comparison_side_mismatch'});
+  });
+
+  it('rejects a cross-trace delta that disagrees with the cited values', () => {
+    const [current, prior] = pair();
+    const mismatch = comparison(current, prior);
+    mismatch.semantics!.numeric = {operator: 'eq', value: 2000, unit: 'us'};
+    expect(verify(mismatch).deterministicProof).toMatchObject({status: 'rejected', reason: 'comparison_delta_rejected'});
+  });
+
   it('does not rely on matching params hashes or column names when field semantics are absent', () => {
     const sameParams = (result: EvidenceAnchorV1) => {result.context.paramsHash = 'same';};
     const current = metric({id: 'current', fields: {}, beforeCapture: sameParams});

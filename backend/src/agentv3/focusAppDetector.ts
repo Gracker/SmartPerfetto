@@ -152,6 +152,29 @@ const SYSTEM_PACKAGE_PREFIXES = [
   'com.sec.android.app.launcher',      // Samsung launcher
 ];
 
+/**
+ * What defines the detector's `primaryApp` and `confidence`. Captured focus-app
+ * evidence is fingerprinted with it, so a change here issues a new producer
+ * definition. Bump `version` when the SQL or ranking changes meaning in a way
+ * these constants do not show.
+ */
+export const FOCUS_APP_DETECTOR_DEFINITION = Object.freeze({
+  version: 'focus-app-detector@1',
+  weights: FOCUS_APP_WEIGHTS,
+  launchTierBonus: LAUNCH_TIER_BONUS,
+  systemOrPersistentFactor: SYSTEM_OR_PERSISTENT_FACTOR,
+  subprocessFactor: SUBPROCESS_FACTOR,
+  highConfidenceRatio: HIGH_CONFIDENCE_RATIO,
+  mediumConfidenceRatio: MEDIUM_CONFIDENCE_RATIO,
+  substantiveShare: SUBSTANTIVE_SHARE,
+  firstApplicationAppId: FIRST_APPLICATION_APPID,
+  isolatedAppIds: Object.freeze([ISOLATED_APPID_START, ISOLATED_APPID_END]),
+  persistentScoreFloor: PERSISTENT_SCORE_FLOOR,
+  systemProcessExact: Object.freeze([...SYSTEM_PROCESS_EXACT].sort()),
+  systemProcessPrefixes: Object.freeze([...SYSTEM_PROCESS_PREFIXES]),
+  systemPackagePrefixes: Object.freeze([...SYSTEM_PACKAGE_PREFIXES]),
+});
+
 function isSystemProcess(name: string): boolean {
   const lower = name.toLowerCase();
   return SYSTEM_PROCESS_EXACT.has(lower) ||

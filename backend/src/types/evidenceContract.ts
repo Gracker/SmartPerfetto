@@ -59,6 +59,7 @@ export type EvidenceRelationReasonCodeV1 =
   | 'overlap_disjoint'
   | 'overlap_verified'
   | 'comparison_side_mismatch'
+  | 'comparison_not_cross_trace'
   | 'comparison_metric_missing'
   | 'comparison_metric_invalid'
   | 'comparison_delta_mismatch'

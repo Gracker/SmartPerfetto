@@ -111,6 +111,22 @@ export function evidenceCaptureHash(value: unknown): string {
   return createHash('sha256').update(canonical(value)).digest('hex');
 }
 
+/** A field's producer declaration; the origin is added by `nativeProducerFields`. */
+export type DeclaredFieldSemantics = Omit<CapturedFieldSemantics, 'origin'>;
+
+/**
+ * Binds a native producer's declared fields to one fingerprint of the
+ * definition that gives them meaning. The definition must contain everything
+ * that does (producer, version, columns, declarations), so a change to any of
+ * it yields a new fingerprint.
+ */
+export function nativeProducerFields(definition: unknown,
+  declared: Readonly<Record<string, DeclaredFieldSemantics>>): Record<string, CapturedFieldSemantics> {
+  const definitionFingerprint = evidenceCaptureHash(definition);
+  return Object.fromEntries(Object.entries(declared).map(([column, field]) =>
+    [column, {...field, origin: {kind: 'native_producer' as const, definitionFingerprint}}]));
+}
+
 export function captureEvidenceTable(data: unknown,
   fields: Record<string, CapturedFieldSemantics> = {}, unavailableReason?: string): EvidenceTableWitness {
   const witness = Object.freeze({captureId: randomUUID()});

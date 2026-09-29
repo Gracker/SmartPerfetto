@@ -39,6 +39,7 @@ import {
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
 import { resolveFocusAppTarget } from '../../focusAppTarget';
+import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import {buildMaxTurnsTerminationMessage, estimateAnalysisConfidence} from '../../../agentv3/analysisTermination';
@@ -798,13 +799,20 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       if (!privateAnalysisContext) this.sessionNotes.set(sessionId, notes);
     }
 
+    const artifactStore = resolveRuntimeEvidenceStore(normalizedOptions, {sessionId, traceId},
+      () => privateAnalysisContext ? new ArtifactStore() : this.artifactStores.get(sessionId) ?? new ArtifactStore());
+    if (!privateAnalysisContext) this.artifactStores.set(sessionId, artifactStore);
+    sessionState.artifactStore = artifactStore;
+    // The detector's primary app becomes citable current-run evidence.
+    const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
+
     const analysisContext: ClaudeAnalysisContext = {
       query,
       turnIntent,
       strategyRegistry: intentResolver.strategyRegistry,
       onDemandContext: policy.onDemandContext,
       packageName: effectivePackageName,
-      focusTarget,
+      focusTarget: citedFocusTarget,
       sceneType,
       architecture,
       selectionContext: options?.selectionContext,
@@ -856,11 +864,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     skillExecutor.setFragmentRegistry(
       sceneCoverageRegistry ? new Map(sceneCoverageRegistry.fragments) : effectiveSkillRegistry.getFragmentCache(),
     );
-
-    const artifactStore = resolveRuntimeEvidenceStore(normalizedOptions, {sessionId, traceId},
-      () => privateAnalysisContext ? new ArtifactStore() : this.artifactStores.get(sessionId) ?? new ArtifactStore());
-    if (!privateAnalysisContext) this.artifactStores.set(sessionId, artifactStore);
-    sessionState.artifactStore = artifactStore;
 
     const skillNotesBudget = createRuntimeSkillNotesBudget(isQuickMode);
     const recentSqlErrors = policy.allowAutomaticPrefetch

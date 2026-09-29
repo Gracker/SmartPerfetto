@@ -869,6 +869,51 @@ describe('scrolling_analysis skill schema', () => {
     }
   });
 
+  it('leaves out the target\'s own monitor channel once it has application deliveries', () => {
+    // The launcher owns its window and a gesture monitor: 1-3 resolve an action
+    // on the window and are copied to the monitor, 4-5 resolve none and reach
+    // both, 6 reaches only the window.
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 1000000]),
+      ...['4', '5', '6'].map((eventId): InputDelivery => [1, launcher, 'Launcher (server)', eventId, null, 1000000]),
+      ...['1', '2', '3', '4', '5'].map((eventId): InputDelivery =>
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+    ]);
+    try {
+      const row = db.prepare(renderScrollingSql('input_latency_summary', '')).get() as {
+        target_process: string;
+        total_input_events: number;
+        move_events: number;
+      };
+
+      expect(row).toMatchObject({target_process: launcher, total_input_events: 6, move_events: 1});
+    } finally {
+      db.close();
+    }
+  });
+
+  it('keeps a pinned instance that only observed input when a same-named instance has deliveries', () => {
+    const launcher = 'com.example.launcher';
+    const db = createMonitorCopyInputFixture([
+      ...['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].map((action, index): InputDelivery =>
+        [1, launcher, 'Launcher (server)', String(index + 1), action, 1000000]),
+      ...['1', '2', '3'].map((eventId): InputDelivery =>
+        [1, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+      ...['1', '2'].map((eventId): InputDelivery =>
+        [3, launcher, '[Gesture Monitor] swipe-up (server)', eventId, null, 9000000]),
+    ]);
+    try {
+      const render = (upid: string) =>
+        renderScrollingSql('input_latency_summary', launcher).split('${__process_scope.upid}').join(upid);
+      expect(db.prepare(render('NULL')).get()).toMatchObject({total_input_events: 3});
+      expect(db.prepare(render('3')).get()).toMatchObject({target_process: launcher, total_input_events: 2});
+    } finally {
+      db.close();
+    }
+  });
+
   it('ranks action-free input by physical events, so extra monitor channels do not win', () => {
     // No receiver carries an action (runtimes that resolve none): the app has
     // more distinct events, systemui more rows through two channels.

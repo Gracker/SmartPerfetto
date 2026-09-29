@@ -7383,7 +7383,7 @@
         "steps": [
           {
             "id": "check_input_data",
-            "sha256": "a2bcfec23425415a2f9cd2cb61a0bad8c40bccb6de8250cc0c8ebb5193f79d16",
+            "sha256": "41f544ffd24620ce9a8210695ee770d9fef9dc32c876c687ac5a62179512b2c4",
             "required_columns": [
               "event_count",
               "status"
@@ -7391,7 +7391,7 @@
           },
           {
             "id": "get_process",
-            "sha256": "8f3eac606d6d1250787ac0eb87e6c988614e61c850746ab081a57cf02db4d758",
+            "sha256": "24abee32c27e6beb8bb826fc08ff8660db0774a1298e5b79804ed0498f775a52",
             "required_columns": [
               "process_name",
               "event_count",
@@ -7401,7 +7401,7 @@
           },
           {
             "id": "input_latency_overview",
-            "sha256": "2cd3ce0a70b533c55ab9fc0f319f777e431fc26d96a616aa0dbc5be53c475a23",
+            "sha256": "b630e521e86703eec2fa7bd236a709e888b0b052b9020ea075366bbbfa416289",
             "required_columns": [
               "total_events",
               "avg_dispatch_ms",
@@ -7419,7 +7419,7 @@
           },
           {
             "id": "latency_by_event_type",
-            "sha256": "950b23ad46cf26bf53d528292d97207e837ffc8f192bf0be0a961ece0192692e",
+            "sha256": "d2052356b7c84adf071720abe9611e15e9f23d4d3de5edea66bf081e694e452f",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7432,7 +7432,7 @@
           },
           {
             "id": "latency_by_window",
-            "sha256": "62e4bcf972e906f8881cd8f13a8ede45f90209498f66474a53a32f0f19175b73",
+            "sha256": "250d1c4e819fde772c8c533ba18dfa846abf9d204debf984aca551f14fb74987",
             "required_columns": [
               "window",
               "count",
@@ -7444,7 +7444,7 @@
           },
           {
             "id": "slow_input_events",
-            "sha256": "f14cb5566024f8b58b1e00ad9dfb06dd42f11ff3719835465bce9ab5216e9650",
+            "sha256": "5e4484783de227a4b0bac37582814ab985f117f65cb11c541a3ec3812c675bd1",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7469,7 +7469,7 @@
           },
           {
             "id": "input_thread_state",
-            "sha256": "b9df8eafaea3b4fb04eaa7d4427d2dfc1e2d94be16bdd4ea23083aa2d19d9b1d",
+            "sha256": "a85f856007384b2f9d7c9872b6cfb0520d5d2902c72cd2cd390e71a033bc2633",
             "required_columns": [
               "window_id",
               "upid",
@@ -7485,7 +7485,7 @@
           },
           {
             "id": "input_binder_calls",
-            "sha256": "6960b35a6b56982ee97eb647d17d3edab07696ef793906d320e8a2351be25c5b",
+            "sha256": "72b12e7d224113f8ef292cd2f78d190bf7a7ecbd3ca0d20a7db5c251520c8768",
             "required_columns": [
               "server_process",
               "aidl_name",
@@ -7497,7 +7497,7 @@
           },
           {
             "id": "input_to_frame",
-            "sha256": "4577be3abbe7a417d40cf278da57570539804280d0687b1cc9516d978c8308ae",
+            "sha256": "51f1b9159ab79f56e3c9966dd57ba501e0d2933bfd9b57fce37e6b98f680444d",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7510,7 +7510,7 @@
           },
           {
             "id": "latency_distribution",
-            "sha256": "9c76c790881d0e301fc8ba5c45f97f6fcf56c5964eb54358e223fe22ee5d9768",
+            "sha256": "06b77cabc2473e9f2968cdca4efb13fe8fa5cc3c316765eae8119dd0eb482f02",
             "required_columns": [
               "latency_bucket",
               "count",
@@ -10851,7 +10851,7 @@
           },
           {
             "id": "input_latency_summary",
-            "sha256": "9cb8b82013d251937375924e38932266f78986aeabc1f9240f8dd382333f8c44",
+            "sha256": "66b490ab72ae7beb0beb5b197e8c7f8aea8c3aa692125a19886cf4375e55a68d",
             "required_columns": [
               "target_process",
               "total_input_events",
