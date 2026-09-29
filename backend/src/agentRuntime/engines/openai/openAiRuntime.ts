@@ -64,7 +64,7 @@ import {createRuntimePerformanceRun, runtimeOutcomeFromError, type RuntimeModelC
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
-import {countCompletedQuickConversationTurns} from '../../quickDirectResult';
+import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {
   buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,

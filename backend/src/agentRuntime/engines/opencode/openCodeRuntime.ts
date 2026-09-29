@@ -143,7 +143,7 @@ import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliv
 import {resolveAgentRuntimeBudgetConfig} from '../../../config';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {countCompletedQuickConversationTurns} from '../../quickDirectResult';
+import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {
   createJsonSchemaFromZodRawShape,
   normalizeRuntimeToolArgs,

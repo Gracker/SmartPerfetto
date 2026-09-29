@@ -249,8 +249,6 @@ afterEach(async () => {
   clearCodeAwareOutputGuards('session-private-stream-recovery');
   sessionContextManager.remove('session-a');
   sessionContextManager.remove('session-quick');
-  sessionContextManager.remove('session-quick-focus-evidence');
-  sessionContextManager.remove('session-quick-selection-trace-fact');
   sessionContextManager.remove('session-language-quick');
   sessionContextManager.remove('session-language-full');
   sessionContextManager.remove('session-provider');

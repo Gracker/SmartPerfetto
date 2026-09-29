@@ -17,6 +17,7 @@ import type {
   QuickRunTurnBudget,
   QuickRunVerifierStatus,
 } from '../agent/core/orchestratorTypes';
+import type {ConversationTurn} from '../agent/types';
 import type {AdaptiveRoutingReceiptV1} from '../types/adaptiveRouting';
 import {parseAdaptiveRoutingReceipt} from './adaptiveEvidenceRouter';
 import type {AnalysisTurnIntent} from './analysisTurnIntent';
@@ -78,6 +79,12 @@ export const EMPTY_QUICK_RUN_CONTEXT_COUNTS: QuickRunContextInjectedCounts = {
   negativePatternHints: 0,
   caseBackgroundCases: 0,
 };
+
+export function countCompletedQuickConversationTurns(
+  turns: ReadonlyArray<Pick<ConversationTurn, 'completed'>>,
+): number {
+  return turns.filter(turn => turn.completed).slice(-3).length;
+}
 
 export function buildQuickRunReceipt(input: {
   requestedMode: QuickRunRequestedMode;
