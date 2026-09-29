@@ -1248,24 +1248,13 @@ steps:
     process_scope:
       role: target
       binding: native_upid
-    # 事件数按物理事件（input_event_id）计，只读下游实际分析的行（analyzed_for_upid，见 fragment）。
+    # 事件数按物理事件（physical_event_key）计，只读下游实际分析的行（analyzed_for_upid，见 fragment）。
     # 进程数只计收到应用投递的进程，范围内没有应用投递时才计全部接收进程。
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
     sql: |
-      WITH scoped_events AS (
-        SELECT *, COALESCE(input_event_id, 'dispatch:' || dispatch_ts) AS event_key
-        FROM android_input_scoped_deliveries
-        WHERE analyzed_for_upid
-          AND (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
-          AND (
-          ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
-          OR process_name = '${package}'
-          OR process_name GLOB '${package}:*'
-        )
-      )
       SELECT
         -- frame_matched_events: exact association only (see fragments/android_input_events_normalized.sql); speculative_only = frames matched only speculatively.
         CASE
@@ -1274,13 +1263,20 @@ steps:
           WHEN COUNT(frame_id) > 0 THEN 'speculative_only'
           ELSE 'no_frame_match'
         END as input_data_status,
-        COUNT(DISTINCT event_key) as total_input_events,
-        COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN event_key END) as move_events,
-        COUNT(DISTINCT CASE WHEN exact_frame_id IS NOT NULL THEN event_key END) as frame_matched_events,
+        COUNT(DISTINCT physical_event_key) as total_input_events,
+        COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN physical_event_key END) as move_events,
+        COUNT(DISTINCT CASE WHEN exact_frame_id IS NOT NULL THEN physical_event_key END) as frame_matched_events,
         COALESCE(
           NULLIF(COUNT(DISTINCT CASE WHEN monitor_observation = 0 THEN upid END), 0),
           COUNT(DISTINCT upid)) as target_processes
-      FROM scoped_events
+      FROM android_input_scoped_deliveries
+      WHERE analyzed_for_upid
+        AND (${__process_scope.upid} IS NULL OR upid = ${__process_scope.upid})
+        AND (
+          ${__process_scope.upid} IS NOT NULL OR '${package}' = ''
+          OR process_name = '${package}'
+          OR process_name GLOB '${package}:*'
+        )
     save_as: input_data
 
   - id: input_latency_summary
@@ -1435,15 +1431,17 @@ steps:
       ),
       -- Backlog: exact association only (see fragments/android_input_events_normalized.sql).
       frame_backlog AS (
-        SELECT exact_frame_id, COUNT(*) as event_count
+        SELECT exact_frame_id, COUNT(DISTINCT physical_event_key) as event_count
         FROM target_events
         WHERE exact_frame_id IS NOT NULL
         GROUP BY exact_frame_id
       )
       SELECT
         (SELECT process_name FROM target) as target_process,
-        COUNT(*) as total_input_events,
-        SUM(CASE WHEN event_action = 'MOVE' THEN 1 ELSE 0 END) as move_events,
+        -- 事件计数按物理事件计，与 input_data_check 一致：只观察输入的目标可能有多个 monitor 通道。
+        -- 延迟值逐投递统计（每个接收通道各有延迟与帧关联）；"满足条件的事件数"计至少一个投递满足条件的物理事件。
+        COUNT(DISTINCT physical_event_key) as total_input_events,
+        COUNT(DISTINCT CASE WHEN event_action = 'MOVE' THEN physical_event_key END) as move_events,
         ROUND(AVG(dispatch_latency_dur) / 1e6, 2) as avg_dispatch_ms,
         ROUND(MAX(dispatch_latency_dur) / 1e6, 2) as max_dispatch_ms,
         ROUND(AVG(handling_latency_dur) / 1e6, 2) as avg_handling_ms,
@@ -1453,11 +1451,11 @@ steps:
         ROUND(MAX(ack_latency_dur) / 1e6, 2) as max_ack_ms,
         ROUND(AVG(exact_end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
         ROUND(MAX(exact_end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
-        SUM(CASE
+        COUNT(DISTINCT CASE
           WHEN handling_latency_dur > (SELECT vsync_period_ns FROM timing_config) * ${input_handling_budget_ratio|0.5}
-          THEN 1 ELSE 0 END) as slow_handling_events,
+          THEN physical_event_key END) as slow_handling_events,
         (SELECT COUNT(*) FROM frame_backlog WHERE event_count >= ${input_event_backlog_threshold|3}) as input_backlog_frames,
-        SUM(CASE WHEN frame_association = 'speculative' THEN 1 ELSE 0 END) as speculative_frame_matches,
+        COUNT(DISTINCT CASE WHEN frame_association = 'speculative' THEN physical_event_key END) as speculative_frame_matches,
         ROUND((SELECT vsync_period_ns FROM timing_config) / 1e6, 2) as frame_budget_ms,
         CASE
           WHEN COUNT(*) = 0 THEN '无 input 事件'

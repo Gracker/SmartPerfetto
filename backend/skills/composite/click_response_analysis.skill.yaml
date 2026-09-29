@@ -124,16 +124,19 @@ steps:
         - name: status
           label: "状态"
           type: string
-    # 每个接收通道一行：按物理事件（input_event_id）计数，monitor 通道不重复计入。
-    sql_fragments: [fragments/android_input_events_normalized.sql]
+    # 每个接收通道一行：按物理事件（physical_event_key）计数，只读下游实际分析的行（analyzed_for_name），
+    # 进程自带 monitor 看到、却没投递到它窗口的事件不计入（见 fragment）。
+    sql_fragments:
+      - fragments/android_input_events_normalized.sql
+      - fragments/android_input_delivery_roles.sql
+      - fragments/android_input_scoped_deliveries.sql
     sql: |
       SELECT
-        COUNT(DISTINCT COALESCE(input_event_id, 'dispatch:' || dispatch_ts)) as event_count,
+        COUNT(DISTINCT physical_event_key) as event_count,
         CASE WHEN COUNT(*) > 0 THEN 'available' ELSE 'unavailable' END as status
-      FROM android_input_events_normalized
-      WHERE (('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*') OR '${package}' = '')
-        AND (${start_ts} IS NULL OR receive_ts + receive_dur > ${start_ts})
-        AND (${end_ts} IS NULL OR dispatch_ts < ${end_ts})
+      FROM android_input_scoped_deliveries
+      WHERE analyzed_for_name
+        AND ('${package}' = '' OR process_name = '${package}' OR process_name GLOB '${package}:*')
     save_as: input_check
 
   # ========== 选择目标进程（让分析更聚焦）==========
@@ -163,7 +166,7 @@ steps:
           unit: ms
     # 按应用投递排序而非行数：monitor 副本会让系统进程行数更多。
     # 无 action 时先比本进程所属窗口上的事件，monitor 看到全屏触摸、事件数可更多（见 fragment）。
-    # event_count / max_total_ms 只算下游实际分析的行（analyzed_for_name），排序仍用全部行。
+    # event_count（物理事件数）/ max_total_ms 只算下游实际分析的行（analyzed_for_name），排序仍用全部行。
     sql_fragments:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
@@ -171,7 +174,7 @@ steps:
     sql: |
       SELECT
         process_name,
-        SUM(analyzed_for_name) as event_count,
+        COUNT(DISTINCT CASE WHEN analyzed_for_name THEN physical_event_key END) as event_count,
         SUM(delivery_role = 'action') as app_delivery_events,
         ROUND(MAX(CASE WHEN analyzed_for_name THEN total_latency_dur END) / 1e6, 2) as max_total_ms
       FROM android_input_scoped_deliveries
@@ -272,9 +275,10 @@ steps:
       - fragments/android_input_events_normalized.sql
       - fragments/android_input_delivery_roles.sql
       - fragments/android_input_scoped_deliveries.sql
+    # 事件计数按物理事件计（与 check_input_data 一致）；延迟值逐投递统计（每个接收通道各有延迟与帧关联）。
     sql: |
       SELECT
-        COUNT(*) as total_events,
+        COUNT(DISTINCT physical_event_key) as total_events,
         -- 分发延迟（系统责任）
         ROUND(AVG(dispatch_latency_dur) / 1e6, 2) as avg_dispatch_ms,
         ROUND(MAX(dispatch_latency_dur) / 1e6, 2) as max_dispatch_ms,
@@ -289,7 +293,7 @@ steps:
         -- Input→Frame: exact association only (see fragments/android_input_events_normalized.sql); speculative counted separately, NULL = unmeasured.
         ROUND(AVG(exact_end_to_end_latency_dur) / 1e6, 2) as avg_e2e_ms,
         ROUND(MAX(exact_end_to_end_latency_dur) / 1e6, 2) as max_e2e_ms,
-        SUM(CASE WHEN frame_association = 'speculative' THEN 1 ELSE 0 END) as speculative_frame_events,
+        COUNT(DISTINCT CASE WHEN frame_association = 'speculative' THEN physical_event_key END) as speculative_frame_events,
         -- 评级
         CASE
           WHEN AVG(total_latency_dur) / 1e6 < 50 THEN '优秀 (<50ms)'
@@ -361,12 +365,12 @@ steps:
       SELECT
         event_type,
         event_action,
-        COUNT(*) as count,
+        -- 次数/慢事件数按物理事件计，延迟逐投递。
+        COUNT(DISTINCT physical_event_key) as count,
         ROUND(AVG(total_latency_dur) / 1e6, 2) as avg_latency_ms,
         ROUND(MAX(total_latency_dur) / 1e6, 2) as max_latency_ms,
         ROUND(AVG(handling_latency_dur) / 1e6, 2) as avg_handling_ms,
-        -- 慢事件数
-        SUM(CASE WHEN total_latency_dur / 1e6 > ${slow_event_threshold_ms|100} THEN 1 ELSE 0 END) as slow_events
+        COUNT(DISTINCT CASE WHEN total_latency_dur / 1e6 > ${slow_event_threshold_ms|100} THEN physical_event_key END) as slow_events
       FROM android_input_scoped_deliveries
       WHERE process_name = '${target_process.data[0].process_name}'
         AND analyzed_for_name
@@ -854,9 +858,14 @@ steps:
         END as latency_bucket,
         COUNT(*) as count,
         ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) as percent
-      FROM android_input_scoped_deliveries
-      WHERE process_name = '${target_process.data[0].process_name}'
-        AND analyzed_for_name
+      -- 每个物理事件一行，按其最慢的分析投递分桶，事件数与 input_latency_overview 的事件总数一致。
+      FROM (
+        SELECT MAX(total_latency_dur) AS total_latency_dur
+        FROM android_input_scoped_deliveries
+        WHERE process_name = '${target_process.data[0].process_name}'
+          AND analyzed_for_name
+        GROUP BY physical_event_key
+      )
       GROUP BY latency_bucket
       ORDER BY
         CASE latency_bucket

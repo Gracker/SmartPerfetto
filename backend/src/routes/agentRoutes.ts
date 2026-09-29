@@ -4580,7 +4580,8 @@ async function detectScrollSessions(
     motion_events AS (
       SELECT
         read_time AS ts,
-        event_action
+        event_action,
+        physical_event_key
       FROM android_input_events_normalized
       WHERE event_type = 'MOTION'
         AND EXISTS (SELECT ok FROM input_exists)
@@ -4589,6 +4590,7 @@ async function detectScrollSessions(
       SELECT
         ts,
         event_action,
+        physical_event_key,
         SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS gesture_id
       FROM motion_events
     ),
@@ -4597,11 +4599,12 @@ async function detectScrollSessions(
         gesture_id,
         MIN(ts) AS down_ts,
         MAX(CASE WHEN event_action = 'UP' THEN ts ELSE NULL END) AS up_ts,
-        COUNT(*) AS event_count
+        COUNT(DISTINCT physical_event_key) AS event_count
       FROM gesture_markers
       WHERE gesture_id > 0
       GROUP BY gesture_id
-      HAVING COUNT(*) >= 4
+      -- Physical events: monitor channels repeat every touch, so rows would pass a tap.
+      HAVING event_count >= 4
     ),
     frame_with_stats AS (
       SELECT
@@ -8192,6 +8195,10 @@ export const agentRoutesCancellationTestSeam = {
     assistantAppService.setSession(sessionId, session),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
   cancelSessionRun,
+};
+
+export const agentRoutesSceneDetectionTestSeam = {
+  detectScrollSessions,
 };
 
 export default router;
