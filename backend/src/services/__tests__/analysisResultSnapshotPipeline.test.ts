@@ -8,7 +8,6 @@ import path from 'path';
 import type { DataEnvelope } from '../../types/dataContract';
 import {createDataEnvelope} from '../../types/dataContract';
 import type {ConclusionContract} from '../../agent/core/conclusionContract';
-import {deriveEvidenceBackedConclusionContractForNarrative} from '../agentResultNormalizer';
 import {runPreparedAnalysisClaimVerification} from '../evidence/analysisRelationPreparation';
 import {
   buildCompletedAnalysisResultSnapshot,
@@ -196,14 +195,13 @@ describe('analysis result snapshot pipeline', () => {
       ]}], uncertainties: [], nextSteps: [],
     };
     const conclusion = 'TTID=9999ms，事件计数1912次。';
-    const normalized = deriveEvidenceBackedConclusionContractForNarrative(conclusion, [data], {existingContract: contract});
     const store = new ArtifactStore();
     store.registerStandaloneEvidenceCapture(captureEvidenceTable(data.data, {
       ttid_ms: {unit: 'ms', origin: {kind: 'native_producer', definitionFingerprint: 'snapshot-ttid-v1'}},
     }), {meta: data.meta, display: data.display});
-    const preparedEvidence = await prepareClaimEvidence({conclusionContract: normalized, bindingEligibility: 'eligible',
+    const preparedEvidence = await prepareClaimEvidence({conclusionContract: contract, bindingEligibility: 'eligible',
       evidenceReadView: store.createEvidenceReadView({allowedTraces: [{traceId: 'trace-a', traceSide: 'current'}], ownerKey: 'run-a'})});
-    const verification = runPreparedAnalysisClaimVerification({conclusionContract: normalized, dataEnvelopes: [data],
+    const verification = runPreparedAnalysisClaimVerification({conclusionContract: contract, dataEnvelopes: [data],
       preparedEvidence, bindingEligibility: 'eligible'});
     expect(verification.claimVerificationResult.claimResults[0].referenceCells).toEqual([
       expect.objectContaining({status: 'value_mismatch'}),
@@ -211,7 +209,7 @@ describe('analysis result snapshot pipeline', () => {
     const snapshot = persistCompletedAnalysisResultSnapshot({
       tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a',
       traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a', query: '核对 TTID',
-      conclusion, conclusionContract: normalized, dataEnvelopes: [data],
+      conclusion, conclusionContract: contract, dataEnvelopes: [data],
       claimSupport: verification.claimSupport, claimVerificationResult: verification.claimVerificationResult,
     });
     expect(snapshot?.conclusionContract).toEqual(contract);

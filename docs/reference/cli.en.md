@@ -582,3 +582,5 @@ the prompt; a further press exits with 130. With no turn running, press Ctrl-C t
 ## System investigation output
 
 The CLI reports system investigation coverage separately from system evidence coverage, with Not checked for missing historical fields. Machine-readable conclusion records include `investigationAssurance` without changing the original conclusion or native completion. Each turn also saves `NNN.investigation-assessment.json` and `NNN.delivery-assurance.json` with dimension statuses and evidence references. The HTML report shows the same investigation scope. Restoring historical results does not automatically acquire missing evidence.
+
+Tool results in `stream.jsonl` are transport-truncated copies. Each turn also saves `NNN.tool-results.json`, which records what every call handed to its runtime: tool name, call id (when the runtime supplies one), outcome, text characters and bytes, and whether audited fields such as `vendorOverride` appear verbatim in the text handed to the model. The file contains no payload values; private-knowledge runs also drop Skill ids.

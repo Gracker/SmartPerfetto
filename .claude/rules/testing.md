@@ -473,7 +473,7 @@ cd backend
 npx jest src/agentRuntime/__tests__/runtimeSelection.test.ts
 npx jest src/agentOpenAI/__tests__/openAiConfig.test.ts src/agentOpenAI/__tests__/openAiRuntime.test.ts src/agentOpenAI/__tests__/openAiToolAdapter.test.ts
 npx jest src/assistant/application/__tests__/agentAnalyzeSessionService.test.ts
-npx jest src/services/__tests__/agentResultNormalizer.test.ts src/services/__tests__/finalResultQualityGate.test.ts
+npx jest src/services/__tests__/canonicalAnalysisResult.test.ts src/services/__tests__/finalResultQualityGate.test.ts
 npx jest src/services/verifier/__tests__/claimVerificationRunner.test.ts src/services/__tests__/analysisResultSnapshotStore.test.ts
 npx jest src/cli-user/services/__tests__/cliAnalyzeService.runTurn.test.ts src/cli-user/services/__tests__/cliAnalyzeService.test.ts
 npx jest src/services/providerManager/__tests__/providerService.test.ts src/services/providerManager/__tests__/providerRoutes.test.ts

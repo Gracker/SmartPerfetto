@@ -51,10 +51,6 @@ import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agent
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {AnalysisCaseRetrievalState} from '../types/analysisDelivery';
 import {copyAnalysisDeliveryFields, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
-import {
-  normalizeNarrativeForClient as sharedNormalizeNarrative,
-  resolveConclusionOutputModeForTurn,
-} from '../services/agentResultNormalizer';
 import { reportStore, persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
@@ -81,7 +77,7 @@ import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
-import { sanitizeNarrativeForClient } from './narrativeSanitizer';
+import { normalizeNarrativeForClient } from './narrativeSanitizer';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
 import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import { buildSmartSceneSelectionReport } from '../agent/scene/buildSmartChatReport';
@@ -2436,30 +2432,6 @@ function recoverResultForSessionIfNeeded(
   return recovered && belongsToRun(recovered) ? recovered : null;
 }
 
-function conclusionContractDeriveOptionsForSession(
-  session: AnalysisSession,
-  result: AgentRuntimeAnalysisResult,
-  sceneId: string | undefined,
-  requestedAnalysisMode?: AnalyzeMode,
-): {
-  existingContract?: ConclusionContract;
-  mode: ConclusionContract['mode'];
-  sceneId?: string;
-} {
-  const mode = resolveConclusionOutputModeForTurn({
-    existingMode: result.conclusionContract?.mode,
-    runSequence: session.runSequence,
-    requestedAnalysisMode,
-  });
-  return {
-    existingContract: result.conclusionContract
-      ? {...result.conclusionContract, mode} as ConclusionContract
-      : undefined,
-    mode,
-    ...(sceneId ? {sceneId} : {}),
-  };
-}
-
 // =============================================================================
 // Scene Reconstruction Types (kept for backward-compatible API responses)
 // =============================================================================
@@ -4771,7 +4743,6 @@ registerTeachingRoutes(router);
 registerAgentReportRoutes(router, {
   getSession: (sessionId) => assistantAppService.getSession(sessionId),
   recoverResultForSessionIfNeeded,
-  normalizeNarrativeForClient: narrative => narrative,
   buildClientFindings: copyStoredClientFindings,
   buildSessionResultContract,
   getCompletedPayload: ensureCompletedAnalysisResultPayload,
@@ -7091,13 +7062,6 @@ function buildSceneReplayNarrative(
   ]
     .filter(Boolean)
     .join('\n');
-}
-
-// Delegates to the shared normalizer so CLI's buildReportHtml gets identical
-// conclusion text for the same run. The HTTP-specific pieces (scene replay,
-// sceneIdHint) stay inline in sendAgentDrivenResult.
-function normalizeNarrativeForClient(narrative: string): string {
-  return sharedNormalizeNarrative(narrative);
 }
 
 function conclusionHasEvidenceIndex(conclusion: string): boolean {

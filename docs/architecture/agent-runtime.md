@@ -104,10 +104,10 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 | `backend/src/agentRuntime/analysisFinalizationContext.ts`, `runtimeEvidenceContext.ts` | 私有 finalization 上下文、原 deadline、受授权的原始证据读取及跨轮 lease |
 | `backend/src/agentRuntime/runtimeCandidateAdmission.ts` | 维护者控制的并发候选准入边界 |
 | `backend/src/agentRuntime/runtimePerformance.ts` | RunManifest 内部阶段、工具与 SQL 排队/执行耗时 receipt |
+| `backend/src/agentRuntime/runtimeToolResultAudit.ts` | RunManifest 内部工具结果交接 receipt：每次调用交给 runtime 的文本规模与受审计字段是否逐字可见 |
 | `backend/src/agentRuntime/runtimeToolConcurrency.ts` | request-scoped 公平读写调度与默认独占策略 |
 | `backend/src/agentv3/claudeMcpServer.ts` | SmartPerfetto 工具注册，仍是工具单一事实源 |
 | `backend/src/agentv3/mcpToolRegistry.ts` | 工具 descriptor、exposure level 和 allowlist 单一事实源 |
-| `backend/src/services/agentResultNormalizer.ts` | 统一 final result、client projection 和 report data 边界 |
 | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | 保留原命题的 canonical 结果与产品层唯一异步 finalizer |
 | `backend/src/services/finalSemanticAssessment.ts`, `evidence/evidenceReadView.ts` | 有界无工具语义审核与原始采集读取 |
 | `backend/src/services/finalReportContractGate.ts` | 执行 strategy `final_report_contract` 完整性检查 |
@@ -136,6 +136,8 @@ OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`�
 并发默认 fail closed。一个 runtime/session 同时只允许一个分析执行；工具默认独占，只有显式标记且已准入的可交换只读工具可在同一 request 内重叠。每个 trace processor 实例仍由一个 SQL worker 串行执行查询，因此同一 trace/processor 的 SQL 不会因为工具并发而同时进入 processor；不同 processor/trace 或已准入的纯读准备工作可以重叠。processor 创建与恢复使用 single-flight，取消后旧执行不能覆盖新 session state。
 
 后端把真实阶段、first output、工具调度等待，以及 SQL 排队/执行耗时记录到内部 `RunManifest.performance`。该 `RuntimePerformance` receipt 不进入公开 SSE；公开流也不提供可用于准入的 model、provider snapshot、provider usage 或 performance 字段。它用于内部归因和受控 benchmark，不能单独证明真实 provider 的速度或准确性。
+
+SSE 与 session log 里的工具结果会被截断到 2000 字符，截断后看不出模型是否拿到了尾部的 `vendorOverride` 这类提示。为此，内部 `RunManifest.toolResults` 在最外层共享工具边界上记录每次调用交给 runtime 的内容，记录发生在所有产品包装（包括 pacing 提醒）之后、传输截断之前。记录项包括：工具名、调用 id（仅当 adapter 提供时，目前是 OpenAI、Pi、OpenCode）、结果状态、receipt 事实（`planPhaseId` 只记是否存在），以及 adapter 序列化之前的文本规模。对 `RUNTIME_TOOL_RESULT_AUDITED_FIELDS` 中的每个字段，还会记录它的 key 和值是否逐字出现在交接文本里。这份记录不复制任何 payload 的值。它只能证明内容交给了 runtime adapter，runtime 自身的输出上限不在产品视野内。
 
 性能分支由严格的维护者开关 `SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES` 控制；默认没有任何候选获准。值只能是无空白、无重复的 `task4` 到 `task9` 逗号列表，任意空白、未知项、重复项或格式错误都会让整项 fail closed。它不是 Provider Manager、UI 或 provider env，也不会从 benchmark artifact 自动激活：
 

@@ -30,6 +30,7 @@ import {
   createRuntimePerformanceRecorder,
   type RuntimePerformanceRecorder,
 } from '../../agentRuntime/runtimePerformance';
+import {RuntimeToolResultAuditRecorder} from '../../agentRuntime/runtimeToolResultAudit';
 import type {AdaptiveRoutingReceiptV1} from '../../types/adaptiveRouting';
 
 export interface CreateRunManifestBuilderInput {
@@ -80,6 +81,7 @@ function copySkillDefinition(
 export class RunManifestBuilder implements RunManifestAttributionSink {
   readonly identity: RunManifestIdentity;
   readonly runtimePerformanceRecorder: RuntimePerformanceRecorder;
+  readonly toolResultAuditRecorder: RuntimeToolResultAuditRecorder;
 
   private readonly runManifestId: string;
   private readonly startedAt: number;
@@ -123,6 +125,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     this.now = input.now ?? Date.now;
     this.onDiagnostic = input.onDiagnostic;
     this.runtimePerformanceRecorder = createRuntimePerformanceRecorder();
+    this.toolResultAuditRecorder = new RuntimeToolResultAuditRecorder();
     this.actor = input.userId ? {userId: input.userId} : undefined;
     this.runtime = {
       runtime: input.runtime,
@@ -451,6 +454,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
     const performance = this.runtimePerformanceRecorder.hasRecordedData
       ? this.runtimePerformanceRecorder.seal()
       : undefined;
+    const toolResults = this.toolResultAuditRecorder.hasRecordedData
+      ? this.toolResultAuditRecorder.seal()
+      : undefined;
     const manifest: RunManifestV1 = {
       schemaVersion: 1,
       runManifestId: this.runManifestId,
@@ -496,6 +502,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         ? {capabilityManifest: this.capabilityManifest}
         : {}),
       ...(performance ? {performance} : {}),
+      ...(toolResults ? {toolResults} : {}),
       ...(this.referenceTraceId ? {referenceTraceId: this.referenceTraceId} : {}),
       ...(this.comparisonIdentity
         ? {comparisonIdentity: this.comparisonIdentity}
