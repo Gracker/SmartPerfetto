@@ -7,7 +7,6 @@
     "src/agent/core/executors/extendExecutor.ts",
     "src/agentRuntime/adaptiveRoutingAdmission.ts",
     "src/agentRuntime/finalReportSceneResolution.ts",
-    "src/agentRuntime/quickFocusAppDirectAnswer.ts",
     "src/agentRuntime/quickProcessIdentityDirectAnswer.ts",
     "src/agentv3/selfImprove/proposeStrategyPatch.ts",
     "src/agentv3/selfImprove/reviewAgentSdk.ts",
