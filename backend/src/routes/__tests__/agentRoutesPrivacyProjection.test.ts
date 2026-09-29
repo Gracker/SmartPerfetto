@@ -93,7 +93,7 @@ describe('agent route private projections', () => {
       query: 'original query', completed: true, result: {...result, message: conclusion}} as any, sessionId, 'en');
     const get = jest.fn();
     registerAgentReportRoutes({get} as any, {getSession: () => session, recoverResultForSessionIfNeeded: () => result,
-      normalizeNarrativeForClient: text => text, buildClientFindings: () => [], buildSessionResultContract: () => ({})});
+      buildClientFindings: () => [], buildSessionResultContract: () => ({})});
     const response = {json: jest.fn(), status: jest.fn().mockReturnThis()};
     const handler = get.mock.calls[0][1] as (req: any, res: any) => void;
     handler({params: {sessionId}, requestContext: {tenantId: 'tenant', workspaceId: 'workspace', userId: 'user'}}, response);

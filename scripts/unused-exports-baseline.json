@@ -224,7 +224,6 @@
     "src/runtimeEnvironment.ts#__testing",
     "src/services/adb/adbContextDetector.ts#detectAdbContext",
     "src/services/agentEventStore.ts#resetAgentEventStoreForTests",
-    "src/services/agentResultNormalizer.ts#normalizeResultForReport",
     "src/services/analysisHistoryStore.ts#resetAnalysisHistoryStoreForTests",
     "src/services/analysisRunStore.ts#resetAnalysisRunStoreForTests",
     "src/services/analysisRunTraceProcessorLease.ts#AnalysisRunProcessorPolicy",

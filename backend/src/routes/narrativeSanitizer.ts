@@ -7,6 +7,11 @@
  * Keeps human-readable reasoning but removes internal evidence IDs.
  */
 import { LEGACY_TO_PLAIN_PHRASE_RULES } from '../utils/analysisNarrative';
+import {
+  normalizeConclusionOutput,
+  shouldNormalizeConclusionOutput,
+} from '../agent/core/conclusionGenerator';
+import { hasDeliverableFinalReportHeading } from '../services/finalResultQualityGate';
 
 const EVIDENCE_ID_RE = /\bev_[0-9a-f]{12}\b/gi;
 // Artifact handles (`art-11`) and tool-call ids (`execute_sql:6:07787eaf`) are
@@ -231,4 +236,33 @@ export function sanitizeNarrativeForClient(narrative: string): string {
   out = out.replace(/\n{3,}/g, '\n\n');
 
   return out.trim();
+}
+
+/**
+ * Convert a legacy structured conclusion (numbered conclusions, clusters,
+ * evidence chains) into readable Markdown. A complete final report is already
+ * presentation text and is returned unchanged.
+ */
+function normalizeLegacyConclusionLayout(narrative: string): string {
+  const raw = String(narrative || '');
+  const trimmed = raw.trim();
+  if (!trimmed || hasDeliverableFinalReportHeading(trimmed) || !shouldNormalizeConclusionOutput(trimmed)) {
+    return raw;
+  }
+  try {
+    return normalizeConclusionOutput(trimmed).trim() || raw;
+  } catch {
+    return raw;
+  }
+}
+
+/**
+ * Normalize a stored conclusion for end-user display. Display only: the
+ * finalizer derives and verifies the conclusion contract from the original
+ * body, so this never feeds a contract, report or snapshot. Falls back to the
+ * normalized text when sanitization would empty it.
+ */
+export function normalizeNarrativeForClient(narrative: string): string {
+  const normalized = normalizeLegacyConclusionLayout(narrative);
+  return sanitizeNarrativeForClient(normalized) || normalized;
 }

@@ -69,7 +69,6 @@ Key files:
 | `backend/src/agentRuntime/runtimeEvidenceContext.ts` | issued in-memory evidence continuity with exact scope and run leases |
 | `backend/src/agentRuntime/engines/claude/claudeVerifier.ts` | shared structured delivery diagnostics; no additional semantic LLM call |
 | `backend/src/agentv3/sessionStateSnapshot.ts` | persisted runtime state snapshot |
-| `backend/src/services/agentResultNormalizer.ts` | normalizes final result and preserves report/client boundaries |
 | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | canonical body/claim extraction and the single asynchronous finalization boundary |
 | `backend/src/services/finalSemanticAssessment.ts` | bounded no-tool semantic review of the current body and declarations |
 | `backend/src/services/evidence/evidenceCapture.ts`, `evidenceReadView.ts` | original execution witnesses and bounded reads of retained captures |

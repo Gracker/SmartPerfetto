@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { sanitizeNarrativeForClient } from '../narrativeSanitizer';
+import { normalizeNarrativeForClient, sanitizeNarrativeForClient } from '../narrativeSanitizer';
 
 describe('internal identifier stripping', () => {
   // Measured on 13 real provider conclusions: 103 `art-N` artifact ids and 7
@@ -133,5 +133,44 @@ describe('narrativeSanitizer', () => {
     expect(output).not.toContain('K1');
     expect(output).not.toContain('K2');
     expect(output).not.toContain('- C1:');
+  });
+});
+
+describe('normalizeNarrativeForClient', () => {
+  test('returns empty string unchanged', () => {
+    expect(normalizeNarrativeForClient('')).toBe('');
+    expect(normalizeNarrativeForClient('   ')).toBe('   ');
+  });
+
+  test('returns raw when narrative is non-conclusion text', () => {
+    const raw = 'just a plain string with no special markers';
+    expect(normalizeNarrativeForClient(raw)).toBe(raw);
+  });
+
+  test('preserves a complete final report when it contains legacy section labels', () => {
+    const report = [
+      '# 双 Trace 对比分析报告',
+      '',
+      '## 综合结论',
+      '',
+      '- com.example.launch.aosp.heavy 的冷启动 TTID 为 1912ms。',
+      '- com.example.androidappdemo 的冷启动 TTID 为 1339ms。',
+      '',
+      '结论: 两条 trace 的启动耗时存在明显差异',
+      '证据链: C1: 两条 trace 都已完成启动事件采集',
+      '不确定性: 暂无',
+      '下一步: 对比主线程热点',
+    ].join('\n');
+
+    const out = normalizeNarrativeForClient(report);
+
+    expect(out).toContain('## 综合结论');
+    expect(out).toContain('com.example.launch.aosp.heavy');
+    expect(out).toContain('com.example.androidappdemo');
+  });
+
+  test('tolerates non-string-coerced inputs', () => {
+    expect(normalizeNarrativeForClient(null as unknown as string)).toBe('');
+    expect(normalizeNarrativeForClient(undefined as unknown as string)).toBe('');
   });
 });

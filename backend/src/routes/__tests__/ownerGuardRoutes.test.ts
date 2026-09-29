@@ -458,7 +458,6 @@ describe('owner guard for agent session routes', () => {
     registerAgentReportRoutes(router, {
       getSession: (sessionId) => sessions.get(sessionId),
       recoverResultForSessionIfNeeded,
-      normalizeNarrativeForClient: (narrative) => narrative,
       buildClientFindings: (findings) => findings,
       buildSessionResultContract: () => ({value: 'PRIVATE_RESULT_CONTRACT_CANARY'}),
       getCompletedPayload: (session) => session.sessionId === 'private-session' ? {
