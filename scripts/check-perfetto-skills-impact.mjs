@@ -25,8 +25,6 @@ export const TRIGGERS = Object.freeze([
   'backend/src/services/analysisResultSnapshot',
   'backend/src/services/multiTraceComparison',
   'backend/src/agent/decision/',
-  'backend/src/agent/core/executors/directSkillExecutor.ts',
-  'backend/src/agent/core/executors/comparisonExecutor.ts',
   'backend/src/types/claimVerification.ts',
   'backend/src/types/evidenceContract.ts',
   'backend/src/types/identityContract.ts',

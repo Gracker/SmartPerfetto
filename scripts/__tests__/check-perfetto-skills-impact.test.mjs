@@ -2,10 +2,11 @@ import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import {
+  TRIGGERS,
   classify,
   collectChangedPaths,
   evaluate,
@@ -35,6 +36,15 @@ test('covers dotfile rules and shared runtime/report surfaces', () => {
   }
   assert.throws(() => classify(['../outside.ts']), /unsafe/);
   assert.throws(() => classify(['/tmp/outside.ts']), /unsafe/);
+});
+
+test('every trigger names a tracked path', () => {
+  // A trigger for a deleted module matches nothing and silently stops
+  // guarding the contract it was listed for.
+  const repoRoot = resolve(import.meta.dirname, '../..');
+  const tracked = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8' }).split('\n');
+  const stale = TRIGGERS.filter(trigger => !tracked.some(path => path.startsWith(trigger)));
+  assert.deepEqual(stale, []);
 });
 
 test('requires a semantic decision for triggered changes', () => {

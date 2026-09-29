@@ -21,7 +21,6 @@ import {
   DEFAULT_VSYNC_PERIOD_NS,
   DEFAULT_JANK_THRESHOLDS,
   DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS,
-  DEFAULT_CIRCUIT_BREAKER_THRESHOLDS,
   SQL_VSYNC_THRESHOLD_NS,
   SQL_JANK_THRESHOLD_NS,
 } from '../thresholds';
@@ -237,18 +236,6 @@ describe('默认值一致性', () => {
       expect(DEFAULT_JANK_THRESHOLDS.criticalCount).toBeGreaterThan(
         DEFAULT_JANK_THRESHOLDS.warningCount
       );
-    });
-  });
-
-  describe('Circuit Breaker 阈值', () => {
-    it('超时时间应该是正数', () => {
-      expect(DEFAULT_CIRCUIT_BREAKER_THRESHOLDS.userResponseTimeoutMs).toBeGreaterThan(0);
-      expect(DEFAULT_CIRCUIT_BREAKER_THRESHOLDS.forceCloseCooldownMs).toBeGreaterThan(0);
-    });
-
-    it('成功阈值应该是正整数', () => {
-      expect(DEFAULT_CIRCUIT_BREAKER_THRESHOLDS.halfOpenSuccessThreshold).toBeGreaterThan(0);
-      expect(Number.isInteger(DEFAULT_CIRCUIT_BREAKER_THRESHOLDS.halfOpenSuccessThreshold)).toBe(true);
     });
   });
 

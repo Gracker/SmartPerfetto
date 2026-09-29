@@ -7,7 +7,6 @@
  *
  * Unit tests for the new Agent architecture components:
  * - SessionLogger
- * - CircuitBreaker
  * - ModelRouter
  */
 
@@ -22,7 +21,6 @@ import {
   SessionLogger,
 } from '../services/sessionLogger';
 
-import { CircuitBreaker } from '../agent/core/circuitBreaker';
 import { ModelRouter } from '../agent/core/modelRouter';
 
 describe('SessionLogger', () => {
@@ -157,81 +155,6 @@ describe('SessionLoggerManager', () => {
 
     // Should return same instance
     expect(logger1).toBe(logger2);
-  });
-});
-
-describe('CircuitBreaker', () => {
-  let circuitBreaker: CircuitBreaker;
-
-  beforeEach(() => {
-    circuitBreaker = new CircuitBreaker({
-      maxRetriesPerAgent: 3,
-      maxIterationsPerStage: 5,
-      cooldownMs: 1000,
-      halfOpenAttempts: 1,
-    });
-  });
-
-  describe('failure recording', () => {
-    it('should allow retries within limit', () => {
-      const decision1 = circuitBreaker.recordFailure('agent-1');
-      expect(decision1.action).toBe('retry');
-
-      const decision2 = circuitBreaker.recordFailure('agent-1');
-      expect(decision2.action).toBe('retry');
-    });
-
-    it('should trip after max retries', () => {
-      circuitBreaker.recordFailure('agent-2');
-      circuitBreaker.recordFailure('agent-2');
-      const decision = circuitBreaker.recordFailure('agent-2');
-
-      expect(decision.action).toBe('ask_user');
-      expect(decision.reason).toContain('agent-2');
-    });
-  });
-
-  describe('iteration recording', () => {
-    it('should allow iterations within limit', () => {
-      for (let i = 0; i < 4; i++) {
-        const decision = circuitBreaker.recordIteration('stage-1');
-        expect(decision.action).toBe('continue');
-      }
-    });
-
-    it('should request user intervention after max iterations', () => {
-      for (let i = 0; i < 5; i++) {
-        circuitBreaker.recordIteration('stage-2');
-      }
-
-      const decision = circuitBreaker.recordIteration('stage-2');
-      expect(decision.action).toBe('ask_user');
-    });
-  });
-
-  describe('state management', () => {
-    it('should reset counters', () => {
-      circuitBreaker.recordFailure('agent-3');
-      circuitBreaker.recordFailure('agent-3');
-
-      circuitBreaker.reset();
-
-      // After reset, should start fresh
-      const decision = circuitBreaker.recordFailure('agent-3');
-      expect(decision.action).toBe('retry');
-    });
-
-    it('should track tripped state', () => {
-      // isTripped is a getter property, not a method
-      expect(circuitBreaker.isTripped).toBe(false);
-
-      // Trip the breaker
-      circuitBreaker.recordFailure('agent-4');
-      circuitBreaker.recordFailure('agent-4');
-      circuitBreaker.recordFailure('agent-4');
-
-      expect(circuitBreaker.isTripped).toBe(true);
-    });
   });
 });
 

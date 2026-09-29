@@ -6,7 +6,7 @@
  * Entity Capture Module
  *
  * Extracts Frame and Session entities from AgentResponse outputs.
- * Called after each strategy stage to populate the EntityStore.
+ * The runtime applies the captured entities to the session EntityStore.
  *
  * Parsing targets:
  * - scroll_sessions (from scroll_session_analysis/scrolling_analysis): SessionEntity[]
@@ -30,7 +30,6 @@ import type {
   GenericEntity,
   EntityId,
 } from '../context/entityStore';
-import type { FocusInterval } from '../strategies/types';
 import { EntityCaptureKind, resolveCaptureEntityKindByStepId } from './entityRegistry';
 
 // =============================================================================
@@ -102,43 +101,8 @@ export function captureEntitiesFromResponses(responses: AgentResponse[]): Captur
 }
 
 /**
- * Extract entities from FocusInterval array (from extractIntervals).
- * Intervals often contain richer metadata than raw SQL results.
- */
-export function captureEntitiesFromIntervals(intervals: FocusInterval[]): CapturedEntities {
-  const result = createEmptyCapturedEntities();
-
-  for (const interval of intervals) {
-    const meta = interval.metadata || {};
-    const entityType = meta.sourceEntityType || inferEntityType(meta);
-
-    // Support both camelCase and snake_case keys
-    const frameId = meta.frameId || meta.frame_id;
-    const sessionId = meta.sessionId || meta.session_id;
-
-    if (entityType === 'frame' && frameId) {
-      const frame = buildFrameFromInterval(interval);
-      if (frame) {
-        result.frames.push(frame);
-        result.candidateFrameIds.push(String(frameId));
-      }
-    } else if (entityType === 'session' && sessionId) {
-      const session = buildSessionFromInterval(interval);
-      if (session) {
-        result.sessions.push(session);
-        result.candidateSessionIds.push(String(sessionId));
-      }
-    }
-    // Phase 3: Support for other entity types can be added here
-    // by checking entityType === 'cpu_slice', 'binder', etc.
-  }
-
-  return result;
-}
-
-/**
  * Apply captured entities to the store.
- * This is the single write-back point from orchestrator.
+ * This is the single write-back point into the EntityStore.
  */
 export function applyCapturedEntities(store: EntityStore, captured: CapturedEntities): void {
   // Upsert core entities
@@ -169,38 +133,6 @@ export function applyCapturedEntities(store: EntityStore, captured: CapturedEnti
   if (captured.candidateSessionIds.length > 0) {
     store.setLastCandidateSessions(captured.candidateSessionIds);
   }
-}
-
-/**
- * Merge multiple CapturedEntities into one.
- */
-export function mergeCapturedEntities(...captures: CapturedEntities[]): CapturedEntities {
-  const result = createEmptyCapturedEntities();
-
-  for (const capture of captures) {
-    result.frames.push(...capture.frames);
-    result.sessions.push(...capture.sessions);
-    result.cpuSlices.push(...(capture.cpuSlices || []));
-    result.binders.push(...(capture.binders || []));
-    result.gcs.push(...(capture.gcs || []));
-    result.memories.push(...(capture.memories || []));
-    result.generics.push(...(capture.generics || []));
-    result.candidateFrameIds.push(...capture.candidateFrameIds);
-    result.candidateSessionIds.push(...capture.candidateSessionIds);
-  }
-
-  // Deduplicate
-  result.frames = deduplicateById(result.frames, 'frame_id');
-  result.sessions = deduplicateById(result.sessions, 'session_id');
-  result.cpuSlices = deduplicateById(result.cpuSlices, 'slice_id');
-  result.binders = deduplicateById(result.binders, 'transaction_id');
-  result.gcs = deduplicateById(result.gcs, 'gc_id');
-  result.memories = deduplicateById(result.memories, 'memory_id');
-  result.generics = deduplicateById(result.generics, 'entity_id');
-  result.candidateFrameIds = [...new Set(result.candidateFrameIds)];
-  result.candidateSessionIds = [...new Set(result.candidateSessionIds)];
-
-  return result;
 }
 
 // =============================================================================
@@ -470,61 +402,6 @@ function parseMemories(payload: any): MemoryEntity[] {
 }
 
 /**
- * Build a FrameEntity from a FocusInterval.
- */
-function buildFrameFromInterval(interval: FocusInterval): FrameEntity | null {
-  const meta = interval.metadata || {};
-  // Try both camelCase and snake_case for frameId
-  const frameId = meta.frameId || meta.frame_id || meta.sourceEntityId;
-  if (!frameId) return null;
-
-  return {
-    frame_id: String(frameId),
-    start_ts: interval.startTs,
-    end_ts: interval.endTs,
-    process_name: interval.processName,
-    session_id: stringifyId(meta.sessionId || meta.session_id),
-    jank_type: meta.jankType || meta.jank_type,
-    dur_ms: meta.durMs || meta.dur_ms,
-    main_start_ts: stringifyTs(meta.mainStartTs || meta.main_start_ts),
-    main_end_ts: stringifyTs(meta.mainEndTs || meta.main_end_ts),
-    render_start_ts: stringifyTs(meta.renderStartTs || meta.render_start_ts),
-    render_end_ts: stringifyTs(meta.renderEndTs || meta.render_end_ts),
-    pid: meta.pid,
-    layer_name: meta.layerName || meta.layer_name,
-    vsync_missed: meta.vsyncMissed || meta.vsync_missed,
-    source: 'interval',
-    updated_at: Date.now(),
-  };
-}
-
-/**
- * Build a SessionEntity from a FocusInterval.
- */
-function buildSessionFromInterval(interval: FocusInterval): SessionEntity | null {
-  const meta = interval.metadata || {};
-  const sessionId = meta.sessionId || meta.session_id || meta.sourceEntityId;
-  if (!sessionId) return null;
-
-  return {
-    session_id: String(sessionId),
-    start_ts: interval.startTs,
-    end_ts: interval.endTs,
-    process_name: interval.processName,
-    frame_count: meta.frameCount || meta.frame_count,
-    jank_count: meta.jankCount || meta.jank_count,
-    max_vsync_missed: meta.maxVsyncMissed || meta.max_vsync_missed,
-    jank_types: meta.jankTypes || meta.jank_types,
-    source: 'interval',
-    updated_at: Date.now(),
-  };
-}
-
-// =============================================================================
-// Utilities
-// =============================================================================
-
-/**
  * Normalize columnar or array payload to array of row objects.
  */
 function normalizeToRows(payload: any): Array<Record<string, any>> {
@@ -580,15 +457,6 @@ function stringifyTs(value: any): string | undefined {
 function stringifyId(value: any): string | undefined {
   if (value === undefined || value === null) return undefined;
   return String(value);
-}
-
-/**
- * Infer entity type from metadata.
- */
-function inferEntityType(meta: Record<string, any>): 'frame' | 'session' | 'unknown' {
-  if (meta.frame_id || meta.frameId) return 'frame';
-  if (meta.session_id || meta.sessionId) return 'session';
-  return 'unknown';
 }
 
 /**
