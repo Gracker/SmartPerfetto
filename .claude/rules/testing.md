@@ -108,21 +108,27 @@ Orphaned means not reachable from an entrypoint: imported only by tests, by
 nothing, or only by other orphans (including cycles). An importer count cannot
 see the last shape, because a dead root keeps its whole subtree looking alive.
 Counting importers and skipping untested files missed 52 modules, among them
-the legacy executor/strategy orchestrator under `agent/core` that a 2026-09-26
-fix still patched.
+the legacy executor/strategy orchestrator under `agent/core`, which a
+2026-09-26 fix still patched before it was deleted.
 
-`scripts/orphaned-modules-baseline.json` records 71 modules already in this
+Reachability is per module, not per export. A module stays reachable while any
+live module imports it for one symbol, and a barrel such as `agent/index.ts`
+keeps every re-exported module reachable whether or not anything uses the
+symbol. After deleting an orphan root, check each export it consumed with
+`rg -w` for a remaining non-test caller; the check reports none of them.
+
+`scripts/orphaned-modules-baseline.json` records the modules already in this
 state. They are accepted debt, not blessed: each is behaviour the product does
 not run, and any suite over it vouches for nothing. Shrink the list by restoring the call site
 or deleting the module with its suite; `--update-baseline` grows it only with a
 justification in the same commit.
 
-Suites that no focused tier owns live in `test:unit-sweep` (233 of them, ~39s).
+Suites that no focused tier owns live in `test:unit-sweep` (about 40s).
 Prefer the tier that matches the change; the sweep is the home for everything
 else. Directory-scoped patterns are also supported by the check, but note two
 costs before reaching for one: a directory pattern re-runs suites already owned
-by another tier (the same 233 cost five minutes that way rather than 39
-seconds), and Jest's `testMatch` treats every `.ts` under `__tests__/` as a
+by another tier (the same suites cost five minutes that way rather than
+about 40 seconds), and Jest's `testMatch` treats every `.ts` under `__tests__/` as a
 suite, so a fixture such as `sourceFinalizationFixture.ts` fails with "must
 contain at least one test".
 

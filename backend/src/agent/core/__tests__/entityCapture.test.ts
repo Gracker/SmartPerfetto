@@ -8,14 +8,11 @@
 
 import {
   captureEntitiesFromResponses,
-  captureEntitiesFromIntervals,
   applyCapturedEntities,
-  mergeCapturedEntities,
   CapturedEntities,
 } from '../entityCapture';
 import { createEntityStore, EntityStore } from '../../context/entityStore';
 import type { AgentResponse, AgentToolResult } from '../../types/agentProtocol';
-import type { FocusInterval } from '../../strategies/types';
 
 describe('entityCapture', () => {
   describe('captureEntitiesFromResponses', () => {
@@ -176,95 +173,6 @@ describe('entityCapture', () => {
     });
   });
 
-  describe('captureEntitiesFromIntervals', () => {
-    test('extracts frame entities from intervals', () => {
-      const intervals: FocusInterval[] = [
-        {
-          id: 0,
-          processName: 'com.example.app',
-          startTs: '123456789000000',
-          endTs: '123456889000000',
-          priority: 1,
-          label: '帧 1436069',
-          metadata: {
-            sourceEntityType: 'frame',
-            sourceEntityId: 1436069,
-            frameId: 1436069,
-            sessionId: 1,
-            jankType: 'App Deadline Missed',
-            durMs: 100,
-          },
-        },
-      ];
-
-      const captured = captureEntitiesFromIntervals(intervals);
-
-      expect(captured.frames).toHaveLength(1);
-      expect(captured.frames[0].frame_id).toBe('1436069');
-      expect(captured.frames[0].start_ts).toBe('123456789000000');
-      expect(captured.frames[0].session_id).toBe('1');
-      expect(captured.frames[0].jank_type).toBe('App Deadline Missed');
-      expect(captured.frames[0].source).toBe('interval');
-
-      expect(captured.candidateFrameIds).toEqual(['1436069']);
-    });
-
-    test('extracts session entities from intervals', () => {
-      const intervals: FocusInterval[] = [
-        {
-          id: 1,
-          processName: 'com.example.app',
-          startTs: '100000000000000',
-          endTs: '200000000000000',
-          priority: 1,
-          label: '会话 1',
-          metadata: {
-            sourceEntityType: 'session',
-            sourceEntityId: 1,
-            sessionId: 1,
-            frameCount: 120,
-            jankCount: 5,
-          },
-        },
-      ];
-
-      const captured = captureEntitiesFromIntervals(intervals);
-
-      expect(captured.sessions).toHaveLength(1);
-      expect(captured.sessions[0].session_id).toBe('1');
-      expect(captured.sessions[0].start_ts).toBe('100000000000000');
-      expect(captured.sessions[0].frame_count).toBe(120);
-      expect(captured.sessions[0].source).toBe('interval');
-
-      expect(captured.candidateSessionIds).toEqual(['1']);
-    });
-
-    test('handles snake_case metadata keys', () => {
-      const intervals: FocusInterval[] = [
-        {
-          id: 0,
-          processName: 'com.example.app',
-          startTs: '123456789000000',
-          endTs: '123456889000000',
-          priority: 1,
-          metadata: {
-            sourceEntityType: 'frame',
-            frame_id: 1436069,
-            session_id: 1,
-            jank_type: 'App Deadline Missed',
-          },
-        },
-      ];
-
-      const captured = captureEntitiesFromIntervals(intervals);
-
-      expect(captured.frames).toHaveLength(1);
-      expect(captured.frames[0].frame_id).toBe('1436069');
-      expect(captured.frames[0].session_id).toBe('1');
-      expect(captured.frames[0].jank_type).toBe('App Deadline Missed');
-    });
-  });
-
   describe('applyCapturedEntities', () => {
     test('upserts entities and updates candidate lists', () => {
       const store = createEntityStore();
@@ -315,51 +223,6 @@ describe('entityCapture', () => {
 
       // Should preserve old candidates
       expect(store.getLastCandidateFrames()).toEqual(['old1', 'old2']);
-    });
-  });
-
-  describe('mergeCapturedEntities', () => {
-    test('merges multiple captures and deduplicates', () => {
-      const capture1: CapturedEntities = {
-        frames: [{ frame_id: '1', start_ts: '100' }],
-        sessions: [{ session_id: '1', start_ts: '100' }],
-        cpuSlices: [],
-        binders: [],
-        gcs: [],
-        memories: [],
-        generics: [],
-        candidateFrameIds: ['1', '2'],
-        candidateSessionIds: ['1'],
-      };
-
-      const capture2: CapturedEntities = {
-        frames: [
-          { frame_id: '1', start_ts: '200' }, // Duplicate
-          { frame_id: '3', start_ts: '300' },
-        ],
-        sessions: [{ session_id: '2', start_ts: '200' }],
-        cpuSlices: [],
-        binders: [],
-        gcs: [],
-        memories: [],
-        generics: [],
-        candidateFrameIds: ['2', '3'],
-        candidateSessionIds: ['2'],
-      };
-
-      const merged = mergeCapturedEntities(capture1, capture2);
-
-      // Frames deduplicated by ID (first wins)
-      expect(merged.frames).toHaveLength(2);
-      expect(merged.frames.map(f => f.frame_id).sort()).toEqual(['1', '3']);
-      expect(merged.frames.find(f => f.frame_id === '1')?.start_ts).toBe('100'); // First one wins
-
-      // Sessions merged
-      expect(merged.sessions).toHaveLength(2);
-
-      // Candidate IDs deduplicated
-      expect(merged.candidateFrameIds.sort()).toEqual(['1', '2', '3']);
-      expect(merged.candidateSessionIds.sort()).toEqual(['1', '2']);
     });
   });
 });

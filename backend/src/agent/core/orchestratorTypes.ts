@@ -3,36 +3,16 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 /**
- * Orchestrator Types, Constants, and Interfaces
+ * Orchestrator Types
  *
- * Shared definitions used across orchestrator sub-modules:
- * - Config types and defaults
- * - Task graph structures
- * - Domain alias mappings
- * - Unified executor interface (AnalysisExecutor pattern)
- * - Progress emitter (decouples EventEmitter dependency)
+ * Shared runtime contracts: the IOrchestrator interface, analysis
+ * options/results, streaming payloads, and the progress emitter.
  */
 
-import {
-  Intent,
-  Finding,
-  StreamingUpdate,
-} from '../types';
-import {
-  Hypothesis,
-  SharedAgentContext,
-} from '../types/agentProtocol';
-import {
-  StrategyDecision,
-} from '../agents/iterationStrategyPlanner';
-import type { AgentMessageBus } from '../communication';
-import type { CircuitBreaker } from './circuitBreaker';
-import type { ModelRouter } from './modelRouter';
-import type { FocusInterval } from '../strategies/types';
+import type { Finding, StreamingUpdate } from '../types';
+import type { Hypothesis } from '../types/agentProtocol';
 import type { SmartScenePreviewPayload } from '../scene/types';
 import type { AdbCollaborationConfig, AdbContext } from '../../services/adb';
-import type { IncrementalScope } from './incrementalAnalyzer';
-import type { EnhancedSessionContext } from '../context/enhancedSessionContext';
 import type { ConclusionContract } from './conclusionContract';
 import type { ClaimSupportV1 } from '../../types/evidenceContract';
 import type { ClaimVerificationResult } from '../../types/claimVerification';
@@ -48,120 +28,6 @@ import type {
   AnalysisRuntimeAppendix,
   FinalReportAssessment,
 } from '../../types/analysisDelivery';
-
-// =============================================================================
-// Agent ID Constants
-// =============================================================================
-
-export const AGENT_IDS = {
-  FRAME: 'frame_agent',
-  CPU: 'cpu_agent',
-  MEMORY: 'memory_agent',
-  BINDER: 'binder_agent',
-  STARTUP: 'startup_agent',
-  INTERACTION: 'interaction_agent',
-  ANR: 'anr_agent',
-  SYSTEM: 'system_agent',
-} as const;
-
-// =============================================================================
-// Configuration
-// =============================================================================
-
-export interface AgentRuntimeConfig {
-  /** Maximum analysis rounds */
-  maxRounds: number;
-  /**
-   * Preferred maximum rounds (soft budget).
-   * Executors may choose to stop after reaching this budget *if* results are already "good enough".
-   * This should never be treated as a hard cap (use maxRounds for safety limits).
-   */
-  softMaxRounds?: number;
-  /** Maximum concurrent agent tasks */
-  maxConcurrentTasks: number;
-  /** Default timeout for a single agent task (ms) */
-  taskTimeoutMs?: number;
-  /** Confidence threshold to conclude */
-  confidenceThreshold: number;
-  /** Stop after consecutive rounds with no new evidence */
-  maxNoProgressRounds: number;
-  /** Stop after consecutive rounds with mostly failed tasks */
-  maxFailureRounds: number;
-  /** Enable logging */
-  enableLogging: boolean;
-  /** Streaming callback */
-  streamingCallback?: (update: StreamingUpdate) => void;
-}
-
-export const DEFAULT_CONFIG: AgentRuntimeConfig = {
-  maxRounds: 5,
-  maxConcurrentTasks: 3,
-  taskTimeoutMs: Number.parseInt(process.env.AGENT_TASK_TIMEOUT_MS || '', 10) || 180000,
-  confidenceThreshold: 0.7,
-  maxNoProgressRounds: 2,
-  maxFailureRounds: 2,
-  enableLogging: true,
-};
-
-// =============================================================================
-// Task Graph Types
-// =============================================================================
-
-export interface TaskGraphNode {
-  id: string;
-  domain: string;
-  description: string;
-  evidenceNeeded: string[];
-  timeRange?: { start: number | string; end: number | string };
-  dependsOn?: string[];
-}
-
-export interface TaskGraphPlan {
-  nodes: TaskGraphNode[];
-}
-
-// =============================================================================
-// Domain Mappings
-// =============================================================================
-
-export const DOMAIN_ALIASES: Record<string, string> = {
-  gpu: 'frame',
-  render: 'frame',
-  rendering: 'frame',
-  surfaceflinger: 'frame',
-  sf: 'frame',
-  choreographer: 'frame',
-  ui: 'frame',
-  input: 'interaction',
-  touch: 'interaction',
-  interaction: 'interaction',
-  binder: 'binder',
-  ipc: 'binder',
-  lock: 'binder',
-  memory: 'memory',
-  gc: 'memory',
-  art: 'memory',
-  startup: 'startup',
-  launch: 'startup',
-  coldstart: 'startup',
-  anr: 'anr',
-  systemserver: 'system',
-  system: 'system',
-  thermal: 'system',
-  io: 'system',
-  power: 'system',
-};
-
-export const DEFAULT_EVIDENCE: Record<string, string[]> = {
-  frame: ['jank frames', 'frame durations', 'fps', 'frame timeline'],
-  cpu: ['cpu load', 'runqueue latency', 'cpu frequency', 'thread hotspots'],
-  binder: ['binder call latency', 'thread blocking', 'lock contention'],
-  memory: ['heap usage', 'gc pauses', 'allocation spikes', 'lmk events'],
-  startup: ['cold start duration', 'main thread blocking', 'io latency'],
-  interaction: ['input latency', 'dispatch delay', 'response time'],
-  anr: ['anr traces', 'blocked main thread', 'binder waits'],
-  system: ['thermal throttling', 'io stalls', 'system_server workload'],
-};
 
 // =============================================================================
 // IOrchestrator — Shared interface for ClaudeRuntime and OpenAIRuntime
@@ -296,35 +162,8 @@ export interface AnalysisOptions {
   adbContext?: AdbContext;
 
   /**
-   * Parameters resolved from follow-up queries
-   * Contains enriched params (frame_id with start_ts/end_ts, etc.)
-   * populated by resolveFollowUp()
-   */
-  resolvedFollowUpParams?: Record<string, any>;
-
-  /**
-   * Pre-built focus intervals for drill-down follow-ups
-   * These bypass the normal interval extraction and go directly to per-interval stages
-   */
-  prebuiltIntervals?: FocusInterval[];
-
-  /**
-   * Optional strategy hint (computed by registry match) for hypothesis-driven planning.
-   * When default loop mode prefers hypothesis+experiments, we still surface the best-matching
-   * strategy so the planner can reuse its structure without forcing the deterministic pipeline.
-   */
-  suggestedStrategy?: {
-    id: string;
-    name: string;
-    confidence?: number;
-    matchMethod?: 'keyword' | 'llm' | 'none';
-    reasoning?: string;
-  };
-
-  /**
-   * Optional strategy deny-list enforced by route layer.
-   * Matched strategies in this list will be treated as no-match and
-   * routed to non-strategy executors.
+   * Optional strategy deny-list enforced by the route layer: matched
+   * strategies in this list are treated as no-match.
    */
   blockedStrategyIds?: string[];
 
@@ -658,100 +497,4 @@ export type PayloadFor<T extends StreamingEventType> =
 export interface ProgressEmitter {
   emitUpdate<T extends StreamingEventType>(type: T, content: PayloadFor<T>): void;
   log(message: string): void;
-}
-
-// =============================================================================
-// Analysis Services (aggregate dependency — reduces God Dependency on ModelRouter)
-// =============================================================================
-
-import type { EmittedEnvelopeRegistry } from './emittedEnvelopeRegistry';
-import type { ExtendedSqlKnowledgeBase } from '../../services/sqlKnowledgeBase';
-
-export interface AnalysisServices {
-  modelRouter: ModelRouter;
-  messageBus: AgentMessageBus;
-  circuitBreaker: CircuitBreaker;
-  /** Session-scoped registry for deduplicating emitted DataEnvelopes */
-  emittedEnvelopeRegistry?: EmittedEnvelopeRegistry;
-  /** Perfetto SQL schema context for LLM SQL generation */
-  knowledgeBase?: ExtendedSqlKnowledgeBase;
-}
-
-// =============================================================================
-// Execution Context (immutable context passed to executors)
-// =============================================================================
-
-export interface ExecutionContext {
-  query: string;
-  sessionId: string;
-  traceId: string;
-  intent: Intent;
-  initialHypotheses: Hypothesis[];
-  sharedContext: SharedAgentContext;
-  options: AnalysisOptions;
-  /**
-   * Session-scoped multi-turn context (v2.0).
-   * Provides access to durable per-trace state (EntityStore, FocusStore-derived state, TraceAgentState).
-   */
-  sessionContext?: EnhancedSessionContext;
-  /**
-   * Incremental analysis scope hint (v2.0).
-   * When present, executors should prefer analyzing only what is new/relevant
-   * instead of re-running full analysis on every turn.
-   */
-  incrementalScope?: IncrementalScope;
-  config: AgentRuntimeConfig;
-}
-
-// =============================================================================
-// Executor Result (accumulated output from any executor)
-// =============================================================================
-
-import type { CapturedEntities } from './entityCapture';
-
-export interface ExecutorResult {
-  findings: Finding[];
-  lastStrategy: StrategyDecision | null;
-  confidence: number;
-  informationGaps: string[];
-  rounds: number;
-  stopReason: string | null;
-
-  /**
-   * Captured entities from this execution (frames, sessions).
-   * Applied to EntityStore by orchestrator after execution.
-   */
-  capturedEntities?: CapturedEntities;
-
-  /**
-   * Entity IDs that were analyzed in this execution.
-   * Used to mark entities as analyzed in EntityStore for extend support.
-   */
-  analyzedEntityIds?: {
-    frames?: string[];
-    sessions?: string[];
-  };
-}
-
-// =============================================================================
-// Utility
-// =============================================================================
-
-export function normalizeDomain(domain: string): string {
-  const normalized = domain.toLowerCase();
-  return DOMAIN_ALIASES[normalized] || normalized;
-}
-
-export function concludeDecision(confidence: number, reasoning: string): StrategyDecision {
-  return { strategy: 'conclude', confidence, reasoning };
-}
-
-export function translateStrategy(strategy: string): string {
-  const translations: Record<string, string> = {
-    'continue': '继续分析',
-    'deep_dive': '深入分析',
-    'pivot': '转向新方向',
-    'conclude': '生成结论',
-  };
-  return translations[strategy] || strategy;
 }

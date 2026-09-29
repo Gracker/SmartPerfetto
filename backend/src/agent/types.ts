@@ -377,14 +377,13 @@ export interface StreamingUpdate {
 }
 
 // =============================================================================
-// State Machine Types (新架构)
+// Agent Phase and Checkpoint Types
 // =============================================================================
 
 /**
  * Agent execution phase enum
  *
- * Provides type-safe state values for the agent state machine.
- * @see STATE_TRANSITIONS in stateMachine.ts for valid transitions
+ * Provides type-safe phase values for agent checkpoints.
  */
 export enum AgentPhase {
   IDLE = 'idle',
@@ -395,31 +394,6 @@ export enum AgentPhase {
   AWAITING_USER = 'awaiting_user',
   COMPLETED = 'completed',
   FAILED = 'failed',
-}
-
-/**
- * State machine event type enum
- *
- * Provides type-safe event names for state transitions.
- */
-export enum StateEventType {
-  START_ANALYSIS = 'START_ANALYSIS',
-  INTENT_UNDERSTOOD = 'INTENT_UNDERSTOOD',
-  PLAN_CREATED = 'PLAN_CREATED',
-  STAGE_STARTED = 'STAGE_STARTED',
-  STAGE_COMPLETED = 'STAGE_COMPLETED',
-  EVALUATION_COMPLETE = 'EVALUATION_COMPLETE',
-  NEEDS_REFINEMENT = 'NEEDS_REFINEMENT',
-  CIRCUIT_TRIPPED = 'CIRCUIT_TRIPPED',
-  USER_RESPONDED = 'USER_RESPONDED',
-  ANALYSIS_COMPLETE = 'ANALYSIS_COMPLETE',
-  ERROR_OCCURRED = 'ERROR_OCCURRED',
-}
-
-export interface StateEvent {
-  type: StateEventType;
-  payload?: any;
-  timestamp?: number;
 }
 
 export interface Checkpoint {
@@ -441,27 +415,6 @@ export interface SerializedAgentState {
   expertResults: ExpertResult[];
   iterationCount: number;
   metadata: Record<string, any>;
-}
-
-export interface StateMachineConfig {
-  sessionId: string;
-  traceId: string;
-  persistPath?: string;
-  autoSave?: boolean;
-  autoSaveIntervalMs?: number;
-}
-
-export interface AgentStateMachineState {
-  sessionId: string;
-  traceId: string;
-  phase: AgentPhase;
-  checkpoints: Map<string, Checkpoint>;
-  iterationCounters: Map<string, number>;
-  currentStageIndex: number;
-  stageResults: Map<string, StageResult>;
-  events: StateEvent[];
-  createdAt: number;
-  updatedAt: number;
 }
 
 // =============================================================================
@@ -530,59 +483,6 @@ export interface PipelineProgress {
   totalStages: number;
   elapsedMs: number;
   estimatedRemainingMs: number;
-}
-
-// =============================================================================
-// Circuit Breaker Types (新架构)
-// =============================================================================
-
-/**
- * Circuit breaker state enum
- *
- * Provides type-safe state values for the circuit breaker pattern.
- * - CLOSED: Normal operation, requests pass through
- * - OPEN: Circuit tripped, requests are blocked
- * - HALF_OPEN: Testing recovery, limited requests allowed
- */
-export enum CircuitState {
-  CLOSED = 'closed',
-  OPEN = 'open',
-  HALF_OPEN = 'half-open',
-}
-
-export interface CircuitBreakerConfig {
-  maxRetriesPerAgent: number;
-  maxIterationsPerStage: number;
-  cooldownMs: number;
-  halfOpenAttempts: number;
-  failureThreshold: number;
-  successThreshold: number;
-}
-
-export interface CircuitDecision {
-  action: 'continue' | 'retry' | 'skip' | 'abort' | 'ask_user';
-  reason?: string;
-  delay?: number;
-  context?: CircuitDiagnostics;
-}
-
-export interface CircuitDiagnostics {
-  agentId: string;
-  failureCount: number;
-  iterationCount: number;
-  lastError?: string;
-  lastAttemptTime: number;
-  state: CircuitState;
-  recentErrors: Array<{ time: number; error: string }>;
-}
-
-export interface CircuitBreakerState {
-  state: CircuitState;
-  retryCounters: Map<string, number>;
-  iterationCounters: Map<string, number>;
-  failureHistory: Map<string, Array<{ time: number; error: string }>>;
-  lastStateChange: number;
-  tripReason?: string;
 }
 
 // =============================================================================
@@ -769,17 +669,6 @@ export interface EvaluationCriteria {
 // Master Orchestrator Types (新架构)
 // =============================================================================
 
-export interface MasterOrchestratorConfig {
-  stateMachineConfig: StateMachineConfig;
-  circuitBreakerConfig: CircuitBreakerConfig;
-  modelRouterConfig: ModelRouterConfig;
-  pipelineConfig: PipelineConfig;
-  evaluationCriteria: EvaluationCriteria;
-  maxTotalIterations: number;
-  enableTraceRecording: boolean;
-  streamingCallback?: (update: StreamingUpdate) => void;
-}
-
 export interface MasterOrchestratorResult {
   sessionId: string;
   intent: Intent;
@@ -815,19 +704,6 @@ export interface SessionInfo {
   updatedAt: number;
   canResume: boolean;
   lastCheckpointId?: string;
-  error?: string;
-}
-
-export interface RecoveryOptions {
-  fromCheckpoint?: string;
-  skipFailedStage?: boolean;
-  overrideConfig?: Partial<MasterOrchestratorConfig>;
-}
-
-export interface RecoveryResult {
-  success: boolean;
-  resumedFrom: string;
-  result?: MasterOrchestratorResult;
   error?: string;
 }
 

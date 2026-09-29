@@ -488,50 +488,6 @@ export const agentConfig = {
 } as const;
 
 // =============================================================================
-// Circuit Breaker Configuration
-// =============================================================================
-
-export const circuitBreakerConfig = {
-  /** Maximum retries per agent */
-  maxRetriesPerAgent: parseIntEnv('CB_MAX_RETRIES_PER_AGENT', 3),
-
-  /** Maximum iterations per stage */
-  maxIterationsPerStage: parseIntEnv('CB_MAX_ITERATIONS_PER_STAGE', 5),
-
-  /** Cooldown period after tripping (ms) */
-  cooldownMs: parseIntEnv('CB_COOLDOWN_MS', 30000),
-
-  /** Number of attempts in half-open state */
-  halfOpenAttempts: parseIntEnv('CB_HALF_OPEN_ATTEMPTS', 1),
-
-  /** Number of failures before tripping */
-  failureThreshold: parseIntEnv('CB_FAILURE_THRESHOLD', 3),
-
-  /** Number of successes to close circuit */
-  successThreshold: parseIntEnv('CB_SUCCESS_THRESHOLD', 2),
-
-  /** Base delay for exponential backoff (ms) */
-  backoffBaseDelayMs: parseIntEnv('CB_BACKOFF_BASE_DELAY_MS', 1000),
-
-  /** Maximum delay for exponential backoff (ms) */
-  backoffMaxDelayMs: parseIntEnv('CB_BACKOFF_MAX_DELAY_MS', 30000),
-
-  // === User Intervention Thresholds ===
-
-  /** Timeout waiting for user response (ms) - default 5 minutes */
-  userResponseTimeoutMs: parseIntEnv('CB_USER_RESPONSE_TIMEOUT_MS', 5 * 60 * 1000),
-
-  /** Cooldown period between forceClose calls (ms) - default 30 seconds */
-  forceCloseCooldownMs: parseIntEnv('CB_FORCE_CLOSE_COOLDOWN_MS', 30000),
-
-  /** Maximum forceClose calls per session */
-  maxForceCloseCount: parseIntEnv('CB_MAX_FORCE_CLOSE_COUNT', 5),
-
-  /** Successes needed in half-open state to fully close */
-  halfOpenSuccessThreshold: parseIntEnv('CB_HALF_OPEN_SUCCESS_THRESHOLD', 3),
-} as const;
-
-// =============================================================================
 // Pipeline Configuration
 // =============================================================================
 
@@ -734,7 +690,6 @@ export const config = {
   server: serverConfig,
   traceProcessor: traceProcessorConfig,
   agent: agentConfig,
-  circuitBreaker: circuitBreakerConfig,
   pipeline: pipelineConfig,
   modelRouter: modelRouterConfig,
   fork: forkConfig,
