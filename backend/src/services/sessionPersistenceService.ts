@@ -255,37 +255,6 @@ export class SessionPersistenceService {
   }
 
   /**
-   * Get all sessions for a specific trace
-   */
-  getSessionsByTrace(traceId: string): StoredSession[] {
-    const rows = this.db.prepare(`
-      SELECT id FROM sessions WHERE trace_id = ? ORDER BY created_at DESC
-    `).all(traceId) as any[];
-
-    return rows
-      .map(row => this.getSession(row.id))
-      .filter((s): s is StoredSession => s !== null);
-  }
-
-  /**
-   * Export sessions as JSON for backup
-   */
-  exportSessions(traceId?: string): string {
-    const sessions = traceId
-      ? this.getSessionsByTrace(traceId)
-      : this.listSessions({ limit: 1000 }).sessions;
-
-    return JSON.stringify({
-      exportedAt: Date.now(),
-      count: sessions.length,
-      sessions: sessions.map(s => ({
-        ...s,
-        messages: this.getSession(s.id)?.messages || [],
-      })),
-    }, null, 2);
-  }
-
-  /**
    * Clean up old sessions (older than specified days)
    */
   cleanupOldSessions(daysToKeep: number = 30): number {

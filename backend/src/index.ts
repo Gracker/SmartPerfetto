@@ -18,7 +18,6 @@ import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config'
 import sqlRoutes from './routes/sql';
 import simpleTraceRoutes from './routes/simpleTraceRoutes';
 import perfettoLocalRoutes from './routes/perfettoLocalRoutes';
-import sessionRoutes from './routes/sessionRoutes';
 import exportRoutes from './routes/exportRoutes';
 import templateAnalysisRoutes from './routes/templateAnalysisRoutes';
 import skillRoutes from './routes/skillRoutes';
@@ -59,7 +58,7 @@ import {
   markLegacyApi,
   rejectLegacyAgentApi,
 } from './middleware/legacyAgentApi';
-import { rejectRemovedPerfettoSqlApi } from './middleware/removedApi';
+import { rejectRemovedPerfettoSqlApi, rejectRemovedSessionsApi } from './middleware/removedApi';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,
@@ -276,7 +275,7 @@ app.use(
   simpleTraceRoutes,
 );
 app.use('/api/perfetto', rejectEnterpriseUnscopedApi, perfettoLocalRoutes);
-app.use('/api/sessions', rejectEnterpriseUnscopedApi, sessionRoutes);
+app.use('/api/sessions', rejectRemovedSessionsApi);
 app.use('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
 app.use('/api/export', exportRoutes);
 app.use('/api/template-analysis', rejectEnterpriseUnscopedApi, templateAnalysisRoutes);

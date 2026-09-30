@@ -269,29 +269,6 @@ describe('SessionPersistenceService', () => {
     });
   });
 
-  describe('getSessionsByTrace', () => {
-    it('should retrieve all sessions for a trace', () => {
-      const service = SessionPersistenceService.getInstance();
-
-      for (let i = 1; i <= 3; i++) {
-        const session: StoredSession = {
-          id: `trace-session-${i}`,
-          traceId: 'shared-trace',
-          traceName: 'shared.perfetto-trace',
-          question: `Question ${i}`,
-          createdAt: Date.now(),
-          updatedAt: Date.now(),
-          messages: [],
-        };
-        service.saveSession(session);
-      }
-
-      const sessions = service.getSessionsByTrace('shared-trace');
-      expect(sessions).toHaveLength(3);
-      expect(sessions.every(s => s.traceId === 'shared-trace')).toBe(true);
-    });
-  });
-
   describe('cleanupOldSessions', () => {
     it('should delete sessions older than specified days', () => {
       const service = SessionPersistenceService.getInstance();

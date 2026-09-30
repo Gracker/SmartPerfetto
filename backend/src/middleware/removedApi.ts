@@ -7,8 +7,8 @@ import { recordLegacyApiUsage } from '../services/legacyApiTelemetry';
 
 export interface RemovedApiOptions {
   error: string;
-  /** Successor for a path relative to the mount point, when one exists. */
-  successorFor: (path: string) => string | undefined;
+  /** Successor for a request path relative to the mount point, when one exists. */
+  successorFor: (path: string, method: string) => string | undefined;
   /** Where to go when the path has no direct successor. */
   fallback: string;
 }
@@ -21,7 +21,7 @@ export interface RemovedApiOptions {
 export function rejectRemovedApi({ error, successorFor, fallback }: RemovedApiOptions) {
   return (req: Request, res: Response): void => {
     recordLegacyApiUsage(req);
-    const successor = successorFor(req.path);
+    const successor = successorFor(req.path, req.method);
     res.setHeader('Deprecation', 'true');
     if (successor) {
       res.setHeader('Link', `<${successor}>; rel="successor-version"`);
@@ -60,4 +60,23 @@ export const rejectRemovedPerfettoSqlApi = rejectRemovedApi({
     return skillId ? `/api/skills/execute/${skillId}` : undefined;
   },
   fallback: '/api/workspaces/:workspaceId/agent',
+});
+
+const SAFE_SESSION_ID_RE = /^[A-Za-z0-9._:-]+$/;
+
+/**
+ * `/api/sessions`: an unscoped store API that returned or deleted any
+ * persisted session for any caller, whoever created it and whatever private
+ * source or knowledge it read. The agent session routes are its owner-scoped
+ * successors.
+ */
+export const rejectRemovedSessionsApi = rejectRemovedApi({
+  error: 'Session API has been removed',
+  successorFor: (path, method) => {
+    const segment = path.replace(/\/+$/, '').replace(/^\//, '');
+    if (segment === '') return '/api/agent/v1/sessions';
+    if (segment === 'export' || !SAFE_SESSION_ID_RE.test(segment)) return undefined;
+    return method === 'DELETE' ? `/api/agent/v1/${segment}` : `/api/agent/v1/${segment}/turns`;
+  },
+  fallback: '/api/agent/v1/sessions',
 });
