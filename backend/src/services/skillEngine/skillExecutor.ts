@@ -31,7 +31,6 @@ import {
   DisplayResult,
   DiagnosticResult,
   DisplayConfig,
-  DisplayLevel,
   SkillEvent,
   SynthesizeConfig,
 } from './types';
@@ -70,10 +69,7 @@ import {
   DataEnvelopeMeta,
   DataEnvelopeTraceSide,
   ColumnDefinition,
-  createDataEnvelope,
-  buildColumnDefinitions,
   displayResultToEnvelope,
-  layeredResultToEnvelopes,
 } from '../../types/dataContract';
 import {
   formatDisplayContractIssue,
@@ -2711,7 +2707,6 @@ export class SkillExecutor {
     context: Partial<SkillExecutionContext>,
     processScope?: EffectiveProcessScope,
   ): Promise<LayeredResult> {
-    const startTime = Date.now();
     const signal = context.signal || getSkillExecutionSignal(context.inherited);
     throwIfTraceProcessorQueryCancelled(signal);
 
@@ -4825,34 +4820,6 @@ export class SkillExecutor {
         },
       },
     };
-  }
-
-  /**
-   * 创建 DataEnvelope (v2.0 数据契约格式)
-   *
-   * DataEnvelope 是自描述的数据容器，包含:
-   * - meta: 数据来源和版本信息
-   * - data: 实际数据内容
-   * - display: 显示配置（包括列定义）
-   *
-   * 前端可以根据 display.columns 配置进行通用渲染，无需硬编码字段名。
-   */
-  private buildDataEnvelope(
-    skillId: string,
-    stepId: string,
-    title: string,
-    stepResult: StepResult,
-    displayConfig?: DisplayConfig,
-    sql?: string
-  ): DataEnvelope {
-    // First create the DisplayResult using existing logic
-    const displayResult = this.createDisplayResult(stepId, title, stepResult, displayConfig, sql);
-
-    // Extract column definitions from config or infer from data
-    const explicitColumns = (displayConfig as any)?.columns as Partial<ColumnDefinition>[] | undefined;
-
-    // Build the DataEnvelope
-    return displayResultToEnvelope(displayResult, skillId, explicitColumns);
   }
 
   /**

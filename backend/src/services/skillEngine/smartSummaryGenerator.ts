@@ -9,7 +9,7 @@
  * 当 AI 服务不可用时作为兜底方案
  */
 
-import { DisplayResult, DiagnosticResult, DisplayLevel } from './types';
+import { DisplayResult, DiagnosticResult } from './types';
 import { DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS } from '../../config/thresholds';
 
 // =============================================================================

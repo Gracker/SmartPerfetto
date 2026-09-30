@@ -9,7 +9,6 @@
  * 将结构化数据转换为用户可理解的答案
  */
 
-import { DiagnosticResult, DisplayResult } from './types';
 import { DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS } from '../../config/thresholds';
 
 // =============================================================================
@@ -542,7 +541,7 @@ export class AnswerGenerator {
   private extractEvidence(sections: Record<string, any>): string[] {
     const evidence: string[] = [];
 
-    for (const [key, section] of Object.entries(sections)) {
+    for (const section of Object.values(sections)) {
       if (!section.data || !Array.isArray(section.data) || section.data.length === 0) {
         continue;
       }
@@ -579,7 +578,7 @@ export class AnswerGenerator {
   private extractKeyMetrics(sections: Record<string, any>): string[] {
     const metrics: string[] = [];
 
-    for (const [key, section] of Object.entries(sections)) {
+    for (const section of Object.values(sections)) {
       if (!section.data || !Array.isArray(section.data) || section.data.length === 0) {
         continue;
       }
@@ -618,7 +617,7 @@ export class AnswerGenerator {
   private extractLocations(sections: Record<string, any>): string[] {
     const locations: string[] = [];
 
-    for (const [key, section] of Object.entries(sections)) {
+    for (const section of Object.values(sections)) {
       if (!section.data || !Array.isArray(section.data)) {
         continue;
       }

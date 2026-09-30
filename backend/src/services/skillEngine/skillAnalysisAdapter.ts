@@ -23,11 +23,11 @@ import {
 import {isTraceProcessorQueryCancelledError} from '../traceProcessorCancellation';
 import { DEFAULT_PROCESS_IDENTITY_ALIASES } from '../processIdentity/types';
 import { SkillExecutor, createSkillExecutor, LayeredResult } from './skillExecutor';
-import { skillRegistry, ensureSkillRegistryInitialized, type SkillRegistry } from './skillLoader';
+import { skillRegistry, ensureSkillRegistryInitialized } from './skillLoader';
 import { SkillDefinition, SkillEvent, DisplayLevel, DisplayLayer, StepResult } from './types';
 import { smartSummaryGenerator } from './smartSummaryGenerator';
-import { answerGenerator, GeneratedAnswer } from './answerGenerator';
-import { SkillEventCollector, createEventCollector, EventSummary, ProgressInfo } from './eventCollector';
+import { answerGenerator } from './answerGenerator';
+import { createEventCollector, EventSummary } from './eventCollector';
 import type { SkillOriginMetadata } from '../skillPacks/skillPackTypes';
 import {
   localizeSkillDefinition,
@@ -177,7 +177,6 @@ export class SkillAnalysisAdapter {
   private executor: SkillExecutor;
   private initialized = false;
   private eventHandler?: (event: SkillEvent) => void;
-  private currentEventCollector?: SkillEventCollector;
   private registry: SkillRegistryView;
   private registryFingerprint?: string;
   private registeredFingerprint?: string;
@@ -416,8 +415,6 @@ export class SkillAnalysisAdapter {
 
     // 创建事件收集器
     const eventCollector = createEventCollector();
-    const totalSteps = skill.steps?.length || 1;
-    eventCollector.start(targetSkillId, totalSteps);
 
     // 设置事件处理器（同时转发到外部处理器和收集器）
     const combinedHandler = (event: SkillEvent) => {

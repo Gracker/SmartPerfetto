@@ -13,7 +13,6 @@
  * - 展示控制（display）
  */
 
-import type {OemVendorId} from '../traceVendor/traceVendorResolver';
 import type { ColumnDefinition } from '../../types/dataContract';
 import type { IdentityResolutionV1, EvidenceScopeMetadata, EvidenceScopeProvenanceV1, EvidenceScopeRole } from '../../types/identityContract';
 import type { EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
@@ -702,18 +701,6 @@ export interface AIResponseEvent extends SkillEvent {
     tokens?: number;
   };
 }
-
-// =============================================================================
-// Vendor Types
-// =============================================================================
-
-/**
- * Vendor ids: the OEM values the trace vendor resolver reports
- * (`services/traceVendor/traceVendorResolver.ts`) plus the SoC / legacy ids
- * that name `backend/skills/vendors/<id>` override directories. `aosp` means an
- * AOSP or generic build; `unknown` means the trace carries no identity.
- */
-export type VendorType = OemVendorId | 'transsion' | 'mtk' | 'qualcomm';
 
 // =============================================================================
 // Module Metadata Types
