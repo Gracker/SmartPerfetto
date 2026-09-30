@@ -119,7 +119,7 @@ for the user-visible contract.
 | `backend/src/services/finalSemanticAssessment.ts`, `evidence/evidenceReadView.ts` | Bounded no-tool semantic review and original execution-capture reads |
 | `backend/src/services/finalReportContractGate.ts` | Strategy-owned `final_report_contract` validation |
 | `backend/src/services/providerManager/` | Provider configuration and runtime/protocol/env mapping |
-| `backend/src/agentv3/sessionStateSnapshot.ts` | Shared snapshot for SDK and Pi/OpenCode/Qoder runtime state |
+| `backend/src/agentv3/sessionStateSnapshot.ts` | Shared snapshot: every runtime's provider pin, product state and its own `engineState` |
 | `backend/src/services/externalIssueReporting/providerPin.ts` | M10 source-run provider snapshot validation |
 | `backend/src/services/externalIssueReporting/triageRunner.ts` | M10 no-tool Agent triage and deterministic fallback |
 

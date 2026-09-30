@@ -6,7 +6,6 @@ import { describe, expect, it } from '@jest/globals';
 import {
   getClaudeSnapshotEngineState,
   getOpenCodeSnapshotEngineState,
-  getPiAgentCoreSnapshotEngineState,
   getQoderSnapshotEngineState,
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
@@ -249,7 +248,7 @@ describe('SessionStateSnapshot runtime state inventory', () => {
     });
   });
 
-  it('normalizes legacy public Pi runtime mirrors into opaque engineState', () => {
+  it('normalizes legacy public Pi runtime mirrors into a provider-only engineState', () => {
     const legacySnapshot: SessionStateSnapshot = {
       version: 1,
       snapshotTimestamp: 1,
@@ -281,13 +280,11 @@ describe('SessionStateSnapshot runtime state inventory', () => {
         providerId: 'provider-pi',
         providerSnapshotHash: 'hash-pi',
       },
-      pi: {
-        opaque: undefined,
-      },
+      pi: {},
     });
   });
 
-  it('reads canonical Pi and OpenCode opaque engine states', () => {
+  it('keeps the provider pin of a legacy Pi snapshot that still stores a transcript', () => {
     const piSnapshot: SessionStateSnapshot = {
       version: 1,
       snapshotTimestamp: 1,
@@ -323,15 +320,15 @@ describe('SessionStateSnapshot runtime state inventory', () => {
       conversationOrdinal: 0,
     };
 
-    expect(getPiAgentCoreSnapshotEngineState(piSnapshot)).toEqual({
-      opaque: {
-        version: 1,
-        messages: [{ role: 'assistant', content: [{ type: 'text', text: 'prior' }] }],
-        messageCount: 1,
-        byteSize: 72,
-      },
-    });
+    // No run reads the stored transcript; normalization leaves it untouched and
+    // the provider pin still resolves from engineState.
+    expect(normalizeSessionStateSnapshot(piSnapshot)).toBe(piSnapshot);
+    expect(getSnapshotRuntimeKind(piSnapshot)).toBe('pi-agent-core');
+    expect(getSnapshotRuntimeProviderId(piSnapshot)).toBe('provider-pi');
+    expect(getSnapshotRuntimeProviderSnapshotHash(piSnapshot)).toBe('hash-pi');
+  });
 
+  it('reads canonical OpenCode opaque engine state', () => {
     const openCodeSnapshot: SessionStateSnapshot = {
       version: 1,
       snapshotTimestamp: 1,

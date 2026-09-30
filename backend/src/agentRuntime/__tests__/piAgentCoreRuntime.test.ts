@@ -5,6 +5,7 @@
 import { beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { z } from 'zod';
 import type { StreamingUpdate } from '../../agent/types';
+import type { SessionStateSnapshot } from '../../agentv3/sessionStateSnapshot';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import {
   createPiAgentCoreToolFromSharedSpec,
@@ -2315,10 +2316,6 @@ describe('experimental Pi agent-core runtime contract', () => {
       await second;
       await delay(25);
       expect(JSON.stringify(updates)).not.toContain('LATE_ABORT_IGNORING_PROVIDER_TEXT');
-      const snapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-      expect(snapshot.engineState?.kind === 'pi-agent-core'
-        ? snapshot.engineState.pi.opaque
-        : undefined).toBeUndefined();
     } finally {
       releasePrompt.resolve([{
         role: 'assistant',
@@ -2393,10 +2390,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(JSON.stringify(updates)).not.toContain('LATE_MESSAGE_CANARY');
     expect(JSON.stringify(updates)).not.toContain('LATE_TOOL_CANARY');
     expect(JSON.stringify(updates)).not.toContain('LATE_ERROR_CANARY');
-    const postAbortSnapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-    expect(postAbortSnapshot.engineState?.kind === 'pi-agent-core'
-      ? postAbortSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
 
     releasePrompt.resolve([{
       role: 'assistant',
@@ -2501,10 +2494,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(runtime.getSessionNotes(sessionId)).toEqual([]);
     expect(runtime.getSessionPlan(sessionId)).toBeNull();
     expect(runtime.getSessionUncertaintyFlags(sessionId)).toEqual([]);
-    const postAbortSnapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-    expect(postAbortSnapshot.engineState?.kind === 'pi-agent-core'
-      ? postAbortSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
     sessionContextManager.remove(sessionId);
   });
 
@@ -2558,10 +2547,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(runtime.getSessionNotes(sessionId)).toEqual([]);
     expect(runtime.getSessionPlan(sessionId)).toBeNull();
     expect(runtime.getSessionUncertaintyFlags(sessionId)).toEqual([]);
-    const postAbortSnapshot = runtime.takeSnapshot(sessionId, traceId, createSnapshotFields());
-    expect(postAbortSnapshot.engineState?.kind === 'pi-agent-core'
-      ? postAbortSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
     sessionContextManager.remove(sessionId);
   });
 
@@ -2816,7 +2801,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
   });
 
-  it('inherits logical history without replaying Pi opaque transcripts on follow-up', async () => {
+  it('inherits logical history and ignores a transcript stored by an older snapshot', async () => {
     FakePiAgent.promptMessages = [
       {
         role: 'assistant',
@@ -2842,16 +2827,28 @@ describe('experimental Pi agent-core runtime contract', () => {
       createSnapshotFields(),
     );
 
-    expect(snapshot.engineState?.kind).toBe('pi-agent-core');
-    const piOpaque = snapshot.engineState?.kind === 'pi-agent-core'
-      ? snapshot.engineState.pi.opaque
-      : undefined;
-    expect(piOpaque?.messages).toEqual([
-      {
-        role: 'assistant', stopReason: 'stop',
-        content: [{ type: 'text', text: 'First Pi answer' }],
+    expect(snapshot.engineState).toEqual({
+      kind: 'pi-agent-core',
+      provider: {providerId: null, providerSnapshotHash: null},
+      pi: {},
+    });
+    // Snapshots written before the transcript was dropped still carry it.
+    const legacySnapshot = {
+      ...snapshot,
+      engineState: {
+        ...snapshot.engineState,
+        pi: {
+          opaque: {
+            version: 1,
+            messages: [{role: 'assistant', content: [{type: 'text', text: 'LEGACY_TRANSCRIPT_CANARY'}]}],
+            messageCount: 81,
+            originalMessageCount: 120,
+            truncated: true,
+            degradedReason: 'too_large',
+          },
+        },
       },
-    ]);
+    } as SessionStateSnapshot;
 
     FakePiAgent.promptMessages = [
       {
@@ -2868,7 +2865,9 @@ describe('experimental Pi agent-core runtime contract', () => {
         providerRuntimeLoader: loadFakePiProviderRuntime,
       },
     );
-    secondRuntime.restoreFromSnapshot('session-pi-resume', 'trace-pi', snapshot);
+    secondRuntime.restoreFromSnapshot('session-pi-resume', 'trace-pi', legacySnapshot);
+    const updates: StreamingUpdate[] = [];
+    secondRuntime.on('update', update => updates.push(update));
 
     await secondRuntime.analyze('follow-up question', 'session-pi-resume', 'trace-pi', {
       analysisMode: 'fast',
@@ -2880,6 +2879,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         messages: [],
       }),
     });
+    expect(JSON.stringify(restoredAgent.options)).not.toContain('LEGACY_TRANSCRIPT_CANARY');
+    expect(updates.map(update => update.type)).not.toContain('degraded');
     expect(restoredAgent.prompts[0]).toContain('follow-up question');
     expect(restoredAgent.prompts[0]).toContain('first question');
     expect(restoredAgent.prompts[0]).toContain('First Pi answer');
@@ -2929,7 +2930,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(current.conclusion).not.toContain('Previous-turn root cause');
   });
 
-  it('never reuses or retains opaque Pi transcripts across private analysis boundaries', async () => {
+  it('never carries a Pi transcript across private analysis boundaries', async () => {
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
       {kind: 'pi-agent-core', source: 'env'},
@@ -2967,10 +2968,8 @@ describe('experimental Pi agent-core runtime contract', () => {
         codebaseIds: ['private-codebase'],
       },
     );
-    expect(privateSnapshot.engineState?.kind).toBe('pi-agent-core');
-    expect(privateSnapshot.engineState?.kind === 'pi-agent-core'
-      ? privateSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
+    expect(privateSnapshot.engineState).toMatchObject({kind: 'pi-agent-core', pi: {}});
+    expect(JSON.stringify(privateSnapshot)).not.toContain('PRIVATE_SOURCE_CANARY');
 
     FakePiAgent.promptMessages = [{
       role: 'assistant',
@@ -2981,16 +2980,6 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
     expect((FakePiAgent.instances[2].options?.initialState as any).messages).toEqual([]);
     expect(JSON.stringify(FakePiAgent.instances[2].options)).not.toContain('PRIVATE_SOURCE_CANARY');
-
-    runtime.cleanupSession('session-private-boundary');
-    const cleanupSnapshot = runtime.takeSnapshot(
-      'session-private-boundary',
-      'trace-pi',
-      createSnapshotFields(),
-    );
-    expect(cleanupSnapshot.engineState?.kind === 'pi-agent-core'
-      ? cleanupSnapshot.engineState.pi.opaque
-      : undefined).toBeUndefined();
   });
 
   it('keeps Pi quick mode on shared core tools without preview verification metadata', async () => {

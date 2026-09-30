@@ -112,7 +112,7 @@ manifest、凭据不可用、snapshot 漂移或非法模型输出在 V1 中使�
 | `backend/src/services/finalSemanticAssessment.ts`, `evidence/evidenceReadView.ts` | 有界无工具语义审核与原始采集读取 |
 | `backend/src/services/finalReportContractGate.ts` | 执行 strategy `final_report_contract` 完整性检查 |
 | `backend/src/services/providerManager/` | Provider 配置、runtime/protocol/env 映射 |
-| `backend/src/agentv3/sessionStateSnapshot.ts` | 统一会话快照，含 Claude/OpenAI SDK 状态和 Pi/OpenCode/Qoder runtime state |
+| `backend/src/agentv3/sessionStateSnapshot.ts` | 统一会话快照：各 runtime 的 provider 钉定、产品状态，以及各 engine 自己的 `engineState` |
 | `backend/src/services/externalIssueReporting/providerPin.ts` | M10 源 run provider snapshot 校验 |
 | `backend/src/services/externalIssueReporting/triageRunner.ts` | M10 无工具 Agent triage 与确定性 fallback |
 

@@ -53,9 +53,7 @@ import { extractSourceLookupCodeReferences } from '../../../services/codebase/so
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {
   createPiAgentCoreSnapshotEngineState,
-  getPiAgentCoreSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
-  type PiAgentCoreOpaqueState,
   type SessionFieldsForSnapshot,
   sessionFieldsUsePrivateKnowledge,
   type SessionStateSnapshot,
@@ -206,10 +204,6 @@ const PI_AGENT_CORE_PREVIEW_CLAIM_VERIFICATION: ClaimVerificationResult = {
 
 type EnvLike = Record<string, string | undefined>;
 
-const MAX_PI_OPAQUE_MESSAGES = 80;
-const MAX_PI_OPAQUE_BYTES = 512 * 1024;
-const SENSITIVE_OPAQUE_KEY_RE = /(?:api[_-]?key|auth|authorization|bearer|password|secret|token)/i;
-
 interface PiAgentCoreAgentState {
   messages?: unknown[];
   tools?: unknown[];
@@ -231,78 +225,6 @@ export interface PiAgentCoreAgentOptions extends Record<string, unknown> {
 
 interface PiAgentCoreModule {
   Agent: new (options: PiAgentCoreAgentOptions) => PiAgentCoreAgent;
-}
-
-function sanitizeOpaqueJsonValue(value: unknown, key = ''): unknown {
-  if (SENSITIVE_OPAQUE_KEY_RE.test(key)) return '[redacted]';
-  if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value
-      .map((item) => sanitizeOpaqueJsonValue(item))
-      .filter(item => item !== undefined);
-  }
-  if (typeof value === 'object' && value) {
-    const candidate = value as Record<string, unknown>;
-    const messageType = typeof candidate.type === 'string' ? candidate.type : '';
-    const messageRole = typeof candidate.role === 'string' ? candidate.role : '';
-    if (/tool[_-]?result/i.test(messageType) || /tool[_-]?result/i.test(messageRole)) {
-      return {
-        ...(messageType ? {type: messageType} : {}),
-        ...(messageRole ? {role: messageRole} : {}),
-        ...(typeof candidate.toolCallId === 'string' ? {toolCallId: candidate.toolCallId} : {}),
-        content: '[TOOL_RESULT_REDACTED_FROM_DURABLE_STATE]',
-      };
-    }
-    const out: Record<string, unknown> = {};
-    for (const [childKey, childValue] of Object.entries(candidate)) {
-      const sanitized = sanitizeOpaqueJsonValue(childValue, childKey);
-      if (sanitized !== undefined) out[childKey] = sanitized;
-    }
-    return out;
-  }
-  return undefined;
-}
-
-function createPiOpaqueStateFromMessages(messages: unknown[] | undefined): PiAgentCoreOpaqueState {
-  const allMessages = Array.isArray(messages) ? messages : [];
-  const visibleMessages = allMessages.slice(-MAX_PI_OPAQUE_MESSAGES);
-  const truncated = allMessages.length > visibleMessages.length;
-  try {
-    const sanitized = sanitizeOpaqueJsonValue(visibleMessages);
-    const json = JSON.stringify(sanitized);
-    if (!json) {
-      return { version: 1, messageCount: 0, degradedReason: 'not_json_serializable' };
-    }
-    const byteSize = Buffer.byteLength(json, 'utf8');
-    if (byteSize > MAX_PI_OPAQUE_BYTES) {
-      return {
-        version: 1,
-        messageCount: visibleMessages.length,
-        originalMessageCount: allMessages.length,
-        truncated: truncated || undefined,
-        byteSize,
-        degradedReason: 'too_large',
-      };
-    }
-    return {
-      version: 1,
-      messages: JSON.parse(json) as unknown[],
-      messageCount: visibleMessages.length,
-      originalMessageCount: truncated ? allMessages.length : undefined,
-      truncated: truncated || undefined,
-      byteSize,
-    };
-  } catch {
-    return {
-      version: 1,
-      messageCount: visibleMessages.length,
-      originalMessageCount: allMessages.length,
-      truncated: truncated || undefined,
-      degradedReason: 'not_json_serializable',
-    };
-  }
 }
 
 const importEsmModule = new Function(
@@ -1211,8 +1133,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionHypotheses = new Map<string, Hypothesis[]>();
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
-  private readonly sessionOpaqueStates = new Map<string, PiAgentCoreOpaqueState>();
-  private readonly suppressedOpaqueStateSessions = new Set<string>();
   private readonly executionGuard = new RuntimeExecutionGuard();
 
   constructor(
@@ -1242,7 +1162,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       referenceTraceId: options.referenceTraceId,
       runId: options.runId ?? options.runManifestAttributionSink?.identity.runId ?? randomUUID(),
     });
-    this.suppressedOpaqueStateSessions.delete(sessionId);
     const startedAt = Date.now();
     const runtimePerformance = createRuntimePerformanceRun(
       options.runManifestAttributionSink,
@@ -1276,7 +1195,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       requestTimeoutMs = Math.min(timeouts.requestTimeoutMs, limitMs);
       requestTimer = setTimeout(() => {
         markTimeout('request', requestTimeoutMs);
-        this.suppressedOpaqueStateSessions.add(sessionId);
         const reason = new Error(`Pi Agent Core request timeout after ${requestTimeoutMs}ms`);
         void this.executionGuard.abortSession(sessionId, reason).catch(() => undefined);
         this.activeAgents.get(sessionId)?.abort();
@@ -1295,7 +1213,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           query,
           sessionId,
           traceId,
-          options,
           executionLease,
           runtimePerformance,
           timeouts.streamIdleTimeoutMs,
@@ -1342,7 +1259,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         executionLease.signal,
       );
       if (executionLease.signal.aborted) {
-        this.suppressedOpaqueStateSessions.add(sessionId);
         if (analysis) {
           const analysisCleanedUp = await joinPiPromptCleanup(analysis, timeouts.abortJoinTimeoutMs);
           deferLeaseSettleToAnalysisCleanup = !analysisCleanedUp;
@@ -1404,31 +1320,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     }
   }
 
-  private getInitialMessagesForSession(sessionId: string): unknown[] {
-    const opaque = this.sessionOpaqueStates.get(sessionId);
-    if (!opaque) return [];
-    if (opaque.degradedReason) {
-      this.emit('update', {
-        type: 'degraded',
-        content: {
-          module: 'pi-agent-core',
-          fallback: 'smartperfetto_context',
-          reason: opaque.degradedReason,
-          message: 'Pi Agent Core third-party transcript state was unavailable; continuing with SmartPerfetto session context only.',
-        },
-        timestamp: Date.now(),
-      });
-      return [];
-    }
-    // Logical history is supplied by the scoped SmartPerfetto context. Native
-    // transcripts may contain stale selections and unbounded tool payloads.
-    return [];
-  }
-
-  private rememberOpaqueState(sessionId: string, agent: PiAgentCoreAgent): void {
-    this.sessionOpaqueStates.set(sessionId, createPiOpaqueStateFromMessages(agent.state.messages));
-  }
-
   private getProviderRuntime(modelConfig: PiAgentCoreModelConfig) {
     const key = providerCacheKey(modelConfig, this.env);
     const cached = this.providerRuntimeCache.get(key);
@@ -1463,7 +1354,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     query: string,
     sessionId: string,
     traceId: string,
-    options: AnalysisOptions,
     executionLease: RuntimeExecutionLease,
     runtimePerformance: RuntimePerformanceRun,
     streamIdleTimeoutMs: number,
@@ -1481,17 +1371,13 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         ? `Pi agent-core smoke completed for query "${query}" on trace ${traceId}.`
         : `Experimental Pi agent-core smoke completed for query "${query}" on trace ${traceId}.`,
     );
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
-    if (privateAnalysisContext) this.sessionOpaqueStates.delete(sessionId);
 
     const agent = new Agent({
       initialState: {
         systemPrompt,
         model: modelConfig.model,
         tools: [],
-        messages: privateAnalysisContext
-          ? []
-          : this.getInitialMessagesForSession(sessionId),
+        messages: [],
       },
       streamFn,
       toolExecution: 'sequential',
@@ -1508,7 +1394,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       timeoutMs: streamIdleTimeoutMs,
       markTimeout,
       abort: () => {
-        this.suppressedOpaqueStateSessions.add(sessionId);
         void this.executionGuard
           .abortSession(sessionId, `Pi Agent Core provider stream idle timeout after ${streamIdleTimeoutMs}ms`)
           .catch(() => undefined);
@@ -1566,11 +1451,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       executionLease.throwIfAborted();
     } finally {
       acceptingProviderEvents = false;
-      if (privateAnalysisContext || executionLease.signal.aborted) {
-        this.sessionOpaqueStates.delete(sessionId);
-      } else {
-        this.rememberOpaqueState(sessionId, agent);
-      }
       providerIdle.clear();
       unsubscribe();
       if (this.activeAgents.get(sessionId) === agent) {
@@ -1689,7 +1569,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     onPreparationReady({sourceUse: prep.sourceUse, artifactStore: prep.artifactStore,
       selection: prep.analysisRunSpec.selection});
     executionLease.throwIfAborted();
-    if (privateAnalysisContext) this.sessionOpaqueStates.delete(sessionId);
 
     const quickBudget = resolveQuickTurnBudget({env: this.env, enforcement: 'turn_cap'});
     const maxTurns = prep.quickMode ? quickBudget.hardCapTurns : resolveAgentRuntimeBudgetConfig(this.env).maxTurns;
@@ -1708,7 +1587,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         systemPrompt: prep.systemPrompt,
         model: providerRuntime.model,
         tools: prep.tools,
-        messages: privateAnalysisContext ? [] : this.getInitialMessagesForSession(sessionId),
+        // Each logical follow-up starts a fresh native context: scoped product
+        // history is in the prompt, and a native transcript would carry stale
+        // selections and unbounded tool payloads.
+        messages: [],
         thinkingLevel: modelConfig.thinkingLevel ?? 'off',
       },
       sessionId,
@@ -1740,7 +1622,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const providerIdle = createPiProviderIdleSupervisor({
       sessionId, timeoutMs: streamIdleTimeoutMs, markTimeout,
       abort: () => {
-        this.suppressedOpaqueStateSessions.add(sessionId);
         void this.executionGuard.abortSession(sessionId,
           new Error(`Pi Agent Core provider stream idle timeout after ${streamIdleTimeoutMs}ms`)).catch(() => undefined);
         agent.abort();
@@ -1953,8 +1834,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     } finally {
       acceptingProviderEvents = false;
       toolAdmissionsOpen = false;
-      if (privateAnalysisContext || executionLease.signal.aborted) this.sessionOpaqueStates.delete(sessionId);
-      else this.rememberOpaqueState(sessionId, agent);
       providerIdle.clear();
       unsubscribe();
       if (this.activeAgents.get(sessionId) === agent) this.activeAgents.delete(sessionId);
@@ -2375,14 +2254,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
-    const activeAgent = this.activeAgents.get(sessionId);
-    const activeAgentOpaque = activeAgent && !this.suppressedOpaqueStateSessions.has(sessionId)
-      ? createPiOpaqueStateFromMessages(activeAgent.state.messages)
-      : undefined;
-    const opaque = privateKnowledge
-      ? undefined
-      : this.sessionOpaqueStates.get(sessionId)
-        ?? activeAgentOpaque;
     return {
       version: 1,
       snapshotTimestamp: Date.now(),
@@ -2398,7 +2269,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       engineState: createPiAgentCoreSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-        opaque,
       }),
       agentRuntimeKind: PI_AGENT_CORE_RUNTIME_KIND,
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
@@ -2429,10 +2299,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     if (snapshot.architecture) {
       setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
     }
-    const opaque = getPiAgentCoreSnapshotEngineState(snapshot)?.opaque;
-    if (opaque) {
-      this.sessionOpaqueStates.set(sessionId, opaque);
-    }
   }
 
   reset(): void {
@@ -2441,8 +2307,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       agent.reset();
     }
     this.activeAgents.clear();
-    this.sessionOpaqueStates.clear();
-    this.suppressedOpaqueStateSessions.clear();
     this.architectureCache.clear();
     this.providerRuntimeCache.clear();
     this.moduleRuntimeCache.clear();
@@ -2450,16 +2314,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
   }
 
   abortActiveRun(): void {
-    for (const sessionId of this.activeAgents.keys()) {
-      this.suppressedOpaqueStateSessions.add(sessionId);
-    }
     for (const agent of this.activeAgents.values()) {
       agent.abort();
     }
   }
 
   abortSession(sessionId: string): void {
-    this.suppressedOpaqueStateSessions.add(sessionId);
     void this.executionGuard
       .abortSession(sessionId, `Runtime analysis aborted for session ${sessionId}`)
       .catch(() => undefined);
@@ -2474,8 +2334,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     this.sessionPlans.delete(sessionId);
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
-    this.sessionOpaqueStates.delete(sessionId);
-    this.suppressedOpaqueStateSessions.delete(sessionId);
   }
 }
 

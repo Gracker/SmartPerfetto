@@ -255,8 +255,12 @@ const runtimeSnapshot = firstRuntime.takeSnapshot(
   'trace-pi-real',
   createSnapshotFields(),
 );
-assert.equal(runtimeSnapshot.engineState?.kind, 'pi-agent-core');
-assert.ok(runtimeSnapshot.engineState.pi.opaque?.messageCount > 0);
+// The snapshot pins the provider; no native transcript is persisted.
+assert.deepEqual(runtimeSnapshot.engineState, {
+  kind: 'pi-agent-core',
+  provider: {providerId: null, providerSnapshotHash: null},
+  pi: {},
+});
 
 const resumedRuntimeProvider = createRuntimeProvider();
 resumedRuntimeProvider.runtimeFaux.setResponses([
@@ -281,11 +285,7 @@ const resumedSnapshot = resumedRuntime.takeSnapshot(
   'trace-pi-real',
   createSnapshotFields(),
 );
-assert.equal(resumedSnapshot.engineState?.kind, 'pi-agent-core');
-assert.equal(
-  resumedSnapshot.engineState.pi.opaque?.messageCount,
-  runtimeSnapshot.engineState.pi.opaque.messageCount,
-);
+assert.deepEqual(resumedSnapshot.engineState, runtimeSnapshot.engineState);
 // A logical follow-up gets fresh native messages. Product-owned, bounded
 // history supplies continuity to both classification and the answer request.
 assert.equal(resumedRuntimeProvider.requests.length, 2);
@@ -321,12 +321,7 @@ const privateRuntimeSnapshot = resumedRuntime.takeSnapshot(
     codebaseIds: ['private-codebase'],
   }),
 );
-assert.equal(
-  privateRuntimeSnapshot.engineState?.kind === 'pi-agent-core'
-    ? privateRuntimeSnapshot.engineState.pi.opaque
-    : undefined,
-  undefined,
-);
+assert.deepEqual(privateRuntimeSnapshot.engineState?.pi, {});
 
 const missingDeclarationBody = runtimeQuestion('runtime-missing-declaration');
 const repairedDeclarationCandidate = declaredRuntimeAnswer(missingDeclarationBody);

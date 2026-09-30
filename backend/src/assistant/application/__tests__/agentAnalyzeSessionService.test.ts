@@ -1069,7 +1069,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
   });
 
-  test('skips Pi opaque snapshot restore after a scoped API-key rotation', () => {
+  test('skips Pi snapshot restore after a scoped API-key rotation even with a legacy stored transcript', () => {
     const provider = getProviderService().create({
       name: 'Pi Provider',
       category: 'custom',

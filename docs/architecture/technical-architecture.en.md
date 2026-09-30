@@ -121,7 +121,7 @@ shared `IOrchestrator` contract:
 |---|---|---|
 | `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude-compatible | Claude session id |
 | `openai-agents-sdk` | OpenAI Responses, OpenAI-compatible, Ollama/chat-completions | No native state across turns (provider pin only) |
-| `pi-agent-core` | Provider Manager custom profile / Pi model config | opaque transcript |
+| `pi-agent-core` | Provider Manager custom profile / Pi model config | No native state across turns (provider pin only) |
 | `opencode` | OpenCode SDK and custom providers | OpenCode session id + isolated directories |
 | `qoder-agent-sdk` | Qoder CLI login or PAT, custom providers | Qoder session id; private-knowledge runs do not persist opaque sessions |
 

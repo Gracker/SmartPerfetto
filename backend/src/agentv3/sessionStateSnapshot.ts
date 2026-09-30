@@ -143,20 +143,18 @@ export interface OpenAISnapshotEngineState {
 }
 
 export type ThirdPartyOpaqueDegradedReason =
-  | 'not_json_serializable'
-  | 'too_large'
   | 'missing_required_fields'
   | 'state_unavailable'
   | 'session_restore_failed';
 
-export interface PiAgentCoreOpaqueState {
+interface PiAgentCoreOpaqueState {
   version: 1;
   messages?: unknown[];
   messageCount: number;
   originalMessageCount?: number;
   truncated?: boolean;
   byteSize?: number;
-  degradedReason?: ThirdPartyOpaqueDegradedReason;
+  degradedReason?: 'not_json_serializable' | 'too_large';
 }
 
 export interface OpenCodeOpaqueState {
@@ -168,7 +166,11 @@ export interface OpenCodeOpaqueState {
   degradedReason?: ThirdPartyOpaqueDegradedReason;
 }
 
-export interface PiAgentCoreSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. Pi runs start from fresh physical
+ * context, write `{}` here and never read the transcript back.
+ */
+interface PiAgentCoreSnapshotEngineState {
   opaque?: PiAgentCoreOpaqueState;
 }
 
@@ -265,14 +267,12 @@ export function createOpenAISnapshotEngineState(
 }
 
 export function createPiAgentCoreSnapshotEngineState(
-  input: EngineProviderStateInput & PiAgentCoreSnapshotEngineState = {},
+  input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
     kind: 'pi-agent-core',
     provider: createSnapshotEngineProviderState(input),
-    pi: {
-      opaque: input.opaque,
-    },
+    pi: {},
   };
 }
 
@@ -345,29 +345,6 @@ export function getClaudeSnapshotEngineState(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-export function getPiAgentCoreSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState'>,
-): PiAgentCoreSnapshotEngineState | undefined {
-  if (snapshot.engineState?.kind !== 'pi-agent-core') return undefined;
-  const opaque = snapshot.engineState.pi.opaque;
-  if (!isRecord(opaque) || opaque.version !== 1) return undefined;
-  return {
-    opaque: {
-      version: 1,
-      messages: Array.isArray(opaque.messages) ? opaque.messages : undefined,
-      messageCount: typeof opaque.messageCount === 'number' ? opaque.messageCount : 0,
-      originalMessageCount: typeof opaque.originalMessageCount === 'number'
-        ? opaque.originalMessageCount
-        : undefined,
-      truncated: typeof opaque.truncated === 'boolean' ? opaque.truncated : undefined,
-      byteSize: typeof opaque.byteSize === 'number' ? opaque.byteSize : undefined,
-      degradedReason: typeof opaque.degradedReason === 'string'
-        ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
-        : undefined,
-    },
-  };
 }
 
 export function getOpenCodeSnapshotEngineState(
