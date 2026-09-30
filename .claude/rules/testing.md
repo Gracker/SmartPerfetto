@@ -656,6 +656,13 @@ For CI-backed real-provider validation, use the manual GitHub Actions workflow
 accepts `suite=all|startup|scrolling|external-issue|context`; keep it manual
 because it consumes provider quota and secrets.
 
+`npm --prefix backend run verify:e2e:stop-semantics -- --base-url http://127.0.0.1:<port>`
+checks drafts, the provisional answer, review-only/full/forced stops and the
+stored history and replay on both the agent route and the conversation API;
+each check is `pass`, `legal_race`, `not_exercised` or `fail`. It starts
+nothing: run it against a separately started isolated backend (own ports and
+data/log/upload dirs) with a real provider.
+
 Flutter TextureView and SurfaceView must be verified separately because their
 rendering pipelines differ:
 
