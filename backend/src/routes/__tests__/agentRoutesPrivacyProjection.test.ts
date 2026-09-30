@@ -11,7 +11,6 @@ import ts from 'typescript';
 import {
   agentRoutesPrivacyProjectionTestSeam,
   agentRoutesReceiptTestSeam,
-  agentRoutesCancellationTestSeam,
 } from '../agentRoutes';
 import {
   clearCodeAwareOutputGuards,
@@ -406,36 +405,6 @@ describe('agent route private projections', () => {
       patternStatus: null,
       caseCandidateFeedbackAdded: null,
     });
-  });
-
-  it.each([
-    ['zh-CN', '## 证据索引', '关键数据来源：', '（execute_sql / ev-1）'],
-    ['en', '## Evidence Index', 'Key data sources:', '(execute_sql / ev-1)'],
-  ] as const)('localizes generated evidence indexes for %s', (language, heading, prefix, item) => {
-    const evidenceIndex = agentRoutesPrivacyProjectionTestSeam.buildConclusionEvidenceIndex([
-      {
-        meta: {source: 'execute_sql', evidenceRefId: 'ev-1'},
-        display: {title: 'Frame timeline'},
-      } as any,
-    ], 3, language);
-
-    expect(evidenceIndex).toContain(heading);
-    expect(evidenceIndex).toContain(prefix);
-    expect(evidenceIndex).toContain(item);
-    expect(evidenceIndex).not.toContain(language === 'en' ? '关键数据来源' : 'Key data sources');
-  });
-
-  it.each([
-    '## 证据索引\n\n关键数据来源：帧时间。',
-    '## Evidence Index\n\nKey data sources: frame timing.',
-    'Evidence Index: frame timing',
-  ])('recognizes an existing bilingual evidence index without duplicating it', (conclusion) => {
-    expect(agentRoutesPrivacyProjectionTestSeam.conclusionHasEvidenceIndex(conclusion)).toBe(true);
-    expect(agentRoutesPrivacyProjectionTestSeam.appendEvidenceIndexIfMissing(
-      conclusion,
-      [{meta: {source: 'execute_sql'}, display: {title: 'Frame timeline'}} as any],
-      'en',
-    )).toBe(conclusion);
   });
 
   it('scrubs model-authored state before retiring an authorization-changed session', () => {

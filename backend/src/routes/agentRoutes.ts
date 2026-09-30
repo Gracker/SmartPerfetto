@@ -18,8 +18,6 @@ import {SCENE_FINITE_RULE_VERSION} from '../agent/scene/sceneTimelineProposal';
 import {appendSceneAwareReplayEvent, includeLatestSceneReplay} from '../assistant/stream/sceneTimelineReplay';
 import {dispatchAnalysisRun, SmartPreviewSelectionError,
   type AnalysisRunDispatchDependencies} from '../assistant/application/analysisRunDispatchService';
-import * as fs from 'fs';
-import * as path from 'path';
 import {randomUUID} from 'crypto';
 import {getTraceProcessorService, type TraceProcessorLeaseQueryContext} from '../services/traceProcessorService';
 import {SessionLogger} from '../services/sessionLogger';
@@ -51,7 +49,7 @@ import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agent
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {AnalysisCaseRetrievalState} from '../types/analysisDelivery';
 import {copyAnalysisDeliveryFields, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
-import { reportStore, persistReport } from './reportRoutes';
+import { persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
   authenticate,
@@ -122,7 +120,6 @@ import {
   hasTerminalReplayAfter,
   isTerminalSseEvent,
   parseLastEventId,
-  TERMINAL_SSE_EVENT_TYPES,
 } from '../assistant/stream/sessionSseReplay';
 
 import {
@@ -179,7 +176,6 @@ import {
 import {
   deriveTimelineStep,
   sanitizeConversationText,
-  summarizeDataEnvelopeForTimeline,
 } from '../services/timeline/conversationTimeline';
 import {patternExistsForFeedback} from '../agentv3/analysisPatternMemory';
 import { backendLogPath } from '../runtimePaths';
@@ -232,7 +228,6 @@ import type { CaseCandidateCaptureInput, CaseEvolutionConfig } from '../types/ca
 import type { CaseEvolutionEngine } from '../types/caseEvolution';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
 import {createAnswerDraftRelay} from '../services/answerDraftRelay';
-import {getWorkspaceSkillRegistry} from '../services/skillPacks/workspaceSkillRegistryProvider';
 import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
 import {
   currentEffectiveSkillRegistry,
@@ -7064,101 +7059,6 @@ function buildSceneReplayNarrative(
     .join('\n');
 }
 
-function conclusionHasEvidenceIndex(conclusion: string): boolean {
-  const text = conclusion || '';
-  return /(^|\n)\s*(?:##\s*)?(?:证据(?:表)?索引|evidence\s+index)(?=\s|$|[:：])/i.test(text);
-}
-
-function markdownCell(value: unknown, maxLen = 80): string {
-  return (
-    String(value ?? '')
-      .replace(/\s+/g, ' ')
-      .replace(/\|/g, '/')
-      .trim()
-      .slice(0, maxLen) || '-'
-  );
-}
-
-function buildConclusionEvidenceIndex(
-  envelopes: DataEnvelope[],
-  maxItems = 3,
-  language: OutputLanguage = configuredOutputLanguage(),
-): string {
-  if (!Array.isArray(envelopes) || envelopes.length === 0) return '';
-
-  const seen = new Set<string>();
-  const candidates: Array<{ title: string; source: string; evidence: string }> = [];
-  for (const env of envelopes) {
-    const meta = (env as any)?.meta || {};
-    const display = (env as any)?.display || {};
-    if (display.level === 'hidden') continue;
-
-    const title = markdownCell(display.title || meta.stepId || meta.source);
-    if (title === '-') continue;
-
-    const key = String(meta.evidenceRefId || `${meta.source || ''}:${meta.stepId || ''}:${title}`);
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const source = markdownCell(meta.source || meta.skillId || 'execute_sql');
-    const evidence = markdownCell(meta.evidenceRefId || meta.sourceToolCallId || '-', 36);
-    candidates.push({ title, source, evidence });
-  }
-
-  if (candidates.length === 0) return '';
-  const rows = candidates.slice(0, maxItems);
-  const omitted = Math.max(0, candidates.length - rows.length);
-  const summary = rows.map((item) => localize(
-    language,
-    `${item.title}（${item.source} / ${item.evidence}）`,
-    `${item.title} (${item.source} / ${item.evidence})`,
-  )).join(localize(language, '；', '; '));
-  return [
-    localize(language, '## 证据索引', '## Evidence Index'),
-    '',
-    localize(
-      language,
-      `关键数据来源：${summary}${omitted > 0 ? `；其余 ${omitted} 份结构化证据见报告数据详情。` : '。'}`,
-      `Key data sources: ${summary}${omitted > 0 ? `; ${omitted} additional structured evidence items are available in report details.` : '.'}`,
-    ),
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-function appendEvidenceIndexIfMissing(
-  conclusion: string,
-  envelopes: DataEnvelope[],
-  language: OutputLanguage = configuredOutputLanguage(),
-): string {
-  const normalized = conclusion || '';
-  if (conclusionHasEvidenceIndex(normalized)) return normalized;
-  const evidenceIndex = buildConclusionEvidenceIndex(envelopes, 3, language);
-  if (!evidenceIndex) return normalized;
-  return `${normalized.trim()}\n\n${evidenceIndex}`;
-}
-
-function augmentConclusionUpdateWithEvidenceIndex(session: AnalysisSession, update: StreamingUpdate): StreamingUpdate {
-  if (update.type !== 'conclusion') return update;
-  const content = update.content;
-  if (!content || typeof content !== 'object' || Array.isArray(content)) return update;
-  const conclusion = (content as Record<string, any>).conclusion;
-  if (typeof conclusion !== 'string') return update;
-  const augmented = appendEvidenceIndexIfMissing(
-    conclusion,
-    session.dataEnvelopes || [],
-    sessionOutputLanguage(session),
-  );
-  if (augmented === conclusion) return update;
-  return {
-    ...update,
-    content: {
-      ...(content as Record<string, any>),
-      conclusion: augmented,
-    },
-  };
-}
-
 function collectEvidenceRefsFromText(text: string | undefined): Set<string> {
   const refs = new Set<string>();
   const matches = String(text || '').match(/data:[A-Za-z0-9_.:-]+/g) || [];
@@ -8062,9 +7962,6 @@ export const agentRoutesPrivacyProjectionTestSeam = {
   scrubAuthorizationChangedSession,
   retireAuthorizationChangedSession,
   connectedStreamQuery,
-  conclusionHasEvidenceIndex,
-  buildConclusionEvidenceIndex,
-  appendEvidenceIndexIfMissing,
   privateFeedbackResponse,
   analysisCompletedData,
 };
