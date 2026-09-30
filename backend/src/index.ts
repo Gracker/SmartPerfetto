@@ -78,7 +78,7 @@ import { TraceProcessorFactory, killOrphanProcessors } from './services/workingT
 import { shouldCleanOrphanProcessorsOnStartup } from './services/startupCleanupPolicy';
 import { resetPortPool } from './services/portPool';
 import { failInterruptedAnalysisRunsOnStartup } from './services/analysisRunStore';
-import { startCaseEvolutionWorker } from './services/caseEvolution/caseEvolutionWorkerBootstrap';
+import { caseEvolutionStartupWarnings } from './services/caseEvolution/caseEvolutionConfig';
 import { startPatternMemoryAutoConfirmSweep } from './agentv3/analysisPatternMemory';
 import {
   startAndroidInternalsPackUpdateWorker,
@@ -389,9 +389,10 @@ for (const warning of selfEvolutionLifecycle.warnings) {
 for (const error of selfEvolutionLifecycle.errors) {
   console.error(`[SelfEvolution] ${error.message}`);
 }
+for (const warning of caseEvolutionStartupWarnings()) {
+  console.warn(`[CaseEvolution] ${warning}`);
+}
 
-let caseEvolutionWorkerHandle:
-  ReturnType<typeof startCaseEvolutionWorker> | undefined;
 let patternMemorySweepHandle:
   ReturnType<typeof startPatternMemoryAutoConfirmSweep> | undefined;
 let androidInternalsPackUpdateWorkerHandle:
@@ -417,9 +418,6 @@ function gracefulShutdown(signal: string) {
   // Reset port pool
   console.log('🔌 Resetting port pool...');
   resetPortPool();
-
-  console.log('🧠 Stopping case evolution worker...');
-  caseEvolutionWorkerHandle?.stop();
 
   console.log('🧠 Stopping pattern memory sweep...');
   patternMemorySweepHandle?.stop();
@@ -505,7 +503,6 @@ async function startBackend(): Promise<void> {
     );
   }
 
-  caseEvolutionWorkerHandle = startCaseEvolutionWorker();
   patternMemorySweepHandle = startPatternMemoryAutoConfirmSweep();
   androidInternalsPackUpdateWorkerHandle =
     startAndroidInternalsPackUpdateWorker();

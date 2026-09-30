@@ -238,7 +238,7 @@ describe('enterprise knowledge scope', () => {
     const baselineStore = new BaselineStore(path.join(tmpDir, 'baselines.json'));
     const memoryStore = new ProjectMemory(path.join(tmpDir, 'memory.json'));
     const caseLibrary = new CaseLibrary(path.join(tmpDir, 'cases.json'));
-    const caseGraph = new CaseGraph(path.join(tmpDir, 'edges.json'));
+    const caseGraph = new CaseGraph(path.join(tmpDir, 'edges.json'), caseLibrary);
 
     baselineStore.addBaseline(
       makeBaseline({curatorNote: 'tenant-a'}),

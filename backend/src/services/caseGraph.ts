@@ -25,7 +25,9 @@
  * from another bundle ahead of the cases. Traversal callers handle
  * orphan edges by joining with the case library and reporting the
  * absent node — same pattern as `traceUnavailableReason` for archived
- * cases.
+ * cases. The one thing the graph asks the case store is which of its
+ * cases are retired (`RetiredCaseSource`): a retired learned case may
+ * carry an ordinary id, so an edge's own fields cannot tell.
  *
  * Out of scope:
  * - MCP tools — `recall_similar_case`, `cite_case_in_report` land
@@ -49,6 +51,7 @@ import {
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {assertNotRetiredCaseWrite, isRetiredCaseEdge} from './retiredCaseData';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -75,6 +78,11 @@ export interface FindRelatedOptions {
   knowledgeScope?: KnowledgeScope;
 }
 
+/** The case store of the same scope, which knows its retired cases (a `CaseLibrary`). */
+export interface RetiredCaseSource {
+  retiredCaseIds(scope?: KnowledgeScope): ReadonlySet<string>;
+}
+
 /**
  * CaseGraph — local file-backed edge storage. Same persistence
  * contract as ragStore / baselineStore / projectMemory / caseLibrary.
@@ -84,9 +92,11 @@ export class CaseGraph {
   /** Map from canonical edge key to the stored edge. */
   private readonly edges = new Map<string, CaseEdge>();
   private loadError: Error | undefined;
+  private readonly cases: RetiredCaseSource;
 
-  constructor(storagePath: string) {
+  constructor(storagePath: string, cases: RetiredCaseSource) {
     this.storagePath = storagePath;
+    this.cases = cases;
   }
 
   load(): void {
@@ -101,11 +111,10 @@ export class CaseGraph {
         return;
       }
       for (const e of parsed.edges) this.edges.set(edgeKey(e), e);
-    } catch (error) {
-      // Corrupted JSON: file preserved, in-memory cache stays empty.
-      this.loadError = new Error(
-        `Case graph is unreadable: ${error instanceof Error ? error.message : String(error)}`,
-      );
+    } catch {
+      // Corrupted JSON: file preserved, in-memory cache stays empty. The parse
+      // error quotes the file, so the message does not carry it.
+      this.loadError = new Error('Case graph is unreadable');
     }
   }
 
@@ -116,6 +125,7 @@ export class CaseGraph {
    */
   addEdge(edge: CaseEdge, scope?: KnowledgeScope): void {
     this.load();
+    assertNotRetiredCaseWrite('edge', isRetiredCaseEdge(edge, this.cases.retiredCaseIds(scope)), edge.edgeId);
     if (edge.fromCaseId === edge.toCaseId) {
       throw new Error(
         `Self-loops are not permitted: edge '${edge.edgeId}' has fromCaseId === toCaseId === '${edge.fromCaseId}'`,
@@ -202,28 +212,14 @@ export class CaseGraph {
 
   /** Get all edges originating at the case. */
   getEdgesFrom(caseId: string, scope?: KnowledgeScope): CaseEdge[] {
-    if (enterpriseKnowledgeStoreEnabled()) {
-      return this.listEnterpriseEdges(scope)
-        .map(row => row.record)
-        .filter(e => e.fromCaseId === caseId)
-        .sort((a, b) => a.edgeId.localeCompare(b.edgeId));
-    }
-    this.load();
-    return Array.from(this.edges.values())
+    return this.readableEdges(scope)
       .filter(e => e.fromCaseId === caseId)
       .sort((a, b) => a.edgeId.localeCompare(b.edgeId));
   }
 
   /** Get all edges pointing at the case. */
   getEdgesTo(caseId: string, scope?: KnowledgeScope): CaseEdge[] {
-    if (enterpriseKnowledgeStoreEnabled()) {
-      return this.listEnterpriseEdges(scope)
-        .map(row => row.record)
-        .filter(e => e.toCaseId === caseId)
-        .sort((a, b) => a.edgeId.localeCompare(b.edgeId));
-    }
-    this.load();
-    return Array.from(this.edges.values())
+    return this.readableEdges(scope)
       .filter(e => e.toCaseId === caseId)
       .sort((a, b) => a.edgeId.localeCompare(b.edgeId));
   }
@@ -238,16 +234,12 @@ export class CaseGraph {
     caseId: string,
     opts: FindRelatedOptions = {},
   ): Array<{caseId: string; edge: CaseEdge}> {
-    this.load();
     const direction = opts.direction ?? 'both';
     const relations = opts.relations ? new Set(opts.relations) : null;
     const topK = opts.topK ?? 10;
 
     const candidates: Array<{caseId: string; edge: CaseEdge}> = [];
-    const edges = enterpriseKnowledgeStoreEnabled()
-      ? this.listEnterpriseEdges(opts.knowledgeScope).map(row => row.record)
-      : Array.from(this.edges.values());
-    for (const e of edges) {
+    for (const e of this.readableEdges(opts.knowledgeScope)) {
       if (relations && !relations.has(e.relation)) continue;
       if (
         (direction === 'out' || direction === 'both') &&
@@ -277,24 +269,72 @@ export class CaseGraph {
   /** All edges, deterministically ordered by canonical key. Used by
    * the export bundler that joins this with the case library. */
   listEdges(scope?: KnowledgeScope): CaseEdge[] {
-    if (enterpriseKnowledgeStoreEnabled()) {
-      return this.listEnterpriseEdges(scope)
-        .map(row => row.record)
-        .sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
-    }
-    this.load();
-    return Array.from(this.edges.values()).sort((a, b) =>
-      edgeKey(a).localeCompare(edgeKey(b)),
-    );
+    return this.readableEdges(scope).sort((a, b) => edgeKey(a).localeCompare(edgeKey(b)));
   }
 
   /** Total edge count. */
   size(scope?: KnowledgeScope): number {
-    if (enterpriseKnowledgeStoreEnabled()) {
-      return this.listEnterpriseEdges(scope).length;
+    return this.readableEdges(scope).length;
+  }
+
+  /**
+   * Remove every stored edge touching a case from every copy this phase
+   * writes, matching each by its own endpoints (edge ids are not unique). A
+   * retired case with an ordinary id is the only thing that marks its
+   * ordinary edges as retired, so all of them must go before it does; a copy
+   * that cannot be read fails the removal rather than reading as holding none.
+   */
+  removeEdgesTouching(caseId: string, scope?: KnowledgeScope): number {
+    const touches = (edge: CaseEdge) => edge.fromCaseId === caseId || edge.toCaseId === caseId;
+    const filesystemWrites = legacyKnowledgeFilesystemWritesEnabled();
+    let removed = 0;
+    if (enterpriseKnowledgeDbWritesEnabled()) {
+      for (const row of this.listEnterpriseEdges(scope, {requireReadable: true})) {
+        if (!touches(row.record)) continue;
+        const deleted = removeScopedKnowledgeRecordIf<CaseEdge>(
+          KNOWLEDGE_KIND,
+          row.externalId,
+          scope,
+          touches,
+          current => {
+            if (!filesystemWrites) return;
+            this.mutateFilesystem(() => {
+              const key = edgeKey(current);
+              assertReplicaMatches('case edge', row.externalId, current, this.edges.get(key));
+              this.edges.delete(key);
+            });
+          },
+        );
+        if (deleted) removed++;
+      }
     }
-    this.load();
-    return this.edges.size;
+    if (filesystemWrites) {
+      // Edges the database copy never had.
+      removed += this.mutateFilesystem(() => {
+        let count = 0;
+        for (const [key, edge] of this.edges) {
+          if (!touches(edge)) continue;
+          this.edges.delete(key);
+          count++;
+        }
+        return count;
+      });
+    }
+    return removed;
+  }
+
+  /** Every stored edge of the scope except retired ones. */
+  private readableEdges(scope?: KnowledgeScope): CaseEdge[] {
+    let edges: CaseEdge[];
+    if (enterpriseKnowledgeStoreEnabled()) {
+      edges = this.listEnterpriseEdges(scope).map(row => row.record);
+    } else {
+      this.load();
+      edges = Array.from(this.edges.values());
+    }
+    if (edges.length === 0) return edges;
+    const retiredCaseIds = this.cases.retiredCaseIds(scope);
+    return edges.filter(edge => !isRetiredCaseEdge(edge, retiredCaseIds));
   }
 
   private persist(): void {
@@ -324,11 +364,11 @@ export class CaseGraph {
     );
   }
 
-  private listEnterpriseEdges(scope?: KnowledgeScope) {
+  private listEnterpriseEdges(scope?: KnowledgeScope, {requireReadable = false} = {}) {
     return listScopedKnowledgeRecords<CaseEdge>(
       KNOWLEDGE_KIND,
       scope,
-      {rowScopePrefix: CASE_EDGE_ROW_SCOPE_PREFIX},
+      {rowScopePrefix: CASE_EDGE_ROW_SCOPE_PREFIX, requireReadable},
     );
   }
 }

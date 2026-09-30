@@ -31,7 +31,7 @@ afterEach(() => {
 function caseNode(caseId: string, status: CaseNode['status'], quality: 'curated' | 'imported'): CaseNode {
   return {
     schemaVersion: 1,
-    source: quality === 'imported' ? 'runtime_analysis_candidate' : 'manual_fixture',
+    source: 'curated_markdown_case',
     createdAt: 1,
     caseId,
     title: `${caseId} title`,
@@ -66,7 +66,7 @@ function caseNode(caseId: string, status: CaseNode['status'], quality: 'curated'
 
 describe('buildCaseBackgroundContext', () => {
   it('returns undefined when prompt injection is off by default', () => {
-    library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
 
     expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
@@ -75,8 +75,8 @@ describe('buildCaseBackgroundContext', () => {
   });
 
   it('surfaces reviewed background cases without copying recommendation text', () => {
-    library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
-    library.saveCase(caseNode('learned:draft', 'draft', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-draft', 'draft', 'imported'));
 
     const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
@@ -87,13 +87,13 @@ describe('buildCaseBackgroundContext', () => {
     });
 
     expect(context).toContain('可能相关的历史案例');
-    expect(context).toContain('learned:reviewed');
-    expect(context).not.toContain('learned:draft');
+    expect(context).toContain('case-reviewed');
+    expect(context).not.toContain('case-draft');
     expect(context).not.toContain('Do not copy this into prompt');
   });
 
   it('renders an English-only context when English output is configured', () => {
-    library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
 
     const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
@@ -111,7 +111,7 @@ describe('buildCaseBackgroundContext', () => {
   });
 
   it('does not inject durable case memory into a private source or RAG analysis', () => {
-    library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
 
     expect(buildRuntimeCaseBackgroundContext({
       sceneType: 'scrolling',
@@ -127,23 +127,21 @@ describe('buildCaseBackgroundContext', () => {
     })).toBeUndefined();
   });
 
-  it('includes drafts only when the high-risk includeDrafts flag is explicitly valid', () => {
-    library.saveCase(caseNode('learned:draft', 'draft', 'imported'));
+  it('never injects drafts: the retired draft switch is ignored', () => {
+    library.saveCase(caseNode('case-draft', 'draft', 'curated'));
 
-    const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
+    expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
       config: loadCaseEvolutionConfig({
         CASE_EVOLUTION_RETRIEVE_ENABLED: '1',
         CASE_EVOLUTION_PROMPT_INJECT_ENABLED: '1',
         CASE_EVOLUTION_INCLUDE_DRAFTS: '1',
       }),
-    });
-
-    expect(context).toContain('learned:draft');
+    })).toBeUndefined();
   });
 
   it('silently drops the segment when it exceeds its dedicated prompt budget', () => {
-    library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
 
     expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,

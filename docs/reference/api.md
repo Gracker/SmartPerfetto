@@ -773,7 +773,7 @@ trace 的诊断证据或 root-cause 证明。接口复用当前 workspace scope�
 - `/api/v1/providers/*`，优先迁移到 `/api/workspaces/:workspaceId/providers/*`
 - `/api/template-analysis/*`
 
-仍在维护的辅助 API 包括 `/api/flamegraph/*`、`/api/critical-path/*`、`/api/baselines/*`、`/api/memory/*`、`/api/cases/*`、`/api/ci/*`、`/api/tp/*`、`/api/auth/*`、`/api/tenant/*` 和 `/api/admin/runtime/*`。这些接口面向特定产品面或管理面，调用前应先确认当前部署是否启用了对应 feature / auth。
+仍在维护的辅助 API 包括 `/api/flamegraph/*`、`/api/critical-path/*`、`/api/baselines/*`、`/api/memory/*`、`/api/cases/*`、`/api/ci/*`、`/api/tp/*`、`/api/auth/*`、`/api/tenant/*` 和 `/api/admin/runtime/*`。这些接口面向特定产品面或管理面，调用前应先确认当前部署是否启用了对应 feature / auth。`/api/cases/*` 的读取只需登录；新建、删除、发布、归档与边的增删要求 `self_evolution:curate`，curator 与 reviewer 取自登录身份，请求体中的名字不被采用。学习产生的 case 已退役：以 `learned:` 开头的 id 与学习来源的 case 不再返回，写入会被拒绝。
 
 legacy agent API base 会被 `rejectLegacyAgentApi` 拒绝，避免外部继续接入废弃路径。`/api/advanced-ai/*`、`/api/auto-analysis/*` 和 `/api/agent/v1/llm/*` 这类旧 direct AI route 已移除；统一使用 `/api/agent/v1/analyze`。`/api/perfetto-sql/*` 已移除，所有部署模式下都返回 410：场景端点（如 `/startup`、`/scrolling`）改用请求体相同（`{traceId, packageName}`）的 `POST /api/skills/execute/<skillId>`（enterprise 部署下该接口同样要求 workspace 路由），响应的 `migration.successor` 给出对应路径；`/sql`、`/tables`、`/functions`、`/skills`、`/analyze`、`/input`、`/buffer-flow`、`/systemserver` 没有直接替代，`migration.fallback` 指向 workspace agent 接口。
 

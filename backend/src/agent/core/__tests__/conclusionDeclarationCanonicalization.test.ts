@@ -363,3 +363,46 @@ describe('numeric claim diagnostics name the failing part', () => {
     expect(isConclusionClaimDiagnostic({ordinal: 1, code: 'invalid_reference', field: 'references', subreason: 'value'})).toBe(false);
   });
 });
+
+describe('a model declaration cannot bring learned-case recommendations into a new result', () => {
+  it('leaves declared caseRecommendations, learned provenance included, out of every surface', () => {
+    const declaration = {...verboseDeclaration(CLAIMS), caseRecommendations: [{
+      caseId: 'learned:0123456789abcdef', title: 'A learned case', matchStrength: 'strong',
+      recommendations: {app: [], oem: []},
+      learnedProvenance: {candidateId: 'casecand-run-1', supportingEvidence: 3, contradictingEvidence: 0, supported: true},
+    }]};
+    const typed = parseTypedConclusionContractJson(JSON.stringify(declaration));
+    const surfaces = canonicalSurfaces(sidecar(JSON.stringify(declaration)));
+
+    expect([typed.status, surfaces.status]).toEqual(['valid', 'valid']);
+    for (const surface of [JSON.stringify(typed.contract), ...Object.values(surfaces).map(String)]) {
+      expect(surface).not.toMatch(/caseRecommendations|learnedProvenance/);
+    }
+  });
+
+  it('drops learned data from a runtime-supplied contract, and a restored result keeps its own', () => {
+    const recommendations = [
+      {caseId: 'learned:0123456789abcdef', title: 'A learned case', matchStrength: 'strong',
+        recommendations: {app: [], oem: []}},
+      {caseId: 'curated-case', title: 'A curated case', matchStrength: 'partial',
+        recommendations: {app: [], oem: []},
+        learnedProvenance: {candidateId: 'casecand-run-1', supportingEvidence: 3, contradictingEvidence: 0, supported: true}},
+    ];
+    const source = {sessionId: 'session-fallback', success: true, findings: [], hypotheses: [],
+      conclusion: '结论正文。', confidence: 0.5, rounds: 1, totalDurationMs: 1,
+      conclusionContract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
+        conclusions: [{rank: 1, statement: 'Shader compile causes jank.'}], clusters: [], evidenceChain: [],
+        uncertainties: [], nextSteps: [], caseRecommendations: recommendations},
+    } as unknown as AnalysisResult;
+
+    const accepted = canonicalizeAnalysisResult(source);
+    const curatedOnly = [
+      {caseId: 'curated-case', title: 'A curated case', matchStrength: 'partial', recommendations: {app: [], oem: []}},
+    ];
+    // Both what the result delivers and what the finalizer re-projects from.
+    expect(accepted.result.conclusionContract?.caseRecommendations).toEqual(curatedOnly);
+    expect(accepted.validationContract?.caseRecommendations).toEqual(curatedOnly);
+    expect(canonicalizeAnalysisResult(source, {context: {entry: 'historical_restore'}})
+      .result.conclusionContract?.caseRecommendations).toEqual(recommendations);
+  });
+});

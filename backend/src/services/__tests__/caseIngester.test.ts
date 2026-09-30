@@ -154,7 +154,7 @@ describe('caseIngester', () => {
       'app_precompile_shader',
     );
 
-    const graph = new CaseGraph(caseGraphPath);
+    const graph = new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath));
     expect(graph.listEdges()).toEqual([
       expect.objectContaining({
         fromCaseId: 'scroll_shader_compile_pixel8_001',
@@ -213,7 +213,7 @@ describe('caseIngester', () => {
     expect(library.getCase('scroll_scheduler_freq_mixed_001')?.title).toBe(
       'New title',
     );
-    expect(new CaseGraph(caseGraphPath).listEdges()).toEqual([]);
+    expect(new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath)).listEdges()).toEqual([]);
     expect(new RagStore(ragStorePath).listChunks({kind: 'case_library'})).toHaveLength(1);
   });
 
@@ -241,14 +241,14 @@ describe('caseIngester', () => {
     ).toThrow(/simulated/i);
 
     expect(new CaseLibrary(caseLibraryPath).listCases()).toHaveLength(2);
-    expect(new CaseGraph(caseGraphPath).listEdges()).toEqual([]);
+    expect(new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath)).listEdges()).toEqual([]);
     expect(new RagStore(ragStorePath).listChunks({kind: 'case_library'})).toEqual([]);
 
     const result = ingest();
 
     expect(result.caseCount).toBe(2);
     expect(new CaseLibrary(caseLibraryPath).listCases()).toHaveLength(2);
-    expect(new CaseGraph(caseGraphPath).listEdges()).toHaveLength(1);
+    expect(new CaseGraph(caseGraphPath, new CaseLibrary(caseLibraryPath)).listEdges()).toHaveLength(1);
     expect(new RagStore(ragStorePath).listChunks({kind: 'case_library'})).toHaveLength(2);
   });
 

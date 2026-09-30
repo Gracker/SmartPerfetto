@@ -2,20 +2,20 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type {
-  CaseEvidenceSignature,
-  CaseKnowledgeMatchStrength,
-  CaseKnowledgeRecommendation,
-  CaseKnowledgeReportRecommendation,
-  CaseKnowledgeResponsibility,
-  CaseKnowledgeStatus,
+import {
+  caseKnowledgeQualityRank,
+  caseStatusRank,
+  type CaseEvidenceSignature,
+  type CaseKnowledgeMatchStrength,
+  type CaseKnowledgeRecommendation,
+  type CaseKnowledgeReportRecommendation,
+  type CaseKnowledgeResponsibility,
+  type CaseKnowledgeStatus,
 } from '../../types/caseKnowledge';
 import type { CaseNode } from '../../types/sparkContracts';
 import { CaseLibrary } from '../caseLibrary';
 import { RagStore } from '../ragStore';
 import type { KnowledgeScope } from '../scopedKnowledgeStore';
-import { caseKnowledgeQualityRank } from './caseCandidateIngester';
-import { recordCaseEvolutionRetrieverQuery } from './caseEvolutionRuntimeMetrics';
 
 export interface CaseRecommendationQuery {
   scene: string;
@@ -28,7 +28,7 @@ export interface CaseRecommendationQuery {
   evidenceSignatures: Record<string, unknown>;
   textQuery?: string;
   topK?: number;
-  includeStatuses?: CaseKnowledgeStatus[];
+  includeStatuses?: readonly CaseKnowledgeStatus[];
 }
 
 export interface CaseRecommendationHit extends CaseKnowledgeReportRecommendation {
@@ -60,7 +60,7 @@ type RankedCase = {
   keywordScore: number;
 };
 
-const DEFAULT_STATUSES: CaseKnowledgeStatus[] = ['published'];
+const DEFAULT_STATUSES: readonly CaseKnowledgeStatus[] = ['published'];
 
 export function evaluateCaseEvidenceSignature(
   signature: CaseEvidenceSignature,
@@ -98,7 +98,6 @@ export function evaluateCaseEvidenceSignature(
 export function createCaseRetriever(deps: CaseRetrieverDeps): { retrieve(query: CaseRecommendationQuery): CaseRecommendationHit[] } {
   return {
     retrieve(query: CaseRecommendationQuery) {
-      const startedAt = Date.now();
       const statuses = query.includeStatuses && query.includeStatuses.length > 0
         ? query.includeStatuses
         : DEFAULT_STATUSES;
@@ -115,12 +114,7 @@ export function createCaseRetriever(deps: CaseRetrieverDeps): { retrieve(query: 
         });
       }
       ranked.sort(rankCases);
-      const hits = ranked.slice(0, query.topK ?? 8).map(toHit);
-      recordCaseEvolutionRetrieverQuery({
-        latencyMs: Date.now() - startedAt,
-        strongHits: hits.filter(hit => hit.matchStrength === 'strong').length,
-      });
-      return hits;
+      return ranked.slice(0, query.topK ?? 8).map(toHit);
     },
   };
 }
@@ -224,16 +218,13 @@ function buildKeywordScoreMap(
 }
 
 function caseIdFromCaseUri(uri: string): string | null {
-  if (uri.startsWith('case://learned/')) return uri.slice('case://learned/'.length);
-  if (uri.startsWith('case://')) return uri.slice('case://'.length);
-  return null;
+  return uri.startsWith('case://') ? uri.slice('case://'.length) : null;
 }
 
 function rankCases(a: RankedCase, b: RankedCase): number {
   return matchStrengthRank(b.matchStrength) - matchStrengthRank(a.matchStrength)
-    || statusRank(b.caseNode.status) - statusRank(a.caseNode.status)
+    || caseStatusRank(b.caseNode.status) - caseStatusRank(a.caseNode.status)
     || caseKnowledgeQualityRank(b.caseNode.knowledge?.quality) - caseKnowledgeQualityRank(a.caseNode.knowledge?.quality)
-    || learnedSupportedRank(b.caseNode) - learnedSupportedRank(a.caseNode)
     || b.keywordScore - a.keywordScore
     || a.caseNode.caseId.localeCompare(b.caseNode.caseId);
 }
@@ -242,27 +233,6 @@ function matchStrengthRank(value: CaseKnowledgeMatchStrength): number {
   return value === 'strong' ? 3 : value === 'partial' ? 2 : 1;
 }
 
-function statusRank(status: string): number {
-  return status === 'published' ? 3 : status === 'reviewed' ? 2 : status === 'draft' ? 1 : 0;
-}
-
-function learnedSupportedRank(caseNode: CaseNode): number {
-  return learnedProvenance(caseNode)?.supported ? 1 : 0;
-}
-
-function learnedProvenance(caseNode: CaseNode): CaseKnowledgeReportRecommendation['learnedProvenance'] | undefined {
-  const marker = caseNode.knowledge?.context?.['caseEvolution.v1'];
-  if (!marker || typeof marker !== 'object' || Array.isArray(marker)) return undefined;
-  const record = marker as Record<string, unknown>;
-  const candidateId = typeof record.candidateId === 'string' ? record.candidateId : undefined;
-  if (!candidateId) return undefined;
-  return {
-    candidateId,
-    supportingEvidence: Number(record.supportingEvidence ?? 0),
-    contradictingEvidence: Number(record.contradictingEvidence ?? 0),
-    supported: Boolean(record.supported),
-  };
-}
 
 function toHit(item: RankedCase): CaseRecommendationHit {
   const knowledge = item.caseNode.knowledge!;
@@ -277,6 +247,5 @@ function toHit(item: RankedCase): CaseRecommendationHit {
     evidenceGap: item.evidenceGap,
     evidenceRefs: item.matchedSignatures,
     recommendations: knowledge.recommendations,
-    learnedProvenance: learnedProvenance(item.caseNode),
   };
 }

@@ -2,7 +2,7 @@
 
 **状态**：Self-Evolution V1 已接入生产控制面并默认关闭；M10 外部反馈是独立用户面；
 legacy 组件边界见下文
-**最后核对**：2026-07-30
+**最后核对**：2026-10-01
 **权威源**：生产启动代码、类型、配置解析和测试；本文不保存 PR/实施历史
 
 Self-Improving 的目标是让历史分析结果在受控边界内改善后续分析，同时不把模型输出
@@ -20,7 +20,8 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 | Pattern memory | 已接入 | `intrinsicStatus` 与 `feedbackProjectionStatus` 分离；读取 effective status |
 | Legacy FeedbackPipeline | 已退役 | 旧 `feedbackPipeline.ts` 已删除，不再存在第二套“反馈→学习产物”状态机 |
 | Curated/runtime Skill Notes 注入 | 已接入，默认关闭 | `SELF_IMPROVE_NOTES_INJECT_ENABLED=1`；quick path 预算默认 0 |
-| Case Evolution capture/review/retrieve | 已接入，全部默认关闭 | 后端启动时读取 `CASE_EVOLUTION_*`；依赖关系校验失败时会降级或拒绝 |
+| 学习 case（capture/review/ingest） | 已退役 | 管线、worker、CLI 与指标端点已删除；旧数据不再被读取、导出或写入，见下文 |
+| 人工 case 检索与背景注入 | 已接入，默认关闭 | `CASE_EVOLUTION_RETRIEVE_ENABLED`；背景注入另需 `CASE_EVOLUTION_PROMPT_INJECT_ENABLED` |
 | Legacy ReviewWorker | 组件和单测存在，未接入应用启动 | `SELF_IMPROVE_REVIEW_ENABLED` 只影响已显式构造的 worker |
 | Strategy auto-patch | 已删除 | 只能生成不参与运行时的 `phase_hints`；`SELF_IMPROVE_AUTOPATCH_ENABLED` 没有读取点 |
 | Skill SQL auto-patch | 不支持 | 没有生产入口，不允许模型直接修改 Skill SQL |
@@ -125,10 +126,12 @@ JSONL，再推进 `effective_feedback` 与 dirty-target revision。崩溃不会�
 下一次 append 或离线
 `npm --prefix backend run self-evolution:feedback-migrate -- --rebuild`
 会幂等补投影。
-旧 pattern 的当前状态一次性冻结为 `intrinsicStatus`，旧反馈不可撤销。旧
-`candidate_feedback` 表现在只作历史审计源，不再写入；迁移仅把该表中旧流程
-已接受的 `short` 行规范化追加到事实日志，旧 JSONL 中的 mis-tap、重复或写库失败
-记录继续保留审计但不进入有效投影。
+旧 pattern 的当前状态一次性冻结为 `intrinsicStatus`，旧反馈不可撤销。学习 case 退役后，
+`case_candidate` 只保留历史解码：新反馈不能以它为目标（HTTP 400
+`case candidate feedback is retired`，store 报 `feedback_target_retired`，撤回旧反馈也一样），
+迁移不再读取学习 case outbox 的 `candidate_feedback` 表；事实日志里已有的候选反馈照常解码、
+重建和 catch-up，但不进入有效反馈、统计与待投影目标，也不会被标成已应用。旧 JSONL 中的
+mis-tap、重复或写库失败记录继续保留审计但不进入有效投影。
 
 ### Skill Notes
 
@@ -145,31 +148,53 @@ npm run skill-notes:promote -- <skillId> <noteId>
 npm run test:scene-trace-regression
 ```
 
-### Case Evolution
+### 人工 case 与学习 case 的退役
 
-Case Evolution 是当前接入后端生命周期的独立管线：
+Case 知识只来自人工策展：Markdown 经 `npm --prefix backend run ingest:cases` 导入（与
+`validate:cases` 共用同一校验），或经 `/api/cases` 写入。读取只需登录；写入、删除、发布、
+归档和边的增删要求 `self_evolution:curate`，curator 与 reviewer 取自登录身份，请求体里的
+名字不被采用。两个开关都默认关闭：
 
-```text
-analysis result
-  -> bounded candidate capture
-  -> SQLite outbox
-  -> optional SDK review worker
-  -> optional sidecar / case-library ingest
-  -> optional retrieval
-  -> optional prompt background context
-```
+- `CASE_EVOLUTION_RETRIEVE_ENABLED`：终结时按当前证据召回匹配的 case，写入
+  `caseRetrieval`，供报告要求判断适用性。
+- `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`：把 published / reviewed case 作为背景注入 system
+  prompt，需要检索同时开启；草稿从不注入，私有 run 不注入。
 
-后端启动会调用 `startCaseEvolutionWorker()`，关闭时会停止 worker 并关闭 outbox。
-所有 flag 默认关闭，并按依赖关系逐级启用：
+从分析结果学出 case 的管线（capture → outbox → review worker → sidecar / ingest，以及
+promote、rederive、retract CLI 和 `/api/admin/case-evolution/metrics`）已删除：它无法证明
+来源 run 是公开的，而且生产格式的 id 会被它自己的匿名化改写。其余
+`CASE_EVOLUTION_*` 键（`ENABLED`、`CAPTURE_ENABLED`、`REVIEW_ENABLED`、`NOTES_WRITE_ENABLED`、
+`INGEST_ENABLED`、`INCLUDE_DRAFTS` 及 worker、队列、预算类数值）不再解析，任何取值都不会
+阻止启动；仍被设置的键在启动时各告警一次。RunManifest 的 feature flag 记录
+`caseRetrievalEnabled` 与 `caseBackgroundInjectionEnabled`，取值来自实际门控所用的同一读取；
+旧 manifest 里的 `caseEvolutionEnabled` / `caseEvolutionPromptInjectEnabled` 只是历史记录，
+没有读取方。
 
-- `CASE_EVOLUTION_REVIEW_ENABLED` 需要 `CASE_EVOLUTION_CAPTURE_ENABLED`；
-- `CASE_EVOLUTION_NOTES_WRITE_ENABLED` 和 `CASE_EVOLUTION_INGEST_ENABLED` 需要 review；
-- `CASE_EVOLUTION_PROMPT_INJECT_ENABLED` 需要 `CASE_EVOLUTION_RETRIEVE_ENABLED`；
-- `CASE_EVOLUTION_INCLUDE_DRAFTS` 需要 retrieve 与 prompt inject 同时开启。
+已写入各 store 的学习数据不迁移、不清除，由读取侧排除（`backend/src/services/retiredCaseData.ts`）。
+识别依据：CaseNode 的 source 为 `runtime_analysis_candidate` 或 id 以 `learned:` 开头；
+`case_library` chunk 的 chunkId 以 `case:learned:` 开头，或 uri 以 `case://learned/`、
+`case://learned:`（Markdown 往返后的形式）开头；边的 id 以 `case-learned-edge:` 开头，或任一
+端点是退役 case（按 id 前缀，或按同 scope case store 的节点来源）。CaseLibrary、RagStore、
+CaseGraph 的全部读取（get / list / search / stats / related / size）在文件、dual-write 与 DB
+各阶段都排除它们，SQL 检索在取候选之前排除，所以它们不占候选名额；只剩退役 chunk 的索引按
+空索引处理。租户导出不带它们的内容。普通 id 的退役节点是它那些普通边唯一的退役依据，所以
+这个依据失效时一律失败关闭：case store 读不了（文件损坏或 DB 行无法解码）时，图的读取与写入
+直接报错，而不是把它当作没有退役节点；经 `DELETE /api/cases/:caseId` 删除退役 case 时，先在当前
+阶段写入的每个副本里删掉与它相连的边（按端点匹配，边 id 并不唯一），再删节点，图的任一副本读
+不了就拒绝删除、保留节点。各 store 的写入入口拒绝退役数据（`retired_case_data_write_refused`），
+`learned:` 是 Markdown case 的保留前缀；删除仍然允许。新结果不带学习来源：受理新结果时
+（`canonicalizeAnalysisResult`），不论 contract 来自声明还是 runtime，推荐都去掉
+`learnedProvenance` 和退役 case；召回命中本身也不再带它。恢复的历史结果与报告照常展示原有来源。
 
-Review 输出必须经过 schema/关系类型/证据引用验证和匿名化。检索命中只是待当前 trace
-证据验证的背景，不会自动成为 claim evidence。发布或撤回 learned case 使用专用 CLI，
-不能直接改运行时数据库或生成 YAML。
+这个承诺只覆盖已升级实例的活跃知识读取：未升级的进程仍按旧代码读自己的数据，所以发布验收
+要求所有对外实例完成升级。退役数据仍留在原处：本地 `rag_store.json` 的文件大小与 chunk 数
+预算在过滤之前检查，超出预算照旧 fail-closed。需要物理清理时，先停止所有后端进程，再在
+实际运行目录（不是仓库相对路径）删除：数据根（`SMARTPERFETTO_BACKEND_DATA_DIR`，默认
+`<cwd>/data`）下的 `self_improve/case_evolution.db` 及其 `-wal` / `-shm`，日志根
+（`SMARTPERFETTO_BACKEND_LOG_DIR`，默认 `<cwd>/logs`）下的 `case_candidates/`，以及这些文件的
+备份。store 中的学习 case 与边可以在线用 `DELETE /api/cases/:caseId`、
+`DELETE /api/cases/edges/:edgeId` 删除；它们的 RAG chunk 不再经 `/api/rag` 暴露，留在原处不会被
+读取。
 
 ## Failure taxonomy 与证据边界
 
@@ -212,7 +237,7 @@ supersede。这些是可测试组件，不代表生产启动：
 | Pattern memory | `backendLogPath()` 下的 analysis pattern stores | 默认 `backend/logs`，可由 `SMARTPERFETTO_BACKEND_LOG_DIR` 重定向 |
 | Legacy review outbox | `backend/data/self_improve/self_improve.db` | 组件级 SQLite outbox |
 | Supersede markers | `backend/data/self_improve/supersede.db` | 组件级 strategy 状态 |
-| Case Evolution outbox | `backend/data/self_improve/case_evolution.db` | 生产生命周期可选 worker |
+| 学习 case outbox（已退役） | 数据根下 `self_improve/case_evolution.db` | 不再打开；清理方法见上文 |
 | Runtime Skill Notes | backend runtime logs/data path | 不进 git |
 | Curated Skill Notes | `backend/skills/curated_skill_notes/` | 人工晋升并随代码评审 |
 | Run manifests | user data `self_improve/run_manifests.db` | scope/run 身份与 pinned runtime 事实源 |
@@ -279,7 +304,8 @@ npm run self-improve:migrate-failure-mode-hash -- --apply
 | Failure taxonomy | `backend/src/agentv3/selfImprove/failureTaxonomy.ts` |
 | Skill Notes 运行时预算 | `backend/src/agentRuntime/runtimeSkillNotes.ts` |
 | Legacy review/patch 组件 | `backend/src/agentv3/selfImprove/` |
-| Case Evolution 配置与 worker | `backend/src/services/caseEvolution/` |
+| Case 检索、背景注入与配置 | `backend/src/services/caseEvolution/` |
+| 学习 case 的退役判定 | `backend/src/services/retiredCaseData.ts` |
 | Worker 启动/停止 | `backend/src/index.ts` |
 | 指标端点 | `backend/src/routes/strategyAdminRoutes.ts` |
 | Self-Evolution lifecycle / stores / gate / overlay | `backend/src/services/selfEvolution/` |
@@ -294,14 +320,14 @@ npm run self-improve:migrate-failure-mode-hash -- --apply
 
 ## 验证
 
-Self-Improving 或 Case Evolution 改动至少按影响面运行：
+Self-Improving 或 case 改动至少按影响面运行：
 
 ```bash
 cd backend
 npm run typecheck
 npm run test:self-evolution
 npm run test:external-issue-reporting
-npx jest --runInBand src/services/caseEvolution
+npm run test:cases
 npm run test:scene-trace-regression
 ```
 

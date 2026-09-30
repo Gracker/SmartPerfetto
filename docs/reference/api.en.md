@@ -887,7 +887,12 @@ Maintained auxiliary APIs include `/api/flamegraph/*`, `/api/critical-path/*`,
 `/api/baselines/*`, `/api/memory/*`, `/api/cases/*`, `/api/ci/*`, `/api/tp/*`,
 `/api/auth/*`, `/api/tenant/*`, and `/api/admin/runtime/*`. These are scoped to
 specific product or admin surfaces; confirm the relevant feature/auth state
-before integrating against them.
+before integrating against them. Reading `/api/cases/*` needs a login; creating,
+deleting, publishing and archiving cases and adding or removing edges need
+`self_evolution:curate`, and the curator and reviewer are the signed-in
+identity, never a name in the body. Learned cases are retired: ids beginning
+`learned:` and cases of learned origin are no longer returned, and writing them
+is refused.
 
 The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API.
 

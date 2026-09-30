@@ -1108,6 +1108,31 @@ export const FEEDBACK_TARGET_KINDS = [
 
 export type FeedbackTargetKind = (typeof FEEDBACK_TARGET_KINDS)[number];
 
+/**
+ * Target kinds whose feature is retired (`case_candidate`: learned cases).
+ * Older feedback logs still decode and rebuild with them, but new feedback
+ * cannot target them and no active view returns them: effective feedback,
+ * its statistics, and the dirty targets awaiting projection.
+ */
+export const RETIRED_FEEDBACK_TARGET_KINDS = [
+  'case_candidate',
+] as const satisfies readonly FeedbackTargetKind[];
+
+export type ActiveFeedbackTargetKind = Exclude<
+  FeedbackTargetKind,
+  (typeof RETIRED_FEEDBACK_TARGET_KINDS)[number]
+>;
+
+/**
+ * Whether new feedback names a retired target, by kind or by the
+ * `caseCandidateId` field that only case candidate feedback carried. Takes
+ * unchecked input: it guards typed and untyped writers alike.
+ */
+export function isRetiredFeedbackTarget(feedback: {targetKind?: unknown; caseCandidateId?: unknown}): boolean {
+  return (RETIRED_FEEDBACK_TARGET_KINDS as readonly unknown[]).includes(feedback.targetKind) ||
+    feedback.caseCandidateId !== undefined;
+}
+
 export const FEEDBACK_EVENT_KINDS = [
   'created',
   'replaced',
@@ -1148,7 +1173,12 @@ export interface FeedbackEventV1 {
   timestamp: string;
 }
 
-export interface AppendFeedbackEventInput {
+/**
+ * One feedback command as a log line records it. Replaying an older log still
+ * meets retired targets, so this keeps them; new feedback is the narrower
+ * `AppendFeedbackEventInput`.
+ */
+export interface FeedbackCommand {
   kind: FeedbackEventKind;
   feedbackId?: string;
   supersedesEventId?: string;
@@ -1167,6 +1197,11 @@ export interface AppendFeedbackEventInput {
   actor: FeedbackEventV1['actor'];
   scope: RunManifestScope;
   timestamp?: string;
+}
+
+/** New feedback, which cannot name a retired target. */
+export interface AppendFeedbackEventInput extends Omit<FeedbackCommand, 'targetKind' | 'caseCandidateId'> {
+  targetKind: ActiveFeedbackTargetKind;
 }
 
 export interface AppendFeedbackEventResult {

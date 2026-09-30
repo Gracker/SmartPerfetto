@@ -7,6 +7,7 @@ import * as path from 'path';
 
 import {parseCaseMarkdown} from './caseMarkdownParser';
 import {validateCaseDomainPack} from './caseDomainPacks';
+import {isRetiredCaseId} from './retiredCaseData';
 import type {
   CaseEvidenceSignature,
   CaseEvidenceSignatureOperator,
@@ -131,6 +132,12 @@ function normalizeFrontmatter(
   const issues: CaseKnowledgeValidationIssue[] = [];
 
   const caseId = stringField(raw, 'case_id', parsed.filePath, issues);
+  // A learned case exported to Markdown keeps its retired id; importing it
+  // would launder it into a curated case.
+  if (caseId && isRetiredCaseId(caseId)) {
+    issues.push(issue(parsed.filePath,
+      `case_id '${caseId}' uses the prefix of the retired learned cases; give the case an ordinary id`, 'case_id'));
+  }
   const title = stringField(raw, 'title', parsed.filePath, issues);
   const status = enumField(
     raw,
@@ -477,6 +484,12 @@ function normalizeRelations(
       continue;
     }
     relations[relation] = [...targets];
+  }
+  for (const [relation, targets] of Object.entries(relations)) {
+    for (const target of targets.filter(isRetiredCaseId)) {
+      issues.push(issue(filePath,
+        `relations.${relation} links the retired learned case '${target}'; remove the link`, `relations.${relation}`));
+    }
   }
   return relations;
 }

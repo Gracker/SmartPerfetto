@@ -10,6 +10,7 @@ import type Database from 'better-sqlite3';
 import type { RequestContext } from '../middleware/auth';
 import { isPrivateKnowledgeChunk } from './ragStore';
 import {PATTERN_BUCKET_KNOWLEDGE_KIND, projectPatternBucketForExport} from '../agentv3/analysisPatternMemory';
+import {isRetiredRagChunk} from './retiredCaseData';
 import {
   decodePrivateContextColumn,
   privateContextRestrictsAudience,
@@ -460,7 +461,8 @@ function exportableMemoryContent(
   const {kind, record} = envelope as {kind?: unknown; record?: {kind?: unknown; registryOrigin?: unknown}};
   if (kind === PATTERN_BUCKET_KNOWLEDGE_KIND) return projectPatternBucketForExport(envelope as {record?: unknown});
   if (kind === 'rag_chunk') {
-    return !record || typeof record.kind !== 'string' || isPrivateKnowledgeChunk(record) ? undefined : envelope;
+    return !record || typeof record.kind !== 'string' || isPrivateKnowledgeChunk(record) || isRetiredRagChunk(record)
+      ? undefined : envelope;
   }
   return row.source_run_id && publicRunIds.has(row.source_run_id) ? envelope : undefined;
 }

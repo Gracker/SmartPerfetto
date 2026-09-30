@@ -259,8 +259,8 @@ export interface RuntimeMemoryContext {
 /**
  * The cross-session memory an automatic prefetch puts into a prompt, the tier
  * `allowAutomaticPrefetch` gates. Admitted pattern memory is public-run
- * material that every run reads, a private one included; learned cases stay
- * closed to a run whose selection carries private material.
+ * material that every run reads, a private one included; the curated case
+ * background stays closed to a run whose selection carries private material.
  */
 export function buildRuntimeMemoryContext(input: {
   allowAutomaticPrefetch: boolean;

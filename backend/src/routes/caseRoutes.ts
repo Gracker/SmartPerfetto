@@ -23,9 +23,10 @@
  * @module caseRoutes
  */
 
-import {Router, type Router as ExpressRouter} from 'express';
+import {Router, type NextFunction, type Request, type Response, type Router as ExpressRouter} from 'express';
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
+import {hasRbacPermission, sendForbidden} from '../services/rbac';
 import {CaseLibrary} from '../services/caseLibrary';
 import {CaseGraph} from '../services/caseGraph';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
@@ -44,8 +45,23 @@ function getDefaultLibrary(): CaseLibrary {
   return cachedLibrary;
 }
 function getDefaultGraph(): CaseGraph {
-  if (!cachedGraph) cachedGraph = new CaseGraph(backendLogPath('case_graph.json'));
+  if (!cachedGraph) cachedGraph = new CaseGraph(backendLogPath('case_graph.json'), getDefaultLibrary());
   return cachedGraph;
+}
+
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Cases and their edges reach other users' analyses (background, recall,
+ * report recommendations): reading them needs a login, and every other method
+ * is curation. Guarding by method keeps a write route added later closed.
+ */
+function requireCurationForWrites(req: Request, res: Response, next: NextFunction): void {
+  if (READ_METHODS.has(req.method) || hasRbacPermission(requireRequestContext(req), 'self_evolution:curate')) {
+    next();
+    return;
+  }
+  sendForbidden(res, 'Case curation requires self_evolution:curate permission');
 }
 
 /** Test/factory hook. Pass explicit stores; default singletons
@@ -55,9 +71,11 @@ export function createCaseRoutes(
   graph?: CaseGraph,
 ): ExpressRouter {
   const lib = library ?? getDefaultLibrary();
-  const g = graph ?? getDefaultGraph();
+  // A graph made here reads its retired cases from the library these routes serve.
+  const g = graph ?? (library ? new CaseGraph(backendLogPath('case_graph.json'), library) : getDefaultGraph());
   const router = Router();
   router.use(authenticate);
+  router.use(requireCurationForWrites);
 
   // -------------------------------------------------------------------
   // Edge endpoints — registered BEFORE the `/:caseId` routes so the
@@ -142,14 +160,17 @@ export function createCaseRoutes(
   });
 
   router.post('/', (req, res) => {
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const c = req.body as CaseNode | undefined;
-    if (!c || !c.caseId || !c.title || !c.status) {
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
+    const body = req.body as CaseNode | undefined;
+    if (!body || !body.caseId || !body.title || !body.status) {
       return res.status(400).json({
         success: false,
         error: 'Body must be a CaseNode with caseId, title, status',
       });
     }
+    // The curator is whoever is signed in, never a name the body supplies.
+    const c: CaseNode = {...body, curatedBy: context.userId};
     try {
       lib.saveCase(c, scope);
       return res.status(201).json({success: true, case: c});
@@ -175,6 +196,7 @@ export function createCaseRoutes(
 
   router.delete('/:caseId', (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    if (lib.retiredCaseIds(scope).has(req.params.caseId)) g.removeEdgesTouching(req.params.caseId, scope);
     const removed = lib.removeCase(req.params.caseId, scope);
     if (!removed) {
       return res.status(404).json({
@@ -185,12 +207,12 @@ export function createCaseRoutes(
     res.json({success: true});
   });
 
-  /** POST /api/cases/:caseId/publish — body `{reviewer}`. */
+  /** POST /api/cases/:caseId/publish — the signed-in curator is the reviewer. */
   router.post('/:caseId/publish', (req, res) => {
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const reviewer = (req.body?.reviewer ?? '') as string;
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
     try {
-      const published = lib.publishCase(req.params.caseId, {reviewer}, scope);
+      const published = lib.publishCase(req.params.caseId, {reviewer: context.userId}, scope);
       return res.json({success: true, case: published});
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

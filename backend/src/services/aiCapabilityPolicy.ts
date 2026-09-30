@@ -21,7 +21,6 @@ export type AiCapabilityFeature =
   | 'cli_provider_test'
   | 'capture_analyze'
   | 'llm_skill_step'
-  | 'background_review_agent'
   | 'critical_path_ai_summary'
   | 'comparison_ai_conclusion'
   | 'flamegraph_ai_summary';
@@ -65,7 +64,6 @@ export const AI_CAPABILITY_BLOCKED_FEATURES: readonly AiCapabilityFeature[] = [
   'cli_provider_test',
   'capture_analyze',
   'llm_skill_step',
-  'background_review_agent',
   'critical_path_ai_summary',
   'comparison_ai_conclusion',
   'flamegraph_ai_summary',

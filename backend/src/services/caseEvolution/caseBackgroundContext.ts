@@ -6,19 +6,20 @@ import { estimatePromptTokens } from '../../agentv3/claudeSystemPrompt';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import { loadPromptTemplate, renderTemplate } from '../../agentv3/strategyLoader';
 import { backendLogPath } from '../../runtimePaths';
-import type { CaseEvidenceSignature, CaseKnowledgeQuality } from '../../types/caseKnowledge';
-import type { CaseNode, CurationStatus } from '../../types/sparkContracts';
+import {
+  CURATED_CASE_STATUSES,
+  caseKnowledgeQualityRank,
+  caseStatusRank,
+  type CaseEvidenceSignature,
+} from '../../types/caseKnowledge';
+import type { CaseNode } from '../../types/sparkContracts';
 import { CaseLibrary } from '../caseLibrary';
 import type { KnowledgeScope } from '../scopedKnowledgeStore';
 import {
+  isCaseBackgroundInjectionEnabled,
   loadCaseEvolutionConfig,
-  validateCaseEvolutionConfig,
-  type CaseEvolutionConfigValidation,
+  type CaseEvolutionConfig,
 } from './caseEvolutionConfig';
-import {
-  recordCaseEvolutionPromptDroppedForBudget,
-  recordCaseEvolutionPromptSegmentBuilt,
-} from './caseEvolutionRuntimeMetrics';
 import {canonicalContentHash} from '../selfEvolution/canonicalJson';
 import {currentRunManifestAttributionSink} from '../selfEvolution/runManifestLifecycle';
 import {
@@ -41,11 +42,10 @@ const DEFAULT_CASE_BACKGROUND_TOKEN_BUDGET = 600;
 
 export interface BuildCaseBackgroundContextOptions {
   library?: CaseLibrary;
-  config?: ReturnType<typeof loadCaseEvolutionConfig>;
+  config?: CaseEvolutionConfig;
   maxTokens?: number;
   topK?: number;
   loadTemplate?: typeof loadPromptTemplate;
-  validateConfig?: typeof validateCaseEvolutionConfig;
   outputLanguage?: OutputLanguage;
 }
 
@@ -77,16 +77,13 @@ export function buildCaseBackgroundContext(
   knowledgeScope?: KnowledgeScope,
   opts: BuildCaseBackgroundContextOptions = {},
 ): string | undefined {
-  const rawConfig = opts.config ?? loadCaseEvolutionConfig();
-  const validation = (opts.validateConfig ?? validateCaseEvolutionConfig)(rawConfig);
-  if (!canInjectCaseBackground(validation)) return undefined;
+  if (!isCaseBackgroundInjectionEnabled(opts.config ?? loadCaseEvolutionConfig())) return undefined;
 
   const library = opts.library ?? new CaseLibrary(backendLogPath('case_library.json'));
   const cases = findBackgroundCases({
     library,
     sceneType,
     architectureType,
-    includeDrafts: validation.effectiveConfig.includeDrafts,
     topK: opts.topK ?? DEFAULT_TOP_K,
     knowledgeScope,
   });
@@ -116,10 +113,7 @@ export function buildCaseBackgroundContext(
       .join('\n'),
   });
   const maxTokens = opts.maxTokens ?? DEFAULT_CASE_BACKGROUND_TOKEN_BUDGET;
-  if (estimatePromptTokens(context) > maxTokens) {
-    recordCaseEvolutionPromptDroppedForBudget();
-    return undefined;
-  }
+  if (estimatePromptTokens(context) > maxTokens) return undefined;
   const sink = currentRunManifestAttributionSink();
   for (const {caseNode, contentHash} of eligibleCases) {
     registerEvaluationInjection({
@@ -134,30 +128,19 @@ export function buildCaseBackgroundContext(
       contentHash,
     );
   }
-  recordCaseEvolutionPromptSegmentBuilt();
   return context;
-}
-
-function canInjectCaseBackground(validation: CaseEvolutionConfigValidation): boolean {
-  return validation.ok &&
-    validation.effectiveConfig.retrieveEnabled &&
-    validation.effectiveConfig.promptInjectEnabled;
 }
 
 function findBackgroundCases(opts: {
   library: CaseLibrary;
   sceneType?: string;
   architectureType?: string;
-  includeDrafts: boolean;
   topK: number;
   knowledgeScope?: KnowledgeScope;
 }): CaseNode[] {
-  const statuses: CurationStatus[] = opts.includeDrafts
-    ? ['published', 'reviewed', 'draft']
-    : ['published', 'reviewed'];
   const seen = new Set<string>();
   const candidates: CaseNode[] = [];
-  for (const status of statuses) {
+  for (const status of CURATED_CASE_STATUSES) {
     for (const caseNode of opts.library.listCases({status}, opts.knowledgeScope)) {
       if (seen.has(caseNode.caseId)) continue;
       seen.add(caseNode.caseId);
@@ -185,43 +168,9 @@ function isStructuralMatch(
 }
 
 function compareBackgroundCases(a: CaseNode, b: CaseNode): number {
-  return statusRank(b.status) - statusRank(a.status) ||
-    draftQualityRank(b) - draftQualityRank(a) ||
-    qualityRank(b.knowledge?.quality) - qualityRank(a.knowledge?.quality) ||
+  return caseStatusRank(b.status) - caseStatusRank(a.status) ||
+    caseKnowledgeQualityRank(b.knowledge?.quality) - caseKnowledgeQualityRank(a.knowledge?.quality) ||
     a.caseId.localeCompare(b.caseId);
-}
-
-function statusRank(status: CurationStatus): number {
-  switch (status) {
-    case 'published':
-      return 4;
-    case 'reviewed':
-      return 3;
-    case 'draft':
-      return 2;
-    case 'private':
-      return 1;
-    default:
-      return 0;
-  }
-}
-
-function draftQualityRank(caseNode: CaseNode): number {
-  if (caseNode.status !== 'draft') return 0;
-  return qualityRank(caseNode.knowledge?.quality);
-}
-
-function qualityRank(quality: CaseKnowledgeQuality | undefined): number {
-  switch (quality) {
-    case 'curated':
-      return 3;
-    case 'imported':
-      return 2;
-    case 'weak':
-      return 1;
-    default:
-      return 0;
-  }
 }
 
 function formatCaseLine(caseNode: CaseNode, template: string): string {

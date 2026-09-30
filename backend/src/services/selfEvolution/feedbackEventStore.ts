@@ -13,6 +13,7 @@ import type {
   AppendFeedbackEventInput,
   AppendFeedbackEventResult,
   EffectiveFeedbackV1,
+  FeedbackCommand,
   FeedbackDimension,
   FeedbackEventV1,
   FeedbackTargetKind,
@@ -24,6 +25,8 @@ import {
   FEEDBACK_POSITIVE_DIMENSIONS,
   FEEDBACK_SOURCES,
   FEEDBACK_TARGET_KINDS,
+  isRetiredFeedbackTarget,
+  RETIRED_FEEDBACK_TARGET_KINDS,
 } from '../../types/selfEvolution';
 import {withFilesystemRegistryLockAsync} from '../filesystemRegistryLock';
 import {canonicalContentHash, canonicalJsonString} from './canonicalJson';
@@ -48,15 +51,6 @@ export interface FeedbackProjectionTarget {
   targetKind: FeedbackTargetKind;
   targetId: string;
   revision: number;
-}
-
-export interface LegacyCandidateFeedbackImport {
-  sourceRowId: number;
-  candidateId: string;
-  sourceSessionId: string;
-  sourceAnalysisRunId?: string;
-  rating: 'positive' | 'negative';
-  receivedAt: number;
 }
 
 interface IndexedEventRow {
@@ -99,6 +93,14 @@ const POSITIVE_DIMENSIONS = new Set<FeedbackDimension>(
 const EVENT_KINDS = new Set<string>(FEEDBACK_EVENT_KINDS);
 const SOURCES = new Set<string>(FEEDBACK_SOURCES);
 const TARGET_KINDS = new Set<string>(FEEDBACK_TARGET_KINDS);
+/**
+ * Every active read carries this; history (the event index, rebuild and
+ * catch-up) does not, so a retired target's feedback still decodes and a
+ * rebuild still accepts its log.
+ */
+const ACTIVE_TARGET_KIND_SQL = `target_kind NOT IN (${
+  RETIRED_FEEDBACK_TARGET_KINDS.map(kind => `'${kind}'`).join(', ')
+})`;
 
 function scopeKey(scope: RunManifestScope): string {
   return `${scope.tenantId}\0${scope.workspaceId}`;
@@ -117,7 +119,7 @@ function checksumForEvent(event: Omit<FeedbackEventV1, 'checksum'>): string {
   return canonicalContentHash(event);
 }
 
-function normalizedCommand(input: AppendFeedbackEventInput): Record<string, unknown> {
+function normalizedCommand(input: FeedbackCommand): Record<string, unknown> {
   return {
     kind: input.kind,
     ...(input.kind !== 'created' && input.feedbackId
@@ -147,7 +149,7 @@ function normalizedCommand(input: AppendFeedbackEventInput): Record<string, unkn
   };
 }
 
-function commandFingerprint(input: AppendFeedbackEventInput): string {
+function commandFingerprint(input: FeedbackCommand): string {
   return canonicalContentHash(normalizedCommand(input));
 }
 
@@ -479,9 +481,6 @@ export class FeedbackEventStore {
           targetKind: input.targetKind,
           targetId,
           ...(input.patternId ? {patternId: input.patternId} : {}),
-          ...(input.caseCandidateId
-            ? {caseCandidateId: input.caseCandidateId}
-            : {}),
           source: input.source,
           actor: {...input.actor},
           scope: {...input.scope},
@@ -495,56 +494,6 @@ export class FeedbackEventStore {
         lease.assertHeld();
         this.catchUpLocked(new Map([[event.eventId, fingerprint]]));
         return {event, idempotent: false, storage: this.storage};
-      },
-    );
-  }
-
-  async importAcceptedLegacyCandidateFeedback(
-    records: readonly LegacyCandidateFeedbackImport[],
-  ): Promise<number> {
-    return withFilesystemRegistryLockAsync(
-      this.eventLogPath,
-      'feedback_event_store_busy',
-      async lease => {
-        lease.assertHeld();
-        this.catchUpLocked();
-        let imported = 0;
-        for (const record of records) {
-          if (
-            !Number.isSafeInteger(record.sourceRowId) ||
-            record.sourceRowId <= 0 ||
-            !record.candidateId.trim() ||
-            !record.sourceSessionId.trim() ||
-            !Number.isFinite(record.receivedAt)
-          ) {
-            throw new Error('legacy_candidate_feedback_import_invalid');
-          }
-          const timestamp = new Date(record.receivedAt).toISOString();
-          const line = canonicalJsonString({
-            legacyCandidateFeedbackAccepted: true,
-            legacySourceRowId: record.sourceRowId,
-            sessionId: record.sourceSessionId,
-            ...(record.sourceAnalysisRunId
-              ? {runId: record.sourceAnalysisRunId}
-              : {}),
-            rating: record.rating,
-            caseCandidateId: record.candidateId,
-            timestamp,
-            storageScope: {...this.scope},
-          });
-          const eventId = `legacy:${hashText(
-            `${scopeKey(this.scope)}\0${line}`,
-          )}`;
-          const existing = this.db().prepare(`
-            SELECT 1 FROM feedback_event_index WHERE event_id = ?
-          `).get(eventId);
-          if (existing) continue;
-          this.appendLine(line);
-          imported += 1;
-        }
-        lease.assertHeld();
-        this.catchUpLocked();
-        return imported;
       },
     );
   }
@@ -589,6 +538,7 @@ export class FeedbackEventStore {
       FROM effective_feedback
       WHERE tenant_id = ? AND workspace_id = ?
         AND target_kind = ? AND target_id = ?
+        AND ${ACTIVE_TARGET_KIND_SQL}
       ORDER BY COALESCE(sequence, -1), event_index_id, feedback_id
     `).all(
       this.scope.tenantId,
@@ -611,6 +561,7 @@ export class FeedbackEventStore {
       FROM feedback_projection_targets
       WHERE tenant_id = ? AND workspace_id = ?
         AND (applied_revision IS NULL OR applied_revision < revision)
+        AND ${ACTIVE_TARGET_KIND_SQL}
       ORDER BY revision, target_kind, target_id
     `).all(
       this.scope.tenantId,
@@ -649,6 +600,7 @@ export class FeedbackEventStore {
       FROM effective_feedback
       WHERE tenant_id = ? AND workspace_id = ?
         AND (? IS NULL OR target_kind = ?)
+        AND ${ACTIVE_TARGET_KIND_SQL}
     `).get(
       this.scope.tenantId,
       this.scope.workspaceId,
@@ -671,6 +623,7 @@ export class FeedbackEventStore {
       SELECT *
       FROM effective_feedback
       WHERE tenant_id = ? AND workspace_id = ?
+        AND ${ACTIVE_TARGET_KIND_SQL}
       ORDER BY COALESCE(sequence, -1), event_index_id, feedback_id
     `).all(
       this.scope.tenantId,
@@ -704,6 +657,7 @@ export class FeedbackEventStore {
     if (!sameScope(input.scope, this.scope)) {
       throw new Error('feedback_scope_mismatch');
     }
+    if (isRetiredFeedbackTarget(input)) throw new Error('feedback_target_retired');
     if (!input.idempotencyKey.trim()) {
       throw new Error('feedback_idempotency_key_required');
     }
@@ -745,7 +699,7 @@ export class FeedbackEventStore {
     }
   }
 
-  private validateTransition(input: AppendFeedbackEventInput): void {
+  private validateTransition(input: FeedbackCommand): void {
     const database = this.db();
     if (input.kind === 'created') return;
 

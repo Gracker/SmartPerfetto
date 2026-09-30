@@ -4,7 +4,7 @@
 
 import { backendLogPath } from '../../runtimePaths';
 import type { ConclusionContract } from '../../agent/core/conclusionContract';
-import type { CaseKnowledgeReportRecommendation } from '../../types/caseKnowledge';
+import { CURATED_CASE_STATUSES, type CaseKnowledgeReportRecommendation } from '../../types/caseKnowledge';
 import type { ClaimVerificationIssue } from '../../types/claimVerification';
 import type { DataEnvelope } from '../../types/dataContract';
 import type { CaseNode } from '../../types/sparkContracts';
@@ -16,7 +16,6 @@ import {
   evaluateCaseEvidenceSignature,
   type CaseRecommendationQuery,
 } from './caseRecommendationRetriever';
-import { recordCaseEvolutionCaseHitsPruned } from './caseEvolutionRuntimeMetrics';
 import { projectScrollingCandidateClusters } from './scrollingCandidateProjector';
 
 export interface AttachCaseHitsToContractInput {
@@ -108,7 +107,6 @@ export function verifyAndPruneCaseRecommendations(
     kept.push(hit);
   }
 
-  recordCaseEvolutionCaseHitsPruned(issues.length);
   return {
     contract: {
       ...input.contract,
@@ -145,7 +143,7 @@ function projectContractQueries(input: AttachCaseHitsToContractInput): CaseRecom
       audiences: audienceForResponsibility(cluster.responsibility),
       evidenceSignatures: cluster.evidenceSignatures,
       textQuery: `${cluster.rootCause} ${cluster.evidenceSignatures.render_slices ?? ''}`,
-      includeStatuses: ['published', 'reviewed'],
+      includeStatuses: CURATED_CASE_STATUSES,
       topK: MAX_ATTACHED_CASES,
     }));
   }
@@ -156,7 +154,7 @@ function projectContractQueries(input: AttachCaseHitsToContractInput): CaseRecom
     audiences: ['app', 'oem'],
     evidenceSignatures: { reason_code: cluster.cluster },
     textQuery: `${cluster.cluster} ${input.conclusionContract.conclusions.map(c => c.statement).join(' ')}`,
-    includeStatuses: ['published', 'reviewed'],
+    includeStatuses: CURATED_CASE_STATUSES,
     topK: MAX_ATTACHED_CASES,
   }));
 }

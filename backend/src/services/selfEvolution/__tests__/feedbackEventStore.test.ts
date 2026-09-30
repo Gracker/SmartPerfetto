@@ -16,6 +16,7 @@ import {
   feedbackEventStoreTesting,
   privateFeedbackStorePaths,
 } from '../feedbackEventStore';
+import {FeedbackProjectionService} from '../feedbackProjectionService';
 
 const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a'};
 let tmpDir: string;
@@ -49,6 +50,80 @@ function input(
     timestamp: '2026-07-28T00:00:00.000Z',
     ...overrides,
   };
+}
+
+/** A checksum-valid v1 event, as an earlier release appended it. */
+function loggedEvent(
+  overrides: Partial<Omit<FeedbackEventV1, 'checksum'>> = {},
+): FeedbackEventV1 {
+  const withoutChecksum: Omit<FeedbackEventV1, 'checksum'> = {
+    schemaVersion: 1,
+    eventId: 'event-crash-window',
+    feedbackId: 'feedback-crash-window',
+    sequence: 1,
+    idempotencyKey: 'request-crash-window',
+    kind: 'created',
+    runId: 'run-1',
+    sessionId: 'session-1',
+    rating: 'positive',
+    targetKind: 'session',
+    targetId: 'session-1',
+    source: 'api',
+    actor: {userId: 'user-1'},
+    scope,
+    timestamp: '2026-07-28T00:00:00.000Z',
+    ...overrides,
+  };
+  return {
+    ...withoutChecksum,
+    checksum: feedbackEventStoreTesting.checksumForEvent(withoutChecksum),
+  };
+}
+
+/**
+ * Feedback on learned-case candidates as releases before their retirement
+ * logged it: an audit-only legacy line, an accepted legacy import, and a v1
+ * event, around one ordinary session event.
+ */
+function writeRetiredCandidateHistory(): void {
+  const lines = [
+    {
+      schemaVersion: 1,
+      sessionId: 'legacy-session',
+      rating: 'negative',
+      caseCandidateId: 'candidate-legacy',
+      timestamp: '2026-07-27T00:00:00.000Z',
+      storageScope: scope,
+    },
+    {
+      legacyCandidateFeedbackAccepted: true,
+      legacySourceRowId: 7,
+      sessionId: 'legacy-session',
+      runId: 'legacy-run',
+      rating: 'positive',
+      caseCandidateId: 'candidate-legacy',
+      timestamp: '2026-07-27T00:00:20.000Z',
+      storageScope: scope,
+    },
+    loggedEvent({
+      eventId: 'event-candidate',
+      feedbackId: 'feedback-candidate',
+      idempotencyKey: 'request-candidate',
+      sessionId: 'session-2',
+      runId: 'run-2',
+      rating: 'negative',
+      targetKind: 'case_candidate',
+      targetId: 'candidate-1',
+      caseCandidateId: 'candidate-1',
+    }),
+    loggedEvent({
+      eventId: 'event-session',
+      feedbackId: 'feedback-session',
+      sequence: 2,
+      idempotencyKey: 'request-session',
+    }),
+  ];
+  fs.writeFileSync(logPath, lines.map(line => `${JSON.stringify(line)}\n`).join(''));
 }
 
 function openStore(): FeedbackEventStore {
@@ -162,27 +237,7 @@ describe('FeedbackEventStore', () => {
   });
 
   it('catches up a fsynced event left behind before SQLite projection', () => {
-    const eventWithoutChecksum: Omit<FeedbackEventV1, 'checksum'> = {
-      schemaVersion: 1,
-      eventId: 'event-crash-window',
-      feedbackId: 'feedback-crash-window',
-      sequence: 1,
-      idempotencyKey: 'request-crash-window',
-      kind: 'created',
-      runId: 'run-1',
-      sessionId: 'session-1',
-      rating: 'positive',
-      targetKind: 'session',
-      targetId: 'session-1',
-      source: 'api',
-      actor: {userId: 'user-1'},
-      scope,
-      timestamp: '2026-07-28T00:00:00.000Z',
-    };
-    const event: FeedbackEventV1 = {
-      ...eventWithoutChecksum,
-      checksum: feedbackEventStoreTesting.checksumForEvent(eventWithoutChecksum),
-    };
+    const event = loggedEvent();
     fs.writeFileSync(logPath, `${JSON.stringify(event)}\n`);
 
     const store = openStore();
@@ -193,59 +248,117 @@ describe('FeedbackEventStore', () => {
     store.close();
   });
 
-  it('imports only old candidate rows that the legacy DB accepted', async () => {
-    const legacyAuditOnly = {
-      schemaVersion: 1,
-      sessionId: 'legacy-session',
-      rating: 'negative',
-      caseCandidateId: 'candidate-legacy',
-      timestamp: '2026-07-27T00:00:00.000Z',
-      storageScope: scope,
-    };
-    fs.writeFileSync(logPath, `${JSON.stringify(legacyAuditOnly)}\n`);
+  it('decodes retired candidate feedback yet keeps it out of every active view', async () => {
+    writeRetiredCandidateHistory();
     const store = openStore();
-    store.catchUp();
-    expect(store.getEffectiveForTarget(
-      'case_candidate',
-      'candidate-legacy',
-    )).toEqual([]);
+    const activeView = () => ({
+      effective: store.listEffective().map(feedback => feedback.feedbackId),
+      stats: store.effectiveStats(),
+      candidateStats: store.effectiveStats('case_candidate'),
+      candidate: [
+        ...store.getEffectiveForTarget('case_candidate', 'candidate-legacy'),
+        ...store.getEffectiveForTarget('case_candidate', 'candidate-1'),
+      ],
+      dirty: store.listDirtyTargets().map(target => target.targetKind),
+    });
+    const expected = {
+      effective: ['feedback-session'],
+      stats: {totalPositive: 1, totalNegative: 0, distinctSessions: 1},
+      candidateStats: {totalPositive: 0, totalNegative: 0, distinctSessions: 0},
+      candidate: [],
+      dirty: ['session'],
+    };
+    const decoded = () => {
+      const raw = new Database(dbPath, {readonly: true});
+      try {
+        return raw.prepare(`
+          SELECT target_kind AS kind, COUNT(*) AS rows
+          FROM feedback_event_index GROUP BY target_kind ORDER BY target_kind
+        `).all();
+      } finally {
+        raw.close();
+      }
+    };
 
-    await expect(store.importAcceptedLegacyCandidateFeedback([{
-      sourceRowId: 7,
-      candidateId: 'candidate-legacy',
-      sourceSessionId: 'legacy-session',
-      sourceAnalysisRunId: 'legacy-run',
-      rating: 'positive',
-      receivedAt: Date.parse('2026-07-27T00:00:20.000Z'),
-    }])).resolves.toBe(1);
-    await expect(store.importAcceptedLegacyCandidateFeedback([{
-      sourceRowId: 7,
-      candidateId: 'candidate-legacy',
-      sourceSessionId: 'legacy-session',
-      sourceAnalysisRunId: 'legacy-run',
-      rating: 'positive',
-      receivedAt: Date.parse('2026-07-27T00:00:20.000Z'),
-    }])).resolves.toBe(0);
-    const effective = store.getEffectiveForTarget(
-      'case_candidate',
-      'candidate-legacy',
-    );
-    expect(effective).toMatchObject([
-      {legacy: true, rating: 'positive'},
+    store.catchUp();
+    expect(activeView()).toEqual(expected);
+    // History is kept, not dropped: every line decoded into the index.
+    expect(decoded()).toEqual([
+      {kind: 'case_candidate', rows: 3},
+      {kind: 'session', rows: 1},
     ]);
 
-    await expect(store.append(input({
-      kind: 'retracted',
-      idempotencyKey: 'legacy-retract',
-      feedbackId: effective[0].feedbackId,
-      supersedesEventId: effective[0].currentEventId,
-      rating: undefined,
-      sessionId: 'legacy-session',
-      runId: 'legacy-run',
+    store.rebuild();
+    expect(activeView()).toEqual(expected);
+    expect(decoded()).toEqual([
+      {kind: 'case_candidate', rows: 3},
+      {kind: 'session', rows: 1},
+    ]);
+
+    // A new event continues the sequence the historical events began.
+    const appended = await store.append(input({
+      idempotencyKey: 'request-after-retirement',
+      sessionId: 'session-3',
+      runId: 'run-3',
+      targetId: 'session-3',
+    }));
+    expect(appended.event.sequence).toBe(3);
+
+    // Projection applies what it projected and nothing it skipped: the
+    // retired targets stay unapplied instead of being marked done.
+    await new FeedbackProjectionService({store, knowledgeScope: scope})
+      .projectDirtyTargets();
+    expect(store.listDirtyTargets()).toEqual([]);
+    const raw = new Database(dbPath, {readonly: true});
+    try {
+      expect(raw.prepare(`
+        SELECT target_kind AS kind, target_id AS id, applied_revision IS NULL AS unapplied
+        FROM feedback_projection_targets ORDER BY target_kind, target_id
+      `).all()).toEqual([
+        {kind: 'case_candidate', id: 'candidate-1', unapplied: 1},
+        {kind: 'case_candidate', id: 'candidate-legacy', unapplied: 1},
+        {kind: 'session', id: 'session-1', unapplied: 0},
+        {kind: 'session', id: 'session-3', unapplied: 0},
+      ]);
+    } finally {
+      raw.close();
+    }
+    store.close();
+  });
+
+  it('refuses new feedback on a retired target, including retracting its history', async () => {
+    writeRetiredCandidateHistory();
+    const originalLog = fs.readFileSync(logPath, 'utf8');
+    const store = openStore();
+    store.catchUp();
+    // The input type no longer admits a retired target; an untyped writer
+    // still meets the store's own refusal.
+    const untypedInput = (overrides: Record<string, unknown>) =>
+      input(overrides as Partial<AppendFeedbackEventInput>);
+
+    await expect(store.append(untypedInput({
+      idempotencyKey: 'new-candidate',
       targetKind: 'case_candidate',
-      targetId: 'candidate-legacy',
-      caseCandidateId: 'candidate-legacy',
-    }))).rejects.toThrow('legacy_feedback_not_retractable');
+      targetId: 'candidate-1',
+    }))).rejects.toThrow('feedback_target_retired');
+    await expect(store.append(untypedInput({
+      idempotencyKey: 'session-with-candidate',
+      caseCandidateId: 'candidate-1',
+    }))).rejects.toThrow('feedback_target_retired');
+    await expect(store.append(untypedInput({
+      kind: 'retracted',
+      idempotencyKey: 'retract-candidate',
+      feedbackId: 'feedback-candidate',
+      supersedesEventId: 'event-candidate',
+      rating: undefined,
+      sessionId: 'session-2',
+      runId: 'run-2',
+      targetKind: 'case_candidate',
+      targetId: 'candidate-1',
+      caseCandidateId: 'candidate-1',
+    }))).rejects.toThrow('feedback_target_retired');
+
+    expect(fs.readFileSync(logPath, 'utf8')).toBe(originalLog);
     store.close();
   });
 
@@ -387,13 +500,12 @@ describe('FeedbackEventStore', () => {
     const store = openStore();
     await store.append(input());
     await store.append(input({
-      idempotencyKey: 'candidate-request',
+      idempotencyKey: 'finding-request',
       sessionId: 'session-2',
       runId: 'run-2',
       rating: 'negative',
-      targetKind: 'case_candidate',
-      targetId: 'candidate-1',
-      caseCandidateId: 'candidate-1',
+      targetKind: 'finding',
+      targetId: 'finding-1',
     }));
 
     expect(store.effectiveStats()).toEqual({
@@ -401,7 +513,7 @@ describe('FeedbackEventStore', () => {
       totalNegative: 1,
       distinctSessions: 2,
     });
-    expect(store.effectiveStats('case_candidate')).toEqual({
+    expect(store.effectiveStats('finding')).toEqual({
       totalPositive: 0,
       totalNegative: 1,
       distinctSessions: 1,

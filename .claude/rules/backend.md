@@ -280,7 +280,7 @@ Keep these boundaries intact:
   number is a fixed baseline (Round 60 printed 35% for every conclusion), so
   user-facing text checks `analysisConfidenceIsGrounded` and shows the
   verified-claim count instead; do not repurpose the field as a verification
-  ratio — case evolution and pattern memory still consume it as confidence.
+  ratio — pattern memory still consumes it as confidence.
 - Claim verification separates "could not verify" from "contradicted". An
   ineligible declaration, and evidence the product could not read, stay
   `not_checked` with warnings; only reference errors, value mismatches, rejected

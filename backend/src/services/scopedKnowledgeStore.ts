@@ -7,6 +7,7 @@ import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
 import { openEnterpriseDb, openEnterpriseDbReadOnly } from './enterpriseDb';
+import { RETIRED_RAG_CHUNK_SQL } from './retiredCaseData';
 import { createEnterpriseWorkspaceRepository } from './enterpriseRepository';
 import {
   enterpriseDbReadAuthorityEnabled,
@@ -112,6 +113,8 @@ interface ListOptions {
   rowScope?: string;
   rowScopePrefix?: string;
   includeSystem?: boolean;
+  /** A listed row that cannot be decoded throws instead of being skipped. */
+  requireReadable?: boolean;
 }
 
 interface UpsertOptions {
@@ -553,6 +556,7 @@ export function getScopedRagStats(
     WHERE tenant_id = @tenantId
       AND workspace_id = @workspaceId
       AND scope LIKE 'rag:%'
+      AND NOT ${RETIRED_RAG_CHUNK_SQL}
       AND (
         (
           scope <> 'rag:android_internals_wiki'
@@ -627,7 +631,11 @@ export function listScopedKnowledgeRecords<T>(
       ORDER BY updated_at DESC, id ASC
     `).all(params);
     return rows
-      .map(row => parseKnowledgeRow<T>(kind, row))
+      .map(row => {
+        const record = parseKnowledgeRow<T>(kind, row);
+        if (!record && opts.requireReadable) throw new Error('knowledge_record_unreadable');
+        return record;
+      })
       .filter((record): record is ScopedKnowledgeRecord<T> => Boolean(record));
   });
 }
@@ -653,7 +661,9 @@ export function searchScopedRagKnowledgeRecords<T>(
       ? `((memory_entries.tenant_id = @tenantId AND memory_entries.workspace_id = @workspaceId)
           OR (memory_entries.tenant_id = @systemTenantId AND memory_entries.workspace_id = @systemWorkspaceId))`
       : `(memory_entries.tenant_id = @tenantId AND memory_entries.workspace_id = @workspaceId)`;
-    const indexClauses = [ownerClause, `memory_entries.scope LIKE 'rag:%'`];
+    // Retired case chunks are not part of the index: a store holding only
+    // them reads as empty, and they never take a candidate slot below.
+    const indexClauses = [ownerClause, `memory_entries.scope LIKE 'rag:%'`, `NOT ${RETIRED_RAG_CHUNK_SQL}`];
     const eligibleClauses = [...indexClauses, 'memory_entries.rag_unsupported_reason IS NULL'];
 
     if (opts.rowScopes && opts.rowScopes.length > 0) {

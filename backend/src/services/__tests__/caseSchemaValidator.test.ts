@@ -149,6 +149,36 @@ describe('caseSchemaValidator', () => {
     );
   });
 
+  it('rejects the retired learned-case id prefix, so an exported learned case cannot come back as curated', () => {
+    const parsed = parseValid(validCase().replace(
+      'case_id: scroll_shader_compile_pixel8_001',
+      "case_id: 'learned:0123456789abcdef'",
+    ));
+
+    const result = validateParsedCaseFiles([parsed]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.issues.map(issue => issue.message).join('\n')).toMatch(
+      /retired learned cases/,
+    );
+  });
+
+  it('rejects a relation to a retired learned case before ingest writes anything', () => {
+    const parsed = parseValid(validCase().replace(
+      '  similar_root_cause: []',
+      "  similar_root_cause: ['learned:0123456789abcdef']",
+    ));
+
+    const result = validateParsedCaseFiles([parsed]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.issues.map(issue => issue.message).join('\n')).toMatch(
+      /relations\.similar_root_cause links the retired learned case/,
+    );
+  });
+
   it('rejects duplicate case_id values across files', () => {
     const first = parseValid(validCase(), 'one.md');
     const second = parseValid(validCase(), 'two.md');

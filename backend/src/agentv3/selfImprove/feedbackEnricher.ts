@@ -18,10 +18,11 @@ import {
   FEEDBACK_POSITIVE_DIMENSIONS,
   FEEDBACK_SOURCES,
   FEEDBACK_TARGET_KINDS,
+  isRetiredFeedbackTarget,
+  type ActiveFeedbackTargetKind,
   type FeedbackDimension,
   type FeedbackEventKind,
   type FeedbackSource,
-  type FeedbackTargetKind,
 } from '../../types/selfEvolution';
 
 const MAX_COMMENT_CHARS = 500;
@@ -30,7 +31,6 @@ const MAX_SCENE_TYPE_CHARS = 50;
 const MAX_ARCHITECTURE_CHARS = 50;
 const MAX_PACKAGE_NAME_CHARS = 200;
 const MAX_PATTERN_ID_CHARS = 100;
-const MAX_CASE_CANDIDATE_ID_CHARS = 120;
 const MAX_FINDING_ID_CHARS = 100;
 const MAX_FINDING_IDS_LENGTH = 20;
 const MAX_EVENT_ID_CHARS = 160;
@@ -57,14 +57,12 @@ export interface FeedbackInputSchema {
   packageName?: string;
   findingIds?: string[];
   patternId?: string;
-  caseCandidateId?: string;
-  caseCandidateSurfacedAt?: number;
   eventKind?: FeedbackEventKind;
   feedbackId?: string;
   supersedesEventId?: string;
   idempotencyKey?: string;
   runId?: string;
-  targetKind?: FeedbackTargetKind;
+  targetKind?: ActiveFeedbackTargetKind;
   targetId?: string;
   dimensions?: FeedbackDimension[];
   source?: FeedbackSource;
@@ -96,8 +94,6 @@ export interface EnrichedFeedbackEntry {
   packageName?: string;
   findingIds?: string[];
   patternId?: string;
-  caseCandidateId?: string;
-  caseCandidateSurfacedAt?: number;
   timestamp: string;
   /** True when at least one field was filled by reverse lookup rather than the client body. */
   enrichedFromSession: boolean;
@@ -114,7 +110,6 @@ type StringFieldKey =
   | 'architecture'
   | 'packageName'
   | 'patternId'
-  | 'caseCandidateId'
   | 'feedbackId'
   | 'supersedesEventId'
   | 'idempotencyKey'
@@ -128,7 +123,6 @@ const STRING_FIELDS: ReadonlyArray<{ key: StringFieldKey; max: number }> = [
   { key: 'architecture', max: MAX_ARCHITECTURE_CHARS },
   { key: 'packageName', max: MAX_PACKAGE_NAME_CHARS },
   { key: 'patternId', max: MAX_PATTERN_ID_CHARS },
-  { key: 'caseCandidateId', max: MAX_CASE_CANDIDATE_ID_CHARS },
   { key: 'feedbackId', max: MAX_FEEDBACK_ID_CHARS },
   { key: 'supersedesEventId', max: MAX_EVENT_ID_CHARS },
   { key: 'idempotencyKey', max: MAX_IDEMPOTENCY_KEY_CHARS },
@@ -151,7 +145,8 @@ const POSITIVE_DIMENSIONS = new Set<string>(FEEDBACK_POSITIVE_DIMENSIONS);
  *
  * Truncates over-long string fields rather than rejecting — matches the
  * existing `comment.substring(0, 500)` convention in agentRoutes.ts. Hard-rejects
- * only for type errors and unknown rating / schemaVersion values.
+ * type errors, unknown rating / schemaVersion values, and feedback on retired
+ * case candidates.
  */
 export function validateFeedbackInput(body: unknown): ValidationResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -166,6 +161,12 @@ export function validateFeedbackInput(body: unknown): ValidationResult {
         error: `unsupported schemaVersion (got ${String(raw.schemaVersion)}, expected ${SUPPORTED_SCHEMA_VERSION})`,
       };
     }
+  }
+
+  // Learned cases are retired: say so rather than filing the rating as
+  // session feedback.
+  if (isRetiredFeedbackTarget(raw) || raw.caseCandidateSurfacedAt !== undefined) {
+    return {ok: false, error: 'case candidate feedback is retired'};
   }
 
   const eventKind = raw.eventKind ?? 'created';
@@ -204,17 +205,6 @@ export function validateFeedbackInput(body: unknown): ValidationResult {
     value.turnIndex = Math.floor(raw.turnIndex);
   }
 
-  if (raw.caseCandidateSurfacedAt !== undefined) {
-    if (
-      typeof raw.caseCandidateSurfacedAt !== 'number' ||
-      !Number.isFinite(raw.caseCandidateSurfacedAt) ||
-      raw.caseCandidateSurfacedAt < 0
-    ) {
-      return { ok: false, error: 'caseCandidateSurfacedAt must be a non-negative finite number' };
-    }
-    value.caseCandidateSurfacedAt = Math.floor(raw.caseCandidateSurfacedAt);
-  }
-
   if (raw.findingIds !== undefined) {
     if (!Array.isArray(raw.findingIds)) {
       return { ok: false, error: 'findingIds must be an array' };
@@ -234,7 +224,7 @@ export function validateFeedbackInput(body: unknown): ValidationResult {
     if (typeof raw.targetKind !== 'string' || !TARGET_KINDS.has(raw.targetKind)) {
       return {ok: false, error: 'targetKind is not supported'};
     }
-    value.targetKind = raw.targetKind as FeedbackTargetKind;
+    value.targetKind = raw.targetKind as ActiveFeedbackTargetKind;
   }
 
   if (raw.source !== undefined) {
@@ -339,8 +329,6 @@ export function enrichFeedbackEntry(
   if (input.packageName) entry.packageName = input.packageName;
   if (input.findingIds && input.findingIds.length > 0) entry.findingIds = input.findingIds;
   if (input.patternId) entry.patternId = input.patternId;
-  if (input.caseCandidateId) entry.caseCandidateId = input.caseCandidateId;
-  if (input.caseCandidateSurfacedAt !== undefined) entry.caseCandidateSurfacedAt = input.caseCandidateSurfacedAt;
 
   return entry;
 }

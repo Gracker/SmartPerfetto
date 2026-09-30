@@ -15,6 +15,11 @@ import type {
   RunSkillRegistryAttribution,
 } from '../../types/selfEvolution';
 import {
+  isCaseBackgroundInjectionEnabled,
+  loadCaseEvolutionConfig,
+} from '../caseEvolution/caseEvolutionConfig';
+import {loadSelfEvolutionConfig} from './selfEvolutionConfig';
+import {
   RunManifestBuilder,
   type CreateRunManifestBuilderInput,
 } from './runManifestBuilder';
@@ -87,20 +92,23 @@ function sameIdentity(
   return identityKey(left) === identityKey(right);
 }
 
-function booleanFlag(value: string | undefined): boolean {
-  return /^(?:1|true|yes|on)$/i.test(value?.trim() ?? '');
-}
-
+/**
+ * Every flag comes from the loader that gates the behaviour, so the record
+ * says what the run was gated by (the requested Self-Evolution settings, as
+ * before). Manifests sealed before learned cases were retired carry
+ * `caseEvolutionEnabled` and `caseEvolutionPromptInjectEnabled` instead; the
+ * snapshot is free-form attribution and nothing reads either key.
+ */
 export function buildRunManifestFeatureFlagSnapshot(
   env: NodeJS.ProcessEnv = process.env,
 ): Record<string, string | number | boolean> {
+  const selfEvolution = loadSelfEvolutionConfig(env);
+  const cases = loadCaseEvolutionConfig(env);
   return {
-    selfEvolutionEnabled: booleanFlag(env.SELF_EVOLUTION_ENABLED),
-    selfEvolutionApplyEnabled: booleanFlag(env.SELF_EVOLUTION_APPLY),
-    caseEvolutionEnabled: booleanFlag(env.CASE_EVOLUTION_ENABLED),
-    caseEvolutionPromptInjectEnabled: booleanFlag(
-      env.CASE_EVOLUTION_PROMPT_INJECT_ENABLED,
-    ),
+    selfEvolutionEnabled: selfEvolution.enabled,
+    selfEvolutionApplyEnabled: selfEvolution.applyEnabled,
+    caseRetrievalEnabled: cases.retrieveEnabled,
+    caseBackgroundInjectionEnabled: isCaseBackgroundInjectionEnabled(cases),
   };
 }
 

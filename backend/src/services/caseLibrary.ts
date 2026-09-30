@@ -48,6 +48,7 @@ import {
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {assertNotRetiredCaseWrite, isRetiredCaseNode} from './retiredCaseData';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -73,15 +74,6 @@ export interface PublishOptions {
 
 export interface ArchiveOptions {
   reason: string;
-}
-
-export interface CaseEvolutionFeedbackProjection {
-  candidateId: string;
-  supportingEvidence: number;
-  contradictingEvidence: number;
-  maintainerPromoted: boolean;
-  supported: boolean;
-  feedbackProjectionRejected: boolean;
 }
 
 /**
@@ -121,10 +113,11 @@ export class CaseLibrary {
    * Save (insert or replace) a case. Throws when the record arrives
    * with `status='published'` — the only legitimate path to publish
    * is the dedicated `publishCase()` call so the gate cannot be
-   * bypassed by a field update.
+   * bypassed by a field update — and for a retired learned case.
    */
   saveCase(record: CaseNode, scope?: KnowledgeScope): void {
     this.load();
+    assertNotRetiredCaseWrite('case', isRetiredCaseNode(record), record.caseId);
     if (record.status === 'published') {
       throw new Error(
         `Use publishCase() to advance a case to 'published'; saveCase() rejects published records to keep the gate auditable`,
@@ -162,15 +155,18 @@ export class CaseLibrary {
   }
 
   getCase(caseId: string, scope?: KnowledgeScope): CaseNode | undefined {
-    if (enterpriseKnowledgeStoreEnabled()) {
-      return getScopedKnowledgeRecord<CaseNode>(
-        KNOWLEDGE_KIND,
-        caseId,
-        scope,
-      )?.record;
-    }
-    this.load();
-    return this.cases.get(caseId);
+    const node = this.getStoredCase(caseId, scope);
+    return node && !isRetiredCaseNode(node) ? node : undefined;
+  }
+
+  /**
+   * The ids of the retired cases this scope's store holds, for a store that
+   * must recognize them by node facts: a retired node may carry an ordinary id.
+   * A store it cannot fully read throws rather than reading as holding none.
+   */
+  retiredCaseIds(scope?: KnowledgeScope): Set<string> {
+    const cases = this.listStoredCases(scope, undefined, {requireReadable: true});
+    return new Set(cases.filter(isRetiredCaseNode).map(c => c.caseId));
   }
 
   removeCase(caseId: string, scope?: KnowledgeScope): boolean {
@@ -202,17 +198,7 @@ export class CaseLibrary {
   }
 
   listCases(opts: ListOptions = {}, scope?: KnowledgeScope): CaseNode[] {
-    this.load();
-    let out = enterpriseKnowledgeStoreEnabled()
-      ? listScopedKnowledgeRecords<CaseNode>(
-          KNOWLEDGE_KIND,
-          scope,
-          {
-            rowScope: opts.status ? caseRowScope(opts.status) : undefined,
-            rowScopePrefix: opts.status ? undefined : CASE_ROW_SCOPE_PREFIX,
-          },
-        ).map(row => row.record)
-      : Array.from(this.cases.values());
+    let out = this.listStoredCases(scope, opts.status).filter(c => !isRetiredCaseNode(c));
     if (opts.status) out = out.filter(c => c.status === opts.status);
     if (opts.educationalLevel)
       out = out.filter(c => c.educationalLevel === opts.educationalLevel);
@@ -248,7 +234,7 @@ export class CaseLibrary {
       );
     }
     const publish = (existing: CaseNode | undefined): CaseNode => {
-      if (!existing) throw new Error(`Cannot publish case '${caseId}': not found`);
+      if (!existing || isRetiredCaseNode(existing)) throw new Error(`Cannot publish case '${caseId}': not found`);
       if (existing.redactionState !== 'redacted') {
         throw new Error(
           `Cannot publish case '${caseId}': redactionState='${existing.redactionState}' (must be 'redacted')`,
@@ -306,7 +292,7 @@ export class CaseLibrary {
       throw new Error(`archiveCase requires a non-empty reason`);
     }
     const archive = (existing: CaseNode | undefined): CaseNode => {
-      if (!existing) throw new Error(`Cannot archive case '${caseId}': not found`);
+      if (!existing || isRetiredCaseNode(existing)) throw new Error(`Cannot archive case '${caseId}': not found`);
       return {
         ...existing,
         ...makeSparkProvenance({
@@ -344,131 +330,51 @@ export class CaseLibrary {
     });
   }
 
-  /**
-   * Update only Case Evolution evidence projection. Published governance is
-   * immutable here; non-published cases remember and restore their prior
-   * status when a reversible negative projection is later retracted.
-   */
-  applyCaseEvolutionFeedbackProjection(
-    caseId: string,
-    projection: CaseEvolutionFeedbackProjection,
-    scope?: KnowledgeScope,
-  ): CaseNode {
-    this.load();
-    const project = (existing: CaseNode | undefined): CaseNode => {
-      if (!existing) throw new Error(`Cannot project case '${caseId}': not found`);
-      if (!existing.knowledge) {
-        throw new Error(`Cannot project case '${caseId}': knowledge missing`);
-      }
-      const previousMarker =
-        existing.knowledge.context?.['caseEvolution.v1'];
-      const marker = previousMarker &&
-        typeof previousMarker === 'object' &&
-        !Array.isArray(previousMarker)
-        ? previousMarker as Record<string, unknown>
-        : {};
-      const previousStatus = marker.statusBeforeFeedbackProjection;
-      const statusBeforeProjection: CurationStatus | undefined =
-        previousStatus === 'draft' ||
-        previousStatus === 'reviewed' ||
-        previousStatus === 'private'
-          ? previousStatus
-          : undefined;
-      const {
-        statusBeforeFeedbackProjection: _statusBeforeFeedbackProjection,
-        supportedAt: previousSupportedAt,
-        ...markerWithoutPreviousStatus
-      } = marker;
-      const nextStatusBeforeProjection =
-        projection.feedbackProjectionRejected &&
-        existing.status !== 'published'
-          ? statusBeforeProjection ??
-            (existing.status === 'private' ? undefined : existing.status)
-          : undefined;
-      const nextStatus = existing.status === 'published'
-        ? 'published'
-        : projection.feedbackProjectionRejected
-          ? 'private'
-          : statusBeforeProjection && existing.status === 'private'
-            ? statusBeforeProjection
-            : existing.status;
-      return {
-        ...existing,
-        status: nextStatus,
-        knowledge: {
-          ...existing.knowledge,
-          context: {
-            ...existing.knowledge.context,
-            'caseEvolution.v1': {
-              ...markerWithoutPreviousStatus,
-              candidateId: projection.candidateId,
-              supportingEvidence: projection.supportingEvidence,
-              contradictingEvidence: projection.contradictingEvidence,
-              maintainerPromoted: projection.maintainerPromoted,
-              supported: projection.supported,
-              feedbackProjectionRejected:
-                projection.feedbackProjectionRejected,
-              ...(projection.supported
-                ? {
-                    supportedAt: typeof previousSupportedAt === 'number'
-                      ? previousSupportedAt
-                      : Date.now(),
-                  }
-                : {}),
-              ...(nextStatusBeforeProjection
-                ? {statusBeforeFeedbackProjection: nextStatusBeforeProjection}
-                : {}),
-            },
-          },
-        },
-      };
-    };
-
-    const filesystemWrites = legacyKnowledgeFilesystemWritesEnabled();
-    const databaseWrites = enterpriseKnowledgeDbWritesEnabled();
-    if (databaseWrites) {
-      return mutateScopedKnowledgeRecordWithSideEffect<CaseNode>(
-        KNOWLEDGE_KIND,
-        caseId,
-        scope,
-        current => {
-          const next = project(current);
-          return {record: next, rowScope: caseRowScope(next.status)};
-        },
-        (next, current) => {
-          if (!filesystemWrites) return;
-          this.mutateFilesystem(() => {
-            assertReplicaMatches('case', caseId, current, this.cases.get(caseId));
-            this.cases.set(caseId, next);
-          });
-        },
-      );
-    }
-    return this.mutateFilesystem(() => {
-      const next = project(this.cases.get(caseId));
-      this.cases.set(caseId, next);
-      return next;
-    });
-  }
-
   /** Stats by status — useful for the admin dashboard. */
   getStats(scope?: KnowledgeScope): Record<CurationStatus, number> {
-    this.load();
     const out: Record<CurationStatus, number> = {
       draft: 0,
       reviewed: 0,
       published: 0,
       private: 0,
     };
-    const cases = enterpriseKnowledgeStoreEnabled()
-      ? listScopedKnowledgeRecords<CaseNode>(
-          KNOWLEDGE_KIND,
-          scope,
-          {rowScopePrefix: CASE_ROW_SCOPE_PREFIX},
-        ).map(row => row.record)
-      : Array.from(this.cases.values());
-    for (const c of cases) out[c.status]++;
+    for (const c of this.listCases({}, scope)) out[c.status]++;
     return out;
+  }
+
+  /** The stored record as is, retired or not. */
+  private getStoredCase(caseId: string, scope?: KnowledgeScope): CaseNode | undefined {
+    if (enterpriseKnowledgeStoreEnabled()) {
+      return getScopedKnowledgeRecord<CaseNode>(
+        KNOWLEDGE_KIND,
+        caseId,
+        scope,
+      )?.record;
+    }
+    this.load();
+    return this.cases.get(caseId);
+  }
+
+  private listStoredCases(
+    scope?: KnowledgeScope,
+    status?: CurationStatus,
+    {requireReadable = false}: {requireReadable?: boolean} = {},
+  ): CaseNode[] {
+    if (enterpriseKnowledgeStoreEnabled()) {
+      return listScopedKnowledgeRecords<CaseNode>(
+        KNOWLEDGE_KIND,
+        scope,
+        {
+          rowScope: status ? caseRowScope(status) : undefined,
+          rowScopePrefix: status ? undefined : CASE_ROW_SCOPE_PREFIX,
+          requireReadable,
+        },
+      ).map(row => row.record);
+    }
+    this.load();
+    // The load error quotes the file; the caller learns only that it failed.
+    if (requireReadable && this.loadError) throw new Error('case_library_unreadable');
+    return Array.from(this.cases.values());
   }
 
   private persist(): void {

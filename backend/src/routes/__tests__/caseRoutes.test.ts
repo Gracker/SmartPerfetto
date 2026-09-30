@@ -11,6 +11,7 @@ import express from 'express';
 import request from 'supertest';
 
 import {createCaseRoutes} from '../caseRoutes';
+import {DEFAULT_DEV_USER_ID} from '../../middleware/auth';
 import {CaseLibrary} from '../../services/caseLibrary';
 import {CaseGraph} from '../../services/caseGraph';
 import {
@@ -23,21 +24,45 @@ let tmpDir: string;
 let library: CaseLibrary;
 let graph: CaseGraph;
 let app: express.Express;
+const originalAuthEnv = {
+  apiKey: process.env.SMARTPERFETTO_API_KEY,
+  trustedHeaders: process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS,
+};
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'case-routes-test-'));
   library = new CaseLibrary(path.join(tmpDir, 'cases.json'));
-  graph = new CaseGraph(path.join(tmpDir, 'edges.json'));
+  graph = new CaseGraph(path.join(tmpDir, 'edges.json'), library);
   app = express();
   app.use(express.json({limit: '5mb'}));
   app.use('/api/cases', createCaseRoutes(library, graph));
 });
 
 afterEach(() => {
+  for (const [key, value] of [
+    ['SMARTPERFETTO_API_KEY', originalAuthEnv.apiKey],
+    ['SMARTPERFETTO_SSO_TRUSTED_HEADERS', originalAuthEnv.trustedHeaders],
+  ] as const) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   if (fs.existsSync(tmpDir)) {
     fs.rmSync(tmpDir, {recursive: true, force: true});
   }
 });
+
+/** An SSO analyst: may read cases, may not curate them. */
+function asAnalyst(req: request.Test): request.Test {
+  delete process.env.SMARTPERFETTO_API_KEY;
+  process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+  return req
+    .set('X-SmartPerfetto-SSO-User-Id', 'analyst-user')
+    .set('X-SmartPerfetto-SSO-Email', 'analyst@example.test')
+    .set('X-SmartPerfetto-SSO-Tenant-Id', 'default-dev-tenant')
+    .set('X-SmartPerfetto-SSO-Workspace-Id', 'default-workspace')
+    .set('X-SmartPerfetto-SSO-Roles', 'analyst')
+    .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,agent:run,report:read');
+}
 
 function makeCase(overrides: Partial<CaseNode> = {}): CaseNode {
   return {
@@ -69,6 +94,13 @@ describe('POST /api/cases', () => {
     const res = await request(app).post('/api/cases').send(c);
     expect(res.status).toBe(201);
     expect(res.body.success).toBe(true);
+  });
+
+  it('records the signed-in curator, not a name from the body', async () => {
+    const res = await request(app).post('/api/cases').send(makeCase({curatedBy: 'someone-else'}));
+    expect(res.status).toBe(201);
+    expect(res.body.case.curatedBy).toBe(DEFAULT_DEV_USER_ID);
+    expect(library.getCase('case-001')?.curatedBy).toBe(DEFAULT_DEV_USER_ID);
   });
 
   it('rejects published-status saves with 400 (use /publish)', async () => {
@@ -132,14 +164,14 @@ describe('GET / DELETE /api/cases/:caseId', () => {
 });
 
 describe('POST /api/cases/:caseId/publish', () => {
-  it('publishes when redactionState is redacted + reviewer supplied', async () => {
+  it('publishes a redacted case with the signed-in curator as reviewer', async () => {
     library.saveCase(makeCase({caseId: 'a', redactionState: 'redacted'}));
     const res = await request(app)
       .post('/api/cases/a/publish')
-      .send({reviewer: 'chris'});
+      .send({reviewer: 'someone-else'});
     expect(res.status).toBe(200);
     expect(res.body.case.status).toBe('published');
-    expect(res.body.case.curatedBy).toBe('chris');
+    expect(res.body.case.curatedBy).toBe(DEFAULT_DEV_USER_ID);
   });
 
   it('returns 400 when redactionState != redacted', async () => {
@@ -149,12 +181,6 @@ describe('POST /api/cases/:caseId/publish', () => {
       .send({reviewer: 'chris'});
     expect(res.status).toBe(400);
     expect(res.body.error).toMatch(/redactionState/);
-  });
-
-  it('returns 400 when reviewer is missing', async () => {
-    library.saveCase(makeCase({caseId: 'a', redactionState: 'redacted'}));
-    const res = await request(app).post('/api/cases/a/publish').send({});
-    expect(res.status).toBe(400);
   });
 
   it('returns 404 when case is missing', async () => {
@@ -244,5 +270,29 @@ describe('Edge endpoints', () => {
   it('DELETE /api/cases/edges/:edgeId returns 404 for missing edge', async () => {
     const res = await request(app).delete('/api/cases/edges/missing');
     expect(res.status).toBe(404);
+  });
+});
+
+describe('case curation permission', () => {
+  it('lets a signed-in user without self_evolution:curate read but not write', async () => {
+    library.saveCase(makeCase({caseId: 'a', redactionState: 'redacted'}));
+    graph.addEdge(makeEdge({edgeId: 'e1'}));
+
+    expect((await asAnalyst(request(app).get('/api/cases'))).status).toBe(200);
+    expect((await asAnalyst(request(app).get('/api/cases/edges'))).status).toBe(200);
+    // Built one at a time: supertest opens a server per request object.
+    const writes = [
+      () => request(app).post('/api/cases').send(makeCase({caseId: 'b'})),
+      () => request(app).delete('/api/cases/a'),
+      () => request(app).post('/api/cases/a/publish').send({}),
+      () => request(app).post('/api/cases/a/archive').send({reason: 'stale'}),
+      () => request(app).post('/api/cases/edges').send(makeEdge({edgeId: 'e2'})),
+      () => request(app).delete('/api/cases/edges/e1'),
+    ];
+    const statuses: number[] = [];
+    for (const write of writes) statuses.push((await asAnalyst(write())).status);
+    expect(statuses).toEqual(writes.map(() => 403));
+    expect(library.listCases().map(c => [c.caseId, c.status])).toEqual([['a', 'draft']]);
+    expect(graph.listEdges().map(edge => edge.edgeId)).toEqual(['e1']);
   });
 });

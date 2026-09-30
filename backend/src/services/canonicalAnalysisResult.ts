@@ -20,6 +20,7 @@ import {analysisDeliveryFingerprint, sameAnalysisCandidate,
 import {isIssuedNativeConclusionDeclaration, projectConclusionContractForDisplay,
   type NativeConclusionDeclaration} from './security/conclusionProtocolProjection';
 import {issueCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
+import {withoutRetiredCaseLearning} from './retiredCaseData';
 export {isIssuedCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
 
 export interface CanonicalAnalysisResult {
@@ -229,12 +230,15 @@ export function canonicalizeAnalysisResult(
     ? inspectCandidateProtocol(options.nativeDeclaration.raw, options.conversation) : display;
   const narrative = display.canonicalBody;
   const intent = options.context?.turnIntent;
-  const validationContract = sidecar.status !== 'absent'
+  // Learned cases are retired: whichever source a new result's contract comes
+  // from, the finalizer, the review and every delivered projection read it
+  // without learned provenance or a retired case's recommendation.
+  const validationContract = withoutRetiredCaseLearning(sidecar.status !== 'absent'
     ? sidecar.contract
     : typedJson && typedJson.status !== 'absent' ? typedJson.contract : options.nativeDeclaration?.contract ?? source.conclusionContract ?? deriveConclusionContract(narrative, {
       mode: intent?.status === 'resolved' && intent.deliverable === 'answer' ? 'focused_answer' : 'initial_report',
       ...(intent?.status === 'resolved' ? {sceneId: intent.sceneId} : {}),
-    }) ?? undefined;
+    }) ?? undefined);
   const bindingEligibility: ConclusionBindingEligibility = sidecar.status === 'invalid' || typedJson?.status === 'invalid' ||
     conversation?.status === 'invalid' ? 'ineligible' : validationContract?.bindingEligibility ?? 'legacy_unchecked';
   const conclusionContract = options.nativeDeclaration

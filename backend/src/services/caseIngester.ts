@@ -67,7 +67,12 @@ export function ingestCaseKnowledge(
   const caseGraphPath = options.caseGraphPath ?? backendLogPath('case_graph.json');
   const ragStorePath = options.ragStorePath ?? backendLogPath('rag_store.json');
   const library = options.caseLibrary ?? new CaseLibrary(caseLibraryPath);
-  const graph = options.caseGraph ?? new CaseGraph(caseGraphPath);
+  // Every case is written before the first edge and no retired case can be
+  // written, so one read of the retired ids serves the whole edge pass.
+  let retiredCaseIds: ReadonlySet<string> | undefined;
+  const graph = options.caseGraph ?? new CaseGraph(caseGraphPath, {
+    retiredCaseIds: scope => (retiredCaseIds ??= library.retiredCaseIds(scope)),
+  });
   const ragStore = options.ragStore ?? (
     options.ragStorePath ? new RagStore(ragStorePath) : getDefaultRagStore()
   );

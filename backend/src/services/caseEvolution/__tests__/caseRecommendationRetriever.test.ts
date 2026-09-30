@@ -37,11 +37,10 @@ function addCase(input: {
   quality?: CaseKnowledgeQuality;
   required?: Array<{ field: string; op: 'eq' | 'contains_any' | 'gte' | 'lte'; value: unknown }>;
   supportive?: Array<{ field: string; op: 'eq' | 'contains_any' | 'gte' | 'lte'; value: unknown }>;
-  supported?: boolean;
 }) {
   const record: CaseNode = {
     schemaVersion: 1,
-    source: input.quality === 'imported' ? 'runtime_analysis_candidate' : 'curated_markdown_case',
+    source: 'curated_markdown_case',
     createdAt: 1,
     caseId: input.caseId,
     title: input.caseId,
@@ -61,9 +60,7 @@ function addCase(input: {
         responsibility: 'app',
         severity: 'warning',
       },
-      context: input.supported
-        ? {'caseEvolution.v1': { candidateId: 'cand-supported', supportingEvidence: 3, contradictingEvidence: 0, supported: true }}
-        : {},
+      context: {},
       evidenceSignatures: {
         required: input.required ?? [{ field: 'reason_code', op: 'eq', value: 'shader_compile' }],
         supportive: input.supportive ?? [],
@@ -83,7 +80,7 @@ function addCase(input: {
   const chunk: RagChunk = {
     chunkId: `case:${input.caseId}:summary`,
     kind: 'case_library',
-    uri: input.quality === 'imported' ? `case://learned/${input.caseId}` : `case://${input.caseId}`,
+    uri: `case://${input.caseId}`,
     title: input.caseId,
     snippet: `${input.caseId} shader compile makePipeline`,
     indexedAt: 1,
@@ -126,7 +123,7 @@ describe('caseRecommendationRetriever', () => {
   });
 
   it('honors includeStatuses and ranks curated above imported at equal strength', () => {
-    addCase({ caseId: 'learned-draft', status: 'draft', quality: 'imported', supported: true });
+    addCase({ caseId: 'imported-draft', status: 'draft', quality: 'imported' });
     addCase({ caseId: 'curated-reviewed', status: 'reviewed', quality: 'curated' });
 
     const publishedOnly = createCaseRetriever({ library, ragStore }).retrieve({
@@ -147,17 +144,14 @@ describe('caseRecommendationRetriever', () => {
       evidenceSignatures: { reason_code: 'shader_compile' },
       includeStatuses: ['draft', 'reviewed'],
     });
-    expect(withDrafts.map(hit => hit.caseId)).toEqual(['curated-reviewed', 'learned-draft']);
-    expect(withDrafts[1].learnedProvenance).toMatchObject({ candidateId: 'cand-supported', supported: true });
+    expect(withDrafts.map(hit => hit.caseId)).toEqual(['curated-reviewed', 'imported-draft']);
+    // Learned cases are retired: no hit carries learned provenance.
+    expect(withDrafts.some(hit => 'learnedProvenance' in hit)).toBe(false);
   });
 
-  // MAJOR-3 regression: at EQUAL matchStrength AND EQUAL status, a curated
-  // case must outrank a supported learned case. The original comparator ran
-  // learnedSupported before quality, letting a supported learned published
-  // case outrank a curated published case — contrary to §4.2 Stage C.
-  it('ranks a curated published case above a supported learned published case at equal strength', () => {
+  it('ranks a curated published case above an imported published case at equal strength', () => {
+    addCase({ caseId: 'imported-pub', status: 'published', quality: 'imported' });
     addCase({ caseId: 'curated-pub', status: 'published', quality: 'curated' });
-    addCase({ caseId: 'learned-pub', status: 'published', quality: 'imported', supported: true });
 
     const hits = createCaseRetriever({ library, ragStore }).retrieve({
       scene: 'scrolling',
@@ -169,6 +163,6 @@ describe('caseRecommendationRetriever', () => {
       includeStatuses: ['published'],
     });
 
-    expect(hits.map(hit => hit.caseId)).toEqual(['curated-pub', 'learned-pub']);
+    expect(hits.map(hit => hit.caseId)).toEqual(['curated-pub', 'imported-pub']);
   });
 });

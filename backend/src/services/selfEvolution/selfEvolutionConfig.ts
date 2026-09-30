@@ -16,20 +16,15 @@ import type {
   SelfEvolutionConfigValidation,
   SelfEvolutionPersistenceCapability,
 } from '../../types/selfEvolution';
-
-const TRUE_VALUES = new Set(['1', 'true', 'yes']);
-
-function readBoolean(env: NodeJS.ProcessEnv, key: string): boolean {
-  const value = env[key];
-  return typeof value === 'string' && TRUE_VALUES.has(value.trim().toLowerCase());
-}
+import {LifecycleConfigReader} from '../evolutionLifecycle/lifecycleConfig';
 
 export function loadSelfEvolutionConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): SelfEvolutionConfig {
+  const reader = new LifecycleConfigReader(env);
   return {
-    enabled: readBoolean(env, 'SELF_EVOLUTION_ENABLED'),
-    applyEnabled: readBoolean(env, 'SELF_EVOLUTION_APPLY'),
+    enabled: reader.boolean('SELF_EVOLUTION_ENABLED'),
+    applyEnabled: reader.boolean('SELF_EVOLUTION_APPLY'),
   };
 }
 

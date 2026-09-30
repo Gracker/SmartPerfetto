@@ -447,7 +447,6 @@ describe('agent route private projections', () => {
       durableFeedbackStored: true,
       storageDisposition: 'stored_private_local',
       patternStatus: null,
-      caseCandidateFeedbackAdded: null,
     });
   });
 

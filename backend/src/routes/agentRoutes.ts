@@ -66,7 +66,6 @@ import {
   type ResourceOwnerFields,
 } from '../services/resourceOwnership';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
-import { AiDisabledError, assertAiFeatureEnabled } from '../services/aiCapabilityPolicy';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import { sessionContextManager, EnhancedSessionContext } from '../agent/context/enhancedSessionContext';
 import { registerCoreTools, StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
@@ -182,19 +181,10 @@ import {
   sanitizeConversationText,
 } from '../services/timeline/conversationTimeline';
 import {patternExistsForFeedback} from '../agentv3/analysisPatternMemory';
-import { backendLogPath } from '../runtimePaths';
-import { CaseLibrary } from '../services/caseLibrary';
-import { saveCaseCandidates } from '../services/caseEvolution/saveCaseCandidates';
-import { openCaseCandidateOutbox } from '../services/caseEvolution/caseCandidateOutbox';
-import {caseCandidateKnowledgeScope} from '../services/caseEvolution/caseCandidateBuilder';
 import {
   attachCaseHitsToContractSync,
 } from '../services/caseEvolution/attachCaseHitsToContract';
-import {
-  isCaseEvolutionCaptureEnabled,
-  isCaseEvolutionRetrieveEnabled,
-  loadCaseEvolutionConfig,
-} from '../services/caseEvolution/caseEvolutionConfig';
+import { loadCaseEvolutionConfig } from '../services/caseEvolution/caseEvolutionConfig';
 import {
   knowledgeScopeFromRequestContext,
   resolveKnowledgeScope,
@@ -236,8 +226,6 @@ import {
   cleanupIdleAgentConversationSessions,
   registerAgentConversationRoutes,
 } from './agentConversationRoutes';
-import type { CaseCandidateCaptureInput, CaseEvolutionConfig } from '../types/caseEvolution';
-import type { CaseEvolutionEngine } from '../types/caseEvolution';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
 import {createAnswerDraftRelay} from '../services/answerDraftRelay';
 import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
@@ -1472,7 +1460,7 @@ function sealHttpRunManifest(
         session.query,
         session.dataEnvelopes,
       ),
-      architecture: resolveCaseEvolutionArchitectureType(
+      architecture: resolveSessionArchitectureType(
         session,
         session.traceId,
       ),
@@ -3155,7 +3143,6 @@ function privateFeedbackResponse(input: {
     ...(input.eventId ? {eventId: input.eventId} : {}),
     ...(input.feedbackId ? {feedbackId: input.feedbackId} : {}),
     patternStatus: null,
-    caseCandidateFeedbackAdded: null,
   };
 }
 
@@ -3237,14 +3224,9 @@ router.post('/:sessionId/feedback', async (req, res) => {
     targetRun.runId,
   );
   const targetKind = validated.value.targetKind ??
-    (validated.value.patternId
-      ? 'pattern'
-      : validated.value.caseCandidateId
-        ? 'case_candidate'
-        : 'session');
+    (validated.value.patternId ? 'pattern' : 'session');
   const targetId = validated.value.targetId ??
     validated.value.patternId ??
-    validated.value.caseCandidateId ??
     sessionId;
   if (
     validated.value.patternId &&
@@ -3255,42 +3237,9 @@ router.post('/:sessionId/feedback', async (req, res) => {
       error: 'patternId must identify a pattern target',
     });
   }
-  if (
-    validated.value.caseCandidateId &&
-    (
-      targetKind !== 'case_candidate' ||
-      targetId !== validated.value.caseCandidateId
-    )
-  ) {
-    return res.status(400).json({
-      success: false,
-      error: 'caseCandidateId must identify a case_candidate target',
-    });
-  }
   if (targetKind === 'pattern') {
     if (!patternExistsForFeedback(targetId, feedbackKnowledgeScope)) {
       return res.status(404).json({success: false, error: 'Pattern not found'});
-    }
-  } else if (targetKind === 'case_candidate') {
-    const outbox = openCaseCandidateOutbox();
-    try {
-      const candidate = outbox.getCandidate(targetId);
-      const candidateScope = candidate
-        ? caseCandidateKnowledgeScope(candidate.candidate)
-        : null;
-      if (
-        !candidate ||
-        !candidateScope ||
-        candidateScope.tenantId !== resolvedFeedbackScope.tenantId ||
-        candidateScope.workspaceId !== resolvedFeedbackScope.workspaceId
-      ) {
-        return res.status(404).json({
-          success: false,
-          error: 'Case candidate not found',
-        });
-      }
-    } finally {
-      outbox.close();
     }
   } else if (!feedbackTargetBelongsToSession(
     session,
@@ -3323,7 +3272,6 @@ router.post('/:sessionId/feedback', async (req, res) => {
     targetKind,
     targetId,
     patternId: validated.value.patternId,
-    caseCandidateId: validated.value.caseCandidateId,
     source: validated.value.source ?? 'ui',
     actor: {
       userId: requestContext.userId,
@@ -3377,8 +3325,6 @@ router.post('/:sessionId/feedback', async (req, res) => {
       durableFeedbackStored: true,
       storageDisposition: 'stored_scoped',
       patternStatus: projected.patternStatus,
-      caseCandidateFeedbackAdded:
-        projected.caseCandidateProjection?.found ?? null,
     });
   } catch (err) {
     console.error('[Feedback] Failed to save feedback:', (err as Error).message);
@@ -4776,76 +4722,11 @@ registerAgentExternalIssueRoutes(router, {
 // Agent-Driven Analysis Helper Functions (Phase 2-4)
 // ============================================================================
 
-type CaseCandidateSaveFn = (input: CaseCandidateCaptureInput) => Promise<unknown>;
-
-export interface CaptureCaseCandidatesAfterQualityArtifactsInput {
-  sessionId: string;
-  traceId: string;
-  session: AnalysisSession;
-  result: AgentRuntimeAnalysisResult;
-  normalizedConclusionContract?: ConclusionContract;
-  sceneIdHint?: string;
-  runIdForAnalysis: string;
-  knowledgeScope?: KnowledgeScope;
-  caseEvolutionConfig?: CaseEvolutionConfig;
-  computeTraceHash?: (traceId: string) => Promise<string | null>;
-  saveCandidates?: CaseCandidateSaveFn;
-  /**
-   * Returns the set of `${scene}::${rootCause}` keys already covered by
-   * published cases, used to dedupe capture against the live library
-   * (§1.2 flooding guard). Defaults to scanning the real CaseLibrary.
-   */
-  listPublishedSceneRootCauses?: (scope?: KnowledgeScope) => Set<string>;
-  logger: Pick<SessionLogger, 'info' | 'warn'>;
-}
-
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function resolveCaseEvolutionTurnIndex(session: AnalysisSession): number {
-  const activeSequence = session.activeRun?.sequence;
-  if (typeof activeSequence === 'number' && Number.isFinite(activeSequence)) {
-    return activeSequence;
-  }
-  if (typeof session.runSequence === 'number' && Number.isFinite(session.runSequence)) {
-    return session.runSequence;
-  }
-  if (typeof session.conversationOrdinal === 'number' && Number.isFinite(session.conversationOrdinal)) {
-    return session.conversationOrdinal;
-  }
-  return 0;
-}
-
-function resolveCaseEvolutionEngine(runtimeKind: AgentRuntimeKind | undefined): CaseEvolutionEngine {
-  switch (runtimeKind) {
-    case 'openai-agents-sdk':
-      return 'openai';
-    case 'opencode':
-      return 'opencode';
-    case 'pi-agent-core':
-      return 'pi';
-    case 'claude-agent-sdk':
-    default:
-      return 'claude';
-  }
-}
-
-function cloneCaseEvolutionEnvelopes(envelopes: readonly DataEnvelope[]): DataEnvelope[] {
-  try {
-    return structuredClone(envelopes) as DataEnvelope[];
-  } catch {
-    // DataEnvelope payloads are expected to be structured-cloneable. Keep a
-    // detached top-level snapshot for legacy/custom envelopes that are not.
-    return envelopes.map(envelope => ({...envelope}));
-  }
-}
-
-export function buildCaseEvolutionSnapshotPath(sessionId: string): string {
-  return `session-persistence://sessions/${sessionId}/metadata/sessionStateSnapshot`;
-}
-
-export function resolveCaseEvolutionArchitectureType(
+export function resolveSessionArchitectureType(
   session: Pick<AnalysisSession, 'orchestrator'>,
   traceId: string,
 ): string {
@@ -4855,119 +4736,6 @@ export function resolveCaseEvolutionArchitectureType(
     return typeof type === 'string' && type.trim() ? type.trim() : 'unknown';
   } catch {
     return 'unknown';
-  }
-}
-
-/**
- * Build the dedupe set of `${scene}::${rootCause}` keys covered by published
- * cases in the live CaseLibrary (curated + learned). Used by the §1.2 capture
- * flooding guard so a recurring trace whose root cause already has published
- * guidance does not re-enqueue candidates. Failures are non-fatal: an empty
- * set means "no dedupe" (the candidate still goes through the qualification
- * gate), never a blocked capture.
- */
-export function collectPublishedSceneRootCauses(scope: KnowledgeScope | undefined): Set<string> {
-  const keys = new Set<string>();
-  try {
-    const library = new CaseLibrary(backendLogPath('case_library.json'));
-    const published = library.listCases({ status: 'published' }, scope);
-    for (const node of published) {
-      const knowledge = node.knowledge;
-      if (!knowledge) continue;
-      const scene = knowledge.scene;
-      const rootCause = knowledge.taxonomy?.primary_root_cause;
-      if (scene && rootCause) keys.add(`${scene}::${rootCause}`);
-    }
-  } catch {
-    // Library read is best-effort for dedupe; never block capture on it.
-  }
-  return keys;
-}
-
-export async function captureCaseCandidatesAfterQualityArtifacts(
-  input: CaptureCaseCandidatesAfterQualityArtifactsInput & {assertCurrent?: () => void},
-): Promise<void> {
-  try {
-    if (sessionRunHasPrivateContext(input.session, input.runIdForAnalysis)) {
-      input.logger.info('CaseEvolution', 'Skipping candidate capture for private source or knowledge analysis', {
-        sessionId: input.sessionId,
-        runId: input.runIdForAnalysis,
-      });
-      return;
-    }
-    try {
-      assertAiFeatureEnabled('background_review_agent');
-    } catch (error) {
-      if (error instanceof AiDisabledError) {
-        input.logger.info('CaseEvolution', 'Skipping background candidate capture because AI is disabled', {
-          sessionId: input.sessionId,
-          runId: input.runIdForAnalysis,
-          feature: error.feature,
-        });
-        return;
-      }
-      throw error;
-    }
-    const config = input.caseEvolutionConfig || loadCaseEvolutionConfig();
-    if (!isCaseEvolutionCaptureEnabled(config)) return;
-
-    // Capture every mutable session-derived field before the first await. A
-    // follow-up turn may reuse and mutate the live session while trace hashing
-    // is still in flight; candidates must describe the turn that triggered
-    // this call, not whichever turn happens to be current later.
-    const capturedDataEnvelopes = cloneCaseEvolutionEnvelopes(input.session.dataEnvelopes || []);
-    const capturedArchitectureType = resolveCaseEvolutionArchitectureType(
-      input.session,
-      input.traceId,
-    );
-    const capturedTurnIndex = resolveCaseEvolutionTurnIndex(input.session);
-    const capturedEngine = resolveCaseEvolutionEngine(input.session.runtimeKind);
-
-    const computeTraceHash =
-      input.computeTraceHash || ((traceId) => computeTraceContentHash(getTraceProcessorService(), traceId));
-    input.assertCurrent?.();
-    const traceContentHash = await computeTraceHash(input.traceId);
-    input.assertCurrent?.();
-    // §1.2 flooding guard: build the set of (scene::rootCause) keys the
-    // published library already covers, so capture skips clusters that
-    // already have published guidance. Defaults to scanning the live library.
-    const listPublishedSceneRootCauses =
-      input.listPublishedSceneRootCauses ??
-      ((scope?: KnowledgeScope) => collectPublishedSceneRootCauses(scope ?? input.knowledgeScope));
-    const existingPublishedSceneRootCauses = listPublishedSceneRootCauses(input.knowledgeScope);
-    const saveCandidates =
-      input.saveCandidates ||
-      ((captureInput: CaseCandidateCaptureInput) =>
-        saveCaseCandidates(captureInput, {
-          logger: input.logger,
-          config,
-          existingPublishedSceneRootCauses,
-        }));
-
-    input.assertCurrent?.();
-    await saveCandidates({
-      result: input.result,
-      conclusionContract: input.normalizedConclusionContract,
-      claimVerificationResult: input.result.claimVerificationResult,
-      dataEnvelopes: capturedDataEnvelopes,
-      sceneType: input.sceneIdHint || 'general',
-      architectureType: capturedArchitectureType,
-      knowledgeScope: input.knowledgeScope,
-      snapshotPath: buildCaseEvolutionSnapshotPath(input.sessionId),
-      provenance: {
-        sessionId: input.sessionId,
-        runId: input.runIdForAnalysis,
-        turnIndex: capturedTurnIndex,
-        engine: capturedEngine,
-        traceContentHash,
-      },
-    });
-  } catch (error) {
-    input.logger.warn('CaseEvolution', 'Candidate capture failed (non-fatal)', {
-      sessionId: input.sessionId,
-      runId: input.runIdForAnalysis,
-      error: errorMessage(error),
-    });
   }
 }
 
@@ -5388,13 +5156,12 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     finalizationRun.assertCurrent();
     const sceneIdHint = finalizationContext?.turnIntent.status === 'resolved'
       ? finalizationContext.turnIntent.sceneId : result.conclusionContract?.metadata?.sceneId;
-    const caseEvolutionConfig = loadCaseEvolutionConfig();
     let caseRetrieval: AnalysisCaseRetrievalState = {status: 'not_checked', recommendations: []};
-    if (canPrefetch() && result.conclusionContract && isCaseEvolutionRetrieveEnabled(caseEvolutionConfig)) {
+    if (canPrefetch() && result.conclusionContract && loadCaseEvolutionConfig().retrieveEnabled) {
       try {
         const attached = attachCaseHitsToContractSync({
           conclusionContract: result.conclusionContract, dataEnvelopes: rawDataEnvelopes,
-          sceneType: sceneIdHint, architectureType: resolveCaseEvolutionArchitectureType(session, traceId), knowledgeScope,
+          sceneType: sceneIdHint, architectureType: resolveSessionArchitectureType(session, traceId), knowledgeScope,
         });
         finalizationRun.assertCurrent();
         caseRetrieval = {status: 'checked', recommendations: attached.hits};
@@ -5489,16 +5256,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
           {code: 'scene_archive_unavailable'}]};
         logger.warn('SceneReconstruction', 'Timeline archive unavailable', {diagnostic: diagnosticLogIdentity(errorMessage(error))});
       }
-    }
-    if (canPrefetch() && (result.success || result.partial === true)) {
-      void captureCaseCandidatesAfterQualityArtifacts({
-        sessionId, traceId, session, result, normalizedConclusionContract: result.conclusionContract,
-        sceneIdHint, runIdForAnalysis, knowledgeScope, caseEvolutionConfig, logger,
-        assertCurrent: () => {
-          finalizationRun.assertCurrent();
-          if (Date.now() >= runtimeDeadlineMs) throw new DOMException('Run deadline exceeded', 'TimeoutError');
-        },
-      });
     }
 
     // Claim the terminal write, then generate report and snapshot and publish

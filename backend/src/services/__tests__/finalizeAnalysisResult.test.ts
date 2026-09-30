@@ -56,6 +56,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   investigationRequirement?: AnalysisInvestigationRequirement;
   /** Deliver the body as an evidence-rendered acknowledgement with its proof. */
   evidenceRenderedAcknowledgement?: boolean;
+  /** The runtime hands over its own contract, with these recommendations and no sidecar in the body. */
+  runtimeCaseRecommendations?: ConclusionContract['caseRecommendations'];
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>} = {}) {
   const runId = options.runId ?? 'run';
   const body = options.body ?? (options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
@@ -98,6 +100,11 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
       ? '<!-- smartperfetto:conclusion-contract@1\n```json\n' + JSON.stringify({...declared, verified: true}) + '\n```\n-->'
       : renderConclusionContractSidecar(declared)}`;
     delete result.conclusionContract;
+  }
+  if (options.runtimeCaseRecommendations) {
+    result.conclusion = body;
+    result.conclusionContract = {...parseConclusionContractDeclaration(declared).contract!,
+      caseRecommendations: options.runtimeCaseRecommendations};
   }
   if (options.invalidDeclaration && !options.source) {
     result.conclusion = `${body}\n` + '<!-- smartperfetto:conclusion-contract@1\n```json\n' +
@@ -1238,5 +1245,22 @@ describe('semantic finalization capacity', () => {
     const final = await target.run();
     expect(final.semanticAssessment).toMatchObject({status: 'coverage_incomplete', reason: 'input_projection_limit'});
     expect(target.dispatch).not.toHaveBeenCalled();
+  });
+});
+
+describe('retired learned cases', () => {
+  it('leave no learned data in a result finalized through a native declaration', async () => {
+    const curated = {caseId: 'curated-case', title: 'A curated case', matchStrength: 'partial' as const,
+      recommendations: {app: [], oem: []}};
+    const run = fixture({currentRead: true, source: {marker: 'native-case-marker'}, runtimeCaseRecommendations: [
+      {caseId: 'learned:0123456789abcdef', title: 'A learned case', matchStrength: 'strong', recommendations: {app: [], oem: []}},
+      {...curated, learnedProvenance: {candidateId: 'casecand-run-1', supportingEvidence: 3, contradictingEvidence: 0, supported: true}},
+    ]});
+    // The native declaration is the runtime's own contract, learned data included.
+    expect(run.context.getNativeDeclaration(run.result, run.owner.signal)?.contract?.caseRecommendations).toHaveLength(2);
+
+    const final = await run.run();
+
+    expect(final.result.conclusionContract?.caseRecommendations).toEqual([curated]);
   });
 });

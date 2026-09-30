@@ -57,6 +57,40 @@ describe('RunManifestLifecycle', () => {
     }));
   });
 
+  it('records the flags the run was gated by, not the raw settings', () => {
+    // The gates do not accept `on`, so neither does the record.
+    expect(buildRunManifestFeatureFlagSnapshot({
+      SELF_EVOLUTION_ENABLED: 'on',
+      SELF_EVOLUTION_APPLY: 'on',
+    })).toEqual(expect.objectContaining({
+      selfEvolutionEnabled: false,
+      selfEvolutionApplyEnabled: false,
+    }));
+
+    const flags = (env: NodeJS.ProcessEnv) => {
+      const snapshot = buildRunManifestFeatureFlagSnapshot(env);
+      return {
+        retrieval: snapshot.caseRetrievalEnabled,
+        background: snapshot.caseBackgroundInjectionEnabled,
+        retired: 'caseEvolutionEnabled' in snapshot,
+      };
+    };
+
+    expect(flags({
+      CASE_EVOLUTION_RETRIEVE_ENABLED: 'true',
+      CASE_EVOLUTION_PROMPT_INJECT_ENABLED: 'true',
+    })).toEqual({retrieval: true, background: true, retired: false});
+    // Injection without retrieval never reaches a prompt.
+    expect(flags({CASE_EVOLUTION_PROMPT_INJECT_ENABLED: 'true'}))
+      .toEqual({retrieval: false, background: false, retired: false});
+    // The retired master switch changes nothing.
+    expect(flags({
+      CASE_EVOLUTION_ENABLED: 'true',
+      CASE_EVOLUTION_RETRIEVE_ENABLED: 'on',
+      CASE_EVOLUTION_PROMPT_INJECT_ENABLED: 'on',
+    })).toEqual({retrieval: false, background: false, retired: false});
+  });
+
   it('retries persistence with the exact sealed DTO without resealing', () => {
     const append = jest.fn()
       .mockImplementationOnce(() => {

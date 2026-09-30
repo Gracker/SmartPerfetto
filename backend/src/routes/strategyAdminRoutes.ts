@@ -17,7 +17,6 @@
 import express from 'express';
 import { invalidateStrategyCache } from '../agentv3/strategyLoader';
 import { collectSelfImproveMetrics } from '../agentv3/selfImprove/metricsAggregator';
-import { collectCaseEvolutionMetrics } from '../services/caseEvolution/caseEvolutionMetricsAggregator';
 import {authenticate, requireRequestContext} from '../middleware/auth';
 import {hasRbacPermission, sendForbidden} from '../services/rbac';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
@@ -67,28 +66,6 @@ router.get('/self-improve/metrics', (req, res) => {
   } catch (err) {
     console.error('[SelfImproveMetrics] Aggregation failed:', (err as Error).message);
     res.status(500).json({ success: false, error: 'Failed to aggregate metrics' });
-  }
-});
-
-/**
- * GET /api/admin/case-evolution/metrics
- *
- * Read-only snapshot of the Case Knowledge Self-Evolution shadow pipeline.
- * Aggregation is best-effort: corrupt DB/log artifacts are surfaced in
- * `warnings` instead of failing the whole dashboard request.
- */
-router.get('/case-evolution/metrics', (req, res) => {
-  try {
-    const context = requireRequestContext(req);
-    if (!hasRbacPermission(context, 'audit:read')) {
-      return sendForbidden(res, 'Case evolution metrics require audit:read');
-    }
-    res.json(collectCaseEvolutionMetrics({
-      knowledgeScope: knowledgeScopeFromRequestContext(context),
-    }));
-  } catch (err) {
-    console.error('[CaseEvolutionMetrics] Aggregation failed:', (err as Error).message);
-    res.status(500).json({success: false, error: 'Failed to aggregate case evolution metrics'});
   }
 });
 

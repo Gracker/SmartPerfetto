@@ -29,6 +29,7 @@ import * as path from 'path';
 import {backendLogPath} from '../runtimePaths';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {tokenizeRagText} from './rag/searchTokens';
+import {assertNotRetiredCaseWrite, isRetiredRagChunk} from './retiredCaseData';
 
 import {
   type RagChunk,
@@ -153,6 +154,11 @@ export function isPrivateKnowledgeChunk(chunk: {kind?: unknown; registryOrigin?:
 
 function isExternalPrivateKnowledgeChunk(chunk: RagChunk): boolean {
   return chunk.kind === 'android_internals_wiki';
+}
+
+/** Visible to this scope and not retired case data. */
+function readableChunk(chunk: RagChunk, scope?: KnowledgeScope): boolean {
+  return privateKnowledgeVisibleInScope(chunk, scope) && !isRetiredRagChunk(chunk);
 }
 
 export function privateKnowledgeScopeFingerprint(scope?: KnowledgeScope): string | undefined {
@@ -480,6 +486,7 @@ export class RagStore {
     const filesystemWritesEnabled = legacyKnowledgeFilesystemWritesEnabled();
     if (filesystemWritesEnabled) this.load();
     const normalizedChunks = chunks.map(chunk => {
+      assertNotRetiredCaseWrite('chunk', isRetiredRagChunk(chunk), chunk.chunkId);
       let normalized = normalizeChunkForStorage(chunk);
       if (LICENSE_REQUIRED_KINDS.has(chunk.kind) && !chunk.license) {
         throw new Error(
@@ -801,11 +808,11 @@ export class RagStore {
         chunkId,
         scope,
       )?.record;
-      return chunk && privateKnowledgeVisibleInScope(chunk, scope) ? chunk : undefined;
+      return chunk && readableChunk(chunk, scope) ? chunk : undefined;
     }
     this.load();
     const chunk = this.chunks.get(chunkId);
-    return chunk && privateKnowledgeVisibleInScope(chunk, scope) ? chunk : undefined;
+    return chunk && readableChunk(chunk, scope) ? chunk : undefined;
   }
 
   /** List chunks for rebuild/maintenance callers without changing search semantics. */
@@ -819,7 +826,7 @@ export class RagStore {
           {rowScopePrefix: RAG_ROW_SCOPE_PREFIX, includeSystem: true},
         ).map(row => row.record)
       : Array.from(this.chunks.values());
-    chunks = chunks.filter(chunk => privateKnowledgeVisibleInScope(chunk, opts.scope));
+    chunks = chunks.filter(chunk => readableChunk(chunk, opts.scope));
     if (opts.kind) chunks = chunks.filter(chunk => chunk.kind === opts.kind);
     if (opts.registryOrigin) {
       chunks = chunks.filter(chunk => chunk.registryOrigin === opts.registryOrigin);
@@ -854,7 +861,7 @@ export class RagStore {
           {rowScopePrefix: RAG_ROW_SCOPE_PREFIX, includeSystem: true},
         ).map(row => row.record)
       : Array.from(this.chunks.values());
-    for (const c of chunks.filter(chunk => privateKnowledgeVisibleInScope(chunk, scope))) {
+    for (const c of chunks.filter(chunk => readableChunk(chunk, scope))) {
       const s = stats[c.kind];
       s.chunkCount++;
       if (s.lastIndexedAt === undefined || c.indexedAt > s.lastIndexedAt) {
@@ -930,9 +937,11 @@ export class RagStore {
           includeSystem: true,
         })
       : undefined;
+    // Retired chunks are not in the index at all, so a store holding only
+    // them reads as an empty index, as the SQL search does.
     const chunks = enterpriseSearch
       ? enterpriseSearch.records.map(row => row.record)
-      : Array.from(this.chunks.values());
+      : Array.from(this.chunks.values()).filter(chunk => !isRetiredRagChunk(chunk));
     const codebaseFilter = opts.codebaseIds ? new Set(opts.codebaseIds) : null;
     const knowledgeSourceFilter = opts.knowledgeSourceIds
       ? new Set(opts.knowledgeSourceIds)

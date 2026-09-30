@@ -145,7 +145,7 @@ export function estimateAnalysisConfidence(input: {
  * protocol prose findings are almost always empty — Round 60 printed
  * "confidence 35%" for all seven conclusions. User-facing surfaces omit such a
  * number instead of presenting it as a measurement; the field itself is kept
- * for its existing consumers (pattern memory, case evolution thresholds).
+ * for its existing consumer (pattern memory).
  */
 export function analysisConfidenceIsGrounded(result: {findings?: readonly unknown[]}): boolean {
   return (result.findings?.length ?? 0) > 0;
