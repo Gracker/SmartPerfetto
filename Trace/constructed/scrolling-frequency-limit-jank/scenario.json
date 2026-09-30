@@ -1,0 +1,586 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-middle",
+    "duration_ns": "2400000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      },
+      {
+        "id": "render",
+        "process": "app",
+        "name": "RenderThread"
+      },
+      {
+        "id": "burner",
+        "process": "app",
+        "name": "Burner-0"
+      },
+      {
+        "id": "ui",
+        "process": "app",
+        "name": "1.ui"
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "0",
+      "cpu_id": 0,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "0",
+      "cpu_id": 1,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 1
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "0",
+      "cpu_id": 2,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 2
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "0",
+      "cpu_id": 4,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 4
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "0",
+      "cpu_id": 5,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 5
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "0",
+      "cpu_id": 0,
+      "value": 2400000,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "0",
+      "cpu_id": 1,
+      "value": 2400000,
+      "cpu": 1
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "0",
+      "cpu_id": 2,
+      "value": 2400000,
+      "cpu": 2
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "0",
+      "cpu_id": 3,
+      "value": 2400000,
+      "cpu": 3
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "0",
+      "cpu_id": 4,
+      "value": 2400000,
+      "cpu": 4
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "0",
+      "cpu_id": 5,
+      "value": 2400000,
+      "cpu": 5
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "10000000",
+      "duration_ns": "20000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
+      "cpu": 0
+    },
+    {
+      "type": "cdev-update",
+      "at_ns": "50000000",
+      "cdev_type": "thermal-cpufreq-0",
+      "target": 0,
+      "cpu": 0
+    },
+    {
+      "type": "cdev-update",
+      "at_ns": "100000000",
+      "cdev_type": "thermal-cpufreq-0",
+      "target": 1,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "100000000",
+      "cpu_id": 0,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2300000,
+      "cpu": 0
+    },
+    {
+      "type": "cdev-update",
+      "at_ns": "150000000",
+      "cdev_type": "thermal-cpufreq-0",
+      "target": 0,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "150000000",
+      "cpu_id": 0,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 0
+    },
+    {
+      "type": "cdev-update",
+      "at_ns": "200000000",
+      "cdev_type": "thermal-cpufreq-0",
+      "target": 1,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "200000000",
+      "cpu_id": 0,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2300000,
+      "cpu": 0
+    },
+    {
+      "type": "cdev-update",
+      "at_ns": "250000000",
+      "cdev_type": "thermal-cpufreq-0",
+      "target": 0,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "250000000",
+      "cpu_id": 0,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "400000000",
+      "cpu_id": 1,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 1800000,
+      "cpu": 1
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "400000000",
+      "cpu_id": 1,
+      "value": 1800000,
+      "cpu": 1
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "500000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 901,
+      "token": 1101,
+      "display_frame_token": 1301,
+      "layer_name": "SyntheticFreqLimitL",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "502000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitL",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "502000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 1,
+      "end_state": "S"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "600000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 902,
+      "token": 1102,
+      "display_frame_token": 1302,
+      "layer_name": "SyntheticFreqLimitU",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "602000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitU",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "602000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 3,
+      "end_state": "S"
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "700000000",
+      "cpu_id": 1,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 1
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "700000000",
+      "cpu_id": 1,
+      "value": 2400000,
+      "cpu": 1
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "900000000",
+      "cpu_id": 3,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 2400000,
+      "cpu": 3
+    },
+    {
+      "type": "cdev-update",
+      "at_ns": "1000000000",
+      "cdev_type": "thermal-cpufreq-0",
+      "target": 2,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "1000000000",
+      "cpu_id": 0,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 1800000,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "1000000000",
+      "cpu_id": 0,
+      "value": 1800000,
+      "cpu": 0
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "1020000000",
+      "cpu_id": 2,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 1800000,
+      "cpu": 2
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "1020000000",
+      "cpu_id": 2,
+      "value": 1800000,
+      "cpu": 2
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "1300000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 903,
+      "token": 1103,
+      "display_frame_token": 1303,
+      "layer_name": "SyntheticFreqLimitT",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1302000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitT",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1302000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "1400000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 904,
+      "token": 1104,
+      "display_frame_token": 1304,
+      "layer_name": "SyntheticFreqLimitN1",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1402000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitN1",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1402000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 2,
+      "end_state": "S"
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "1495000000",
+      "cpu_id": 0,
+      "value": 1200000,
+      "cpu": 0
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "1500000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 905,
+      "token": 1105,
+      "display_frame_token": 1305,
+      "layer_name": "SyntheticFreqLimitN",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1502000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitN",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1502000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "1520000000",
+      "cpu_id": 0,
+      "value": 1800000,
+      "cpu": 0
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "1600000000",
+      "duration_ns": "40000000",
+      "process": "app",
+      "cookie": 906,
+      "token": 1106,
+      "display_frame_token": 1306,
+      "layer_name": "SyntheticFreqLimitN3",
+      "jank_type": 64
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1600000000",
+      "duration_ns": "35000000",
+      "thread": "render",
+      "cpu": 0,
+      "end_state": "S"
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1602000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitN3",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1602000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 5,
+      "end_state": "S"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "1800000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 907,
+      "token": 1107,
+      "display_frame_token": 1307,
+      "layer_name": "SyntheticFreqLimitN2b",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "1802000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitN2b",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "1802000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 4,
+      "end_state": "S"
+    },
+    {
+      "type": "cpu-frequency-limits",
+      "at_ns": "1815000000",
+      "cpu_id": 4,
+      "min_freq_khz": 500000,
+      "max_freq_khz": 1800000,
+      "cpu": 4
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "1815000000",
+      "cpu_id": 4,
+      "value": 1800000,
+      "cpu": 4
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "2000000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 908,
+      "token": 1108,
+      "display_frame_token": 1308,
+      "layer_name": "SyntheticFreqLimitN2a",
+      "jank_type": 64
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "2000000000",
+      "duration_ns": "2000000",
+      "thread": "burner",
+      "cpu": 4,
+      "end_state": "S"
+    },
+    {
+      "type": "cpu-frequency",
+      "at_ns": "2002000000",
+      "cpu_id": 4,
+      "value": 1200000,
+      "cpu": 4
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "2002000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitN2a",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "2002000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 4,
+      "end_state": "S"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "2200000000",
+      "duration_ns": "30000000",
+      "process": "app",
+      "cookie": 909,
+      "token": 1109,
+      "display_frame_token": 1309,
+      "layer_name": "SyntheticFreqLimitN4",
+      "jank_type": 64
+    },
+    {
+      "type": "atrace-slice",
+      "at_ns": "2202000000",
+      "duration_ns": "10000000",
+      "process": "app",
+      "thread": "main",
+      "name": "FreqLimitN4",
+      "cpu": 0
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "2202000000",
+      "duration_ns": "10000000",
+      "thread": "main",
+      "cpu": 5,
+      "end_state": "S"
+    },
+    {
+      "type": "sched-running",
+      "at_ns": "2202000000",
+      "duration_ns": "10000000",
+      "thread": "ui",
+      "cpu": 0,
+      "end_state": "S"
+    }
+  ]
+}

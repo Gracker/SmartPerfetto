@@ -80,6 +80,9 @@ sql_fragments:
   backend/skills/fragments/system_cpu_freq_limit_episode_verdicts.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_cpu_freq_limit_episode_verdicts.sql
+  backend/skills/fragments/system_cpu_freq_limit_frame_binding.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/system_cpu_freq_limit_frame_binding.sql
   backend/skills/fragments/effective_target_processes.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/effective_target_processes.sql

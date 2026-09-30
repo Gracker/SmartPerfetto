@@ -391,10 +391,17 @@ describe('cross-scene canonical system consumers', () => {
         CREATE TABLE thread_track(id INTEGER,utid INTEGER);
         CREATE TABLE slice(track_id INTEGER,ts INTEGER,dur INTEGER,name TEXT);
         CREATE TABLE actual_frame_timeline_slice(ts INTEGER,upid INTEGER,display_frame_token INTEGER);
+        CREATE TABLE cpu_counter_track(id INTEGER,cpu INTEGER,type TEXT,name TEXT);
+        CREATE TABLE counter_track(id INTEGER,type TEXT,name TEXT,dimension_arg_set_id INTEGER);
+        CREATE TABLE counter(id INTEGER,track_id INTEGER,ts INTEGER,value REAL);
+        CREATE TABLE args(arg_set_id INTEGER,key TEXT,string_value TEXT);
       `);
+      // The decline stays an observation; with no max-limit track the only
+      // frequency-limit statement is that the evidence is missing.
       expect(query(db, 'scrolling_analysis', 'global_context_flags', {start_ts:'0',end_ts:'10000000000'}))
         .toEqual([expect.objectContaining({frequency_decline_observed:1,thermal_trending:null,
-          thermal_evidence:'temperature_or_throttle_evidence_required'})]);
+          thermal_evidence:'LIMIT_EVIDENCE_MISSING',freq_limit_classification:'LIMIT_EVIDENCE_MISSING',
+          freq_limit_trace_summary:'LIMIT_EVIDENCE_MISSING'})]);
     } finally { db.close(); }
   });
 

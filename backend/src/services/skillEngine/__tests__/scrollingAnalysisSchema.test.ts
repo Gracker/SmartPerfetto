@@ -372,6 +372,134 @@ describe('scrolling_analysis skill schema', () => {
     expect(rtWorkColumn.unit).toBe('ms');
   });
 
+  describe('frequency-limit reason branches', () => {
+    const batchSql = () => String(getStep('batch_frame_root_cause').sql);
+    // The maintained reason CASE of the `classified` CTE, placeholders bound to their defaults.
+    const reasonCase = () => {
+      const sql = batchSql();
+      const start = sql.indexOf('CASE', sql.indexOf('classified AS ('));
+      const end = sql.indexOf('END as reason_code', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      return sql.slice(start, end + 3).replace(/\$\{[^}|]+\|([^}]+)\}/g, '$1');
+    };
+
+    it('keeps P4 workload_heavy < thermal_throttling < cpu_max_limited < big_core_low_freq and the fallback last', () => {
+      const tree = reasonCase();
+      const at = (code: string, from = 0) => tree.indexOf(`THEN '${code}'`, from);
+      const p4 = at('workload_heavy');
+      expect(p4).toBeGreaterThan(0);
+      expect(at('thermal_throttling')).toBeGreaterThan(p4);
+      expect(at('cpu_max_limited')).toBeGreaterThan(at('thermal_throttling'));
+      expect(at('big_core_low_freq')).toBeGreaterThan(at('cpu_max_limited'));
+      const fallback = at('workload_heavy', p4 + 1);
+      expect(fallback).toBeGreaterThan(at('small_core_placement', at('big_core_low_freq')));
+      expect(at('app_jank_unattributed')).toBeGreaterThan(fallback);
+    });
+
+    it('derives no reason from the device-peak frequency ratio', () => {
+      const tree = reasonCase();
+      expect(tree).not.toMatch(/device_peak_freq_mhz/);
+      // The two frequency-limit branches read only the binding state and the onset verdict.
+      const limitBranches = tree.slice(tree.indexOf("THEN 'workload_heavy'"), tree.indexOf("THEN 'cpu_max_limited'"));
+      expect(limitBranches).not.toMatch(/freq_mhz/);
+      expect(limitBranches.match(/freq_limit_state = 'capped_binding'/g)).toHaveLength(2);
+      expect(getColumn(getStep('batch_frame_root_cause'), 'device_peak_freq_mhz').hidden).toBe(true);
+      expect(getColumn(getStep('batch_frame_root_cause'), 'freq_ceiling_ratio_pct').type).toBe('percentage');
+    });
+
+    it('classifies frames from the main thread\'s binding state and its onset verdict only', () => {
+      const tree = reasonCase();
+      const columns = [...new Set(tree.replace(/'[^']*'/g, "''").match(/\b[a-z_][a-z0-9_]*\b/g) ?? [])];
+      const db = new Database(':memory:');
+      try {
+        const evaluate = (overrides: Record<string, unknown>) => {
+          const row: Record<string, unknown> = Object.fromEntries(columns.map(name => [name, 0]));
+          Object.assign(row, {jank_responsibility: 'APP', jank_type: 'App Deadline Missed', input_stage: '',
+            vsync_period_ns: 8_333_333, frame_budget_ms: 8.33, slice_critical_ms: 4.17, freq_ramp_critical_ms: 2.92,
+            binder_overlap_critical_ms: 1.5, dur_ms: 20, top_slice_ms: 6, freq_limit_state: null,
+            freq_limit_basis: null, freq_limit_onset_confirmed: 0, ...overrides});
+          const projection = columns.map(name => `@${name} AS ${name}`).join(', ');
+          return (db.prepare(`SELECT ${tree} AS reason_code FROM (SELECT ${projection})`).get(
+            Object.fromEntries(columns.map(name => [name, row[name] as any]))) as any).reason_code;
+        };
+        const binding = {freq_limit_state: 'capped_binding'};
+        expect(evaluate({})).toBe('workload_heavy');
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, freq_limit_basis: 'THERMAL_LIMIT_CONFIRMED'}))
+          .toBe('thermal_throttling');
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, freq_limit_basis: 'mixed_limit_values_in_frame'}))
+          .toBe('cpu_max_limited');
+        expect(evaluate({...binding, freq_limit_basis: 'LIMIT_RELAXED'})).toBe('cpu_max_limited');
+        expect(evaluate({...binding, freq_limit_basis: 'LIMIT_ONSET_UNKNOWN'})).toBe('cpu_max_limited');
+        // Before P5: a binding cap outranks a low average frequency.
+        expect(evaluate({...binding, big_run_pct: 50, big_avg_freq_mhz: 900, big_max_freq_mhz: 2000}))
+          .toBe('cpu_max_limited');
+        // After P4: a slice over 2x budget stays workload_heavy; under the critical share nothing names a cap.
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, top_slice_ms: 20})).toBe('workload_heavy');
+        expect(evaluate({...binding, freq_limit_onset_confirmed: 1, top_slice_ms: 3})).toBe('app_jank_unattributed');
+        for (const state of ['capped_not_binding', 'limit_state_unknown', 'limit_track_unavailable',
+          'threads_not_on_limited_policy', 'insufficient_running', 'frequency_unavailable', 'at_observed_max_limit']) {
+          expect({state, reason: evaluate({freq_limit_state: state, freq_limit_onset_confirmed: 1})})
+            .toEqual({state, reason: 'workload_heavy'});
+        }
+        // The old heuristic's inputs alone never name a frequency reason.
+        expect(evaluate({big_max_freq_mhz: 500, device_peak_freq_mhz: 3000})).toBe('workload_heavy');
+        // RenderThread binding is diagnostic only.
+        expect(evaluate({freq_limit_state: 'threads_not_on_limited_policy', rt_freq_limit_state: 'capped_binding'}))
+          .toBe('workload_heavy');
+      } finally { db.close(); }
+    });
+
+    it('cites the selected limit value with its own binding time, the cumulative time only as across values', () => {
+      const sql = batchSql();
+      expect(sql).toContain('flm.onset_binding_ns AS freq_limit_onset_binding_ns');
+      const start = sql.search(/CASE\s+WHEN reason_code = 'buffer_stuffing' THEN '原始/);
+      const end = sql.indexOf('END as primary_cause', start);
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      const text = sql.slice(start, end + 3);
+      const columns = [...new Set(text.replace(/'[^']*'/g, "''").match(/\b[a-z_][a-z0-9_]*\b/g) ?? [])];
+      const db = new Database(':memory:');
+      try {
+        const cause = (overrides: Record<string, unknown>) => {
+          const row: Record<string, unknown> = Object.fromEntries(columns.map(name => [name, 0]));
+          Object.assign(row, {top_slice_name: 'Work', freq_limit_run_ns: 10_000_000, freq_limit_policy_cpu: 6n,
+            freq_limit_mhz: 1800.0, freq_limit_depth_pct: 25.0, freq_limit_binding_ratio: 1.0, ...overrides});
+          return (db.prepare(`SELECT ${text} AS cause FROM (SELECT ${columns.map(n => `@${n} AS ${n}`).join(', ')})`)
+            .get(Object.fromEntries(columns.map(n => [n, row[n] as any]))) as any).cause as string;
+        };
+        // Confirmed 1800 MHz binds 3 ms, an unconfirmed 1500 MHz value 2 ms: never "5 ms under 1800 MHz".
+        const mixed = cause({reason_code: 'cpu_max_limited', freq_limit_basis: 'mixed_limit_values_in_frame',
+          freq_limit_onset_binding_ns: 3_000_000, freq_limit_binding_ns: 5_000_000});
+        expect(mixed).toContain('运行 10.0ms 中有 3.0ms 受 policy6 上限 1800.0MHz 约束');
+        expect(mixed).toContain('跨全部上限值共受约束 5.0ms');
+        expect(mixed).not.toMatch(/5\.0ms 受 policy/);
+        expect(mixed).toContain('mixed_limit_values_in_frame');
+        // Confirmed 1800 MHz binds 6 ms, a later value 2 ms.
+        const thermal = cause({reason_code: 'thermal_throttling', freq_limit_basis: 'THERMAL_LIMIT_CONFIRMED',
+          freq_limit_onset_binding_ns: 6_000_000, freq_limit_binding_ns: 8_000_000});
+        expect(thermal).toContain('运行 10.0ms 中有 6.0ms 受 policy6 上限 1800.0MHz 约束');
+        expect(thermal).toContain('跨全部上限值共受约束 8.0ms');
+        expect(thermal).not.toMatch(/8\.0ms 受 policy/);
+        // One value only: no cross-value clause.
+        const single = cause({reason_code: 'thermal_throttling', freq_limit_onset_binding_ns: 10_000_000,
+          freq_limit_binding_ns: 10_000_000});
+        expect(single).toContain('中有 10.0ms 受 policy6');
+        expect(single).not.toContain('跨全部上限值');
+      } finally { db.close(); }
+    });
+
+    it('attributes main-thread state to the clipped top slice and RenderThread state to the frame', () => {
+      const sql = batchSql();
+      // The main interval belongs to the thread that ran the top slice, not to every main-role thread.
+      expect(sql).toMatch(/system_work_intervals AS \(\s*SELECT ts_top\.frame_key AS window_id,'main' AS role,ts_top\.slice_utid AS utid,\s*MAX\(ts_top\.slice_ts,fl\.frame_start\) AS work_start_ts,\s*MIN\(ts_top\.slice_ts\+ts_top\.slice_dur_ns,fl\.frame_end\) AS work_end_ts/);
+      expect(sql).toMatch(/ptr\.utid as slice_utid,\s*ROW_NUMBER\(\) OVER \(PARTITION BY fl\.frame_key ORDER BY s\.dur DESC\) as rn\s*FROM jank_frame_list fl\s*JOIN per_frame_thread_roles ptr ON ptr\.frame_key = fl\.frame_key AND ptr\.role = 'main'/);
+      expect(sql).toContain("SELECT frame_key,'render',NULL,frame_start,frame_end FROM jank_frame_list");
+      expect(sql).toContain("flm.window_id=fl.frame_key AND flm.role='main'");
+      expect(sql).toContain("flr.window_id=fl.frame_key AND flr.role='render'");
+    });
+  });
+
   it('uses trace-wide evidence when the shared VSync fragment has no range', () => {
     const fragmentPath = path.join(process.cwd(), 'skills', 'fragments', 'vsync_config.sql');
     const fragment = fs.readFileSync(fragmentPath, 'utf-8');

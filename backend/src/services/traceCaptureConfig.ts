@@ -92,8 +92,8 @@ const COMMON_FTRACE_EVENTS = [
   'ftrace/print',
 ];
 
-// Thermal zone temperature and cooling-device state. Both the power and the
-// CPU/scheduler preset need them: a frequency clamp is only attributable once
+// Thermal zone temperature and cooling-device state. The power, CPU/scheduler
+// and scrolling presets need them: a frequency clamp is only attributable once
 // the thermal side of the same window is in the trace.
 const THERMAL_EVENTS = [
   'thermal/thermal_temperature',
@@ -189,7 +189,7 @@ export const CAPTURE_PRESETS: CapturePresetDefinition[] = [
     defaultDurationSeconds: 15,
     bufferSizeKb: 65536,
     atraceCategories: ['gfx', 'view', 'input', 'wm', 'am', 'binder_driver', 'webview'],
-    ftraceEvents: [...COMMON_FTRACE_EVENTS, ...BINDER_EVENTS, 'power/gpu_frequency'],
+    ftraceEvents: [...COMMON_FTRACE_EVENTS, ...BINDER_EVENTS, ...THERMAL_EVENTS, 'power/gpu_frequency'],
     dataSources: [...COMMON_DATA_SOURCES, 'android.surfaceflinger.frametimeline', 'android.input.inputevent'],
     description: 'Scrolling and frame-jank capture with FrameTimeline, input, scheduler, and CPU/GPU frequency.',
     descriptionZh: '滑动和卡顿分析需要 FrameTimeline、input、调度、CPU/GPU 频率和 binder 上下文。',

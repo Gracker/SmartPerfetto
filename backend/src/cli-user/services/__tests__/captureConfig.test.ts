@@ -79,6 +79,13 @@ describe('capture config rendering', () => {
     }
   });
 
+  it('gives the scrolling preset the cooling-device events a per-frame thermal verdict needs', () => {
+    const config = renderAndroidTraceConfig({target: 'android', preset: 'scrolling', app: '*', durationSeconds: 5});
+    expect(config).toContain('ftrace_events: "power/cpu_frequency_limits"');
+    expect(config).toContain('ftrace_events: "thermal/thermal_temperature"');
+    expect(config).toContain('ftrace_events: "thermal/cdev_update"');
+  });
+
   it('renders the power preset with android.power configuration', () => {
     const config = renderAndroidTraceConfig({
       target: 'android',

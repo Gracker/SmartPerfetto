@@ -399,9 +399,10 @@ smp capture android --preset game --app com.example.game --duration 20 --out gam
 `memory-profile`、`cpu`、`power`、`overview`、`full`。除 `memory-profile` 外的
 所有系统级预设都会开启 `power/cpu_frequency` 与
 `power/cpu_frequency_limits`，后者提供每个 CPU 的频率上下限，用来区分“负载低所以
-频率低”和“被限频压住”。`cpu` 和 `power` 还会开启
+频率低”和“被限频压住”。`cpu`、`power`、`scrolling` 和 `full` 还会开启
 `thermal/thermal_temperature` 与 `thermal/cdev_update`，让限频可以和同一时间窗内
-的热区温度对应起来；这两个 tracepoint 依赖设备/内核支持，并非所有设备都暴露。
+的热区温度对应起来；散热设备的档位变化也是把滑动帧所受上限归因到内核热控的唯一
+证据。这两个 tracepoint 依赖设备/内核支持，并非所有设备都暴露。
 `power` 另外会开启 `android.power` 的 battery
 counters、power rails、suspend/wakeup 相关 ftrace 和 `android.network_packets`。
 `loading` 面向 App 内的页面/内容加载（页面跳转、列表数据、图片、WebView）：加载是

@@ -459,9 +459,11 @@ Available presets: `startup`, `scrolling`, `camera`, `anr`, `loading`, `game`, `
 `memory-profile`, `cpu`, `power`, `overview`, and `full`. Every system-wide preset
 (all except `memory-profile`) enables `power/cpu_frequency` and
 `power/cpu_frequency_limits`; the latter carries each CPU's frequency bounds and
-separates "low frequency because the load is low" from "clamped". `cpu` and
-`power` also enable `thermal/thermal_temperature` and `thermal/cdev_update` so a
-clamp can be matched against thermal-zone temperature in the same window. Those
+separates "low frequency because the load is low" from "clamped". `cpu`,
+`power`, `scrolling`, and `full` also enable `thermal/thermal_temperature` and
+`thermal/cdev_update` so a clamp can be matched against thermal-zone temperature
+in the same window; cooling-device transitions are also the only evidence that
+ties a clamp a scrolling frame ran under to kernel thermal mitigation. Those
 tracepoints depend on device and kernel support and are not exposed everywhere.
 `power` additionally enables `android.power` battery
 counters, power rails, suspend/wakeup ftrace, and `android.network_packets`.

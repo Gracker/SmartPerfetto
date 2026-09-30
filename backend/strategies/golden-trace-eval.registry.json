@@ -287,6 +287,20 @@
       ],
       "split": "train",
       "createdAt": "2026-09-25T00:00:00.000Z"
+    },
+    {
+      "caseId": "synthetic-scrolling-frequency-limit-jank-v1",
+      "catalogAlias": "scrolling-frequency-limit-jank",
+      "query": "Analyze the scrolling jank and say, frame by frame, whether a CPU frequency limit actually slowed the main-thread work and whether thermal throttling set that limit.",
+      "analysisMode": "full",
+      "expectedScene": "scrolling",
+      "goldenPoints": [
+        "Attribute a frame to a frequency limit only when the main thread's own Running time on the policy ran at the cap during its top slice, not when another thread or another time was capped.",
+        "Call the frame thermal throttling only when the selected limit value alone binds long enough and its onset is confirmed by a cooling device tied to that policy; otherwise report cpu_max_limited with the trigger unconfirmed.",
+        "Report frames before the first limit sample, or running below the cap, without a frequency-limit reason."
+      ],
+      "split": "validation",
+      "createdAt": "2026-09-30T00:00:00.000Z"
     }
   ]
 }

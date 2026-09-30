@@ -1188,6 +1188,23 @@
           "frame_budget_ms",
           "vsync_source",
           "device_peak_freq_mhz",
+          "freq_ceiling_ratio_pct",
+          "freq_limit_state",
+          "freq_limit_basis",
+          "freq_limit_onset_confirmed",
+          "freq_limit_onset_ts",
+          "freq_limit_cooling_basis",
+          "freq_limit_policy_cpu",
+          "freq_limit_mhz",
+          "freq_limit_depth_pct",
+          "freq_limit_binding_ratio",
+          "freq_limit_onset_binding_ns",
+          "freq_limit_binding_ns",
+          "freq_limit_run_ns",
+          "freq_limit_trace_episode_id",
+          "rt_freq_limit_state",
+          "rt_freq_limit_binding_ns",
+          "rt_freq_limit_policy_cpu",
           "file_io_overlap_ms",
           "input_event_count",
           "input_move_count",
@@ -1233,6 +1250,11 @@
             "column": "lock_contention_ms",
             "operator": "eq",
             "value": 0
+          },
+          {
+            "column": "freq_limit_state",
+            "operator": "eq",
+            "value": "limit_track_unavailable"
           }
         ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank"
