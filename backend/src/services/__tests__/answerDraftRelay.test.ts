@@ -15,8 +15,7 @@ import {
 } from '../answerDraftRelay';
 import {registerPrivateAnalysisQueryForEcho, revokeCodeAwareOutputGuards} from '../security/codeAwareOutputRegistry';
 import {projectOwnerCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
-import {projectOwnerProvisionalConclusion, sessionUsesPrivateKnowledge} from '../security/privateAnalysisProjection';
-import {analysisContextUsesPrivateKnowledge} from '../resolvedAnalysisContext';
+import {projectOwnerProvisionalConclusion} from '../security/privateAnalysisProjection';
 
 const token = (text: string, attempt = 0, runId = 'run-1'): StreamingUpdate =>
   ({type: 'answer_token', content: {token: text, runId, attempt}, timestamp: 1});
@@ -208,11 +207,6 @@ describe('AnswerDraftRelay', () => {
       runId: 'run-1', projectionSessionId: 's', privateKnowledge, outputLanguage: 'en', deliver: () => undefined});
     expect(create(true)).toBeUndefined();
     expect(create(false)).toBeInstanceOf(AnswerDraftRelay);
-    // The flags each surface derives: registered codebases or knowledge make a session private.
-    expect(sessionUsesPrivateKnowledge({codeAwareMode: 'metadata_only', codebaseIds: ['app']})).toBe(true);
-    expect(sessionUsesPrivateKnowledge({knowledgeSourceIds: ['kb']})).toBe(true);
-    expect(analysisContextUsesPrivateKnowledge({codeAwareMode: 'provider_send', codebaseIds: ['app']})).toBe(true);
-    expect(sessionUsesPrivateKnowledge({})).toBe(false);
   });
 
   it('in a plain session shows a split credential exactly as the final body does: both projections are the identity', () => {

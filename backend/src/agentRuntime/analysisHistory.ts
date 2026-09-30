@@ -6,7 +6,7 @@ import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {renderRequiredLocalizedStrategyTemplate} from '../agentv3/localizedStrategyTemplate';
 import {AnalysisHistoryStore, parseAnalysisHistoryEvidenceLocator, type AnalysisHistoryScope} from '../services/analysisHistoryStore';
-import {sessionUsesPrivateKnowledge} from '../services/security/privateAnalysisProjection';
+import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
 
 /** Historical declarations and locators, never execution witnesses or verification authority. */
 export interface AnalysisHistoryEvidenceLocator {
@@ -207,7 +207,7 @@ export function createRuntimeAnalysisHistoryReader(input: {
   const binding = resolveHistoryBinding(input.options);
   // A run with authorized source or private knowledge reads its own derived
   // history; the exact fingerprint below is what partitions it.
-  const defaultActivation = input.includeSourceDerived ?? sessionUsesPrivateKnowledge(input.options);
+  const defaultActivation = input.includeSourceDerived ?? analysisHasPrivateContext(input.options);
   // A product's explicit activation survives physical runtime wrappers. A later
   // wrapper can restrict it, but cannot turn a dormant product run into source use.
   const includeSourceDerived = binding?.includeSourceDerived !== undefined

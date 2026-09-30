@@ -10,7 +10,6 @@ import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {getConversationSessionStore, type ConversationSessionDescriptor} from '../services/conversationSessionStore';
 import {
   ConversationSessionService,
-  conversationRunUsesPrivateKnowledge,
   type ConversationRun,
   type ConversationSession,
   type ConversationTraceContext,
@@ -54,7 +53,7 @@ import {resolveProviderRuntimeSnapshot} from '../services/providerManager/provid
 import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
 import {requireAiEnabledForHttp} from './aiCapabilityPolicyHttp';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions} from './agent/normalizeAnalyzeOptions';
-import {resolvePrimaryConversationSourceUse} from '../assistant/runtime/conversationSourcePolicy';
+import {analysisHasPrivateContext, privateContextRestrictsAudience} from '../services/security/analysisPrivateContext';
 
 const CONVERSATION_RUN_HEARTBEAT_MS = 30_000;
 const heartbeatTimers = new Map<string, NodeJS.Timeout>();
@@ -76,8 +75,6 @@ export function shouldCloseConversationStream(input: {
     input.eventType === 'source_enrichment_failed' ||
     input.eventType === 'source_enrichment_cancelled';
 }
-
-export {conversationRunUsesPrivateKnowledge};
 
 function configuredOutputLanguage(): OutputLanguage {
   return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -109,7 +106,7 @@ function runScope(
     traceId: session.traceContext.kind === 'attached'
       ? session.traceContext.traceId
       : `conversation-no-trace:${session.sessionId}`,
-    query: conversationRunUsesPrivateKnowledge(session, run)
+    query: privateContextRestrictsAudience(run.privateContext)
       ? privateAnalysisQueryMessage(session.outputLanguage ?? configuredOutputLanguage())
       : run.query,
     mode: 'conversation',
@@ -132,7 +129,7 @@ function sessionDescriptor(session: ConversationSession, run: ConversationRun): 
     status: session.status, createdAt: session.createdAt, lastActivityAt: session.lastActivityAt,
     lastRun: {runId: run.runId, query: runScope(session, run).query ?? '', turnIndex: run.turnIndex,
       status: run.status, startedAt: run.startedAt, completedAt: run.completedAt,
-      ...(run.sourceUseMode === 'explicit' || session.knowledgeSourceIds?.length ? {sourceDerived: true} : {})},
+      ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})},
     ...(run.outcome ? {lastOutcome: outcome} : {}),
   };
 }
@@ -148,7 +145,7 @@ function settleRun(session: ConversationSession, run: ConversationRun): void {
       : run.outcome?.kind === 'needs_user_input'
         ? 'awaiting_user'
         : 'completed';
-  const error = run.error && conversationRunUsesPrivateKnowledge(session, run)
+  const error = run.error && privateContextRestrictsAudience(run.privateContext)
     ? projectOwnerAnalysisError(undefined, run.error, session.outputLanguage ?? configuredOutputLanguage())
     : run.error;
   persistAnalysisRunState(runScope(session, run), status, {error});
@@ -288,17 +285,7 @@ async function startConversation(req: express.Request, res: express.Response): P
         .json(analysisContextAuthorization.payload);
       return;
     }
-    privateKnowledge = Boolean(
-      options.knowledgeSourceIds?.length ||
-      (
-        options.codebaseIds?.length &&
-        resolvePrimaryConversationSourceUse({
-          query,
-          codeAwareMode: options.codeAwareMode,
-          codebaseIds: options.codebaseIds,
-        }) === 'explicit'
-      ),
-    );
+    privateKnowledge = analysisHasPrivateContext(options);
     const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
       options,
       knowledgeScopeFromRequestContext(requestContext),
@@ -550,7 +537,7 @@ function sourceHistoryTurnAccessible(session: ConversationSession, turnId: strin
 
 function settledRunHistoryAccessible(session: ConversationSession, run: ConversationRun): boolean {
   const turn = session.historyTurns.find(candidate => candidate.id === run.runId);
-  return run.status === 'running' || !(turn?.sourceDerived || run.sourceUseMode === 'explicit') ||
+  return run.status === 'running' || !(turn?.sourceDerived || privateContextRestrictsAudience(run.privateContext)) ||
     sourceHistoryTurnAccessible(session, run.runId);
 }
 

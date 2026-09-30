@@ -17,8 +17,11 @@ import {
   projectOwnerStructuredValue,
   projectOwnerAnalysisResult,
 } from '../../services/security/privateAnalysisProjection';
-import {analysisContextUsesPrivateKnowledge, AnalysisContextAuthorizationChangedError,
-  buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
+import {
+  AnalysisContextAuthorizationChangedError,
+  buildAnalysisContextAuthorizationFingerprint,
+  assertCurrentAnalysisContextAuthorization,
+} from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {takeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import {createRuntimeEvidenceContext, type RuntimeEvidenceBinding, type RuntimeEvidenceContext} from '../../agentRuntime/runtimeEvidenceContext';
@@ -34,11 +37,11 @@ import {
   type ConversationEvidenceRef,
   type ConversationRuntimeOutcome,
 } from '../contracts/conversationContract';
-import {resolvePrimaryConversationSourceUse} from './conversationSourcePolicy';
 import type {
   ConversationRuntimeAdapter,
   ConversationRuntimeInput,
 } from '../application/conversationSessionService';
+import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
 
 export interface OrchestratorConversationRuntimeOptions {
   analysisOptions?: Omit<AnalysisOptions, 'analysisMode' | 'runId'>;
@@ -83,12 +86,6 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     private readonly options: OrchestratorConversationRuntimeOptions = {},
   ) {}
 
-  resolvePrimarySourceUse(query: string) {
-    return resolvePrimaryConversationSourceUse({
-      query, codeAwareMode: this.options.analysisOptions?.codeAwareMode,
-      codebaseIds: this.options.analysisOptions?.codebaseIds,
-    });
-  }
 
   private createExecution(input: ConversationRuntimeInput): ConversationExecution {
     if (this.disposed) throw new DOMException('Conversation adapter disposed', 'AbortError');
@@ -183,10 +180,9 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     const state = this.createExecution(input);
     const {runtimeSessionId} = state;
     const analysisOptions = this.options.analysisOptions ?? {};
-    const primarySourceUse = this.resolvePrimarySourceUse(input.query);
-    // Registered knowledge is independently enabled by the authorized selection.
-    const includeSourceDerived = primarySourceUse !== 'dormant' || Boolean(analysisOptions.knowledgeSourceIds?.length);
-    const privateKnowledge = analysisContextUsesPrivateKnowledge(analysisOptions);
+    // A run with private context reads its own derived history; the fingerprint partitions it.
+    const privateKnowledge = analysisHasPrivateContext(analysisOptions);
+    const includeSourceDerived = privateKnowledge;
     const outputLanguage = analysisOptions.outputLanguage ?? 'zh-CN';
     // Filter whole turns, including source-bearing user queries, on every read.
     const historyReader = createAnalysisHistoryReader({

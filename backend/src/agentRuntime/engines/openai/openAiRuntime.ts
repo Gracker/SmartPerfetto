@@ -29,7 +29,7 @@ import {resolveFocusAppTarget} from '../../focusAppTarget';
 import {registerFocusAppEvidence} from '../../focusAppEvidence';
 import {type SceneType} from '../../../agentv3/sceneClassifier';
 import {getExtendedKnowledgeBase} from '../../../services/sqlKnowledgeBase';
-import {analysisContextMemoryPartitionKey, analysisContextUsesPrivateKnowledge, assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
+import {analysisContextMemoryPartitionKey, assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import type {AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, Hypothesis, TracePairContext, TraceCompleteness, UncertaintyFlag} from '../../../agentv3/types';
 import {recordPlanOrPrePlanToolCall, resetPrePlanToolCallsForNewRun, readToolResultFacts} from '../../../agentv3/planToolCallRecorder';
@@ -38,7 +38,7 @@ import {ArtifactStore} from '../../../agentv3/artifactStore';
 import {resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
 import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/scene/sceneRuntimeBinding';
 import type {ScenePacingInputs} from '../../../agent/scene/sceneProposalPacing';
-import {createOpenAISnapshotEngineState, getOpenAISnapshotEngineState, projectSessionFieldsForDurableSnapshot, type SessionFieldsForSnapshot, sessionFieldsUsePrivateKnowledge, type SessionStateSnapshot} from '../../../agentv3/sessionStateSnapshot';
+import {createOpenAISnapshotEngineState, getOpenAISnapshotEngineState, projectSessionFieldsForDurableSnapshot, type SessionFieldsForSnapshot, type SessionStateSnapshot} from '../../../agentv3/sessionStateSnapshot';
 import {extractTraceFeatures, extractKeyInsights, saveAnalysisPattern, saveQuickPathPattern} from '../../../agentv3/analysisPatternMemory';
 import {probeTraceCompleteness} from '../../../agentv3/traceCompletenessProber';
 import {localize, type OutputLanguage} from '../../../agentv3/outputLanguage';
@@ -94,6 +94,7 @@ import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn, type AnalysisHistoryReader} from '../../analysisHistory';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisCompletion, type AnalysisDeliveryContext, type AnalysisOutputOrigin} from '../../../types/analysisDelivery';
+import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 
 interface OpenAiChatTerminal {
   responseId?: string;
@@ -897,7 +898,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         let modelCall: RuntimeModelCallSpan | undefined;
         let modelCallResponded = false;
         const answerStreamFilter = createOpenAiReasoningFilterState();
-        const answerTextProjection = analysisContextUsesPrivateKnowledge(options)
+        const answerTextProjection = analysisHasPrivateContext(options)
           ? createCodeAwareStreamingTextProjection(sessionId, `openai-answer-${attemptId}`, 'owner') : undefined;
         const toolInputsByTaskId = new Map<string, {toolName: string; args: Record<string, unknown>}>();
         const processedToolResultIds = new Set<string>();
@@ -1178,7 +1179,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         emitUpdate: update => this.emitUpdate(update), enableLLM: false,
         plan: this.sessionPlans.get(sessionId)?.current ?? null, hypotheses: context.hypotheses,
         sceneType, outputLanguage: config.outputLanguage, emitIssueProgress: false,
-        allowPersistentLearning: !analysisContextUsesPrivateKnowledge(options), deliveryContext,
+        allowPersistentLearning: !analysisHasPrivateContext(options), deliveryContext,
         conclusionContract: result.conclusionContract,
       });
       verificationPhase.end('ok');
@@ -1197,7 +1198,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
             runState: finalRunState, updatedAt: Date.now()});
         }
         this.recordTurn({query, sessionId, result, sessionContext, previousTurnCount: previousTurns.length, quickMode,
-          sourceDerived: analysisContextUsesPrivateKnowledge(options) || Boolean(sourceUse?.getSourceUseDecision()),
+          sourceDerived: analysisHasPrivateContext(options),
           analysisContextFingerprint: options.analysisContextFingerprint});
         this.recordPatternMemory({sessionId, result, previousTurnCount: previousTurns.length, quickMode,
           sceneType, architecture: context.architecture, packageName: context.effectivePackageName, options});
@@ -1325,7 +1326,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     sessionFields: SessionFieldsForSnapshot,
   ): SessionStateSnapshot {
-    const privateKnowledge = sessionFieldsUsePrivateKnowledge(sessionFields);
+    const privateKnowledge = analysisHasPrivateContext(sessionFields);
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
@@ -1897,7 +1898,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     packageName?: string;
     options: AnalysisOptions;
   }): void {
-    if (analysisContextUsesPrivateKnowledge(input.options)) return;
+    if (analysisHasPrivateContext(input.options)) return;
     if (input.result.partial === true || input.result.findings.length === 0) return;
     const insights = extractKeyInsights(input.result.findings, input.result.conclusion);
     if (insights.length === 0) return;

@@ -21,9 +21,9 @@ import {
   type ConversationSourceEnrichmentOutcome,
   type ConversationSourceEnrichmentState,
 } from './conversationSourceEnrichmentCoordinator';
-import type {PrimaryConversationSourceUse} from '../runtime/conversationSourcePolicy';
 import {buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
 import {
+  privateContextRestrictsAudience,
   resolveAnalysisPrivateContext,
   type AnalysisPrivateContextMarker,
 } from '../../services/security/analysisPrivateContext';
@@ -78,7 +78,6 @@ export interface ConversationSourceEnrichmentRuntimeInput extends ConversationRu
 
 export interface ConversationRuntimeAdapter {
   run(input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome>;
-  resolvePrimarySourceUse?(query: string): PrimaryConversationSourceUse;
   shouldStartSourceEnrichment?(
     input: ConversationRuntimeInput,
     outcome: ConversationRuntimeOutcome,
@@ -127,10 +126,13 @@ export interface ConversationRun {
   completion: Promise<ConversationRuntimeOutcome>;
   events: ConversationSessionEvent[];
   lifecycleSettled?: boolean;
-  sourceUseMode?: PrimaryConversationSourceUse;
   sourceEnrichmentPending?: boolean;
   sourceEnrichment?: ConversationSourceEnrichmentState;
-  /** Fixed at admission from the selection this run was authorized with; restored runs are 'unknown'. */
+  /**
+   * Fixed at admission from the selection this run was authorized with. A
+   * session's selection is pinned by its authorization fingerprint, so a
+   * restored run's marker is its session's.
+   */
   privateContext: AnalysisPrivateContextMarker;
 }
 
@@ -184,25 +186,6 @@ export interface StartConversationTurnInput {
 export type ConversationCancelResult =
   | {status: 'review_stop_requested'}
   | {status: 'settled'; outcome: ConversationRuntimeOutcome};
-
-/**
- * Registered knowledge, or registered source used explicitly by this run. Its
- * unverified body stays live-only: no watchdog fallback ever persists it.
- */
-export function conversationRunUsesPrivateKnowledge(
-  session: Pick<ConversationSession, 'codeAwareMode' | 'codebaseIds' | 'knowledgeSourceIds'>,
-  run: Pick<ConversationRun, 'sourceUseMode'>,
-): boolean {
-  return Boolean(
-    session.knowledgeSourceIds?.length ||
-    (
-      run.sourceUseMode === 'explicit' &&
-      session.codeAwareMode &&
-      session.codeAwareMode !== 'off' &&
-      session.codebaseIds?.length
-    ),
-  );
-}
 
 export interface ConversationTurnReceipt {
   sessionId: string;
@@ -363,9 +346,9 @@ export class ConversationSessionService {
     // Settled history is replayable; an interrupted SDK has no live execution or pending promise.
     if (outcome) session.runs.push({runId: descriptor.lastRun.runId, query: descriptor.lastRun.query,
       turnIndex: descriptor.lastRun.turnIndex, status: descriptor.lastRun.status === 'cancelled' ? 'cancelled' : 'completed',
-      sourceUseMode: descriptor.lastRun.sourceDerived ? 'explicit' : 'dormant',
       startedAt: descriptor.lastRun.startedAt, completedAt: descriptor.lastRun.completedAt, outcome,
-      completion: Promise.resolve(outcome), lifecycleSettled: true, events: [], privateContext: 'unknown'});
+      completion: Promise.resolve(outcome), lifecycleSettled: true, events: [],
+      privateContext: resolveAnalysisPrivateContext(session)});
     this.sessions.setSession(session.sessionId, session);
     return session;
   }
@@ -490,7 +473,6 @@ export class ConversationSessionService {
     session.lastActivityAt = this.now();
 
     const runId = this.createId('run');
-    const sourceUseMode = session.runtime.resolvePrimarySourceUse?.(query) ?? 'dormant';
     const stop = this.createRunStop(session, () => run);
     const runtimeInput: ConversationRuntimeInput = {
       sessionId: session.sessionId,
@@ -543,7 +525,6 @@ export class ConversationSessionService {
       startedAt: this.now(),
       completion: Promise.resolve({kind: 'cancelled', message: ''}),
       events: [],
-      sourceUseMode,
       privateContext: resolveAnalysisPrivateContext(session),
     };
     const authorizationSelection = {codeAwareMode: session.codeAwareMode,
@@ -580,7 +561,8 @@ export class ConversationSessionService {
       this.publish(session.sessionId, {type: 'run_started', sessionId: session.sessionId, runId});
     }
     if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
-      session.history.push({role: 'user', content: query, turnId: runId, ...(sourceUseMode === 'explicit' || session.knowledgeSourceIds?.length ? {sourceDerived: true} : {})});
+      session.history.push({role: 'user', content: query, turnId: runId,
+        ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})});
     }
 
     let runtimeCompletion: Promise<ConversationRuntimeOutcome>;
@@ -731,7 +713,8 @@ export class ConversationSessionService {
     };
     return new ReviewStopController<ConversationRuntimeOutcome>({watchdogMs: this.reviewStopWatchdogMs, owner: {
       mayPersistPartial: () => mayPersistUnverifiedBody({
-        privateKnowledge: conversationRunUsesPrivateKnowledge(session, getRun()),
+        // A private run's unverified body stays live-only: no watchdog fallback persists it.
+        privateKnowledge: privateContextRestrictsAudience(getRun().privateContext),
         isCurrent: () => this.isCurrentRun(session, getRun()),
         assertAuthorized: () => this.runAuthorizationChecks.get(getRun())?.(),
       }),
@@ -911,7 +894,7 @@ export class ConversationSessionService {
       timestamp: run.completedAt ?? run.startedAt, analysisContextFingerprint: run.analysisContextFingerprint,
       traceId: session.traceContext.kind === 'attached' ? session.traceContext.traceId :
         `conversation-no-trace:${session.sessionId}`,
-      sourceDerived: run.sourceUseMode === 'explicit' || Boolean(session.knowledgeSourceIds?.length),
+      sourceDerived: privateContextRestrictsAudience(run.privateContext),
       result: outcome?.finalResult ?? (outcome ? {message: outcome.message,
         partial: outcome.kind === 'cancelled', completion: {status: outcome.kind === 'cancelled' ? 'incomplete' : 'completed'}} :
         {partial: true, completion: {status: 'incomplete'}, terminationReason: 'execution_error'}),

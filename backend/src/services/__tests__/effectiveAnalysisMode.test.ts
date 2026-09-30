@@ -11,7 +11,6 @@ import {
 import {
   AnalysisContextAuthorizationChangedError,
   analysisContextMemoryPartitionKey,
-  analysisContextUsesPrivateKnowledge,
   assertCurrentAnalysisContextAuthorization,
   buildAnalysisContextAuthorizationFingerprint,
 } from '../resolvedAnalysisContext';
@@ -41,15 +40,6 @@ describe('effective analysis mode', () => {
     expect(resolveEffectiveAnalysisMode('full', context)).toBe('full');
     expect(resolveEffectiveAnalysisMode('auto', context)).toBe('auto');
     expect(resolveEffectiveAnalysisMode(undefined, context)).toBe(defaultMode);
-  });
-
-  it.each([
-    ['trace only', {}, false],
-    ['codebase only', {codebaseIds: ['app']}, true],
-    ['private RAG only', {knowledgeSourceIds: ['wiki']}, true],
-    ['source and private RAG', {codebaseIds: ['app'], knowledgeSourceIds: ['wiki']}, true],
-  ] as const)('%s identifies the cross-session privacy boundary', (_label, context, expected) => {
-    expect(analysisContextUsesPrivateKnowledge(context)).toBe(expected);
   });
 
   it.each(contexts)('$label preserves Smart deep-dive defaults, explicit fast, and exact private allowlists', ({context}) => {

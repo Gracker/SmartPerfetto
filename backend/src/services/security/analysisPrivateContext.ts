@@ -43,6 +43,15 @@ export function resolveAnalysisPrivateContext(
   };
 }
 
+/**
+ * Whether a run with this authorized selection may read private material. The
+ * one test every audience decision uses; a started run reads its own fixed
+ * marker instead.
+ */
+export function analysisHasPrivateContext(selection: AnalysisContextSelection): boolean {
+  return privateContextRestrictsAudience(resolveAnalysisPrivateContext(selection));
+}
+
 export function privateContextRestrictsAudience(
   marker: AnalysisPrivateContextMarker | undefined,
 ): boolean {

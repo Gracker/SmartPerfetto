@@ -12,6 +12,7 @@ import {
   routeAdaptiveEvidencePostEvidence,
   routeAdaptiveEvidencePreflight,
 } from './adaptiveEvidenceRouter';
+import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
 
 export function buildAdaptiveRoutingPreflight(input: {
   requestedMode: AdaptiveRoutingReceiptV1['requestedMode'];
@@ -45,13 +46,6 @@ export function buildAdaptiveRoutingPreflight(input: {
   });
 }
 
-function privateContext(options: AnalysisOptions): boolean {
-  const codeAware = options.codeAwareMode !== undefined
-    && options.codeAwareMode !== 'off'
-    && (options.codebaseIds?.length ?? 0) > 0;
-  return codeAware || (options.knowledgeSourceIds?.length ?? 0) > 0;
-}
-
 /**
  * The shadow preflight receipt for a run, from the same typed intent and
  * resolved budget mode the runtime acts on. Recorded for every run so that
@@ -78,7 +72,7 @@ export function buildAdaptiveRoutingForTurnIntent(input: {
     // No runtime answers from pre-collected evidence without a model turn.
     directEvidenceAvailable: false,
     hasReferenceTrace: Boolean(input.options.referenceTraceId),
-    privateContext: privateContext(input.options),
+    privateContext: analysisHasPrivateContext(input.options),
   });
 }
 

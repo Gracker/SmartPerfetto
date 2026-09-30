@@ -7,6 +7,7 @@ import {describe, expect, it} from '@jest/globals';
 
 import {
   NO_PRIVATE_CONTEXT,
+  analysisHasPrivateContext,
   decodePrivateContextColumn,
   decodePrivateContextJson,
   encodePrivateContextColumn,
@@ -30,6 +31,18 @@ describe('analysis private context marker', () => {
     expect(resolveAnalysisPrivateContext({codeAwareMode: 'off', codebaseIds: ['app']})).toEqual(NO_PRIVATE_CONTEXT);
     expect(resolveAnalysisPrivateContext({codeAwareMode: 'provider_send', codebaseIds: []})).toEqual(NO_PRIVATE_CONTEXT);
     expect(resolveAnalysisPrivateContext({})).toEqual(NO_PRIVATE_CONTEXT);
+  });
+
+  it('is the one test of whether a run may read private material', () => {
+    expect(analysisHasPrivateContext({codeAwareMode: 'provider_send', codebaseIds: ['app']})).toBe(true);
+    expect(analysisHasPrivateContext({knowledgeSourceIds: ['kb']})).toBe(true);
+    expect(analysisHasPrivateContext({codeAwareMode: 'metadata_only', codebaseIds: ['app'], knowledgeSourceIds: ['kb']}))
+      .toBe(true);
+    // An unset mode still gives the run source tools, so it is private.
+    expect(analysisHasPrivateContext({codebaseIds: ['app']})).toBe(true);
+    // With code-aware analysis off no source tool is exposed at all.
+    expect(analysisHasPrivateContext({codeAwareMode: 'off', codebaseIds: ['app']})).toBe(false);
+    expect(analysisHasPrivateContext({})).toBe(false);
   });
 
   it('restricts marked and unknown artifacts alike', () => {

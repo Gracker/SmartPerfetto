@@ -147,7 +147,12 @@ import {
   type AnalysisRunPersistenceScope,
   type PersistedAnalysisRunStatus,
 } from '../services/analysisRunStore';
-import {buildAgentQueryWithContinuityNotice, type AnalyzeSessionRunContext} from '../assistant/application/agentAnalyzeSessionService';
+import {
+  buildAgentQueryWithContinuityNotice,
+  sessionRunHasPrivateContext,
+  sessionRunPrivateContext,
+  type AnalyzeSessionRunContext,
+} from '../assistant/application/agentAnalyzeSessionService';
 import { buildAssistantResultContract } from '../assistant/contracts/assistantResultContract';
 import {
   persistCompletedAnalysisResultSnapshot,
@@ -224,11 +229,11 @@ import {
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
-  sessionUsesPrivateKnowledge,
 } from '../services/security/privateAnalysisProjection';
 import {
   privateContextRestrictsAudience,
   resolveAnalysisPrivateContext,
+  analysisHasPrivateContext,
 } from '../services/security/analysisPrivateContext';
 import {
   AnalysisContextAuthorizationChangedError,
@@ -502,7 +507,7 @@ function startSessionRun(
     turn: nextSequence,
     query,
     timestamp: Date.now(),
-    sourceDerived: session.sourceActivation === 'bounded_explicit' ? true : undefined,
+    sourceDerived: privateContextRestrictsAudience(run.privateContext) ? true : undefined,
   });
 
   // Inject turn boundary marker for multi-turn conversations
@@ -656,7 +661,7 @@ function createHttpFinalizationRun(
   const stop = new ReviewStopController<CancelSessionRunResult | undefined>({
     watchdogMs: httpReviewStopWatchdogMs,
     owner: {
-      mayPersistPartial: () => mayPersistUnverifiedBody({privateKnowledge: sessionUsesPrivateKnowledge(session),
+      mayPersistPartial: () => mayPersistUnverifiedBody({privateKnowledge: sessionRunHasPrivateContext(session, runId),
         isCurrent: () => !run.terminal && owner.isCurrent(), assertAuthorized: owner.assertAuthorized}),
       commitPartial: body => run.commitReviewNotFinished?.(body) ?? false,
       fullCancel: () => !run.terminal && isCurrentRunOwner(session, runId) && !isSessionRunCancelled(session, runId)
@@ -1540,7 +1545,7 @@ function baseAgentEventScopeFromSession(
     sessionId: session.sessionId,
     runId: run.runId,
     traceId: session.traceId,
-    query: sessionUsesPrivateKnowledge(session)
+    query: privateContextRestrictsAudience(run.privateContext)
       ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
       : run.query || session.query,
     privateContext: run.privateContext,
@@ -1572,7 +1577,7 @@ function persistSessionRunState(
   const scope = analysisRunScopeFromSession(session, runId);
   if (!scope) return;
   try {
-    const durableError = error && sessionUsesPrivateKnowledge(session)
+    const durableError = error && privateContextRestrictsAudience(scope.privateContext)
       ? projectOwnerAnalysisError(session.sessionId, error, sessionOutputLanguage(session))
       : error;
     persistAnalysisRunState(scope, status, {
@@ -1636,8 +1641,8 @@ function persistBufferedAgentEvent(session: AnalysisSession, event: SerializedAg
     );
   if (!scope) return;
   try {
-    const durableEvent = sessionUsesPrivateKnowledge(session)
-      ? sanitizePersistedAnalysisCompletedEvent(session, event)
+    const durableEvent = privateContextRestrictsAudience(scope.privateContext)
+      ? sanitizePersistedAnalysisCompletedEvent(session, event, true)
       : event;
     persistSerializedAgentEvent(scope, durableEvent, {
       updateSessionStatus: shouldUpdateSessionStatusForRun(session, scope.runId),
@@ -1665,9 +1670,9 @@ function getRunSseReplayState(session: AnalysisSession, runId: string): RunScope
 function sanitizePersistedAnalysisCompletedEvent(
   session: AnalysisSession,
   event: SerializedAgentEvent,
+  privateKnowledge: boolean,
 ): SerializedAgentEvent {
   if (event.eventType !== 'analysis_completed') return event;
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
 
   let payload: any;
   try {
@@ -1887,7 +1892,8 @@ function replayPersistedAgentEvents(
   let lastCursor = lastEventId;
   for (const event of events) {
     try {
-      const replayEvent = sanitizePersistedAnalysisCompletedEvent(session, event);
+      const replayEvent = sanitizePersistedAnalysisCompletedEvent(
+        session, event, privateContextRestrictsAudience(scope.privateContext));
       res.write(`id: ${event.cursor}\n`);
       res.write(`event: ${replayEvent.eventType}\n`);
       res.write(`data: ${projectSerializedDataEvent(replayEvent.eventType, replayEvent.eventData)}\n\n`);
@@ -2099,7 +2105,8 @@ function loadPersistedCompletedAnalysisSseEvents(session: AnalysisSession, runId
         event.eventType === 'scene_reconstruction_completed' ||
         event.eventType === 'end',
     )
-    .map((event) => sanitizePersistedAnalysisCompletedEvent(session, event))
+    .map((event) => sanitizePersistedAnalysisCompletedEvent(
+      session, event, privateContextRestrictsAudience(scope.privateContext)))
     .map((event) => ({
       seqId: event.cursor,
       eventType: event.eventType,
@@ -2947,7 +2954,7 @@ function connectedStreamQuery(
   session: AnalysisSession,
   streamRun?: AnalyzeSessionRunContext,
 ): string {
-  return sessionUsesPrivateKnowledge(session)
+  return sessionRunHasPrivateContext(session, streamRun?.runId)
     ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
     : streamRun?.query ?? session.query;
 }
@@ -2990,13 +2997,14 @@ router.get('/:sessionId/status', async (req, res) => {
 
   const session = getAuthorizedSession(req, res, sessionId);
   if (!session || !await ensureSceneHistoryAccessible(req, res, session)) return;
+  const privateKnowledge = sessionRunHasPrivateContext(session);
 
   const response: any = {
     success: true,
     sessionId,
     status: session.status,
     traceId: session.traceId,
-    query: sessionUsesPrivateKnowledge(session)
+    query: privateKnowledge
       ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
       : session.query,
     createdAt: session.createdAt,
@@ -3009,7 +3017,6 @@ router.get('/:sessionId/status', async (req, res) => {
       const completedPayload = ensureCompletedAnalysisResultPayload(session);
       const result = completedPayload?.result ?? projectStoredHttpResult(session, recoveredResult);
       const finalArtifacts = completedPayload?.finalArtifacts;
-      const privateKnowledge = sessionUsesPrivateKnowledge(session);
       const outputLanguage = sessionOutputLanguage(session);
       const normalizedCompletedConclusion = result.conclusion;
       const projectedCompletedContract = result.conclusionContract;
@@ -3058,7 +3065,7 @@ router.get('/:sessionId/status', async (req, res) => {
   }
 
   if (session.status === 'failed' || session.status === 'cancelled') {
-    response.error = sessionUsesPrivateKnowledge(session)
+    response.error = privateKnowledge
       ? projectOwnerAnalysisError(sessionId, session.error, sessionOutputLanguage(session))
       : session.error;
   }
@@ -3099,7 +3106,7 @@ router.get('/:sessionId/turns', (req, res) => {
   }
   const privateSelection = assistantAppService.getSession(sessionId) ??
     SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId) ?? {};
-  const privateSessionId = sessionUsesPrivateKnowledge(privateSelection) ? sessionId : undefined;
+  const privateSessionId = analysisHasPrivateContext(privateSelection) ? sessionId : undefined;
   const outputLanguage = sessionOutputLanguage(privateSelection);
 
   const allTurns = resolved.context.getAllTurns();
@@ -3156,7 +3163,7 @@ router.get('/:sessionId/turns/:turnId', (req, res) => {
   }
   const privateSelection = assistantAppService.getSession(sessionId) ??
     SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId) ?? {};
-  const privateSessionId = sessionUsesPrivateKnowledge(privateSelection) ? sessionId : undefined;
+  const privateSessionId = analysisHasPrivateContext(privateSelection) ? sessionId : undefined;
   const outputLanguage = sessionOutputLanguage(privateSelection);
 
   const turns = resolved.context.getAllTurns();
@@ -3894,7 +3901,7 @@ async function runSmartAnalysis(
     knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const cancelToken = smartCancelBridge.create(sessionId, runId);
   let dispatchedToAgentDeepDive = false;
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  const privateKnowledge = sessionRunHasPrivateContext(session, runId);
   const outputLanguage = sessionOutputLanguage(session);
   const durableQuery = privateKnowledge
     ? privateAnalysisQueryMessage(outputLanguage)
@@ -4337,6 +4344,7 @@ function completeAgentDrivenSessionWithResult(input: {
     markSessionRunStatus,
     persistAgentTurn,
     refreshPersistedAgentSnapshot,
+    runPrivateContext: (session: AnalysisSession, runId?: string) => sessionRunPrivateContext(session, runId),
     ensureCompletedAnalysisSseEvents: (session, runId) => ensureCompletedAnalysisSseEvents(session, runId, {
       entry: 'new_finalization', assertCurrent: input.assertCurrent,
     }),
@@ -4972,7 +4980,7 @@ export async function captureCaseCandidatesAfterQualityArtifacts(
   input: CaptureCaseCandidatesAfterQualityArtifactsInput & {assertCurrent?: () => void},
 ): Promise<void> {
   try {
-    if (sessionUsesPrivateKnowledge(input.session)) {
+    if (sessionRunHasPrivateContext(input.session, input.runIdForAnalysis)) {
       input.logger.info('CaseEvolution', 'Skipping candidate capture for private source or knowledge analysis', {
         sessionId: input.sessionId,
         runId: input.runIdForAnalysis,
@@ -5104,7 +5112,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   persistSessionRunState(session, 'running', undefined, runIdForAnalysis);
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runIdForAnalysis);
   logger.info('AgentDrivenAnalysis', 'Starting agent-driven analysis', {
-    query: sessionUsesPrivateKnowledge(session)
+    query: sessionRunHasPrivateContext(session, runIdForAnalysis)
       ? privateAnalysisQueryMessage(outputLanguage)
       : query,
     traceId,
@@ -5142,11 +5150,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   let contextTransferred = false;
   let sceneSeal: SceneRuntimeSeal | undefined;
   let acceptingUpdates = true;
-  const sourceAware = sessionUsesPrivateKnowledge({
-    codeAwareMode: options.codeAwareMode,
-    codebaseIds: options.codebaseIds,
-    knowledgeSourceIds: options.knowledgeSourceIds,
-  });
+  const sourceAware = analysisHasPrivateContext(options);
   // Display-only answer draft, live-only for every session. Scene runs own
   // their terminal delivery and have no conclusion that would replace it.
   const answerDraftRelay = options.sceneRunBinding ? undefined : createAnswerDraftRelay({
@@ -5605,7 +5609,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     // finalization is not a failure.
     if (finalizationRun.terminal === 'review_not_finished') return;
     if (!finalizationRun.owner.isCurrent()) return;
-    const privateKnowledge = sessionUsesPrivateKnowledge(session);
+    const privateKnowledge = sessionRunHasPrivateContext(session, runIdForAnalysis);
     const authorizationChanged = error instanceof AnalysisContextAuthorizationChangedError ||
       error?.code === 'analysis_context_changed_restart_required';
     if (authorizationChanged) {
@@ -5946,7 +5950,7 @@ function broadcastAnswer(
   const runId = run.owner.runId;
   if (!body.trim() || !isCurrentRunOwner(session, runId) ||
     assistantAppService.getSession(session.sessionId) !== session) return false;
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  const privateKnowledge = sessionRunHasPrivateContext(session, runId);
   const conclusion = projectOwnerProvisionalConclusion(privateKnowledge, session.sessionId, body, outputLanguage);
   if (options.provisional) run.stop.markDelivered(body);
   const content: ProvisionalConclusionEventData | {conclusion: string} = options.provisional
@@ -7521,9 +7525,9 @@ function ensureCompletedAnalysisFinalArtifacts(
     result,
     runId,
   );
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
   // This run's own marker: a later run may already have moved the session on.
-  const privateContext = resolveSessionRun(session, runId)?.privateContext ?? 'unknown';
+  const privateContext = sessionRunPrivateContext(session, runId);
+  const privateKnowledge = privateContextRestrictsAudience(privateContext);
   const outputLanguage = sessionOutputLanguage(session);
   const durableResultForClient = privateKnowledge
     ? projectOwnerAnalysisResult(session.sessionId, input.resultForClient, outputLanguage)
@@ -7593,6 +7597,7 @@ function ensureCompletedAnalysisFinalArtifacts(
       const reportData = buildAgentDrivenReportData({
         session,
         result: resultForReport,
+        privateContext,
       });
       console.log(`[AgentRoutes] Generating HTML report, data keys:`, {
         hasResult: !!result,
@@ -7769,7 +7774,7 @@ function copyStoredClientFindings(findings: AgentRuntimeAnalysisResult['findings
 }
 
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {
-  return sessionUsesPrivateKnowledge(session)
+  return sessionRunHasPrivateContext(session)
     ? projectOwnerAnalysisResult(session.sessionId, result, sessionOutputLanguage(session))
     : copyAnalysisResultForSnapshot(result);
 }
@@ -7850,11 +7855,13 @@ function projectAnalysisCompletedConclusionContract(
 
 function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: string, publication?: CompletedPublication): BufferedSseEvent[] {
   const completedRunId = getCompletedResultRunId(session, runId);
+  const privateKnowledge = sessionRunHasPrivateContext(session, completedRunId);
   const sseCache = (session as any).completedAnalysisSseEventsByRunId as Record<string, {events: BufferedSseEvent[]}> | undefined;
   const cached = completedRunId ? sseCache?.[completedRunId]?.events
     : (session as any).completedAnalysisSseEvents as BufferedSseEvent[] | undefined;
   if (cached?.length && !publication) return cached.map(event => ({...event,
-    eventData: sanitizePersistedAnalysisCompletedEvent(session, event as unknown as SerializedAgentEvent).eventData}));
+    eventData: sanitizePersistedAnalysisCompletedEvent(session, event as unknown as SerializedAgentEvent,
+      privateKnowledge).eventData}));
   if (!publication) {
     const persisted = loadPersistedCompletedAnalysisSseEvents(session, completedRunId);
     if (persisted.length) return persisted;
@@ -7879,7 +7886,6 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
     finalArtifacts,
   } = completedPayload;
   const observability = buildStreamObservability(session, completedRunId);
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
   const outputLanguage = sessionOutputLanguage(session);
   const projectedConclusion = normalizedConclusion;
   const projectedConclusionContract = normalizedConclusionContract;

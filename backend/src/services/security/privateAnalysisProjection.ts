@@ -36,13 +36,6 @@ function privateControl<T extends string>(value: unknown, allowed: readonly T[],
   return typeof value === 'string' && allowed.includes(value as T) ? value as T : fallback;
 }
 
-export interface PrivateAnalysisSessionSelection {
-  sessionId: string;
-  codeAwareMode?: string;
-  codebaseIds?: string[];
-  knowledgeSourceIds?: string[];
-}
-
 const SAFE_TERMINATION_REASONS = new Set([
   'max_turns',
   'max_budget_usd',
@@ -200,15 +193,6 @@ function projectPrivateCodebaseSnapshot(
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .slice(0, MAX_PRIVATE_PROVENANCE_IDS);
-}
-
-export function sessionUsesPrivateKnowledge(
-  session: Omit<PrivateAnalysisSessionSelection, 'sessionId'>,
-): boolean {
-  return Boolean(
-    (session.codeAwareMode && session.codeAwareMode !== 'off' && session.codebaseIds?.length) ||
-    session.knowledgeSourceIds?.length,
-  );
 }
 
 export function privateAnalysisFailureMessage(language: OutputLanguage): string {

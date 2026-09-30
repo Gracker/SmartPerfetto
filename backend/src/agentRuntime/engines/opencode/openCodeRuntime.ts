@@ -77,7 +77,6 @@ import {
   projectSessionFieldsForDurableSnapshot,
   type OpenCodeOpaqueState,
   type SessionFieldsForSnapshot,
-  sessionFieldsUsePrivateKnowledge,
   type SessionStateSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
 import type { McpToolDefinition } from '../../../agentv3/mcpToolRegistry';
@@ -87,8 +86,10 @@ import {
   applyFinalResultQualityGate,
   type FinalResultComparisonIdentity,
 } from '../../../services/finalResultQualityGate';
-import {analysisContextUsesPrivateKnowledge, assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
+import {
+  assertCurrentAnalysisContextAuthorization,
+  buildAnalysisContextAuthorizationFingerprint,
+} from '../../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn,
   type AnalysisHistoryReader} from '../../analysisHistory';
@@ -158,6 +159,7 @@ import {
   OPENCODE_RUNTIME_KIND,
 } from '../../runtimeKinds';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
+import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 
 export type ExperimentalOpenCodeRuntimeKind = typeof EXPERIMENTAL_OPENCODE_RUNTIME_KIND;
 export type PublicOpenCodeRuntimeKind = typeof OPENCODE_RUNTIME_KIND;
@@ -2547,7 +2549,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       throw error;
     }
     executionLease.throwIfAborted();
-    const privateKnowledge = analysisContextUsesPrivateKnowledge(options ?? {});
+    const privateKnowledge = analysisHasPrivateContext(options ?? {});
     const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
@@ -2779,7 +2781,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       await bridge.close().catch(() => undefined);
       throw error;
     }
-    const privateKnowledge = analysisContextUsesPrivateKnowledge(options);
+    const privateKnowledge = analysisHasPrivateContext(options);
     const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
@@ -3067,7 +3069,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         sceneType: prep.sceneType, outputLanguage: prep.analysisRunSpec.outputLanguage,
         query, emitIssueProgress: false,
         deliveryContext,
-        allowPersistentLearning: !analysisContextUsesPrivateKnowledge(options) && turnPolicy.allowNewEvidence,
+        allowPersistentLearning: !privateKnowledge && turnPolicy.allowNewEvidence,
       });
       const issue = [...verification.heuristicIssues, ...(verification.llmIssues ?? [])]
         .find(issue => issue.severity === 'error' && issue.type !== 'plan_deviation' && issue.type !== 'unresolved_hypothesis');
@@ -3282,7 +3284,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     uncertaintyFlags.splice(0);
 
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+    const privateAnalysisContext = analysisHasPrivateContext(options);
     const allowMemoryPrefetch = turnPolicy.allowAutomaticPrefetch && !privateAnalysisContext;
     const recentSqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope, options) : [];
     const skillNotesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
@@ -3541,7 +3543,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     sessionFields: SessionFieldsForSnapshot,
   ): SessionStateSnapshot {
-    const privateKnowledge = sessionFieldsUsePrivateKnowledge(sessionFields);
+    const privateKnowledge = analysisHasPrivateContext(sessionFields);
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);

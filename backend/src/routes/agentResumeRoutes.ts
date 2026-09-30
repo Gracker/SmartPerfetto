@@ -23,13 +23,16 @@ import {
   getSnapshotRuntimeProviderSnapshotHash,
 } from '../agentv3/sessionStateSnapshot';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
-import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, sessionUsesPrivateKnowledge} from '../services/security/privateAnalysisProjection';
+import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult} from '../services/security/privateAnalysisProjection';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
   requireAiEnabledForHttp,
   sendAiDisabledErrorIfPresent,
 } from './aiCapabilityPolicyHttp';
-import { decodePrivateContextJson } from '../services/security/analysisPrivateContext';
+import {
+  decodePrivateContextJson,
+  privateContextRestrictsAudience,
+} from '../services/security/analysisPrivateContext';
 
 interface AssistantSessionStore {
   getSession(sessionId: string): any;
@@ -222,12 +225,14 @@ export function registerAgentResumeRoutes(
       const restoredTurns = restoredContext.getAllTurns();
       const latestTurn = restoredTurns.length > 0 ? restoredTurns[restoredTurns.length - 1] : null;
       const snapshotRun = snapshot?.lastRun ?? snapshot?.activeRun;
+      // A run serialized before markers existed carries none: it is unknown.
+      const snapshotRunPrivateContext = decodePrivateContextJson(snapshotRun?.privateContext);
       const storedFinal = snapshot?.finalResult;
       const storedFinalRunId = storedFinal?.completion?.runId ?? storedFinal?.analysisReceipt?.runId;
       const matchingStoredFinal = storedFinal?.sessionId === sessionId && snapshotRun?.runId &&
         (!storedFinalRunId || storedFinalRunId === snapshotRun.runId);
       const recoveredResult = matchingStoredFinal
-        ? (sessionUsesPrivateKnowledge(snapshot!)
+        ? (privateContextRestrictsAudience(snapshotRunPrivateContext)
             ? projectOwnerAnalysisResult(sessionId, storedFinal!, snapshot?.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
             : copyAnalysisResultForSnapshot(storedFinal!))
         : deps.buildRecoveredResultFromContext(sessionId, restoredContext);
@@ -244,10 +249,8 @@ export function registerAgentResumeRoutes(
             privateContext: 'unknown',
           }
         : undefined;
-      const snapshotRunContext = (snapshot?.lastRun || snapshot?.activeRun) as AnalyzeSessionRunContext | undefined;
-      // A run serialized before markers existed carries none: it is unknown.
-      const restoredRun = snapshotRunContext
-        ? {...snapshotRunContext, privateContext: decodePrivateContextJson(snapshotRunContext.privateContext)}
+      const restoredRun = snapshotRun
+        ? {...snapshotRun as AnalyzeSessionRunContext, privateContext: snapshotRunPrivateContext}
         : fallbackRestoredRun;
       const restoredStatus = restoredSessionStatus(restoredRun, Boolean(recoveredResult));
       const owner = normalizeResourceOwner(persistedSession.metadata);

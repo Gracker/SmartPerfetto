@@ -17,6 +17,7 @@ import { openCaseCandidateOutbox, type CaseCandidateOutboxHandle } from '../case
 import { loadCaseEvolutionConfig } from '../caseEvolutionConfig';
 import { CaseEvolutionWorker } from '../caseEvolutionWorker';
 import { saveCaseCandidates } from '../saveCaseCandidates';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 let outbox: CaseCandidateOutboxHandle;
 let tempDir: string;
@@ -172,7 +173,7 @@ describe('case evolution shadow integration', () => {
       sessionId: 'session-shadow',
       traceId: 'trace-shadow',
       session: {
-        activeRun: {sequence: 7},
+        activeRun: {runId: 'run-shadow', sequence: 7, privateContext: NO_PRIVATE_CONTEXT},
         dataEnvelopes: [liveEnvelope],
         orchestrator: {getCachedArchitecture: () => ({type: 'android'})},
         _lastSnapshot: {conclusionContract: staleSnapshotContract},

@@ -253,6 +253,7 @@ describe('source provenance output surface matrix', () => {
           }),
           createdAt: 1,
         } as any,
+        true,
       );
       const sseResult = JSON.parse(sseEvent.eventData).data;
       const sseContract = sseResult.conclusionContract;
@@ -292,6 +293,7 @@ describe('source provenance output surface matrix', () => {
           },
         } as any,
         result,
+        privateContext: {codebase: true, knowledge: false},
       });
       expect(reportData.result.claimVerificationResult).toEqual(result.claimVerificationResult);
       const html = new HTMLReportGenerator().generateAgentDrivenHTML(reportData);

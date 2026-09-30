@@ -21,7 +21,7 @@ import {projectPrimaryAnalysisOptions, resolveAnalysisSourceActivation} from '..
 import {knowledgeScopeFromRequestContext} from '../../services/scopedKnowledgeStore';
 import {authorizeAnalysisContext} from '../../services/analysisContextAuthorization';
 import {registerPrivateAnalysisQueryForEcho, revokeCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
-import {privateAnalysisFailureMessage, projectOwnerAnalysisError, sessionUsesPrivateKnowledge} from '../../services/security/privateAnalysisProjection';
+import {privateAnalysisFailureMessage, projectOwnerAnalysisError} from '../../services/security/privateAnalysisProjection';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
 import {withRunManifestLifecycle, type RunManifestLifecycle} from '../../services/selfEvolution/runManifestLifecycle';
 import type {RequestContext} from '../../middleware/auth';
@@ -40,6 +40,10 @@ import type {KnowledgeScope} from '../../services/scopedKnowledgeStore';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {AiDisabledError, assertAiFeatureEnabled, buildAiDisabledPayload} from '../../services/aiCapabilityPolicy';
 import {readTraceMetadataForContext} from '../../services/traceMetadataStore';
+import {
+  analysisHasPrivateContext,
+  privateContextRestrictsAudience,
+} from '../../services/security/analysisPrivateContext';
 
 export interface AnalysisDispatchSession extends AnalyzeManagedSession {
   sceneStoryReport?: SceneReport;
@@ -638,7 +642,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
       sessionForRun.knowledgeSourceIds = Array.isArray(options.knowledgeSourceIds)
         ? options.knowledgeSourceIds
         : undefined;
-      if (sessionUsesPrivateKnowledge(sessionForRun)) {
+      if (analysisHasPrivateContext(sessionForRun)) {
         registerPrivateAnalysisQueryForEcho(sessionId, query);
       }
       if (validatedSmartPreviewReport) {
@@ -747,7 +751,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         // handler covers startup failures, without producing a second error event.
         if (session.activeRun?.runId === runContext.runId &&
           ['completed', 'failed', 'cancelled', 'quota_exceeded'].includes(session.activeRun.status)) return;
-        const privateKnowledge = sessionUsesPrivateKnowledge(session);
+        const privateKnowledge = privateContextRestrictsAudience(runContext.privateContext);
         const publicErrorMessage = privateKnowledge
           ? projectOwnerAnalysisError(sessionId, error, sessionOutputLanguage(session))
           : error instanceof Error ? error.message : String(error);

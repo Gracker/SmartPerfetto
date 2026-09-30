@@ -16,8 +16,8 @@ import {
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
-  sessionUsesPrivateKnowledge,
 } from '../services/security/privateAnalysisProjection';
+import {sessionRunHasPrivateContext} from '../assistant/application/agentAnalyzeSessionService';
 
 interface AgentReportRoutesDeps {
   getSession: (sessionId: string) => any;
@@ -58,7 +58,7 @@ export function registerAgentReportRoutes(
     }
 
     const completedPayload = deps.getCompletedPayload?.(session);
-    const privateKnowledge = sessionUsesPrivateKnowledge(session);
+    const privateKnowledge = sessionRunHasPrivateContext(session);
     const outputLanguage = session.outputLanguage
       ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const result = privateKnowledge

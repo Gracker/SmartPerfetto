@@ -9,6 +9,10 @@ import type {
 } from '../../agent';
 import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 import type {FinalResultQualityIssue} from '../../services/finalResultQualityGate';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from '../../services/security/analysisPrivateContext';
 
 type SessionStatus = 'pending' | 'running' | 'awaiting_user' | 'completed' | 'failed' | 'cancelled' | 'quota_exceeded';
 
@@ -57,6 +61,7 @@ export interface FinalizeAgentDrivenSessionDeps<TSession extends FinalizeSession
     result: AgentRuntimeAnalysisResult;
     logger: TSession['logger'];
     logComponent: string;
+    privateContext: AnalysisPrivateContextMarker;
   }): void;
   refreshPersistedAgentSnapshot(input: {
     session: any;
@@ -66,7 +71,10 @@ export interface FinalizeAgentDrivenSessionDeps<TSession extends FinalizeSession
     result: AgentRuntimeAnalysisResult;
     logger: TSession['logger'];
     logComponent: string;
+    privateContext: AnalysisPrivateContextMarker;
   }): void;
+  /** A run's own private-context marker, fixed at admission. */
+  runPrivateContext(session: TSession, runId?: string): AnalysisPrivateContextMarker;
   ensureCompletedAnalysisSseEvents(session: TSession, runId?: string): unknown[];
   sendAgentDrivenResult(client: any, session: TSession, runId?: string): void;
 }
@@ -100,6 +108,7 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
   } = input;
   const { logger } = session;
   const completedRunId = getCompletedResultRunId(session, runId);
+  const privateContext = deps.runPrivateContext(session, completedRunId);
   if (!deps.isRunCurrent(session, runId)) {
     logger.warn(input.logComponent, 'Skipping stale finalization', {
       sessionId,
@@ -166,7 +175,7 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
       conclusion: result.conclusion,
       confidence: result.confidence ?? 0,
       timestamp: Date.now(),
-      sourceDerived: session.sourceActivation === 'bounded_explicit' ? true : undefined,
+      sourceDerived: privateContextRestrictsAudience(privateContext) ? true : undefined,
     });
   }
 
@@ -204,6 +213,7 @@ export function finalizeAgentDrivenSession<TSession extends FinalizeSessionLike>
     result,
     logger,
     logComponent: input.logComponent,
+    privateContext,
   };
   assertCurrent();
   deps.persistAgentTurn(persistenceInput);

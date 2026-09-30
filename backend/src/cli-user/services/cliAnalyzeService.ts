@@ -133,8 +133,10 @@ import {
   projectOwnerProvisionalConclusion,
 } from '../../services/security/privateAnalysisProjection';
 import {
+  analysisHasPrivateContext,
   privateContextRestrictsAudience,
   resolveAnalysisPrivateContext,
+  type AnalysisPrivateContextMarker,
 } from '../../services/security/analysisPrivateContext';
 import {registerPrivateAnalysisQueryForEcho} from '../../services/security/codeAwareOutputRegistry';
 import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
@@ -645,7 +647,7 @@ export class CliAnalyzeService {
       turn: session.runSequence,
       query: input.query,
       timestamp: Date.now(),
-      sourceDerived: sourceActivation === 'dormant' ? undefined : true,
+      sourceDerived: primaryPrivateKnowledge ? true : undefined,
     });
     const requestedAnalysisMode = resolveEffectiveAnalysisMode(input.analysisMode, {
       referenceTraceId: effectiveReferenceTraceId,
@@ -887,7 +889,7 @@ export class CliAnalyzeService {
             conclusion: result.conclusion,
             confidence: result.confidence ?? 0,
             timestamp: Date.now(),
-            sourceDerived: sourceActivation === 'bounded_explicit' ? true : undefined,
+            sourceDerived: primaryPrivateKnowledge ? true : undefined,
           });
         }
         assertActive();
@@ -954,6 +956,7 @@ export class CliAnalyzeService {
           traceId,
           query: input.query,
           result,
+          privateContext: primaryPrivateContext,
         });
 
         const persistedSnapshot = (
@@ -993,7 +996,7 @@ export class CliAnalyzeService {
             : undefined;
 
         assertActive();
-        const reportOutput = this.buildReportHtml(session, result);
+        const reportOutput = this.buildReportHtml(session, result, primaryPrivateContext);
         const durableResult = primaryPrivateKnowledge
           ? projectOwnerAnalysisResult(sessionId, result, outputLanguage)
           : result;
@@ -1058,9 +1061,10 @@ export class CliAnalyzeService {
   private buildReportHtml(
     session: AnalyzeManagedSession,
     result: AnalysisResult,
+    privateContext: AnalysisPrivateContextMarker,
   ): { html?: string; error?: string } {
     try {
-      const reportData = buildAgentDrivenReportData({session, result});
+      const reportData = buildAgentDrivenReportData({session, result, privateContext});
       const html = getHTMLReportGenerator().generateAgentDrivenHTML(reportData);
       return { html };
     } catch (err) {
@@ -1294,10 +1298,7 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
       totalDurationMs,
     },
   };
-  const privateKnowledge = Boolean(
-    (output.codeAwareMode !== 'off' && input.codebaseIds?.length)
-    || input.knowledgeSourceIds?.length,
-  );
+  const privateKnowledge = analysisHasPrivateContext(input);
   if (!privateKnowledge) return output;
   const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const durableResult = projectOwnerAnalysisResult(sessionId, output.result, outputLanguage);

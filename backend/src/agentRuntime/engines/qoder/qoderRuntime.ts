@@ -55,7 +55,6 @@ import {
   createQoderSnapshotEngineState,
   getQoderSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
-  sessionFieldsUsePrivateKnowledge,
   type QoderOpaqueState,
   type SessionFieldsForSnapshot,
   type SessionStateSnapshot,
@@ -67,8 +66,10 @@ import {
   createCodeAwareStreamingTextProjection,
   sanitizeOwnerCodeAwareText,
 } from '../../../services/security/codeAwareOutputRegistry';
-import {analysisContextUsesPrivateKnowledge, assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
+import {
+  assertCurrentAnalysisContextAuthorization,
+  buildAnalysisContextAuthorizationFingerprint,
+} from '../../../services/resolvedAnalysisContext';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
@@ -141,6 +142,7 @@ import {
   truthyEnv,
   numericEnv,
 } from './qoderConfig';
+import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 
 export type QoderRuntimeKind = typeof QODER_AGENT_RUNTIME_KIND;
 
@@ -576,7 +578,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       options, sessionId, traceId, getTurns: () => sessionContext.getAnalysisHistory(),
       assertActive: assertAuthorized,
     });
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(normalizedOptions);
+    const privateAnalysisContext = analysisHasPrivateContext(normalizedOptions);
     if (privateAnalysisContext) this.sessionOpaqueStates.delete(sessionId);
     const knowledgeScope = knowledgeScopeFromAnalysisOptions(normalizedOptions);
 
@@ -1592,7 +1594,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     sessionFields: SessionFieldsForSnapshot,
   ): SessionStateSnapshot {
-    const privateKnowledge = sessionFieldsUsePrivateKnowledge(sessionFields);
+    const privateKnowledge = analysisHasPrivateContext(sessionFields);
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);

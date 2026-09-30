@@ -266,7 +266,6 @@ import {
 } from '../services/externalKnowledgeSourceRegistry';
 import {SymbolResolver} from '../services/symbol/symbolResolver';
 import {
-  analysisContextUsesPrivateKnowledge,
   buildAnalysisContextAuthorizationFingerprint,
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
@@ -284,6 +283,7 @@ import type {
   SliceKind,
   WakeSourceSummary,
 } from '../types/criticalPathContract';
+import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
 
 export function requireToolDescription(templateName: string, loaded?: string): string {
   const content = loaded === undefined ? loadPromptSegment(templateName) : stripPromptComments(loaded);
@@ -1045,7 +1045,7 @@ export function loadLearnedSqlFixPairs(
   scope?: KnowledgeScope,
   selection: AnalysisContextSelection = {},
 ): SqlErrorFixPair[] {
-  if (analysisContextUsesPrivateKnowledge(selection)) return [];
+  if (analysisHasPrivateContext(selection)) return [];
   try {
     const logFile = sqlErrorLogFile(scope);
     if (!fs.existsSync(logFile)) return [];
@@ -1561,7 +1561,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     ? getDefaultAndroidInternalsPackStore(options.androidInternalsPackPin)
     : options.androidInternalsPackStore ?? undefined;
   const analysisContextSelection = {codeAwareMode, codebaseIds, knowledgeSourceIds};
-  const privateAnalysisContext = analysisContextUsesPrivateKnowledge(analysisContextSelection);
+  const privateAnalysisContext = analysisHasPrivateContext(analysisContextSelection);
   const pinnedAnalysisContextFingerprint = options.analysisContextFingerprint ??
     buildAnalysisContextAuthorizationFingerprint(analysisContextSelection, knowledgeScope ?? {}, {
       codebaseRegistry,

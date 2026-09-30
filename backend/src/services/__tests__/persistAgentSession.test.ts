@@ -9,7 +9,12 @@ import * as path from 'path';
 import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import { EnhancedSessionContext, sessionContextManager } from '../../agent/context/enhancedSessionContext';
 import { SessionPersistenceService } from '../sessionPersistenceService';
-import { persistAgentTurn, refreshPersistedAgentSnapshot } from '../persistAgentSession';
+import {
+  persistAgentTurn as persistRunTurn,
+  refreshPersistedAgentSnapshot as refreshRunSnapshot,
+  type PersistAgentTurnInput,
+} from '../persistAgentSession';
+import {resolveAnalysisPrivateContext} from '../security/analysisPrivateContext';
 import { createDataEnvelope } from '../../types/dataContract';
 import {CodeLookupLedger} from '../codebase/codeLookupLedger';
 import {SOURCE_USE_DECISION_SCHEMA_VERSION} from '../codebase/sourceUseDecision';
@@ -17,6 +22,13 @@ import {clearCodeAwareOutputGuards, registerCodeAwareCanary, registerOnDemandSou
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {AnalysisHistoryStore} from '../analysisHistoryStore';
+
+// These cases describe the run by its session selection; the marker is the one admission fixes from it.
+type TurnInput = Omit<PersistAgentTurnInput, 'privateContext'> & Partial<Pick<PersistAgentTurnInput, 'privateContext'>>;
+const withRunMarker = (input: TurnInput): PersistAgentTurnInput =>
+  ({privateContext: resolveAnalysisPrivateContext(input.session ?? {}), ...input});
+const persistAgentTurn = (input: TurnInput) => persistRunTurn(withRunMarker(input));
+const refreshPersistedAgentSnapshot = (input: TurnInput) => refreshRunSnapshot(withRunMarker(input));
 
 describe('persistAgentTurn', () => {
   it('archives current finalized typed missing work and propagates archive failure', () => {

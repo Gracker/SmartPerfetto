@@ -7,7 +7,12 @@ jest.mock('../traceProcessorService', () => ({
   getTraceProcessorService: () => ({getTrace: () => undefined}),
 }));
 
-import {buildAgentDrivenReportData} from '../agentReportData';
+import {buildAgentDrivenReportData as buildRunReportData, type BuildAgentReportDataInput} from '../agentReportData';
+import {resolveAnalysisPrivateContext} from '../security/analysisPrivateContext';
+
+// These cases describe the reported run by its session selection; the marker is the one admission fixes from it.
+const buildAgentDrivenReportData = (input: Omit<BuildAgentReportDataInput, 'privateContext'>) =>
+  buildRunReportData({privateContext: resolveAnalysisPrivateContext(input.session), ...input});
 import {HTMLReportGenerator} from '../htmlReportGenerator';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary, registerOnDemandSourceLookupForEcho} from '../security/codeAwareOutputRegistry';
 import {sanitizeSourceReference} from '../codebase/sourceUseDecision';

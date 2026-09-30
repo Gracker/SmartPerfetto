@@ -35,7 +35,6 @@ import { SessionPersistenceService } from '../../services/sessionPersistenceServ
 import {parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
 import {
   privateAnalysisQueryMessage,
-  sessionUsesPrivateKnowledge,
 } from '../../services/security/privateAnalysisProjection';
 import {
   AssistantApplicationService,
@@ -45,7 +44,13 @@ import {
   registerSessionBackgroundKnowledgeReferences,
 } from '../../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
 import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
-import type {AnalysisPrivateContextMarker} from '../../services/security/analysisPrivateContext';
+import {
+  analysisHasPrivateContext,
+  privateContextRestrictsAudience,
+  resolveAnalysisPrivateContext,
+  type AnalysisPrivateContextMarker,
+} from '../../services/security/analysisPrivateContext';
+import type {AnalysisContextSelection} from '../../services/resolvedAnalysisContext';
 
 export interface AnalyzeSessionConversationStep {
   eventId: string;
@@ -86,6 +91,34 @@ export interface AnalyzeSessionRunContext {
    * A run restored without a recorded marker is 'unknown'.
    */
   privateContext: AnalysisPrivateContextMarker;
+}
+
+type SessionRunsWithSelection = AnalysisContextSelection & {
+  activeRun?: AnalyzeSessionRunContext;
+  lastRun?: AnalyzeSessionRunContext;
+  runRegistry?: Record<string, AnalyzeSessionRunContext>;
+};
+
+/**
+ * The private-context marker of one of a session's runs, fixed when the run
+ * was admitted. Without a run id, the latest run. A named run that is not
+ * found is unknown, which restricts; a session with no run yet is described
+ * by its current selection.
+ */
+export function sessionRunPrivateContext(
+  session: SessionRunsWithSelection,
+  runId?: string,
+): AnalysisPrivateContextMarker {
+  const run = runId === undefined
+    ? session.activeRun ?? session.lastRun
+    : [session.activeRun, session.lastRun].find(candidate => candidate?.runId === runId) ??
+      session.runRegistry?.[runId];
+  if (run) return run.privateContext;
+  return runId === undefined ? resolveAnalysisPrivateContext(session) : 'unknown';
+}
+
+export function sessionRunHasPrivateContext(session: SessionRunsWithSelection, runId?: string): boolean {
+  return privateContextRestrictsAudience(sessionRunPrivateContext(session, runId));
 }
 
 export interface AnalyzeManagedSession extends ManagedAssistantSession {
@@ -359,11 +392,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       ? options.outputLanguage as OutputLanguage
       : undefined;
     let requestedOutputLanguage = explicitOutputLanguage ?? defaultOutputLanguage;
-    const requestedPrivateKnowledge = sessionUsesPrivateKnowledge({
-      codeAwareMode: options.codeAwareMode,
-      codebaseIds: options.codebaseIds,
-      knowledgeSourceIds: options.knowledgeSourceIds,
-    });
+    const requestedPrivateKnowledge = analysisHasPrivateContext(options);
     let privateQuery = privateAnalysisQueryMessage(requestedOutputLanguage);
     const providerScope = input.providerScope;
     const requestedReferenceTraceId = normalizeReferenceTraceId(input.referenceTraceId ?? options.referenceTraceId);
@@ -504,7 +533,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
           existingSession.runSequence = Number.isFinite(existingSession.runSequence)
             ? Math.max(0, Math.floor(existingSession.runSequence as number))
             : 0;
-          const privateKnowledge = requestedPrivateKnowledge || sessionUsesPrivateKnowledge(existingSession);
+          const privateKnowledge = requestedPrivateKnowledge || analysisHasPrivateContext(existingSession);
           existingSession.logger.info('AgentRoutes', 'Continuing multi-turn dialogue', {
             turnQuery: privateKnowledge ? privateQuery : query,
             previousQuery: privateKnowledge ? privateQuery : existingSession.query,
@@ -815,7 +844,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             } as unknown as TSession;
 
             this.assistantAppService.setSession(requestedSessionId, restoredSession);
-            const privateKnowledge = requestedPrivateKnowledge || sessionUsesPrivateKnowledge(restoredSession);
+            const privateKnowledge = requestedPrivateKnowledge || analysisHasPrivateContext(restoredSession);
             restoredLogger.info('AgentRoutes', 'Continuing multi-turn dialogue from persisted context', {
               turnQuery: privateKnowledge ? privateQuery : query,
               previousQuery: privateKnowledge ? privateQuery : latestTurn?.query || persistedSession.question,

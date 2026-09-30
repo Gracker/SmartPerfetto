@@ -33,6 +33,7 @@ import * as eventStore from '../../services/agentEventStore';
 import {SessionPersistenceService} from '../../services/sessionPersistenceService';
 import {registerAgentReportRoutes} from '../agentReportRoutes';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
 
 const sessionId = 'private-route-projection';
 
@@ -133,6 +134,7 @@ describe('agent route private projections', () => {
       const eventData = JSON.stringify({data: {conclusion: '', terminalRunStatus}});
       const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
         session, {eventType: 'analysis_completed', eventData} as any,
+        analysisHasPrivateContext(session),
       );
       expect(JSON.parse(projected.eventData).data.terminalRunStatus).toBe(terminalRunStatus);
     },
@@ -267,6 +269,7 @@ describe('agent route private projections', () => {
         }),
         createdAt: 1,
       } as any,
+      true,
     );
     const persistedContract = JSON.parse(persisted.eventData).data.conclusionContract;
     expect(persistedContract?.claims).toBeDefined();
@@ -337,6 +340,7 @@ describe('agent route private projections', () => {
           },
         }}),
       } as any,
+      analysisHasPrivateContext(session),
     );
 
     const projectedData = JSON.parse(projected.eventData).data;
@@ -420,6 +424,11 @@ describe('agent route private projections', () => {
       .toEqual({codebase: true, knowledge: false});
     expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, second.runId)?.privateContext)
       .toEqual({codebase: false, knowledge: false});
+    // The question each run's records carry follows the run, not the session's current selection.
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, first.runId)?.query)
+      .not.toBe('first');
+    expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, second.runId)?.query)
+      .toBe('second');
   });
 
   it('reports private feedback as locally stored without public projection', () => {
@@ -612,6 +621,7 @@ describe('agent route private projections', () => {
     const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
       session,
       {eventType: 'analysis_completed', eventData} as any,
+      analysisHasPrivateContext(session),
     );
 
     expect(JSON.stringify(projected)).not.toContain('PRIVATE_REPLAY_CANARY');
@@ -642,7 +652,7 @@ describe('agent route private projections', () => {
         source: 'passed', identity: 'passed', report: 'passed', investigation: 'passed', investigationEvidence: 'passed'},
     }});
     const projected = agentRoutesPrivacyProjectionTestSeam.sanitizePersistedAnalysisCompletedEvent(
-      session, {eventType: 'analysis_completed', eventData} as any);
+      session, {eventType: 'analysis_completed', eventData} as any, analysisHasPrivateContext(session));
     const data = JSON.parse(projected.eventData).data;
     expect(data.investigationAssessment).toBeUndefined();
     expect(data.deliveryAssurance).toBeUndefined();

@@ -35,6 +35,8 @@ import {
 } from '../services/codebase/sourceUseDecision';
 import type { AgentRuntimeKind } from '../services/providerManager/types';
 import type {OutputLanguage} from './outputLanguage';
+import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
+import type {AnalysisPrivateContextMarker} from '../services/security/analysisPrivateContext';
 
 export type ComparisonSourceKind = 'raw_trace_pair' | 'analysis_result_snapshots';
 
@@ -102,6 +104,8 @@ export interface SnapshotRunContext {
   completedAt?: number;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'quota_exceeded';
   error?: string;
+  /** Fixed at admission; absent on runs serialized before markers existed. */
+  privateContext?: AnalysisPrivateContextMarker;
 }
 
 export interface SnapshotEngineProviderState {
@@ -743,14 +747,6 @@ export interface SessionFieldsForSnapshot {
   lastRun?: SnapshotRunContext;
 }
 
-/** Third-party opaque transcripts are not durable for private source sessions. */
-export function sessionFieldsUsePrivateKnowledge(fields: SessionFieldsForSnapshot): boolean {
-  return Boolean(
-    fields.codebaseIds?.length ||
-    fields.knowledgeSourceIds?.length,
-  );
-}
-
 /**
  * Private retrieval sessions persist only the verified product result and
  * deterministic trace evidence. Intermediate model-authored state must not be
@@ -759,7 +755,7 @@ export function sessionFieldsUsePrivateKnowledge(fields: SessionFieldsForSnapsho
 export function projectSessionFieldsForDurableSnapshot(
   fields: SessionFieldsForSnapshot,
 ): SessionFieldsForSnapshot {
-  if (!sessionFieldsUsePrivateKnowledge(fields)) return fields;
+  if (!analysisHasPrivateContext(fields)) return fields;
   const {
     sourceUseDecision: rawSourceUseDecision,
     codeLookupSummary: rawCodeLookupSummary,

@@ -40,7 +40,6 @@ import {
   privateAnalysisQueryMessage,
   projectOwnerSessionStateSnapshot,
   projectOwnerTerminationMessage,
-  sessionUsesPrivateKnowledge,
   copyAnalysisResultForSnapshot,
   projectOwnerAnalysisResult,
 } from './security/privateAnalysisProjection';
@@ -51,6 +50,10 @@ import {
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {AnalysisHistoryStore} from './analysisHistoryStore';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
 
 const MAX_SQL_RESULTS_PER_MESSAGE = 5;
 const MAX_SQL_RESULT_ENTRY_BYTES = 100 * 1024;
@@ -134,6 +137,8 @@ export interface PersistAgentTurnInput {
    *  existing log-based alerts keyed on that component; CLI defaults to
    *  logComponent so CLI-only log stream is self-identifying. */
   logComponent?: string;
+  /** The persisted run's own marker, fixed at admission. */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 function buildPersistedAssistantMessage(result: PersistAgentTurnInput['result']): string {
@@ -247,7 +252,7 @@ function buildAssistantSqlResult(envelopes: unknown): SqlResultMessageBundle | u
 
 function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boolean): void {
   const { session, sessionId, traceId, query, result, logger } = input;
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  const privateKnowledge = privateContextRestrictsAudience(input.privateContext);
   const outputLanguage = session.outputLanguage
     ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const logComponent = input.logComponent ?? 'AgentPersistence';
@@ -279,7 +284,7 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
       timestamp: session.lastRun?.completedAt ?? Date.now(), query: privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : query,
       traceId, result: finalResult,
       analysisContextFingerprint: session.analysisContextFingerprint,
-      sourceDerived: privateKnowledge || session.sourceActivation === 'bounded_explicit' || session.sourceActivation === 'deep_supplement',
+      sourceDerived: privateKnowledge,
     }));
   }
 

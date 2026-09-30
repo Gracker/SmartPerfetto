@@ -9,6 +9,7 @@ import {
   resolveCaseEvolutionArchitectureType,
 } from '../agentRoutes';
 import { buildTraceContextDataEnvelopes } from '../../agentRuntime/traceContextEvidence';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 afterEach(() => {
   jest.restoreAllMocks();
@@ -63,7 +64,7 @@ describe('agentRoutes case evolution capture seam', () => {
       claimVerificationResult,
     };
     const session = {
-      activeRun: { sequence: 3 },
+      activeRun: {runId: 'run-1', sequence: 3, privateContext: NO_PRIVATE_CONTEXT},
       dataEnvelopes: [dataEnvelope],
       orchestrator: {
         getCachedArchitecture: jest.fn(() => ({ type: 'android' })),
@@ -128,7 +129,7 @@ describe('agentRoutes case evolution capture seam', () => {
     };
     const session = {
       runtimeKind: 'openai-agents-sdk',
-      activeRun: {sequence: 4},
+      activeRun: {runId: 'run-race', sequence: 4, privateContext: NO_PRIVATE_CONTEXT},
       dataEnvelopes: [originalEnvelope],
       orchestrator: {
         getCachedArchitecture: jest.fn(() => ({type: 'android-original'})),
@@ -201,7 +202,7 @@ describe('agentRoutes case evolution capture seam', () => {
       sessionId: 'session-1',
       traceId: 'trace-1',
       session: {
-        activeRun: { sequence: 1 },
+        activeRun: {runId: 'run-1', sequence: 1, privateContext: NO_PRIVATE_CONTEXT},
         dataEnvelopes: [],
         orchestrator: {},
       } as any,
@@ -240,6 +241,7 @@ describe('agentRoutes case evolution capture seam', () => {
         codeAwareMode: 'provider_send',
         codebaseIds: ['app-source'],
         knowledgeSourceIds: ['wiki'],
+        activeRun: {runId: 'private-run', sequence: 1, privateContext: {codebase: true, knowledge: true}},
         dataEnvelopes: [],
         orchestrator: {},
       } as any,
@@ -270,7 +272,7 @@ describe('agentRoutes case evolution capture seam', () => {
       sessionId: 'session-1',
       traceId: 'trace-1',
       session: {
-        activeRun: { sequence: 1 },
+        activeRun: {runId: 'run-1', sequence: 1, privateContext: NO_PRIVATE_CONTEXT},
         dataEnvelopes: [],
         orchestrator: {},
       } as any,

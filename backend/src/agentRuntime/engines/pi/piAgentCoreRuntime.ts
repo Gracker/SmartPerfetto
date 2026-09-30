@@ -42,7 +42,7 @@ import {
 } from '../../../services/selfEvolution/evaluationRuntimeHooks';
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
-import {analysisContextUsesPrivateKnowledge, assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
+import {assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
 import {
@@ -57,7 +57,6 @@ import {
   projectSessionFieldsForDurableSnapshot,
   type PiAgentCoreOpaqueState,
   type SessionFieldsForSnapshot,
-  sessionFieldsUsePrivateKnowledge,
   type SessionStateSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
 import {
@@ -168,6 +167,7 @@ import {
   parsePiAgentCoreModelConfig,
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
+import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 
 export {
   createPiAgentCoreProviderRuntime,
@@ -1499,7 +1499,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         ? `Pi agent-core smoke completed for query "${query}" on trace ${traceId}.`
         : `Experimental Pi agent-core smoke completed for query "${query}" on trace ${traceId}.`,
     );
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+    const privateAnalysisContext = analysisHasPrivateContext(options);
     if (privateAnalysisContext) this.sessionOpaqueStates.delete(sessionId);
 
     const agent = new Agent({
@@ -1650,7 +1650,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+    const privateAnalysisContext = analysisHasPrivateContext(options);
     const authorizationScope = resolveKnowledgeScope(options);
     const authorizationFingerprint = options.analysisContextFingerprint ??
       buildAnalysisContextAuthorizationFingerprint(options, authorizationScope);
@@ -2163,7 +2163,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
 
     const watchdogWarning: { current: string | null } = { current: null };
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+    const privateAnalysisContext = analysisHasPrivateContext(options);
     const recentSqlErrors = policy.allowNewEvidence ? loadLearnedSqlFixPairs(5, knowledgeScope, options) : [];
     const skillNotesBudget = createRuntimeSkillNotesBudget(quickMode);
     const pairInput = {
@@ -2388,7 +2388,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     sessionFields: SessionFieldsForSnapshot,
   ): SessionStateSnapshot {
-    const privateKnowledge = sessionFieldsUsePrivateKnowledge(sessionFields);
+    const privateKnowledge = analysisHasPrivateContext(sessionFields);
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);

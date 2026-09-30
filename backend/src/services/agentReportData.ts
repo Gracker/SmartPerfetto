@@ -28,7 +28,6 @@ import {
   projectOwnerDataEnvelopes,
   projectOwnerHypotheses,
   projectOwnerStructuredValue,
-  sessionUsesPrivateKnowledge,
 } from './security/privateAnalysisProjection';
 import type {SessionStateSnapshot} from '../agentv3/sessionStateSnapshot';
 import {isCodebaseKind} from './codebase/codebaseRegistry';
@@ -37,6 +36,10 @@ import {
   type SafeSourceProvenanceProjection,
 } from './codebase/sourceClaimVerifier';
 import {sanitizeSourceClaimBindings, type SourceUseDecisionV1} from './codebase/sourceUseDecision';
+import {
+  privateContextRestrictsAudience,
+  type AnalysisPrivateContextMarker,
+} from './security/analysisPrivateContext';
 
 type AgentReportSourceContext = AgentDrivenReportData['sourceContext'];
 const MAX_REPORT_SOURCE_ID = 160;
@@ -162,6 +165,8 @@ export interface BuildAgentReportDataInput {
   result: ReportResultLike;
   /** Optional server origin for downloaded HTML's authenticated detail links. */
   backendBaseUrl?: string;
+  /** The reported run's own marker, fixed at admission. */
+  privateContext: AnalysisPrivateContextMarker;
 }
 
 export function buildAgentDrivenReportData(
@@ -172,7 +177,7 @@ export function buildAgentDrivenReportData(
     result,
     'sourceUseDecision',
   );
-  const privateKnowledge = sessionUsesPrivateKnowledge(session);
+  const privateKnowledge = privateContextRestrictsAudience(input.privateContext);
   const outputLanguage = session.outputLanguage
     ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
 

@@ -13,6 +13,7 @@ import {
   getDefaultExternalKnowledgeSourceRegistry,
 } from './externalKnowledgeSourceRegistry';
 import type {KnowledgeScope} from './scopedKnowledgeStore';
+import {analysisHasPrivateContext} from './security/analysisPrivateContext';
 
 export interface AnalysisContextSelection {
   codeAwareMode?: CodeAwareMode;
@@ -29,24 +30,11 @@ export class AnalysisContextAuthorizationChangedError extends Error {
   }
 }
 
-/**
- * Whether a run is authorized to consume user/private knowledge. This is the
- * shared boundary for disabling cross-session learning and raw diagnostic
- * persistence; tenant scoping alone does not make model-authored text safe to
- * retain.
- */
-export function analysisContextUsesPrivateKnowledge(
-  selection: AnalysisContextSelection,
-): boolean {
-  return selectedIds(selection.codebaseIds).length > 0 ||
-    selectedIds(selection.knowledgeSourceIds).length > 0;
-}
-
 /** In-memory partition for raw SQL correction state; contains no source text. */
 export function analysisContextMemoryPartitionKey(
   selection: AnalysisContextSelection,
 ): string {
-  if (!analysisContextUsesPrivateKnowledge(selection)) return 'trace-public';
+  if (!analysisHasPrivateContext(selection)) return 'trace-public';
   return `private-${createHash('sha256').update(JSON.stringify({
     codeAwareMode: selection.codeAwareMode ?? 'off',
     codebaseIds: selectedIds(selection.codebaseIds),

@@ -90,7 +90,6 @@ import { buildAgentDefinitions } from './claudeAgentDefinitions';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {
   analysisContextMemoryPartitionKey,
-  analysisContextUsesPrivateKnowledge,
   assertCurrentAnalysisContextAuthorization,
   buildAnalysisContextAuthorizationFingerprint,
 } from '../../../services/resolvedAnalysisContext';
@@ -110,7 +109,6 @@ import {
   createClaudeSnapshotEngineState,
   getClaudeSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
-  sessionFieldsUsePrivateKnowledge,
   type SessionStateSnapshot,
   type SessionFieldsForSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
@@ -125,7 +123,7 @@ import {
   createCodeAwareStreamingTextProjection,
   sanitizeOwnerCodeAwareStructuredTextWithReceipt,
 } from '../../../services/security/codeAwareOutputRegistry';
-import {resolveAnalysisPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {resolveAnalysisPrivateContext, analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -1032,6 +1030,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
       sourceUse = ctx.sourceUse;
       executionLease.throwIfAborted();
+      const privateAnalysisContext = analysisHasPrivateContext(options);
 
       // Display-only draft: the bridge revokes it at each main-agent
       // message_start and at a tool_use after answer text; a retry, closeout or
@@ -1074,7 +1073,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
       }, runAnswerDraft, outputLanguage, {
         tracePairContext: ctx.analysisContextForRebuild.comparison?.tracePairContext,
-      }, ((options.codeAwareMode && options.codeAwareMode !== 'off') || options.knowledgeSourceIds?.length)
+      }, privateAnalysisContext
         ? createCodeAwareStreamingTextProjection(sessionId, 'claude-full-answer', 'owner')
         : undefined);
       // The bridge accumulates native text before applying the public stream projection.
@@ -1102,7 +1101,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
 
       // Each logical turn receives only product-owned, bounded history.
-      const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
       let finalResult: string | undefined;
       let mainCostUsd: number | undefined;
       let terminationReason: AnalysisResult['terminationReason'];
@@ -2081,7 +2079,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
       // P1: Save negative patterns to long-term memory (fire-and-forget)
       if (
-        !analysisContextUsesPrivateKnowledge(options) &&
+        !privateAnalysisContext &&
         failedApproaches.length > 0 &&
         fullFeatures.length > 0
       ) {
@@ -2143,7 +2141,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         // Persist session metrics (fire-and-forget, non-blocking)
         try {
           metricsCollector.recordTurn();
-          persistSessionMetrics(metricsCollector.summarize(), analysisContextUsesPrivateKnowledge(options));
+          persistSessionMetrics(metricsCollector.summarize(), analysisHasPrivateContext(options));
         } catch (metricsErr) {
           console.warn('[ClaudeRuntime] Failed to persist metrics:', (metricsErr as Error).message);
         }
@@ -2264,7 +2262,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     sessionFields: SessionFieldsForSnapshot,
   ): SessionStateSnapshot {
-    const privateKnowledge = sessionFieldsUsePrivateKnowledge(sessionFields);
+    const privateKnowledge = analysisHasPrivateContext(sessionFields);
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const notes = this.sessionNotes.get(sessionId) || [];
     const planState = this.sessionPlans.get(sessionId);
@@ -2676,7 +2674,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       sceneType,
       packageName: effectivePackageName,
     });
-    const privateAnalysisContext = analysisContextUsesPrivateKnowledge(options);
+    const privateAnalysisContext = analysisHasPrivateContext(options);
     const patternContext = privateAnalysisContext || !turnPolicy.allowAutomaticPrefetch
       ? undefined
       : buildPatternContextSection(traceFeatures, knowledgeScope);

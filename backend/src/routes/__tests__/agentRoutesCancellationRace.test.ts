@@ -53,6 +53,7 @@ import {
 } from '../../services/traceProcessorService';
 import { ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata } from '../../services/traceMetadataStore';
 import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
+import {NO_PRIVATE_CONTEXT, resolveAnalysisPrivateContext} from '../../services/security/analysisPrivateContext';
 
 const envKeys = [
   'SMARTPERFETTO_API_KEY',
@@ -331,6 +332,7 @@ describe('agent analyze cancellation races', () => {
       startedAt: Date.now(),
       completedAt: Date.now(),
       status: 'completed' as const,
+      privateContext: NO_PRIVATE_CONTEXT,
     };
     const session = {
       sessionId,
@@ -388,8 +390,9 @@ describe('agent analyze cancellation races', () => {
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'analyst-user'};
     const liveSession = (sessionId: string, extra: Record<string, unknown> = {}) => {
       const runId = `${sessionId}:1`;
+      // The marker admission fixes from the session's selection.
       const run = {runId, requestId: `request-${sessionId}`, sequence: 1, query: 'trace 时长',
-        startedAt: Date.now(), status: 'running' as const};
+        startedAt: Date.now(), status: 'running' as const, privateContext: resolveAnalysisPrivateContext(extra)};
       const abortSession = jest.fn();
       const session = {sessionId, status: 'running' as const, createdAt: Date.now(), lastActivityAt: Date.now(),
         traceId: `trace-${sessionId}`, query: run.query, sseClients: [], sseEventSeq: 0, sseEventBuffer: [],
@@ -1346,7 +1349,8 @@ describe('HTTP shared finalization ownership', () => {
   function fixture(id: string) {
     process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
     const runId = `${id}:run`;
-    const run = {runId, requestId: `${id}:request`, sequence: 1, query: 'fact', startedAt: Date.now(), status: 'running'};
+    const run = {runId, requestId: `${id}:request`, sequence: 1, query: 'fact', startedAt: Date.now(), status: 'running',
+      privateContext: NO_PRIVATE_CONTEXT};
     const emitter = new EventEmitter();
     const native: AnalysisResult = {sessionId: id, success: false, conclusion: 'exact\r\nbody',
       findings: [], hypotheses: [], confidence: 0.2, rounds: 1, totalDurationMs: 1};
