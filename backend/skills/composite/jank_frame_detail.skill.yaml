@@ -776,6 +776,11 @@ steps:
           label: "最大单次"
           type: duration
           format: duration_ms
+        - name: total_overlap_ms
+          label: "总重叠"
+          type: duration
+          format: duration_ms
+          hidden: true
     sql: |
       WITH gc_events AS (
         SELECT
@@ -791,16 +796,22 @@ steps:
         WHERE (${__process_scope.upid} IS NOT NULL OR '${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND gc.gc_ts < ${end_ts}
           AND gc.gc_ts + gc.gc_dur > ${start_ts}
+      ),
+      gc_by_type AS (
+        SELECT
+          gc_type,
+          COUNT(*) as gc_count,
+          ROUND(SUM(gc_dur) / 1e6, 2) as total_dur_ms,
+          ROUND(SUM(CASE WHEN overlap_end > overlap_start THEN overlap_end - overlap_start ELSE 0 END) / 1e6, 2) as overlap_ms,
+          ROUND(MAX(gc_dur) / 1e6, 2) as max_dur_ms
+        FROM gc_events
+        GROUP BY gc_type
+        HAVING overlap_ms > 0
       )
-      SELECT
-        gc_type,
-        COUNT(*) as gc_count,
-        ROUND(SUM(gc_dur) / 1e6, 2) as total_dur_ms,
-        ROUND(SUM(CASE WHEN overlap_end > overlap_start THEN overlap_end - overlap_start ELSE 0 END) / 1e6, 2) as overlap_ms,
-        ROUND(MAX(gc_dur) / 1e6, 2) as max_dur_ms
-      FROM gc_events
-      GROUP BY gc_type
-      HAVING overlap_ms > 0
+      -- The frame-window total is the sum of the per-type values shown above,
+      -- so the diagnosis cites one number computed here, not in its template.
+      SELECT *, ROUND(SUM(overlap_ms) OVER (), 2) as total_overlap_ms
+      FROM gc_by_type
       ORDER BY overlap_ms DESC
     save_as: gc_data
     optional: true
@@ -2035,10 +2046,26 @@ steps:
     inputs: [quadrant_data, binder_data, freq_data, main_slices, resync_markers, render_slices, freq_timeline, lock_data, gc_data, io_data, root_cause, sched_data, migration_data, gpu_data, binder_blocking_data, freq_limit_evidence, cluster_load_data, page_fault_data, sf_data, gpu_freq_data, vsync_data, pipeline_data]
     rules:
       # ===== 最高优先级：根因分析总结 =====
-      - condition: "root_cause?.data?.[0]?.primary_cause"
+      # One rule per root_cause confidence level: confidence is a literal,
+      # neither runtime interpolates it.
+      - condition: "root_cause?.data?.[0]?.primary_cause && root_cause.data[0].confidence === '高'"
         severity: critical
         diagnosis: "${root_cause.data[0].primary_cause}"
-        confidence: "${root_cause.data[0].confidence === '高' ? 'high' : root_cause.data[0].confidence === '中' ? 'medium' : 'low'}"
+        confidence: high
+        suggestions:
+          - "${root_cause.data[0].secondary_info || '查看下方详细数据分析具体原因'}"
+
+      - condition: "root_cause?.data?.[0]?.primary_cause && root_cause.data[0].confidence === '中'"
+        severity: critical
+        diagnosis: "${root_cause.data[0].primary_cause}"
+        confidence: medium
+        suggestions:
+          - "${root_cause.data[0].secondary_info || '查看下方详细数据分析具体原因'}"
+
+      - condition: "root_cause?.data?.[0]?.primary_cause && root_cause.data[0].confidence !== '高' && root_cause.data[0].confidence !== '中'"
+        severity: critical
+        diagnosis: "${root_cause.data[0].primary_cause}"
+        confidence: low
         suggestions:
           - "${root_cause.data[0].secondary_info || '查看下方详细数据分析具体原因'}"
 
@@ -2085,9 +2112,9 @@ steps:
           - "证据闭环后再考虑内存映射、预加载或异步化"
 
       # ===== 高优先级：GC 影响 =====
-      - condition: "gc_data?.data?.length > 0 && gc_data.data.reduce((s, g) => s + (g.overlap_ms || 0), 0) > 3"
+      - condition: "(gc_data?.data?.[0]?.total_overlap_ms || 0) > 3"
         severity: critical
-        diagnosis: "GC 严重影响帧渲染：总重叠 ${gc_data.data.reduce((s, g) => s + (g.overlap_ms || 0), 0).toFixed(1)}ms"
+        diagnosis: "GC 严重影响帧渲染：总重叠 ${gc_data.data[0].total_overlap_ms}ms"
         confidence: high
         suggestions:
           - "减少帧期间的对象分配"

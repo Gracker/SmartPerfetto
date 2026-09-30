@@ -76,6 +76,7 @@ display:
       type: duration
       format: duration_ms
       unit: ms
+    - {name: returned_total_cpu_ms, label: "返回线程 CPU 时间合计", type: duration, format: duration_ms, unit: ms, hidden: true}
     - name: q1_big_running_ms
       label: "Q1 大核运行"
       type: duration
@@ -265,8 +266,9 @@ sql: |
     WHERE ss.dur > 0 AND ss.end_state = 'R+'
       AND ss.ts + ss.dur >= ${start_ts} AND ss.ts + ss.dur < ${end_ts}
     GROUP BY ss.utid
-  )
+  ),
   -- Final: 合并四象限 + 摆核数据
+  returned AS (
   SELECT
     (SELECT window_start_ts FROM system_windows) AS window_start_ts,
     (SELECT window_end_ts FROM system_windows) AS window_end_ts,
@@ -315,5 +317,11 @@ sql: |
     CASE tq.role WHEN 'main' THEN 0 ELSE 1 END,
     tq.total_cpu_ms DESC
   LIMIT ${top_k|15}
+  )
+  -- CPU time of the returned threads, summed once so a caller can cite it
+  -- without template arithmetic.
+  SELECT returned.*, ROUND(SUM(total_cpu_ms) OVER (), 2) AS returned_total_cpu_ms
+  FROM returned
+  ORDER BY CASE role WHEN 'main' THEN 0 ELSE 1 END, total_cpu_ms DESC
 output:
   format: structured

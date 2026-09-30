@@ -307,7 +307,8 @@ steps:
     rules:
       - condition: "lmk_events.data.length > 0"
         diagnosis: "检测到 ${lmk_events.data.length} 个 LMK 事件，系统内存压力大"
-        confidence: critical
+        severity: critical
+        confidence: high
         suggestions:
           - "检查内存泄漏"
           - "减少后台进程内存使用"

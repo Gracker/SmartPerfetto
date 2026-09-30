@@ -43,3 +43,30 @@ describe('validate --contracts save_from', () => {
       .toEqual([expect.stringContaining("'no_such_skill_d10' does not exist")]);
   });
 });
+
+/** No runtime interpolates a rule confidence: a template or a severity word would misreport. */
+describe('validate --contracts diagnostic confidence', () => {
+  const withConfidence = (confidence: unknown): SkillDefinition => ({
+    name: 'confidence_contract_probe', version: '1', type: 'composite',
+    meta: {display_name: 'probe', description: 'probe'},
+    steps: [{id: 'verdict', type: 'diagnostic', inputs: [], rules: [
+      {condition: 'true', diagnosis: 'observed', confidence},
+    ]} as any],
+  });
+  const confidenceErrors = (confidence: unknown) =>
+    validateContracts(withConfidence(confidence)).errors.filter(error => error.includes('confidence'));
+
+  it('accepts a literal level, a number, or no confidence', () => {
+    for (const confidence of ['high', 'medium', 'low', 0.8, undefined]) {
+      expect(confidenceErrors(confidence)).toEqual([]);
+    }
+  });
+
+  it('rejects a template, a severity word and a non-finite number', () => {
+    for (const confidence of ["${level === '高' ? 'high' : 'low'}", 'critical', Number.NaN]) {
+      expect(confidenceErrors(confidence)).toEqual([
+        expect.stringContaining('steps[0].rules[0].confidence: Diagnostic rule confidence must be high, medium, low or a number'),
+      ]);
+    }
+  });
+});

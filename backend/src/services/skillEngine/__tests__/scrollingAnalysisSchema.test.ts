@@ -2655,10 +2655,10 @@ describe('single-frame exact UPID SQL semantics', () => {
       const lock = rootCtes('monitor_lock_overlap', 'render_sync_intervals', 42);
       expect(db.prepare(`WITH ${lock} SELECT lock_contention_ms FROM monitor_lock_overlap`).get()).toEqual({lock_contention_ms: 10});
       expect(db.prepare(sqlFor('gc_in_frame', 42)).all()).toEqual([
-        {gc_type: 'young', gc_count: 1, total_dur_ms: 10, overlap_ms: 10, max_dur_ms: 10},
+        {gc_type: 'young', gc_count: 1, total_dur_ms: 10, overlap_ms: 10, max_dur_ms: 10, total_overlap_ms: 10},
       ]);
       expect(db.prepare(sqlFor('gc_in_frame', null)).all()).toEqual([
-        {gc_type: 'young', gc_count: 2, total_dur_ms: 90, overlap_ms: 90, max_dur_ms: 80},
+        {gc_type: 'young', gc_count: 2, total_dur_ms: 90, overlap_ms: 90, max_dur_ms: 80, total_overlap_ms: 90},
       ]);
       expect(step('lock_contention').process_scope.context_fields.peer_context).toEqual(['blocking_method', 'blocking_thread_name', 'waiter_count']);
     } finally {db.close();}

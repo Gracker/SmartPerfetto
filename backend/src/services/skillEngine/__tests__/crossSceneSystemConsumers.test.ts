@@ -417,3 +417,46 @@ describe('cross-scene canonical system consumers', () => {
     }
   });
 });
+
+// Totals a diagnosis cites are computed in SQL: the portable runtime that also
+// renders these templates has no rounding or ternary.
+describe('SQL-computed values cited by diagnostic templates', () => {
+  it('jank GC total sums the per-type overlaps as displayed, so rounding cannot cross the threshold', () => {
+    const db = fixture();
+    try {
+      // Two GC types each overlap the 10-40ms window by 1.504ms: 1.5 + 1.5, not round(3.008).
+      db.exec(`CREATE TABLE android_garbage_collection_events(tid INTEGER,upid INTEGER,gc_type TEXT,gc_ts INTEGER,gc_dur INTEGER);
+        INSERT INTO android_garbage_collection_events VALUES
+          (100,42,'young',38496000,2000000),(100,42,'full',9000000,2504000),
+          (101,43,'young',20000000,5000000),(100,42,'young',45000000,1000000);`);
+      const rows = query(db, 'jank_frame_detail', 'gc_in_frame');
+      expect(rows).toEqual([
+        expect.objectContaining({gc_type: expect.any(String), overlap_ms: 1.5, total_overlap_ms: 3}),
+        expect.objectContaining({gc_type: expect.any(String), overlap_ms: 1.5, total_overlap_ms: 3}),
+      ]);
+    } finally { db.close(); }
+  });
+
+  it('startup critical tasks total only the threads it returns, after the top_k cut', () => {
+    const db = fixture();
+    try {
+      db.exec(`INSERT INTO thread_state VALUES(8,2,10000000,3000000,'Running',1,1,NULL,NULL,NULL,NULL);`);
+      const all = query(db, 'atomic/startup_critical_tasks', 'root');
+      expect(all.map(row => row.utid)).toEqual([1, 2]);
+      expect(all.map(row => row.returned_total_cpu_ms)).toEqual([13, 13]);
+      const top = query(db, 'atomic/startup_critical_tasks', 'root', {top_k: '1'});
+      expect(top).toEqual([expect.objectContaining({utid: 1, total_cpu_ms: 10, returned_total_cpu_ms: 10, total_observed_threads: 2})]);
+    } finally { db.close(); }
+  });
+
+  it('ANR context gives the exact integer window start of its decimal-string timestamps', () => {
+    const db = fixture();
+    try {
+      db.exec(`CREATE TABLE android_anrs(ts INTEGER,process_name TEXT,pid INTEGER,upid INTEGER,anr_type TEXT,error_id TEXT,default_anr_dur_ms INTEGER,anr_dur_ms INTEGER);
+        INSERT INTO android_anrs VALUES(9007199254742101,'com.example.app',100,42,'INPUT_DISPATCHING_TIMEOUT','e1',5000,0);`);
+      const rows = query(db, 'atomic/anr_context_in_range', 'root', {anr_type: ''});
+      expect(rows).toEqual([expect.objectContaining({
+        anr_ts: '9007199254742101', timeout_ns: '5000000000', window_start_ts: '9007194254742101'})]);
+    } finally { db.close(); }
+  });
+});

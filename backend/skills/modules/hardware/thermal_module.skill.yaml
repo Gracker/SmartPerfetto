@@ -335,7 +335,8 @@ steps:
     rules:
       - condition: "temp_overview.data.filter(t => t.status === 'critical').length > 0"
         diagnosis: "检测到严重高温: ${temp_overview.data.filter(t => t.status === 'critical')[0]?.sensor_name} 最高 ${temp_overview.data.filter(t => t.status === 'critical')[0]?.max_temp}°C"
-        confidence: critical
+        severity: critical
+        confidence: high
         suggestions:
           - "检查设备散热条件"
           - "减少 CPU/GPU 密集型操作"

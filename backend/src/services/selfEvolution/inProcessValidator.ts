@@ -25,7 +25,7 @@ import {
   strategySkillCallTexts,
   type StrategySkillInputs,
 } from '../../agentv3/strategySkillCalls';
-import {validateSkillStepListRuntime} from './skillStepRuntimeValidator';
+import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
 export const IN_PROCESS_VALIDATOR_VERSION = '2';
 
@@ -271,6 +271,7 @@ export function validateSkillDefinitionInProcess(
       readIssue.message,
     ));
   }
+  issues.push(...validateDiagnosticConfidence(skill));
   issues.push(...validateSaveFromPlacement(skill));
   if (options.definitions) issues.push(...validateSaveFromTargets(skill, options.definitions));
   if (options.fragmentCache) {
@@ -287,6 +288,25 @@ export function validateSkillDefinitionInProcess(
       ));
     }
   }
+  return issues;
+}
+
+/**
+ * A diagnostic rule's confidence must be a literal level or number even when
+ * structural checks are off: the executor maps anything else to 0.5 and the
+ * public runtime would publish the text, so a template there silently misreports.
+ */
+function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  visitSteps(skill.steps ?? [], (step, path) => {
+    if (step.type !== 'diagnostic') return;
+    (step.rules ?? []).forEach((rule, index) => {
+      if (rule.confidence !== undefined && !isDiagnosticConfidence(rule.confidence)) {
+        issues.push(issue('error', 'diagnostic_confidence_invalid', skill.name, `${path}.rules[${index}].confidence`,
+          `Diagnostic rule confidence must be high, medium, low or a number, got ${JSON.stringify(rule.confidence)}.`));
+      }
+    });
+  });
   return issues;
 }
 
