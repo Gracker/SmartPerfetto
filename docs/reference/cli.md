@@ -395,7 +395,7 @@ smp capture android --preset overview --app com.example.app --duration 10 --kill
 smp capture android --preset game --app com.example.game --duration 20 --out game.perfetto-trace --analyze --query "分析启动和帧节奏问题" --mode fast
 ```
 
-内置预设包括：`startup`、`scrolling`、`camera`、`anr`、`game`、`memory`、
+内置预设包括：`startup`、`scrolling`、`camera`、`anr`、`loading`、`game`、`memory`、
 `memory-profile`、`cpu`、`power`、`overview`、`full`。除 `memory-profile` 外的
 所有系统级预设都会开启 `power/cpu_frequency` 与
 `power/cpu_frequency_limits`，后者提供每个 CPU 的频率上下限，用来区分“负载低所以
@@ -404,6 +404,11 @@ smp capture android --preset game --app com.example.game --duration 20 --out gam
 的热区温度对应起来；这两个 tracepoint 依赖设备/内核支持，并非所有设备都暴露。
 `power` 另外会开启 `android.power` 的 battery
 counters、power rails、suspend/wakeup 相关 ftrace 和 `android.network_packets`。
+`loading` 面向 App 内的页面/内容加载（页面跳转、列表数据、图片、WebView）：加载是
+主线程等待 worker、Binder、IO 和网络的跨线程链路，所以它开启唤醒、Binder 与块 IO
+ftrace，`network`/`database`/`res`/`webview` atrace，以及 input、FrameTimeline 和
+`android.network_packets`。网络包只在提供该 producer 的设备/版本上才有数据；没有
+网络包轨道表示缺数据，不能据此判断“没有网络请求”。
 `camera` 会采集 Camera/HAL/厂商 atrace 候选、Binder、scheduler、FrameTimeline，
 以及 DMA-BUF 或旧版 ION 事件；这些 tracepoint 都是可选的，会随 Android 版本、
 内核和厂商实现而变化。即使使用该预设，trace 仍可能缺少可移植的 Camera open、
@@ -439,6 +444,11 @@ category。它和系统级预设有以下区别：
 - 配置不包含 Memscope 使用的 `java_hprof` `smaps_config`（需要 Android build
   ZP1A.260626.001 或更新）和 `process_stats` `record_process_age`，因为设备会拒绝
   其 perfetto 不认识的配置字段。
+
+`smp capture suggest` 把“页面加载”“加载慢”“内容加载”“图片加载”“白屏”以及
+`page load`、`content load`、`slow to load` 建议为 `loading`。与启动、滑动、ANR
+关键词同分时保留原有预设，例如“冷启动白屏”仍为 `startup`，“图片加载慢导致滑动卡顿”
+仍为 `scrolling`；单独的 `loading` 一词不会触发，以免误配 `downloading` 或加载动画掉帧。
 
 `smp capture suggest` 在请求涉及 heap dump、hprof、Java 堆、heap graph 或内存泄漏
 且 `--app` 为明确包名时建议 `memory-profile`；没有 `--app` 时保留系统级 `memory`

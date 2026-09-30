@@ -113,7 +113,7 @@ describe('capture CLI command', () => {
     const payload = JSON.parse(String(consoleLogSpy.mock.calls[0]?.[0] ?? '{}'));
     const ids = payload.presets.map((preset: { id: string }) => preset.id);
     expect(ids).toEqual([
-      'startup', 'scrolling', 'camera', 'anr', 'game', 'memory', 'memory-profile', 'cpu', 'power', 'overview', 'full',
+      'startup', 'scrolling', 'camera', 'anr', 'loading', 'game', 'memory', 'memory-profile', 'cpu', 'power', 'overview', 'full',
     ]);
     for (const preset of payload.presets) {
       const keys = Object.keys(preset).sort();

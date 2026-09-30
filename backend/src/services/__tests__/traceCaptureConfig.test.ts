@@ -30,6 +30,8 @@ const SYSTEM_PRESET_CONFIG_SHA256: Record<string, string> = {
   'anr|com.example.app': 'aa023370b010e7caf50780e2f94cbd0f0adff50c8726b7b33a59f2bec52574cd',
   'anr|*': 'f4fe0c3cb653eeeea38740d500d165862e1e5eef40de6c965089380c41ff0548',
   'game|com.example.app': '5d9ce0e48bd02e444ed81622484bfdab0252371ec9b65d2849c1d10580304699',
+  'loading|*': '5351faac6d206d8f387e894c8fa29a2b32170b9c7ba7f3667cdfad8b1c38fe6d',
+  'loading|com.example.app': 'd653db2c8d9501f748ee37fe9bdf3e5c8f355eaef462250a806d00a5ecaffcdc',
   'game|*': '8ceacf3261e0f835d59586d086d9dd37848d6ba8be3a0cf08f179ceaa8124326',
   'memory|com.example.app': '1a04cadbd2b31674040103951b1070bfa0421a6cfb84b76fef89a7cbf3e376a5',
   'memory|*': '85fd09c6f574963eb0ac4d6f4f7cd0fdcc2c70720a081f91d73f418e48ce5be2',

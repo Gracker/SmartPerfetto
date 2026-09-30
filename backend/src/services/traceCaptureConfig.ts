@@ -14,6 +14,7 @@ export type CapturePresetId =
   | 'scrolling'
   | 'camera'
   | 'anr'
+  | 'loading'
   | 'game'
   | 'memory'
   | 'memory-profile'
@@ -216,6 +217,28 @@ export const CAPTURE_PRESETS: CapturePresetDefinition[] = [
     dataSources: [...COMMON_DATA_SOURCES, 'android.input.inputevent'],
     description: 'ANR and main-thread blocking with input, binder, scheduler, IO, and logcat context.',
     descriptionZh: 'ANR 分析需要 input、主线程调度、binder、IO 和 logcat 上下文。',
+  },
+  {
+    // In-app content loading (page navigation, list data, images, WebView) is a
+    // cross-thread wait chain: the main thread waits on workers, binder, IO and
+    // the network. android.network_packets records only on builds that provide
+    // its producer; without it the trace simply has no packet track, which is
+    // missing data, not evidence of no network work.
+    id: 'loading',
+    label: 'Android content loading',
+    intent: 'network',
+    defaultDurationSeconds: 20,
+    bufferSizeKb: 98304,
+    atraceCategories: ['am', 'wm', 'view', 'gfx', 'input', 'dalvik', 'binder_driver', 'network', 'database', 'res', 'webview'],
+    ftraceEvents: [...COMMON_FTRACE_EVENTS, ...BINDER_EVENTS, ...IO_EVENTS],
+    dataSources: [
+      ...COMMON_DATA_SOURCES,
+      'android.surfaceflinger.frametimeline',
+      'android.input.inputevent',
+      'android.network_packets',
+    ],
+    description: 'In-app content loading (page, list data, images, WebView) with wakeups, binder, IO, network packets where the device records them, input, and FrameTimeline.',
+    descriptionZh: '页面/内容加载分析需要唤醒链、binder、IO、网络包（设备支持时）、input 和 FrameTimeline，覆盖主线程等待 worker、跨进程和网络的加载链路。',
   },
   {
     id: 'game',
