@@ -91,15 +91,12 @@ export {
   type QoderRuntimeKind,
 } from './engines/qoder';
 export {
-  SDK_SESSION_FRESHNESS_MS,
   buildEntityContext,
   buildQuickConversationContext,
-  buildRuntimeSessionMapKey,
   captureSkillDisplayEntities,
   createRuntimeSkillNotesBudget,
   formatTraceContext,
   getLruCacheEntry,
-  isFreshRuntimeEntry,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
   setLruCacheEntry,

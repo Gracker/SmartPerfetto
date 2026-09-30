@@ -173,7 +173,6 @@ describe('continueSession Level-3 lineage', () => {
     return {
       sessionId,
       traceId,
-      sdkSessionId: `sdk-${sessionId}`,
       providerId: null,
       agentRuntimeKind: 'claude-agent-sdk',
       providerSnapshotHash: 'hash-next',
@@ -204,7 +203,6 @@ describe('continueSession Level-3 lineage', () => {
       providerId: null,
       agentRuntimeKind: 'claude-agent-sdk',
       providerSnapshotHash: 'hash-old',
-      sdkSessionId: 'sdk-old',
       model: 'claude-test',
       createdAt: 1_700_000_000_000,
       lastTurnAt: 1_700_000_001_000,

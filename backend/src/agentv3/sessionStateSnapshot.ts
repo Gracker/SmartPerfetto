@@ -155,7 +155,11 @@ export interface SessionLineage {
   at: number;
 }
 
-export interface ClaudeSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. Claude runs start from fresh physical
+ * context, write `{}` here and never read the SDK session id back.
+ */
+interface ClaudeSnapshotEngineState {
   sdkSessionId?: string;
   sdkSessionMode?: 'full';
 }
@@ -170,7 +174,7 @@ export interface OpenAISnapshotEngineState {
   runState?: string;
 }
 
-export type ThirdPartyOpaqueDegradedReason =
+type ThirdPartyOpaqueDegradedReason =
   | 'missing_required_fields'
   | 'state_unavailable'
   | 'session_restore_failed';
@@ -185,7 +189,7 @@ interface PiAgentCoreOpaqueState {
   degradedReason?: 'not_json_serializable' | 'too_large';
 }
 
-export interface OpenCodeOpaqueState {
+interface OpenCodeOpaqueState {
   version: 1;
   openCodeSessionId?: string;
   projectDir?: string;
@@ -202,17 +206,26 @@ interface PiAgentCoreSnapshotEngineState {
   opaque?: PiAgentCoreOpaqueState;
 }
 
-export interface OpenCodeSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. OpenCode runs create a fresh native
+ * session in directories derived from the SmartPerfetto session id, write `{}`
+ * here and never read the stored session id or directories back.
+ */
+interface OpenCodeSnapshotEngineState {
   opaque?: OpenCodeOpaqueState;
 }
 
-export interface QoderOpaqueState {
+interface QoderOpaqueState {
   version: 1;
   sdkSessionId?: string;
   degradedReason?: ThirdPartyOpaqueDegradedReason;
 }
 
-export interface QoderSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. Qoder runs start from fresh physical
+ * context, write `{}` here and never read the SDK session id back.
+ */
+interface QoderSnapshotEngineState {
   opaque?: QoderOpaqueState;
 }
 
@@ -272,15 +285,12 @@ function createSnapshotEngineProviderState(
 }
 
 export function createClaudeSnapshotEngineState(
-  input: EngineProviderStateInput & ClaudeSnapshotEngineState,
+  input: EngineProviderStateInput,
 ): SnapshotEngineState {
   return {
     kind: 'claude-agent-sdk',
     provider: createSnapshotEngineProviderState(input),
-    claude: {
-      sdkSessionId: input.sdkSessionId,
-      sdkSessionMode: input.sdkSessionMode,
-    },
+    claude: {},
   };
 }
 
@@ -305,60 +315,23 @@ export function createPiAgentCoreSnapshotEngineState(
 }
 
 export function createOpenCodeSnapshotEngineState(
-  input: EngineProviderStateInput & OpenCodeSnapshotEngineState = {},
+  input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
     kind: 'opencode',
     provider: createSnapshotEngineProviderState(input),
-    opencode: {
-      opaque: input.opaque,
-    },
+    opencode: {},
   };
 }
 
 export function createQoderSnapshotEngineState(
-  input: EngineProviderStateInput & QoderSnapshotEngineState = {},
+  input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
     kind: 'qoder-agent-sdk',
     provider: createSnapshotEngineProviderState(input),
-    qoder: {
-      opaque: input.opaque,
-    },
+    qoder: {},
   };
-}
-
-/**
- * The snapshot without the state a runtime keeps for one provider: SDK session
- * ids, response history and opaque transcripts or directories. A provider
- * snapshot change invalidates only that part. The runtime/provider pin and the
- * product-owned state (notes, plan, hypotheses, uncertainty flags, artifacts,
- * architecture) do not depend on which provider produced them and stay.
- */
-export function withoutProviderBoundEngineState(snapshot: SessionStateSnapshot): SessionStateSnapshot {
-  const {
-    sdkSessionId: _sdkSessionId,
-    sdkSessionMode: _sdkSessionMode,
-    openAIHistory: _openAIHistory,
-    openAILastResponseId: _openAILastResponseId,
-    openAIRunState: _openAIRunState,
-    ...productState
-  } = snapshot;
-  const engineState = snapshot.engineState;
-  if (!engineState) return productState;
-  const pin = engineState.provider;
-  switch (engineState.kind) {
-    case 'claude-agent-sdk':
-      return {...productState, engineState: createClaudeSnapshotEngineState(pin)};
-    case 'openai-agents-sdk':
-      return {...productState, engineState: createOpenAISnapshotEngineState(pin)};
-    case 'pi-agent-core':
-      return {...productState, engineState: createPiAgentCoreSnapshotEngineState(pin)};
-    case 'opencode':
-      return {...productState, engineState: createOpenCodeSnapshotEngineState(pin)};
-    case 'qoder-agent-sdk':
-      return {...productState, engineState: createQoderSnapshotEngineState(pin)};
-  }
 }
 
 export function getSnapshotRuntimeKind(
@@ -385,64 +358,6 @@ export function getSnapshotRuntimeProviderSnapshotHash(
     return provider.providerSnapshotHash ?? null;
   }
   return snapshot?.agentRuntimeProviderSnapshotHash;
-}
-
-export function getClaudeSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState' | 'sdkSessionId' | 'sdkSessionMode'>,
-): ClaudeSnapshotEngineState | undefined {
-  if (snapshot.engineState) {
-    return snapshot.engineState.kind === 'claude-agent-sdk'
-      ? snapshot.engineState.claude
-      : undefined;
-  }
-  if (snapshot.sdkSessionId || snapshot.sdkSessionMode) {
-    return {
-      sdkSessionId: snapshot.sdkSessionId,
-      sdkSessionMode: snapshot.sdkSessionMode,
-    };
-  }
-  return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-export function getOpenCodeSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState'>,
-): OpenCodeSnapshotEngineState | undefined {
-  if (snapshot.engineState?.kind !== 'opencode') return undefined;
-  const opaque = snapshot.engineState.opencode.opaque;
-  if (!isRecord(opaque) || opaque.version !== 1) return undefined;
-  return {
-    opaque: {
-      version: 1,
-      openCodeSessionId: typeof opaque.openCodeSessionId === 'string' ? opaque.openCodeSessionId : undefined,
-      projectDir: typeof opaque.projectDir === 'string' ? opaque.projectDir : undefined,
-      homeDir: typeof opaque.homeDir === 'string' ? opaque.homeDir : undefined,
-      configDir: typeof opaque.configDir === 'string' ? opaque.configDir : undefined,
-      degradedReason: typeof opaque.degradedReason === 'string'
-        ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
-        : undefined,
-    },
-  };
-}
-
-export function getQoderSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState'>,
-): QoderSnapshotEngineState | undefined {
-  if (snapshot.engineState?.kind !== 'qoder-agent-sdk') return undefined;
-  const opaque = snapshot.engineState.qoder.opaque;
-  if (!isRecord(opaque) || opaque.version !== 1) return undefined;
-  return {
-    opaque: {
-      version: 1,
-      sdkSessionId: typeof opaque.sdkSessionId === 'string' ? opaque.sdkSessionId : undefined,
-      degradedReason: typeof opaque.degradedReason === 'string'
-        ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
-        : undefined,
-    },
-  };
 }
 
 function normalizeSourceUseSnapshotFields(
@@ -477,6 +392,18 @@ function normalizeSourceUseSnapshotFields(
   };
 }
 
+/** Every runtime's engine state now holds only its provider pin. */
+const PROVIDER_ONLY_ENGINE_STATE: Record<
+  AgentRuntimeKind,
+  (input: EngineProviderStateInput) => SnapshotEngineState
+> = {
+  'claude-agent-sdk': createClaudeSnapshotEngineState,
+  'openai-agents-sdk': createOpenAISnapshotEngineState,
+  'pi-agent-core': createPiAgentCoreSnapshotEngineState,
+  'opencode': createOpenCodeSnapshotEngineState,
+  'qoder-agent-sdk': createQoderSnapshotEngineState,
+};
+
 export function normalizeSessionStateSnapshot(
   snapshot: SessionStateSnapshot,
 ): SessionStateSnapshot {
@@ -496,36 +423,10 @@ export function normalizeSessionStateSnapshot(
         : undefined
     );
 
-  if (!snapshot.engineState && runtimeKind === 'claude-agent-sdk') {
+  if (!snapshot.engineState && runtimeKind) {
     normalizedSnapshot = {
       ...snapshot,
-      engineState: createClaudeSnapshotEngineState({
-        providerId: snapshot.agentRuntimeProviderId,
-        providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
-        sdkSessionId: snapshot.sdkSessionId,
-        sdkSessionMode: snapshot.sdkSessionMode,
-      }),
-    };
-  } else if (!snapshot.engineState && runtimeKind === 'openai-agents-sdk') {
-    normalizedSnapshot = {
-      ...snapshot,
-      engineState: createOpenAISnapshotEngineState({
-        providerId: snapshot.agentRuntimeProviderId,
-        providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
-      }),
-    };
-  } else if (!snapshot.engineState && runtimeKind === 'pi-agent-core') {
-    normalizedSnapshot = {
-      ...snapshot,
-      engineState: createPiAgentCoreSnapshotEngineState({
-        providerId: snapshot.agentRuntimeProviderId,
-        providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
-      }),
-    };
-  } else if (!snapshot.engineState && runtimeKind === 'opencode') {
-    normalizedSnapshot = {
-      ...snapshot,
-      engineState: createOpenCodeSnapshotEngineState({
+      engineState: PROVIDER_ONLY_ENGINE_STATE[runtimeKind]({
         providerId: snapshot.agentRuntimeProviderId,
         providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
       }),
@@ -624,9 +525,11 @@ export interface SessionStateSnapshot {
   architecture?: ArchitectureInfo;
   /** Canonical engine-local runtime state. Product/report state stays top-level. */
   engineState?: SnapshotEngineState;
-  /** Legacy Claude/OpenAI runtime mirror kept during the compatible M7 split. */
+  /**
+   * Legacy Claude runtime mirrors, no longer written. Still read to infer the
+   * runtime kind of snapshots that predate `agentRuntimeKind`/`engineState`.
+   */
   sdkSessionId?: string;
-  /** Legacy Claude runtime mirror kept during the compatible M7 split. */
   sdkSessionMode?: 'full';
 
   // --- Backend Runtime State (legacy mirrors; use helpers above for reads) ---
@@ -639,9 +542,8 @@ export interface SessionStateSnapshot {
    */
   agentRuntimeProviderId?: string | null;
   /**
-   * Non-secret hash of the provider/runtime configuration that created the
-   * snapshot. Restore keeps provider-bound engine state only while this still
-   * matches the current resolved provider snapshot.
+   * Non-secret hash of the provider/runtime configuration that produced the
+   * snapshot, compared with the current resolved provider snapshot on restore.
    */
   agentRuntimeProviderSnapshotHash?: string | null;
   /** Append-only audit of provider snapshot changes observed when this session was restored. */
@@ -709,8 +611,8 @@ export interface SessionStateSnapshot {
 /**
  * Session-level fields provided by the route layer to `takeSnapshot()`.
  *
- * ClaudeRuntime reads its own Maps (notes, plans, flags, artifacts, architecture,
- * sdkSessionId) internally. The route layer provides the session-scoped arrays
+ * ClaudeRuntime reads its own Maps (notes, plans, flags, artifacts, architecture)
+ * internally. The route layer provides the session-scoped arrays
  * that live in the AnalysisSession object.
  */
 export interface SessionFieldsForSnapshot {

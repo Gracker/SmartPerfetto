@@ -1194,9 +1194,6 @@ async function scenarioD8(
 
   const sessionId = `session-${crypto.randomUUID()}`;
   const originalRunId = `run-${crypto.randomUUID()}`;
-  const followUpRunId = `run-${crypto.randomUUID()}`;
-  const oldSdkSessionId = 'sdk-response-d8-old';
-  const freshSdkSessionId = 'sdk-response-d8-fresh';
 
   db.prepare(`
     INSERT INTO analysis_sessions
@@ -1240,7 +1237,6 @@ async function scenarioD8(
       agentRuntimeKind: 'openai-agents-sdk',
       agentRuntimeProviderId: providerId,
       agentRuntimeProviderSnapshotHash: originalHash,
-      sdkSessionId: oldSdkSessionId,
       runSequence: 1,
     }),
     now + 20,
@@ -1284,68 +1280,13 @@ async function scenarioD8(
   const originalRuntimeSnapshot = JSON.parse(originalRuntimeRow?.snapshot_json ?? '{}') as {
     agentRuntimeProviderId?: string;
     agentRuntimeProviderSnapshotHash?: string;
-    sdkSessionId?: string;
   };
   const providerSnapshotChanged = Boolean(
     originalRuntimeSnapshot.agentRuntimeProviderSnapshotHash
     && latestProviderSnapshot?.snapshot_hash
     && originalRuntimeSnapshot.agentRuntimeProviderSnapshotHash !== latestProviderSnapshot.snapshot_hash,
   );
-  const sdkSessionReusable = Boolean(
-    !providerSnapshotChanged
-    && originalRuntimeSnapshot.sdkSessionId
-    && originalRuntimeSnapshot.agentRuntimeProviderId === providerId,
-  );
 
-  db.prepare(`
-    INSERT INTO analysis_runs
-      (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at)
-    VALUES (?, ?, ?, ?, 'followup', 'completed', ?, ?, ?)
-  `).run(
-    followUpRunId,
-    userAWindow1.context.tenantId,
-    userAWindow1.context.workspaceId,
-    sessionId,
-    'follow-up turn after provider config changed',
-    now + 30,
-    now + 40,
-  );
-  db.prepare(`
-    INSERT INTO runtime_snapshots
-      (id, tenant_id, workspace_id, session_id, run_id, runtime_type, snapshot_json, created_at)
-    VALUES (?, ?, ?, ?, ?, 'openai-agents-sdk', ?, ?)
-  `).run(
-    `runtime-snapshot-d8-followup-${crypto.randomUUID()}`,
-    userAWindow1.context.tenantId,
-    userAWindow1.context.workspaceId,
-    sessionId,
-    followUpRunId,
-    JSON.stringify({
-      agentRuntimeKind: 'openai-agents-sdk',
-      agentRuntimeProviderId: providerId,
-      agentRuntimeProviderSnapshotHash: changedHash,
-      sdkSessionId: freshSdkSessionId,
-      previousProviderSnapshotHash: originalHash,
-      providerSnapshotChangeReason: 'provider_snapshot_hash_mismatch',
-      runSequence: 2,
-    }),
-    now + 50,
-  );
-  const followUpRuntimeRow = db.prepare<unknown[], { snapshot_json: string }>(`
-    SELECT snapshot_json
-    FROM runtime_snapshots
-    WHERE tenant_id = ? AND workspace_id = ? AND session_id = ? AND run_id = ?
-  `).get(
-    userAWindow1.context.tenantId,
-    userAWindow1.context.workspaceId,
-    sessionId,
-    followUpRunId,
-  );
-  const followUpRuntimeSnapshot = JSON.parse(followUpRuntimeRow?.snapshot_json ?? '{}') as {
-    agentRuntimeProviderSnapshotHash?: string;
-    sdkSessionId?: string;
-    previousProviderSnapshotHash?: string;
-  };
   const pinnedConfigJson = pinnedSnapshot?.resolved_config_json ?? '';
   const latestConfigJson = latestProviderSnapshot?.resolved_config_json ?? '';
 
@@ -1357,12 +1298,6 @@ async function scenarioD8(
       && latestProviderSnapshot.snapshot_hash === changedHash
       && latestProviderSnapshot.snapshot_hash !== pinnedSnapshot?.snapshot_hash,
     resumeDetectsProviderSnapshotHashMismatch: providerSnapshotChanged,
-    oldSdkSessionIsNotReusableAfterMismatch: !sdkSessionReusable
-      && originalRuntimeSnapshot.sdkSessionId === oldSdkSessionId,
-    followUpRuntimeUsesFreshSdkSession: followUpRuntimeSnapshot.agentRuntimeProviderSnapshotHash === changedHash
-      && followUpRuntimeSnapshot.previousProviderSnapshotHash === originalHash
-      && followUpRuntimeSnapshot.sdkSessionId === freshSdkSessionId
-      && followUpRuntimeSnapshot.sdkSessionId !== originalRuntimeSnapshot.sdkSessionId,
     providerSnapshotsDoNotPersistPlaintextSecret: !pinnedConfigJson.includes('sk-')
       && !latestConfigJson.includes('sk-')
       && pinnedSnapshot?.secret_version === 'secret-v1'
@@ -1375,16 +1310,12 @@ async function scenarioD8(
       traceId: upload.traceId,
       sessionId,
       originalRunId,
-      followUpRunId,
       providerId,
       originalSnapshotId,
       changedSnapshotId,
       originalHash,
       changedHash,
-      oldSdkSessionId,
-      freshSdkSessionId,
       providerSnapshotChanged,
-      sdkSessionReusable,
     },
   };
 }
@@ -1780,7 +1711,7 @@ export async function runEnterpriseWindowRegression(
         'D5 covers TraceProcessorLease holder grace and pageshow-style reacquire semantics after offline heartbeat expiry; frontend stale-lease reload signaling is covered by HttpRpcEngine unit tests.',
         'D6 covers the persisted AgentEvent replay contract after a conclusion cursor; the live stream route path is covered by agentRoutesRbac tests.',
         'D7 covers running run, active lease, report_generation holder, and draining rejection invariants; actual route blocking is covered by enterpriseTraceMetadataRoutes tests.',
-        'D8 covers the DB ProviderSnapshot pin/hash-mismatch invariant in the enterprise window regression; AgentAnalyzeSessionService tests cover actual in-memory and persisted SDK session non-reuse.',
+        'D8 covers the DB ProviderSnapshot pin/hash-mismatch invariant in the enterprise window regression; AgentAnalyzeSessionService tests cover restoring a session after its provider snapshot changed.',
         'D9 covers file-backed DB close/reopen recovery for trace metadata, run states, and AgentEvent replay; enterpriseRestartPersistence tests cover the route-level restart recovery path.',
         'D10 covers RAM-admission rejection without creating a new lease or cleaning up existing active holders; TraceProcessorFactory tests cover pre-spawn rejection before a real processor starts.',
         'Production backend proxy and queue behavior remain future §0.7 D1/D2/D3/D4/D5/D6/D7/D8/D9/D10 final-acceptance work against a live browser and trace_processor_shell.',

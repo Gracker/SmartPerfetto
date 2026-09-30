@@ -3526,7 +3526,7 @@ describe('experimental OpenCode runtime contract', () => {
 
 
 
-  it('restores OpenCode provider directories while creating a fresh native session', async () => {
+  it('reuses the session-derived directories across turns without persisting native session state', async () => {
     await withBackendDataDir(async (dataDir) => {
       const firstRecord = {
         closeCount: 0,
@@ -3570,19 +3570,33 @@ describe('experimental OpenCode runtime contract', () => {
         'trace-opencode',
         createSnapshotFields(),
       );
-      const opaque = snapshot.engineState?.kind === 'opencode'
-        ? snapshot.engineState.opencode.opaque
-        : undefined;
-
-      expect(opaque).toMatchObject({
-        version: 1,
-        openCodeSessionId: 'ses-opencode-original',
+      expect(snapshot.engineState).toEqual({
+        kind: 'opencode',
+        provider: {providerId: null, providerSnapshotHash: null},
+        opencode: {},
       });
-      expect(opaque?.projectDir).toContain(dataDir);
-      expect(opaque?.homeDir).toContain(dataDir);
-      expect(opaque?.configDir).toContain(dataDir);
-      expect(firstRecord.homeAtCreate).toBe(opaque?.homeDir);
-      expect(firstRecord.configAtCreate).toBe(opaque?.configDir);
+      expect(JSON.stringify(snapshot)).not.toContain('ses-opencode-original');
+      const projectDir = (firstRecord.createInput as {query: {directory: string}}).query.directory;
+      expect(projectDir).toContain(dataDir);
+      expect(firstRecord.homeAtCreate).toContain(dataDir);
+      expect(firstRecord.configAtCreate).toContain(dataDir);
+
+      // A snapshot written before native state was dropped still names the old
+      // session and absolute directories; neither is reused.
+      const legacySnapshot = {
+        ...snapshot,
+        engineState: {
+          kind: 'opencode' as const,
+          provider: {providerId: null, providerSnapshotHash: null},
+          opencode: {opaque: {
+            version: 1 as const,
+            openCodeSessionId: 'ses-opencode-original',
+            projectDir: dataDir,
+            homeDir: dataDir,
+            configDir: dataDir,
+          }},
+        },
+      };
 
       const restoredRecord = {
         closeCount: 0,
@@ -3624,7 +3638,7 @@ describe('experimental OpenCode runtime contract', () => {
           }),
         }),
       });
-      restoredRuntime.restoreFromSnapshot('session-opencode-resume', 'trace-opencode', snapshot);
+      restoredRuntime.restoreFromSnapshot('session-opencode-resume', 'trace-opencode', legacySnapshot);
 
       await restoredRuntime.analyze('follow-up OpenCode question', 'session-opencode-resume', 'trace-opencode');
 
@@ -3632,10 +3646,10 @@ describe('experimental OpenCode runtime contract', () => {
       expect(restoredRecord.getInput).toBeUndefined();
       expect(restoredRecord.promptInput).toMatchObject({
         path: { id: 'ses-opencode-new' },
-        query: { directory: opaque?.projectDir },
+        query: { directory: projectDir },
       });
-      expect(restoredRecord.homeAtCreate).toBe(opaque?.homeDir);
-      expect(restoredRecord.configAtCreate).toBe(opaque?.configDir);
+      expect(restoredRecord.homeAtCreate).toBe(firstRecord.homeAtCreate);
+      expect(restoredRecord.configAtCreate).toBe(firstRecord.configAtCreate);
     });
   });
 

@@ -207,10 +207,6 @@ export function enterpriseDbWritesEnabled(env: NodeJS.ProcessEnv = process.env):
   return resolveEnterpriseMigrationPlan(env).writeDb;
 }
 
-export function legacyFilesystemReadAuthorityEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return resolveEnterpriseMigrationPlan(env).readAuthority === 'filesystem';
-}
-
 export function legacyFilesystemWritesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return resolveEnterpriseMigrationPlan(env).writeFilesystem;
 }

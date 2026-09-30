@@ -67,9 +67,7 @@ import {
 } from '../../../agentv3/planToolCallRecorder';
 import {
   createOpenCodeSnapshotEngineState,
-  getOpenCodeSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
-  type OpenCodeOpaqueState,
   type SessionFieldsForSnapshot,
   sessionFieldsUsePrivateKnowledge,
   type SessionStateSnapshot,
@@ -243,10 +241,6 @@ interface OpenCodeClient {
       body?: { title?: string };
       query?: { directory?: string };
     }): Promise<OpenCodeSdkResponse<OpenCodeSession> | OpenCodeSession>;
-    get?(input: {
-      path: { id: string };
-      query?: { directory?: string };
-    }): Promise<OpenCodeSdkResponse<OpenCodeSession> | OpenCodeSession>;
     prompt(input: OpenCodePromptInput): Promise<unknown>;
     promptAsync?(input: OpenCodePromptInput): Promise<unknown>;
     status?(input?: { query?: { directory?: string } }): Promise<unknown>;
@@ -287,9 +281,6 @@ interface OpenCodeSdkModule {
 
 interface OpenCodeActiveSession {
   openCodeSessionId?: string;
-  projectDir?: string;
-  homeDir?: string;
-  configDir?: string;
   server?: OpenCodeServerHandle;
   client?: OpenCodeClient;
   closeBridge?: () => Promise<void>;
@@ -1244,33 +1235,6 @@ function cleanupStaleEphemeralOpenCodeDirs(now = Date.now()): void {
       // Best-effort crash residue cleanup. Unknown failures preserve the directory.
     }
   }
-}
-
-function openCodeOpaqueDirsExist(opaque: OpenCodeOpaqueState): boolean {
-  return Boolean(
-    opaque.projectDir &&
-    opaque.homeDir &&
-    opaque.configDir &&
-    fs.existsSync(opaque.projectDir) &&
-    fs.existsSync(opaque.homeDir) &&
-    fs.existsSync(opaque.configDir),
-  );
-}
-
-function createOpenCodeOpaqueState(
-  openCodeSessionId: string | undefined,
-  dirs: OpenCodeSessionDirs,
-): OpenCodeOpaqueState {
-  if (!openCodeSessionId) {
-    return { version: 1, degradedReason: 'state_unavailable' };
-  }
-  return {
-    version: 1,
-    openCodeSessionId,
-    projectDir: dirs.projectDir,
-    homeDir: dirs.homeDir,
-    configDir: dirs.configDir,
-  };
 }
 
 function resolveOpenCodeCliPath(): string {
@@ -2348,7 +2312,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionHypotheses = new Map<string, Hypothesis[]>();
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
-  private readonly sessionOpaqueStates = new Map<string, OpenCodeOpaqueState>();
   private readonly executionGuard = new RuntimeExecutionGuard();
 
   constructor(
@@ -2362,51 +2325,17 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     this.selection = input.selection as RuntimeSelection<OpenCodeRuntimeKind>;
   }
 
-  private emitOpenCodeStateDegraded(reason: string, fallback = 'fresh_session'): void {
-    this.emitUpdate({
-      type: 'degraded',
-      content: {
-        module: 'opencode',
-        fallback,
-        reason,
-        message: 'OpenCode session state unavailable; started a fresh OpenCode session with SmartPerfetto context.',
-      },
-      timestamp: Date.now(),
-    });
-  }
-
   private resolveSessionDirs(sessionId: string, privateKnowledge = false): {
     dirs: OpenCodeSessionDirs;
-    restoredOpenCodeSessionId?: string;
     ephemeralRoot?: string;
   } {
     if (privateKnowledge) {
-      this.sessionOpaqueStates.delete(sessionId);
       const ephemeral = createEphemeralOpenCodeSessionDirs();
       return {dirs: ephemeral, ephemeralRoot: ephemeral.ephemeralRoot};
     }
-    const restored = this.sessionOpaqueStates.get(sessionId);
-    if (restored?.degradedReason) {
-      this.emitOpenCodeStateDegraded(restored.degradedReason);
-      this.sessionOpaqueStates.delete(sessionId);
-      return { dirs: createDurableOpenCodeSessionDirs(sessionId, this.env) };
-    }
-    if (restored?.openCodeSessionId && openCodeOpaqueDirsExist(restored)) {
-      return {
-        dirs: {
-          projectDir: restored.projectDir!,
-          homeDir: restored.homeDir!,
-          configDir: restored.configDir!,
-        },
-        // Reuse isolated provider directories, but logical history is injected
-        // from SmartPerfetto's authorized context into a fresh native session.
-      };
-    }
-    if (restored) {
-      this.emitOpenCodeStateDegraded('missing_required_fields');
-      this.sessionOpaqueStates.delete(sessionId);
-    }
-    return { dirs: createDurableOpenCodeSessionDirs(sessionId, this.env) };
+    // Every turn of a session reuses the same isolated directories, derived from
+    // the session id; each turn still starts a fresh native OpenCode session.
+    return {dirs: createDurableOpenCodeSessionDirs(sessionId, this.env)};
   }
 
   private async createOpenCodeInstance(
@@ -2417,44 +2346,11 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     return createOpenCodeInstanceWithExplicitEnv(sdk, dirs, this.env, options);
   }
 
-  private async canReuseOpenCodeSession(
-    client: OpenCodeClient,
-    openCodeSessionId: string,
-    projectDir: string,
-  ): Promise<boolean> {
-    try {
-      if (client.session.get) {
-        const existing = unwrapSdkData(await client.session.get({
-          path: { id: openCodeSessionId },
-          query: { directory: projectDir },
-        }), 'OpenCode restored session get');
-        return Boolean(existing?.id);
-      }
-      if (client.session.messages) {
-        unwrapSdkData(await client.session.messages({
-          path: { id: openCodeSessionId },
-          query: { directory: projectDir, limit: 1, order: 'asc' },
-        }), 'OpenCode restored session messages');
-        return true;
-      }
-    } catch {
-      return false;
-    }
-    return false;
-  }
-
-  private async resolveOpenCodeSessionId(
+  private async createOpenCodeSession(
     client: OpenCodeClient,
     sessionId: string,
     projectDir: string,
-    restoredOpenCodeSessionId?: string,
   ): Promise<string> {
-    if (restoredOpenCodeSessionId) {
-      const reusable = await this.canReuseOpenCodeSession(client, restoredOpenCodeSessionId, projectDir);
-      if (reusable) return restoredOpenCodeSessionId;
-      this.emitOpenCodeStateDegraded('session_restore_failed');
-      this.sessionOpaqueStates.delete(sessionId);
-    }
     const created = unwrapSdkData(await client.session.create({
       query: { directory: projectDir },
       body: { title: `SmartPerfetto ${sessionId}` },
@@ -2553,7 +2449,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     }
     executionLease.throwIfAborted();
     const privateKnowledge = analysisContextUsesPrivateKnowledge(options ?? {});
-    const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
+    const {dirs, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
     );
@@ -2575,18 +2471,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         client: opencode.client,
         abortController,
         aborted: false,
-        projectDir: dirs.projectDir,
-        homeDir: dirs.homeDir,
-        configDir: dirs.configDir,
       };
       this.activeSessions.set(sessionId, activeSession);
       executionLease.throwIfAborted();
       this.currentServer = opencode.server;
-      const openCodeSessionId = await this.resolveOpenCodeSessionId(
+      const openCodeSessionId = await this.createOpenCodeSession(
         opencode.client,
         sessionId,
         dirs.projectDir,
-        restoredOpenCodeSessionId,
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
@@ -2611,12 +2503,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
       executionLease.throwIfAborted();
     } finally {
-      if (activeSession && !privateKnowledge && !executionLease.signal.aborted) {
-        this.sessionOpaqueStates.set(sessionId, createOpenCodeOpaqueState(
-          activeSession.openCodeSessionId,
-          dirs,
-        ));
-      }
       await this.closeSessionHandle(sessionId, activeSession);
       if (ephemeralRoot) fs.rmSync(ephemeralRoot, {recursive: true, force: true});
     }
@@ -2787,7 +2673,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       throw error;
     }
     const privateKnowledge = analysisContextUsesPrivateKnowledge(options);
-    const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
+    const {dirs, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
     );
@@ -2837,20 +2723,16 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         closeBridge: () => bridge.close().catch(() => undefined),
         abortController,
         aborted: false,
-        projectDir: dirs.projectDir,
-        homeDir: dirs.homeDir,
-        configDir: dirs.configDir,
       };
       bridgeOwnedByActiveSession = true;
       unownedOpenCodeInstance = undefined;
       this.activeSessions.set(sessionId, activeSession);
       executionLease.throwIfAborted();
       this.currentServer = opencode.server;
-      const openCodeSessionId = await this.resolveOpenCodeSessionId(
+      const openCodeSessionId = await this.createOpenCodeSession(
         opencode.client,
         sessionId,
         dirs.projectDir,
-        restoredOpenCodeSessionId,
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
@@ -2871,9 +2753,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       if (!promptSession) {
         throw new Error('OpenCode active session was not registered before prompt execution');
       }
-      let resumedPromptSession = Boolean(
-        restoredOpenCodeSessionId && openCodeSessionId === restoredOpenCodeSessionId,
-      );
+      let resumedPromptSession = false;
       const runAnalysisPrompt = async (text: string) => {
         if (Date.now() >= deadlineMs) throw openCodePromptTimeoutError(promptTimeout);
         const promptResult = await runOpenCodePrompt(opencode, {
@@ -2927,12 +2807,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       conclusion = acceptedMessage ? extractTextParts(acceptedMessage).trim() : '';
     } finally {
       toolAdmissionsOpen = false;
-      if (activeSession && !privateKnowledge && !executionLease.signal.aborted) {
-        this.sessionOpaqueStates.set(sessionId, createOpenCodeOpaqueState(
-          activeSession.openCodeSessionId,
-          dirs,
-        ));
-      }
       await this.closeSessionHandle(sessionId, activeSession);
       if (!activeSession && unownedOpenCodeInstance) {
         await Promise.resolve(unownedOpenCodeInstance.server.close()).catch(() => undefined);
@@ -3494,7 +3368,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     this.executionGuard.clear();
     this.currentSessionId = undefined;
     void this.abortAllSessions();
-    this.sessionOpaqueStates.clear();
     this.architectureCache.clear();
     this.removeAllListeners();
   }
@@ -3506,7 +3379,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionPlans.delete(sessionId);
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
-    this.sessionOpaqueStates.delete(sessionId);
     fs.rmSync(openCodeSessionRoot(sessionId), {recursive: true, force: true});
   }
 
@@ -3553,26 +3425,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
-    const activeSession = this.activeSessions.get(sessionId);
-    let activeOpaque: OpenCodeOpaqueState | undefined;
-    if (activeSession) {
-      const activeDirs: OpenCodeSessionDirs = (
-        activeSession.projectDir &&
-        activeSession.homeDir &&
-        activeSession.configDir
-      ) ? {
-          projectDir: activeSession.projectDir,
-          homeDir: activeSession.homeDir,
-          configDir: activeSession.configDir,
-        }
-        : createDurableOpenCodeSessionDirs(sessionId, this.env);
-      activeOpaque = createOpenCodeOpaqueState(activeSession.openCodeSessionId, activeDirs);
-    }
-    const opaque = privateKnowledge
-      ? undefined
-      : this.sessionOpaqueStates.get(sessionId)
-        ?? activeOpaque
-        ?? {version: 1, degradedReason: 'state_unavailable' as const};
     return {
       version: 1,
       snapshotTimestamp: Date.now(),
@@ -3588,7 +3440,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       engineState: createOpenCodeSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-        opaque,
       }),
       agentRuntimeKind: OPENCODE_RUNTIME_KIND,
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
@@ -3622,10 +3473,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       } catch {
         // Ignore malformed legacy artifact snapshots.
       }
-    }
-    const opaque = getOpenCodeSnapshotEngineState(snapshot)?.opaque;
-    if (opaque) {
-      this.sessionOpaqueStates.set(sessionId, opaque);
     }
   }
 

@@ -22,7 +22,6 @@ import {
   getSnapshotRuntimeProviderId,
   continuityBreaksAfterRestore,
   getSnapshotRuntimeProviderSnapshotHash,
-  withoutProviderBoundEngineState,
 } from '../agentv3/sessionStateSnapshot';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, sessionUsesPrivateKnowledge} from '../services/security/privateAnalysisProjection';
@@ -217,7 +216,7 @@ export function registerAgentResumeRoutes(
         turnCount: restoredContext.getAllTurns().length,
       });
       if (providerSnapshotChanged) {
-        logger.warn('AgentRoutes', 'Provider snapshot changed; provider-bound runtime state will not be restored', {
+        logger.warn('AgentRoutes', 'Provider snapshot changed since the snapshot was saved; continuity break recorded', {
           providerId: restoredProviderId,
           previousProviderSnapshotHash: snapshotProviderHash,
           nextProviderSnapshotHash: restoredProviderSnapshotHash,
@@ -253,14 +252,10 @@ export function registerAgentResumeRoutes(
       const owner = normalizeResourceOwner(persistedSession.metadata);
 
       // Unified snapshot restoration — all fields populated from single source
-      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture, engine state).
-      // A provider snapshot change drops only the state bound to the old provider.
+      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture).
+      // They hold no provider-bound engine state, so a provider snapshot change restores them unchanged.
       if (snapshot && typeof orchestrator.restoreFromSnapshot === 'function') {
-        orchestrator.restoreFromSnapshot(
-          sessionId,
-          effectiveTraceId,
-          providerSnapshotChanged ? withoutProviderBoundEngineState(snapshot) : snapshot,
-        );
+        orchestrator.restoreFromSnapshot(sessionId, effectiveTraceId, snapshot);
         logger.info('AgentRoutes', 'ClaudeRuntime Maps restored from snapshot', {
           notes: snapshot.analysisNotes.length,
           hasPlan: !!snapshot.analysisPlan,

@@ -10,10 +10,8 @@ import {
   buildQuickMemoryContext,
   buildQuickMemoryContextPayload,
   buildTraceContextDataEnvelopes,
-  buildRuntimeSessionMapKey,
   decorateTraceContextDatasets,
   formatTraceContext,
-  isFreshRuntimeEntry,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
   setLruCacheEntry,
@@ -43,16 +41,6 @@ describe('runtimeCommon', () => {
     });
     expect(providerScopeFromAnalysisOptions({ tenantId: 'tenant-only' })).toBeUndefined();
     expect(knowledgeScopeFromAnalysisOptions({ workspaceId: 'workspace-only' })).toBeUndefined();
-  });
-
-  it('centralizes runtime session keys and freshness checks', () => {
-    const now = 1_700_000_000_000;
-
-    expect(buildRuntimeSessionMapKey('s1')).toBe('s1');
-    expect(buildRuntimeSessionMapKey('s1', 'trace-b')).toBe('s1:ref:trace-b');
-    expect(isFreshRuntimeEntry({ updatedAt: now - 10 }, 100, now)).toBe(true);
-    expect(isFreshRuntimeEntry({ updatedAt: now - 101 }, 100, now)).toBe(false);
-    expect(isFreshRuntimeEntry(undefined, 100, now)).toBe(false);
   });
 
   it('formats explicit request trace datasets once for both runtimes', () => {
@@ -314,10 +302,7 @@ describe('runtimeCommon', () => {
         'knowledgeScopeFromAnalysisOptions',
       ],
       runtimeCache: [
-        'SDK_SESSION_FRESHNESS_MS',
         'DEFAULT_RUNTIME_CACHE_LIMIT',
-        'buildRuntimeSessionMapKey',
-        'isFreshRuntimeEntry',
         'getLruCacheEntry',
         'setLruCacheEntry',
       ],

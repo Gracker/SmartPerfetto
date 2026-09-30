@@ -107,7 +107,6 @@ import { buildRecoveryNote } from '../../../agentv3/recoveryNoteBuilder';
 import { evaluateThreshold as evaluateContextThreshold } from '../../../agentv3/contextTokenMeter';
 import {
   createClaudeSnapshotEngineState,
-  getClaudeSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
   sessionFieldsUsePrivateKnowledge,
   type SessionStateSnapshot,
@@ -131,7 +130,6 @@ import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
 import {verifyConclusion, generateCorrectionPrompt} from './claudeVerifier';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import { backendLogPath } from '../../../runtimePaths';
 import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
@@ -180,26 +178,12 @@ import { localize } from '../../../agentv3/outputLanguage';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { isPolicyRefusalResult } from '../../../agentv3/toolNarration';
 import {
-  deleteClaudeSessionMapRuntimeSnapshots,
-  loadClaudeSessionMapFromRuntimeSnapshots,
-  saveClaudeSessionMapToRuntimeSnapshots,
-  type ClaudeSessionMapRuntimeEntry,
-} from '../../../services/runtimeSnapshotStore';
-import {
-  enterpriseDbWritesEnabled,
-  legacyFilesystemReadAuthorityEnabled,
-  legacyFilesystemWritesEnabled,
-} from '../../../services/enterpriseMigration';
-import {
-  SDK_SESSION_FRESHNESS_MS,
   buildQuickRunReceipt,
   buildEntityContext,
   buildQuickConversationContext,
-  buildRuntimeSessionMapKey,
   captureSkillDisplayEntities,
   createRuntimeSkillNotesBudget,
   getLruCacheEntry,
-  isFreshRuntimeEntry,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
   quickStopReasonFromTermination,
@@ -219,104 +203,7 @@ import {
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
 
-const sessionMapFile = () => backendLogPath('claude_session_map.json');
-/** Max age for session map entries before pruning (24 hours). */
-const SESSION_MAP_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-interface SessionMapEntry {
-  sdkSessionId: string;
-  updatedAt: number;
-  mode?: 'full';
-}
-
-function enterpriseSessionMapDbWritesEnabled(): boolean {
-  return enterpriseDbWritesEnabled();
-}
-
-function legacySessionMapWritesEnabled(): boolean {
-  return legacyFilesystemWritesEnabled();
-}
-
-function loadPersistedSessionMap(): Map<string, SessionMapEntry> {
-  try {
-    const file = sessionMapFile();
-    if (fs.existsSync(file)) {
-      const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
-      const map = new Map<string, SessionMapEntry>();
-      for (const [key, value] of Object.entries(data)) {
-        // Migration: old format stored plain string, new format stores {sdkSessionId, updatedAt}
-        if (typeof value === 'string') {
-          map.set(key, { sdkSessionId: value, updatedAt: Date.now() });
-        } else if (value && typeof value === 'object') {
-          const entry = value as Partial<SessionMapEntry>;
-          if (typeof entry.sdkSessionId !== 'string') continue;
-          const updatedAt = typeof entry.updatedAt === 'number' && Number.isFinite(entry.updatedAt)
-            ? entry.updatedAt
-            : Date.now();
-          const mode = entry.mode === 'full' ? entry.mode : undefined;
-          map.set(key, { sdkSessionId: entry.sdkSessionId, updatedAt, ...(mode ? { mode } : {}) });
-        }
-      }
-      return map;
-    }
-  } catch {
-    // Ignore — start with empty map
-  }
-  return new Map();
-}
-
-function loadSessionMapForCurrentMode(): Map<string, SessionMapEntry> {
-  if (legacyFilesystemReadAuthorityEnabled()) {
-    return loadPersistedSessionMap();
-  }
-
-  try {
-    return loadClaudeSessionMapFromRuntimeSnapshots(SESSION_MAP_MAX_AGE_MS);
-  } catch (err) {
-    console.warn('[ClaudeRuntime] Failed to load runtime_snapshots session map:', diagnosticLogIdentity((err as Error).message));
-  }
-  return new Map();
-}
-
-/**
- * Debounce timer for session map persistence — avoids blocking event loop on every SDK message.
- * P2-1: Use a Map keyed by the Map reference to support multiple ClaudeRuntime instances.
- */
-const saveTimers = new WeakMap<Map<string, SessionMapEntry>, ReturnType<typeof setTimeout>>();
-const SAVE_DEBOUNCE_MS = 2000;
 const TEXT_ONLY_CORRECTION_TIMEOUT_MS = 120_000;
-
-function savePersistedSessionMap(map: Map<string, SessionMapEntry>): void {
-  const existing = saveTimers.get(map);
-  if (existing) clearTimeout(existing);
-  saveTimers.set(map, setTimeout(() => {
-    saveTimers.delete(map);
-    savePersistedSessionMapSync(map);
-  }, SAVE_DEBOUNCE_MS));
-}
-
-/** Immediate save — used by debounce timer and for critical operations (session removal). */
-function savePersistedSessionMapSync(map: Map<string, SessionMapEntry>): void {
-  try {
-    const file = sessionMapFile();
-    const dir = path.dirname(file);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-
-    // Prune stale entries before saving
-    const now = Date.now();
-    for (const [key, entry] of map) {
-      if (now - entry.updatedAt > SESSION_MAP_MAX_AGE_MS) {
-        map.delete(key);
-      }
-    }
-
-    const tmpFile = file + '.tmp';
-    fs.writeFileSync(tmpFile, JSON.stringify(Object.fromEntries(map)));
-    fs.renameSync(tmpFile, file);
-  } catch (err) {
-    console.warn('[ClaudeRuntime] Failed to persist session map:', diagnosticLogIdentity((err as Error).message));
-  }
-}
 
 // Notes persistence now handled by unified SessionStateSnapshot — no separate disk I/O.
 // The old logs/session_notes/ directory is no longer written to.
@@ -355,16 +242,6 @@ function formatSdkError(error: unknown): string {
     }
   }
   return String(error);
-}
-
-function isMissingSdkConversationError(message: string): boolean {
-  return /No conversation found with session ID/i.test(message);
-}
-
-function isFreshFullSdkSessionEntry(entry: SessionMapEntry | undefined, now = Date.now()): entry is SessionMapEntry & { mode: 'full' } {
-  return !!entry
-    && entry.mode === 'full'
-    && isFreshRuntimeEntry(entry, SDK_SESSION_FRESHNESS_MS, now);
 }
 
 type ClaudeSdkSystemPrompt = string | string[];
@@ -418,7 +295,7 @@ function buildClaudeSdkToolOptions(
 }
 
 export const __testing = {
-  getSdkResultErrorMessage, isMissingSdkConversationError, isFreshFullSdkSessionEntry,
+  getSdkResultErrorMessage,
   buildClaudeSdkSystemPrompt, buildQuickConversationContext, chooseClaudeConclusionText,
   claudeTerminalState, isRetryableError, projectClaudeToolResultForPlan, buildClaudeSdkToolOptions,
 };
@@ -633,7 +510,6 @@ function sdkQueryWithRetry(
 export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   private traceProcessorService: TraceProcessorService;
   private config: ClaudeAgentConfig;
-  private sessionMap: Map<string, SessionMapEntry>;
   /** Cache architecture detection results per traceId (deterministic per trace). */
   private architectureCache: Map<string, ArchitectureInfo> = new Map();
   /** Per-session artifact stores — persist across turns within a session. */
@@ -667,7 +543,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.config = loadClaudeConfig(config);
     this.runtimeSelection = runtimeSelection;
     this.runtimeCapabilities = getProductionEngineCapabilities(runtimeSelection.kind);
-    this.sessionMap = loadSessionMapForCurrentMode();
   }
 
   /** Restore a cached architecture detection result (e.g., from session persistence). */
@@ -678,69 +553,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   /** Get cached architecture for a traceId (used for persistence). */
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
     return this.architectureCache.get(traceId);
-  }
-
-  /** Get SDK session ID for persistence. */
-  getSdkSessionId(smartPerfettoSessionId: string, referenceTraceId?: string): string | undefined {
-    const entry = this.sessionMap.get(this.buildSessionMapKey(smartPerfettoSessionId, referenceTraceId));
-    return isFreshFullSdkSessionEntry(entry) ? entry.sdkSessionId : undefined;
-  }
-
-  private buildSessionMapKey(sessionId: string, referenceTraceId?: string): string {
-    return buildRuntimeSessionMapKey(sessionId, referenceTraceId);
-  }
-
-  private persistSessionMapEntry(
-    sessionId: string,
-    traceId: string,
-    sessionMapKey: string,
-    entry: ClaudeSessionMapRuntimeEntry,
-    options: AnalysisOptions,
-  ): void {
-    if (legacySessionMapWritesEnabled()) {
-      savePersistedSessionMap(this.sessionMap);
-    }
-
-    if (!enterpriseSessionMapDbWritesEnabled()) return;
-
-    if (!options.tenantId || !options.workspaceId) {
-      console.warn('[ClaudeRuntime] Enterprise session map persistence skipped: missing tenant/workspace scope');
-      return;
-    }
-
-    try {
-      saveClaudeSessionMapToRuntimeSnapshots({
-        tenantId: options.tenantId,
-        workspaceId: options.workspaceId,
-        userId: options.userId,
-        sessionId,
-        runId: options.runId,
-        traceId,
-      }, sessionMapKey, entry);
-    } catch (err) {
-      console.warn('[ClaudeRuntime] Failed to persist session map to runtime_snapshots:', diagnosticLogIdentity((err as Error).message));
-    }
-  }
-
-  private rememberFullSdkSessionMapping(
-    sessionId: string,
-    traceId: string,
-    sessionMapKey: string,
-    sdkSessionId: string,
-    options: AnalysisOptions,
-  ): void {
-    const entry = { sdkSessionId, updatedAt: Date.now(), mode: 'full' as const };
-    this.sessionMap.set(sessionMapKey, entry);
-    this.persistSessionMapEntry(sessionId, traceId, sessionMapKey, entry, options);
-  }
-
-  private removeSessionMapEntries(sessionId: string): void {
-    const referencePrefix = `${sessionId}:ref:`;
-    for (const key of [...this.sessionMap.keys()]) {
-      if (key === sessionId || key.startsWith(referencePrefix)) {
-        this.sessionMap.delete(key);
-      }
-    }
   }
 
   async analyze(
@@ -764,7 +576,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const runActivity = {active: true};
     const allFindings: Finding[][] = [];
     let conclusionText = '';
-    let sdkSessionId: string | undefined;
     let rounds = 0;
     const runId = options.runId ?? options.runManifestAttributionSink?.identity.runId ?? randomUUID();
     let turnIntent: AnalysisTurnIntent | undefined;
@@ -1165,7 +976,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             acceptedOrigin = 'assistant_stream';
             acquisition.open = true;
             mainAttemptWorkObserved = false;
-            sdkSessionId = undefined;
           },
         });
       const unregisterSdkAbortHandle = this.registerAbortHandle(sessionId, { abort: closeSdk });
@@ -1296,11 +1106,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           if ((msg as any).type === 'system' && (msg as any).subtype === 'compact_boundary') {
             sdkCompactDetected = true;
             console.warn(`[ClaudeRuntime] SDK auto-compact detected for session ${sessionId} — prior turns summarized`);
-          }
-
-          if (!privateAnalysisContext && msg.session_id && !sdkSessionId) {
-            sdkSessionId = msg.session_id;
-            this.rememberFullSdkSessionMapping(sessionId, traceId, ctx.sessionMapKey, sdkSessionId, options);
           }
 
           const sdkResultError = getSdkResultErrorMessage(msg);
@@ -2143,13 +1948,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   }
 
   removeSession(sessionId: string): void {
-    // Cancel any pending debounced save to prevent stale write after sync save
-    const pendingTimer = saveTimers.get(this.sessionMap);
-    if (pendingTimer) {
-      clearTimeout(pendingTimer);
-      saveTimers.delete(this.sessionMap);
-    }
-    this.removeSessionMapEntries(sessionId);
     this.artifactStores.delete(sessionId);
     this.sessionNotes.delete(sessionId);
     this.sessionSqlErrors.delete(sessionId);
@@ -2158,17 +1956,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
     this.activeAnalyses.delete(sessionId);
-    if (enterpriseSessionMapDbWritesEnabled()) {
-      try {
-        deleteClaudeSessionMapRuntimeSnapshots(sessionId);
-      } catch (err) {
-        console.warn('[ClaudeRuntime] Failed to delete runtime_snapshots session map:', diagnosticLogIdentity((err as Error).message));
-      }
-    }
-    if (legacySessionMapWritesEnabled()) {
-      // Use immediate save — session is being removed, must persist before cleanup completes
-      savePersistedSessionMapSync(this.sessionMap);
-    }
   }
 
   /** Clean up all session-scoped state for a given session. */
@@ -2239,8 +2026,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   /**
    * Take a snapshot of all session state for atomic persistence.
    *
-   * Reads from ClaudeRuntime's 7 internal Maps (notes, plans, hypotheses,
-   * flags, artifacts, architectureCache, sessionMap) and merges with
+   * Reads from ClaudeRuntime's 6 internal Maps (notes, plans, hypotheses,
+   * flags, artifacts, architectureCache) and merges with
    * session-level arrays provided by the route layer.
    *
    * @param sessionId - The SmartPerfetto session ID
@@ -2260,12 +2047,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const flags = this.sessionUncertaintyFlags.get(sessionId) || [];
     const artifactStore = this.artifactStores.get(sessionId);
     const architecture = this.architectureCache.get(traceId);
-    const sessionMapEntry = this.sessionMap.get(
-      this.buildSessionMapKey(sessionId, sessionFields.referenceTraceId),
-    );
-    const sdkSessionId = !privateKnowledge && isFreshFullSdkSessionEntry(sessionMapEntry)
-      ? sessionMapEntry.sdkSessionId
-      : undefined;
 
     return {
       version: 1,
@@ -2288,10 +2069,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       engineState: createClaudeSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-        sdkSessionId,
-        sdkSessionMode: sdkSessionId ? 'full' : undefined,
       }),
-      ...(sdkSessionId ? { sdkSessionId, sdkSessionMode: 'full' as const } : {}),
       agentRuntimeKind: 'claude-agent-sdk',
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
       agentRuntimeProviderSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
@@ -2304,7 +2082,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
   /**
    * Restore all ClaudeRuntime Maps from a persisted snapshot.
    *
-   * Called during session resume to repopulate the 7 internal Maps
+   * Called during session resume to repopulate the 6 internal Maps
    * that are normally built up during analysis.
    *
    * @param sessionId - The SmartPerfetto session ID
@@ -2337,15 +2115,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
     if (snapshot.architecture) {
       setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
-    }
-
-    const claudeEngineState = getClaudeSnapshotEngineState(snapshot);
-    if (claudeEngineState?.sdkSessionId && claudeEngineState.sdkSessionMode === 'full') {
-      this.sessionMap.set(this.buildSessionMapKey(sessionId, snapshot.referenceTraceId), {
-        sdkSessionId: claudeEngineState.sdkSessionId,
-        updatedAt: snapshot.snapshotTimestamp || Date.now(),
-        mode: 'full',
-      });
     }
   }
 
@@ -2623,9 +2392,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     // Phase 3: Session context + conversation history (reuse precomputed if available)
     const sessionContext = precomputed?.sessionContext ?? sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = precomputed?.previousTurns ?? (sessionContext.getAllTurns?.() || []);
-    // Composite key for comparison mode session identity isolation
-    const sessionMapKey = precomputed?.analysisRunSpec?.identity.sessionMapKey
-      ?? this.buildSessionMapKey(sessionId, referenceTraceId);
     // Phase 4: Entity store + entity context for drill-down
     const entityStore = sessionContext.getEntityStore();
 
@@ -2858,7 +2624,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       sceneType,
       allowedTools, // P2-G1: auto-derived from MCP server registration
       analysisContextForRebuild, // Used by correction retry to rebuild prompt with reduced budget
-      sessionMapKey, // Composite key for comparison mode session identity isolation
       analysisRunSpec: precomputed?.analysisRunSpec,
       sourceUse,
     };

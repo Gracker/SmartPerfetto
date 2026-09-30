@@ -129,7 +129,7 @@ Claude runtime 直接把这些工具暴露为 in-process MCP server。
 
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
-当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist、SDK session resume 和可配置 sub-agent；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools；OpenCode 使用每次分析的隔离 server/MCP bridge；Qoder 通过 SDK in-process bridge 复用共享工具。OpenCode/Qoder 的内建文件、shell 等工具隔离规则不变。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
+当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist 和可配置 sub-agent，每轮开启新的 SDK session；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools；OpenCode 使用每次分析的隔离 server/MCP bridge；Qoder 通过 SDK in-process bridge 复用共享工具。OpenCode/Qoder 的内建文件、shell 等工具隔离规则不变。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
 
 ## 并发、观测与准入
 
@@ -247,7 +247,7 @@ Pi Agent Core 的真实模型路径复用 SmartPerfetto 的 scene strategy、系
 
 OpenCode 路径同样只允许 custom provider。它可以使用带 `providerID` / `modelID` / `baseUrl` / `apiKey` 的 `SMARTPERFETTO_OPENCODE_MODEL_JSON`，也可以回退到 OpenAI-compatible 的 `OPENAI_*` env/provider 字段。SmartPerfetto 不复用用户自己的 OpenCode CLI 登录态、配置文件或 project extension；回滚路径是把 custom provider 或 `SMARTPERFETTO_AGENT_RUNTIME` 切回 `claude-agent-sdk` / `openai-agents-sdk`。
 
-Qoder 在 Provider Manager 中同样只允许 custom provider，也可以通过 env 显式选择。SDK 默认不安装，用户必须先审阅条款，再通过 `qoder:install -- --accept-terms` 或显式 module path opt in。`resolveModel` BYOK 由 `QODER_BYOK_API_KEY`、`QODER_BYOK_PROVIDER`、`QODER_MODEL` 及可选 base URL/style/light model 组成；配置不完整时 fail closed。BYOK 只替换模型 provider，不替代 Qoder PAT 或本机 `qodercli` 登录认证。Provider Manager 仅允许 Qoder custom profile 的 `custom.envOverrides` 写入这四个 BYOK 值，不允许借此覆盖 CLI、SDK module 或 worker path。BYOK key 只进入 SDK 的 `resolveModel` 回调，不进入 SDK 子进程 env、诊断或明文快照；provider/base/style 进入非密钥快照，key 只参与 secret fingerprint，确保 provider pin、resume、外部 Issue 和 Self-Evolution proof 能检测配置变化。公开分析的逻辑续问使用产品历史并建立新模型上下文；一旦请求获准访问私有 codebase 或外部知识源，就不会恢复或保存该 provider opaque session，也不会把中间状态写入 durable snapshot。
+Qoder 在 Provider Manager 中同样只允许 custom provider，也可以通过 env 显式选择。SDK 默认不安装，用户必须先审阅条款，再通过 `qoder:install -- --accept-terms` 或显式 module path opt in。`resolveModel` BYOK 由 `QODER_BYOK_API_KEY`、`QODER_BYOK_PROVIDER`、`QODER_MODEL` 及可选 base URL/style/light model 组成；配置不完整时 fail closed。BYOK 只替换模型 provider，不替代 Qoder PAT 或本机 `qodercli` 登录认证。Provider Manager 仅允许 Qoder custom profile 的 `custom.envOverrides` 写入这四个 BYOK 值，不允许借此覆盖 CLI、SDK module 或 worker path。BYOK key 只进入 SDK 的 `resolveModel` 回调，不进入 SDK 子进程 env、诊断或明文快照；provider/base/style 进入非密钥快照，key 只参与 secret fingerprint，确保 provider pin、resume、外部 Issue 和 Self-Evolution proof 能检测配置变化。逻辑续问使用产品历史并建立新模型上下文，不恢复也不保存 provider session；一旦请求获准访问私有 codebase 或外部知识源，也不会把中间状态写入 durable snapshot。
 
 ## Final Result 与质量产物
 
@@ -336,8 +336,8 @@ Conversation 的逻辑 session 保留精确 trace pair、授权指纹和 tenant/
 
 Raw trace comparison session 还必须持久化 `referenceTraceId`、`comparisonSource`
 和 `comparisonReportSection`。同一个 session 不能从 comparison 降级成 single-trace，
-也不能静默切到另一个 reference trace；恢复时 runtime-specific session state 和
-provider/runtime identity 都必须按 comparison identity 读写。
+也不能静默切到另一个 reference trace；恢复时 provider/runtime identity 必须按
+comparison identity 读写。
 
 ## 发布与平台边界
 

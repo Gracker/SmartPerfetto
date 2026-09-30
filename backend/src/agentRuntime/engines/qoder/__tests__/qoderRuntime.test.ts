@@ -1144,7 +1144,6 @@ describe('QoderRuntime', () => {
       await Promise.resolve();
       expect(mockQuery).not.toHaveBeenCalled();
       expect(mockCreateClaudeMcpServer).not.toHaveBeenCalled();
-      expect(runtime.getSdkSessionId('cancel-intent')).toBeUndefined();
     });
 
     it('applies the main wall budget even while the shared SDK module load never settles', async () => {
@@ -1562,7 +1561,6 @@ describe('QoderRuntime', () => {
       expect(result.conclusion).toBe(body);
       expect(result.completion).toMatchObject({status: 'completed', attemptId: 'main',
         conclusionFingerprint: analysisDeliveryFingerprint(body)});
-      expect(runtime.getSdkSessionId('qoder-declaration-rejected')).toBe('sdk-original-session');
       expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
     });
 
@@ -1848,14 +1846,6 @@ describe('QoderRuntime', () => {
           message: { content: [{ type: 'text', text: 'late-answer-canary' }] },
         },
       },
-      {
-        label: 'opaque init and progress',
-        lateMessage: {
-          type: 'system',
-          subtype: 'init',
-          session_id: 'late-opaque-canary',
-        },
-      },
       {label: 'provider error', lateMessage: new Error('Late provider failure')},
     ])('fences late $label from a timed-out iterator after same-session reuse', async ({ lateMessage }) => {
       const releaseLateIterator = createDeferred<void>();
@@ -1901,7 +1891,6 @@ describe('QoderRuntime', () => {
         success: false,
         terminationReason: 'timeout',
       });
-      expect(runtime.getSdkSessionId('session-qoder-timeout-late-iterator')).toBeUndefined();
       await expect(runtime.analyze(
         'second',
         'session-qoder-timeout-late-iterator',
@@ -1919,7 +1908,6 @@ describe('QoderRuntime', () => {
       expect(newClose).toHaveBeenCalledTimes(1);
       expect(mockProjectionWrite).not.toHaveBeenCalledWith('late-answer-canary');
       expect(JSON.stringify(updates)).not.toContain('late-answer-canary');
-      expect(runtime.getSdkSessionId('session-qoder-timeout-late-iterator')).toBe('new-run-opaque');
       expect(runtime.getSessionNotes('session-qoder-timeout-late-iterator')).toEqual([{
         section: 'observation', content: 'Evidence collected by the new run', priority: 'low', timestamp: 1,
       }]);
@@ -1941,7 +1929,6 @@ describe('QoderRuntime', () => {
 
       expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(updates)).not.toContain('private-tail-canary');
-      expect(runtime.getSdkSessionId('session-qoder-private-tail')).toBeUndefined();
     });
 
     it('returns hypotheses written through the shared MCP state', async () => {
@@ -2355,102 +2342,6 @@ describe('QoderRuntime', () => {
       ]));
     });
 
-    it('invalidates Qoder opaque state when cancelled after SDK init before provider completion', async () => {
-      const initObserved = createDeferred<void>();
-      const releaseStream = createDeferred<void>();
-      mockQuery.mockReturnValue({
-        async *[Symbol.asyncIterator]() {
-          yield { type: 'system', subtype: 'init', session_id: 'sdk-qoder-cancel-after-init' };
-          initObserved.resolve();
-          await releaseStream.promise;
-          yield { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\nlate result' };
-        },
-        interrupt: mockInterrupt,
-        close: mockClose,
-      });
-
-      const runtime = createRuntime();
-      const analysis = runtime.analyze('test', 'session-qoder-init-cancel', 'trace-1', {
-        analysisMode: 'full',
-      });
-      await initObserved.promise;
-      await runtime.abortSession('session-qoder-init-cancel');
-      releaseStream.resolve();
-      await expect(analysis).resolves.toMatchObject({
-        sessionId: 'session-qoder-init-cancel',
-        success: false,
-      });
-
-      const snapshot = runtime.takeSnapshot('session-qoder-init-cancel', 'trace-1', {
-        agentRuntimeProviderId: 'prov-1',
-        agentRuntimeProviderSnapshotHash: 'hash-1',
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      } as any);
-
-      if (snapshot.engineState?.kind !== 'qoder-agent-sdk') {
-        throw new Error('expected qoder snapshot engine state');
-      }
-      expect(snapshot.engineState.qoder.opaque).toEqual({
-        version: 1,
-        degradedReason: 'state_unavailable',
-      });
-    });
-
-    it('invalidates Qoder opaque state before abortSession returns while the provider stream is unsettled', async () => {
-      const initObserved = createDeferred<void>();
-      const releaseStream = createDeferred<void>();
-      mockQuery.mockReturnValue({
-        async *[Symbol.asyncIterator]() {
-          yield { type: 'system', subtype: 'init', session_id: 'sdk-qoder-immediate-abort' };
-          initObserved.resolve();
-          await releaseStream.promise;
-          yield { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\nlate result' };
-        },
-        interrupt: mockInterrupt,
-        close: mockClose,
-      });
-
-      const runtime = createRuntime();
-      const analysis = runtime.analyze('test', 'session-qoder-immediate-abort', 'trace-1', {
-        analysisMode: 'full',
-      });
-      await initObserved.promise;
-      await runtime.abortSession('session-qoder-immediate-abort');
-
-      const snapshot = runtime.takeSnapshot('session-qoder-immediate-abort', 'trace-1', {
-        agentRuntimeProviderId: 'prov-1',
-        agentRuntimeProviderSnapshotHash: 'hash-1',
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      } as any);
-
-      if (snapshot.engineState?.kind !== 'qoder-agent-sdk') {
-        throw new Error('expected qoder snapshot engine state');
-      }
-      expect(snapshot.engineState.qoder.opaque).toEqual({
-        version: 1,
-        degradedReason: 'state_unavailable',
-      });
-
-      releaseStream.resolve();
-      await expect(analysis).resolves.toMatchObject({
-        sessionId: 'session-qoder-immediate-abort',
-        success: false,
-      });
-    });
   });
 
   describe('session resume', () => {
@@ -2488,19 +2379,6 @@ describe('QoderRuntime', () => {
       expect(planState.current).toBeNull();
       expect(planState.history).toEqual([previousPlan]);
       expect(planState.prePlanToolCallLog).toEqual([]);
-    });
-
-    it('captures session ID from system init message', async () => {
-      const messages = [
-        { type: 'system', subtype: 'init', session_id: 'sdk-session-abc' },
-        { type: 'result', subtype: 'success', is_error: false, result: 'done' },
-      ];
-      mockQuery.mockReturnValue(createMockSdkStream(messages));
-
-      const runtime = createRuntime();
-      await runtime.analyze('test', 'session-1', 'trace-1');
-
-      expect(runtime.getSdkSessionId('session-1')).toBe('sdk-session-abc');
     });
 
     it('starts a fresh provider session and inherits product history on subsequent calls', async () => {
@@ -2562,67 +2440,20 @@ describe('QoderRuntime', () => {
 
       const runtime = createRuntime();
       await runtime.analyze('private', 'session-1', 'trace-1', privateOptions);
-      expect(runtime.getSdkSessionId('session-1')).toBeUndefined();
 
       await runtime.analyze('public', 'session-1', 'trace-1');
       const publicCallArgs = mockQuery.mock.calls[1][0] as any;
       expect(publicCallArgs.options.resume).toBeUndefined();
     });
 
-    it('discards an existing public opaque session before a private run', async () => {
-      mockQuery
-        .mockReturnValueOnce(createMockSdkStream([
-          { type: 'system', subtype: 'init', session_id: 'public-sdk-session' },
-          { type: 'result', subtype: 'success', is_error: false, result: 'done' },
-        ]))
-        .mockReturnValueOnce(createMockSdkStream([
-          { type: 'system', subtype: 'init', session_id: 'private-sdk-session' },
-          { type: 'result', subtype: 'success', is_error: false, result: 'private done' },
-        ]))
-        .mockReturnValueOnce(createMockSdkStream([
-          { type: 'result', subtype: 'success', is_error: false, result: 'public again' },
-        ]));
-
-      const runtime = createRuntime();
-      await runtime.analyze('public', 'session-qoder-private-discard', 'trace-1');
-      expect(runtime.getSdkSessionId('session-qoder-private-discard')).toBe('public-sdk-session');
-
-      await runtime.analyze('private', 'session-qoder-private-discard', 'trace-1', {
-        knowledgeSourceIds: ['private-wiki'],
-      });
-      expect(runtime.getSdkSessionId('session-qoder-private-discard')).toBeUndefined();
-
-      await runtime.analyze('public again', 'session-qoder-private-discard', 'trace-1');
-      expect((mockQuery.mock.calls[2][0] as any).options.resume).toBeUndefined();
-    });
-
-    it('clears stale session on missing-conversation error', async () => {
-      const messages1 = [
-        { type: 'system', subtype: 'init', session_id: 'sdk-session-abc' },
-        { type: 'result', subtype: 'success', is_error: false, result: 'done' },
-      ];
-      mockQuery
-        .mockReturnValueOnce(createMockSdkStream(messages1))
-        .mockImplementationOnce(() => {
-          throw new Error('No conversation found with session ID sdk-session-abc');
-        });
-
-      const runtime = createRuntime();
-      await runtime.analyze('first', 'session-1', 'trace-1');
-      expect(runtime.getSdkSessionId('session-1')).toBe('sdk-session-abc');
-
-      await runtime.analyze('second', 'session-1', 'trace-1');
-      expect(runtime.getSdkSessionId('session-1')).toBeUndefined();
-    });
   });
 
   describe('snapshot round-trip', () => {
-    it('preserves session state through snapshot/restore', async () => {
-      const messages = [
+    it('keeps no native session across snapshot/restore, even from a legacy snapshot', async () => {
+      mockQuery.mockReturnValue(createMockSdkStream([
         { type: 'system', subtype: 'init', session_id: 'sdk-session-xyz' },
         { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone' },
-      ];
-      mockQuery.mockReturnValue(createMockSdkStream(messages));
+      ]));
 
       const runtime = createRuntime();
       await runtime.analyze('test', 'session-1', 'trace-1');
@@ -2642,11 +2473,31 @@ describe('QoderRuntime', () => {
       const snapshot = runtime.takeSnapshot('session-1', 'trace-1', sessionFields as any);
 
       expect(snapshot.agentRuntimeKind).toBe('qoder-agent-sdk');
+      expect(snapshot.engineState).toEqual({
+        kind: 'qoder-agent-sdk',
+        provider: {providerId: 'prov-1', providerSnapshotHash: 'hash-1'},
+        qoder: {},
+      });
+      expect(JSON.stringify(snapshot)).not.toContain('sdk-session-xyz');
 
+      // A snapshot written before native state was dropped still carries the SDK
+      // session id; restoring it must neither resume that session nor save it again.
+      const legacySnapshot = {
+        ...snapshot,
+        engineState: {
+          kind: 'qoder-agent-sdk' as const,
+          provider: {providerId: 'prov-1', providerSnapshotHash: 'hash-1'},
+          qoder: {opaque: {version: 1 as const, sdkSessionId: 'sdk-session-legacy'}},
+        },
+      };
       const runtime2 = createRuntime();
-      runtime2.restoreFromSnapshot('session-2', 'trace-1', snapshot);
+      runtime2.restoreFromSnapshot('session-2', 'trace-1', legacySnapshot);
+      await runtime2.analyze('follow-up', 'session-2', 'trace-1');
 
-      expect(runtime2.getSdkSessionId('session-2')).toBe('sdk-session-xyz');
+      expect((mockQuery.mock.calls[1][0] as any).options.resume).toBeUndefined();
+      expect(JSON.stringify(mockQuery.mock.calls[1][0])).not.toContain('sdk-session-legacy');
+      expect(JSON.stringify(runtime2.takeSnapshot('session-2', 'trace-1', sessionFields as any)))
+        .not.toContain('sdk-session-legacy');
     });
 
     it('does not persist opaque SDK or intermediate state for private knowledge', async () => {
@@ -2674,7 +2525,7 @@ describe('QoderRuntime', () => {
       } as any);
 
       expect(snapshot.engineState?.kind).toBe('qoder-agent-sdk');
-      expect(snapshot.engineState?.kind === 'qoder-agent-sdk' && snapshot.engineState.qoder.opaque).toBeUndefined();
+      expect(snapshot.engineState?.kind === 'qoder-agent-sdk' && snapshot.engineState.qoder).toEqual({});
       expect(snapshot.conversationSteps).toEqual([]);
       expect(snapshot.agentDialogue).toEqual([]);
       expect(snapshot.agentResponses).toEqual([]);

@@ -18,7 +18,6 @@
  * It keeps:
  *   - prepareSession / analyze / conclusion capture
  *   - HTML report generation (written to CLI's session folder, not /api/reports)
- *   - sdkSessionId surfacing for subsequent resume
  */
 
 import * as fs from 'fs';
@@ -227,7 +226,6 @@ export interface RunTurnInput {
 export interface RunTurnOutput {
   sessionId: string;
   traceId: string;
-  sdkSessionId?: string;
   result: AnalysisResult;
   /** Absolute path to the generated HTML report, or undefined if generation failed. */
   reportHtml?: string;
@@ -987,12 +985,6 @@ export class CliAnalyzeService {
           );
         }
 
-        // SDK/session id is runtime-specific and exposed only through the orchestrator hook.
-        const sdkSessionId =
-          typeof orchestrator.getSdkSessionId === 'function'
-            ? orchestrator.getSdkSessionId(sessionId, effectiveReferenceTraceId)
-            : undefined;
-
         assertActive();
         const reportOutput = this.buildReportHtml(session, result);
         const durableResult = primaryPrivateKnowledge
@@ -1003,7 +995,6 @@ export class CliAnalyzeService {
         return {
           sessionId,
           traceId,
-          sdkSessionId,
           result: durableResult,
           reportHtml: reportOutput.html,
           reportError:
@@ -1248,7 +1239,6 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
   const output: RunTurnOutput = {
     sessionId,
     traceId,
-    sdkSessionId: `cli-e2e-fake-${sessionId}`,
     model: 'cli-e2e-fake',
     providerId: null,
     agentRuntimeKind: 'openai-agents-sdk',

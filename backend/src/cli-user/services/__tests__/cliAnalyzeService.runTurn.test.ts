@@ -262,10 +262,8 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     mockPrepareSession.mockImplementation(() => defaultPreparedSessionResult());
     const orchestrator = new EventEmitter() as EventEmitter & {
       analyze: typeof mockAnalyze;
-      getSdkSessionId: () => string;
     };
     orchestrator.analyze = mockAnalyze;
-    orchestrator.getSdkSessionId = () => 'sdk-cli-session-quality';
     mockPreparedSession = makeSession(orchestrator);
     mockAnalyze.mockReset();
     mockAnalyze.mockResolvedValue({

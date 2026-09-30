@@ -22,7 +22,6 @@ import {
   type ComparisonReportSection,
   type ComparisonSourceKind,
   continuityBreaksAfterRestore,
-  withoutProviderBoundEngineState,
 } from '../../agentv3/sessionStateSnapshot';
 import {
   type EnhancedSessionContext,
@@ -607,14 +606,10 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
 
             // Restore runtime maps from the unified snapshot. Mirrors the
             // explicit /resume endpoint so both paths recover the full agent
-            // state, not just SessionContext. A provider snapshot change drops
-            // only the state bound to the old provider.
+            // state, not just SessionContext. It holds no provider-bound engine
+            // state, so a provider snapshot change restores it unchanged.
             if (stateSnapshot && typeof restoredOrchestrator.restoreFromSnapshot === 'function') {
-              restoredOrchestrator.restoreFromSnapshot(
-                requestedSessionId,
-                traceId,
-                snapshotProviderHashMismatch ? withoutProviderBoundEngineState(stateSnapshot) : stateSnapshot,
-              );
+              restoredOrchestrator.restoreFromSnapshot(requestedSessionId, traceId, stateSnapshot);
             }
 
             const restoredTurns = restoredContext.getAllTurns();
@@ -663,7 +658,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               entityStoreStats: restoredContext.getEntityStore().getStats(),
             });
             if (snapshotProviderHashMismatch) {
-              restoredLogger.warn('AgentRoutes', 'Provider snapshot changed; provider-bound runtime state was not restored', {
+              restoredLogger.warn('AgentRoutes', 'Provider snapshot changed since the snapshot was saved; continuity break recorded', {
                 providerId: restoredProviderId,
                 previousProviderSnapshotHash: snapshotProviderHash,
                 nextProviderSnapshotHash: restoredProviderSnapshotHash,

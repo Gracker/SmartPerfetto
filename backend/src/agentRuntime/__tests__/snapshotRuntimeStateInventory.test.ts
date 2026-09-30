@@ -5,17 +5,12 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   continuityBreaksAfterRestore,
-  getClaudeSnapshotEngineState,
-  getOpenCodeSnapshotEngineState,
-  getQoderSnapshotEngineState,
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
   getSnapshotRuntimeProviderSnapshotHash,
   normalizeSessionStateSnapshot,
   projectSessionFieldsForDurableSnapshot,
   type SessionStateSnapshot,
-  type SnapshotEngineState,
-  withoutProviderBoundEngineState,
 } from '../../agentv3/sessionStateSnapshot';
 import type { AgentRuntimeKind } from '../../services/providerManager/types';
 
@@ -207,7 +202,6 @@ describe('SessionStateSnapshot runtime state inventory', () => {
     expect(getSnapshotRuntimeKind(snapshot)).toBe('openai-agents-sdk');
     expect(getSnapshotRuntimeProviderId(snapshot)).toBe('provider-1');
     expect(getSnapshotRuntimeProviderSnapshotHash(snapshot)).toBe('hash-1');
-    expect(getClaudeSnapshotEngineState(snapshot)).toBeUndefined();
   });
 
   it('normalizes legacy v1 runtime mirrors into canonical engineState', () => {
@@ -248,6 +242,47 @@ describe('SessionStateSnapshot runtime state inventory', () => {
         providerSnapshotHash: 'hash-1',
       },
       openai: {},
+    });
+  });
+
+  it('normalizes a legacy Claude SDK session mirror into a provider-only engineState', () => {
+    const legacySnapshot: SessionStateSnapshot = {
+      version: 1,
+      snapshotTimestamp: 1,
+      sessionId: 'session-claude',
+      traceId: 'trace-claude',
+      conversationSteps: [],
+      queryHistory: [],
+      conclusionHistory: [],
+      agentDialogue: [],
+      agentResponses: [],
+      dataEnvelopes: [],
+      hypotheses: [],
+      analysisNotes: [],
+      analysisPlan: null,
+      planHistory: [],
+      uncertaintyFlags: [],
+      agentRuntimeProviderId: 'provider-claude',
+      agentRuntimeProviderSnapshotHash: 'hash-claude',
+      sdkSessionId: 'sdk-legacy',
+      sdkSessionMode: 'full',
+      runSequence: 0,
+      conversationOrdinal: 0,
+    };
+
+    // Without agentRuntimeKind, only the legacy SDK session mirror identifies the runtime.
+    const normalized = normalizeSessionStateSnapshot(legacySnapshot);
+    expect(getSnapshotRuntimeKind(normalized)).toBe('claude-agent-sdk');
+    expect(getSnapshotRuntimeProviderId(normalized)).toBe('provider-claude');
+    expect(getSnapshotRuntimeProviderSnapshotHash(normalized)).toBe('hash-claude');
+    // No run resumes the SDK session, so its id is not copied into engineState.
+    expect(normalized.engineState).toEqual({
+      kind: 'claude-agent-sdk',
+      provider: {
+        providerId: 'provider-claude',
+        providerSnapshotHash: 'hash-claude',
+      },
+      claude: {},
     });
   });
 
@@ -331,7 +366,7 @@ describe('SessionStateSnapshot runtime state inventory', () => {
     expect(getSnapshotRuntimeProviderSnapshotHash(piSnapshot)).toBe('hash-pi');
   });
 
-  it('reads canonical OpenCode opaque engine state', () => {
+  it('keeps the provider pin of a legacy OpenCode snapshot that still stores a session', () => {
     const openCodeSnapshot: SessionStateSnapshot = {
       version: 1,
       snapshotTimestamp: 1,
@@ -368,18 +403,15 @@ describe('SessionStateSnapshot runtime state inventory', () => {
       conversationOrdinal: 0,
     };
 
-    expect(getOpenCodeSnapshotEngineState(openCodeSnapshot)).toEqual({
-      opaque: {
-        version: 1,
-        openCodeSessionId: 'ses-opencode',
-        projectDir: '/data/opencode/session/project',
-        homeDir: '/data/opencode/session/home',
-        configDir: '/data/opencode/session/config',
-      },
-    });
+    // No run reads the stored session id or directories; normalization leaves
+    // them untouched and the provider pin still resolves from engineState.
+    expect(normalizeSessionStateSnapshot(openCodeSnapshot)).toBe(openCodeSnapshot);
+    expect(getSnapshotRuntimeKind(openCodeSnapshot)).toBe('opencode');
+    expect(getSnapshotRuntimeProviderId(openCodeSnapshot)).toBe('provider-opencode');
+    expect(getSnapshotRuntimeProviderSnapshotHash(openCodeSnapshot)).toBe('hash-opencode');
   });
 
-  it('reads canonical Qoder opaque engine states', () => {
+  it('keeps the provider pin of legacy Qoder snapshots that still store a session id', () => {
     const qoderSnapshot: SessionStateSnapshot = {
       version: 1,
       snapshotTimestamp: 1,
@@ -413,11 +445,22 @@ describe('SessionStateSnapshot runtime state inventory', () => {
       conversationOrdinal: 0,
     };
 
-    expect(getQoderSnapshotEngineState(qoderSnapshot)).toEqual({
-      opaque: {
-        version: 1,
-        sdkSessionId: 'ses-qoder-123',
-      },
+    expect(normalizeSessionStateSnapshot(qoderSnapshot)).toBe(qoderSnapshot);
+    expect(getSnapshotRuntimeKind(qoderSnapshot)).toBe('qoder-agent-sdk');
+    expect(getSnapshotRuntimeProviderId(qoderSnapshot)).toBe('provider-qoder');
+    expect(getSnapshotRuntimeProviderSnapshotHash(qoderSnapshot)).toBe('hash-qoder');
+
+    // A Qoder snapshot that predates engineState gets the same provider-only shape.
+    const {engineState: _engineState, ...mirrorOnly} = qoderSnapshot;
+    expect(normalizeSessionStateSnapshot({
+      ...mirrorOnly,
+      agentRuntimeKind: 'qoder-agent-sdk',
+      agentRuntimeProviderId: 'provider-qoder',
+      agentRuntimeProviderSnapshotHash: 'hash-qoder',
+    }).engineState).toEqual({
+      kind: 'qoder-agent-sdk',
+      provider: {providerId: 'provider-qoder', providerSnapshotHash: 'hash-qoder'},
+      qoder: {},
     });
 
     const degradedSnapshot: SessionStateSnapshot = {
@@ -437,77 +480,8 @@ describe('SessionStateSnapshot runtime state inventory', () => {
       },
     };
 
-    expect(getQoderSnapshotEngineState(degradedSnapshot)).toEqual({
-      opaque: {
-        version: 1,
-        degradedReason: 'state_unavailable',
-      },
-    });
-  });
-
-  it('drops provider-bound engine state but keeps product state and the runtime pin', () => {
-    const NATIVE_ENGINE_KEY = {
-      'claude-agent-sdk': 'claude',
-      'openai-agents-sdk': 'openai',
-      'pi-agent-core': 'pi',
-      opencode: 'opencode',
-      'qoder-agent-sdk': 'qoder',
-    } as const satisfies Record<AgentRuntimeKind, string>;
-    const provider = {providerId: 'provider-1', providerSnapshotHash: 'hash-1'};
-    const engineStates: SnapshotEngineState[] = [
-      {kind: 'claude-agent-sdk', provider, claude: {sdkSessionId: 'sdk-1', sdkSessionMode: 'full'}},
-      {kind: 'openai-agents-sdk', provider, openai: {history: [{role: 'user'}], lastResponseId: 'resp-1'}},
-      {kind: 'pi-agent-core', provider, pi: {opaque: {version: 1, messages: [{role: 'assistant'}], messageCount: 1}}},
-      {kind: 'opencode', provider, opencode: {opaque: {version: 1, openCodeSessionId: 'ses-1', projectDir: '/p'}}},
-      {kind: 'qoder-agent-sdk', provider, qoder: {opaque: {version: 1, sdkSessionId: 'qoder-1'}}},
-    ];
-    for (const engineState of engineStates) {
-      const snapshot: SessionStateSnapshot = {
-        version: 1,
-        snapshotTimestamp: 1,
-        sessionId: 'session-1',
-        traceId: 'trace-1',
-        conversationSteps: [],
-        queryHistory: [{turn: 1, query: 'q', timestamp: 1}],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        analysisNotes: [{section: 'finding', content: 'binder wait', priority: 'high', timestamp: 1}],
-        analysisPlan: null,
-        planHistory: [],
-        uncertaintyFlags: [],
-        claudeHypotheses: [],
-        artifacts: [{id: 'art-1'} as any],
-        architecture: {type: 'STANDARD'} as any,
-        engineState,
-        sdkSessionId: 'legacy-sdk',
-        sdkSessionMode: 'full',
-        openAIHistory: [{role: 'user'}],
-        openAILastResponseId: 'legacy-resp',
-        openAIRunState: 'legacy-run-state',
-        agentRuntimeKind: engineState.kind,
-        agentRuntimeProviderId: 'provider-1',
-        agentRuntimeProviderSnapshotHash: 'hash-1',
-        continuityBreaks: [{at: 1, previousProviderHash: 'hash-0', reason: 'provider_snapshot_hash_mismatch'}],
-        runSequence: 1,
-        conversationOrdinal: 1,
-      };
-
-      const stripped = withoutProviderBoundEngineState(snapshot);
-
-      for (const field of PRODUCT_STATE_FIELDS) expect(stripped[field]).toEqual(snapshot[field]);
-      expect(stripped.claudeHypotheses).toEqual(snapshot.claudeHypotheses);
-      expect(stripped.continuityBreaks).toEqual(snapshot.continuityBreaks);
-      expect(getSnapshotRuntimeKind(stripped)).toBe(engineState.kind);
-      expect(getSnapshotRuntimeProviderId(stripped)).toBe('provider-1');
-      expect(getSnapshotRuntimeProviderSnapshotHash(stripped)).toBe('hash-1');
-      for (const field of LEGACY_OPENAI_RUNTIME_MIRROR_FIELDS) expect(field in stripped).toBe(false);
-      expect('sdkSessionId' in stripped || 'sdkSessionMode' in stripped).toBe(false);
-      expect(stripped.engineState).toEqual({kind: engineState.kind, provider, [NATIVE_ENGINE_KEY[engineState.kind]]: {}});
-      expect(snapshot.engineState).toBe(engineState);
-    }
+    expect(getSnapshotRuntimeKind(degradedSnapshot)).toBe('qoder-agent-sdk');
+    expect(getSnapshotRuntimeProviderSnapshotHash(degradedSnapshot)).toBe('hash-qoder');
   });
 
   it('carries the valid continuity-break audit forward and appends only on a provider change', () => {

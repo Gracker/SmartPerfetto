@@ -206,7 +206,7 @@ Only inspect my selected time range. Why did the UI thread slow down?
 Is there a Binder or scheduling problem around this slice?
 ```
 
-Follow-up questions reuse the current session. Switching between conversation, fast, full, and auto starts a new SDK session so lightweight and full contexts do not mix.
+Follow-up questions reuse the current session. Switching between conversation, fast, full, and auto starts a new backend agent session so lightweight and full contexts do not mix.
 
 `/anr` and `/jank` use the same backend evidence, claim-verification, and report path as ordinary analysis. They are blocked when backend policy disables AI.
 

@@ -1069,11 +1069,11 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       'persisted-1',
       'trace-1',
       expect.objectContaining({
-        engineState: {
+        // Restored as persisted: no runtime reads a legacy engine payload.
+        engineState: expect.objectContaining({
           kind: 'openai-agents-sdk',
           provider: {providerId: provider.id, providerSnapshotHash: originalHash},
-          openai: {},
-        },
+        }),
       }),
     );
   });
@@ -1167,11 +1167,10 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       expect.objectContaining({
         analysisNotes: [piNote],
         artifacts: piArtifacts,
-        engineState: {
+        engineState: expect.objectContaining({
           kind: 'pi-agent-core',
           provider: {providerId: provider.id, providerSnapshotHash: originalHash},
-          pi: {},
-        },
+        }),
       }),
     );
   });

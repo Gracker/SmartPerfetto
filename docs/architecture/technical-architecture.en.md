@@ -119,11 +119,11 @@ shared `IOrchestrator` contract:
 
 | Runtime | Primary providers | Resume state |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude-compatible | Claude session id |
+| `claude-agent-sdk` | Anthropic, Bedrock, Vertex, Claude-compatible | No native state across turns (provider pin only) |
 | `openai-agents-sdk` | OpenAI Responses, OpenAI-compatible, Ollama/chat-completions | No native state across turns (provider pin only) |
 | `pi-agent-core` | Provider Manager custom profile / Pi model config | No native state across turns (provider pin only) |
-| `opencode` | OpenCode SDK and custom providers | OpenCode session id + isolated directories |
-| `qoder-agent-sdk` | Qoder CLI login or PAT, custom providers | Qoder session id; private-knowledge runs do not persist opaque sessions |
+| `opencode` | OpenCode SDK and custom providers | No native session across turns; isolated directories derived from the session id are reused |
+| `qoder-agent-sdk` | Qoder CLI login or PAT, custom providers | No native state across turns (provider pin only) |
 
 Canonical loaders and capabilities come from
 `backend/src/agentRuntime/runtimeDescriptors.ts`, with implementations under

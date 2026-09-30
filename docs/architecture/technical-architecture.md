@@ -109,11 +109,11 @@ Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS
 
 | Runtime | 主要 Provider | 恢复状态 |
 |---|---|---|
-| `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude-compatible | Claude session id |
+| `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude-compatible | 不跨轮保留原生状态（只保留 provider 钉定） |
 | `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | 不跨轮保留原生状态（只保留 provider 钉定） |
 | `pi-agent-core` | Provider Manager custom profile / Pi model config | 不跨轮保留原生状态（只保留 provider 钉定） |
-| `opencode` | OpenCode SDK 与 custom provider | OpenCode session id + 隔离目录 |
-| `qoder-agent-sdk` | Qoder CLI 登录态或 PAT、custom provider | Qoder session id；私有知识运行不持久化 opaque session |
+| `opencode` | OpenCode SDK 与 custom provider | 不跨轮保留原生 session；隔离目录由 session id 推导，每轮复用 |
+| `qoder-agent-sdk` | Qoder CLI 登录态或 PAT、custom provider | 不跨轮保留原生状态（只保留 provider 钉定） |
 
 canonical loader 和 capabilities 来自
 `backend/src/agentRuntime/runtimeDescriptors.ts`，具体实现在

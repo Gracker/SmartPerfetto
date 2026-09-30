@@ -149,8 +149,9 @@ or denied. Qoder uses the SDK's in-process MCP bridge with built-in SDK tools
 disabled and projects every answer token through the shared private-output
 guard before SSE emission. Each engine uses its pinned provider's native no-tool
 transport for the same typed intent and hands its result to the same
-product-owned finalizer/report boundary. SDK/server resume, streaming, tool
-cadence and cost/timeout semantics still differ.
+product-owned finalizer/report boundary. Every engine starts each turn in a
+fresh native context; streaming, tool cadence and cost/timeout semantics still
+differ.
 
 The tool surface follows actual request scope, artifact-store availability,
 codebase permission, `referenceTraceId`, comparison context and evidence access.
@@ -248,9 +249,10 @@ worker path. The BYOK key reaches only the SDK `resolveModel` callback, not the
 SDK subprocess environment, diagnostics, or plaintext snapshots. Provider,
 base URL, and style remain non-secret snapshot inputs, while key changes update
 the secret fingerprint used by provider pinning, resume, external issue, and
-Self-Evolution proof boundaries. Public logical follow-ups use product history and a fresh model context. A run authorized for private codebase or external knowledge never resumes
-or stores that opaque provider session, and its intermediate state is excluded
-from durable snapshots.
+Self-Evolution proof boundaries. Logical follow-ups use product history and a
+fresh model context; no provider session is resumed or stored. A run authorized
+for private codebase or external knowledge also keeps its intermediate state out
+of durable snapshots.
 
 ## Source-Aware Runtime Parity
 
@@ -491,9 +493,8 @@ affect the next turn.
 Raw trace comparison sessions must also persist `referenceTraceId`,
 `comparisonSource`, and `comparisonReportSection`. A comparison session cannot
 silently downgrade to single-trace mode or switch to a different reference
-trace. Claude/OpenAI SDK session keys must be read and written with the
-comparison identity, and Pi/OpenCode/Qoder runtime state must preserve the same
-provider/runtime identity.
+trace. Restore must read and write the provider/runtime identity with the
+comparison identity.
 
 ## Platform Boundaries
 

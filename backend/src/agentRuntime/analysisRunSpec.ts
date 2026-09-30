@@ -20,7 +20,6 @@ import type { RuntimeSelection } from './runtimeSelection';
 import type { EngineCapabilities } from './runtimeDescriptorTypes';
 import { getProductionEngineCapabilities } from './runtimeDescriptors';
 import {
-  buildRuntimeSessionMapKey,
   formatTraceContext,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
@@ -74,7 +73,6 @@ export interface AnalysisRunSpec {
     sessionId: string;
     traceId: string;
     referenceTraceId?: string;
-    sessionMapKey: string;
   };
   query: {
     text: string;
@@ -412,7 +410,6 @@ export function createAnalysisRunSpec(input: CreateAnalysisRunSpecInput): Analys
       sessionId: input.sessionId,
       traceId: input.traceId,
       referenceTraceId: options.referenceTraceId,
-      sessionMapKey: buildRuntimeSessionMapKey(input.sessionId, options.referenceTraceId),
     },
     query: {
       text: input.query,

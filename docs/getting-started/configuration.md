@@ -177,7 +177,7 @@ SmartPerfetto 后端支持这些 runtime path：
 - `openai-agents-sdk`：OpenAI runtime。适合 OpenAI Responses API、Ollama 和支持流式 function/tool calling 的 OpenAI-compatible gateway。
 - `pi-agent-core`：可选 public runtime。真实模型配置下复用 SmartPerfetto 共享 prompt、SQL/Skill、plan/hypothesis 和 report/claim-verification 管线；后端只在选择这个 runtime 时动态加载 `@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell tool 或 file tool。
 - `opencode`：可选 public runtime。它会启动加固隔离的 OpenCode server，使用显式 OpenAI-compatible 或 OpenCode model 配置，只暴露 request-scoped SmartPerfetto MCP 工具；不会读取用户自己的 OpenCode CLI 登录态、project config、extension，也不会启用内建 file/shell/web/edit tools。
-- `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT，并禁止私有知识分析复用 provider session 或持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
+- `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT；每轮都开启新的 provider session，不持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
 
 这些 runtime 是互斥选择的后端编排路径。配置 OpenAI runtime 时不需要先安装或登录 Claude Code；配置 Claude API 时也不需要 OpenAI key，但本机 Claude Code 登录态不能替代 Claude Agent SDK 的显式凭据。Pi Agent Core、OpenCode 和 Qoder 与两者独立。真实模型路径应通过启动/滑动 E2E 验证分析质量；fake-stream 只用于 smoke/test，不能代表等价分析效果。
 
@@ -523,7 +523,7 @@ timeout）限制用户停止核验（Web、对话或 CLI Ctrl-C）之后 run 保
 后续提问默认继承有界历史摘要，并可按需回查完整旧轮；来源、用户或 Trace 的权限边界
 不会因历史继承而扩大。更早正文不需要每轮全部发送给模型。
 
-前端会把选择持久化到 `localStorage['ai-analysis-mode']`。中途切换模式会清空当前 `agentSessionId`，让后端开启新的 SDK session。
+前端会把选择持久化到 `localStorage['ai-analysis-mode']`。中途切换模式会清空当前 `agentSessionId`，让后端开启新的 agent session。
 
 ### 证据保留预算
 
