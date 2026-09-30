@@ -439,6 +439,7 @@ export function trustLocalCliRegistrations(): void {
   unrecordedRootChannel = 'local_cli';
 }
 
+/** @internal Test seam: restores the server's default channel trust between cases. */
 export function resetRegistrationChannelTrustForTests(): void {
   trustedRootChannels = new Set(['native_picker']);
   unrecordedRootChannel = undefined;

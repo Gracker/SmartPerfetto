@@ -1,6 +1,6 @@
 {
   "note": "Backend exports no production module uses, in or outside its own file: used only by tests, or by nothing, including barrel re-exports nothing imports through the barrel. Each entry is accepted debt, and a suite over it vouches for nothing the product does. Shrink this list; do not grow it.",
-  "generated": "2026-09-29",
+  "generated": "2026-09-30",
   "unusedExports": [
     "src/agent/core/modelRouter.ts#default",
     "src/agent/detectors/index.ts#ArchitectureDetector",
@@ -304,7 +304,6 @@
     "src/services/ragStore.ts#ragStoreRequiresLicense",
     "src/services/rbac.ts#canCreateAnalysisResultResource",
     "src/services/rbac.ts#canDeleteAnalysisResultResource",
-    "src/services/rbac.ts#canReadAnalysisResultResource",
     "src/services/resultExportService.ts#default",
     "src/services/runtimeSnapshotStore.ts#deleteClaudeSessionMapRuntimeSnapshot",
     "src/services/security/codeAwareOutputRegistry.ts#clearAllCodeAwareOutputGuards",
