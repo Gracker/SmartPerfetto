@@ -10162,3 +10162,103 @@ describe('analyze_wait_chain', () => {
     });
   });
 });
+
+// A governance refusal carries `action_required`, which keeps it out of the circuit
+// breaker's failure rate; a missing capability carries no instruction and still counts.
+describe('source and knowledge governance refusals', () => {
+  const callRaw = (tools: Map<string, ToolDef>, name: string, params: Record<string, any>) =>
+    tools.get(name)!.handler(params, undefined);
+  const expectRefusal = (raw: any, expected: Record<string, unknown>) => {
+    expect(JSON.parse(raw.content[0].text)).toMatchObject({success: false, ...expected});
+    expect(isPolicyRefusalResult(raw)).toBe(true);
+  };
+
+  it('refuses an exhausted source budget with what to do instead', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'metadata_only',
+      codebaseIds: ['app-codebase'],
+      sourceUsePolicy: {phase: 'explicit', maxSearchCalls: 0, maxReadCalls: 0},
+    });
+
+    expectRefusal(await callRaw(tools, 'search_codebase', {query: 'StartupHooks'}), {
+      unsupportedReason: 'source_search_budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence',
+    });
+    expectRefusal(await callRaw(tools, 'read_codebase_file', {file_path: 'src/StartupHooks.kt'}), {
+      unsupportedReason: 'source_read_budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence',
+    });
+  });
+
+  it('refuses a codebase outside the session whitelist', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'metadata_only',
+      codebaseIds: ['app-a', 'app-b'],
+    });
+
+    expectRefusal(await callRaw(tools, 'search_codebase', {query: 'StartupHooks'}), {
+      unsupportedReason: 'whitelisted_codebase_id_required',
+      action_required: 'list_codebases',
+    });
+    expectRefusal(await callRaw(tools, 'lookup_app_source', {query: 'StartupHooks', codebase_id: 'other'}), {
+      unsupportedReason: 'codebase_not_whitelisted',
+      action_required: 'retry_without_codebase_id',
+    });
+    expectRefusal(await callRaw(tools, 'lookup_aosp_source', {query: 'Looper', codebase_id: 'other'}), {
+      unsupportedReason: 'codebase_not_whitelisted',
+      action_required: 'retry_without_codebase_id',
+    });
+  });
+
+  it('refuses a source-use decision the current state does not admit', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'metadata_only',
+      codebaseIds: ['app-codebase'],
+    });
+
+    expectRefusal(await callRaw(tools, 'record_source_use_decision', {
+      status: 'not_needed',
+      reason: 'The trace evidence is conclusive\u0000 and requires no source.',
+    }), {
+      unsupportedReason: 'source_use_decision_reason_invalid',
+      action_required: 'retry_with_valid_reason',
+      reasonConstraints: {minChars: 30, maxChars: 1000, singleLine: true},
+    });
+  });
+
+  it('refuses a patch whose context was never looked up', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['app-codebase'],
+    });
+
+    expectRefusal(await callRaw(tools, 'propose_patch', {
+      context_chunk_ids: ['chunk-never-looked-up'],
+      problem: 'Startup hook blocks the main thread.',
+    }), {
+      result: expect.objectContaining({patchStatus: 'unverified', unsupportedReason: 'missing_context_chunk'}),
+      action_required: 'lookup_source_before_patch',
+    });
+  });
+
+  it('refuses a private knowledge source that is not authorized for the request', async () => {
+    const {tools} = createTestServer();
+
+    expectRefusal(await callRaw(tools, 'lookup_blog_knowledge', {
+      query: 'Handler', source: 'android_internals_wiki', knowledge_source_id: 'wiki-a',
+    }), {
+      unsupportedReason: 'private_knowledge_source_not_whitelisted',
+      action_required: 'continue_without_private_knowledge',
+    });
+  });
+
+  it('keeps an unavailable capability a failure, not a refusal', async () => {
+    const {tools} = createTestServer();
+
+    const raw = await callRaw(tools, 'lookup_blog_knowledge', {query: 'Handler', source: 'android_internals_pack'});
+    const payload = JSON.parse(raw.content[0].text);
+    expect(payload).toMatchObject({success: false, unsupportedReason: 'android_internals_pack_unavailable'});
+    expect(payload).not.toHaveProperty('action_required');
+    expect(isPolicyRefusalResult(raw)).toBe(false);
+  });
+});
