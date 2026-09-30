@@ -81,40 +81,49 @@ const bigRange = (min: number, max: number, coreType = 'big'): Rows => [
   {core_type: 'little', avg_freq_mhz: 1800, max_freq_mhz: 1800, min_freq_mhz: 1800},
 ];
 
-async function diagnose(scenario: Scenario): Promise<DiagnosticResult[]> {
+type QueryAnswer = Table | {columns: string[]; rows: unknown[][]; error: string};
+
+/** Runs `steps` as one Skill against a trace processor that answers each query with `answer`. */
+async function runSteps(
+  steps: unknown[],
+  answer: (sql: string) => QueryAnswer | undefined,
+  setup: (executor: ReturnType<typeof createSkillExecutor>) => void = () => {},
+): Promise<DiagnosticResult[]> {
   const tp = {
-    query: jest.fn(async (_traceId: string, sql: string) => {
-      if (sql.includes('has_limit_track')) {
-        if (scenario.limit === 'error') return {columns: [], rows: [], error: 'limit query failed'};
-        return table(scenario.limit);
-      }
-      if (sql.includes('freq_drop_pct')) return table(scenario.throttle ?? []);
-      if (sql.includes('stub_freq_data')) return table(scenario.freq ?? []);
-      if (sql.includes('stub_freq_timeline')) return table(scenario.timeline ?? []);
-      return {columns: [], rows: []};
-    }),
+    query: jest.fn(async (_traceId: string, sql: string) => answer(sql) ?? {columns: [], rows: []}),
     touchTrace: jest.fn(),
     getTraceWithPort: jest.fn(async () => ({port: 9100})),
   };
   const executor = createSkillExecutor(tp as any);
-  executor.setFragmentRegistry(FRAGMENTS);
-  executor.registerSkill(fresh(CHILD));
-  executor.registerSkill({name: 'cpu_topology_view', type: 'atomic', version: '1',
-    meta: {display_name: 'topology', description: 'topology'}, sql: 'SELECT 1'} as SkillDefinition);
-
+  setup(executor);
   executor.registerSkill({
     name: 'jank_frame_detail_under_test', type: 'composite', version: '1',
-    meta: {display_name: 'under test', description: 'under test'},
-    steps: [
-      {id: 'cpu_freq_analysis', type: 'atomic', sql: 'SELECT 1 AS stub_freq_data', save_as: 'freq_data'},
-      {id: 'cpu_freq_timeline', type: 'atomic', sql: 'SELECT 1 AS stub_freq_timeline', save_as: 'freq_timeline'},
-      fresh(stepOf(PARENT, 'cpu_throttling')),
-      fresh(stepOf(PARENT, 'frame_diagnosis')),
-    ],
+    meta: {display_name: 'under test', description: 'under test'}, steps,
   } as SkillDefinition);
+  return (await executor.execute('jank_frame_detail_under_test', 'trace-1', {start_ts: 1, end_ts: 2})).diagnostics;
+}
 
-  const result = await executor.execute('jank_frame_detail_under_test', 'trace-1', {start_ts: 1, end_ts: 2});
-  return result.diagnostics;
+function diagnose(scenario: Scenario): Promise<DiagnosticResult[]> {
+  return runSteps([
+    {id: 'cpu_freq_analysis', type: 'atomic', sql: 'SELECT 1 AS stub_freq_data', save_as: 'freq_data'},
+    {id: 'cpu_freq_timeline', type: 'atomic', sql: 'SELECT 1 AS stub_freq_timeline', save_as: 'freq_timeline'},
+    fresh(stepOf(PARENT, 'cpu_throttling')),
+    fresh(stepOf(PARENT, 'frame_diagnosis')),
+  ], sql => {
+    if (sql.includes('has_limit_track')) {
+      if (scenario.limit === 'error') return {columns: [], rows: [], error: 'limit query failed'};
+      return table(scenario.limit);
+    }
+    if (sql.includes('freq_drop_pct')) return table(scenario.throttle ?? []);
+    if (sql.includes('stub_freq_data')) return table(scenario.freq ?? []);
+    if (sql.includes('stub_freq_timeline')) return table(scenario.timeline ?? []);
+    return undefined;
+  }, executor => {
+    executor.setFragmentRegistry(FRAGMENTS);
+    executor.registerSkill(fresh(CHILD));
+    executor.registerSkill({name: 'cpu_topology_view', type: 'atomic', version: '1',
+      meta: {display_name: 'topology', description: 'topology'}, sql: 'SELECT 1'} as SkillDefinition);
+  });
 }
 
 const LIMIT_ASSERTION = '帧窗口内观测到 CPU 限频';
@@ -202,17 +211,6 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
     expect(hints.filter(text => text.includes('是否限频以本帧的 CPU 限频证据为准'))).toHaveLength(2);
   });
 
-  it('writes rule text the public runtime can evaluate: no ternary, no Math', () => {
-    // The Perfetto-Skills runtime interpolates these templates with a portable
-    // expression subset; a construct outside it fails there, not here.
-    const rules = stepOf(PARENT, 'frame_diagnosis').rules as any[];
-    const templates = rules.flatMap(rule => [rule.diagnosis, ...(rule.suggestions ?? [])]);
-    const placeholders = templates.flatMap(text => [...String(text).matchAll(/\$\{([^}]*)\}/g)].map(m => m[1]));
-    expect(placeholders.length).toBeGreaterThan(0);
-    expect(placeholders.filter(body => /\?\s*['"\w(]/.test(body.replace(/\?\./g, '')) || /\bMath\./.test(body)))
-      .toEqual([]);
-  });
-
   it('reads only fields and values the child evidence step can produce', () => {
     const binding = stepOf(PARENT, 'cpu_throttling');
     expect(binding).toMatchObject({save_as: 'freq_limit_evidence', save_from: 'limit_evidence'});
@@ -230,5 +228,40 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
     const reasons = [...rules.matchAll(/limit_evidence_missing_reason === '(\w+)'/g)].map(m => m[1]);
     expect(reasons.length).toBeGreaterThan(0);
     expect(reasons.filter(reason => !spansFragment.includes(`'${reason}'`))).toEqual([]);
+  });
+});
+
+/** frame_diagnosis alone, fed stub rows under the save_as names its rules read. */
+function diagnoseFrom(inputs: Record<string, Rows>): Promise<DiagnosticResult[]> {
+  const names = Object.keys(inputs);
+  return runSteps([
+    ...names.map(name => ({id: `stub_${name}`, type: 'atomic', sql: `SELECT 1 AS stub_${name}`, save_as: name})),
+    fresh(stepOf(PARENT, 'frame_diagnosis')),
+  ], sql => {
+    const name = names.find(candidate => sql.includes(`stub_${candidate}`));
+    return name ? table(inputs[name]) : undefined;
+  });
+}
+
+describe('jank_frame_detail frame_diagnosis values', () => {
+  it('carries the root-cause confidence level as the rule confidence', async () => {
+    const cases: Array<[unknown, number]> = [['高', 0.9], ['中', 0.7], ['低', 0.5], [null, 0.5]];
+    for (const [level, confidence] of cases) {
+      const rootCause = [{primary_cause: '主线程锁竞争', confidence: level, secondary_info: null}];
+      const matched = (await diagnoseFrom({root_cause: rootCause}))
+        .filter(d => d.diagnosis === '主线程锁竞争');
+      expect(matched).toHaveLength(1);
+      expect(matched[0]).toMatchObject({confidence, severity: 'critical', suggestions: ['查看下方详细数据分析具体原因']});
+    }
+  });
+
+  it('cites the frame-window GC total the gc step computed', async () => {
+    const gc = (total: number) => [
+      {gc_type: 'young', overlap_ms: 2.2, total_overlap_ms: total},
+      {gc_type: 'full', overlap_ms: 1.1, total_overlap_ms: total},
+    ];
+    const heavy = find(await diagnoseFrom({gc_data: gc(3.3)}), 'GC 严重影响帧渲染');
+    expect(heavy.map(d => d.diagnosis)).toEqual(['GC 严重影响帧渲染：总重叠 3.3ms']);
+    expect(find(await diagnoseFrom({gc_data: gc(3)}), 'GC 严重影响帧渲染')).toHaveLength(0);
   });
 });

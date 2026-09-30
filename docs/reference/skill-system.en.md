@@ -119,7 +119,15 @@ hashes, and references.
 
 ## Parameter Substitution
 
-Skill parameters use `${param|default}`. Resolution order is explicit input, saved prior step output, SmartPerfetto defaults, inline default, then type default. The engine escapes substituted values to reduce SQL injection risk.
+Skill parameters use `${param|default}`. Placeholders, `condition`, iterator `filter`, diagnostic and AI step `inputs`, and input evidence scope all resolve a root name in one order; the first scope that binds it wins:
+
+1. **Current iteration item** (iterator `filter` only): `item` and its own fields → `currentItem`
+2. **Saved variable**: `${save_as_name}` → `variables[save_as_name]`; a `null` value counts as bound (an unobserved `save_from` step binds `null`)
+3. **Step result**: `${step_id}` → `results[step_id].data`
+4. **Input**: `${package}` → `params.package`, including a declared `default`
+5. **Inherited context**: `${parent_var}` → `inherited[parent_var]`, the calling Skill's inherited values and `save_as` bindings
+
+A Skill's own binding therefore hides a caller's value of the same name, and a `save_as` reads its declared binding (including the child step `save_from` selects) rather than a same-named step result. A step's `save_as` may not reuse another step's id (`validate:skills` reports `save_as_step_id_collision`); naming the binding after its own step is the usual form. Once a scope binds the root name, lookup never falls back to a lower scope (a `null` variable does not yield to a same-named input). When the full path then resolves to `null` or `undefined` (unbound, bound to `null`, `[0]` of an empty array, a missing field), the inline `|default` applies, then the type default (`''` inside SQL quotes, otherwise `NULL`). The engine escapes substituted values to reduce SQL injection risk.
 
 ## Display Configuration
 

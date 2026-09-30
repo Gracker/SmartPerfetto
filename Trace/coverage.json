@@ -1404,9 +1404,10 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "b69509c1b1dbf19d9a1271f3e43e556bcb0b8bbcfe091b63dc49a5748d7003e5",
+            "sha256": "e67e1d090ccd9f9aa852107ff2666c3ce82e821bc0653f022887c22e88e8c8b9",
             "required_columns": [
               "anr_ts",
+              "window_start_ts",
               "timeout_ns",
               "timeout_ms",
               "timeout_source",
@@ -5194,7 +5195,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "f1bbaf788239459b91cc6763f6f0fc2c5f0b3e668f941f100e40651b394c0fd2",
+            "sha256": "0bfadc3213e18cd4e448db51709acf19302adbb2f570f8ae9d63c884ad4d4503",
             "required_columns": [
               "window_start_ts",
               "window_end_ts",
@@ -5205,6 +5206,7 @@
               "tid",
               "role",
               "total_cpu_ms",
+              "returned_total_cpu_ms",
               "q1_big_running_ms",
               "q2_little_running_ms",
               "q3_runnable_ms",
@@ -9267,13 +9269,14 @@
           },
           {
             "id": "gc_in_frame",
-            "sha256": "ed0d4ade1ea124e8e2fc69ef6581b913612e4640fd22c9ac92d91c8cee83cce1",
+            "sha256": "a2038afaa33250807ff10232828241fa82b2771d3de973d3332d3115eb44e801",
             "required_columns": [
               "gc_type",
               "gc_count",
               "total_dur_ms",
               "overlap_ms",
-              "max_dur_ms"
+              "max_dur_ms",
+              "total_overlap_ms"
             ]
           },
           {

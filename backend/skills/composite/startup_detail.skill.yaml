@@ -1233,6 +1233,7 @@ steps:
           type: duration
           format: duration_ms
           unit: ms
+        - {name: returned_total_cpu_ms, label: "返回线程 CPU 时间合计", type: duration, format: duration_ms, unit: ms, hidden: true}
         - name: q1_big_running_ms
           label: "Q1 大核运行"
           type: duration
@@ -1701,9 +1702,9 @@ steps:
           - "检查是否有其他线程/进程在启动期间与主线程争抢 CPU"
 
       # 多线程 CPU 时间可超过墙钟时间；这是并行度观察，不是争抢证据。
-      - condition: "critical_tasks?.data?.length > 0 && critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0) > ${dur_ms} * 2"
+      - condition: "(critical_tasks?.data?.[0]?.returned_total_cpu_ms || 0) > ${dur_ms} * 2"
         severity: info
-        diagnosis: "返回的关键线程 CPU 时间合计 ${Math.round(critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0))}ms，是启动墙钟时间 ${dur_ms}ms 的 ${(critical_tasks.data.reduce((sum, t) => sum + (t.total_cpu_ms || 0), 0) / ${dur_ms}).toFixed(1)} 倍，表明存在多核并行工作；是否竞争需检查实际 Runnable 与抢占区间"
+        diagnosis: "返回的关键线程 CPU 时间合计 ${critical_tasks.data[0].returned_total_cpu_ms}ms，超过启动墙钟时间 ${dur_ms}ms 的 2 倍，表明存在多核并行工作；是否竞争需检查实际 Runnable 与抢占区间"
         confidence: medium
         suggestions:
           - "结合逐核系统负载、关键线程 Runnable 和 R+ 交接，确认并行工作是否挤占关键路径"

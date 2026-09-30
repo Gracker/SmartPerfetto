@@ -350,11 +350,15 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 
 ### 解析优先级
 
-1. **步骤结果**: `${step_id}` → `results[step_id].data`
-2. **保存的变量**: `${save_as_name}` → `variables[save_as_name]`
-3. **输入参数**: `${package}` → `params.package`
-4. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`
-5. **当前迭代项**: `${item.field}` → `currentItem.field`
+占位符、`condition`、iterator `filter`、诊断与 AI 步骤的 `inputs` 以及证据范围都按同一顺序解析根名字，先找到的作用域生效：
+
+1. **当前迭代项**（仅 iterator `filter`）: `item` 和它自己的字段 → `currentItem`
+2. **保存的变量**: `${save_as_name}` → `variables[save_as_name]`；值为 `null` 也算已绑定（`save_from` 未观测到结果时就是 `null`）
+3. **步骤结果**: `${step_id}` → `results[step_id].data`
+4. **输入参数**: `${package}` → `params.package`（含声明的 `default`）
+5. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`，即调用方 Skill 的继承值和它的 `save_as`
+
+所以本 Skill 自己的绑定总会遮住调用方的同名值；`save_as` 先于同名步骤结果，读到的是它声明的绑定（包括 `save_from` 选中的子步骤）。一个步骤的 `save_as` 不能使用另一个步骤的 id（`validate:skills` 报 `save_as_step_id_collision`），以自身 id 命名则是常规写法。根名字一旦在某层找到就不再向更低的层回退（例如 `null` 变量不会让位给同名输入参数）；完整路径最终解析为 `null`/`undefined` 时（未绑定、绑定为 `null`、空数组取 `[0]`、字段不存在），再使用 `|默认值` 和下面的智能默认值。
 
 ### 智能默认值
 

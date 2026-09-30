@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1367,
-    "explicitColumnCount": 5051
+    "explicitColumnCount": 5055
   },
   "skills": {
     "ams_module": {
@@ -3176,6 +3176,12 @@
               "label": {
                 "zh-CN": "ANR 时间",
                 "en": "ANR Ts"
+              }
+            },
+            "window_start_ts": {
+              "label": {
+                "zh-CN": "窗口起点",
+                "en": "Window Start Ts"
               }
             },
             "timeout_ns": {
@@ -22237,6 +22243,12 @@
                 "zh-CN": "最大单次",
                 "en": "Max Dur ms"
               }
+            },
+            "total_overlap_ms": {
+              "label": {
+                "zh-CN": "总重叠",
+                "en": "Total Overlap ms"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -37946,6 +37958,12 @@
                 "en": "Total CPU ms"
               }
             },
+            "returned_total_cpu_ms": {
+              "label": {
+                "zh-CN": "返回线程 CPU 时间合计",
+                "en": "Returned Total CPU ms"
+              }
+            },
             "q1_big_running_ms": {
               "label": {
                 "zh-CN": "Q1 大核运行",
@@ -38498,6 +38516,12 @@
               "label": {
                 "zh-CN": "CPU 时间",
                 "en": "Total CPU ms"
+              }
+            },
+            "returned_total_cpu_ms": {
+              "label": {
+                "zh-CN": "返回线程 CPU 时间合计",
+                "en": "Returned Total CPU ms"
               }
             },
             "q1_big_running_ms": {

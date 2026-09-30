@@ -11,7 +11,9 @@
 #
 # Output fields used as parameters by consumers:
 #   - anr_ts: ANR timestamp (for window end)
-#   - timeout_ns: ANR timeout in nanoseconds (for window start = anr_ts - timeout_ns)
+#   - timeout_ns: ANR timeout in nanoseconds
+#   - window_start_ts: anr_ts - timeout_ns, computed here so a caller can pass
+#     it as a parameter without template arithmetic on these decimal strings
 #   - timeout_source: whether timeout_ns came from actual duration, stdlib default, or heuristic fallback
 #   - process_name, pid, upid, anr_type, error_id: ANR metadata
 #
@@ -63,6 +65,10 @@ display:
   columns:
     - name: anr_ts
       label: "ANR 时间"
+      type: timestamp
+      clickAction: navigate_timeline
+    - name: window_start_ts
+      label: "窗口起点"
       type: timestamp
       clickAction: navigate_timeline
     - name: timeout_ns
@@ -133,6 +139,7 @@ sql: |
   SELECT
     printf('%d', ts) as anr_ts,
     printf('%d', CAST(timeout_ms * 1e6 AS INTEGER)) as timeout_ns,
+    printf('%d', ts - CAST(timeout_ms * 1e6 AS INTEGER)) as window_start_ts,
     ROUND(timeout_ms, 2) as timeout_ms,
     timeout_source,
     process_name,

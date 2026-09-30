@@ -484,7 +484,7 @@ steps:
     skill: futex_wait_distribution
     params:
       package: "${package || process_name || anr_ctx.data?.[0]?.process_name || ''}"
-      start_ts: "${anr_ctx.data?.[0]?.anr_ts != null && anr_ctx.data?.[0]?.timeout_ns != null ? (Number(anr_ctx.data[0].anr_ts) - Number(anr_ctx.data[0].timeout_ns)) : null}"
+      start_ts: "${anr_ctx.data?.[0]?.window_start_ts ?? null}"
       end_ts: "${anr_ctx.data?.[0]?.anr_ts ?? null}"
     display:
       level: detail

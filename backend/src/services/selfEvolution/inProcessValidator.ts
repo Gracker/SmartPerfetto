@@ -25,7 +25,7 @@ import {
   strategySkillCallTexts,
   type StrategySkillInputs,
 } from '../../agentv3/strategySkillCalls';
-import {validateSkillStepListRuntime} from './skillStepRuntimeValidator';
+import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
 export const IN_PROCESS_VALIDATOR_VERSION = '2';
 
@@ -202,6 +202,21 @@ function validateDefinitionShape(
       }
     }
     });
+    // Expressions resolve a save_as binding before a step result of the same
+    // name, so another step's id reused as a save_as would never be readable.
+    // A separate pass: the colliding id may belong to a later step.
+    visitSteps(skill.steps ?? [], (step, path) => {
+      const saveAs = 'save_as' in step ? step.save_as : undefined;
+      if (typeof saveAs === 'string' && saveAs !== step.id && stepIds.has(saveAs)) {
+        issues.push(issue(
+          'error',
+          'save_as_step_id_collision',
+          skill.name,
+          `${path}.save_as`,
+          `save_as '${saveAs}' is the id of another step; name the binding after its own step or choose a distinct name.`,
+        ));
+      }
+    });
   }
   if (includeSqlGuardrails && hasRootSql) {
     for (const guardrail of analyzeSqlGuardrails(skill.sql!, {
@@ -271,6 +286,7 @@ export function validateSkillDefinitionInProcess(
       readIssue.message,
     ));
   }
+  issues.push(...validateDiagnosticConfidence(skill));
   issues.push(...validateSaveFromPlacement(skill));
   if (options.definitions) issues.push(...validateSaveFromTargets(skill, options.definitions));
   if (options.fragmentCache) {
@@ -287,6 +303,25 @@ export function validateSkillDefinitionInProcess(
       ));
     }
   }
+  return issues;
+}
+
+/**
+ * A diagnostic rule's confidence must be a literal level or number even when
+ * structural checks are off: the executor maps anything else to 0.5 and the
+ * public runtime would publish the text, so a template there silently misreports.
+ */
+function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  visitSteps(skill.steps ?? [], (step, path) => {
+    if (step.type !== 'diagnostic') return;
+    (step.rules ?? []).forEach((rule, index) => {
+      if (rule.confidence !== undefined && !isDiagnosticConfidence(rule.confidence)) {
+        issues.push(issue('error', 'diagnostic_confidence_invalid', skill.name, `${path}.rules[${index}].confidence`,
+          `Diagnostic rule confidence must be high, medium, low or a number, got ${JSON.stringify(rule.confidence)}.`));
+      }
+    });
+  });
   return issues;
 }
 

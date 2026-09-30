@@ -981,6 +981,7 @@
             "semantic_step": "root",
             "required_columns": [
               "anr_ts",
+              "window_start_ts",
               "timeout_ns",
               "timeout_ms",
               "timeout_source",
@@ -14808,6 +14809,7 @@
               "tid",
               "role",
               "total_cpu_ms",
+              "returned_total_cpu_ms",
               "q1_big_running_ms",
               "q2_little_running_ms",
               "q3_runnable_ms",
