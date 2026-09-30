@@ -11,16 +11,24 @@ import { collectSelfImproveMetrics } from '../metricsAggregator';
 import type {SelfEvolutionLifecycleSnapshot} from '../../../types/selfEvolution';
 import {__testing as snapshotTesting} from '../../../utils/sqliteReadSnapshot';
 
+const ADMISSION = {version: 1 as const, basis: 'public_run' as const, runId: 'run-public', admittedAt: 1};
+const originalLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+
 describe('collectSelfImproveMetrics', () => {
   let tmp: string;
 
   beforeEach(() => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-metrics-'));
+    process.env.SMARTPERFETTO_BACKEND_LOG_DIR = tmp;
   });
 
   afterEach(() => {
+    if (originalLogDir === undefined) delete process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+    else process.env.SMARTPERFETTO_BACKEND_LOG_DIR = originalLogDir;
     fs.rmSync(tmp, {recursive: true, force: true});
   });
+
+  const patternsFile = () => path.join(tmp, 'analysis_patterns.json');
 
   function snapshotDirectories(): string[] {
     return fs.readdirSync(os.tmpdir())
@@ -69,9 +77,6 @@ describe('collectSelfImproveMetrics', () => {
 
   function paths() {
     return {
-      patternsFile: path.join(tmp, 'patterns.json'),
-      negativePatternsFile: path.join(tmp, 'negatives.json'),
-      quickPatternsFile: path.join(tmp, 'quicks.json'),
       feedbackFile: path.join(tmp, 'feedback.jsonl'),
       skillNotesDir: path.join(tmp, 'skill_notes'),
       curatedSkillNotesDir: path.join(tmp, 'curated_skill_notes'),
@@ -143,18 +148,43 @@ describe('collectSelfImproveMetrics', () => {
     expect(fs.existsSync(path.join(tmp, 'stores'))).toBe(false);
   });
 
-  it('counts pattern entries by status (legacy entries fold into `legacy` bucket)', () => {
-    const p = paths();
-    fs.writeFileSync(p.patternsFile, JSON.stringify([
-      { id: 'a', status: 'provisional', traceFeatures: [], sceneType: 's', keyInsights: [], confidence: 0.5, createdAt: 0, matchCount: 0 },
-      { id: 'b', status: 'confirmed', traceFeatures: [], sceneType: 's', keyInsights: [], confidence: 0.7, createdAt: 0, matchCount: 0 },
-      { id: 'c', traceFeatures: [], sceneType: 's', keyInsights: [], confidence: 0.6, createdAt: 0, matchCount: 0 }, // legacy (no status)
+  it('counts admitted entries by status and unadmitted ones only as quarantined', () => {
+    const entry = { traceFeatures: [], sceneType: 's', keyInsights: ['text'], confidence: 0.5, createdAt: 0, matchCount: 0 };
+    fs.writeFileSync(patternsFile(), JSON.stringify([
+      { ...entry, id: 'a', status: 'provisional', learningAdmission: ADMISSION },
+      { ...entry, id: 'b', status: 'confirmed', learningAdmission: ADMISSION },
+      { ...entry, id: 'c', learningAdmission: ADMISSION }, // legacy (no status)
+      { ...entry, id: 'd', status: 'confirmed' }, // no admission
+      { ...entry, id: 'e', status: 'confirmed', learningAdmission: {version: 1, basis: 'public_run'} }, // invalid stamp
     ]));
-    const metrics = collectSelfImproveMetrics(p);
-    expect(metrics.patterns.positive.total).toBe(3);
-    expect(metrics.patterns.positive.byStatus.provisional).toBe(1);
-    expect(metrics.patterns.positive.byStatus.confirmed).toBe(1);
-    expect(metrics.patterns.positive.byStatus.legacy).toBe(1);
+    fs.writeFileSync(path.join(tmp, 'analysis_quick_patterns.json'), JSON.stringify([
+      { ...entry, id: 'q', status: 'provisional' },
+    ]));
+    const metrics = collectSelfImproveMetrics(paths());
+    expect(metrics.patterns.positive).toEqual({
+      total: 3,
+      byStatus: {provisional: 1, confirmed: 1, rejected: 0, disputed: 0, disputed_late: 0, legacy: 1},
+      quarantined: 2,
+    });
+    expect(metrics.patterns.quick).toMatchObject({total: 0, quarantined: 1});
+    expect(metrics.patterns.negative).toMatchObject({total: 0, quarantined: 0});
+    expect(metrics.warnings).toEqual([]);
+  });
+
+  it('counts only the caller scope, as a run of that scope reads', () => {
+    const entry = { traceFeatures: [], sceneType: 's', keyInsights: [], confidence: 0.5, createdAt: 0, matchCount: 0, status: 'confirmed' };
+    const provenance = (workspaceId: string) => ({sourceTenantId: 'tenant-a', sourceWorkspaceId: workspaceId});
+    fs.writeFileSync(patternsFile(), JSON.stringify([
+      { ...entry, id: 'mine', provenance: provenance('ws-a'), learningAdmission: ADMISSION },
+      { ...entry, id: 'mine-unadmitted', provenance: provenance('ws-a') },
+      { ...entry, id: 'other', provenance: provenance('ws-b'), learningAdmission: ADMISSION },
+      { ...entry, id: 'other-unadmitted', provenance: provenance('ws-b') },
+    ]));
+    const metrics = collectSelfImproveMetrics({
+      ...paths(),
+      knowledgeScope: {tenantId: 'tenant-a', workspaceId: 'ws-a', userId: 'u'},
+    });
+    expect(metrics.patterns.positive).toMatchObject({total: 1, quarantined: 1});
   });
 
   it('counts skill notes across runtime and curated directories', () => {
@@ -190,11 +220,14 @@ describe('collectSelfImproveMetrics', () => {
     expect(metrics.feedback.negative).toBe(2);
   });
 
-  it('records a warning when a JSON file is corrupt', () => {
-    const p = paths();
-    fs.writeFileSync(p.patternsFile, '{ malformed');
-    const metrics = collectSelfImproveMetrics(p);
-    expect(metrics.warnings.some(w => w.includes('patterns.json'))).toBe(true);
+  it('records a warning for a corrupt pattern store and leaves it in place', () => {
+    // An unquoted token makes the parser quote the text around it.
+    fs.writeFileSync(patternsFile(), '[{"keyInsights":[SECRET-UNADMITTED-TEXT lock]}]');
+    const metrics = collectSelfImproveMetrics(paths());
+    expect(metrics.warnings).toContain('failed to read positive pattern memory: analysis patterns store is not valid JSON');
+    expect(JSON.stringify(metrics.warnings)).not.toContain('SECRET');
+    expect(metrics.patterns.positive).toMatchObject({total: 0, quarantined: 0});
+    expect(fs.readdirSync(tmp).filter(name => name.startsWith('analysis_patterns.json'))).toEqual(['analysis_patterns.json']);
   });
 
   it('exposes the canonical SupersedeState keys with zero defaults', () => {

@@ -6,7 +6,7 @@ import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
-import { openEnterpriseDb } from './enterpriseDb';
+import { openEnterpriseDb, openEnterpriseDbReadOnly } from './enterpriseDb';
 import { createEnterpriseWorkspaceRepository } from './enterpriseRepository';
 import {
   enterpriseDbReadAuthorityEnabled,
@@ -80,9 +80,10 @@ export interface ScopedKnowledgeRecord<T> {
 /** Enumerate DB partitions that own one of the requested row scopes. */
 export function listScopedKnowledgePartitions(
   rowScopes: readonly string[],
+  opts: KnowledgeReadOptions = {},
 ): KnowledgeScope[] {
   if (rowScopes.length === 0) return [];
-  return withKnowledgeDb((db) => {
+  return readKnowledgeDb(opts, (db) => {
     const params: Record<string, string> = {};
     const placeholders = rowScopes.map((rowScope, index) => {
       params[`rowScope${index}`] = rowScope;
@@ -97,7 +98,14 @@ export function listScopedKnowledgePartitions(
       tenantId: row.tenant_id,
       workspaceId: row.workspace_id,
     }));
-  });
+  }) ?? [];
+}
+
+interface KnowledgeReadOptions {
+  /** Never create or migrate the database; with no database yet, read nothing. */
+  readOnly?: boolean;
+  /** A row that exists but cannot be decoded throws instead of reading as missing. */
+  requireReadable?: boolean;
 }
 
 interface ListOptions {
@@ -406,9 +414,10 @@ export function getScopedKnowledgeRecord<T>(
   kind: string,
   externalId: string,
   scopeInput?: KnowledgeScope,
+  opts: KnowledgeReadOptions = {},
 ): ScopedKnowledgeRecord<T> | undefined {
   const scope = resolveKnowledgeScope(scopeInput);
-  return withKnowledgeDb((db) => {
+  return readKnowledgeDb(opts, (db) => {
     const repo = createEnterpriseWorkspaceRepository<KnowledgeEntryRow>(
       db,
       'memory_entries',
@@ -417,7 +426,10 @@ export function getScopedKnowledgeRecord<T>(
       scope,
       scopedKnowledgeRowId(kind, externalId, scope),
     );
-    return row ? parseKnowledgeRow<T>(kind, row) : undefined;
+    if (!row) return undefined;
+    const record = parseKnowledgeRow<T>(kind, row);
+    if (!record && opts.requireReadable) throw new Error('knowledge_record_unreadable');
+    return record;
   });
 }
 
@@ -796,13 +808,25 @@ export function searchScopedRagKnowledgeRecords<T>(
   });
 }
 
-function withKnowledgeDb<T>(fn: (db: Database.Database) => T): T {
-  const db = openEnterpriseDb();
+function withKnowledgeDb<T>(
+  fn: (db: Database.Database) => T,
+  db: Database.Database = openEnterpriseDb(),
+): T {
   try {
     return fn(db);
   } finally {
     db.close();
   }
+}
+
+/** Undefined for a read-only read when no database exists yet. */
+function readKnowledgeDb<T>(
+  opts: KnowledgeReadOptions,
+  fn: (db: Database.Database) => T,
+): T | undefined {
+  if (!opts.readOnly) return withKnowledgeDb(fn);
+  const db = openEnterpriseDbReadOnly();
+  return db ? withKnowledgeDb(fn, db) : undefined;
 }
 
 function mutateScopedKnowledgeRecordInDb<T>(

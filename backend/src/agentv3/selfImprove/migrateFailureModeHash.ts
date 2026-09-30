@@ -6,10 +6,12 @@
  * One-shot migration that backfills `failureModeHash` on existing analysis
  * patterns + negative patterns.
  *
- * Defaults to dry-run: read every entry under `logs/`, infer a category via
- * `inferCategoryFromText`, compute the hash, and print a report. Pass
- * `--apply` to actually persist the augmented entries back to disk via
- * atomic tmp-rename.
+ * Defaults to dry-run: read every admitted entry of every pattern memory
+ * partition, infer a category via `inferCategoryFromText`, compute the hash,
+ * and print a report. Pass `--apply` to persist the augmented entries through
+ * the pattern memory store (its lock, and the DB once the DB is written).
+ * Entries without a learning admission are never read by a run, so they are
+ * only counted: neither rewritten nor quoted in the report.
  *
  * Run: `npx tsx src/agentv3/selfImprove/migrateFailureModeHash.ts [--apply]`
  *
@@ -18,9 +20,8 @@
  * lands on `unknown` is excluded from supersede actions in PR9 by design.
  */
 
-import * as fs from 'fs';
 import type { AnalysisPatternEntry, NegativePatternEntry, FailedApproach } from '../types';
-import { backendLogPath } from '../../runtimePaths';
+import {mutateEveryAdmittedPatternPartition} from '../analysisPatternMemory';
 import {
   computeFailureModeHash,
   inferCategoryFromText,
@@ -30,11 +31,15 @@ import {
 
 export interface MigrationReport {
   total: number;
+  /** Unadmitted entries left as they are. */
+  quarantined: number;
   alreadyHashed: number;
   newlyHashed: number;
   byCategory: Record<FailureCategory, number>;
   samples: Record<FailureCategory, string[]>;
 }
+
+const MAX_SAMPLES_PER_CATEGORY = 3;
 
 function emptyReport(): MigrationReport {
   const byCategory = {} as Record<FailureCategory, number>;
@@ -43,7 +48,7 @@ function emptyReport(): MigrationReport {
     byCategory[category] = 0;
     samples[category] = [];
   }
-  return { total: 0, alreadyHashed: 0, newlyHashed: 0, byCategory, samples };
+  return { total: 0, quarantined: 0, alreadyHashed: 0, newlyHashed: 0, byCategory, samples };
 }
 
 function pickArchType(arch: string | undefined): string {
@@ -75,7 +80,7 @@ export function backfillPatternEntries(
     const evidence = e.keyInsights.join(' ');
     const category = inferCategoryFromText(evidence);
     report.byCategory[category] += 1;
-    if (report.samples[category].length < 3 && evidence.trim()) {
+    if (report.samples[category].length < MAX_SAMPLES_PER_CATEGORY && evidence.trim()) {
       report.samples[category].push(evidence.substring(0, 120));
     }
     const failureModeHash = computeFailureModeHash({
@@ -123,7 +128,7 @@ export function backfillNegativeEntries(
     const aggregateText = e.failedApproaches.map(a => `${a.reason} ${a.approach}`).join(' ');
     const category = inferCategoryFromText(aggregateText);
     report.byCategory[category] += 1;
-    if (report.samples[category].length < 3 && aggregateText.trim()) {
+    if (report.samples[category].length < MAX_SAMPLES_PER_CATEGORY && aggregateText.trim()) {
       report.samples[category].push(aggregateText.substring(0, 120));
     }
     const failureModeHash = computeFailureModeHash({
@@ -145,7 +150,8 @@ function failedApproachToolHint(a: FailedApproach): string | undefined {
 function formatReport(label: string, report: MigrationReport): string {
   const lines: string[] = [];
   lines.push(`\n=== ${label} ===`);
-  lines.push(`  total entries:      ${report.total}`);
+  lines.push(`  admitted entries:   ${report.total}`);
+  lines.push(`  quarantined:        ${report.quarantined} (unadmitted; not migrated)`);
   lines.push(`  already hashed:     ${report.alreadyHashed}`);
   lines.push(`  newly hashed:       ${report.newlyHashed}`);
   lines.push(`  by inferred category:`);
@@ -160,49 +166,55 @@ function formatReport(label: string, report: MigrationReport): string {
   return lines.join('\n');
 }
 
-function readJsonArray<T>(file: string): T[] {
-  if (!fs.existsSync(file)) return [];
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch (err) {
-    console.warn(`[migrateFailureModeHash] failed to parse ${file}: ${(err as Error).message}`);
-    return [];
+function mergeReports(parts: readonly MigrationReport[]): MigrationReport {
+  const total = emptyReport();
+  for (const part of parts) {
+    total.total += part.total;
+    total.quarantined += part.quarantined;
+    total.alreadyHashed += part.alreadyHashed;
+    total.newlyHashed += part.newlyHashed;
+    for (const category of FAILURE_CATEGORIES) {
+      total.byCategory[category] += part.byCategory[category];
+      const room = MAX_SAMPLES_PER_CATEGORY - total.samples[category].length;
+      if (room > 0) total.samples[category].push(...part.samples[category].slice(0, room));
+    }
   }
+  return total;
 }
 
-function atomicWrite(file: string, data: unknown): void {
-  const tmp = `${file}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-  fs.renameSync(tmp, file);
+export interface FailureModeHashMigrationResult {
+  positive: MigrationReport;
+  negative: MigrationReport;
+}
+
+/**
+ * Backfill every partition's admitted positive and negative patterns. A dry
+ * run only reads; `apply` rewrites under the store lock. Either way the
+ * report is what the authoritative store held while it was visited.
+ */
+export async function runFailureModeHashMigration(
+  opts: {apply: boolean},
+): Promise<FailureModeHashMigrationResult> {
+  const dryRun = {dryRun: !opts.apply};
+  const positive = await mutateEveryAdmittedPatternPartition('positive', (admitted, quarantined) => {
+    const {entries, report} = backfillPatternEntries(admitted);
+    return {entries, result: {...report, quarantined}};
+  }, dryRun);
+  const negative = await mutateEveryAdmittedPatternPartition('negative', (admitted, quarantined) => {
+    const {entries, report} = backfillNegativeEntries(admitted);
+    return {entries, result: {...report, quarantined}};
+  }, dryRun);
+  return {positive: mergeReports(positive), negative: mergeReports(negative)};
 }
 
 async function main(): Promise<void> {
   const apply = process.argv.includes('--apply');
-  const patternsFile = backendLogPath('analysis_patterns.json');
-  const negativePatternsFile = backendLogPath('analysis_negative_patterns.json');
-
-  const positives = readJsonArray<AnalysisPatternEntry>(patternsFile);
-  const negatives = readJsonArray<NegativePatternEntry>(negativePatternsFile);
-
-  const positiveResult = backfillPatternEntries(positives);
-  const negativeResult = backfillNegativeEntries(negatives);
-
-  console.log(formatReport(`positive patterns (${patternsFile})`, positiveResult.report));
-  console.log(formatReport(`negative patterns (${negativePatternsFile})`, negativeResult.report));
-
-  if (apply) {
-    if (positiveResult.report.newlyHashed > 0) {
-      atomicWrite(patternsFile, positiveResult.entries);
-      console.log(`\n[applied] wrote ${positiveResult.entries.length} entries to ${patternsFile}`);
-    }
-    if (negativeResult.report.newlyHashed > 0) {
-      atomicWrite(negativePatternsFile, negativeResult.entries);
-      console.log(`[applied] wrote ${negativeResult.entries.length} entries to ${negativePatternsFile}`);
-    }
-  } else {
-    console.log('\n(dry-run — pass --apply to write changes back to disk)');
-  }
+  const {positive, negative} = await runFailureModeHashMigration({apply});
+  console.log(formatReport('positive patterns', positive));
+  console.log(formatReport('negative patterns', negative));
+  console.log(apply
+    ? `\n[applied] hashed ${positive.newlyHashed} positive and ${negative.newlyHashed} negative entries`
+    : '\n(dry-run — pass --apply to write changes back)');
 }
 
 if (require.main === module) {

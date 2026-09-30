@@ -13,6 +13,9 @@
  * so a single corrupt file doesn't take the dashboard down. The endpoint is
  * intentionally read-only — no side effects, no implicit migrations.
  *
+ * Pattern memory is counted through its own module, so the store (DB or
+ * file), the caller's scope and the admission rule are the ones runs read by.
+ *
  * See docs/architecture/self-improving-design.md "运维入口" — these counts
  * power both the dashboard and the trend regression suite.
  */
@@ -27,8 +30,9 @@ import {
 import { runSnapshots } from './strategyFingerprint';
 import { runtimeSkillNotesDir } from './skillNotesWriter';
 import type { JobState } from './reviewOutbox';
-import type { AnalysisPatternEntry, NegativePatternEntry, PatternStatus } from '../types';
+import type { PatternStatus } from '../types';
 import { backendLogPath } from '../../runtimePaths';
+import {readPatternBucketCensus, type PatternBucketId} from '../analysisPatternMemory';
 import {
   getSelfEvolutionLifecycleSnapshot,
 } from '../../services/selfEvolution/selfEvolutionLifecycle';
@@ -50,9 +54,13 @@ import {
 
 const CURATED_SKILL_NOTES_DIR = path.resolve(__dirname, '..', '..', '..', 'skills', 'curated_skill_notes');
 
+/** One bucket of the caller's scope: what its runs read, and what they never will. */
 export interface PatternMetrics {
+  /** Admitted entries, the live memory. */
   total: number;
   byStatus: Record<PatternStatus | 'legacy', number>;
+  /** Entries without a learning admission, aging out unread. */
+  quarantined: number;
 }
 
 export interface SkillNotesMetrics {
@@ -96,9 +104,6 @@ export interface SelfImproveMetrics {
 }
 
 export function collectSelfImproveMetrics(opts: {
-  patternsFile?: string;
-  negativePatternsFile?: string;
-  quickPatternsFile?: string;
   feedbackFile?: string;
   feedbackStore?: Pick<FeedbackEventStore, 'effectiveStats' | 'close'>;
   knowledgeScope?: KnowledgeScope;
@@ -111,10 +116,6 @@ export function collectSelfImproveMetrics(opts: {
     () => SelfEvolutionOperationalMetrics;
 } = {}): SelfImproveMetrics {
   const warnings: string[] = [];
-
-  const positives = readJson<AnalysisPatternEntry>(opts.patternsFile ?? backendLogPath('analysis_patterns.json'), warnings);
-  const negatives = readJson<NegativePatternEntry>(opts.negativePatternsFile ?? backendLogPath('analysis_negative_patterns.json'), warnings);
-  const quicks = readJson<AnalysisPatternEntry>(opts.quickPatternsFile ?? backendLogPath('analysis_quick_patterns.json'), warnings);
 
   const outboxMetrics = readStore(
     () => openReviewOutboxReadOnly({dbPath: opts.reviewOutboxDbPath}),
@@ -157,9 +158,9 @@ export function collectSelfImproveMetrics(opts: {
   return {
     collectedAt: Date.now(),
     patterns: {
-      positive: bucketByStatus(positives),
-      negative: bucketByStatus(negatives),
-      quick: bucketByStatus(quicks),
+      positive: countPatternBucket('positive', opts.knowledgeScope, warnings),
+      negative: countPatternBucket('negative', opts.knowledgeScope, warnings),
+      quick: countPatternBucket('quick', opts.knowledgeScope, warnings),
     },
     outbox: outboxMetrics,
     supersede: supersedeCounts,
@@ -261,17 +262,6 @@ function selfEvolutionMetrics(
   };
 }
 
-function readJson<T>(file: string, warnings: string[]): T[] {
-  if (!fs.existsSync(file)) return [];
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'));
-    return Array.isArray(parsed) ? (parsed as T[]) : [];
-  } catch (err) {
-    warnings.push(`failed to parse ${file}: ${(err as Error).message}`);
-    return [];
-  }
-}
-
 function readStore<TStore extends {close(): void}, TResult>(
   open: () => TStore | null,
   read: (store: TStore) => TResult,
@@ -295,9 +285,24 @@ function readStore<TStore extends {close(): void}, TResult>(
   }
 }
 
-function bucketByStatus(entries: ReadonlyArray<{ status?: PatternStatus }>): PatternMetrics {
+function countPatternBucket(
+  bucket: PatternBucketId,
+  knowledgeScope: KnowledgeScope | undefined,
+  warnings: string[],
+): PatternMetrics {
+  try {
+    const {admitted, quarantined} = readPatternBucketCensus(bucket, knowledgeScope);
+    return bucketByStatus(admitted, quarantined);
+  } catch (err) {
+    warnings.push(`failed to read ${bucket} pattern memory: ${(err as Error).message}`);
+    return bucketByStatus([], 0);
+  }
+}
+
+function bucketByStatus(entries: ReadonlyArray<{ status?: PatternStatus }>, quarantined: number): PatternMetrics {
   const result: PatternMetrics = {
     total: entries.length,
+    quarantined,
     byStatus: {
       provisional: 0,
       confirmed: 0,

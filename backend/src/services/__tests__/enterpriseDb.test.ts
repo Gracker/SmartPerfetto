@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import {
   openEnterpriseDb,
+  openEnterpriseDbReadOnly,
   resolveEnterpriseDbPath,
   ENTERPRISE_DB_PATH_ENV,
 } from '../enterpriseDb';
@@ -74,6 +75,30 @@ describe('enterprise SQLite WAL database', () => {
     } finally {
       db.close();
     }
+  });
+
+  test('opens a read-only connection that never creates, migrates or writes the database', async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-enterprise-db-'));
+    const dbPath = path.join(tmpDir, 'enterprise.sqlite');
+    expect(openEnterpriseDbReadOnly(dbPath)).toBeUndefined();
+    await expect(fs.stat(dbPath)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    openEnterpriseDb(dbPath).close();
+    const before = await fs.readFile(dbPath);
+    const db = openEnterpriseDbReadOnly(dbPath)!;
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS count FROM organizations').get()).toEqual({ count: 0 });
+      // better-sqlite3's error class may come from another test realm; read the code.
+      const write = (() => {
+        try { db.prepare("INSERT INTO organizations (id, name, status, plan, created_at, updated_at) VALUES ('o', 'o', 'active', 'free', 0, 0)").run(); }
+        catch (err) { return (err as { code?: string }).code; }
+        return 'written';
+      })();
+      expect(write).toBe('SQLITE_READONLY');
+    } finally {
+      db.close();
+    }
+    expect((await fs.readFile(dbPath)).equals(before)).toBe(true);
   });
 
   test('allows a writer to commit while another WAL connection holds a read transaction', async () => {

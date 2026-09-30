@@ -239,6 +239,9 @@ curl -H "Authorization: Bearer $SMARTPERFETTO_API_KEY" \
 
 该端点继续使用既有 `audit:read` 权限，并向原响应追加 `selfEvolution.operational`，
 聚合 proposal/overlay/generation/reconciliation、运行中 operation 和 L2 judge 状态。
+`patterns.*` 经 `analysisPatternMemory.ts` 读取，与调用者 workspace 的 run 读取同一存储
+（DB 权威时读 DB）和同一 scope：`total`/`byStatus` 只计已准入条目，未准入条目只计入
+`quarantined`，不参与状态统计。
 它是观测面，不会自动启用组件。响应中的 warning 需要结合当前 flag 与启动日志判断。
 
 Self-Evolution 控制面使用单独 base path：
@@ -261,7 +264,12 @@ npm run self-improve:migrate-failure-mode-hash
 npm run self-improve:migrate-failure-mode-hash -- --apply
 ```
 
-迁移前先备份当前 backend data path；先 dry-run，再 apply。
+迁移前先备份当前 backend data path；先 dry-run，再 apply。脚本经模式记忆模块遍历每个
+分区（旧文件整体一次，DB 逐分区），只改写已准入条目（持 store 锁，DB 写入开启后同写 DB）；未准入条目原样保留，报告
+只给出数量，不引用其文本。dry-run 只读打开数据库（不建库、不迁移、不改数据）；存储文件无法解析时
+只报告 "store is not valid JSON"，不引用原文；DB 里解不出的桶行会被报告（指标给出 warning，迁移报错），
+而不是记为空，运行时读取仍把它当作空桶；权威副本
+写入失败时 `--apply` 报错退出，DB 副本保持不变。
 
 ## 修改位置
 

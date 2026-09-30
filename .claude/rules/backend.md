@@ -622,7 +622,21 @@ Important whitelisted examples:
   admit only stamped entries; an unstamped entry is evicted first and ages out
   with its TTL. Every run, private ones included, reads the same admitted
   memory (`buildRuntimeMemoryContext`). No learning store without a workspace
-  partition is read.
+  partition is read. Maintainer tools (the self-improve metrics, the
+  failure-mode-hash migration) read and rewrite pattern memory only through
+  `analysisPatternMemory.ts` (`readPatternBucketCensus`,
+  `mutateEveryAdmittedPatternPartition`), never the raw files, so the store
+  mode, scope and admission rule stay in that module. A pass over every
+  partition visits the legacy file once as a whole and each DB partition on
+  its own; during dual write a list of DB partitions misses file entries
+  written before the DB was. Their reads never create, migrate or change the
+  store: the DB opens read-only on the live file (not an
+  `openSqliteReadSnapshot` copy of the large, busy sessions DB; SQLite may
+  leave empty WAL sidecars), an unreadable store file is reported without the
+  parser's quote of its text, and a DB bucket row that cannot be decoded is
+  reported rather than counted empty (a run still reads it as empty). A save
+  or rewrite whose authoritative write failed rejects before the DB copy
+  changes.
 
 Keep scoped selection questions lightweight. A selected slice/range is a scope
 signal, not an automatic quick/full decision.

@@ -24,6 +24,7 @@ import {resolveDurableLearningPermission, withDurableLearningPermission} from '.
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {
   matchPatterns,
+  readPatternBucketCensus,
   saveAnalysisPattern,
   setSupersedeStoreForTesting,
   sweepAllPatternMemoryPartitions,
@@ -123,6 +124,59 @@ describe('analysis pattern memory enterprise buckets', () => {
     expect(result.totalPromoted).toBe(2);
     expect(readPositiveBucket(scopeA)[0]?.status).toBe('confirmed');
     expect(readPositiveBucket(scopeB)[0]?.status).toBe('confirmed');
+  });
+
+  it('auto-confirms the whole legacy file and every DB partition during dual write', async () => {
+    const originalLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+    process.env.SMARTPERFETTO_BACKEND_LOG_DIR = tempDir;
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'dual-write';
+    try {
+      const now = Date.now();
+      const ripe = (scope: KnowledgeScope, prefix: string): AnalysisPatternEntry => ({
+        ...seededPatterns(scope, prefix)[0],
+        status: 'provisional',
+        createdAt: now - 8 * 24 * 60 * 60 * 1000,
+      });
+      for (const [scope, prefix] of [[scopeA, 'a'], [scopeB, 'b']] as const) {
+        mutateScopedKnowledgeRecord<AnalysisPatternEntry[]>(
+          'analysis_pattern_bucket', 'positive', scope,
+          () => [ripe(scope, prefix)], {rowScope: 'pattern-memory:positive'},
+        );
+      }
+      // Written before dual write: no DB row, no partition provenance.
+      const {provenance: _none, ...unpartitioned} = ripe(scopeA, 'legacy');
+      fs.writeFileSync(path.join(tempDir, 'analysis_patterns.json'), JSON.stringify([unpartitioned]));
+
+      const result = await sweepAllPatternMemoryPartitions(now);
+
+      // The legacy file stays authoritative during dual write: one pass over all of it.
+      expect(result.positivePromoted).toBe(1);
+      const file = JSON.parse(fs.readFileSync(path.join(tempDir, 'analysis_patterns.json'), 'utf-8'));
+      expect(file.map((entry: AnalysisPatternEntry) => entry.status)).toEqual(['confirmed']);
+      expect(readPositiveBucket(scopeA)[0]?.status).toBe('confirmed');
+      expect(readPositiveBucket(scopeB)[0]?.status).toBe('confirmed');
+    } finally {
+      restoreEnv('SMARTPERFETTO_BACKEND_LOG_DIR', originalLogDir);
+    }
+  });
+
+  it('counts one partition, splitting admitted from quarantined entries', () => {
+    const [admitted, other] = seededPatterns(scopeA, 'a');
+    const {learningAdmission: _dropped, ...unadmitted} = other;
+    mutateScopedKnowledgeRecord<AnalysisPatternEntry[]>(
+      'analysis_pattern_bucket', 'positive', scopeA,
+      () => [admitted, unadmitted], {rowScope: 'pattern-memory:positive'},
+    );
+    mutateScopedKnowledgeRecord<AnalysisPatternEntry[]>(
+      'analysis_pattern_bucket', 'positive', scopeB,
+      () => seededPatterns(scopeB, 'b').slice(0, 3), {rowScope: 'pattern-memory:positive'},
+    );
+
+    const census = readPatternBucketCensus('positive', scopeA);
+
+    expect(census.admitted.map(entry => entry.id)).toEqual([admitted.id]);
+    expect(census.quarantined).toBe(1);
+    expect(readPatternBucketCensus('negative', scopeA)).toEqual({admitted: [], quarantined: 0});
   });
 
   it('enforces retention per workspace without noisy-neighbor eviction', async () => {

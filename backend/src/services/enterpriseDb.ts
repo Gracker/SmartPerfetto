@@ -33,3 +33,14 @@ export function openEnterpriseDb(dbPath = resolveEnterpriseDbPath()): Database.D
   applyEnterpriseMinimalSchema(db);
   return db;
 }
+
+/**
+ * A connection for maintainer reads that never creates the database, migrates
+ * its schema or changes its data; undefined when no database exists yet.
+ * SQLite may leave empty WAL sidecars behind when none existed. It reads the
+ * live file rather than an openSqliteReadSnapshot copy: this database is
+ * large, and a running server keeps changing it while it would be copied.
+ */
+export function openEnterpriseDbReadOnly(dbPath = resolveEnterpriseDbPath()): Database.Database | undefined {
+  return fs.existsSync(dbPath) ? new Database(dbPath, { readonly: true }) : undefined;
+}

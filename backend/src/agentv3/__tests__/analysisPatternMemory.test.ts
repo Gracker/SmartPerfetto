@@ -129,7 +129,7 @@ import {
   matchQuickPatternsAsBackup,
   applyEffectiveFeedbackProjection,
   projectPatternFeedbackStatus,
-  migrateLegacyPatternStatuses,
+  migrateAllLegacyPatternStatuses,
   sweepAutoConfirm,
   buildPatternContextSection,
   buildNegativePatternSection,
@@ -1091,8 +1091,8 @@ describe('legacy pattern status migration', () => {
       matchCount: 0,
     }]);
 
-    const first = await migrateLegacyPatternStatuses();
-    const second = await migrateLegacyPatternStatuses();
+    const first = await migrateAllLegacyPatternStatuses();
+    const second = await migrateAllLegacyPatternStatuses();
 
     expect(first).toMatchObject({migrated: 2, positive: 1, quick: 1});
     expect(second.migrated).toBe(0);
@@ -1232,5 +1232,30 @@ describe('learning admission', () => {
     for (const record of [{entries: envelope.record}, null, 'entries', undefined]) {
       expect(projectPatternBucketForExport({...envelope, record})).toBeUndefined();
     }
+  });
+});
+
+describe('store write failure', () => {
+  // The file is the authoritative store here: a write it did not take fails
+  // the save, the sweep and the feedback projection, never a silent success.
+  const features = ['arch:STANDARD', 'scene:scrolling'];
+  const noSpace = Object.assign(new Error('ENOSPC: no space left on device'), {code: 'ENOSPC'});
+  const failure = {message: 'analysis_pattern_store_write_unavailable', cause: noSpace};
+  const failNextWrite = () => jest.mocked(require('fs').promises.writeFile).mockRejectedValueOnce(noSpace);
+
+  it('rejects every writer and leaves the store as it was', async () => {
+    const seeded = admitted([{id: 'p1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['x'],
+      confidence: 0.7, matchCount: 0, status: 'provisional' as const, createdAt: Date.now() - 30 * 24 * 60 * 60 * 1000}]);
+    mockPatterns = seeded;
+
+    failNextWrite();
+    await expect(saveAnalysisPattern(features, ['new insight'], 'scrolling', 'STANDARD', 0.8, ADMIT))
+      .rejects.toMatchObject(failure);
+    failNextWrite();
+    await expect(sweepAutoConfirm(Date.now())).rejects.toMatchObject(failure);
+    failNextWrite();
+    await expect(applyEffectiveFeedbackProjection('p1', [], {tenantId: 'default-dev-tenant', workspaceId: 'default-workspace'}))
+      .rejects.toMatchObject(failure);
+    expect(mockPatterns).toBe(seeded);
   });
 });
