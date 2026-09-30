@@ -232,10 +232,8 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     this.orchestrator.on('update', onUpdate);
     try {
       this.assertActive(input, state);
-      if (privateKnowledge) {
-        const queries = [...historyReader.getTurns().map(turn => turn.query), input.query];
-        for (const query of new Set(queries)) registerPrivateAnalysisQueryForEcho(runtimeSessionId, query);
-      }
+      // History questions are registered by the runtime's history reader on every read.
+      if (privateKnowledge) registerPrivateAnalysisQueryForEcho(runtimeSessionId, input.query);
       const options: AnalysisOptions = {...analysisOptions, selectionContext: input.selectionContext, analysisMode: 'fast',
         assistantSurface: 'conversation', conversationTraceAttached: input.traceContext.kind === 'attached', runId: input.runId};
       const scope = {logicalSessionId: input.sessionId, traceId, options};

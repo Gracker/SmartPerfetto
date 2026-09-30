@@ -6,6 +6,7 @@ import {describe, expect, it, jest} from '@jest/globals';
 import {createAnalysisHistoryReader, createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext,
   resolveAnalysisHistoryReader, toAnalysisHistoryTurn, withAnalysisHistoryReader, type AnalysisHistoryTurn} from '../analysisHistory';
 import {AnalysisHistoryStore, parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
+import {clearCodeAwareOutputGuards, sanitizeCodeAwareText, sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
 
 function turn(index = 0): AnalysisHistoryTurn {
   return toAnalysisHistoryTurn({id: `run-${index}`, turnIndex: index, traceId: 'trace', timestamp: index,
@@ -75,6 +76,43 @@ describe('typed analysis history', () => {
     expect(read({analysisContextFingerprint: 'scope-A', knowledgeSourceIds: ['kb']})).toEqual([scopeA, publicTurn]);
     for (const inactive of [{}, {codeAwareMode: 'off', codebaseIds: ['A']}, {codeAwareMode: 'provider_send', codebaseIds: []}]) {
       expect(read({analysisContextFingerprint: 'scope-A', ...inactive})).toEqual([publicTurn]);
+    }
+  });
+
+  it('registers every private question the model can read for strict echo, whichever store supplied it', () => {
+    const sessionId = 'history-echo-physical';
+    const privateTurn = (index: number, id: string, fingerprint: string, query: string): AnalysisHistoryTurn =>
+      ({...turn(index), id, sourceDerived: true, analysisContextFingerprint: fingerprint, query});
+    const durableOnly = privateTurn(0, 'durable-only', 'scope-A', 'DURABLE_ONLY_PRIVATE_QUESTION about Foo::bar');
+    const durableOriginal = privateTurn(1, 'same-run', 'scope-A', 'DURABLE_ORIGINAL_PRIVATE_QUESTION about Baz::qux');
+    const otherScope = privateTurn(2, 'other-scope', 'scope-B', 'OTHER_SCOPE_PRIVATE_QUESTION');
+    // An older CLI transcript stored a placeholder under the same run id.
+    const localPlaceholder = {...durableOriginal, query: 'Private source or knowledge analysis request (original content not persisted)'};
+    const archive = jest.spyOn(AnalysisHistoryStore.prototype, 'list').mockReturnValue([durableOnly, durableOriginal, otherScope]);
+    try {
+      const options = {tenantId: 't', workspaceId: 'w', userId: 'u', analysisContextFingerprint: 'scope-A',
+        codeAwareMode: 'provider_send' as const, codebaseIds: ['A']};
+      // The CLI binds its local transcript merged under the backend reader, which wins per run id.
+      const backend = createRuntimeAnalysisHistoryReader({options, sessionId, traceId: 'trace',
+        getTurns: () => [], assertActive: () => {}});
+      const merged = createAnalysisHistoryReader({assertActive: () => {},
+        getTurns: () => [...new Map([localPlaceholder, ...backend.getTurns()].map(entry => [entry.id, entry])).values()]});
+      const runtime = createRuntimeAnalysisHistoryReader({options: withAnalysisHistoryReader(options, merged),
+        sessionId, traceId: 'trace', getTurns: () => [], assertActive: () => {}});
+
+      expect(runtime.getTurns().map(entry => entry.query).sort()).toEqual([durableOnly.query, durableOriginal.query].sort());
+      const echo = `Earlier you asked ${durableOnly.query}; then ${durableOriginal.query}.`;
+      const strict = sanitizeCodeAwareText(sessionId, echo);
+      expect(strict).toContain('[PRIVATE_QUERY_REFERENCE]');
+      expect(strict).not.toContain('DURABLE_ONLY_PRIVATE_QUESTION');
+      expect(strict).not.toContain('DURABLE_ORIGINAL_PRIVATE_QUESTION');
+      // The creator's own question stays readable to them.
+      expect(sanitizeOwnerCodeAwareText(sessionId, echo)).toBe(echo);
+      // A question the model cannot read is neither returned nor registered.
+      expect(sanitizeCodeAwareText(sessionId, otherScope.query)).toBe(otherScope.query);
+    } finally {
+      archive.mockRestore();
+      clearCodeAwareOutputGuards(sessionId);
     }
   });
 

@@ -1598,6 +1598,31 @@ describe('HTTP shared finalization ownership', () => {
     } finally {replacementOwner.release(); agentRoutesCancellationTestSeam.deleteSession(id);}
   });
 
+  it('keeps a private run question out of the strict session log', async () => {
+    const id = 'http-private-log-placeholder'; const f = fixture(id);
+    const question = 'PRIVATE_LOG_QUESTION about Foo::bar';
+    f.session.outputLanguage = 'en';
+    f.session.activeRun.privateContext = {codebase: true, knowledge: false};
+    f.native.success = true; f.attach();
+    jest.spyOn(reports, 'persistReport').mockImplementation(() => undefined);
+    jest.spyOn(snapshots, 'persistCompletedAnalysisResultSnapshot').mockReturnValue(null);
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      input.context?.dispose(); return {result: input.result};
+    });
+    try {
+      await agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, question, 'trace-a', {
+        runContext: f.session.activeRun, generateTracks: false,
+      });
+      expect(f.analyze).toHaveBeenCalledTimes(1);
+      // Logs are a strict surface: the creator's question never reaches them.
+      expect(f.session.logger.info).toHaveBeenCalledWith('AgentDrivenAnalysis', 'Starting agent-driven analysis',
+        expect.objectContaining({query: 'Private source or knowledge analysis request (original content not persisted)'}));
+      const logger = f.session.logger;
+      expect(JSON.stringify([logger.info.mock.calls, logger.warn.mock.calls, logger.error.mock.calls, logger.debug.mock.calls]))
+        .not.toContain('PRIVATE_LOG_QUESTION');
+    } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+  });
+
   it('does not launch an automatic source supplement for a legacy deep_supplement activation', async () => {
     const id = 'http-no-automatic-source-supplement'; const f = fixture(id);
     f.native.success = true; f.attach({evidenceAccess: 'read_new'});

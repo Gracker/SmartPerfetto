@@ -54,6 +54,7 @@ import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguag
 import {requireAiEnabledForHttp} from './aiCapabilityPolicyHttp';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions} from './agent/normalizeAnalyzeOptions';
 import {analysisHasPrivateContext, privateContextRestrictsAudience} from '../services/security/analysisPrivateContext';
+import {sanitizeOwnerCodeAwareText} from '../services/security/codeAwareOutputRegistry';
 
 const CONVERSATION_RUN_HEARTBEAT_MS = 30_000;
 const heartbeatTimers = new Map<string, NodeJS.Timeout>();
@@ -127,7 +128,8 @@ function sessionDescriptor(session: ConversationSession, run: ConversationRun): 
     outputLanguage: session.outputLanguage, codeAwareMode: session.codeAwareMode,
     codebaseIds: session.codebaseIds, knowledgeSourceIds: session.knowledgeSourceIds,
     status: session.status, createdAt: session.createdAt, lastActivityAt: session.lastActivityAt,
-    lastRun: {runId: run.runId, query: runScope(session, run).query ?? '', turnIndex: run.turnIndex,
+    // The creator's conversation record keeps the question; only the run row takes the placeholder.
+    lastRun: {runId: run.runId, query: run.query, turnIndex: run.turnIndex,
       status: run.status, startedAt: run.startedAt, completedAt: run.completedAt,
       ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})},
     ...(run.outcome ? {lastOutcome: outcome} : {}),
@@ -153,7 +155,7 @@ function settleRun(session: ConversationSession, run: ConversationRun): void {
   const turn = session.historyTurns.find(turn => turn.id === run.runId);
   if (!turn) throw new Error('conversation_finalized_history_missing');
   // Descriptor and the exact finalized public turn share one SQLite transaction.
-  getConversationSessionStore().save(descriptor, {...turn, query: descriptor.lastRun.query});
+  getConversationSessionStore().save(descriptor, turn);
 }
 
 const conversationSessionService = new ConversationSessionService({
@@ -185,7 +187,7 @@ const conversationSessionService = new ConversationSessionService({
     persistAnalysisRunState(scope, 'running');
     const descriptor = sessionDescriptor(session, run);
     getConversationSessionStore().save(descriptor, toAnalysisHistoryTurn({id: run.runId,
-      turnIndex: run.turnIndex, query: descriptor.lastRun.query, traceId: scope.traceId,
+      turnIndex: run.turnIndex, query: run.query, traceId: scope.traceId,
       timestamp: run.startedAt, sourceDerived: descriptor.lastRun.sourceDerived,
       analysisContextFingerprint: descriptor.analysisContextFingerprint,
       result: {partial: true, completion: {status: 'unknown'}},
@@ -558,8 +560,11 @@ async function getConversation(req: express.Request, res: express.Response): Pro
   const latestRun = session.runs[session.runs.length - 1];
   const controlsAccessible = !latestRun || settledRunHistoryAccessible(session, latestRun);
   res.json({success: true, sessionId: session.sessionId, status: session.status, traceContext: session.traceContext,
+    // A private turn stores its question verbatim for the model, so every
+    // source-derived message is read back under the owner guard. The run's
+    // guards are gone by now, so only the credential patterns apply.
     history: history.slice(-200).map(({role, content, turnId, sourceDerived, turn}) => ({
-      role, content, turnId, sourceDerived,
+      role, content: sourceDerived ? sanitizeOwnerCodeAwareText(undefined, content) : content, turnId, sourceDerived,
       ...(turn ? {turn: {id: turn.id, turnIndex: turn.turnIndex, partial: turn.partial, completionStatus: turn.completionStatus,
         terminationReason: turn.terminationReason, terminationMessage: turn.terminationMessage,
         uncertainties: turn.uncertainties, nextSteps: turn.nextSteps, evidence: turn.evidence}} : {}),

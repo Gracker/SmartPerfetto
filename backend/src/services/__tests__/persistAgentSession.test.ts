@@ -51,6 +51,36 @@ describe('persistAgentTurn', () => {
     append.mockImplementation(() => {throw new Error('archive unavailable');});
     expect(() => persistAgentTurn(input)).toThrow('archive unavailable');
   });
+  it('archives a private question for same-authorization follow-ups while the message row keeps the placeholder', () => {
+    const append = jest.spyOn(AnalysisHistoryStore.prototype, 'append').mockImplementation(() => {});
+    const appendMessages = jest.fn();
+    jest.spyOn(SessionPersistenceService, 'getInstance').mockReturnValue({
+      saveSessionStateSnapshot: jest.fn(() => true), appendMessages,
+    } as any);
+    const sessionId = 'session-private-history';
+    const traceId = 'trace-private-history';
+    const question = 'Why does scheduleFrame block the main thread in Main.kt?';
+    sessionContextManager.set(sessionId, traceId, new EnhancedSessionContext(sessionId, traceId));
+    try {
+      persistAgentTurn({sessionId, traceId, query: question,
+        result: {sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Answer.', confidence: 0.6,
+          rounds: 1, totalDurationMs: 10},
+        session: {sessionId, tenantId: 't', workspaceId: 'w', userId: 'u', traceId, runSequence: 1,
+          createdAt: Date.now(), outputLanguage: 'en', codeAwareMode: 'provider_send', codebaseIds: ['private-codebase'],
+          analysisContextFingerprint: 'source-A', activeRun: {runId: 'run-private-history'}, dataEnvelopes: [],
+          orchestrator: {takeSnapshot: jest.fn(() => ({version: 1, sessionId, traceId, snapshotTimestamp: 1,
+            conversationSteps: [], dataEnvelopes: [], analysisNotes: [], queryHistory: [], conclusionHistory: []}))}} as any});
+
+      // The follow-up model input: the original question, partitioned by its authorization fingerprint.
+      expect(append).toHaveBeenCalledWith(expect.objectContaining({runId: 'run-private-history'}),
+        expect.objectContaining({query: question, sourceDerived: true, analysisContextFingerprint: 'source-A'}));
+      const messages = appendMessages.mock.calls[0]?.[1] as Array<{role: string; content: string}>;
+      expect(messages.find(message => message.role === 'user')?.content)
+        .toBe('Private source or knowledge analysis request (original content not persisted)');
+    } finally {
+      sessionContextManager.remove(sessionId);
+    }
+  });
   it('attaches only the complete current result and matching quality fields to the snapshot', () => {
     const save = jest.fn(() => true);
     const takeSnapshot = jest.fn((_sessionId: string, _traceId: string, fields: Record<string, unknown>) => ({

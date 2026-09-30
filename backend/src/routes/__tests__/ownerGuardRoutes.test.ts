@@ -434,7 +434,7 @@ describe('owner guard for agent session routes', () => {
         sessionId: 'private-session',
         status: 'completed',
         traceId: 'private-trace',
-        query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY',
+        query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="PRIVATE_QUERY_SECRET_123456"',
         createdAt: 3000,
         tenantId: 'tenant-a',
         workspaceId: 'workspace-a',
@@ -493,10 +493,11 @@ describe('owner guard for agent session routes', () => {
       'own-session',
       'private-session',
     ]);
-    expect(JSON.stringify(res.body)).not.toContain('PRIVATE_QUERY_CANARY');
+    // The creator sees their own question; a credential inside it stays masked.
+    expect(JSON.stringify(res.body)).not.toContain('PRIVATE_QUERY_SECRET_123456');
     expect(res.body.activeSessions.find((session: any) =>
       session.sessionId === 'private-session').query).toBe(
-      'Private source or knowledge analysis request (original content not persisted)',
+      'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="[REDACTED_SECRET]"',
     );
   });
 
@@ -517,7 +518,7 @@ describe('owner guard for agent session routes', () => {
     const {app} = makeAgentApp();
     registerPrivateAnalysisQueryForEcho(
       'private-session',
-      'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY',
+      'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="PRIVATE_QUERY_SECRET_123456"',
     );
     const protectedCanaries = [
       'PRIVATE_FINDING_CANARY',
@@ -554,8 +555,10 @@ describe('owner guard for agent session routes', () => {
       }));
       // The log is written through the strict projection; the owner may locate it.
       expect(res.body.report.logFile).toBe('/tmp/private-session.log');
+      // The creator's question is theirs to read; only its credential is withheld.
+      // The registered guard replaces the whole quoted unit around the match.
       expect(res.body.report.query).toBe(
-        'Private source or knowledge analysis request (original content not persisted)',
+        'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key=[REDACTED_SECRET]',
       );
       expect(res.body.report.summary.terminationMessage).toBe(
         '[REDACTED_CODE_ECHO]',
@@ -566,7 +569,7 @@ describe('owner guard for agent session routes', () => {
       }));
       // Ordinary source/query quotations are owner-visible; registered canaries
       // and raw prompt/runtime state remain protected independently.
-      for (const canary of [...protectedCanaries, 'PRIVATE_QUERY_CANARY', 'PRIVATE_NOTE_CANARY',
+      for (const canary of [...protectedCanaries, 'PRIVATE_QUERY_SECRET_123456', 'PRIVATE_NOTE_CANARY',
         'PRIVATE_PLAN_CANARY', 'PRIVATE_FLAG_CANARY']) {
         expect(JSON.stringify(res.body)).not.toContain(canary);
       }

@@ -574,7 +574,7 @@ describe('commitTurnOutputs', () => {
     }
   });
 
-  it('keeps every private session artifact free of raw query, model, and quality canaries', () => {
+  it('keeps the question only as resume history and every displayed private artifact under the owner guard', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-private-'));
     const paths = computePaths(home);
     ensureLayout(paths);
@@ -676,18 +676,25 @@ describe('commitTurnOutputs', () => {
         },
       });
 
+      // The transcript is resume history, which the model reads as the
+      // authorized original; everything displayed passes the owner guard.
+      expect(JSON.parse(fs.readFileSync(sp.transcript, 'utf-8'))).toMatchObject({
+        question: `query ${canary}`, history: {query: `query ${canary}`, sourceDerived: true},
+      });
       const persistedText = [
-        ...readTextFiles(sp.dir),
-        ...readTextFiles(paths.home),
+        ...readTextFiles(sp.dir, [sp.transcript]),
+        ...readTextFiles(paths.home, [sp.transcript]),
       ].join('\n');
       expect(persistedText).not.toContain(canary);
+      expect(fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf-8')).toContain('query [REDACTED_CODE_ECHO]');
+      expect(JSON.parse(fs.readFileSync(paths.indexFile, 'utf-8')).sessions[sessionId].firstQuery)
+        .toBe('query [REDACTED_CODE_ECHO]');
       expect(JSON.stringify(jest.mocked(renderer.printCompletion).mock.calls)).not.toContain(canary);
       expect(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.tool-results.json'), 'utf-8'))).toEqual({
         schemaVersion: 1,
         results: [{toolName: 'invoke_skill', outcome: 'returned', facts: {planPhaseIdPresent: true}}],
       });
       expect(renderer.printCompletion).toHaveBeenCalledWith(expect.objectContaining({terminationMessage: expect.any(String)}));
-      expect(persistedText).toMatch(/原始内容未持久化|original content not persisted/);
       const privateReceipt = JSON.parse(
         fs.readFileSync(path.join(sp.dir, 'analysis-receipt.json'), 'utf-8'),
       );
@@ -706,13 +713,13 @@ describe('commitTurnOutputs', () => {
   });
 });
 
-function readTextFiles(root: string): string[] {
+function readTextFiles(root: string, exclude: string[] = []): string[] {
   if (!fs.existsSync(root)) return [];
   const output: string[] = [];
   for (const entry of fs.readdirSync(root, {withFileTypes: true})) {
     const target = path.join(root, entry.name);
-    if (entry.isDirectory()) output.push(...readTextFiles(target));
-    else if (entry.isFile()) output.push(fs.readFileSync(target, 'utf-8'));
+    if (entry.isDirectory()) output.push(...readTextFiles(target, exclude));
+    else if (entry.isFile() && !exclude.includes(target)) output.push(fs.readFileSync(target, 'utf-8'));
   }
   return output;
 }

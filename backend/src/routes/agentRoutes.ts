@@ -208,6 +208,7 @@ import {
   privateAnalysisQueryMessage,
   projectOwnerAnalysisReceipt,
   projectOwnerAnalysisResult,
+  projectOwnerQuestion,
   projectOwnerReportError,
   projectPrivateAnalysisReceipt,
   copyAnalysisResultForSnapshot,
@@ -2295,6 +2296,11 @@ function buildDisplayTurnResult(turn: ConversationTurn): ConversationTurn['resul
   return turn.result;
 }
 
+/** A turn's recorded value for its creator: under the owner guard when the session reads private material. */
+function ownerTurnValue<T>(privateSessionId: string | undefined, value: T): T {
+  return privateSessionId ? projectOwnerStructuredValue(privateSessionId, value) : value;
+}
+
 function buildTurnSummary(
   turn: ConversationTurn,
   privateSessionId?: string,
@@ -2319,14 +2325,12 @@ function buildTurnSummary(
     turnId: turn.id,
     turnIndex: turn.turnIndex,
     timestamp: turn.timestamp,
-    query: privateSessionId ? privateAnalysisQueryMessage(outputLanguage) : turn.query,
-    intent: privateSessionId
-      ? {primaryGoal: '', followUpType: 'initial', aspects: []}
-      : {
-          primaryGoal: turn.intent?.primaryGoal || '',
-          followUpType: turn.intent?.followUpType || 'initial',
-          aspects: Array.isArray(turn.intent?.aspects) ? turn.intent.aspects : [],
-        },
+    query: ownerTurnValue(privateSessionId, turn.query),
+    intent: ownerTurnValue(privateSessionId, {
+      primaryGoal: turn.intent?.primaryGoal || '',
+      followUpType: turn.intent?.followUpType || 'initial',
+      aspects: Array.isArray(turn.intent?.aspects) ? turn.intent.aspects : [],
+    }),
     completed: !!turn.completed,
     success: typeof displayResult?.success === 'boolean' ? displayResult.success : null,
     partial: displayResult?.partial === true,
@@ -2352,7 +2356,7 @@ function buildTurnDetail(
   const displayResult = buildDisplayTurnResult(turn);
   return {
     ...summary,
-    intent: privateSessionId ? summary.intent : toJsonSafe(turn.intent),
+    intent: ownerTurnValue(privateSessionId, toJsonSafe(turn.intent)),
     result: displayResult
       ? toJsonSafe(privateSessionId
           ? projectOwnerAnalysisResult(privateSessionId, {
@@ -2860,9 +2864,8 @@ function connectedStreamQuery(
   session: AnalysisSession,
   streamRun?: AnalyzeSessionRunContext,
 ): string {
-  return sessionRunHasPrivateContext(session, streamRun?.runId)
-    ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
-    : streamRun?.query ?? session.query;
+  return projectOwnerQuestion(sessionRunHasPrivateContext(session, streamRun?.runId), session.sessionId,
+    streamRun?.query ?? session.query);
 }
 
 async function ensureSceneHistoryAccessible(req: express.Request, res: express.Response, session: AnalysisSession): Promise<boolean> {
@@ -2910,9 +2913,7 @@ router.get('/:sessionId/status', async (req, res) => {
     sessionId,
     status: session.status,
     traceId: session.traceId,
-    query: privateKnowledge
-      ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
-      : session.query,
+    query: projectOwnerQuestion(privateKnowledge, sessionId, session.query),
     createdAt: session.createdAt,
     observability: buildSessionObservability(session),
   };
@@ -3024,9 +3025,7 @@ router.get('/:sessionId/turns', (req, res) => {
     sessionId,
     traceId: resolved.traceId,
     source: resolved.source,
-    query: privateSessionId
-      ? privateAnalysisQueryMessage(outputLanguage)
-      : resolved.query,
+    query: ownerTurnValue(privateSessionId, resolved.query),
     createdAt: resolved.createdAt,
     totalTurns: allTurns.length,
     turns: paged.map(turn => buildTurnSummary(turn, privateSessionId, outputLanguage)),
@@ -7502,9 +7501,8 @@ function ensureCompletedAnalysisFinalArtifacts(
         reportId: finalArtifacts.reportId,
         sceneType: result.turnIntent?.status === 'resolved' ? result.turnIntent.sceneId
           : result.conclusionContract?.metadata?.sceneId ?? 'general',
-        query: privateKnowledge
-          ? privateAnalysisQueryMessage(outputLanguage)
-          : session.query,
+        // The snapshot pipeline keeps the creator's question and writes the run row's placeholder.
+        query: session.query,
         traceLabel: session.traceId,
         conclusion: privateKnowledge
           ? durableResultForClient.conclusion

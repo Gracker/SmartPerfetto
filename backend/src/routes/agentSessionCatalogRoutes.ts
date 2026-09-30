@@ -7,9 +7,10 @@ import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { requireRequestContext } from '../middleware/auth';
 import { isOwnedByContext } from '../services/resourceOwnership';
-import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
+import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
   privateAnalysisQueryMessage,
+  projectOwnerQuestion,
 } from '../services/security/privateAnalysisProjection';
 import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
 import type {AnalysisContextSelection} from '../services/resolvedAnalysisContext';
@@ -30,7 +31,6 @@ interface SessionLike extends AnalysisContextSelection {
   tenantId?: string;
   workspaceId?: string;
   userId?: string;
-  outputLanguage?: OutputLanguage;
   activeRun?: AnalyzeSessionRunContext;
   lastRun?: AnalyzeSessionRunContext;
   runRegistry?: Record<string, AnalyzeSessionRunContext>;
@@ -54,7 +54,6 @@ export function registerAgentSessionCatalogRoutes<TSession extends SessionLike>(
 
       const activeSessions: any[] = [];
       const activeIds = new Set<string>();
-      const defaultOutputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
 
       for (const [sessionId, session] of deps.sessionStore.entries()) {
         if (traceId && session.traceId !== traceId) continue;
@@ -66,9 +65,7 @@ export function registerAgentSessionCatalogRoutes<TSession extends SessionLike>(
           sessionId,
           status: session.status,
           traceId: session.traceId,
-          query: sessionRunHasPrivateContext(session)
-            ? privateAnalysisQueryMessage(session.outputLanguage ?? defaultOutputLanguage)
-            : session.query,
+          query: projectOwnerQuestion(sessionRunHasPrivateContext(session), sessionId, session.query),
           createdAt: session.createdAt,
           isActive: true,
           turnCount: activeContext?.getAllTurns().length ?? 0,
@@ -80,6 +77,7 @@ export function registerAgentSessionCatalogRoutes<TSession extends SessionLike>(
       const recoverableSessions: any[] = [];
       if (shouldIncludeRecoverable) {
         try {
+          const defaultOutputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
           const persistenceService = SessionPersistenceService.getInstance();
           const persistedResult = persistenceService.listSessions({
             traceId: traceId as string | undefined,

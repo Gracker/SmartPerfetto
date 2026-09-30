@@ -23,6 +23,7 @@ import {
   type AnalysisPrivateContextMarker,
 } from './security/analysisPrivateContext';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
+import {sanitizeOwnerCodeAwareText} from './security/codeAwareOutputRegistry';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
@@ -579,6 +580,7 @@ function ensureSnapshotParentGraph(
   db: Database.Database,
   input: CompletedAnalysisSnapshotInput,
   now: number,
+  runQuestion: string,
 ): void {
   if (!input.tenantId || !input.workspaceId || !input.runId) return;
 
@@ -645,7 +647,7 @@ function ensureSnapshotParentGraph(
     sessionId: input.sessionId,
     mode: 'agent',
     status: 'completed',
-    question: input.query,
+    question: runQuestion,
     startedAt: now,
     completedAt: now,
     heartbeatAt: now,
@@ -678,9 +680,10 @@ export function persistCompletedAnalysisResultSnapshot(
     reportAssessment: _assessment, investigationAssessment: _investigation, deliveryAssurance: _assurance, ...inputWithoutDelivery} = input;
   const durableInput: CompletedAnalysisSnapshotInput = privateKnowledge
     ? {
+        // The creator's snapshot keeps their question and trace label; the run row does not.
         ...inputWithoutDelivery,
-        query: privateAnalysisQueryMessage(outputLanguage),
-        traceLabel: input.traceId,
+        query: sanitizeOwnerCodeAwareText(input.sessionId, input.query),
+        ...(input.traceLabel ? {traceLabel: sanitizeOwnerCodeAwareText(input.sessionId, input.traceLabel)} : {}),
         ...copyAnalysisDeliveryFields(privateResult ?? {}),
         conclusion: privateResult?.conclusion,
         conclusionContract: privateResult?.conclusionContract,
@@ -705,7 +708,9 @@ export function persistCompletedAnalysisResultSnapshot(
 
   const db = openEnterpriseDb();
   try {
-    ensureSnapshotParentGraph(db, durableInput, snapshot.createdAt);
+    // A run row's question is read only by tenant export; a private run's stays a placeholder.
+    ensureSnapshotParentGraph(db, durableInput, snapshot.createdAt,
+      privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : input.query);
     return createAnalysisResultSnapshotRepository(db).createSnapshot(snapshot);
   } finally {
     db.close();

@@ -39,7 +39,6 @@ import {
 import type {CodeAwareMode} from '../../services/codebase/codeAwareFeature';
 import type {CliAnalysisMode, TraceCaptureResult} from '../types';
 import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
-import {privateAnalysisQueryMessage} from '../../services/security/privateAnalysisProjection';
 import {toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
 import {isTurnInterrupted, TurnInterruptController, TurnInterruptedError, type InterruptSource} from './turnInterrupt';
@@ -198,10 +197,6 @@ async function runStartSession(
     ...provisionalAnswerOption(ctx.renderer, interrupt),
     ...interruptOptions(interrupt),
   });
-  const persistedQuery = result.privateKnowledge
-    ? privateAnalysisQueryMessage(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
-    : input.query;
-
   // Defensive: if onSessionReady didn't fire (future refactor hazard) we
   // still land on a valid session folder using the resolved sessionId.
   if (!resolvedSessionId || !sp) {
@@ -239,10 +234,10 @@ async function runStartSession(
     renderer: ctx.renderer,
     sessionId: resolvedSessionId,
     turn: 1,
-    query: persistedQuery,
+    query: input.query,
     result,
     config,
-    turnMarkdown: formatTurnMarkdown(1, persistedQuery, result.result.conclusion || '', result.result, false),
+    turnMarkdown: formatTurnMarkdown(1, input.query, result.result.conclusion || '', result.result, false),
     reportAppendix,
     indexEntry: {
       sessionId: resolvedSessionId,
@@ -252,7 +247,7 @@ async function runStartSession(
       traceFilename: referenceTracePath
         ? `${path.basename(tracePath)} vs ${path.basename(referenceTracePath)}`
         : path.basename(tracePath),
-      firstQuery: persistedQuery,
+      firstQuery: input.query,
       turnCount: 1,
       status: result.result.success ? 'completed' : 'failed',
     },
@@ -415,10 +410,6 @@ async function runContinueSession(
     lastTurnAt: now,
     turnCount: nextTurn,
   };
-  const persistedQuery = result.privateKnowledge
-    ? privateAnalysisQueryMessage(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
-    : input.query;
-
   const idx = readIndex(ctx.paths);
   const prev = idx.sessions[userSessionId];
 
@@ -428,12 +419,12 @@ async function runContinueSession(
     renderer: ctx.renderer,
     sessionId: userSessionId,
     turn: nextTurn,
-    query: persistedQuery,
+    query: input.query,
     result,
     config: updatedConfig,
     turnMarkdown: formatTurnMarkdown(
       nextTurn,
-      persistedQuery,
+      input.query,
       result.result.conclusion || '',
       result.result,
       degraded,
@@ -445,7 +436,7 @@ async function runContinueSession(
       lastTurnAt: now,
       tracePath: existingConfig.tracePath,
       traceFilename: prev?.traceFilename ?? path.basename(existingConfig.tracePath),
-      firstQuery: result.privateKnowledge ? persistedQuery : prev?.firstQuery ?? persistedQuery,
+      firstQuery: prev?.firstQuery ?? input.query,
       turnCount: nextTurn,
       status: result.result.success ? 'completed' : 'failed',
     },

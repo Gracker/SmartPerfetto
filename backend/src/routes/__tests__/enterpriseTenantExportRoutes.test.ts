@@ -12,6 +12,8 @@ import request from 'supertest';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
 import { stableStringify } from '../../services/enterpriseTenantExportService';
+import {AnalysisHistoryStore} from '../../services/analysisHistoryStore';
+import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import exportRoutes from '../exportRoutes';
 
 const originalEnv = {
@@ -191,6 +193,11 @@ async function seedRestrictedContentFixture(): Promise<void> {
     `);
     insertTurn.run('turn-private', 'run-private', '{"text":"PRIVATE_TURN"}', now);
     insertTurn.run('turn-legacy', 'run-legacy', '{"text":"LEGACY_TURN"}', now);
+    // A private run's history keeps its creator's question for follow-ups; the export still omits it.
+    new AnalysisHistoryStore(db).append({tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a',
+      sessionId: 'session-a', traceId: 'trace-a', runId: 'run-private'}, toAnalysisHistoryTurn({id: 'turn-private-history',
+      turnIndex: 0, traceId: 'trace-a', timestamp: now, query: 'PRIVATE_HISTORY_QUESTION', sourceDerived: true,
+      result: {message: 'answer'}}));
     const insertReport = db.prepare(`
       INSERT INTO report_artifacts
         (id, tenant_id, workspace_id, session_id, run_id, local_path, content_hash, visibility, created_by, created_at,
@@ -300,7 +307,7 @@ describe('enterprise tenant export route', () => {
     expect(res.status).toBe(200);
     const bundle = res.body.bundle;
     const serialized = JSON.stringify(bundle);
-    for (const secret of ['PRIVATE_QUESTION', 'PRIVATE_ERROR', 'PRIVATE_TURN', 'PRIVATE_REPORT', 'PRIVATE_MEMORY',
+    for (const secret of ['PRIVATE_QUESTION', 'PRIVATE_HISTORY_QUESTION', 'PRIVATE_ERROR', 'PRIVATE_TURN', 'PRIVATE_REPORT', 'PRIVATE_MEMORY',
       'LEGACY_QUESTION', 'LEGACY_ERROR', 'LEGACY_TURN', 'LEGACY_REPORT', 'UNLINKED_MEMORY', 'PRIVATE_SOURCE_CHUNK']) {
       expect(serialized).not.toContain(secret);
     }
@@ -318,9 +325,10 @@ describe('enterprise tenant export route', () => {
       privateContext: {codebase: false, knowledge: true}, contentOmitted: 'private_context', contentHash: 'hash-private'});
     expect(byId(bundle.reports, 'report-legacy')).toMatchObject({html: null, privateContext: 'unknown'});
     expect(byId(bundle.turns, 'turn-legacy')).toMatchObject({content: null, contentOmitted: 'private_context'});
+    expect(byId(bundle.turns, 'turn-private-history')).toMatchObject({content: null, contentOmitted: 'private_context'});
     expect(byId(bundle.knowledge.memoryEntries, 'chunk-public-blog')).not.toHaveProperty('contentOmitted');
-    expect(bundle.manifest.contentOmitted).toEqual({reports: 2, runs: 2, turns: 2, memoryRecords: 3});
-    expect(bundle.manifest).toEqual(expect.objectContaining({runCount: 3, turnCount: 3, reportCount: 3,
+    expect(bundle.manifest.contentOmitted).toEqual({reports: 2, runs: 2, turns: 3, memoryRecords: 3});
+    expect(bundle.manifest).toEqual(expect.objectContaining({runCount: 3, turnCount: 4, reportCount: 3,
       memoryRecordCount: 5}));
   });
 

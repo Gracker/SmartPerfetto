@@ -524,22 +524,25 @@ describe('agent route private projections', () => {
     expect(session.orchestratorUpdateHandler).toBeUndefined();
   });
 
-  it('never returns the raw private query in an SSE connected payload', () => {
+  it('shows the creator their own question in an SSE connected payload, under the owner guard', () => {
     const canary = 'PRIVATE_CONNECTED_QUERY_CANARY';
+    registerCodeAwareCanary(sessionId, canary);
     const projected = agentRoutesPrivacyProjectionTestSeam.connectedStreamQuery({
-      query: canary,
+      sessionId,
+      query: 'session question',
       outputLanguage: 'en',
       codeAwareMode: 'provider_send',
       codebaseIds: ['cb-private'],
     } as any, {
-      query: `run ${canary}`,
+      query: `run question ${canary} api_key="secret-value-123456"`,
     } as any);
 
+    expect(projected).toContain('run question');
     expect(projected).not.toContain(canary);
-    expect(projected).toContain('original content not persisted');
+    expect(projected).not.toContain('secret-value-123456');
   });
 
-  it('removes private query, intent, and quality artifacts from turn list and detail payloads', () => {
+  it('shows the creator their turn question and intent under the owner guard, keeping quality artifacts projected', () => {
     const canary = 'PRIVATE_TURN_CANARY';
     registerCodeAwareCanary(sessionId, canary);
     const turn = {
@@ -565,8 +568,9 @@ describe('agent route private projections', () => {
     const detail = agentRoutesPrivacyProjectionTestSeam.buildTurnDetail(turn, sessionId);
 
     expect(JSON.stringify({summary, detail})).not.toContain(canary);
-    expect(summary.query).toMatch(/原始内容未持久化|original content not persisted/);
-    expect(summary.intent).toEqual({primaryGoal: '', followUpType: 'initial', aspects: []});
+    expect(summary.query).toBe('query [REDACTED_CODE_ECHO]');
+    expect(summary.intent).toEqual({primaryGoal: '[REDACTED_CODE_ECHO]', followUpType: '[REDACTED_CODE_ECHO]',
+      aspects: ['[REDACTED_CODE_ECHO]']});
     expect(summary.findingCount).toBe(1);
     expect(detail.findings).toHaveLength(1);
     expect(detail.result).toHaveProperty('claimSupport');

@@ -106,6 +106,7 @@ interface GuardedOutput {
 
 class SessionCodeAwareOutputGuard {
   private readonly registrations: GuardRegistration[] = [];
+  private readonly registered = new Set<string>();
   private readonly streams = new Map<string, LLMEchoOutputStream>();
   private registrationBytes = 0;
   private overflowed = false;
@@ -114,8 +115,11 @@ class SessionCodeAwareOutputGuard {
   /** Changes whenever the registered set does; text released earlier was not projected against it. */
   get registrationVersion(): number { return this.version; }
 
-  register(registration: GuardRegistration): void {
-    if (this.overflowed) return;
+  /** A repeat (every history read registers its questions again) spends no capacity and changes nothing. */
+  register(registration: GuardRegistration): 'applied' | 'repeat' | 'unavailable' {
+    if (this.overflowed) return 'unavailable';
+    const key = textFingerprint(JSON.stringify(registration));
+    if (this.registered.has(key)) return 'repeat';
     this.version++;
     const pattern = registration.kind === 'snippet'
       ? registration.snippet
@@ -130,13 +134,16 @@ class SessionCodeAwareOutputGuard {
       this.overflowed = true;
       this.registrationBytes = 0;
       this.registrations.length = 0;
+      this.registered.clear();
       for (const stream of this.streams.values()) stream.destroy();
       this.streams.clear();
-      return;
+      return 'unavailable';
     }
+    this.registered.add(key);
     this.registrations.push(registration);
     this.registrationBytes += patternBytes;
     for (const stream of this.streams.values()) this.apply(stream, registration);
+    return 'applied';
   }
 
   projectComplete(text: string): string {
@@ -197,6 +204,7 @@ class SessionCodeAwareOutputGuard {
     for (const stream of this.streams.values()) stream.destroy();
     this.streams.clear();
     this.registrations.length = 0;
+    this.registered.clear();
     this.registrationBytes = 0;
     // Projections may still hold this guard after registry eviction. Keep the
     // detached object irreversibly fail-closed instead of turning it into an
@@ -283,17 +291,15 @@ function redactOwnerCredentials(text: string): string {
 class SessionOutputGuards {
   readonly strict = new SessionCodeAwareOutputGuard();
   readonly owner = new SessionCodeAwareOutputGuard();
-  // Repeated lookups of the same material must not spend owner guard capacity.
-  private readonly ownerCredentials = new Set<string>();
-  register(registration: GuardRegistration): void {
-    this.strict.register(registration);
+  /** False for a repeat, which strict holds only because both audiences already applied it. */
+  register(registration: GuardRegistration): boolean {
+    if (this.strict.register(registration) === 'repeat') return false;
     if (OWNER_VIEW[registration.kind] === 'credentials_withheld' && 'snippet' in registration) {
       for (const credential of credentialValues(registration.snippet)) {
-        if (this.ownerCredentials.has(credential)) continue;
-        this.ownerCredentials.add(credential);
         this.owner.register({kind: 'private', snippet: credential, replacement: '[REDACTED_SECRET]'});
       }
     } else { this.owner.register(registration); }
+    return true;
   }
   get patternBytes(): number { return this.strict.patternBytes + this.owner.patternBytes; }
   destroy(): void { this.strict.destroy(); this.owner.destroy(); }
@@ -380,10 +386,7 @@ function guardFor(sessionId: string): SessionOutputGuards | undefined {
 }
 
 function registerForSession(sessionId: string, registration: GuardRegistration): void {
-  const guard = guardFor(sessionId);
-  if (!guard) return;
-  guard.register(registration);
-  enforceRegistryLimits(sessionId);
+  if (guardFor(sessionId)?.register(registration)) enforceRegistryLimits(sessionId);
 }
 
 export function registerCodeAwareLookupForEcho(sessionId: string | undefined, result: SanitizedRagResult): void {

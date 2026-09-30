@@ -140,7 +140,7 @@ import {
   resolveAnalysisPrivateContext,
   type AnalysisPrivateContextMarker,
 } from '../../services/security/analysisPrivateContext';
-import {registerPrivateAnalysisQueryForEcho} from '../../services/security/codeAwareOutputRegistry';
+import {registerPrivateAnalysisQueryForEcho, sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
 import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
 import {buildSkillRegistryAttribution} from '../../services/selfEvolution/skillFingerprint';
 import {getEffectiveRuntimeRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryProvider';
@@ -1316,7 +1316,7 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
       sessionId,
       traceId,
       referenceTraceId: input.referenceTraceId,
-      query: privateAnalysisQueryMessage(outputLanguage),
+      query: sanitizeOwnerCodeAwareText(sessionId, input.query),
       conclusion: durableResult.conclusion,
       conclusionContract: durableResult.conclusionContract,
       sourceUseDecision: durableResult.sourceUseDecision,

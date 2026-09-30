@@ -35,8 +35,8 @@ import {projectToolResultAuditForPrivateRun} from '../../agentRuntime/runtimeToo
 import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {
   projectOwnerAnalysisError,
-  privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
+  projectOwnerQuestion,
 } from '../../services/security/privateAnalysisProjection';
 import {sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
 import {
@@ -96,19 +96,11 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
           : {}),
       }
     : input.result;
-  const durableQuery = result.privateKnowledge
-    ? privateAnalysisQueryMessage(outputLanguage)
-    : query;
-  const baseTurnMarkdown = result.privateKnowledge
-    ? sanitizeOwnerCodeAwareText(
-        sessionId,
-        replaceExact(
-          replaceExact(input.turnMarkdown, query, durableQuery),
-          rawConclusion,
-          result.result.conclusion || '',
-        ),
-      )
-    : input.turnMarkdown;
+  const conclusion = result.result.conclusion || '';
+  // The creator's local files keep the question: the transcript is resume
+  // history for the model, and displayed copies pass the owner guard.
+  const ownerView = (text: string) => sanitizeOwnerCodeAwareText(sessionId, replaceExact(text, rawConclusion, conclusion));
+  const baseTurnMarkdown = result.privateKnowledge ? ownerView(input.turnMarkdown) : input.turnMarkdown;
   const sourceProvenance = inputSourceProvenance ?? sourceProvenanceForResult(result);
   const turnMarkdown = reportAppendix?.markdown
     ? `${baseTurnMarkdown}\n\n${reportAppendix.markdown}`
@@ -120,11 +112,9 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
     result.result.partial && input.indexEntry.status === 'completed'
       ? 'partial'
       : input.indexEntry.status;
-  const indexEntry = result.privateKnowledge
-    ? {...input.indexEntry, status: statusForIndex, firstQuery: durableQuery}
-    : {...input.indexEntry, status: statusForIndex};
+  const indexEntry = {...input.indexEntry, status: statusForIndex,
+    firstQuery: projectOwnerQuestion(result.privateKnowledge === true, sessionId, input.indexEntry.firstQuery)};
 
-  const conclusion = result.result.conclusion || '';
   const turnPrefix = path.join(sp.turnsDir, String(turn).padStart(3, '0'));
   const cliTurnPath = `${turnPrefix}.md`;
   const evidenceBundle = buildCliAnalysisEvidenceBundle({
@@ -141,16 +131,7 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
   writeTurnMarkdown(sp, turn, turnMarkdown);
 
   let turnReportPath: string | undefined;
-  const privateSafeReportHtml = result.privateKnowledge && result.reportHtml
-    ? sanitizeOwnerCodeAwareText(
-        sessionId,
-        replaceExact(
-          replaceExact(result.reportHtml, query, durableQuery),
-          rawConclusion,
-          result.result.conclusion || '',
-        ),
-      )
-    : result.reportHtml;
+  const privateSafeReportHtml = result.privateKnowledge && result.reportHtml ? ownerView(result.reportHtml) : result.reportHtml;
   const reportHtml = privateSafeReportHtml && reportAppendix?.html
     ? appendHtmlToBody(privateSafeReportHtml, reportAppendix.html)
     : privateSafeReportHtml;
@@ -172,12 +153,12 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
   appendTranscriptTurn(sp.transcript, {
     turn,
     timestamp: config.lastTurnAt,
-    question: durableQuery,
+    question: query,
     conclusionMd: conclusion,
     history: toAnalysisHistoryTurn({
       id: result.result.completion?.runId ?? `${sessionId}:turn:${turn}`,
       turnIndex: turn - 1,
-      query: durableQuery,
+      query,
       traceId: result.traceId,
       timestamp: config.lastTurnAt,
       result: result.result,

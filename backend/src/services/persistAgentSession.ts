@@ -281,7 +281,9 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
     new AnalysisHistoryStore().append({tenantId: session.tenantId, workspaceId: session.workspaceId,
       userId: session.userId, sessionId, traceId, runId}, toAnalysisHistoryTurn({
       id: runId, turnIndex: Math.max(0, (session.runSequence ?? (latest ? latest.turnIndex + 1 : 1)) - 1),
-      timestamp: session.lastRun?.completedAt ?? Date.now(), query: privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : query,
+      // The creator's own history keeps the question: a follow-up under the same
+      // authorization fingerprint reads it. Tenant export omits restricted turns.
+      timestamp: session.lastRun?.completedAt ?? Date.now(), query,
       traceId, result: finalResult,
       analysisContextFingerprint: session.analysisContextFingerprint,
       sourceDerived: privateKnowledge,

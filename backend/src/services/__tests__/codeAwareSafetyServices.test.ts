@@ -2086,6 +2086,32 @@ describe('owner streaming projection for answer drafts', () => {
   });
 });
 
+describe('guard registration capacity', () => {
+  const sessions = ['repeat-registration', 'owner-credential-overflow'];
+  afterEach(() => sessions.forEach(clearCodeAwareOutputGuards));
+
+  it('spends no capacity and no registration change on a repeated registration', () => {
+    // Every history read registers the same questions again.
+    const question = 'the same pasted question about Foo::bar';
+    for (let index = 0; index < 300; index++) registerPrivateAnalysisQueryForEcho(sessions[0], question);
+    expect(sanitizeCodeAwareText(sessions[0], 'ordinary model text')).toBe('ordinary model text');
+    expect(sanitizeCodeAwareText(sessions[0], question)).toContain('[PRIVATE_QUERY_REFERENCE]');
+    const projection = createCodeAwareStreamingTextProjection(sessions[0], 'repeat-draft', 'strict');
+    projection.write('released text\n');
+    registerPrivateAnalysisQueryForEcho(sessions[0], question);
+    projection.flush();
+    expect(projection.altered).toBe(false);
+  });
+
+  // Strict overflow leaving the owner guard intact is covered by 'preserves source after strict registration overflow'.
+  it('fails the owner guard closed once distinct credentials exceed its own capacity', () => {
+    for (let index = 0; index <= 200; index++) {
+      registerPrivateAnalysisQueryForEcho(sessions[1], `question ${index} api_key="distinct-secret-${index}-value"`);
+    }
+    expect(sanitizeOwnerCodeAwareText(sessions[1], 'ordinary model text')).toBe('[PRIVATE_OUTPUT_SUPPRESSED]');
+  });
+});
+
 describe('semantic input structure budget', () => {
   it('preserves byte-bounded JSON beyond the ordinary output node cap without widening output limits', () => {
     const input = {records: Array.from({length: 3000}, (_, n) => ({n, unit: 'ms'}))};

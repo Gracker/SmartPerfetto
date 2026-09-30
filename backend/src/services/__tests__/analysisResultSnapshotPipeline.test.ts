@@ -977,10 +977,9 @@ describe('analysis result snapshot pipeline', () => {
 
       expect(snapshot).not.toBeNull();
       expect(JSON.stringify(snapshot)).not.toContain(canary);
-      expect(snapshot?.userQuery).toBe(
-        'Private source or knowledge analysis request (original content not persisted)',
-      );
-      expect(snapshot?.traceLabel).toBe('trace-private');
+      // The creator's snapshot keeps their question and trace label under the owner guard.
+      expect(snapshot?.userQuery).toBe('query [REDACTED_CODE_ECHO]');
+      expect(snapshot?.traceLabel).toBe('label [REDACTED_CODE_ECHO]');
       expect(snapshot?.sceneType).toBe('startup');
       expect(snapshot?.capabilityManifest).toEqual(receiptCapabilityManifest);
       expect(snapshot?.summary.analysisReceipt?.capabilityManifest).toEqual(receiptCapabilityManifest);

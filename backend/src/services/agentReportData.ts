@@ -23,11 +23,11 @@ import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import { getTraceProcessorService } from './traceProcessorService';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
-  privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
   projectOwnerDataEnvelopes,
   projectOwnerHypotheses,
   projectOwnerStructuredValue,
+  projectOwnerQuestion,
 } from './security/privateAnalysisProjection';
 import type {SessionStateSnapshot} from '../agentv3/sessionStateSnapshot';
 import {isCodebaseKind} from './codebase/codebaseRegistry';
@@ -248,7 +248,7 @@ export function buildAgentDrivenReportData(
 
   return {
     traceId: session.traceId,
-    query: privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : session.query,
+    query: projectOwnerQuestion(privateKnowledge, session.sessionId, session.query),
     outputLanguage,
     traceStartNs:
       traceStartNs !== undefined && traceStartNs !== null ? String(traceStartNs) : undefined,

@@ -200,6 +200,21 @@ describe('conversation routes authorized recovery', () => {
     expect(JSON.stringify(response.body)).not.toContain('PRIVATE_HANDOFF');
   });
 
+  it('reopens an authorized private turn with its question under the owner view', async () => {
+    const question = 'Why is Foo::bar slow here? api_key="conversation-secret-123456"';
+    storeSnapshot({lastRun: {...descriptor.lastRun, query: question, sourceDerived: true}},
+      {sourceDerived: true, analysisContextFingerprint: descriptor.analysisContextFingerprint});
+    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    expect(response.status).toBe(200);
+    // The stored question is the authorized original, read back by its creator
+    // with only the credential withheld; source names stay readable.
+    expect(response.body.history[0]).toMatchObject({role: 'user', sourceDerived: true,
+      content: 'Why is Foo::bar slow here? api_key="[REDACTED_SECRET]"'});
+    expect(JSON.stringify(response.body)).not.toContain('conversation-secret-123456');
+    // What the model reads on a follow-up stays unrewritten.
+    expect(getConversationSessionStore().listTurns(descriptor)[0].query).toBe(question);
+  });
+
   it('does not hydrate or create an adapter for a different user in the same workspace', async () => {
     storeSnapshot();
     const response = await request(app('other-owner')).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);

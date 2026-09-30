@@ -18,6 +18,8 @@ import {
   writeTurnReportHtml,
 } from '../../io/sessionStore';
 import type { CliSessionConfig } from '../../types';
+import {appendTranscriptTurn} from '../../io/transcriptWriter';
+import {toAnalysisHistoryTurn} from '../../../agentRuntime/analysisHistory';
 import {
   buildCliAnalysisEvidenceBundle,
   latestCliAnalysisEvidencePath,
@@ -101,6 +103,38 @@ describe('CLI list/report command messages', () => {
     await runReportExportCommand({envFile, sessionDir, sessionId, format: 'json', out: jsonOut});
     const mismatched = JSON.parse(fs.readFileSync(jsonOut, 'utf8'));
     expect(mismatched.sceneReportStatus).toBe('unavailable'); expect(mismatched).not.toHaveProperty('sceneReport');
+  });
+
+  test('json export shows a private turn question as its creator sees it, masking credentials', async () => {
+    const sessionId = 'session-private-transcript';
+    const sp = sessionPaths(computePaths(sessionDir), sessionId);
+    writeConfig(sp, {...makeConfig(sessionId), codeAwareMode: 'provider_send', codebaseIds: ['app']});
+    // Resume reads the stored question verbatim; only the export is projected.
+    const entry = (turn: number, question: string, sourceDerived: boolean) => appendTranscriptTurn(sp.transcript,
+      {turn, timestamp: turn, question, history: toAnalysisHistoryTurn({id: `turn-${turn}`, turnIndex: turn - 1, query: question,
+        traceId: 'trace-id', timestamp: turn, result: {message: 'answer'}, sourceDerived})});
+    entry(1, 'Why is Foo::bar slow? api_key="transcript-secret-123456"', true);
+    entry(2, 'public token="kept-as-typed"', false);
+    // A row from before turns carried a marker follows the session's selection.
+    appendTranscriptTurn(sp.transcript, {turn: 3, timestamp: 3, question: 'legacy api_key="legacy-secret-123456"'});
+    // A write cut short leaves a line that holds the question but no readable marker.
+    fs.appendFileSync(sp.transcript, '{"turn":4,"timestamp":4,"question":"cut api_key=\\"truncated-secret-123456\\"\n');
+    const jsonOut = path.join(tmpDir, 'private-transcript.json');
+
+    expect(await runReportExportCommand({envFile, sessionDir, sessionId, format: 'json', out: jsonOut})).toBe(0);
+    const exported = fs.readFileSync(jsonOut, 'utf8');
+    const [privateTurn, publicTurn, legacyTurn, cutTurn] = JSON.parse(exported).transcript;
+    const masked = 'Why is Foo::bar slow? api_key="[REDACTED_SECRET]"';
+    expect(privateTurn).toMatchObject({question: masked, history: {query: masked, sourceDerived: true}});
+    expect(publicTurn.question).toBe('public token="kept-as-typed"');
+    expect(legacyTurn.question).toBe('legacy api_key="[REDACTED_SECRET]"');
+    expect(cutTurn).toEqual({unreadable: true});
+    for (const secret of ['transcript-secret-123456', 'legacy-secret-123456', 'truncated-secret-123456']) {
+      expect(exported).not.toContain(secret);
+    }
+    expect(fs.readFileSync(sp.transcript, 'utf8')).toContain('transcript-secret-123456');
+    expect(await runReportExportCommand({envFile, sessionDir, sessionId, turn: 1, format: 'json', out: jsonOut})).toBe(0);
+    expect(JSON.parse(fs.readFileSync(jsonOut, 'utf8')).transcriptTurn.question).toBe(masked);
   });
 
   test('missing report recommends valid follow-up commands', async () => {

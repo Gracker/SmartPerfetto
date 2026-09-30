@@ -9,13 +9,13 @@ import { isOwnedByContext, sendResourceNotFound } from '../services/resourceOwne
 import {copyAnalysisDeliveryFields} from '../services/security/analysisDeliveryProjection';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
-  privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
   copyAnalysisResultForSnapshot,
   projectOwnerReportError,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
+  projectOwnerQuestion,
 } from '../services/security/privateAnalysisProjection';
 import {sessionRunHasPrivateContext} from '../assistant/application/agentAnalyzeSessionService';
 
@@ -104,7 +104,7 @@ export function registerAgentReportRoutes(
     const report = {
       sessionId,
       traceId: session.traceId,
-      query: privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : session.query,
+      query: projectOwnerQuestion(privateKnowledge, sessionId, session.query),
       createdAt: session.createdAt,
       completedAt: Date.now(),
       ...copyAnalysisDeliveryFields(result),

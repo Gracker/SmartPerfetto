@@ -50,7 +50,7 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
       session: {
         sessionId,
         traceId: 'trace-a',
-        query: 'analyze PRIVATE_QUERY_CANARY',
+        query: 'analyze scheduleFrame jank api_key="PRIVATE_QUERY_SECRET_123456"',
         codeAwareMode: 'provider_send',
         codebaseIds: ['private-app'],
         outputLanguage: 'en',
@@ -138,7 +138,8 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
     expect(report.analysisPlan).toBeNull();
     expect(report.uncertaintyFlags).toEqual([]);
     expect(report.outputLanguage).toBe('en');
-    expect(report.query).toContain('Private source or knowledge analysis request');
+    // The creator reads their own question, source names included; its credential stays masked.
+    expect(report.query).toBe('analyze scheduleFrame jank api_key="[REDACTED_SECRET]"');
     expect(report.sourceContext).toEqual({
       selected: [{
         codebaseId: 'private-app',

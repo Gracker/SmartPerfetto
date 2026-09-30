@@ -11,7 +11,7 @@ import type {ConclusionContract} from '../../agent/core/conclusionContract';
 import type {ClaimSupportV1} from '../../types/evidenceContract';
 import type {ClaimVerificationResult, DeterministicNativeRowIdentity} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
-import {sanitizeCodeAwareText, withOwnerCodeAwareProjection, isOwnerCodeAwareProjection, isCredentialField} from './codeAwareOutputRegistry';
+import {sanitizeCodeAwareText, sanitizeOwnerCodeAwareText, withOwnerCodeAwareProjection, isOwnerCodeAwareProjection, isCredentialField} from './codeAwareOutputRegistry';
 import {projectSceneTimelineForOwner} from '../../agent/scene/sceneTimelineProjection';
 import type {CodeLookupSummary} from '../codebase/codeLookupLedger';
 import {sanitizeSourceUseDecision, type SourceUseDecisionV1, type SourceReferenceV1} from '../codebase/sourceUseDecision';
@@ -909,6 +909,10 @@ export function projectOwnerProvisionalConclusion(
   privateKnowledge: boolean, sessionId: string, conclusion: string, language: OutputLanguage,
 ): string {
   return privateKnowledge ? projectOwnerConclusion({sessionId, conclusion, success: true, language}) : conclusion;
+}
+/** The question a surface shows its creator: under the owner guard for a run with private context. */
+export function projectOwnerQuestion(privateKnowledge: boolean, sessionId: string, query: string): string {
+  return privateKnowledge ? sanitizeOwnerCodeAwareText(sessionId, query) : query;
 }
 /** The report error a surface shows: under the owner guard for a run with private context. */
 export function projectOwnerReportError(
