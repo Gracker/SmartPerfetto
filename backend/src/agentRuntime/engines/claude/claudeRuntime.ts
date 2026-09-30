@@ -670,14 +670,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionMap = loadSessionMapForCurrentMode();
   }
 
-  /** Restore a previously persisted SDK session mapping (e.g., after server restart). */
-  restoreSessionMapping(smartPerfettoSessionId: string, sdkSessionId: string, referenceTraceId?: string): void {
-    this.sessionMap.set(
-      this.buildSessionMapKey(smartPerfettoSessionId, referenceTraceId),
-      { sdkSessionId, updatedAt: Date.now(), mode: 'full' },
-    );
-  }
-
   /** Restore a cached architecture detection result (e.g., from session persistence). */
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {
     setLruCacheEntry(this.architectureCache, traceId, architecture);

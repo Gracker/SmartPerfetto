@@ -599,16 +599,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       : undefined;
   }
 
-  restoreSessionMapping(sessionId: string, sdkSessionId: string, referenceTraceId?: string): void {
-    const sessionMapKey = this.buildSessionMapKey(sessionId, referenceTraceId);
-    const existing = this.sessionMap.get(sessionMapKey);
-    this.sessionMap.set(sessionMapKey, {
-      ...existing,
-      lastResponseId: sdkSessionId,
-      updatedAt: Date.now(),
-    });
-  }
-
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {
     setLruCacheEntry(this.architectureCache, traceId, architecture);
   }

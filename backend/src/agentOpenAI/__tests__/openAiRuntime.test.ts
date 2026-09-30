@@ -2197,13 +2197,4 @@ describe('OpenAI snapshot compatibility', () => {
     }));
     expect(runtime.getSdkSessionId('s1', 'trace-b')).toBe('resp_compare_old');
   });
-
-  it('restores explicit OpenAI session mappings under the comparison key', () => {
-    const runtime = createOpenAiRuntimeForTest();
-
-    runtime.restoreSessionMapping('s1', 'resp_compare_restored', 'trace-b');
-
-    expect(runtime.getSdkSessionId('s1')).toBeUndefined();
-    expect(runtime.getSdkSessionId('s1', 'trace-b')).toBe('resp_compare_restored');
-  });
 });

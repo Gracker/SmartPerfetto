@@ -57,11 +57,6 @@ export interface IOrchestrator {
   recordUserInteraction?(interaction: any): void;
   /** SDK session ID for runtimes that expose one. */
   getSdkSessionId?(sessionId: string, referenceTraceId?: string): string | undefined;
-  /**
-   * @deprecated P1-7: Dead code — sessionMap is loaded from `claude_session_map.json` at construction.
-   * Kept for backward compatibility but never called from route layer.
-   */
-  restoreSessionMapping?(sessionId: string, sdkSessionId: string, referenceTraceId?: string): void;
   /** Restore a cached architecture result from persistence (agentv3). */
   restoreArchitectureCache?(traceId: string, architecture: any): void;
   /** Get cached architecture for persistence (agentv3). */
