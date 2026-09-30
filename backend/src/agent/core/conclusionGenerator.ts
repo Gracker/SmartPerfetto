@@ -47,16 +47,6 @@ type EvidenceObject = {
 const DEFAULT_TOP_CLUSTER_FRAME_RENDER_LIMIT = 5;
 const DEFAULT_FULL_CLUSTER_FRAME_RENDER_LIMIT = 120;
 
-function isJankSceneId(sceneId?: string): boolean {
-  return String(sceneId || '').trim().toLowerCase() === 'jank';
-}
-
-function resolveClusterSectionHeading(sceneId?: string): string {
-  return isJankSceneId(sceneId)
-    ? '## 掉帧聚类（先看大头）'
-    : '## 聚类（先看大头）';
-}
-
 function asEvidenceObject(value: unknown): EvidenceObject | null {
   if (!value || typeof value !== 'object') {
     return null;
@@ -545,20 +535,6 @@ function parseClaimItemsFromUnknown(value: unknown): ConclusionContractClaimItem
   return claims;
 }
 
-function formatClaimReferenceMarkdown(ref: ConclusionContractClaimReference): string {
-  const parts: string[] = [];
-  if (ref.evidenceRefId) parts.push(`evidence_ref_id=${ref.evidenceRefId}`);
-  if (ref.sourceRef) parts.push(`source_ref=${ref.sourceRef}`);
-  if (ref.sourceToolCallId) parts.push(`source_tool_call_id=${ref.sourceToolCallId}`);
-  if (ref.artifactId) parts.push(`artifact_id=${ref.artifactId}`);
-  if (ref.sourceArtifactId) parts.push(`source_artifact_id=${ref.sourceArtifactId}`);
-  if (typeof ref.rowIndex === 'number') parts.push(`row_index=${ref.rowIndex}`);
-  if (ref.rowSelector) parts.push(`row_selector=${JSON.stringify(ref.rowSelector)}`);
-  if (ref.column) parts.push(`column=${ref.column}`);
-  if (ref.value !== undefined) parts.push(`value=${String(ref.value)}`);
-  return parts.join('; ');
-}
-
 function parseClaimReferencesFromMarkdownLine(line: string): ConclusionContractClaimReference[] {
   const identifierKeys = new Set([
     'evidence_ref_id',
@@ -1033,90 +1009,6 @@ function sanitizeConclusionContract(contract: ConclusionContract): ConclusionCon
   return sanitizeConclusionSourceContract(sanitized);
 }
 
-function renderConclusionContract(contract: ConclusionContract): string {
-  const lines: string[] = [];
-
-  lines.push('## 结论（按可能性排序）');
-  contract.conclusions.forEach((item, idx) => {
-    const confidenceSuffix = typeof item.confidencePercent === 'number'
-      ? `（置信度: ${Math.round(item.confidencePercent)}%）`
-      : '';
-    lines.push(`${idx + 1}. ${item.statement}${confidenceSuffix}`);
-  });
-  lines.push('');
-
-  lines.push(resolveClusterSectionHeading(contract.metadata?.sceneId));
-  if (contract.clusters.length === 0) {
-    lines.push('- 暂无');
-  } else {
-    contract.clusters.forEach((cluster) => {
-      const prefix = cluster.description
-        ? `${cluster.cluster}: ${cluster.description}`
-        : cluster.cluster;
-      const metrics: string[] = [];
-      if (typeof cluster.frames === 'number') metrics.push(`${Math.round(cluster.frames)}帧`);
-      if (typeof cluster.percentage === 'number') metrics.push(`${cluster.percentage.toFixed(1)}%`);
-      const frameRefs = parseFrameRefsFromUnknown(cluster.frameRefs);
-      const frameRefText = frameRefs.length > 0 ? `；帧: ${frameRefs.join(' / ')}` : '';
-      const omissionHint = typeof cluster.omittedFrameRefs === 'number' && cluster.omittedFrameRefs > 0
-        ? `（其余 ${Math.round(cluster.omittedFrameRefs)} 帧省略）`
-        : '';
-      lines.push(`- ${prefix}${metrics.length > 0 ? `（${metrics.join(', ')}）` : ''}${frameRefText}${omissionHint}`);
-    });
-  }
-  lines.push('');
-
-  lines.push('## 证据链（对应上述结论）');
-  if (contract.evidenceChain.length === 0) {
-    lines.push('- 证据链信息缺失');
-  } else {
-    contract.evidenceChain.forEach((item) => lines.push(`- ${item.conclusionId}: ${item.text}`));
-  }
-  lines.push('');
-
-  if (contract.claims && contract.claims.length > 0) {
-    lines.push('## 逐句数据引用（结构化来源）');
-    contract.claims.forEach((item, idx) => {
-      const claimId = item.id || `Q${idx + 1}`;
-      const conclusionId = item.conclusionId ? ` / ${item.conclusionId}` : '';
-      lines.push(`- ${claimId}${conclusionId}: ${item.text}`);
-      item.references.forEach((ref) => {
-        const line = formatClaimReferenceMarkdown(ref);
-        if (line) lines.push(`  - ${line}`);
-      });
-    });
-    lines.push('');
-  }
-
-  lines.push('## 不确定性与反例');
-  if (contract.uncertainties.length === 0) {
-    lines.push('- 暂无');
-  } else {
-    contract.uncertainties.forEach((item) => lines.push(`- ${item}`));
-  }
-  lines.push('');
-
-  lines.push('## 下一步（最高信息增益）');
-  if (contract.nextSteps.length === 0) {
-    lines.push('- 暂无');
-  } else {
-    contract.nextSteps.forEach((item) => lines.push(`- ${item}`));
-  }
-
-  if (contract.metadata && (contract.metadata.confidencePercent !== undefined || contract.metadata.rounds !== undefined)) {
-    lines.push('');
-    lines.push('## 分析元数据');
-    if (contract.metadata.confidencePercent !== undefined) {
-      lines.push(`- 置信度: ${Math.round(contract.metadata.confidencePercent)}%`);
-    }
-    if (contract.metadata.rounds !== undefined) {
-      lines.push(`- 分析轮次: ${Math.round(contract.metadata.rounds)}`);
-    }
-  }
-
-  return lines.join('\n');
-}
-
 function parseMarkdownToConclusionContract(
   markdown: string,
   mode: ConclusionOutputMode,
@@ -1421,53 +1313,6 @@ function findMarkdownSection(
   return { headerStart, headerEnd, bodyStart, bodyEnd, body };
 }
 
-export function shouldNormalizeConclusionOutput(text: string): boolean {
-  const t = String(text || '').trim();
-  if (!t) return false;
-
-  if (t.startsWith('{') || t.startsWith('[') || t.startsWith('```')) {
-    return true;
-  }
-
-  const sectioned = parseJsonLikeSections(t);
-  if (sectioned) {
-    const signalCount =
-      sectioned.conclusion.length +
-      sectioned.evidence_chain.length +
-      sectioned.uncertainties.length +
-      sectioned.next_steps.length;
-    if (signalCount > 0) return true;
-  }
-
-  return false;
-}
-
-export function normalizeConclusionOutput(rawText: string): string {
-  if (parseConclusionContractSidecar(rawText).status !== 'absent') return rawText;
-  const directContract = parseJsonToConclusionContract(rawText, 'initial_report');
-  if (directContract.status === 'invalid') return rawText;
-  if (directContract.contract) {
-    return renderConclusionContract(directContract.contract);
-  }
-
-  const converted = convertJsonToMarkdown(rawText);
-  const fromJsonLike = convertJsonLikeSectionsToMarkdown(rawText);
-  const preferredMarkdown = looksLikeMarkdownConclusion(converted)
-    ? converted
-    : (fromJsonLike || converted);
-  const markdownContract = parseMarkdownToConclusionContract(preferredMarkdown, 'initial_report');
-  if (markdownContract) {
-    return renderConclusionContract(markdownContract);
-  }
-
-  return preferredMarkdown;
-}
-
-function looksLikeMarkdownConclusion(text: string): boolean {
-  const t = String(text || '');
-  return /^##\s*结论/m.test(t) || /^##\s*分析结论/m.test(t);
-}
-
 function convertJsonLikeSectionsToMarkdown(rawText: string): string | null {
   const sections = parseJsonLikeSections(rawText);
   if (!sections) return null;
@@ -1628,7 +1473,7 @@ function convertJsonLikeSectionsToMarkdown(rawText: string): string | null {
   }
   lines.push('');
 
-  lines.push(resolveClusterSectionHeading());
+  lines.push('## 聚类（先看大头）');
   if (clusterLines.length === 0) {
     lines.push('- 暂无');
   } else {

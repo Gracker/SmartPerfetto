@@ -514,7 +514,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/scene-reconstruct` | 启动场景还原 |
 | `GET` | `/scene-reconstruct/:analysisId/stream` | 场景还原 SSE |
 | `GET` | `/scene-reconstruct/:analysisId/tracks` | 获取 tracks |
-| `GET` | `/scene-reconstruct/:analysisId/status` | 查询状态 |
+| `GET` | `/scene-reconstruct/:analysisId/status` | 查询状态；`result.narrative` 与 `/:sessionId/status` 的 `conclusion` 是同一份经 owner 投影的正文（仅场景回放类查询返回场景回放摘要），`error` 同样经投影 |
 | `POST` | `/scene-reconstruct/:analysisId/deep-dive` | 对某个场景深挖 |
 | `POST` | `/scene-reconstruct/:analysisId/cancel` | 取消 |
 | `DELETE` | `/scene-reconstruct/:analysisId` | 删除 |

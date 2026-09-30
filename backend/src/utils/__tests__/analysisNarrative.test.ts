@@ -4,7 +4,6 @@
 
 import {
   buildTriadStatement,
-  LEGACY_TO_PLAIN_PHRASE_RULES,
   parseTriadParts,
   TRIAD_LABELS,
 } from '../analysisNarrative';
@@ -36,17 +35,5 @@ describe('analysisNarrative', () => {
       supply: 'B',
       amplification: 'C',
     });
-  });
-
-  test('legacy phrase rewrite rules convert jargon to plain terms', () => {
-    const input = '触发因子（直接原因）: X；供给约束: Y；放大路径: Z；负载主导（供给约束弱）';
-    const output = LEGACY_TO_PLAIN_PHRASE_RULES.reduce(
-      (acc, rule) => acc.replace(rule.pattern, rule.replacement),
-      input
-    );
-    expect(output).toContain('直接原因: X');
-    expect(output).toContain('资源问题: Y');
-    expect(output).toContain('放大因素: Z');
-    expect(output).toContain('负载主导（资源问题弱）');
   });
 });

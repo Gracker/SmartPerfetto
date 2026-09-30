@@ -481,7 +481,7 @@ npm run test:runtime-resilience
 ```
 
 Use the result-quality suites when changing final report contract enforcement,
-agent result normalization, evidence/claim verification, identity resolution,
+result canonicalization, evidence/claim verification, identity resolution,
 analysis-result snapshots, CLI turn persistence, or visible-vs-report
 projection behavior.
 

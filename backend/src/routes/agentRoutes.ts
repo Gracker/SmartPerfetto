@@ -77,7 +77,6 @@ import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
-import { normalizeNarrativeForClient } from './narrativeSanitizer';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
 import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import { buildSmartSceneSelectionReport } from '../agent/scene/buildSmartChatReport';
@@ -2777,13 +2776,14 @@ function handleSessionStream(
 
   // If analysis failed, send error
   if (streamStatus === 'failed') {
+    const error = projectStoredHttpError(session);
     sendReplayableSessionEvent(
       session,
       res,
       'error',
       {
-        error: session.error,
-        message: session.error,
+        error,
+        message: error,
         timestamp: Date.now(),
         ...buildStreamObservability(session, streamRunId),
       },
@@ -2955,9 +2955,7 @@ router.get('/:sessionId/status', async (req, res) => {
   }
 
   if (session.status === 'failed' || session.status === 'cancelled') {
-    response.error = sessionUsesPrivateKnowledge(session)
-      ? projectOwnerAnalysisError(sessionId, session.error, sessionOutputLanguage(session))
-      : session.error;
+    response.error = projectStoredHttpError(session);
   }
 
   res.json(response);
@@ -3688,7 +3686,11 @@ registerSceneReconstructRoutes(router, {
     const session = getAuthorizedSession(req, res, sessionId);
     return Boolean(session && await ensureSceneHistoryAccessible(req, res, session));
   },
-  projectSceneResult: session => session.result ? projectStoredHttpResult(session, session.result) : undefined,
+  projectSceneResult: session => {
+    const stored = recoverResultForSessionIfNeeded(session.sessionId, session);
+    return stored ? projectStoredHttpResult(session, stored) : undefined;
+  },
+  projectSceneError: projectStoredHttpError,
   getRequestId,
   dispatchSceneAnalysis: input => dispatchAnalysisRun({...input, entry: 'scene_reconstruction'}, analysisRunDispatchDependencies()),
   cancelSceneRun: async (sessionId, runId) => {
@@ -3698,7 +3700,6 @@ registerSceneReconstructRoutes(router, {
   assistantAppService,
   isSceneReplayOnlyQuery,
   buildSceneReplayNarrative,
-  normalizeNarrativeForClient,
   sceneStoryService,
 });
 
@@ -7654,6 +7655,13 @@ interface CompletedPublication {
 
 function copyStoredClientFindings(findings: AgentRuntimeAnalysisResult['findings']): ClientFindingPayload[] {
   return findings.map((finding, index) => ({...finding, id: finding.id ?? `finding_${index + 1}`}));
+}
+
+/** A stored error may predate projection (startup and lease failures keep the raw message). */
+function projectStoredHttpError(session: AnalysisSession): string | undefined {
+  return sessionUsesPrivateKnowledge(session)
+    ? projectOwnerAnalysisError(session.sessionId, session.error, sessionOutputLanguage(session))
+    : session.error;
 }
 
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {

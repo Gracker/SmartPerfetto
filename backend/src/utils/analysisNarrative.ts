@@ -16,8 +16,6 @@ export const TRIAD_ROLE_ALIASES: Record<TriadRole, string[]> = {
   amplification: ['放大路径', '放大环节', '放大因素'],
 };
 
-export const SUPPLY_NONE_TEXT = `${TRIAD_LABELS.supply}不明显`;
-
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -53,27 +51,3 @@ export function buildTriadStatement(params: Partial<Record<TriadRole, string>>):
   if (params.amplification) parts.push(`${TRIAD_LABELS.amplification}: ${params.amplification}`);
   return parts.join('；');
 }
-
-export type PhraseRule = {
-  pattern: RegExp;
-  replacement: string;
-};
-
-export const LEGACY_TO_PLAIN_PHRASE_RULES: PhraseRule[] = [
-  {
-    pattern: /触发因子（直接原因）|触发因子/g,
-    replacement: TRIAD_LABELS.trigger,
-  },
-  {
-    pattern: /供给约束（资源瓶颈）|供给约束/g,
-    replacement: TRIAD_LABELS.supply,
-  },
-  {
-    pattern: /放大路径（问题放大环节）|放大路径/g,
-    replacement: TRIAD_LABELS.amplification,
-  },
-  {
-    pattern: /负载主导（供给约束弱）/g,
-    replacement: `任务量偏大（${SUPPLY_NONE_TEXT}）`,
-  },
-];

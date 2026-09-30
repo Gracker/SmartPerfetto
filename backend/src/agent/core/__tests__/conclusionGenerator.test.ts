@@ -3,13 +3,10 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 /**
- * Conclusion contract derivation, normalization and sidecar round-trip tests.
+ * Conclusion contract derivation and sidecar round-trip tests.
  */
 
-import {
-  deriveConclusionContract,
-  normalizeConclusionOutput,
-} from '../conclusionGenerator';
+import {deriveConclusionContract} from '../conclusionGenerator';
 import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseConclusionContractDeclaration,
   parseDeclaredRelationProposals, renderConclusionContractSidecar, conclusionParseIssueTriageCodes,
   CONCLUSION_PARSE_ISSUE_CODES, type ConclusionContract, type ClaimSemanticsV1,
@@ -30,44 +27,37 @@ describe('complete generated conclusion collections', () => {
     expect(contract.evidenceChain).toHaveLength(13);
     expect(contract.uncertainties).toHaveLength(7);
     expect(contract.nextSteps).toHaveLength(7);
-    const rendered = normalizeConclusionOutput(raw);
-    for (const tail of ['Conclusion 4', 'Cluster 6', 'Evidence 13', 'Uncertainty 7', 'Next action 7']) {
-      expect(rendered).toContain(tail);
-    }
   });
 
-  it.each(['number', 'claim', 'bullet'] as const)('retains all %s conclusions through Markdown roundtrip', style => {
+  it.each(['number', 'claim', 'bullet'] as const)('retains all %s conclusions from Markdown', style => {
     const statements = collection('Observed statement', 12);
     const body = `## 结论（按可能性排序）\n${statements.map((text, index) =>
       `${style === 'number' ? `${index + 1}.` : style === 'claim' ? `C${index + 1}:` : '-'} ${text}`).join('\n')}`;
     const contract = deriveConclusionContract(body)!;
     expect(contract.conclusions.map(item => item.statement)).toEqual(statements);
-    const rendered = normalizeConclusionOutput(body);
-    expect(deriveConclusionContract(rendered)?.conclusions.map(item => item.statement)).toEqual(statements);
-    expect(normalizeConclusionOutput(rendered)).toContain('Observed statement 12');
   });
 
-  it('keeps generated JSON-like conclusion and cluster tails before Markdown normalization', () => {
+  it('keeps generated JSON-like conclusion and cluster tails', () => {
     const raw = ['conclusion:', ...collection('Observed conclusion', 4).map(statement => JSON.stringify({statement})),
       'clusters:', ...collection('Cluster detail', 6).map((description, index) => JSON.stringify({cluster: `K${index + 1}`, description})),
       'evidence_chain:', JSON.stringify({conclusion_id: 'C4', evidence: ['Evidence for the final conclusion']}),
       'uncertainties:', 'Uncertainty remains', 'next_steps:', 'Inspect the recorded event'].join('\n');
-    const normalized = normalizeConclusionOutput(raw);
-    expect(normalized).toContain('Observed conclusion 4');
-    expect(normalized).toContain('Cluster detail 6');
-    expect(deriveConclusionContract(normalized)?.conclusions).toHaveLength(4);
-    expect(deriveConclusionContract(normalized)?.clusters).toHaveLength(6);
+    const contract = deriveConclusionContract(raw);
+    expect(contract?.conclusions).toHaveLength(4);
+    expect(contract?.conclusions[3].statement).toContain('Observed conclusion 4');
+    expect(contract?.clusters).toHaveLength(6);
+    expect(contract?.clusters[5].description).toContain('Cluster detail 6');
   });
 });
 
-describe('conclusion contract derivation and normalization', () => {
-  test('normalizeConclusionOutput keeps generic cluster heading without scene hints', () => {
-    const normalized = normalizeConclusionOutput(`结论: 启动阶段存在初始化耗时
+describe('conclusion contract derivation', () => {
+  test('does not infer a scene from a generic cluster section', () => {
+    const contract = deriveConclusionContract(`结论: 启动阶段存在初始化耗时
 clusters: S1: 初始化阶段（3帧, 75%）
 证据链: C1: 首帧延迟`);
 
-    expect(normalized).toContain('## 聚类（先看大头）');
-    expect(normalized).not.toContain('## 掉帧聚类（先看大头）');
+    expect(contract?.clusters).toHaveLength(1);
+    expect(contract?.metadata?.sceneId).toBeUndefined();
   });
 
   test('deriveConclusionContract infers jank sceneId from markdown heading', () => {
@@ -110,7 +100,7 @@ clusters: S1: 初始化阶段（3帧, 75%）
     expect(contract?.metadata?.sceneId).toBe('jank');
   });
 
-  test('round-trips claim references through deterministic contract markdown', () => {
+  test('parses claim references from JSON and from the Markdown reference format', () => {
     const raw = JSON.stringify({
       schema_version: 'conclusion_contract_v1',
       mode: 'initial_report',
@@ -146,9 +136,17 @@ clusters: S1: 初始化阶段（3帧, 75%）
       value: 45.6,
     });
 
-    const markdown = normalizeConclusionOutput(raw);
-    const roundTripped = deriveConclusionContract(markdown);
-    expect(roundTripped?.claims?.[0]?.references[0]).toMatchObject({
+    const markdown = [
+      '## 结论（按可能性排序）',
+      '1. 帧耗时异常（置信度: 90%）',
+      '',
+      '## 逐句数据引用（结构化来源）',
+      '- Q1 / C1: 帧耗时 45.6ms',
+      '  - evidence_ref_id=data:sql_table:current:trace-a:query-a:params-a; source_ref=表 1; '
+        + 'source_tool_call_id=execute_sql:1:params-a; row_index=0; row_selector={"frame_id":123}; column=dur_ms; value=45.6',
+    ].join('\n');
+    const fromMarkdown = deriveConclusionContract(markdown);
+    expect(fromMarkdown?.claims?.[0]?.references[0]).toMatchObject({
       evidenceRefId: 'data:sql_table:current:trace-a:query-a:params-a',
       sourceRef: '表 1',
       sourceToolCallId: 'execute_sql:1:params-a',
@@ -262,9 +260,6 @@ clusters: S1: 初始化阶段（3帧, 75%）
     expect(parsed?.sourceReferences?.[0]?.id).toBe(parsed?.sourceUseDecision?.references[0]?.id);
     expect(JSON.stringify(parsed)).not.toContain('/private/raw-root-canary');
     expect(JSON.stringify(parsed)).not.toContain('raw-source-canary');
-    expect(normalizeConclusionOutput(JSON.stringify(sourceContract))).toBe(
-      normalizeConclusionOutput(JSON.stringify(baseContract)),
-    );
   });
 });
 
@@ -606,7 +601,6 @@ describe('versioned conclusion declaration sidecar', () => {
       expect(invalid).toMatchObject({status: 'invalid', bindingEligibility: 'ineligible',
         issues: [{code: 'invalid_contract', path: '$'}], rawPayload: invalidDeclaration});
       expect(invalid.contract).toBeUndefined();
-      expect(normalizeConclusionOutput(raw)).toBe(raw);
       const validDeclaration = {...base, [field]: [`${entry.topic}: ${entry.detail}`]};
       const valid = parseConclusionContractSidecar(rawSidecar(validDeclaration));
       expect(valid).toMatchObject({status: 'valid', bindingEligibility: 'eligible', issues: []});
@@ -622,7 +616,6 @@ describe('versioned conclusion declaration sidecar', () => {
       const result = parseConclusionContractSidecar(original);
       expect(result.status).toBe('valid');
       expect(result.narrative).toBe(body + '\r\n\r\n');
-      expect(normalizeConclusionOutput(original)).toBe(original);
       expect(deriveConclusionContract(original)?.claims?.[0].id).toBe('claim:original');
     },
   );
@@ -654,7 +647,6 @@ describe('versioned conclusion declaration sidecar', () => {
       expect(result.bindingEligibility).toBe('ineligible');
       expect(result.contract).toBeUndefined();
       expect(deriveConclusionContract(input)).toBeNull();
-      expect(normalizeConclusionOutput(input)).toBe(input);
     },
   );
 
@@ -793,7 +785,6 @@ describe('versioned conclusion declaration sidecar', () => {
       const derived = deriveConclusionContract(text);
       expect(derived?.bindingEligibility).toBe('ineligible');
       expect(derived?.parseIssues).toEqual(parsed.issues);
-      expect(normalizeConclusionOutput(text)).toBe(text);
       const roundTrip = parseConclusionContractSidecar(renderConclusionContractSidecar(derived!));
       expect(roundTrip.status).toBe('invalid');
       expect(roundTrip.rawPayload).toEqual(input);
@@ -817,7 +808,6 @@ describe('versioned conclusion declaration sidecar', () => {
         expect(parsed.rawPayload).toEqual(input);
         expect(parsed.contract).toBeUndefined();
         expect(deriveConclusionContract(text)).toBeNull();
-        expect(normalizeConclusionOutput(text)).toBe(text);
       }
     },
   );
@@ -827,7 +817,6 @@ describe('versioned conclusion declaration sidecar', () => {
     for (const json of [JSON.stringify(contract()), JSON.stringify(invalid)]) {
       for (const text of [json + '\ntrailing text', '```json\n' + json + '\n```\ntrailing text']) {
         expect(deriveConclusionContract(text)).toBeNull();
-        expect(normalizeConclusionOutput(text)).toBe(text);
       }
     }
   });
@@ -856,15 +845,13 @@ describe('versioned conclusion declaration sidecar', () => {
     expect(parseConclusionContractSidecar(unescaped).status).toBe('invalid');
   });
 
-  it('leaves plain legacy contracts on their existing visible rendering', () => {
+  it('derives plain legacy contracts', () => {
     const original = contract();
     delete original.relationProposals;
     delete original.claims![0].semantics;
     delete original.claims![0].kind;
     delete original.claims![0].artifactRefs;
     delete original.claims![0].relationRefs;
-    const rendered = normalizeConclusionOutput(JSON.stringify(original));
-    expect(parseConclusionContractSidecar(rendered).status).toBe('absent');
     expect(deriveConclusionContract(JSON.stringify(original))?.claims?.[0].text).toBe('Original claim');
   });
 });

@@ -594,7 +594,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/scene-reconstruct` | Start scene reconstruction |
 | `GET` | `/scene-reconstruct/:analysisId/stream` | Subscribe to scene reconstruction SSE |
 | `GET` | `/scene-reconstruct/:analysisId/tracks` | Fetch tracks |
-| `GET` | `/scene-reconstruct/:analysisId/status` | Poll status |
+| `GET` | `/scene-reconstruct/:analysisId/status` | Poll status; `result.narrative` is the same owner-projected body as `conclusion` from `/:sessionId/status` (scene-replay-only queries get the scene replay summary instead), and `error` is projected the same way |
 | `POST` | `/scene-reconstruct/:analysisId/deep-dive` | Deep-dive one scene |
 | `POST` | `/scene-reconstruct/:analysisId/cancel` | Cancel |
 | `DELETE` | `/scene-reconstruct/:analysisId` | Delete |
