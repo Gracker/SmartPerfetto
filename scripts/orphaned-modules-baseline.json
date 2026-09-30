@@ -6,17 +6,9 @@
     "src/agentv3/selfImprove/reviewAgentSdk.ts",
     "src/agentv3/selfImprove/reviewWorker.ts",
     "src/routes/agent/stateTimelineRunProjection.ts",
-    "src/services/anonymizer.ts",
     "src/services/aospKnowledgeIngester.ts",
-    "src/services/artifactCompression.ts",
-    "src/services/binderRootCauseChain.ts",
     "src/services/blogKnowledgeIngester.ts",
-    "src/services/cpuThermalPmu.ts",
     "src/services/domainSkillEvalHarness.ts",
-    "src/services/gpuSurfaceFlinger.ts",
-    "src/services/ioNetworkWakeup.ts",
-    "src/services/jankDecisionTree.ts",
-    "src/services/memoryRootCause.ts",
     "src/services/oemSdkKnowledgeIngester.ts",
     "src/services/rag/sessionToolResultRegistry.ts",
     "src/services/selfEvolution/evaluator/codeGrader.ts",
@@ -31,11 +23,6 @@
     "src/services/selfEvolution/realTraceCuration.ts",
     "src/services/selfEvolution/repositoryPatchChannel.ts",
     "src/services/selfEvolution/syntheticEvalSeeder.ts",
-    "src/services/smartperfettoSqlPackage.ts",
-    "src/services/startupAnrMethodGraph.ts",
-    "src/services/symbol/traceSymbolContext.ts",
-    "src/services/threadSchedContext.ts",
-    "src/services/timelineBinning.ts",
-    "src/services/traceSummaryV2.ts"
+    "src/services/symbol/traceSymbolContext.ts"
   ]
 }
