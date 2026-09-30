@@ -324,7 +324,6 @@ function writeSourceProvenanceSidecars(
 }
 
 function assertCliReceiptPath(result: RunTurnOutput, cliTurnPath: string): void {
-  if (result.privateKnowledge) return;
   const receipt = result.result.analysisReceipt;
   if (!receipt) return;
   if (receipt.outputs.cliTurnPath !== cliTurnPath) {

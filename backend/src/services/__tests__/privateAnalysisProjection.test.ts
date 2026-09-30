@@ -288,6 +288,31 @@ describe('final delivery private projection', () => {
     expect(restored).not.toHaveProperty('turnIntent');
   });
 
+  it('projects every kept diagnostic through the owner guard, withdrawing a binding it changes', () => {
+    const current = deliveredResult();
+    const canary = 'PRIVATE_DIAGNOSTIC_CANARY';
+    current.turnIntent = {...current.turnIntent!, reason: 'plain reason', actualModel: `model-${canary}`, finishReason: canary};
+    current.completion = {...current.completion!, sdkFinishReason: canary};
+    current.reportAssessment!.binding.intentFingerprint = analysisDeliveryFingerprint(current.turnIntent);
+    registerCodeAwareCanary(current.sessionId, canary);
+    try {
+      const projected = projectOwnerAnalysisResult(current.sessionId, current, 'en');
+      expect(JSON.stringify(projected)).not.toContain(canary);
+      expect(projected.turnIntent?.reason).toBe('plain reason');
+      expect(projected.reportAssessment?.binding.intentFingerprint).toBe('');
+    } finally { clearCodeAwareOutputGuards(current.sessionId); }
+  });
+
+  it('keeps intent diagnostics for the owner, so the report binding and its verdict survive', () => {
+    const current = deliveredResult();
+    current.turnIntent = {...current.turnIntent!, reason: 'Scrolling jank in the feed', actualModel: 'model-a'};
+    current.reportAssessment!.binding.intentFingerprint = analysisDeliveryFingerprint(current.turnIntent);
+    const projected = projectOwnerAnalysisResult(current.sessionId, current, 'en');
+    expect(projected.turnIntent).toEqual(current.turnIntent);
+    expect(projected.reportAssessment).toEqual(current.reportAssessment);
+    expect(projected.deliveryAssurance?.report).toBe(current.deliveryAssurance?.report);
+  });
+
   it('invalidates report coverage when its copied claim IDs change, and tolerates malformed nested entries', () => {
     const result = deliveredResult();
     result.conclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',

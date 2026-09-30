@@ -252,6 +252,20 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
   return preserveProjectedFieldOrder(input, output);
 }
 
+/**
+ * Kept diagnostics are provider text: project them in place, so an unchanged
+ * value keeps its field order and the binding computed over it.
+ */
+function projectTextFields<T extends object>(value: T, keys: readonly (keyof T)[],
+  projectText: (text: string) => string): T {
+  const projected = {...value};
+  for (const key of keys) {
+    const entry = projected[key];
+    if (typeof entry === 'string') projected[key] = projectText(entry) as T[keyof T];
+  }
+  return projected;
+}
+
 export function analysisProjectionChanged(before: unknown, after: unknown): boolean {
   return analysisDeliveryFingerprint(before) !== analysisDeliveryFingerprint(after);
 }
@@ -271,14 +285,16 @@ export function projectPrivateAnalysisDelivery(
   const bodyChanged = input.conclusion !== projection.conclusion;
   const contractChanged = analysisProjectionChanged(input.conclusionContract, projection.conclusionContract);
   const claimsChanged = bodyChanged || contractChanged || Boolean(projection.claimsChanged);
-  if (output.turnIntent && options.privateMetadata !== false) {
+  if (output.turnIntent) {
     const {reason: _reason, actualModel: _model, finishReason: _finish, ...intent} = output.turnIntent;
-    output.turnIntent = intent;
+    output.turnIntent = options.privateMetadata !== false ? intent
+      : projectTextFields(output.turnIntent, ['reason', 'actualModel', 'finishReason'], projectText);
   }
   const intentChanged = analysisProjectionChanged(input.turnIntent, output.turnIntent);
   if (output.completion) {
     const {sdkFinishReason: _finishReason, ...safeCompletion} = output.completion;
-    const completion = options.privateMetadata === false ? output.completion : safeCompletion;
+    const completion = options.privateMetadata === false
+      ? projectTextFields(output.completion, ['sdkFinishReason'], projectText) : safeCompletion;
     const bound = !bodyChanged && boundCandidate(completion, projection.conclusion);
     output.completion = {...completion,
       ...(!bound ? {conclusionFingerprint: '',

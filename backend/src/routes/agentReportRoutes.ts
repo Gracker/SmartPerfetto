@@ -13,6 +13,7 @@ import {
   projectOwnerAnalysisResult,
   copyAnalysisResultForSnapshot,
   projectOwnerConclusion,
+  projectOwnerReportError,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
@@ -127,7 +128,8 @@ export function registerAgentReportRoutes(
           : result.terminationMessage,
       },
       reportUrl: completedPayload?.finalArtifacts?.reportUrl,
-      reportError: privateKnowledge ? undefined : completedPayload?.finalArtifacts?.reportError,
+      reportError: projectOwnerReportError(privateKnowledge, sessionId,
+        completedPayload?.finalArtifacts?.reportError, outputLanguage),
       resultSnapshotId: completedPayload?.finalArtifacts?.resultSnapshotId,
       conclusionContract: rawConclusionContract,
       claimSupport: rawClaimSupport,
@@ -164,7 +166,7 @@ export function registerAgentReportRoutes(
       analysisPlan,
       uncertaintyFlags,
       resultContract,
-      logFile: privateKnowledge ? undefined : session.logger.getLogFilePath(),
+      logFile: session.logger.getLogFilePath(),
     };
 
     return res.json({

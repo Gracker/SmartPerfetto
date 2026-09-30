@@ -1545,13 +1545,17 @@ describe('HTTP shared finalization ownership', () => {
       } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
     });
 
-    it('streams no draft for a session with source access: its owner projection redacts per fragment', async () => {
+    it('streams an owner-projected draft for a session with source access, live only', async () => {
       const id = 'http-draft-private';
       const project = jest.spyOn(streamingProjection, 'projectOwnerCodeAwareStreamingUpdate');
       try {
         const {f, writes} = await runWithDrafts(id, {options: {codeAwareMode: 'provider_send', codebaseIds: ['app-source']}});
-        expect(project).not.toHaveBeenCalledWith(id, expect.objectContaining({type: 'answer_token'}), true, expect.any(String));
-        expect(drafts(writes)).toEqual([]);
+        expect(project).toHaveBeenCalledWith(id, expect.objectContaining({type: 'answer_token'}), true, expect.any(String));
+        expect(drafts(writes).map(event => [event.type, event.data.data.token ?? null, event.data.data.attempt])).toEqual([
+          ['answer_segment_reset', null, 1],
+          ['answer_token', 'Answer body', 1],
+        ]);
+        expect(drafts(writes).every(event => !event.hasId)).toBe(true);
         expect(JSON.stringify(f.session.sseEventBuffer)).not.toContain('Answer body');
       } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
     });

@@ -142,6 +142,11 @@ export class LLMEchoOutputStream {
     return this.overflowed;
   }
 
+  /** Output so far differs from its input: a replacement, a dropped unit, or overflow. */
+  get altered(): boolean {
+    return this.overflowed || this.redactedBytes > 0;
+  }
+
   registerSnippet(snippet: string, ref: CodeRef): void {
     this.assertActive();
     this.registerDerivedPatterns(snippet, ref);

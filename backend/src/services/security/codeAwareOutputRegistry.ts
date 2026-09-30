@@ -98,14 +98,25 @@ export function composeCodeAwareTextProjectionReceipts(
   });
 }
 
+/** A channel write or flush, and whether that channel's output so far differs from its input. */
+interface GuardedOutput {
+  text: string;
+  altered: boolean;
+}
+
 class SessionCodeAwareOutputGuard {
   private readonly registrations: GuardRegistration[] = [];
   private readonly streams = new Map<string, LLMEchoOutputStream>();
   private registrationBytes = 0;
   private overflowed = false;
+  private version = 0;
+
+  /** Changes whenever the registered set does; text released earlier was not projected against it. */
+  get registrationVersion(): number { return this.version; }
 
   register(registration: GuardRegistration): void {
     if (this.overflowed) return;
+    this.version++;
     const pattern = registration.kind === 'snippet'
       ? registration.snippet
       : 'replacement' in registration
@@ -159,23 +170,24 @@ class SessionCodeAwareOutputGuard {
     }
   }
 
-  write(channel: string, text: string): string {
-    if (this.overflowed) return '';
+  write(channel: string, text: string): GuardedOutput {
+    if (this.overflowed) return {text: '', altered: true};
     let stream = this.streams.get(channel);
     if (!stream) {
       stream = this.createStream();
       this.streams.set(channel, stream);
     }
-    return stream.write(text);
+    return {text: stream.write(text), altered: stream.altered};
   }
 
-  flush(channel: string): string {
-    if (this.overflowed) return PRIVATE_OUTPUT_SUPPRESSED;
+  flush(channel: string): GuardedOutput {
+    if (this.overflowed) return {text: PRIVATE_OUTPUT_SUPPRESSED, altered: true};
     const stream = this.streams.get(channel);
-    if (!stream) return '';
+    if (!stream) return {text: '', altered: false};
     this.streams.delete(channel);
     try {
-      return stream.flush();
+      const text = stream.flush();
+      return {text, altered: stream.altered};
     } finally {
       stream.destroy();
     }
@@ -233,15 +245,34 @@ export function withOwnerCodeAwareProjection<T>(project: () => T): T {
 
 export function isOwnerCodeAwareProjection(): boolean { return projectionAudience === 'owner'; }
 
+const CREDENTIAL_KEY = String.raw`["']?\b(?:api[_-]?key|secret|password|token|access[_-]?token|auth[_-]?token)["']?`;
+
 /** Credentials have explicit syntax; hashes and company URLs are ordinary source context. */
+const CREDENTIAL_PATTERNS = [
+  new RegExp(String.raw`(?:${CREDENTIAL_KEY})\s*[:=]\s*['"]([^'"\r\n]{8,})['"]`, 'gi'),
+  new RegExp(String.raw`(?:${CREDENTIAL_KEY})\s*[:=]\s*(?!['"])([^\s'";,]{8,})`, 'gi'),
+  /\bBearer\s+([A-Za-z0-9._~+/-]{8,})/gi,
+  /\b((?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}))\b/g,
+];
+
+const CREDENTIAL_KEY_AT_END = new RegExp(String.raw`${CREDENTIAL_KEY}$`, 'i');
+
+/**
+ * A credential value never spans a line, but its key, separator and Bearer
+ * prefix may be followed by line breaks, so text ending in one of them can
+ * still become a match when later lines arrive. Reads only the tail: a key
+ * with its quotes is under 16 characters, and 32 keep a boundary character.
+ */
+function endsInDanglingCredentialPrefix(text: string): boolean {
+  const trimmed = text.trimEnd();
+  if (/\bBearer$/i.test(trimmed.slice(-32))) return true;
+  const last = trimmed.slice(-1);
+  const key = last === ':' || last === '=' ? trimmed.slice(0, -1).trimEnd() : trimmed;
+  return CREDENTIAL_KEY_AT_END.test(key.slice(-32));
+}
+
 function credentialValues(text: string): string[] {
-  const patterns = [
-    /(?:["']?\b(?:api[_-]?key|secret|password|token|access[_-]?token|auth[_-]?token)["']?)\s*[:=]\s*['"]([^'"\r\n]{8,})['"]/gi,
-    /(?:["']?\b(?:api[_-]?key|secret|password|token|access[_-]?token|auth[_-]?token)["']?)\s*[:=]\s*(?!['"])([^\s'";,]{8,})/gi,
-    /\bBearer\s+([A-Za-z0-9._~+/-]{8,})/gi,
-    /\b((?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}))\b/g,
-  ];
-  return patterns.flatMap(pattern => [...text.matchAll(pattern)].map(match => match[1]));
+  return CREDENTIAL_PATTERNS.flatMap(pattern => [...text.matchAll(pattern)].map(match => match[1]));
 }
 
 function redactOwnerCredentials(text: string): string {
@@ -636,6 +667,14 @@ export interface CodeAwareStreamingTextProjection {
   flush(): string;
   projectComplete(text: string): string;
   projectCompleteWithReceipt(text: string): CodeAwareTextProjectionReceipt;
+  /**
+   * Streamed output so far may differ from what projecting the whole text
+   * shows: content was redacted or dropped, the guard became unavailable, or
+   * registrations changed after the current stretch (since the last flush)
+   * received text, which may still be held unprojected against them.
+   * Conservative, and sticky for the projection's life.
+   */
+  readonly altered: boolean;
 }
 
 /** Stateful per-channel projection that keeps cross-token matches private. */
@@ -649,6 +688,13 @@ export function createCodeAwareStreamingTextProjection(
   const guard = sessionId ? (touchGuard(sessionId) ?? guardFor(sessionId))?.[audience] : undefined;
   const unavailable = () => guard?.unavailable || Boolean(sessionId && sessionWasRevoked(sessionId));
   const credentials = new OwnerCredentialStream();
+  let altered = false;
+  let stretchVersion: number | undefined;
+  const settle = (guarded: GuardedOutput, output: string): string => {
+    if (guarded.altered || credentials.altered) altered = true;
+    if (stretchVersion !== undefined && guard?.registrationVersion !== stretchVersion) altered = true;
+    return output;
+  };
   const project = (text: string): CodeAwareTextProjectionReceipt => {
     if (unavailable()) return textProjectionReceipt(text, PRIVATE_OUTPUT_SUPPRESSED, true);
     const receipt = guard ? guard.projectCompleteWithReceipt(text) : textProjectionReceipt(text, text);
@@ -657,45 +703,65 @@ export function createCodeAwareStreamingTextProjection(
   };
   return {
     write: text => {
-      if (unavailable()) { credentials.clear(); return ''; }
-      const projected = guard ? guard.write(channel, text) : text;
-      return audience === 'owner' ? credentials.write(projected) : projected;
+      if (unavailable()) { credentials.clear(); altered = true; return ''; }
+      if (text && stretchVersion === undefined) stretchVersion = guard?.registrationVersion;
+      const guarded = guard ? guard.write(channel, text) : {text, altered: false};
+      return settle(guarded, audience === 'owner' ? credentials.write(guarded.text) : guarded.text);
     },
     flush: () => {
-      if (unavailable()) { credentials.clear(); return PRIVATE_OUTPUT_SUPPRESSED; }
-      const projected = guard?.flush(channel) ?? '';
-      return audience === 'owner' ? credentials.write(projected) + credentials.flush() : projected;
+      if (unavailable()) { credentials.clear(); altered = true; return PRIVATE_OUTPUT_SUPPRESSED; }
+      const guarded = guard?.flush(channel) ?? {text: '', altered: false};
+      const output = settle(guarded,
+        audience === 'owner' ? credentials.write(guarded.text) + credentials.flush() : guarded.text);
+      stretchVersion = undefined;
+      return output;
     },
     projectComplete: text => project(text).text,
     projectCompleteWithReceipt: project,
+    get altered() { return altered; },
   };
 }
 
-/** Credentials may cross provider token boundaries. Bound buffering to one line. */
+/** Held text is only ever appended to or dropped whole, so a UTF-16 count cannot split a character. */
+const MAX_OWNER_CREDENTIAL_HOLD_CHARS = 64 * 1024;
+
+/**
+ * Credentials may cross provider token boundaries, and a key may sit lines
+ * above its value. Hold text until its lines are complete and it does not end
+ * in a credential key, separator or Bearer prefix, then redact it as a whole.
+ */
 class OwnerCredentialStream {
   private pending = '';
   private discardingLine = false;
+  /** Output so far differs from its input: a credential was redacted or oversized text dropped. */
+  altered = false;
   write(text: string): string {
     let output = '';
     for (const fragment of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
       const complete = fragment.endsWith('\n');
       if (!this.discardingLine) {
         this.pending += fragment;
-        if (this.pending.length > 64 * 1024) {
+        if (this.pending.length > MAX_OWNER_CREDENTIAL_HOLD_CHARS) {
           output += '[OVERSIZED_OUTPUT_LINE]';
           this.pending = '';
           this.discardingLine = true;
-        } else if (complete) {
-          output += redactOwnerCredentials(this.pending);
-          this.pending = '';
+          this.altered = true;
+        } else if (complete && !endsInDanglingCredentialPrefix(this.pending)) {
+          output += this.release();
         }
       }
       if (complete && this.discardingLine) { this.discardingLine = false; output += '\n'; }
     }
     return output;
   }
-  flush(): string { const output = redactOwnerCredentials(this.pending); this.clear(); return output; }
+  flush(): string { const output = this.release(); this.clear(); return output; }
   clear(): void { this.pending = ''; this.discardingLine = false; }
+  private release(): string {
+    const output = redactOwnerCredentials(this.pending);
+    if (output !== this.pending) this.altered = true;
+    this.pending = '';
+    return output;
+  }
 }
 
 export function clearCodeAwareOutputGuards(sessionId: string): void {
@@ -736,6 +802,11 @@ export function sanitizeOwnerCodeAwareStructuredTextWithReceipt(
 }
 
 
+/**
+ * Field names whose string value is a credential, matching the keys the text
+ * patterns recognize. A draft's answer text also sits in `token`; the owner
+ * streaming projection handles that field before any structured walk.
+ */
 export function isCredentialField(key: string): boolean {
-  return /^(?:apikey|secret|password|accesstoken|authtoken|authorization)$/.test(key.replace(/[_-]/g, '').toLowerCase());
+  return /^(?:apikey|secret|password|token|accesstoken|authtoken|authorization)$/.test(key.replace(/[_-]/g, '').toLowerCase());
 }

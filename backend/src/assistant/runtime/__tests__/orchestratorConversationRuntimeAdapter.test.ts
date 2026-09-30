@@ -14,6 +14,7 @@ import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/str
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
 import {createDataEnvelope} from '../../../types/dataContract';
 import * as authorization from '../../../services/resolvedAnalysisContext';
+import {ANSWER_DRAFT_FLUSH_INTERVAL_MS} from '../../../services/answerDraftRelay';
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {listProductionRuntimeKinds} from '../../../agentRuntime/runtimeKinds';
 import type {AnalysisOptions, AnalysisResult, IOrchestrator} from '../../../agent/core/orchestratorTypes';
@@ -240,6 +241,41 @@ describe('Conversation evidence and stream consumer boundaries', () => {
     const incapable = await run(false);
     expect(incapable.updates.map(update => updateRecord(update).type)).toEqual(['progress']);
     expect(incapable.drafts).toEqual([]);
+  });
+
+  it('gives a private run a draft, and drops what a timer would deliver after authorization is revoked', async () => {
+    let revoked = false;
+    const check = jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
+      if (revoked) throw new authorization.AnalysisContextAuthorizationChangedError();
+    });
+    const emitted = deferred<void>();
+    const release = deferred<void>();
+    try {
+      const shown = `${'Visible private draft '.repeat(12)}\n`;
+      const emitter = createOrchestrator(async () => result('unused'));
+      emitter.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, _session, _trace, options = {}) => {
+        // Past the size threshold: delivered at once. The second token waits for the timer.
+        emitter.emit('update', {type: 'answer_token', content: {token: shown, runId: options.runId, attempt: 0}, timestamp: 1});
+        emitter.emit('update', {type: 'answer_token', content: {token: 'BUFFERED_AFTER_REVOCATION', runId: options.runId,
+          attempt: 0}, timestamp: 2});
+        emitted.resolve();
+        await release.promise;
+        return result('unused');
+      });
+      const adapter = new OrchestratorConversationRuntimeAdapter(emitter, {runtimeKind: 'openai-agents-sdk',
+        analysisOptions: {codeAwareMode: 'provider_send', codebaseIds: ['private-app']}});
+      const drafts: unknown[] = [];
+      // Unique ids: a finished run leaves its physical session's guards revoked.
+      const run = adapter.run({sessionId: 'private-draft-conversation', runId: 'private-draft-run', query: 'question',
+        history: [], traceContext: {kind: 'none'}, onAnswerDraft: update => drafts.push(update)});
+      await emitted.promise;
+      revoked = true;
+      await new Promise(resolve => setTimeout(resolve, ANSWER_DRAFT_FLUSH_INTERVAL_MS + 50));
+      expect(drafts.map(text)).toEqual([shown]);
+      release.resolve();
+      await run.catch(() => undefined);
+      await adapter.dispose();
+    } finally {check.mockRestore();}
   });
 
   it('rejects old producer events and delayed abort/cleanup while a replacement physical run is active', async () => {

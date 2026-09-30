@@ -420,7 +420,8 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     const [runScope] = mockPersistAnalysisRunState.mock.calls[0] as [{query?: string}];
     expect(runScope.query).toBe(privateAnalysisQueryMessage(
       parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE)));
-    expect(output.result.analysisReceipt?.outputs.cliTurnPath).toBeUndefined();
+    // The receipt points the owner at their own turn file, as it does without private context.
+    expect(output.result.analysisReceipt?.outputs.cliTurnPath).toBe(cliTurnBinding.resolveCliTurnPath('', 1));
     expect(events).toContainEqual(expect.objectContaining({
       type: 'finding', content: {message: 'Source location found; implementation has not been read.'},
     }));

@@ -197,7 +197,12 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
     const traceId = input.traceContext.kind === 'attached' ? input.traceContext.traceId : `conversation-no-trace:${input.sessionId}`;
     const answerDraft = createAnswerDraftRelay({runtimeKind: this.options.runtimeKind, runId: input.runId,
       projectionSessionId: runtimeSessionId, privateKnowledge, outputLanguage,
-      deliver: update => { if (this.isCurrent(input, state)) input.onAnswerDraft?.(update); },
+      // A timer flush can come after cancellation or a revoked authorization;
+      // the relay closes on this throw and drops what it buffered.
+      deliver: update => {
+        this.assertActive(input, state);
+        input.onAnswerDraft?.(update);
+      },
     });
     let evidenceBinding: RuntimeEvidenceBinding | undefined;
     let evidenceContext: RuntimeEvidenceContext | undefined;

@@ -611,7 +611,7 @@ describe('commitTurnOutputs', () => {
           nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
           claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
           qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
-          outputs: {reportError: canary, cliTurnPath: canary},
+          outputs: {reportError: canary, cliTurnPath: path.join(sp.turnsDir, '001.md')},
           capabilityManifest: {
             schemaVersion: 'capability_manifest_attribution@1',
             resolution: {
@@ -682,7 +682,8 @@ describe('commitTurnOutputs', () => {
           manifestId: `capability_manifest:${'a'.repeat(64)}`,
         }),
       }));
-      expect(privateReceipt.outputs).toEqual({});
+      // The owner keeps their turn path and the report error, under the owner guard.
+      expect(privateReceipt.outputs).toEqual({reportError: '[REDACTED_CODE_ECHO]', cliTurnPath: path.join(sp.turnsDir, '001.md')});
     } finally {
       clearCodeAwareOutputGuards(sessionId);
       fs.rmSync(home, {recursive: true, force: true});

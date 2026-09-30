@@ -596,12 +596,14 @@ describe('persistAgentTurn', () => {
       conclusionHistory: [{conclusion: expect.stringContaining(source)}],
       analysisNotes: [],
       analysisPlan: null,
+      // The owner keeps the provenance a run without private context shows,
+      // with the registered canary still replaced inside it.
       dataEnvelopes: [expect.objectContaining({
-        meta: expect.not.objectContaining({queryReview: expect.anything(), intent: expect.anything()}),
-        data: expect.objectContaining({rows: [[42, expect.any(String)]]}),
+        meta: expect.objectContaining({intent: '[REDACTED_CODE_ECHO]'}),
+        data: expect.objectContaining({rows: [[42, '[REDACTED_CODE_ECHO]']]}),
       })],
     }));
-    expect(persistedSnapshot.dataEnvelopes[0]).not.toHaveProperty('sql');
+    expect(persistedSnapshot.dataEnvelopes[0].sql).toBe('SELECT [REDACTED_CODE_ECHO]');
     expect((saveSessionStateSnapshot.mock.calls[0] as unknown[])[2])
       .toEqual(expect.objectContaining({clearPrivateContext: true}));
     expect(JSON.stringify(appendMessages.mock.calls[0]?.[1])).not.toContain(canary);

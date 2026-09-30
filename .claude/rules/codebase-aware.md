@@ -4,7 +4,9 @@ Use these rules before touching code-aware analysis, codebase registry, source i
 
 ## Product Boundary
 
-- Treat source code as user-owned local material. Authorized owner-facing analysis may display and retain quoted source in local history, reports, exports, and result snapshots. Do not copy raw tool payloads into logs, telemetry, opaque provider transcripts, or public artifacts. Keep private knowledge filtering separate.
+- Treat source code and knowledge-base text as user-owned local material. Authorized owner-facing analysis may display and retain quoted source and knowledge text in local history, reports, exports, and result snapshots; the owner guard withholds only the credentials inside them and canaries, while strict surfaces replace the material whole. Do not copy raw tool payloads into logs, telemetry, opaque provider transcripts, or public artifacts.
+- Material-derived history re-enters a later prompt only for the same creator under the same authorization fingerprint.
+- A private run's answer draft passes the owner streaming projection and is withdrawn for the rest of the run at the projection's first alteration; the finalized answer replaces it. A value that only later context identifies as a credential can show until that context arrives (owner-only, live-only, never stored); see `backend.md`.
 - Registration makes a codebase selectable; it never attaches source to an analysis automatically. Every run must carry an explicit selection.
 - The Web Add and use action may combine registration, disclosed provider consent, and explicit current selection. Register-only leaves selection and consent unchanged; metadata-only selections are never silently upgraded.
 - LLM-visible output should prefer `CodeRef` metadata: `referenceId` or `chunkId`, relative `filePath`, `lineRange`, `symbol`, `codebaseId`, `buildId`, `vendor`.

@@ -289,13 +289,16 @@ export function projectPrivateAnalysisReceipt(
     ...receiptWithoutAttribution,
     ...(capabilityManifest ? {capabilityManifest} : {}),
     ...(traceSummary ? {traceSummary} : {}),
-    outputs: {
-      ...(receipt.outputs.reportId ? {reportId: receipt.outputs.reportId} : {}),
-      ...(receipt.outputs.reportUrl ? {reportUrl: receipt.outputs.reportUrl} : {}),
-      ...(receipt.outputs.resultSnapshotId
-        ? {resultSnapshotId: receipt.outputs.resultSnapshotId}
-        : {}),
-    },
+    // The owner also gets the CLI turn path and the report error, under the owner guard.
+    outputs: isOwnerCodeAwareProjection()
+      ? projectPrivateStructuredValue(receipt.sessionId, receipt.outputs)
+      : {
+          ...(receipt.outputs.reportId ? {reportId: receipt.outputs.reportId} : {}),
+          ...(receipt.outputs.reportUrl ? {reportUrl: receipt.outputs.reportUrl} : {}),
+          ...(receipt.outputs.resultSnapshotId
+            ? {resultSnapshotId: receipt.outputs.resultSnapshotId}
+            : {}),
+        },
   };
 }
 
@@ -357,10 +360,11 @@ function projectPrivateEnvelopeValue(
   if (!value || typeof value !== 'object') return undefined;
 
   const projected: Record<string, unknown> = {};
+  const owner = isOwnerCodeAwareProjection();
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
-    const normalizedKey = key.replace(/[_-]/g, '').toLowerCase();
-    if (PRIVATE_ENVELOPE_FORBIDDEN_KEYS.has(normalizedKey)) continue;
-    const projectedEntry = isOwnerCodeAwareProjection() && isCredentialField(key) && typeof entry === 'string' && entry.length >= 8
+    // The owner reads the provenance a run without private context shows.
+    if (!owner && PRIVATE_ENVELOPE_FORBIDDEN_KEYS.has(key.replace(/[_-]/g, '').toLowerCase())) continue;
+    const projectedEntry = owner && isCredentialField(key) && typeof entry === 'string' && entry.length >= 8
       ? '[REDACTED_SECRET]' : projectPrivateEnvelopeValue(sessionId, entry, depth + 1);
     if (projectedEntry !== undefined) projected[key] = projectedEntry;
   }
@@ -369,8 +373,8 @@ function projectPrivateEnvelopeValue(
 
 /**
  * Field-level projection for model-authored structured artifacts. It preserves
- * the contract shape and trace provenance while removing SQL/prompt/query
- * fields and applying the same registered-source echo guard to every string.
+ * the contract shape and trace provenance and applies the session echo guard
+ * to every string; strict output also removes SQL/prompt/query fields.
  */
 export function projectPrivateStructuredValue<T>(sessionId: string, value: T): T {
   return projectPrivateEnvelopeValue(sessionId, value) as T;
@@ -582,12 +586,15 @@ export function projectPrivateUiActionProposals(
 /**
  * Project trace-derived evidence before it crosses a live or durable private
  * boundary. Envelope shape validation is not a provenance proof: SQL literals
- * and model-authored metadata can otherwise carry retrieved source verbatim.
+ * and model-authored metadata can carry retrieved source verbatim, so strict
+ * output keeps a metadata whitelist. The owner, who may read that source, sees
+ * the whole envelope under the owner guard.
  */
 export function projectPrivateDataEnvelope(
   sessionId: string,
   envelope: DataEnvelope,
 ): DataEnvelope {
+  if (isOwnerCodeAwareProjection()) return projectPrivateStructuredValue(sessionId, envelope);
   const meta = envelope.meta;
   const projectedMeta: DataEnvelope['meta'] = {
     type: meta.type,
@@ -678,7 +685,7 @@ export function projectPrivateAnalysisResult(
   const identityChanged = analysisProjectionChanged(result.identityResolutions, identityResolutions);
   const delivery = projectPrivateAnalysisDelivery(result, {conclusion, conclusionContract, claimsChanged,
     sourceChanged, identityChanged,
-  }, text => sanitizeCodeAwareText(sessionId, text));
+  }, text => sanitizeCodeAwareText(sessionId, text), {privateMetadata: !isOwnerCodeAwareProjection()});
   let analysisReceipt = projectPrivateAnalysisReceipt(result.analysisReceipt);
   if (analysisReceipt && (claimsChanged || identityChanged ||
       delivery.deliveryAssurance?.report === 'not_checked' || delivery.deliveryAssurance?.report === 'coverage_incomplete')) {
@@ -903,8 +910,17 @@ export function projectOwnerProvisionalConclusion(
 ): string {
   return privateKnowledge ? projectOwnerConclusion({sessionId, conclusion, success: true, language}) : conclusion;
 }
+/** The report error a surface shows: under the owner guard for a run with private context. */
+export function projectOwnerReportError(
+  privateKnowledge: boolean, sessionId: string, reportError: string | undefined, language: OutputLanguage,
+): string | undefined {
+  return privateKnowledge && reportError ? projectOwnerAnalysisError(sessionId, reportError, language) : reportError;
+}
 export function projectOwnerTerminationMessage(...args: Parameters<typeof projectPrivateTerminationMessage>): string | undefined {
   return withOwnerCodeAwareProjection(() => projectPrivateTerminationMessage(...args));
+}
+export function projectOwnerAnalysisReceipt(receipt: AnalysisReceipt | undefined): AnalysisReceipt | undefined {
+  return withOwnerCodeAwareProjection(() => projectPrivateAnalysisReceipt(receipt));
 }
 export function projectOwnerStructuredValue<T>(sessionId: string, value: T): T {
   return withOwnerCodeAwareProjection(() => projectPrivateStructuredValue(sessionId, value));

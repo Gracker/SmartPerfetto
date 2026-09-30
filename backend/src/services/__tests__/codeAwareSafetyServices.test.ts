@@ -42,6 +42,7 @@ import {
   registerCodeAwareLookupForEcho,
 } from '../security/codeAwareOutputRegistry';
 import {projectCodeAwareStreamingUpdate, projectOwnerCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
+import {projectOwnerDataEnvelopes} from '../security/privateAnalysisProjection';
 import {issuePrivateToolResultNarrationReceipt} from '../../agentv3/toolNarration';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 import {LLMEchoOutputStream, type CodeRef} from '../security/llmEchoOutputFilter';
@@ -1931,13 +1932,159 @@ describe('owner source output isolation', () => {
     revokeCodeAwareOutputGuards(sessionId);
     expect(projection.flush()).toBe('[PRIVATE_OUTPUT_SUPPRESSED]');
     clearCodeAwareOutputGuards(sessionId);
-    const update = {type: 'thought' as const, content: {thought: 'Checking renderFrame against the trace.', arguments: {raw: 'tool payload'}}, timestamp: 1};
+    // The owner sees a thought as a run without private context shows it; strict output omits it.
+    const update = {type: 'thought' as const, content: {thought: 'Checking renderFrame against the trace.', arguments: {query: 'renderFrame'}}, timestamp: 1};
     expect(projectOwnerCodeAwareStreamingUpdate(sessionId, update, true, 'en')?.content)
-      .toEqual({thought: 'Checking renderFrame against the trace.'});
+      .toEqual({thought: 'Checking renderFrame against the trace.', arguments: {query: 'renderFrame'}});
     expect(projectCodeAwareStreamingUpdate(sessionId, update, true, 'en')).toBeNull();
+    // A dispatch keeps its arguments and narration; a result keeps its narration, never its payload.
+    const dispatch = {type: 'agent_task_dispatched' as const, timestamp: 1, content: {taskId: 't1',
+      toolName: 'search_codebase', args: {query: 'renderFrame'}, message: 'Search source: renderFrame'}};
+    expect(projectOwnerCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en')).toEqual(dispatch);
+    const response = {type: 'agent_response' as const, timestamp: 1, content: {taskId: 't1', toolName: 'execute_sql',
+      result: '{"rows":[[1]]}', resultNarration: 'SQL matched no rows', isError: false}};
+    expect(projectOwnerCodeAwareStreamingUpdate(sessionId, response, true, 'en')?.content)
+      .toEqual({taskId: 't1', toolName: 'execute_sql', resultNarration: 'SQL matched no rows', isError: false});
+    expect(JSON.stringify(projectCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en'))).not.toContain('renderFrame');
+  });
+
+  it('withholds an unregistered credential in a structured token field but not a draft token', () => {
+    const dispatch = {type: 'agent_task_dispatched' as const, timestamp: 1, content: {taskId: 't3', toolName: 'call_api',
+      args: {token: 'unregistered-secret-12345', api_key: 'unregistered-secret-12345', frame: 'frame 42'}}};
+    expect((projectOwnerCodeAwareStreamingUpdate(sessionId, dispatch, true, 'en')?.content as {args: unknown}).args)
+      .toEqual({token: '[REDACTED_SECRET]', api_key: '[REDACTED_SECRET]', frame: 'frame 42'});
+    const envelope = createDataEnvelope({columns: ['name'], rows: [['frame']]}, {type: 'sql_result', source: 'fixture', title: 't'});
+    const [projected] = projectOwnerDataEnvelopes(sessionId,
+      [{...envelope, data: {...envelope.data, token: 'unregistered-secret-12345'}} as never]);
+    expect((projected.data as {token?: unknown}).token).toBe('[REDACTED_SECRET]');
+    const draft = projectOwnerCodeAwareStreamingUpdate(sessionId, {type: 'answer_token',
+      content: {token: 'The token budget is fine', runId: 'r', attempt: 0}, timestamp: 1}, true, 'en');
+    expect(draft?.content.token).toBe('The token budget is fine');
+  });
+
+  it('withholds a draft token the owner guard had to change', () => {
+    registerCodeAwareCanary(sessionId, 'CANARY_IN_DRAFT_TOKEN');
+    expect(projectOwnerCodeAwareStreamingUpdate(sessionId, {type: 'answer_token',
+      content: {token: 'before CANARY_IN_DRAFT_TOKEN', runId: 'r', attempt: 0}, timestamp: 1}, true, 'en')).toBeNull();
+  });
+
+  it('narrates a source result for the owner from its private outcome receipt', () => {
+    const result = {sourceRefs: [{referenceId: 'r1', codebaseId: 'app', snippetLength: 12}], outcome: 'success'};
+    const receipt = issuePrivateToolResultNarrationReceipt({toolName: 'read_codebase_file', result});
+    const update = {type: 'agent_response' as const, timestamp: 1, content: {taskId: 't2', toolName: 'read_codebase_file',
+      result: JSON.stringify(result), resultNarration: '', privateToolResultReceipt: receipt, isError: false}};
+    const content = projectOwnerCodeAwareStreamingUpdate(sessionId, update, true, 'en')?.content as Record<string, unknown>;
+    expect(content.resultNarration).toBe('Authorized content was read and is available to check against trace evidence');
+    expect(content).not.toHaveProperty('result');
+    expect(content).not.toHaveProperty('privateToolResultReceipt');
   });
 });
 
+
+describe('owner streaming projection for answer drafts', () => {
+  const sessionId = 'owner-draft-projection';
+  afterEach(() => clearCodeAwareOutputGuards(sessionId));
+  let channel = 0;
+  /** Stream `parts`; `shown` is what was released while the projection was still unaltered. */
+  function stream(parts: string[]) {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, `draft-${channel++}`, 'owner');
+    let shown = '';
+    let output = '';
+    const note = (released: string) => {
+      output += released;
+      if (!projection.altered) shown += released;
+    };
+    for (const part of parts) note(projection.write(part));
+    note(projection.flush());
+    return {shown, output, altered: projection.altered};
+  }
+  /** Every split of `text` into two tokens, plus one token per character. */
+  const splits = (text: string) => [...Array.from({length: text.length - 1},
+    (_, index) => [text.slice(0, index + 1), text.slice(index + 1)]), [...text]];
+
+  it.each([
+    ['LF', 'Intro\napi_key=\n"synthetic-secret-123456"\nAfter\n', 'synthetic-secret-123456'],
+    ['CRLF', 'Intro\r\napi_key =\r\n  "synthetic-secret-123456"\r\nAfter\r\n', 'synthetic-secret-123456'],
+    ['quoted key and separator on their own lines', 'Intro\n"password"\n:\n hunter2hunter2\nAfter\n', 'hunter2hunter2'],
+    ['Bearer prefix', 'Intro\nAuthorization: Bearer\nabcdefghijklmnop123\nAfter\n', 'abcdefghijklmnop123'],
+  ])('never releases a credential whose key and value sit on different lines (%s)', (_label, text, secret) => {
+    for (const parts of splits(text)) {
+      const {shown, output, altered} = stream(parts);
+      expect(shown).not.toContain(secret);
+      expect(altered).toBe(true);
+      // Fixed registrations and no capacity failure: the stream equals the whole-text projection.
+      expect(output).toBe(sanitizeOwnerCodeAwareText(sessionId, text));
+    }
+  });
+
+  it('releases ordinary text unaltered at every split, holding a line that ends in a key only until the next', () => {
+    const text = 'Frame 42 took 16.7 ms on RenderThread.\nCheck the token\nThe budget is fine.\n';
+    for (const parts of splits(text)) expect(stream(parts)).toEqual({shown: text, output: text, altered: false});
+  });
+
+  it('marks the stream when later context identifies text it already released', () => {
+    const text = 'The value abcdefgh12345 was used\ntoken = "abcdefgh12345"\n';
+    const {shown, altered} = stream(['The value abcdefgh12345 was used\n', 'token = "abcdefgh12345"\n']);
+    // Released before its context arrived: the residual a draft withdrawal bounds.
+    expect(shown).toBe('The value abcdefgh12345 was used\n');
+    expect(altered).toBe(true);
+    expect(sanitizeOwnerCodeAwareText(sessionId, text)).not.toContain('abcdefgh12345');
+  });
+
+  it('marks the stream before a redacted value can reappear bare', () => {
+    expect(stream(['token = "abcdefgh12345"\n', 'again abcdefgh12345\n'])).toMatchObject({shown: '', altered: true});
+  });
+
+  it('fails safe on an oversized line and reports the drop', () => {
+    expect(stream(['x'.repeat(64 * 1024 + 1) + '\n'])).toEqual({shown: '', output: '[OVERSIZED_OUTPUT_LINE]\n', altered: true});
+  });
+
+  it('marks a stream that replaced a canary', () => {
+    registerCodeAwareCanary(sessionId, 'CANARY_DRAFT_MARK');
+    const {shown, output, altered} = stream(['before CANARY_DRAFT_MARK after\n']);
+    expect(output).not.toContain('CANARY_DRAFT_MARK');
+    expect({shown, altered}).toEqual({shown: '', altered: true});
+  });
+
+  const registerCredential = () => registerCodeAwareLookupForEcho(sessionId, {hits: [{chunkId: 'wiki-chunk',
+    snippet: 'token="synthetic-secret-123456"', metadata: {knowledgeSourceId: 'wiki'}}]} as any);
+
+  it('marks a stretch whose registrations changed after it released text', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-registration', 'owner');
+    expect(projection.write('synthetic-secret-123456\n')).toBe('synthetic-secret-123456\n');
+    expect(projection.altered).toBe(false);
+    registerCredential();
+    projection.flush();
+    expect(projection.altered).toBe(true);
+    expect(sanitizeOwnerCodeAwareText(sessionId, 'synthetic-secret-123456\n')).toBe('[REDACTED_SECRET]\n');
+  });
+
+  it('marks a stretch whose registrations changed while its text was still held', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-held-registration', 'owner');
+    expect(projection.write('synthetic-secret-123456')).toBe('');
+    registerCredential();
+    projection.write('\n');
+    projection.flush();
+    expect(projection.altered).toBe(true);
+  });
+
+  it('does not mark a later stretch for registrations made before it released text', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-new-stretch', 'owner');
+    projection.write('first response\n');
+    projection.flush();
+    registerCredential();
+    // A registered pattern makes the guard hold a lookbehind window until flush.
+    expect(projection.write('second response\n') + projection.flush()).toBe('second response\n');
+    expect(projection.altered).toBe(false);
+  });
+
+  it('marks a stream whose guard became unavailable, even when it released nothing', () => {
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'draft-revoked', 'owner');
+    revokeCodeAwareOutputGuards(sessionId);
+    expect(projection.write('text after revocation\n')).toBe('');
+    expect(projection.altered).toBe(true);
+  });
+});
 
 describe('semantic input structure budget', () => {
   it('preserves byte-bounded JSON beyond the ordinary output node cap without widening output limits', () => {

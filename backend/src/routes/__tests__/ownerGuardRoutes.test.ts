@@ -452,7 +452,7 @@ describe('owner guard for agent session routes', () => {
           getSessionPlan: () => ({text: 'PRIVATE_PLAN_CANARY'}),
           getSessionUncertaintyFlags: () => ['PRIVATE_FLAG_CANARY'],
         },
-        logger: {getLogFilePath: () => '/tmp/PRIVATE_LOG_CANARY.log'},
+        logger: {getLogFilePath: () => '/tmp/private-session.log'},
       }],
     ]);
 
@@ -553,7 +553,8 @@ describe('owner guard for agent session routes', () => {
         analysisPlan: null,
         uncertaintyFlags: [],
       }));
-      expect(res.body.report.logFile).toBeUndefined();
+      // The log is written through the strict projection; the owner may locate it.
+      expect(res.body.report.logFile).toBe('/tmp/private-session.log');
       expect(res.body.report.query).toBe(
         'Private source or knowledge analysis request (original content not persisted)',
       );
@@ -567,7 +568,7 @@ describe('owner guard for agent session routes', () => {
       // Ordinary source/query quotations are owner-visible; registered canaries
       // and raw prompt/runtime state remain protected independently.
       for (const canary of [...protectedCanaries, 'PRIVATE_QUERY_CANARY', 'PRIVATE_NOTE_CANARY',
-        'PRIVATE_PLAN_CANARY', 'PRIVATE_FLAG_CANARY', 'PRIVATE_LOG_CANARY']) {
+        'PRIVATE_PLAN_CANARY', 'PRIVATE_FLAG_CANARY']) {
         expect(JSON.stringify(res.body)).not.toContain(canary);
       }
     } finally {

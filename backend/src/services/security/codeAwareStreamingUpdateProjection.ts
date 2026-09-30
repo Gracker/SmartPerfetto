@@ -12,8 +12,9 @@ import {
   sanitizeCodeAwareText,
   withOwnerCodeAwareProjection,
 } from './codeAwareOutputRegistry';
-import {projectPrivateDataEnvelope, projectPrivateStructuredValue} from './privateAnalysisProjection';
+import {projectPrivateDataEnvelope} from './privateAnalysisProjection';
 import {validateDataEnvelope} from '../../types/dataContract';
+import {isPlainObject} from '../../utils/llmJson';
 import {formatToolCallNarration, formatToolResultNarration, readPrivateToolResultNarrationReceipt} from '../../agentv3/toolNarration';
 import {sanitizeCandidateProtocolDiagnostic} from '../canonicalAnalysisResult';
 import {projectSceneTimelineForOwner} from '../../agent/scene/sceneTimelineProjection';
@@ -290,7 +291,26 @@ export function projectCodeAwareStreamingUpdate(
 }
 
 
-/** Authenticated owner process view. Raw tool payloads still use deterministic narration. */
+/**
+ * A tool result's transported payload stays out of the process view; the owner
+ * reads its outcome narration. Source and knowledge results are projected to
+ * hashes before the runtime narrates them, so for those only the private
+ * outcome receipt can say what came back.
+ */
+function ownerToolResultContent(content: StreamingUpdate['content'], language: OutputLanguage): StreamingUpdate['content'] {
+  if (!isPlainObject(content)) return content;
+  const {result: _payload, privateToolResultReceipt, ...rest} = content;
+  const toolName = typeof rest.toolName === 'string' ? rest.toolName : '';
+  const resultNarration = typeof rest.resultNarration === 'string' && rest.resultNarration
+    ? rest.resultNarration
+    : readPrivateToolResultNarrationReceipt(privateToolResultReceipt, toolName, language)?.message;
+  return {...rest, ...(resultNarration ? {resultNarration} : {})};
+}
+
+/**
+ * Authenticated owner process view: the updates a run without private context
+ * shows, under the owner guard, with tool results narrated rather than carried.
+ */
 export function projectOwnerCodeAwareStreamingUpdate(
   sessionId: string,
   update: StreamingUpdate,
@@ -298,9 +318,6 @@ export function projectOwnerCodeAwareStreamingUpdate(
   language: OutputLanguage,
 ): StreamingUpdate | null {
   if (!sourceAware) return update;
-  if (update.type === 'tool_call' || update.type === 'agent_task_dispatched' || update.type === 'agent_response') {
-    return privateExecutionUpdate(update, language);
-  }
   return withOwnerCodeAwareProjection(() => {
     if (update.type === 'scene_timeline_updated') {
       // The shared scene tool emits only a committed, bounded display view. Guard
@@ -311,15 +328,15 @@ export function projectOwnerCodeAwareStreamingUpdate(
       return {...update, content: projectSceneTimelineForOwner(value)};
     }
     if (update.type === 'data') return projectCodeAwareStreamingUpdate(sessionId, update, true, language);
-    // Tool acquisition payloads belong to evidence artifacts, not the process timeline.
-    if (update.type === 'skill_data' || update.type === 'skill_layered_result' ||
-        update.type === 'sql_generated') return null;
-    // A draft token the private guard could not vouch for is reported
-    // structurally (no update), never as a placeholder string in display text.
-    const token = update.type === 'answer_token' ? (update.content as {token?: unknown} | undefined)?.token : undefined;
-    if (typeof token === 'string' &&
-      sanitizeCodeAwareStructuredTextWithReceipt(sessionId, token).disposition === 'replaced') return null;
-    const content = sanitizeCodeAwareStructuredText(sessionId, update.content);
-    return {...update, content: projectPrivateStructuredValue(sessionId, content)};
+    if (update.type === 'answer_token' && isPlainObject(update.content) && typeof update.content.token === 'string') {
+      // A draft token the owner guard had to change is reported structurally
+      // (no update), never as a placeholder string in display text.
+      const receipt = sanitizeCodeAwareStructuredTextWithReceipt(sessionId, update.content.token);
+      if (receipt.disposition !== 'preserved') return null;
+      const {token: _token, ...rest} = update.content;
+      return {...update, content: {...sanitizeCodeAwareStructuredText(sessionId, rest), token: receipt.text}};
+    }
+    return {...update, content: sanitizeCodeAwareStructuredText(sessionId,
+      update.type === 'agent_response' ? ownerToolResultContent(update.content, language) : update.content)};
   });
 }

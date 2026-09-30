@@ -220,8 +220,10 @@ import {
   privateAnalysisFailureMessage,
   projectOwnerAnalysisError,
   privateAnalysisQueryMessage,
-  projectPrivateAnalysisReceipt,
+  projectOwnerAnalysisReceipt,
   projectOwnerAnalysisResult,
+  projectOwnerReportError,
+  projectPrivateAnalysisReceipt,
   copyAnalysisResultForSnapshot,
   projectOwnerFindings,
   projectOwnerConclusion,
@@ -1761,6 +1763,8 @@ function sanitizePersistedAnalysisCompletedEvent(
         identityResolutions: undefined,
         sceneTimeline: undefined, sceneReport: undefined,
         uiActionProposals: [],
+        // An untrusted legacy event keeps only the receipt's identifiers.
+        analysisReceipt: projectPrivateAnalysisReceipt(result.analysisReceipt),
       }
     : result;
   const durableResult = privateKnowledge
@@ -1799,7 +1803,7 @@ function sanitizePersistedAnalysisCompletedEvent(
         resultContract: trustedPrivateProjection && data.resultContract
           ? projectOwnerStructuredValue(session.sessionId, data.resultContract)
           : undefined,
-        analysisReceipt: projectPrivateAnalysisReceipt(durableResult.analysisReceipt),
+        analysisReceipt: durableResult.analysisReceipt,
         confidence: durableResult.confidence,
         rounds: durableResult.rounds,
         totalDurationMs: durableResult.totalDurationMs,
@@ -1815,6 +1819,9 @@ function sanitizePersistedAnalysisCompletedEvent(
           : undefined,
         resultSnapshotId: typeof data?.resultSnapshotId === 'string'
           ? data.resultSnapshotId.slice(0, 160)
+          : undefined,
+        reportError: trustedPrivateProjection && typeof data.reportError === 'string' && data.reportError
+          ? projectOwnerAnalysisError(session.sessionId, data.reportError, outputLanguage)
           : undefined,
         terminalRunStatus: ['completed', 'failed', 'cancelled', 'quota_exceeded'].includes(data?.terminalRunStatus)
           ? data.terminalRunStatus
@@ -3047,10 +3054,10 @@ router.get('/:sessionId/status', async (req, res) => {
           ? projectOwnerTerminationMessage(result.terminationMessage, outputLanguage, result)
           : result.terminationMessage,
         reportUrl: finalArtifacts?.reportUrl,
-        reportError: privateKnowledge ? undefined : finalArtifacts?.reportError,
+        reportError: projectOwnerReportError(privateKnowledge, sessionId, finalArtifacts?.reportError, outputLanguage),
         resultSnapshotId: finalArtifacts?.resultSnapshotId,
         analysisReceipt: privateKnowledge
-          ? projectPrivateAnalysisReceipt(completedPayload?.analysisReceipt)
+          ? projectOwnerAnalysisReceipt(completedPayload?.analysisReceipt)
           : completedPayload?.analysisReceipt,
         uiActionProposals: privateKnowledge
           ? projectOwnerStructuredValue(sessionId, completedPayload?.uiActionProposals || [])
@@ -7591,7 +7598,7 @@ function ensureCompletedAnalysisFinalArtifacts(
       const resultForReport = {
         ...durableResultForClient,
         analysisReceipt: privateKnowledge
-          ? projectPrivateAnalysisReceipt(reportReceipt)
+          ? projectOwnerAnalysisReceipt(reportReceipt)
           : reportReceipt,
       };
       const reportData = buildAgentDrivenReportData({
@@ -7722,7 +7729,7 @@ function ensureCompletedAnalysisFinalArtifacts(
           : result.terminationMessage,
         dataEnvelopes: session.dataEnvelopes,
         analysisReceipt: privateKnowledge
-          ? projectPrivateAnalysisReceipt(snapshotReceipt)
+          ? projectOwnerAnalysisReceipt(snapshotReceipt)
           : snapshotReceipt,
         traceSummary: session.traceSummary,
         uiActionProposals: durableResultForClient.uiActionProposals,
@@ -7986,7 +7993,7 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
             : result.terminationMessage,
           quickRun,
           analysisReceipt: privateKnowledge
-            ? projectPrivateAnalysisReceipt(analysisReceipt)
+            ? projectOwnerAnalysisReceipt(analysisReceipt)
             : analysisReceipt,
           uiActionProposals: projectedUiActionProposals,
           sceneTimeline: result.sceneTimeline ? projectSceneTimelineForClient(result.sceneTimeline) : undefined,
@@ -8010,7 +8017,7 @@ function ensureCompletedAnalysisSseEvents(session: AnalysisSession, runId?: stri
           conversationTimelineCount: privateKnowledge ? 0 : session.conversationSteps.length,
           conversationTimeline: privateKnowledge ? [] : session.conversationSteps,
           reportUrl: finalArtifacts.reportUrl,
-          reportError: privateKnowledge ? undefined : finalArtifacts.reportError,
+          reportError: projectOwnerReportError(privateKnowledge, session.sessionId, finalArtifacts.reportError, outputLanguage),
           comparisonReportSection: session.comparisonReportSection
             ? (privateKnowledge
                 ? projectOwnerStructuredValue(session.sessionId, {

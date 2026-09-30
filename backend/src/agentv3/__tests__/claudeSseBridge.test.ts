@@ -359,7 +359,7 @@ describe('createSseBridge', () => {
     expect(updates.filter(update => update.type === 'answer_token').map(update => update.content.token).join('')).toBe(answer);
   });
 
-  it('projects a private canary split across chunks at the former answer limit and retains the public tail', () => {
+  it('projects a private canary split across chunks at the former answer limit and withdraws the draft', () => {
     jest.useFakeTimers();
     const sessionId = 'claude-answer-beyond-old-limit';
     const canary = 'PRIVATE_CLAUDE_ANSWER_BOUNDARY_CANARY';
@@ -385,8 +385,11 @@ describe('createSseBridge', () => {
       expect(visible).not.toContain(canary);
       expect(visible).not.toContain(canary.slice(0, split));
       expect(visible).not.toContain(canary.slice(split));
-      expect(visible.endsWith(tail)).toBe(true);
       expect(visible).not.toContain('[truncated accumulated answer]');
+      // The guard replaced the oversized unit before anything was shown, so the
+      // draft is withdrawn without a token; the final answer is projected whole
+      // from the intact accumulation above.
+      expect(updates.filter(update => update.type === 'answer_token' || update.type === 'answer_segment_reset')).toEqual([]);
     } finally {
       bridge.dispose();
       clearCodeAwareOutputGuards(sessionId);
@@ -446,6 +449,56 @@ describe('createSseBridge', () => {
         ]);
         bridge.dispose();
       } finally {jest.useRealTimers();}
+    });
+
+    it('drops what an interrupted response held at the next message_start', () => {
+      jest.useFakeTimers();
+      const sessionId = 'claude-interrupted-draft';
+      try {
+        for (const projection of [undefined, createCodeAwareStreamingTextProjection(sessionId, 'claude-full-answer', 'owner')]) {
+          const updates: StreamingUpdate[] = [];
+          const bridge = createSseBridge(update => updates.push(update),
+            createAnswerDraftStream('run-i', update => updates.push(update)), 'en', {}, projection);
+          bridge.handleMessage(messageStart());
+          bridge.handleMessage(delta('Unclassified text'));
+          bridge.handleMessage(messageStart());
+          bridge.handleMessage(delta('Streamed but unfinished line'));
+          jest.advanceTimersByTime(250);
+          // No assistant message: the response was interrupted and replaced.
+          bridge.handleMessage(messageStart());
+          bridge.handleMessage(delta('Fresh answer\n'));
+          jest.advanceTimersByTime(250);
+          const shown = draftEvents(updates).filter(([type]) => type === 'answer_token').map(([, token]) => token);
+          expect(shown).toEqual(projection
+            ? ['Fresh answer\n']
+            : ['Streamed but unfinished line', 'Fresh answer\n']);
+          expect(bridge.getAccumulatedAnswer()).not.toContain('Unclassified text');
+          bridge.dispose();
+        }
+      } finally { jest.useRealTimers(); clearCodeAwareOutputGuards(sessionId); }
+    });
+
+    it('withdraws a private draft when a credential completes across lines', () => {
+      jest.useFakeTimers();
+      const sessionId = 'claude-private-draft';
+      try {
+        const updates: StreamingUpdate[] = [];
+        const bridge = createSseBridge(update => updates.push(update),
+          createAnswerDraftStream('run-p', update => updates.push(update)), 'en', {},
+          createCodeAwareStreamingTextProjection(sessionId, 'claude-full-answer', 'owner'));
+        bridge.handleMessage(messageStart());
+        bridge.handleMessage(delta('Intro line\n'));
+        jest.advanceTimersByTime(250);
+        for (const text of ['api_key=\n', '"synthetic-secret-123456"\n', 'Later line\n']) bridge.handleMessage(delta(text));
+        bridge.handleMessage({type: 'assistant', parent_tool_use_id: null, message: {content: [{type: 'text',
+          text: 'Intro line\napi_key=\n"synthetic-secret-123456"\nLater line\n'}]}});
+        expect(draftEvents(updates)).toEqual([
+          ['answer_token', 'Intro line\n', 'run-p', 0],
+          ['answer_segment_reset', null, 'run-p', 1],
+        ]);
+        expect(JSON.stringify(updates)).not.toContain('synthetic-secret-123456');
+        bridge.dispose();
+      } finally { jest.useRealTimers(); clearCodeAwareOutputGuards(sessionId); }
     });
 
     it('never lets a sub-agent final turn into the draft or the accumulated answer', () => {

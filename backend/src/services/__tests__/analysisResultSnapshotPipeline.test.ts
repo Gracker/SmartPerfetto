@@ -986,7 +986,8 @@ describe('analysis result snapshot pipeline', () => {
       expect(snapshot?.sceneType).toBe('startup');
       expect(snapshot?.capabilityManifest).toEqual(receiptCapabilityManifest);
       expect(snapshot?.summary.analysisReceipt?.capabilityManifest).toEqual(receiptCapabilityManifest);
-      expect(snapshot?.summary.analysisReceipt?.outputs).toEqual({});
+      // The owner's snapshot keeps the receipt outputs under the owner guard.
+      expect(snapshot?.summary.analysisReceipt?.outputs).toEqual({reportError: '[REDACTED_CODE_ECHO]', cliTurnPath: '[REDACTED_CODE_ECHO]'});
       const storedSourceDecision = snapshot?.summary.sourceUseDecision;
       expect(snapshot?.conclusionContract).not.toHaveProperty('sourceUseDecision');
       expect(storedSourceDecision).toEqual(expect.objectContaining({

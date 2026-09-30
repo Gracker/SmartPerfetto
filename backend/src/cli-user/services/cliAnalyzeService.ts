@@ -128,6 +128,7 @@ import {
 } from '../../services/codebase/sourceUseDecision';
 import {
   projectOwnerAnalysisError,
+  projectOwnerReportError,
   privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
   projectOwnerProvisionalConclusion,
@@ -692,7 +693,7 @@ export class CliAnalyzeService {
       ),
       runtimeRegistrySnapshot,
     });
-    const cliTurnPath = primaryPrivateKnowledge ? undefined : input.resolveCliTurnPath(sessionId, input.turn);
+    const cliTurnPath = input.resolveCliTurnPath(sessionId, input.turn);
 
     let traceProcessorLeases: AnalysisRunTraceProcessorLeases | undefined;
     // Set once the durable parent exists, so the terminal writes below close
@@ -1008,10 +1009,7 @@ export class CliAnalyzeService {
           sdkSessionId,
           result: durableResult,
           reportHtml: reportOutput.html,
-          reportError:
-            primaryPrivateKnowledge && reportOutput.error
-              ? projectOwnerAnalysisError(sessionId, reportOutput.error, outputLanguage)
-              : reportOutput.error,
+          reportError: projectOwnerReportError(primaryPrivateKnowledge, sessionId, reportOutput.error, outputLanguage),
           model,
           providerId: persistedProviderId !== undefined ? persistedProviderId : (session.providerId ?? null),
           agentRuntimeKind: publicRuntimeKind,

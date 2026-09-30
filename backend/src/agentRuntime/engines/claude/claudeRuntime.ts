@@ -1045,6 +1045,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         handleMessage: bridge,
         getAccumulatedAnswer,
         flushPendingAnswer,
+        discardPendingAnswer,
         dispose: disposeBridge,
       } = createSseBridge((update: StreamingUpdate) => {
         if (!runActivity.active || executionLease.signal.aborted) return;
@@ -1166,8 +1167,8 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           runtimeReceiptState: sdkRuntimeReceiptState,
           onAttempt: () => {
             assertAuthorized();
-            flushPendingAnswer();
-            answerDraft?.reset();
+            // The previous attempt's unfinished text is not this attempt's answer.
+            discardPendingAnswer();
             attemptStreamOffset = getAccumulatedAnswer().length;
             acceptedRawBody = undefined;
             acceptedAttemptId = `${runId}:main:${++attemptNumber}`;

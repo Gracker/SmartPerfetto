@@ -6,7 +6,7 @@ import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIProvider, Runner, RunContext, tool, withTrace} from '@openai/agents';
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
-import {createAnswerDraftStream} from '../../agentRuntime/answerDraftStream';
+import {createAnswerDraftStream, createProjectedAnswerDraft} from '../../agentRuntime/answerDraftStream';
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import type {OpenAIAgentConfig} from '../../agentRuntime/engines/openai/openAiConfig';
@@ -126,7 +126,7 @@ function plan(phases: PlanPhase[]): AnalysisPlanV3 {
 }
 function streamContext(sessionId: string, quickMode: boolean, runtime?: {emitUpdate(update: unknown): void}) {
   return {sessionId, quickMode, answerStreamFilter: __testing.createOpenAiReasoningFilterState(),
-    answerDraft: createAnswerDraftStream(`${sessionId}-run`, update => runtime?.emitUpdate(update)),
+    answerDraft: createProjectedAnswerDraft(createAnswerDraftStream(`${sessionId}-run`, update => runtime?.emitUpdate(update)), undefined),
     toolInputsByTaskId: new Map<string, {toolName: string; args: Record<string, unknown>}>()};
 }
 
@@ -1462,6 +1462,27 @@ describe('OpenAI shared tool receipt and private projection', () => {
     runtime.handleStreamEvent({type: 'raw_model_stream_event', data: {type: 'output_text_delta', delta: text}}, 'zh-CN',
       streamContext('no-plan', false, runtime));
     expect(updates.filter(update => update.type === 'answer_token').map(update => update.content.token)).toEqual([text]);
+  });
+
+  it('withdraws a private draft when a credential completes across lines, and shows nothing more', () => {
+    const {runtime, updates} = createRuntimeWithUpdates();
+    const sessionId = 'openai-private-draft';
+    const projection = createCodeAwareStreamingTextProjection(sessionId, 'openai-answer-test', 'owner');
+    const context = {...streamContext(sessionId, false, runtime), answerTextProjection: projection,
+      answerDraft: createProjectedAnswerDraft(createAnswerDraftStream(`${sessionId}-run`,
+        update => runtime.emitUpdate(update)), projection)};
+    const delta = (text: string) => runtime.handleStreamEvent({type: 'raw_model_stream_event',
+      data: {type: 'output_text_delta', delta: text}}, 'en', context);
+    try {
+      for (const text of ['Intro line\n', 'api_key=\n', '"synthetic-secret-123456"\n', 'Later line\n']) delta(text);
+      runtime.handleStreamEvent({type: 'run_item_stream_event', name: 'tool_called', item: {rawItem: {
+        type: 'function_call', callId: 'call-private', name: 'execute_sql', arguments: '{"sql":"select 1"}'}}}, 'en', context);
+      delta('Next response\n');
+      expect(updates.filter(update => update.type === 'answer_token' || update.type === 'answer_segment_reset')
+        .map(update => [update.type, update.content.token ?? null])).toEqual([
+        ['answer_token', 'Intro line\n'], ['answer_segment_reset', null]]);
+      expect(JSON.stringify(updates)).not.toContain('synthetic-secret-123456');
+    } finally { clearCodeAwareOutputGuards(sessionId); }
   });
 
   it('revokes answer text that preceded a tool call in the same response', async () => {

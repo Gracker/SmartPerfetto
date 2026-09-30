@@ -4,7 +4,9 @@
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import type {StreamingUpdate} from '../../agent/types';
-import {createAnswerDraftStream, readAnswerDraftIdentity} from '../../agentRuntime/answerDraftStream';
+import {createAnswerDraftStream, createProjectedAnswerDraft, readAnswerDraftIdentity} from '../../agentRuntime/answerDraftStream';
+import {runtimeSupportsDraftAnswerStreaming} from '../../agentRuntime/runtimeDescriptors';
+import {listProductionRuntimeKinds} from '../../agentRuntime/runtimeKinds';
 import {renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {
   ANSWER_DRAFT_FLUSH_CHARS,
@@ -13,7 +15,13 @@ import {
   createAnswerDraftRelay,
   type AnswerDraftRelayOptions,
 } from '../answerDraftRelay';
-import {registerPrivateAnalysisQueryForEcho, revokeCodeAwareOutputGuards} from '../security/codeAwareOutputRegistry';
+import {
+  clearCodeAwareOutputGuards,
+  createCodeAwareStreamingTextProjection,
+  registerCodeAwareLookupForEcho,
+  registerPrivateAnalysisQueryForEcho,
+  revokeCodeAwareOutputGuards,
+} from '../security/codeAwareOutputRegistry';
 import {projectOwnerCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
 import {projectOwnerProvisionalConclusion} from '../security/privateAnalysisProjection';
 
@@ -202,13 +210,6 @@ describe('AnswerDraftRelay', () => {
     expect(delivered).toHaveLength(1);
   });
 
-  it('gives no draft to a private-knowledge or source-access session', () => {
-    const create = (privateKnowledge: boolean) => createAnswerDraftRelay({runtimeKind: 'openai-agents-sdk',
-      runId: 'run-1', projectionSessionId: 's', privateKnowledge, outputLanguage: 'en', deliver: () => undefined});
-    expect(create(true)).toBeUndefined();
-    expect(create(false)).toBeInstanceOf(AnswerDraftRelay);
-  });
-
   it('in a plain session shows a split credential exactly as the final body does: both projections are the identity', () => {
     const sessionId = 'draft-relay-plain';
     const first = token('Authorization: Bearer ');
@@ -224,5 +225,99 @@ describe('AnswerDraftRelay', () => {
       privateKnowledge: false, outputLanguage: 'en', deliver: () => undefined})).toBeUndefined();
     expect(createAnswerDraftRelay({runtimeKind: undefined, runId: 'run-1', projectionSessionId: 's',
       privateKnowledge: false, outputLanguage: 'en', deliver: () => undefined})).toBeUndefined();
+  });
+});
+
+describe('projected answer draft', () => {
+  const sessionId = 'projected-answer-draft';
+  let channel = 0;
+  afterEach(() => clearCodeAwareOutputGuards(sessionId));
+  function setup(emit?: (update: StreamingUpdate) => void) {
+    const events: StreamingUpdate[] = [];
+    const draft = createAnswerDraftStream('run-p', emit ?? (update => events.push(update)));
+    const projection = createCodeAwareStreamingTextProjection(sessionId, `projected-${channel++}`, 'owner');
+    return {events, projected: createProjectedAnswerDraft(draft, projection)};
+  }
+  const view = (events: StreamingUpdate[]) => events.map(event =>
+    [event.type, (event.content as {token?: string}).token ?? null, (event.content as {attempt: number}).attempt]);
+  const withdrawn = [['answer_token', 'Intro line\n', 0], ['answer_segment_reset', null, 1]];
+
+  it('withdraws at the first alteration and shows nothing more in the run, across boundaries', () => {
+    const {events, projected} = setup();
+    for (const text of ['Intro line\n', 'api_key=\n', '"synthetic-secret-123456"\n', 'Later line\n']) projected.write(text);
+    projected.boundary();
+    projected.write('Next response\n');
+    projected.finish();
+    expect(view(events)).toEqual(withdrawn);
+    expect(JSON.stringify(events)).not.toContain('synthetic-secret-123456');
+  });
+
+  it('withdraws when only the held tail reveals a credential', () => {
+    const {events, projected} = setup();
+    projected.write('Intro line\n');
+    projected.write('token = "abcdefgh12345"');
+    projected.finish();
+    expect(view(events)).toEqual(withdrawn);
+  });
+
+  it('withdraws at a boundary whose discarded tail was altered', () => {
+    const {events, projected} = setup();
+    projected.write('Intro line\n');
+    projected.write('token = "abcdefgh12345"');
+    expect(projected.boundary()).toBe('token = "[REDACTED_SECRET]"');
+    projected.write('Next response\n');
+    expect(view(events)).toEqual(withdrawn);
+  });
+
+  it('withdraws when a registration arrives while projected text is still held', () => {
+    const {events, projected} = setup();
+    projected.write('Intro line\n');
+    projected.write('synthetic-secret-123456');
+    registerCodeAwareLookupForEcho(sessionId, {hits: [{chunkId: 'wiki-chunk',
+      snippet: 'token="synthetic-secret-123456"', metadata: {knowledgeSourceId: 'wiki'}}]} as never);
+    projected.write('\nLater line\n');
+    projected.finish();
+    expect(view(events)).toEqual(withdrawn);
+    expect(JSON.stringify(events)).not.toContain('synthetic-secret-123456');
+  });
+
+  it('withdraws when a write releases nothing because the projection failed safe', () => {
+    const {events, projected} = setup();
+    projected.write('Intro line\n');
+    revokeCodeAwareOutputGuards(sessionId);
+    expect(projected.write('more\n')).toBe('');
+    expect(view(events)).toEqual(withdrawn);
+  });
+
+  it('keeps a clean draft', () => {
+    const {events, projected} = setup();
+    projected.write('Plain answer\n');
+    projected.finish();
+    expect(view(events)).toEqual([['answer_token', 'Plain answer\n', 0]]);
+  });
+
+  it('is the only path to a draft for every draft-capable runtime', () => {
+    // A runtime added here must send a private run's answer text through
+    // createProjectedAnswerDraft, with a test like the OpenAI and Claude ones.
+    expect(listProductionRuntimeKinds().filter(runtimeSupportsDraftAnswerStreaming))
+      .toEqual(['claude-agent-sdk', 'openai-agents-sdk']);
+  });
+
+  it('reaches the surface as a revocation: the relay clears what it showed and forwards nothing more', () => {
+    jest.useFakeTimers();
+    try {
+      const delivered: StreamingUpdate[] = [];
+      const surface = createAnswerDraftRelay({runtimeKind: 'openai-agents-sdk', runId: 'run-p',
+        projectionSessionId: sessionId, privateKnowledge: true, outputLanguage: 'en',
+        deliver: update => delivered.push(update)})!;
+      const {projected} = setup(update => surface.accept(update));
+      projected.write('Intro line\n');
+      jest.runOnlyPendingTimers();
+      for (const text of ['api_key=\n', '"synthetic-secret-123456"\n', 'Later line\n']) projected.write(text);
+      surface.settle();
+      expect(delivered.map(update => [update.type, (update.content as {token?: string}).token ?? null]))
+        .toEqual([['answer_token', 'Intro line\n'], ['answer_segment_reset', null]]);
+      expect(JSON.stringify(delivered)).not.toContain('synthetic-secret-123456');
+    } finally { jest.useRealTimers(); }
   });
 });

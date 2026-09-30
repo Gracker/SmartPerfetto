@@ -453,10 +453,12 @@ or another run and clear the draft on a reset; a provisional or final
 discards it (a stop shows the cancelled notice). The draft is never written to
 browser storage. For every session draft events carry no SSE `id`, never enter
 the in-memory replay buffer or the durable event store, and are not replayed on
-reconnect. Sessions with registered source or knowledge send no draft at all
-(their owner projection redacts per fragment, so a split secret could show
-before the final body is redacted); they receive the projected body at
-finalization. Other runtimes send no draft.
+reconnect. In a session with registered source or knowledge, drafts reach
+only the owner and pass the owner projection, which holds text until a
+credential split across tokens or lines is complete. The first time that
+projection has to redact or drop anything, the run's draft is revoked with an
+`answer_segment_reset` and no further draft follows; the projected body arrives
+at finalization. Other runtimes send no draft.
 
 The review is sent only when `✓` is still reachable or an obligation needs it:
 a report deliverable, a selection, source access or source fields in the

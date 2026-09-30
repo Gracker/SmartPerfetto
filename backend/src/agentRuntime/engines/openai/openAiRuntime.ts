@@ -46,7 +46,9 @@ import {createCodeAwareStreamingTextProjection, type CodeAwareStreamingTextProje
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt, toolResultIsFailure} from '../../../agentv3/toolNarration';
 import {estimateAnalysisConfidence} from '../../../agentv3/analysisTermination';
-import {createAnswerDraftStream, type AnswerDraftStream} from '../../answerDraftStream';
+import {
+  SILENT_ANSWER_DRAFT, createAnswerDraftStream, createProjectedAnswerDraft, type ProjectedAnswerDraft,
+} from '../../answerDraftStream';
 import {isPlainObject} from '../../../utils/llmJson';
 import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
 import {loadOpenAIConfig, type OpenAIAgentConfig} from './openAiConfig';
@@ -900,6 +902,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const answerStreamFilter = createOpenAiReasoningFilterState();
         const answerTextProjection = analysisHasPrivateContext(options)
           ? createCodeAwareStreamingTextProjection(sessionId, `openai-answer-${attemptId}`, 'owner') : undefined;
+        // A recovery candidate is delivered atomically by the final conclusion event.
+        const attemptDraft = recoveringOutputLimit
+          ? SILENT_ANSWER_DRAFT : createProjectedAnswerDraft(answerDraft, answerTextProjection);
         const toolInputsByTaskId = new Map<string, {toolName: string; args: Record<string, unknown>}>();
         const processedToolResultIds = new Set<string>();
         const attemptDeliveryDeadlineAt = deliveryDeadlineAt;
@@ -950,8 +955,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                   attemptModelTurns++;
                   // Text of the previous response preceded a tool call: it was
                   // not the answer. Revoke it, including any withheld suffix.
-                  answerDraft.reset();
-                  answerTextProjection?.flush();
+                  attemptDraft.boundary();
                   runAnswer = '';
                   lastResponse = undefined;
                   Object.assign(answerStreamFilter, createOpenAiReasoningFilterState());
@@ -961,8 +965,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 }
               }
               const answerDelta = this.handleStreamEvent(event, config.outputLanguage, {
-                sessionId, quickMode, answerStreamFilter, answerTextProjection, runtimePerformance, answerDraft,
-                suppressAnswerTokens: recoveringOutputLimit,
+                sessionId, quickMode, answerStreamFilter, answerTextProjection, runtimePerformance,
+                answerDraft: attemptDraft,
                 toolInputsByTaskId, processedToolResultIds,
                 tracePairContext: options.tracePairContext, onToolCalled: () => {observedToolCalls++;},
                 onToolOutput: () => runDeadline.recordProgress(),
@@ -980,8 +984,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           if (recoveringOutputLimit) {
             assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
           }
-          const projectedTail = answerTextProjection?.flush();
-          if (projectedTail && !recoveringOutputLimit) answerDraft.token(projectedTail);
+          attemptDraft.finish();
           // SDK currentTurn can be zero-based; every native response consumes a turn.
           rounds += Math.max(attemptModelTurns, stream.currentTurn || 0, attemptDispatched ? 1 : 0);
           const finalOutput = streamCompleted ? stream.finalOutput : undefined;
@@ -1691,17 +1694,14 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       answerStreamFilter: OpenAiReasoningFilterState;
       answerTextProjection?: CodeAwareStreamingTextProjection;
       runtimePerformance?: RuntimePerformanceRun;
-      /** Run-scoped draft stream; tokens carry runId + attempt and tool calls revoke them. */
-      answerDraft: AnswerDraftStream;
+      /** The attempt's projected view of the run draft; tool calls revoke its segment. */
+      answerDraft: ProjectedAnswerDraft;
       toolInputsByTaskId: Map<string, { toolName: string; args: Record<string, unknown> }>;
       processedToolResultIds?: Set<string>;
       tracePairContext?: TracePairContext;
       onToolCalled?: () => void;
       /** A tool result returned to the model: one completed investigation round. */
       onToolOutput?: () => void;
-      onSuppressedAnswerDelta?: (delta: string) => void;
-      /** A replacement candidate is delivered atomically by the final conclusion event. */
-      suppressAnswerTokens?: boolean;
     },
   ): string {
     const now = Date.now();
@@ -1710,11 +1710,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       if (data?.type === 'output_text_delta' && typeof data.delta === 'string') {
         const delta = filterOpenAiVisibleAnswerDelta(data.delta, streamContext.answerStreamFilter);
         if (!delta) return '';
-        const projected = streamContext.answerTextProjection?.write(delta) ?? delta;
-        if (projected && !streamContext.suppressAnswerTokens) {
-          streamContext.runtimePerformance?.recordFirstOutput();
-          streamContext.answerDraft.token(projected, now);
-        }
+        if (streamContext.answerDraft.write(delta, now)) streamContext.runtimePerformance?.recordFirstOutput();
         return delta;
       }
       return '';
@@ -1745,8 +1741,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       streamContext.onToolCalled?.();
       // Text this response already streamed preceded a tool call, so it was
       // not the answer: revoke the draft and whatever the projection withheld.
-      streamContext.answerDraft.reset(now);
-      streamContext.answerTextProjection?.flush();
+      streamContext.answerDraft.boundary(now);
       if (callKey) streamContext.toolInputsByTaskId.set(callKey, {toolName, args});
       this.emitUpdate({
         type: 'agent_task_dispatched',

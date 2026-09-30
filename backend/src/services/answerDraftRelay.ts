@@ -165,10 +165,10 @@ export class AnswerDraftRelay {
 
 /**
  * The relay for one run of one surface, or undefined when the pinned runtime
- * does not implement the draft reset contract or the session uses private
- * knowledge (then no answer text is forwarded before the finalized answer).
- * `privateKnowledge` must be the same flag the surface passes to its owner
- * streaming projection; without it that projection returns every update as is.
+ * does not implement the draft reset contract. For a private run the owner
+ * projection here is a second check, after the runtime's own; its failure also
+ * withdraws. `privateKnowledge` must be the same flag the surface passes to its
+ * owner streaming projection; without it that projection returns every update as is.
  */
 export function createAnswerDraftRelay(input: {
   runtimeKind: string | undefined;
@@ -179,11 +179,7 @@ export function createAnswerDraftRelay(input: {
   outputLanguage: OutputLanguage;
   deliver(update: StreamingUpdate): void;
 }): AnswerDraftRelay | undefined {
-  // Private knowledge or source access is exactly when the owner projection is
-  // not the identity. It redacts fragment by fragment, so a secret split
-  // across tokens could be shown before the final body is redacted as a
-  // whole: such sessions get no draft, only the projected body at finalization.
-  if (input.privateKnowledge || !runtimeSupportsDraftAnswerStreaming(input.runtimeKind)) return undefined;
+  if (!runtimeSupportsDraftAnswerStreaming(input.runtimeKind)) return undefined;
   return new AnswerDraftRelay({runId: input.runId, deliver: input.deliver,
     project: update => projectOwnerCodeAwareStreamingUpdate(input.projectionSessionId, update,
       input.privateKnowledge, input.outputLanguage)});

@@ -425,14 +425,16 @@ Keep these boundaries intact:
   owner projection (recovery attempts never stream); the Claude bridge resets
   at each main-agent `message_start` and at `tool_use` in answer mode, and only
   `parent_tool_use_id == null` messages can become answer text — sub-agent text
-  is a `thought`, never draft or accumulated answer. Each surface creates one
-  relay per run through `createAnswerDraftRelay`, which returns none for a
-  runtime without the capability and for any private-knowledge or source-access
-  session: there the owner projection redacts fragment by fragment, so a
-  secret split across tokens could be shown before the whole body is
-  redacted; those sessions see only the projected body at finalization. In the
-  remaining sessions both the draft projection and the final projection are
-  the identity. The relay applies the owner projection, then
+  is a `thought`, never draft or accumulated answer. A new main-agent response
+  or a retry discards what an unfinished one held (`discardPendingAnswer`)
+  instead of flushing it into the next segment. In a run with private context
+  both runtimes send answer text through `createProjectedAnswerDraft`: the
+  first time the owner streaming projection reports `altered` the draft is
+  withdrawn for the rest of the run and the finalized answer replaces it. The
+  residual is described in `codebase-aware.md`. Each surface creates one relay
+  per run through `createAnswerDraftRelay`, which returns none for a runtime
+  without the capability. Outside private context both the draft projection
+  and the final projection are the identity. The relay applies the owner projection, then
   `AnalysisNarrativeStreamProjection`, then coalescing (200 ms / 256 visible
   characters); a reset drops the unflushed buffer, stale-attempt and
   foreign-run events are dropped, and a projection failure, a structurally
@@ -440,7 +442,9 @@ Keep these boundaries intact:
   authorization on a timer flush) withdraws the draft; nothing escapes the
   relay. The agent route broadcasts drafts `liveOnly`: no SSE id, no ring
   buffer, no durable event store, and disposes the relay the first time the
-  run loses currency. The conversation service publishes them as live-only
+  run loses currency; both surfaces revalidate the run, its cancellation and
+  its authorization on every delivery, timer flushes included. The
+  conversation service publishes them as live-only
   `runtime_update` events with no `seqId` and no SSE `id:` line, outside the
   run's replay events, and stops once the provisional answer is out. The CLI never shows drafts. The runtime's
   `conclusion` stays dropped; the provisional or final conclusion replaces the

@@ -85,7 +85,7 @@ describe('agent route private projections', () => {
     const session = {sessionId, traceId: 'trace', query: 'original query', status: 'completed', createdAt: 1,
       tenantId: 'tenant', workspaceId: 'workspace', userId: 'user', codeAwareMode: 'provider_send', codebaseIds: ['app'],
       outputLanguage: 'en', result, hypotheses: [], dataEnvelopes: [], scenes: [],
-      completedAnalysisFinalArtifacts: {}, logger: {warn: () => {}}, runSequence: 1} as any;
+      completedAnalysisFinalArtifacts: {}, logger: {warn: () => {}, getLogFilePath: () => '/logs/session.jsonl'}, runSequence: 1} as any;
     const events = agentRoutesPrivacyProjectionTestSeam.ensureCompletedAnalysisSseEvents(session);
     const completed = events.find(event => event.eventType === 'analysis_completed');
     expect(completed).toBeDefined();
@@ -292,7 +292,7 @@ describe('agent route private projections', () => {
     );
   });
 
-  it('whitelists stored capability attribution in private persisted SSE projection', () => {
+  it.each([false, true])('whitelists stored capability attribution in private persisted SSE projection (trusted=%s)', trusted => {
     const canary = '/private/SSE_CAPABILITY_CANARY';
     const hash = 'a'.repeat(64);
     const session = {
@@ -306,6 +306,7 @@ describe('agent route private projections', () => {
       {
         eventType: 'analysis_completed',
         eventData: JSON.stringify({data: {
+          ...(trusted ? {privateProjectionVersion: 1} : {}),
           success: true,
           conclusion: 'safe conclusion',
           analysisReceipt: {
@@ -322,7 +323,7 @@ describe('agent route private projections', () => {
             nonEvidenceContext: {frontendPrequeryCount: 0, memoryHintCount: 0, conversationContextCount: 0, strategyHintCount: 0},
             claimAudit: {totalClaims: 0, verifiedClaims: 0, unsupportedClaims: 0, uncertainClaims: 0},
             qualityGates: {finalReportContract: 'not_applicable', claimVerification: 'not_applicable', identityResolution: 'not_applicable'},
-            outputs: {reportError: canary, cliTurnPath: canary},
+            outputs: {reportError: 'report generation failed', cliTurnPath: '/tmp/turns/001.md'},
             capabilityManifest: {
               schemaVersion: 'capability_manifest_attribution@1',
               resolution: {
@@ -351,7 +352,10 @@ describe('agent route private projections', () => {
         manifestId: `capability_manifest:${hash}`,
       }),
     }));
-    expect(projectedData.analysisReceipt.outputs).toEqual({});
+    // A trusted owner-only event keeps the receipt outputs; an untrusted legacy
+    // event keeps only its identifiers.
+    expect(projectedData.analysisReceipt.outputs).toEqual(trusted
+      ? {reportError: 'report generation failed', cliTurnPath: '/tmp/turns/001.md'} : {});
   });
 
   it('carries sealed RunManifest capability attribution into the HTTP receipt', () => {
