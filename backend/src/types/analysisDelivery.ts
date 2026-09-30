@@ -5,7 +5,6 @@
 import {createHash} from 'node:crypto';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {AgentRuntimeKind} from '../agentRuntime/runtimeKinds';
-import type {CaseKnowledgeReportRecommendation} from './caseKnowledge';
 import type {ResolvedAnalysisInvestigationRequirements} from './analysisInvestigation';
 import type {FinalInvestigationAssessment} from './analysisInvestigationAssessment';
 import type {InvestigationEvidenceSnapshot} from '../services/evidence/investigationEvidenceLedger';
@@ -43,7 +42,6 @@ export interface AnalysisRuntimeAppendix {
 
 export type AnalysisReportRequirementCondition =
   | {kind: 'semantic'; description: string}
-  | {kind: 'strong_case_retrieval'}
   | {kind: 'unresolved'; reason: 'legacy_trigger_patterns' | 'invalid_condition'};
 
 export interface AnalysisReportRequirement {
@@ -56,11 +54,6 @@ export interface AnalysisReportRequirement {
 }
 
 export type AnalysisMissingReportSection = Pick<AnalysisReportRequirement, 'id' | 'label' | 'description'>;
-
-export interface AnalysisCaseRetrievalState {
-  status: 'not_checked' | 'unavailable' | 'checked';
-  recommendations: readonly CaseKnowledgeReportRecommendation[];
-}
 
 export interface PinnedAnalysisReportRequirements {
   sceneId: string;
@@ -139,7 +132,6 @@ interface CurrentAnalysisDeliveryContext {
   investigationRequirements?: ResolvedAnalysisInvestigationRequirements;
   investigationEvidence?: InvestigationEvidenceSnapshot;
   investigationAssessment?: FinalInvestigationAssessment;
-  caseRetrieval?: AnalysisCaseRetrievalState;
 }
 
 export type AnalysisDeliveryContext =

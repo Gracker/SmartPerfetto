@@ -11,7 +11,6 @@ import {loadPromptTemplate} from '../agentv3/strategyLoader';
 import {
   analysisDeliveryFingerprint,
   type AnalysisCandidateIdentity,
-  type AnalysisCaseRetrievalState,
   type AnalysisReportRequirement,
   type AnalysisReportRequirementAssessment,
   type PinnedAnalysisReportRequirements,
@@ -24,6 +23,7 @@ import type {InvestigationContentAssessment} from '../types/analysisInvestigatio
 import {compactInvestigationEvidenceForSemantic,
   type CompactInvestigationEvidenceSnapshot} from './evidence/investigationEvidenceLedger';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT, FINAL_SEMANTIC_OUTPUT_BYTE_LIMIT} from './finalSemanticLimits';
+import {fixedReportRequirementApplicability} from './finalReportContractGate';
 import {SEMANTIC_ISSUE_CODES, type SemanticIssueCode} from './finalSemanticIssueCodes';
 export type {SemanticIssueCode} from './finalSemanticIssueCodes';
 import {expandSemanticSourceSnapshot} from './evidence/semanticSourceSnapshot';
@@ -50,7 +50,6 @@ export interface FinalSemanticSnapshot {
   sourceUse?: SourceUseDecisionV1;
   capabilitySnapshot?: unknown;
   reportRequirements?: PinnedAnalysisReportRequirements;
-  caseRetrieval?: AnalysisCaseRetrievalState;
   investigationRequirements?: ResolvedAnalysisInvestigationRequirements;
   investigationEvidence?: CompactInvestigationEvidenceSnapshot;
   /** Canonical run selection scope. Lookup/range input only; never evidence. */
@@ -487,17 +486,6 @@ function wholeBodyCovered(locations: readonly SemanticContentLocation[], length:
 }
 type FinalSemanticPromptContext = Pick<CapturedSnapshot, 'snapshot' | 'intent' | 'traceIdentity' | 'registryFingerprint'>;
 
-function fixedApplicability(requirement: AnalysisReportRequirement, captured: FinalSemanticPromptContext):
-  AnalysisReportRequirementAssessment['applicability'] | undefined {
-  if (requirement.condition?.kind === 'unresolved') return 'unknown';
-  if (requirement.condition?.kind === 'strong_case_retrieval') {
-    const cases = captured.snapshot.caseRetrieval;
-    return cases?.status !== 'checked' ? 'unknown' :
-      cases.recommendations.some(item => nonempty(item.caseId) && item.matchStrength === 'strong') ? 'applicable' : 'not_applicable';
-  }
-  return captured.intent.scope === 'scene_wide' && !requirement.condition ? 'applicable' : undefined;
-}
-
 /** Single prompt assembly path shared by exact budgeting and dispatch. */
 export function buildFinalSemanticPrompt(captured: FinalSemanticPromptContext):
   {prompt: string; promptFingerprint: string; locationCatalog?: SemanticLocationCatalog} | undefined {
@@ -518,7 +506,8 @@ export function buildFinalSemanticPrompt(captured: FinalSemanticPromptContext):
     // removes any untrusted same-name snapshot property.
     contentLocationCatalog: locationCatalog?.payload,
     fixedRequirementApplicability: normalized.snapshot.reportRequirements?.requirements.map(requirement => ({
-      requirementId: requirement.id, applicability: fixedApplicability(requirement, normalized) ?? 'semantic_decision',
+      requirementId: requirement.id,
+      applicability: fixedReportRequirementApplicability(requirement, normalized.intent.scope) ?? 'semantic_decision',
     })),
   })}`;
   return {prompt, promptFingerprint, ...(locationCatalog ? {locationCatalog} : {})};
@@ -691,7 +680,7 @@ function parseResponseStrict(
       return invalidResponse('report_requirement', 'invalid_reference', {ordinal: index + 1});
     }
     const locations = parseLocations(item.contentLocations, body, locationFormat, locationCatalog);
-    const fixed = fixedApplicability(requirementMap.get(item.requirementId)!, captured);
+    const fixed = fixedReportRequirementApplicability(requirementMap.get(item.requirementId)!, captured.intent.scope);
     if (!locations || (fixed !== undefined && item.applicability !== fixed) ||
       (item.applicability !== 'applicable' && item.coverage !== 'unknown') ||
       (item.coverage === 'covered' && !locations.length && !item.claimIds.length)) {

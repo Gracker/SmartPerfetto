@@ -128,13 +128,6 @@ final_report_contract:
       pattern_groups:
         - ['真实掉帧', 'real[_\s-]?jank']
         - ['最长帧', 'longest frame', '峰值']
-    - id: case_recommendations
-      label: 相似案例引用
-      description: '当 typed caseRecommendations 中存在 strong 匹配时，报告需引用对应 case_id，并说明它是证据验证后的相似案例。'
-      condition:
-        kind: strong_case_retrieval
-      pattern_groups:
-        - ['case_id', '相似案例', '案例引用', 'case recommendation', 'case[-\s]?based']
 
 phase_hints:
   - id: main_thread_work

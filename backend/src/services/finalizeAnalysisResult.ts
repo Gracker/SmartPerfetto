@@ -10,8 +10,9 @@ import type {ComparisonReportSection} from '../agentv3/sessionStateSnapshot';
 import {getFinalReportContract} from '../agentv3/strategyLoader';
 import type {DataEnvelope} from '../types/dataContract';
 import {analysisDeliveryFingerprint, reportRequirementsFingerprint, sameAnalysisCandidate,
-  type AnalysisCandidateIdentity, type AnalysisCaseRetrievalState, type AnalysisDeliveryContext,
+  type AnalysisCandidateIdentity, type AnalysisDeliveryContext,
   type FinalReportAssessment, type PinnedAnalysisReportRequirements} from '../types/analysisDelivery';
+import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
 import type {ClaimVerificationResult, ClaimVerificationClaimResult, ClaimVerificationIssue} from '../types/claimVerification';
 import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection} from './canonicalAnalysisResult';
 import {attachSourceUseToAnalysisResult, verifySourceClaimBindings} from './codebase/sourceClaimVerifier';
@@ -67,7 +68,8 @@ export interface FinalizeAnalysisResultInput {
   dataEnvelopes?: readonly DataEnvelope[];
   comparisonReportSection?: ComparisonReportSection;
   comparisonIdentity?: FinalResultComparisonIdentity;
-  caseRetrieval?: AnalysisCaseRetrievalState;
+  /** Curated-case hits the server retrieved for this run. */
+  caseRecommendations?: readonly CaseKnowledgeReportRecommendation[];
   conversation?: NonNullable<Parameters<typeof canonicalizeAnalysisResult>[1]>['conversation'];
   /** Issued product sidecar, separate from a provider's accepted body or result JSON. */
   scene?: {seal: SceneRuntimeSeal; scope: SceneScope; outputLanguage: OutputLanguage; providerId?: string | null};
@@ -309,10 +311,33 @@ function semanticReviewTriggers(input: {
   return triggers;
 }
 
+const CASE_PROJECTION_ROUNDS = 3;
+
+/**
+ * Project the hits inside the contract they join, as every later owner surface
+ * projects that contract, until the projection stops changing them. A guard can
+ * withhold a value or field name a hit's structure requires, such as its match
+ * strength; the next projection's normalization then drops that hit (or that
+ * recommendation), so a result accepted after one round would differ on every
+ * later surface and invalidate the bindings made from this contract.
+ */
+function withRetrievedCaseRecommendations(sessionId: string, contract: ConclusionContract,
+  recommendations: readonly CaseKnowledgeReportRecommendation[]): ConclusionContract {
+  let hits = [...recommendations];
+  for (let round = 0; round < CASE_PROJECTION_ROUNDS; round++) {
+    const projected = projectOwnerConclusionContract(sessionId, {...contract, caseRecommendations: hits})
+      ?.caseRecommendations ?? [];
+    if (round > 0 && analysisDeliveryFingerprint(projected) === analysisDeliveryFingerprint(hits)) {
+      return projected.length ? {...contract, caseRecommendations: projected} : contract;
+    }
+    hits = projected;
+  }
+  return contract;
+}
+
 function semanticReportAssessment(input: {
   candidate: AnalysisCandidateIdentity; result: AnalysisResult; context: RuntimeFinalizationContext;
-  evidenceFingerprint: string; requirements?: PinnedAnalysisReportRequirements;
-  caseRetrieval?: AnalysisCaseRetrievalState; semantic: FinalSemanticAssessment;
+  evidenceFingerprint: string; requirements?: PinnedAnalysisReportRequirements; semantic: FinalSemanticAssessment;
 }): FinalReportAssessment | undefined {
   const {requirements, semantic, candidate, context, result} = input;
   if (!requirements) return undefined;
@@ -322,8 +347,7 @@ function semanticReportAssessment(input: {
     evidenceFingerprint: input.evidenceFingerprint,
     requirementsFingerprint: reportRequirementsFingerprint(requirements),
     registryFingerprint: context.strategyRegistry.registryFingerprint,
-    intentFingerprint: analysisDeliveryFingerprint(context.turnIntent),
-    caseRetrievalFingerprint: analysisDeliveryFingerprint(input.caseRetrieval)},
+    intentFingerprint: analysisDeliveryFingerprint(context.turnIntent)},
     status: !bound ? 'not_checked' : semantic.status === 'checked' || semantic.status === 'coverage_incomplete'
       ? semantic.coverage.report === 'incomplete' ? 'coverage_incomplete' : 'checked'
       : semantic.status,
@@ -425,8 +449,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     const comparisonIdentity = expectedPair && (expectedPair.referenceTraceId || suppliedIdentity)
       ? {...(pairConflict ? {} : suppliedIdentity), currentTraceId: expectedPair.currentTraceId,
         referenceTraceId: expectedPair.referenceTraceId} : suppliedIdentity;
-    const caseRetrieval = frozenSnapshot(input.caseRetrieval ?? (context?.deliveryContext.entry !== 'historical_restore'
-      ? context?.deliveryContext.caseRetrieval : undefined));
+    const caseRecommendations = frozenSnapshot(input.caseRecommendations);
     const nativeDeclaration = context?.getNativeDeclaration(original, owner.signal);
     const canonical = canonicalizeAnalysisResult(original, {context: context?.deliveryContext, nativeDeclaration, conversation});
     if (!isIssuedCanonicalAnalysisProjection(canonical.projection)) throw new Error('unissued_canonical_projection');
@@ -494,7 +517,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       const snapshot: FinalSemanticSnapshot = {inputCoverage: 'complete', declarationBindingEligibility: canonical.bindingEligibility,
         query: providerQuery?.text ?? query,
         body: result.conclusion, conclusionContract: validationContract, evidenceSnapshot, sourceUse,
-        capabilitySnapshot: context.capabilityEvidence, reportRequirements: requirements, caseRetrieval,
+        capabilitySnapshot: context.capabilityEvidence, reportRequirements: requirements,
         investigationRequirements,
         ...(selectionScope ? {selectionScope} : {}),
         protocolDiagnostics: diagnostics ? {sidecar: {status: diagnostics.sidecar.status,
@@ -516,7 +539,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
         projected.changed ? {...value, inputCoverage: 'incomplete',
           inputProjectionIssue: projected.limited ? 'structure_limit' : 'content_projection', query: '', body: result.conclusion,
           conclusionContract: undefined, protocolDiagnostics: undefined, evidenceSnapshot: null,
-          sourceUse: undefined, capabilitySnapshot: undefined, caseRetrieval: undefined, investigationEvidence: undefined}
+          sourceUse: undefined, capabilitySnapshot: undefined, investigationEvidence: undefined}
           : compactSemanticSourceSnapshot({...projected.value,
             evidenceSnapshot: compactSemanticEvidenceSnapshot(projected.value.evidenceSnapshot)});
       let safeSnapshot: FinalSemanticSnapshot;
@@ -604,6 +627,11 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       result.claimVerificationResult = projectOwnerClaimVerification(result.sessionId, result.claimVerificationResult)!;
       result.claimSupport = projectOwnerClaimSupport(result.sessionId, result.claimSupport);
     }
+    // After the contract's owner projection, before any binding fingerprints it.
+    if (result.conclusionContract && caseRecommendations?.length) {
+      result.conclusionContract = withRetrievedCaseRecommendations(result.sessionId, result.conclusionContract,
+        caseRecommendations);
+    }
     const claimsFingerprint = analysisDeliveryFingerprint(result.conclusionContract?.claims ?? []);
     const sourceUseFingerprint = analysisDeliveryFingerprint(result.sourceUseDecision);
     const sourceScopeFingerprint = sourceScope ? analysisDeliveryFingerprint(sourceScope) : undefined;
@@ -615,12 +643,12 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       sourceVerificationBinding: result.sourceClaimVerificationResult ? {candidate, claimsFingerprint, evidenceFingerprint,
         sourceUseFingerprint, sourceScopeFingerprint, conclusionContractFingerprint: analysisDeliveryFingerprint(result.conclusionContract),
         verificationFingerprint: analysisDeliveryFingerprint(result.sourceClaimVerificationResult)} : undefined,
-      reportRequirements: requirements, caseRetrieval,
+      reportRequirements: requirements,
       investigationRequirements, investigationEvidence: context?.investigationEvidence,
       investigationAssessment: context && investigationRequirements ? buildInvestigationAssessment({
         candidate, result, context, evidenceFingerprint, requirements: investigationRequirements, semantic}) : undefined,
       reportAssessment: context && semantic ? semanticReportAssessment({candidate, result, context,
-        evidenceFingerprint, requirements, caseRetrieval, semantic}) : undefined};
+        evidenceFingerprint, requirements, semantic}) : undefined};
     assertOwner(owner);
     const qualityIssue = applyFinalResultQualityGate({result, query, context: delivery, comparisonIdentity});
     assertOwner(owner);

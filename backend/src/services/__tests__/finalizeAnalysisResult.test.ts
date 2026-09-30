@@ -11,6 +11,7 @@ import {ArtifactStore} from '../../agentv3/artifactStore';
 import {buildStrategyRegistrySnapshotFromDefinitions, type StrategyDefinition} from '../../agentv3/strategyLoader';
 import * as strategyTemplates from '../../agentv3/strategyLoader';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import type {CaseKnowledgeReportRecommendation} from '../../types/caseKnowledge';
 import {createDataEnvelope} from '../../types/dataContract';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../types/identityContract';
 import {captureEvidenceTable, evidenceCaptureHash} from '../evidence/evidenceCapture';
@@ -58,6 +59,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   evidenceRenderedAcknowledgement?: boolean;
   /** The runtime hands over its own contract, with these recommendations and no sidecar in the body. */
   runtimeCaseRecommendations?: ConclusionContract['caseRecommendations'];
+  /** Issue the runtime's protocol projection (a native declaration) even without source use. */
+  nativeProjection?: boolean;
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>} = {}) {
   const runId = options.runId ?? 'run';
   const body = options.body ?? (options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
@@ -134,8 +137,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const, status: 'completed' as const},
     ...(options.evidenceRenderedAcknowledgement ? {evidenceRenderedProof: {kind: 'acknowledgement' as const, candidate,
       intentFingerprint: analysisDeliveryFingerprint(intentFor(registry.registryFingerprint)), evidence: 'not_applicable' as const}} : {})};
-  const projection = sourceUse ? finalizeOwnerSourceAwareAnalysisResultWithProjection(result,
-    {getSourceUseDecision: () => sourceUse!}, {context: nativeDelivery}) : undefined;
+  const projection = sourceUse || options.nativeProjection ? finalizeOwnerSourceAwareAnalysisResultWithProjection(result,
+    sourceUse ? {getSourceUseDecision: () => sourceUse!} : undefined, {context: nativeDelivery}) : undefined;
   const semanticBody = canonicalizeAnalysisResult(result).result.conclusion;
   const controller = new AbortController();
   const owner: AnalysisFinalizationOwner = {runId, signal: controller.signal,
@@ -174,10 +177,31 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     dispatchText: dispatch});
   const context = takeFinalizationContext(result)!;
   return {result, context, controller, owner, dispatch, envelope,
-    run: () => finalizeAnalysisResult({result, context, owner, query: 'What is the captured value?', dataEnvelopes: [envelope]})};
+    run: (extra: {caseRecommendations?: CaseKnowledgeReportRecommendation[]} = {}) => finalizeAnalysisResult({result, context, owner,
+      query: 'What is the captured value?', dataEnvelopes: [envelope], ...extra})};
 }
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
+
+/**
+ * Owner surfaces project a result again, as does its reader after a JSON round
+ * trip, and a public snapshot copies it; none of them may change it.
+ */
+function expectOwnerSurfacesStable(result: AnalysisResult): void {
+  const stable = (projected: AnalysisResult) => {
+    expect(projected.conclusionContract).toEqual(result.conclusionContract);
+    expect(projected.claimVerificationResult).toEqual(result.claimVerificationResult);
+    expect(projected.sourceClaimVerificationResult).toEqual(result.sourceClaimVerificationResult);
+    expect(projected.reportAssessment).toEqual(result.reportAssessment);
+    expect(projected.investigationAssessment).toEqual(result.investigationAssessment);
+    expect(projected.deliveryAssurance).toEqual(result.deliveryAssurance);
+  };
+  const ownerAgain = projectOwnerAnalysisResult(result.sessionId, result, 'en');
+  stable(ownerAgain);
+  const readBack = JSON.parse(JSON.stringify(ownerAgain)) as AnalysisResult;
+  stable(projectOwnerAnalysisResult(readBack.sessionId, readBack, 'en'));
+  stable(copyAnalysisResultForSnapshot(result));
+}
 
 const areaSelection: AnalysisRunSelection = {present: true, kind: 'area', context: {kind: 'area', source: 'area_selection',
   startNs: 10, endNs: 20, tracks: [{uri: 'track://main', upid: 921}]},
@@ -590,8 +614,26 @@ describe('issued investigation ledger through finalization', () => {
     const controller = new AbortController();
     const owner: AnalysisFinalizationOwner = {runId: 'run', signal: controller.signal, isCurrent: () => true, assertAuthorized: () => {}};
     return {result, context, dispatch, originalLedger,
-      run: () => finalizeAnalysisResult({result, context, owner, query: 'Describe the selected CPU window.', dataEnvelopes: [count]})};
+      run: (extra: {caseRecommendations?: CaseKnowledgeReportRecommendation[]} = {}) => finalizeAnalysisResult({result,
+        context, owner, query: 'Describe the selected CPU window.', dataEnvelopes: [count], ...extra})};
   }
+
+  it('keeps a checked investigation and report when a private guard breaks a retrieved hit', async () => {
+    const guard = 'password=background';
+    const baselineRun = investigationRun({report: true});
+    registerPrivateAnalysisQueryForEcho(baselineRun.result.sessionId, guard);
+    const baseline = await baselineRun.run();
+    const target = investigationRun({report: true});
+    registerPrivateAnalysisQueryForEcho(target.result.sessionId, guard);
+    const final = await target.run({caseRecommendations: [{caseId: 'scroll-bg-002', title: 'A background case',
+      matchStrength: 'background', recommendations: {app: [], oem: []}}]});
+
+    expect(final.result.conclusionContract).not.toHaveProperty('caseRecommendations');
+    expect(final.result.deliveryAssurance).toEqual(baseline.result.deliveryAssurance);
+    expect(final.result.investigationAssessment?.status).toBe('checked');
+    expect(final.result.reportAssessment?.status).toBe('checked');
+    expectOwnerSurfacesStable(final.result);
+  });
 
   it.each(['run', 'previous-run'])('preserves issued %s capture identity through the sole semantic review and delivery', async originRunId => {
     const target = investigationRun({originRunId});
@@ -1248,19 +1290,96 @@ describe('semantic finalization capacity', () => {
   });
 });
 
-describe('retired learned cases', () => {
-  it('leave no learned data in a result finalized through a native declaration', async () => {
-    const curated = {caseId: 'curated-case', title: 'A curated case', matchStrength: 'partial' as const,
-      recommendations: {app: [], oem: []}};
+describe('case recommendations come only from the server retrieval', () => {
+  const retrieved: CaseKnowledgeReportRecommendation = {caseId: 'scroll-shader-001', title: 'Shader compile on the first scroll',
+    scene: 'scrolling', primaryRootCause: 'shader_compile', matchStrength: 'strong', evidenceRefs: ['data:count'],
+    matchedSignatures: ['reason_code', 'render_slices'], missingRequiredSignatures: [],
+    recommendations: {app: [{id: 'app.warm_shaders', priority: 'P0', action: 'Warm shaders before the first scroll.',
+      applies_when: 'RenderThread compiles shaders inside janky frames', risks: 'More work before first frame'}], oem: []}};
+
+  it('replaces what a native declaration carried with the retrieved hits', async () => {
     const run = fixture({currentRead: true, source: {marker: 'native-case-marker'}, runtimeCaseRecommendations: [
       {caseId: 'learned:0123456789abcdef', title: 'A learned case', matchStrength: 'strong', recommendations: {app: [], oem: []}},
-      {...curated, learnedProvenance: {candidateId: 'casecand-run-1', supportingEvidence: 3, contradictingEvidence: 0, supported: true}},
+      {caseId: 'model-case', title: 'A case the model named', matchStrength: 'strong', recommendations: {app: [], oem: []},
+        learnedProvenance: {candidateId: 'casecand-run-1', supportingEvidence: 3, contradictingEvidence: 0, supported: true}},
     ]});
-    // The native declaration is the runtime's own contract, learned data included.
+    // The native declaration is the runtime's own contract, recommendations included.
     expect(run.context.getNativeDeclaration(run.result, run.owner.signal)?.contract?.caseRecommendations).toHaveLength(2);
 
-    const final = await run.run();
+    const final = await run.run({caseRecommendations: [retrieved]});
 
-    expect(final.result.conclusionContract?.caseRecommendations).toEqual([curated]);
+    expect(final.result.conclusionContract?.caseRecommendations).toEqual([retrieved]);
+    expectOwnerSurfacesStable(final.result);
+  });
+
+  it.each([false, true])('adds retrieved hits to a public result that owner and snapshot surfaces keep, native=%s', async native => {
+    const final = await fixture({nativeProjection: native}).run({caseRecommendations: [retrieved]});
+    expect(final.result.conclusionContract?.caseRecommendations).toEqual([retrieved]);
+    expectOwnerSurfacesStable(final.result);
+  });
+
+  it.each([false, true])('projects hit text a private guard protects, so later surfaces leave it alone, native=%s', async native => {
+    const canary = 'CASE_TEXT_CANARY_NEVER_SHOWN';
+    const run = native ? fixture({currentRead: true, source: {marker: 'native-case-marker'}}) : fixture();
+    registerCodeAwareCanary(run.result.sessionId, canary);
+    const final = await run.run({caseRecommendations: [{...retrieved, title: `Shader compile ${canary}`}]});
+    expect(final.result.conclusionContract?.caseRecommendations).toHaveLength(1);
+    expect(JSON.stringify(final.result.conclusionContract)).not.toContain(canary);
+    expectOwnerSurfacesStable(final.result);
+  });
+
+  it.each([
+    ['a withheld match strength', 'password=background',
+      [retrieved, {...retrieved, caseId: 'scroll-bg-002', matchStrength: 'background' as const}], [retrieved]],
+    ['a withheld field name', 'password=matchStrength', [retrieved], []],
+    ['a withheld nested field name', 'password=applies_when', [retrieved], [{...retrieved, recommendations: {app: [], oem: []}}]],
+  ] as const)('drops what %s breaks, so owner surfaces keep every binding', async (_label, guard, hits, expected) => {
+    for (const [options, valid] of [
+      [{report: true}, {claims: 'passed'}],
+      [{report: true, currentRead: true, source: {marker: 'native-case-marker'}}, {source: 'passed'}],
+    ] as const) {
+      // The query's credential value (8+ characters) is also a value or field name a hit needs.
+      const baselineRun = fixture(options);
+      registerPrivateAnalysisQueryForEcho(baselineRun.result.sessionId, guard);
+      const baseline = await baselineRun.run();
+      const run = fixture(options);
+      registerPrivateAnalysisQueryForEcho(run.result.sessionId, guard);
+      const final = await run.run({caseRecommendations: [...hits]});
+
+      expect(final.result.conclusionContract?.caseRecommendations ?? []).toEqual(expected);
+      // The same bindings as without hits, and live ones, not two equally withdrawn results.
+      expect(final.result.deliveryAssurance).toEqual(baseline.result.deliveryAssurance);
+      expect(final.result.deliveryAssurance).toMatchObject({...valid, report: 'coverage_incomplete'});
+      expect(final.result.reportAssessment).toBeDefined();
+      expectOwnerSurfacesStable(final.result);
+      clearAllCodeAwareOutputGuards();
+    }
+  });
+
+  it.each([undefined, []])('delivers no recommendation without retrieved hits: %p', async caseRecommendations => {
+    const run = fixture({runtimeCaseRecommendations: [retrieved]});
+    const final = await run.run({caseRecommendations});
+    expect(final.result.conclusionContract).toBeDefined();
+    expect(final.result.conclusionContract).not.toHaveProperty('caseRecommendations');
+  });
+
+  it('adds no contract shell when the result has none', async () => {
+    const final = await fixture({absentDeclaration: true}).run({caseRecommendations: [retrieved]});
+    expect(final.result.conclusionContract?.caseRecommendations).toBeUndefined();
+  });
+
+  it('keeps retrieval out of the semantic review and the report assessment', async () => {
+    const without = await fixture({report: true}).run();
+    const run = fixture({report: true});
+    const final = await run.run({caseRecommendations: [retrieved]});
+
+    expect(run.dispatch).toHaveBeenCalledTimes(1);
+    expect(run.dispatch.mock.calls[0][0].prompt).not.toContain(retrieved.caseId);
+    expect(final.result.conclusionContract?.caseRecommendations).toEqual([retrieved]);
+    // Bound to the delivered contract, hits included, and otherwise what the run gets without them.
+    expect(final.result.reportAssessment?.binding).not.toHaveProperty('caseRetrievalFingerprint');
+    expect(final.result.reportAssessment?.binding.conclusionContractFingerprint)
+      .toBe(analysisDeliveryFingerprint(final.result.conclusionContract));
+    expect(final.result.deliveryAssurance).toEqual(without.result.deliveryAssurance);
   });
 });

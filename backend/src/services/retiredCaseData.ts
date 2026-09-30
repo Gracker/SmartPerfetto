@@ -11,8 +11,6 @@
  * write, so data an older process writes stays invisible to upgraded ones.
  */
 
-import type {ConclusionContract} from '../agent/core/conclusionContract';
-
 const RETIRED_CASE_SOURCE = 'runtime_analysis_candidate';
 const RETIRED_CASE_ID_PREFIX = 'learned:';
 const RETIRED_CHUNK_ID_PREFIX = 'case:learned:';
@@ -71,22 +69,6 @@ export const RETIRED_RAG_CHUNK_SQL = `(
     ].join('\n    OR ')}
   )
 )`;
-
-/**
- * A new result's contract without retired learned data: no learned
- * provenance and no recommendation of a retired case. Returns the contract
- * itself when there is nothing to drop. Only accepting a new result applies
- * it; a restored result keeps what its report showed.
- */
-export function withoutRetiredCaseLearning(contract: ConclusionContract | undefined): ConclusionContract | undefined {
-  const recommendations = contract?.caseRecommendations;
-  if (!contract || !recommendations?.some(item => isRetiredCaseId(item.caseId) || 'learnedProvenance' in item)) {
-    return contract;
-  }
-  return {...contract, caseRecommendations: recommendations
-    .filter(item => !isRetiredCaseId(item.caseId))
-    .map(({learnedProvenance: _learnedProvenance, ...item}) => item)};
-}
 
 /** Refuse to write retired case data through any store's shared entry. */
 export function assertNotRetiredCaseWrite(kind: 'case' | 'chunk' | 'edge', retired: boolean, id: unknown): void {

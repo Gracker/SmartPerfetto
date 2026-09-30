@@ -122,6 +122,29 @@ describe('caseRecommendationRetriever', () => {
     expect(hits[2].missingRequiredSignatures).toEqual(['reason_code']);
   });
 
+  it('cites the trace evidence the signatures were read from, and signature names only as matches', () => {
+    addCase({ caseId: 'case-strong', supportive: [{ field: 'render_slices', op: 'contains_any', value: ['makePipeline'] }] });
+    const query = {
+      scene: 'scrolling',
+      domainPack: 'scrolling.v1',
+      rootCause: 'shader_compile',
+      audiences: ['app' as const],
+      evidenceSignatures: { reason_code: 'shader_compile', render_slices: ['makePipeline'] },
+      includeStatuses: ['published' as const],
+    };
+    const retriever = createCaseRetriever({ library, ragStore });
+
+    const [fromTrace] = retriever.retrieve({ ...query, evidenceRefIds: ['data:scrolling:root-causes'] });
+    expect(fromTrace).toMatchObject({
+      evidenceRefs: ['data:scrolling:root-causes'],
+      matchedSignatures: ['reason_code', 'render_slices'],
+    });
+    // Values a caller typed in are matched, but they are no trace evidence.
+    const [supplied] = retriever.retrieve(query);
+    expect(supplied.matchedSignatures).toEqual(['reason_code', 'render_slices']);
+    expect(supplied).not.toHaveProperty('evidenceRefs');
+  });
+
   it('honors includeStatuses and ranks curated above imported at equal strength', () => {
     addCase({ caseId: 'imported-draft', status: 'draft', quality: 'imported' });
     addCase({ caseId: 'curated-reviewed', status: 'reviewed', quality: 'curated' });

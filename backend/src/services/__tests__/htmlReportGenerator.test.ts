@@ -1372,7 +1372,7 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('cdn.jsdelivr.net');
   });
 
-  test('renders case recommendations with strong guidance and partial evidence gaps', () => {
+  test('renders case recommendations as signature matches with their evidence and gaps', () => {
     const generator = new HTMLReportGenerator();
     const html = generator.generateAgentDrivenHTML({
       traceId: 'trace-case-rec',
@@ -1401,6 +1401,7 @@ describe('HTMLReportGenerator', () => {
               primaryRootCause: 'shader_compile',
               matchStrength: 'strong',
               evidenceRefs: ['ev_shader_compile'],
+              matchedSignatures: ['reason_code', 'render_slices'],
               learnedProvenance: {
                 candidateId: 'cand-html-1',
                 supportingEvidence: 3,
@@ -1431,6 +1432,9 @@ describe('HTMLReportGenerator', () => {
               primary_root_cause: 'sched_delay_in_slice',
               match_strength: 'partial',
               evidence_gap: '缺少 CPU 频率 ramp 与掉帧窗口重叠证据。',
+              // A hit from before evidence references were fixed: its signature names were copied in.
+              evidenceRefs: ['reason_code'],
+              matchedSignatures: ['reason_code'],
               recommendations: {
                 app: [{
                   id: 'app.reduce_ui_work',
@@ -1452,13 +1456,16 @@ describe('HTMLReportGenerator', () => {
       },
     });
 
-    expect(html).toContain('相似案例与优化建议');
+    expect(html).toContain('人工案例签名匹配');
+    expect(html).toContain('不是经过验证的结论');
     expect(html).toContain('case_id');
     expect(html).toContain('scroll_shader_compile_pixel8_001');
     expect(html).toContain('学习案例');
     expect(html).toContain('3 次正向反馈');
-    expect(html).toContain('strong 匹配');
-    expect(html).toContain('可作为直接建议');
+    expect(html).toContain('strong：必需签名全部满足，且有支持签名匹配');
+    expect(html).not.toContain('可作为直接建议');
+    expect(html).toContain('证据: <code>ev_shader_compile</code>');
+    expect(html).toContain('匹配签名: <code>reason_code</code>, <code>render_slices</code>');
     expect(html).toContain('App 侧建议');
     expect(html).toContain('OEM/厂商侧建议');
     expect(html).toContain('applies_when');
@@ -1466,10 +1473,11 @@ describe('HTMLReportGenerator', () => {
     expect(html).toContain('risks');
     expect(html).toContain('预热会增加启动或首屏内存/CPU');
     expect(html).toContain('scroll_scheduler_freq_mixed_001');
-    expect(html).toContain('partial 匹配');
-    expect(html).toContain('仅作背景参考');
+    expect(html).toContain('partial：必需签名全部满足，没有支持签名匹配');
     expect(html).toContain('evidence_gap');
     expect(html).toContain('缺少 CPU 频率 ramp 与掉帧窗口重叠证据。');
+    // A signature name is shown as a match, never as evidence.
+    expect(html).not.toContain('证据: <code>reason_code</code>');
   });
 
   test('renders agent-driven report shell in English when configured', () => {

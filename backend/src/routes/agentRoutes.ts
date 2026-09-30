@@ -47,7 +47,7 @@ import {
 } from '../services/reviewStopHandle';
 import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agentRuntime/analysisFinalizationContext';
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
-import type {AnalysisCaseRetrievalState} from '../types/analysisDelivery';
+import type {CaseKnowledgeReportRecommendation} from '../types/caseKnowledge';
 import {copyAnalysisDeliveryFields, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
 import { persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
@@ -181,9 +181,7 @@ import {
   sanitizeConversationText,
 } from '../services/timeline/conversationTimeline';
 import {patternExistsForFeedback} from '../agentv3/analysisPatternMemory';
-import {
-  attachCaseHitsToContractSync,
-} from '../services/caseEvolution/attachCaseHitsToContract';
+import { retrieveCaseHits } from '../services/caseEvolution/retrieveCaseHits';
 import { loadCaseEvolutionConfig } from '../services/caseEvolution/caseEvolutionConfig';
 import {
   knowledgeScopeFromRequestContext,
@@ -3839,7 +3837,7 @@ async function runSmartAnalysis(
         return;
       }
       const finalized = await finalizeAnalysisResult({result, owner: finalizationRun.owner, query,
-        dataEnvelopes: session.dataEnvelopes, caseRetrieval: {status: 'not_checked', recommendations: []}});
+        dataEnvelopes: session.dataEnvelopes});
       finalizationRun.assertCurrent();
       completeAgentDrivenSessionWithResult({
         sessionId,
@@ -5156,18 +5154,13 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     finalizationRun.assertCurrent();
     const sceneIdHint = finalizationContext?.turnIntent.status === 'resolved'
       ? finalizationContext.turnIntent.sceneId : result.conclusionContract?.metadata?.sceneId;
-    let caseRetrieval: AnalysisCaseRetrievalState = {status: 'not_checked', recommendations: []};
-    if (canPrefetch() && result.conclusionContract && loadCaseEvolutionConfig().retrieveEnabled) {
+    let caseRecommendations: CaseKnowledgeReportRecommendation[] | undefined;
+    if (canPrefetch() && loadCaseEvolutionConfig().retrieveEnabled) {
       try {
-        const attached = attachCaseHitsToContractSync({
-          conclusionContract: result.conclusionContract, dataEnvelopes: rawDataEnvelopes,
-          sceneType: sceneIdHint, architectureType: resolveSessionArchitectureType(session, traceId), knowledgeScope,
-        });
-        finalizationRun.assertCurrent();
-        caseRetrieval = {status: 'checked', recommendations: attached.hits};
+        caseRecommendations = retrieveCaseHits({dataEnvelopes: rawDataEnvelopes, sceneType: sceneIdHint, knowledgeScope});
       } catch {
-        finalizationRun.assertCurrent();
-        caseRetrieval = {status: 'unavailable', recommendations: []};
+        // A store error can quote stored text, so the log names only the failure.
+        session.logger.warn('AgentDrivenAnalysis', 'Curated case retrieval failed', {sessionId, runId: runIdForAnalysis});
       }
     }
     finalizationRun.assertCurrent();
@@ -5202,7 +5195,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
         ownerKey: sceneRunOwnerKey(session)}}} : {}),
       dataEnvelopes: rawDataEnvelopes, comparisonReportSection: session.comparisonReportSection,
       comparisonIdentity,
-      caseRetrieval,
+      caseRecommendations,
       // The semantic review can run for minutes after the answer stream ended.
       onProgress: event => {
         broadcastToAgentDrivenClients(sessionId, finalReviewProgressUpdate(event, outputLanguage), runIdForAnalysis);

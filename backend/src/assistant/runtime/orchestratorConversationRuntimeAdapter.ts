@@ -154,7 +154,6 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         owner: {runId: state.runId, signal: state.controller.signal,
           ...(state.analysisContextFingerprint !== undefined ? {analysisContextFingerprint: state.analysisContextFingerprint} : {}),
           isCurrent: () => this.isCurrent(input, state), assertAuthorized: state.assertAuthorized},
-        caseRetrieval: {status: 'not_checked', recommendations: []},
         conversation: {fallbackQuestion: input.query, evidence: projectEvidence(result)},
         onProgress: event => {
           if (this.isCurrent(input, state)) input.onUpdate?.(finalReviewProgressUpdate(event, outputLanguage));

@@ -233,8 +233,6 @@
     "src/services/auth/codebaseScopes.ts#hasCodebaseScope",
     "src/services/batchTrace/batchTraceTypes.ts#BatchTraceComparisonBridgeResult",
     "src/services/capabilityManifestRuntimeIdentity.ts#clearCapabilityRuntimeIdentityCaches",
-    "src/services/caseEvolution/attachCaseHitsToContract.ts#projectEvidenceSignaturesByCluster",
-    "src/services/caseEvolution/attachCaseHitsToContract.ts#verifyAndPruneCaseRecommendations",
     "src/services/codebase/analysisSourceActivationPolicy.ts#boundedAnalysisSourceUsePolicy",
     "src/services/codebase/codeReferenceContract.ts#completeFinalReportCodeReferences",
     "src/services/codebase/codeReferenceContract.ts#loadCodeReferenceContractPrompt",

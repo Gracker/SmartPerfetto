@@ -144,7 +144,9 @@ export interface CaseKnowledgeReportRecommendation {
   primaryRootCause?: string;
   matchStrength: CaseKnowledgeMatchStrength;
   evidenceGap?: string;
+  /** Trace evidence the case's signatures were evaluated against; never signature names. */
   evidenceRefs?: string[];
+  /** Signature fields that evidence satisfied: a match, not a verified claim. */
   matchedSignatures?: string[];
   missingRequiredSignatures?: string[];
   recommendations: CaseKnowledgeFrontmatter['recommendations'];

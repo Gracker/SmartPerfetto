@@ -48,9 +48,6 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     }]);
     expect(parseFinalReportContract({required_sections: [null, {description: 'No stable identity'}]})
       ?.requiredSections).toEqual([]);
-    expect(parseFinalReportContract({required_sections: [{id: 'case_ref',
-      condition: {kind: 'strong_case_retrieval'}}]})?.requiredSections[0].condition)
-      .toEqual({kind: 'strong_case_retrieval'});
     expect(parseFinalReportContract({required_sections: [{id: 'optional_scope',
       condition: {kind: 'semantic', description: 'Only when the requested scope includes launch.'}}]})
       ?.requiredSections[0].condition).toEqual({kind: 'semantic', description: 'Only when the requested scope includes launch.'});
@@ -61,8 +58,10 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
   });
 
   it('keeps legacy or invalid conditions unresolved instead of requiring them unconditionally', () => {
+    // `strong_case_retrieval` is retired: case retrieval never decides a report requirement.
     for (const declaration of [{trigger_patterns: ['case']}, {condition: null},
-      {condition: {kind: 'semantic', description: ''}}, {condition: {kind: 'unknown'}}]) {
+      {condition: {kind: 'semantic', description: ''}}, {condition: {kind: 'unknown'}},
+      {condition: {kind: 'strong_case_retrieval'}}]) {
       const condition = parseFinalReportContract({required_sections: [{id: 'conditional', ...declaration}]})
         ?.requiredSections[0].condition;
       expect(condition).toEqual({kind: 'unresolved',
@@ -70,7 +69,7 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
     }
   });
 
-  it('ships semantic or typed conditions instead of unresolved lexical report triggers', () => {
+  it('ships semantic conditions instead of unresolved lexical report triggers', () => {
     for (const definition of getRegisteredScenes()) {
       const sections = getFinalReportContract(definition.scene)?.requiredSections ?? [];
       expect(new Set(sections.map(section => section.id)).size).toBe(sections.length);
@@ -80,8 +79,9 @@ describe('strategyLoader tolerates leading SPDX HTML comments', () => {
         if (section.condition?.kind === 'semantic') expect(section.condition.description.trim().length).toBeGreaterThan(0);
       }
     }
-    expect(getFinalReportContract('scrolling')?.requiredSections.find(section => section.id === 'case_recommendations')
-      ?.condition).toEqual({kind: 'strong_case_retrieval'});
+    // Case recommendations reach a report from the server's retrieval, never as a content obligation.
+    expect(getFinalReportContract('scrolling')?.requiredSections.map(section => section.id))
+      .not.toContain('case_recommendations');
   });
 
   it('returns non-empty content for known scenes', () => {

@@ -1413,7 +1413,7 @@ describe('HTTP shared finalization ownership', () => {
         expect(input.owner.runId).toBe(f.runId);
         expect(input.comparisonIdentity).toBeUndefined();
         expect(input.dataEnvelopes).toContain(raw);
-        expect(input.caseRetrieval).toEqual({status: 'not_checked', recommendations: []});
+        expect(input.caseRecommendations).toBeUndefined();
         input.owner.assertAuthorized();
         input.context?.dispose();
         return {result: input.result};

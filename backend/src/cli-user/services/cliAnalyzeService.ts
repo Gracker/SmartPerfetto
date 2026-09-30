@@ -824,7 +824,6 @@ export class CliAnalyzeService {
               assertAuthorized: () => assertCurrentAnalysisContextAuthorization(effectiveInput, knowledgeScope, analysisContextFingerprint)},
             dataEnvelopes: session.dataEnvelopes as DataEnvelope[], comparisonReportSection: session.comparisonReportSection,
             ...(comparisonIdentity ? {comparisonIdentity} : {}),
-            caseRetrieval: {status: 'not_checked', recommendations: []},
             // The runtime update handler is already detached; report the review directly.
             onProgress: event => {
               try {

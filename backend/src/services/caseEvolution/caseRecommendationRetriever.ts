@@ -26,6 +26,8 @@ export interface CaseRecommendationQuery {
   audiences: Array<'app' | 'oem'>;
   context?: Record<string, unknown>;
   evidenceSignatures: Record<string, unknown>;
+  /** Trace evidence `evidenceSignatures` were read from; absent when a caller supplied the values itself. */
+  evidenceRefIds?: readonly string[];
   textQuery?: string;
   topK?: number;
   includeStatuses?: readonly CaseKnowledgeStatus[];
@@ -96,12 +98,19 @@ export function evaluateCaseEvidenceSignature(
 }
 
 export function createCaseRetriever(deps: CaseRetrieverDeps): { retrieve(query: CaseRecommendationQuery): CaseRecommendationHit[] } {
+  // A retriever serves one retrieval, so each status is listed once for all its queries.
+  const casesByStatus = new Map<CaseKnowledgeStatus, CaseNode[]>();
+  const listCases = (status: CaseKnowledgeStatus): CaseNode[] => {
+    let cases = casesByStatus.get(status);
+    if (!cases) casesByStatus.set(status, cases = deps.library.listCases({ status }, deps.scope));
+    return cases;
+  };
   return {
     retrieve(query: CaseRecommendationQuery) {
       const statuses = query.includeStatuses && query.includeStatuses.length > 0
         ? query.includeStatuses
         : DEFAULT_STATUSES;
-      const cases = statuses.flatMap(status => deps.library.listCases({ status }, deps.scope));
+      const cases = statuses.flatMap(listCases);
       const keywordScores = buildKeywordScoreMap(deps.ragStore, query, deps.scope);
       const ranked: RankedCase[] = [];
       for (const caseNode of cases) {
@@ -114,7 +123,7 @@ export function createCaseRetriever(deps: CaseRetrieverDeps): { retrieve(query: 
         });
       }
       ranked.sort(rankCases);
-      return ranked.slice(0, query.topK ?? 8).map(toHit);
+      return ranked.slice(0, query.topK ?? 8).map(item => toHit(item, query.evidenceRefIds));
     },
   };
 }
@@ -233,8 +242,7 @@ function matchStrengthRank(value: CaseKnowledgeMatchStrength): number {
   return value === 'strong' ? 3 : value === 'partial' ? 2 : 1;
 }
 
-
-function toHit(item: RankedCase): CaseRecommendationHit {
+function toHit(item: RankedCase, evidenceRefIds: readonly string[] | undefined): CaseRecommendationHit {
   const knowledge = item.caseNode.knowledge!;
   return {
     caseId: item.caseNode.caseId,
@@ -245,7 +253,7 @@ function toHit(item: RankedCase): CaseRecommendationHit {
     matchedSignatures: item.matchedSignatures,
     missingRequiredSignatures: item.missingRequiredSignatures,
     evidenceGap: item.evidenceGap,
-    evidenceRefs: item.matchedSignatures,
+    ...(evidenceRefIds?.length ? { evidenceRefs: [...evidenceRefIds] } : {}),
     recommendations: knowledge.recommendations,
   };
 }

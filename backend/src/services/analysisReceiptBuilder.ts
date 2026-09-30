@@ -354,7 +354,6 @@ function finalReportGate(input: {
     query: input.session.query,
     sceneType: input.sceneType,
     contractSceneId: input.result.conclusionContract?.metadata?.sceneId,
-    caseRecommendations: input.result.conclusionContract?.caseRecommendations,
   };
   if (!assessFinalReportContractApplicability(contractInput)) return 'not_applicable';
   return assessFinalReportContractCompleteness(contractInput) ? 'partial' : 'passed';

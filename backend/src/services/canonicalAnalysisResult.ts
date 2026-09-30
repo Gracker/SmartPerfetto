@@ -20,7 +20,6 @@ import {analysisDeliveryFingerprint, sameAnalysisCandidate,
 import {isIssuedNativeConclusionDeclaration, projectConclusionContractForDisplay,
   type NativeConclusionDeclaration} from './security/conclusionProtocolProjection';
 import {issueCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
-import {withoutRetiredCaseLearning} from './retiredCaseData';
 export {isIssuedCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';
 
 export interface CanonicalAnalysisResult {
@@ -203,6 +202,13 @@ export function buildCandidateProtocolDiagnostic(
   };
 }
 
+/** Drop the field itself; returns the contract unchanged when it carries none. */
+function withoutCaseRecommendations(contract: ConclusionContract | undefined): ConclusionContract | undefined {
+  if (!contract || !Object.prototype.hasOwnProperty.call(contract, 'caseRecommendations')) return contract;
+  const {caseRecommendations: _caseRecommendations, ...rest} = contract;
+  return rest;
+}
+
 /**
  * Select canonical declarations and remove only protocol spans identified by the
  * actual parsers. No caller-supplied renderer or text replacement can mint proof.
@@ -230,10 +236,10 @@ export function canonicalizeAnalysisResult(
     ? inspectCandidateProtocol(options.nativeDeclaration.raw, options.conversation) : display;
   const narrative = display.canonicalBody;
   const intent = options.context?.turnIntent;
-  // Learned cases are retired: whichever source a new result's contract comes
-  // from, the finalizer, the review and every delivered projection read it
-  // without learned provenance or a retired case's recommendation.
-  const validationContract = withoutRetiredCaseLearning(sidecar.status !== 'absent'
+  // Whichever source a new result's contract comes from, the finalizer, the
+  // review and every delivered projection read it without case recommendations:
+  // only the server's retrieval supplies them, and finalization adds those.
+  const validationContract = withoutCaseRecommendations(sidecar.status !== 'absent'
     ? sidecar.contract
     : typedJson && typedJson.status !== 'absent' ? typedJson.contract : options.nativeDeclaration?.contract ?? source.conclusionContract ?? deriveConclusionContract(narrative, {
       mode: intent?.status === 'resolved' && intent.deliverable === 'answer' ? 'focused_answer' : 'initial_report',

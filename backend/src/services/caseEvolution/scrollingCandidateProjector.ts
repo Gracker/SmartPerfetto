@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { CaseKnowledgeResponsibility, CaseKnowledgeSeverity } from '../../types/caseKnowledge';
+import type { CaseKnowledgeResponsibility } from '../../types/caseKnowledge';
 import type { DataEnvelope } from '../../types/dataContract';
 import { dataEnvelopeRefId } from './dataEnvelopeRef';
 
@@ -11,14 +11,6 @@ export interface CaseCandidateCluster {
   domainPack: 'scrolling.v1';
   rootCause: string;
   responsibility: CaseKnowledgeResponsibility;
-  severity: CaseKnowledgeSeverity;
-  frameCount: number;
-  percentage: number;
-  representativeFrame?: {
-    frameId: string;
-    durMs: number;
-    vsyncMissed: number;
-  };
   evidenceSignatures: Record<string, unknown>;
   evidenceRefIds: string[];
 }
@@ -28,16 +20,15 @@ const MIN_PROMOTABLE_PERCENTAGE = 15;
 
 export function projectScrollingCandidateClusters(dataEnvelopes: DataEnvelope[]): CaseCandidateCluster[] {
   const clusters: CaseCandidateCluster[] = [];
-  const evidenceRefCounts = countEvidenceRefIds(dataEnvelopes);
+  const duplicateEvidenceRefIds = new Set(
+    [...countEvidenceRefIds(dataEnvelopes).entries()].filter(([, count]) => count > 1).map(([id]) => id),
+  );
   for (const env of dataEnvelopes) {
     if (env.meta?.skillId !== 'scrolling_analysis' || env.meta?.stepId !== 'batch_frame_root_cause') {
       continue;
     }
     const rows = Array.isArray(env.data?.rows) ? env.data.rows : [];
     const columns = Array.isArray(env.data?.columns) ? env.data.columns : [];
-    const duplicateEvidenceRefIds = new Set(
-      [...evidenceRefCounts.entries()].filter(([, count]) => count > 1).map(([id]) => id),
-    );
     for (const row of rows) {
       const record = rowToRecord(columns, row);
       const frameCount = toNumber(record.frame_count);
@@ -46,26 +37,16 @@ export function projectScrollingCandidateClusters(dataEnvelopes: DataEnvelope[])
         continue;
       }
       const rootCause = readString(record.reason_code) || 'unknown';
-      const vsyncMissed = toNumber(record.vsync_missed);
-      const renderSlices = readStringArray(record.render_slices_json);
       clusters.push({
         scene: 'scrolling',
         domainPack: 'scrolling.v1',
         rootCause,
         responsibility: mapResponsibility(readString(record.jank_responsibility)),
-        severity: severityFromSignals(percentage, vsyncMissed),
-        frameCount,
-        percentage,
-        representativeFrame: {
-          frameId: readString(record.frame_id) || '',
-          durMs: toNumber(record.dur_ms),
-          vsyncMissed,
-        },
         evidenceSignatures: {
           reason_code: rootCause,
           jank_responsibility: readString(record.jank_responsibility) || 'unknown',
-          vsync_missed: vsyncMissed,
-          render_slices: renderSlices,
+          vsync_missed: toNumber(record.vsync_missed),
+          render_slices: readStringArray(record.render_slices_json),
         },
         evidenceRefIds: [dataEnvelopeRefId(env, duplicateEvidenceRefIds)],
       });
@@ -118,9 +99,4 @@ function mapResponsibility(value: string | undefined): CaseKnowledgeResponsibili
   if (normalized === 'sf' || normalized.includes('surfaceflinger') || normalized.includes('display')) return 'oem';
   if (normalized.includes('mixed')) return 'mixed';
   return 'unknown';
-}
-
-function severityFromSignals(percentage: number, vsyncMissed: number): CaseKnowledgeSeverity {
-  if (percentage >= 30 || vsyncMissed >= 5) return 'critical';
-  return 'warning';
 }

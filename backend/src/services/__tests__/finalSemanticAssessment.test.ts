@@ -9,7 +9,7 @@ import type {ConclusionContract} from '../../agent/core/conclusionContract';
 import {attachFinalizationContext, takeFinalizationContext, type RuntimeFinalizationContext} from '../../agentRuntime/analysisFinalizationContext';
 import type {IntentTransportInput, IntentTransportResult} from '../../agentRuntime/intentTransport';
 import {buildStrategyRegistrySnapshotFromDefinitions, loadPromptTemplate, type StrategyDefinition} from '../../agentv3/strategyLoader';
-import {analysisDeliveryFingerprint, type AnalysisReportRequirement, type AnalysisCaseRetrievalState} from '../../types/analysisDelivery';
+import {analysisDeliveryFingerprint, type AnalysisReportRequirement} from '../../types/analysisDelivery';
 import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT,
   type FinalSemanticAssessmentInput} from '../finalSemanticAssessment';
 import type {AnalysisInvestigationRequirement} from '../../types/analysisInvestigation';
@@ -34,7 +34,6 @@ function fixture(options: {
   requirements?: AnalysisReportRequirement[];
   scope?: 'bounded_question' | 'scene_wide';
   deliverable?: 'answer' | 'report';
-  caseRetrieval?: AnalysisCaseRetrievalState;
   deadlineMs?: number;
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>;
   investigationRequirements?: AnalysisInvestigationRequirement[];
@@ -96,7 +95,7 @@ function fixture(options: {
       ...(options.selection ? {selectionScope: options.selection} : {}),
       ...(requirements.length || options.deliverable === 'report' ? {reportRequirements: {
         sceneId: 'general', registryFingerprint: registry.registryFingerprint, requirements,
-      }} : {}), ...(options.caseRetrieval ? {caseRetrieval: options.caseRetrieval} : {})}};
+      }} : {})}};
   if (options.investigationRequirements) input.snapshot.investigationRequirements = resolveAnalysisInvestigationRequirements({
     intent: context.turnIntent, strategyRegistry: registry});
   return {input, reply, dispatch, reads, controller, contract, candidate};
@@ -289,7 +288,7 @@ describe('final semantic assessment snapshot and transport', () => {
     expect(run.dispatch.mock.calls[0][0].prompt).not.toContain('mutated declaration');
   });
 
-  it.each(['body', 'claim', 'evidence', 'source', 'capability', 'case', 'diagnostics', 'query', 'candidate'] as const)(
+  it.each(['body', 'claim', 'evidence', 'source', 'capability', 'diagnostics', 'query', 'candidate'] as const)(
     'does not reuse or redispatch after a %s snapshot change', async field => {
       const run = fixture();
       await assessFinalSemantics(run.input);
@@ -300,7 +299,6 @@ describe('final semantic assessment snapshot and transport', () => {
       if (field === 'source') changed.snapshot.sourceUse = {schemaVersion: 'source_use_decision@1', codeAwareMode: 'metadata_only',
         selectedCodebaseIds: [], status: 'pending', attemptedTools: [], queriedCodebaseIds: [], usedCodebaseIds: [], references: []};
       if (field === 'capability') changed.snapshot.capabilitySnapshot = {available: true};
-      if (field === 'case') changed.snapshot.caseRetrieval = {status: 'checked', recommendations: []};
       if (field === 'diagnostics') changed.snapshot.protocolDiagnostics = {rawPayload: 'changed original'};
       if (field === 'query') changed.snapshot.query += ' Broader request.';
       if (field === 'candidate') changed.canonicalCandidate.attemptId = 'different-attempt';
@@ -1116,21 +1114,6 @@ describe('semantic report applicability and coverage', () => {
     expect(assessment).toMatchObject({status: 'checked', coverage: {report: 'complete'}});
     expect(assessment.requirements).toContainEqual({requirementId: 'optional', applicability: 'unknown', coverage: 'unknown',
       contentLocations: [], claimIds: []});
-  });
-
-  it.each(['not_checked', 'unavailable', 'checked'] as const)('uses actual case retrieval state %s without inventing complete search', async status => {
-    const run = fixture({requirements: [{...required, condition: {kind: 'strong_case_retrieval'}}],
-      caseRetrieval: {status, recommendations: []}});
-    Object.assign(run.reply.requirements[0], {applicability: status === 'checked' ? 'not_applicable' : 'unknown',
-      coverage: 'unknown', contentLocations: [], claimIds: []});
-    expect(await assessFinalSemantics(run.input)).toMatchObject({status: status === 'checked' ? 'checked' : 'coverage_incomplete'});
-  });
-
-  it('cannot waive an actual strong case retrieval requirement', async () => {
-    const run = fixture({requirements: [{...required, condition: {kind: 'strong_case_retrieval'}}],
-      caseRetrieval: {status: 'checked', recommendations: [{caseId: 'case-1', title: 'Relevant case', matchStrength: 'strong', recommendations: {app: [], oem: []}}]}});
-    Object.assign(run.reply.requirements[0], {applicability: 'not_applicable', coverage: 'unknown', contentLocations: [], claimIds: []});
-    expect(await assessFinalSemantics(run.input)).toMatchObject({reason: 'invalid_response'});
   });
 
   it('rejects absent or mutated requirement pins before dispatch', async () => {

@@ -5377,12 +5377,12 @@ export class HTMLReportGenerator {
 
     return `
     <div class="section">
-      <h2 class="section-title">${localize(outputLanguage, '相似案例与优化建议', 'Case-Based Recommendations')}</h2>
+      <h2 class="section-title">${localize(outputLanguage, '人工案例签名匹配', 'Curated Case Signature Matches')}</h2>
       <div class="claim-source-note">
         ${this.escapeHtml(localize(
           outputLanguage,
-          '以下建议来自结构化 case recommendation hit。只有 strong 匹配会作为直接优化建议；partial/background 会明确标注证据缺口。',
-          'The recommendations below come from structured case recommendation hits. Only strong matches are direct guidance; partial/background matches show an explicit evidence gap.',
+          '以下条目是用本次 trace 的数据对人工策展案例的证据签名做的匹配，不是经过验证的结论；采纳建议前请按 applies_when 核对本次证据。',
+          'These entries match this trace\'s data against the evidence signatures of curated cases; they are not verified conclusions. Check each recommendation\'s applies_when against this run\'s evidence before acting on it.',
         ))}
       </div>
       <div class="case-rec-grid">
@@ -5431,38 +5431,32 @@ export class HTMLReportGenerator {
       'vendorRecommendations',
       'vendor_recommendations',
     ]);
+    const matchedSignatures = this.readReportAliasedStringArray(hit, ['matchedSignatures', 'matched_signatures']);
+    // Older hits copied their signature names into evidenceRefs; a name is never evidence.
     const evidenceRefs = this.readReportAliasedStringArray(hit, [
       'evidenceRefs',
       'evidence_refs',
       'evidenceRefIds',
       'evidence_ref_ids',
-    ]);
+    ]).filter(ref => !matchedSignatures.includes(ref));
     const learnedBadge = this.renderLearnedCaseProvenanceBadge(
       this.asReportRecord(this.readReportAliasedValue(hit, ['learnedProvenance', 'learned_provenance'])),
       outputLanguage,
     );
 
     const matchLabel = this.caseMatchLabel(matchStrength, outputLanguage);
-    const guidanceLabel = matchStrength === 'strong'
-      ? localize(outputLanguage, '可作为直接建议', 'Direct guidance')
-      : localize(outputLanguage, '仅作背景参考', 'Context only');
+    const codeList = (values: string[]) => values.map(value => `<code>${this.escapeHtml(value)}</code>`).join(', ');
     const metaParts = [
       `<span class="case-rec-pill ${matchStrength}">${this.escapeHtml(matchLabel)}</span>`,
-      `<span class="case-rec-pill">${this.escapeHtml(guidanceLabel)}</span>`,
       learnedBadge,
       scene ? `<span>${this.escapeHtml(localize(outputLanguage, '场景', 'Scene'))}: ${this.escapeHtml(scene)}</span>` : '',
       rootCause ? `<span>${this.escapeHtml(localize(outputLanguage, '根因', 'Root cause'))}: ${this.escapeHtml(rootCause)}</span>` : '',
-      evidenceRefs.length ? `<span>${this.escapeHtml(localize(outputLanguage, '证据', 'Evidence'))}: ${evidenceRefs.map(ref => `<code>${this.escapeHtml(ref)}</code>`).join(', ')}</span>` : '',
+      matchedSignatures.length ? `<span>${this.escapeHtml(localize(outputLanguage, '匹配签名', 'Matched signatures'))}: ${codeList(matchedSignatures)}</span>` : '',
+      evidenceRefs.length ? `<span>${this.escapeHtml(localize(outputLanguage, '证据', 'Evidence'))}: ${codeList(evidenceRefs)}</span>` : '',
     ].filter(Boolean);
-    const gapText = evidenceGap ||
-      localize(
-        outputLanguage,
-        '当前 trace 未满足该案例的必需证据签名，不能作为直接优化建议。',
-        'The current trace does not satisfy this case\'s required evidence signatures, so this is not direct guidance.',
-      );
-    const gapHtml = matchStrength === 'strong'
+    const gapHtml = matchStrength === 'strong' || !evidenceGap
       ? ''
-      : `<div class="case-rec-gap"><span class="case-field-name">evidence_gap</span>: ${this.escapeHtml(gapText)}</div>`;
+      : `<div class="case-rec-gap"><span class="case-field-name">evidence_gap</span>: ${this.escapeHtml(evidenceGap)}</div>`;
 
     return `
       <div class="case-rec-card">
@@ -5542,17 +5536,21 @@ export class HTMLReportGenerator {
     return 'background';
   }
 
+  /** The retriever's grading (`evaluateCaseNode`), stated once per card. */
   private caseMatchLabel(
     matchStrength: 'strong' | 'partial' | 'background',
     outputLanguage: OutputLanguage,
   ): string {
     switch (matchStrength) {
       case 'strong':
-        return localize(outputLanguage, 'strong 匹配', 'strong match');
+        return localize(outputLanguage, 'strong：必需签名全部满足，且有支持签名匹配',
+          'strong: every required signature and at least one supportive signature matched');
       case 'partial':
-        return localize(outputLanguage, 'partial 匹配', 'partial match');
+        return localize(outputLanguage, 'partial：必需签名全部满足，没有支持签名匹配',
+          'partial: every required signature matched, no supportive one');
       case 'background':
-        return localize(outputLanguage, 'background 匹配', 'background match');
+        return localize(outputLanguage, 'background：缺少必需签名，仅作背景',
+          'background: required signatures missing, context only');
     }
   }
 

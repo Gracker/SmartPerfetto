@@ -358,9 +358,8 @@ export function parseFinalReportContract(value: unknown): FinalReportContract | 
         ? section.recovery_text as Record<string, unknown> : undefined;
       const rawCondition = section.condition && typeof section.condition === 'object'
         ? section.condition as Record<string, unknown> : undefined;
-      const condition: AnalysisReportRequirementCondition | undefined = rawCondition?.kind === 'strong_case_retrieval'
-        ? {kind: 'strong_case_retrieval'}
-        : rawCondition?.kind === 'semantic' && typeof rawCondition.description === 'string' && rawCondition.description.trim()
+      const condition: AnalysisReportRequirementCondition | undefined =
+        rawCondition?.kind === 'semantic' && typeof rawCondition.description === 'string' && rawCondition.description.trim()
           ? {kind: 'semantic', description: rawCondition.description.trim()}
           : 'condition' in section ? {kind: 'unresolved', reason: 'invalid_condition'}
             : 'trigger_patterns' in section ? {kind: 'unresolved', reason: 'legacy_trigger_patterns'} : undefined;

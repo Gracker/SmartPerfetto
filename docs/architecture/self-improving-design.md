@@ -155,8 +155,14 @@ Case 知识只来自人工策展：Markdown 经 `npm --prefix backend run ingest
 归档和边的增删要求 `self_evolution:curate`，curator 与 reviewer 取自登录身份，请求体里的
 名字不被采用。两个开关都默认关闭：
 
-- `CASE_EVOLUTION_RETRIEVE_ENABLED`：终结时按当前证据召回匹配的 case，写入
-  `caseRetrieval`，供报告要求判断适用性。
+- `CASE_EVOLUTION_RETRIEVE_ENABLED`：Web 分析终结前，用本次 trace 自己的帧簇数据
+  （`scrolling_analysis` 的 `batch_frame_root_cause`）匹配人工 case 的证据签名。命中由
+  `finalizeAnalysisResult` 在 contract 完成 owner 投影之后、任何交付绑定之前写入
+  `conclusionContract.caseRecommendations`，这是新结果推荐的唯一来源；其 `evidenceRefs` 是签名
+  所读的 Trace 证据，`matchedSignatures` 单列签名名。这是签名匹配，不是 claim 验证，报告也
+  这样标注。召回失败只记日志（固定文案），结果不带推荐。召回不进入语义复核，也不决定报告
+  要求：模型在写答案时看不到命中，scrolling 因此不再有引用 case 的要求，`strong_case_retrieval`
+  条件已退役（自定义策略仍声明时按 `invalid_condition` 处理）。CLI、对话与 scene run 不召回。
 - `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`：把 published / reviewed case 作为背景注入 system
   prompt，需要检索同时开启；草稿从不注入，私有 run 不注入。
 
@@ -183,8 +189,8 @@ CaseGraph 的全部读取（get / list / search / stats / related / size）在�
 阶段写入的每个副本里删掉与它相连的边（按端点匹配，边 id 并不唯一），再删节点，图的任一副本读
 不了就拒绝删除、保留节点。各 store 的写入入口拒绝退役数据（`retired_case_data_write_refused`），
 `learned:` 是 Markdown case 的保留前缀；删除仍然允许。新结果不带学习来源：受理新结果时
-（`canonicalizeAnalysisResult`），不论 contract 来自声明还是 runtime，推荐都去掉
-`learnedProvenance` 和退役 case；召回命中本身也不再带它。恢复的历史结果与报告照常展示原有来源。
+（`canonicalizeAnalysisResult`），不论 contract 来自声明还是 runtime，推荐字段整体去掉，只有
+上面的服务端召回能再写入，而召回命中不带学习来源。恢复的历史结果与报告照常展示原有推荐与来源。
 
 这个承诺只覆盖已升级实例的活跃知识读取：未升级的进程仍按旧代码读自己的数据，所以发布验收
 要求所有对外实例完成升级。退役数据仍留在原处：本地 `rag_store.json` 的文件大小与 chunk 数

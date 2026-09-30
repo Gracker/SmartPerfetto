@@ -364,7 +364,7 @@ describe('numeric claim diagnostics name the failing part', () => {
   });
 });
 
-describe('a model declaration cannot bring learned-case recommendations into a new result', () => {
+describe('only the server supplies a new result\'s case recommendations', () => {
   it('leaves declared caseRecommendations, learned provenance included, out of every surface', () => {
     const declaration = {...verboseDeclaration(CLAIMS), caseRecommendations: [{
       caseId: 'learned:0123456789abcdef', title: 'A learned case', matchStrength: 'strong',
@@ -380,7 +380,7 @@ describe('a model declaration cannot bring learned-case recommendations into a n
     }
   });
 
-  it('drops learned data from a runtime-supplied contract, and a restored result keeps its own', () => {
+  it('drops every recommendation a runtime-supplied contract carries, and a restored result keeps its own', () => {
     const recommendations = [
       {caseId: 'learned:0123456789abcdef', title: 'A learned case', matchStrength: 'strong',
         recommendations: {app: [], oem: []}},
@@ -396,12 +396,10 @@ describe('a model declaration cannot bring learned-case recommendations into a n
     } as unknown as AnalysisResult;
 
     const accepted = canonicalizeAnalysisResult(source);
-    const curatedOnly = [
-      {caseId: 'curated-case', title: 'A curated case', matchStrength: 'partial', recommendations: {app: [], oem: []}},
-    ];
     // Both what the result delivers and what the finalizer re-projects from.
-    expect(accepted.result.conclusionContract?.caseRecommendations).toEqual(curatedOnly);
-    expect(accepted.validationContract?.caseRecommendations).toEqual(curatedOnly);
+    expect(accepted.result.conclusionContract).not.toHaveProperty('caseRecommendations');
+    expect(accepted.validationContract).not.toHaveProperty('caseRecommendations');
+    expect(accepted.validationContract?.conclusions).toEqual(source.conclusionContract?.conclusions);
     expect(canonicalizeAnalysisResult(source, {context: {entry: 'historical_restore'}})
       .result.conclusionContract?.caseRecommendations).toEqual(recommendations);
   });
