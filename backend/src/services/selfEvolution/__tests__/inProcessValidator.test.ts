@@ -59,6 +59,26 @@ describe('in-process effective Skill validator', () => {
     ]));
   });
 
+  it('rejects a save_as that reuses the id of another step, including a later or nested one', () => {
+    const collisions = (steps: unknown[]) => {
+      const definition = skill('collide');
+      definition.steps = steps as SkillDefinition['steps'];
+      return validateSkillDefinitionsInProcess({definitions: [definition]}).issues
+        .filter(entry => entry.code === 'save_as_step_id_collision')
+        .map(entry => entry.path);
+    };
+
+    // A step naming its binding after itself is the common, unambiguous form.
+    expect(collisions([{id: 'rows', type: 'atomic', sql: 'SELECT 1', save_as: 'rows'}])).toEqual([]);
+    expect(collisions([
+      {id: 'first', type: 'atomic', sql: 'SELECT 1', save_as: 'later'},
+      {id: 'parallel', type: 'parallel', steps: [
+        {id: 'later', type: 'atomic', sql: 'SELECT 2'},
+        {id: 'inner', type: 'atomic', sql: 'SELECT 3', save_as: 'first'},
+      ]},
+    ])).toEqual(['steps[0].save_as', 'steps[1].steps[1].save_as']);
+  });
+
   it('rejects missing nested Skill and fragment references without shelling out', () => {
     const definition = skill('parent');
     definition.steps = [

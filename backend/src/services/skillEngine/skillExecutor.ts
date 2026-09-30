@@ -202,6 +202,11 @@ export function normalizeLayer(layer: string | undefined): DisplayLayer | undefi
 // 表达式求值器
 // =============================================================================
 
+/** The innermost scope that binds a root name, and the raw value it holds there. */
+type RootBinding =
+  | { source: 'item' | 'variable' | 'param' | 'inherited'; value: any }
+  | { source: 'result'; value: any; result: StepResult };
+
 class ExpressionEvaluator {
   private static warnedConditionMessages = new Set<string>();
 
@@ -318,34 +323,14 @@ class ExpressionEvaluator {
       // 从表达式中提取根变量名
       const rootVarNames = this.extractRootVariables(expr);
 
-      // 构建作用域对象
+      // 构建作用域对象。未找到的名字也显式注入 undefined，避免 ReferenceError（例如 expr: "package"）
       const scope: Record<string, any> = {};
 
       for (const varName of rootVarNames) {
-        // 从步骤结果中获取
-        if (context.results[varName]) {
-          scope[varName] = this.wrapAsDataScope(context.results[varName].data);
-        }
-        // 从变量中获取
-        else if (context.variables[varName] !== undefined) {
-          scope[varName] = this.wrapAsDataScope(context.variables[varName]);
-        }
-        // 从参数中获取
-        else if (context.params[varName] !== undefined) {
-          scope[varName] = context.params[varName];
-        }
-        // 从继承上下文中获取
-        else if (context.inherited[varName] !== undefined) {
-          scope[varName] = context.inherited[varName];
-        }
-        // 当前迭代项
-        else if (varName === 'item' && context.currentItem) {
-          scope[varName] = context.currentItem;
-        }
-        // 未找到时也显式注入 undefined，避免 ReferenceError（例如 expr: "package" 或 "frame_ts"）
-        else {
-          scope[varName] = undefined;
-        }
+        const binding = this.resolveRootBinding(varName, context);
+        scope[varName] = binding?.source === 'result' || binding?.source === 'variable'
+          ? this.wrapAsDataScope(binding.value)
+          : binding?.value;
       }
 
       // Debug log removed for cleaner output
@@ -460,6 +445,34 @@ class ExpressionEvaluator {
   }
 
   /**
+   * Resolve a root name, innermost scope first (order documented in
+   * docs/reference/skill-system.md, 解析优先级): iteration item, save_as, step
+   * result, input, inherited. Every name reader resolves here, so a calling
+   * Skill's value never stands in for this Skill's own binding. A `null`
+   * save_as counts as bound: a `save_from` step that observed nothing stops here.
+   */
+  static resolveRootBinding(name: string, context: SkillExecutionContext): RootBinding | undefined {
+    const item = context.currentItem;
+    if (item) {
+      if (name === 'item') return { source: 'item', value: item };
+      if (typeof item === 'object' && Object.prototype.hasOwnProperty.call(item, name) && item[name] !== undefined) {
+        return { source: 'item', value: item[name] };
+      }
+    }
+    if (context.variables[name] !== undefined) return { source: 'variable', value: context.variables[name] };
+    const result = context.results[name];
+    if (result) return { source: 'result', value: result.data, result };
+    if (context.params?.[name] !== undefined) return { source: 'param', value: context.params[name] };
+    if (context.inherited?.[name] !== undefined) return { source: 'inherited', value: context.inherited[name] };
+    return undefined;
+  }
+
+  /** The value a root name holds, without the `.data` wrapper expressions see. */
+  static resolveRootValue(name: string, context: SkillExecutionContext): any {
+    return this.resolveRootBinding(name, context)?.value;
+  }
+
+  /**
    * 解析路径引用，支持深层嵌套和数组索引
    * 例如: "step1.data[0].field" 或 "performance_summary.data[0].app_jank_rate"
    */
@@ -468,43 +481,14 @@ class ExpressionEvaluator {
     const tokens = this.parsePath(path);
     if (tokens.length === 0) return undefined;
 
-    const rootKey = tokens[0];
+    const binding = this.resolveRootBinding(tokens[0], context);
+    if (!binding) return undefined;
 
-    // 获取根值
-    let value: any;
-
-    // 尝试从不同来源解析根值
-    // 1. 当前迭代项
-    if (rootKey === 'item' && context.currentItem) {
-      value = context.currentItem;
-    }
-    // 2. 参数
-    else if (context.params[rootKey] !== undefined) {
-      value = context.params[rootKey];
-    }
-    // 3. 继承的上下文
-    else if (context.inherited[rootKey] !== undefined) {
-      value = context.inherited[rootKey];
-    }
-    // 4. 变量（save_as 保存的）- 也需要包装以支持 .data[0].field 访问
-    else if (context.variables[rootKey] !== undefined) {
-      // 如果路径包含 .data，需要包装；否则直接返回
-      const nextToken = tokens[1];
-      if (nextToken === 'data') {
-        value = this.wrapAsDataScope(context.variables[rootKey]);
-      } else {
-        // 直接访问数组元素，如 ${main_slices[0].name}
-        value = context.variables[rootKey];
-      }
-    }
-    // 5. 步骤结果 - 返回包装对象以支持 .data[0].field 访问
-    else if (context.results[rootKey]) {
-      // 返回包含 data 属性的对象，这样 ${main_slices.data[0].name} 才能正确解析
-      value = this.wrapAsDataScope(context.results[rootKey].data);
-    }
-    else {
-      return undefined;
-    }
+    // 步骤结果包装成 { data } 以支持 ${step.data[0].name}；save_as 变量只在路径写了
+    // .data 时包装，否则直接访问数组元素，如 ${main_slices[0].name}
+    let value: any = binding.source === 'result' || (binding.source === 'variable' && tokens[1] === 'data')
+      ? this.wrapAsDataScope(binding.value)
+      : binding.value;
 
     // 遍历剩余 token 解析深层路径
     for (let i = 1; i < tokens.length; i++) {
@@ -2094,6 +2078,18 @@ export class SkillExecutor {
     if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(selected);
   }
 
+  /**
+   * The scope of the binding an input name resolves to. A bound variable carries
+   * only its own scope, even when it holds no data, never that of a same-named
+   * step result; inputs and inherited values carry none.
+   */
+  private inputScopeProvenance(name: string, context: SkillExecutionContext): EvidenceScopeProvenanceV1 | undefined {
+    const binding = ExpressionEvaluator.resolveRootBinding(name, context);
+    if (binding?.source === 'variable') return context.variableScopes?.[name];
+    if (binding?.source === 'result') return resultScopeProvenance(binding.result);
+    return undefined;
+  }
+
   private namedChildStepResult(stepResult: StepResult, stepId: string): StepResult | undefined {
     const named = (stepResult.data as any)?.rawResults?.[stepId];
     return named && typeof named === 'object' && named.success !== false
@@ -3137,8 +3133,7 @@ export class SkillExecutor {
 
     if (!result.scopeProvenance && ['diagnostic', 'ai_decision', 'ai_summary'].includes(step.type || '')) {
       const inputNames = 'inputs' in step && Array.isArray(step.inputs) ? step.inputs : [];
-      const provenance = mergeScopeProvenance(inputNames.map(name =>
-        resultScopeProvenance(context.results[name]) || context.variableScopes?.[name]));
+      const provenance = mergeScopeProvenance(inputNames.map(name => this.inputScopeProvenance(name, context)));
       Object.assign(result, scopeMetadata(provenance));
       if (Array.isArray(result.data?.diagnostics)) result.data.diagnostics = result.data.diagnostics.map((diagnostic: any) =>
         ({ ...diagnostic, ...scopeMetadata(provenance) }));
@@ -3395,7 +3390,7 @@ export class SkillExecutor {
     }
 
     // 获取数据源
-    const source = context.variables[step.source] || context.results[step.source]?.data;
+    const source = this.resolveStepResultFromSource(step.source, context)?.data;
     if (!source || !Array.isArray(source)) {
       return {
         stepId: step.id,
@@ -3423,8 +3418,7 @@ export class SkillExecutor {
           const itemObj = (item && typeof item === 'object') ? item : {};
           const filterCtx: SkillExecutionContext = {
             ...context,
-            // Expose item fields at root-level for convenience in filter expressions.
-            inherited: { ...(context.inherited || {}), ...itemObj },
+            // resolveRootBinding exposes `item` and its fields ahead of every other scope.
             currentItem: itemObj,
           };
           return ExpressionEvaluator.evaluateCondition(filterExpr, filterCtx);
@@ -3526,10 +3520,10 @@ export class SkillExecutor {
     const startTime = Date.now();
     const diagnostics: DiagnosticResult[] = [];
 
-    // 收集输入数据
+    // 收集输入数据：与规则 condition/diagnosis 读到的是同一个绑定
     const inputs: Record<string, any> = {};
     for (const inputName of step.inputs) {
-      inputs[inputName] = context.variables[inputName] || context.results[inputName]?.data;
+      inputs[inputName] = ExpressionEvaluator.resolveRootValue(inputName, context);
     }
 
     // 评估规则
@@ -4033,11 +4027,10 @@ export class SkillExecutor {
     source: string,
     context: SkillExecutionContext
   ): SkillStepResult | undefined {
-    if (context.results[source]) return context.results[source];
-    if (context.variables[source] !== undefined) {
-      return { data: context.variables[source] as any };
-    }
-    return undefined;
+    // A source names one of this Skill's own steps: its save_as binding, else its result.
+    const binding = ExpressionEvaluator.resolveRootBinding(source, context);
+    if (binding?.source === 'variable') return { data: binding.value };
+    return binding?.source === 'result' ? binding.result : undefined;
   }
 
   private resolveFirstObjectRowFromSource(
@@ -4112,7 +4105,7 @@ export class SkillExecutor {
     const maxColumns = 64;
 
     for (const inputName of inputs) {
-      const value = this.resolveAIInputValue(inputName, context);
+      const value = ExpressionEvaluator.resolveRootValue(inputName, context);
 
       if (value === undefined) {
         payload[inputName] = { missing: true };
@@ -4157,25 +4150,6 @@ export class SkillExecutor {
     }
 
     return payload;
-  }
-
-  private resolveAIInputValue(inputName: string, context: SkillExecutionContext): any {
-    if (context.variables[inputName] !== undefined) {
-      return context.variables[inputName];
-    }
-    if (context.results[inputName]?.data !== undefined) {
-      return context.results[inputName].data;
-    }
-    if (context.params && context.params[inputName] !== undefined) {
-      return context.params[inputName];
-    }
-    if (context.inherited && context.inherited[inputName] !== undefined) {
-      return context.inherited[inputName];
-    }
-    if (context.currentItem && (context.currentItem as any)[inputName] !== undefined) {
-      return (context.currentItem as any)[inputName];
-    }
-    return undefined;
   }
 
   private buildStructuredAIPrompt(
