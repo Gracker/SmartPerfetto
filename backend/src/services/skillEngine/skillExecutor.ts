@@ -2072,6 +2072,36 @@ export class SkillExecutor {
     return this.extractSelectedStepResult(stepResult).data;
   }
 
+  /**
+   * Bind a successful step's `save_as` variable and its scope provenance.
+   * A Skill reference with `save_from` binds exactly that child step. When that
+   * step did not observe a result (failed, skipped, optional query error), the
+   * variable holds no data (`null`): expression lookup stops there, so neither
+   * another step's rows nor an earlier or inherited value can be read in its
+   * place. A genuinely empty result still binds `[]`.
+   */
+  private bindSaveAs(step: SkillStep, stepResult: StepResult, context: SkillExecutionContext): void {
+    if (!('save_as' in step) || !step.save_as) return;
+    const selected = 'save_from' in step && step.save_from && stepResult.stepType === 'skill'
+      ? this.namedChildStepResult(stepResult, step.save_from)
+      : this.extractSelectedStepResult(stepResult);
+    if (!selected) {
+      context.variables[step.save_as] = null;
+      if (context.variableScopes) delete context.variableScopes[step.save_as];
+      return;
+    }
+    context.variables[step.save_as] = selected.data;
+    if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(selected);
+  }
+
+  private namedChildStepResult(stepResult: StepResult, stepId: string): StepResult | undefined {
+    const named = (stepResult.data as any)?.rawResults?.[stepId];
+    return named && typeof named === 'object' && named.success !== false
+      && Object.prototype.hasOwnProperty.call(named, 'data') && !nonObservedStepState(named)
+      ? named as StepResult
+      : undefined;
+  }
+
   private extractSelectedStepResult(stepResult: StepResult): StepResult {
     // Most steps already store direct row arrays/objects in stepResult.data.
     if (stepResult.stepType !== 'skill') {
@@ -2175,10 +2205,7 @@ export class SkillExecutor {
         context.results[step.id] = stepResult;
 
         // 如果有 save_as，保存到变量
-        if ('save_as' in step && step.save_as) {
-          context.variables[step.save_as] = this.extractSaveAsValue(stepResult);
-          if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(this.extractSelectedStepResult(stepResult));
-        }
+        this.bindSaveAs(step, stepResult, context);
 
         // 收集需要展示的结果
         if (this.shouldDisplay(step)) {
@@ -2790,10 +2817,7 @@ export class SkillExecutor {
           execContext.results[step.id] = stepResult;
 
           // Save to variables if save_as is specified
-          if ('save_as' in step && step.save_as) {
-            execContext.variables[step.save_as] = this.extractSaveAsValue(stepResult);
-            if (execContext.variableScopes) execContext.variableScopes[step.save_as] = resultScopeProvenance(this.extractSelectedStepResult(stepResult));
-          }
+          this.bindSaveAs(step, stepResult, execContext);
         }
 
         // IMPORTANT: Add display config from step definition to stepResult

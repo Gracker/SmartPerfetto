@@ -83,6 +83,23 @@ steps:
 | `ai_summary` | Ask the configured AI runtime to summarize selected step inputs; disabled runtimes produce an explicit skipped result |
 | `pipeline` | Detect or describe rendering pipeline behavior |
 
+A `skill` step with `save_as` binds one of the referenced Skill's step
+results. By default the engine picks the first displayed step that returned
+data. When the parent reads specific fields, name the step with `save_from`:
+
+```yaml
+- id: cpu_throttling
+  skill: cpu_throttling_in_range
+  save_as: freq_limit_evidence
+  save_from: limit_evidence   # a top-level step id of the referenced Skill
+```
+
+If that step did not observe a result (failed, skipped by its condition, or
+an optional query error), `save_as` stays unbound; the engine never falls back
+to another step. A genuinely empty result binds `[]`. `save_from` is honoured
+only on a top-level step of the parent, and `validate:skills` rejects an
+unknown target step.
+
 ## Rendering Pipeline Catalog
 
 `docs/rendering_pipelines/*.md` is synchronized from a pinned

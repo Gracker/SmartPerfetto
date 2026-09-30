@@ -637,12 +637,14 @@ function validateStep(
       return hasOnlyKeys(value, [
         ...common,
         'skill',
+        'save_from',
         'params',
         'condition',
         'on_empty',
         'optional',
       ])
         && validateRequiredString(value, 'skill', path, issues)
+        && validateOptionalString(value, 'save_from', path, issues)
         && (
           value.params === undefined
           || isRecord(value.params)

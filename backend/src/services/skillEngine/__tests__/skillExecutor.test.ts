@@ -2484,6 +2484,119 @@ describe('Skill Reference Step 执行', () => {
   });
 });
 
+describe('Skill Reference save_from 绑定', () => {
+  let executor: SkillExecutor;
+  let mockTraceProcessor: any;
+
+  // Two displayed data steps: without save_from the engine binds the first.
+  // `detail` is optional, so the child still succeeds when it fails.
+  const child: SkillDefinition = {
+    name: 'two_step_child',
+    type: 'composite',
+    version: '1.0',
+    meta: createMeta('Two Step Child'),
+    steps: [
+      {id: 'overview', type: 'atomic', sql: 'SELECT /*overview*/ 1', display: {level: 'summary'}},
+      {id: 'detail', type: 'atomic', sql: 'SELECT /*detail*/ 1', display: {level: 'detail'},
+        optional: true, process_scope: {role: 'global_context'}} as any,
+      {id: 'gated', type: 'atomic', sql: 'SELECT /*gated*/ 1', condition: 'false', optional: true},
+      // A failed optional Skill reference is kept with success=false and data.
+      {id: 'nested', skill: 'broken_grandchild', optional: true} as any,
+    ],
+  };
+
+  function answer(detail: {rows: unknown[][]} | {error: string}) {
+    mockTraceProcessor.query.mockImplementation(async (_trace: string, sql: string) => {
+      if (sql.includes('/*overview*/')) return {columns: ['source'], rows: [['overview']]};
+      if (sql.includes('/*detail*/')) return 'error' in detail ? {columns: [], rows: [], ...detail} : {columns: ['source'], ...detail};
+      if (sql.includes('/*stale*/')) return {columns: ['source'], rows: [['stale']]};
+      if (sql.includes('/*broken*/')) return {columns: [], rows: [], error: 'broken'};
+      return {columns: [], rows: []};
+    });
+  }
+
+  function parent(ref: Record<string, unknown>, withStaleBinding = false): SkillDefinition {
+    return {
+      name: 'binding_parent',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Binding Parent'),
+      steps: [
+        ...(withStaleBinding ? [{id: 'earlier', type: 'atomic', sql: 'SELECT /*stale*/ 1', save_as: 'picked'} as any] : []),
+        {id: 'ref', skill: 'two_step_child', save_as: 'picked', optional: true, ...ref} as any,
+        {id: 'probe', type: 'diagnostic', inputs: ['picked'], rules: [
+          {condition: 'picked?.data == null', diagnosis: 'UNBOUND', confidence: 'high'},
+          {condition: 'Array.isArray(picked?.data)', diagnosis: 'BOUND ${JSON.stringify(picked.data)}', confidence: 'high'},
+        ]} as any,
+      ],
+    };
+  }
+
+  async function probeViaExecute(skill: SkillDefinition, inherited: Record<string, unknown> = {}) {
+    executor.registerSkill(skill);
+    return executor.execute(skill.name, 'trace-1', {}, inherited);
+  }
+  const diagnoses = (result: SkillExecutionResult) => result.diagnostics.map(d => d.diagnosis);
+
+  async function probeViaComposite(skill: SkillDefinition, inherited: Record<string, unknown> = {}): Promise<string[]> {
+    const layered = await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1', inherited});
+    const probe = layered.stepResults?.find(step => step.stepId === 'probe');
+    return (probe?.data?.diagnostics ?? []).map((d: any) => d.diagnosis);
+  }
+
+  beforeEach(() => {
+    mockTraceProcessor = createMockTraceProcessorService();
+    executor = createSkillExecutor(mockTraceProcessor);
+    executor.registerSkill(child);
+    executor.registerSkill({name: 'broken_grandchild', type: 'atomic', version: '1.0',
+      meta: createMeta('Broken Grandchild'), sql: 'SELECT /*broken*/ 1'});
+  });
+
+  it('keeps the heuristic pick when save_from is absent', async () => {
+    answer({rows: [['detail']]});
+    expect(diagnoses(await probeViaExecute(parent({})))).toEqual(['BOUND [{"source":"overview"}]']);
+    expect(await probeViaComposite(parent({}))).toEqual(['BOUND [{"source":"overview"}]']);
+  });
+
+  it('binds exactly the named child step on both execution paths', async () => {
+    answer({rows: [['detail']]});
+    const result = await probeViaExecute(parent({save_from: 'detail'}));
+    expect(diagnoses(result)).toEqual(['BOUND [{"source":"detail"}]']);
+    expect(await probeViaComposite(parent({save_from: 'detail'}))).toEqual(['BOUND [{"source":"detail"}]']);
+    // The binding carries the named step's scope, and the reference step's own
+    // result still holds every child step.
+    expect(JSON.stringify(result.diagnostics[0].scopeProvenance)).toContain('global_context');
+    expect(Object.keys(result.rawResults?.ref?.data?.rawResults ?? {})).toEqual(expect.arrayContaining(['overview', 'detail']));
+  });
+
+  it('binds a legitimately empty named step as an empty row set', async () => {
+    answer({rows: []});
+    expect(diagnoses(await probeViaExecute(parent({save_from: 'detail'})))).toEqual(['BOUND []']);
+  });
+
+  it('leaves the variable unbound, never falling back, when the named step fails', async () => {
+    answer({error: 'detail failed'});
+    expect(diagnoses(await probeViaExecute(parent({save_from: 'detail'}, true)))).toEqual(['UNBOUND']);
+    expect(await probeViaComposite(parent({save_from: 'detail'}, true))).toEqual(['UNBOUND']);
+  });
+
+  it('does not let an inherited value of the same name stand in for an unobserved step', async () => {
+    answer({error: 'detail failed'});
+    const inherited = {picked: {data: [{source: 'inherited'}]}};
+    expect(diagnoses(await probeViaExecute(parent({save_from: 'detail'}), inherited))).toEqual(['UNBOUND']);
+    expect(await probeViaComposite(parent({save_from: 'detail'}), inherited)).toEqual(['UNBOUND']);
+  });
+
+  it.each([
+    ['was skipped by its condition', 'gated'],
+    ['failed but kept partial data', 'nested'],
+    ['does not exist', 'missing'],
+  ])('leaves the variable unbound when the named step %s', async (_case, saveFrom) => {
+    answer({rows: [['detail']]});
+    expect(diagnoses(await probeViaExecute(parent({save_from: saveFrom}, true)))).toEqual(['UNBOUND']);
+  });
+});
+
 // =============================================================================
 // Test Suite: 表达式评估（通过 SQL 变量替换测试）
 // =============================================================================

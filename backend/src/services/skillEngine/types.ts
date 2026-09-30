@@ -228,6 +228,13 @@ export interface SkillRefStep {
   optional?: boolean;
   display?: DisplayConfig | boolean;
   save_as?: string;
+  /**
+   * Top-level step id of the referenced Skill whose data `save_as` binds.
+   * Without it the engine binds a heuristic pick (the first displayed step
+   * with data). With it, a missing or failed named step leaves `save_as`
+   * unbound rather than falling back. Honoured only on a top-level step.
+   */
+  save_from?: string;
   synthesize?: boolean | SynthesizeConfig;
 }
 

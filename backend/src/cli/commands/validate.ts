@@ -97,6 +97,24 @@ function loadSkillFragmentCache(): ReadonlyMap<string, string> {
   }
   return skillFragmentCache;
 }
+let skillDefinitionsById: ReadonlyMap<string, SkillDefinition> | undefined;
+
+/** Every Skill on disk by name, so a cross-Skill contract can resolve its target. */
+function loadSkillDefinitionsById(): ReadonlyMap<string, SkillDefinition> {
+  if (!skillDefinitionsById) {
+    const byId = new Map<string, SkillDefinition>();
+    for (const dir of ['atomic', 'composite', 'deep', 'system', 'comparison', 'modules', 'pipelines', 'custom']) {
+      for (const file of findSkillFiles(path.join(SKILLS_DIR, dir), /\.skill\.ya?ml$/)) {
+        try {
+          const skill = yaml.load(fs.readFileSync(file, 'utf-8')) as SkillDefinition | undefined;
+          if (skill?.name) byId.set(skill.name, skill);
+        } catch { /* the file's own validation reports parse errors */ }
+      }
+    }
+    skillDefinitionsById = byId;
+  }
+  return skillDefinitionsById;
+}
 const CASES_DIR = path.join(__dirname, '../../../knowledge/cases');
 const STRATEGIES_DIR = path.join(__dirname, '../../../strategies');
 const STRATEGY_FRONTMATTER_RE = /^(?:\s*<!--[\s\S]*?-->\s*)*---\n([\s\S]*?)\n---\n?/;
@@ -767,6 +785,7 @@ export function validateContracts(skill: SkillDefinition): { errors: string[]; w
   for (const validationIssue of validateSkillDefinitionInProcess(skill, {
     fragmentCache: loadSkillFragmentCache(),
     includeStructuralChecks: false,
+    definitions: loadSkillDefinitionsById(),
   })) {
     const formatted = `${validationIssue.path}: ${validationIssue.message}`;
     if (validationIssue.severity === 'error') {
@@ -1107,20 +1126,9 @@ function validateStrategySkillReferences(): number {
   }
 
   // Build the skill input registry from YAML files on disk (no runtime loader needed)
-  const skills = new Map<string, StrategySkillInputs>();
-  const skillDirs = ['atomic', 'composite', 'deep', 'system', 'comparison', 'modules', 'pipelines'];
-  for (const dir of skillDirs) {
-    const dirPath = path.join(SKILLS_DIR, dir);
-    if (!fs.existsSync(dirPath)) continue;
-    const skillFiles = findSkillFiles(dirPath, /\.skill\.ya?ml$/);
-    for (const file of skillFiles) {
-      try {
-        const content = fs.readFileSync(file, 'utf-8');
-        const skill = yaml.load(content) as any;
-        if (skill?.name) skills.set(skill.name, {inputs: skill.inputs});
-      } catch { /* skip unparseable files */ }
-    }
-  }
+  const skills = new Map<string, StrategySkillInputs>(
+    [...loadSkillDefinitionsById()].map(([name, skill]) => [name, {inputs: skill.inputs}]),
+  );
 
   console.log(colors.bold('\nStrategy → Skill Reference Validation\n'));
   console.log(`Skill registry: ${skills.size} skills loaded from YAML.\n`);
@@ -1303,18 +1311,19 @@ export const validateCommand = new Command('validate')
 
       // Run contract validation when --contracts is specified
       if (options.contracts) {
+        let skill: SkillDefinition | undefined;
         try {
-          const content = fs.readFileSync(file, 'utf-8');
-          const skill = yaml.load(content) as SkillDefinition;
-          if (skill) {
-            const contracts = validateContracts(skill);
-            result.errors.push(...contracts.errors);
-            result.warnings.push(...contracts.warnings);
-            if (contracts.errors.length > 0) {
-              result.valid = false;
-            }
-          }
+          skill = yaml.load(fs.readFileSync(file, 'utf-8')) as SkillDefinition;
         } catch { /* parse error already captured */ }
+        // A validator that throws must fail the run, not pass as a parse error.
+        if (skill) {
+          const contracts = validateContracts(skill);
+          result.errors.push(...contracts.errors);
+          result.warnings.push(...contracts.warnings);
+          if (contracts.errors.length > 0) {
+            result.valid = false;
+          }
+        }
       }
 
       const relativePath = path.relative(SKILLS_DIR, file);

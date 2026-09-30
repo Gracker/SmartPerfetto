@@ -90,6 +90,67 @@ describe('in-process effective Skill validator', () => {
     );
   });
 
+  it('checks that save_from binds a top-level step of the referenced Skill', () => {
+    const child = skill('child');
+    child.steps = [
+      {id: 'overview', type: 'atomic', sql: 'SELECT 1'},
+      {id: 'detail', type: 'atomic', sql: 'SELECT 2'},
+    ];
+    const withSteps = (steps: unknown[]) => {
+      const parent = skill('parent');
+      parent.steps = steps as SkillDefinition['steps'];
+      return validateSkillDefinitionsInProcess({
+        definitions: [parent, child],
+        affectedSkillIds: ['parent'],
+      });
+    };
+    const saveFromIssues = (steps: unknown[]) => withSteps(steps).issues
+      .filter(entry => entry.code.startsWith('save_from'))
+      .map(entry => `${entry.code} ${entry.path}`);
+
+    // A type-less Skill reference is still a Skill reference.
+    expect(withSteps([
+      {id: 'ref', skill: 'child', save_as: 'rows', save_from: 'detail'},
+    ])).toMatchObject({valid: true});
+    expect(saveFromIssues([
+      {id: 'ref', type: 'skill', skill: 'child', save_as: 'rows', save_from: 'missing'},
+    ])).toEqual(['save_from_step_missing steps[0].save_from']);
+    expect(saveFromIssues([
+      {id: 'ref', type: 'skill', skill: 'no_such_child', save_as: 'rows', save_from: 'detail'},
+    ])).toEqual(['save_from_target_missing steps[0].save_from']);
+    // A non-string value is reported, never thrown.
+    expect(saveFromIssues([7, false, {}].map((value, index) =>
+      ({id: `ref${index}`, type: 'skill', skill: 'child', save_as: `rows${index}`, save_from: value}))))
+      .toEqual([0, 1, 2].map(index => `save_from_invalid steps[${index}].save_from`));
+    expect(saveFromIssues([
+      {id: 'ref', type: 'skill', skill: 'child', save_from: 'detail'},
+      {id: 'sql', type: 'atomic', sql: 'SELECT 1', save_as: 'x', save_from: 'detail'},
+      {id: 'blank', type: 'skill', skill: 'child', save_as: 'y', save_from: ' '},
+    ])).toEqual([
+      'save_from_invalid steps[0].save_from',
+      'save_from_invalid steps[1].save_from',
+      'save_from_invalid steps[2].save_from',
+    ]);
+    // Changing only the child still re-checks the parent that binds its step.
+    const parent = skill('parent');
+    parent.steps = [{id: 'ref', skill: 'child', save_as: 'rows', save_from: 'renamed'} as any];
+    expect(validateSkillDefinitionsInProcess({definitions: [parent, child], affectedSkillIds: ['child']})
+      .issues.map(entry => `${entry.skillId} ${entry.code}`)).toEqual(['parent save_from_step_missing']);
+    // Nested steps are executed without binding save_as, so save_from there
+    // would validate and silently never bind.
+    expect(saveFromIssues([
+      {id: 'group', type: 'parallel', steps: [
+        {id: 'inner', skill: 'child', save_as: 'rows', save_from: 'detail'},
+      ]},
+      {id: 'branch', type: 'conditional', conditions: [
+        {when: 'true', then: {id: 'inner2', skill: 'child', save_as: 'rows2', save_from: 'detail'}},
+      ]},
+    ])).toEqual([
+      'save_from_invalid steps[0].steps[0].save_from',
+      'save_from_invalid steps[1].conditions[0].then[0].save_from',
+    ]);
+  });
+
   it('rejects invalid display contracts on effective definitions', () => {
     const definition = skill('display');
     definition.output = {

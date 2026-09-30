@@ -228,6 +228,20 @@ outputs:
     startup_id: "${startup_data.data[0].startup_id}"
 ```
 
+带 `save_as` 的引用步骤只绑定被引用 Skill 的一个步骤结果。默认取第一个有数据的展示步骤；
+父 Skill 要读具体字段时，用 `save_from` 指明步骤：
+
+```yaml
+- id: cpu_throttling
+  skill: cpu_throttling_in_range
+  save_as: freq_limit_evidence
+  save_from: limit_evidence   # 被引用 Skill 的顶层步骤 id
+```
+
+该步骤未观测到结果（失败、条件跳过或可选查询出错）时，`save_as` 保持未绑定，引擎不会退回
+其他步骤；真正的空结果绑定 `[]`。`save_from` 只在父 Skill 的顶层步骤生效，
+`validate:skills` 会拒绝不存在的目标步骤。
+
 ### 4.3 iterator — 遍历数据行
 
 对上一步结果的每一行执行子 Skill。
