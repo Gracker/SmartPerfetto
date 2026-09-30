@@ -525,7 +525,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(calls).toHaveLength(2);
     expect(calls[0].options.resume).toBeUndefined();
     expect(calls[0].prompt).toContain('上一轮回答：主要包名是 com.example.app。');
-    expect(calls[0].options.persistSession).toBe(true);
+    expect(calls[0].options.persistSession).toBe(false);
     expect(calls[0].options.allowedTools).toContain('mcp__smartperfetto__fetch_artifact');
     expect(calls[0].prompt).toContain('继续回答刚才的问题');
   });
@@ -1685,7 +1685,6 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       context: 'selection_context', data: {kind: 'area', startNs: 100, endNs: 200},
     });
     expect(parseContextRecords(blocks.slice(0, boundaryIndex)).some(record => record.context === 'selection_context')).toBe(false);
-    expect(call.options.persistSession).toBe(true);
   });
 
   it('rejects same-session direct overlap even when run and reference ids differ', async () => {
@@ -2140,7 +2139,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect((runtime as any).config.outputLanguage).toBe('zh-CN');
   });
 
-  it('keeps private full-mode Claude transcripts ephemeral', async () => {
+  it('never persists or resumes a private full-mode Claude session', async () => {
     const sessionId = 'session-private-sdk';
     const runtime = new ClaudeRuntime({
       query: async () => ({columns: ['cnt'], rows: [[0]]}),

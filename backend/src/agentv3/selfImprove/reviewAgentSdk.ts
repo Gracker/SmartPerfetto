@@ -14,7 +14,7 @@
  * See docs/architecture/self-improving-design.md "存储与安全".
  */
 
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { claudeSdkQuery as sdkQuery } from '../../agentRuntime/engines/claude/claudeSdkQuery';
 import { createSdkEnv, getSdkBinaryOption } from '../claudeConfig';
 import { FAILURE_CATEGORIES, FAILURE_CATEGORY_DESCRIPTIONS } from './failureTaxonomy';
 import type { ReviewJobPayload, ReviewExecutionResult } from './reviewWorker';

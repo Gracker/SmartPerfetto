@@ -25,10 +25,8 @@ import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type Analys
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import * as fs from 'fs';
 import * as path from 'path';
-import {
-  SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
-  query as sdkQuery,
-} from '@anthropic-ai/claude-agent-sdk';
+import {SYSTEM_PROMPT_DYNAMIC_BOUNDARY} from '@anthropic-ai/claude-agent-sdk';
+import {claudeSdkQuery as sdkQuery} from './claudeSdkQuery';
 import {
   commitEvaluationExposureSince,
   currentEvaluationInjectionContract,
@@ -949,7 +947,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               cwd: runtimeConfig.cwd,
               effort: ctx.effectiveEffort,
               env: sdkEnv,
-              persistSession: !privateAnalysisContext,
               stderr: (data: string) => {
                 console.warn(
                   `[ClaudeRuntime] SDK stderr [${sessionId}]: ${diagnosticLogIdentity(data.trimEnd())}`,
