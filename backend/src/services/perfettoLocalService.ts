@@ -184,7 +184,7 @@ export class PerfettoLocalService extends EventEmitter {
   private async findAvailablePort(startPort: number): Promise<number> {
     const net = await import('net');
 
-    return new Promise((resolve, reject) => {
+    return new Promise(resolve => {
       const server = net.createServer();
 
       server.listen(startPort, () => {

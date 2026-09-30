@@ -184,7 +184,6 @@ export class FrameStatsAnalyzer {
    */
   async analyzeFromSlices(
     traceId: string,
-    processName: string,
     startTs?: number,
     endTs?: number
   ): Promise<FrameStatsResult> {

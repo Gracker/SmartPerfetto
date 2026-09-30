@@ -373,14 +373,12 @@ export class ExternalKnowledgeSourceRegistry {
         sourceId,
         scope,
         ownerToken,
-        useDistributedLease,
         source => this.activateSource(sourceId, source, input),
       ),
       clearActiveGeneration: () => this.mutateSourceWithLease(
         sourceId,
         scope,
         ownerToken,
-        useDistributedLease,
         source => this.clearSource(sourceId, source),
       ),
     };
@@ -448,7 +446,6 @@ export class ExternalKnowledgeSourceRegistry {
     sourceId: string,
     scope: ExternalKnowledgeScope,
     ownerToken: string,
-    useDistributedLease: boolean,
     mutate: (source: ExternalKnowledgeSource | undefined) => ExternalKnowledgeSource,
   ): ExternalKnowledgeSource {
     const activate = (): ExternalKnowledgeSource => {

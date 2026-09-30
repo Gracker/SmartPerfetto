@@ -1392,8 +1392,6 @@ export class HTMLReportGenerator {
     sections?: Record<string, any>;
     error?: string;
   }): string {
-    const uniqueId = this.domIdSeq++;
-
     let html = `<div class="detail-content" style="padding: 15px; border-left: 4px solid #667eea;">`;
 
     // 不再显示原始 JSON 数据，与前端保持一致
@@ -1417,11 +1415,10 @@ export class HTMLReportGenerator {
         if (subData.data && Array.isArray(subData.data) && subData.data.length > 0) {
           const columns = subData.columns || Object.keys(subData.data[0]);
           const dataCount = subData.data.length;
-          const collapsedId = `detail-section-${uniqueId}-${subSectionId.replace(/[^a-zA-Z0-9]/g, '-')}`;
 
           // 诊断要点使用更紧凑的表格格式
           if (subSectionId === 'frame_diagnosis' || subTitle.includes('诊断') || subTitle.includes('diagnosis')) {
-            html += this.generateDiagnosisTable(subData.data, subTitle, collapsedId);
+            html += this.generateDiagnosisTable(subData.data, subTitle);
           } else {
             // 其他 section: 默认展开显示数据表格
             html += `
@@ -1436,8 +1433,7 @@ export class HTMLReportGenerator {
           }
         } else if (subData.diagnostics && Array.isArray(subData.diagnostics) && subData.diagnostics.length > 0) {
           // 显示诊断结果（以表格形式）
-          const collapsedId = `detail-diag-${uniqueId}-${subSectionId.replace(/[^a-zA-Z0-9]/g, '-')}`;
-          html += this.generateDiagnosticsAsTable(subData.diagnostics, subTitle, collapsedId);
+          html += this.generateDiagnosticsAsTable(subData.diagnostics, subTitle);
         } else {
           // 空 section，记录名称
           emptySections.push(subTitle);
@@ -1457,7 +1453,7 @@ export class HTMLReportGenerator {
   /**
    * 生成诊断要点表格（与前端一致的格式）
    */
-  private generateDiagnosisTable(data: any[], title: string, collapsedId: string): string {
+  private generateDiagnosisTable(data: any[], title: string): string {
     // 构建诊断表格数据
     const diagRows: Array<{severity: string; title: string; description: string; source?: string}> = [];
 
@@ -1516,7 +1512,7 @@ export class HTMLReportGenerator {
   /**
    * 将诊断数组渲染为表格（与前端一致）
    */
-  private generateDiagnosticsAsTable(diagnostics: any[], title: string, collapsedId: string): string {
+  private generateDiagnosticsAsTable(diagnostics: any[], title: string): string {
     const diagRows: Array<{severity: string; title: string; description: string; source?: string}> = [];
 
     for (const diag of diagnostics) {
@@ -2340,7 +2336,7 @@ export class HTMLReportGenerator {
             <div class="deep-session-content" id="${sessionId}_content" style="padding: 12px;">
         `;
 
-        frameEntries.forEach(([frameId, stepResult], idx) => {
+        frameEntries.forEach(([frameId, stepResult]) => {
           const result = stepResult as any;
           const frameTitle = result.display?.title || frameId;
           const uniqueFrameId = `${sessionId}_${frameId}`;
@@ -3774,8 +3770,8 @@ export class HTMLReportGenerator {
             </tr>
           </thead>
           <tbody>
-            ${visibleItems.map((item, idx) => this.renderTableRow(item, columnList, idx, false)).join('')}
-            ${hiddenItems.map((item, idx) => this.renderTableRow(item, columnList, visibleItems.length + idx, true)).join('')}
+            ${visibleItems.map(item => this.renderTableRow(item, columnList, false)).join('')}
+            ${hiddenItems.map(item => this.renderTableRow(item, columnList, true)).join('')}
           </tbody>
         </table>
       </div>
@@ -3785,7 +3781,7 @@ export class HTMLReportGenerator {
   /**
    * Render a single table row
    */
-  private renderTableRow(item: any, columns: string[], idx: number, hidden: boolean): string {
+  private renderTableRow(item: any, columns: string[], hidden: boolean): string {
     return `
       <tr style="${hidden ? 'display: none;' : ''}" class="${hidden ? 'hidden-row' : ''}">
         ${columns.map(col => {
@@ -3953,7 +3949,7 @@ export class HTMLReportGenerator {
               <div style="padding: 12px;">
           `;
 
-          valueEntries.forEach(([frameId, frameData], idx) => {
+          valueEntries.forEach(([frameId, frameData]) => {
             const fData = frameData as any;
             const frameTitle = fData.display?.title || frameId;
 
@@ -5469,12 +5465,10 @@ export class HTMLReportGenerator {
           ${this.renderCaseRecommendationAudience(
             localize(outputLanguage, 'App 侧建议', 'App Recommendations'),
             appRecommendations,
-            outputLanguage,
           )}
           ${this.renderCaseRecommendationAudience(
             localize(outputLanguage, 'OEM/厂商侧建议', 'OEM Recommendations'),
             oemRecommendations,
-            outputLanguage,
           )}
         </div>
       </div>`;
@@ -5496,22 +5490,18 @@ export class HTMLReportGenerator {
   private renderCaseRecommendationAudience(
     title: string,
     recommendations: Array<Record<string, unknown>>,
-    outputLanguage: OutputLanguage,
   ): string {
     if (recommendations.length === 0) return '';
     return `
       <div>
         <div class="case-rec-audience-title">${this.escapeHtml(title)}</div>
         <div class="case-rec-list">
-          ${recommendations.map(rec => this.renderCaseRecommendationItem(rec, outputLanguage)).join('')}
+          ${recommendations.map(rec => this.renderCaseRecommendationItem(rec)).join('')}
         </div>
       </div>`;
   }
 
-  private renderCaseRecommendationItem(
-    rec: Record<string, unknown>,
-    outputLanguage: OutputLanguage,
-  ): string {
+  private renderCaseRecommendationItem(rec: Record<string, unknown>): string {
     const id = this.readReportAliasedString(rec, ['id', 'recommendationId', 'recommendation_id']);
     const priority = this.readReportAliasedString(rec, ['priority']);
     const action = this.readReportAliasedString(rec, ['action', 'text', 'statement']);

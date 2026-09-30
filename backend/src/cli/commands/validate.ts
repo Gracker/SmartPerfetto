@@ -741,7 +741,7 @@ function validateSql(sql: string): { errors: string[]; warnings: string[] } {
 /**
  * Contract validation: input declarations, condition references, iterator sources
  */
-export function validateContracts(skill: SkillDefinition, filePath?: string): { errors: string[]; warnings: string[] } {
+export function validateContracts(skill: SkillDefinition): { errors: string[]; warnings: string[] } {
   const errors: string[] = [];
   const warnings: string[] = [];
 
@@ -1307,7 +1307,7 @@ export const validateCommand = new Command('validate')
           const content = fs.readFileSync(file, 'utf-8');
           const skill = yaml.load(content) as SkillDefinition;
           if (skill) {
-            const contracts = validateContracts(skill, file);
+            const contracts = validateContracts(skill);
             result.errors.push(...contracts.errors);
             result.warnings.push(...contracts.warnings);
             if (contracts.errors.length > 0) {

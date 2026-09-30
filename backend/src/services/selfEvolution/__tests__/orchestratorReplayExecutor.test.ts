@@ -275,7 +275,7 @@ describe('OrchestratorReplayExecutor', () => {
       traceProcessorService,
       providerService,
       runManifestStore,
-      resolveRolePlan: ({replay, commonRegistry}) => {
+      resolveRolePlan: ({replay}) => {
         const baseline = replay.role === 'baseline';
         return {
           roleVariant,

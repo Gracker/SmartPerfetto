@@ -1063,7 +1063,6 @@ export class CodebaseRegistry {
           codebaseId,
           scope,
           ownerToken,
-          useDistributedLease,
           expectedCurrentGeneration,
           patch,
         ),
@@ -1161,7 +1160,6 @@ export class CodebaseRegistry {
     codebaseId: string,
     scope: CodebaseScope,
     ownerToken: string,
-    useDistributedLease: boolean,
     expectedCurrentGeneration: number,
     patch: Pick<CodebaseRef, 'lastIngestStatus'> & Partial<CodebaseRef>,
   ): CodebaseRef {

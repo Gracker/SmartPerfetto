@@ -260,7 +260,7 @@ class ExpressionEvaluator {
       return /^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$/.test(p);
     };
 
-    result = result.replace(/\$\{([^}]+)\}/g, (match, path) => {
+    result = result.replace(/\$\{([^}]+)\}/g, (_match, path) => {
       const rawPath = String(path ?? '').trim();
 
       // Support ${varName|defaultValue} syntax
@@ -3052,7 +3052,7 @@ export class SkillExecutor {
           break;
 
         case 'iterator':
-          result = await this.executeIteratorStep(step, context, parentSkillId);
+          result = await this.executeIteratorStep(step, context);
           break;
 
         case 'parallel':
@@ -3354,7 +3354,6 @@ export class SkillExecutor {
   private async executeIteratorStep(
     step: IteratorStep,
     context: SkillExecutionContext,
-    parentSkillId: string
   ): Promise<StepResult> {
     const startTime = Date.now();
 
@@ -3428,11 +3427,6 @@ export class SkillExecutor {
         // 默认将 item 的所有字段作为参数
         Object.assign(params, item);
       }
-
-      // 设置当前迭代项
-      const iterContext = { ...context };
-      iterContext.currentItem = item;
-      iterContext.currentItemIndex = i;
 
       // 执行子 skill
       const itemResult = await this.execute(
@@ -3530,7 +3524,7 @@ export class SkillExecutor {
         const diagnosis = ExpressionEvaluator.evaluate(rule.diagnosis, context);
 
         // 收集 evidence 数据
-        const evidence = this.collectDiagnosticEvidence(rule, context, inputs);
+        const evidence = this.collectDiagnosticEvidence(rule, inputs);
 
         // Evaluate suggestions templates (e.g., "${root_cause.data[0].secondary_info}")
         const evaluatedSuggestions = rule.suggestions?.map((s: string) =>
@@ -3582,7 +3576,6 @@ export class SkillExecutor {
    */
   private collectDiagnosticEvidence(
     rule: any,
-    context: SkillExecutionContext,
     inputs: Record<string, any>
   ): Record<string, any> {
     const evidence: Record<string, any> = {};
@@ -3590,7 +3583,7 @@ export class SkillExecutor {
     // 1. 如果规则定义了 evidence_fields，使用它们
     if (rule.evidence_fields && Array.isArray(rule.evidence_fields)) {
       for (const field of rule.evidence_fields) {
-        const value = this.resolveEvidenceField(field, context, inputs);
+        const value = this.resolveEvidenceField(field, inputs);
         if (value !== undefined) {
           evidence[field] = value;
         }
@@ -3648,7 +3641,6 @@ export class SkillExecutor {
    */
   private resolveEvidenceField(
     field: string,
-    context: SkillExecutionContext,
     inputs: Record<string, any>
   ): any {
     try {
@@ -5006,7 +4998,7 @@ export class SkillExecutor {
     });
 
     // 提取可展开的详细数据 - 使用 displayResults 而不是 sections
-    const expandableData = data.map((iterItem, idx) => ({
+    const expandableData = data.map(iterItem => ({
       item: iterItem.item,
       result: {
         success: iterItem.result?.success ?? false,

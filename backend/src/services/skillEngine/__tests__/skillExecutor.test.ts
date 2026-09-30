@@ -3637,7 +3637,7 @@ describe('完整 Skill 执行', () => {
 
   it('应该按顺序执行所有步骤', async () => {
     const callOrder: string[] = [];
-    mockTraceProcessor.query.mockImplementation((traceId: string, sql: string) => {
+    mockTraceProcessor.query.mockImplementation((_traceId: string, sql: string) => {
       if (sql.includes('step1')) callOrder.push('step1');
       if (sql.includes('step2')) callOrder.push('step2');
       if (sql.includes('step3')) callOrder.push('step3');

@@ -341,7 +341,7 @@ implements SelfEvolutionAdminDependencies {
         resolveBaseSnapshot: value => resolveProposalBaseSnapshot(value),
         staticValidation,
         runPairedReplay: async (
-          value,
+          _value,
           _candidate,
           treatment,
           treatmentBinding,

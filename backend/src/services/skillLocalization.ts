@@ -129,7 +129,6 @@ export function localizedSchemaLabel(
 function catalogStep(
   skill: CatalogSkill,
   stepId: string | undefined,
-  outputLanguage: OutputLanguage,
 ): CatalogStep {
   const normalized = stepId || 'root';
   const entry = skill.steps[normalized];
@@ -300,7 +299,6 @@ export function localizeSkillDefinition(
       const step = catalogStep(
         catalogSkill,
         typeof raw.id === 'string' ? raw.id : undefined,
-        outputLanguage,
       );
       const display = raw.display && typeof raw.display === 'object' && !Array.isArray(raw.display)
         ? {...raw.display as Record<string, unknown>} : undefined;
@@ -348,7 +346,7 @@ export function localizeSkillDisplayResults<T extends {
   const skill = getCatalogSkill(skillId, options);
   if (!skill) return results;
   return results.map(result => {
-    const step = catalogStep(skill, result.stepId, outputLanguage);
+    const step = catalogStep(skill, result.stepId);
     return {
       ...result,
       title: substituteDisplayTitleParameters(
@@ -420,7 +418,7 @@ export function localizeSkillLayeredResult<T extends {
     if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
     const raw = value as Record<string, unknown>;
     const stepId = typeof raw.stepId === 'string' ? raw.stepId : undefined;
-    const step = catalogStep(skill, stepId, outputLanguage);
+    const step = catalogStep(skill, stepId);
     const display = raw.display && typeof raw.display === 'object'
       ? raw.display as Record<string, unknown>
       : undefined;
