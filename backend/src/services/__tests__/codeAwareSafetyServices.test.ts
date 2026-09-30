@@ -1875,21 +1875,24 @@ object Application {
 describe('owner source output isolation', () => {
   const sessionId = 'owner-output-regression';
   afterEach(() => clearCodeAwareOutputGuards(sessionId));
-  it('retains source and query but keeps credentials, knowledge and canaries private', () => {
+  it('retains source, query and knowledge for the owner but keeps credentials and canaries private', () => {
     const source = 'fun executeStartup() { synchronizeWindowLayout(); }';
     registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
     registerPrivateAnalysisQueryForEcho(sessionId, 'Why is startup slow in executeStartup?');
     registerCodeAwareCanary(sessionId, 'CANARY_NEVER_DISPLAY');
-    registerCodeAwareLookupForEcho(sessionId, {hits: [{chunkId: 'wiki-chunk', snippet: 'INTERNAL_KNOWLEDGE_PRIVATE_TEXT',
+    const knowledge = 'INTERNAL_KNOWLEDGE_PRIVATE_TEXT token=knowledge-secret-token-123';
+    registerCodeAwareLookupForEcho(sessionId, {hits: [{chunkId: 'wiki-chunk', snippet: knowledge,
       metadata: {knowledgeSourceId: 'wiki'}}]} as any);
-    const text = `${source} Why is startup slow in executeStartup? api_key="private-key-value-123" CANARY_NEVER_DISPLAY INTERNAL_KNOWLEDGE_PRIVATE_TEXT`;
+    const text = `${source} Why is startup slow in executeStartup? api_key="private-key-value-123" CANARY_NEVER_DISPLAY ${knowledge}`;
     const owner = sanitizeOwnerCodeAwareText(sessionId, text);
     expect(owner).toContain(source);
     expect(owner).toContain('Why is startup slow');
+    expect(owner).toContain('INTERNAL_KNOWLEDGE_PRIVATE_TEXT');
     expect(owner).not.toContain('private-key-value-123');
+    expect(owner).not.toContain('knowledge-secret-token-123');
     expect(owner).not.toContain('CANARY_NEVER_DISPLAY');
-    expect(owner).not.toContain('INTERNAL_KNOWLEDGE_PRIVATE_TEXT');
     expect(sanitizeCodeAwareText(sessionId, source)).not.toContain(source);
+    expect(sanitizeCodeAwareText(sessionId, knowledge)).not.toContain('INTERNAL_KNOWLEDGE_PRIVATE_TEXT');
   });
   it('preserves source after strict registration overflow and redacts split generated credentials', () => {
     for (let index = 0; index < 201; index++) registerOnDemandSourceLookupForEcho(sessionId,

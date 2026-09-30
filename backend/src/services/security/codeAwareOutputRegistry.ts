@@ -13,7 +13,22 @@ type GuardRegistration =
   | {kind: 'snippet'; snippet: string; ref: CodeRef}
   | {kind: 'private'; snippet: string; replacement: string}
   | {kind: 'query'; snippet: string; replacement: string}
+  | {kind: 'knowledge'; snippet: string; replacement: string}
   | {kind: 'canary'; canary: string};
+
+/**
+ * What the owner sees of each kind; strict output replaces every kind. The
+ * owner was authorized to read source, the query and knowledge text, so only
+ * the credentials inside them are withheld. A new kind does not compile until
+ * its owner view is chosen.
+ */
+const OWNER_VIEW = {
+  snippet: 'credentials_withheld',
+  query: 'credentials_withheld',
+  knowledge: 'credentials_withheld',
+  private: 'withheld',
+  canary: 'withheld',
+} as const satisfies Record<GuardRegistration['kind'], 'credentials_withheld' | 'withheld'>;
 
 const MAX_GUARD_REGISTRATIONS = 200;
 const MAX_GUARD_PATTERN_BYTES = 2 * 1024 * 1024;
@@ -93,7 +108,7 @@ class SessionCodeAwareOutputGuard {
     if (this.overflowed) return;
     const pattern = registration.kind === 'snippet'
       ? registration.snippet
-      : (registration.kind === 'private' || registration.kind === 'query')
+      : 'replacement' in registration
         ? `${registration.snippet}\0${registration.replacement}`
         : registration.canary;
     const patternBytes = Buffer.byteLength(pattern, 'utf8');
@@ -192,7 +207,7 @@ class SessionCodeAwareOutputGuard {
   private apply(stream: LLMEchoOutputStream, registration: GuardRegistration): void {
     if (registration.kind === 'snippet') {
       stream.registerSnippet(registration.snippet, registration.ref);
-    } else if ((registration.kind === 'private' || registration.kind === 'query')) {
+    } else if ('replacement' in registration) {
       stream.registerPrivateSnippet(registration.snippet, registration.replacement);
     } else {
       stream.registerCanary(registration.canary);
@@ -237,10 +252,14 @@ function redactOwnerCredentials(text: string): string {
 class SessionOutputGuards {
   readonly strict = new SessionCodeAwareOutputGuard();
   readonly owner = new SessionCodeAwareOutputGuard();
+  // Repeated lookups of the same material must not spend owner guard capacity.
+  private readonly ownerCredentials = new Set<string>();
   register(registration: GuardRegistration): void {
     this.strict.register(registration);
-    if (registration.kind === 'snippet' || registration.kind === 'query') {
+    if (OWNER_VIEW[registration.kind] === 'credentials_withheld' && 'snippet' in registration) {
       for (const credential of credentialValues(registration.snippet)) {
+        if (this.ownerCredentials.has(credential)) continue;
+        this.ownerCredentials.add(credential);
         this.owner.register({kind: 'private', snippet: credential, replacement: '[REDACTED_SECRET]'});
       }
     } else { this.owner.register(registration); }
@@ -342,7 +361,7 @@ export function registerCodeAwareLookupForEcho(sessionId: string | undefined, re
     if (!hit.snippet) continue;
     if (hit.metadata?.knowledgeSourceId) {
       registerForSession(sessionId, {
-        kind: 'private',
+        kind: 'knowledge',
         snippet: hit.snippet,
         replacement: `[Knowledge: ${hit.metadata.knowledgeSourceId}/${hit.chunkId}]`,
       });
