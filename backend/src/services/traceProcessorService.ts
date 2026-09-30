@@ -500,7 +500,7 @@ export class TraceProcessorService extends EventEmitter {
   /**
    * Handle chunk upload for large files
    */
-  public async uploadChunk(traceId: string, chunk: Buffer, offset: number): Promise<void> {
+  public async uploadChunk(traceId: string, chunk: Buffer): Promise<void> {
     const trace = this.traces.get(traceId);
     if (!trace) {
       throw new Error(`Trace ${traceId} not found`);
@@ -516,10 +516,8 @@ export class TraceProcessorService extends EventEmitter {
 
     const writeStream = this.uploads.get(traceId);
 
-    // Write chunk at specific offset
+    // Chunks are appended in arrival order; the endpoint has no positional writes.
     return new Promise((resolve, reject) => {
-      // For simplicity, we'll append chunks
-      // In production, you might want to use random access for better performance
       writeStream.write(chunk, (error: any) => {
         if (error) {
           reject(error);

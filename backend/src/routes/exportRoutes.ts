@@ -189,7 +189,7 @@ router.get('/tenant', authenticate, async (req, res) => {
  * GET /api/export/formats
  * Get available export formats
  */
-router.get('/formats', (req, res) => {
+router.get('/formats', (_req, res) => {
   res.json({
     success: true,
     formats: [

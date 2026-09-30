@@ -97,7 +97,7 @@ async function collectSSEFromUrl(
       .get(`/api/agent/v1/${sessionId}/stream`)
       .set('Accept', 'text/event-stream')
       .buffer(false)
-      .parse((res, callback) => {
+      .parse((res, _callback) => {
         let buffer = '';
         let currentEvent = '';
         let currentData = '';

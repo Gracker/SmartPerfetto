@@ -43,7 +43,7 @@ export function createTestApp() {
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
   // Health check
-  app.get('/health', (req, res) => {
+  app.get('/health', (_req, res) => {
     res.json({ status: 'OK', timestamp: new Date().toISOString() });
   });
 
@@ -68,7 +68,7 @@ export function createTestApp() {
   });
 
   // Error handler
-  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     console.error('Test app error:', err.message);
     res.status(err.status || 500).json({
       error: 'Internal server error',

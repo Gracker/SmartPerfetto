@@ -92,7 +92,6 @@ export async function handleUpload(req: Request, res: Response): Promise<void> {
 export async function uploadChunk(req: Request, res: Response): Promise<void> {
   try {
     const traceId = toSingleString(req.params.traceId);
-    const offsetHeader = toSingleString(req.headers.offset);
 
     if (!traceId) {
       res.status(400).json({ error: 'traceId is required' });
@@ -104,11 +103,7 @@ export async function uploadChunk(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    await traceService.uploadChunk(
-      traceId,
-      req.body,
-      offsetHeader ? parseInt(offsetHeader, 10) : 0
-    );
+    await traceService.uploadChunk(traceId, req.body);
 
     res.json({ received: true });
   } catch (error: any) {
@@ -161,7 +156,7 @@ export async function getTraceStatus(req: Request, res: Response): Promise<void>
 }
 
 // List all traces
-export async function listTraces(req: Request, res: Response): Promise<void> {
+export async function listTraces(_req: Request, res: Response): Promise<void> {
   try {
     const traces = traceService.getAllTraces();
     res.json({ traces });

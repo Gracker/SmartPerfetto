@@ -766,7 +766,7 @@ describe('PortPool - Unit Tests', () => {
     it('should emit released event', (done) => {
       pool.allocate('release-event');
 
-      pool.on('released', ({ port, traceId }) => {
+      pool.on('released', ({ traceId }) => {
         expect(traceId).toBe('release-event');
         done();
       });
@@ -1151,7 +1151,7 @@ describe('Error Handling', () => {
     });
 
     it('should handle chunk upload for non-existent trace', async () => {
-      await expect(service.uploadChunk('non-existent', Buffer.from('test'), 0))
+      await expect(service.uploadChunk('non-existent', Buffer.from('test')))
         .rejects.toThrow('not found');
     });
 

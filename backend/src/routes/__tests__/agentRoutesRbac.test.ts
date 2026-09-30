@@ -270,8 +270,6 @@ describe('agent route RBAC', () => {
     const analyze = jest.spyOn(ClaudeRuntime.prototype, 'analyze').mockImplementation(async (
       _query,
       sessionId,
-      traceId,
-      options = {},
     ) => ({
       sessionId,
       success: true,

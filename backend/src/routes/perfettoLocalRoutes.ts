@@ -22,7 +22,7 @@ const upload = multer({
   limits: {
     fileSize: resolveTraceUploadLimitBytes(),
   },
-  fileFilter: (req, file, cb) => {
+  fileFilter: (_req, file, cb) => {
     // Accept common trace file extensions
     const allowedExtensions = ['.trace', '.pb', '.perfetto', '.json'];
     const fileExtension = path.extname(file.originalname).toLowerCase();
@@ -36,7 +36,7 @@ const upload = multer({
 });
 
 // Get current status of the Perfetto server
-router.get('/status', async (req, res) => {
+router.get('/status', async (_req, res) => {
   try {
     const status = perfettoLocalService.getStatus();
     res.json({
@@ -78,7 +78,7 @@ router.post('/start', async (req, res) => {
 });
 
 // Stop the Perfetto server
-router.post('/stop', async (req, res) => {
+router.post('/stop', async (_req, res) => {
   try {
     await perfettoLocalService.stopServer();
 
