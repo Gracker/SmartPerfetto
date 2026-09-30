@@ -65,6 +65,11 @@ OpenCode 按观察到的实际轮次停止，若已过冲到没有剩余额度�
 `smp ask` 把历史与新问题分开传递，保留历史完整性状态并允许按需回查更早正文；
 Trace 重载后的旧证据仍标为历史，不冒充新 Trace 的已核验事实。
 
+输出接到管道（如 `smp query … --format json | jq`、`| tee`）时，CLI 退出前会等待
+stdout/stderr 把已排队的内容交给系统，最多等待 `SMARTPERFETTO_CLI_FLUSH_TIMEOUT_MS`
+（默认 30000 毫秒）。这是有上限的尽力刷新：读取方提前关闭管道（如 `| head`）或超时后，
+仍按原退出码退出，尾部内容可能丢失。Ctrl-C/SIGTERM 立即退出，不等待刷新。
+
 ## 核心工作流
 
 ```bash

@@ -82,6 +82,14 @@ separately from the new question, retains completeness metadata and allows
 on-demand recall of older text. Evidence from a reloaded trace remains historical,
 not newly verified evidence for the new trace identity.
 
+When output goes to a pipe (for example `smp query … --format json | jq` or
+`| tee`), the CLI waits before exiting until stdout and stderr have handed their
+queued output to the OS, for at most `SMARTPERFETTO_CLI_FLUSH_TIMEOUT_MS`
+(default 30000 ms). This is a bounded best effort: if the reader closes the pipe
+early (for example `| head`) or the bound elapses, the CLI still exits with its
+original code and the tail may be lost. Ctrl-C and SIGTERM exit at once without
+waiting.
+
 ## Core Workflow
 
 ```bash
