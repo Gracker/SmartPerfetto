@@ -641,6 +641,15 @@ signal, not an automatic quick/full decision.
 - Existing live sessions keep their pinned provider unless an explicit
   `providerId` override changes it.
 - Persisted sessions restore the provider/runtime snapshot before continuing.
+  When that snapshot's hash no longer matches the resolved provider (a model,
+  base URL or key change), restore passes `withoutProviderBoundEngineState`:
+  only the state kept for the old provider (SDK session ids, response history,
+  opaque transcripts/directories) is dropped. Notes, plan, hypotheses, flags,
+  artifacts and architecture do not depend on the provider and restore as they
+  would without the change. No runtime carries native context across turns, so
+  the model gets no "context was reset" notice; `continuityBreaks` is an audit
+  record only. A live session whose hash changes is still revoked and replaced
+  by a new clean session.
 - `providerId: null` means use env/default fallback and ignore Provider Manager.
 - If a persisted snapshot references a deleted provider, fail with an explicit
   provider-not-found error instead of silently falling back.

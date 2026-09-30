@@ -27,7 +27,7 @@ import {randomUUID} from 'crypto';
 import { AssistantApplicationService } from '../../assistant/application/assistantApplicationService';
 import {
   AgentAnalyzeSessionService,
-  buildAgentQueryWithContinuityNotice,
+  resolveAgentQuery,
   type AnalyzeManagedSession,
 } from '../../assistant/application/agentAnalyzeSessionService';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
@@ -746,10 +746,7 @@ export class CliAnalyzeService {
         let context: RuntimeFinalizationContext | undefined;
         let contextTransferred = false;
         let finalQualityIssue: FinalResultQualityIssue | undefined;
-        const agentQuery =
-          session.agentQuery && session.query === input.query
-            ? session.agentQuery
-            : buildAgentQueryWithContinuityNotice(input.query, session.continuityBreaks);
+        const agentQuery = resolveAgentQuery(session, input.query);
         try {
           let runtimeOptions: AnalysisOptions = {
             providerId: session.providerId,

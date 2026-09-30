@@ -21,8 +21,9 @@ import {
   type SessionLineage,
   type ComparisonReportSection,
   type ComparisonSourceKind,
+  continuityBreaksAfterRestore,
+  withoutProviderBoundEngineState,
 } from '../../agentv3/sessionStateSnapshot';
-import { loadPromptTemplate, renderTemplate } from '../../agentv3/strategyLoader';
 import {
   type EnhancedSessionContext,
   sessionContextManager as defaultSessionContextManager,
@@ -111,9 +112,9 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
     analysisContextFingerprint: string;
   };
   sourceActivation?: AnalysisSourceActivation;
-  /** Original user query plus internal continuity preamble for the runtime only. */
+  /** Runtime-only replacement for `query` (source-activation reset, private-query scrub); see resolveAgentQuery. */
   agentQuery?: string;
-  /** Append-only provider/runtime continuity breaks that forced fresh SDK context. */
+  /** Append-only audit of provider snapshot changes observed when this session was restored. */
   continuityBreaks?: ProviderContinuityBreak[];
   /** Backend-session ancestry when a user-visible session bridged to a fresh backend session. */
   lineage?: SessionLineage;
@@ -214,48 +215,9 @@ function comparisonSourceForReference(referenceTraceId?: string): ComparisonSour
   return referenceTraceId ? 'raw_trace_pair' : undefined;
 }
 
-function isProviderContinuityBreak(value: unknown): value is ProviderContinuityBreak {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const candidate = value as Partial<ProviderContinuityBreak>;
-  return typeof candidate.at === 'number'
-    && Number.isFinite(candidate.at)
-    && typeof candidate.previousProviderHash === 'string'
-    && candidate.previousProviderHash.length > 0
-    && candidate.reason === 'provider_snapshot_hash_mismatch';
-}
-
-function normalizeContinuityBreaks(value: unknown): ProviderContinuityBreak[] {
-  return Array.isArray(value) ? value.filter(isProviderContinuityBreak) : [];
-}
-
-function appendProviderContinuityBreak(
-  existing: unknown,
-  previousProviderHash: string,
-): ProviderContinuityBreak[] {
-  return [
-    ...normalizeContinuityBreaks(existing),
-    {
-      at: Date.now(),
-      previousProviderHash,
-      reason: 'provider_snapshot_hash_mismatch',
-    },
-  ];
-}
-
-export function buildAgentQueryWithContinuityNotice(
-  query: string,
-  continuityBreaks: readonly ProviderContinuityBreak[] | undefined,
-): string {
-  if (!continuityBreaks || continuityBreaks.length === 0) return query;
-  const template = loadPromptTemplate('prompt-session-continuity-break');
-  if (!template) return query;
-  const latestBreak = continuityBreaks[continuityBreaks.length - 1];
-  return renderTemplate(template, {
-    breakCount: continuityBreaks.length,
-    previousProviderHash: latestBreak.previousProviderHash,
-    reason: latestBreak.reason,
-    query,
-  });
+/** The text a runtime receives for this turn: the prepared replacement when it belongs to this query. */
+export function resolveAgentQuery(session: {query?: string; agentQuery?: string}, query: string): string {
+  return session.agentQuery && session.query === query ? session.agentQuery : query;
 }
 
 function readPersistedReferenceTraceId(
@@ -503,10 +465,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             previousQuery: privateKnowledge ? privateQuery : existingSession.query,
           });
           existingSession.query = query;
-          existingSession.agentQuery = buildAgentQueryWithContinuityNotice(
-            query,
-            existingSession.continuityBreaks,
-          );
+          existingSession.agentQuery = undefined;
           existingSession.status = 'pending';
           existingSession.lastActivityAt = Date.now();
           console.log(`[AgentRoutes] Reusing agent session ${requestedSessionId} for multi-turn dialogue`);
@@ -646,18 +605,15 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               restoredContext.setTraceAgentState(traceAgentStateSnapshot);
             }
 
-            // Restore SDK runtime internal maps/state from the unified snapshot.
-            // Mirrors the explicit /resume endpoint so both paths recover the
-            // full agent state, not just SessionContext.
-            if (
-              stateSnapshot &&
-              !snapshotProviderHashMismatch &&
-              typeof restoredOrchestrator.restoreFromSnapshot === 'function'
-            ) {
-              restoredOrchestrator.restoreFromSnapshot(requestedSessionId, traceId, stateSnapshot);
-            } else if (snapshotProviderHashMismatch) {
-              console.log(
-                `[AgentRoutes] Provider snapshot changed for ${requestedSessionId}, skipping SDK session restoration`
+            // Restore runtime maps from the unified snapshot. Mirrors the
+            // explicit /resume endpoint so both paths recover the full agent
+            // state, not just SessionContext. A provider snapshot change drops
+            // only the state bound to the old provider.
+            if (stateSnapshot && typeof restoredOrchestrator.restoreFromSnapshot === 'function') {
+              restoredOrchestrator.restoreFromSnapshot(
+                requestedSessionId,
+                traceId,
+                snapshotProviderHashMismatch ? withoutProviderBoundEngineState(stateSnapshot) : stateSnapshot,
               );
             }
 
@@ -688,10 +644,10 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               sceneSnapshotResult.sceneTimeline.traceId === traceId &&
               sceneSnapshotResult.sceneTimeline.runId === restoredRun?.runId
               ? sceneSnapshotResult : recoveredResult;
-            const restoredContinuityBreaks = snapshotProviderHashMismatch && typeof snapshotProviderHash === 'string'
-              ? appendProviderContinuityBreak(stateSnapshot?.continuityBreaks, snapshotProviderHash)
-              : normalizeContinuityBreaks(stateSnapshot?.continuityBreaks);
-            const restoredAgentQuery = buildAgentQueryWithContinuityNotice(query, restoredContinuityBreaks);
+            const restoredContinuityBreaks = continuityBreaksAfterRestore(
+              stateSnapshot?.continuityBreaks,
+              snapshotProviderHashMismatch ? snapshotProviderHash : undefined,
+            );
             const restoredLineage = stateSnapshot?.lineage ?? persistedSession.metadata?.lineage;
 
             const restoredLogger = this.createSessionLogger(requestedSessionId);
@@ -707,7 +663,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               entityStoreStats: restoredContext.getEntityStore().getStats(),
             });
             if (snapshotProviderHashMismatch) {
-              restoredLogger.warn('AgentRoutes', 'Provider snapshot changed; fresh SDK runtime will be used', {
+              restoredLogger.warn('AgentRoutes', 'Provider snapshot changed; provider-bound runtime state was not restored', {
                 providerId: restoredProviderId,
                 previousProviderSnapshotHash: snapshotProviderHash,
                 nextProviderSnapshotHash: restoredProviderSnapshotHash,
@@ -773,7 +729,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
                 : undefined,
               analysisContextFingerprint: input.analysisContextFingerprint,
               androidInternalsPackPin: stateSnapshot?.androidInternalsPackPin,
-              agentQuery: restoredAgentQuery,
               continuityBreaks: restoredContinuityBreaks.length > 0 ? restoredContinuityBreaks : undefined,
               lineage: restoredLineage,
               referenceTraceId: effectiveReferenceTraceId,
@@ -861,7 +816,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       status: 'pending',
       traceId,
       query,
-      agentQuery: query,
       providerId: sessionProviderId,
       runtimeKind: resolveProviderRuntimeSnapshot(
         providerSvc,

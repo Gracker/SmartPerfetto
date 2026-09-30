@@ -588,7 +588,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(second.session.continuityBreaks).toBeUndefined();
     expect(second.session.conversationSteps).toEqual([]);
     expect(second.session.query).toBe('second follow-up');
-    expect(second.session.agentQuery).toBe('second follow-up');
+    expect(second.session.agentQuery).toBeUndefined();
   });
 
   test('reuses an in-memory session with its pinned provider when active provider changed elsewhere', () => {
@@ -1063,13 +1063,22 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       reason: 'provider_snapshot_hash_mismatch',
       at: expect.any(Number),
     }));
-    expect(prepared.session.agentQuery).toContain('provider SDK conversation context was reset');
-    expect(prepared.session.agentQuery).toContain('follow-up');
+    expect(prepared.session.agentQuery).toBeUndefined();
     expect(prepared.session.tenantId).toBe('tenant-a');
-    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
+    expect(restoredOrchestrator.restoreFromSnapshot).toHaveBeenCalledWith(
+      'persisted-1',
+      'trace-1',
+      expect.objectContaining({
+        engineState: {
+          kind: 'openai-agents-sdk',
+          provider: {providerId: provider.id, providerSnapshotHash: originalHash},
+          openai: {},
+        },
+      }),
+    );
   });
 
-  test('skips Pi snapshot restore after a scoped API-key rotation even with a legacy stored transcript', () => {
+  test('restores Pi product state but not a legacy stored transcript after a scoped API-key rotation', () => {
     const provider = getProviderService().create({
       name: 'Pi Provider',
       category: 'custom',
@@ -1091,6 +1100,8 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       custom: {envOverrides: {DEEPSEEK_API_KEY: 'second-pi-secret'}},
     });
     const nextHash = providerSnapshotHash(provider.id);
+    const piNote = {section: 'finding', content: 'main thread blocked on binder', priority: 'high', timestamp: 1};
+    const piArtifacts = [{id: 'art-1', skillId: 'startup_analysis', createdAt: 1}];
 
     sessionPersistenceService.getSession.mockReturnValue({
       id: 'persisted-pi',
@@ -1114,10 +1125,11 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       agentResponses: [],
       dataEnvelopes: [],
       hypotheses: [],
-      analysisNotes: [],
+      analysisNotes: [piNote],
       analysisPlan: null,
       planHistory: [],
       uncertaintyFlags: [],
+      artifacts: piArtifacts,
       engineState: {
         kind: 'pi-agent-core',
         provider: {
@@ -1148,8 +1160,20 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(nextHash).not.toBe(originalHash);
     expect(prepared.session.providerSnapshotHash).toBe(nextHash);
     expect(prepared.session.providerSnapshotChanged).toBe(true);
-    expect(prepared.session.agentQuery).toContain('provider SDK conversation context was reset');
-    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
+    expect(prepared.session.agentQuery).toBeUndefined();
+    expect(restoredOrchestrator.restoreFromSnapshot).toHaveBeenCalledWith(
+      'persisted-pi',
+      'trace-pi',
+      expect.objectContaining({
+        analysisNotes: [piNote],
+        artifacts: piArtifacts,
+        engineState: {
+          kind: 'pi-agent-core',
+          provider: {providerId: provider.id, providerSnapshotHash: originalHash},
+          pi: {},
+        },
+      }),
+    );
   });
 
   test('restores a persisted env-fallback session without reading the active provider', () => {

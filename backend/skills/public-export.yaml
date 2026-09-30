@@ -1818,9 +1818,6 @@ strategies:
     workflow: scene-reconstruction
     disposition: exported
     destination: references/generated/strategies/prompt-scene-stage3-summary.template.md
-  backend/strategies/prompt-session-continuity-break.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
   backend/strategies/report-runtime-recovery-contract-section-en.template.md:
     disposition: product-only
     reason: SmartPerfetto report rendering and runtime recovery surface

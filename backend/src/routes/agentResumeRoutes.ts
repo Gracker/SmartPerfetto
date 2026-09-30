@@ -20,7 +20,9 @@ import {
 import {
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
+  continuityBreaksAfterRestore,
   getSnapshotRuntimeProviderSnapshotHash,
+  withoutProviderBoundEngineState,
 } from '../agentv3/sessionStateSnapshot';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, sessionUsesPrivateKnowledge} from '../services/security/privateAnalysisProjection';
@@ -180,6 +182,10 @@ export function registerAgentResumeRoutes(
         snapshotProviderHash &&
         snapshotProviderHash !== restoredProviderSnapshotHash,
       );
+      const continuityBreaks = continuityBreaksAfterRestore(
+        snapshot?.continuityBreaks,
+        providerSnapshotChanged ? snapshotProviderHash : undefined,
+      );
       const orchestrator = createAgentOrchestrator({
         traceProcessorService: getTraceProcessorService(),
         providerId: restoredProviderId,
@@ -211,7 +217,7 @@ export function registerAgentResumeRoutes(
         turnCount: restoredContext.getAllTurns().length,
       });
       if (providerSnapshotChanged) {
-        logger.warn('AgentRoutes', 'Provider snapshot changed; SDK session state will not be restored', {
+        logger.warn('AgentRoutes', 'Provider snapshot changed; provider-bound runtime state will not be restored', {
           providerId: restoredProviderId,
           previousProviderSnapshotHash: snapshotProviderHash,
           nextProviderSnapshotHash: restoredProviderSnapshotHash,
@@ -247,9 +253,14 @@ export function registerAgentResumeRoutes(
       const owner = normalizeResourceOwner(persistedSession.metadata);
 
       // Unified snapshot restoration — all fields populated from single source
-      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture, engine state)
-      if (snapshot && !providerSnapshotChanged && typeof orchestrator.restoreFromSnapshot === 'function') {
-        orchestrator.restoreFromSnapshot(sessionId, effectiveTraceId, snapshot);
+      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture, engine state).
+      // A provider snapshot change drops only the state bound to the old provider.
+      if (snapshot && typeof orchestrator.restoreFromSnapshot === 'function') {
+        orchestrator.restoreFromSnapshot(
+          sessionId,
+          effectiveTraceId,
+          providerSnapshotChanged ? withoutProviderBoundEngineState(snapshot) : snapshot,
+        );
         logger.info('AgentRoutes', 'ClaudeRuntime Maps restored from snapshot', {
           notes: snapshot.analysisNotes.length,
           hasPlan: !!snapshot.analysisPlan,
@@ -281,6 +292,7 @@ export function registerAgentResumeRoutes(
         providerSnapshotChangeReason: providerSnapshotChanged
           ? 'provider_snapshot_hash_mismatch'
           : undefined,
+        continuityBreaks: continuityBreaks.length > 0 ? continuityBreaks : undefined,
         lineage: snapshot?.lineage ?? persistedSession.metadata?.lineage,
         referenceTraceId: snapshot?.referenceTraceId,
         comparisonSource: snapshot?.comparisonSource,

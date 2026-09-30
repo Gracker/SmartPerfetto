@@ -861,7 +861,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         success: true,
         sessionId,
         message: preparedSession?.providerSnapshotChanged
-          ? 'Provider configuration changed; continuing with a fresh SDK session'
+          ? 'Provider configuration changed; continuing the session with the new provider'
           : isNewSession
             ? 'Analysis started'
             : 'Continuing analysis (multi-turn)',

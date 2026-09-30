@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from '@jest/globals';
 import {
+  continuityBreaksAfterRestore,
   getClaudeSnapshotEngineState,
   getOpenCodeSnapshotEngineState,
   getQoderSnapshotEngineState,
@@ -13,6 +14,8 @@ import {
   normalizeSessionStateSnapshot,
   projectSessionFieldsForDurableSnapshot,
   type SessionStateSnapshot,
+  type SnapshotEngineState,
+  withoutProviderBoundEngineState,
 } from '../../agentv3/sessionStateSnapshot';
 import type { AgentRuntimeKind } from '../../services/providerManager/types';
 
@@ -440,5 +443,82 @@ describe('SessionStateSnapshot runtime state inventory', () => {
         degradedReason: 'state_unavailable',
       },
     });
+  });
+
+  it('drops provider-bound engine state but keeps product state and the runtime pin', () => {
+    const NATIVE_ENGINE_KEY = {
+      'claude-agent-sdk': 'claude',
+      'openai-agents-sdk': 'openai',
+      'pi-agent-core': 'pi',
+      opencode: 'opencode',
+      'qoder-agent-sdk': 'qoder',
+    } as const satisfies Record<AgentRuntimeKind, string>;
+    const provider = {providerId: 'provider-1', providerSnapshotHash: 'hash-1'};
+    const engineStates: SnapshotEngineState[] = [
+      {kind: 'claude-agent-sdk', provider, claude: {sdkSessionId: 'sdk-1', sdkSessionMode: 'full'}},
+      {kind: 'openai-agents-sdk', provider, openai: {history: [{role: 'user'}], lastResponseId: 'resp-1'}},
+      {kind: 'pi-agent-core', provider, pi: {opaque: {version: 1, messages: [{role: 'assistant'}], messageCount: 1}}},
+      {kind: 'opencode', provider, opencode: {opaque: {version: 1, openCodeSessionId: 'ses-1', projectDir: '/p'}}},
+      {kind: 'qoder-agent-sdk', provider, qoder: {opaque: {version: 1, sdkSessionId: 'qoder-1'}}},
+    ];
+    for (const engineState of engineStates) {
+      const snapshot: SessionStateSnapshot = {
+        version: 1,
+        snapshotTimestamp: 1,
+        sessionId: 'session-1',
+        traceId: 'trace-1',
+        conversationSteps: [],
+        queryHistory: [{turn: 1, query: 'q', timestamp: 1}],
+        conclusionHistory: [],
+        agentDialogue: [],
+        agentResponses: [],
+        dataEnvelopes: [],
+        hypotheses: [],
+        analysisNotes: [{section: 'finding', content: 'binder wait', priority: 'high', timestamp: 1}],
+        analysisPlan: null,
+        planHistory: [],
+        uncertaintyFlags: [],
+        claudeHypotheses: [],
+        artifacts: [{id: 'art-1'} as any],
+        architecture: {type: 'STANDARD'} as any,
+        engineState,
+        sdkSessionId: 'legacy-sdk',
+        sdkSessionMode: 'full',
+        openAIHistory: [{role: 'user'}],
+        openAILastResponseId: 'legacy-resp',
+        openAIRunState: 'legacy-run-state',
+        agentRuntimeKind: engineState.kind,
+        agentRuntimeProviderId: 'provider-1',
+        agentRuntimeProviderSnapshotHash: 'hash-1',
+        continuityBreaks: [{at: 1, previousProviderHash: 'hash-0', reason: 'provider_snapshot_hash_mismatch'}],
+        runSequence: 1,
+        conversationOrdinal: 1,
+      };
+
+      const stripped = withoutProviderBoundEngineState(snapshot);
+
+      for (const field of PRODUCT_STATE_FIELDS) expect(stripped[field]).toEqual(snapshot[field]);
+      expect(stripped.claudeHypotheses).toEqual(snapshot.claudeHypotheses);
+      expect(stripped.continuityBreaks).toEqual(snapshot.continuityBreaks);
+      expect(getSnapshotRuntimeKind(stripped)).toBe(engineState.kind);
+      expect(getSnapshotRuntimeProviderId(stripped)).toBe('provider-1');
+      expect(getSnapshotRuntimeProviderSnapshotHash(stripped)).toBe('hash-1');
+      for (const field of LEGACY_OPENAI_RUNTIME_MIRROR_FIELDS) expect(field in stripped).toBe(false);
+      expect('sdkSessionId' in stripped || 'sdkSessionMode' in stripped).toBe(false);
+      expect(stripped.engineState).toEqual({kind: engineState.kind, provider, [NATIVE_ENGINE_KEY[engineState.kind]]: {}});
+      expect(snapshot.engineState).toBe(engineState);
+    }
+  });
+
+  it('carries the valid continuity-break audit forward and appends only on a provider change', () => {
+    const recorded = {at: 1, previousProviderHash: 'hash-0', reason: 'provider_snapshot_hash_mismatch' as const};
+    const persisted = [recorded, {at: 2, previousProviderHash: '', reason: 'provider_snapshot_hash_mismatch'}, 'junk'];
+
+    expect(continuityBreaksAfterRestore(persisted, undefined)).toEqual([recorded]);
+    expect(continuityBreaksAfterRestore(undefined, null)).toEqual([]);
+    expect(continuityBreaksAfterRestore(persisted, 'hash-1')).toEqual([
+      recorded,
+      {at: expect.any(Number), previousProviderHash: 'hash-1', reason: 'provider_snapshot_hash_mismatch'},
+    ]);
   });
 });

@@ -119,6 +119,34 @@ export interface ProviderContinuityBreak {
   reason: ProviderContinuityBreakReason;
 }
 
+function isProviderContinuityBreak(value: unknown): value is ProviderContinuityBreak {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<ProviderContinuityBreak>;
+  return typeof candidate.at === 'number'
+    && Number.isFinite(candidate.at)
+    && typeof candidate.previousProviderHash === 'string'
+    && candidate.previousProviderHash.length > 0
+    && candidate.reason === 'provider_snapshot_hash_mismatch';
+}
+
+/**
+ * The valid continuity-break audit carried by a persisted snapshot, plus one
+ * entry when this restore found the provider snapshot changed from
+ * `changedFromProviderHash`. Every restore path must carry it forward, because
+ * the next persisted snapshot is written from the live session.
+ */
+export function continuityBreaksAfterRestore(
+  existing: unknown,
+  changedFromProviderHash: string | null | undefined,
+): ProviderContinuityBreak[] {
+  const breaks = Array.isArray(existing) ? existing.filter(isProviderContinuityBreak) : [];
+  if (!changedFromProviderHash) return breaks;
+  return [
+    ...breaks,
+    {at: Date.now(), previousProviderHash: changedFromProviderHash, reason: 'provider_snapshot_hash_mismatch'},
+  ];
+}
+
 export type SessionLineageReason = 'cli-level3-degraded';
 
 export interface SessionLineage {
@@ -298,6 +326,39 @@ export function createQoderSnapshotEngineState(
       opaque: input.opaque,
     },
   };
+}
+
+/**
+ * The snapshot without the state a runtime keeps for one provider: SDK session
+ * ids, response history and opaque transcripts or directories. A provider
+ * snapshot change invalidates only that part. The runtime/provider pin and the
+ * product-owned state (notes, plan, hypotheses, uncertainty flags, artifacts,
+ * architecture) do not depend on which provider produced them and stay.
+ */
+export function withoutProviderBoundEngineState(snapshot: SessionStateSnapshot): SessionStateSnapshot {
+  const {
+    sdkSessionId: _sdkSessionId,
+    sdkSessionMode: _sdkSessionMode,
+    openAIHistory: _openAIHistory,
+    openAILastResponseId: _openAILastResponseId,
+    openAIRunState: _openAIRunState,
+    ...productState
+  } = snapshot;
+  const engineState = snapshot.engineState;
+  if (!engineState) return productState;
+  const pin = engineState.provider;
+  switch (engineState.kind) {
+    case 'claude-agent-sdk':
+      return {...productState, engineState: createClaudeSnapshotEngineState(pin)};
+    case 'openai-agents-sdk':
+      return {...productState, engineState: createOpenAISnapshotEngineState(pin)};
+    case 'pi-agent-core':
+      return {...productState, engineState: createPiAgentCoreSnapshotEngineState(pin)};
+    case 'opencode':
+      return {...productState, engineState: createOpenCodeSnapshotEngineState(pin)};
+    case 'qoder-agent-sdk':
+      return {...productState, engineState: createQoderSnapshotEngineState(pin)};
+  }
 }
 
 export function getSnapshotRuntimeKind(
@@ -578,12 +639,12 @@ export interface SessionStateSnapshot {
    */
   agentRuntimeProviderId?: string | null;
   /**
-   * Non-secret hash of the provider/runtime configuration that created the SDK
-   * session. Resume may only reuse sdkSessionId when this still matches the
-   * current resolved provider snapshot.
+   * Non-secret hash of the provider/runtime configuration that created the
+   * snapshot. Restore keeps provider-bound engine state only while this still
+   * matches the current resolved provider snapshot.
    */
   agentRuntimeProviderSnapshotHash?: string | null;
-  /** Append-only provider/runtime continuity breaks that forced fresh SDK context. */
+  /** Append-only audit of provider snapshot changes observed when this session was restored. */
   continuityBreaks?: ProviderContinuityBreak[];
   /** Authorization partition for source/RAG continuation. */
   analysisContextFingerprint?: string;
@@ -680,7 +741,7 @@ export interface SessionFieldsForSnapshot {
   agentRuntimeProviderId?: string | null;
   /** Non-secret hash of the resolved provider/runtime configuration. */
   agentRuntimeProviderSnapshotHash?: string | null;
-  /** Append-only provider/runtime continuity breaks that forced fresh SDK context. */
+  /** Append-only audit of provider snapshot changes observed when this session was restored. */
   continuityBreaks?: ProviderContinuityBreak[];
   analysisContextFingerprint?: string;
   androidInternalsPackPin?: SessionStateSnapshot['androidInternalsPackPin'];

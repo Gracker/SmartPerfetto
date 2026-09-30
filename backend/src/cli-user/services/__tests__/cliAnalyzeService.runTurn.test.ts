@@ -59,7 +59,9 @@ jest.mock('../../../assistant/application/agentAnalyzeSessionService', () => ({
     mockSecurityCleanups.push(options.onSessionSecurityCleanup);
     return {prepareSession: (...args: unknown[]) => mockPrepareSession(...args)};
   }),
-  buildAgentQueryWithContinuityNotice: (query: string) => query,
+  resolveAgentQuery: jest.requireActual<
+    typeof import('../../../assistant/application/agentAnalyzeSessionService')
+  >('../../../assistant/application/agentAnalyzeSessionService').resolveAgentQuery,
 }));
 
 function defaultPreparedSessionResult() {
@@ -805,10 +807,9 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     }
   });
 
-  it('passes prepared continuity agentQuery to the runtime while preserving the user query for persistence', async () => {
+  it('passes the prepared agentQuery to the runtime while preserving the user query for persistence', async () => {
     mockPreparedSession.agentQuery = [
-      'System context continuity notice:',
-      'The provider SDK conversation context was reset before this turn.',
+      'Source context changed before this turn.',
       '',
       'User query:',
       '分析启动慢',

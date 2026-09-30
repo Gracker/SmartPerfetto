@@ -134,7 +134,7 @@ import {
   type AnalysisRunPersistenceScope,
   type PersistedAnalysisRunStatus,
 } from '../services/analysisRunStore';
-import {buildAgentQueryWithContinuityNotice, type AnalyzeSessionRunContext} from '../assistant/application/agentAnalyzeSessionService';
+import {resolveAgentQuery, type AnalyzeSessionRunContext} from '../assistant/application/agentAnalyzeSessionService';
 import { buildAssistantResultContract } from '../assistant/contracts/assistantResultContract';
 import {
   persistCompletedAnalysisResultSnapshot,
@@ -5057,10 +5057,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     finalizationRun.assertCurrent();
     return !options.sceneRunBinding && allowAutomaticPrefetch && Date.now() < runtimeDeadlineMs;
   };
-  const agentQuery =
-    session.agentQuery && session.query === query
-      ? session.agentQuery
-      : buildAgentQueryWithContinuityNotice(query, session.continuityBreaks);
+  const agentQuery = resolveAgentQuery(session, query);
 
   // Track generation is a lightweight derivation step from DataEnvelopes.
   // Enable by default (unless explicitly disabled) so `/api/agent/v1/analyze` can
