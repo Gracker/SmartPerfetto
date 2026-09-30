@@ -1631,6 +1631,13 @@ describe('createClaudeMcpServer', () => {
       expect(skillResult.artifacts[0]).not.toHaveProperty('preview');
       expect(skillResult.hint).toContain('forbids raw artifact rows');
 
+      const rowsBeforeSummary = await tools.get('fetch_artifact')!.handler({artifactId, detail: 'rows', limit: 1});
+      expect(isPolicyRefusalResult(rowsBeforeSummary)).toBe(true);
+      expect(JSON.parse(rowsBeforeSummary.content[0].text)).toMatchObject({
+        reason: 'raw_rows_forbidden',
+        action_required: 'fetch_artifact',
+      });
+
       const summary = await callTool(tools, 'fetch_artifact', {
         artifactId,
         detail: 'summary',
@@ -1649,16 +1656,14 @@ describe('createClaudeMcpServer', () => {
         artifactId,
         detail: 'full',
       });
-      expect(rows).toMatchObject({
+      const blocked = {
         success: false,
         error: 'artifact_access_policy_blocked',
         reason: 'raw_rows_forbidden',
-      });
-      expect(full).toMatchObject({
-        success: false,
-        error: 'artifact_access_policy_blocked',
-        reason: 'raw_rows_forbidden',
-      });
+        action_required: 'use_existing_artifact_summary',
+      };
+      expect(rows).toMatchObject(blocked);
+      expect(full).toMatchObject(blocked);
       expect(artifactStore.fetch).toHaveBeenCalledTimes(fetchCallsBeforeBlockedRequests);
     });
 
@@ -1676,7 +1681,10 @@ describe('createClaudeMcpServer', () => {
         detail: 'rows',
         limit: 1,
       });
-      expect(beforeSummary.reason).toBe('summary_required_before_rows');
+      expect(beforeSummary).toMatchObject({
+        reason: 'summary_required_before_rows',
+        action_required: 'fetch_artifact',
+      });
       expect(artifactStore.fetch).not.toHaveBeenCalled();
 
       const summary = await callTool(tools, 'fetch_artifact', {
@@ -1689,7 +1697,10 @@ describe('createClaudeMcpServer', () => {
         detail: 'rows',
         limit: 1,
       });
-      expect(afterCompleteSummary.reason).toBe('complete_summary_already_available');
+      expect(afterCompleteSummary).toMatchObject({
+        reason: 'complete_summary_already_available',
+        action_required: 'use_existing_artifact_summary',
+      });
 
       mockSkillExecutor.execute.mockResolvedValueOnce({
         skillId: 'scrolling_analysis',
@@ -1714,7 +1725,18 @@ describe('createClaudeMcpServer', () => {
         detail: 'rows',
         limit: 1,
       });
-      expect(secondArtifactRows.reason).toBe('summary_required_before_rows');
+      expect(secondArtifactRows).toMatchObject({
+        reason: 'summary_required_before_rows',
+        action_required: 'fetch_artifact',
+      });
+    });
+
+    it('rejects a zero row limit in both the schema and the handler', async () => {
+      const {tools} = createTestServer();
+
+      expect(tools.get('fetch_artifact')?.schema?.limit.safeParse(0).success).toBe(false);
+      const zeroRows = await callTool(tools, 'fetch_artifact', {artifactId: 'art-1', detail: 'rows', limit: 0});
+      expect(zeroRows.error).toContain('limit must be >= 1');
     });
 
     it('allows minimum rows after an incomplete per-artifact summary', async () => {
@@ -6933,6 +6955,20 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('revise_plan (P1-3)', () => {
+    it('refuses a revision before any plan exists as a policy refusal', async () => {
+      const {tools} = createTestServer();
+      const result = await tools.get('revise_plan')!.handler({
+        updatedPhases: [{id: 'p1', name: 'Phase 1', goal: 'G1', expectedTools: ['execute_sql']}],
+        reason: 'No plan was submitted',
+      });
+
+      expect(JSON.parse(result.content[0].text)).toMatchObject({
+        error: '还没有提交 plan，请先调用 submit_plan。',
+        action_required: 'submit_plan',
+      });
+      expect(isPolicyRefusalResult(result)).toBe(true);
+    });
+
     it('should allow revising a plan', async () => {
       const { tools, analysisPlan } = createTestServer();
       // Submit initial plan

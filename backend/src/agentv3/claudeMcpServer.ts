@@ -149,7 +149,7 @@ import {hasValidPlanSkipDisposition, resolvePlanPhaseForCall} from './planPhaseS
 import {getAnalysisPlanCompletionStatus} from './planCompletionStatus';
 import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
 import { planPhaseUpdatedContent } from './planPhaseEvents';
-import type { ArtifactStore, CompactArtifactSummary } from './artifactStore';
+import { ArtifactStore, type CompactArtifactSummary } from './artifactStore';
 import {resolveArtifactAccessPolicy} from './artifactAccessPolicy';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import {
@@ -501,6 +501,9 @@ function coercePlanString(value: unknown): string | undefined {
   }
   return undefined;
 }
+
+/** One row window for fetch_artifact: the schema the model sees and the handler agree on it. */
+const FETCH_ARTIFACT_ROW_LIMIT = { min: 1, max: 200 } as const;
 
 function coerceOptionalInteger(
   value: unknown,
@@ -4191,8 +4194,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       offset: z.coerce.number().int().min(0).optional().describe(
         'Row offset for pagination (detail="rows" only). Default: 0. Use with limit to select a targeted row window.'
       ),
-      limit: z.coerce.number().int().min(0).max(200).optional().describe(
-        'Maximum rows to return (detail="rows" only, 1-200). Ignored for summary/full. Default for rows: 50.'
+      limit: z.coerce.number().int().min(FETCH_ARTIFACT_ROW_LIMIT.min).max(FETCH_ARTIFACT_ROW_LIMIT.max).optional().describe(
+        `Maximum rows to return (detail="rows" only, ${FETCH_ARTIFACT_ROW_LIMIT.min}-${FETCH_ARTIFACT_ROW_LIMIT.max}). Ignored for summary/full. Default for rows: ${ArtifactStore.DEFAULT_PAGE_SIZE}.`
       ),
       purpose: z.string().optional().describe(
         'One short sentence explaining why this artifact is needed for the current plan phase. Used in the user-visible timeline.'
@@ -4210,19 +4213,24 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               ? 'complete_summary_already_available'
               : undefined;
         if (blockedReason) {
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify({
-              success: false,
-              error: 'artifact_access_policy_blocked',
-              reason: blockedReason,
-              artifactId,
-              requestedDetail: effectiveDetail,
-              hint: blockedReason === 'summary_required_before_rows'
-                ? 'Fetch detail="summary" for this artifact first.'
-                : 'Use the existing summary aggregate and report any remaining evidence boundary.',
-            }) }],
-            isError: true,
-          };
+          // A governance refusal, not a broken tool: action_required keeps it out of
+          // failure-rate monitoring. Unlike a malformed pagination below, the call is
+          // not attributed: a producer context would auto-start a pending plan phase
+          // for a read the policy itself refused.
+          const nextStep = summaryState
+            ? {
+              action_required: 'use_existing_artifact_summary',
+              hint: 'Use the existing summary aggregate and report any remaining evidence boundary.',
+            }
+            : {action_required: 'fetch_artifact', hint: 'Fetch detail="summary" for this artifact.'};
+          return createRuntimeToolResult({
+            success: false,
+            error: 'artifact_access_policy_blocked',
+            reason: blockedReason,
+            artifactId,
+            requestedDetail: effectiveDetail,
+            ...nextStep,
+          }, {isError: true});
         }
       }
       const usesPagination = effectiveDetail === 'rows';
@@ -4230,7 +4238,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         ? coerceOptionalInteger(offset, 'offset', { min: 0 })
         : {};
       const normalizedLimit = usesPagination
-        ? coerceOptionalInteger(limit, 'limit', { min: 1, max: 200 })
+        ? coerceOptionalInteger(limit, 'limit', FETCH_ARTIFACT_ROW_LIMIT)
         : {};
       const paginationErrors = [normalizedOffset.error, normalizedLimit.error].filter(Boolean);
       const producerReason = purpose || localize(
@@ -6466,6 +6474,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             text: JSON.stringify({
               success: false,
               error: localize(outputLanguage, '还没有提交 plan，请先调用 submit_plan。', 'No plan submitted yet. Call submit_plan first.'),
+              action_required: 'submit_plan',
             }),
           }],
           isError: true,
