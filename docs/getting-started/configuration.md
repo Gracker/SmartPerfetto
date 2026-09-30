@@ -266,7 +266,7 @@ OPENAI_MODEL=gpt-5.4-mini
 OPENAI_LIGHT_MODEL=gpt-5.4-mini
 ```
 
-官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径；切到它会失去 Responses 侧的会话续接能力，例如 SmartPerfetto OpenAI runtime 使用的 `previousResponseId`。
+官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径。两种协议都不会续接之前的 provider response：每个问题都从新的模型上下文加 SmartPerfetto 有界的 typed history 开始。
 
 Ollama 或 OpenAI-compatible gateway 走 Chat Completions 协议：
 
@@ -499,8 +499,8 @@ OpenAI runtime 的 `maxTurns × per-turn timeout`（full 模式再受上面的�
 总时长，并在其中固定预留一次无工具交付调用；小于初始预算时按初始预算处理，即它只限制延期，不缩短原预算。
 调查仍超时且本轮已有返回数据时，后端用这次预留调用基于已返回数据给出有限结论，结果标记 `partial` / `timeout`；
 没有返回数据或交付调用也超时，则保留“未生成可交付结论”。OpenAI 的
-`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制跨 continuation/session 持有的
-provider history；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制本轮续写/恢复调用可重发的
+当前 run transcript，超出时不会完整重发；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
 
 `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`（默认 15000，不低于 10000，高于 SQLite 5 秒 busy
 timeout）限制用户停止核验（Web、对话或 CLI Ctrl-C）之后 run 保存结论可用的时间，只在这类停止时

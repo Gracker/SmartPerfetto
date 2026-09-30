@@ -8,6 +8,7 @@ import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
 import {createAnswerDraftStream} from '../../agentRuntime/answerDraftStream';
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
+import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
 import type {OpenAIAgentConfig} from '../../agentRuntime/engines/openai/openAiConfig';
 import * as finalization from '../../agentRuntime/analysisFinalizationContext';
@@ -83,6 +84,11 @@ function createOpenAiRuntimeForTest(trace?: TraceProcessorService): any {
   jest.spyOn(runtime as any, 'recordPatternMemory').mockImplementation(() => undefined);
   return runtime;
 }
+function emptySnapshot(sessionId: string, traceId: string): SessionStateSnapshot {
+  return {version: 1, snapshotTimestamp: Date.now(), sessionId, traceId, conversationSteps: [], queryHistory: [],
+    conclusionHistory: [], agentDialogue: [], agentResponses: [], dataEnvelopes: [], hypotheses: [], analysisNotes: [],
+    analysisPlan: null, planHistory: [], uncertaintyFlags: [], runSequence: 0, conversationOrdinal: 0};
+}
 function createRuntimeWithUpdates() {
   const runtime = createOpenAiRuntimeForTest();
   const updates: any[] = [];
@@ -99,7 +105,7 @@ function prepareStub(runtime: any, sourceUse?: unknown) {
   return jest.spyOn(runtime, 'prepareAnalysisContext').mockImplementation(async (...args: any[]) => ({
     systemPrompt: 'test system prompt', tools: [], allowedTools: [],
     sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns,
-    hypotheses: [], sessionMapKey: args[4].analysisRunSpec.identity.sessionMapKey, sourceUse,
+    hypotheses: [], sourceUse,
   }));
 }
 function responseDone(text: string, status = 'completed') {
@@ -501,8 +507,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
         await args[4].toolObserver({...invocation, phase: 'completed', result: {
           content: [{type: 'text', text: JSON.stringify({columns: ['dur'], rows: [[195]], success: true})}]}});
         return {systemPrompt: 'test system prompt', tools: [], allowedTools: [], hypotheses: [],
-          sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns,
-          sessionMapKey: args[4].analysisRunSpec.identity.sessionMapKey};
+          sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns};
       });
     }
     const budgetLine = (warn: jest.SpiedFunction<typeof console.warn>) =>
@@ -667,10 +672,9 @@ describe('OpenAI cancellation and bounded recovery', () => {
     expect(result).toMatchObject({rounds: 50, partial: true, terminationReason: 'max_turns', outputOrigin: 'sdk_final',
       completion: {status: 'incomplete', reason: 'turn_limit', conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)}});
     expect(result.conclusion).toContain('Investigation incomplete');
-    expect(runtime.sessionMap.size).toBe(0);
   });
 
-  it.each(['missing', 'pending-call', 'no-user', 'oversized', 'unreadable', 'remote-resume'])
+  it.each(['missing', 'pending-call', 'no-user', 'oversized', 'unreadable'])
   ('uses bounded returned-data context when native history is %s', async condition => {
     const config = createOpenAiConfigForTest();
     if (condition === 'oversized') config.maxHistoryBytes = 32;
@@ -680,14 +684,13 @@ describe('OpenAI cancellation and bounded recovery', () => {
     const state = condition === 'missing' ? undefined : condition === 'unreadable'
       ? {get history() {throw new Error('unreadable');}} : {history};
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-    if (condition === 'remote-resume') runtime.sessionMap.set('cap-denied', {lastResponseId: 'remote', updatedAt: Date.now()});
     const run = mockRun().mockRejectedValueOnce(new MaxTurnsExceededError('cap', state as any))
       .mockResolvedValueOnce(sdkStream('Investigation incomplete. No root cause is established.'));
     const result = await runtime.analyze('query', 'cap-denied', 'trace', {analysisMode: 'fast', providerId: null});
     expect(run).toHaveBeenCalledTimes(2);
     expect(run.mock.calls[0][2]).not.toHaveProperty('previousResponseId');
     expect((run.mock.calls[1][0] as any).tools).toEqual([]);
-    if (condition !== 'remote-resume') expect(JSON.stringify(run.mock.calls[1][1])).toContain('current_run_returned_data_excerpts');
+    expect(JSON.stringify(run.mock.calls[1][1])).toContain('current_run_returned_data_excerpts');
     expect(result).toMatchObject({rounds: 2, partial: true, terminationReason: 'max_turns'});
     expect(result.conclusion).toContain('No root cause');
   });
@@ -710,8 +713,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
         content: [{type: 'text', text: JSON.stringify({columns: ['dur'], rows: [[9]], success: true})}],
       }});
       return {systemPrompt: 'test system prompt', tools: [], allowedTools: [], hypotheses: [],
-        sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns,
-        sessionMapKey: args[4].analysisRunSpec.identity.sessionMapKey};
+        sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns};
     });
     const run = mockRun().mockRejectedValueOnce(new MaxTurnsExceededError('cap'))
       .mockResolvedValueOnce(sdkStream('Observed dur=9; the root cause is unknown.'));
@@ -777,7 +779,9 @@ describe('OpenAI cancellation and bounded recovery', () => {
   });
   it('starts a fresh physical response and injects typed partial history instead of opaque SDK state', async () => {
     const runtime = createOpenAiRuntimeForTest(); const prepare = prepareStub(runtime);
-    runtime.sessionMap.set('retry', {lastResponseId: 'expired', history: [{role: 'user', content: 'prior'}], updatedAt: Date.now()});
+    // A snapshot written before runs stopped persisting SDK state still restores.
+    runtime.restoreFromSnapshot('retry', 'trace', {...emptySnapshot('retry', 'trace'), agentRuntimeKind: 'openai-agents-sdk',
+      openAIHistory: [{role: 'user', content: 'opaque prior'}], openAILastResponseId: 'expired', openAIRunState: 'opaque state'});
     const reader = createAnalysisHistoryReader({assertActive: () => undefined, getTurns: () => [
       toAnalysisHistoryTurn({id: 'prior-limited', turnIndex: 0, query: 'why slow', traceId: 'trace', timestamp: 1,
         result: {conclusion: 'Wait observed; cause unknown.', partial: true, completion: {status: 'incomplete'},
@@ -790,7 +794,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
     expect(run.mock.calls[0][2]).not.toHaveProperty('previousResponseId');
     expect(run.mock.calls[0][1]).toContain('Wait observed; cause unknown.');
     expect(run.mock.calls[0][1]).toContain('"partial":true');
-    expect(run.mock.calls[0][1]).not.toContain('expired');
+    expect(JSON.stringify(run.mock.calls[0])).not.toMatch(/expired|opaque prior|opaque state/);
   });
   it('does not commit when cancellation arrives while provider close is pending', async () => {
     const scope = new __testing.RuntimeAnalysisAbortScope(); const close = createDeferred<void>(); const commit = jest.fn();
@@ -1049,7 +1053,7 @@ describe('OpenAI bounded output-limit recovery', () => {
     prepareStub(runtime).mockImplementation(async (...args: any[]) => ({
       systemPrompt: 'test system prompt', tools: [sourceTool], allowedTools: ['read_codebase_file'],
       sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns,
-      hypotheses: [], sessionMapKey: args[4].analysisRunSpec.identity.sessionMapKey,
+      hypotheses: [],
     }));
     const wire = (id: string, delta: unknown, finishReason: string) => new Response([
       {id, object: 'chat.completion.chunk', created: 1, model: 'pinned-primary', choices: [{index: 0, delta, finish_reason: null}]},
@@ -1091,7 +1095,6 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(result.completion).toMatchObject({runId: 'recovery-run', status: 'completed', sdkFinishReason: 'stop',
       conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)});
     expect(result.rounds).toBe(3);
-    expect(runtime.sessionMap.size).toBe(0);
     expect(updates.filter(update => update.type === 'answer_token' && update.content.token).map(update => update.content.token).join('')).toBe('The source begins');
     expect(updates.filter(update => update.type === 'conclusion').map(update => update.content.conclusion)).toEqual([result.conclusion]);
     const context = finalization.takeFinalizationContext(result); if (context) finalizationContexts.push(context);
@@ -1153,7 +1156,6 @@ describe('OpenAI bounded output-limit recovery', () => {
 
   it('can repair current-run output without resuming an earlier remote response', async () => {
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-    runtime.sessionMap.set('remote-recovery', {lastResponseId: 'remote-earlier', updatedAt: Date.now()});
     const run = mockRun().mockResolvedValueOnce(recoverableStream('original partial answer'))
       .mockResolvedValueOnce(sdkStream('current-run final answer'));
     const result = await runtime.analyze('query', 'remote-recovery', 'trace', {providerId: null});
@@ -1178,7 +1180,6 @@ describe('OpenAI bounded output-limit recovery', () => {
     await Promise.resolve();
     expect(run).toHaveBeenCalledTimes(2);
     expect(updates.some(update => update.type === 'conclusion')).toBe(false);
-    expect(runtime.sessionMap.size).toBe(0);
   });
 
   describe('declaration-only repair of a rejected declaration', () => {
@@ -1577,7 +1578,6 @@ describe('OpenAI candidate-bound privacy projection', () => {
     expect(verified.mock.calls[0][2]?.deliveryContext).toBe(outcome.deliveryContext);
     expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
     expect(JSON.stringify(result)).not.toContain(outcome.conclusionProjection.inputFingerprint);
-    expect(runtime.sessionMap.has(sessionId)).toBe(false);
   });
   it.each([
     {outputLanguage: 'zh-CN' as const, nativeBody: '原生回答'},
@@ -1595,7 +1595,6 @@ describe('OpenAI candidate-bound privacy projection', () => {
     expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}, quickRun: {stopReason: 'partial'}});
     expect(verified.mock.calls[0][2]?.deliveryContext).toBe(outcome.deliveryContext);
     expect(result.completion.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
-    expect(runtime.sessionMap.has(sessionId)).toBe(false);
     if (!nativeBody) {
       const context = projected.mock.calls[0][2]?.context;
       expect(context?.entry === 'runtime_draft' && context.completion?.status).toBe('unknown');
@@ -1674,7 +1673,6 @@ describe('OpenAI candidate-bound privacy projection', () => {
     expect(projected).not.toHaveBeenCalled();
     expect(updates.filter(update => update.type === 'conclusion')).toHaveLength(0);
     expect(JSON.stringify(updates)).not.toContain('PRIVATE_CANARY');
-    expect(runtime.sessionMap.has(sessionId)).toBe(false);
   });
 });
 
@@ -1903,14 +1901,13 @@ describe('OpenAI SDK token and storage contracts', () => {
     expect(jest.mocked(intentTransport.runOpenAiIntentTransport).mock.calls[0][0].maxOutputTokens).toBe(2048);
   });
 
-  it('disables provider response storage for private model calls', () => {
+  it('never asks the provider to store responses', () => {
     const config = createOpenAiConfigForTest();
-    expect(__testing.buildOpenAIModelSettings(config, config.model, false)).toEqual(expect.objectContaining({
+    expect(__testing.buildOpenAIModelSettings(config, config.model)).toEqual(expect.objectContaining({
       store: false,
       maxTokens: config.maxOutputTokens,
       parallelToolCalls: false,
     }));
-    expect(__testing.buildOpenAIModelSettings(config, config.model, true).store).toBe(true);
   });
 
   it('uses max_completion_tokens for GPT-5.6 Chat Completions without emitting maxTokens', () => {
@@ -1919,7 +1916,7 @@ describe('OpenAI SDK token and storage contracts', () => {
       protocol: 'chat_completions' as const,
       model: 'gpt-5.6-sol',
     };
-    const settings = __testing.buildOpenAIModelSettings(config, config.model, false);
+    const settings = __testing.buildOpenAIModelSettings(config, config.model);
 
     expect(settings).toEqual({
       providerData: { max_completion_tokens: config.maxOutputTokens },
@@ -1935,10 +1932,10 @@ describe('OpenAI SDK token and storage contracts', () => {
       model: 'gpt-5.6-sol',
     };
 
-    expect(__testing.buildOpenAIModelSettings(config, config.model, true)).toEqual({
+    expect(__testing.buildOpenAIModelSettings(config, config.model)).toEqual({
       maxTokens: config.maxOutputTokens,
       parallelToolCalls: false,
-      store: true,
+      store: false,
     });
   });
 
@@ -1967,7 +1964,7 @@ describe('OpenAI SDK token and storage contracts', () => {
       await model.getResponse({
         input: [{ role: 'user', content: 'hi' }],
         systemInstructions: 'answer briefly',
-        modelSettings: __testing.buildOpenAIModelSettings(config, config.model, false),
+        modelSettings: __testing.buildOpenAIModelSettings(config, config.model),
         tools: [],
         handoffs: [],
         outputType: 'text',
@@ -1988,213 +1985,55 @@ describe('OpenAI SDK token and storage contracts', () => {
       model: 'deepseek-v4-pro',
     };
 
-    expect(__testing.buildOpenAIModelSettings(config, config.model, true)).toEqual({
+    expect(__testing.buildOpenAIModelSettings(config, config.model)).toEqual({
       maxTokens: config.maxOutputTokens,
       parallelToolCalls: false,
-      store: true,
+      store: false,
     });
   });
 
  });
 
 describe('OpenAI snapshot compatibility', () => {
-  it('does not persist stale OpenAI response mappings into snapshots', () => {
-    const now = 1_700_000_000_000;
+  const sessionFields = {
+    conversationSteps: [], queryHistory: [], conclusionHistory: [], agentDialogue: [], agentResponses: [],
+    dataEnvelopes: [], hypotheses: [], runSequence: 0, conversationOrdinal: 0,
+  };
+
+  it.each([undefined, 'trace-b'])('writes only the provider pin as engine state (reference %s)', referenceTraceId => {
     const runtime = createOpenAiRuntimeForTest();
-    runtime.sessionMap.set('s1', {
-      history: [{ role: 'user', content: 'previous question' }],
-      lastResponseId: 'resp_stale',
-      updatedAt: now - (5 * 60 * 60 * 1000),
+    const snapshot = runtime.takeSnapshot('s1', 'trace-1', {
+      ...sessionFields, agentRuntimeProviderId: 'provider-1', agentRuntimeProviderSnapshotHash: 'hash-1',
+      ...(referenceTraceId ? {referenceTraceId, comparisonSource: 'raw_trace_pair' as const} : {}),
     });
 
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      const snapshot = runtime.takeSnapshot('s1', 'trace-1', {
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      });
-
-      expect(snapshot.sdkSessionId).toBeUndefined();
-      expect(snapshot.openAILastResponseId).toBeUndefined();
-      expect(snapshot.openAIHistory).toBeUndefined();
-      expect(snapshot.engineState).toEqual(expect.objectContaining({
-        kind: 'openai-agents-sdk',
-        provider: {
-          providerId: null,
-          providerSnapshotHash: null,
-        },
-      }));
-      expect(snapshot.engineState?.openai.lastResponseId).toBeUndefined();
-    } finally {
-      nowSpy.mockRestore();
+    expect(snapshot).toMatchObject({agentRuntimeKind: 'openai-agents-sdk', agentRuntimeProviderId: 'provider-1',
+      agentRuntimeProviderSnapshotHash: 'hash-1', engineState: {kind: 'openai-agents-sdk',
+        provider: {providerId: 'provider-1', providerSnapshotHash: 'hash-1'}}});
+    for (const field of ['sdkSessionId', 'openAIHistory', 'openAILastResponseId', 'openAIRunState']) {
+      expect(snapshot).not.toHaveProperty(field);
     }
+    expect(JSON.parse(JSON.stringify(snapshot.engineState))).toEqual({kind: 'openai-agents-sdk',
+      provider: {providerId: 'provider-1', providerSnapshotHash: 'hash-1'}, openai: {}});
   });
 
-  it('persists fresh OpenAI response mappings into snapshots', () => {
-    const now = 1_700_000_000_000;
+  it.each([
+    ['canonical engine state', {engineState: {kind: 'openai-agents-sdk' as const,
+      provider: {providerId: null, providerSnapshotHash: null},
+      openai: {history: [{role: 'user', content: 'previous question'}], lastResponseId: 'resp_old', runState: 'opaque'}}}],
+    ['legacy mirrors', {referenceTraceId: 'trace-b', comparisonSource: 'raw_trace_pair' as const,
+      openAIHistory: [{role: 'user', content: 'previous question'}], openAILastResponseId: 'resp_old',
+      openAIRunState: 'opaque', sdkSessionId: 'resp_old'}],
+  ])('restores product state from a snapshot carrying %s without carrying SDK state forward', (_label, runtimeState) => {
     const runtime = createOpenAiRuntimeForTest();
-    const history = [{ role: 'user', content: 'previous question' }];
-    runtime.sessionMap.set('s1', {
-      history,
-      lastResponseId: 'resp_fresh',
-      runState: '{"state":true}',
-      updatedAt: now - (30 * 60 * 1000),
-    });
+    const note = {id: 'n1', content: 'kept note'} as any;
+    const snapshot = {...emptySnapshot('s1', 'trace-1'), analysisNotes: [note], ...runtimeState};
 
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      const snapshot = runtime.takeSnapshot('s1', 'trace-1', {
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      });
+    runtime.restoreFromSnapshot('s1', 'trace-1', snapshot);
 
-      expect(snapshot.sdkSessionId).toBe('resp_fresh');
-      expect(snapshot.openAILastResponseId).toBe('resp_fresh');
-      expect(snapshot.openAIHistory).toBe(history);
-      expect(snapshot.openAIRunState).toBe('{"state":true}');
-      expect(snapshot.engineState).toEqual(expect.objectContaining({
-        kind: 'openai-agents-sdk',
-        provider: {
-          providerId: null,
-          providerSnapshotHash: null,
-        },
-        openai: {
-          history,
-          lastResponseId: 'resp_fresh',
-          runState: '{"state":true}',
-        },
-      }));
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-  it('persists fresh comparison OpenAI response mappings into snapshots', () => {
-    const now = 1_700_000_000_000;
-    const runtime = createOpenAiRuntimeForTest();
-    const history = [{ role: 'user', content: 'previous comparison question' }];
-    runtime.sessionMap.set('s1:ref:trace-b', {
-      history,
-      lastResponseId: 'resp_compare_fresh',
-      runState: '{"compare":true}',
-      updatedAt: now - (30 * 60 * 1000),
-    });
-
-    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(now);
-    try {
-      const snapshot = runtime.takeSnapshot('s1', 'trace-1', {
-        referenceTraceId: 'trace-b',
-        comparisonSource: 'raw_trace_pair',
-        conversationSteps: [],
-        queryHistory: [],
-        conclusionHistory: [],
-        agentDialogue: [],
-        agentResponses: [],
-        dataEnvelopes: [],
-        hypotheses: [],
-        runSequence: 0,
-        conversationOrdinal: 0,
-      });
-
-      expect(snapshot.referenceTraceId).toBe('trace-b');
-      expect(snapshot.comparisonSource).toBe('raw_trace_pair');
-      expect(snapshot.sdkSessionId).toBe('resp_compare_fresh');
-      expect(snapshot.openAILastResponseId).toBe('resp_compare_fresh');
-      expect(snapshot.openAIHistory).toBe(history);
-      expect(snapshot.openAIRunState).toBe('{"compare":true}');
-      expect(snapshot.engineState?.kind).toBe('openai-agents-sdk');
-      expect(snapshot.engineState?.openai.lastResponseId).toBe('resp_compare_fresh');
-    } finally {
-      nowSpy.mockRestore();
-    }
-  });
-
-
-  it('restores OpenAI response mappings with the snapshot timestamp', () => {
-    const runtime = createOpenAiRuntimeForTest();
-    const snapshotTimestamp = Date.now() - (5 * 60 * 60 * 1000);
-
-    runtime.restoreFromSnapshot('s1', 'trace-1', {
-      version: 1,
-      snapshotTimestamp,
-      sessionId: 's1',
-      traceId: 'trace-1',
-      conversationSteps: [],
-      queryHistory: [],
-      conclusionHistory: [],
-      agentDialogue: [],
-      agentResponses: [],
-      dataEnvelopes: [],
-      hypotheses: [],
-      analysisNotes: [],
-      analysisPlan: null,
-      planHistory: [],
-      uncertaintyFlags: [],
-      engineState: {
-        kind: 'openai-agents-sdk',
-        provider: { providerId: null, providerSnapshotHash: null },
-        openai: {
-          history: [{ role: 'user', content: 'previous question' }],
-          lastResponseId: 'resp_old',
-        },
-      },
-      runSequence: 0,
-      conversationOrdinal: 0,
-    });
-
-    expect(runtime.sessionMap.get('s1')).toEqual(expect.objectContaining({
-      lastResponseId: 'resp_old',
-      updatedAt: snapshotTimestamp,
-    }));
-  });
-
-  it('restores comparison OpenAI response mappings under the comparison key', () => {
-    const runtime = createOpenAiRuntimeForTest();
-    const snapshotTimestamp = Date.now() - (30 * 60 * 1000);
-
-    runtime.restoreFromSnapshot('s1', 'trace-1', {
-      version: 1,
-      snapshotTimestamp,
-      sessionId: 's1',
-      traceId: 'trace-1',
-      referenceTraceId: 'trace-b',
-      comparisonSource: 'raw_trace_pair',
-      conversationSteps: [],
-      queryHistory: [],
-      conclusionHistory: [],
-      agentDialogue: [],
-      agentResponses: [],
-      dataEnvelopes: [],
-      hypotheses: [],
-      analysisNotes: [],
-      analysisPlan: null,
-      planHistory: [],
-      uncertaintyFlags: [],
-      openAIHistory: [{ role: 'user', content: 'previous comparison question' }],
-      openAILastResponseId: 'resp_compare_old',
-      runSequence: 0,
-      conversationOrdinal: 0,
-    });
-
-    expect(runtime.sessionMap.get('s1')).toBeUndefined();
-    expect(runtime.sessionMap.get('s1:ref:trace-b')).toEqual(expect.objectContaining({
-      lastResponseId: 'resp_compare_old',
-      updatedAt: snapshotTimestamp,
-    }));
-    expect(runtime.getSdkSessionId('s1', 'trace-b')).toBe('resp_compare_old');
+    expect(runtime.getSessionNotes('s1')).toEqual([note]);
+    const next = runtime.takeSnapshot('s1', 'trace-1', {...sessionFields,
+      ...('referenceTraceId' in runtimeState ? {referenceTraceId: runtimeState.referenceTraceId} : {})});
+    expect(JSON.stringify(next)).not.toMatch(/resp_old|previous question|opaque/);
   });
 });

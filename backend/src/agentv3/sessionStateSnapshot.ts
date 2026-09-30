@@ -132,6 +132,10 @@ export interface ClaudeSnapshotEngineState {
   sdkSessionMode?: 'full';
 }
 
+/**
+ * Shape of legacy stored content only. OpenAI runs start from fresh physical
+ * context, write `{}` here and never read these fields back.
+ */
 export interface OpenAISnapshotEngineState {
   history?: unknown[];
   lastResponseId?: string;
@@ -251,16 +255,12 @@ export function createClaudeSnapshotEngineState(
 }
 
 export function createOpenAISnapshotEngineState(
-  input: EngineProviderStateInput & OpenAISnapshotEngineState,
+  input: EngineProviderStateInput,
 ): SnapshotEngineState {
   return {
     kind: 'openai-agents-sdk',
     provider: createSnapshotEngineProviderState(input),
-    openai: {
-      history: input.history,
-      lastResponseId: input.lastResponseId,
-      runState: input.runState,
-    },
+    openai: {},
   };
 }
 
@@ -338,24 +338,6 @@ export function getClaudeSnapshotEngineState(
     return {
       sdkSessionId: snapshot.sdkSessionId,
       sdkSessionMode: snapshot.sdkSessionMode,
-    };
-  }
-  return undefined;
-}
-
-export function getOpenAISnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState' | 'openAIHistory' | 'openAILastResponseId' | 'openAIRunState' | 'sdkSessionId'>,
-): OpenAISnapshotEngineState | undefined {
-  if (snapshot.engineState) {
-    return snapshot.engineState.kind === 'openai-agents-sdk'
-      ? snapshot.engineState.openai
-      : undefined;
-  }
-  if (snapshot.openAIHistory || snapshot.openAILastResponseId || snapshot.openAIRunState || snapshot.sdkSessionId) {
-    return {
-      history: snapshot.openAIHistory,
-      lastResponseId: snapshot.openAILastResponseId || snapshot.sdkSessionId,
-      runState: snapshot.openAIRunState,
     };
   }
   return undefined;
@@ -492,9 +474,6 @@ export function normalizeSessionStateSnapshot(
       engineState: createOpenAISnapshotEngineState({
         providerId: snapshot.agentRuntimeProviderId,
         providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
-        history: snapshot.openAIHistory,
-        lastResponseId: snapshot.openAILastResponseId || snapshot.sdkSessionId,
-        runState: snapshot.openAIRunState,
       }),
     };
   } else if (!snapshot.engineState && runtimeKind === 'pi-agent-core') {
@@ -637,11 +616,12 @@ export interface SessionStateSnapshot {
   backgroundKnowledgeReferences?: import('../types/sparkContracts').BackgroundKnowledgeReference[];
   /** Backend-session ancestry when a user-visible session had to bridge to a fresh backend session. */
   lineage?: SessionLineage;
-  /** OpenAI Agents SDK history for cross-restart multi-turn continuation. */
+  /**
+   * Legacy OpenAI Agents SDK mirrors, no longer written. Still read to infer the
+   * runtime kind of snapshots that predate `agentRuntimeKind`/`engineState`.
+   */
   openAIHistory?: unknown[];
-  /** Last provider response ID from the OpenAI Agents SDK run. */
   openAILastResponseId?: string;
-  /** Reserved serialized OpenAI run state for future SDK-native restoration. */
   openAIRunState?: string;
   /** Code-aware analysis mode persisted with the session. */
   codeAwareMode?: CodeAwareMode;

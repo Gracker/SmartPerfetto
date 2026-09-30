@@ -37,7 +37,7 @@ import {ArtifactStore} from '../../../agentv3/artifactStore';
 import {resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
 import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/scene/sceneRuntimeBinding';
 import type {ScenePacingInputs} from '../../../agent/scene/sceneProposalPacing';
-import {createOpenAISnapshotEngineState, getOpenAISnapshotEngineState, projectSessionFieldsForDurableSnapshot, type SessionFieldsForSnapshot, sessionFieldsUsePrivateKnowledge, type SessionStateSnapshot} from '../../../agentv3/sessionStateSnapshot';
+import {createOpenAISnapshotEngineState, projectSessionFieldsForDurableSnapshot, type SessionFieldsForSnapshot, sessionFieldsUsePrivateKnowledge, type SessionStateSnapshot} from '../../../agentv3/sessionStateSnapshot';
 import {extractTraceFeatures, extractKeyInsights, saveAnalysisPattern, saveQuickPathPattern} from '../../../agentv3/analysisPatternMemory';
 import {probeTraceCompleteness} from '../../../agentv3/traceCompletenessProber';
 import {localize, type OutputLanguage} from '../../../agentv3/outputLanguage';
@@ -54,7 +54,7 @@ import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} fr
 import {createOpenAIToolsFromMcpDefinitions} from './openAiToolAdapter';
 import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
 import {verifyConclusion} from '../claude/claudeVerifier';
-import {SDK_SESSION_FRESHNESS_MS, buildQuickRunReceipt, buildRuntimeSessionMapKey, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, isFreshRuntimeEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
+import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
 import type {RuntimeSelection} from '../../runtimeSelection';
 import {RuntimeExecutionGuard, type RuntimeExecutionLease} from '../../runtimeExecutionGuard';
@@ -277,13 +277,6 @@ function finalizeOpenAiCandidate(input: {
   return {...finalized, deliveryContext: finalized.deliveryContext};
 }
 
-interface OpenAISessionEntry {
-  history?: AgentInputItem[];
-  lastResponseId?: string;
-  runState?: string;
-  updatedAt: number;
-}
-
 type OpenAIAnalysisSessionState = {
   artifactStore: ArtifactStore;
   notes: AnalysisNote[];
@@ -342,9 +335,6 @@ class RuntimeAnalysisAbortScope implements RuntimeAbortHandle {
     };
   }
 }
-
-const OPENAI_SESSION_FRESHNESS_MS = SDK_SESSION_FRESHNESS_MS;
-
 
 function parseJsonObject(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'string') return undefined;
@@ -445,31 +435,9 @@ function filterOpenAiVisibleAnswerDelta(delta: string, state: OpenAiReasoningFil
   return output;
 }
 
-interface OpenAIRunInputResolution {
-  input: string | AgentInputItem[];
-  effectivePrompt: string;
-  shouldPersistRemoteSession: boolean;
-}
-
-function resolveOpenAIRunInput(params: {
-  effectivePrompt: string;
-  historyContext?: string;
-}): OpenAIRunInputResolution {
-  // Logical turns inherit a product-owned bounded preview. Opaque SDK history
-  // would silently bypass that bound even when the remote response is fresh.
-  const historyContext = params.historyContext;
-  const effectivePrompt = historyContext ? `${historyContext}\n\n${params.effectivePrompt}` : params.effectivePrompt;
-  return {
-    input: effectivePrompt,
-    effectivePrompt,
-    shouldPersistRemoteSession: false,
-  };
-}
-
 function buildOpenAIModelSettings(
   config: Pick<OpenAIAgentConfig, 'maxOutputTokens' | 'protocol'>,
   model: string,
-  allowRemotePersistence: boolean,
 ) {
   const chatCompletionsTokenLimit = config.protocol === 'chat_completions' && config.maxOutputTokens !== undefined
     ? buildOpenAIChatCompletionsTokenLimit(model, config.maxOutputTokens)
@@ -482,7 +450,8 @@ function buildOpenAIModelSettings(
       ? { providerData: chatCompletionsTokenLimit }
       : config.maxOutputTokens !== undefined ? { maxTokens: config.maxOutputTokens } : {}),
     parallelToolCalls: false,
-    store: allowRemotePersistence,
+    // Every run starts from fresh physical context; no response is ever resumed.
+    store: false,
   };
 }
 
@@ -552,7 +521,6 @@ export const __testing = {
   RuntimeAnalysisAbortScope,
   createOpenAiReasoningFilterState,
   filterOpenAiVisibleAnswerDelta,
-  resolveOpenAIRunInput,
   compactProviderErrorMessage,
   commitAfterProviderClose,
   buildOpenAIModelSettings,
@@ -572,7 +540,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionPlans = new Map<string, { current: AnalysisPlanV3 | null; history: AnalysisPlanV3[] }>();
   private readonly sessionHypotheses = new Map<string, Hypothesis[]>();
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
-  private readonly sessionMap = new Map<string, OpenAISessionEntry>();
   private readonly activeAnalyses = new Set<string>();
   private readonly activeAbortHandles = new Map<string, Set<RuntimeAbortHandle>>();
   private readonly executionGuard = new RuntimeExecutionGuard();
@@ -586,17 +553,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     super();
     this.traceProcessorService = traceProcessorService;
     this.runtimeSelection = runtimeSelection;
-  }
-
-  private buildSessionMapKey(sessionId: string, referenceTraceId?: string): string {
-    return buildRuntimeSessionMapKey(sessionId, referenceTraceId);
-  }
-
-  getSdkSessionId(sessionId: string, referenceTraceId?: string): string | undefined {
-    const entry = this.sessionMap.get(this.buildSessionMapKey(sessionId, referenceTraceId));
-    return isFreshRuntimeEntry(entry, OPENAI_SESSION_FRESHNESS_MS)
-      ? entry.lastResponseId
-      : undefined;
   }
 
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {
@@ -733,10 +689,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       analysisAbortScope.throwIfAborted();
       const promptPrefix = analysisRunSpec.traceContext.promptSection;
       const effectivePrompt = promptPrefix ? `${promptPrefix}\n\n${query}` : query;
-      let runInput = resolveOpenAIRunInput({
-        effectivePrompt,
-        historyContext: renderAnalysisHistoryContext(historyReader.getTurns(), {outputLanguage: config.outputLanguage}) ?? '',
-      });
+      // Logical turns inherit a product-owned bounded preview, never opaque SDK history.
+      const historyContext = renderAnalysisHistoryContext(historyReader.getTurns(), {outputLanguage: config.outputLanguage});
+      let runInput: string | AgentInputItem[] = historyContext ? `${historyContext}\n\n${effectivePrompt}` : effectivePrompt;
       let chatTerminal: OpenAiChatTerminal = {};
       const nativeFetch = shouldUseMimoReasoningContentCompat(config)
         ? createMimoReasoningContentFetch() as typeof fetch : fetch;
@@ -756,7 +711,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           toolExecution: {maxFunctionToolConcurrency: 1}});
         agent = new Agent({name: 'SmartPerfetto', instructions: context.systemPrompt,
           model: selectedModel, tools: context.tools, toolUseBehavior: 'run_llm_again',
-          modelSettings: buildOpenAIModelSettings(config, selectedModel, false)});
+          modelSettings: buildOpenAIModelSettings(config, selectedModel)});
         sdkStartPhase.end('ok');
       } catch (error) {
         sdkStartPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
@@ -781,24 +736,18 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       let finish: Pick<AnalysisCompletion, 'status' | 'reason' | 'sdkFinishReason'> = {status: 'unknown'};
       let attemptId = '';
       let terminationMessage: string | undefined;
-      let finalHistory: AgentInputItem[] | undefined;
-      let finalLastResponseId: string | undefined;
-      let finalRunState: string | undefined;
       let observedToolCalls = 0;
       let emittedAnswer = '';
       let recoveryCandidate: {
         conclusion: string; attemptId: string; outputOrigin: AnalysisOutputOrigin;
         finish: typeof finish; hadDeclarations: boolean; terminationMessage: string | undefined;
-        finalHistory: AgentInputItem[] | undefined; finalLastResponseId: string | undefined;
-        finalRunState: string | undefined;
         declarationRequest?: NativeDeclarationCompletionRequest;
       } | undefined;
       // Internal performance receipt: why the next attempt's model calls are made.
       let attemptCall: {purpose: RuntimeModelCallPurpose; trigger?: RuntimeModelCallTrigger} = {purpose: 'answer_turn'};
       const restoreRecoveryCandidate = () => {
         if (!recoveryCandidate) return;
-        ({conclusion, attemptId, outputOrigin, finish, terminationMessage,
-          finalHistory, finalLastResponseId, finalRunState} = recoveryCandidate);
+        ({conclusion, attemptId, outputOrigin, finish, terminationMessage} = recoveryCandidate);
       };
       for (;;) {
         analysisAbortScope.throwIfAborted();
@@ -860,7 +809,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           attemptDispatched = true;
           modelCall = startAttemptModelCall();
           const stream = await Promise.race([
-            runner.run(agent, runInput.input, {stream: true, maxTurns: attemptMaxTurns,
+            runner.run(agent, runInput, {stream: true, maxTurns: attemptMaxTurns,
               context: {signal: controller.signal}, signal: controller.signal}),
             requestTimeout.promise, providerIdleTimeout.promise, cancellation,
           ]);
@@ -923,11 +872,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           outputOrigin = streamCompleted && finalOutput !== undefined ? 'sdk_final' : 'assistant_stream';
           finish = resolveOpenAiNativeCompletion({protocol: config.protocol, response: lastResponse,
             chatTerminal, streamCompleted, conclusion});
-          if (streamCompleted) {
-            if (serializedByteLength(stream.history) <= config.maxHistoryBytes) finalHistory = stream.history;
-            finalLastResponseId = stream.lastResponseId;
-            finalRunState = this.safeSerializeRunState(stream.state);
-          }
           providerPhase.end('ok');
           const nativeProtocol = inspectCandidateProtocol(conclusion);
           modelCall?.end({outcome: 'ok', ...(chatTerminal.model ? {model: chatTerminal.model} : {}),
@@ -981,10 +925,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               attemptCall = {purpose: recoveryReason === MISSING_NATIVE_DECLARATION || recoveryReason === INVALID_NATIVE_DECLARATION
                 ? 'declaration_repair' : 'continuation', trigger: recoveryReason};
               recoveryCandidate = {conclusion, attemptId, outputOrigin, finish, terminationMessage,
-                finalHistory, finalLastResponseId, finalRunState,
                 hadDeclarations: nativeProtocol.status !== 'absent', ...(declarationRequest ? {declarationRequest} : {})};
               agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
-              runInput = {...runInput, input: recoveryInput};
+              runInput = recoveryInput;
               continue;
             }
           }
@@ -1020,10 +963,9 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               acceptsToolUpdates = false;
               attemptCall = {purpose: 'continuation', trigger: 'turn_limit'};
               recoveryCandidate = {conclusion, attemptId, outputOrigin, finish, terminationMessage,
-                finalHistory, finalLastResponseId, finalRunState,
                 hadDeclarations: nativeProtocol.status !== 'absent'};
               agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
-              runInput = {...runInput, input: recoveryInput};
+              runInput = recoveryInput;
               continue;
             }
           }
@@ -1045,11 +987,10 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
               acceptsToolUpdates = false;
               attemptCall = {purpose: 'continuation', trigger: 'timeout'};
               recoveryCandidate = {conclusion, attemptId, outputOrigin, finish, terminationMessage,
-                finalHistory, finalLastResponseId, finalRunState,
                 hadDeclarations: inspectCandidateProtocol(conclusion).status !== 'absent'};
               deliveryDeadlineAt = Date.now() + deliveryWindowMs;
               agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
-              runInput = {...runInput, input: [{role: 'user' as const, content: boundedPrompt}]};
+              runInput = [{role: 'user' as const, content: boundedPrompt}];
               continue;
             }
           }
@@ -1125,11 +1066,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const closingProvider = provider;
       return await commitAfterProviderClose(() => closingProvider.close().catch(() => undefined), analysisAbortScope, () => {
         provider = undefined;
-        if (runInput.shouldPersistRemoteSession && result.completion?.status === 'completed' &&
-            result.outputOrigin === 'sdk_final' && !result.partial && conclusionProjection.disposition === 'preserved') {
-          this.sessionMap.set(context.sessionMapKey, {history: finalHistory, lastResponseId: finalLastResponseId,
-            runState: finalRunState, updatedAt: Date.now()});
-        }
         this.recordTurn({query, sessionId, result, sessionContext, previousTurnCount: previousTurns.length, quickMode,
           sourceDerived: analysisContextUsesPrivateKnowledge(options) || Boolean(sourceUse?.getSourceUseDecision()),
           analysisContextFingerprint: options.analysisContextFingerprint});
@@ -1196,16 +1132,11 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     this.sessionPlans.clear();
     this.sessionHypotheses.clear();
     this.sessionUncertaintyFlags.clear();
-    this.sessionMap.clear();
     this.activeAnalyses.clear();
   }
 
   cleanupSession(sessionId: string): void {
     this.abortSession(sessionId);
-    this.sessionMap.delete(sessionId);
-    for (const key of Array.from(this.sessionMap.keys())) {
-      if (key.startsWith(`${sessionId}:ref:`)) this.sessionMap.delete(key);
-    }
     this.artifactStores.delete(sessionId);
     this.sessionNotes.delete(sessionId);
     this.sessionSqlErrors.delete(sessionId);
@@ -1262,13 +1193,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
-    const sessionEntry = this.sessionMap.get(
-      this.buildSessionMapKey(sessionId, sessionFields.referenceTraceId),
-    );
-    const freshSessionEntry = !privateKnowledge &&
-      isFreshRuntimeEntry(sessionEntry, OPENAI_SESSION_FRESHNESS_MS)
-      ? sessionEntry
-      : undefined;
     return {
       version: 1,
       snapshotTimestamp: Date.now(),
@@ -1281,20 +1205,14 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       uncertaintyFlags: privateKnowledge ? [] : this.sessionUncertaintyFlags.get(sessionId) || [],
       claudeHypotheses: privateKnowledge ? undefined : this.sessionHypotheses.get(sessionId) || undefined,
       architecture: this.architectureCache.get(traceId),
+      // No native SDK state crosses a logical turn, so only the provider pin is engine-local.
       engineState: createOpenAISnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-        history: freshSessionEntry?.history,
-        lastResponseId: freshSessionEntry?.lastResponseId,
-        runState: freshSessionEntry?.runState,
       }),
-      sdkSessionId: freshSessionEntry?.lastResponseId,
       agentRuntimeKind: 'openai-agents-sdk',
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
       agentRuntimeProviderSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-      openAIHistory: freshSessionEntry?.history,
-      openAILastResponseId: freshSessionEntry?.lastResponseId,
-      openAIRunState: freshSessionEntry?.runState,
       artifacts: privateKnowledge ? undefined : artifactStore?.serialize(),
     };
   }
@@ -1320,23 +1238,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     }
     if (snapshot.architecture) {
       this.architectureCache.set(traceId, snapshot.architecture);
-    }
-    const openAIEngineState = getOpenAISnapshotEngineState(snapshot);
-    const restoredHistory = openAIEngineState?.history as AgentInputItem[] | undefined;
-    const maxRestoredHistoryBytes = loadOpenAIConfig(null).maxHistoryBytes;
-    const boundedRestoredHistory = restoredHistory &&
-      serializedByteLength(restoredHistory) <= maxRestoredHistoryBytes
-      ? restoredHistory
-      : undefined;
-    const restoredLastResponseId = openAIEngineState?.lastResponseId;
-    const restoredRunState = openAIEngineState?.runState;
-    if (boundedRestoredHistory || restoredLastResponseId || restoredRunState) {
-      this.sessionMap.set(this.buildSessionMapKey(sessionId, snapshot.referenceTraceId), {
-        history: boundedRestoredHistory,
-        lastResponseId: restoredLastResponseId,
-        runState: restoredRunState,
-        updatedAt: snapshot.snapshotTimestamp || Date.now(),
-      });
     }
   }
 
@@ -1511,7 +1412,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       systemPrompt: buildSystemPrompt(promptContext),
       tools: createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions), allowedTools: mcp.allowedTools,
       sessionContext, previousTurns: runtime.previousTurns, architecture, hypotheses,
-      sessionMapKey: analysisRunSpec.identity.sessionMapKey,
       effectivePackageName, sourceUse: mcp.sourceUse,
       ...(comparisonContext ? {comparisonIdentity: buildComparisonIdentity(focusTarget, comparisonContext)} : {}),
     };
@@ -1754,16 +1654,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       }
     }
     return '';
-  }
-
-  private safeSerializeRunState(state: unknown): string | undefined {
-    try {
-      const asSerializable = state as { toString?: () => string };
-      const serialized = asSerializable?.toString?.();
-      return serialized && serialized !== '[object Object]' ? serialized : undefined;
-    } catch {
-      return undefined;
-    }
   }
 
   private recordTurn(input: {

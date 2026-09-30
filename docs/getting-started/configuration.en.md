@@ -300,7 +300,7 @@ OPENAI_MODEL=gpt-5.4-mini
 OPENAI_LIGHT_MODEL=gpt-5.4-mini
 ```
 
-Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path; switching to it disables Responses-side session continuation such as the `previousResponseId` used by the SmartPerfetto OpenAI runtime.
+Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path. Neither protocol resumes an earlier provider response: every question starts from fresh model context plus SmartPerfetto's bounded typed history.
 
 Ollama or OpenAI-compatible gateways:
 
@@ -565,8 +565,8 @@ extensions and never shortens the original budget. When investigation still time
 out after data has returned, that reserved call gives a limited conclusion from the
 returned data, marked `partial` / `timeout`; with no returned data, or if the delivery
 call also times out, the run ends without a deliverable conclusion.
-`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` default to 4 MiB and only bound provider history
-retained across continuations or sessions. It does not truncate Artifacts,
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` default to 4 MiB and only bound the current-run
+transcript a recovery or continuation call may resend; a larger transcript is never resent in full. It does not truncate Artifacts,
 DataEnvelopes, reports, or evidence provenance.
 
 `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` (default 15000, never below 10000, above

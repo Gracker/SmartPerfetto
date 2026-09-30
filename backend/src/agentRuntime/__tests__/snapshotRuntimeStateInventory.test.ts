@@ -5,7 +5,6 @@
 import { describe, expect, it } from '@jest/globals';
 import {
   getClaudeSnapshotEngineState,
-  getOpenAISnapshotEngineState,
   getOpenCodeSnapshotEngineState,
   getPiAgentCoreSnapshotEngineState,
   getQoderSnapshotEngineState,
@@ -206,11 +205,6 @@ describe('SessionStateSnapshot runtime state inventory', () => {
     expect(getSnapshotRuntimeKind(snapshot)).toBe('openai-agents-sdk');
     expect(getSnapshotRuntimeProviderId(snapshot)).toBe('provider-1');
     expect(getSnapshotRuntimeProviderSnapshotHash(snapshot)).toBe('hash-1');
-    expect(getOpenAISnapshotEngineState(snapshot)).toEqual({
-      history: [{ role: 'user', content: 'q' }],
-      lastResponseId: 'resp-1',
-      runState: 'opaque-openai-state',
-    });
     expect(getClaudeSnapshotEngineState(snapshot)).toBeUndefined();
   });
 
@@ -231,7 +225,6 @@ describe('SessionStateSnapshot runtime state inventory', () => {
       analysisPlan: null,
       planHistory: [],
       uncertaintyFlags: [],
-      agentRuntimeKind: 'openai-agents-sdk',
       agentRuntimeProviderId: null,
       agentRuntimeProviderSnapshotHash: 'hash-1',
       openAIHistory: [{ role: 'user', content: 'legacy' }],
@@ -240,19 +233,20 @@ describe('SessionStateSnapshot runtime state inventory', () => {
       conversationOrdinal: 0,
     };
 
+    // Without agentRuntimeKind, only the legacy OpenAI mirrors identify the runtime.
     const normalized = normalizeSessionStateSnapshot(legacySnapshot);
-    expect(normalized.engineState).toEqual(expect.objectContaining({
+    expect(getSnapshotRuntimeKind(normalized)).toBe('openai-agents-sdk');
+    expect(getSnapshotRuntimeProviderId(normalized)).toBeNull();
+    expect(getSnapshotRuntimeProviderSnapshotHash(normalized)).toBe('hash-1');
+    // Legacy mirror content is not copied into engineState: no run consumes it.
+    expect(normalized.engineState).toEqual({
       kind: 'openai-agents-sdk',
       provider: {
         providerId: null,
         providerSnapshotHash: 'hash-1',
       },
-      openai: {
-        history: [{ role: 'user', content: 'legacy' }],
-        lastResponseId: 'resp-legacy',
-        runState: undefined,
-      },
-    }));
+      openai: {},
+    });
   });
 
   it('normalizes legacy public Pi runtime mirrors into opaque engineState', () => {

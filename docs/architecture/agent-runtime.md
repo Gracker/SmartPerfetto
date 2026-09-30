@@ -129,7 +129,7 @@ Claude runtime 直接把这些工具暴露为 in-process MCP server。
 
 OpenAI runtime 不复制工具逻辑，而是读取同一份 `McpToolRegistry`，把每个 tool descriptor 适配为 OpenAI Agents SDK function tool。工具名称保留 `mcp__smartperfetto__*` 前缀，便于 SSE、日志和报告复用现有语义。
 
-当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist、SDK session resume 和可配置 sub-agent；OpenAI 使用同一工具注册表适配的 function tools，Responses 通过 `previousResponseId` 恢复，Chat Completions 通过历史消息恢复；Pi 使用 request-scoped native tools；OpenCode 使用每次分析的隔离 server/MCP bridge；Qoder 通过 SDK in-process bridge 复用共享工具。OpenCode/Qoder 的内建文件、shell 等工具隔离规则不变。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
+当前 production runtime 保持同一个产品合约：输入通过各自 pinned provider 的原生无工具 transport 解析为共享 typed intent，输出交给同一个产品层 finalizer 和报告边界。Claude 使用 in-process MCP、tool allowlist、SDK session resume 和可配置 sub-agent；OpenAI 使用同一工具注册表适配的 function tools，SDK history 只在本轮内用于续写/恢复调用，不写入快照、也不用 `previousResponseId` 跨轮续接；Pi 使用 request-scoped native tools；OpenCode 使用每次分析的隔离 server/MCP bridge；Qoder 通过 SDK in-process bridge 复用共享工具。OpenCode/Qoder 的内建文件、shell 等工具隔离规则不变。各 SDK 的调用节奏、流式事件、恢复和成本/超时语义仍有差异。
 
 ## 并发、观测与准入
 

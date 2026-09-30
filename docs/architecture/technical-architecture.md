@@ -110,7 +110,7 @@ Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS
 | Runtime | 主要 Provider | 恢复状态 |
 |---|---|---|
 | `claude-agent-sdk` | Anthropic、Bedrock、Vertex、Claude-compatible | Claude session id |
-| `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | history + response id |
+| `openai-agents-sdk` | OpenAI Responses、OpenAI-compatible、Ollama/chat-completions | 不跨轮保留原生状态（只保留 provider 钉定） |
 | `pi-agent-core` | Provider Manager custom profile / Pi model config | opaque transcript |
 | `opencode` | OpenCode SDK 与 custom provider | OpenCode session id + 隔离目录 |
 | `qoder-agent-sdk` | Qoder CLI 登录态或 PAT、custom provider | Qoder session id；私有知识运行不持久化 opaque session |

@@ -1241,7 +1241,6 @@ async function scenarioD8(
       agentRuntimeProviderId: providerId,
       agentRuntimeProviderSnapshotHash: originalHash,
       sdkSessionId: oldSdkSessionId,
-      openAILastResponseId: oldSdkSessionId,
       runSequence: 1,
     }),
     now + 20,
@@ -1286,7 +1285,6 @@ async function scenarioD8(
     agentRuntimeProviderId?: string;
     agentRuntimeProviderSnapshotHash?: string;
     sdkSessionId?: string;
-    openAILastResponseId?: string;
   };
   const providerSnapshotChanged = Boolean(
     originalRuntimeSnapshot.agentRuntimeProviderSnapshotHash
@@ -1327,7 +1325,6 @@ async function scenarioD8(
       agentRuntimeProviderId: providerId,
       agentRuntimeProviderSnapshotHash: changedHash,
       sdkSessionId: freshSdkSessionId,
-      openAILastResponseId: freshSdkSessionId,
       previousProviderSnapshotHash: originalHash,
       providerSnapshotChangeReason: 'provider_snapshot_hash_mismatch',
       runSequence: 2,
@@ -1347,7 +1344,6 @@ async function scenarioD8(
   const followUpRuntimeSnapshot = JSON.parse(followUpRuntimeRow?.snapshot_json ?? '{}') as {
     agentRuntimeProviderSnapshotHash?: string;
     sdkSessionId?: string;
-    openAILastResponseId?: string;
     previousProviderSnapshotHash?: string;
   };
   const pinnedConfigJson = pinnedSnapshot?.resolved_config_json ?? '';
@@ -1366,7 +1362,6 @@ async function scenarioD8(
     followUpRuntimeUsesFreshSdkSession: followUpRuntimeSnapshot.agentRuntimeProviderSnapshotHash === changedHash
       && followUpRuntimeSnapshot.previousProviderSnapshotHash === originalHash
       && followUpRuntimeSnapshot.sdkSessionId === freshSdkSessionId
-      && followUpRuntimeSnapshot.openAILastResponseId === freshSdkSessionId
       && followUpRuntimeSnapshot.sdkSessionId !== originalRuntimeSnapshot.sdkSessionId,
     providerSnapshotsDoNotPersistPlaintextSecret: !pinnedConfigJson.includes('sk-')
       && !latestConfigJson.includes('sk-')
