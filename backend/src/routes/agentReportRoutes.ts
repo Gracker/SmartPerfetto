@@ -12,7 +12,6 @@ import {
   privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
   copyAnalysisResultForSnapshot,
-  projectOwnerConclusion,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
