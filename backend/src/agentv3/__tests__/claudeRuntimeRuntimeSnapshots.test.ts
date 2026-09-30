@@ -2962,6 +2962,12 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         status: subtype === 'error_max_turns' ? 'incomplete' : 'failed',
         reason: subtype === 'error_max_turns' ? 'turn_limit' : 'provider_error',
       });
+      // The process view shows this notice as a result-completeness warning.
+      const maxTurnsNotices = updates.filter(update =>
+        update.type === 'degraded' && update.content?.fallback === 'partial_result_after_max_turns');
+      expect(maxTurnsNotices).toEqual(subtype === 'error_max_turns'
+        ? [expect.objectContaining({content: expect.objectContaining({partial: true, terminationReason: 'max_turns'})})]
+        : []);
     } finally {
       sessionContextManager.remove(sessionId);
     }

@@ -296,11 +296,9 @@ export class ExternalKnowledgeSourceRegistry {
     operation: (lease: ExternalKnowledgeIngestLeaseGuard) => Promise<T> | T,
   ): Promise<T> {
     const ownerToken = randomUUID();
-    const localLeaseKey = `${sourceId}\0${scopeKey(scope)}`;
-    const useDistributedLease = enterpriseKnowledgeDbWritesEnabled();
-    if (!useDistributedLease) {
+    if (!enterpriseKnowledgeDbWritesEnabled()) {
       const leasePath = `${this.storagePath}.ingest.${createHash('sha256')
-        .update(localLeaseKey)
+        .update(`${sourceId}\0${scopeKey(scope)}`)
         .digest('hex')
         .slice(0, 24)}`;
       return withFilesystemRegistryLockAsync(
@@ -331,43 +329,39 @@ export class ExternalKnowledgeSourceRegistry {
         INGEST_LEASE_TTL_MS,
       );
     }
-    if (useDistributedLease) {
-      mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
-        INGEST_LEASE_KNOWLEDGE_KIND,
-        sourceId,
-        scope,
-        current => {
-          const now = Date.now();
-          if (current && current.expiresAt > now) {
-            throw new Error('external_knowledge_reindex_in_progress');
-          }
-          return {ownerToken, expiresAt: now + INGEST_LEASE_TTL_MS};
-        },
-        {rowScope: INGEST_LEASE_ROW_SCOPE},
-      );
-    }
+    mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
+      INGEST_LEASE_KNOWLEDGE_KIND,
+      sourceId,
+      scope,
+      current => {
+        const now = Date.now();
+        if (current && current.expiresAt > now) {
+          throw new Error('external_knowledge_reindex_in_progress');
+        }
+        return {ownerToken, expiresAt: now + INGEST_LEASE_TTL_MS};
+      },
+      {rowScope: INGEST_LEASE_ROW_SCOPE},
+    );
 
     const lease: ExternalKnowledgeIngestLeaseGuard = {
       operationId: ownerToken,
       assertHeld: () => {
-        if (useDistributedLease) {
-          mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
-            INGEST_LEASE_KNOWLEDGE_KIND,
-            sourceId,
-            scope,
-            current => {
-              const now = Date.now();
-              if (
-                current?.ownerToken !== ownerToken ||
-                current.expiresAt <= now
-              ) {
-                throw new Error('external_knowledge_reindex_lease_lost');
-              }
-              return {...current, expiresAt: now + INGEST_LEASE_TTL_MS};
-            },
-            {rowScope: INGEST_LEASE_ROW_SCOPE},
-          );
-        }
+        mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
+          INGEST_LEASE_KNOWLEDGE_KIND,
+          sourceId,
+          scope,
+          current => {
+            const now = Date.now();
+            if (
+              current?.ownerToken !== ownerToken ||
+              current.expiresAt <= now
+            ) {
+              throw new Error('external_knowledge_reindex_lease_lost');
+            }
+            return {...current, expiresAt: now + INGEST_LEASE_TTL_MS};
+          },
+          {rowScope: INGEST_LEASE_ROW_SCOPE},
+        );
       },
       activateGeneration: input => this.mutateSourceWithLease(
         sourceId,
@@ -386,22 +380,20 @@ export class ExternalKnowledgeSourceRegistry {
     try {
       return await operation(lease);
     } finally {
-      if (useDistributedLease) {
-        try {
-          mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
-            INGEST_LEASE_KNOWLEDGE_KIND,
-            sourceId,
-            scope,
-            current => current?.ownerToken === ownerToken
-              ? {...current, expiresAt: 0}
-              : current ?? {ownerToken: 'released', expiresAt: 0},
-            {rowScope: INGEST_LEASE_ROW_SCOPE},
-          );
-        } catch (error) {
-          console.warn(
-            `[ExternalKnowledgeSourceRegistry] Lease release failed for ${sourceId}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
+      try {
+        mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
+          INGEST_LEASE_KNOWLEDGE_KIND,
+          sourceId,
+          scope,
+          current => current?.ownerToken === ownerToken
+            ? {...current, expiresAt: 0}
+            : current ?? {ownerToken: 'released', expiresAt: 0},
+          {rowScope: INGEST_LEASE_ROW_SCOPE},
+        );
+      } catch (error) {
+        console.warn(
+          `[ExternalKnowledgeSourceRegistry] Lease release failed for ${sourceId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }

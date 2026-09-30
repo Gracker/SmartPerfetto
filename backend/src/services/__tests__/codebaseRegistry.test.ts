@@ -6,8 +6,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
+import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
+import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
+import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../enterpriseMigration';
 import {
   activeCodebaseGeneration,
   PENDING_GENERATION_TTL_MS,
@@ -18,11 +21,21 @@ import {
 
 let tmpDir: string;
 
+const enterpriseEnvKeys = [ENTERPRISE_FEATURE_FLAG_ENV, ENTERPRISE_DB_PATH_ENV, ENTERPRISE_MIGRATION_PHASE_ENV];
+const originalEnterpriseEnv = enterpriseEnvKeys.map(key => process.env[key]);
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codebase-registry-test-'));
+  for (const key of enterpriseEnvKeys) delete process.env[key];
 });
 
 afterEach(() => {
+  enterpriseEnvKeys.forEach((key, index) => {
+    const value = originalEnterpriseEnv[index];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  });
+  jest.restoreAllMocks();
   fs.rmSync(tmpDir, {recursive: true, force: true});
 });
 
@@ -608,5 +621,27 @@ describe('CodebaseRegistry', () => {
     expect(new CodebaseRegistry(registryPath).get(ref.codebaseId, scope)).toBeUndefined();
     await expect(registry.withIngestLease(ref.codebaseId, scope, () => undefined))
       .rejects.toThrow(`Codebase '${ref.codebaseId}' not found`);
+  });
+
+  it('deletes a distributed registration only while its database lease is live', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise-delete.sqlite');
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
+    const registry = new CodebaseRegistry(path.join(tmpDir, 'registry.json'));
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const ref = registry.register({kind: 'app_source', displayName: 'Private App', rootPath: tmpDir, ...scope});
+    const baseTime = 2_000_000_000_000;
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(baseTime);
+
+    await expect(registry.withIngestLease(ref.codebaseId, scope, lease => {
+      lease.beginDeletion('user-a');
+      clock.mockReturnValue(baseTime + 10 * 60 * 1000 + 1);
+      return lease.deleteRegistration();
+    }, 'delete')).rejects.toThrow('codebase_reindex_lease_lost');
+    expect(registry.get(ref.codebaseId, scope)?.lifecycleState).toBe('deleting');
+
+    const deleted = await registry.withIngestLease(ref.codebaseId, scope, lease => lease.deleteRegistration(), 'delete');
+    expect(deleted.codebaseId).toBe(ref.codebaseId);
+    expect(registry.get(ref.codebaseId, scope)).toBeUndefined();
   });
 });

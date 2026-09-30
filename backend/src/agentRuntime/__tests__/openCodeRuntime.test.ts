@@ -14,25 +14,21 @@ import {
   EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
   OPENCODE_RUNTIME_KIND,
   OpenCodeRuntime,
-  completeOpenCodeFinalReportPhaseIfDelivered,
   createOpenCodeHardenedConfig,
   createOpenCodeStandaloneMcpConfig,
   createOpenCodeStandaloneMcpToolNames,
   createOpenCodeToolAllowlist,
   dispatchOpenCodeBridgeRequest,
   extractOpenCodeAssistantText,
-  getOpenCodePlanCompletionStatus,
   getOpenCodeEngineCapabilities,
   getOpenCodeRuntimeDiagnostics,
   validateOpenCodeModelConfiguration,
   __testing as openCodeTesting,
   projectOpenCodeEventToStreamingUpdate,
   runOpenCodePrompt,
-  sanitizeOpenCodeConclusionText,
   type OpenCodeSdkModuleLoader,
 } from '../openCodeRuntime';
 import type { RuntimeFactoryInput } from '../runtimeRegistry';
-import type {AnalysisPlanV3} from '../../agentv3/types';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
 import {McpToolRegistry} from '../../agentv3/mcpToolRegistry';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
@@ -1124,15 +1120,6 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.traceProcessor.query).not.toHaveBeenCalled();
     expect(harness.serverCloses[0]).toHaveBeenCalledTimes(1);
   }));
-
-  it('does not complete a submitted plan because the answer resembles a report', () => {
-    const plan = createCompletedScrollingPlanWithFinalPhase();
-    expect(getOpenCodePlanCompletionStatus(null)).toMatchObject({complete: true, hasPlan: false, pending: []});
-    expect(completeOpenCodeFinalReportPhaseIfDelivered(plan, '# Report\n' + 'Evidence '.repeat(1000), 'en')).toBeUndefined();
-    expect(getOpenCodePlanCompletionStatus(plan).complete).toBe(false);
-    expect(plan.phases[1].status).toBe('in_progress');
-    expect(sanitizeOpenCodeConclusionText('Process narration\n\n# Report')).toBe('Process narration\n\n# Report');
-  });
 });
 
 describe('experimental OpenCode runtime contract', () => {
@@ -2981,66 +2968,6 @@ describe('experimental OpenCode runtime contract', () => {
       },
     })).rejects.toMatchObject({ name: 'AbortError' });
   });
-
-  it('treats completed and skipped OpenCode plan phases as closed', () => {
-    const plan: AnalysisPlanV3 = {
-      phases: [
-        {id: 'p1', name: 'Review', goal: 'Assess available evidence', expectedTools: [], status: 'completed'},
-        {id: 'p2', name: 'Optional follow-up', goal: 'Resolve additional evidence', expectedTools: [],
-          status: 'skipped', skipDisposition: {kind: 'evidence_unavailable'}},
-      ],
-      successCriteria: 'Answer within available evidence', submittedAt: 1, toolCallLog: [],
-    };
-    expect(getOpenCodePlanCompletionStatus(plan)).toMatchObject({complete: true, pending: []});
-
-    plan.phases[1].status = 'in_progress';
-    delete plan.phases[1].skipDisposition;
-    expect(getOpenCodePlanCompletionStatus(plan)).toMatchObject({complete: false, pending: ['p2']});
-  });
-
-  it('does not treat a completed OpenCode phase as closed when required tool evidence is missing', () => {
-    const status = getOpenCodePlanCompletionStatus({
-      phases: [
-        {
-          id: 'p-frame-detail',
-          name: '代表帧深钻',
-          goal: '调用 jank_frame_detail 获取代表掉帧调用栈',
-          expectedTools: ['invoke_skill'],
-          expectedCalls: [{ tool: 'invoke_skill', skillId: 'jank_frame_detail' }],
-          status: 'completed',
-          summary: '已完成代表帧根因分析，并整理出主线程阻塞调用栈证据。',
-        },
-      ],
-      toolCallLog: [],
-    } as any);
-
-    expect(status).toMatchObject({
-      complete: false,
-      pending: ['p-frame-detail'],
-    });
-    expect(status.evidenceGaps?.[0].missingExpectedCalls).toEqual([
-      { tool: 'invoke_skill', skillId: 'jank_frame_detail' },
-    ]);
-  });
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
   it('projects OpenCode events without synthesizing route terminal events', () => {
     expect(projectOpenCodeEventToStreamingUpdate({

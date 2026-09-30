@@ -934,11 +934,9 @@ export class CodebaseRegistry {
     purpose: 'ingest' | 'delete' = 'ingest',
   ): Promise<T> {
     const ownerToken = randomUUID();
-    const localLeaseKey = ingestLeaseKey(codebaseId, scope);
-    const useDistributedLease = enterpriseKnowledgeDbWritesEnabled();
-    if (!useDistributedLease) {
+    if (!enterpriseKnowledgeDbWritesEnabled()) {
       const leasePath = `${this.registryPath}.ingest.${createHash('sha256')
-        .update(localLeaseKey)
+        .update(ingestLeaseKey(codebaseId, scope))
         .digest('hex')
         .slice(0, 24)}`;
       return withFilesystemRegistryLockAsync(
@@ -989,12 +987,7 @@ export class CodebaseRegistry {
             },
             deleteRegistration: () => {
               assertHeld(true);
-              return this.deleteRegistrationWithLease(
-                codebaseId,
-                scope,
-                ownerToken,
-                false,
-              );
+              return this.deleteRegistrationWithLease(codebaseId, scope);
             },
           };
           const current = this.get(codebaseId, scope);
@@ -1009,47 +1002,43 @@ export class CodebaseRegistry {
         INGEST_LEASE_TTL_MS,
       );
     }
-    if (useDistributedLease) {
-      mutateScopedKnowledgeRecord<CodebaseIngestLease>(
-        INGEST_LEASE_KNOWLEDGE_KIND,
-        codebaseId,
-        scope,
-        current => {
-          const now = Date.now();
-          if (current && current.expiresAt > now) {
-            throw new Error('codebase_reindex_in_progress');
-          }
-          return {ownerToken, expiresAt: now + INGEST_LEASE_TTL_MS};
-        },
-        {rowScope: INGEST_LEASE_ROW_SCOPE},
-      );
-    }
+    mutateScopedKnowledgeRecord<CodebaseIngestLease>(
+      INGEST_LEASE_KNOWLEDGE_KIND,
+      codebaseId,
+      scope,
+      current => {
+        const now = Date.now();
+        if (current && current.expiresAt > now) {
+          throw new Error('codebase_reindex_in_progress');
+        }
+        return {ownerToken, expiresAt: now + INGEST_LEASE_TTL_MS};
+      },
+      {rowScope: INGEST_LEASE_ROW_SCOPE},
+    );
 
     let lastDurableCheckAt = 0;
     const lease: CodebaseIngestLeaseGuard = {
       operationId: ownerToken,
       assertHeld: (forceDurableCheck = false) => {
-        if (useDistributedLease) {
-          const startedAt = Date.now();
-          if (
-            !forceDurableCheck &&
-            startedAt - lastDurableCheckAt < INGEST_LEASE_HEARTBEAT_MS
-          ) return;
-          mutateScopedKnowledgeRecord<CodebaseIngestLease>(
-            INGEST_LEASE_KNOWLEDGE_KIND,
-            codebaseId,
-            scope,
-            current => {
-              const now = Date.now();
-              if (current?.ownerToken !== ownerToken || current.expiresAt <= now) {
-                throw new Error('codebase_reindex_lease_lost');
-              }
-              return {...current, expiresAt: now + INGEST_LEASE_TTL_MS};
-            },
-            {rowScope: INGEST_LEASE_ROW_SCOPE},
-          );
-          lastDurableCheckAt = startedAt;
-        }
+        const startedAt = Date.now();
+        if (
+          !forceDurableCheck &&
+          startedAt - lastDurableCheckAt < INGEST_LEASE_HEARTBEAT_MS
+        ) return;
+        mutateScopedKnowledgeRecord<CodebaseIngestLease>(
+          INGEST_LEASE_KNOWLEDGE_KIND,
+          codebaseId,
+          scope,
+          current => {
+            const now = Date.now();
+            if (current?.ownerToken !== ownerToken || current.expiresAt <= now) {
+              throw new Error('codebase_reindex_lease_lost');
+            }
+            return {...current, expiresAt: now + INGEST_LEASE_TTL_MS};
+          },
+          {rowScope: INGEST_LEASE_ROW_SCOPE},
+        );
+        lastDurableCheckAt = startedAt;
       },
       updateIngestStatus: patch =>
         this.updateIngestStatusWithLease(
@@ -1070,15 +1059,13 @@ export class CodebaseRegistry {
         codebaseId,
         scope,
         ownerToken,
-        useDistributedLease,
+        true,
         actor,
       ),
-      deleteRegistration: () => this.deleteRegistrationWithLease(
-        codebaseId,
-        scope,
-        ownerToken,
-        useDistributedLease,
-      ),
+      deleteRegistration: () => {
+        lease.assertHeld(true);
+        return this.deleteRegistrationWithLease(codebaseId, scope);
+      },
     };
 
     try {
@@ -1091,22 +1078,20 @@ export class CodebaseRegistry {
       }
       return await operation(lease);
     } finally {
-      if (useDistributedLease) {
-        try {
-          mutateScopedKnowledgeRecord<CodebaseIngestLease>(
-            INGEST_LEASE_KNOWLEDGE_KIND,
-            codebaseId,
-            scope,
-            current => current?.ownerToken === ownerToken
-              ? {...current, expiresAt: 0}
-              : current ?? {ownerToken: 'released', expiresAt: 0},
-            {rowScope: INGEST_LEASE_ROW_SCOPE},
-          );
-        } catch (error) {
-          console.warn(
-            `[CodebaseRegistry] Lease release failed for ${codebaseId}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
+      try {
+        mutateScopedKnowledgeRecord<CodebaseIngestLease>(
+          INGEST_LEASE_KNOWLEDGE_KIND,
+          codebaseId,
+          scope,
+          current => current?.ownerToken === ownerToken
+            ? {...current, expiresAt: 0}
+            : current ?? {ownerToken: 'released', expiresAt: 0},
+          {rowScope: INGEST_LEASE_ROW_SCOPE},
+        );
+      } catch (error) {
+        console.warn(
+          `[CodebaseRegistry] Lease release failed for ${codebaseId}: ${error instanceof Error ? error.message : String(error)}`,
+        );
       }
     }
   }
@@ -1287,28 +1272,12 @@ export class CodebaseRegistry {
       : begin();
   }
 
+  /** The caller must have just confirmed that it still holds the ingest lease. */
   private deleteRegistrationWithLease(
     codebaseId: string,
     scope: CodebaseScope,
-    ownerToken: string,
-    useDistributedLease: boolean,
   ): CodebaseRef {
     const remove = (): CodebaseRef => {
-      if (useDistributedLease) {
-        mutateScopedKnowledgeRecord<CodebaseIngestLease>(
-          INGEST_LEASE_KNOWLEDGE_KIND,
-          codebaseId,
-          scope,
-          current => {
-            const now = Date.now();
-            if (current?.ownerToken !== ownerToken || current.expiresAt <= now) {
-              throw new Error('codebase_reindex_lease_lost');
-            }
-            return {...current, expiresAt: now + INGEST_LEASE_TTL_MS};
-          },
-          {rowScope: INGEST_LEASE_ROW_SCOPE},
-        );
-      }
       const existing = this.get(codebaseId, scope);
       if (!existing) throw new Error(`Codebase '${codebaseId}' not found`);
       if (existing.lifecycleState !== 'deleting') {

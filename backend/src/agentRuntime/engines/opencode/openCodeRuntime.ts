@@ -58,13 +58,8 @@ import type {
   AnalysisPlanV3,
   ClaudeAnalysisContext,
   Hypothesis,
-  PlanPhase,
   UncertaintyFlag,
 } from '../../../agentv3/types';
-import {
-  getAnalysisPlanCompletionStatus,
-  type AnalysisPlanCompletionStatus,
-} from '../../../agentv3/planCompletionStatus';
 import {
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
@@ -2294,30 +2289,6 @@ export async function runOpenCodePrompt(
   const turnLimitReached = await stopAtTurnLimit(combinedMessages, baselineWatermark);
   return { promptResponse: openCodeAssistantMessagesResponse(promptAssistantMessages), messagesResponse,
     ...(turnLimitReached ? {turnLimitReached: true, turnLimitCandidate} : {}) };
-}
-
-export function getOpenCodePlanCompletionStatus(plan: AnalysisPlanV3 | null): AnalysisPlanCompletionStatus & {
-  pending: string[];
-} {
-  const status = getAnalysisPlanCompletionStatus(plan);
-  const pending = status.hasPlan
-    ? status.pendingPhases.map((phase: any) => phase.id || phase.title || 'unknown')
-    : [];
-  return { ...status, complete: !status.hasPlan || status.complete, pending };
-}
-
-/** @deprecated Final output does not implicitly complete a model-submitted plan. */
-export function completeOpenCodeFinalReportPhaseIfDelivered(
-  _plan: AnalysisPlanV3 | null,
-  _conclusion: string,
-  _outputLanguage: string,
-  _now: () => number = Date.now,
-): PlanPhase | undefined {
-  return undefined;
-}
-
-export function sanitizeOpenCodeConclusionText(conclusion: string): string {
-  return conclusion.trim();
 }
 
 export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
