@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import { ProviderService } from './providerService';
-import { officialTemplates } from './templates';
 import {providerDataPath} from './providerPaths';
 import {resetProviderModelCatalogService} from './providerModelCatalog';
 

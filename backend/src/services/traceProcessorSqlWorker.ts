@@ -199,7 +199,6 @@ export function classifyTraceProcessorSqlError(message: string): TraceProcessorS
 
 export class TraceProcessorSqlWorker {
   private readonly processorId: string;
-  private readonly traceId: string;
   private readonly processorKey: string;
   private readonly port: number;
   private readonly hostname: string;
@@ -222,7 +221,6 @@ export class TraceProcessorSqlWorker {
 
   constructor(options: TraceProcessorSqlWorkerOptions) {
     this.processorId = options.processorId;
-    this.traceId = options.traceId;
     this.processorKey = options.processorKey ?? options.traceId;
     this.port = options.port;
     this.hostname = options.hostname || '127.0.0.1';

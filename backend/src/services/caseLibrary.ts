@@ -91,7 +91,6 @@ export interface CaseEvolutionFeedbackProjection {
 export class CaseLibrary {
   private readonly storagePath: string;
   private readonly cases = new Map<string, CaseNode>();
-  private loaded = false;
   private loadError: Error | undefined;
 
   constructor(storagePath: string) {
@@ -99,7 +98,6 @@ export class CaseLibrary {
   }
 
   load(): void {
-    this.loaded = true;
     this.cases.clear();
     this.loadError = undefined;
     if (!fs.existsSync(this.storagePath)) return;

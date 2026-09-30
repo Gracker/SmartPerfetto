@@ -32,7 +32,7 @@ import { upsertSession } from '../io/indexJson';
 import { appendTranscriptTurn } from '../io/transcriptWriter';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {projectToolResultAuditForPrivateRun} from '../../agentRuntime/runtimeToolResultAudit';
-import {localize, parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
+import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {
   projectOwnerAnalysisError,
   privateAnalysisQueryMessage,

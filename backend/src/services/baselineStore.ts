@@ -105,7 +105,6 @@ export interface BaselineStoreListOptions {
 export class BaselineStore {
   private readonly storagePath: string;
   private readonly baselines = new Map<string, BaselineRecord>();
-  private loaded = false;
   private loadError: Error | undefined;
 
   constructor(storagePath: string) {
@@ -114,7 +113,6 @@ export class BaselineStore {
 
   /** Idempotently load the on-disk store into memory. */
   load(): void {
-    this.loaded = true;
     this.baselines.clear();
     this.loadError = undefined;
     if (!fs.existsSync(this.storagePath)) return;

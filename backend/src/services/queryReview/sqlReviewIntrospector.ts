@@ -169,9 +169,8 @@ function extractFilters(sql: string): QueryReviewFilterV1[] {
   const confidence: QueryReviewConfidence = hasComplexSqlShape(masked) ? 'partial' : 'observed';
   const filters: QueryReviewFilterV1[] = [];
   const matcher = /\bwhere\b/gi;
-  let match: RegExpExecArray | null;
 
-  while ((match = matcher.exec(masked)) !== null) {
+  while (matcher.exec(masked) !== null) {
     const start = matcher.lastIndex;
     const end = findClauseEnd(masked, start);
     const clause = normalizeExpression(sql.slice(start, end));

@@ -14,7 +14,6 @@ import type { KnowledgeScope } from '../scopedKnowledgeStore';
 import {
   createCaseRetriever,
   evaluateCaseEvidenceSignature,
-  type CaseRecommendationHit,
   type CaseRecommendationQuery,
 } from './caseRecommendationRetriever';
 import { recordCaseEvolutionCaseHitsPruned } from './caseEvolutionRuntimeMetrics';

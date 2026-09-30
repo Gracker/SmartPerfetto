@@ -83,7 +83,6 @@ export class CaseGraph {
   private readonly storagePath: string;
   /** Map from canonical edge key to the stored edge. */
   private readonly edges = new Map<string, CaseEdge>();
-  private loaded = false;
   private loadError: Error | undefined;
 
   constructor(storagePath: string) {
@@ -91,7 +90,6 @@ export class CaseGraph {
   }
 
   load(): void {
-    this.loaded = true;
     this.edges.clear();
     this.loadError = undefined;
     if (!fs.existsSync(this.storagePath)) return;

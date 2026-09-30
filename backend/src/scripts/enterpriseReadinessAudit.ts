@@ -93,10 +93,6 @@ function readFile(filePath: string): string {
   return fs.readFileSync(filePath, 'utf8');
 }
 
-function sectionBetween(markdown: string, startHeading: string, endHeading?: string): string {
-  return sectionSlice(markdown, startHeading, endHeading).content;
-}
-
 function sectionSlice(markdown: string, startHeading: string, endHeading?: string): MarkdownSection {
   const startIndex = markdown.indexOf(startHeading);
   if (startIndex < 0) return { content: '', startLine: 1 };

@@ -77,7 +77,7 @@ import {getSmartPerfettoVersion} from './version';
 // Import cleanup utilities
 import { TraceProcessorFactory, killOrphanProcessors } from './services/workingTraceProcessor';
 import { shouldCleanOrphanProcessorsOnStartup } from './services/startupCleanupPolicy';
-import { getPortPool, resetPortPool } from './services/portPool';
+import { resetPortPool } from './services/portPool';
 import { failInterruptedAnalysisRunsOnStartup } from './services/analysisRunStore';
 import { startCaseEvolutionWorker } from './services/caseEvolution/caseEvolutionWorkerBootstrap';
 import { startPatternMemoryAutoConfirmSweep } from './agentv3/analysisPatternMemory';
