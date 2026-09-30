@@ -32,6 +32,7 @@ Output:
 - Each round places its analysis process and steps above its final conclusion, keeping each round together.
 - Conclusions should trace back to concrete time ranges, threads, slices, SQL rows, or Skill results.
 - Server verification details are collapsed by default; expand them for the full evidence and source references. Verification warnings remain visible.
+- With the Claude or OpenAI runtime, the answer streams in as a draft while it is written. Once finished it is shown in full, marked as being verified, and the verdict follows. A first stop at that point ends only the verification and keeps the answer. The Pi, OpenCode and Qoder runtimes, and sessions with private knowledge or source code selected, show no draft: the answer appears once it is finished.
 
 ### Browser Trace Tools And Local WASM
 
