@@ -142,7 +142,6 @@ import { buildActivePhaseReminder } from './activePhaseReminder';
 import {loadSourceInvestigationPolicy} from './sourceInvestigationPolicy';
 import { summarizeToolCallInput } from './toolCallSummary';
 import {
-  findCompletedPhaseEvidenceGaps,
   getPhaseToolEvidenceStatus,
   replayPrePlanToolCalls,
 } from './planToolCallRecorder';
@@ -225,7 +224,6 @@ import {
   type ToolRequestScope,
 } from './mcpToolRegistry';
 import { backendLogPath } from '../runtimePaths';
-import {diagnosticLogIdentity} from '../utils/logger';
 import {activeCodebaseGeneration, CodebaseRegistry} from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
 import {CodeLookupLedger, type CodeLookupLedgerEntry} from '../services/codebase/codeLookupLedger';
@@ -4250,6 +4248,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           content: [{ type: 'text' as const, text: JSON.stringify({
             success: false,
             error: `Invalid pagination arguments: ${paginationErrors.join('; ')}`,
+            sourceToolCallId: producer.sourceToolCallId,
+            paramsHash: producer.paramsHash,
+            planPhaseId: producer.planPhaseId,
           }) }],
           isError: true,
         };

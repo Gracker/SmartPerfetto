@@ -1812,6 +1812,26 @@ describe('createClaudeMcpServer', () => {
       expect(result.error).toContain('offset must be an integer');
     });
 
+    it('attributes a pagination rejection to its fetch call and active phase', async () => {
+      const { tools } = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [{ id: 'p1', name: '读取明细', goal: '分页读取前序表', expectedTools: ['fetch_artifact'] }],
+        successCriteria: 'Rejected pagination keeps its attribution',
+      });
+      await callTool(tools, 'update_plan_phase', { phaseId: 'p1', status: 'in_progress' });
+
+      const result = await callTool(tools, 'fetch_artifact', {
+        artifactId: 'art-1',
+        detail: 'rows',
+        offset: 'bad',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.sourceToolCallId).toContain('fetch_artifact:');
+      expect(result.paramsHash).toEqual(expect.any(String));
+      expect(result.planPhaseId).toBe('p1');
+    });
+
     it('separates original artifact attribution from the current fetch invocation', async () => {
       const { tools, analysisPlan } = createTestServer();
       await callTool(tools, 'submit_plan', {
@@ -4329,7 +4349,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('selects the unique declared tool even when another phase is active', async () => {
-      const { tools, emittedUpdates, analysisPlan } = createTestServer();
+      const { tools, emittedUpdates } = createTestServer();
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: '启动概览', goal: '获取启动事件和概览', expectedTools: ['execute_sql'] },
@@ -6914,7 +6934,7 @@ describe('createClaudeMcpServer', () => {
 
   describe('revise_plan (P1-3)', () => {
     it('should allow revising a plan', async () => {
-      const { tools, analysisPlan, toolDefinitions } = createTestServer();
+      const { tools, analysisPlan } = createTestServer();
       // Submit initial plan
       await callTool(tools, 'submit_plan', {
         phases: [
