@@ -15,7 +15,14 @@ investigation_contract:
     - id: interaction_dependencies
       domain: dependency_chain
       description: "Use Binder, lock, queue, input dispatch and display dependencies only where they explain response latency; preserve missing endpoint or causal-link limitations. Speculative frame matches are unproven candidates and NULL end-to-end latency is unmeasured, not zero."
-classification_description: "Discrete input or tap response, from input dispatch through application handling to presentation."
+    - id: interaction_navigation_segments
+      domain: critical_path
+      required: false
+      description: "Attribute a page or Activity switch by segment (initiating callback, system incl. source pause, target lifecycle, first frame), anchored in the same navigation's slices; an unobserved cross-process segment stays unknown."
+      condition:
+        kind: semantic
+        description: "Applies when the question concerns opening a new page or Activity, or the answer attributes latency to a page switch."
+classification_description: "Discrete input or tap response, from input dispatch through application handling to presentation, including how long a tap or action takes to open a new page or Activity within the app."
 priority: 4
 effort: medium
 required_capabilities:
@@ -138,6 +145,7 @@ plan_template:
 
 **Detail ref**
 - `interaction:full`: 点击/触摸响应分析（用户提到 点击、触摸、tap、click、input latency） 的完整 phase recipe、SQL、fetch_artifact 表、决策树和边界说明。
+- `interaction:navigation`: 页面跳转 / Activity 切换的四段拆分、`navigation_analysis` 使用边界和跨进程归属规则。
 
 
 <!-- strategy-detail id="full" title="interaction full strategy detail" keywords="interaction,点击,触摸,输入延迟,响应延迟,点击慢,响应慢,点击卡顿,click,tap,touch,input latency,response time,点击/触摸响应分析（用户提到 点击、触摸、tap、click、input latency）,detail,full" default="true" -->
@@ -277,4 +285,33 @@ execute_sql("WITH downs AS (SELECT read_time AS ts, LAG(read_time) OVER (ORDER B
 4. **优化建议**：按影响面排序，区分系统侧 vs 应用侧建议
 
 5. **证据边界**：列出 `android.input` completed-event、InputDispatcher/dumpsys/logcat、WindowManager/focus、FrameTimeline/present 哪些可用，哪些缺失；对 `wq`、stale、focus/window、InputChannel 只在证据闭环时定因。
+<!-- /strategy-detail -->
+
+<!-- strategy-detail id="navigation" title="页面跳转 / Activity 切换分段" keywords="navigation,页面跳转,页面切换,跳转慢,Activity 切换,startActivity,activityPause,activityStart,activityResume,transition,navigation_analysis" -->
+#### 页面跳转 / Activity 切换分段
+
+用户问"点击后打开新页面慢""页面跳转/切换慢"时，跳转耗时不是一个整体数字。目标 Activity 在已运行进程内打开时 `android_startups` 可能没有对应事件，此时不得伪造 startup_id/TTID，窗口用同一次跳转实际观测到的输入事件或生命周期 slice 锚定；有事件时也按下列分段解释。
+
+**证据入口：**
+
+```
+invoke_skill("navigation_analysis", { package: "<包名>", start_ts: "<start>", end_ts: "<end>" })
+```
+
+它给出生命周期阶段、跳转期间主线程阻塞操作、inflate、Fragment 事务、转场相关 slice、Binder 调用和窗口内的 doFrame。使用边界：
+- "跳转耗时/评级"（含 `NAVIGATION_NORMAL`）只是 onCreate/onStart 生命周期 slice 的时长，不是输入到新页面首帧，不能排除发起侧、系统调度侧或首帧侧的延迟；
+- 目标进程按生命周期事件数自动选择，需确认是用户关心的应用；pause 阶段只识别 `performPause`；
+- `first_frames` 是窗口内最早的若干个 `Choreographer#doFrame`，不一定是目标页首帧。
+
+**分段（每段写时间范围、执行线程和运行/等待构成，边界用同一次跳转实际观测到的 slice 或输入事件锚定）：**
+1. **发起侧**：源页面主线程处理触发输入（`deliverInputEvent`、点击回调）到发出 startActivity 请求。回调里的同步计算、IO、Binder 算在这里；App 到 system_server 的 startActivity Binder 事务可作为本段终点。
+2. **系统调度侧**：system_server 处理启动请求、源 Activity pause、事务投递到目标主线程的排队。单窗口下，源 Activity 的 pause（`activityPause`）完成后系统才会 launch 目标；`resumeWhilePausing`、多窗口 multi-resume 不串行，pause 超时（AOSP 约 500ms）后系统会强制继续。源页面的 `onPause` 回调是 App 代码，慢 pause 归发起方页面。
+3. **目标生命周期侧**：目标主线程执行 `activityStart` → `performCreate:*` → `activityResume`，以及其中的 inflate、数据初始化。这些名称是框架容器，结论要落到其子 slice 中 App 可归属的具体工作；子 slice 缺失时写明埋点缺口并给出该区间的运行/等待分解。
+4. **首帧与转场侧**：目标窗口首个 `Choreographer#doFrame` / RenderThread `DrawFrame` 到上屏，以及同期的窗口转场动画。
+
+**归属边界：**
+- 跨进程段（system_server）缺少 Binder 事务或时间对齐证据时写"系统段未观测"，不把段间空隙整体归给 App 或系统。
+- 源 Activity 的 `onStop` / `onSaveInstanceState` 通常在目标页 idle 之后才执行，一般不在跳转关键路径上，不计入跳转耗时。
+- 转场动画按系统配置时长播放，动画时长本身不是 App 执行耗时；只有动画期间 App 主线程或 RenderThread 的实际工作延误了帧，才归入 App。
+- 首帧段区分主线程 UI 工作、RenderThread/GPU 与合成；上屏归因需要 FrameTimeline/present 证据，缺失时写成数据缺口。
 <!-- /strategy-detail -->

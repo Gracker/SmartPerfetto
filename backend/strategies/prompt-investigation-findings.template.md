@@ -33,8 +33,8 @@ that the monitored activity continued in that later window; stopped activity
 cannot prove recovery. Identify supported synthetic/mock/benchmark provenance
 and limit extrapolation to production; names alone are only a candidate signal.
 State relevant collection, capability and version limits. When allowed, suggest
-the specific missing evidence needed to resolve uncertainty, without acquiring
-new data under `existing_only`.
+the specific missing evidence needed to resolve uncertainty, only for evidence
+this trace lacks, without acquiring new data under `existing_only`.
 Exclusive/self time is wall time outside recorded children, not necessarily CPU
 time or removable work; it does not establish a recoverable-time bound.
 Cross-check nested self versus inclusive time, clipping, overlapping intervals
