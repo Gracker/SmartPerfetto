@@ -1900,13 +1900,57 @@ function hasOpenCodeAssistantBaselineBoundary(
   ));
 }
 
+const OPENCODE_MESSAGE_WINDOW_KEYS = ['messages', 'items', 'result'] as const;
+
+function locateOpenCodeRawMessageWindow(
+  messagesResponse: unknown,
+): {window: unknown[]; key?: typeof OPENCODE_MESSAGE_WINDOW_KEYS[number]} | undefined {
+  if (Array.isArray(messagesResponse)) return {window: messagesResponse};
+  if (!isRecord(messagesResponse)) return undefined;
+  const key = OPENCODE_MESSAGE_WINDOW_KEYS.find(candidate => Array.isArray(messagesResponse[candidate]));
+  return key ? {window: messagesResponse[key] as unknown[], key} : undefined;
+}
+
 function getOpenCodeRawMessageWindowCount(messagesResponse: unknown): number {
-  if (Array.isArray(messagesResponse)) return messagesResponse.length;
-  if (!isRecord(messagesResponse)) return 0;
-  for (const key of ['messages', 'items', 'result']) {
-    if (Array.isArray(messagesResponse[key])) return messagesResponse[key].length;
+  return locateOpenCodeRawMessageWindow(messagesResponse)?.window.length ?? 0;
+}
+
+function getOpenCodeMessageCreatedAt(message: unknown): number | undefined {
+  if (!isRecord(message)) return undefined;
+  const info = isRecord(message.info) ? message.info : message;
+  const created = isRecord(info.time) ? info.time.created : undefined;
+  return typeof created === 'number' && Number.isFinite(created) ? created : undefined;
+}
+
+/**
+ * Every window consumer assumes newest-first, which the `order: 'desc'` query
+ * requests but the server does not guarantee (it has been observed returning
+ * chronological windows). Reorder by creation time, native id breaking ties,
+ * only when every entry carries one; otherwise keep the server's order and
+ * report it, since ids alone are not a documented ordering.
+ */
+function normalizeOpenCodeMessageWindow(messagesResponse: unknown, onMissingCreatedAt: () => void): unknown {
+  const located = locateOpenCodeRawMessageWindow(messagesResponse);
+  if (!located || located.window.length === 0) return messagesResponse;
+  const entries = located.window.map(message => ({
+    message,
+    createdAt: getOpenCodeMessageCreatedAt(message),
+    id: isRecord(message) ? getOpenCodeAssistantMessageId(message) : undefined,
+  }));
+  if (entries.some(entry => entry.createdAt === undefined)) {
+    onMissingCreatedAt();
+    return messagesResponse;
   }
-  return 0;
+  if (entries.length < 2) return messagesResponse;
+  const newestFirst = entries.sort((left, right) => (
+    right.createdAt! - left.createdAt! ||
+    (left.id !== undefined && right.id !== undefined && left.id !== right.id
+      ? (left.id < right.id ? 1 : -1)
+      : 0)
+  )).map(entry => entry.message);
+  return located.key
+    ? {...messagesResponse as Record<string, unknown>, [located.key]: newestFirst}
+    : newestFirst;
 }
 
 function nextOpenCodeMessageWindowLimit(limit: number): number {
@@ -2099,11 +2143,18 @@ export async function runOpenCodePrompt(
   const awaitOperation = <T>(operation: () => Promise<T> | T): Promise<T> =>
     awaitOpenCodePromptOperation(operation, waitOptions);
   const throwIfStopped = (): void => throwIfOpenCodePromptStopped(waitOptions);
+  let missingCreatedAtReported = false;
+  const normalizeMessageWindow = (messagesResponse: unknown): unknown =>
+    normalizeOpenCodeMessageWindow(messagesResponse, () => {
+      if (missingCreatedAtReported) return;
+      missingCreatedAtReported = true;
+      console.warn('[OpenCode] message window lacks created times; server order kept');
+    });
   const fetchMessagesWindow = async (limit: number, context = 'OpenCode messages'): Promise<unknown> =>
-    unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
+    normalizeMessageWindow(unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
       path: {id: sessionId},
       query: {directory: projectDir, limit, order: 'desc'},
-    })), context);
+    })), context));
   const recordFirstAssistantMessage = (): void => {
     try {
       onFirstAssistantMessage?.();
@@ -2140,12 +2191,7 @@ export async function runOpenCodePrompt(
   };
   if (opencode.client.session.promptAsync && opencode.client.session.messages) {
     throwIfStopped();
-    const baselineMessagesResponse = resumedSession
-      ? unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
-          path: {id: sessionId},
-          query: {directory: projectDir, limit: 1, order: 'desc'},
-        })), 'OpenCode messages')
-      : undefined;
+    const baselineMessagesResponse = resumedSession ? await fetchMessagesWindow(1) : undefined;
     throwIfStopped();
     const baselineWatermark = createOpenCodeAssistantMessageWatermark(
       getOpenCodeAssistantMessages(baselineMessagesResponse)[0],
@@ -2181,7 +2227,7 @@ export async function runOpenCodePrompt(
         rawMessagesResponse = await awaitOperation(readMessages);
         statusResponse = await awaitOperation(readStatus);
       }
-      messagesResponse = unwrapSdkData(rawMessagesResponse, 'OpenCode messages');
+      messagesResponse = normalizeMessageWindow(unwrapSdkData(rawMessagesResponse, 'OpenCode messages'));
       throwIfStopped();
       const newAssistantMessages = await resolveOpenCodeCurrentTurnMessages({
         initialMessagesResponse: messagesResponse,
@@ -2248,10 +2294,7 @@ export async function runOpenCodePrompt(
 
   throwIfStopped();
   const baselineMessagesResponse = resumedSession && opencode.client.session.messages
-    ? unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
-        path: { id: sessionId },
-        query: { directory: projectDir, limit: 1, order: 'desc' },
-      })), 'OpenCode messages')
+    ? await fetchMessagesWindow(1)
     : undefined;
   throwIfStopped();
   const baselineWatermark = createOpenCodeAssistantMessageWatermark(

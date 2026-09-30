@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { beforeEach, describe, expect, it, jest } from '@jest/globals';
+import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import {EventEmitter} from 'events';
 import {spawn as spawnChildProcess} from 'child_process';
 import fs from 'fs';
@@ -359,6 +359,11 @@ function createNativeIntentHarness(input: {
   closeoutAnswer?: string;
   closeoutError?: boolean;
   mainMessages?: Record<string, unknown>[];
+  /** Replaces the main session's default newest-first window and always-busy status. */
+  mainSession?: {
+    messages: (request: {query?: {limit?: number}}) => Promise<unknown>;
+    status: () => Promise<unknown>;
+  };
   beforeClassifierReply?: () => Promise<void>;
   beforeAnswerReply?: () => Promise<void>;
   env?: Record<string, string>;
@@ -392,14 +397,14 @@ function createNativeIntentHarness(input: {
             return {data: {id: `native-${index}`}};
           },
           abort,
-          ...(index === 1 && input.mainMessages ? {
+          ...(index === 1 && (input.mainMessages || input.mainSession) ? {
             promptAsync: async (request: unknown) => {prompts.push(request); await input.beforeAnswerReply?.(); return {};},
-            messages: async (request: {query?: {limit?: number}}) => {
+            messages: input.mainSession?.messages ?? (async (request: {query?: {limit?: number}}) => {
               const limit = request.query?.limit ?? 50;
               messageReadLimits.push(limit);
               return {data: [...input.mainMessages!].reverse().slice(0, limit)};
-            },
-            status: async () => ({data: {[`native-${index}`]: {type: 'busy'}}}),
+            }),
+            status: input.mainSession?.status ?? (async () => ({data: {[`native-${index}`]: {type: 'busy'}}})),
           } : {}),
           prompt: async request => {
             prompts.push(request);
@@ -1120,6 +1125,162 @@ describe('OpenCode native turn intent and delivery', () => {
     expect(harness.traceProcessor.query).not.toHaveBeenCalled();
     expect(harness.serverCloses[0]).toHaveBeenCalledTimes(1);
   }));
+});
+
+describe('OpenCode message window order', () => {
+  type ServerOrder = 'chronological' | 'newest_first';
+  const SERVER_ORDERS: ServerOrder[] = ['chronological', 'newest_first'];
+  const MISSING_CREATED_DIAGNOSTIC = '[OpenCode] message window lacks created times; server order kept';
+  const message = (role: string, id: string, created: number | undefined, text: string, finish?: string) => ({
+    info: {role, id, ...(finish ? {finish} : {}),
+      time: {...(created === undefined ? {} : {created}), ...(role === 'assistant' ? {completed: (created ?? 0) + 1} : {})}},
+    parts: [{type: 'text', text}],
+  });
+  const user = message('user', 'msg_turn_01_user', 1_000, '这段滑动为什么掉帧？');
+  const toolStep = message('assistant', 'msg_turn_02_tool', 1_001, '先查询帧时间线', 'tool-calls');
+  const answer = message('assistant', 'msg_turn_03_answer', 1_003, '第 12 帧超出截止时间 4ms。', 'stop');
+  const previousUser = message('user', 'msg_prev_01_user', 900, '上一轮问题');
+  const previousAnswer = message('assistant', 'msg_prev_02_answer', 901, '上一轮结论', 'stop');
+  const serverWindow = (chronological: unknown[], order: ServerOrder, limit = 50) => {
+    const tail = chronological.slice(-limit);
+    return order === 'chronological' ? tail : [...tail].reverse();
+  };
+  const windowIds = (response: unknown) =>
+    (response as {data: Array<{info: {id: string}}>}).data.map(entry => entry.info.id);
+  const runPrompt = (session: Record<string, unknown>, options: Record<string, unknown> = {}) => runOpenCodePrompt({
+    client: {session: {prompt: jest.fn(), ...session}},
+    server: {url: 'http://127.0.0.1:4106', close: jest.fn()},
+  } as any, {
+    path: {id: 'ses-order'},
+    query: {directory: '/tmp/project'},
+    body: {parts: [{type: 'text', text: '为什么掉帧'}]},
+  }, {
+    sessionId: 'ses-order', projectDir: '/tmp/project', timeoutMs: 2_000, resumedSession: false,
+    pollDelay: async () => undefined, ...options,
+  } as any);
+  let warn: ReturnType<typeof jest.spyOn>;
+  beforeEach(() => {warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);});
+  afterEach(() => warn.mockRestore());
+
+  it.each(SERVER_ORDERS)('finishes a tool-call turn from %s windows once status drops the finished session', async order => withBackendDataDir(async () => {
+    let reads = 0;
+    const harness = createNativeIntentHarness({
+      env: {SMARTPERFETTO_OPENCODE_PROMPT_TIMEOUT_MS: '4000'},
+      mainSession: {
+        messages: async request => {
+          reads += 1;
+          return {data: serverWindow(reads === 1 ? [user, toolStep] : [user, toolStep, answer], order, request.query?.limit)};
+        },
+        // A finished session disappears from OpenCode's status map, which the loop reads as unknown.
+        status: async () => ({data: reads >= 2 ? {} : {'native-1': {type: 'busy'}}}),
+      },
+    });
+    const result = await harness.runtime.analyze('为什么掉帧', `window-order-${order}`, 'trace-opencode', {analysisMode: 'full'});
+    expect(result.conclusion).toBe('第 12 帧超出截止时间 4ms。');
+    expect(result.completion).toMatchObject({status: 'completed', sdkFinishReason: 'stop'});
+    expect(reads).toBe(2);
+    finalizationContext.takeFinalizationContext(result)?.dispose();
+  }), 15_000);
+
+  it.each(SERVER_ORDERS)('returns the current turn in chronological order with the answer last from %s windows', async order => {
+    let reads = 0;
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages: jest.fn(async () => {
+        reads += 1;
+        return {data: serverWindow(reads === 1 ? [user, toolStep] : [user, toolStep, answer], order)};
+      }),
+      status: jest.fn(async () => ({data: reads >= 2 ? {} : {'ses-order': {type: 'busy'}}})),
+    });
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_02_tool', 'msg_turn_03_answer']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it.each(SERVER_ORDERS)('counts only messages after a resumed watermark in %s windows', async order => {
+    const messages = jest.fn(async (request: {query: {limit: number}}) => ({
+      data: request.query.limit === 1
+        ? [previousAnswer]
+        : serverWindow([previousUser, previousAnswer, user, toolStep, answer], order, request.query.limit),
+    }));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      status: jest.fn(async () => ({data: {}})),
+    }, {resumedSession: true});
+    expect(messages.mock.calls[0]?.[0]).toMatchObject({query: {limit: 1, order: 'desc'}});
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_02_tool', 'msg_turn_03_answer']);
+  });
+
+  it('breaks equal creation times by descending native id', async () => {
+    const first = message('assistant', 'msg_tie_a', 2_000, '先调用工具', 'tool-calls');
+    const second = message('assistant', 'msg_tie_b', 2_000, '同一毫秒内的最终结论', 'stop');
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages: jest.fn(async () => ({data: [first, second]})),
+      status: jest.fn(async () => ({data: {}})),
+    });
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_tie_a', 'msg_tie_b']);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('keeps the server order and reports it once per run when a message lacks its creation time', async () => {
+    const undatedAnswer = message('assistant', 'msg_turn_03_answer', undefined, '缺少创建时间的最终结论', 'stop');
+    const messages = jest.fn(async () => ({data: [undatedAnswer, toolStep, user]}));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      // Idle forces the canonical final read, so the undated window is normalized twice.
+      status: jest.fn(async () => ({data: {'ses-order': {type: 'idle'}}})),
+    });
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_02_tool', 'msg_turn_03_answer']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(MISSING_CREATED_DIAGNOSTIC);
+  });
+
+  it('reports a single undated message once even though one entry needs no ordering', async () => {
+    const undatedAnswer = message('assistant', 'msg_turn_03_answer', undefined, '唯一一条缺少创建时间的结论', 'stop');
+    const messages = jest.fn(async () => ({data: [undatedAnswer]}));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      status: jest.fn(async () => ({data: {'ses-order': {type: 'idle'}}})),
+    });
+    expect(messages).toHaveBeenCalledTimes(2);
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_turn_03_answer']);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(MISSING_CREATED_DIAGNOSTIC);
+  });
+
+  it('orders an expanded chronological window on the idle canonical read', async () => {
+    const steps = Array.from({length: 60}, (_, index) => message(
+      'assistant', `msg_turn_02_tool_${String(index).padStart(2, '0')}`, 1_001 + index, `工具步骤 ${index}`, 'tool-calls'));
+    const lastAnswer = message('assistant', 'msg_turn_03_answer', 2_000, '扩窗后的最终结论', 'stop');
+    const turn = [user, ...steps, lastAnswer];
+    const messages = jest.fn(async (request: {query: {limit: number}}) => ({
+      data: serverWindow(turn, 'chronological', request.query.limit),
+    }));
+    const result = await runPrompt({
+      promptAsync: jest.fn(async () => ({})),
+      messages,
+      status: jest.fn(async () => ({data: {'ses-order': {type: 'idle'}}})),
+    });
+    const limits = messages.mock.calls.map(([request]) => request.query.limit);
+    expect(limits).toContain(100);
+    const ids = windowIds(result.messagesResponse);
+    expect(ids).toHaveLength(61);
+    expect(ids[0]).toBe('msg_turn_02_tool_00');
+    expect(ids[ids.length - 1]).toBe('msg_turn_03_answer');
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('does not reorder a multi-message synchronous prompt response', async () => {
+    const earlier = message('assistant', 'msg_sync_a', 3_000, '同步响应中的工具步骤', 'tool-calls');
+    const later = message('assistant', 'msg_sync_b', 3_001, '同步响应中的最终结论', 'stop');
+    const result = await runPrompt({prompt: jest.fn(async () => ({data: [earlier, later]}))});
+    expect(windowIds(result.promptResponse)).toEqual(['msg_sync_a', 'msg_sync_b']);
+    expect(windowIds(result.messagesResponse)).toEqual(['msg_sync_a', 'msg_sync_b']);
+  });
 });
 
 describe('experimental OpenCode runtime contract', () => {
