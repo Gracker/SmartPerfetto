@@ -18,6 +18,8 @@ import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/str
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
 import {createAnalysisHistoryReader, resolveAnalysisHistoryReader, toAnalysisHistoryTurn, type AnalysisHistoryReader} from '../../../agentRuntime/analysisHistory';
 import {AnalysisHistoryStore} from '../../../services/analysisHistoryStore';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
+import type {AnalysisOptions} from '../../../agent/core/orchestratorTypes';
 
 const mockAnalyze = jest.fn<IOrchestrator['analyze']>();
 const mockPersistAgentTurn = jest.fn();
@@ -298,6 +300,9 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(mockPersistAnalysisRunState.mock.invocationCallOrder[0])
       .toBeLessThan(mockPersistAgentTurn.mock.invocationCallOrder[0]);
     expect(mockPersistAnalysisRunState.mock.calls[1]).toEqual([openScope, 'completed', {error: undefined}]);
+    // A public run may learn across sessions under its own run id.
+    const runOptions = mockAnalyze.mock.calls[0][3] as AnalysisOptions;
+    expect(resolveDurableLearningPermission(runOptions)).toEqual({runId: openScope.runId});
   });
 
   it('leaves no durable run row when the analysis never reaches the archive', async () => {
@@ -405,6 +410,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       codeAwareMode: 'metadata_only',
       codebaseIds: ['cb-cli'],
     }));
+    expect(resolveDurableLearningPermission(analyzeCall[3] as AnalysisOptions)).toBeUndefined();
     expect(mockPreparedSession.codeAwareMode).toBe('metadata_only');
     expect(mockPrepareSession).toHaveBeenCalledWith(expect.objectContaining({
       options: expect.objectContaining({

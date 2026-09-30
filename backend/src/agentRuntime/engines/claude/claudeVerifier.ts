@@ -231,8 +231,6 @@ export async function verifyConclusion(
     /** @deprecated Ignored. Runtime checks do not classify the user query. */
     query?: string;
     emitIssueProgress?: boolean;
-    /** @deprecated Ignored. Runtime checks never learn from wording. */
-    allowPersistentLearning?: boolean;
     /** @deprecated Ignored; this verifier makes no provider calls. */
     providerId?: string | null;
     /** @deprecated Ignored; this verifier makes no provider calls. */

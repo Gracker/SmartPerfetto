@@ -231,6 +231,10 @@ import {renderConclusionContractSidecar, type ConclusionContract} from '../../..
 import {inspectCandidateProtocol} from '../../../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation} from '../../../../../tests/helpers/conclusionDeclarationFixture';
+import * as analysisPatternMemory from '../../../../agentv3/analysisPatternMemory';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../../../services/security/durableLearning';
+import type {ClaudeMcpServerOptions} from '../../../../agentv3/claudeMcpServer';
+import {NO_PRIVATE_CONTEXT} from '../../../../services/security/analysisPrivateContext';
 
 function createRuntime(
   env: Record<string, string | undefined> = {},
@@ -383,12 +387,16 @@ describe('QoderRuntime', () => {
       }));
     });
 
-    it('gives invoke_skill the shared best-effort vendor hint from its own MCP options', async () => {
+    // The same options carry the run's own learning grant, under which
+    // execute_sql learns fixes.
+    it('gives the shared MCP tools the vendor hint from its own options, and the run grant', async () => {
       mockQuery.mockReturnValue(createMockSdkStream([
         {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
       ]));
-      await createRuntime().analyze('分析启动性能', 'session-1', 'trace-1', {analysisMode: 'full'});
-      const runtimeOptions = mockCreateClaudeMcpServer.mock.calls[0][0] as Record<string, unknown>;
+      await createRuntime().analyze('分析启动性能', 'session-1', 'trace-1',
+        withDurableLearningPermission({analysisMode: 'full' as const, runId: 'run-qoder-mcp'}, NO_PRIVATE_CONTEXT));
+      const runtimeOptions = mockCreateClaudeMcpServer.mock.calls[0][0] as Partial<ClaudeMcpServerOptions>;
+      expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-qoder-mcp');
       const actualMcp = jest.requireActual<typeof import('../../../../agentv3/claudeMcpServer')>('../../../../agentv3/claudeMcpServer');
       await expectRuntimeVendorHintParity({
         createMcpServer: actualMcp.createClaudeMcpServer, runtimeOptions});
@@ -2678,6 +2686,24 @@ describe('QoderRuntime', () => {
       expect(snapshot.conversationSteps).toEqual([]);
       expect(snapshot.agentDialogue).toEqual([]);
       expect(snapshot.agentResponses).toEqual([]);
+    });
+
+    it('prefetches admitted cross-session experience for a private run as for a public one', async () => {
+      const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+      const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
+      ]));
+      try {
+        await createRuntime().analyze('private question', 'session-1', 'trace-1', {
+          analysisMode: 'full', knowledgeSourceIds: ['private-wiki'],
+        });
+        expect(patterns).toHaveBeenCalledTimes(1);
+        expect(negative).toHaveBeenCalledTimes(1);
+        const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
+        expect(systemPrompt).toContain('PATTERN_MEMORY_SECTION');
+        expect(systemPrompt).toContain('NEGATIVE_MEMORY_SECTION');
+      } finally { patterns.mockRestore(); negative.mockRestore(); }
     });
 
     it('keeps a private run\'s turn and session state in memory like the other runtimes', async () => {

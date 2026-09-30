@@ -223,6 +223,20 @@ async function seedRestrictedContentFixture(): Promise<void> {
       chunk('app_source', 'PRIVATE_SOURCE_CHUNK', 'codebase_registry'), now, now);
     insertMemory.run('chunk-public-blog', 'rag:androidperformance.com', null,
       chunk('androidperformance.com', 'PUBLIC_BLOG_CHUNK'), now, now);
+    // Last written by a public run, yet it holds an entry no run can be proven
+    // to have written publicly: the bucket is exported entry by entry.
+    insertMemory.run('memory-pattern-bucket', 'pattern-memory:positive', 'run-a', JSON.stringify({
+      kind: 'analysis_pattern_bucket', externalId: 'positive', record: [
+        {id: 'pat-legacy', keyInsights: ['LEGACY_PATTERN']},
+        {id: 'pat-admitted', keyInsights: ['ADMITTED_PATTERN'],
+          learningAdmission: {version: 1, basis: 'public_run', runId: 'run-a', admittedAt: now}},
+      ],
+    }), now, now);
+    // A malformed bucket carries nothing, even though a public run wrote it last.
+    insertMemory.run('memory-pattern-bucket-malformed', 'pattern-memory:negative', 'run-a', JSON.stringify({
+      kind: 'analysis_pattern_bucket', externalId: 'negative',
+      record: {entries: [{id: 'neg-legacy', failedApproaches: [{approach: 'MALFORMED_BUCKET_PATTERN'}]}]},
+    }), now, now);
   } finally {
     db.close();
   }
@@ -308,11 +322,13 @@ describe('enterprise tenant export route', () => {
     const bundle = res.body.bundle;
     const serialized = JSON.stringify(bundle);
     for (const secret of ['PRIVATE_QUESTION', 'PRIVATE_HISTORY_QUESTION', 'PRIVATE_ERROR', 'PRIVATE_TURN', 'PRIVATE_REPORT', 'PRIVATE_MEMORY',
-      'LEGACY_QUESTION', 'LEGACY_ERROR', 'LEGACY_TURN', 'LEGACY_REPORT', 'UNLINKED_MEMORY', 'PRIVATE_SOURCE_CHUNK']) {
+      'LEGACY_QUESTION', 'LEGACY_ERROR', 'LEGACY_TURN', 'LEGACY_REPORT', 'UNLINKED_MEMORY', 'PRIVATE_SOURCE_CHUNK',
+      'LEGACY_PATTERN', 'MALFORMED_BUCKET_PATTERN']) {
       expect(serialized).not.toContain(secret);
     }
     // Public material keeps its content.
     expect(serialized).toContain('PUBLIC_BLOG_CHUNK');
+    expect(serialized).toContain('ADMITTED_PATTERN');
     expect(serialized).toContain('Why jank?');
     expect(serialized).toContain('tenant report');
 
@@ -327,9 +343,13 @@ describe('enterprise tenant export route', () => {
     expect(byId(bundle.turns, 'turn-legacy')).toMatchObject({content: null, contentOmitted: 'private_context'});
     expect(byId(bundle.turns, 'turn-private-history')).toMatchObject({content: null, contentOmitted: 'private_context'});
     expect(byId(bundle.knowledge.memoryEntries, 'chunk-public-blog')).not.toHaveProperty('contentOmitted');
-    expect(bundle.manifest.contentOmitted).toEqual({reports: 2, runs: 2, turns: 3, memoryRecords: 3});
+    expect(byId(bundle.knowledge.memoryEntries, 'memory-pattern-bucket')).toMatchObject({
+      content: {record: [{id: 'pat-admitted'}]}});
+    expect(byId(bundle.knowledge.memoryEntries, 'memory-pattern-bucket-malformed')).toMatchObject({
+      content: null, contentOmitted: 'private_context'});
+    expect(bundle.manifest.contentOmitted).toEqual({reports: 2, runs: 2, turns: 3, memoryRecords: 4});
     expect(bundle.manifest).toEqual(expect.objectContaining({runCount: 3, turnCount: 4, reportCount: 3,
-      memoryRecordCount: 5}));
+      memoryRecordCount: 7}));
   });
 
   it('requires tenant export privileges', async () => {

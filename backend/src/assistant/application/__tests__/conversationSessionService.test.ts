@@ -33,6 +33,19 @@ function createService(adapter: ConversationRuntimeAdapter) {
 }
 
 describe('ConversationSessionService', () => {
+  it('hands the runtime the private-context marker it records for the run', async () => {
+    const inputs: ConversationRuntimeInput[] = [];
+    const service = createService({
+      run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+        inputs.push(input);
+        return {kind: 'answered', message: 'ok'};
+      }),
+      cancel: jest.fn(async () => undefined),
+    });
+    await service.startTurn({query: 'Discuss the requirement'}).completion;
+    expect(inputs[0].privateContext).toEqual({codebase: false, knowledge: false});
+  });
+
   it('requires a new session when a trace is attached after a no-Trace turn', async () => {
     const inputs: ConversationRuntimeInput[] = [];
     const adapter: ConversationRuntimeAdapter = {

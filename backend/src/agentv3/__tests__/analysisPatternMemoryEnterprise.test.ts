@@ -20,12 +20,16 @@ import {
   type KnowledgeScope,
 } from '../../services/scopedKnowledgeStore';
 import type {AnalysisPatternEntry} from '../types';
+import {resolveDurableLearningPermission, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {
   matchPatterns,
   saveAnalysisPattern,
   setSupersedeStoreForTesting,
   sweepAllPatternMemoryPartitions,
 } from '../analysisPatternMemory';
+
+const ADMISSION = {version: 1 as const, basis: 'public_run' as const, runId: 'run-public-learning', admittedAt: 1};
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -68,6 +72,7 @@ function seededPatterns(scope: KnowledgeScope, prefix: string): AnalysisPatternE
       sourceTenantId: tenantId,
       sourceWorkspaceId: workspaceId,
     },
+    learningAdmission: ADMISSION,
   }));
 }
 
@@ -140,7 +145,8 @@ describe('analysis pattern memory enterprise buckets', () => {
       'new-a',
       'new-a',
       0.95,
-      {knowledgeScope: scopeA},
+      {learning: resolveDurableLearningPermission(
+        withDurableLearningPermission({runId: 'run-public-learning'}, NO_PRIVATE_CONTEXT))!, knowledgeScope: scopeA},
     );
 
     const bucketA = readPositiveBucket(scopeA);

@@ -32,11 +32,6 @@ import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
 import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/scene/sceneRuntimeBinding';
 import {
-  buildNegativePatternSection,
-  buildPatternContextSection,
-  extractTraceFeatures,
-} from '../../../agentv3/analysisPatternMemory';
-import {
   createClaudeMcpServer,
   loadLearnedSqlFixPairs,
   MIN_PHASE_SUMMARY_CHARS,
@@ -122,6 +117,7 @@ import {
   buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
+  buildRuntimeMemoryContext,
   detectRunFocusApps,
 } from '../../runtimePromptContext';
 import {
@@ -133,7 +129,6 @@ import {
   resolveQuickTurnBudget,
   toProtocolHypothesis as toRuntimeProtocolHypothesis,
 } from '../../runtimeCommon';
-import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import {runOpenCodeIntentTransport, type OpenCodeClassifierHost, type OpenCodeIntentTransportInput} from './openCodeIntentTransport';
@@ -160,6 +155,7 @@ import {
 } from '../../runtimeKinds';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
 export type ExperimentalOpenCodeRuntimeKind = typeof EXPERIMENTAL_OPENCODE_RUNTIME_KIND;
 export type PublicOpenCodeRuntimeKind = typeof OPENCODE_RUNTIME_KIND;
@@ -3064,7 +3060,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         sceneType: prep.sceneType, outputLanguage: prep.analysisRunSpec.outputLanguage,
         query, emitIssueProgress: false,
         deliveryContext,
-        allowPersistentLearning: !privateKnowledge && turnPolicy.allowNewEvidence,
       });
       const issue = [...verification.heuristicIssues, ...(verification.llmIssues ?? [])]
         .find(issue => issue.severity === 'error' && issue.type !== 'plan_deviation' && issue.type !== 'unresolved_hypothesis');
@@ -3280,9 +3275,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     uncertaintyFlags.splice(0);
 
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const privateAnalysisContext = analysisHasPrivateContext(options);
-    const allowMemoryPrefetch = turnPolicy.allowAutomaticPrefetch && !privateAnalysisContext;
-    const recentSqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope, options) : [];
+    const recentSqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
     const skillNotesBudget = createRuntimeSkillNotesBudget(turnPolicy.budgetMode === 'quick');
     const comparisonContext = turnPolicy.allowAutomaticPrefetch
       ? await buildRuntimeTracePairComparisonContext({
@@ -3335,6 +3328,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       skillNotesBudget,
       outputLanguage,
       knowledgeScope,
+      durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
@@ -3352,11 +3346,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     if (analysisRunSpec.traceContext.promptSection) {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
-    const traceFeatures = extractTraceFeatures({
-      architectureType: architecture?.type,
-      sceneType,
-      packageName: effectivePackageName,
-    });
     let knowledgeBaseContext: string | undefined;
     if (turnPolicy.allowAutomaticPrefetch) {
       try {
@@ -3367,19 +3356,13 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
     }
 
+    const memoryContext = buildRuntimeMemoryContext({
+      allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      packageName: effectivePackageName, knowledgeScope, outputLanguage, selection: options,
+    });
     if (turnPolicy.onDemandContext) {
       const quickMemoryPayload = buildQuickMemoryContextPayload({
-        patternContext: allowMemoryPrefetch
-          ? buildPatternContextSection(traceFeatures, knowledgeScope) : undefined,
-        negativePatternContext: allowMemoryPrefetch
-          ? buildNegativePatternSection(traceFeatures, knowledgeScope) : undefined,
-        caseBackgroundContext: allowMemoryPrefetch ? buildRuntimeCaseBackgroundContext({
-          sceneType,
-          architectureType: architecture?.type,
-          knowledgeScope,
-          outputLanguage,
-          privateAnalysisContext,
-        }) : undefined,
+        ...memoryContext,
         sqlErrorFixPairs: recentSqlErrors,
         outputLanguage,
       });
@@ -3439,17 +3422,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           errorMessage: entry.errorMessage,
           fixedSql: entry.fixedSql,
         })),
-      patternContext: allowMemoryPrefetch
-        ? buildPatternContextSection(traceFeatures, knowledgeScope) : undefined,
-      negativePatternContext: allowMemoryPrefetch
-        ? buildNegativePatternSection(traceFeatures, knowledgeScope) : undefined,
-      caseBackgroundContext: allowMemoryPrefetch ? buildRuntimeCaseBackgroundContext({
-        sceneType,
-        architectureType: architecture?.type,
-        knowledgeScope,
-        outputLanguage,
-        privateAnalysisContext,
-      }) : undefined,
+      ...memoryContext,
       selectionContext: options.selectionContext,
       traceCompleteness,
       traceOs: traceInfo?.traceOs,

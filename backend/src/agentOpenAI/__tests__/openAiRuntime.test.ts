@@ -3,6 +3,9 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import {MaxTurnsExceededError, OpenAIChatCompletionsModel, OpenAIProvider, Runner, RunContext, tool, withTrace} from '@openai/agents';
 import {z} from 'zod';
 import {OpenAIRuntime, __testing} from '../openAiRuntime';
@@ -45,6 +48,10 @@ import {TRACE_VENDOR_METADATA_SQL} from '../../services/traceVendor/traceVendorR
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {createRuntimePerformanceRecorder} from '../../agentRuntime/runtimePerformance';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
+import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../../services/enterpriseMigration';
 
 const runtimes: OpenAIRuntime[] = [];
 const privacySessions: string[] = [];
@@ -228,16 +235,19 @@ describe('OpenAI typed intent integration', () => {
     expect(toolNames).toEqual((mcp.mock.results[0].value as any).toolDefinitions.map((tool: any) => tool.name));
   });
   // The same best-effort vendor hint as every other runtime: built from the
-  // options this runtime passes to the shared MCP factory.
-  it('gives invoke_skill the shared best-effort vendor hint without a vendor preflight', async () => {
+  // options this runtime passes to the shared MCP factory. The same options
+  // carry the run's own learning grant, under which execute_sql learns fixes.
+  it('gives the shared MCP tools the vendor hint without a vendor preflight, and the run grant', async () => {
     const query = jest.fn(async () => ({columns: [], rows: [], durationMs: 0}));
     const runtime = createOpenAiRuntimeForTest({query, getTrace: jest.fn()} as unknown as TraceProcessorService);
     classify(decision);
     jest.spyOn(systemPrompt, 'buildSystemPrompt').mockReturnValue('typed prompt');
     const mcp = jest.spyOn(mcpModule, 'createClaudeMcpServer');
     mockRun();
-    await runtime.analyze('分析启动性能', 'vendor-hint', 'trace', {analysisMode: 'full', providerId: null});
+    await runtime.analyze('分析启动性能', 'vendor-hint', 'trace', withDurableLearningPermission(
+      {analysisMode: 'full', providerId: null, runId: 'run-openai-mcp'}, NO_PRIVATE_CONTEXT));
     const runtimeOptions = mcp.mock.calls[0][0];
+    expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-openai-mcp');
     expect(query.mock.calls.some(call => String((call as unknown[])[1]).includes(TRACE_VENDOR_METADATA_SQL))).toBe(false);
     await expectRuntimeVendorHintParity({
       createMcpServer: jest.requireActual<typeof mcpModule>('../../agentv3/claudeMcpServer').createClaudeMcpServer,
@@ -1518,22 +1528,144 @@ describe('OpenAI shared tool receipt and private projection', () => {
 });
 
 describe('OpenAI provisional memory boundary', () => {
-  it('does not promote a runtime draft as verified and selects the bucket from semantic scope', () => {
+  function setup() {
     const runtime = createOpenAiRuntimeForTest();
     jest.mocked(runtime.recordPatternMemory).mockRestore();
     jest.spyOn(patternMemory, 'extractKeyInsights').mockReturnValue(['an observed fact']);
     const quick = jest.spyOn(patternMemory, 'saveQuickPathPattern').mockResolvedValue(undefined);
     const full = jest.spyOn(patternMemory, 'saveAnalysisPattern').mockResolvedValue(undefined);
-    const promote = jest.spyOn(patternMemory, 'promoteQuickPatternIfMatching').mockResolvedValue(false);
-    const input = {sessionId: 'memory-draft', previousTurnCount: 0, quickMode: false, sceneType: 'general', options: {},
-      result: {conclusion: 'body', findings: [{title: 'fact'}], turnIntent: decision}};
-    runtime.recordPatternMemory(input);
+    const input = (options: object) => ({sessionId: 'memory-draft', previousTurnCount: 0, quickMode: false,
+      sceneType: 'general', options: options as never,
+      result: {conclusion: 'body', findings: [{title: 'fact'}], turnIntent: decision} as never});
+    return {runtime, quick, full, input};
+  }
+  const publicRunOptions = () => withDurableLearningPermission({runId: 'memory-run'}, NO_PRIVATE_CONTEXT);
+
+  it('saves a runtime draft as provisional and selects the bucket from semantic scope', () => {
+    const {runtime, quick, full, input} = setup();
+    const draft = input(publicRunOptions());
+    runtime.recordPatternMemory(draft);
     expect(quick).toHaveBeenCalledTimes(1); expect(full).not.toHaveBeenCalled();
-    runtime.recordPatternMemory({...input, quickMode: true, result: {...input.result,
-      turnIntent: {...decision, scope: 'scene_wide', deliverable: 'report'}}});
+    expect(quick.mock.calls[0][4]).toMatchObject({status: 'provisional', learning: {runId: 'memory-run'}});
+    runtime.recordPatternMemory({...draft, quickMode: true, result: {...(draft.result as object),
+      turnIntent: {...decision, scope: 'scene_wide', deliverable: 'report'}} as never});
     expect(full).toHaveBeenCalledTimes(1);
-    expect(full.mock.calls[0][5]).toMatchObject({status: 'provisional'});
-    expect(promote).not.toHaveBeenCalled();
+    expect(full.mock.calls[0][5]).toMatchObject({status: 'provisional', learning: {runId: 'memory-run'}});
+  });
+
+  it.each([
+    ['no grant', () => ({runId: 'memory-run'})],
+    ['a selection that turned private', () => ({...publicRunOptions(), knowledgeSourceIds: ['private-wiki']})],
+  ])('learns nothing under %s', (_label, options) => {
+    const {runtime, quick, full, input} = setup();
+    runtime.recordPatternMemory(input(options()));
+    expect(quick).not.toHaveBeenCalled();
+    expect(full).not.toHaveBeenCalled();
+  });
+});
+
+describe('OpenAI durable learning across the run lifecycle', () => {
+  // A finding and a root cause: everything a public run learns from, so only
+  // how the run ends decides whether it learns.
+  const LEARNABLE_ANSWER = '[HIGH] 主线程同步等待 Binder 回复\n主线程在 doFrame 中等待 system_server 48 ms。\n' +
+    '根因：主线程同步等待 system_server 的 Binder 回复超过一帧预算';
+  const ENV_KEYS = ['SMARTPERFETTO_BACKEND_LOG_DIR', ENTERPRISE_FEATURE_FLAG_ENV, ENTERPRISE_MIGRATION_PHASE_ENV];
+  let savedEnv: Array<[string, string | undefined]> = [];
+  let logDir = '';
+  beforeEach(() => {
+    savedEnv = ENV_KEYS.map(key => [key, process.env[key]]);
+    logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-openai-learning-'));
+    process.env.SMARTPERFETTO_BACKEND_LOG_DIR = logDir;
+    delete process.env[ENTERPRISE_FEATURE_FLAG_ENV];
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'legacy';
+  });
+  afterEach(() => {
+    for (const [key, value] of savedEnv) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    fs.rmSync(logDir, {recursive: true, force: true});
+  });
+  function setup() {
+    const runtime = createOpenAiRuntimeForTest();
+    jest.mocked(runtime.recordPatternMemory).mockRestore();
+    prepareStub(runtime);
+    return {runtime, save: jest.spyOn(patternMemory, 'saveQuickPathPattern')};
+  }
+  const grant = (runId: string) => withDurableLearningPermission({runId, providerId: null}, NO_PRIVATE_CONTEXT);
+  // Lets any late save start, waits until every save settled, then reads the
+  // store the way a later run's prefetch does.
+  async function learned(save: jest.SpiedFunction<typeof patternMemory.saveQuickPathPattern>) {
+    await new Promise(resolve => setImmediate(resolve));
+    await Promise.all(save.mock.results.map(result => result.value));
+    return save.mock.calls.flatMap(([features]) => patternMemory.matchQuickPatternsAsBackup(features));
+  }
+  // Whichever bucket a regression chose, nothing was written.
+  const storedPatternFiles = () => fs.readdirSync(logDir).filter(name => name.endsWith('patterns.json'));
+
+  it('learns once from a completed public run, stamped with that run', async () => {
+    const {runtime, save} = setup(); mockRun(sdkStream(LEARNABLE_ANSWER));
+    const result = await runtime.analyze('query', 'learning-completed', 'trace', grant('run-completed'));
+    expect(result.partial).toBeUndefined(); expect(result.findings.length).toBeGreaterThan(0);
+    const entries = await learned(save);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({status: 'provisional',
+      learningAdmission: {version: 1, basis: 'public_run', runId: 'run-completed'}});
+  });
+
+  it('learns nothing from a run the provider cut short', async () => {
+    const {runtime, save} = setup(); mockRun(sdkStream(LEARNABLE_ANSWER, {status: 'incomplete'}));
+    const result = await runtime.analyze('query', 'learning-partial', 'trace', grant('run-partial'));
+    expect(result.partial).toBe(true); expect(result.findings.length).toBeGreaterThan(0);
+    expect(await learned(save)).toEqual([]); expect(save).not.toHaveBeenCalled(); expect(storedPatternFiles()).toEqual([]);
+  });
+
+  it('learns nothing from a failed run', async () => {
+    const {runtime, save} = setup(); mockRun().mockRejectedValue(new Error('upstream unavailable'));
+    const result = await runtime.analyze('query', 'learning-failed', 'trace', grant('run-failed'));
+    expect(result.success).toBe(false);
+    expect(await learned(save)).toEqual([]); expect(save).not.toHaveBeenCalled(); expect(storedPatternFiles()).toEqual([]);
+  });
+
+  it('learns nothing from a run cancelled after its answer was complete', async () => {
+    const {runtime, save} = setup(); mockRun(sdkStream(LEARNABLE_ANSWER));
+    const verifying = createDeferred<void>(); const release = createDeferred<void>();
+    const verify = jest.spyOn(verifier, 'verifyConclusion').mockImplementation(async () => {
+      verifying.resolve(); await release.promise;
+      return {passed: true, durationMs: 1, heuristicIssues: []} as never;
+    });
+    const pending = runtime.analyze('query', 'learning-cancelled', 'trace', grant('run-cancelled'));
+    const rejected = expect(pending).rejects.toThrow();
+    await verifying.promise; runtime.abortSession('learning-cancelled'); release.resolve(); await rejected;
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(await learned(save)).toEqual([]); expect(save).not.toHaveBeenCalled(); expect(storedPatternFiles()).toEqual([]);
+  });
+
+  it('learns nothing from a run cancelled while its provider closes', async () => {
+    const {runtime, save} = setup(); mockRun(sdkStream(LEARNABLE_ANSWER));
+    const verify = jest.spyOn(verifier, 'verifyConclusion');
+    const closing = createDeferred<void>(); const release = createDeferred<void>();
+    jest.spyOn(OpenAIProvider.prototype, 'close').mockImplementation(async () => {closing.resolve(); await release.promise;});
+    const pending = runtime.analyze('query', 'learning-closing', 'trace', grant('run-closing'));
+    const rejected = expect(pending).rejects.toThrow();
+    await closing.promise; expect(verify).toHaveBeenCalledTimes(1);
+    runtime.abortSession('learning-closing'); release.resolve(); await rejected;
+    expect(await learned(save)).toEqual([]); expect(save).not.toHaveBeenCalled(); expect(storedPatternFiles()).toEqual([]);
+  });
+
+  it('learns only from the successor when a superseded run completes late', async () => {
+    const {runtime, save} = setup();
+    const entered = createDeferred<void>(); const late = createDeferred<void>();
+    mockRun(sdkStream(LEARNABLE_ANSWER)).mockResolvedValueOnce({currentTurn: 1, finalOutput: LEARNABLE_ANSWER,
+      history: [], state: {}, completed: Promise.resolve(), async *[Symbol.asyncIterator]() {
+        entered.resolve(); await late.promise; yield responseDone(LEARNABLE_ANSWER);
+      }});
+    const superseded = runtime.analyze('query', 'learning-superseded', 'trace', grant('run-superseded'));
+    const rejected = expect(superseded).rejects.toThrow();
+    await entered.promise; runtime.abortSession('learning-superseded'); await rejected;
+    const successor = await runtime.analyze('follow-up', 'learning-superseded', 'trace', grant('run-successor'));
+    late.resolve();
+    expect(successor.partial).toBeUndefined();
+    expect((await learned(save)).map(entry => entry.learningAdmission?.runId)).toEqual(['run-successor']);
   });
 });
 

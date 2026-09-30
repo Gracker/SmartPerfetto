@@ -224,6 +224,7 @@ import {
   resolveAnalysisPrivateContext,
   analysisHasPrivateContext,
 } from '../services/security/analysisPrivateContext';
+import {withDurableLearningPermission} from '../services/security/durableLearning';
 import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
@@ -5284,7 +5285,11 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
             runId: runIdForAnalysis,
             runManifestAttributionSink: options.runManifestAttributionSink,
           };
-        const analyzeOptions = options.sceneRunBinding ? options.sceneRunBinding.bindOptions(baseAnalyzeOptions) : baseAnalyzeOptions;
+        // The run may learn across sessions only under its own marker, fixed at admission.
+        const analyzeOptions = withDurableLearningPermission(
+          options.sceneRunBinding ? options.sceneRunBinding.bindOptions(baseAnalyzeOptions) : baseAnalyzeOptions,
+          sessionRunPrivateContext(session, runIdForAnalysis),
+        );
         const analyze = () => session.orchestrator.analyze(agentQuery, sessionId, traceId, analyzeOptions).then(nativeResult => {
             sceneSeal = options.sceneRunBinding?.seal();
             finalizationContext = takeFinalizationContext(nativeResult);

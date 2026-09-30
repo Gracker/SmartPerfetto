@@ -281,6 +281,12 @@ import {
   requireToolDescription,
 } from '../claudeMcpServer';
 import {resolveRuntimeToolConcurrencyPolicy} from '../../agentRuntime/runtimeToolConcurrency';
+import {
+  resolveDurableLearningPermission,
+  withDurableLearningPermission,
+  type DurableLearningPermission,
+} from '../../services/security/durableLearning';
+import {matchPatterns} from '../analysisPatternMemory';
 import {normalizeWaitChainSelectors} from '../../services/criticalPathSelectors';
 import {createJsonSchemaFromZodRawShape} from '../../agentRuntime/runtimeToolSpec';
 import {SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES_ENV} from '../../agentRuntime/runtimeCandidateAdmission';
@@ -371,6 +377,7 @@ function createTestServer(options: {
     maxReadCalls?: number;
     maxDurationMs?: number;
   };
+  durableLearning?: DurableLearningPermission;
 } = {}) {
   const analysisNotes: AnalysisNote[] = [];
   const hypotheses: Hypothesis[] = [];
@@ -444,6 +451,7 @@ function createTestServer(options: {
     knowledgeSourceIds: options.knowledgeSourceIds,
     analysisResultSnapshotRepository: options.analysisResultSnapshotRepository,
     knowledgeScope: options.knowledgeScope,
+    durableLearning: options.durableLearning,
     sessionId: options.sessionId,
     outputLanguage: options.outputLanguage,
     runManifestAttributionSink: options.runManifestAttributionSink,
@@ -9298,25 +9306,107 @@ describe('createClaudeMcpServer', () => {
   });
 });
 
+describe('recall_patterns', () => {
+  it('returns admitted experience to a private run as to a public one, without learned misdiagnosis', async () => {
+    const knowledgeScope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const admitted = {id: 'pat-admitted', traceFeatures: ['arch:Standard'], sceneType: 'scrolling',
+      keyInsights: ['admitted insight'], architectureType: 'Standard', confidence: 0.8, createdAt: 1, matchCount: 2,
+      score: 0.8};
+    for (const selection of [{}, {knowledgeSourceIds: ['kb-a']}]) {
+      jest.mocked(matchPatterns).mockReturnValueOnce([admitted] as never);
+      const {tools} = createTestServer({knowledgeScope, ...selection});
+      const result = await callTool(tools, 'recall_patterns', {sceneType: 'scrolling'});
+      expect(result).toMatchObject({success: true,
+        positivePatterns: [expect.objectContaining({insights: ['admitted insight']})]});
+      expect(result).not.toHaveProperty('disabled');
+      expect(result).not.toHaveProperty('learnedMisdiagnosis');
+    }
+  });
+});
+
+describe('durable SQL learning admission', () => {
+  const realFs = jest.requireActual<typeof fs>('fs');
+  const scope = {tenantId: 'tenant-sql', workspaceId: 'workspace-sql'};
+  const errorSql = "SELECT custom_metric_ms FROM my_widget_stats WHERE widget_name = 'hero_banner'";
+  const fixedSql = "SELECT custom_metric FROM my_widget_stats WHERE widget_name = 'hero_banner'";
+  let logDir: string;
+  let previousLogDir: string | undefined;
+
+  beforeEach(() => {
+    previousLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+    logDir = realFs.mkdtempSync(path.join(os.tmpdir(), 'sql-learning-'));
+    process.env.SMARTPERFETTO_BACKEND_LOG_DIR = logDir;
+  });
+  afterEach(() => {
+    if (previousLogDir === undefined) delete process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
+    else process.env.SMARTPERFETTO_BACKEND_LOG_DIR = previousLogDir;
+    realFs.rmSync(logDir, {recursive: true, force: true});
+  });
+
+  const grant = () => resolveDurableLearningPermission(
+    withDurableLearningPermission({runId: 'run-public-sql'}, NO_PRIVATE_CONTEXT))!;
+  const pairsFile = () => path.join(logDir, 'sql_learning', scope.tenantId, scope.workspaceId, 'error_fix_pairs.json');
+  const storedPairs = () => realFs.existsSync(pairsFile()) ? JSON.parse(realFs.readFileSync(pairsFile(), 'utf-8')) : [];
+
+  async function failThenFix(durableLearning?: DurableLearningPermission): Promise<void> {
+    const {tools, mockTpService} = createTestServer({knowledgeScope: scope, durableLearning});
+    mockTpService.query.mockResolvedValueOnce({columns: [], rows: [], durationMs: 1, error: 'no such column: custom_metric_ms'});
+    expect((await callTool(tools, 'execute_sql', {sql: errorSql})).success).toBe(false);
+    expect((await callTool(tools, 'execute_sql', {sql: fixedSql})).success).toBe(true);
+  }
+
+  it('persists a fixed query only under the run grant, stamped with that run', async () => {
+    await failThenFix();
+    expect(storedPairs()).toEqual([]);
+    // A forged grant, or a copy of an issued one, persists nothing either.
+    await failThenFix({runId: 'run-public-sql'} as never);
+    await failThenFix({...grant()});
+    expect(storedPairs()).toEqual([]);
+
+    await failThenFix(grant());
+    expect(storedPairs()).toEqual([expect.objectContaining({errorSql, fixedSql,
+      errorMessage: 'no such column: custom_metric_ms',
+      learningAdmission: expect.objectContaining({version: 1, basis: 'public_run', runId: 'run-public-sql'})})]);
+  });
+
+  it('never refreshes an unadmitted pair and never persists a skill error by itself', async () => {
+    realFs.mkdirSync(path.dirname(pairsFile()), {recursive: true});
+    const legacy = {errorSql: 'LEGACY_CANARY', errorMessage: 'no such column: custom_metric_ms', fixedSql, timestamp: 5};
+    realFs.writeFileSync(pairsFile(), JSON.stringify([legacy]));
+
+    await failThenFix(grant());
+
+    const pairs = storedPairs();
+    expect(pairs[0]).toEqual(legacy);
+    expect(pairs[1]).toMatchObject({errorSql, learningAdmission: {runId: 'run-public-sql'}});
+
+    // A skill's own SQL error is kept for this turn's matching only. (Unscoped,
+    // so the direct workspace skill registry is not consulted.)
+    const {tools, mockSkillExecutor} = createTestServer({durableLearning: grant()});
+    mockSkillExecutor.execute.mockResolvedValueOnce({skillId: 'scrolling_analysis', success: false,
+      error: 'SQL error: no such table: missing', displayResults: [], diagnostics: [], executionTimeMs: 1} as never);
+    await callTool(tools, 'invoke_skill', {skillId: 'scrolling_analysis', params: {process_name: 'com.example'}});
+    expect(mockSkillExecutor.execute).toHaveBeenCalledTimes(1);
+    expect(realFs.existsSync(path.join(logDir, 'sql_learning', 'error_fix_pairs.json'))).toBe(false);
+    expect(storedPairs()).toHaveLength(2);
+  });
+});
+
 describe('loadLearnedSqlFixPairs', () => {
+  it('reads only pairs a public run admitted', () => {
+    jest.mocked(fs.existsSync).mockImplementationOnce(() => true);
+    jest.mocked(fs.readFileSync).mockImplementationOnce((() => JSON.stringify([
+      {errorSql: 'LEGACY_CANARY', errorMessage: 'no such column', fixedSql: 'SELECT fixed', timestamp: Date.now()},
+      {errorSql: 'SELECT admitted', errorMessage: 'no such column', fixedSql: 'SELECT fixed', timestamp: Date.now(),
+        learningAdmission: {version: 1, basis: 'public_run', runId: 'run-public-sql', admittedAt: Date.now()}},
+    ])) as never);
+    // Every run reads the same admitted pairs; a private run's selection no longer matters.
+    expect(loadLearnedSqlFixPairs(10).map(pair => pair.errorSql)).toEqual(['SELECT admitted']);
+  });
+
   it('should return empty array when no file', () => {
     const pairs = loadLearnedSqlFixPairs();
     expect(pairs).toEqual([]);
-  });
-
-  it.each([
-    ['codebase only', {codebaseIds: ['app']}],
-    ['private RAG only', {knowledgeSourceIds: ['wiki']}],
-    ['source and private RAG', {codebaseIds: ['app'], knowledgeSourceIds: ['wiki']}],
-  ])('does not read durable SQL learning for %s', (_label, selection) => {
-    const existsSpy = jest.spyOn(fs, 'existsSync');
-    existsSpy.mockClear();
-    try {
-      expect(loadLearnedSqlFixPairs(10, undefined, selection)).toEqual([]);
-      expect(existsSpy).not.toHaveBeenCalled();
-    } finally {
-      existsSpy.mockRestore();
-    }
   });
 });
 

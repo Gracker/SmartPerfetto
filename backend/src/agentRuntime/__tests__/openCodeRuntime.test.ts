@@ -46,6 +46,7 @@ import {expectRuntimeVendorHintParity} from './vendorHintParityFixture';
 import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
 import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import * as traceCompletenessProber from '../../agentv3/traceCompletenessProber';
@@ -74,6 +75,8 @@ import {renderConclusionContractSidecar, type ConclusionContract} from '../../ag
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const mockOpenCodeIntentTransport = jest.fn<typeof runOpenCodeIntentTransport>();
 jest.mock('../engines/opencode/openCodeIntentTransport', () => ({
@@ -948,6 +951,22 @@ describe('OpenCode native turn intent and delivery', () => {
     } finally { quick.mockRestore(); full.mockRestore(); }
   }));
 
+  it.each(['full', 'fast'] as const)(
+    'prefetches admitted cross-session experience for a private %s run as for a public one', mode => withBackendDataDir(async () => {
+      const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+      const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+      try {
+        const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}});
+        await harness.runtime.analyze('the whole scene', `private-experience-${mode}`, 'trace-opencode', {
+          analysisMode: mode, codeAwareMode: 'metadata_only', codebaseIds: ['cb-opencode-private-experience'],
+        });
+        expect(patterns).toHaveBeenCalled();
+        expect(negative).toHaveBeenCalled();
+        expect(harness.prompts[1].body.system).toContain('PATTERN_MEMORY_SECTION');
+        expect(harness.prompts[1].body.system).toContain('NEGATIVE_MEMORY_SECTION');
+      } finally { patterns.mockRestore(); negative.mockRestore(); }
+    }));
+
   it('renders an issued focus-app evidence locator in both prompt variants', async () => withBackendDataDir(async () => {
     const focus = jest.spyOn(focusAppDetectorModule, 'detectFocusApps').mockResolvedValue({
       method: 'battery_stats', confidence: 'high', primaryApp: 'com.example.opencode',
@@ -1006,14 +1025,18 @@ describe('OpenCode native turn intent and delivery', () => {
     }
   }));
 
-  it('gives invoke_skill the shared best-effort vendor hint from its own MCP options', async () => withBackendDataDir(async () => {
+  // The same options carry the run's own learning grant, under which
+  // execute_sql learns fixes.
+  it('gives the shared MCP tools the vendor hint from its own options, and the run grant', async () => withBackendDataDir(async () => {
     const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
     let runtimeOptions: Parameters<typeof createClaudeMcpServer>[0];
     try {
       const harness = createNativeIntentHarness();
-      await harness.runtime.analyze('分析启动性能', 'opencode-vendor-hint', 'trace-opencode');
+      await harness.runtime.analyze('分析启动性能', 'opencode-vendor-hint', 'trace-opencode',
+        withDurableLearningPermission({runId: 'run-opencode-mcp'}, NO_PRIVATE_CONTEXT));
       runtimeOptions = mcp.mock.calls[0][0];
     } finally { mcp.mockRestore(); }
+    expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-opencode-mcp');
     await expectRuntimeVendorHintParity({
       createMcpServer: createClaudeMcpServer, runtimeOptions});
   }));

@@ -208,8 +208,12 @@ evaluatingModules = false;
   });
   const notesRead = load('agentv3/selfImprove/skillNotesInjector.ts')
     .loadSkillNotesFromSources(input.probeId, {curatedDir: input.emptyDir}).length;
+  const durableLearning = load('services/security/durableLearning.ts');
+  const learning = durableLearning.resolveDurableLearningPermission(durableLearning.withDurableLearningPermission(
+    {runId: input.probeId}, load('services/security/analysisPrivateContext.ts').NO_PRIVATE_CONTEXT));
   await load('agentv3/analysisPatternMemory.ts')
-    .saveAnalysisPattern(['arch:standard', 'scene:scrolling'], ['runtime path probe'], 'scrolling');
+    .saveAnalysisPattern(['arch:standard', 'scene:scrolling'], ['runtime path probe'], 'scrolling', undefined, undefined,
+      {learning});
 
   fs.writeFileSync(input.resultFile, JSON.stringify({
     moduleCount: input.modules.length,

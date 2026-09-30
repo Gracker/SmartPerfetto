@@ -30,6 +30,15 @@ import {
 } from '../agentv3/outputLanguage';
 import {renderRequiredLocalizedStrategyTemplate} from '../agentv3/localizedStrategyTemplate';
 import {renderAnalysisHistoryContext, toAnalysisHistoryTurn} from './analysisHistory';
+import {
+  buildNegativePatternSection,
+  buildPatternContextSection,
+  extractTraceFeatures,
+} from '../agentv3/analysisPatternMemory';
+import {buildRuntimeCaseBackgroundContext} from '../services/caseEvolution/caseBackgroundContext';
+import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
+import type {AnalysisContextSelection} from '../services/resolvedAnalysisContext';
+import type {KnowledgeScope} from '../services/scopedKnowledgeStore';
 
 function freezeComparisonContext<T>(value: T, seen = new Set<object>()): T {
   if (!value || typeof value !== 'object' || seen.has(value)) return value;
@@ -239,6 +248,38 @@ function countRecentSqlResultSections(text: string | undefined): number {
   const matches = text.match(/SQL Result\s+\d+/gi);
   if (matches && matches.length > 0) return matches.length;
   return 1;
+}
+
+export interface RuntimeMemoryContext {
+  patternContext?: string;
+  negativePatternContext?: string;
+  caseBackgroundContext?: string;
+}
+
+/**
+ * The cross-session memory an automatic prefetch puts into a prompt, the tier
+ * `allowAutomaticPrefetch` gates. Admitted pattern memory is public-run
+ * material that every run reads, a private one included; learned cases stay
+ * closed to a run whose selection carries private material.
+ */
+export function buildRuntimeMemoryContext(input: {
+  allowAutomaticPrefetch: boolean;
+  sceneType: string;
+  architectureType?: string;
+  packageName?: string;
+  knowledgeScope?: KnowledgeScope;
+  outputLanguage: OutputLanguage;
+  selection: AnalysisContextSelection;
+}): RuntimeMemoryContext {
+  if (!input.allowAutomaticPrefetch) return {};
+  const {sceneType, architectureType, knowledgeScope, outputLanguage} = input;
+  const features = extractTraceFeatures({architectureType, sceneType, packageName: input.packageName});
+  return {
+    patternContext: buildPatternContextSection(features, knowledgeScope),
+    negativePatternContext: buildNegativePatternSection(features, knowledgeScope),
+    caseBackgroundContext: buildRuntimeCaseBackgroundContext({sceneType, architectureType, knowledgeScope,
+      outputLanguage, privateAnalysisContext: analysisHasPrivateContext(input.selection)}),
+  };
 }
 
 export function buildQuickMemoryContextPayload(input: QuickMemoryContextInput): QuickMemoryContextPayload {

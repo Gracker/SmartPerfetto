@@ -112,17 +112,13 @@ import {
   type SessionFieldsForSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
 import { AgentMetricsCollector, persistSessionMetrics } from '../../../agentv3/agentMetrics';
-import {
-  extractTraceFeatures,
-  saveNegativePattern,
-  buildPatternContextSection,
-  buildNegativePatternSection,
-} from '../../../agentv3/analysisPatternMemory';
+import {extractTraceFeatures, saveNegativePattern} from '../../../agentv3/analysisPatternMemory';
 import {
   createCodeAwareStreamingTextProjection,
   sanitizeOwnerCodeAwareStructuredTextWithReceipt,
 } from '../../../services/security/codeAwareOutputRegistry';
 import {resolveAnalysisPrivateContext, analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -132,7 +128,6 @@ import {verifyConclusion, generateCorrectionPrompt} from './claudeVerifier';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import { backendLogPath } from '../../../runtimePaths';
 import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
-import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import {
@@ -147,6 +142,7 @@ import {
 import {
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
+  buildRuntimeMemoryContext,
   detectRunFocusApps,
 } from '../../runtimePromptContext';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
@@ -1874,7 +1870,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           plan: ctx.analysisPlan.current, hypotheses: ctx.hypotheses, sceneType,
           lightModel: runtimeConfig.lightModel, verifierTimeoutMs: runtimeConfig.verifierTimeoutMs,
           providerId: options.providerId, providerScope, outputLanguage, query,
-          allowPersistentLearning: !privateAnalysisContext,
           deliveryContext: projectedCandidate.deliveryContext,
         });
         executionLease.throwIfAborted();
@@ -2076,13 +2071,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         });
       }
 
-      // P1: Save negative patterns to long-term memory (fire-and-forget)
+      // P1: Save negative patterns to long-term memory (fire-and-forget), only
+      // under this run's durable-learning grant.
+      const durableLearning = resolveDurableLearningPermission(options);
       if (
-        !privateAnalysisContext &&
+        durableLearning &&
         failedApproaches.length > 0 &&
         fullFeatures.length > 0
       ) {
         saveNegativePattern(fullFeatures, failedApproaches, sceneType, ctx.architecture?.type, {
+          learning: durableLearning,
           knowledgeScope: knowledgeScopeFromAnalysisOptions(options),
         })
           .catch(err => console.warn('[ClaudeRuntime] Negative pattern save failed:', diagnosticLogIdentity((err as Error).message)));
@@ -2645,25 +2643,11 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     });
 
     // Phase 5.5: Pattern memory — match similar historical traces (P2-2)
-    const traceFeatures = extractTraceFeatures({
-      architectureType: architecture?.type,
-      sceneType,
-      packageName: effectivePackageName,
+    const {patternContext, negativePatternContext, caseBackgroundContext} = buildRuntimeMemoryContext({
+      allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      packageName: effectivePackageName, knowledgeScope, outputLanguage: runtimeConfig.outputLanguage,
+      selection: options,
     });
-    const privateAnalysisContext = analysisHasPrivateContext(options);
-    const patternContext = privateAnalysisContext || !turnPolicy.allowAutomaticPrefetch
-      ? undefined
-      : buildPatternContextSection(traceFeatures, knowledgeScope);
-    const negativePatternContext = privateAnalysisContext || !turnPolicy.allowAutomaticPrefetch
-      ? undefined
-      : buildNegativePatternSection(traceFeatures, knowledgeScope);
-    const caseBackgroundContext = turnPolicy.allowAutomaticPrefetch ? buildRuntimeCaseBackgroundContext({
-      sceneType,
-      architectureType: architecture?.type,
-      knowledgeScope,
-      outputLanguage: runtimeConfig.outputLanguage,
-      privateAnalysisContext,
-    }) : undefined;
 
     // Phase 6: Session-scoped artifact store + analysis notes
     const artifactStore = resolveRuntimeEvidenceStore(options, {sessionId, traceId},
@@ -2718,7 +2702,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     }
     let sqlErrors = this.sessionSqlErrors.get(sessionId);
     if (!sqlErrors) {
-      sqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope, options) : [];
+      sqlErrors = turnPolicy.allowAutomaticPrefetch ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
       this.sessionSqlErrors.set(sessionId, sqlErrors);
     }
 
@@ -2782,6 +2766,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       strategyRegistry,
       outputLanguage: runtimeConfig.outputLanguage,
       knowledgeScope,
+      durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,

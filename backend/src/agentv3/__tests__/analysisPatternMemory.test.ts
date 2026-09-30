@@ -127,17 +127,29 @@ import {
   saveNegativePattern,
   saveQuickPathPattern,
   matchQuickPatternsAsBackup,
-  promoteQuickPatternIfMatching,
   applyEffectiveFeedbackProjection,
   projectPatternFeedbackStatus,
   migrateLegacyPatternStatuses,
   sweepAutoConfirm,
   buildPatternContextSection,
   buildNegativePatternSection,
+  projectPatternBucketForExport,
   setSupersedeStoreForTesting,
 } from '../analysisPatternMemory';
 import { bucketPackageDomain } from '../../services/caseEvolution/domainBucket';
 import { canonicalContentHash } from '../../services/selfEvolution/canonicalJson';
+import {resolveDurableLearningPermission, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+
+// Stores seeded here hold entries a public run wrote under the admission rule
+// (the stamp as stored); the legacy cases below seed entries without it.
+const TEST_ADMISSION = {version: 1 as const, basis: 'public_run' as const, runId: 'run-public-learning', admittedAt: 1};
+const LEARNING = resolveDurableLearningPermission(
+  withDurableLearningPermission({runId: 'run-public-learning'}, NO_PRIVATE_CONTEXT))!;
+const ADMIT = {learning: LEARNING};
+function admitted<T extends object>(entries: T[]): T[] {
+  return entries.map(entry => ({learningAdmission: TEST_ADMISSION, ...entry}));
+}
 
 // ── Setup ────────────────────────────────────────────────────────────────
 
@@ -261,7 +273,7 @@ describe('matchPatterns', () => {
   });
 
   it('should match patterns with high similarity', () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-1',
       traceFeatures: ['arch:Standard', 'scene:scrolling', 'domain:google'],
       sceneType: 'scrolling',
@@ -269,7 +281,7 @@ describe('matchPatterns', () => {
       confidence: 0.8,
       createdAt: Date.now(), // Fresh — no decay
       matchCount: 0,
-    }];
+    }]);
 
     const matches = matchPatterns(['arch:Standard', 'scene:scrolling', 'domain:google']);
     expect(matches.length).toBe(1);
@@ -277,7 +289,7 @@ describe('matchPatterns', () => {
   });
 
   it('should not match patterns with low similarity', () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-1',
       traceFeatures: ['arch:Flutter', 'scene:startup'],
       sceneType: 'startup',
@@ -285,7 +297,7 @@ describe('matchPatterns', () => {
       confidence: 0.5,
       createdAt: Date.now(),
       matchCount: 0,
-    }];
+    }]);
 
     const matches = matchPatterns(['arch:Standard', 'scene:scrolling']);
     expect(matches).toHaveLength(0);
@@ -293,7 +305,7 @@ describe('matchPatterns', () => {
 
   it('should apply confidence decay to old patterns', () => {
     const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-old',
       traceFeatures: ['arch:Standard', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -301,7 +313,7 @@ describe('matchPatterns', () => {
       confidence: 0.8,
       createdAt: thirtyDaysAgo, // 30 days old → ~50% decay
       matchCount: 0,
-    }];
+    }]);
 
     const matches = matchPatterns(['arch:Standard', 'scene:scrolling']);
     if (matches.length > 0) {
@@ -312,7 +324,7 @@ describe('matchPatterns', () => {
 
   it('should boost frequently matched patterns', () => {
     const features = ['arch:Standard', 'scene:scrolling', 'domain:google'];
-    mockPatterns = [
+    mockPatterns = admitted([
       {
         id: 'pat-frequent',
         traceFeatures: features,
@@ -331,7 +343,7 @@ describe('matchPatterns', () => {
         createdAt: Date.now(),
         matchCount: 0, // Never matched
       },
-    ];
+    ]);
 
     const matches = matchPatterns(features);
     expect(matches.length).toBe(2);
@@ -357,7 +369,7 @@ describe('matchPatterns', () => {
 
   it('should filter expired patterns', () => {
     const seventyDaysAgo = Date.now() - 70 * 24 * 60 * 60 * 1000; // > 60-day TTL
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-expired',
       traceFeatures: ['arch:Standard', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -365,7 +377,7 @@ describe('matchPatterns', () => {
       confidence: 0.8,
       createdAt: seventyDaysAgo,
       matchCount: 0,
-    }];
+    }]);
 
     expect(matchPatterns(['arch:Standard', 'scene:scrolling'])).toHaveLength(0);
   });
@@ -375,7 +387,7 @@ describe('matchPatterns', () => {
 
 describe('matchNegativePatterns', () => {
   it('should match negative patterns', () => {
-    mockNegativePatterns = [{
+    mockNegativePatterns = admitted([{
       id: 'neg-1',
       traceFeatures: ['arch:Standard', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -386,7 +398,7 @@ describe('matchNegativePatterns', () => {
       }],
       createdAt: Date.now(),
       matchCount: 0,
-    }];
+    }]);
 
     const matches = matchNegativePatterns(['arch:Standard', 'scene:scrolling']);
     expect(matches.length).toBe(1);
@@ -395,14 +407,14 @@ describe('matchNegativePatterns', () => {
 
   it('should respect 90-day TTL for negative patterns', () => {
     const hundredDaysAgo = Date.now() - 100 * 24 * 60 * 60 * 1000;
-    mockNegativePatterns = [{
+    mockNegativePatterns = admitted([{
       id: 'neg-expired',
       traceFeatures: ['arch:Standard', 'scene:scrolling'],
       sceneType: 'scrolling',
       failedApproaches: [{ type: 'sql_error', approach: 'bad query', reason: 'syntax error' }],
       createdAt: hundredDaysAgo,
       matchCount: 0,
-    }];
+    }]);
 
     expect(matchNegativePatterns(['arch:Standard', 'scene:scrolling'])).toHaveLength(0);
   });
@@ -413,10 +425,10 @@ describe('matchNegativePatterns', () => {
 describe('saveAnalysisPattern', () => {
   it('should skip empty features or insights', async () => {
     const fs = require('fs');
-    await saveAnalysisPattern([], ['insight'], 'scrolling');
+    await saveAnalysisPattern([], ['insight'], 'scrolling', undefined, undefined, ADMIT);
     expect(fs.promises.writeFile).not.toHaveBeenCalled();
 
-    await saveAnalysisPattern(['arch:Standard'], [], 'scrolling');
+    await saveAnalysisPattern(['arch:Standard'], [], 'scrolling', undefined, undefined, ADMIT);
     expect(fs.promises.writeFile).not.toHaveBeenCalled();
   });
 
@@ -427,6 +439,7 @@ describe('saveAnalysisPattern', () => {
       'scrolling',
       'Standard',
       0.85,
+      ADMIT,
     );
     expect(mockPatterns.length).toBe(1);
     expect(mockPatterns[0].sceneType).toBe('scrolling');
@@ -435,7 +448,7 @@ describe('saveAnalysisPattern', () => {
   });
 
   it('should merge into existing pattern with >70% similarity', async () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-existing',
       traceFeatures: ['arch:Standard', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -443,12 +456,15 @@ describe('saveAnalysisPattern', () => {
       confidence: 0.7,
       createdAt: Date.now() - 1000,
       matchCount: 3,
-    }];
+    }]);
 
     await saveAnalysisPattern(
       ['arch:Standard', 'scene:scrolling'], // Same features → >70% similarity
       ['New insight'],
       'scrolling',
+      undefined,
+      undefined,
+      ADMIT,
     );
 
     expect(mockPatterns.length).toBe(1); // Merged, not duplicated
@@ -461,8 +477,8 @@ describe('saveAnalysisPattern', () => {
     const fs = require('fs');
 
     await Promise.all([
-      saveAnalysisPattern(['arch:STANDARD', 'scene:startup'], ['startup insight'], 'startup', 'STANDARD'),
-      saveAnalysisPattern(['arch:FLUTTER', 'scene:scrolling'], ['scrolling insight'], 'scrolling', 'FLUTTER'),
+      saveAnalysisPattern(['arch:STANDARD', 'scene:startup'], ['startup insight'], 'startup', 'STANDARD', undefined, ADMIT),
+      saveAnalysisPattern(['arch:FLUTTER', 'scene:scrolling'], ['scrolling insight'], 'scrolling', 'FLUTTER', undefined, ADMIT),
     ]);
 
     expect(mockPatterns.map(p => p.keyInsights[0]).sort()).toEqual([
@@ -479,7 +495,7 @@ describe('saveAnalysisPattern', () => {
   it('backs up corrupt positive store, logs an error, and falls back to last known good patterns', () => {
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const features = ['arch:STANDARD', 'scene:scrolling'];
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-good',
       traceFeatures: features,
       sceneType: 'scrolling',
@@ -488,7 +504,7 @@ describe('saveAnalysisPattern', () => {
       createdAt: Date.now(),
       matchCount: 0,
       status: 'confirmed',
-    }];
+    }]);
 
     expect(matchPatterns(features)).toHaveLength(1);
 
@@ -505,7 +521,7 @@ describe('saveAnalysisPattern', () => {
   it('keeps last known good patterns after a corrupt store is quarantined and then missing', () => {
     const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     const features = ['arch:STANDARD', 'scene:scrolling'];
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-good',
       traceFeatures: features,
       sceneType: 'scrolling',
@@ -514,7 +530,7 @@ describe('saveAnalysisPattern', () => {
       createdAt: Date.now(),
       matchCount: 0,
       status: 'confirmed',
-    }];
+    }]);
 
     expect(matchPatterns(features)).toHaveLength(1);
 
@@ -534,25 +550,29 @@ describe('saveNegativePattern', () => {
       ['arch:Flutter', 'scene:scrolling'],
       [{ type: 'tool_failure', approach: 'bad_skill', reason: 'not found' }],
       'scrolling',
+      undefined,
+      ADMIT,
     );
     expect(mockNegativePatterns.length).toBe(1);
     expect(mockNegativePatterns[0].failedApproaches).toHaveLength(1);
   });
 
   it('should merge approaches on duplicate', async () => {
-    mockNegativePatterns = [{
+    mockNegativePatterns = admitted([{
       id: 'neg-1',
       traceFeatures: ['arch:Flutter', 'scene:scrolling'],
       sceneType: 'scrolling',
       failedApproaches: [{ type: 'sql_error', approach: 'bad query 1', reason: 'syntax' }],
       createdAt: Date.now(),
       matchCount: 0,
-    }];
+    }]);
 
     await saveNegativePattern(
       ['arch:Flutter', 'scene:scrolling'],
       [{ type: 'tool_failure', approach: 'bad query 2', reason: 'timeout' }],
       'scrolling',
+      undefined,
+      ADMIT,
     );
 
     expect(mockNegativePatterns.length).toBe(1);
@@ -580,7 +600,7 @@ describe('buildPatternContextSection', () => {
   });
 
   it('should build markdown section with matched patterns', () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'pat-1',
       traceFeatures: ['arch:Standard', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -589,7 +609,7 @@ describe('buildPatternContextSection', () => {
       confidence: 0.8,
       createdAt: Date.now(),
       matchCount: 2,
-    }];
+    }]);
 
     const section = buildPatternContextSection(['arch:Standard', 'scene:scrolling']);
     expect(section).toBeDefined();
@@ -612,7 +632,7 @@ describe('buildNegativePatternSection', () => {
   });
 
   it('should build markdown with failed approaches', () => {
-    mockNegativePatterns = [{
+    mockNegativePatterns = admitted([{
       id: 'neg-1',
       traceFeatures: ['arch:Standard', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -624,7 +644,7 @@ describe('buildNegativePatternSection', () => {
       }],
       createdAt: Date.now(),
       matchCount: 0,
-    }];
+    }]);
 
     const section = buildNegativePatternSection(['arch:Standard', 'scene:scrolling']);
     expect(section).toBeDefined();
@@ -645,7 +665,7 @@ describe('buildNegativePatternSection', () => {
 
 describe('saveAnalysisPattern with extras', () => {
   it('defaults new entries to status=provisional', async () => {
-    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['root cause: jank'], 'scrolling', 'STANDARD');
+    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['root cause: jank'], 'scrolling', 'STANDARD', undefined, ADMIT);
     expect(mockPatterns).toHaveLength(1);
     expect(mockPatterns[0].status).toBe('provisional');
   });
@@ -657,7 +677,7 @@ describe('saveAnalysisPattern with extras', () => {
       'scrolling',
       'STANDARD',
       0.7,
-      { status: 'confirmed' },
+      { ...ADMIT, status: 'confirmed' },
     );
     expect(mockPatterns[0].status).toBe('confirmed');
   });
@@ -670,6 +690,7 @@ describe('saveAnalysisPattern with extras', () => {
       'STANDARD',
       undefined,
       {
+        ...ADMIT,
         failureModeHash: 'cafebabe12345678',
         bucketKey: 'scrolling::STANDARD::tencent',
         provenance: { sessionId: 's1', turnIndex: 0 },
@@ -681,10 +702,10 @@ describe('saveAnalysisPattern with extras', () => {
   });
 
   it('does not downgrade an already-confirmed entry on re-save', async () => {
-    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['v1'], 'scrolling', 'STANDARD', 0.7, { status: 'confirmed' });
+    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['v1'], 'scrolling', 'STANDARD', 0.7, { ...ADMIT, status: 'confirmed' });
     expect(mockPatterns[0].status).toBe('confirmed');
     // Re-save with overlapping features → triggers the merge branch.
-    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['v2'], 'scrolling', 'STANDARD');
+    await saveAnalysisPattern(['arch:STANDARD', 'scene:scrolling'], ['v2'], 'scrolling', 'STANDARD', undefined, ADMIT);
     expect(mockPatterns[0].status).toBe('confirmed');
   });
 });
@@ -705,7 +726,7 @@ describe('enterprise scope isolation', () => {
       'scrolling',
       'STANDARD',
       0.9,
-      {knowledgeScope: scopeA},
+      {...ADMIT, knowledgeScope: scopeA},
     );
     await saveAnalysisPattern(
       features,
@@ -713,7 +734,7 @@ describe('enterprise scope isolation', () => {
       'scrolling',
       'STANDARD',
       0.9,
-      {knowledgeScope: scopeB},
+      {...ADMIT, knowledgeScope: scopeB},
     );
 
     expect(mockPatterns).toHaveLength(2);
@@ -735,21 +756,21 @@ describe('enterprise scope isolation', () => {
       [{type: 'sql_error', approach: 'bad sql', reason: 'tenant-a'}],
       'scrolling',
       'STANDARD',
-      {knowledgeScope: scopeA},
+      {...ADMIT, knowledgeScope: scopeA},
     );
     await saveNegativePattern(
       features,
       [{type: 'sql_error', approach: 'bad sql', reason: 'tenant-b'}],
       'scrolling',
       'STANDARD',
-      {knowledgeScope: scopeB},
+      {...ADMIT, knowledgeScope: scopeB},
     );
     await saveQuickPathPattern(
       features,
       ['tenant-a quick'],
       'scrolling',
       'STANDARD',
-      {knowledgeScope: scopeA},
+      {...ADMIT, knowledgeScope: scopeA},
     );
 
     expect(matchNegativePatterns(features, scopeA)[0].failedApproaches[0].reason)
@@ -762,20 +783,20 @@ describe('enterprise scope isolation', () => {
 
 describe('matchPatterns status weighting', () => {
   it('drops entries with status=rejected', async () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'p1', traceFeatures: ['arch:STANDARD', 'scene:scrolling'],
       sceneType: 'scrolling', keyInsights: ['x'], confidence: 0.9,
       createdAt: Date.now(), matchCount: 5, status: 'rejected',
-    }];
+    }]);
     expect(matchPatterns(['arch:STANDARD', 'scene:scrolling'])).toEqual([]);
   });
 
   it('confirmed entries score higher than provisional for same features', async () => {
     const now = Date.now();
-    mockPatterns = [
+    mockPatterns = admitted([
       { id: 'p_conf', traceFeatures: ['arch:STANDARD', 'scene:scrolling'], sceneType: 'scrolling', keyInsights: ['a'], confidence: 0.9, createdAt: now, matchCount: 0, status: 'confirmed' },
       { id: 'p_prov', traceFeatures: ['arch:STANDARD', 'scene:scrolling'], sceneType: 'scrolling', keyInsights: ['b'], confidence: 0.9, createdAt: now, matchCount: 0, status: 'provisional' },
-    ];
+    ]);
     const matches = matchPatterns(['arch:STANDARD', 'scene:scrolling']);
     expect(matches[0].id).toBe('p_conf');
     expect(matches[1].id).toBe('p_prov');
@@ -783,10 +804,10 @@ describe('matchPatterns status weighting', () => {
   });
 
   it('legacy entries (no status field) behave as confirmed', async () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'legacy', traceFeatures: ['arch:STANDARD', 'scene:scrolling'],
       sceneType: 'scrolling', keyInsights: ['x'], confidence: 0.7, createdAt: Date.now(), matchCount: 0,
-    }];
+    }]);
     const matches = matchPatterns(['arch:STANDARD', 'scene:scrolling']);
     expect(matches.length).toBe(1);
     // Legacy gets full status weight (1.0) — score should be similar to a confirmed entry.
@@ -796,14 +817,14 @@ describe('matchPatterns status weighting', () => {
 
 describe('quick-path bucket', () => {
   it('saves and retrieves quick-path entries', async () => {
-    await saveQuickPathPattern(['arch:FLUTTER', 'scene:scrolling'], ['quick insight'], 'scrolling', 'FLUTTER');
+    await saveQuickPathPattern(['arch:FLUTTER', 'scene:scrolling'], ['quick insight'], 'scrolling', 'FLUTTER', ADMIT);
     expect(mockQuickPatterns).toHaveLength(1);
     const matches = matchQuickPatternsAsBackup(['arch:FLUTTER', 'scene:scrolling']);
     expect(matches.length).toBe(1);
   });
 
   it('injects quick-path matches into the prompt when full-path memory has no match', () => {
-    mockQuickPatterns = [{
+    mockQuickPatterns = admitted([{
       id: 'quick',
       traceFeatures: ['arch:FLUTTER', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -812,7 +833,7 @@ describe('quick-path bucket', () => {
       createdAt: Date.now(),
       matchCount: 0,
       status: 'confirmed',
-    }];
+    }]);
 
     const section = buildPatternContextSection(['arch:FLUTTER', 'scene:scrolling']);
 
@@ -822,7 +843,7 @@ describe('quick-path bucket', () => {
   });
 
   it('does not read quick-path fallback when full-path memory already matches', () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'long',
       traceFeatures: ['arch:FLUTTER', 'scene:scrolling'],
       sceneType: 'scrolling',
@@ -831,7 +852,7 @@ describe('quick-path bucket', () => {
       createdAt: Date.now(),
       matchCount: 0,
       status: 'confirmed',
-    }];
+    }]);
     mockQuickPatternFileRaw = '{not valid json';
 
     const section = buildPatternContextSection(['arch:FLUTTER', 'scene:scrolling']);
@@ -843,101 +864,20 @@ describe('quick-path bucket', () => {
 
   it('quick-path matches score lower than long-term confirmed for same features', async () => {
     const now = Date.now();
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'long', traceFeatures: ['arch:FLUTTER', 'scene:scrolling'],
       sceneType: 'scrolling', keyInsights: ['l'], confidence: 0.9, createdAt: now, matchCount: 0, status: 'confirmed',
-    }];
-    mockQuickPatterns = [{
+    }]);
+    mockQuickPatterns = admitted([{
       id: 'quick', traceFeatures: ['arch:FLUTTER', 'scene:scrolling'],
       sceneType: 'scrolling', keyInsights: ['q'], confidence: 0.3, createdAt: now, matchCount: 0, status: 'confirmed',
-    }];
+    }]);
     const longMatch = matchPatterns(['arch:FLUTTER', 'scene:scrolling'])[0];
     const quickMatch = matchQuickPatternsAsBackup(['arch:FLUTTER', 'scene:scrolling'])[0];
     expect(longMatch.score).toBeGreaterThan(quickMatch.score);
   });
 });
 
-describe('promoteQuickPatternIfMatching', () => {
-  const features = ['arch:FLUTTER', 'scene:scrolling'];
-
-  it('returns false when verifierPassed is false', async () => {
-    mockQuickPatterns = [{
-      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['root cause: jank'],
-      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
-    }];
-    const promoted = await promoteQuickPatternIfMatching({
-      fullPathFeatures: features,
-      fullPathInsights: ['root cause: jank'],
-      sceneType: 'scrolling',
-      architectureType: 'FLUTTER',
-      verifierPassed: false,
-    });
-    expect(promoted).toBe(false);
-    expect(mockPatterns).toHaveLength(0);
-  });
-
-  it('promotes when similarity ≥0.65 and at least one insight overlaps', async () => {
-    mockQuickPatterns = [{
-      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['root cause: dropped frames'],
-      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
-    }];
-    const promoted = await promoteQuickPatternIfMatching({
-      fullPathFeatures: features,
-      fullPathInsights: ['root cause: dropped frames', 'extra detail'],
-      sceneType: 'scrolling',
-      architectureType: 'FLUTTER',
-      verifierPassed: true,
-    });
-    expect(promoted).toBe(true);
-    expect(mockPatterns).toHaveLength(1);
-    expect(mockPatterns[0].status).toBe('confirmed');
-  });
-
-  it('refuses to promote when no insight overlaps', async () => {
-    mockQuickPatterns = [{
-      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['something unrelated'],
-      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
-    }];
-    const promoted = await promoteQuickPatternIfMatching({
-      fullPathFeatures: features,
-      fullPathInsights: ['totally different insight'],
-      sceneType: 'scrolling',
-      architectureType: 'FLUTTER',
-      verifierPassed: true,
-    });
-    expect(promoted).toBe(false);
-  });
-
-  it('refuses to promote when scene/arch differ', async () => {
-    mockQuickPatterns = [{
-      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['x'],
-      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'provisional',
-    }];
-    const promoted = await promoteQuickPatternIfMatching({
-      fullPathFeatures: features,
-      fullPathInsights: ['x'],
-      sceneType: 'startup', // mismatch
-      architectureType: 'FLUTTER',
-      verifierPassed: true,
-    });
-    expect(promoted).toBe(false);
-  });
-
-  it('refuses to promote rejected/disputed quick entries', async () => {
-    mockQuickPatterns = [{
-      id: 'q1', traceFeatures: features, sceneType: 'scrolling', keyInsights: ['x'],
-      architectureType: 'FLUTTER', confidence: 0.5, createdAt: Date.now(), matchCount: 0, status: 'rejected',
-    }];
-    const promoted = await promoteQuickPatternIfMatching({
-      fullPathFeatures: features,
-      fullPathInsights: ['x'],
-      sceneType: 'scrolling',
-      architectureType: 'FLUTTER',
-      verifierPassed: true,
-    });
-    expect(promoted).toBe(false);
-  });
-});
 
 describe('FeedbackEvent pattern projection', () => {
   const feedbackScope = {
@@ -986,7 +926,7 @@ describe('FeedbackEvent pattern projection', () => {
   });
 
   it('projects positive feedback without overwriting intrinsic state', async () => {
-    mockPatterns = [{ ...baseEntry, status: 'provisional', createdAt: Date.now() }];
+    mockPatterns = admitted([{ ...baseEntry, status: 'provisional', createdAt: Date.now() }]);
     const status = await applyEffectiveFeedbackProjection(
       'p1',
       [feedback('positive', 1)],
@@ -1001,7 +941,7 @@ describe('FeedbackEvent pattern projection', () => {
   });
 
   it('retraction returns effective status to the frozen intrinsic state', async () => {
-    mockPatterns = [{ ...baseEntry, status: 'provisional', createdAt: Date.now() }];
+    mockPatterns = admitted([{ ...baseEntry, status: 'provisional', createdAt: Date.now() }]);
     await applyEffectiveFeedbackProjection(
       'p1',
       [feedback('negative', 1)],
@@ -1037,7 +977,7 @@ describe('FeedbackEvent pattern projection', () => {
   });
 
   it('finds patterns across positive / quick / negative buckets', async () => {
-    mockQuickPatterns = [{ ...baseEntry, id: 'q1', status: 'provisional', createdAt: Date.now() }];
+    mockQuickPatterns = admitted([{ ...baseEntry, id: 'q1', status: 'provisional', createdAt: Date.now() }]);
     const row = {...feedback('positive', 1), targetId: 'q1', patternId: 'q1'};
     const status = await applyEffectiveFeedbackProjection(
       'q1',
@@ -1049,7 +989,7 @@ describe('FeedbackEvent pattern projection', () => {
   });
 
   it('does not mutate a matching id owned by another tenant', async () => {
-    mockPatterns = [{...baseEntry, status: 'provisional', createdAt: Date.now()}];
+    mockPatterns = admitted([{...baseEntry, status: 'provisional', createdAt: Date.now()}]);
     const status = await applyEffectiveFeedbackProjection(
       'p1',
       [feedback('negative', 1)],
@@ -1067,12 +1007,12 @@ describe('FeedbackEvent pattern projection', () => {
 describe('sweepAutoConfirm', () => {
   it('promotes provisional entries past the 24h window to confirmed', async () => {
     const now = 1_700_000_000_000;
-    mockPatterns = [
+    mockPatterns = admitted([
       { id: 'old', traceFeatures: ['x'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
         createdAt: now - 2 * 24 * 60 * 60 * 1000, matchCount: 0, status: 'provisional' },
       { id: 'fresh', traceFeatures: ['y'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
         createdAt: now - 60 * 1000, matchCount: 0, status: 'provisional' },
-    ];
+    ]);
     await sweepAutoConfirm(now);
     const old = mockPatterns.find(p => p.id === 'old');
     const fresh = mockPatterns.find(p => p.id === 'fresh');
@@ -1082,12 +1022,12 @@ describe('sweepAutoConfirm', () => {
 
   it('does not touch confirmed/rejected entries', async () => {
     const now = 1_700_000_000_000;
-    mockPatterns = [
+    mockPatterns = admitted([
       { id: 'conf', traceFeatures: ['x'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
         createdAt: now - 2 * 24 * 60 * 60 * 1000, matchCount: 0, status: 'confirmed' },
       { id: 'rej', traceFeatures: ['x'], sceneType: 's', keyInsights: ['i'], confidence: 0.5,
         createdAt: now - 2 * 24 * 60 * 60 * 1000, matchCount: 0, status: 'rejected' },
-    ];
+    ]);
     await sweepAutoConfirm(now);
     expect(mockPatterns.find(p => p.id === 'conf').status).toBe('confirmed');
     expect(mockPatterns.find(p => p.id === 'rej').status).toBe('rejected');
@@ -1098,22 +1038,22 @@ describe('sweepAutoConfirm', () => {
     const now = 1_700_000_000_000;
     const old = now - 2 * 24 * 60 * 60 * 1000;
     const scopeA = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
-    mockPatterns = [
+    mockPatterns = admitted([
       { id: 'pos-a', traceFeatures: ['x'], sceneType: 's', keyInsights: ['a'], confidence: 0.5,
         createdAt: old, matchCount: 0, status: 'provisional',
         provenance: {sourceTenantId: 'tenant-a', sourceWorkspaceId: 'workspace-a'} },
       { id: 'pos-b', traceFeatures: ['x'], sceneType: 's', keyInsights: ['b'], confidence: 0.5,
         createdAt: old, matchCount: 0, status: 'provisional',
         provenance: {sourceTenantId: 'tenant-b', sourceWorkspaceId: 'workspace-b'} },
-    ];
-    mockNegativePatterns = [
+    ]);
+    mockNegativePatterns = admitted([
       { id: 'neg-a', traceFeatures: ['x'], sceneType: 's', failedApproaches: [],
         createdAt: old, matchCount: 0, status: 'provisional',
         provenance: {sourceTenantId: 'tenant-a', sourceWorkspaceId: 'workspace-a'} },
       { id: 'neg-b', traceFeatures: ['x'], sceneType: 's', failedApproaches: [],
         createdAt: old, matchCount: 0, status: 'provisional',
         provenance: {sourceTenantId: 'tenant-b', sourceWorkspaceId: 'workspace-b'} },
-    ];
+    ]);
 
     const result = await sweepAutoConfirm(now, scopeA);
 
@@ -1131,7 +1071,7 @@ describe('sweepAutoConfirm', () => {
 
 describe('legacy pattern status migration', () => {
   it('freezes each legacy effective status exactly once', async () => {
-    mockPatterns = [{
+    mockPatterns = admitted([{
       id: 'legacy-positive',
       traceFeatures: ['x'],
       sceneType: 'scrolling',
@@ -1140,8 +1080,8 @@ describe('legacy pattern status migration', () => {
       createdAt: Date.now(),
       matchCount: 0,
       status: 'rejected',
-    }];
-    mockQuickPatterns = [{
+    }]);
+    mockQuickPatterns = admitted([{
       id: 'legacy-quick',
       traceFeatures: ['y'],
       sceneType: 'scrolling',
@@ -1149,7 +1089,7 @@ describe('legacy pattern status migration', () => {
       confidence: 0.3,
       createdAt: Date.now(),
       matchCount: 0,
-    }];
+    }]);
 
     const first = await migrateLegacyPatternStatuses();
     const second = await migrateLegacyPatternStatuses();
@@ -1203,5 +1143,94 @@ describe('startPatternMemoryAutoConfirmSweep', () => {
 
     handle.stop();
     expect(clearIntervalFn).toHaveBeenCalledWith(timer);
+  });
+});
+
+describe('learning admission', () => {
+  const features = ['arch:STANDARD', 'scene:scrolling'];
+  const entry = (id: string, extra: object = {}) => ({
+    id, traceFeatures: features, sceneType: 'scrolling', keyInsights: [`${id} LEGACY_CANARY`],
+    architectureType: 'STANDARD', confidence: 0.9, createdAt: Date.now() - 60_000, matchCount: 3,
+    status: 'confirmed', ...extra,
+  });
+
+  it('never reads an entry without an admission stamp', () => {
+    mockPatterns = [entry('pat-legacy')];
+    mockNegativePatterns = [{id: 'neg-legacy', traceFeatures: features, sceneType: 'scrolling',
+      failedApproaches: [{type: 'sql_error', approach: 'LEGACY_CANARY', reason: 'syntax'}],
+      createdAt: Date.now() - 60_000, matchCount: 3, status: 'confirmed'}];
+    mockQuickPatterns = [entry('qp-legacy')];
+
+    expect(matchPatterns(features)).toEqual([]);
+    expect(matchNegativePatterns(features)).toEqual([]);
+    expect(matchQuickPatternsAsBackup(features)).toEqual([]);
+    expect(buildPatternContextSection(features)).toBeUndefined();
+    expect(buildNegativePatternSection(features)).toBeUndefined();
+  });
+
+  it('never merges a new observation into an unadmitted entry', async () => {
+    const legacyCreatedAt = Date.now() - 60_000;
+    mockPatterns = [entry('pat-legacy', {createdAt: legacyCreatedAt})];
+
+    await saveAnalysisPattern(features, ['fresh insight'], 'scrolling', 'STANDARD', 0.8, ADMIT);
+
+    expect(mockPatterns).toHaveLength(2);
+    expect(mockPatterns.find(pattern => pattern.id === 'pat-legacy')).toMatchObject({
+      keyInsights: ['pat-legacy LEGACY_CANARY'], createdAt: legacyCreatedAt, matchCount: 3,
+    });
+    expect(matchPatterns(features).map(pattern => pattern.keyInsights)).toEqual([['fresh insight']]);
+  });
+
+  it('evicts unadmitted entries first once a bucket is full', async () => {
+    const now = Date.now();
+    mockPatterns = [
+      entry('pat-legacy', {createdAt: now, matchCount: 50}),
+      ...admitted(Array.from({length: 199}, (_, index) => entry(`pat-${index}`, {
+        traceFeatures: [`arch:A${index}`, `scene:S${index}`], matchCount: 0,
+      }))),
+    ];
+
+    await saveAnalysisPattern(['arch:NEW', 'scene:NEW'], ['new insight'], 'NEW', 'NEW', 0.8, ADMIT);
+
+    expect(mockPatterns).toHaveLength(200);
+    expect(mockPatterns.some(pattern => pattern.id === 'pat-legacy')).toBe(false);
+    expect(mockPatterns.some(pattern => pattern.keyInsights.includes('new insight'))).toBe(true);
+  });
+
+  it('saves nothing without a valid admission', async () => {
+    const fs = require('fs');
+    fs.promises.writeFile.mockClear();
+
+    await saveAnalysisPattern(features, ['insight'], 'scrolling', 'STANDARD', 0.8, {} as never);
+    // A forged grant, or a copy of an issued one, stamps nothing.
+    await saveNegativePattern(features, [{type: 'sql_error', approach: 'a', reason: 'b'}], 'scrolling', 'STANDARD',
+      {learning: {runId: 'run-public-learning'} as never});
+    await saveQuickPathPattern(features, ['insight'], 'scrolling', 'STANDARD', {learning: {...LEARNING}});
+
+    expect(fs.promises.writeFile).not.toHaveBeenCalled();
+    expect([mockPatterns, mockNegativePatterns, mockQuickPatterns]).toEqual([[], [], []]);
+  });
+
+  it('stamps what it saves with the learning run', async () => {
+    await saveAnalysisPattern(features, ['insight'], 'scrolling', 'STANDARD', 0.8, ADMIT);
+    await saveNegativePattern(features, [{type: 'sql_error', approach: 'a', reason: 'b'}], 'scrolling', 'STANDARD', ADMIT);
+    await saveQuickPathPattern(features, ['insight'], 'scrolling', 'STANDARD', ADMIT);
+
+    for (const bucket of [mockPatterns, mockNegativePatterns, mockQuickPatterns]) {
+      expect(bucket).toEqual([expect.objectContaining({learningAdmission: {version: 1, basis: 'public_run',
+        runId: 'run-public-learning', admittedAt: expect.any(Number)}})]);
+    }
+  });
+
+  it('exports only the admitted entries of a pattern bucket', () => {
+    const envelope = {schemaVersion: 1, kind: 'analysis_pattern_bucket', externalId: 'positive',
+      record: [entry('pat-legacy'), ...admitted([entry('pat-public')])]};
+
+    expect(projectPatternBucketForExport(envelope)).toEqual({...envelope,
+      record: [expect.objectContaining({id: 'pat-public'})]});
+    // A bucket in any other shape carries nothing.
+    for (const record of [{entries: envelope.record}, null, 'entries', undefined]) {
+      expect(projectPatternBucketForExport({...envelope, record})).toBeUndefined();
+    }
   });
 });

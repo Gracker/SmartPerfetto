@@ -14,6 +14,7 @@ import type {AnalysisRecoveryKind, AnalysisMissingReportSection} from '../types/
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
 import type {RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {ReadonlyStrategyRegistrySnapshot} from '../services/selfEvolution/effectiveRuntimeRegistryContext';
+import type {LearningAdmission} from '../services/security/durableLearning';
 
 // =============================================================================
 // Query Complexity Classification
@@ -626,6 +627,8 @@ export interface AnalysisPatternEntry {
   lastFeedbackAt?: number;
   /** Provenance fields tying this entry to the originating run. */
   provenance?: PatternProvenance;
+  /** Proof that a public run wrote it; an entry without one is never read or merged into. */
+  learningAdmission?: LearningAdmission;
   /**
    * Bucket key for quota-fair eviction. Format depends on bucket type:
    * positive = `${sceneType}::${archType}::${domainHash}`,
@@ -660,6 +663,8 @@ export interface NegativePatternEntry {
   lastFeedbackAt?: number;
   /** Provenance fields tying this entry to the originating run. */
   provenance?: PatternProvenance;
+  /** See AnalysisPatternEntry.learningAdmission. */
+  learningAdmission?: LearningAdmission;
   /** Bucket key for quota-fair eviction (negative form: scene::arch::failureModeHash). */
   bucketKey?: string;
 }

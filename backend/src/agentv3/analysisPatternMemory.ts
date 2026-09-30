@@ -17,6 +17,8 @@
  * Storage: backend/logs/analysis_patterns.json (200 entry max, 60-day TTL)
  * Negative: backend/logs/analysis_negative_patterns.json (100 entry max, 90-day TTL)
  * Matching: Weighted Jaccard similarity on trace features
+ * Admission: only entries a proven-public run wrote are read or merged into
+ * (services/security/durableLearning.ts).
  */
 
 import * as fs from 'fs';
@@ -48,6 +50,11 @@ import {
   resolveKnowledgeScope,
 } from '../services/scopedKnowledgeStore';
 import {withFilesystemRegistryLockAsync} from '../services/filesystemRegistryLock';
+import {
+  admitLearnedEntry,
+  isAdmittedLearning,
+  type DurableLearningPermission,
+} from '../services/security/durableLearning';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import {
@@ -57,7 +64,7 @@ import {
 import { bucketPackageDomain } from '../services/caseEvolution/domainBucket';
 import type {EffectiveFeedbackV1} from '../types/selfEvolution';
 
-const PATTERN_BUCKET_KNOWLEDGE_KIND = 'analysis_pattern_bucket';
+export const PATTERN_BUCKET_KNOWLEDGE_KIND = 'analysis_pattern_bucket';
 const PATTERN_BUCKET_ROW_SCOPE_PREFIX = 'pattern-memory:';
 const MAX_PATTERNS = 200;
 const MAX_NEGATIVE_PATTERNS = 100;
@@ -418,12 +425,10 @@ export function resetSupersedeHandlesForTesting(): void {
   supersedeWriteHandle = undefined;
 }
 
-/**
- * Optional metadata that callers (claudeRuntime, review agent, feedback path)
- * attach to new pattern entries. Every field is optional so existing
- * positional-argument callers keep working unchanged.
- */
+/** Metadata a save stores with the entry it writes. */
 export interface PatternSaveExtras {
+  /** The writing run's durable-learning grant; nothing is saved without one. */
+  learning: DurableLearningPermission;
   /** Defaults to 'provisional' on save. */
   status?: PatternStatus;
   failureModeHash?: string;
@@ -582,14 +587,53 @@ async function mutatePatternBucket<T, TResult>(
   });
 }
 
-/** Load patterns from the authoritative migration surface. */
-function loadPatterns(scope?: KnowledgeScope): AnalysisPatternEntry[] {
-  return loadPatternBucket(POSITIVE_PATTERN_BUCKET, scope);
+/**
+ * A pattern bucket row for tenant export. The bucket holds entries of many
+ * runs, and only an admitted entry proves a public run wrote it, so the row
+ * carries its admitted entries whichever run wrote it last; a bucket in any
+ * other shape carries nothing.
+ */
+export function projectPatternBucketForExport(envelope: {record?: unknown}): Record<string, unknown> | undefined {
+  const {record} = envelope;
+  return Array.isArray(record) ? {...envelope, record: record.filter(isAdmittedLearning)} : undefined;
 }
 
-/** Load negative patterns from the authoritative migration surface. */
+/** Every read of learned entries: an entry without an admission is never read. */
+function loadAdmittedPatternBucket<T>(spec: PatternBucketSpec<T>, scope?: KnowledgeScope): T[] {
+  return loadPatternBucket(spec, scope).filter(isAdmittedLearning);
+}
+
+/**
+ * Every save of a learned entry. `save` sees only admitted entries, so a new
+ * observation never merges into an unadmitted one; the bucket then keeps its
+ * live entries within capacity, evicting unadmitted ones first (P1-G10:
+ * frequency-aware eviction within each group).
+ */
+async function saveAdmittedPatternEntry<T extends {createdAt: number; matchCount: number}>(
+  spec: PatternBucketSpec<T>,
+  scope: KnowledgeScope | undefined,
+  limits: {now: number; ttlMs: number; maxEntries: number},
+  save: (admitted: T[]) => void,
+): Promise<void> {
+  await mutatePatternBucket(spec, scope, entries => {
+    const admitted = entries.filter(isAdmittedLearning);
+    save(admitted);
+    const live = (group: T[]) => group
+      .filter(entry => entry.createdAt >= limits.now - limits.ttlMs)
+      .sort((a, b) => evictionScore(b) - evictionScore(a));
+    const unadmitted = entries.filter(entry => !isAdmittedLearning(entry));
+    return {entries: [...live(admitted), ...live(unadmitted)].slice(0, limits.maxEntries), result: undefined};
+  });
+}
+
+/** Load the admitted patterns from the authoritative migration surface. */
+function loadPatterns(scope?: KnowledgeScope): AnalysisPatternEntry[] {
+  return loadAdmittedPatternBucket(POSITIVE_PATTERN_BUCKET, scope);
+}
+
+/** Load the admitted negative patterns from the authoritative migration surface. */
 function loadNegativePatterns(scope?: KnowledgeScope): NegativePatternEntry[] {
-  return loadPatternBucket(NEGATIVE_PATTERN_BUCKET, scope);
+  return loadAdmittedPatternBucket(NEGATIVE_PATTERN_BUCKET, scope);
 }
 
 /**
@@ -686,28 +730,26 @@ export async function saveAnalysisPattern(
   features: string[],
   insights: string[],
   sceneType: string,
-  architectureType?: string,
-  confidence?: number,
-  extras: PatternSaveExtras = {},
+  architectureType: string | undefined,
+  confidence: number | undefined,
+  extras: PatternSaveExtras,
 ): Promise<void> {
-  if (features.length === 0 || insights.length === 0) return;
-
   const now = Date.now();
+  const learningAdmission = admitLearnedEntry(extras.learning, now);
+  if (features.length === 0 || insights.length === 0 || !learningAdmission) return;
+
   const id = `pat-${now}-${Math.random().toString(36).substring(2, 6)}`;
   const provenance = withKnowledgeScopeProvenance(
     extras.provenance,
     extras.knowledgeScope,
   );
-  await mutatePatternBucket(POSITIVE_PATTERN_BUCKET, extras.knowledgeScope, patterns => {
-
+  await saveAdmittedPatternEntry(POSITIVE_PATTERN_BUCKET, extras.knowledgeScope,
+    {now, ttlMs: PATTERN_TTL_MS, maxEntries: MAX_PATTERNS}, patterns => {
     // Deduplicate: check if a very similar pattern already exists (>70% similarity)
-    const existingIdx = patterns.findIndex(
-      p => weightedJaccardSimilarity(p.traceFeatures, features) > 0.7,
-    );
+    const existing = patterns.find(p => weightedJaccardSimilarity(p.traceFeatures, features) > 0.7);
 
-    if (existingIdx >= 0) {
+    if (existing) {
       // Update existing pattern: merge insights, bump match count
-      const existing = patterns[existingIdx];
       freezeLegacyPatternStatus(existing);
       const uniqueInsights = new Set([...existing.keyInsights, ...insights]);
       existing.keyInsights = Array.from(uniqueInsights).slice(0, 10);
@@ -735,17 +777,9 @@ export async function saveAnalysisPattern(
         failureModeHash: extras.failureModeHash,
         bucketKey: extras.bucketKey,
         provenance,
+        learningAdmission,
       });
     }
-
-    // Prune expired + enforce max size (P1-G10: frequency-aware eviction)
-    const cutoff = now - PATTERN_TTL_MS;
-    const active = patterns
-      .filter(p => p.createdAt >= cutoff)
-      .sort((a, b) => evictionScore(b) - evictionScore(a))
-      .slice(0, MAX_PATTERNS);
-
-    return {entries: active, result: undefined};
   });
 }
 
@@ -757,10 +791,12 @@ export async function saveNegativePattern(
   features: string[],
   failedApproaches: FailedApproach[],
   sceneType: string,
-  architectureType?: string,
-  extras: PatternSaveExtras = {},
+  architectureType: string | undefined,
+  extras: PatternSaveExtras,
 ): Promise<void> {
-  if (features.length === 0 || failedApproaches.length === 0) return;
+  const now = Date.now();
+  const learningAdmission = admitLearnedEntry(extras.learning, now);
+  if (features.length === 0 || failedApproaches.length === 0 || !learningAdmission) return;
 
   // Recurrence detection: a fresh negative on a hash that's currently being
   // canary-watched means the alleged fix didn't work. Fire-and-forget.
@@ -768,21 +804,17 @@ export async function saveNegativePattern(
     checkAndRecordRecurrence(extras.failureModeHash);
   }
 
-  const now = Date.now();
   const id = `neg-${now}-${Math.random().toString(36).substring(2, 6)}`;
   const provenance = withKnowledgeScopeProvenance(
     extras.provenance,
     extras.knowledgeScope,
   );
-  await mutatePatternBucket(NEGATIVE_PATTERN_BUCKET, extras.knowledgeScope, patterns => {
-
+  await saveAdmittedPatternEntry(NEGATIVE_PATTERN_BUCKET, extras.knowledgeScope,
+    {now, ttlMs: NEGATIVE_PATTERN_TTL_MS, maxEntries: MAX_NEGATIVE_PATTERNS}, patterns => {
     // Deduplicate: merge into existing pattern if >70% similar
-    const existingIdx = patterns.findIndex(
-      p => weightedJaccardSimilarity(p.traceFeatures, features) > 0.7,
-    );
+    const existing = patterns.find(p => weightedJaccardSimilarity(p.traceFeatures, features) > 0.7);
 
-    if (existingIdx >= 0) {
-      const existing = patterns[existingIdx];
+    if (existing) {
       freezeLegacyPatternStatus(existing);
       const existingKeys = new Set(existing.failedApproaches.map(a => `${a.type}:${a.approach}`));
       for (const approach of failedApproaches) {
@@ -813,17 +845,9 @@ export async function saveNegativePattern(
         failureModeHash: extras.failureModeHash,
         bucketKey: extras.bucketKey,
         provenance,
+        learningAdmission,
       });
     }
-
-    // Prune expired + enforce max size (P1-G10: frequency-aware eviction)
-    const cutoff = now - NEGATIVE_PATTERN_TTL_MS;
-    const active = patterns
-      .filter(p => p.createdAt >= cutoff)
-      .sort((a, b) => evictionScore(b) - evictionScore(a))
-      .slice(0, MAX_NEGATIVE_PATTERNS);
-
-    return {entries: active, result: undefined};
   });
 }
 
@@ -940,9 +964,9 @@ export function checkAndRecordRecurrence(failureModeHash: string | undefined): v
 // Quick-path bucket — short TTL fallback memory for analyzeQuick() runs
 // =============================================================================
 
-/** Load entries from the 7-day quick-path bucket. */
+/** Load the admitted entries from the 7-day quick-path bucket. */
 function loadQuickPatterns(scope?: KnowledgeScope): AnalysisPatternEntry[] {
-  return loadPatternBucket(QUICK_PATTERN_BUCKET, scope);
+  return loadAdmittedPatternBucket(QUICK_PATTERN_BUCKET, scope);
 }
 
 /**
@@ -955,18 +979,20 @@ export async function saveQuickPathPattern(
   features: string[],
   insights: string[],
   sceneType: string,
-  architectureType?: string,
-  extras: PatternSaveExtras = {},
+  architectureType: string | undefined,
+  extras: PatternSaveExtras,
 ): Promise<void> {
-  if (features.length === 0 || insights.length === 0) return;
-
   const now = Date.now();
+  const learningAdmission = admitLearnedEntry(extras.learning, now);
+  if (features.length === 0 || insights.length === 0 || !learningAdmission) return;
+
   const id = `qp-${now}-${Math.random().toString(36).substring(2, 6)}`;
   const provenance = withKnowledgeScopeProvenance(
     extras.provenance,
     extras.knowledgeScope,
   );
-  await mutatePatternBucket(QUICK_PATTERN_BUCKET, extras.knowledgeScope, patterns => {
+  await saveAdmittedPatternEntry(QUICK_PATTERN_BUCKET, extras.knowledgeScope,
+    {now, ttlMs: QUICK_PATTERN_TTL_MS, maxEntries: MAX_QUICK_PATTERNS}, patterns => {
     patterns.push({
       id,
       traceFeatures: features,
@@ -982,15 +1008,8 @@ export async function saveQuickPathPattern(
       failureModeHash: extras.failureModeHash,
       bucketKey: extras.bucketKey,
       provenance,
+      learningAdmission,
     });
-
-    const cutoff = now - QUICK_PATTERN_TTL_MS;
-    const active = patterns
-      .filter(p => p.createdAt >= cutoff)
-      .sort((a, b) => evictionScore(b) - evictionScore(a))
-      .slice(0, MAX_QUICK_PATTERNS);
-
-    return {entries: active, result: undefined};
   });
 }
 
@@ -1018,68 +1037,6 @@ export function matchQuickPatternsAsBackup(
     .filter(p => p.score >= MIN_MATCH_SCORE * QUICK_BUCKET_WEIGHT)
     .sort((a, b) => b.score - a.score)
     .slice(0, MAX_MATCHED_PATTERNS);
-}
-
-/**
- * Promote a quick-path pattern to long-term memory once a full-path run
- * verifies the same features with the same scene/arch/domain and at least
- * one matching insight category. Returns true on promotion.
- *
- * Implements the six-criterion judgement from §6 of the design doc:
- *   1. same sceneType + archType + domain
- *   2. weighted Jaccard similarity ≥ 0.65
- *   3. full-path verifier passed (caller's responsibility — pass `true`)
- *   4. at least one matching insight or finding category
- *   5. quick pattern has no rejected/disputed status
- *   6. (caller may also gate on full packageName equality as bonus)
- */
-export async function promoteQuickPatternIfMatching(input: {
-  fullPathFeatures: string[];
-  fullPathInsights: string[];
-  sceneType: string;
-  architectureType?: string;
-  verifierPassed: boolean;
-  knowledgeScope?: KnowledgeScope;
-}): Promise<boolean> {
-  if (!input.verifierPassed) return false;
-  const candidates = loadQuickPatterns(input.knowledgeScope);
-  const winner = candidates
-    .filter(p => patternMatchesKnowledgeScope(p, input.knowledgeScope))
-    .filter(p => getEffectiveStatus(p) !== 'rejected' && getEffectiveStatus(p) !== 'disputed')
-    .filter(p => p.sceneType === input.sceneType && p.architectureType === input.architectureType)
-    .map(p => ({
-      pattern: p,
-      similarity: weightedJaccardSimilarity(p.traceFeatures, input.fullPathFeatures),
-    }))
-    .filter(({ similarity }) => similarity >= 0.65)
-    .sort((a, b) => b.similarity - a.similarity)[0];
-
-  if (!winner) return false;
-
-  // Require ≥1 overlapping insight category — guards against noise promotion.
-  const quickInsightTokens = new Set(
-    winner.pattern.keyInsights.map(i => i.toLowerCase().substring(0, 40)),
-  );
-  const hasOverlap = input.fullPathInsights.some(i =>
-    quickInsightTokens.has(i.toLowerCase().substring(0, 40)),
-  );
-  if (!hasOverlap) return false;
-
-  await saveAnalysisPattern(
-    input.fullPathFeatures,
-    input.fullPathInsights,
-    input.sceneType,
-    input.architectureType,
-    winner.pattern.confidence,
-    {
-      status: 'confirmed',
-      failureModeHash: winner.pattern.failureModeHash,
-      bucketKey: winner.pattern.bucketKey,
-      provenance: winner.pattern.provenance,
-      knowledgeScope: input.knowledgeScope,
-    },
-  );
-  return true;
 }
 
 // =============================================================================

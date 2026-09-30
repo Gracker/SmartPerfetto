@@ -66,6 +66,8 @@ import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {analysisContextMemoryPartitionKey} from '../../services/resolvedAnalysisContext';
 
 function declaredCandidate(body: string): string {
   return `${body}\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
@@ -1139,7 +1141,9 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {mcp.mockRestore();}
   });
 
-  it('gives invoke_skill the shared best-effort vendor hint without a vendor preflight', async () => {
+  // The same options carry the run's own learning grant, under which
+  // execute_sql learns fixes.
+  it('gives the shared MCP tools the vendor hint without a vendor preflight, and the run grant', async () => {
     const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
     const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
     const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer');
@@ -1148,9 +1152,11 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     });
     let runtimeOptions: Parameters<typeof claudeMcpServer.createClaudeMcpServer>[0];
     try {
-      await runtime.analyze('分析启动性能', 'claude-vendor-hint', 'trace', {analysisMode: 'full'});
+      await runtime.analyze('分析启动性能', 'claude-vendor-hint', 'trace',
+        withDurableLearningPermission({analysisMode: 'full' as const, runId: 'run-claude-mcp'}, NO_PRIVATE_CONTEXT));
       runtimeOptions = mcp.mock.calls[0][0];
     } finally {mcp.mockRestore();}
+    expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-claude-mcp');
     expect(traceProcessor.query.mock.calls.some(call =>
       String((call as unknown[])[1]).includes(TRACE_VENDOR_METADATA_SQL))).toBe(false);
     await expectRuntimeVendorHintParity({
@@ -1349,6 +1355,111 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(projection.mock.results[0].value.conclusionProjection.disposition).toBe('replaced');
       expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
     } finally {projection.mockRestore(); clearCodeAwareOutputGuards(sessionId); sessionContextManager.remove(sessionId);}
+  });
+
+  it('prefetches admitted cross-session experience for a private run as for a public one', async () => {
+    intentDecision = {...defaultIntent};
+    const sessionId = 'claude-private-experience';
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false, enableVerification: false});
+    const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+    const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: 'done'};
+    });
+    let context: ReturnType<typeof takeFinalizationContext>;
+    try {
+      const result = await runtime.analyze('Analyze scrolling', sessionId, 'trace', {
+        analysisMode: 'full', codeAwareMode: 'metadata_only', codebaseIds: ['cb-private-experience'],
+      });
+      context = takeFinalizationContext(result);
+      expect(patterns).toHaveBeenCalledTimes(1);
+      expect(negative).toHaveBeenCalledTimes(1);
+      const prompt = JSON.stringify(claudeSdkMock.__getQueryCalls().slice(-1)[0].options.systemPrompt);
+      expect(prompt).toContain('PATTERN_MEMORY_SECTION');
+      expect(prompt).toContain('NEGATIVE_MEMORY_SECTION');
+    } finally {context?.dispose(); patterns.mockRestore(); negative.mockRestore(); sessionContextManager.remove(sessionId);}
+  });
+
+  // A negative pattern records what failed during the run (here an SQL error
+  // it never fixed), which stays true when the run ends short. A run without
+  // its grant, a failed run and a cancelled run learn nothing.
+  describe('negative-pattern learning across the run lifecycle', () => {
+    beforeEach(() => analysisPatternMemory.setSupersedeStoreForTesting(null));
+    afterEach(() => analysisPatternMemory.resetSupersedeHandlesForTesting());
+
+    async function analyzeAfterFailedApproach(label: string, {granted = true, terminal, cancelWhileVerifying}: {
+      granted?: boolean;
+      terminal?: Record<string, unknown>;
+      cancelWhileVerifying?: boolean;
+    } = {}) {
+      intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer'};
+      const sessionId = `claude-negative-learning-${label}`;
+      const runId = `run-negative-learning-${label}`;
+      const base: AnalysisOptions = {analysisMode: 'full', runId};
+      const options = granted ? withDurableLearningPermission(base, NO_PRIVATE_CONTEXT) : base;
+      const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+        {enableSubAgents: false});
+      (runtime as any).sessionSqlErrors.set(sessionId, [
+        {errorSql: 'SELECT missing_column FROM slice', errorMessage: 'no such column: missing_column', timestamp: Date.now()},
+      ]);
+      (runtime as any).sessionSqlErrorPartitions.set(sessionId, analysisContextMemoryPartitionKey(options));
+      const save = jest.spyOn(analysisPatternMemory, 'saveNegativePattern');
+      mockClaudeVerifierVerifyConclusion.mockImplementation(async () => {
+        if (cancelWhileVerifying) runtime.abortSession(sessionId);
+        return {passed: true, heuristicIssues: [], llmIssues: [], durationMs: 0};
+      });
+      claudeSdkMock.__setQueryImplementation(async function* () {
+        yield terminal ?? {type: 'result', subtype: 'success', num_turns: 1, result: 'The frame budget was missed once.'};
+      });
+      try {
+        const result = await runtime.analyze('A bounded question', sessionId, 'trace', options);
+        takeFinalizationContext(result)?.dispose();
+        // Waits until every save the run started settled, then reads the
+        // authoritative store the way a later run's prefetch does.
+        await new Promise(resolve => setImmediate(resolve));
+        await Promise.all(save.mock.results.map(entry => entry.value));
+        const learned = save.mock.calls.flatMap(([features]) => analysisPatternMemory.matchNegativePatterns(features));
+        return {result, saves: save.mock.calls.length, runId, learned};
+      } finally {save.mockRestore(); sessionContextManager.remove(sessionId);}
+    }
+
+    it('learns the failed approach under the run\'s own grant, readable by a later run', async () => {
+      const {result, learned, runId} = await analyzeAfterFailedApproach('completed');
+      expect(result.completion?.status).toBe('completed');
+      expect(learned).toHaveLength(1);
+      expect(learned[0]).toMatchObject({
+        failedApproaches: [expect.objectContaining({type: 'sql_error', reason: 'no such column: missing_column'})],
+        learningAdmission: {version: 1, basis: 'public_run', runId},
+      });
+    });
+
+    it('learns the failed approach when the run ends at its turn limit', async () => {
+      const {result, learned, runId} = await analyzeAfterFailedApproach('turn-limit',
+        {terminal: {type: 'result', subtype: 'error_max_turns', num_turns: 1}});
+      expect(result.partial).toBe(true);
+      expect(learned.map(entry => entry.learningAdmission?.runId)).toEqual([runId]);
+    });
+
+    it('learns nothing without a grant', async () => {
+      const {result, saves} = await analyzeAfterFailedApproach('ungranted', {granted: false});
+      expect(result.completion?.status).toBe('completed');
+      expect(saves).toBe(0);
+    });
+
+    it('learns nothing from a failed run', async () => {
+      const {result, saves} = await analyzeAfterFailedApproach('failed',
+        {terminal: {type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 1, errors: ['provider down']}});
+      expect(result.success).toBe(false);
+      expect(saves).toBe(0);
+    });
+
+    it('learns nothing from a run cancelled after its answer was complete', async () => {
+      const {result, saves} = await analyzeAfterFailedApproach('cancelled', {cancelWhileVerifying: true});
+      expect(mockClaudeVerifierVerifyConclusion).toHaveBeenCalled();
+      expect(result.completion?.status).toBe('cancelled');
+      expect(saves).toBe(0);
+    });
   });
 
   it('does not infer insights or save a pattern from a runtime-only verification pass', async () => {

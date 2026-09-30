@@ -613,6 +613,16 @@ Important whitelisted examples:
   vendor override, after that Skill's own queries. `allowAutomaticPrefetch`
   now means the memory tier only. Planning is on demand; an explicitly submitted
   plan remains binding.
+- Cross-session learning (pattern memory, SQL fix pairs) is read by every run
+  of a workspace, so it holds only what a proven-public run learned. The
+  product grants durable learning at dispatch from the run's own marker, bound
+  to its run id (`services/security/durableLearning.ts`); a run without a grant
+  (private, unknown, replay, source supplement) learns nothing. The store
+  stamps each entry it saves, and reads, merges, eviction and tenant export
+  admit only stamped entries; an unstamped entry is evicted first and ages out
+  with its TTL. Every run, private ones included, reads the same admitted
+  memory (`buildRuntimeMemoryContext`). No learning store without a workspace
+  partition is read.
 
 Keep scoped selection questions lightweight. A selected slice/range is a scope
 signal, not an automatic quick/full decision.

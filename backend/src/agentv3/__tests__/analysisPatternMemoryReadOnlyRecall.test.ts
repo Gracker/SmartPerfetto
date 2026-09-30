@@ -28,6 +28,7 @@ const SEEDED_NEGATIVE = JSON.stringify([
     matchCount: 0,
     status: 'confirmed',
     failureModeHash: 'h_m1b_invariant_test',
+    learningAdmission: {version: 1, basis: 'public_run', runId: 'run-m1b', admittedAt: 1},
   },
 ]);
 

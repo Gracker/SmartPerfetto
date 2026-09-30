@@ -47,6 +47,11 @@ export type {
 export interface ConversationRuntimeInput {
   sessionId: string;
   runId: string;
+  /**
+   * The run's own private-context marker, fixed when the run starts: the value
+   * its ConversationRun records. Absent, the run's context is unknown.
+   */
+  privateContext?: AnalysisPrivateContextMarker;
   query: string;
   history: ConversationMessage[];
   getHistoryTurns?(): readonly AnalysisHistoryTurn[];
@@ -474,9 +479,11 @@ export class ConversationSessionService {
 
     const runId = this.createId('run');
     const stop = this.createRunStop(session, () => run);
+    const privateContext = resolveAnalysisPrivateContext(session);
     const runtimeInput: ConversationRuntimeInput = {
       sessionId: session.sessionId,
       runId,
+      privateContext,
       query,
       history: session.history.map((message) => ({...message})),
       getHistoryTurns: () => {
@@ -525,7 +532,7 @@ export class ConversationSessionService {
       startedAt: this.now(),
       completion: Promise.resolve({kind: 'cancelled', message: ''}),
       events: [],
-      privateContext: resolveAnalysisPrivateContext(session),
+      privateContext,
     };
     const authorizationSelection = {codeAwareMode: session.codeAwareMode,
       codebaseIds: session.codebaseIds ? [...session.codebaseIds] : undefined,

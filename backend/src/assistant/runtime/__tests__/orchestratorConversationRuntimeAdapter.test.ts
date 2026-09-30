@@ -27,6 +27,8 @@ import {resolveRuntimeEvidenceStore} from '../../../agentRuntime/runtimeEvidence
 import {captureEvidenceTable} from '../../../services/evidence/evidenceCapture';
 import {buildTraceProcessorQueryProvenance} from '../../../services/traceProcessorConnectionModel';
 import {renderConclusionContractSidecar, type ConclusionContract} from '../../../agent/core/conclusionContract';
+import {NO_PRIVATE_CONTEXT} from '../../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
 const mockFinalize = jest.fn<(input: FinalizeAnalysisResultInput) => Promise<FinalizedAnalysisResult>>();
 jest.mock('../../../services/finalizeAnalysisResult', () => ({
@@ -415,6 +417,23 @@ function result(conclusion: string, sessionId = 'runtime-session'): AnalysisResu
 }
 
 describe('OrchestratorConversationRuntimeAdapter', () => {
+  it.each([
+    ['a public run marker', NO_PRIVATE_CONTEXT, true],
+    ['a private run marker under a public selection', {codebase: false, knowledge: true}, false],
+    ['no run marker', undefined, false],
+  ] as const)('grants cross-session learning from %s only', async (_label, privateContext, granted) => {
+    let receivedOptions: AnalysisOptions | undefined;
+    const orchestrator = createOrchestrator(async (options) => {
+      receivedOptions = options;
+      return result('ok\n<!-- smartperfetto:conversation-control {"kind":"answered"} -->');
+    });
+    await new OrchestratorConversationRuntimeAdapter(orchestrator).run({
+      sessionId: 'conversation-learning', runId: 'run-learning', query: 'q', history: [], traceContext: {kind: 'none'},
+      ...(privateContext ? {privateContext} : {}),
+    });
+    expect(resolveDurableLearningPermission(receivedOptions!)).toEqual(granted ? {runId: 'run-learning'} : undefined);
+  });
+
   it.each(listProductionRuntimeKinds())(
     'applies the same conversation contract to %s',
     async () => {

@@ -165,7 +165,6 @@
     "src/agentRuntime/runtimeToolSpec.ts#RuntimeToolConcurrencyMode",
     "src/agentv3/agentMetrics.ts#TurnInfo",
     "src/agentv3/agentMetrics.ts#cleanupOldMetrics",
-    "src/agentv3/analysisPatternMemory.ts#promoteQuickPatternIfMatching",
     "src/agentv3/analysisPatternMemory.ts#resetSupersedeHandlesForTesting",
     "src/agentv3/analysisPatternMemory.ts#setSupersedeStoreForTesting",
     "src/agentv3/analysisTermination.ts#buildMaxTurnsFallbackConclusion",

@@ -42,6 +42,7 @@ import type {
   ConversationRuntimeInput,
 } from '../application/conversationSessionService';
 import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
+import {withDurableLearningPermission} from '../../services/security/durableLearning';
 
 export interface OrchestratorConversationRuntimeOptions {
   analysisOptions?: Omit<AnalysisOptions, 'analysisMode' | 'runId'>;
@@ -257,7 +258,12 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
           context: 'retained_artifacts', ...projectedArtifacts,
         })})}`;
       }
-      const runtimeOptions = withAnalysisHistoryReader(evidenceBinding.options, historyReader, {includeSourceDerived});
+      // Cross-session learning follows the run's own marker from the session
+      // service; a missing marker is unknown and grants nothing.
+      const runtimeOptions = withDurableLearningPermission(
+        withAnalysisHistoryReader(evidenceBinding.options, historyReader, {includeSourceDerived}),
+        input.privateContext,
+      );
       const analysis = this.updateExecution.run(state, () => this.orchestrator.analyze(prompt,
         runtimeSessionId, traceId, runtimeOptions))
         .then(result => this.finalizeRuntimeResult(result, input, state, dataEnvelopes,

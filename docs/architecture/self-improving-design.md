@@ -114,8 +114,11 @@ provisional
   -> disputed_late   已确认后出现迟到反证，仅降低信任并留审计
 ```
 
-Quick pattern 只有在 scene/architecture/domain 相容、相似度和 insight 重合满足门槛、
-full-path 验证通过且没有负向状态时，才能创建新的长期 pattern。它不是原样搬运。
+学到的经验只在能证明由公开 run 写入时才会被读取。产品在派发时按 run 自己在准入时固定的
+私有上下文标记签发学习权限，并绑定 runId（`services/security/durableLearning.ts`）；
+私有、unknown、回放和源码补充等没有权限的 run 都不写入。store 在保存时给条目盖准入戳
+`learningAdmission`；读取、合并、淘汰和租户导出只认带戳的条目，没有戳的条目最先被淘汰，
+并随 TTL 过期。SQL 修正对遵循同一规则。私有 run 与公开 run 读取同一批已准入经验。
 
 反馈写入按 `(tenantId, workspaceId)` 单写者分配 sequence，先 fsync append-only
 JSONL，再推进 `effective_feedback` 与 dirty-target revision。崩溃不会回滚事实日志；

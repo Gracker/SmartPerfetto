@@ -45,6 +45,7 @@ import type {AnalysisTurnIntentDecision} from '../analysisTurnIntent';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../agentv3/strategyLoader';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
+import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
 import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
@@ -59,6 +60,8 @@ import {ArtifactStore} from '../../agentv3/artifactStore';
 import {loadPiProviderRuntimeModules} from '../engines/pi/piAgentCoreProvider';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} from '../../../tests/helpers/conclusionDeclarationFixture';
+import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
+import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const mockClaudeVerifierVerifyConclusion = jest.fn();
 jest.mock('../engines/claude/claudeVerifier', () => {
@@ -1064,24 +1067,20 @@ describe('experimental Pi agent-core runtime contract', () => {
     });
   });
 
-  it('gives invoke_skill the shared best-effort vendor hint from its own MCP options', async () => {
-    const runtime = new PiAgentCoreRuntime(
-      createFakeTraceProcessorService(),
-      { kind: 'pi-agent-core', source: 'env' },
-      {
-        env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
-        moduleLoader: async () => ({ Agent: FakePiAgent }),
-        providerRuntimeLoader: loadFakePiProviderRuntime,
-      },
-    );
+  // The same options carry the run's own learning grant, under which
+  // execute_sql learns fixes.
+  it('gives the shared MCP tools the vendor hint from its own options, and the run grant', async () => {
+    const runtime = typedRuntime();
     const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
     let runtimeOptions: Parameters<typeof createClaudeMcpServer>[0];
     try {
-      await runtime.analyze('分析启动性能', 'session-pi-vendor-hint', 'trace-pi', {analysisMode: 'full'});
+      await runtime.analyze('分析启动性能', 'session-pi-vendor-hint', 'trace-pi',
+        withDurableLearningPermission({analysisMode: 'full' as const, runId: 'run-pi-mcp'}, NO_PRIVATE_CONTEXT));
       runtimeOptions = mcp.mock.calls[0][0];
     } finally {
       mcp.mockRestore();
     }
+    expect(admitLearnedEntry(runtimeOptions.durableLearning, 1)?.runId).toBe('run-pi-mcp');
     await expectRuntimeVendorHintParity({
       createMcpServer: createClaudeMcpServer, runtimeOptions});
   });
@@ -1151,6 +1150,35 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(updates.map((update) => update.type)).toContain('architecture_detected');
     expect(updates.map((update) => update.type)).not.toContain('answer_token');
     expect(providerRuntimeLoader).toHaveBeenCalledTimes(1);
+  });
+
+  it('prefetches admitted cross-session experience for a private run as for a public one', async () => {
+    piClassifierDecision = {...piClassifierDecision, taskKind: 'investigation', scope: 'scene_wide',
+      recommendedComplexity: 'full', deliverable: 'report'};
+    const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
+    const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+    const buildPrompt = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: jest.fn(loadFakePiProviderRuntime),
+      },
+    );
+    try {
+      await runtime.analyze('Analyze the scrolling session', 'session-pi-private-experience', 'trace-pi', {
+        analysisMode: 'full', codeAwareMode: 'metadata_only', codebaseIds: ['cb-pi-private-experience'],
+      });
+      expect(patterns).toHaveBeenCalledTimes(1);
+      expect(negative).toHaveBeenCalledTimes(1);
+      expect(buildPrompt).toHaveBeenCalledWith(expect.objectContaining({
+        patternContext: 'PATTERN_MEMORY_SECTION', negativePatternContext: 'NEGATIVE_MEMORY_SECTION'}));
+    } finally {
+      patterns.mockRestore(); negative.mockRestore(); buildPrompt.mockRestore();
+      sessionContextManager.remove('session-pi-private-experience');
+    }
   });
 
   it('passes the active code-aware mode and selected codebases into the Pi quick prompt', async () => {

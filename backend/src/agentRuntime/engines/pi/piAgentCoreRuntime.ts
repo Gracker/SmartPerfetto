@@ -71,11 +71,6 @@ import { registerFocusAppEvidence } from '../../focusAppEvidence';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
 import {resolveRuntimeEvidenceStore} from '../../runtimeEvidenceContext';
 import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/scene/sceneRuntimeBinding';
-import {
-  buildNegativePatternSection,
-  buildPatternContextSection,
-  extractTraceFeatures,
-} from '../../../agentv3/analysisPatternMemory';
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
 import type {SceneType} from '../../../agentv3/sceneClassifier';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, parseOutputLanguage, type OutputLanguage } from '../../../agentv3/outputLanguage';
@@ -126,6 +121,7 @@ import {
   buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
+  buildRuntimeMemoryContext,
   detectRunFocusApps,
 } from '../../runtimePromptContext';
 import { loadPromptTemplate } from '../../../agentv3/strategyLoader';
@@ -148,7 +144,6 @@ import {
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
-import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {countCompletedQuickConversationTurns} from '../../quickBudget';
@@ -167,6 +162,7 @@ import {
   type PiAgentCoreModelConfig,
 } from './piAgentCoreConfig';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
 export {
   createPiAgentCoreProviderRuntime,
@@ -1810,7 +1806,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           emitUpdate: update => { if (!executionLease.signal.aborted) this.emit('update', update); },
           enableLLM: false, plan: prep.analysisPlan.current, hypotheses: prep.hypotheses,
           sceneType: turnIntent.sceneId, outputLanguage, query,
-          emitIssueProgress: false, allowPersistentLearning: !privateAnalysisContext,
+          emitIssueProgress: false,
           deliveryContext: {entry: 'runtime_draft', turnIntent,
             acceptedCandidate: candidateIdentity(text, attemptId),
             completion: completionFor(assistant, text, attemptId, limited),
@@ -2162,8 +2158,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
 
     const watchdogWarning: { current: string | null } = { current: null };
     const knowledgeScope = analysisRunSpec.scopes.knowledge;
-    const privateAnalysisContext = analysisHasPrivateContext(options);
-    const recentSqlErrors = policy.allowNewEvidence ? loadLearnedSqlFixPairs(5, knowledgeScope, options) : [];
+    const recentSqlErrors = policy.allowNewEvidence ? loadLearnedSqlFixPairs(5, knowledgeScope) : [];
     const skillNotesBudget = createRuntimeSkillNotesBudget(quickMode);
     const pairInput = {
       traceProcessorService: this.traceProcessorService,
@@ -2260,6 +2255,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       skillNotesBudget,
       outputLanguage,
       knowledgeScope,
+      durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
@@ -2289,18 +2285,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     if (analysisRunSpec.traceContext.promptSection) {
       prompt = `${analysisRunSpec.traceContext.promptSection}\n\n${prompt}`;
     }
-    const traceFeatures = extractTraceFeatures({
-      architectureType: architecture?.type,
-      sceneType,
-      packageName: effectivePackageName,
+    const memoryContext = buildRuntimeMemoryContext({
+      allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+      packageName: effectivePackageName, knowledgeScope, outputLanguage, selection: options,
     });
-
-    const patternContext = privateAnalysisContext || !policy.allowAutomaticPrefetch
-      ? undefined
-      : buildPatternContextSection(traceFeatures, knowledgeScope);
-    const negativePatternContext = privateAnalysisContext || !policy.allowAutomaticPrefetch
-      ? undefined
-      : buildNegativePatternSection(traceFeatures, knowledgeScope);
     const traceInfo = this.traceProcessorService.getTrace(traceId);
     const systemPromptEnv = normalizeOptionalString(this.env[PI_AGENT_CORE_SYSTEM_PROMPT_ENV]);
     const analysisContext: ClaudeAnalysisContext = {
@@ -2318,15 +2306,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           errorMessage: entry.errorMessage,
           fixedSql: entry.fixedSql,
         })),
-      patternContext,
-      negativePatternContext,
-      caseBackgroundContext: policy.allowAutomaticPrefetch ? buildRuntimeCaseBackgroundContext({
-        sceneType,
-        architectureType: architecture?.type,
-        knowledgeScope,
-        outputLanguage,
-        privateAnalysisContext,
-      }) : undefined,
+      ...memoryContext,
       selectionContext: options.selectionContext,
       traceCompleteness,
       traceOs: traceInfo?.traceOs,

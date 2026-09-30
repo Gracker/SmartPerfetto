@@ -334,7 +334,7 @@ describe('verifyConclusion runtime-only diagnostics', () => {
     const plan = makePlan();
     plan.toolCallLog = [];
     const result = await verifyConclusion([makeFinding({severity: 'critical', evidence: []})], body, {
-      enableLLM: true, allowPersistentLearning: true, lightModel: 'fixture-model',
+      enableLLM: true, lightModel: 'fixture-model',
       verifierTimeoutMs: 1, providerId: 'fixture-provider', plan,
       deliveryContext: makeDeliveryContext(body, 'incomplete'),
     });
@@ -348,7 +348,7 @@ describe('verifyConclusion runtime-only diagnostics', () => {
 
   it('does not reclassify historical content through an auxiliary provider', async () => {
     await verifyConclusion([], 'Historical text', {deliveryContext: {entry: 'historical_restore'},
-      enableLLM: true, allowPersistentLearning: true});
+      enableLLM: true});
     expect(sdkQuery).not.toHaveBeenCalled();
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });

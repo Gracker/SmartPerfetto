@@ -96,6 +96,7 @@ import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnal
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisCompletion, type AnalysisDeliveryContext, type AnalysisOutputOrigin} from '../../../types/analysisDelivery';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 
 interface OpenAiChatTerminal {
   responseId?: string;
@@ -1126,7 +1127,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         emitUpdate: update => this.emitUpdate(update), enableLLM: false,
         plan: this.sessionPlans.get(sessionId)?.current ?? null, hypotheses: context.hypotheses,
         sceneType, outputLanguage: config.outputLanguage, emitIssueProgress: false,
-        allowPersistentLearning: !analysisHasPrivateContext(options), deliveryContext,
+        deliveryContext,
         conclusionContract: result.conclusionContract,
       });
       verificationPhase.end('ok');
@@ -1466,7 +1467,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.sessionSqlErrorPartitions.set(sessionId, sqlErrorPartition);
     }
     const sqlErrors = this.sessionSqlErrors.get(sessionId) ?? (policy.allowAutomaticPrefetch
-      ? loadLearnedSqlFixPairs(5, knowledgeScope, options) : []);
+      ? loadLearnedSqlFixPairs(5, knowledgeScope) : []);
     this.sessionSqlErrors.set(sessionId, sqlErrors);
     const entityStore = sessionContext.getEntityStore();
     const skillExecutor = createSkillExecutor(this.traceProcessorService);
@@ -1503,6 +1504,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       skillNotesBudget: createRuntimeSkillNotesBudget(policy.budgetMode === 'quick'),
       lightweight: usesLightweightToolCatalog(policy),
       outputLanguage: config.outputLanguage, knowledgeScope,
+      durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds, knowledgeSourceIds: options.knowledgeSourceIds,
       sourceUsePolicy: options.sourceUsePolicy, analysisContextFingerprint: options.analysisContextFingerprint,
       androidInternalsPackPin: options.androidInternalsPackPin,
@@ -1817,7 +1819,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     packageName?: string;
     options: AnalysisOptions;
   }): void {
-    if (analysisHasPrivateContext(input.options)) return;
+    const durableLearning = resolveDurableLearningPermission(input.options);
+    if (!durableLearning) return;
     if (input.result.partial === true || input.result.findings.length === 0) return;
     const insights = extractKeyInsights(input.result.findings, input.result.conclusion);
     if (insights.length === 0) return;
@@ -1831,6 +1834,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     });
     const knowledgeScope = knowledgeScopeFromAnalysisOptions(input.options);
     const patternExtras = {
+      learning: durableLearning,
       status: 'provisional' as const,
       provenance: {
         sessionId: input.sessionId,

@@ -139,6 +139,7 @@ import {
   resolveAnalysisPrivateContext,
   type AnalysisPrivateContextMarker,
 } from '../../services/security/analysisPrivateContext';
+import {withDurableLearningPermission} from '../../services/security/durableLearning';
 import {registerPrivateAnalysisQueryForEcho, sanitizeOwnerCodeAwareText} from '../../services/security/codeAwareOutputRegistry';
 import {finalReviewProgressUpdate} from '../../services/finalizationProgress';
 import {buildSkillRegistryAttribution} from '../../services/selfEvolution/skillFingerprint';
@@ -754,7 +755,8 @@ export class CliAnalyzeService {
             ? session.agentQuery
             : buildAgentQueryWithContinuityNotice(input.query, session.continuityBreaks);
         try {
-          let runtimeOptions: AnalysisOptions = {
+          // The run may learn across sessions only under the marker its run record carries.
+          let runtimeOptions: AnalysisOptions = withDurableLearningPermission({
             providerId: session.providerId,
             runId: run.runId,
             referenceTraceId: effectiveReferenceTraceId,
@@ -766,7 +768,7 @@ export class CliAnalyzeService {
             analysisContextFingerprint: primaryOptions.analysisContextFingerprint,
             runManifestAttributionSink: runManifestLifecycle.builder,
             ...knowledgeScope,
-          };
+          }, primaryPrivateContext);
           if (input.history?.length) {
             // Current source activation controls both the preview and later tool reads.
             const history = input.history.filter(turn => !turn.sourceDerived ||

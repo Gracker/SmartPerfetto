@@ -54,6 +54,7 @@ import {
 import { ENTERPRISE_DATA_DIR_ENV, writeTraceMetadata } from '../../services/traceMetadataStore';
 import agentRoutes, {agentRoutesCancellationTestSeam} from '../agentRoutes';
 import {NO_PRIVATE_CONTEXT, resolveAnalysisPrivateContext} from '../../services/security/analysisPrivateContext';
+import {resolveDurableLearningPermission} from '../../services/security/durableLearning';
 
 const envKeys = [
   'SMARTPERFETTO_API_KEY',
@@ -1620,6 +1621,28 @@ describe('HTTP shared finalization ownership', () => {
       const logger = f.session.logger;
       expect(JSON.stringify([logger.info.mock.calls, logger.warn.mock.calls, logger.error.mock.calls, logger.debug.mock.calls]))
         .not.toContain('PRIVATE_LOG_QUESTION');
+    } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+  });
+
+  it.each([
+    ['http-learning-public', 'a public run', NO_PRIVATE_CONTEXT, true],
+    ['http-learning-private', 'a run whose marker is private under a public selection',
+      {codebase: true, knowledge: false}, false],
+    ['http-learning-unknown', 'a run whose marker is unknown', 'unknown', false],
+  ] as const)('%s: grants cross-session learning at dispatch only to %s', async (id, _label, privateContext, granted) => {
+    const f = fixture(id);
+    f.session.activeRun.privateContext = privateContext;
+    f.native.success = true; f.attach();
+    jest.spyOn(reports, 'persistReport').mockImplementation(() => undefined);
+    jest.spyOn(snapshots, 'persistCompletedAnalysisResultSnapshot').mockReturnValue(null);
+    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
+      input.context?.dispose(); return {result: input.result};
+    });
+    try {
+      await agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'fact', 'trace-a', {
+        runContext: f.session.activeRun, generateTracks: false,
+      });
+      expect(resolveDurableLearningPermission(f.analyze.mock.calls[0][3]!)).toEqual(granted ? {runId: f.runId} : undefined);
     } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
   });
 

@@ -9,6 +9,7 @@ import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
 import { isPrivateKnowledgeChunk } from './ragStore';
+import {PATTERN_BUCKET_KNOWLEDGE_KIND, projectPatternBucketForExport} from '../agentv3/analysisPatternMemory';
 import {
   decodePrivateContextColumn,
   privateContextRestrictsAudience,
@@ -442,20 +443,26 @@ function turnExport(
 }
 
 /**
- * RAG chunks are registered material: a private kind (a user's codebase or
- * private knowledge) never leaves, a public kind does. Every other record
- * carries content only when it was written by a run known to be public.
+ * The content a memory row may carry out, or undefined to withhold it. RAG
+ * chunks are registered material: a private kind (a user's codebase or
+ * private knowledge) never leaves, a public kind does. A pattern bucket
+ * carries only its admitted entries (projectPatternBucketForExport). Every
+ * other record carries content only when it was written by a run known to
+ * be public.
  */
-function memoryContentRestricted(
+function exportableMemoryContent(
   row: TenantExportMemoryRow,
   envelope: unknown,
   publicRunIds: PublicRunIds,
-): boolean {
-  const {kind, record} = (envelope ?? {}) as {kind?: unknown; record?: {kind?: unknown; registryOrigin?: unknown}};
+): unknown {
+  // Unparseable content reads as null, which no rule vouches for.
+  if (envelope === null) return undefined;
+  const {kind, record} = envelope as {kind?: unknown; record?: {kind?: unknown; registryOrigin?: unknown}};
+  if (kind === PATTERN_BUCKET_KNOWLEDGE_KIND) return projectPatternBucketForExport(envelope as {record?: unknown});
   if (kind === 'rag_chunk') {
-    return !record || typeof record.kind !== 'string' || isPrivateKnowledgeChunk(record);
+    return !record || typeof record.kind !== 'string' || isPrivateKnowledgeChunk(record) ? undefined : envelope;
   }
-  return !(row.source_run_id && publicRunIds.has(row.source_run_id));
+  return row.source_run_id && publicRunIds.has(row.source_run_id) ? envelope : undefined;
 }
 
 function memoryExport(
@@ -466,20 +473,20 @@ function memoryExport(
   try {
     envelope = JSON.parse(row.content_json);
   } catch {
-    // Unparseable content reads as null, which no rule vouches for.
+    // Unparseable content stays null.
   }
-  const restricted = envelope === null || memoryContentRestricted(row, envelope, publicRunIds);
+  const content = exportableMemoryContent(row, envelope, publicRunIds);
   return {
     id: row.id,
     tenantId: row.tenant_id,
     workspaceId: row.workspace_id,
     scope: row.scope,
     sourceRunId: row.source_run_id,
-    content: restricted ? null : sanitizeJson(envelope),
+    content: content === undefined ? null : sanitizeJson(content),
     embeddingRef: row.embedding_ref,
     createdAt: toIso(row.created_at),
     updatedAt: toIso(row.updated_at),
-    ...(restricted ? {contentOmitted: CONTENT_OMITTED} : {}),
+    ...(content === undefined ? {contentOmitted: CONTENT_OMITTED} : {}),
   };
 }
 

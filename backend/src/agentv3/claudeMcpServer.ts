@@ -265,10 +265,7 @@ import {
   getDefaultExternalKnowledgeSourceRegistry,
 } from '../services/externalKnowledgeSourceRegistry';
 import {SymbolResolver} from '../services/symbol/symbolResolver';
-import {
-  buildAnalysisContextAuthorizationFingerprint,
-  type AnalysisContextSelection,
-} from '../services/resolvedAnalysisContext';
+import {buildAnalysisContextAuthorizationFingerprint} from '../services/resolvedAnalysisContext';
 import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
 import {isPlaceholderToolString} from '../agentRuntime/toolArgPlaceholders';
 import {
@@ -284,6 +281,12 @@ import type {
   WakeSourceSummary,
 } from '../types/criticalPathContract';
 import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
+import {
+  admitLearnedEntry,
+  isAdmittedLearning,
+  type DurableLearningPermission,
+  type LearningAdmission,
+} from '../services/security/durableLearning';
 
 export function requireToolDescription(templateName: string, loaded?: string): string {
   const content = loaded === undefined ? loadPromptSegment(templateName) : stripPromptComments(loaded);
@@ -1007,6 +1010,8 @@ interface SqlErrorFixPair {
   errorMessage: string;
   fixedSql?: string;
   timestamp: number;
+  /** See AnalysisPatternEntry.learningAdmission. */
+  learningAdmission?: LearningAdmission;
 }
 
 /**
@@ -1043,18 +1048,16 @@ function sqlErrorLogFile(scope?: KnowledgeScope): string {
 export function loadLearnedSqlFixPairs(
   maxPairs = 10,
   scope?: KnowledgeScope,
-  selection: AnalysisContextSelection = {},
 ): SqlErrorFixPair[] {
-  if (analysisHasPrivateContext(selection)) return [];
   try {
     const logFile = sqlErrorLogFile(scope);
     if (!fs.existsSync(logFile)) return [];
     const data = fs.readFileSync(logFile, 'utf-8');
     const pairs: SqlErrorFixPair[] = JSON.parse(data);
     const cutoff = Date.now() - ERROR_FIX_PAIR_TTL_MS;
-    // Only return pairs that have successful fixes and are within TTL
+    // Only return admitted pairs that have successful fixes and are within TTL
     return pairs
-      .filter(p => p.fixedSql && p.timestamp >= cutoff)
+      .filter(p => p.fixedSql && p.timestamp >= cutoff && isAdmittedLearning(p))
       .slice(-maxPairs);
   } catch {
     return [];
@@ -1063,8 +1066,11 @@ export function loadLearnedSqlFixPairs(
 
 async function logSqlErrorFixPair(
   pair: SqlErrorFixPair,
-  scope?: KnowledgeScope,
+  scope: KnowledgeScope | undefined,
+  learning: DurableLearningPermission,
 ): Promise<void> {
+  const learningAdmission = admitLearnedEntry(learning, pair.timestamp);
+  if (!learningAdmission) return;
   try {
     const logFile = sqlErrorLogFile(scope);
     let pairs: SqlErrorFixPair[] = [];
@@ -1072,17 +1078,22 @@ async function logSqlErrorFixPair(
       const data = await fs.promises.readFile(logFile, 'utf-8');
       pairs = JSON.parse(data);
     } catch { /* fresh start */ }
-    // Deduplicate: if an equivalent error+fix pair already exists, update timestamp instead of appending
-    const existingIdx = pairs.findIndex(p =>
+    // Deduplicate: if an equivalent admitted error+fix pair already exists,
+    // update its timestamp instead of appending. An unadmitted pair is never
+    // refreshed, so it ages out.
+    const existingIdx = pairs.findIndex(p => isAdmittedLearning(p) &&
       p.errorMessage === pair.errorMessage && p.fixedSql === pair.fixedSql
     );
     if (existingIdx >= 0) {
       pairs[existingIdx].timestamp = pair.timestamp;
     } else {
-      pairs.push(pair);
+      pairs.push({...pair, learningAdmission});
     }
-    // Keep last 200 pairs
-    if (pairs.length > 200) pairs = pairs.slice(-200);
+    // Keep the last 200 pairs; capacity evicts unadmitted pairs first.
+    if (pairs.length > 200) {
+      const unadmitted = pairs.filter(p => !isAdmittedLearning(p));
+      pairs = [...unadmitted, ...pairs.filter(isAdmittedLearning)].slice(-200);
+    }
     await fs.promises.mkdir(path.dirname(logFile), { recursive: true });
     // Atomic write: write to tmp file, then rename
     const tmpFile = logFile + '.tmp';
@@ -1300,6 +1311,11 @@ export interface ClaudeMcpServerOptions {
   outputLanguage?: OutputLanguage;
   /** Enterprise tenant/workspace scope for knowledge, memory, case, and baseline tools. */
   knowledgeScope?: KnowledgeScope;
+  /**
+   * The run's grant to write cross-session learning, resolved by the runtime
+   * from the product-issued permission. Absent, nothing is persisted.
+   */
+  durableLearning?: DurableLearningPermission;
   /** SmartPerfetto session id, used for code lookup ledger sidecars. */
   sessionId?: string;
   /** Code-aware analysis mode. `metadata_only` never sends source snippets to the provider. */
@@ -2843,13 +2859,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             return jaccard > 0.3; // At least 30% token overlap
           });
           if (matchingError) {
-            // Private source/RAG runs may learn within this in-memory turn, but
-            // raw SQL and provider errors must never cross the durable boundary.
-            if (!privateAnalysisContext) {
-            await logSqlErrorFixPair(
-              { ...matchingError, fixedSql: sql },
-              knowledgeScope,
-            );
+            // Any run may learn within this in-memory turn; only a run granted
+            // durable learning persists the pair.
+            if (options.durableLearning) {
+              await logSqlErrorFixPair(
+                { ...matchingError, fixedSql: sql },
+                knowledgeScope,
+                options.durableLearning,
+              );
             }
             const idx = recentSqlErrors.indexOf(matchingError);
             if (idx >= 0) recentSqlErrors.splice(idx, 1);
@@ -3203,22 +3220,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           timestamp: Date.now(),
         });
 
-        // Capture skill SQL errors in the learning system — skill SQL is the most complex
-        // and most likely to break across Perfetto versions.
-        // P1-3: Also persist to disk for cross-session learning (same as execute_sql errors).
+        // Capture skill SQL errors in this turn's learning window — skill SQL is
+        // the most complex and most likely to break across Perfetto versions.
+        // Nothing is persisted here: only a pair with its fix is ever read
+        // back, and execute_sql records that once a later query succeeds.
         if (!result.success && result.error && result.error.includes('SQL')) {
-          const errorPair: SqlErrorFixPair = {
+          recentSqlErrors.push({
             errorSql: `[skill:${skillId}] ${JSON.stringify(effectiveParams)}`,
             errorMessage: result.error,
             timestamp: Date.now(),
-          };
-          recentSqlErrors.push(errorPair);
+          });
           if (recentSqlErrors.length > 10) recentSqlErrors.shift();
-          // Persist only trace-public learning. Skill params/errors can contain
-          // private source text or provider echoes.
-          if (!privateAnalysisContext) {
-            logSqlErrorFixPair(errorPair, knowledgeScope).catch(() => {});
-          }
         }
 
         // Artifact mode stores displayResults before emitting DataEnvelopes so
@@ -6969,17 +6981,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       keywords: z.array(z.string()).optional().describe('Domain keywords (e.g., ["jank", "binder", "gpu"])'),
     },
     async ({ architectureType, sceneType: querySceneType, keywords }) => {
-      if (privateAnalysisContext) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({
-            success: true,
-            disabled: 'private_analysis_context',
-            positivePatterns: [],
-            negativePatterns: [],
-            message: 'Cross-session pattern recall is disabled for private source and RAG analyses.',
-          }) }],
-        };
-      }
       const features = extractTraceFeatures({
         architectureType,
         sceneType: querySceneType,
@@ -7023,32 +7024,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         }))
       );
 
-      // P1-10: Also include verifier's learned misdiagnosis patterns
-      let learnedMisdiagnosis: Array<{ keywords: string[]; message: string; occurrences: number }> = [];
-      try {
-        const learnedPatternsFile = backendLogPath('learned_misdiagnosis_patterns.json');
-        if (fs.existsSync(learnedPatternsFile)) {
-          const raw = JSON.parse(fs.readFileSync(learnedPatternsFile, 'utf-8'));
-          const cutoff = Date.now() - 60 * 24 * 60 * 60 * 1000; // 60-day TTL
-          learnedMisdiagnosis = (raw as any[])
-            .filter((p: any) => p.createdAt >= cutoff && p.occurrences >= 2)
-            .slice(0, 10)
-            .map((p: any) => ({
-              keywords: p.keywords,
-              message: p.message,
-              occurrences: p.occurrences,
-            }));
-        }
-      } catch { /* non-fatal */ }
-
       return {
         content: [{ type: 'text' as const, text: JSON.stringify({
           success: true,
           positivePatterns: positive,
           negativePatterns: negative,
-          learnedMisdiagnosis: learnedMisdiagnosis.length > 0 ? learnedMisdiagnosis : undefined,
-          message: `Found ${positive.length} positive and ${negative.length} negative patterns from past sessions.` +
-            (learnedMisdiagnosis.length > 0 ? ` Also ${learnedMisdiagnosis.length} learned misdiagnosis avoidance patterns.` : ''),
+          message: `Found ${positive.length} positive and ${negative.length} negative patterns from past sessions.`,
         }) }],
       };
     },
