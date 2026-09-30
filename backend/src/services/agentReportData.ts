@@ -260,7 +260,6 @@ export function buildAgentDrivenReportData(
     dataEnvelopes: (privateKnowledge
       ? projectOwnerDataEnvelopes(session.sessionId, session.dataEnvelopes as any[])
       : session.dataEnvelopes) as AgentDrivenReportData['dataEnvelopes'],
-    agentResponses: privateKnowledge ? [] : session.agentResponses as AgentDrivenReportData['agentResponses'],
     timestamp: Date.now(),
     conversationTurns: session.runSequence || 1,
     queryHistory: privateKnowledge ? [] : session.queryHistory || [],

@@ -5178,7 +5178,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
         MAX_SESSION_AGENT_DIALOGUE,
       );
 
-      // Collect full agent responses for HTML report enrichment
+      // Collect agent responses for the analysis receipt's artifact ids
       if (normalizedUpdate.content.phase === 'task_completed') {
         pushWithSessionCap(
           session.agentResponses,

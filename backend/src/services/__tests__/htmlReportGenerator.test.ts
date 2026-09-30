@@ -97,7 +97,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [makeEnvelopeWithFrameId(1435508)],
       result: {
         sessionId: 'session-1',
@@ -143,7 +142,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-partial',
@@ -171,7 +169,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [makeEnvelopeWithQueryReview()],
       result: {
         sessionId: 'session-query-review',
@@ -199,7 +196,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-receipt',
@@ -358,7 +354,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: 1,
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-capability-status',
@@ -435,7 +430,6 @@ describe('HTMLReportGenerator', () => {
           sourceEventType: 'stage_transition',
         },
       ],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-2',
@@ -510,7 +504,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [summaryEnvelope],
       result: {
         sessionId: 'session-4',
@@ -884,7 +877,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [envelope],
       result: {
         sessionId: 'session-claim',
@@ -974,7 +966,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [firstEnvelope, secondEnvelope],
       result: {
         sessionId: 'session-claim-duplicate',
@@ -1004,7 +995,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [firstEnvelope, secondEnvelope],
       result: {
         sessionId: 'session-claim-duplicate',
@@ -1061,7 +1051,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [envelope],
       result: {
         sessionId: 'session-source-ref-only',
@@ -1121,7 +1110,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [diagnosticEnvelope],
       result: {
         sessionId: 'session-5',
@@ -1157,7 +1145,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       outputLanguage,
       dataEnvelopes: [
         tableEnvelope('input_events', {executionStatus: 'skipped',
@@ -1189,7 +1176,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [{
         meta: {
           type: 'sql_result',
@@ -1355,7 +1341,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-3',
@@ -1395,7 +1380,6 @@ describe('HTMLReportGenerator', () => {
       timestamp: Date.now(),
       hypotheses: [],
       dialogue: [],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-case-rec',
@@ -1505,7 +1489,6 @@ describe('HTMLReportGenerator', () => {
         text: 'Starting analysis',
         timestamp: Date.now(),
       }],
-      agentResponses: [],
       dataEnvelopes: [],
       result: {
         sessionId: 'session-en',

@@ -128,7 +128,7 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
     expect(report.result.uiActionProposals).toHaveLength(1);
     expect(report.dialogue).toEqual([]);
     expect(report.conversationTimeline).toEqual([{text: expect.stringContaining(source)}]);
-    expect(report.agentResponses).toEqual([]);
+    expect(report).not.toHaveProperty('agentResponses');
     expect(report.analysisNotes).toEqual([]);
     expect(report.analysisPlan).toBeNull();
     expect(report.uncertaintyFlags).toEqual([]);
