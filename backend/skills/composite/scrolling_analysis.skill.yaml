@@ -3210,7 +3210,8 @@ steps:
         peer_context: [binder_calls_json]
     sql: |
       -- 批量帧根因分类：对采样上限内的消费端真实掉帧执行简化版根因决策树
-      -- 与 jank_frame_detail 的 root_cause_summary 使用相同优先级 CASE 树
+      -- 与 jank_frame_detail 的 root_cause_summary 对齐的只有 direct-evidence（锁 / RT 同步）
+      -- 与限频（P4.5/P4.6，同一 frame binding fragment）两族，其余优先级各自不同
       -- 区别：jank_frame_detail 是单帧深钻，此步骤是带覆盖率的批量分类
       WITH
       -- ========== 1. VSync 配置 ==========
@@ -4264,7 +4265,7 @@ steps:
         LEFT JOIN per_frame_input_detail pfid ON pfid.frame_key = fl.frame_key
         LEFT JOIN per_frame_input_slice_detail pfisd ON pfisd.frame_key = fl.frame_key
       ),
-      -- ========== 11. 根因分类（与 jank_frame_detail 相同优先级 CASE 树） ==========
+      -- ========== 11. 根因分类（direct-evidence 与限频两族与 jank_frame_detail 对齐） ==========
       classified AS (
         SELECT *,
           CASE

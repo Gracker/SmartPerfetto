@@ -9300,7 +9300,7 @@
           },
           {
             "id": "root_cause_summary",
-            "sha256": "b0a56177b67966bc6212cb6c9dd089d98c3778b3f172c044170310691957934b",
+            "sha256": "4abae76fa17cb77770086613dae93a1d7f3b28e6dc7be6a4915e9ad24b96234e",
             "required_columns": [
               "primary_cause",
               "deep_reason",
@@ -9317,7 +9317,23 @@
               "jank_type",
               "lock_contention_ms",
               "render_sync_wait_ms",
-              "render_sync_rt_work_ms"
+              "render_sync_rt_work_ms",
+              "freq_limit_state",
+              "freq_limit_basis",
+              "freq_limit_onset_confirmed",
+              "freq_limit_onset_ts",
+              "freq_limit_cooling_basis",
+              "freq_limit_policy_cpu",
+              "freq_limit_mhz",
+              "freq_limit_depth_pct",
+              "freq_limit_binding_ratio",
+              "freq_limit_onset_binding_ns",
+              "freq_limit_binding_ns",
+              "freq_limit_run_ns",
+              "freq_limit_trace_episode_id",
+              "rt_freq_limit_state",
+              "rt_freq_limit_binding_ns",
+              "rt_freq_limit_policy_cpu"
             ]
           }
         ]
@@ -11043,7 +11059,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "fafe1abaf01d82c89af02c5fdd405cc14c6469ba7af309d64b4734bc183b29bb",
+            "sha256": "073fdcd138d1351e2485c58551364b0b9876a4066aa42b48795d0ae228c10133",
             "required_columns": [
               "system_evidence_json",
               "frame_id",

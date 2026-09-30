@@ -22,7 +22,7 @@ Run `npm run trace:build` to materialize base-plus-overlay traces under `Trace/.
 | [Rendering pipeline jank](./rendering-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 46 target(s) |
 | [Scene observation and device state contracts](./scene-observation-contracts/) | scene_reconstruction | Android 16 / API 36 (tested API 35-36) | android-startup-light | 5 target(s) |
 | [Scheduler and CPU contention](./scheduler-cpu-contention/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 38 target(s) |
-| [Per-frame CPU frequency-limit binding in scrolling](./scrolling-frequency-limit-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 1 target(s) |
+| [Per-frame CPU frequency-limit binding in scrolling](./scrolling-frequency-limit-jank/) | scrolling | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 2 target(s) |
 | [Source analysis semantic ground truth](./source-analysis-semantic/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-light | 0 target(s) |
 | [Startup and process lifecycle](./startup-lifecycle/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 24 target(s) |
 | [System scheduling evidence with explicit handoffs](./system-scheduling-evidence/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 5 target(s) |

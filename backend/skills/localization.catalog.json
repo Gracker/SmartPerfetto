@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1367,
-    "explicitColumnCount": 5055
+    "explicitColumnCount": 5071
   },
   "skills": {
     "ams_module": {
@@ -22716,6 +22716,102 @@
               "label": {
                 "zh-CN": "RenderThread同步阶段工作",
                 "en": "Render Sync Rt Work ms"
+              }
+            },
+            "freq_limit_state": {
+              "label": {
+                "zh-CN": "主线程限频状态",
+                "en": "Freq Limit State"
+              }
+            },
+            "freq_limit_basis": {
+              "label": {
+                "zh-CN": "限频触发依据",
+                "en": "Freq Limit Basis"
+              }
+            },
+            "freq_limit_onset_confirmed": {
+              "label": {
+                "zh-CN": "热控施加已确认",
+                "en": "Freq Limit Onset Confirmed"
+              }
+            },
+            "freq_limit_onset_ts": {
+              "label": {
+                "zh-CN": "上限值写入时间",
+                "en": "Freq Limit Onset Ts"
+              }
+            },
+            "freq_limit_cooling_basis": {
+              "label": {
+                "zh-CN": "散热设备关联",
+                "en": "Freq Limit Cooling Basis"
+              }
+            },
+            "freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "限频 policy",
+                "en": "Freq Limit Policy CPU"
+              }
+            },
+            "freq_limit_mhz": {
+              "label": {
+                "zh-CN": "频率上限",
+                "en": "Freq Limit MHz"
+              }
+            },
+            "freq_limit_depth_pct": {
+              "label": {
+                "zh-CN": "上限低于观测最高上限",
+                "en": "Freq Limit Depth Pct"
+              }
+            },
+            "freq_limit_binding_ratio": {
+              "label": {
+                "zh-CN": "运行频率/上限",
+                "en": "Freq Limit Binding Ratio"
+              }
+            },
+            "freq_limit_onset_binding_ns": {
+              "label": {
+                "zh-CN": "该上限值约束运行时长",
+                "en": "Freq Limit Onset Binding ns"
+              }
+            },
+            "freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "跨上限值约束运行时长",
+                "en": "Freq Limit Binding ns"
+              }
+            },
+            "freq_limit_run_ns": {
+              "label": {
+                "zh-CN": "关键操作运行时长",
+                "en": "Freq Limit Run ns"
+              }
+            },
+            "freq_limit_trace_episode_id": {
+              "label": {
+                "zh-CN": "限频区段",
+                "en": "Freq Limit Trace Episode Id"
+              }
+            },
+            "rt_freq_limit_state": {
+              "label": {
+                "zh-CN": "RenderThread 限频状态",
+                "en": "Rt Freq Limit State"
+              }
+            },
+            "rt_freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "RenderThread 上限约束运行时长",
+                "en": "Rt Freq Limit Binding ns"
+              }
+            },
+            "rt_freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "RenderThread 限频 policy",
+                "en": "Rt Freq Limit Policy CPU"
               }
             }
           },

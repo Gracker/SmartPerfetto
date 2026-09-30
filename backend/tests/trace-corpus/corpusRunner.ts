@@ -8,7 +8,7 @@ import crypto from 'crypto';
 import {loadStrategies} from '../../src/agentv3/strategyLoader';
 import {createSkillEvaluator, type EvalStepResult, type SkillEvaluator} from '../skill-eval/runner';
 
-type TokenContext = {
+type FixtureTokenContext = {
   trace_start: string;
   trace_end: string;
   fixture_start: string;
@@ -16,6 +16,10 @@ type TokenContext = {
   fixture_upid: number;
   fixture_utid: number;
 };
+
+type TokenContext = FixtureTokenContext & {fixture_process_found: boolean};
+
+type SqlQuery = (sql: string) => Promise<{columns: string[]; rows: any[][]; error?: string}>;
 
 type CorpusExpectation = {
   id: string;
@@ -105,7 +109,7 @@ export function loadCorpus(repoRoot: string): {
 
 export function resolveParameterTokens(
   parameters: Record<string, unknown>,
-  context: TokenContext,
+  context: FixtureTokenContext,
 ): Record<string, unknown> {
   const tokenValues = new Map<string, unknown>([
     ['${trace_start}', context.trace_start],
@@ -121,6 +125,60 @@ export function resolveParameterTokens(
       typeof value === 'string' && tokenValues.has(value) ? tokenValues.get(value) : value,
     ]),
   );
+}
+
+const FRAME_TOKEN = /^\$\{frame_(start|end):(.+)\}$/;
+
+/**
+ * Resolves `${frame_start:<layer>}` / `${frame_end:<layer>}` to the bounds of
+ * the one fixture-process FrameTimeline frame whose layer_name is exactly
+ * <layer>. A layer is queried only when a parameter names it. Bounds stay
+ * decimal strings from SQL, so nanoseconds past 2^53 keep their precision.
+ */
+export async function resolveFrameTokens(
+  parameters: Record<string, unknown>,
+  context: Pick<TokenContext, 'fixture_upid' | 'fixture_process_found'>,
+  query: SqlQuery,
+  caseId: string,
+): Promise<Record<string, unknown>> {
+  const frames = new Map<string, {start: string; end: string}>();
+  const resolved: Record<string, unknown> = {...parameters};
+  for (const [key, value] of Object.entries(parameters)) {
+    const match = typeof value === 'string' ? FRAME_TOKEN.exec(value) : null;
+    if (!match) continue;
+    const [, edge, layer] = match;
+    let frame = frames.get(layer);
+    if (!frame) {
+      frame = await lookupFixtureFrame(layer, context, query, caseId);
+      frames.set(layer, frame);
+    }
+    resolved[key] = edge === 'start' ? frame.start : frame.end;
+  }
+  return resolved;
+}
+
+async function lookupFixtureFrame(
+  layer: string,
+  context: Pick<TokenContext, 'fixture_upid' | 'fixture_process_found'>,
+  query: SqlQuery,
+  caseId: string,
+): Promise<{start: string; end: string}> {
+  const subject = `${caseId}: frame token layer ${JSON.stringify(layer)}`;
+  if (!context.fixture_process_found) {
+    throw new Error(`${subject} needs the com.smartperfetto.fixture process, which the trace does not contain`);
+  }
+  const result = await query(`
+    SELECT printf('%d', ts) AS start_ts, printf('%d', ts + dur) AS end_ts, dur > 0 AS has_duration
+    FROM actual_frame_timeline_slice
+    WHERE upid = ${context.fixture_upid} AND layer_name = '${layer.replace(/'/g, "''")}'
+  `);
+  if (result.error) throw new Error(`${subject} cannot be resolved: ${result.error}`);
+  if (result.rows.length !== 1) {
+    throw new Error(`${subject} matches ${result.rows.length} frames of fixture upid ${context.fixture_upid}, expected exactly 1`);
+  }
+  const [start, end, hasDuration] = result.rows[0];
+  if (Number(hasDuration) !== 1) throw new Error(`${subject} names a frame without a positive duration`);
+  return {start: String(start), end: String(end)};
 }
 
 function assertionMatches(actual: unknown, assertion: CorpusValueAssertion): boolean {
@@ -214,7 +272,8 @@ async function loadTokenContext(evaluator: SkillEvaluator): Promise<TokenContext
         JOIN process p USING (upid)
         WHERE p.name = 'com.smartperfetto.fixture' AND t.name = 'main'
         ORDER BY t.utid DESC LIMIT 1
-      ), 0) AS fixture_utid
+      ), 0) AS fixture_utid,
+      EXISTS (SELECT 1 FROM process WHERE name = 'com.smartperfetto.fixture') AS fixture_process_found
   `);
   if (result.error || result.rows.length !== 1) {
     throw new Error(`cannot resolve trace tokens: ${result.error ?? 'no row'}`);
@@ -227,6 +286,7 @@ async function loadTokenContext(evaluator: SkillEvaluator): Promise<TokenContext
     fixture_end: String(row[3]),
     fixture_upid: Number(row[4]),
     fixture_utid: Number(row[5]),
+    fixture_process_found: Number(row[6]) === 1,
   };
 }
 
@@ -251,6 +311,7 @@ function validateDefinition(repoRoot: string, expectation: CorpusExpectation): v
 
 async function runSkillExpectation(
   evaluator: SkillEvaluator,
+  caseId: string,
   expectation: CorpusExpectation,
   tokenContext: TokenContext,
   tracePath: string,
@@ -267,7 +328,12 @@ async function runSkillExpectation(
   await evaluator.selectSkill(expectation.target);
   const requiredSteps = expectation.required_steps ?? [];
   if (requiredSteps.length === 0) throw new Error('execute expectation has no required_steps');
-  const params = resolveParameterTokens(expectation.parameters ?? {}, tokenContext);
+  const params = await resolveFrameTokens(
+    resolveParameterTokens(expectation.parameters ?? {}, tokenContext),
+    tokenContext,
+    sql => evaluator.executeSQL(sql),
+    caseId,
+  );
   const semanticStep = expectation.semantic_step ?? requiredSteps[requiredSteps.length - 1];
   const requiredSqlSteps = expectation.required_sql_steps ?? [];
   const forcedSqlSteps = new Set(expectation.forced_sql_steps ?? []);
@@ -553,6 +619,7 @@ export async function runCorpusRegression(
             if (expectation.mode === 'definition') validateDefinition(repoRoot, expectation);
             const sqlEvidence = await runSkillExpectation(
               evaluator,
+              entry.id,
               expectation,
               tokenContext,
               tracePath,
