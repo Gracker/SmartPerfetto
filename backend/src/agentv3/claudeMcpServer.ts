@@ -1027,8 +1027,6 @@ const ERROR_FIX_PAIR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 const REASONING_NUDGE_ZH = '\n\n[REFLECT] 在执行下一步之前：这个数据的关键发现是什么？是否支持/反驳你的假设？如有重要推断，请用 submit_hypothesis 或 write_analysis_note 记录。';
 const REASONING_NUDGE_EN = '\n\n[REFLECT] Before the next action: what is the key finding from this data? Does it support or refute your hypothesis? If there is an important inference, record it with submit_hypothesis or write_analysis_note.';
-/** Compatibility export for runtime callers; summary length no longer controls plan completion. */
-export const MIN_PHASE_SUMMARY_CHARS = 15;
 
 function sqlErrorLogFile(scope?: KnowledgeScope): string {
   if (!enterpriseKnowledgeStoreEnabled() && !scope) {
@@ -6305,7 +6303,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         content: planPhaseUpdatedContent({phaseId, status: nextStatus, summary: phase.summary ?? '', phaseName: phase.name, origin: 'model'}),
         timestamp: Date.now(),
       });
-      const completion = getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 0});
+      const completion = getAnalysisPlanCompletionStatus(plan);
       return createRuntimeToolResult({
         success: true, allPhasesComplete: completion.complete,
         ...(completion.unresolvedExpectations?.length ? {

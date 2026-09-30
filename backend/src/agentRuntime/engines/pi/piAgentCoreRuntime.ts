@@ -63,7 +63,6 @@ import {
 import {
   createClaudeMcpServer,
   loadLearnedSqlFixPairs,
-  MIN_PHASE_SUMMARY_CHARS,
 } from '../../../agentv3/claudeMcpServer';
 import {buildSystemPrompt} from '../../../agentv3/claudeSystemPrompt';
 import { extractFindingsFromText } from '../../../agentv3/claudeFindingExtractor';
@@ -88,13 +87,8 @@ import type {
   AnalysisPlanV3,
   ClaudeAnalysisContext,
   Hypothesis,
-  PlanPhase,
   UncertaintyFlag,
 } from '../../../agentv3/types';
-import {
-  getAnalysisPlanCompletionStatus,
-  type AnalysisPlanCompletionStatus,
-} from '../../../agentv3/planCompletionStatus';
 import {
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
@@ -691,17 +685,6 @@ function latestAssistantMessage(messages: unknown[] | undefined): Record<string,
   return reversed.find(message => (message as { role?: string }).role === 'assistant') as
     | Record<string, unknown>
     | undefined;
-}
-
-export function getPiAgentCorePlanCompletionStatus(plan: AnalysisPlanV3 | null | undefined): {
-  complete: boolean;
-  hasPlan: boolean;
-  pendingPhases: PlanPhase[];
-  evidenceGaps?: AnalysisPlanCompletionStatus['evidenceGaps'];
-} {
-  return getAnalysisPlanCompletionStatus(plan, {
-    minSummaryChars: MIN_PHASE_SUMMARY_CHARS,
-  });
 }
 
 function loadPiFinalReportCorrectionSystemPrompt(outputLanguage: OutputLanguage): string {

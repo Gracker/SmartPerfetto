@@ -2872,20 +2872,17 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       subtype: 'error_during_execution',
       errors: ['stream terminated before completion'],
       terminationReason: 'execution_error',
-      fallback: 'partial_result_after_stream_termination',
     },
     {
       name: 'maximum-turn termination',
       subtype: 'error_max_turns',
       errors: ['maximum turns reached'],
       terminationReason: 'max_turns',
-      fallback: 'partial_result_after_max_turns',
     },
   ])('sanitizes a private streamed report before returning after $name', async ({
     subtype,
     errors,
     terminationReason,
-    fallback,
   }) => {
     const sessionId = 'session-private-stream-recovery';
     const privateCanary = 'PRIVATE_STREAM_RECOVERY_CANARY';

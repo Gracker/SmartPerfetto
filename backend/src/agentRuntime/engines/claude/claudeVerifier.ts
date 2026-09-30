@@ -58,7 +58,7 @@ export function verifyPlanAdherence(plan: AnalysisPlanV3 | null): VerificationIs
   if (!validSubmittedPlanShape(plan)) {
     return [{type: 'plan_deviation', severity: 'error', message: 'Submitted plan structure is invalid.'}];
   }
-  const completion = getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 0});
+  const completion = getAnalysisPlanCompletionStatus(plan);
   if (!Array.isArray(plan.phases) || plan.phases.length === 0 ||
     (completion.hasPlan && !completion.complete && completion.pendingPhases.length === 0)) {
     return [{type: 'plan_deviation', severity: 'error', message: 'Submitted plan structure is invalid.'}];

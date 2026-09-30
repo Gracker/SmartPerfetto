@@ -39,7 +39,6 @@ import {
 import {
   createClaudeMcpServer,
   loadLearnedSqlFixPairs,
-  MIN_PHASE_SUMMARY_CHARS,
 } from '../../../agentv3/claudeMcpServer';
 import {
   buildQuickSystemPrompt,
@@ -2300,9 +2299,7 @@ export async function runOpenCodePrompt(
 export function getOpenCodePlanCompletionStatus(plan: AnalysisPlanV3 | null): AnalysisPlanCompletionStatus & {
   pending: string[];
 } {
-  const status = getAnalysisPlanCompletionStatus(plan, {
-    minSummaryChars: MIN_PHASE_SUMMARY_CHARS,
-  });
+  const status = getAnalysisPlanCompletionStatus(plan);
   const pending = status.hasPlan
     ? status.pendingPhases.map((phase: any) => phase.id || phase.title || 'unknown')
     : [];

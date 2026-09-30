@@ -95,7 +95,7 @@ export const dataStatsTool: Tool<DataStatsParams, DataStatsResult> = {
     return { valid: errors.length === 0, errors };
   },
 
-  async execute(params: DataStatsParams, context: ToolContext): Promise<ToolResult<DataStatsResult>> {
+  async execute(params: DataStatsParams, _context: ToolContext): Promise<ToolResult<DataStatsResult>> {
     const startTime = Date.now();
 
     try {

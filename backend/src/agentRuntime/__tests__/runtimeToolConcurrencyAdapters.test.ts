@@ -614,7 +614,7 @@ describe('runtime tool concurrency adapter boundaries', () => {
   });
 
   it.each([
-    ['Claude SDK MCP', (definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => {
+    ['Claude SDK MCP', (_definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => {
       const registered = sdkToolsByName(registry);
       return [
         registered.lookup_sql_schema.handler({keyword: 'frame'}, {toolCallId: 'claude-rollback-1'}),
@@ -689,7 +689,7 @@ describe('runtime tool concurrency adapter boundaries', () => {
   );
 
   it.each([
-    ['Claude SDK MCP', (definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => {
+    ['Claude SDK MCP', (_definitions: readonly McpToolDefinition[], registry: McpToolRegistry) => {
       const registered = sdkToolsByName(registry);
       return [
         registered.lookup_sql_schema.handler({keyword: 'frame'}, {toolCallId: 'claude-mixed-1'}),

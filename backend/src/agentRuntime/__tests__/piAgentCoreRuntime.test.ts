@@ -10,7 +10,6 @@ import {
   createPiAgentCoreToolFromSharedSpec,
   buildPiAnalysisCompletion,
   EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND,
-  getPiAgentCorePlanCompletionStatus,
   getPiAgentCoreEngineCapabilities,
   PI_AGENT_CORE_ABORT_JOIN_TIMEOUT_MS_ENV,
   PI_AGENT_CORE_MODULE_PATH_ENV,
@@ -2213,7 +2212,7 @@ describe('experimental Pi agent-core runtime contract', () => {
         llmIssues: [],
         durationMs: 1,
       }));
-    FakePiAgent.promptHandler = async (agent, input, promptIndex) => {
+    FakePiAgent.promptHandler = async (agent, _input, promptIndex) => {
       if (promptIndex === 1) {
         await submitCompletedMinimalPlan(agent);
         return [{
@@ -3041,34 +3040,6 @@ describe('experimental Pi agent-core runtime contract', () => {
       {role: 'assistant', content: [{type: 'text', text: 'All phases are complete.'}]},
     ])).toBe('All phases are complete.');
   });
-
-  it('does not treat a completed Pi phase as closed when required tool evidence is missing', () => {
-    const plan = {
-      phases: [
-        {
-          id: 'p-frame-detail',
-          name: '代表帧深钻',
-          goal: '调用 jank_frame_detail 获取代表掉帧调用栈',
-          expectedTools: ['invoke_skill'],
-          expectedCalls: [{ tool: 'invoke_skill', skillId: 'jank_frame_detail' }],
-          status: 'completed',
-          summary: '已完成代表帧根因分析，并整理出主线程阻塞调用栈证据。',
-        },
-      ],
-      successCriteria: '完整解释代表掉帧根因',
-      submittedAt: 1,
-      toolCallLog: [],
-    } as any;
-
-    const status = getPiAgentCorePlanCompletionStatus(plan);
-
-    expect(status.complete).toBe(false);
-    expect(status.pendingPhases.map(phase => phase.id)).toEqual(['p-frame-detail']);
-    expect(status.evidenceGaps?.[0].missingExpectedCalls).toEqual([
-      { tool: 'invoke_skill', skillId: 'jank_frame_detail' },
-    ]);
-  });
-
 
   function typedRuntime(input: {trace?: any; env?: Record<string, string>; loader?: any} = {}) {
     return new PiAgentCoreRuntime(input.trace ?? createFakeTraceProcessorService(),
