@@ -176,7 +176,11 @@ AI 分析推荐在 UI 里配置 Provider profile。需要 env 凭证时，在对
 创建 `env` 文件后重启启动器。
 
 便携包启动时会将可写的上传目录通过 `UPLOAD_DIR` 传给后端，并在用户数据根目录下
-创建 `uploads/`。不要依赖包内的 `backend/uploads`；App 位于 macOS `AppTranslocation`
+创建 `uploads/`。上传的 trace 及其元数据保存在 `uploads/traces/`，后端重启后也从这里
+重新加载；后端进程的工作目录位于包内，但默认的上传和 trace 目录都不会解析到包内。
+若在用户数据目录的 `env` 文件里设置 `UPLOAD_DIR` 或 `SMARTPERFETTO_TRACE_UPLOAD_DIR`，
+请使用包外的绝对路径：相对路径会按包内的工作目录解析。
+不要依赖包内的 `backend/uploads`；App 位于 macOS `AppTranslocation`
 临时路径或应用包不可写时，trace 上传会因目录不可写而失败。
 若从下载目录启动出现 `AppTranslocation`，请将 App 移到 `/Applications` 后再打开；
 可信的未公证包也可以移除隔离属性：

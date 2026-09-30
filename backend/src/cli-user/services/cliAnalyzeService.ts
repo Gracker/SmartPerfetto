@@ -487,7 +487,7 @@ export class CliAnalyzeService {
    * Resume-only path: try to reload an existing trace by its original id,
    * preserving identity so the persisted session's `traceId` still matches.
    * Returns true on success, false if the trace file has been evicted from
-   * `uploads/traces/` (caller should then degrade to a fresh load).
+   * the trace directory (caller should then degrade to a fresh load).
    */
   async reloadTraceById(traceId: string): Promise<boolean> {
     await this.ensureTraceProcessorAvailable();

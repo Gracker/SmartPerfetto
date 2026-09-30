@@ -744,6 +744,14 @@ UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 ```
 
+`UPLOAD_DIR` is the upload root; a relative path resolves against the backend
+process's working directory. Uploaded trace files and their metadata live in
+`${UPLOAD_DIR}/traces`, and the upload routes, the metadata, and reloading a
+trace by id after a backend restart all use that one directory. Set
+`SMARTPERFETTO_TRACE_UPLOAD_DIR` only to move the trace directory elsewhere; it
+overrides all three together (the npm CLI uses it to keep trace copies under
+its own home).
+
 `TRACE_PROCESSOR_PATH` usually does not need manual configuration.
 `./start.sh` and `./scripts/start-dev.sh` prefer SHA256-pinned prebuilts. An
 explicit `TRACE_PROCESSOR_PATH` is a user-owned override: launchers and backend

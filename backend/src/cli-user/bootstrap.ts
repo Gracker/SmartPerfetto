@@ -155,8 +155,8 @@ function applyEnvironment(
     process.env.SMARTPERFETTO_BACKEND_LOG_DIR = path.join(paths.home, 'runtime', 'logs');
   }
   // Keep CLI trace copies inside the same user-selected home. The web server
-  // keeps its historical ./uploads/traces default because it does not call
-  // this bootstrap path.
+  // does not call this bootstrap path; it derives the trace directory from
+  // UPLOAD_DIR (see services/traceUploadPaths).
   if (!process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR?.trim()) {
     process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR = paths.tracesRoot;
   }

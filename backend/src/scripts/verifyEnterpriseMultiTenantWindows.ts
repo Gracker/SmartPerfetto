@@ -11,11 +11,11 @@ import Database from 'better-sqlite3';
 import { applyEnterpriseMinimalSchema } from '../services/enterpriseSchema';
 import type { EnterpriseRepositoryScope } from '../services/enterpriseRepository';
 import {
-  getTracesDir,
   listTraceMetadata,
   readTraceMetadataForContext,
   writeTraceMetadata,
 } from '../services/traceMetadataStore';
+import { getTracesDir } from '../services/traceUploadPaths';
 import { TraceProcessorLeaseStore } from '../services/traceProcessorLeaseStore';
 import {
   TP_ADMISSION_CONTROL_ENV,
@@ -1634,7 +1634,10 @@ export async function runEnterpriseWindowRegression(
     ? path.resolve(input.uploadRoot)
     : await fsp.mkdtemp(path.join(os.tmpdir(), 'smartperfetto-enterprise-window-'));
   const previousUploadRoot = process.env.UPLOAD_DIR;
+  const previousTraceUploadDir = process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR;
   process.env.UPLOAD_DIR = uploadRoot;
+  // An inherited trace-dir override would move traces out of the temp root.
+  delete process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR;
 
   const db = new Database(':memory:');
   applyEnterpriseMinimalSchema(db);
@@ -1738,6 +1741,9 @@ export async function runEnterpriseWindowRegression(
       delete process.env.UPLOAD_DIR;
     } else {
       process.env.UPLOAD_DIR = previousUploadRoot;
+    }
+    if (previousTraceUploadDir !== undefined) {
+      process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR = previousTraceUploadDir;
     }
     if (createdUploadRoot && !input.keepTemp) {
       await fsp.rm(uploadRoot, { recursive: true, force: true });

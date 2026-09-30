@@ -650,6 +650,11 @@ UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 ```
 
+`UPLOAD_DIR` 是上传根目录，相对路径按后端进程的工作目录解析。上传的 trace 文件与其元数据保存在
+`${UPLOAD_DIR}/traces`；上传接口、元数据和后端重启后按 traceId 重新加载 trace 都使用这同一个目录。
+`SMARTPERFETTO_TRACE_UPLOAD_DIR` 只在需要把 trace 目录单独放到别处时设置，它会同时覆盖上述三处
+（npm CLI 用它把 trace 副本放在自己的 home 下）。
+
 默认不需要手动设置 `TRACE_PROCESSOR_PATH`。普通 `./start.sh` 和开发模式 `./scripts/start-dev.sh` 都优先使用经过固定 SHA256 校验的 prebuilt。显式的 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径：启动和 backend `predev` 只检查文件存在、可执行以及 `--version`，不会改权限、按固定 SHA 替换或向该路径下载。
 
 只有在修改 Perfetto C++ 或需要自编译时才使用：

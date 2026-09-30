@@ -202,6 +202,12 @@ restart the launcher.
 
 At startup, the portable package passes the writable upload directory to the
 backend through `UPLOAD_DIR` and creates `uploads/` under the user data root.
+Uploaded traces and their metadata live in `uploads/traces/`, which is also
+where the backend reloads them after a restart. The backend's working directory
+is inside the package, but the default upload and trace directories never
+resolve there. If you set `UPLOAD_DIR` or `SMARTPERFETTO_TRACE_UPLOAD_DIR` in the
+user-data `env` file, use an absolute path outside the package: a relative path
+resolves against the package-internal working directory.
 Do not rely on package-local `backend/uploads`; trace uploads would fail when
 the app is launched from a macOS `AppTranslocation` path or the app bundle is
 not writable. If a downloaded app starts under `AppTranslocation`, move it

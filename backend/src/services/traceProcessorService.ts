@@ -25,6 +25,7 @@ import {
   type TraceProcessorHolderType,
 } from './traceProcessorLeaseStore';
 import { traceProcessorProcessorKey } from './traceProcessorConnectionModel';
+import { getTracesDir } from './traceUploadPaths';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
 import {
   raceWithTraceProcessorCancellation,
@@ -214,7 +215,7 @@ export class TraceProcessorService extends EventEmitter {
     new AsyncLocalStorage<TraceProcessorLeaseQueryContext | TraceProcessorLeaseQueryContextMap>();
 
   constructor(
-    uploadDir = resolveDefaultTraceUploadDir(),
+    uploadDir = getTracesDir(),
     private readonly leaseRestartPolicy: TraceProcessorLeaseRestartPolicy = {},
   ) {
     super();
@@ -1665,11 +1666,6 @@ export class TraceProcessorService extends EventEmitter {
     const lastAccess = trace.lastAccessTime?.getTime() ?? trace.uploadTime.getTime();
     return (now - lastAccess) <= idleTimeout;
   }
-}
-
-function resolveDefaultTraceUploadDir(): string {
-  const configured = process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR?.trim();
-  return configured || './uploads/traces';
 }
 
 // Singleton instance for sharing across route modules

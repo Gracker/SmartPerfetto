@@ -57,6 +57,7 @@ import {
   type TraceMetadata,
   writeTraceMetadata,
 } from '../services/traceMetadataStore';
+import { getUploadRoot } from '../services/traceUploadPaths';
 import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 import {
   canDeleteTraceResource,
@@ -846,7 +847,7 @@ const storage = multer.diskStorage({
     try {
       tracesDir = getWritableTraceDirForContext(requireRequestContext(req));
     } catch (error) {
-      cb(error as Error, process.env.UPLOAD_DIR || './uploads');
+      cb(error as Error, getUploadRoot());
       return;
     }
 
