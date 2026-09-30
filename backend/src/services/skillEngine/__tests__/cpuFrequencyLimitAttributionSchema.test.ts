@@ -53,6 +53,14 @@ describe('cpu frequency limit attribution skill family', () => {
       expect(childInputs.has(param)).toBe(true);
       expect(episodeColumns).toContain(column);
     }
+    // The drill-down is anchored on the trace-wide onset, never on the start
+    // of the window-clipped episode, and is scoped to the parent's window.
+    expect(drilldown.item_params).toMatchObject({
+      episode_start_ts: 'onset_ts',
+      trace_episode_id: 'trace_episode_id',
+      window_start_ts: 'window_start_ts',
+      window_end_ts: 'window_end_ts',
+    });
   });
 
   it('declares every threshold as an input with a documented default', () => {
@@ -63,6 +71,9 @@ describe('cpu frequency limit attribution skill family', () => {
       ['who_window_ms', 2000],
       ['cooling_coincidence_ms', 50],
       ['max_episodes', 3],
+      ['cdev_policy_pair_ms', 1],
+      ['cdev_policy_min_transitions', 3],
+      ['cdev_policy_min_pair_pct', 80],
       ['sustained_pct', 80],
       ['spin_avg_slice_us', 200],
       ['spin_switches_per_s', 2000],
@@ -102,25 +113,20 @@ describe('cpu frequency limit attribution skill family', () => {
     for (const s of [step(attribution, 'episodes'), step(timeline, 'limit_episodes')]) {
       expect(columns(s)).toEqual(expect.arrayContaining([
         'starts_at_data_start', 'ends_at_data_end', 'evidence_status',
+        'trace_episode_id', 'onset_ts', 'onset_observed',
       ]));
     }
   });
 
-  it('exposes the four declared who-verdicts and nothing else', () => {
-    const sql: string = step(episode, 'who_verdict').sql;
-    const verdicts = [...sql.matchAll(/'(thermal_cooling_device_confirmed|userspace_thermal_daemon_active_before_limit|limit_changed_no_thermal_evidence|onset_unknown_capped_at_data_start)'/g)]
-      .map(m => m[1]);
-    expect(new Set(verdicts)).toEqual(new Set([
-      'thermal_cooling_device_confirmed',
-      'userspace_thermal_daemon_active_before_limit',
-      'limit_changed_no_thermal_evidence',
-      'onset_unknown_capped_at_data_start',
-    ]));
-    // Coincidence is the strong branch; background cooling is reported but is
-    // not allowed to outrank a daemon that ran right before the limit.
-    expect(columns(step(episode, 'who_verdict'))).toEqual(expect.arrayContaining([
-      'cooling_transition_coincident', 'cooling_nearest_transition_ns', 'cooling_active_ns',
-      'daemon_ran_before_limit_ns', 'onset_observed',
+  it('the drill-down reads the shared verdict and keeps no ladder', () => {
+    // The closed class and rank tables are asserted by querying the fragment
+    // in cpuFrequencyLimitVerdicts.test.ts.
+    const who = step(episode, 'who_verdict');
+    expect(who.sql_fragments).toContain('fragments/system_cpu_freq_limit_episode_verdicts.sql');
+    expect(who.sql).not.toMatch(/THEN '(thermal_cooling_device_confirmed|userspace_thermal_daemon_active_before_limit)'/);
+    expect(columns(who)).toEqual(expect.arrayContaining([
+      'who_verdict', 'trigger_class', 'trigger_class_rank', 'onset_trigger_mix', 'onset_count',
+      'confirmed_onset_count', 'onset_ts', 'onset_observed', 'cooling_policy_association', 'verdict_scope',
     ]));
   });
 
@@ -145,10 +151,13 @@ describe('cpu frequency limit attribution skill family', () => {
       [workload, 'workload_summary'],
       [anomalies, 'anomalous_threads'],
       [episode, 'who_verdict'],
+      [episode, 'limit_onsets'],
       [attribution, 'attribution_summary'],
     ] as const) {
       expect(columns(step(skill, id))).toContain('evidence_scope');
-      expect(step(skill, id).sql).toContain("'observation_not_causal'");
+      const sources = [step(skill, id).sql, ...(step(skill, id).sql_fragments ?? [])
+        .map((p: string) => fs.readFileSync(path.join(skillsDir, p), 'utf-8'))].join('\n');
+      expect(sources).toContain("'observation_not_causal'");
     }
   });
 

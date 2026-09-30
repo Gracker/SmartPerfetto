@@ -2,8 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import type { OutputFormat } from '../repl/renderer';
 import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { getTraceProcessorService, type QueryResult } from '../../services/traceProcessorService';
@@ -19,7 +18,7 @@ export interface QueryCommandArgs {
 }
 
 export async function runQueryCommand(args: QueryCommandArgs): Promise<number> {
-  const tracePath = path.resolve(args.trace);
+  const tracePath = resolveInvocationPath(args.trace);
   const format = args.format ?? 'text';
   const lifecycle: { service?: CliAnalyzeService } = {};
 

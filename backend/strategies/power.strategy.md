@@ -242,7 +242,7 @@ plan_template:
 | `cpu_freq_idle` | 无 CPU idle/freq 完整状态 | 不做 Wattson CPU 能耗归因；可退化为 CPU 频率/DVFS 定性分析 |
 | `gpu_work_period` | 无 GPU active region | 不做 GPU work period/能耗归因；可退化为 GPU 频率或 Mali power state 分析 |
 | `cpu_freq_limits` | 无 `cpu_max/min_frequency_limit` 轨道 | 不能给限频归因结论；只能用实际 `cpufreq` 做观测，并按 Phase 4(e) 给 `power/cpu_frequency_limits` 采集建议 |
-| `thermal_throttling` | 无热区温度 / cooling device 轨道 | 不能确认热触发；限频结论最多停在 `NON_THERMAL` 或守护进程候选 |
+| `thermal_throttling` | 无热区温度 / cooling device 轨道 | 不能确认热触发；限频结论最多停在守护进程候选或 `THERMAL_EVIDENCE_NOT_CAPTURED`，不能写成非热 |
 
 如果用户明确问“怎么采集”，优先调用：
 ```
@@ -361,14 +361,18 @@ invoke_skill("cpu_frequency_limit_attribution", { package: "<包名>", lookback_
 
 **(b) 读 who_verdict，按证据阶梯收口**
 
-| who_verdict | 证据强度 | 结论写法 |
-|---|---|---|
-| `thermal_cooling_device_confirmed` | 强：cdev 档位跳变与 limit 变化同刻 | 可写“热管理触发的限频”，给出 cdev 名与温度上下文 |
-| `userspace_thermal_daemon_active_before_limit` | 中：limit 变化前窗口内有 thermal 守护进程活动 | 只能写**候选触发源**；说明该平台把限频写进 sysfs，trace 里没有 cdev 事件 |
-| `limit_changed_no_thermal_evidence` | 弱：限频确实发生，但无 cooling/温度证据 | 写 `NON_THERMAL`：PowerHAL/perf service、游戏/省电模式、厂商策略都可能限频，需要补证 |
-| `onset_unknown_capped_at_data_start` | 起点缺失 | 只报受限时长与影响，不报触发者 |
+分类只来自共享 fragment：每次限频写入（上限值变化）单独判定，区段/窗口取最强一级，`onset_trigger_mix` 给出逐次分布（“N 次写入中 M 次由热控施加”，不能说成整段都是）。散热设备与 policy 的对应关系由“档位变更之后 1ms 内该 policy 上限同向变化”的时序配对确定，不看设备名。
 
-对应诊断分级：`THERMAL_LIMIT_CONFIRMED` / `THERMAL_DAEMON_SUSPECTED` / `NON_THERMAL_LIMIT` / `LIMIT_EVIDENCE_MISSING`。
+| trigger_class（who_verdict） | 证据强度 | 结论写法 |
+|---|---|---|
+| `THERMAL_LIMIT_CONFIRMED`（`thermal_cooling_device_confirmed`） | 强：上限收紧紧跟在关联散热设备升档之后 | 可写“热管理触发的限频”，给出散热设备名与温度上下文 |
+| `THERMAL_DAEMON_SUSPECTED` | 中：收紧前窗口内有 thermal 守护进程活动 | 只能写**候选触发源**；该平台把限频写进 sysfs，trace 里没有 cdev 配对 |
+| `THERMAL_COOLING_BACKGROUND` / `THERMAL_COOLING_UNASSOCIATED` | 弱：关联设备只是同期活动，或只有未关联设备活动 | 写“并存的热控活动”，不能写成施加者 |
+| `LIMIT_ONSET_UNKNOWN` | 起点缺失（首样本或无效样本之后） | 只报受限时长与影响，不报触发者，也不写非热 |
+| `NO_THERMAL_EVIDENCE_OBSERVED` / `THERMAL_EVIDENCE_NOT_CAPTURED` | 无热证据：前者采到了 cdev 变化但无关联，后者没采到 | 触发方未确定；PowerHAL/perf service、游戏/省电模式、厂商策略都可能限频，**不能从“没看到”推出非热**；后者给 `thermal/cdev_update` 采集建议 |
+| `LIMIT_RELAXED` | 窗口内只有放宽 | 放宽不是原因；扩大窗口找最初的收紧 |
+
+会话级另有 `NO_LIMIT_EPISODE`（有有效上限样本但无区段）与 `LIMIT_EVIDENCE_MISSING`（无有效最大上限样本：`max_limit_not_captured` / `max_limit_samples_missing`）。
 
 平台差异决定你最多能拿到哪一级证据，不是结论本身：内核热管理平台（Pixel，GKI 上的 MTK 多半也是）会发 cooling device 跳变，可直接对上 limit 变化；高通把限频写在用户态（`thermal-engine` / `android.hardware.thermal-service.qti` 直写 sysfs），**limit 变了却没有任何 cdev 事件**，温度采样也稀疏（每分钟几个点），此时最强结论只能到“守护进程在限频前活跃”。
 

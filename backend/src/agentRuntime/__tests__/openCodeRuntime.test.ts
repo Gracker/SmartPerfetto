@@ -42,6 +42,7 @@ import {runOpenCodeIntentTransport} from '../engines/opencode/openCodeIntentTran
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
 import * as claudeMcpModule from '../../agentv3/claudeMcpServer';
+import {expectRuntimeVendorHintParity} from './vendorHintParityFixture';
 import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
@@ -262,35 +263,6 @@ function createCompletedScrollingPlanWithFinalPhase(): any {
       matchedPhaseId: 'p1',
       timestamp: 1,
     }],
-  };
-}
-
-function createCompletedStartupPlanWithFinalPhase(): any {
-  return {
-    phases: [
-      {
-        id: 'p1',
-        name: '启动证据采集与根因深钻',
-        goal: '采集启动指标、阶段分解与根因证据',
-        expectedTools: [],
-        status: 'completed',
-        summary: '已完成启动类型、TTID/TTFD、阶段耗时和根因证据采集。',
-      },
-      {
-        id: 'p2',
-        name: '综合结论',
-        goal: '输出完整启动分析报告',
-        expectedTools: [],
-        status: 'in_progress',
-        summary: '',
-      },
-    ],
-    successCriteria: '输出包含完整启动场景合同的最终报告',
-    submittedAt: 1,
-    toolCallLog: [
-      {toolName: 'invoke_skill', skillId: 'anr_analysis', success: true, timestamp: 1},
-      {toolName: 'invoke_skill', skillId: 'startup_analysis', success: true, timestamp: 2},
-    ],
   };
 }
 
@@ -1034,6 +1006,18 @@ describe('OpenCode native turn intent and delivery', () => {
     }
   }));
 
+  it('gives invoke_skill the shared best-effort vendor hint from its own MCP options', async () => withBackendDataDir(async () => {
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
+    let runtimeOptions: Parameters<typeof createClaudeMcpServer>[0];
+    try {
+      const harness = createNativeIntentHarness();
+      await harness.runtime.analyze('分析启动性能', 'opencode-vendor-hint', 'trace-opencode');
+      runtimeOptions = mcp.mock.calls[0][0];
+    } finally { mcp.mockRestore(); }
+    await expectRuntimeVendorHintParity({
+      createMcpServer: createClaudeMcpServer, runtimeOptions});
+  }));
+
   it.each(['fast', 'full'] as const)('preserves known pair package identities for bounded %s answers', async analysisMode => withBackendDataDir(async () => {
     const originalPairBuilder = runtimePromptContext.buildRuntimeTracePairIdentityContext;
     const pair = jest.spyOn(runtimePromptContext, 'buildRuntimeTracePairIdentityContext')
@@ -1438,7 +1422,7 @@ describe('experimental OpenCode runtime contract', () => {
     const parent = net.createServer(socket => {
       sockets.add(socket);
       socket.on('close', () => sockets.delete(socket));
-      socket.once('data', chunk => {
+      socket.once('data', () => {
         setTimeout(() => {
           if (!socket.destroyed) {
             socket.write(`${JSON.stringify({jsonrpc: '2.0', id: 'strict-child', result: {ok: true}})}\n`);

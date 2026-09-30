@@ -4,8 +4,8 @@
 
 # Hardware CPU Module Expert
 #
-# Provides CPU hardware analysis capabilities for cross-domain experts.
-# Answers questions about CPU frequency, thermal throttling, and power state.
+# Provides CPU hardware analysis capabilities.
+# Covers CPU frequency, thermal throttling, and power state.
 
 name: cpu_module
 version: "1.0"
@@ -26,75 +26,6 @@ module:
     - thermal
     - power
     - cluster
-  relatedModules:
-    - kernel_scheduler
-    - hardware_gpu
-    - hardware_memory
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: cpu_frequency_analysis
-      questionTemplate: "What is the CPU frequency during {start_ts} to {end_ts}?"
-      requiredParams: [start_ts, end_ts]
-      optionalParams: [cpu_id]
-      description: "Analyze CPU frequency changes and throttling"
-
-    - id: thermal_throttling
-      questionTemplate: "Is there thermal throttling affecting performance?"
-      requiredParams: []
-      description: "Detect thermal throttling events"
-
-    - id: cluster_utilization
-      questionTemplate: "What is the big/little core utilization?"
-      requiredParams: []
-      optionalParams: [package]
-      description: "Analyze core cluster usage patterns"
-
-    - id: cpu_idle_analysis
-      questionTemplate: "What CPU idle states are being used?"
-      requiredParams: []
-      description: "Analyze CPU C-state transitions"
-
-  findingsSchema:
-    - id: thermal_throttling_detected
-      severity: critical
-      titleTemplate: "Thermal throttling: CPU limited to {max_freq_mhz}MHz"
-      descriptionTemplate: "CPU frequency capped due to thermal limit ({thermal_zone}°C)"
-      evidenceFields: [max_freq_mhz, thermal_zone, throttle_duration_ms]
-
-    - id: low_frequency_operation
-      severity: warning
-      titleTemplate: "CPU running at low frequency: avg {avg_freq_mhz}MHz"
-      descriptionTemplate: "CPU frequency below optimal ({avg_freq_mhz}MHz vs {max_freq_mhz}MHz capacity)"
-      evidenceFields: [avg_freq_mhz, max_freq_mhz, time_at_low_freq_pct]
-
-    - id: inefficient_cluster_usage
-      severity: warning
-      titleTemplate: "Inefficient cluster usage: {small_core_pct}% on small cores"
-      descriptionTemplate: "Performance-critical work running on efficiency cores"
-      evidenceFields: [small_core_pct, big_core_pct, total_cpu_time_ms]
-
-    - id: frequent_frequency_changes
-      severity: info
-      titleTemplate: "Frequent frequency changes: {change_count} transitions"
-      descriptionTemplate: "CPU frequency changing rapidly, possible governor issue"
-      evidenceFields: [change_count, avg_duration_between_changes_ms]
-
-  suggestionsSchema:
-    - id: check_thermal_zone
-      condition: "thermal_throttling == true"
-      targetModule: thermal_module
-      questionTemplate: "What is causing thermal throttling?"
-      paramsMapping: {}
-      priority: 1
-
-    - id: check_power_state
-      condition: "low_power_mode == true"
-      targetModule: power_module
-      questionTemplate: "Is power saving mode affecting CPU performance?"
-      paramsMapping: {}
-      priority: 2
 
 prerequisites:
   modules:

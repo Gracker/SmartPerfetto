@@ -69,7 +69,6 @@ Key files:
 | `backend/src/agentRuntime/runtimeEvidenceContext.ts` | issued in-memory evidence continuity with exact scope and run leases |
 | `backend/src/agentRuntime/engines/claude/claudeVerifier.ts` | shared structured delivery diagnostics; no additional semantic LLM call |
 | `backend/src/agentv3/sessionStateSnapshot.ts` | persisted runtime state snapshot |
-| `backend/src/services/agentResultNormalizer.ts` | normalizes final result and preserves report/client boundaries |
 | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts` | canonical body/claim extraction and the single asynchronous finalization boundary |
 | `backend/src/services/finalSemanticAssessment.ts` | bounded no-tool semantic review of the current body and declarations |
 | `backend/src/services/evidence/evidenceCapture.ts`, `evidenceReadView.ts` | original execution witnesses and bounded reads of retained captures |
@@ -413,6 +412,17 @@ Keep these boundaries intact:
   silently degrades plan phase attribution to semantic inference and leaves
   tool success unknown. Pass `resultFacts` from `readToolResultFacts(...)` at
   the runtime call site; `resultText` is a fallback, not a source of truth.
+  The same cap hides whether the model ever received a trailing hint such as
+  `vendorOverride`. `RunManifest.toolResults` (`runtimeToolResultAudit.ts`)
+  answers that: `withRuntimeToolConcurrency`, the outermost shared tool
+  boundary after every product wrapper including pacing reminders, records
+  per call the tool, the call id when the adapter supplies one (OpenAI, Pi,
+  OpenCode), outcome, receipt facts (plan phase id presence only), text size
+  before adapter serialization, and for each field in
+  `RUNTIME_TOOL_RESULT_AUDITED_FIELDS` whether its serialized key and value sit
+  verbatim in that text. It copies no payload values; add a new model-steering
+  payload field to that list. It proves the handoff to the runtime adapter,
+  not what the provider tokenized: runtime-native caps are outside its view.
 - Answer drafts are display-only and capability-gated. A runtime may stream
   answer text before finalization only under `agentRuntime/answerDraftStream.ts`:
   every `answer_token` carries `runId` + a monotone `attempt`, and an
@@ -522,7 +532,8 @@ identifiers, secrets, or unbounded provider content. Classification and the
 review are recorded for every runtime through the shared transport wrappers;
 per-response answer calls are recorded by the OpenAI runtime. The CLI, whose
 manifest store is not durable, writes the sealed receipt to
-`turns/NNN.runtime-performance.json`. Do not
+`turns/NNN.runtime-performance.json` and the tool-result handoff receipt to
+`turns/NNN.tool-results.json` (skill ids dropped for private runs). Do not
 add model, provider snapshot, usage, or performance fields to public SSE as an
 incidental benchmark shortcut; any public contract expansion needs its own
 privacy and compatibility review.
@@ -595,8 +606,11 @@ Important whitelisted examples:
   for a resolved `scene_wide` read, also prefetches memory-type context
   (knowledge base, patterns, cases, SQL fix pairs); `trace_facts`, for a bounded
   question or an unavailable classification, still detects the focus app,
-  architecture, vendor and trace completeness, because a narrow question is
-  still asked about a trace the model has never seen. `allowAutomaticPrefetch`
+  architecture and trace completeness, because a narrow question is
+  still asked about a trace the model has never seen. The device vendor is not
+  a preflight step: `services/traceVendor/traceVendorResolver.ts` reads it from
+  trace `metadata` (never slice names) only when an `invoke_skill` target has a
+  vendor override, after that Skill's own queries. `allowAutomaticPrefetch`
   now means the memory tier only. Planning is on demand; an explicitly submitted
   plan remains binding.
 

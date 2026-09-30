@@ -5,7 +5,7 @@
  * that global list-style evidence is surfaced in stable layers.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import {
   SkillEvaluator,
   createSkillEvaluator,

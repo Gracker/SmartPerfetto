@@ -93,6 +93,7 @@ jest.mock('../../services/skillEngine/skillLoader', () => ({
       origin: name.endsWith('_identity_skill') ? 'external_pack' : 'built_in',
     })),
     getVendorOverride: jest.fn(() => undefined),
+    hasVendorOverrides: jest.fn(() => false),
     getAllSkills: jest.fn(() => [
       { name: 'scrolling_analysis', type: 'composite', description: 'Scrolling analysis' },
       { name: 'cpu_analysis', type: 'atomic', description: 'CPU analysis' },
@@ -316,6 +317,7 @@ import {DeterministicFixtureSourceAccessService} from '../../testSupport/determi
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import {resolveFocusAppTarget, type FocusAppTarget} from '../../agentRuntime/focusAppTarget';
 import {createAnalysisHistoryReader, type AnalysisHistoryReader} from '../../agentRuntime/analysisHistory';
+import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendorHintParityFixture';
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -530,6 +532,7 @@ function createRuntimeRegistrySnapshotForTest() {
       getFragmentCache: jest.fn(() => new Map()),
       getSkill: jest.fn(() => undefined),
       getVendorOverride: jest.fn(() => undefined),
+      hasVendorOverrides: jest.fn(() => false),
     },
     strategyRegistry: {} as never,
   };
@@ -678,6 +681,14 @@ function analysisSnapshot(
 // ── Tests ────────────────────────────────────────────────────────────────
 
 describe('createClaudeMcpServer', () => {
+  it.each([
+    ['artifact results', {}],
+    ['inline results', {artifactStore: undefined, lightweight: true}],
+  ] as const)('adds the vendor override hint only after the Skill queries and only within the wait bound (%s)',
+    async (_label, runtimeOptions) => {
+      await expectRuntimeVendorHintParity({
+        createMcpServer: createClaudeMcpServer, runtimeOptions: runtimeOptions as never});
+    });
   it('does not accept a model-supplied backend evidence completion marker', async () => {
     const {tools, analysisPlan} = createTestServer();
     const result = await callTool(tools, 'submit_plan', {
@@ -970,6 +981,7 @@ describe('createClaudeMcpServer', () => {
         getFragmentCache: jest.fn(() => new Map([['fragments/external.sql', 'external AS (SELECT 1 AS value)']])),
         getSkill: jest.fn(() => ({ type: 'atomic', name: 'external_skill' })),
         getVendorOverride: jest.fn(() => undefined),
+        hasVendorOverrides: jest.fn(() => false),
         getSkillOrigin: jest.fn(() => ({
           origin: 'external_pack',
           packId: 'local-pack',
@@ -1836,6 +1848,26 @@ describe('createClaudeMcpServer', () => {
 
       expect(result.success).toBe(false);
       expect(result.error).toContain('offset must be an integer');
+    });
+
+    it('attributes a pagination rejection to its fetch call and active phase', async () => {
+      const { tools } = createTestServer();
+      await callTool(tools, 'submit_plan', {
+        phases: [{ id: 'p1', name: '读取明细', goal: '分页读取前序表', expectedTools: ['fetch_artifact'] }],
+        successCriteria: 'Rejected pagination keeps its attribution',
+      });
+      await callTool(tools, 'update_plan_phase', { phaseId: 'p1', status: 'in_progress' });
+
+      const result = await callTool(tools, 'fetch_artifact', {
+        artifactId: 'art-1',
+        detail: 'rows',
+        offset: 'bad',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.sourceToolCallId).toContain('fetch_artifact:');
+      expect(result.paramsHash).toEqual(expect.any(String));
+      expect(result.planPhaseId).toBe('p1');
     });
 
     it('separates original artifact attribution from the current fetch invocation', async () => {
@@ -4355,7 +4387,7 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('selects the unique declared tool even when another phase is active', async () => {
-      const { tools, emittedUpdates, analysisPlan } = createTestServer();
+      const { tools, emittedUpdates } = createTestServer();
       await callTool(tools, 'submit_plan', {
         phases: [
           { id: 'p1', name: '启动概览', goal: '获取启动事件和概览', expectedTools: ['execute_sql'] },
@@ -5488,6 +5520,7 @@ describe('createClaudeMcpServer', () => {
               getFragmentCache: jest.fn(() => new Map()),
               getSkill: jest.fn(() => undefined),
               getVendorOverride: jest.fn(() => undefined),
+              hasVendorOverrides: jest.fn(() => false),
             },
             registryFingerprint: 'deferred-registry',
             enabledPacks: [],
@@ -6939,7 +6972,7 @@ describe('createClaudeMcpServer', () => {
 
   describe('revise_plan (P1-3)', () => {
     it('should allow revising a plan', async () => {
-      const { tools, analysisPlan, toolDefinitions } = createTestServer();
+      const { tools, analysisPlan } = createTestServer();
       // Submit initial plan
       await callTool(tools, 'submit_plan', {
         phases: [

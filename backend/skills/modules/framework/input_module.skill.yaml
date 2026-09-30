@@ -4,8 +4,8 @@
 
 # Framework Input Module Expert
 #
-# Provides input event analysis capabilities for cross-domain experts.
-# Answers questions about touch latency, input dispatch, and click response.
+# Provides input event analysis capabilities.
+# Covers touch latency, input dispatch, and click response.
 
 name: input_module
 version: "1.0"
@@ -25,65 +25,6 @@ module:
     - input_reader
     - input_dispatcher
     - input_consumer
-  relatedModules:
-    - framework_wms
-    - framework_surfaceflinger
-    - app_third_party
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: click_response_analysis
-      questionTemplate: "What is the click response time for package {package}?"
-      requiredParams: [package]
-      optionalParams: [start_ts, end_ts]
-      description: "Analyze touch-to-response latency"
-
-    - id: input_dispatch_latency
-      questionTemplate: "Why was input dispatch slow at timestamp {ts}?"
-      requiredParams: [ts]
-      description: "Analyze input dispatch delays"
-
-    - id: touch_event_flow
-      questionTemplate: "What happened to touch event at {ts}?"
-      requiredParams: [ts]
-      description: "Trace touch event through the system"
-
-  findingsSchema:
-    - id: high_input_latency
-      severity: critical
-      titleTemplate: "High input latency: {latency_ms}ms"
-      descriptionTemplate: "Touch-to-response exceeded threshold ({latency_ms}ms > 100ms)"
-      evidenceFields: [latency_ms, dispatch_ms, app_handling_ms]
-
-    - id: input_dispatch_delay
-      severity: warning
-      titleTemplate: "Input dispatch delayed by {dispatch_ms}ms"
-      descriptionTemplate: "InputDispatcher took {dispatch_ms}ms to dispatch event"
-      evidenceFields: [dispatch_ms, queue_depth]
-
-    - id: app_input_handling_slow
-      severity: warning
-      titleTemplate: "App input handling slow: {app_handling_ms}ms"
-      descriptionTemplate: "App took {app_handling_ms}ms to handle input event"
-      evidenceFields: [app_handling_ms, main_thread_state]
-
-  suggestionsSchema:
-    - id: check_main_thread
-      condition: "app_handling_ms > 50"
-      targetModule: scheduler_module
-      questionTemplate: "Why was main thread slow during input handling?"
-      paramsMapping:
-        package: package
-      priority: 1
-
-    - id: check_binder_during_input
-      condition: "binder_during_input > 0"
-      targetModule: binder_module
-      questionTemplate: "What Binder calls happened during input handling?"
-      paramsMapping:
-        package: package
-      priority: 2
 
 prerequisites:
   modules:

@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {resolveTraceCase} from '../../../../utils/traceCorpus';
+import {resolveTraceCase} from '../../../../../tests/helpers/traceCorpus';
 import {EvaluationRunner} from '../../../../../tests/agent-eval/evaluationRunner';
 import {loadAllScenarios} from '../../../../../tests/agent-eval/scenarioLoader';
 import {CodeGrader} from '../codeGrader';

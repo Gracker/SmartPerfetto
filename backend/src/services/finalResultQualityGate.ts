@@ -189,13 +189,6 @@ function isFallbackSummaryHeading(heading: string): boolean {
     normalized === 'evidence summary by phase';
 }
 
-function isHeadingLine(line: string, labelPattern: string): boolean {
-  return new RegExp(
-    `^\\s*(?:#{1,3}\\s*)?(?:${labelPattern})(?:\\s*[：:])?\\s*$`,
-    'i',
-  ).test(line);
-}
-
 function matchHeadingWithTail(line: string, labelPattern: string): string | undefined {
   const match = line.match(new RegExp(
     `^\\s*(?:#{1,6}\\s*)?(?:${labelPattern})(?:\\s*[：:])?\\s*(.*)$`,

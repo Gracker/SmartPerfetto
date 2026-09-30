@@ -13,7 +13,7 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { skillRegistry, ensureSkillRegistryInitialized, getSkillsDir } from '../services/skillEngine/skillLoader';
-import { SkillDefinition, VendorType } from '../services/skillEngine/types';
+import { SkillDefinition } from '../services/skillEngine/types';
 import { ErrorResponse } from '../types';
 import { toSingleString } from '../utils/httpValue';
 

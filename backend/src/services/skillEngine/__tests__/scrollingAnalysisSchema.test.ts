@@ -863,7 +863,8 @@ describe('scrolling_analysis skill schema', () => {
       };
 
       expect(row.target_process).toBe('com.android.systemui');
-      expect(row.total_input_events).toBe(4);
+      // Four rows, three physical events: the navigation bar repeats event 1.
+      expect(row.total_input_events).toBe(3);
     } finally {
       db.close();
     }
@@ -962,6 +963,35 @@ describe('scrolling_analysis skill schema', () => {
       }
       expect(run('input_data_check', {packageName: 'com.example.absent'})).toMatchObject({
         input_data_status: 'unavailable', total_input_events: 0, target_processes: 0,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('counts an observer target in physical events across its channels, latency per delivery', () => {
+    // systemui observes the app's touches on a gesture monitor and its
+    // navigation bar; events 1-2 are slow and map both channels to the same
+    // exact frame, event 3 to a speculative one.
+    const db = createMonitorCopyInputFixture(['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].flatMap(
+      (action, index): InputDelivery[] => [
+        [1, 'com.example.app', 'app (server)', String(index + 1), action, 1000000],
+        [2, 'com.android.systemui', '[Gesture Monitor] swipe (server)', String(index + 1), null, 3000000],
+        [2, 'com.android.systemui', 'NavigationBar0 (server)', String(index + 1), null, 3000000],
+      ]));
+    try {
+      db.exec(`UPDATE android_input_events SET handling_latency_dur = 10000000, frame_id = 7,
+        is_speculative_frame = 0 WHERE upid = 2 AND input_event_id IN ('1', '2');
+        UPDATE android_input_events SET frame_id = 8, is_speculative_frame = 1
+        WHERE upid = 2 AND input_event_id = '3'`);
+      const check = db.prepare(renderScrollingSql('input_data_check', 'com.android.systemui')).get();
+      const summary = db.prepare(renderScrollingSql('input_latency_summary', 'com.android.systemui')).get();
+
+      expect(check).toMatchObject({total_input_events: 3, move_events: 0, frame_matched_events: 2});
+      // Two events on frame 7 is no backlog, however many channels saw them.
+      expect(summary).toMatchObject({
+        target_process: 'com.android.systemui', total_input_events: 3, move_events: 0, input_backlog_frames: 0,
+        slow_handling_events: 2, speculative_frame_matches: 1, max_handling_ms: 10,
       });
     } finally {
       db.close();

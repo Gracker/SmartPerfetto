@@ -8,6 +8,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const {pathToFileURL} = require('url');
+const net = require('net');
 const { spawnSync } = require('child_process');
 const {createHash} = require('crypto');
 
@@ -80,7 +81,7 @@ async function main() {
     NODE_ENV: 'test',
     NO_COLOR: '1',
   };
-  writeEnvFile(envFile, {
+  const envFileValues = {
     NODE_ENV: baseEnv.NODE_ENV,
     SMARTPERFETTO_HOME: baseEnv.SMARTPERFETTO_HOME,
     SMARTPERFETTO_AGENT_RUNTIME: baseEnv.SMARTPERFETTO_AGENT_RUNTIME,
@@ -90,12 +91,13 @@ async function main() {
     OPENAI_BASE_URL: baseEnv.OPENAI_BASE_URL,
     OPENAI_MODEL: baseEnv.OPENAI_MODEL,
     TRACE_PROCESSOR_PATH: baseEnv.TRACE_PROCESSOR_PATH,
-  });
+  };
+  writeEnvFile(envFile, envFileValues);
 
   const runCli = (name, args, options = {}) => {
     const fullArgs = options.noSessionDir ? args : ['--env-file', envFile, '--session-dir', sessionHome, ...args];
     const result = runProcess(name, cli.command, [...cli.prefixArgs, ...fullArgs], {
-      cwd: repoRoot,
+      cwd: options.cwd ?? repoRoot,
       env: { ...baseEnv, ...(options.env || {}) },
       timeoutMs: options.timeoutMs ?? 120000,
       expectExit: options.expectExit ?? 0,
@@ -125,6 +127,32 @@ async function main() {
   assert.equal(doctor.ok, true);
   assert.equal(doctor.runtime.kind, 'openai-agents-sdk');
   assert.equal(doctor.cliHome, sessionHome);
+
+  // Env-first entry: invoked from another directory, relative --env-file,
+  // --session-dir and trace arguments resolve against that directory, and the
+  // env file reaches module-scope config (the trace processor port pool)
+  // before any module reads it.
+  const invokeDir = path.join(workRoot, 'invoke');
+  const relativeHome = path.join(invokeDir, 'relative-home');
+  fs.mkdirSync(invokeDir);
+  fs.copyFileSync(tracePath, path.join(invokeDir, 'trace.pftrace'));
+  const pinnedPort = await findFreePort();
+  writeEnvFile(path.join(invokeDir, 'relative.env'), {
+    ...envFileValues,
+    TP_PORT_MIN: pinnedPort,
+    TP_PORT_MAX: pinnedPort,
+  });
+  const relativeArgs = ['--env-file', 'relative.env', '--session-dir', 'relative-home'];
+  runCli('relative help', [...relativeArgs, '--help'], { noSessionDir: true, cwd: invokeDir });
+  assert(!fs.existsSync(relativeHome), '--help must not create the CLI home');
+  const relativeQuery = runCli(
+    'relative query json',
+    [...relativeArgs, 'query', '--format', 'json', 'trace.pftrace', '--sql', 'select count(*) as slice_count from slice'],
+    { noSessionDir: true, cwd: invokeDir, timeoutMs: 180000 },
+  );
+  assert.equal(parseJson(relativeQuery.stdout).ok, true);
+  assert.match(relativeQuery.stderr, new RegExp(`--http-port ${pinnedPort}\\b`));
+  assertCliTraceCopies(relativeHome, 1);
 
   const providers = parseJson(runCli('provider list', ['provider', 'list', '--format', 'json']).stdout);
   assert.equal(providers.ok, true);
@@ -668,6 +696,17 @@ function assertFileContains(filePath, needle, label) {
 function assertNoSecret(result, name) {
   const combined = `${result.stdout}\n${result.stderr}`;
   assert(!combined.includes(rawSecret), `${name} leaked CLI E2E secret`);
+}
+
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
 }
 
 function writeEnvFile(filePath, values) {

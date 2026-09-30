@@ -10,6 +10,7 @@ import {
   requireWorkspaceRouteContext,
 } from '../../middleware/workspaceRouteContext';
 import traceConfigProposalRoutes from '../traceConfigProposalRoutes';
+import {LOADING_ROUTING_CASES} from '../../../tests/helpers/traceConfigProposalRoutingCases';
 
 const originalEnv = {
   apiKey: process.env.SMARTPERFETTO_API_KEY,
@@ -83,6 +84,16 @@ describe('trace config proposal routes', () => {
     });
     expect(res.body.proposal.config.textproto).toContain('duration_ms: 10000');
     expect(res.body.proposal.config.textproto).toContain('atrace_categories: "dalvikviktime"');
+  });
+
+  it.each(LOADING_ROUTING_CASES)('routes "$request" to $preset over HTTP ($why)', async ({request: text, preset}) => {
+    const res = await authHeaders(
+      request(makeApp())
+        .post('/api/workspaces/workspace-a/trace-config/proposals')
+        .send({request: text}),
+    );
+    expect(res.status).toBe(200);
+    expect(res.body.proposal.preset).toBe(preset);
   });
 
   it('requires trace write permission for enterprise SSO callers', async () => {

@@ -66,7 +66,11 @@ export interface SceneReconstructSession extends ManagedAssistantSession {
   workspaceId?: string;
   userId?: string;
   logger: SessionLogger;
-  result?: AgentRuntimeAnalysisResult;
+  /**
+   * Only the fields routing needs. Bodies and claims reach a client solely
+   * through `projectSceneResult`, which applies the owner projection.
+   */
+  result?: Pick<AgentRuntimeAnalysisResult, 'sceneTimeline'>;
   /** Set by SceneStoryService once the pipeline completes (fresh or cached). */
   sceneStoryReport?: SceneReport;
   hypotheses: Hypothesis[];
@@ -145,10 +149,10 @@ interface RegisterSceneReconstructRoutesDeps<TSession extends SceneReconstructSe
   streamSceneAnalysis(req: express.Request, res: express.Response, sessionId: string): Promise<void>;
   checkSceneHistory(req: express.Request, res: express.Response, sessionId: string): Promise<boolean>;
   projectSceneResult(session: TSession): AgentRuntimeAnalysisResult | undefined;
+  projectSceneError(session: TSession): string | undefined;
   cancelSceneRun(sessionId: string, runId: string): Promise<{status: number; body: Record<string, unknown>}>;
   isSceneReplayOnlyQuery: (query: string) => boolean;
   buildSceneReplayNarrative: (scenes: any[]) => string;
-  normalizeNarrativeForClient: (narrative: string) => string;
   /** Historical report access and publication adapter; execution uses shared dispatch. */
   sceneStoryService: SceneStoryService;
 }
@@ -375,44 +379,35 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       analysisId,
       status: session.status,
     };
+    // Every body comes from `projectSceneResult`: the stored result for this
+    // run, owner-projected exactly as `/:sessionId/status` serves it.
     const canonical = deps.projectSceneResult(session);
     if (canonical?.sceneTimeline) {
       response.result = {narrative: canonical.conclusion, partial: canonical.partial,
         sceneTimeline: projectSceneTimelineForClient(canonical.sceneTimeline), sceneReport: canonical.sceneReport,
         confidence: canonical.confidence, executionTimeMs: canonical.totalDurationMs,
         scenesCount: canonical.sceneTimeline.segments.length};
-      if (session.status === 'failed') response.error = session.error;
-      return res.json(response);
-    }
-
-    // Two completion shapes — legacy agent-driven (session.result) and the
-    // new Scene Story pipeline (session.sceneStoryReport). Surface whichever
-    // is present so polling clients can see "done" for both flows.
-    if (session.status === 'completed') {
-      if (session.result) {
-        const narrative = deps.isSceneReplayOnlyQuery(session.query)
+    } else if (session.status === 'completed' && canonical) {
+      // An agent-driven run without a scene timeline.
+      response.result = {
+        narrative: deps.isSceneReplayOnlyQuery(session.query)
           ? deps.buildSceneReplayNarrative(session.scenes || [])
-          : deps.normalizeNarrativeForClient(session.result.conclusion);
-        response.result = {
-          narrative,
-          confidence: session.result.confidence,
-          executionTimeMs: session.result.totalDurationMs,
-          scenesCount: session.scenes?.length || 0,
-          tracksCount: session.trackEvents?.length || 0,
-        };
-      } else {
-        const sceneStoryReport = session.sceneStoryReport;
-        if (sceneStoryReport) {
-          response.result = projectSceneStoryStatusResult(
-            sceneStoryReport,
-            session.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
-          );
-        }
-      }
+          : canonical.conclusion,
+        confidence: canonical.confidence,
+        executionTimeMs: canonical.totalDurationMs,
+        scenesCount: session.scenes?.length || 0,
+        tracksCount: session.trackEvents?.length || 0,
+      };
+    } else if (session.status === 'completed' && session.sceneStoryReport) {
+      // The Scene Story pipeline.
+      response.result = projectSceneStoryStatusResult(
+        session.sceneStoryReport,
+        session.outputLanguage ?? DEFAULT_OUTPUT_LANGUAGE,
+      );
     }
 
     if (session.status === 'failed') {
-      response.error = session.error;
+      response.error = deps.projectSceneError(session);
     }
 
     res.json(response);

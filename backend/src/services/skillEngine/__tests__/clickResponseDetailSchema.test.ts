@@ -8,7 +8,10 @@ import path from 'path';
 import Database from 'better-sqlite3';
 import {describe, expect, it} from '@jest/globals';
 import yaml from 'js-yaml';
-import {completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
+import {
+  completeAndroidInputEventsFixture,
+  createOwnMonitorInputFixture,
+} from '../../../../tests/helpers/androidInputEventsFixture';
 import {renderStepSql, withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
 
 const skillPath = path.join(
@@ -102,8 +105,9 @@ describe('click_response_analysis target process selection', () => {
   it('keeps an explicit package authoritative when its rows are all monitor copies', () => {
     const db = createFixture();
     try {
+      // Three rows, two physical events: the navigation bar repeats event 1.
       expect(selectTarget(db, 'com.android.systemui')).toEqual([
-        {process_name: 'com.android.systemui', event_count: 3, app_delivery_events: 0, max_total_ms: 3},
+        {process_name: 'com.android.systemui', event_count: 2, app_delivery_events: 0, max_total_ms: 3},
       ]);
     } finally {
       db.close();
@@ -178,35 +182,7 @@ describe('click_response_analysis target process selection', () => {
       db.close();
     }
   });
-  // A launcher owns its activity window and its own gesture monitor. Events 1-3
-  // resolve an action on the window and are copied to the monitor; events 4-5
-  // resolve no action anywhere and reach both channels; event 6 (FOCUS) reaches
-  // only the window. systemui observes 1-5 on its own monitor.
-  const createOwnMonitorFixture = (): Database.Database => {
-    const db = new Database(':memory:');
-    db.exec(`
-      CREATE TABLE android_input_events (
-        upid INTEGER, process_name TEXT, event_channel TEXT, normalized_event_channel TEXT, input_event_id TEXT,
-        event_type TEXT, event_action TEXT, total_latency_dur INTEGER,
-        dispatch_ts INTEGER, receive_ts INTEGER, receive_dur INTEGER
-      );
-    `);
-    const insert = db.prepare('INSERT INTO android_input_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 10)');
-    const deliver = (upid: number, processName: string, channel: string, id: number,
-      eventType: string, action: string | null, latencyMs: number) =>
-      insert.run(upid, processName, channel, channel, String(id), eventType, action, latencyMs * 1_000_000,
-        id * 100, id * 100 + 5);
-    const launcher = 'com.example.launcher';
-    ['ACTION_DOWN', 'ACTION_MOVE', 'ACTION_UP'].forEach((action, index) =>
-      deliver(1, launcher, 'Launcher (server)', index + 1, 'MOTION', action, 2));
-    [4, 5].forEach(id => deliver(1, launcher, 'Launcher (server)', id, 'MOTION', null, 4));
-    deliver(1, launcher, 'Launcher (server)', 6, 'FOCUS', null, 1);
-    [1, 2, 3, 4, 5].forEach(id => deliver(1, launcher, '[Gesture Monitor] swipe-up (server)', id, 'MOTION', null, 9));
-    [1, 2, 3, 4, 5].forEach(id =>
-      deliver(2, 'com.android.systemui', '[Gesture Monitor] edge-swipe (server)', id, 'MOTION', null, 3));
-    completeAndroidInputEventsFixture(db);
-    return db;
-  };
+  const createOwnMonitorFixture = () => createOwnMonitorInputFixture().db;
 
   it('analyzes only the target application channel when it also owns a monitor', () => {
     const db = createOwnMonitorFixture();
@@ -273,7 +249,52 @@ describe('click_response_analysis target process selection', () => {
       // Without action evidence no channel can be shown to be a monitor.
       db.exec('UPDATE android_input_events SET event_action = NULL');
       const [target] = selectTarget(db, 'com.example.launcher');
-      expect(target).toMatchObject({event_count: 11, app_delivery_events: 0});
+      // Monitor rows stay analyzed (their 9 ms latency counts); events are counted once.
+      expect(target).toMatchObject({event_count: 6, app_delivery_events: 0, max_total_ms: 9});
+    } finally {
+      db.close();
+    }
+  });
+
+  it('counts a target\'s events once, over the physical events its analysis reads', () => {
+    // Event 7 is a tap on another app that only the launcher's own monitor also
+    // observed; systemui observes 1-5 on a second channel, its navigation bar.
+    const {db, deliver} = createOwnMonitorInputFixture();
+    try {
+      deliver(3, 'com.example.app', 'app (server)', 7, 'MOTION', 'ACTION_DOWN', 2);
+      deliver(1, 'com.example.launcher', '[Gesture Monitor] swipe-up (server)', 7, 'MOTION', null, 9);
+      [1, 2, 3, 4, 5].forEach(id => deliver(2, 'com.android.systemui', 'NavigationBar0 (server)', id, 'MOTION', null, 5));
+      const checkInput = (packageName: string) =>
+        db.prepare(renderStep('check_input_data', {package: packageName})).all();
+
+      // The launcher is measured by its window: 1-6, never 7.
+      expect(checkInput('com.example.launcher')).toEqual([{event_count: 6, status: 'available'}]);
+      const [launcher] = selectTarget(db, 'com.example.launcher');
+      expect(launcher).toMatchObject({event_count: 6, app_delivery_events: 3, max_total_ms: 4});
+      expect(runForTarget(db, 'input_latency_overview', launcher)).toEqual([
+        expect.objectContaining({total_events: 6}),
+      ]);
+
+      // An observer keeps both channels, but each event counts once; the
+      // per-window breakdown and latency stay per delivery.
+      expect(checkInput('com.android.systemui')).toEqual([{event_count: 5, status: 'available'}]);
+      const [systemui] = selectTarget(db, 'com.android.systemui');
+      expect(systemui).toMatchObject({event_count: 5, app_delivery_events: 0, max_total_ms: 5});
+      expect(runForTarget(db, 'input_latency_overview', systemui)).toEqual([
+        expect.objectContaining({total_events: 5, avg_total_ms: 4, max_total_ms: 5}),
+      ]);
+      expect(runForTarget(db, 'latency_by_window', systemui).map(row => [row.window, row.count])).toEqual(
+        expect.arrayContaining([['[Gesture Monitor] edge-swipe (server)', 5], ['NavigationBar0 (server)', 5]]));
+      expect(runForTarget(db, 'latency_by_event_type', systemui)).toEqual([
+        expect.objectContaining({event_type: 'MOTION', event_action: null, count: 5, max_latency_ms: 5}),
+      ]);
+      // Each event lands in one bucket, by its slowest analyzed delivery.
+      expect(runForTarget(db, 'latency_distribution', systemui)).toEqual([
+        {latency_bucket: '<16ms (极快)', count: 5, percent: 100},
+      ]);
+
+      expect(checkInput('')).toEqual([{event_count: 7, status: 'available'}]);
+      expect(checkInput('com.example.absent')).toEqual([{event_count: 0, status: 'unavailable'}]);
     } finally {
       db.close();
     }

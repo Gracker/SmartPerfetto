@@ -30,6 +30,8 @@ import type { RuntimeToolResult, SharedToolSpec } from '../runtimeToolSpec';
 import {createRuntimeToolResult, readRuntimeToolResultFacts} from '../runtimeToolResult';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {createClaudeMcpServer} from '../../agentv3/claudeMcpServer';
+import * as claudeMcpModule from '../../agentv3/claudeMcpServer';
+import {expectRuntimeVendorHintParity} from './vendorHintParityFixture';
 import {
   createRuntimeSourceFinalizationFixture,
   SOURCE_FINALIZATION_CANARY,
@@ -284,6 +286,7 @@ function createEffectiveRuntimeRegistrySnapshot(): EffectiveRuntimeRegistrySnaps
     getSkillOrigin: () => undefined,
     getAppliedOverlayIds: () => [],
     getVendorOverride: () => undefined,
+    hasVendorOverrides: () => false,
     getVendorOverridesForSkill: () => [],
     getVendorOverrideLoadIssues: () => [],
     findMatchingSkill: () => undefined,
@@ -1059,6 +1062,28 @@ describe('experimental Pi agent-core runtime contract', () => {
       terminationReason: 'plan_incomplete',
       terminationMessage: 'Pi agent-core runtime completed through the capability-limited public preview path.',
     });
+  });
+
+  it('gives invoke_skill the shared best-effort vendor hint from its own MCP options', async () => {
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      { kind: 'pi-agent-core', source: 'env' },
+      {
+        env: { [PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON },
+        moduleLoader: async () => ({ Agent: FakePiAgent }),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
+      },
+    );
+    const mcp = jest.spyOn(claudeMcpModule, 'createClaudeMcpServer');
+    let runtimeOptions: Parameters<typeof createClaudeMcpServer>[0];
+    try {
+      await runtime.analyze('分析启动性能', 'session-pi-vendor-hint', 'trace-pi', {analysisMode: 'full'});
+      runtimeOptions = mcp.mock.calls[0][0];
+    } finally {
+      mcp.mockRestore();
+    }
+    await expectRuntimeVendorHintParity({
+      createMcpServer: createClaudeMcpServer, runtimeOptions});
   });
 
   it('builds a real Pi analysis context from shared SmartPerfetto prompt and tools', async () => {

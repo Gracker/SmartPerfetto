@@ -5,8 +5,8 @@
 import {randomUUID} from 'node:crypto';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import {deriveConclusionContract} from '../agent/core/conclusionGenerator';
-import {parseConclusionContractSidecar, parseTypedConclusionContractJson, parseDeclaredConclusionClaims,
-  parseDeclaredRelationProposals, declaredFields, declaredContractForResult, type ConclusionContract, type ConclusionBindingEligibility,
+import {parseConclusionContractSidecar, parseTypedConclusionContractJson,
+  declaredFields, declaredContractForResult, type ConclusionContract, type ConclusionBindingEligibility,
   type ConclusionContractDeclarationParseResult, type ConclusionContractSidecarParseResult,
   MAX_CONCLUSION_STRUCTURE_DETAILS, isConclusionContractStructureDetail,
   MAX_RELATION_PROPOSAL_DIAGNOSTICS, isConclusionRelationProposalDiagnostic, CONCLUSION_PARSE_ISSUE_CODES,
@@ -17,8 +17,6 @@ import {parseConversationResponseWithProjection, type ConversationEvidenceRef,
   type ConversationResponseProjection, type ConversationRuntimeOutcome} from '../assistant/contracts/conversationContract';
 import {analysisDeliveryFingerprint, sameAnalysisCandidate,
   type AnalysisDeliveryContext} from '../types/analysisDelivery';
-import {sanitizeSourceUseDecision, sanitizeSourceReferences, sanitizeSourceClaimBindings} from './codebase/sourceUseDecision';
-import type {CaseKnowledgeReportRecommendation, CaseKnowledgeRecommendation} from '../types/caseKnowledge';
 import {isIssuedNativeConclusionDeclaration, projectConclusionContractForDisplay,
   type NativeConclusionDeclaration} from './security/conclusionProtocolProjection';
 import {issueCanonicalAnalysisProjection, type CanonicalAnalysisProjection} from './canonicalAnalysisProjection';

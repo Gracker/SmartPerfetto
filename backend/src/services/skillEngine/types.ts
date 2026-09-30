@@ -478,20 +478,13 @@ export interface SkillDefinition {
   }>;
 
   // ==========================================================================
-  // Module Expert System fields (Phase 1 - Cross-Domain Expert System)
+  // Module metadata
   // ==========================================================================
 
   /**
-   * Module metadata - identifies this skill as a module expert
-   * When present, this skill can be invoked by cross-domain experts
+   * Module metadata - the architecture layer and component this skill covers
    */
   module?: ModuleMetadata;
-
-  /**
-   * Dialogue interface - how cross-domain experts interact with this module
-   * Defines capabilities (questions it can answer), findings schemas, and suggestions
-   */
-  dialogue?: DialogueInterface;
 }
 
 // =============================================================================
@@ -710,19 +703,7 @@ export interface AIResponseEvent extends SkillEvent {
 }
 
 // =============================================================================
-// Vendor Types
-// =============================================================================
-
-export type VendorType = 'oppo' | 'vivo' | 'xiaomi' | 'honor' | 'transsion' | 'mtk' | 'qualcomm' | 'samsung' | 'aosp' | 'unknown';
-
-export interface VendorDetectionResult {
-  vendor: VendorType;
-  confidence: ConfidenceLevel;
-  matchedPatterns?: string[];
-}
-
-// =============================================================================
-// Module Expert Types (Phase 1 - Cross-Domain Expert System)
+// Module Metadata Types
 // =============================================================================
 
 /**
@@ -740,70 +721,6 @@ export interface ModuleMetadata {
   component: string;
   /** Sub-components this module covers */
   subsystems?: string[];
-  /** Related modules that may be consulted */
-  relatedModules?: string[];
-}
-
-/**
- * Dialogue capability - a question type this module can answer
- */
-export interface DialogueCapability {
-  /** Unique capability ID */
-  id: string;
-  /** Question template with placeholders */
-  questionTemplate: string;
-  /** Required parameters for this question */
-  requiredParams: string[];
-  /** Optional parameters */
-  optionalParams?: string[];
-  /** Description of what this capability analyzes */
-  description?: string;
-}
-
-/**
- * Finding schema - structured finding output format
- */
-export interface FindingSchema {
-  /** Finding type ID */
-  id: string;
-  /** Severity level */
-  severity: 'info' | 'warning' | 'critical';
-  /** Title template with placeholders */
-  titleTemplate: string;
-  /** Description template */
-  descriptionTemplate?: string;
-  /** Fields to include as evidence */
-  evidenceFields?: string[];
-}
-
-/**
- * Suggestion schema - suggests next analysis steps
- */
-export interface SuggestionSchema {
-  /** Suggestion ID */
-  id: string;
-  /** Condition expression to trigger this suggestion */
-  condition: string;
-  /** Target module to consult */
-  targetModule: string;
-  /** Question template for the target module */
-  questionTemplate: string;
-  /** Parameter mapping from current results to target params */
-  paramsMapping?: Record<string, string>;
-  /** Priority (lower = higher priority) */
-  priority?: number;
-}
-
-/**
- * Dialogue interface - how cross-domain experts interact with this module
- */
-export interface DialogueInterface {
-  /** Questions this module can answer */
-  capabilities?: DialogueCapability[];
-  /** Structured findings this module produces */
-  findingsSchema?: FindingSchema[];
-  /** Suggestions for follow-up analysis */
-  suggestionsSchema?: SuggestionSchema[];
 }
 
 // =============================================================================

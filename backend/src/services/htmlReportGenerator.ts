@@ -21,7 +21,6 @@ import {projectAnalysisEvidenceForDisplay} from './evidence/analysisEvidencePres
 import {
   AnalysisSession,
   CollectedResult,
-  QueryResult,
 } from '../types/analysis';
 import { OrchestratorResult, MasterOrchestratorResult, Finding, Diagnostic, ExpertResult, StageResult } from '../agent/types';
 import {
@@ -29,7 +28,6 @@ import {
   DataEnvelope,
   ColumnDefinition,
   buildColumnDefinitions,
-  inferColumnDefinition,
   type UiActionProposalV1,
 } from '../types/dataContract';
 import type { QueryReviewV1 } from '../types/queryReviewContract';
@@ -184,12 +182,6 @@ export interface AgentDrivenReportData {
     sourceEventType?: string;
   }>;
   dataEnvelopes?: DataEnvelope[];
-  agentResponses?: Array<{
-    taskId: string;
-    agentId: string;
-    response: any;
-    timestamp: number;
-  }>;
   timestamp: number;
   /** P1-11: User conversation turn count (distinct from SDK internal rounds). */
   conversationTurns?: number;
@@ -1373,7 +1365,7 @@ export class HTMLReportGenerator {
           html += `
               <tr id="${rowId}_details" class="details-row" style="display: none;">
                 <td colspan="${totalColumns}" style="padding: 0; background: #fafbfc;">
-                  ${this.generateDetailContent(expandableItem)}
+                  ${this.generateDetailContent(expandableItem.result)}
                 </td>
               </tr>
           `;
@@ -1395,15 +1387,11 @@ export class HTMLReportGenerator {
    * Generate detail content for a single expandable row
    * 生成单行展开后的详细内容
    */
-  private generateDetailContent(itemData: {
-    item: Record<string, any>;
-    result: {
-      success: boolean;
-      sections?: Record<string, any>;
-      error?: string;
-    };
+  private generateDetailContent(result: {
+    success: boolean;
+    sections?: Record<string, any>;
+    error?: string;
   }): string {
-    const { item, result } = itemData;
     const uniqueId = this.domIdSeq++;
 
     let html = `<div class="detail-content" style="padding: 15px; border-left: 4px solid #667eea;">`;
@@ -1939,13 +1927,6 @@ export class HTMLReportGenerator {
     const columnIndices = new Map<string, number>();
     columns.forEach((c, idx) => columnIndices.set(c, idx));
 
-    // Convert each row to an object for detail "item" fallback
-    const rowObjects = rows.map((row: any[]) => {
-      const obj: Record<string, any> = {};
-      columns.forEach((c, i) => { obj[c] = row[i]; });
-      return obj;
-    });
-
     // Unique section id (used only for future bulk operations / safety)
     const sectionUniqueId = this.nextDomId(`expandable_${envelope.meta?.stepId || 'table'}`);
 
@@ -1975,8 +1956,7 @@ export class HTMLReportGenerator {
               ${rows.map((row: any[], idx: number) => {
                 const exp = expandableData[idx];
                 const hasDetails = !!(exp && exp.result && exp.result.sections && Object.keys(exp.result.sections).length > 0);
-                const itemData = exp && exp.item ? exp.item : rowObjects[idx];
-                const detailData = exp ? { ...exp, item: itemData } : { item: itemData, result: { success: false, error: localize(outputLanguage, '无详情数据', 'No detail data') } };
+                const detailResult = exp?.result ?? { success: false, error: localize(outputLanguage, '无详情数据', 'No detail data') };
                 const rowId = `envelope_row_${this.domIdSeq++}`;
                 const totalColumns = visibleColumnDefs.length + 1; // +1 for 详情列
 
@@ -2000,7 +1980,7 @@ export class HTMLReportGenerator {
                 const detailsRow = `
                   <tr id="${rowId}_details" class="details-row" style="display: none;">
                     <td colspan="${totalColumns}" style="padding: 0; background: #fafbfc;">
-                      ${this.generateDetailContent(detailData)}
+                      ${this.generateDetailContent(detailResult)}
                     </td>
                   </tr>
                 `;
@@ -2340,9 +2320,7 @@ export class HTMLReportGenerator {
     // deep 是嵌套结构：Record<string, Record<string, StepResult>>
     else if (layerType === 'deep') {
       // 显示会话和帧信息
-      let sessionIndex = 0;
       for (const [sessionId, frames] of Object.entries(layerData)) {
-        sessionIndex++;
         const frameEntries = Object.entries(frames as Record<string, any>);
         const frameCount = frameEntries.length;
         const sessionNum = sessionId.replace('session_', '');
@@ -2852,54 +2830,6 @@ export class HTMLReportGenerator {
   private markdownToHtml(text: string): string {
     if (!text) return '';
     return this.getReportMd().render(text).trim();
-  }
-
-  /**
-   * Convert Markdown tables to HTML tables
-   */
-  private convertMarkdownTables(text: string): string {
-    // Match Markdown table pattern
-    // Header row | col1 | col2 | col3 |
-    // Separator  |------|------|------|
-    // Data rows  | val1 | val2 | val3 |
-    const tableRegex = /(\|[^\n]+\|\n)(\|[-:\s|]+\|\n)((?:\|[^\n]+\|\n?)+)/g;
-
-    return text.replace(tableRegex, (match, headerRow, separatorRow, bodyRows) => {
-      // Parse header
-      const headers = this.parseTableRow(headerRow);
-
-      // Parse body rows
-      const rows = bodyRows.trim().split('\n').map((row: string) => this.parseTableRow(row));
-
-      // Generate HTML table
-      return `
-<table style="width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px;">
-  <thead>
-    <tr style="background: #f8fafc;">
-      ${headers.map((h: string) => `<th style="padding: 10px 12px; border: 1px solid #e2e8f0; text-align: left; font-weight: 600; color: #374151;">${this.escapeHtml(h)}</th>`).join('')}
-    </tr>
-  </thead>
-  <tbody>
-    ${rows.map((row: string[]) => `
-    <tr>
-      ${row.map((cell: string) => `<td style="padding: 8px 12px; border: 1px solid #e2e8f0;">${this.escapeHtml(cell)}</td>`).join('')}
-    </tr>`).join('')}
-  </tbody>
-</table>
-`;
-    });
-  }
-
-  /**
-   * Parse a single table row into cells
-   */
-  private parseTableRow(row: string): string[] {
-    // Remove leading/trailing pipes and split by pipe
-    return row.trim()
-      .replace(/^\|/, '')
-      .replace(/\|$/, '')
-      .split('|')
-      .map(cell => cell.trim());
   }
 
   generateAgentHTML(data: AgentReportData): string {
@@ -4011,7 +3941,6 @@ export class HTMLReportGenerator {
 
         if (isNestedFrameStructure) {
           // Render as expandable frame sections (like generateLayerContent does for 'deep' type)
-          const sessionId = `deep-${stageId}-${key}`.replace(/[^a-zA-Z0-9-]/g, '-');
           let frameHtml = `
             <div style="margin-bottom: 16px; border: 1px solid #e2e8f0; border-radius: 8px; overflow: hidden;">
               <div style="padding: 12px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; cursor: pointer; display: flex; justify-content: space-between; align-items: center;" onclick="this.nextElementSibling.style.display = this.nextElementSibling.style.display === 'none' ? 'block' : 'none'; this.querySelector('.toggle-icon').textContent = this.nextElementSibling.style.display === 'none' ? '▶' : '▼';">
@@ -4027,7 +3956,6 @@ export class HTMLReportGenerator {
           valueEntries.forEach(([frameId, frameData], idx) => {
             const fData = frameData as any;
             const frameTitle = fData.display?.title || frameId;
-            const uniqueFrameId = `${sessionId}_${frameId}`.replace(/[^a-zA-Z0-9-_]/g, '-');
 
             frameHtml += `
               <div style="margin-bottom: 8px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden;">
@@ -4165,7 +4093,6 @@ export class HTMLReportGenerator {
     const htmlLang = outputLanguage === 'en' ? 'en' : 'zh-CN';
     const locale = this.getReportLocale(outputLanguage);
     const dataEnvelopes = this.prepareAgentDrivenEnvelopes(data.dataEnvelopes || []);
-    const agentResponses = data.agentResponses || [];
     const traceStartNs = data.traceStartNs ? this.parseNs(data.traceStartNs) : null;
     const normalizedConversationTimeline = this.normalizeConversationTimeline(
       conversationTimeline || [],
@@ -4282,19 +4209,6 @@ export class HTMLReportGenerator {
       height: 8px; background: #e5e7eb; border-radius: 4px; margin-top: 8px; overflow: hidden;
     }
     .confidence-fill { height: 100%; background: #8b5cf6; border-radius: 4px; }
-    .dialogue-item {
-      display: flex; gap: 12px; padding: 12px; margin-bottom: 8px;
-      background: #f8f9fa; border-radius: 8px;
-    }
-    .dialogue-item.task { background: #eff6ff; border-left: 3px solid #3b82f6; }
-    .dialogue-item.response { background: #f0fdf4; border-left: 3px solid #10b981; }
-    .dialogue-agent { font-weight: 600; color: #6d28d9; min-width: 120px; }
-    .dialogue-content { flex: 1; font-size: 13px; }
-    .dialogue-findings { margin-top: 8px; padding: 8px; background: rgba(0,0,0,0.03); border-radius: 4px; }
-    .dialogue-findings .finding-tag {
-      display: inline-block; padding: 2px 8px; margin: 2px; border-radius: 4px;
-      font-size: 11px; font-weight: 500;
-    }
     .finding { margin-bottom: 12px; padding: 15px; border-radius: 8px; border-left: 4px solid; }
     .finding.critical { background: #fef2f2; border-color: #dc2626; }
     .finding.warning { background: #fff7ed; border-color: #ea580c; }
@@ -4304,7 +4218,6 @@ export class HTMLReportGenerator {
     .finding.low { background: #f0fdf4; border-color: #10b981; }
     .finding .title { font-weight: 600; margin-bottom: 5px; }
     .finding .description { font-size: 13px; color: #555; margin-bottom: 8px; line-height: 1.6; }
-    .finding .evidence-list { margin-top: 8px; }
     .finding .evidence-item { font-size: 12px; color: #555; padding: 4px 0; padding-left: 16px; position: relative; }
     .finding .evidence-item::before { content: '•'; position: absolute; left: 4px; color: #8b5cf6; }
     .finding .recommendations { margin-top: 10px; padding: 10px; background: rgba(139,92,246,0.05); border-radius: 6px; }
@@ -4312,9 +4225,6 @@ export class HTMLReportGenerator {
       font-size: 12px; color: #4c1d95; padding: 3px 0; padding-left: 20px; position: relative;
     }
     .finding .recommendations .rec-item::before { content: '💡'; position: absolute; left: 0; font-size: 11px; }
-    .finding .details-grid { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 12px; }
-    .finding .details-grid .detail-key { color: #666; font-weight: 500; }
-    .finding .details-grid .detail-value { color: #333; font-family: monospace; font-size: 11px; }
     .envelope-card {
       margin-bottom: 16px; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;
     }
@@ -6818,104 +6728,6 @@ export class HTMLReportGenerator {
   }
 
   /**
-   * Render a finding with evidence, details, and recommendations
-   */
-  private renderEnhancedFinding(finding: Finding): string {
-    const severityClass = finding.severity || 'info';
-
-    // 【优化】格式化 details 字段，避免显示原始 JSON
-    let detailsHtml = '';
-    if (finding.details && Object.keys(finding.details).length > 0) {
-      // 过滤掉大对象（如 summary、sample），只显示简单的标量值
-      const simpleEntries = Object.entries(finding.details)
-        .filter(([key, value]) => {
-          // 跳过大对象和数组
-          if (typeof value === 'object' && value !== null) return false;
-          // 跳过已经在 title 中显示的字段
-          if (key === 'jankCount' || key === 'jankRate') return false;
-          return true;
-        })
-        .slice(0, 6);
-
-      if (simpleEntries.length > 0) {
-        detailsHtml = `
-          <div class="details-grid" style="display: flex; gap: 16px; flex-wrap: wrap; margin-top: 8px;">
-            ${simpleEntries.map(([key, value]) => `
-              <span style="color: #666; font-size: 12px;">
-                <span style="color: #888;">${this.formatMetricLabel(key)}:</span>
-                <strong style="color: #333;">${this.formatDetailValue(value, key)}</strong>
-              </span>
-            `).join('')}
-          </div>
-        `;
-      }
-    }
-
-    let evidenceHtml = '';
-    if (finding.evidence && finding.evidence.length > 0) {
-      evidenceHtml = `
-        <div class="evidence-list" style="margin-top: 8px; padding-left: 12px; border-left: 2px solid #e5e7eb;">
-          ${finding.evidence.slice(0, 5).map((e: any) => `
-            <div style="font-size: 12px; color: #555; margin: 4px 0;">• ${this.escapeHtml(typeof e === 'string' ? e : (e.description || e.message || ''))}</div>
-          `).join('')}
-        </div>
-      `;
-    }
-
-    // 精简版 Finding 卡片 - 紧凑布局
-    return `
-      <div class="finding ${severityClass}" style="padding: 12px 16px; margin-bottom: 8px; border-radius: 6px; border-left: 3px solid ${this.getSeverityColor(severityClass)}; background: ${this.getSeverityBg(severityClass)};">
-        <div style="font-weight: 600; color: #1f2937; margin-bottom: 4px;">${this.escapeHtml(finding.title)}</div>
-        ${finding.description ? `<div style="font-size: 13px; color: #4b5563;">${this.escapeHtml(finding.description)}</div>` : ''}
-        ${detailsHtml}
-        ${evidenceHtml}
-      </div>
-    `;
-  }
-
-  /**
-   * 格式化 detail 值为更友好的显示
-   */
-  private formatDetailValue(value: any, key?: string): string {
-    if (value === null || value === undefined) return '-';
-    if (this.isIdentifierKey(key)) {
-      return this.escapeHtml(this.normalizeIdentifierDisplay(value));
-    }
-    if (typeof value === 'number') {
-      // 百分比
-      if (value > 0 && value < 1) return `${(value * 100).toFixed(1)}%`;
-      // 大数字加千分位
-      if (Number.isInteger(value)) return value.toLocaleString();
-      return value.toFixed(2);
-    }
-    return this.escapeHtml(String(value));
-  }
-
-  /**
-   * 获取 severity 对应的边框颜色
-   */
-  private getSeverityColor(severity: string): string {
-    switch (severity) {
-      case 'critical': return '#dc2626';
-      case 'warning': return '#f59e0b';
-      case 'info': return '#3b82f6';
-      default: return '#6b7280';
-    }
-  }
-
-  /**
-   * 获取 severity 对应的背景色
-   */
-  private getSeverityBg(severity: string): string {
-    switch (severity) {
-      case 'critical': return '#fef2f2';
-      case 'warning': return '#fffbeb';
-      case 'info': return '#eff6ff';
-      default: return '#f9fafb';
-    }
-  }
-
-  /**
    * P1-R3: Render analysis plan section from agentv3 submit_plan data
    */
   private renderAnalysisPlanSection(
@@ -7223,78 +7035,6 @@ export class HTMLReportGenerator {
   private renderFindingsSection(_findings: Finding[], _dataEnvelopes: DataEnvelope[]): string {
     // 直接返回空字符串，不再显示此部分
     return '';
-  }
-
-  /**
-   * Render enhanced dialogue item with meaningful content extraction from agent responses
-   */
-  private renderEnhancedDialogue(
-    d: { agentId: string; type: string; content: any; timestamp: number },
-    agentResponses: Array<{ taskId: string; agentId: string; response: any; timestamp: number }>
-  ): string {
-    const typeLabel = d.type === 'task' ? '任务派发' : d.type === 'response' ? '任务完成' : '问询';
-
-    // Extract meaningful content from the dialogue
-    let contentHtml = '';
-
-    if (d.type === 'task') {
-      // For task dispatch, show the objective/message
-      const message = d.content?.message || d.content?.objective || d.content?.description || '';
-      const agentId = d.content?.agentId || '';
-      contentHtml = `<strong>${typeLabel}${agentId ? ` → ${this.escapeHtml(agentId)}` : ''}:</strong> ${this.escapeHtml(message || d.content?.phase || '')}`;
-    } else if (d.type === 'response') {
-      // For responses, extract findings/confidence from the matching agentResponse
-      const matchingResponse = agentResponses.find(
-        r => r.agentId === d.agentId && Math.abs(r.timestamp - d.timestamp) < 5000
-      );
-
-      const response = matchingResponse?.response || d.content?.response || d.content;
-      const findings = response?.findings || response?.result?.findings || [];
-      const confidence = response?.confidence || response?.result?.confidence;
-
-      contentHtml = `<strong>${typeLabel}:</strong>`;
-
-      if (findings.length > 0) {
-        contentHtml += ` ${findings.length} 条发现`;
-        contentHtml += `<div class="dialogue-findings">`;
-        contentHtml += findings.slice(0, 5).map((f: any) => {
-          const severity = f.severity || 'info';
-          const colors: Record<string, string> = {
-            critical: '#fef2f2; color: #dc2626',
-            high: '#fef2f2; color: #dc2626',
-            warning: '#fff7ed; color: #ea580c',
-            medium: '#fff7ed; color: #ea580c',
-            info: '#eff6ff; color: #2563eb',
-            low: '#f0fdf4; color: #059669',
-          };
-          const color = colors[severity] || colors.info;
-          return `<span class="finding-tag" style="background: ${color}">[${severity}] ${this.escapeHtml((f.title || '').substring(0, 60))}</span>`;
-        }).join('');
-        if (findings.length > 5) {
-          contentHtml += `<span class="finding-tag" style="background: #f3f4f6; color: #6b7280">+${findings.length - 5} more</span>`;
-        }
-        contentHtml += `</div>`;
-      } else {
-        // Fallback to showing the phase/message
-        const message = d.content?.message || d.content?.phase || '';
-        if (message) {
-          contentHtml += ` ${this.escapeHtml(String(message).substring(0, 200))}`;
-        }
-      }
-
-      if (confidence !== undefined) {
-        contentHtml += `<div style="margin-top: 4px; font-size: 11px; color: #888;">置信度: ${(Number(confidence) * 100).toFixed(0)}%</div>`;
-      }
-    } else {
-      contentHtml = `<strong>${typeLabel}:</strong> ${this.escapeHtml(String(d.content?.message || d.content?.phase || JSON.stringify(d.content)).substring(0, 200))}`;
-    }
-
-    return `
-      <div class="dialogue-item ${d.type}">
-        <div class="dialogue-agent">[${this.escapeHtml(d.agentId)}]</div>
-        <div class="dialogue-content">${contentHtml}</div>
-      </div>
-    `;
   }
 
   generateFromSession(session: AnalysisSession, answer: string): string {

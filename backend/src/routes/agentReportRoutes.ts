@@ -12,7 +12,6 @@ import {
   privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
   copyAnalysisResultForSnapshot,
-  projectOwnerConclusion,
   projectOwnerReportError,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
@@ -23,7 +22,6 @@ import {sessionRunHasPrivateContext} from '../assistant/application/agentAnalyze
 interface AgentReportRoutesDeps {
   getSession: (sessionId: string) => any;
   recoverResultForSessionIfNeeded: (sessionId: string, session: any) => any;
-  normalizeNarrativeForClient: (narrative: string) => string;
   buildClientFindings: (findings: any[], scenes: any[]) => any[];
   buildSessionResultContract: (session: any, clientFindings: any[]) => unknown;
   getCompletedPayload?: (session: any) => any;

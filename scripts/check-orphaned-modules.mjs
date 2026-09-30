@@ -27,8 +27,11 @@
  * Liveness is reachability from the entrypoints, so modules that only import
  * each other in a cycle are orphaned too.
  *
- * Entrypoints: modules a script or bin invokes rather than imports, and
- * modules build tooling under `backend/scripts/` imports. Harnesses and
+ * Entrypoints: modules a `backend/package.json` script or bin, or tooling
+ * under `backend/scripts/`, names by path (a `dist/<path>.js` command names
+ * `src/<path>.ts`), and modules that tooling imports. Nothing is an
+ * entrypoint by where it lives: an unregistered script under `src/scripts/`
+ * is dead and keeps everything it imports looking alive. Harnesses and
  * helpers under `backend/tests/` count as tests. A sibling that names
  * `<stem>.js` or `<stem>.ts` (a worker or child process loaded by path) is
  * treated as importing that module, so a dead loader does not keep it alive.
@@ -103,22 +106,40 @@ const append = (map, key, value) => {
 /** A quoted `<stem>.js` / `<stem>.ts`: a sibling module loaded by path. */
 const PATH_LOAD_RE = /['"]([^'"/\\]+)\.[jt]s['"]/g;
 
+/** Expands a `dist/<path>.js` command to also name its `src/<path>.ts` source. */
+const nameSources = text => text.replace(/\bdist\/([\w/.-]+)\.js\b/g, (command, path) => `${command} src/${path}.ts`);
+
 /**
- * Returns each orphaned module with the reason it is unreachable:
- * `tests-only`, `unreferenced`, or `orphaned-importers` (with `importers`).
+ * Walks the backend import graph from its entrypoints.
+ *
+ * `entrypoints` maps each module the product invokes rather than imports to
+ * `{reason, via}`: `via` is the backend-relative file whose presence makes it
+ * an entrypoint — the module itself, or the build-tooling file that imports
+ * it. Live path-loaded modules are included too: nothing imports them, so a
+ * symbol-level analysis must start from them as well.
  */
-export function analyzeOrphans(modules, scripts, backendDir = BACKEND) {
+export function analyzeModuleGraph(modules, commands, backendDir = BACKEND) {
   const moduleSet = new Set(modules);
   const tooling = ['scripts', 'tests'].flatMap(root => listFiles(backendDir, root, name => /\.[cm]?[jt]s$/.test(name)));
   // Match the module's own path, not its basename: a test path in a script
   // body must never vouch for the module it tests.
-  const scriptBodies = Object.values(scripts).join(' ');
-  const roots = modules.filter(module => !isTestPath(module) && (scriptBodies.includes(module)
-    || module.startsWith('src/scripts/')
-    || module.endsWith('Cli.ts')));
+  const namers = [
+    { reason: 'named by a backend/package.json command', text: nameSources(commands.join(' ')) },
+    ...tooling.filter(file => file.startsWith('scripts/')).map(file => ({
+      reason: `named by backend/${file}`,
+      text: nameSources(readFileSync(join(backendDir, file), 'utf8')),
+    })),
+  ];
+  const entrypoints = new Map();
+  for (const module of modules) {
+    if (isTestPath(module)) continue;
+    const namer = namers.find(({ text }) => text.includes(module));
+    if (namer) entrypoints.set(module, { reason: namer.reason, via: module });
+  }
 
   const importedBy = new Map();
   const imports = new Map();
+  const pathLoadedBy = new Map();
   const testImported = new Set();
   const shims = new Set();
   for (const file of [...modules, ...tooling]) {
@@ -127,26 +148,44 @@ export function analyzeOrphans(modules, scripts, backendDir = BACKEND) {
     if (fromModule && isShim(source)) shims.add(file);
     const targets = Array.from(source.matchAll(IMPORT_RE), match => resolve(file, match[1], moduleSet));
     if (fromModule && !isTestPath(file)) {
-      for (const match of source.matchAll(PATH_LOAD_RE)) targets.push(`${dirname(file)}/${match[1]}.ts`);
+      for (const match of source.matchAll(PATH_LOAD_RE)) {
+        const target = `${dirname(file)}/${match[1]}.ts`;
+        targets.push(target);
+        if (moduleSet.has(target) && target !== file) append(pathLoadedBy, target, file);
+      }
     }
     for (const target of targets) {
       if (!target || target === file || !moduleSet.has(target)) continue;
       if (isTestPath(file)) testImported.add(target);
-      else if (!fromModule) roots.push(target);
-      else {
+      else if (!fromModule) {
+        if (!entrypoints.has(target)) entrypoints.set(target, { reason: `imported by backend/${file}`, via: file });
+      } else {
         append(importedBy, target, file);
         append(imports, file, target);
       }
     }
   }
 
-  const live = new Set(roots);
+  const live = new Set(entrypoints.keys());
   for (const pending = [...live]; pending.length > 0;) {
     for (const target of imports.get(pending.pop()) ?? []) {
       if (!live.has(target)) { live.add(target); pending.push(target); }
     }
   }
+  for (const [target, loaders] of pathLoadedBy) {
+    const loader = loaders.find(file => live.has(file));
+    if (loader && !entrypoints.has(target)) entrypoints.set(target, { reason: `loaded by path from backend/${loader}`, via: target });
+  }
 
+  return { entrypoints, live, importedBy, testImported, shims };
+}
+
+/**
+ * Returns each orphaned module with the reason it is unreachable:
+ * `tests-only`, `unreferenced`, or `orphaned-importers` (with `importers`).
+ */
+export function analyzeOrphans(modules, commands, backendDir = BACKEND) {
+  const { live, importedBy, testImported, shims } = analyzeModuleGraph(modules, commands, backendDir);
   const report = new Map();
   for (const module of modules) {
     if (live.has(module) || isTestPath(module) || shims.has(module)) continue;
@@ -163,9 +202,26 @@ const describe = ({ reason, importers }) => {
   return `imported only by orphaned ${importers.map(path => `backend/${path}`).join(', ')}`;
 };
 
+/** The commands `backend/package.json` runs: its scripts and its bin targets. */
+export function readEntrypointCommands(backendDir = BACKEND) {
+  const manifest = JSON.parse(readFileSync(join(backendDir, 'package.json'), 'utf8'));
+  const bins = typeof manifest.bin === 'string' ? [manifest.bin] : Object.values(manifest.bin ?? {});
+  return [...Object.values(manifest.scripts ?? {}), ...bins];
+}
+
 function readBaseline() {
   if (!existsSync(BASELINE_PATH)) return { orphaned: [] };
   return JSON.parse(readFileSync(BASELINE_PATH, 'utf8'));
+}
+
+/** `added`: findings outside the accepted baseline; `resolved`: baseline entries no longer found. */
+export function compareWithBaseline(findings, baselineEntries) {
+  const current = new Set(findings);
+  const baseline = new Set(baselineEntries);
+  return {
+    added: findings.filter(entry => !baseline.has(entry)),
+    resolved: baselineEntries.filter(entry => !current.has(entry)),
+  };
 }
 
 function main(argv) {
@@ -175,9 +231,8 @@ function main(argv) {
     strict: false,
   });
 
-  const scripts = JSON.parse(readFileSync(join(BACKEND, 'package.json'), 'utf8')).scripts ?? {};
   const modules = listModules();
-  const report = analyzeOrphans(modules, scripts);
+  const report = analyzeOrphans(modules, readEntrypointCommands());
   const orphans = Array.from(report.keys());
 
   if (values['update-baseline']) {
@@ -190,9 +245,7 @@ function main(argv) {
     return 0;
   }
 
-  const baseline = new Set(readBaseline().orphaned ?? []);
-  const newlyOrphaned = orphans.filter(module => !baseline.has(module));
-  const revived = Array.from(baseline).filter(module => !report.has(module));
+  const { added: newlyOrphaned, resolved: revived } = compareWithBaseline(orphans, readBaseline().orphaned ?? []);
 
   if (values.json) {
     console.log(JSON.stringify({ totalModules: modules.length, orphaned: orphans.length, newlyOrphaned, baselineEntriesNowImported: revived }, null, 2));

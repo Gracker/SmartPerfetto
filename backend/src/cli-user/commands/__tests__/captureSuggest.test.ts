@@ -5,6 +5,7 @@
 import { runCaptureSuggestCommand } from '../capture';
 
 jest.mock('../../bootstrap', () => ({
+  ...jest.requireActual('../../bootstrap'),
   bootstrap: jest.fn(() => ({ paths: { root: '/tmp/smp', sessions: '/tmp/smp/sessions' } })),
 }));
 

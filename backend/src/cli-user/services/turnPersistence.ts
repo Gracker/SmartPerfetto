@@ -31,7 +31,8 @@ import {
 import { upsertSession } from '../io/indexJson';
 import { appendTranscriptTurn } from '../io/transcriptWriter';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
-import {localize, parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
+import {projectToolResultAuditForPrivateRun} from '../../agentRuntime/runtimeToolResultAudit';
+import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {
   projectOwnerAnalysisError,
   privateAnalysisQueryMessage,
@@ -90,6 +91,9 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
         reportError: input.result.reportError
           ? projectOwnerAnalysisError(sessionId, input.result.reportError, outputLanguage)
           : undefined,
+        ...(input.result.toolResultAudit
+          ? {toolResultAudit: projectToolResultAuditForPrivateRun(input.result.toolResultAudit)}
+          : {}),
       }
     : input.result;
   const durableQuery = result.privateKnowledge
@@ -283,6 +287,10 @@ function writeAnalysisQualitySidecars(
   // Internal timing receipt only (no content): the CLI manifest store is not durable.
   if (result.runtimePerformance) {
     writeJsonFile(sp, `${turnPrefix}.runtime-performance.json`, result.runtimePerformance);
+  }
+  // Handoff facts only (no payload values); the stream copy is transport-truncated.
+  if (result.toolResultAudit) {
+    writeJsonFile(sp, `${turnPrefix}.tool-results.json`, result.toolResultAudit);
   }
   writeSourceProvenanceSidecars(sp, turnPrefix, sourceProvenance);
 }

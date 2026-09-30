@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals';
 import { runBatchSkillCommand } from '../batch';
+import { resetCliEnvironmentForTesting } from '../../bootstrap';
 import { runBatchSkill } from '../../../services/batchTrace/batchTraceRunner';
 import { writeBatchTraceArtifacts } from '../../../services/batchTrace/batchTraceReportService';
 import { BATCH_TRACE_RUN_SCHEMA_VERSION, type BatchTraceRunV1 } from '../../../services/batchTrace/batchTraceTypes';
@@ -71,6 +72,7 @@ function completedRun(): BatchTraceRunV1 {
 }
 
 beforeEach(() => {
+  resetCliEnvironmentForTesting();
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-batch-test-'));
   tracePath = path.join(tempDir, 'trace.pftrace');
   fs.writeFileSync(tracePath, 'trace');

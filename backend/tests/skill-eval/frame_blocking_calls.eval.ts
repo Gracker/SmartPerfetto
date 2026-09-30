@@ -6,7 +6,7 @@
  * distinguished by agents and the UI.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 const TRACE_FILE = 'scroll-demo-customer-scroll.pftrace';

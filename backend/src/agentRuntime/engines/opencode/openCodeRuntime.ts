@@ -144,7 +144,7 @@ import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliv
 import {resolveAgentRuntimeBudgetConfig} from '../../../config';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {countCompletedQuickConversationTurns} from '../../quickDirectResult';
+import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {
   createJsonSchemaFromZodRawShape,
   normalizeRuntimeToolArgs,
@@ -466,7 +466,6 @@ export function getOpenCodeRuntimeDiagnostics(
 ) {
   const modulePath = env[OPENCODE_SDK_MODULE_PATH_ENV]?.trim();
   const projectDir = env[OPENCODE_PROJECT_DIR_ENV]?.trim();
-  const modelJson = env[OPENCODE_MODEL_JSON_ENV]?.trim();
   const standaloneMcpEnabled = truthyEnv(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV]);
   const selection: RuntimeSelection<string> = selectedProviderId
     ? {kind, source: 'provider', providerId: selectedProviderId}
@@ -1936,11 +1935,6 @@ function recordOpenCodeAssistantUsage(
   }
 }
 
-function getLatestOpenCodeAssistantMessage(value: unknown): Record<string, unknown> | undefined {
-  const messages = getOpenCodeAssistantMessages(value);
-  return messages[messages.length - 1];
-}
-
 function isOpenCodeAssistantMessageComplete(message: Record<string, unknown> | undefined): boolean {
   if (!message) return false;
   const info = isRecord(message.info) ? message.info : message;
@@ -2756,11 +2750,13 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     );
     const sceneDeadlineMs = resolveSceneProductScope(options, {runId: executionLease.key.runId!, sessionId, traceId})
       ? Date.now() + promptTimeout : undefined;
+    // The MCP server stamps tool captures with the run id finalization reads.
+    const runId = options.runId ?? crypto.randomUUID();
     const prep = await this.prepareAnalysis(
       query, sessionId, traceId, options,
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
       turnIntent, turnPolicy, resolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
-      () => toolAdmissionsOpen && !executionLease.signal.aborted, sceneDeadlineMs, executionLease.signal,
+      () => toolAdmissionsOpen && !executionLease.signal.aborted, sceneDeadlineMs, executionLease.signal, runId,
     );
     executionLease.throwIfAborted();
     const resolveFinalReportSceneType = () => prep.sceneType;
@@ -2797,7 +2793,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     // SDK maxSteps forces a text-only iteration; it does not guarantee a total call cap.
     // The native answer and final semantic review share one absolute budget.
     const deadlineMs = sceneDeadlineMs ?? Date.now() + promptTimeout;
-    const runId = options.runId ?? crypto.randomUUID();
     let attemptId = crypto.randomUUID();
     let turnLimitReached = false;
     let closeoutAccepted = false;
@@ -3186,6 +3181,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     canInvokeTool?: () => boolean,
     sceneDeadlineMs?: number,
     sceneSignal?: AbortSignal,
+    runId?: string,
   ): Promise<OpenCodeAnalysisPreparation> {
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -3307,6 +3303,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       artifactStore, sceneCoverageRegistry, signal: sceneSignal, canInvokeTool});
     const { toolDefinitions, sourceUse } = createClaudeMcpServer({
       sceneRunContext,
+      runId,
       toolObserver, canInvokeTool, analysisHistoryReader,
       strategyRegistry,
       conversationTraceAttached: options.assistantSurface === 'conversation'

@@ -167,10 +167,6 @@ export const DRILL_DOWN_SKILL_REGISTRY: Record<DrillDownEntityType, DrillDownSki
   },
 };
 
-export function isDrillDownEntityType(value: string): value is DrillDownEntityType {
-  return value === 'frame' || value === 'session' || value === 'startup';
-}
-
 export function getDrillDownSkillConfig(entityType: DrillDownEntityType): DrillDownSkillConfig {
   return DRILL_DOWN_SKILL_REGISTRY[entityType];
 }

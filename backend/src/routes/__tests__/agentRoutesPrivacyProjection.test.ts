@@ -2,13 +2,15 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {afterEach, describe, expect, it, jest} from '@jest/globals';
+import {afterAll, afterEach, beforeAll, describe, expect, it, jest} from '@jest/globals';
 import {EventEmitter} from 'events';
+import express from 'express';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import request from 'supertest';
 import ts from 'typescript';
-import {
+import agentRoutes, {
   agentRoutesPrivacyProjectionTestSeam,
   agentRoutesReceiptTestSeam,
   agentRoutesCancellationTestSeam,
@@ -94,7 +96,7 @@ describe('agent route private projections', () => {
       query: 'original query', completed: true, result: {...result, message: conclusion}} as any, sessionId, 'en');
     const get = jest.fn();
     registerAgentReportRoutes({get} as any, {getSession: () => session, recoverResultForSessionIfNeeded: () => result,
-      normalizeNarrativeForClient: text => text, buildClientFindings: () => [], buildSessionResultContract: () => ({})});
+      buildClientFindings: () => [], buildSessionResultContract: () => ({})});
     const response = {json: jest.fn(), status: jest.fn().mockReturnThis()};
     const handler = get.mock.calls[0][1] as (req: any, res: any) => void;
     handler({params: {sessionId}, requestContext: {tenantId: 'tenant', workspaceId: 'workspace', userId: 'user'}}, response);
@@ -448,36 +450,6 @@ describe('agent route private projections', () => {
     });
   });
 
-  it.each([
-    ['zh-CN', '## 证据索引', '关键数据来源：', '（execute_sql / ev-1）'],
-    ['en', '## Evidence Index', 'Key data sources:', '(execute_sql / ev-1)'],
-  ] as const)('localizes generated evidence indexes for %s', (language, heading, prefix, item) => {
-    const evidenceIndex = agentRoutesPrivacyProjectionTestSeam.buildConclusionEvidenceIndex([
-      {
-        meta: {source: 'execute_sql', evidenceRefId: 'ev-1'},
-        display: {title: 'Frame timeline'},
-      } as any,
-    ], 3, language);
-
-    expect(evidenceIndex).toContain(heading);
-    expect(evidenceIndex).toContain(prefix);
-    expect(evidenceIndex).toContain(item);
-    expect(evidenceIndex).not.toContain(language === 'en' ? '关键数据来源' : 'Key data sources');
-  });
-
-  it.each([
-    '## 证据索引\n\n关键数据来源：帧时间。',
-    '## Evidence Index\n\nKey data sources: frame timing.',
-    'Evidence Index: frame timing',
-  ])('recognizes an existing bilingual evidence index without duplicating it', (conclusion) => {
-    expect(agentRoutesPrivacyProjectionTestSeam.conclusionHasEvidenceIndex(conclusion)).toBe(true);
-    expect(agentRoutesPrivacyProjectionTestSeam.appendEvidenceIndexIfMissing(
-      conclusion,
-      [{meta: {source: 'execute_sql'}, display: {title: 'Frame timeline'}} as any],
-      'en',
-    )).toBe(conclusion);
-  });
-
   it('scrubs model-authored state before retiring an authorization-changed session', () => {
     const canary = 'PRIVATE_AUTH_CHANGE_CANARY';
     const session = {
@@ -828,5 +800,97 @@ describe('agent route private projections', () => {
       }
       fs.rmSync(tmpDir, {recursive: true, force: true});
     }
+  });
+
+  describe('scene reconstruction status compatibility endpoint', () => {
+    const canary = 'PRIVATE_SCENE_STATUS_CANARY';
+    const credential = 'sk-scenestatusfallback0123456789';
+    const owner = {tenantId: 'tenant-scene-status', workspaceId: 'workspace-scene-status', userId: 'user-scene-status'};
+    const envKeys = ['SMARTPERFETTO_API_KEY', 'SMARTPERFETTO_SSO_TRUSTED_HEADERS', ENTERPRISE_FEATURE_FLAG_ENV] as const;
+    const originalEnv = new Map(envKeys.map(key => [key, process.env[key]]));
+    const sessionIds: string[] = [];
+    const app = express();
+    app.use(express.json());
+    app.use('/api/agent/v1', agentRoutes);
+    const get = (url: string) => request(app).get(`/api/agent/v1${url}`)
+      .set('X-SmartPerfetto-SSO-User-Id', owner.userId)
+      .set('X-SmartPerfetto-SSO-Email', 'scene-status@example.test')
+      .set('X-SmartPerfetto-SSO-Tenant-Id', owner.tenantId)
+      .set('X-SmartPerfetto-SSO-Workspace-Id', owner.workspaceId)
+      .set('X-SmartPerfetto-SSO-Roles', 'analyst')
+      .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,agent:run,report:read');
+    // A session without a scene timeline takes the endpoint's fallback branch:
+    // any owned ordinary analysis, or a scene run that committed no segment.
+    const addSession = (id: string, privateKnowledge: boolean, fields: Record<string, unknown>) => {
+      sessionIds.push(id);
+      if (privateKnowledge) registerCodeAwareCanary(id, canary);
+      agentRoutesCancellationTestSeam.setSession(id, {sessionId: id, traceId: `trace-${id}`, query: 'why is it slow',
+        createdAt: 1, lastActivityAt: 1, ...owner, outputLanguage: 'en',
+        ...(privateKnowledge ? {codeAwareMode: 'provider_send', codebaseIds: ['cb-private']} : {}),
+        scenes: [], hypotheses: [], dataEnvelopes: [], sseClients: [], sseEventBuffer: [], sseEventSeq: 0,
+        logger: {info: () => {}, warn: () => {}, error: () => {}}, ...fields} as any);
+    };
+
+    beforeAll(() => {
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+    });
+    afterEach(() => {
+      for (const id of sessionIds.splice(0)) {
+        agentRoutesCancellationTestSeam.deleteSession(id);
+        clearCodeAwareOutputGuards(id);
+      }
+    });
+    afterAll(() => {
+      for (const [key, value] of originalEnv) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    });
+
+    it.each([true, false])('serves the same projected body as the ordinary status (private=%s)', async privateKnowledge => {
+      const id = `scene-status-body-${privateKnowledge}`;
+      const conclusion = `Main thread blocked ${canary}; token ${credential}; evidence ev_0123456789ab.`;
+      addSession(id, privateKnowledge, {status: 'completed', result: {sessionId: id, success: true, conclusion,
+        findings: [], hypotheses: [], confidence: 0.7, rounds: 1, totalDurationMs: 5}});
+      const scene = await get(`/scene-reconstruct/${id}/status`);
+      const ordinary = await get(`/${id}/status`);
+      expect(scene.status).toBe(200);
+      expect(ordinary.status).toBe(200);
+      expect(scene.body.result.narrative).toBe(ordinary.body.result.conclusion);
+      if (privateKnowledge) {
+        expect(JSON.stringify(scene.body)).not.toContain(canary);
+        expect(JSON.stringify(scene.body)).not.toContain(credential);
+      } else {
+        expect(scene.body.result.narrative).toBe(conclusion);
+      }
+    });
+
+    it('does not serve a stored result that belongs to another run', async () => {
+      const id = 'scene-status-other-run';
+      const run = {runId: 'run-current', requestId: 'request-current', sequence: 2, query: 'q', startedAt: 1,
+        status: 'completed'};
+      addSession(id, false, {status: 'completed', lastRun: run, runRegistry: {[run.runId]: run},
+        result: {sessionId: id, success: true, conclusion: 'An earlier run answer', findings: [], hypotheses: [],
+          confidence: 0.7, rounds: 1, totalDurationMs: 5, completion: {runId: 'run-earlier'}}});
+      const scene = await get(`/scene-reconstruct/${id}/status`);
+      expect(scene.status).toBe(200);
+      expect(scene.body.result).toBeUndefined();
+    });
+
+    it('projects a stored raw failure message on every read surface', async () => {
+      const id = 'scene-status-private-failure';
+      addSession(id, true, {status: 'failed', error: `lease failed ${canary} ${credential}`});
+      const scene = await get(`/scene-reconstruct/${id}/status`);
+      const ordinary = await get(`/${id}/status`);
+      const stream = await get(`/${id}/stream`);
+      expect(scene.body.error).toEqual(expect.any(String));
+      expect(scene.body.error).toBe(ordinary.body.error);
+      for (const text of [JSON.stringify(scene.body), JSON.stringify(ordinary.body), stream.text]) {
+        expect(text).not.toContain(canary);
+        expect(text).not.toContain(credential);
+      }
+      expect(stream.text).toContain('event: error');
+    });
   });
 });

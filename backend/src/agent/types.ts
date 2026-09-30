@@ -76,39 +76,12 @@ export interface AgentThought {
   confidence: number;
 }
 
-export interface AgentAction {
-  type: 'tool_call' | 'delegate' | 'conclude';
-  toolName?: string;
-  toolParams?: Record<string, any>;
-  delegateTo?: string;
-  conclusion?: string;
-}
-
-export interface AgentState {
-  query: string;
-  context: AnalysisContext;
-  thoughts: AgentThought[];
-  toolResults: ToolResult[];
-  findings: string[];
-  currentStep: number;
-  isComplete: boolean;
-}
-
 export interface AnalysisContext {
   traceId: string;
   package?: string;
   timeRange?: { start: string; end: string };
   previousFindings?: string[];
   userPreferences?: Record<string, any>;
-}
-
-export interface ExpertAgentConfig {
-  name: string;
-  domain: string;
-  description: string;
-  tools: string[];
-  maxIterations: number;
-  confidenceThreshold: number;
 }
 
 export interface ExpertResult {
@@ -280,39 +253,6 @@ export interface ToolRegistry {
   getToolDescriptionsForLLM(): string;
 }
 
-export interface AgentRegistry {
-  registerExpert(agent: ExpertAgent): void;
-  getExpert(name: string): ExpertAgent | undefined;
-  listExperts(): ExpertAgentConfig[];
-  getExpertForDomain(domain: string): ExpertAgent | undefined;
-}
-
-// =============================================================================
-// Agent Interfaces
-// =============================================================================
-
-export interface ExpertAgent {
-  config: ExpertAgentConfig;
-  analyze(context: AnalysisContext): Promise<ExpertResult>;
-  canHandle(intent: Intent): boolean;
-}
-
-export interface OrchestratorAgent {
-  handleQuery(query: string, traceId: string, options?: OrchestratorOptions): Promise<OrchestratorResult>;
-  understandIntent(query: string): Promise<Intent>;
-  planAnalysis(intent: Intent, context: AnalysisContext): Promise<AnalysisPlan>;
-  selectExpert(task: AnalysisTask): ExpertAgent | undefined;
-  synthesize(results: ExpertResult[], intent: Intent): Promise<string>;
-}
-
-export interface OrchestratorOptions {
-  maxDuration?: number;
-  maxLLMCalls?: number;
-  maxExpertIterations?: number;
-  confidenceThreshold?: number;
-  streamingCallback?: (update: StreamingUpdate) => void;
-}
-
 export interface StreamingUpdate {
   /**
    * Event type for streaming updates
@@ -376,116 +316,6 @@ export interface StreamingUpdate {
   id?: string;
 }
 
-// =============================================================================
-// State Machine Types (新架构)
-// =============================================================================
-
-/**
- * Agent execution phase enum
- *
- * Provides type-safe state values for the agent state machine.
- * @see STATE_TRANSITIONS in stateMachine.ts for valid transitions
- */
-export enum AgentPhase {
-  IDLE = 'idle',
-  PLANNING = 'planning',
-  EXECUTING = 'executing',
-  EVALUATING = 'evaluating',
-  REFINING = 'refining',
-  AWAITING_USER = 'awaiting_user',
-  COMPLETED = 'completed',
-  FAILED = 'failed',
-}
-
-/**
- * State machine event type enum
- *
- * Provides type-safe event names for state transitions.
- */
-export enum StateEventType {
-  START_ANALYSIS = 'START_ANALYSIS',
-  INTENT_UNDERSTOOD = 'INTENT_UNDERSTOOD',
-  PLAN_CREATED = 'PLAN_CREATED',
-  STAGE_STARTED = 'STAGE_STARTED',
-  STAGE_COMPLETED = 'STAGE_COMPLETED',
-  EVALUATION_COMPLETE = 'EVALUATION_COMPLETE',
-  NEEDS_REFINEMENT = 'NEEDS_REFINEMENT',
-  CIRCUIT_TRIPPED = 'CIRCUIT_TRIPPED',
-  USER_RESPONDED = 'USER_RESPONDED',
-  ANALYSIS_COMPLETE = 'ANALYSIS_COMPLETE',
-  ERROR_OCCURRED = 'ERROR_OCCURRED',
-}
-
-export interface StateEvent {
-  type: StateEventType;
-  payload?: any;
-  timestamp?: number;
-}
-
-export interface Checkpoint {
-  id: string;
-  stageId: string;
-  timestamp: number;
-  phase: AgentPhase;
-  agentState: SerializedAgentState;
-  stageResults: StageResult[];
-  findings: Finding[];
-  canResume: boolean;
-}
-
-export interface SerializedAgentState {
-  query: string;
-  traceId: string;
-  intent?: Intent;
-  plan?: AnalysisPlan;
-  expertResults: ExpertResult[];
-  iterationCount: number;
-  metadata: Record<string, any>;
-}
-
-export interface StateMachineConfig {
-  sessionId: string;
-  traceId: string;
-  persistPath?: string;
-  autoSave?: boolean;
-  autoSaveIntervalMs?: number;
-}
-
-export interface AgentStateMachineState {
-  sessionId: string;
-  traceId: string;
-  phase: AgentPhase;
-  checkpoints: Map<string, Checkpoint>;
-  iterationCounters: Map<string, number>;
-  currentStageIndex: number;
-  stageResults: Map<string, StageResult>;
-  events: StateEvent[];
-  createdAt: number;
-  updatedAt: number;
-}
-
-// =============================================================================
-// Pipeline Types (新架构)
-// =============================================================================
-
-export interface PipelineStage {
-  id: string;
-  name: string;
-  description: string;
-  agentType: 'planner' | 'worker' | 'evaluator' | 'synthesizer';
-  dependencies: string[];
-  canParallelize: boolean;
-  timeout: number;
-  maxRetries: number;
-  /** 阶段元数据，用于配置额外选项如分析类型 */
-  metadata?: {
-    /** 决策树分析类型 (scrolling/launch/memory 等) */
-    analysisType?: string;
-    /** 其他自定义配置 */
-    [key: string]: any;
-  };
-}
-
 export interface StageResult {
   stageId: string;
   success: boolean;
@@ -495,94 +325,6 @@ export interface StageResult {
   startTime: number;
   endTime: number;
   retryCount: number;
-}
-
-export interface PipelineConfig {
-  stages: PipelineStage[];
-  maxTotalDuration: number;
-  enableParallelization: boolean;
-  onStageComplete?: (stage: PipelineStage, result: StageResult) => void;
-  onStageError?: (stage: PipelineStage, error: Error) => PipelineErrorDecision;
-}
-
-export type PipelineErrorDecision = 'retry' | 'skip' | 'abort' | 'ask_user';
-
-export interface PipelineResult {
-  success: boolean;
-  stageResults: StageResult[];
-  totalDuration: number;
-  completedStages: string[];
-  failedStages: string[];
-  pausedAt?: string;
-  error?: string;
-}
-
-export interface PipelineCallbacks {
-  onStageComplete: (stage: PipelineStage, result: StageResult) => void;
-  onStageStart: (stage: PipelineStage) => void;
-  onError: (stage: PipelineStage, error: Error) => Promise<PipelineErrorDecision>;
-  onProgress: (progress: PipelineProgress) => void;
-}
-
-export interface PipelineProgress {
-  currentStage: string;
-  completedStages: number;
-  totalStages: number;
-  elapsedMs: number;
-  estimatedRemainingMs: number;
-}
-
-// =============================================================================
-// Circuit Breaker Types (新架构)
-// =============================================================================
-
-/**
- * Circuit breaker state enum
- *
- * Provides type-safe state values for the circuit breaker pattern.
- * - CLOSED: Normal operation, requests pass through
- * - OPEN: Circuit tripped, requests are blocked
- * - HALF_OPEN: Testing recovery, limited requests allowed
- */
-export enum CircuitState {
-  CLOSED = 'closed',
-  OPEN = 'open',
-  HALF_OPEN = 'half-open',
-}
-
-export interface CircuitBreakerConfig {
-  maxRetriesPerAgent: number;
-  maxIterationsPerStage: number;
-  cooldownMs: number;
-  halfOpenAttempts: number;
-  failureThreshold: number;
-  successThreshold: number;
-}
-
-export interface CircuitDecision {
-  action: 'continue' | 'retry' | 'skip' | 'abort' | 'ask_user';
-  reason?: string;
-  delay?: number;
-  context?: CircuitDiagnostics;
-}
-
-export interface CircuitDiagnostics {
-  agentId: string;
-  failureCount: number;
-  iterationCount: number;
-  lastError?: string;
-  lastAttemptTime: number;
-  state: CircuitState;
-  recentErrors: Array<{ time: number; error: string }>;
-}
-
-export interface CircuitBreakerState {
-  state: CircuitState;
-  retryCounters: Map<string, number>;
-  iterationCounters: Map<string, number>;
-  failureHistory: Map<string, Array<{ time: number; error: string }>>;
-  lastStateChange: number;
-  tripReason?: string;
 }
 
 // =============================================================================
@@ -646,21 +388,6 @@ export interface EnsembleResult {
   agreementScore: number;
   totalCost: number;
   totalLatencyMs: number;
-}
-
-// =============================================================================
-// SubAgent Types (新架构)
-// =============================================================================
-
-export interface SubAgentConfig {
-  id: string;
-  name: string;
-  type: 'planner' | 'worker' | 'evaluator' | 'synthesizer';
-  description: string;
-  preferredModel?: TaskType;
-  tools: string[];
-  maxIterations: number;
-  confidenceThreshold: number;
 }
 
 export interface SubAgentContext {
@@ -758,27 +485,9 @@ export interface EvaluationFeedback {
   priorityActions: string[];
 }
 
-export interface EvaluationCriteria {
-  minQualityScore: number;
-  minCompletenessScore: number;
-  maxContradictions: number;
-  requiredAspects: string[];
-}
-
 // =============================================================================
 // Master Orchestrator Types (新架构)
 // =============================================================================
-
-export interface MasterOrchestratorConfig {
-  stateMachineConfig: StateMachineConfig;
-  circuitBreakerConfig: CircuitBreakerConfig;
-  modelRouterConfig: ModelRouterConfig;
-  pipelineConfig: PipelineConfig;
-  evaluationCriteria: EvaluationCriteria;
-  maxTotalIterations: number;
-  enableTraceRecording: boolean;
-  streamingCallback?: (update: StreamingUpdate) => void;
-}
 
 export interface MasterOrchestratorResult {
   sessionId: string;
@@ -800,35 +509,6 @@ export interface ModelUsageSummary {
   totalOutputTokens: number;
   totalCost: number;
   modelBreakdown: Record<string, { calls: number; tokens: number; cost: number }>;
-}
-
-// =============================================================================
-// Session & Recovery Types (新架构)
-// =============================================================================
-
-export interface SessionInfo {
-  sessionId: string;
-  traceId: string;
-  query: string;
-  phase: AgentPhase;
-  createdAt: number;
-  updatedAt: number;
-  canResume: boolean;
-  lastCheckpointId?: string;
-  error?: string;
-}
-
-export interface RecoveryOptions {
-  fromCheckpoint?: string;
-  skipFailedStage?: boolean;
-  overrideConfig?: Partial<MasterOrchestratorConfig>;
-}
-
-export interface RecoveryResult {
-  success: boolean;
-  resumedFrom: string;
-  result?: MasterOrchestratorResult;
-  error?: string;
 }
 
 // =============================================================================

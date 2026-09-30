@@ -15,13 +15,13 @@ import {
 import { getProviderService, resetProviderService } from '../../services/providerManager';
 import {SECRET_STORE_MASTER_KEY_ENV} from '../../services/providerManager/localSecretStore';
 import { saveClaudeSessionMapToRuntimeSnapshots } from '../../services/runtimeSnapshotStore';
-import type { TraceProcessorService } from '../../services/traceProcessorService';
 import * as runtimePromptContext from '../../agentRuntime/runtimePromptContext';
 import {createRuntimePerformanceRecorder, createRuntimePerformanceRun} from '../../agentRuntime/runtimePerformance';
 import {evaluationRuntimeCapabilities} from '../../services/selfEvolution/evaluationRuntimeCapabilities';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as skillLoader from '../../services/skillEngine/skillLoader';
-import * as skillAnalysisAdapter from '../../services/skillEngine/skillAnalysisAdapter';
+import {expectRuntimeVendorHintParity} from '../../agentRuntime/__tests__/vendorHintParityFixture';
+import {TRACE_VENDOR_METADATA_SQL} from '../../services/traceVendor/traceVendorResolver';
 import {
   withEffectiveRuntimeRegistrySnapshot,
   type EffectiveRuntimeRegistrySnapshot,
@@ -204,6 +204,7 @@ function createEffectiveRuntimeRegistrySnapshot(): EffectiveRuntimeRegistrySnaps
     getSkillOrigin: () => undefined,
     getAppliedOverlayIds: () => [],
     getVendorOverride: () => undefined,
+    hasVendorOverrides: () => false,
     getVendorOverridesForSkill: () => [],
     getVendorOverrideLoadIssues: () => [],
     findMatchingSkill: () => undefined,
@@ -250,8 +251,6 @@ afterEach(async () => {
   clearCodeAwareOutputGuards('session-private-stream-recovery');
   sessionContextManager.remove('session-a');
   sessionContextManager.remove('session-quick');
-  sessionContextManager.remove('session-quick-focus-evidence');
-  sessionContextManager.remove('session-quick-selection-trace-fact');
   sessionContextManager.remove('session-language-quick');
   sessionContextManager.remove('session-language-full');
   sessionContextManager.remove('session-provider');
@@ -1140,6 +1139,24 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {mcp.mockRestore();}
   });
 
+  it('gives invoke_skill the shared best-effort vendor hint without a vendor preflight', async () => {
+    const traceProcessor = {query: jest.fn(async () => ({columns: [], rows: []})), getTrace: () => undefined};
+    const runtime = new ClaudeRuntime(traceProcessor as any, {enableVerification: false, enableSubAgents: false});
+    const mcp = jest.spyOn(claudeMcpServer, 'createClaudeMcpServer');
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: '启动分析完成'};
+    });
+    let runtimeOptions: Parameters<typeof claudeMcpServer.createClaudeMcpServer>[0];
+    try {
+      await runtime.analyze('分析启动性能', 'claude-vendor-hint', 'trace', {analysisMode: 'full'});
+      runtimeOptions = mcp.mock.calls[0][0];
+    } finally {mcp.mockRestore();}
+    expect(traceProcessor.query.mock.calls.some(call =>
+      String((call as unknown[])[1]).includes(TRACE_VENDOR_METADATA_SQL))).toBe(false);
+    await expectRuntimeVendorHintParity({
+      createMcpServer: claudeMcpServer.createClaudeMcpServer, runtimeOptions});
+  });
+
   // A failed classifier is the turn that knows least about the trace, so it
   // keeps the trace-fact preflight; what it loses is the scene, and with it
   // the scene-wide memory tier.
@@ -1535,7 +1552,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     ]));
   });
 
-  it('starts Claude full comparison, registry, and SQL knowledge before current architecture/vendor settle and records preflight phases once', async () => {
+  it('starts Claude full comparison, registry, and SQL knowledge before current architecture settles and records preflight phases once', async () => {
     process.env.SMARTPERFETTO_ADMITTED_RUNTIME_CANDIDATES = 'task6';
     const traceId = 'trace-claude-overlap-current';
     const referenceTraceId = 'trace-claude-overlap-reference';
@@ -1559,7 +1576,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
 
     const architectureStarted = createDeferred<void>();
     const releaseArchitecture = createDeferred<any>();
-    const releaseVendor = createDeferred<{ vendor: string }>();
     const releaseCompleteness = createDeferred<any>();
     const releaseRegistry = createDeferred<void>();
     const releaseKnowledge = createDeferred<{ getContextForAI: () => string }>();
@@ -1575,11 +1591,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
           }
           return { type: 'STANDARD', confidence: 0.8, evidence: [] };
         }),
-      } as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => releaseVendor.promise),
       } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockImplementation(async () => releaseCompleteness.promise);
@@ -1620,11 +1631,9 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(registrySpy).toHaveBeenCalledTimes(1);
       expect(knowledgeSpy).toHaveBeenCalledTimes(1);
       expect(comparisonSpy).toHaveBeenCalledTimes(1);
-      expect(adapterSpy).not.toHaveBeenCalled();
       expect(completenessSpy).not.toHaveBeenCalled();
     } finally {
       releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
-      releaseVendor.resolve({ vendor: 'xiaomi' });
       releaseCompleteness.resolve(undefined);
       releaseRegistry.resolve();
       releaseKnowledge.resolve({ getContextForAI: () => 'SQL knowledge overlap context' });
@@ -1647,7 +1656,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
         expect.objectContaining({ name: 'knowledge', outcome: 'ok' }),
       ]));
       architectureSpy.mockRestore();
-      adapterSpy.mockRestore();
       completenessSpy.mockRestore();
       registrySpy.mockRestore();
       knowledgeSpy.mockRestore();
@@ -1666,9 +1674,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       jest.spyOn(sqlKnowledgeBase, 'getExtendedKnowledgeBase').mockResolvedValue({getContextForAI: () => undefined} as any),
       jest.spyOn(architectureDetector, 'createArchitectureDetector')
         .mockReturnValue({detect: jest.fn(async () => undefined)} as any),
-      jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter').mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined), detectVendor: jest.fn(async () => ({vendor: 'aosp'})),
-      } as any),
       jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness').mockResolvedValue(undefined as any),
     ];
     try {
@@ -1716,11 +1721,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const architectureDetect = jest.fn(async () => ({type: 'STANDARD', confidence: 0.9, evidence: []}));
     const architectureSpy = jest.spyOn(architectureDetector, 'createArchitectureDetector')
       .mockReturnValue({detect: architectureDetect} as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => ({vendor: 'xiaomi'})),
-      } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockResolvedValue(undefined as any);
 
@@ -1746,13 +1746,11 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     await pending;
     expect(knowledgeSpy).toHaveBeenCalledTimes(1);
     expect(architectureDetect).toHaveBeenCalledTimes(1);
-    expect(adapterSpy).toHaveBeenCalledTimes(1);
     expect(completenessSpy).toHaveBeenCalledTimes(1);
     expect(registrySpy.mock.invocationCallOrder[0]).toBeLessThan(knowledgeSpy.mock.invocationCallOrder[0]);
     expect(knowledgeSpy.mock.invocationCallOrder[0]).toBeLessThan(architectureDetect.mock.invocationCallOrder[0]);
 
     architectureSpy.mockRestore();
-    adapterSpy.mockRestore();
     completenessSpy.mockRestore();
     registrySpy.mockRestore();
     knowledgeSpy.mockRestore();
@@ -1793,7 +1791,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     const architectureStarted = createDeferred<void>();
     const comparisonStarted = createDeferred<void>();
     const releaseArchitecture = createDeferred<any>();
-    const releaseVendor = createDeferred<{ vendor: string }>();
     const releaseCompleteness = createDeferred<any>();
     const releaseRegistry = createDeferred<void>();
     const releaseKnowledge = createDeferred<{ getContextForAI: () => string }>();
@@ -1812,11 +1809,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
           }
           return { type: 'STANDARD', confidence: 0.8, evidence: [] };
         }),
-      } as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => releaseVendor.promise),
       } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockImplementation(async () => releaseCompleteness.promise);
@@ -1860,7 +1852,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       releaseComparison.reject(new Error('comparison rejected after cancellation'));
       releaseArchitecture.resolve({ type: 'STANDARD', confidence: 0.9, evidence: [] });
       await Promise.resolve();
-      releaseVendor.resolve({ vendor: 'xiaomi' });
       releaseCompleteness.resolve(undefined);
 
       await expect(preparePromise).rejects.toThrow(abortError.message);
@@ -1877,7 +1868,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {
       process.off('unhandledRejection', onUnhandledRejection);
       architectureSpy.mockRestore();
-      adapterSpy.mockRestore();
       completenessSpy.mockRestore();
       registrySpy.mockRestore();
       knowledgeSpy.mockRestore();
@@ -3720,11 +3710,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       .mockReturnValue({
         detect: jest.fn(async () => ({ type: 'STANDARD', confidence: 0.9, evidence: [] })),
       } as any);
-    const adapterSpy = jest.spyOn(skillAnalysisAdapter, 'getSkillAnalysisAdapter')
-      .mockReturnValue({
-        ensureInitialized: jest.fn(async () => undefined),
-        detectVendor: jest.fn(async () => ({ vendor: 'xiaomi' })),
-      } as any);
     const completenessSpy = jest.spyOn(traceCompletenessProber, 'probeTraceCompleteness')
       .mockResolvedValue(undefined as any);
     const registrySpy = jest.spyOn(skillLoader, 'ensureSkillRegistryInitialized')
@@ -3779,7 +3764,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(3);
       expect(focusSpy).toHaveBeenCalledTimes(1);
       expect(architectureSpy).toHaveBeenCalledTimes(1);
-      expect(adapterSpy).toHaveBeenCalledTimes(1);
       expect(completenessSpy).toHaveBeenCalledTimes(1);
       expect(registrySpy).toHaveBeenCalledTimes(1);
       expect(knowledgeSpy).toHaveBeenCalledTimes(1);
@@ -3817,7 +3801,6 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
     } finally {
       focusSpy.mockRestore();
       architectureSpy.mockRestore();
-      adapterSpy.mockRestore();
       completenessSpy.mockRestore();
       registrySpy.mockRestore();
       knowledgeSpy.mockRestore();

@@ -4,7 +4,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { bootstrap } from '../bootstrap';
+import { bootstrap, resolveInvocationPath } from '../bootstrap';
 import type { OutputFormat } from '../repl/renderer';
 import { createRenderer } from '../repl/renderer';
 import { withConsoleLogToStderr } from '../io/stdio';
@@ -89,7 +89,7 @@ export interface CaptureSuggestCommandArgs {
 export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs): Promise<number> {
   const { paths } = bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir, requireLlm: false });
   const format = args.format ?? 'text';
-  const outPath = path.resolve(args.out);
+  const outPath = resolveInvocationPath(args.out);
   const lifecycle: { service?: CliAnalyzeService } = {};
 
   try {
@@ -123,9 +123,9 @@ export async function runCaptureAndroidCommand(args: CaptureAndroidCommandArgs):
       out: outPath,
       serial: args.serial,
       sideload: args.sideload,
-      traceboxPath: args.tracebox,
+      traceboxPath: args.tracebox && resolveInvocationPath(args.tracebox),
       noGuardrails: args.noGuardrails,
-      adbPath: args.adb,
+      adbPath: args.adb && resolveInvocationPath(args.adb),
       killStale: args.killStale,
       backendRoot: process.cwd(),
       runner: args.runner,
@@ -198,7 +198,7 @@ export async function runCaptureConfigCommand(args: CaptureConfigCommandArgs): P
       extraAtraceCategories: args.categories,
     });
     if (args.out) {
-      const outPath = path.resolve(args.out);
+      const outPath = resolveInvocationPath(args.out);
       fs.mkdirSync(path.dirname(outPath), { recursive: true });
       fs.writeFileSync(outPath, configText, 'utf-8');
       if (format === 'json' || format === 'ndjson') {
@@ -251,7 +251,7 @@ function resolveAndroidConfigInput(args: CaptureAndroidCommandArgs): {
   durationSeconds?: number;
 } {
   if (args.config) {
-    const config = readTraceConfigFile(args.config, { durationSeconds: args.durationSeconds });
+    const config = readTraceConfigFile(resolveInvocationPath(args.config), { durationSeconds: args.durationSeconds });
     const configText = addAtraceCategories(config.textproto, args.categories ?? []);
     return {
       configText,

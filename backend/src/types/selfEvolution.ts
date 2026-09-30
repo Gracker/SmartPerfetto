@@ -8,6 +8,10 @@ import type {
   RuntimePerformanceReceiptV1,
   RuntimePerformanceRecorder,
 } from '../agentRuntime/runtimePerformance';
+import type {
+  RuntimeToolResultAuditReceiptV1,
+  RuntimeToolResultAuditRecorder,
+} from '../agentRuntime/runtimeToolResultAudit';
 import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 import type {AdaptiveRoutingReceiptV1} from './adaptiveRouting';
 import type {
@@ -252,6 +256,8 @@ export interface RunManifestV1 {
   capabilityFlags: string[];
   capabilityManifest?: CapabilityManifestAttributionV1;
   performance?: RuntimePerformanceReceiptV1;
+  /** What each tool call handed to its runtime for the model, before transport truncation. */
+  toolResults?: RuntimeToolResultAuditReceiptV1;
 
   referenceTraceId?: string;
   comparisonIdentity?: string;
@@ -1241,6 +1247,7 @@ export interface RunManifestSceneAttribution {
 export interface RunManifestAttributionSink {
   readonly identity: RunManifestIdentity;
   readonly runtimePerformanceRecorder?: RuntimePerformanceRecorder;
+  readonly toolResultAuditRecorder?: RuntimeToolResultAuditRecorder;
   recordScene(input: RunManifestSceneAttribution): void;
   recordRuntime(input: RunManifestRuntimeAttribution): void;
   recordMode(input: {

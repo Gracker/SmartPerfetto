@@ -143,6 +143,23 @@ acquisition. A generic 'system is normal' or 'data is insufficient' without the
 specific checked dimension, scope or missing evidence is not covered. The backend
 independently compares these descriptions with trusted capture records; this
 review must not produce acquisition proof or causal verification.
+
+The backend derives the expected `evidenceStatus` from the records you select
+and keeps coverage unknown unless your value matches it exactly. Derive it the
+same way, taking the first rule that applies:
+
+1. No selected record: `not_checked`, also when the answer explains that the
+   trace lacks the data.
+2. `scopeMatch` other than matched: `insufficient`.
+3. A selected record whose captureId is in `incompleteCaptureIds`: `unknown`.
+4. Each selected record stands for its cohort: every supplied record with the
+   same captureId, domain, trace side, window and metricId, cited by the answer
+   or not. A requirement `evidenceMetrics` entry missing from those cohorts:
+   `insufficient`.
+5. Any cohort record whose status or origin is `unknown`: `unknown`.
+6. Any cohort record that is `partial` or `unavailable`, or
+   `ledger_record_budget_exhausted` in `issues`: `insufficient`.
+7. Otherwise: `observed`.
 An investigation requirement without `evidenceMetrics` is a content obligation
 whose facts retain the existing claim-verification boundary. For that row use
 `evidenceStatus: not_applicable` and an empty record list; do not invent a new

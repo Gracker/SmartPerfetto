@@ -156,7 +156,11 @@ usually `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads:
 1. `backend/.env` from the package or source backend directory.
 2. `~/.smartperfetto/env`, which overrides earlier values.
 
-If you pass `--env-file /path/to/env`, the CLI reads only that file. Enable only
+If you pass `--env-file /path/to/env`, the CLI reads only that file. These env
+files are loaded before any module evaluates, so startup settings such as
+`LOG_LEVEL` and trace processor ports or timeouts can live there too. Relative
+paths in commands (traces, `--out`, `--config`, ...) always resolve against the
+directory you ran `smp` from. Enable only
 one CLI provider source for first setup: an active profile already present in
 the current CLI store, one Claude-compatible env block, or one OpenAI-compatible
 env block. `smp provider list` and `smp provider test <providerId>` inspect that
@@ -451,7 +455,7 @@ smp capture android --preset overview --app com.example.app --duration 10 --kill
 smp capture android --preset game --app com.example.game --duration 20 --out game.perfetto-trace --analyze --query "Find launch and frame pacing issues" --mode fast
 ```
 
-Available presets: `startup`, `scrolling`, `camera`, `anr`, `game`, `memory`,
+Available presets: `startup`, `scrolling`, `camera`, `anr`, `loading`, `game`, `memory`,
 `memory-profile`, `cpu`, `power`, `overview`, and `full`. Every system-wide preset
 (all except `memory-profile`) enables `power/cpu_frequency` and
 `power/cpu_frequency_limits`; the latter carries each CPU's frequency bounds and
@@ -461,6 +465,13 @@ clamp can be matched against thermal-zone temperature in the same window. Those
 tracepoints depend on device and kernel support and are not exposed everywhere.
 `power` additionally enables `android.power` battery
 counters, power rails, suspend/wakeup ftrace, and `android.network_packets`.
+`loading` targets in-app content loading (page navigation, list data, images,
+WebView). A load is a cross-thread wait chain from the main thread to workers,
+Binder, IO, and the network, so it enables wakeup, Binder, and block-IO ftrace,
+`network`/`database`/`res`/`webview` atrace, input, FrameTimeline, and
+`android.network_packets`. Packets are recorded only on devices and releases that
+provide that producer; a missing packet track is missing data, not evidence that
+no network request happened.
 `camera` collects Camera/HAL/vendor atrace candidates, Binder, scheduler,
 FrameTimeline, and DMA-BUF or legacy ION events. These tracepoints are optional
 and vary by Android release, kernel, and vendor implementation. Even with this
@@ -502,6 +513,12 @@ It differs from the system-wide presets in several ways:
   ZP1A.260626.001 or newer) and `process_stats` `record_process_age`, both used
   by Memscope, because the device rejects config fields its perfetto does not
   know.
+
+`smp capture suggest` proposes `loading` for 页面加载, 加载慢, 内容加载, 图片加载,
+白屏, `page load`, `content load`, and `slow to load`. A tie with startup,
+scrolling, or ANR keywords keeps the existing preset: "冷启动白屏" stays `startup`
+and "图片加载慢导致滑动卡顿" stays `scrolling`. The bare word `loading` does not
+trigger it, so `downloading` and loading-animation jank are not misrouted.
 
 `smp capture suggest` proposes `memory-profile` for heap-dump, hprof, Java heap,
 heap graph, and memory-leak requests when `--app` names a concrete package.
@@ -578,3 +595,5 @@ the prompt; a further press exits with 130. With no turn running, press Ctrl-C t
 ## System investigation output
 
 The CLI reports system investigation coverage separately from system evidence coverage, with Not checked for missing historical fields. Machine-readable conclusion records include `investigationAssurance` without changing the original conclusion or native completion. Each turn also saves `NNN.investigation-assessment.json` and `NNN.delivery-assurance.json` with dimension statuses and evidence references. The HTML report shows the same investigation scope. Restoring historical results does not automatically acquire missing evidence.
+
+Tool results in `stream.jsonl` are transport-truncated copies. Each turn also saves `NNN.tool-results.json`, which records what every call handed to its runtime: tool name, call id (when the runtime supplies one), outcome, text characters and bytes, and whether audited fields such as `vendorOverride` appear verbatim in the text handed to the model. The file contains no payload values; private-knowledge runs also drop Skill ids.

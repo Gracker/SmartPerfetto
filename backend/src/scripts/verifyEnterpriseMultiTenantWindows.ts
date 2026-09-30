@@ -92,7 +92,7 @@ const DEFAULT_TRACE_CANDIDATES = [
 ];
 
 function printUsage(): void {
-  console.log('Usage: npx tsx src/scripts/verifyEnterpriseMultiTenantWindows.ts [options]');
+  console.log('Usage: npm run enterprise:multi-tenant-windows -- [options]');
   console.log('');
   console.log('Options:');
   console.log('  --trace <path>         Fixture trace path. Defaults to the cataloged android-startup-light case.');

@@ -113,6 +113,8 @@ steps:
     type: atomic
     name: "温度数据检测"
     display: false
+    sql_fragments:
+      - fragments/system_cpu_freq_limit_spans.sql
     sql: |
       SELECT
         CASE WHEN EXISTS (
@@ -130,14 +132,12 @@ steps:
           WHERE type IN ('table', 'view') AND name = 'android_gpu_frequency'
         ) THEN 1 ELSE 0 END as has_gpu_freq_data,
         -- Direct throttling evidence. A temperature counter correlating with a
-        -- low frequency proves nothing; these two do the actual work.
-        CASE WHEN EXISTS (
-          SELECT 1 FROM cpu_counter_track
-          WHERE type IN ('cpu_max_frequency_limit', 'cpu_min_frequency_limit')
-        ) THEN 1 ELSE 0 END as has_limit_data,
-        CASE WHEN EXISTS (
-          SELECT 1 FROM counter_track WHERE type = 'cooling_device_counter'
-        ) THEN 1 ELSE 0 END as has_cdev_data
+        -- low frequency proves nothing; the limit track does the actual work.
+        -- Limit evidence needs a VALID max-limit sample: a min-only capture or
+        -- an empty/invalid-only max track is missing evidence, not "no limit".
+        ds.has_max_limit_data,
+        ds.limit_evidence_missing_reason
+      FROM system_cpu_freq_limit_data_status ds
     save_as: data_check
 
   # ========== L0: 专家分析时间窗 ==========
@@ -241,38 +241,44 @@ steps:
 
   # ========== L1: 直接限频证据（cpufreq policy limit + cooling device） ==========
   # Correlating a temperature counter with a low frequency cannot establish
-  # throttling. These two typed tracks can: the limit track says a cap was
-  # APPLIED, and a non-zero cooling-device state says the kernel thermal
-  # framework was mitigating at the same time. Full who/what/anomaly
-  # attribution lives in the cpu_frequency_limit_attribution Skill.
+  # throttling. The limit track says a cap was APPLIED; whether a kernel
+  # cooling device applied it is decided once, by the shared verdict fragment
+  # (a tightening limit write forward-paired with a cooling device tied to the
+  # same policy). This step only selects the fragment's window summary: its
+  # classification, `is_confirmed`, class note and per-class episode counts.
+  # Full who/what/anomaly attribution lives in cpu_frequency_limit_attribution.
   - id: direct_limit_evidence
     type: atomic
     name: "直接限频证据"
     optional: true
-    condition: "data_check.data?.[0]?.has_limit_data === 1"
+    condition: "data_check.data?.[0]?.has_max_limit_data === 1"
     process_scope:
       role: global_context
     sql_fragments:
-      - fragments/observed_data_bounds.sql
       - fragments/system_sched_spans.sql
       - fragments/system_cpu_freq_limit_spans.sql
       - fragments/system_cpu_freq_limit_episodes.sql
       - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
       - fragments/thermal_signal_signatures.sql
       - fragments/system_cpu_freq_limit_episode_verdicts.sql
     display:
       level: summary
       layer: overview
-      title: "直接限频证据（限频区段 x 散热设备）"
+      title: "直接限频证据（限频区段 x 关联散热设备）"
       columns:
         - {name: episode_count, label: "限频区段数", type: number}
         - {name: policy_count, label: "涉及 policy 数", type: number}
         - {name: deepest_depth_pct, label: "最大限频深度", type: percentage}
         - {name: longest_episode_ns, label: "最长区段", type: duration, unit: ns}
-        - {name: cooling_confirmed_episodes, label: "与散热设备同期的区段", type: number}
+        - {name: cooling_confirmed_episodes, label: "由关联散热设备施加的区段", type: number}
         - {name: onset_unknown_episodes, label: "起点不可观测的区段", type: number}
-        - {name: has_cdev_data, label: "有内核散热设备数据", type: boolean}
+        - {name: has_cdev_data, label: "采集到散热设备档位变化", type: boolean}
+        - {name: freq_limit_classification, label: "限频触发分类", type: string}
+        - {name: is_confirmed, label: "已核验由内核热控施加", type: boolean}
+        - {name: onset_trigger_mix, label: "逐次限频写入分类", type: string}
         - {name: thermal_throttling_evidence, label: "热节流证据", type: string}
+        - {name: class_note, label: "分类说明", type: string}
         - {name: next_step, label: "下一步", type: string}
         - {name: evidence_scope, label: "证据范围", type: string}
     on_empty: "窗口内没有超过阈值的限频区段。"
@@ -283,24 +289,23 @@ steps:
           COALESCE(${end_ts}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
       )
       SELECT
-        COUNT(*) AS episode_count,
-        COUNT(DISTINCT v.policy_cpu) AS policy_count,
-        ROUND(MAX(v.depth_pct), 1) AS deepest_depth_pct,
-        MAX(v.episode_dur_ns) AS longest_episode_ns,
-        -- Overlap with an active cooling device, the weaker of the two cooling
-        -- readings the fragment keeps; cpu_frequency_limit_attribution ranks
-        -- the coincident transition above it.
-        SUM(CASE WHEN v.cooling_spans > 0 THEN 1 ELSE 0 END) AS cooling_confirmed_episodes,
-        SUM(CASE WHEN v.starts_at_data_start = 1 THEN 1 ELSE 0 END) AS onset_unknown_episodes,
-        ${data_check.data[0].has_cdev_data|0} AS has_cdev_data,
-        CASE
-          WHEN SUM(CASE WHEN v.cooling_spans > 0 THEN 1 ELSE 0 END) > 0
-            THEN 'confirmed_by_cooling_device'
-          ELSE 'limit_observed_cause_unverified'
-        END AS thermal_throttling_evidence,
+        ws.episode_count,
+        ws.policy_count,
+        ws.deepest_depth_pct,
+        ws.longest_episode_ns,
+        ws.confirmed_episode_count AS cooling_confirmed_episodes,
+        ws.onset_unknown_episode_count AS onset_unknown_episodes,
+        ws.cooling_transition_coverage AS has_cdev_data,
+        ws.freq_limit_classification,
+        ws.is_confirmed,
+        ws.onset_trigger_mix,
+        CASE WHEN ws.is_confirmed = 1 THEN 'confirmed_by_cooling_device'
+          ELSE 'limit_observed_cause_unverified' END AS thermal_throttling_evidence,
+        ws.class_note,
         '用 cpu_frequency_limit_attribution 查看谁触发了限频、限频前的负载归因与异常线程' AS next_step,
         'observation_not_causal' AS evidence_scope
-      FROM system_cpu_freq_limit_episode_verdicts v
+      FROM system_cpu_freq_limit_window_summary ws
+      WHERE ws.window_id = 0
     save_as: direct_limit_evidence
 
   # ========== L1: 温度传感器概览 ==========
@@ -819,8 +824,13 @@ steps:
     sql_fragments: [fragments/thermal_sample_quality.sql]
     sql: |
       WITH
+      -- The limit side comes from the shared verdict fragment through
+      -- direct_limit_evidence: its window classification, `is_confirmed` and
+      -- class note. No class is mapped or restated here.
       limit_facts AS (
-        SELECT ${direct_limit_evidence.data[0].cooling_confirmed_episodes|0} AS cooling_confirmed_episodes,
+        SELECT ${direct_limit_evidence.data[0].is_confirmed|0} AS is_confirmed,
+          '${direct_limit_evidence.data[0].freq_limit_classification}' AS freq_limit_classification,
+          '${direct_limit_evidence.data[0].class_note}' AS class_note,
           ${direct_limit_evidence.data[0].episode_count|0} AS episode_count
       ),
       thermal_peak AS (
@@ -866,10 +876,11 @@ steps:
         WHERE prev_freq IS NOT NULL AND freq_mhz < prev_freq * 0.7
       )
       SELECT
-        -- THERMAL_LIMIT_CONFIRMED requires a limit episode that overlaps an
-        -- active cooling device. Temperature alone never reaches this branch.
-        CASE WHEN (SELECT cooling_confirmed_episodes FROM limit_facts) > 0
-            THEN 'THERMAL_LIMIT_CONFIRMED'
+        -- A confirmed limit class comes only from the shared verdict fragment
+        -- (a limit write applied by a tied cooling device). Temperature alone
+        -- never reaches this branch.
+        CASE WHEN (SELECT is_confirmed FROM limit_facts) = 1
+            THEN (SELECT freq_limit_classification FROM limit_facts)
           WHEN (SELECT rejected_tracks FROM thermal_quality) > 0
             OR (SELECT sensor_spread_c FROM thermal_quality) > 30 THEN 'DATA_SUSPECT'
           WHEN (SELECT peak_temp_c FROM thermal_peak) IS NULL THEN 'THERMAL_DATA_UNAVAILABLE'
@@ -882,15 +893,15 @@ steps:
         (SELECT cnt FROM freq_drops) AS severe_drop_count,
         (SELECT rejected_tracks FROM thermal_quality) AS rejected_temperature_tracks,
         ROUND((SELECT sensor_spread_c FROM thermal_quality), 1) AS sensor_spread_c,
-        CASE WHEN (SELECT cooling_confirmed_episodes FROM limit_facts) > 0
+        CASE WHEN (SELECT is_confirmed FROM limit_facts) = 1
             THEN 'confirmed_by_cooling_device'
           WHEN (SELECT episode_count FROM limit_facts) > 0
             THEN 'limit_observed_cause_unverified'
           ELSE 'not_established' END AS thermal_throttling_evidence,
         (SELECT episode_count FROM limit_facts) AS limit_episode_count,
         '用 cpu_frequency_limit_attribution 查看谁触发了限频、限频前的负载归因与异常线程' AS next_step,
-        CASE WHEN (SELECT cooling_confirmed_episodes FROM limit_facts) > 0
-          THEN '限频区段与内核散热设备的非零档位同时存在：热控框架确实在同期抑温。该事件不声明散热设备治理哪个 cpufreq policy。'
+        CASE WHEN (SELECT is_confirmed FROM limit_facts) = 1
+          THEN (SELECT class_note FROM limit_facts)
           WHEN (SELECT rejected_tracks FROM thermal_quality) > 0
           THEN '温度数据可疑：已排除低质量轨道；峰值仅代表有效传感器，不代表 CPU 结温。'
           WHEN (SELECT sensor_spread_c FROM thermal_quality) > 30
@@ -925,14 +936,14 @@ steps:
     rules:
       - condition: "root_cause.data[0]?.classification === 'THERMAL_LIMIT_CONFIRMED'"
         severity: warning
-        diagnosis: "已核验热限频：${direct_limit_evidence.data[0].cooling_confirmed_episodes} 段限频区段与内核散热设备的非零档位同时存在（最大深度 ${direct_limit_evidence.data[0].deepest_depth_pct}%）"
+        diagnosis: "已核验热限频：${direct_limit_evidence.data[0].cooling_confirmed_episodes} 段限频区段中有限频写入紧跟在与该 policy 时序关联的内核散热设备升档之后（最大深度 ${direct_limit_evidence.data[0].deepest_depth_pct}%；逐次写入分类 ${direct_limit_evidence.data[0].onset_trigger_mix}）"
         confidence: high
         suggestions:
           - "用 cpu_frequency_limit_attribution 查看谁触发了限频、限频前的负载归因与异常线程"
-          - "核对该散热设备治理的 cpufreq policy 与触发它的热区阈值；cdev_update 事件本身不声明作用对象"
+          - "散热设备与 policy 的对应关系来自档位变更与上限变更的时序配对，不来自设备名；核对触发它的热区阈值"
       - condition: "root_cause.data[0]?.thermal_throttling_evidence === 'limit_observed_cause_unverified'"
         severity: info
-        diagnosis: "观测到 ${direct_limit_evidence.data[0].episode_count} 段限频区段，但没有同期的内核散热设备活动；限频原因未核验"
+        diagnosis: "观测到 ${direct_limit_evidence.data[0].episode_count} 段限频区段，但没有一次限频写入由关联散热设备施加（分类 ${direct_limit_evidence.data[0].freq_limit_classification}）；限频原因未核验"
         confidence: medium
         suggestions:
           - "用 cpu_frequency_limit_attribution 判断是用户态温控守护进程、非热策略限频，还是采集缺少 thermal/cdev_update"

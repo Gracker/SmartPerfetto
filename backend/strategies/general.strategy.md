@@ -85,9 +85,10 @@ keywords: []
 | **内存 / OOM / 泄漏** | `invoke_skill("memory_analysis")` → 如果有 heap dump → `invoke_skill("android_heap_graph_summary")` → 如果有 LMK → `invoke_skill("lmk_analysis")` → 如果涉及 GPU 内存 → `invoke_skill("dmabuf_analysis")` | 层层深入内存问题；heap graph 用 retained/cumulative size 定位 retainer |
 | **IO / 磁盘 / 存储** | `invoke_skill("block_io_analysis")` 或 `invoke_skill("io_pressure")` | 先区分 block I/O、D-state 等待、主线程文件 I/O、SQLite/DB slice、页缺失和存储容量/损坏线索；不要把系统 I/O 压力直接写成 SQLite 或业务文件根因 |
 | **GPU / 渲染** | `invoke_skill("gpu_analysis")` | GPU 频率、利用率、Fence 等待 |
-| **Binder / IPC** | `invoke_skill("binder_analysis")` → 特定事务 → `invoke_skill("binder_detail")` | Binder 通信分析 |
+| **Binder / IPC** | `invoke_skill("binder_analysis")` → 特定事务 → `invoke_skill("binder_detail")` | 先分客户端阻塞（`client_dur`）与服务端执行（`server_dur`）再归属；判别表见 binder-ipc 知识模板 |
 | **锁竞争 / 死锁** | `invoke_skill("lock_contention_analysis")` | Monitor 竞争、锁链分析；trace 有 system_server 锁追踪（`*_lock_held`）时，`lock_held_owner_summary` / `lock_held_long_holds` 给持锁一侧的持有时长、持锁线程和等锁方看到的持锁方法。`lock_held_capability.status=runtime_lacks_android_lock_held` 表示 trace 有数据但 trace processor 早于该模块，只能报数据存在，不能给持锁时长 |
 | **电源 / 功耗 / 唤醒** | 优先切到 power 策略；或 `invoke_skill("wattson_rails_power_breakdown")` / `invoke_skill("suspend_wakeup_analysis")` | 先看 power_rails/battery_counters/cpu_freq_idle/gpu_work_period 数据完整度；缺 Wattson 数据时退化为 wakelock/Doze/唤醒链 |
+| **页面跳转 / Activity 切换** | `invoke_skill("navigation_analysis", { package: "<包名>", start_ts: "<start>", end_ts: "<end>" })` | 该 Skill 的"跳转耗时"只是生命周期 slice 时长，不是输入到首帧；分段方法见 `interaction:navigation` detail |
 | **SurfaceFlinger / 合成** | `invoke_skill("surfaceflinger_analysis")` | SF 合成延迟、GPU/HWC 分析 |
 | **非标准/混合渲染架构卡顿** | 先 `detect_architecture`；始终保留 HWUI host 分析（`scrolling_analysis` / `jank_frame_detail`），再按候选链路补：Flutter → `flutter_scrolling_analysis`，TextureView → `textureview_producer_frame_timing`，WebView GL Functor → `webview_drawfunctor_jank_chain`，RN old/new → `rn_bridge_to_frame_jank` / `rn_fabric_render_jank`，GLSurfaceView/NativeActivity → `gl_standalone_swap_jank` | 混合出图要先分开看 host 与 producer，再合并看依赖；避免只看 FrameTimeline 漏掉生产端 jank |
 | **网络** | `invoke_skill("network_analysis")` | 只把 packet-level trace 当作包收发、接口、协议、远程端口、活跃周期和流量证据；DNS/连接/TLS/TTFB 需要 request-level telemetry 或接入层日志补证 |

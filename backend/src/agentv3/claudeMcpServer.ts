@@ -24,6 +24,8 @@ import {
   createSkillAnalysisAdapter,
   type SkillRegistryView,
 } from '../services/skillEngine/skillAnalysisAdapter';
+import {awaitTraceVendorHint} from '../services/traceVendor/traceVendorResolver';
+import {selectVendorOverride} from '../services/skillEngine/vendorOverrideSelection';
 import { skillRegistry } from '../services/skillEngine/skillLoader';
 import { getWorkspaceSkillRegistry } from '../services/skillPacks/workspaceSkillRegistryProvider';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
@@ -140,7 +142,6 @@ import { buildActivePhaseReminder } from './activePhaseReminder';
 import {loadSourceInvestigationPolicy} from './sourceInvestigationPolicy';
 import { summarizeToolCallInput } from './toolCallSummary';
 import {
-  findCompletedPhaseEvidenceGaps,
   getPhaseToolEvidenceStatus,
   replayPrePlanToolCalls,
 } from './planToolCallRecorder';
@@ -223,7 +224,6 @@ import {
   type ToolRequestScope,
 } from './mcpToolRegistry';
 import { backendLogPath } from '../runtimePaths';
-import {diagnosticLogIdentity} from '../utils/logger';
 import {activeCodebaseGeneration, CodebaseRegistry} from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
 import {CodeLookupLedger, type CodeLookupLedgerEntry} from '../services/codebase/codeLookupLedger';
@@ -1250,6 +1250,12 @@ export interface ClaudeMcpServerOptions {
   allowNewEvidence?: boolean;
   /** Runtime lease: no tool body may execute after acquisition closes. */
   canInvokeTool?: () => boolean;
+  /**
+   * The run id finalization reads evidence with (`currentRunId`). Tool-call
+   * captures and observations carry it, so the ledger can tell this run's
+   * acquisition from reused evidence; any other value reads as reused.
+   */
+  runId?: string;
   /** In-process, product-issued scene capability. Never reconstructed from tool JSON. */
   sceneRunContext?: SceneRunContext;
   /** Issued session-bound reader, never accepted from HTTP/SDK tool arguments. */
@@ -1277,8 +1283,6 @@ export interface ClaudeMcpServerOptions {
   sceneType?: SceneType;
   /** Mutable uncertainty flags array (P1-G1) */
   uncertaintyFlags?: UncertaintyFlag[];
-  /** Cached vendor detection result (e.g. "xiaomi", "pixel", "aosp") — avoids redundant re-detection */
-  cachedVendor?: string | null;
   /** Reference trace ID for comparison mode — enables dual-trace MCP tools */
   referenceTraceId?: string;
   /** Pre-computed comparison context (capabilities, metadata) for get_comparison_context tool */
@@ -3437,22 +3441,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           }
         }
 
-        // Vendor override hint: if a vendor is detected and overrides exist for this skill,
-        // include a hint in the result so Claude can consider vendor-specific analysis steps.
-        let vendorOverrideHint: { vendor: string; displayName?: string; additionalStepIds: string[] } | undefined;
-        const detectedVendor = options.cachedVendor;
-        if (detectedVendor && detectedVendor !== 'aosp' && result.success) {
-          const vendorOverride = effectiveSkillRegistry.getVendorOverride(skillId, detectedVendor);
-          if (vendorOverride && vendorOverride.additionalSteps.length > 0) {
-            vendorOverrideHint = {
-              vendor: vendorOverride.vendor,
-              displayName: vendorOverride.displayName,
-              additionalStepIds: vendorOverride.additionalSteps
-                .map((s: any) => s.id || s.name)
-                .filter(Boolean),
-            };
-          }
-        }
+        // Vendor override hint. Resolved only for a Skill that has overrides,
+        // only after its own queries finished, and waited for at most
+        // VENDOR_HINT_WAIT_MS under this call's signal: the hint is optional,
+        // so a slow, failed or cancelled resolution leaves the result as is.
+        const vendorOverrideHint = result.success && effectiveSkillRegistry.hasVendorOverrides(skillId)
+          ? selectVendorOverride(effectiveSkillRegistry, skillId,
+            await awaitTraceVendorHint(traceProcessorService, traceId, {signal}))
+          : undefined;
 
         // Artifact mode: return compact references whenever any fetchable
         // artifact was created.
@@ -4248,6 +4244,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           content: [{ type: 'text' as const, text: JSON.stringify({
             success: false,
             error: `Invalid pagination arguments: ${paginationErrors.join('; ')}`,
+            sourceToolCallId: producer.sourceToolCallId,
+            paramsHash: producer.paramsHash,
+            planPhaseId: producer.planPhaseId,
           }) }],
           isError: true,
         };
@@ -7794,6 +7793,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     runManifestAttributionSink,
     toolObserver: options.toolObserver,
     acquisitionObserver: event => { artifactStore?.observeInvestigationTool?.(event); },
+    runId: options.runId,
     requestScope: toolRequestScope,
     canInvokeTool: options.canInvokeTool,
     // A scene run must commit its timeline before its acquisition budget runs out.

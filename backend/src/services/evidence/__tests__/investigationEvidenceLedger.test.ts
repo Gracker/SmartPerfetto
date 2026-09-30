@@ -14,6 +14,7 @@ import {isIssuedInvestigationEvidenceSnapshot, investigationEvidenceFingerprint,
   investigationCaptureFields, validateInvestigationEvidenceDeclarations, LEDGER_PER_METRIC_BUDGET,
   type InvestigationEvidenceDeclaration, type InvestigationEvidenceSnapshot} from '../investigationEvidenceLedger';
 import type {RuntimeToolInvocationEvent} from '../../../agentRuntime/runtimeToolObserver';
+import {runWithinRuntimeToolInvocation} from '../../../agentRuntime/runtimeToolInvocationContext';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../../finalSemanticLimits';
 
 const declaration: InvestigationEvidenceDeclaration = {window: {start: 'start', end: 'end'},
@@ -26,9 +27,9 @@ const observation = (phase: 'started' | 'completed' | 'failed', toolCallId = 'ca
   ...(phase === 'completed' ? {result: {content: []}} : phase === 'failed' ? {error: new Error('fixture')} : {}),
 } as RuntimeToolInvocationEvent);
 
-async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; declared?: boolean; originRunId?: string;
-  declaration?: InvestigationEvidenceDeclaration; extraColumns?: string[];
-  executionStatus?: 'optional_error' | 'unavailable' | 'skipped'} = {}) {
+/** One fresh producer execution: its witness has never been registered anywhere. */
+async function executeFixture(rows: unknown[][] = [row], settings: {declared?: boolean;
+  declaration?: InvestigationEvidenceDeclaration; extraColumns?: string[]} = {}) {
   const executor = new SkillExecutor({query: async () => ({columns: ['start', 'end', 'upid', 'utid', 'freq', 'status', 'coverage', 'denominator', ...(settings.extraColumns || [])],
     rows, durationMs: 1})});
   executor.registerSkill({name: 'ledger_fixture', version: '1', type: 'atomic',
@@ -37,16 +38,25 @@ async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; 
     output: {display: {layer: 'overview', level: 'summary', format: 'table', columns: [{name: 'freq', type: 'number'}]}}});
   const result = await executor.execute('ledger_fixture', 'trace');
   expect(result.success).toBe(true);
-  const display = result.displayResults[0];
+  return {skillId: result.skillId, display: result.displayResults[0]};
+}
+
+async function fixture(rows: unknown[][] = [row], settings: {observe?: boolean; declared?: boolean; originRunId?: string;
+  declaration?: InvestigationEvidenceDeclaration; extraColumns?: string[];
+  executionStatus?: 'optional_error' | 'unavailable' | 'skipped'} = {}) {
+  const {skillId, display} = await executeFixture(rows, settings);
   const store = new ArtifactStore();
   const originRunId = settings.originRunId || 'run-1';
   if (settings.observe !== false) {
     store.observeInvestigationTool(observation('started'), originRunId);
     store.observeInvestigationTool(observation('completed'), originRunId);
   }
-  const artifactId = store.store({skillId: result.skillId, data: display.data, executionStatus: settings.executionStatus,
-    traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}), sourceToolCallId: 'call'});
-  store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture', originRunId});
+  const artifactId = store.store({skillId, data: display.data, executionStatus: settings.executionStatus,
+    traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}),
+    sourceToolCallId: 'invoke_skill:1:fixture'});
+  // Production captures are registered inside the invocation the observations name.
+  await runWithinRuntimeToolInvocation({toolCallId: 'call'}, async () =>
+    store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture', originRunId}));
   return {store, artifactId, display};
 }
 
@@ -110,6 +120,51 @@ describe('trusted investigation evidence ledger', () => {
       inputSchema: {}, exposure: 'public', evidenceEffect: effect, handler: async () => ({content: []})});
     for (const tool of registry.list()) await expect(tool.shared.handler({}, {})).resolves.toEqual({content: []});
     expect(phases).toEqual(['started', 'completed']);
+  });
+
+  // Production captures carry a synthetic producer id (`invoke_skill:<n>:<hash>`)
+  // that no observation names, and a run without a run-scoped evidence facade
+  // stamps no origin run. Every real ledger record once read `unknown`, so no
+  // requirement with declared metrics could be acquired. The invocation the
+  // registry runs the handler in now supplies both.
+  describe('through the registry on an unbound store', () => {
+    async function acquireThroughRegistry(settings: {supplyCallId?: boolean; lateCapture?: boolean} = {}) {
+      const {display} = await executeFixture();
+      const store = new ArtifactStore();
+      let late: Promise<void> | undefined;
+      const registry = new McpToolRegistry({runId: 'run-1',
+        acquisitionObserver: event => store.observeInvestigationTool(event, 'run-1')});
+      registry.registerShared({name: 'invoke_skill', description: 'fixture', inputSchema: {}, exposure: 'public',
+        evidenceEffect: 'acquire', handler: async () => {
+          const register = () => {
+            const artifactId = store.store({skillId: 'ledger_fixture', data: display.data,
+              traceProvenance: buildTraceProcessorQueryProvenance({traceId: 'trace', traceSide: 'current'}),
+              sourceToolCallId: 'invoke_skill:1:3ba220c3'});
+            store.registerEvidenceCapture(artifactId, evidenceTableFor(display)!, {evidenceRefId: 'evidence:fixture'});
+          };
+          if (settings.lateCapture) late = new Promise<void>(resolve => setTimeout(() => {register(); resolve();}, 0));
+          else register();
+          return {content: []};
+        }});
+      await registry.list()[0].shared.handler({}, settings.supplyCallId === false ? {} : {toolCallId: 'call_x9Qk'});
+      await late;
+      return store.createEvidenceReadView(options).investigationEvidence!();
+    }
+
+    it.each([true, false])('joins a capture to the invocation that produced it (runtime call id supplied: %p)', async supplyCallId => {
+      const snapshot = await acquireThroughRegistry({supplyCallId});
+      expect(snapshot.issues).not.toContain('capture_tool_observation_missing');
+      expect(snapshot.records[0]).toMatchObject({origin: 'current_run', originRunId: 'run-1', status: 'observed',
+        sourceToolCallId: 'invoke_skill:1:3ba220c3'});
+      // The join key is private: it reaches neither the ledger nor anything derived from it.
+      expect(JSON.stringify(snapshot)).not.toContain('call_x9Qk');
+    });
+
+    it('does not attribute a capture registered after its invocation settled', async () => {
+      const snapshot = await acquireThroughRegistry({lateCapture: true});
+      expect(snapshot.records[0]).toMatchObject({origin: 'current_run', status: 'unknown'});
+      expect(snapshot.issues).toContain('capture_tool_observation_missing');
+    });
   });
 
   // A real 10s scrolling trace filled the whole ledger with one per-handoff

@@ -22,7 +22,6 @@ import {
   readSkillNotesFile,
   runtimeSkillNotesDir,
   type SkillNotesFile,
-  type PersistedSkillNote,
 } from './skillNotesWriter';
 
 const CURATED_DIR = path.resolve(__dirname, '..', '..', '..', 'skills', 'curated_skill_notes');

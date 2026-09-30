@@ -1,7 +1,7 @@
 // backend/src/services/providerManager/connectionTester.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
-import type { OpenAIProtocol, ProviderConfig, ProviderType, TestResult } from './types';
+import type { OpenAIProtocol, ProviderConfig, TestResult } from './types';
 import {
   normalizeBedrockModelId,
   resolveProviderAgentRuntime,

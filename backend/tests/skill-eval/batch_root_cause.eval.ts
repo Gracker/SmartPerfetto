@@ -3,7 +3,7 @@
  * Validates that batch SQL classification covers all jank frames
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 // Fixture removed in commit 52feac55; describeWithTrace skips when missing.

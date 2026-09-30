@@ -132,6 +132,56 @@ describe('typed turn prompt assembly', () => {
     return segment ? JSON.parse(segment.content).data : undefined;
   };
 
+  describe('trace completeness data', () => {
+    const buckets = {
+      available: [{id: 'frames', displayName: 'Frames', status: 'available' as const, primaryTable: 'actual_frame_timeline_slice', rowCount: 12}],
+      missingConfig: [{id: 'startup', displayName: 'Startup', status: 'missing_config_suspected' as const,
+        primaryTable: 'android_startups', reason: 'table missing'}],
+      notApplicable: [], insufficient: [],
+    };
+    const withResolution = (diagnosedAt: number, capabilityManifestResolution: unknown): ClaudeAnalysisContext => ({
+      ...fixture(),
+      traceCompleteness: {...buckets, diagnosedAt, capabilityManifestResolution} as any,
+    });
+    const ready = {
+      status: 'ready',
+      manifest: {
+        content: {schemaVersion: 'capability_manifest@1',
+          traceProcessor: {source: 'bundled', gitRevision: 'b'.repeat(40)},
+          trace: {fingerprintSha256: 'a'.repeat(64), fingerprintKind: 'trace_bytes_sha256', traceSide: 'current'},
+          capabilities: []},
+        provenance: {traceId: 'trace-manifest-1', processorKey: 'processor-key-1', leaseId: 'lease-1',
+          rpcEndpoint: 'http://127.0.0.1:9731', diagnosedAt: 1_000, generatedAt: 2_000},
+        manifestId: `capability_manifest:${'c'.repeat(64)}`,
+        contentHash: 'c'.repeat(64),
+      },
+    };
+
+    it('keeps the shadow capability manifest and the diagnosis time out of the prompt', () => {
+      const readyParts = buildSystemPromptParts(withResolution(1_000, ready));
+      const unavailableParts = buildSystemPromptParts(withResolution(9_999,
+        {status: 'unavailable', reason: 'identity_resolution_failed'}));
+      // The manifest's state and the diagnosis time change nothing the model reads.
+      expect(readyParts.fullPrompt).toBe(unavailableParts.fullPrompt);
+      expect(readyParts.stablePrefix).toBe(unavailableParts.stablePrefix);
+      for (const leaked of ['capabilityManifestResolution', 'diagnosedAt', 'capability_manifest:', 'a'.repeat(64),
+        'c'.repeat(64), 'b'.repeat(40), 'trace-manifest-1', 'processor-key-1', 'lease-1', '127.0.0.1:9731',
+        'identity_resolution_failed']) {
+        expect(readyParts.fullPrompt).not.toContain(leaked);
+      }
+      // The capability buckets the model reasons with stay.
+      expect(segmentData(readyParts, 'trace_completeness')).toEqual(buckets);
+    });
+
+    it('keeps capture-loss data and omits the section when the turn has no trace', () => {
+      const dataLoss = {status: 'loss_detected', sources: ['ftrace_buffer_overrun']};
+      const withLoss = {...fixture(), traceCompleteness: {...buckets, diagnosedAt: 1, dataLoss} as any};
+      expect(segmentData(buildSystemPromptParts(withLoss), 'trace_completeness')).toEqual({...buckets, dataLoss});
+      const traceless = buildSystemPromptParts(fixture());
+      expect(traceless.segments.find(segment => segment.label === 'trace_completeness')).toBeUndefined();
+    });
+  });
+
   function investigationFixture(overrides: Partial<AnalysisTurnIntent> = {}): ClaudeAnalysisContext {
     const context = fixture({taskKind: 'investigation', ...overrides});
     context.strategyRegistry!.getStrategy('scrolling')!.investigationContract = {

@@ -2276,16 +2276,22 @@
         "steps": [
           {
             "id": "limit_data_check",
-            "sha256": "d46f4493b9512218c56660e62068be97266a046ce4ceabd1fbfe5ed7e5eccb50",
+            "sha256": "c2850f899a0088ec6bf2a29e88d8f0936066548e1e0e2c715acda56e1e10197e",
             "required_columns": [
               "has_max_limit_track",
               "has_min_limit_track",
-              "limit_track_count"
+              "limit_track_count",
+              "has_max_limit_data",
+              "has_any_limit_sample",
+              "valid_max_sample_count",
+              "invalid_max_sample_count",
+              "invalid_min_sample_count",
+              "limit_evidence_missing_reason"
             ]
           },
           {
             "id": "limit_summary",
-            "sha256": "1a6c582dbf739e2e811494577cc848356dc8095c937c49a32d3a32bd4b675f0b",
+            "sha256": "4d8020515b94b88b7c4d1a507a8b9df092993dfbd6ffdd4090482b4a1a8f60c9",
             "required_columns": [
               "window_id",
               "window_start_ts",
@@ -2309,21 +2315,27 @@
               "first_sample_state_unknown",
               "limit_covered_ns",
               "limit_evidence",
+              "invalid_sample_count",
+              "invalid_limit_ns",
+              "data_quality_note",
               "limit_source",
               "evidence_scope"
             ]
           },
           {
             "id": "limit_episodes",
-            "sha256": "b492126382277ac8ca74d6cf510e3596baa63e3241c8f5f49f008a262db26a38",
+            "sha256": "ee75588ef84d42930db92badaca7746a9027d44fa4d6016953703f1611ad18ca",
             "required_columns": [
               "episode_id",
+              "trace_episode_id",
               "policy_cpu",
               "core_type",
               "topology_source",
               "episode_start_ts",
               "episode_end_ts",
               "episode_dur_ns",
+              "onset_ts",
+              "onset_observed",
               "min_limit_khz",
               "reference_max_limit_khz",
               "depth_pct",
@@ -2338,7 +2350,7 @@
           },
           {
             "id": "limit_events",
-            "sha256": "692c98dc2ab23687d7b9c8786a96c405815bb1684151787396dbd18ed80ed594",
+            "sha256": "b7cd80337d719eb0106c67108814219ef035656e6d361ac232c0a68dcf924251",
             "required_columns": [
               "ts",
               "policy_cpu",
@@ -2348,6 +2360,10 @@
               "limit_khz",
               "delta_khz",
               "direction",
+              "direction_basis",
+              "limit_value_valid",
+              "event_role",
+              "trace_episode_id",
               "dur_ns",
               "reference_max_limit_khz",
               "limit_source",
@@ -2356,9 +2372,11 @@
           },
           {
             "id": "limit_unavailable",
-            "sha256": "3e252dd6ee4a9b36257969b13ede6e4cadde4de4a257a6de24c977de5e78c797",
+            "sha256": "ea64be89645713015cd4379f0ce5e0a244d360c887d689b5f9a96b2778b47575",
             "required_columns": [
               "limit_evidence",
+              "limit_classification",
+              "limit_evidence_missing_reason",
               "required_ftrace_event",
               "message"
             ]
@@ -2649,9 +2667,10 @@
         "steps": [
           {
             "id": "limit_evidence",
-            "sha256": "538a667040e4ff46069a1d8da7243fa1fe60f902a83efc826a46e3ea13f3a200",
+            "sha256": "937b7c5421814c64fd1aacfdeacab53109c00c552af41e26b8b0a58f1370b310",
             "required_columns": [
               "has_limit_track",
+              "has_max_limit_data",
               "episode_count",
               "policy_count",
               "deepest_depth_pct",
@@ -2659,6 +2678,7 @@
               "reference_max_limit_khz",
               "reference_basis",
               "evidence_status",
+              "limit_evidence_missing_reason",
               "next_step",
               "evidence_scope"
             ]
@@ -3490,7 +3510,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "366fb03aaf84d31c9a2aaa469e6f29c99d7993eeb85846cca5bb3e4e27da996b",
+            "sha256": "7934a5e9e6bead25f21b983dedda8345f17006a11dd611c98f43b79deea4db0e",
             "required_columns": [
               "event_ts",
               "event_type",
@@ -6013,7 +6033,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "8a6423c236a00ef3569cac555786ede7aa7485ac0d627b7b9d2ca44be12d7c78",
+            "sha256": "01dd7d9d6b473a833e10aa7f8d07e36f871d0a2b59effd610fde46cc84235489",
             "required_columns": [
               "input_ts",
               "process_name",
@@ -7383,7 +7403,7 @@
         "steps": [
           {
             "id": "check_input_data",
-            "sha256": "41f544ffd24620ce9a8210695ee770d9fef9dc32c876c687ac5a62179512b2c4",
+            "sha256": "fdec831dd61edd82e03bdae8ec7bf7d53b16a2fbdddb1331898e99a5e87a0873",
             "required_columns": [
               "event_count",
               "status"
@@ -7391,7 +7411,7 @@
           },
           {
             "id": "get_process",
-            "sha256": "24abee32c27e6beb8bb826fc08ff8660db0774a1298e5b79804ed0498f775a52",
+            "sha256": "199fb10d2209683cbd768ded44474c39051f965c18ad0e353ea66228619ff51f",
             "required_columns": [
               "process_name",
               "event_count",
@@ -7401,7 +7421,7 @@
           },
           {
             "id": "input_latency_overview",
-            "sha256": "b630e521e86703eec2fa7bd236a709e888b0b052b9020ea075366bbbfa416289",
+            "sha256": "6b81105d70389421871c7149789d13850c37c2035cfd62eb8fee6985d5acacb6",
             "required_columns": [
               "total_events",
               "avg_dispatch_ms",
@@ -7419,7 +7439,7 @@
           },
           {
             "id": "latency_by_event_type",
-            "sha256": "d2052356b7c84adf071720abe9611e15e9f23d4d3de5edea66bf081e694e452f",
+            "sha256": "8fe1793e18a10c49ac8a7a58cd2a75a3638e98d2ec8f3d70088079377699f770",
             "required_columns": [
               "event_type",
               "event_action",
@@ -7510,7 +7530,7 @@
           },
           {
             "id": "latency_distribution",
-            "sha256": "06b77cabc2473e9f2968cdca4efb13fe8fa5cc3c316765eae8119dd0eb482f02",
+            "sha256": "f072edb763cae438c23b1a1aeb25427fa54fe581ffc4ea5d545f0f8bfce2d4c7",
             "required_columns": [
               "latency_bucket",
               "count",
@@ -7855,10 +7875,13 @@
         "steps": [
           {
             "id": "data_check",
-            "sha256": "1a9d65c2df930f04e2c1311003aa721bb19648735c5b8d4a8adbe4a7e6f67137",
+            "sha256": "09bc85a9c54735cbf96fc530cc22340d77eec8f78e92391b570f64303d810241",
             "required_columns": [
-              "has_limit_data",
+              "has_max_limit_data",
+              "has_any_limit_sample",
+              "limit_evidence_missing_reason",
               "has_cdev_data",
+              "cooling_track_count",
               "has_temperature_data",
               "has_cpufreq_data",
               "has_sched_data"
@@ -7879,15 +7902,18 @@
           },
           {
             "id": "episodes",
-            "sha256": "48a57b47d2cb855decf96fe376b95816293507b870a36c8ac60647141f690dac",
+            "sha256": "a10e6f2d374a9f4be03c7a033e9e7c9a97d467784e94876571f93d6363393848",
             "required_columns": [
               "episode_id",
+              "trace_episode_id",
               "policy_cpu",
               "core_type",
               "topology_source",
               "episode_start_ts",
               "episode_end_ts",
               "episode_dur_ns",
+              "onset_ts",
+              "onset_observed",
               "min_limit_khz",
               "reference_max_limit_khz",
               "reference_basis",
@@ -7902,6 +7928,8 @@
               "window_clipped_to_data_start",
               "who_start_ts",
               "who_end_ts",
+              "window_start_ts",
+              "window_end_ts",
               "package",
               "process_name",
               "lookback_ms",
@@ -7913,23 +7941,35 @@
               "spin_switches_per_s",
               "waker_per_s",
               "kernel_daemon_share_pct",
+              "cdev_policy_pair_ms",
+              "cdev_policy_min_transitions",
+              "cdev_policy_min_pair_pct",
+              "episode_drop_pct",
+              "merge_gap_ms",
               "thresholds",
               "evidence_scope"
             ]
           },
           {
             "id": "attribution_summary",
-            "sha256": "3734b5a8ec4a68c6973f432326e014afd718ad7d17607fdcab7f32bd7cf7dc49",
+            "sha256": "ccb1ccf470b816b8597b16c9b56ea85dae49d1a9eb1700251a97700b9dcf517c",
             "required_columns": [
               "classification",
+              "classification_scope",
               "episode_count",
+              "onset_count",
+              "confirmed_onset_count",
+              "causal_onset_count",
+              "onset_trigger_mix",
               "deepest_depth_pct",
               "longest_episode_ns",
               "cooling_confirmed_episodes",
-              "coincident_transition_episodes",
-              "cooling_active_episodes",
               "daemon_suspected_episodes",
+              "cooling_background_episodes",
+              "cooling_unassociated_episodes",
               "onset_unknown_episodes",
+              "tied_cooling_devices",
+              "cooling_transition_coverage",
               "top_episode_id",
               "top_before_start_ts",
               "top_before_end_ts",
@@ -7962,9 +8002,11 @@
           },
           {
             "id": "no_limit_capture_advice",
-            "sha256": "f28559e70563a8e830d24f74ed56f52dd2cf32fca67ee14eb3886f5b97560cb4",
+            "sha256": "8aa8a35c19b877f78e1e599b642e0b9a35904c6ded8e756e00a82d797d93a494",
             "required_columns": [
               "limit_evidence",
+              "classification",
+              "limit_evidence_missing_reason",
               "required_ftrace_event",
               "also_useful",
               "message",
@@ -7989,7 +8031,7 @@
         "steps": [
           {
             "id": "episode_windows",
-            "sha256": "d92dd35d7f592040c5f483e5796dfad659ff2dc645b1482cb65ad61c9e267ab2",
+            "sha256": "215ee5eb766c484cdbed334e883875f698f62f37cd00aaa65bac2e5363b37989",
             "required_columns": [
               "episode_id",
               "policy_cpu",
@@ -8003,7 +8045,6 @@
               "who_start_ts",
               "who_end_ts",
               "who_window_clipped",
-              "starts_at_data_start",
               "data_start_ts",
               "data_end_ts",
               "window_basis"
@@ -8011,13 +8052,16 @@
           },
           {
             "id": "who_cooling",
-            "sha256": "64a498f32762aaa78656171675bccb53b450b2785f6c70cd707c7a4f251ca2ca",
+            "sha256": "88ac87d99b9e9a8a5ae0c38a131eff87c603a8c58b818f15724e0a305083938a",
             "required_columns": [
               "ts",
               "rel_to_limit_ns",
               "cdev_name",
               "cdev_kind_hint",
               "cdev_kind_basis",
+              "association_status",
+              "associated_policy_cpu",
+              "tied_to_this_policy",
               "prev_state",
               "state",
               "direction",
@@ -8083,25 +8127,47 @@
           },
           {
             "id": "who_verdict",
-            "sha256": "11b152fc0ef248d45697bc26c52dbb5439558aa96e7edb2ecf5e9fea709f75df",
+            "sha256": "f3ca2d7ccd87d60d9c9755efd4e6e165d9e2b478eb2f687d3306bc7ac56a1cbf",
             "required_columns": [
               "episode_id",
+              "trace_episode_id",
               "policy_cpu",
               "core_type",
               "who_verdict",
-              "cooling_transition_coincident",
-              "cooling_nearest_transition_ns",
-              "cooling_nearest_transition_ts",
-              "cooling_active_ns",
-              "cooling_devices_active",
-              "cooling_transitions_in_who_window",
-              "daemon_ran_before_limit_ns",
-              "daemon_threads_before_limit",
+              "trigger_class",
+              "trigger_class_rank",
+              "onset_trigger_mix",
+              "onset_count",
+              "confirmed_onset_count",
+              "causal_onset_count",
+              "onset_ts",
               "onset_observed",
               "onset_note",
+              "paired_cooling_device",
+              "cooling_policy_association",
+              "tied_cooling_device",
               "thresholds",
-              "verdict_basis",
+              "verdict_scope",
               "interpretation",
+              "evidence_scope"
+            ]
+          },
+          {
+            "id": "limit_onsets",
+            "sha256": "6a683ce01359f6dca64f661c29a2dc5ed728928a26c6d80a8521c811901de6db",
+            "required_columns": [
+              "onset_ts",
+              "value_end_ts",
+              "prev_valid_limit_khz",
+              "limit_khz",
+              "direction",
+              "direction_basis",
+              "onset_verdict",
+              "trigger_class",
+              "cooling_basis",
+              "paired_cdev_name",
+              "pair_lead_ns",
+              "daemon_slices",
               "evidence_scope"
             ]
           }
@@ -10840,7 +10906,7 @@
           },
           {
             "id": "input_data_check",
-            "sha256": "5e7b6af17283c9d20e1f9aab5aec565626ed51e9b2ea0fe8d858461780d68784",
+            "sha256": "d934f8314af4524f26ba5b11a09b578b8cbaac85111fadf744e35835feb5f20a",
             "required_columns": [
               "input_data_status",
               "total_input_events",
@@ -10851,7 +10917,7 @@
           },
           {
             "id": "input_latency_summary",
-            "sha256": "66b490ab72ae7beb0beb5b197e8c7f8aea8c3aa692125a19886cf4375e55a68d",
+            "sha256": "a49f419a9e11ab1e1aecc1dded9ea39881f18e1c061a23d54ba9546d4c720234",
             "required_columns": [
               "target_process",
               "total_input_events",
@@ -11870,13 +11936,12 @@
         "steps": [
           {
             "id": "data_check",
-            "sha256": "d3e1e6ce448e432e3466653e873a500f3c935b74b424adc34224956e362a89c7",
+            "sha256": "181b382445170a95e9f2338d1c6faa0b31e69216c48218fb08bba7e8d5c3f01a",
             "required_columns": [
               "has_thermal_data",
               "has_freq_data",
               "has_gpu_freq_data",
-              "has_limit_data",
-              "has_cdev_data"
+              "limit_evidence_missing_reason"
             ]
           },
           {
@@ -11891,7 +11956,7 @@
           },
           {
             "id": "direct_limit_evidence",
-            "sha256": "a5a2f114dbc0fcf1b0047966ed1f059c78a9c606d51a358e7b71ef9cf7fac929",
+            "sha256": "a09c6c2ab91bd6c8f5503ca4cb103834cfd33a4d91a4edcc7460e4fa097c3f51",
             "required_columns": [
               "episode_count",
               "policy_count",
@@ -11900,7 +11965,11 @@
               "cooling_confirmed_episodes",
               "onset_unknown_episodes",
               "has_cdev_data",
+              "freq_limit_classification",
+              "is_confirmed",
+              "onset_trigger_mix",
               "thermal_throttling_evidence",
+              "class_note",
               "next_step",
               "evidence_scope"
             ]
@@ -11981,7 +12050,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "24753979002555d511615511531a7846553e74d773c51f63efc8107d6c44ab45",
+            "sha256": "2aed2f14bb7c17e5bf4ed598b7f1b2e6901487eb12b4cb9b31bdd5993d1b6133",
             "required_columns": [
               "classification",
               "peak_temp_c",

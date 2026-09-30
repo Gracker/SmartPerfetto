@@ -13,13 +13,21 @@ import { scopeMetadata, type EvidenceScopeProvenanceV1 } from '../../types/ident
 import { resultScopeProvenance } from './scopeEvidence';
 import { nonObservedStepState } from './stepExecutionState';
 import { TraceProcessorService } from '../traceProcessorService';
+import {
+  failedTraceVendorResolution,
+  isOemVendor,
+  numericVendorConfidence,
+  resolveTraceVendor,
+  type TraceVendorResolution,
+} from '../traceVendor/traceVendorResolver';
+import {isTraceProcessorQueryCancelledError} from '../traceProcessorCancellation';
 import { DEFAULT_PROCESS_IDENTITY_ALIASES } from '../processIdentity/types';
 import { SkillExecutor, createSkillExecutor, LayeredResult } from './skillExecutor';
-import { skillRegistry, ensureSkillRegistryInitialized, type SkillRegistry } from './skillLoader';
+import { skillRegistry, ensureSkillRegistryInitialized } from './skillLoader';
 import { SkillDefinition, SkillEvent, DisplayLevel, DisplayLayer, StepResult } from './types';
 import { smartSummaryGenerator } from './smartSummaryGenerator';
-import { answerGenerator, GeneratedAnswer } from './answerGenerator';
-import { SkillEventCollector, createEventCollector, EventSummary, ProgressInfo } from './eventCollector';
+import { answerGenerator } from './answerGenerator';
+import { createEventCollector, EventSummary } from './eventCollector';
 import type { SkillOriginMetadata } from '../skillPacks/skillPackTypes';
 import {
   localizeSkillDefinition,
@@ -125,6 +133,39 @@ export interface SkillRegistryView {
   findMatchingSkill(question: string): SkillDefinition | undefined;
   getSkillOrigin(name: string): SkillOriginMetadata | undefined;
   getVendorOverride(skillId: string, vendor: string): import('./skillLoader').VendorOverride | undefined;
+  /** True when at least one vendor override extends this Skill; lets callers skip vendor resolution. */
+  hasVendorOverrides(skillId: string): boolean;
+}
+
+/**
+ * `/api/skills/detect-vendor` response, schema `trace_vendor@1`. `confidence`
+ * stays numeric for existing clients; `vendorConfidence` is the resolver's
+ * level. `aosp` means an AOSP/generic build, `unknown` a trace without identity.
+ */
+export interface SkillVendorDetection {
+  schemaVersion: TraceVendorResolution['schemaVersion'];
+  vendor: TraceVendorResolution['vendor'];
+  brand?: string;
+  confidence: number;
+  vendorConfidence: TraceVendorResolution['confidence'];
+  soc: TraceVendorResolution['soc'];
+  os: TraceVendorResolution['os'];
+  source: TraceVendorResolution['source'];
+  evidence: TraceVendorResolution['evidence'];
+}
+
+export function toSkillVendorDetection(resolution: TraceVendorResolution): SkillVendorDetection {
+  return {
+    schemaVersion: resolution.schemaVersion,
+    vendor: resolution.vendor,
+    ...(resolution.brand ? {brand: resolution.brand} : {}),
+    confidence: numericVendorConfidence(resolution),
+    vendorConfidence: resolution.confidence,
+    soc: resolution.soc,
+    os: resolution.os,
+    source: resolution.source,
+    evidence: resolution.evidence,
+  };
 }
 
 // =============================================================================
@@ -136,7 +177,6 @@ export class SkillAnalysisAdapter {
   private executor: SkillExecutor;
   private initialized = false;
   private eventHandler?: (event: SkillEvent) => void;
-  private currentEventCollector?: SkillEventCollector;
   private registry: SkillRegistryView;
   private registryFingerprint?: string;
   private registeredFingerprint?: string;
@@ -223,83 +263,21 @@ export class SkillAnalysisAdapter {
   }
 
   /**
-   * 检测厂商（从 trace 数据）
+   * Resolve the device vendor from trace metadata through the shared cached
+   * resolver. Never rejects: a failed query or an inactive lease reports
+   * `source: 'query_failed'` with confidence 0.
    */
-  async detectVendor(traceId: string): Promise<{ vendor: string; confidence: number }> {
+  async detectVendor(traceId: string): Promise<SkillVendorDetection> {
+    let resolution: TraceVendorResolution;
     try {
-      // HarmonyOS 检测：通过 tracing_mark_write 中的 HarmonyOS 独有标签
-      try {
-        const harmonyCheck = await this.traceProcessor.query(traceId, `
-          SELECT 1 FROM slice
-          WHERE (LOWER(name) LIKE '%ace::%' OR LOWER(name) LIKE '%rsrender%'
-             OR LOWER(name) LIKE '%ffrt%' OR LOWER(name) LIKE '%arkts%'
-             OR LOWER(name) LIKE '%harmonyos%' OR LOWER(name) LIKE '%ohos.%')
-          LIMIT 1`);
-        if (harmonyCheck.rows && harmonyCheck.rows.length > 0) {
-          return { vendor: 'harmonyos', confidence: 0.85 };
-        }
-      } catch { /* content check failed */ }
-
-      // Android vendor detection via slice table
-      const result = await this.traceProcessor.query(traceId, `
-        SELECT
-          CASE
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%miui%' OR LOWER(name) LIKE '%hyperos%' OR LOWER(name) LIKE '%xiaomi%')
-            ) THEN 'xiaomi'
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%oppo%' OR LOWER(name) LIKE '%coloros%' OR LOWER(name) LIKE '%oplus%')
-            ) THEN 'oppo'
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%vivo%' OR LOWER(name) LIKE '%originos%' OR LOWER(name) LIKE '%funtouch%' OR LOWER(name) LIKE '%bbk%')
-            ) THEN 'vivo'
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%honor%' OR LOWER(name) LIKE '%magicos%' OR LOWER(name) LIKE '%huawei%')
-            ) THEN 'honor'
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%samsung%' OR LOWER(name) LIKE '%oneui%' OR LOWER(name) LIKE '%sec.%' OR LOWER(name) LIKE '%galaxy%')
-            ) THEN 'samsung'
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%pixel%' OR LOWER(name) LIKE '%tensor%' OR LOWER(name) LIKE '%google%')
-            ) THEN 'pixel'
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%qualcomm%' OR LOWER(name) LIKE '%qcom%' OR LOWER(name) LIKE '%snapdragon%' OR LOWER(name) LIKE '%adreno%')
-            ) THEN 'qualcomm'
-            WHEN EXISTS(
-              SELECT 1 FROM slice
-              WHERE name IS NOT NULL
-                AND (LOWER(name) LIKE '%mediatek%' OR LOWER(name) LIKE '%mtk%' OR LOWER(name) LIKE '%dimensity%' OR LOWER(name) LIKE '%helio%')
-            ) THEN 'mtk'
-            ELSE 'aosp'
-          END as vendor
-      `);
-
-      if (result.rows && result.rows.length > 0) {
-        const detectedVendor = String(result.rows[0][0] || 'aosp');
-        return {
-          vendor: detectedVendor,
-          confidence: detectedVendor === 'aosp' ? 0.5 : 0.8,
-        };
-      }
+      resolution = await resolveTraceVendor(this.traceProcessor, traceId);
     } catch (error) {
-      console.warn('[SkillAnalysisAdapter] Vendor detection failed:', error);
+      // The resolver itself never rejects on a failed query; a throw is the
+      // caller's lease check.
+      console.warn('[SkillAnalysisAdapter] Vendor detection failed:', (error as Error)?.message ?? error);
+      resolution = failedTraceVendorResolution(isTraceProcessorQueryCancelledError(error) ? 'cancelled' : 'query_error');
     }
-
-    return { vendor: 'aosp', confidence: 0.5 };
+    return toSkillVendorDetection(resolution);
   }
 
   /**
@@ -421,8 +399,9 @@ export class SkillAnalysisAdapter {
       {externalAuthored},
     );
 
-    // 检测厂商
-    const vendorResult = await this.detectVendor(traceId);
+    // Vendor from trace metadata (cached per trace). It throws only when this
+    // caller's lease is inactive, in which case the Skill could not run either.
+    const {vendor} = await resolveTraceVendor(this.traceProcessor, traceId);
 
     // 构建参数 - 合并 request.params 和 packageName
     const params: Record<string, any> = {
@@ -436,8 +415,6 @@ export class SkillAnalysisAdapter {
 
     // 创建事件收集器
     const eventCollector = createEventCollector();
-    const totalSteps = skill.steps?.length || 1;
-    eventCollector.start(targetSkillId, totalSteps);
 
     // 设置事件处理器（同时转发到外部处理器和收集器）
     const combinedHandler = (event: SkillEvent) => {
@@ -462,7 +439,7 @@ export class SkillAnalysisAdapter {
         layeredResult = await (this.executor as any).executeCompositeSkill(
           skill,
           params,
-          { traceId, vendor: vendorResult.vendor, __outputLanguage: outputLanguage }
+          { traceId, vendor, __outputLanguage: outputLanguage }
         );
         console.log('[SkillAnalysisAdapter] executeCompositeSkill completed. layeredResult:', JSON.stringify({
           hasLayers: !!layeredResult?.layers,
@@ -527,7 +504,7 @@ export class SkillAnalysisAdapter {
         targetSkillId,
         traceId,
         params,
-        { vendor: vendorResult.vendor, __outputLanguage: outputLanguage }
+        { vendor, __outputLanguage: outputLanguage }
       );
     }
 
@@ -622,7 +599,7 @@ export class SkillAnalysisAdapter {
       diagnostics,
       summary,
       executionTimeMs: result.executionTimeMs,
-      vendor: vendorResult.vendor !== 'aosp' ? vendorResult.vendor : undefined,
+      vendor: isOemVendor(vendor) ? vendor : undefined,
       displayResults: result.displayResults,
       aiSummary: result.aiSummary,
       directAnswer: localizeSkillNarrative(

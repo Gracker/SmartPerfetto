@@ -20,7 +20,7 @@ import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { uuidv4 } from '../../utils/uuid';
-import { TraceProcessorService, TraceInfo, QueryResult } from '../traceProcessorService';
+import { TraceProcessorService, TraceInfo } from '../traceProcessorService';
 import { PortPool, getPortPool, resetPortPool } from '../portPool';
 import {
   TraceProcessorFactory,
@@ -34,7 +34,8 @@ import {
   supportsTraceProcessorCorsOriginsFlag,
 } from '../workingTraceProcessor';
 import { isTraceProcessorQueryCancelledError } from '../traceProcessorCancellation';
-import { listTraceCases, resolveTraceCase } from '../../utils/traceCorpus';
+import * as traceFormatDetector from '../traceFormatDetector';
+import { listTraceCases, resolveTraceCase } from '../../../tests/helpers/traceCorpus';
 
 // =============================================================================
 // Test Environment Detection
@@ -104,16 +105,6 @@ function getTestTracePath(): string | null {
 // Test Utilities
 // =============================================================================
 
-// Create a temporary trace file (minimal valid content for testing)
-function createTempTraceFile(): string {
-  const tempDir = os.tmpdir();
-  const tempFile = path.join(tempDir, `test-trace-${uuidv4()}.trace`);
-  // Write minimal content - real traces need actual proto format
-  // For unit tests that don't actually spawn trace_processor, this is fine
-  fs.writeFileSync(tempFile, Buffer.from([0x0a, 0x00])); // Minimal proto-like header
-  return tempFile;
-}
-
 // Clean up a temporary file
 function cleanupTempFile(filePath: string): void {
   try {
@@ -124,10 +115,6 @@ function cleanupTempFile(filePath: string): void {
     // Ignore cleanup errors
   }
 }
-
-// =============================================================================
-// Mock Setup for Unit Tests (no real trace_processor_shell)
-// =============================================================================
 
 describe('trace_processor startup stderr parsing', () => {
   it('does not treat trace loading as HTTP readiness', () => {
@@ -222,69 +209,6 @@ describe('trace_processor startup stderr parsing', () => {
     }
   });
 });
-
-// Mock processor for unit tests
-class MockTraceProcessor {
-  id: string;
-  traceId: string;
-  status: 'initializing' | 'ready' | 'busy' | 'error' = 'ready';
-  httpPort: number;
-  destroyed = false;
-
-  constructor(traceId: string, port: number) {
-    this.id = uuidv4();
-    this.traceId = traceId;
-    this.httpPort = port;
-  }
-
-  async query(sql: string): Promise<QueryResult> {
-    if (this.status !== 'ready') {
-      throw new Error(`Processor not ready (status: ${this.status})`);
-    }
-
-    // Simulate query response
-    if (sql.includes('SELECT 1')) {
-      return {
-        columns: ['result'],
-        rows: [[1]],
-        durationMs: 1,
-      };
-    }
-
-    if (sql.includes('FROM slice')) {
-      return {
-        columns: ['ts', 'dur', 'name'],
-        rows: [
-          [100000000, 1000000, 'doFrame'],
-          [101000000, 2000000, 'measure'],
-        ],
-        durationMs: 5,
-      };
-    }
-
-    // Invalid SQL
-    if (sql.includes('INVALID')) {
-      return {
-        columns: [],
-        rows: [],
-        durationMs: 1,
-        error: 'syntax error at INVALID',
-      };
-    }
-
-    // Empty result
-    return {
-      columns: ['col1', 'col2'],
-      rows: [],
-      durationMs: 1,
-    };
-  }
-
-  destroy(): void {
-    this.destroyed = true;
-    this.status = 'error';
-  }
-}
 
 // =============================================================================
 // Unit Tests (mocked, no real trace_processor_shell)
@@ -562,6 +486,61 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
       await service.cleanup(1 * 60 * 60 * 1000, 1);
 
       expect(service.getTrace(traceId)).toBeDefined();
+    });
+  });
+
+  describe('Load Trace From Disk', () => {
+    const androidTrace = Buffer.concat([
+      Buffer.from([0x0a, 0x08, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x12, 0x51]),
+      Buffer.from('google/raven_beta/raven:CinnamonBun/CP31.260508.005.A1/15421647:user/release-keys', 'latin1'),
+    ]);
+
+    // Older metadata may carry an OS label from the former substring detector.
+    function persistLegacyTrace(traceId: string): void {
+      fs.writeFileSync(path.join(uploadDir, `${traceId}.trace`), androidTrace);
+      fs.writeFileSync(path.join(uploadDir, `${traceId}.json`), JSON.stringify({
+        filename: 'legacy.trace',
+        size: androidTrace.length,
+        uploadedAt: new Date().toISOString(),
+        traceOs: 'harmonyos',
+        traceFormat: 'atrace_text',
+      }));
+    }
+
+    beforeEach(() => {
+      jest.spyOn(TraceProcessorFactory, 'create').mockImplementation(async (traceId: string) => ({
+        id: `processor-${traceId}`,
+        traceId,
+        status: 'ready',
+        activeQueries: 0,
+        query: jest.fn(async () => ({columns: [], rows: [], durationMs: 0})),
+        queryRaw: jest.fn(async (body: Buffer) => body),
+        destroy: jest.fn(),
+      }) as unknown as WorkingTraceProcessor);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('re-detects OS and format from the file instead of trusting persisted values', async () => {
+      persistLegacyTrace('legacy-harmony-label');
+
+      await expect(service.loadTraceFromDisk('legacy-harmony-label')).resolves.toMatchObject({
+        traceOs: 'android',
+        traceFormat: 'perfetto_protobuf',
+      });
+    });
+
+    it('resets both detection fields to unknown when detection fails', async () => {
+      persistLegacyTrace('legacy-detection-failure');
+      jest.spyOn(traceFormatDetector, 'detectTraceFormat').mockRejectedValue(new Error('forced read failure'));
+      jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+      await expect(service.loadTraceFromDisk('legacy-detection-failure')).resolves.toMatchObject({
+        traceOs: 'unknown',
+        traceFormat: 'unknown',
+      });
     });
   });
 
@@ -1183,7 +1162,7 @@ describe('Error Handling', () => {
 
     it('should create upload directory if not exists', () => {
       const newDir = path.join(os.tmpdir(), `new-upload-dir-${uuidv4()}`);
-      const newService = new TraceProcessorService(newDir);
+      new TraceProcessorService(newDir);
 
       expect(fs.existsSync(newDir)).toBe(true);
 

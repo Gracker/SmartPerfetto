@@ -22,6 +22,11 @@ import * as ts from 'typescript';
 const BACKEND_ROOT = path.resolve(__dirname, '..', '..');
 const SRC_ROOT = path.join(BACKEND_ROOT, 'src');
 const CLI_ENTRY = path.join(SRC_ROOT, 'cli-user', 'bin.ts');
+// bin.ts imports this first so env files load before the rest evaluates. The
+// probe leaves it out on purpose: modules must not resolve runtime paths at
+// import even when nothing prepared the environment (tests, scripts, the Web
+// server), so it loads them in that worst-case order and bootstraps after.
+const CLI_ENV_ENTRY = path.join(SRC_ROOT, 'cli-user', 'envEntry.ts');
 
 /**
  * Functions whose result depends on env or cwd at the moment they run. The
@@ -251,7 +256,7 @@ describe('runtime path resolution under the CLI bootstrap order', () => {
     fs.writeFileSync(envFile, '');
     const resultFile = path.join(home, 'probe-result.json');
     const probeId = `runtime_path_probe_${process.pid}`;
-    const modules = cliModuleGraph().filter(file => file !== CLI_ENTRY);
+    const modules = cliModuleGraph().filter(file => file !== CLI_ENTRY && file !== CLI_ENV_ENTRY);
 
     const child = spawnSync(process.execPath, ['--require', 'tsx/cjs', '-e', CLI_ORDER_PROBE], {
       cwd: BACKEND_ROOT,

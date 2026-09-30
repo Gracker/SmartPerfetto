@@ -184,6 +184,7 @@ describe('RunManifestLifecycle', () => {
       getSkillOrigin: () => undefined,
       getAppliedOverlayIds: () => [],
       getVendorOverride: () => undefined,
+      hasVendorOverrides: () => false,
       getVendorOverridesForSkill: () => [],
       getVendorOverrideLoadIssues: () => [],
       findMatchingSkill: () => undefined,

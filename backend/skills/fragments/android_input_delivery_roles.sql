@@ -11,8 +11,8 @@
 --                  carries one: a monitor observation, not the app's.
 --   unresolved   - NULL action on every receiver of the event (trace-edge
 --                  events, FOCUS, runtimes that resolve no action).
--- unresolved_event_key identifies an unresolved event once per input_event_id,
--- so counting it DISTINCT gives extra channels of one event no extra weight.
+-- unresolved_event_key is the physical_event_key of an unresolved row, so
+-- counting it DISTINCT gives extra channels of one event no extra weight.
 -- window_owner is the stdlib's owner of the receiving channel,
 -- str_split(str_split(event_channel, ' ', 1), '/', 0), spelled portably: the
 -- package of a '<hash> <package>/<component>' window. Monitor, dispatcher,
@@ -61,7 +61,7 @@ android_input_event_deliveries AS NOT MATERIALIZED (
         WHEN a.input_event_id IS NOT NULL THEN 'monitor_copy'
         ELSE 'unresolved' END AS delivery_role,
       CASE WHEN e.event_action IS NULL AND a.input_event_id IS NULL
-        THEN COALESCE(e.input_event_id, 'dispatch:' || e.dispatch_ts) END AS unresolved_event_key,
+        THEN e.physical_event_key END AS unresolved_event_key,
       (e.event_action IS NULL
         AND (a.input_event_id IS NOT NULL OR m.upid IS NOT NULL)) AS monitor_observation,
       -- Second word of the channel, cut at its first '/'.

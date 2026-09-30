@@ -9,7 +9,6 @@ import type { IOrchestrator } from '../../agent/core/orchestratorTypes';
 import {
   RuntimeRegistry,
   createRuntimeRegistry,
-  createRuntimeRegistryForSelection,
   type RuntimeEngineDefinition,
   type RuntimeFactoryInput,
 } from '../runtimeRegistry';

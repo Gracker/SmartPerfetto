@@ -43,7 +43,6 @@ import type {
   IoSignal,
   MonitorContentionSummary,
   SegmentSemantics,
-  SemanticSourceName,
   SemanticSourceStatus,
   SemanticSources,
   WaitClass,

@@ -198,10 +198,6 @@ export interface QuickConversationContextTurn {
   completed: boolean;
 }
 
-interface FindingSessionContext<TFinding extends Pick<Finding, 'title'>> {
-  getAllTurns?: () => Array<{ findings?: TFinding[] }>;
-}
-
 export function buildQuickConversationContext(
   previousTurns: QuickConversationContextTurn[],
   outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
@@ -312,21 +308,6 @@ export function buildQuickMemoryContextPayload(input: QuickMemoryContextInput): 
 
 export function buildQuickMemoryContext(input: QuickMemoryContextInput): string | undefined {
   return buildQuickMemoryContextPayload(input).text;
-}
-
-export function collectRecentFindings<TFinding extends Pick<Finding, 'title'> = Finding>(
-  sessionContext: FindingSessionContext<TFinding>,
-  options: { maxTurns?: number; maxFindings?: number } = {},
-): TFinding[] {
-  try {
-    let turns = sessionContext.getAllTurns?.() ?? [];
-    if (options.maxTurns && options.maxTurns > 0) {
-      turns = turns.slice(-options.maxTurns);
-    }
-    return turns.flatMap(turn => turn.findings ?? []).slice(-(options.maxFindings ?? 5));
-  } catch {
-    return [];
-  }
 }
 
 /**

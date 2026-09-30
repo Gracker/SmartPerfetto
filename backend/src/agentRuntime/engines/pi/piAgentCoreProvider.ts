@@ -6,7 +6,6 @@ import {access} from 'node:fs/promises';
 import {resolve as resolvePath} from 'node:path';
 import type {
   Api,
-  AuthResult,
   Credential,
   DeferredCancelOptions,
   DeferredFetchOptions,

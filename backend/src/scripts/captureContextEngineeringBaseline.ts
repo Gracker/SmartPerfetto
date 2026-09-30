@@ -20,7 +20,7 @@
  *   3. Diff the JSON files for cache-read ratio, cost, and so on.
  *
  * Usage:
- *   tsx src/scripts/captureContextEngineeringBaseline.ts \
+ *   npm run metrics:session-baseline -- \
  *     --stage current \
  *     --since-mins 30 \
  *     --out test-output/baseline-current.json
@@ -28,6 +28,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import {configureRuntimeEnvironment} from '../runtimeEnvironment';
 
 type OutputFormat = 'json' | 'markdown';
 
@@ -70,25 +71,35 @@ interface PersistedSessionMetrics {
   classifierSource?: 'user_explicit' | 'hard_rule' | 'ai';
 }
 
-const DEFAULT_METRICS_DIR = path.resolve(__dirname, '..', '..', 'logs', 'metrics');
+/**
+ * Where `AgentMetricsCollector` wrote its metrics: `backendLogPath('metrics')`
+ * as seen by a backend started from `backend/`, so a relative
+ * SMARTPERFETTO_BACKEND_LOG_DIR resolves against that directory too. Resolved
+ * on use, after the env is loaded.
+ */
+function defaultMetricsDir(): string {
+  const backendRoot = path.resolve(__dirname, '..', '..');
+  return path.resolve(backendRoot, process.env.SMARTPERFETTO_BACKEND_LOG_DIR || 'logs', 'metrics');
+}
+
 const DEFAULT_SINCE_MINS = 30;
 
 function printUsage(): void {
-  console.log('Usage: tsx src/scripts/captureContextEngineeringBaseline.ts [options]');
+  console.log('Usage: npm run metrics:session-baseline -- [options]');
   console.log('');
   console.log('Options:');
   console.log('  --stage <name>       Baseline stage label (current / post-P0 / post-v2.1) — required');
   console.log('  --out <path>         Output report path — required');
   console.log('  --format <kind>      Output format: json (default) or markdown');
   console.log(`  --since-mins <n>     Only include sessions whose mtime is within the last N minutes (default: ${DEFAULT_SINCE_MINS})`);
-  console.log(`  --metrics-dir <dir>  Override metrics directory (default: ${DEFAULT_METRICS_DIR})`);
+  console.log(`  --metrics-dir <dir>  Override metrics directory (default: ${defaultMetricsDir()})`);
   console.log('  --help               Show this help');
 }
 
 function parseArgs(argv: string[]): CliOptions {
   const opts: Partial<CliOptions> = {
     sinceMins: DEFAULT_SINCE_MINS,
-    metricsDir: DEFAULT_METRICS_DIR,
+    metricsDir: defaultMetricsDir(),
     format: 'json',
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -166,6 +177,11 @@ function aggregate(sessions: PersistedSessionMetrics[]) {
 }
 
 function main(): void {
+  // Read the env the backend server loads when started from backend/, so the
+  // default metrics directory matches where it wrote, whatever cwd this
+  // script runs from. SMARTPERFETTO_ENV_FILE still selects another file.
+  process.env.SMARTPERFETTO_ENV_FILE ||= path.resolve(__dirname, '..', '..', '.env');
+  configureRuntimeEnvironment();
   const opts = parseArgs(process.argv.slice(2));
 
   if (!fs.existsSync(opts.metricsDir)) {

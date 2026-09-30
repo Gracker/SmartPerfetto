@@ -585,10 +585,11 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
   it('prints no pending cue when no review ran and returns the run performance receipt', async () => {
     const performance = {schemaVersion: 1 as const, phases: [], tools: [], sql: [],
       finalReview: {necessity: 'not_required' as const, triggers: [], declaredClaimCount: 0}};
+    const toolResults = {schemaVersion: 1 as const, results: [{toolName: 'invoke_skill', outcome: 'returned' as const}]};
     mockFinalizeAnalysisResult.mockImplementationOnce(async input => {
       // A review that is not required sends nothing: no provisional answer, no progress.
       mockRunManifestLifecycles[mockRunManifestLifecycles.length - 1].sealOnceAndPersist.mockReturnValueOnce({
-        runManifestId: 'manifest-cli-test', runId: input.owner.runId, capabilityManifest, performance});
+        runManifestId: 'manifest-cli-test', runId: input.owner.runId, capabilityManifest, performance, toolResults});
       return {result: input.result};
     });
     const events: StreamingUpdate[] = [];
@@ -598,6 +599,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     expect(provisional).toEqual([]);
     expect(events.some(event => (event.content as any)?.phase === 'final_review')).toBe(false);
     expect(output.runtimePerformance).toEqual(performance);
+    expect(output.toolResultAudit).toEqual(toolResults);
   });
 
   it('hands the provisional answer to its own callback and leaves the event stream unchanged', async () => {

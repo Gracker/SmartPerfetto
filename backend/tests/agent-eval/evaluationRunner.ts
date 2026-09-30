@@ -21,14 +21,13 @@ import {
   EvaluationResult,
   EvaluationRunSummary,
   EvaluationConfig,
-  GraderConfig,
   Finding,
 } from './types';
 import { loadScenarios, loadAllScenarios, LoadOptions } from './scenarioLoader';
 import { CodeGrader } from './codeGrader';
 import { ModelGrader, ModelGraderOptions } from './modelGrader';
 import { ProcessGrader } from './processGrader';
-import { resolveTraceCase } from '../../src/utils/traceCorpus';
+import { resolveTraceCase } from '../helpers/traceCorpus';
 
 // Sentinel for catalog-backed default fixture resolution.
 const DEFAULT_TRACE_DIR = path.resolve(__dirname, '../../..');
@@ -569,8 +568,6 @@ export class EvaluationRunner {
     // Group by category
     const byCategory: Record<string, any> = {};
     for (const result of results) {
-      const scenario = result.scenarioId;
-      // Find the scenario to get its category
       const category = 'general'; // Default, would need scenario lookup
 
       if (!byCategory[category]) {

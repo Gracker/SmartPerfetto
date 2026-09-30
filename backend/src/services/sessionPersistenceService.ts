@@ -12,14 +12,12 @@ import path from 'path';
 import fs from 'fs';
 import {
   StoredSession,
-  StoredMessage,
   SessionFilter,
   SessionListResponse,
   SessionMetadata,
 } from '../models/sessionSchema';
 import {
   EntityStore,
-  EntityStoreSnapshot,
 } from '../agent/context/entityStore';
 import { EnhancedSessionContext } from '../agent/context/enhancedSessionContext';
 import { FocusStore, FocusStoreSnapshot } from '../agent/context/focusStore';
@@ -28,7 +26,6 @@ import {
   normalizeSessionStateSnapshot,
   type SessionStateSnapshot,
 } from '../agentv3/sessionStateSnapshot';
-import { backendDataPath } from '../runtimePaths';
 import { applyEnterpriseMinimalSchema } from './enterpriseSchema';
 import { resolveEnterpriseDbPath } from './enterpriseDb';
 

@@ -54,7 +54,7 @@ describe('shared scene proposal capability', () => {
   it('refuses forged and JSON-copied capabilities', async () => {
     const f = fixture();
     const capability = (await f.activate())!;
-    expect(() => f.server({bindOptions: value => value})).toThrow('unissued_scene_runtime_capability');
+    expect(() => f.server({} as SceneRunContext)).toThrow('unissued_scene_runtime_capability');
     expect(() => f.server(JSON.parse(JSON.stringify(capability)))).toThrow('unissued_scene_runtime_capability');
   });
   it('registers the shared schema and returns bounded revision diagnostics while retaining full state privately', async () => {

@@ -9,7 +9,7 @@
 
 import express from 'express';
 import { getTraceProcessorService } from '../services/traceProcessorService';
-import { AnalysisTemplateManager, AnalysisTemplateName } from '../services/analysisTemplates/templateManager';
+import { AnalysisTemplateManager } from '../services/analysisTemplates/templateManager';
 
 const router = express.Router();
 

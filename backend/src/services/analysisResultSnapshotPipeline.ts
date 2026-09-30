@@ -278,7 +278,6 @@ function evidenceRefsFromInput(input: CompletedAnalysisSnapshotInput): EvidenceR
     sourceRefOrdinals[sourceRefKind] = (sourceRefOrdinals[sourceRefKind] || 0) + 1;
     const sourceRefKey = `${sourceRefKind}:${sourceRefOrdinals[sourceRefKind]}`;
     const source = env.meta?.source || env.meta?.skillId || 'data_envelope';
-    const stepId = env.meta?.stepId || 'step';
     const id = dataEnvelopeRefId(env, duplicateEvidenceRefIds);
     const isPinnedClaimRef =
       claimPins.evidenceRefIds.has(id) ||

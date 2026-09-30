@@ -21,7 +21,9 @@ import type { TraceProcessorQueryProvenance } from '../services/traceProcessorCo
 import {randomUUID} from 'crypto';
 import {isDeepStrictEqual} from 'util';
 import type {RuntimeToolInvocationEvent} from '../agentRuntime/runtimeToolObserver';
-import {captureInvestigationToolObservation, type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
+import {captureInvestigationToolObservation, recordCaptureToolCall,
+  type InvestigationToolObservation} from '../services/evidence/investigationEvidenceLedger';
+import {currentRuntimeToolInvocation} from '../agentRuntime/runtimeToolInvocationContext';
 import {createDataEnvelope} from '../types/dataContract';
 import {capturedEvidenceTable, freezeEvidenceValue, type CapturedEvidenceTable, type EvidenceTableWitness, INDEXED_ROW_SHAPE, indexEvidenceRows,
   MODEL_EVIDENCE_TRUNCATED_CELL_LIMIT, type ModelEvidenceProjectionStatus,
@@ -450,7 +452,11 @@ export class ArtifactStore {
   private captureRecord(key: string, witness: EvidenceTableWitness, meta: DataEnvelopeMeta,
     display: import('../types/dataContract').DataEnvelope['display'], sourceRefs?: readonly string[], originRunId?: string): void {
     const table = capturedEvidenceTable(witness)!;
-    if (!captureOriginRuns.has(witness)) captureOriginRuns.set(witness, originRunId);
+    // A run-scoped facade names its run explicitly; an unbound store learns it
+    // from the tool invocation the capture is registered inside.
+    const invocation = currentRuntimeToolInvocation();
+    recordCaptureToolCall(witness, invocation.toolCallId);
+    if (!captureOriginRuns.has(witness)) captureOriginRuns.set(witness, originRunId ?? invocation.runId);
     const capturedOriginRunId = captureOriginRuns.get(witness);
     const {queryReview: _reviewOnly, ...capturedMeta} = meta;
     const record = freezeEvidenceValue(structuredClone({
@@ -489,7 +495,8 @@ export class ArtifactStore {
   }
 
   /** Shared admitted-tool observer; records no payload or model-authored success claims. */
-  observeInvestigationTool(event: RuntimeToolInvocationEvent, originRunId?: string): void {
+  observeInvestigationTool(event: RuntimeToolInvocationEvent, explicitRunId?: string): void {
+    const originRunId = explicitRunId ?? currentRuntimeToolInvocation().runId;
     this.investigationToolObservations.set(`${originRunId || ''}:${event.toolCallId}`,
       {...captureInvestigationToolObservation(event), ...(originRunId ? {originRunId} : {})});
     while (this.investigationToolObservations.size > 4096) {

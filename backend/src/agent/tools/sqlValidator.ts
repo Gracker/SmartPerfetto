@@ -22,11 +22,22 @@
  * - Performance-aware (avoid regex catastrophe)
  */
 
-import type { SQLConstraints } from './sqlGenerator';
-
 // =============================================================================
 // Types
 // =============================================================================
+
+export interface SQLConstraints {
+  /** Maximum rows to return (default: 1000) */
+  maxRows: number;
+  /** Allowed tables (whitelist) */
+  allowedTables: string[];
+  /** Forbidden SQL patterns (regex) */
+  forbiddenPatterns: RegExp[];
+  /** Query timeout in milliseconds */
+  timeout: number;
+  /** Maximum query complexity (joins, subqueries) */
+  maxComplexity?: number;
+}
 
 /**
  * Validation result
@@ -502,16 +513,3 @@ function isKeyword(word: string): boolean {
   ]);
   return keywords.has(word.toUpperCase());
 }
-
-// =============================================================================
-// Factory
-// =============================================================================
-
-/**
- * Create an SQL validator instance.
- */
-export function createSQLValidator(constraints?: Partial<SQLConstraints>): SQLValidator {
-  return new SQLValidator(constraints);
-}
-
-export default SQLValidator;

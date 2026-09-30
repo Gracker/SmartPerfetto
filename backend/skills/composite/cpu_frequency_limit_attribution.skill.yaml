@@ -12,8 +12,11 @@
 #   1. cpufreq policy limit tracks (ftrace power/cpu_frequency_limits) say a
 #      limit was APPLIED. Nothing else in a normal trace does.
 #   2. Kernel cooling devices (ftrace thermal/cdev_update) say the kernel
-#      thermal framework was mitigating AT THE SAME TIME. The event does not
-#      say which cpufreq policy a given device governs.
+#      thermal framework was mitigating. The event does not say which cpufreq
+#      policy a device governs; the shared association fragment ties a device
+#      to a policy only when its transitions are followed, within
+#      cdev_policy_pair_ms, by that policy's limit changes. Only a tightening
+#      limit write forward-paired with a tied device is confirmed.
 #   3. A userspace thermal daemon running just before the limit is a CANDIDATE.
 #      Qualcomm-style stacks write the sysfs limits from userspace and emit no
 #      cooling-device event at all, so this is often the only trace of "who" -
@@ -26,6 +29,9 @@
 # Temperature that merely correlates with a low frequency proves nothing: the
 # frequency can be low because the workload ended. That is why this Skill is
 # built on limit episodes rather than on observed cpufreq values.
+#
+# Every trigger class comes from fragments/system_cpu_freq_limit_episode_verdicts.sql
+# (one ladder, one rank table). This Skill only selects and presents rows.
 # =============================================================================
 
 name: cpu_frequency_limit_attribution
@@ -95,6 +101,21 @@ inputs:
     required: false
     default: 50
     description: "散热设备档位变更与限频时刻的重合容差(ms)；重合才视为该次限频由内核热控直接施加"
+  - name: cdev_policy_pair_ms
+    type: number
+    required: false
+    default: 1
+    description: "散热设备档位变更与其后 policy 上限变更的前向配对窗口(ms)；只有上限在档位变更之后该时间内变化才算一对"
+  - name: cdev_policy_min_transitions
+    type: number
+    required: false
+    default: 3
+    description: "判定散热设备与 policy 关联所需的最少档位变更次数"
+  - name: cdev_policy_min_pair_pct
+    type: number
+    required: false
+    default: 80
+    description: "判定关联所需的配对占比与同向占比下限(%)"
   - name: max_episodes
     type: number
     required: false
@@ -156,18 +177,28 @@ steps:
     process_scope:
       role: global_context
     display: false
+    sql_fragments:
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
+    # Cooling coverage comes from the shared fragment: `has_cdev_data` is
+    # true only when a cooling device actually changed state (the only source
+    # that can attribute a limit write); `cooling_track_count` only says
+    # whether there is a cooling device to list.
     sql: |
       SELECT
-        CASE WHEN EXISTS (SELECT 1 FROM cpu_counter_track
-          WHERE type IN ('cpu_max_frequency_limit', 'cpu_min_frequency_limit'))
-          THEN 1 ELSE 0 END AS has_limit_data,
-        CASE WHEN EXISTS (SELECT 1 FROM counter_track WHERE type = 'cooling_device_counter')
-          THEN 1 ELSE 0 END AS has_cdev_data,
+        ds.has_max_limit_data,
+        ds.has_any_limit_sample,
+        ds.limit_evidence_missing_reason,
+        cov.cooling_transition_coverage AS has_cdev_data,
+        cov.cooling_track_count,
         CASE WHEN EXISTS (SELECT 1 FROM counter_track WHERE type = 'thermal_temperature')
           THEN 1 ELSE 0 END AS has_temperature_data,
         CASE WHEN EXISTS (SELECT 1 FROM cpu_counter_track WHERE type = 'cpu_frequency')
           THEN 1 ELSE 0 END AS has_cpufreq_data,
         CASE WHEN EXISTS (SELECT 1 FROM sched_slice) THEN 1 ELSE 0 END AS has_sched_data
+      FROM system_cpu_freq_limit_data_status ds
+      CROSS JOIN thermal_cooling_transition_coverage cov
     save_as: data_check
 
   - id: analysis_window
@@ -230,7 +261,7 @@ steps:
     name: "散热设备概览"
     skill: thermal_cooling_device_timeline
     optional: true
-    condition: "data_check.data?.[0]?.has_cdev_data === 1"
+    condition: "data_check.data?.[0]?.cooling_track_count > 0"
     params:
       start_ts: "${analysis_window.data?.[0]?.window_start_ts ?? null}"
       end_ts: "${analysis_window.data?.[0]?.window_end_ts ?? null}"
@@ -246,7 +277,7 @@ steps:
     type: atomic
     name: "限频区段（按影响排序）"
     optional: true
-    condition: "data_check.data?.[0]?.has_limit_data === 1"
+    condition: "data_check.data?.[0]?.has_max_limit_data === 1"
     process_scope:
       role: global_context
     sql_fragments:
@@ -260,18 +291,21 @@ steps:
       title: "限频区段（按 深度 x 时长 x 核心能力 排序）"
       columns:
         - {name: episode_id, label: "区段", type: string}
+        - {name: trace_episode_id, label: "全 trace 区段", type: string}
         - {name: policy_cpu, label: "policy 首核", type: number}
         - {name: core_type, label: "核心类型", type: string}
         - {name: topology_source, label: "拓扑来源", type: string}
         - {name: episode_start_ts, label: "开始", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: episode_end_ts, label: "结束", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: episode_dur_ns, label: "持续", type: duration, unit: ns}
+        - {name: onset_ts, label: "限频起点", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: onset_observed, label: "起点可观测", type: boolean}
         - {name: min_limit_khz, label: "最低上限", type: number}
         - {name: reference_max_limit_khz, label: "参考上限", type: number}
         - {name: reference_basis, label: "参考依据", type: string}
         - {name: depth_pct, label: "限频深度", type: percentage}
         - {name: change_count, label: "合并变更数", type: number}
-        - {name: starts_at_data_start, label: "起点未知", type: boolean}
+        - {name: starts_at_data_start, label: "区段含轨道首样本", type: boolean}
         - {name: ends_at_data_end, label: "终点未知", type: boolean}
         - {name: evidence_status, label: "证据状态", type: string}
         - {name: impact_rank_score, label: "排序分", type: number, hidden: true}
@@ -280,6 +314,8 @@ steps:
         - {name: window_clipped_to_data_start, label: "回溯窗口被裁剪", type: boolean}
         - {name: who_start_ts, label: "归因窗口开始", type: timestamp, unit: ns, hidden: true}
         - {name: who_end_ts, label: "归因窗口结束", type: timestamp, unit: ns, hidden: true}
+        - {name: window_start_ts, label: "分析窗口开始", type: timestamp, unit: ns, hidden: true}
+        - {name: window_end_ts, label: "分析窗口结束", type: timestamp, unit: ns, hidden: true}
         - {name: package, label: "package", type: string, hidden: true}
         - {name: process_name, label: "process_name", type: string, hidden: true}
         - {name: lookback_ms, label: "lookback_ms", type: number, hidden: true}
@@ -291,6 +327,11 @@ steps:
         - {name: spin_switches_per_s, label: "spin_switches_per_s", type: number, hidden: true}
         - {name: waker_per_s, label: "waker_per_s", type: number, hidden: true}
         - {name: kernel_daemon_share_pct, label: "kernel_daemon_share_pct", type: number, hidden: true}
+        - {name: cdev_policy_pair_ms, label: "cdev_policy_pair_ms", type: number, hidden: true}
+        - {name: cdev_policy_min_transitions, label: "cdev_policy_min_transitions", type: number, hidden: true}
+        - {name: cdev_policy_min_pair_pct, label: "cdev_policy_min_pair_pct", type: number, hidden: true}
+        - {name: episode_drop_pct, label: "episode_drop_pct", type: number, hidden: true}
+        - {name: merge_gap_ms, label: "merge_gap_ms", type: number, hidden: true}
         - {name: thresholds, label: "阈值", type: string}
         - {name: evidence_scope, label: "证据范围", type: string}
     on_empty: "分析窗口内没有超过阈值的限频区段。可降低 episode_drop_pct 复查更浅的限频，或确认窗口是否覆盖限频时刻。"
@@ -300,18 +341,24 @@ steps:
           ${analysis_window.data[0].window_start_ts} AS window_start_ts,
           ${analysis_window.data[0].window_end_ts} AS window_end_ts
       )
-      SELECT e.episode_id, e.policy_cpu, e.core_type, e.topology_source,
+      -- Windows are anchored on the trace-wide onset, never on the clipped
+      -- window start: a window that cuts through an episode must not invent a
+      -- limit change at its own boundary.
+      SELECT e.episode_id, e.trace_episode_id, e.policy_cpu, e.core_type, e.topology_source,
         e.episode_start_ts, e.episode_end_ts, e.episode_dur_ns,
+        e.onset_ts, e.onset_observed,
         e.min_limit_khz, e.reference_max_limit_khz, e.reference_basis,
         e.depth_pct, e.change_count,
         e.starts_at_data_start, e.ends_at_data_end, e.evidence_status,
         ROUND(e.depth_pct * (e.episode_dur_ns / 1e6) * COALESCE(e.capacity, 1), 1) AS impact_rank_score,
-        MAX(db.data_start_ts, e.episode_start_ts - CAST(${lookback_ms|10000} * 1000000 AS INTEGER)) AS before_start_ts,
-        e.episode_start_ts AS before_end_ts,
-        CASE WHEN e.episode_start_ts - CAST(${lookback_ms|10000} * 1000000 AS INTEGER) < db.data_start_ts
+        MAX(db.data_start_ts, e.onset_ts - CAST(${lookback_ms|10000} * 1000000 AS INTEGER)) AS before_start_ts,
+        e.onset_ts AS before_end_ts,
+        CASE WHEN e.onset_ts - CAST(${lookback_ms|10000} * 1000000 AS INTEGER) < db.data_start_ts
           THEN 1 ELSE 0 END AS window_clipped_to_data_start,
-        MAX(db.data_start_ts, e.episode_start_ts - CAST(${who_window_ms|2000} * 1000000 AS INTEGER)) AS who_start_ts,
-        MIN(db.data_end_ts, e.episode_start_ts + CAST(${who_window_ms|2000} * 1000000 AS INTEGER)) AS who_end_ts,
+        MAX(db.data_start_ts, e.onset_ts - CAST(${who_window_ms|2000} * 1000000 AS INTEGER)) AS who_start_ts,
+        MIN(db.data_end_ts, e.onset_ts + CAST(${who_window_ms|2000} * 1000000 AS INTEGER)) AS who_end_ts,
+        ${analysis_window.data[0].window_start_ts} AS window_start_ts,
+        ${analysis_window.data[0].window_end_ts} AS window_end_ts,
         '${package}' AS package,
         '${process_name}' AS process_name,
         ${lookback_ms|10000} AS lookback_ms,
@@ -323,11 +370,19 @@ steps:
         ${spin_switches_per_s|2000} AS spin_switches_per_s,
         ${waker_per_s|500} AS waker_per_s,
         ${kernel_daemon_share_pct|10} AS kernel_daemon_share_pct,
-        printf('episode_drop_pct=%s;merge_gap_ms=%s;max_episodes=%s',
-          ${episode_drop_pct|10}, ${merge_gap_ms|500}, ${max_episodes|3}) AS thresholds,
+        ${cdev_policy_pair_ms|1} AS cdev_policy_pair_ms,
+        ${cdev_policy_min_transitions|3} AS cdev_policy_min_transitions,
+        ${cdev_policy_min_pair_pct|80} AS cdev_policy_min_pair_pct,
+        -- trace_episode_id numbers episodes under these thresholds; the child
+        -- rebuilds the shared fragments and must use the same ones to resolve it.
+        ${episode_drop_pct|10} AS episode_drop_pct,
+        ${merge_gap_ms|500} AS merge_gap_ms,
+        printf('episode_drop_pct=%s;merge_gap_ms=%s;max_episodes=%s;cdev_policy_pair_ms=%s;cdev_policy_min_transitions=%s;cdev_policy_min_pair_pct=%s',
+          ${episode_drop_pct|10}, ${merge_gap_ms|500}, ${max_episodes|3},
+          ${cdev_policy_pair_ms|1}, ${cdev_policy_min_transitions|3}, ${cdev_policy_min_pair_pct|80}) AS thresholds,
         e.evidence_scope
       FROM system_cpu_freq_limit_episodes e CROSS JOIN observed_data_bounds db
-      ORDER BY impact_rank_score DESC, e.episode_start_ts
+      ORDER BY impact_rank_score DESC, e.onset_ts
       LIMIT ${max_episodes|3}
     save_as: episode_rows
 
@@ -342,11 +397,13 @@ steps:
     max_items: 8
     item_params:
       episode_id: episode_id
-      episode_start_ts: episode_start_ts
+      trace_episode_id: trace_episode_id
+      episode_start_ts: onset_ts
       episode_end_ts: episode_end_ts
+      window_start_ts: window_start_ts
+      window_end_ts: window_end_ts
       policy_cpu: policy_cpu
       core_type: core_type
-      starts_at_data_start: starts_at_data_start
       package: package
       process_name: process_name
       lookback_ms: lookback_ms
@@ -358,6 +415,11 @@ steps:
       spin_switches_per_s: spin_switches_per_s
       waker_per_s: waker_per_s
       kernel_daemon_share_pct: kernel_daemon_share_pct
+      cdev_policy_pair_ms: cdev_policy_pair_ms
+      cdev_policy_min_transitions: cdev_policy_min_transitions
+      cdev_policy_min_pair_pct: cdev_policy_min_pair_pct
+      episode_drop_pct: episode_drop_pct
+      merge_gap_ms: merge_gap_ms
     display:
       level: key
       layer: deep
@@ -365,7 +427,9 @@ steps:
       format: table
 
   # ---------------------------------------------------------------------------
-  # L2: window-level attribution summary (feeds the diagnosis)
+  # L2: window-level attribution summary (feeds the diagnosis). Classification,
+  # rank and mix are the shared fragment's window-scoped values over every
+  # episode in the analysis window; this step keeps no ladder of its own.
   # ---------------------------------------------------------------------------
   - id: attribution_summary
     type: atomic
@@ -375,11 +439,11 @@ steps:
     process_scope:
       role: global_context
     sql_fragments:
-      - fragments/observed_data_bounds.sql
       - fragments/system_sched_spans.sql
       - fragments/system_cpu_freq_limit_spans.sql
       - fragments/system_cpu_freq_limit_episodes.sql
       - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
       - fragments/thermal_signal_signatures.sql
       - fragments/system_cpu_freq_limit_episode_verdicts.sql
       - fragments/actor_class_labels.sql
@@ -389,14 +453,21 @@ steps:
       title: "限频归因汇总"
       columns:
         - {name: classification, label: "分类", type: string}
+        - {name: classification_scope, label: "分类范围", type: string}
         - {name: episode_count, label: "区段数", type: number}
+        - {name: onset_count, label: "限频写入次数", type: number}
+        - {name: confirmed_onset_count, label: "由关联散热设备施加的写入", type: number}
+        - {name: causal_onset_count, label: "收紧或起点未知的写入", type: number}
+        - {name: onset_trigger_mix, label: "逐次写入分类", type: string}
         - {name: deepest_depth_pct, label: "最大限频深度", type: percentage}
         - {name: longest_episode_ns, label: "最长区段", type: duration, unit: ns}
         - {name: cooling_confirmed_episodes, label: "判定为内核热控的区段", type: number}
-        - {name: coincident_transition_episodes, label: "档位变更与限频重合的区段", type: number}
-        - {name: cooling_active_episodes, label: "区段内散热设备生效的区段", type: number}
-        - {name: daemon_suspected_episodes, label: "守护进程先于限频活动的区段", type: number}
+        - {name: daemon_suspected_episodes, label: "以守护进程为最强证据的区段", type: number}
+        - {name: cooling_background_episodes, label: "仅有关联散热设备背景活动的区段", type: number}
+        - {name: cooling_unassociated_episodes, label: "仅有未关联散热设备活动的区段", type: number}
         - {name: onset_unknown_episodes, label: "起点不可观测的区段", type: number}
+        - {name: tied_cooling_devices, label: "与 policy 时序关联的散热设备数", type: number}
+        - {name: cooling_transition_coverage, label: "采集到散热设备档位变化", type: boolean}
         - {name: top_episode_id, label: "首要区段", type: string}
         - {name: top_before_start_ts, label: "首要区段回溯窗口开始", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: top_before_end_ts, label: "首要区段回溯窗口结束", type: timestamp, unit: ns, hidden: true}
@@ -417,18 +488,6 @@ steps:
           ${episode_rows[0].before_start_ts},
           ${episode_rows[0].before_end_ts}
       ),
-      ep AS (
-        SELECT * FROM ${episode_rows}
-      ),
-      -- Per-episode who evidence comes from the shared fragment; only the
-      -- episodes selected by the `episodes` step are summarised.
-      classified AS (
-        SELECT v.episode_id, v.depth_pct, v.episode_dur_ns, v.starts_at_data_start,
-          v.cooling_spans, v.coincident_transitions, v.daemon_slices, v.episode_verdict
-        FROM system_cpu_freq_limit_episode_verdicts v
-        JOIN ep ON ep.episode_id = v.episode_id
-        WHERE v.window_id = 0
-      ),
       before_work AS (
         SELECT
           COALESCE(SUM(CASE WHEN ac.actor_class = 'target_app' THEN s.dur_ns ELSE 0 END), 0) AS target_running_ns,
@@ -438,21 +497,22 @@ steps:
         WHERE s.window_id = 1 AND COALESCE(s.is_idle, 0) = 0 AND s.dur_ns > 0
       )
       SELECT
-        CASE
-          WHEN SUM(CASE WHEN cl.episode_verdict = 'thermal_cooling_device_confirmed' THEN 1 ELSE 0 END) > 0
-            THEN 'THERMAL_LIMIT_CONFIRMED'
-          WHEN SUM(CASE WHEN cl.episode_verdict = 'userspace_thermal_daemon_active_before_limit' THEN 1 ELSE 0 END) > 0
-            THEN 'THERMAL_DAEMON_SUSPECTED'
-          ELSE 'NON_THERMAL_LIMIT'
-        END AS classification,
-        COUNT(*) AS episode_count,
-        ROUND(MAX(cl.depth_pct), 1) AS deepest_depth_pct,
-        MAX(cl.episode_dur_ns) AS longest_episode_ns,
-        SUM(CASE WHEN cl.episode_verdict = 'thermal_cooling_device_confirmed' THEN 1 ELSE 0 END) AS cooling_confirmed_episodes,
-        SUM(CASE WHEN cl.coincident_transitions > 0 THEN 1 ELSE 0 END) AS coincident_transition_episodes,
-        SUM(CASE WHEN cl.cooling_spans > 0 THEN 1 ELSE 0 END) AS cooling_active_episodes,
-        SUM(CASE WHEN cl.episode_verdict = 'userspace_thermal_daemon_active_before_limit' THEN 1 ELSE 0 END) AS daemon_suspected_episodes,
-        SUM(CASE WHEN cl.starts_at_data_start = 1 THEN 1 ELSE 0 END) AS onset_unknown_episodes,
+        ws.freq_limit_classification AS classification,
+        ws.classification_scope,
+        ws.episode_count,
+        ws.onset_count,
+        ws.confirmed_onset_count,
+        ws.causal_onset_count,
+        ws.onset_trigger_mix,
+        ws.deepest_depth_pct,
+        ws.longest_episode_ns,
+        ws.confirmed_episode_count AS cooling_confirmed_episodes,
+        ws.daemon_suspected_episode_count AS daemon_suspected_episodes,
+        ws.cooling_background_episode_count AS cooling_background_episodes,
+        ws.cooling_unassociated_episode_count AS cooling_unassociated_episodes,
+        ws.onset_unknown_episode_count AS onset_unknown_episodes,
+        ws.tied_cooling_device_count AS tied_cooling_devices,
+        ws.cooling_transition_coverage,
         '${episode_rows[0].episode_id}' AS top_episode_id,
         ${episode_rows[0].before_start_ts} AS top_before_start_ts,
         ${episode_rows[0].before_end_ts} AS top_before_end_ts,
@@ -469,17 +529,10 @@ steps:
         CASE WHEN '${package}' = '' AND '${process_name}' = ''
           THEN 'no_target_process_selected'
           ELSE 'package_or_process_name_match' END AS target_scope,
-        CASE
-          WHEN SUM(CASE WHEN cl.coincident_transitions > 0 THEN 1 ELSE 0 END) > 0
-            THEN '内核散热设备的档位变更与限频时刻重合：热控框架在此刻施加了抑温动作。该事件不声明散热设备治理哪个 cpufreq policy，policy 对应关系仍需核对。'
-          WHEN SUM(CASE WHEN cl.episode_verdict = 'thermal_cooling_device_confirmed' THEN 1 ELSE 0 END) > 0
-            THEN '限频区段期间内核散热设备处于非零档位，但没有与限频时刻重合的档位变更：属于并存的背景热控，policy 对应关系与施加者仍需核对。'
-          WHEN SUM(CASE WHEN cl.episode_verdict = 'userspace_thermal_daemon_active_before_limit' THEN 1 ELSE 0 END) > 0
-            THEN '未观测到内核散热设备事件，但限频前有名字匹配温控签名的守护进程在运行：用户态温控是候选触发方，尚未证明因果。'
-          ELSE '观测到限频，但窗口内既无内核散热设备活动，也无匹配温控签名的守护进程活动：可能是非热的策略限频，也可能是本 trace 未采集到对应事件。'
-        END AS description,
+        ws.class_note AS description,
         'observation_not_causal' AS evidence_scope
-      FROM classified cl
+      FROM system_cpu_freq_limit_window_summary ws
+      WHERE ws.window_id = 0
     save_as: attribution_summary
 
   # ---------------------------------------------------------------------------
@@ -630,7 +683,7 @@ steps:
     name: "无限频数据时的频率观测"
     skill: cpu_throttling_in_range
     optional: true
-    condition: "data_check.data?.[0]?.has_limit_data !== 1 && data_check.data?.[0]?.has_cpufreq_data === 1"
+    condition: "data_check.data?.[0]?.has_max_limit_data !== 1 && data_check.data?.[0]?.has_cpufreq_data === 1"
     params:
       start_ts: "${analysis_window.data?.[0]?.window_start_ts ?? null}"
       end_ts: "${analysis_window.data?.[0]?.window_end_ts ?? null}"
@@ -641,15 +694,19 @@ steps:
   - id: no_limit_capture_advice
     type: atomic
     name: "限频数据缺失说明"
-    condition: "data_check.data?.[0]?.has_limit_data !== 1"
+    condition: "data_check.data?.[0]?.has_max_limit_data !== 1"
     process_scope:
       role: global_context
+    sql_fragments:
+      - fragments/system_cpu_freq_limit_spans.sql
     display:
       level: key
       layer: overview
       title: "无法直接观测限频"
       columns:
         - {name: limit_evidence, label: "限频证据", type: string}
+        - {name: classification, label: "分类", type: string}
+        - {name: limit_evidence_missing_reason, label: "缺失原因", type: string}
         - {name: required_ftrace_event, label: "需要采集的 ftrace 事件", type: string}
         - {name: also_useful, label: "同时建议采集", type: string}
         - {name: message, label: "说明", type: string}
@@ -657,10 +714,13 @@ steps:
     sql: |
       SELECT
         'unavailable' AS limit_evidence,
+        ds.limit_evidence_classification AS classification,
+        ds.limit_evidence_missing_reason,
         'power/cpu_frequency_limits' AS required_ftrace_event,
         'thermal/cdev_update, thermal/thermal_temperature, power/cpu_frequency' AS also_useful,
-        '本 trace 没有 cpufreq policy 限频轨道，因此无法直接判断频率是否被限制。观测到的频率低既可能是被限频，也可能只是负载下降或进入空闲 DVFS——两者在没有限频事件时不可区分。请在采集配置的 ftrace_events 中加入 power/cpu_frequency_limits（以及 thermal/cdev_update、thermal/thermal_temperature）后重新采集。' AS message,
+        ds.limit_evidence_missing_note AS message,
         'observation_not_causal' AS evidence_scope
+      FROM system_cpu_freq_limit_data_status ds
     save_as: no_limit_capture_advice
 
   # ---------------------------------------------------------------------------
@@ -676,17 +736,17 @@ steps:
     inputs: [data_check, analysis_window, episode_rows, attribution_summary, vendor_signal_discovery]
     rules:
       - id: limit_evidence_missing
-        condition: "data_check.data?.[0]?.has_limit_data !== 1"
+        condition: "data_check.data?.[0]?.has_max_limit_data !== 1"
         severity: info
-        diagnosis: "LIMIT_EVIDENCE_MISSING：本 trace 没有 cpufreq 限频轨道，无法判断是否发生限频；观测到的低频不能区分限频与负载下降"
+        diagnosis: "LIMIT_EVIDENCE_MISSING（${data_check.data[0].limit_evidence_missing_reason}）：本 trace 没有有效的 cpufreq 最大上限样本，无法判断是否发生限频；观测到的低频不能区分限频与负载下降"
         confidence: low
         suggestions:
           - "系统侧：在采集配置中加入 ftrace 事件 power/cpu_frequency_limits，并尽量同时加入 thermal/cdev_update 与 thermal/thermal_temperature"
           - "App 侧：在拿到限频证据之前，不要把性能下降归因于温控；先用同窗口负载数据判断是否是自身工作量导致"
       - id: no_episode
-        condition: "data_check.data?.[0]?.has_limit_data === 1 && !(episodes.data?.length > 0)"
+        condition: "data_check.data?.[0]?.has_max_limit_data === 1 && !(episodes.data?.length > 0)"
         severity: info
-        diagnosis: "窗口内存在限频轨道，但没有超过 ${episode_drop_pct|10}% 阈值的限频区段；未观测到显著限频"
+        diagnosis: "NO_LIMIT_EPISODE：窗口内存在有效的上限样本，但没有超过 ${episode_drop_pct|10}% 阈值的限频区段；未观测到显著限频"
         confidence: medium
         suggestions:
           - "系统侧：如需排查更浅的限频，降低 episode_drop_pct 后重跑"
@@ -694,31 +754,69 @@ steps:
       - id: thermal_limit_confirmed
         condition: "attribution_summary.data?.[0]?.classification === 'THERMAL_LIMIT_CONFIRMED'"
         severity: warning
-        diagnosis: "THERMAL_LIMIT_CONFIRMED：${attribution_summary.data[0].cooling_confirmed_episodes}/${attribution_summary.data[0].episode_count} 段限频由内核热控框架施加（其中 ${attribution_summary.data[0].coincident_transition_episodes} 段的散热设备档位变更与限频时刻重合，最大限频深度 ${attribution_summary.data[0].deepest_depth_pct}%）"
+        diagnosis: "THERMAL_LIMIT_CONFIRMED：窗口内 ${attribution_summary.data[0].confirmed_onset_count}/${attribution_summary.data[0].causal_onset_count} 次收紧类限频写入紧跟在与该 policy 时序关联的内核散热设备升档之后（涉及 ${attribution_summary.data[0].cooling_confirmed_episodes}/${attribution_summary.data[0].episode_count} 段，最大限频深度 ${attribution_summary.data[0].deepest_depth_pct}%；逐次写入分类 ${attribution_summary.data[0].onset_trigger_mix}）"
         confidence: high
         suggestions:
-          - "系统侧：核对该散热设备治理的 cpufreq policy 与触发它的热区阈值；cdev_update 事件本身不声明作用对象"
+          - "系统侧：散热设备与 policy 的对应关系来自档位变更与上限变更的前向时序配对，不来自设备名；继续核对触发该散热设备的热区阈值"
           - "系统侧：检查限频前回溯窗口内的温升与非 CPU 热源（充电、GPU、相机、Modem），温控不一定由 CPU 负载单独造成"
           - "App 侧：查看逐区段的限频前负载归因，确认目标应用是否主导了限频前的 CPU 工作量（target_dominated_before_limit=${attribution_summary.data[0].target_dominated_before_limit}）"
           - "App 侧：若目标应用主导，优先降低持续 CPU 工作量或把工作移出大核；若不主导，应用侧优化对本次限频的收益有限"
       - id: thermal_daemon_suspected
         condition: "attribution_summary.data?.[0]?.classification === 'THERMAL_DAEMON_SUSPECTED'"
         severity: warning
-        diagnosis: "THERMAL_DAEMON_SUSPECTED：未观测到内核散热设备事件，但限频前有名字匹配温控签名的守护进程在运行（共 ${attribution_summary.data[0].episode_count} 段，最大深度 ${attribution_summary.data[0].deepest_depth_pct}%）；用户态温控是候选触发方，尚未证明因果"
+        diagnosis: "THERMAL_DAEMON_SUSPECTED：没有限频写入由关联散热设备施加，但收紧前有名字匹配温控签名的守护进程在运行（共 ${attribution_summary.data[0].episode_count} 段，最大深度 ${attribution_summary.data[0].deepest_depth_pct}%；逐次写入分类 ${attribution_summary.data[0].onset_trigger_mix}）；用户态温控是候选触发方，尚未证明因果"
         confidence: medium
         suggestions:
           - "系统侧：该平台可能由用户态 thermal daemon 直接写 cpufreq sysfs 限频，不产生 cdev_update；用 execute_sql 查看候选守护进程的 slice 与厂商计数器以确认"
           - "系统侧：守护进程在未限频时也会周期性运行，需比较归因窗口速率与全 trace 基线速率再下结论"
           - "App 侧：查看限频前负载归因，确认目标应用是否主导了限频前工作量（target_dominated_before_limit=${attribution_summary.data[0].target_dominated_before_limit}）"
-      - id: non_thermal_limit
-        condition: "attribution_summary.data?.[0]?.classification === 'NON_THERMAL_LIMIT'"
+      - id: thermal_cooling_background
+        condition: "attribution_summary.data?.[0]?.classification === 'THERMAL_COOLING_BACKGROUND'"
         severity: info
-        diagnosis: "NON_THERMAL_LIMIT：观测到 ${attribution_summary.data[0].episode_count} 段限频，但窗口内既无内核散热设备活动，也无匹配温控签名的守护进程活动；触发方未确定"
+        diagnosis: "THERMAL_COOLING_BACKGROUND：与该 policy 时序关联的散热设备在限频期间处于非零档位或在写入附近换档，但没有一次收紧与其升档前向配对；属于并存的背景热控候选，不能确认施加者（逐次写入分类 ${attribution_summary.data[0].onset_trigger_mix}）"
+        confidence: medium
+        suggestions:
+          - "系统侧：对照限频写入时刻与散热设备档位变更的先后顺序；只有上限紧跟在升档之后才是热控施加"
+          - "App 侧：在触发方确认之前不要按温控优化；先用限频前负载归因判断自身工作量"
+      - id: thermal_cooling_unassociated
+        condition: "attribution_summary.data?.[0]?.classification === 'THERMAL_COOLING_UNASSOCIATED'"
+        severity: info
+        diagnosis: "THERMAL_COOLING_UNASSOCIATED：限频期间只有未与该 policy 关联的散热设备有活动（关联依据为档位变更与上限变更的前向配对，不看设备名）；它们不能算作这次限频的施加者"
+        confidence: low
+        suggestions:
+          - "系统侧：散热设备可能治理其他 policy、GPU 或其他子系统；用 thermal_cooling_device_timeline 与 cpu_freq_limit_timeline 对照时序"
+          - "App 侧：在触发方确认之前不要按温控优化"
+      - id: limit_onset_unknown
+        condition: "attribution_summary.data?.[0]?.classification === 'LIMIT_ONSET_UNKNOWN'"
+        severity: info
+        diagnosis: "LIMIT_ONSET_UNKNOWN：窗口内限频值的写入时刻不可观测（轨道首样本即受限，或紧跟在无效样本之后）；只能报告受限时长与影响，不能判断触发方，也不能写成非热限频"
+        confidence: low
+        suggestions:
+          - "系统侧：从更早的时刻开始采集，以覆盖限频开始的时刻"
+          - "App 侧：可评估受限期间的性能影响，但不要据此归因"
+      - id: no_thermal_evidence_observed
+        condition: "attribution_summary.data?.[0]?.classification === 'NO_THERMAL_EVIDENCE_OBSERVED'"
+        severity: info
+        diagnosis: "NO_THERMAL_EVIDENCE_OBSERVED：观测到 ${attribution_summary.data[0].episode_count} 段限频；本 trace 采集到了散热设备档位变化，但没有一次收紧与关联散热设备配对或同期活动，也没有温控守护进程活动；未观测到热证据，但这不证明触发方是非热的"
         confidence: low
         suggestions:
           - "系统侧：考虑非热的限频来源——性能策略/省电模式、后台限制、用户态 perf HAL 或 uclamp 上限；厂商信号候选表可作为 execute_sql 的探索起点"
-          - "系统侧：若怀疑温控，确认采集配置是否包含 thermal/cdev_update 与 thermal/thermal_temperature；缺事件与无事件不可混同"
           - "App 侧：在触发方确定之前不要按温控优化；先用限频前负载归因判断是否为自身工作量问题"
+      - id: thermal_evidence_not_captured
+        condition: "attribution_summary.data?.[0]?.classification === 'THERMAL_EVIDENCE_NOT_CAPTURED'"
+        severity: info
+        diagnosis: "THERMAL_EVIDENCE_NOT_CAPTURED：观测到 ${attribution_summary.data[0].episode_count} 段限频，但本 trace 没有任何散热设备档位变化，无法把限频写入归因到内核热控；温度与守护进程名只能算线索，触发方无法判定"
+        confidence: low
+        suggestions:
+          - "系统侧：在采集配置中加入 thermal/cdev_update（以及 thermal/thermal_temperature）后重新采集；缺事件与无事件不可混同"
+          - "App 侧：在触发方确定之前不要按温控优化；先用限频前负载归因判断是否为自身工作量问题"
+      - id: limit_relaxed_only
+        condition: "attribution_summary.data?.[0]?.classification === 'LIMIT_RELAXED'"
+        severity: info
+        diagnosis: "LIMIT_RELAXED：窗口内只看到上限被放宽，造成受限的收紧发生在窗口之前；放宽不是限频原因，本窗口不判断触发方"
+        confidence: low
+        suggestions:
+          - "系统侧：扩大分析窗口以覆盖最初收紧的时刻"
 
 output:
   format: layered

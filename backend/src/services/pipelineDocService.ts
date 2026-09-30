@@ -239,7 +239,6 @@ export class PipelineDocService {
     const lines = content.split('\n');
 
     let inTable = false;
-    let headerCols: string[] = [];
     let threadColIdx = -1;
     let responsibilityColIdx = -1;
     let traceTagColIdx = -1;
@@ -283,7 +282,6 @@ export class PipelineDocService {
           // Check if this looks like a thread roles table
           if (threadColIdx >= 0 && responsibilityColIdx >= 0) {
             inTable = true;
-            headerCols = cols;
             continue;
           }
         }

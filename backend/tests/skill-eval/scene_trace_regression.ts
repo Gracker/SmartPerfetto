@@ -11,18 +11,12 @@
 
 import { createSkillEvaluator, getTestTracePath, findStepInLayers } from './runner';
 
-type StepResultLike = {
-  success?: boolean;
-  error?: string;
-  data?: any[];
-};
-
 type TraceCase = {
   file: string;
   label: string;
-  minCounts?: Partial<Record<string, number>>;
+  minCounts?: Record<string, number>;
   maxUnlockEvents?: number;
-  minMaxDurationMs?: Partial<Record<string, number>>;
+  minMaxDurationMs?: Record<string, number>;
 };
 
 const TRACE_CASES: TraceCase[] = [

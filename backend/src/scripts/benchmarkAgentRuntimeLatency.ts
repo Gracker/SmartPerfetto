@@ -3147,13 +3147,6 @@ function realScenarios(options: AgentLatencyBenchmarkOptions): RuntimeBenchmarkS
   ];
 }
 
-function candidatesForRuntime(runtime: AgentRuntimeKind): BenchmarkCandidate[] {
-  if (runtime === 'claude-agent-sdk' || runtime === 'openai-agents-sdk') return ['task4', 'task5', 'task6'];
-  if (runtime === 'pi-agent-core') return ['task4', 'task5', 'task7'];
-  if (runtime === 'opencode') return ['task4', 'task5', 'task8'];
-  return ['task4', 'task5', 'task9'];
-}
-
 function relativeOutputRoot(options: AgentLatencyBenchmarkOptions): string {
   return path.relative(options.backendRoot, options.outputDir).split(path.sep).join('/');
 }

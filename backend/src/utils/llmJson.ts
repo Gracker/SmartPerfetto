@@ -37,10 +37,6 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-export function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((v) => typeof v === 'string');
-}
-
 export function stripOuterMarkdownCodeFence(text: string): string {
   const trimmed = (text || '').trim();
   if (!trimmed.startsWith('```')) return trimmed;
@@ -149,16 +145,5 @@ export function parseLlmJson<T = unknown>(text: string, schema?: LlmJsonSchema<T
   }
 
   return parsed as T;
-}
-
-export function tryParseLlmJson<T = unknown>(
-  text: string,
-  schema?: LlmJsonSchema<T>
-): { ok: true; value: T } | { ok: false; error: Error } {
-  try {
-    return { ok: true, value: parseLlmJson<T>(text, schema) };
-  } catch (error: any) {
-    return { ok: false, error };
-  }
 }
 

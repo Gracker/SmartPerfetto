@@ -19,12 +19,7 @@ import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals
 import {
   SkillDefinition,
   SkillStep,
-  AtomicStep,
-  IteratorStep,
-  DiagnosticStep,
-  SkillExecutionContext,
   SkillExecutionResult,
-  StepResult,
   DisplayConfig,
   SkillEvent,
 } from '../types';
@@ -59,15 +54,6 @@ const createMockTraceProcessorService = () => ({
   }),
   touchTrace: jest.fn<(...args: any[]) => any>(),
   getTraceWithPort: jest.fn<(...args: any[]) => any>().mockResolvedValue({ port: 9100 }),
-});
-
-// Mock 执行上下文
-const createMockContext = (): SkillExecutionContext => ({
-  traceId: 'test-trace',
-  params: {},
-  inherited: {},
-  results: {},
-  variables: {},
 });
 
 // Helper to create skill meta
@@ -766,7 +752,7 @@ describe('Atomic Step 执行', () => {
     };
     executor.registerSkill(skill);
 
-    const result = await executor.execute('param_query', 'trace-1', { id: 42 });
+    await executor.execute('param_query', 'trace-1', { id: 42 });
     expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', 'SELECT * FROM table WHERE id = 42');
   });
 
@@ -1140,7 +1126,7 @@ describe('Iterator Step 执行', () => {
     };
     executor.registerSkill(limitedSkill);
 
-    const result = await executor.execute('limited_iterator', 'trace-1');
+    await executor.execute('limited_iterator', 'trace-1');
     // 1 个初始查询 + 2 个迭代查询（限制为 2）
     expect(mockTraceProcessor.query).toHaveBeenCalledTimes(3);
   });

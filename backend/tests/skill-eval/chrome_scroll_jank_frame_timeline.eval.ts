@@ -6,7 +6,7 @@
  * can extend this with non-empty v3/v4 rows later.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 const TRACE_FILE = 'scroll-demo-customer-scroll.pftrace';

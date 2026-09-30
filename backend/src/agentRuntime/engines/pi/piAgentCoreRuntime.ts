@@ -151,12 +151,11 @@ import {
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {countCompletedQuickConversationTurns} from '../../quickDirectResult';
+import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
-  summarizeExternalToolResult,
   type RuntimeTimeoutKind,
 } from '../../runtimeLimits';
 import {
@@ -2229,6 +2228,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
     const { toolDefinitions, sourceUse } = createClaudeMcpServer({
       sceneRunContext,
+      runId: executionLease.key.runId!,
       toolObserver, canInvokeTool, analysisHistoryReader,
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true

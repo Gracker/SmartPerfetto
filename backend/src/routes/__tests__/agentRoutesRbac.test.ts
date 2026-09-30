@@ -45,7 +45,7 @@ import type { TracePairContext } from '../../agentv3/types';
 import * as defaultCodebaseServices from '../../services/codebase/defaultCodebaseServices';
 import * as externalKnowledgeServices from '../../services/externalKnowledgeSourceRegistry';
 import {getProviderService, resetProviderService} from '../../services/providerManager';
-import agentRoutes, {resolveConclusionSceneIdHint} from '../agentRoutes';
+import agentRoutes from '../agentRoutes';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
@@ -264,41 +264,6 @@ afterEach(async () => {
 });
 
 describe('agent route RBAC', () => {
-  it('prefers the executed analysis skill over ambiguous trace wording', () => {
-    expect(resolveConclusionSceneIdHint({
-      sessionId: 'scene-evidence-test',
-      query: '检查这个启动 Trace 是否包含 ANR',
-      findings: [],
-      intent: {
-        primaryGoal: '检查这个启动 Trace 是否包含 ANR',
-        aspects: ['startup'],
-        expectedOutputType: 'diagnosis',
-        complexity: 'moderate',
-        followUpType: 'initial',
-      },
-      dataEnvelopes: [{meta: {skillId: 'anr_analysis'}} as any],
-    })).toBe('anr');
-  });
-
-  it('does not let prior-turn skill evidence override the current follow-up scene', () => {
-    expect(resolveConclusionSceneIdHint({
-      sessionId: 'scene-turn-scope-test',
-      query: '只解释上一轮结论，不要重新分析',
-      findings: [],
-      intent: {
-        primaryGoal: '只解释上一轮结论，不要重新分析',
-        aspects: [],
-        expectedOutputType: 'summary',
-        complexity: 'simple',
-        followUpType: 'clarify',
-      },
-      currentTurn: 2,
-      dataEnvelopes: [
-        {meta: {skillId: 'scrolling_analysis', turn: 1}} as any,
-      ],
-    })).toBe('generic');
-  });
-
   it('runs a no-Trace conversation through the lightweight contract and streams the answer', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';

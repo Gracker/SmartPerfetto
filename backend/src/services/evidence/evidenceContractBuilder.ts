@@ -4,7 +4,6 @@
 
 import crypto from 'crypto';
 import type {
-  ConclusionClaimKind,
   ConclusionContract,
   ConclusionContractClaimItem,
   ConclusionContractClaimReference,

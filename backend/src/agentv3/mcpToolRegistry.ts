@@ -57,6 +57,7 @@ import {
 import {getPlanToolCapability, type PlanToolCapability} from './types';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {withRuntimeToolObserver, type RuntimeToolInvocationEvent, type RuntimeToolObserver} from '../agentRuntime/runtimeToolObserver';
+import {withRuntimeToolInvocationScope} from '../agentRuntime/runtimeToolInvocationContext';
 import {createRuntimeToolResult} from '../agentRuntime/runtimeToolResult';
 import type {RuntimeToolResult} from '../agentRuntime/runtimeToolSpec';
 
@@ -208,6 +209,7 @@ export class McpToolRegistry {
   private readonly requestScope?: ToolRequestScope;
   private readonly canInvokeTool?: () => boolean;
   private readonly acquisitionPolicy?: RuntimeAcquisitionPolicy;
+  private readonly runId?: string;
 
   constructor(options: {
     toolConcurrencyCoordinator?: RuntimeToolConcurrencyCoordinator;
@@ -217,6 +219,7 @@ export class McpToolRegistry {
     requestScope?: ToolRequestScope;
     canInvokeTool?: () => boolean;
     acquisitionPolicy?: RuntimeAcquisitionPolicy;
+    runId?: string;
   } = {}) {
     this.toolConcurrencyCoordinator = options.toolConcurrencyCoordinator
       ?? createRuntimeToolConcurrencyCoordinator();
@@ -225,6 +228,7 @@ export class McpToolRegistry {
     this.acquisitionObserver = options.acquisitionObserver;
     this.canInvokeTool = options.canInvokeTool;
     this.acquisitionPolicy = options.acquisitionPolicy;
+    this.runId = options.runId;
     this.requestScope = options.requestScope && Object.freeze({
       ...options.requestScope,
       ...(options.requestScope.capabilities
@@ -277,7 +281,7 @@ export class McpToolRegistry {
       if (this.toolObserver) await this.toolObserver(event);
     } : this.toolObserver;
     const runtimeShared = withRuntimeToolConcurrency(
-      withRuntimeToolObserver(guarded, observer),
+      withRuntimeToolInvocationScope(withRuntimeToolObserver(guarded, observer), this.runId),
       this.toolConcurrencyCoordinator,
       {runManifestAttributionSink: this.runManifestAttributionSink},
     );

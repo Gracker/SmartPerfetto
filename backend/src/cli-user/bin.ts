@@ -11,6 +11,8 @@
  * even if some module has a stray setInterval / active handle we missed.
  */
 
+// Must stay first: loads env files before any module below reads process.env.
+import './envEntry';
 import {Command, CommanderError, Option} from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -279,7 +281,8 @@ function main(): void {
     .command('probe')
     .description('verify this artifact can load the live strategy registry before a batch run')
     .action(async () => {
-      await runAndExit(() => runProbeCommand());
+      const g = globals();
+      await runAndExit(() => runProbeCommand({envFile: g.envFile, sessionDir: g.sessionDir}));
     });
 
   const configCmd = program.command('config').description('manage SmartPerfetto CLI configuration');

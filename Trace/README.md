@@ -12,7 +12,7 @@ Evidence tiers: R1=6, R2=0, R3=21.
 
 Pinned Perfetto SQL source: `99234d73fe356bf7edf6b2cb7afcf2a9eefc5368`. The generated coverage ledger contains 252 Skill SQL source contracts and 2 canonical portable SQL source checks with exact source hashes and upstream module paths.
 
-Skill execution quality: 243 source-column-backed semantic, 4 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
+Skill execution quality: 247 source-column-backed semantic, 4 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
 ## Commands
 
@@ -73,4 +73,4 @@ Constructed cases keep source scenarios and overlay protobufs in Git; combined t
 | [Source analysis semantic ground truth](./constructed/source-analysis-semantic/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-light | 0 target(s) |
 | [Startup and process lifecycle](./constructed/startup-lifecycle/) | startup | Android 16 / API 36 (tested API 35-36) | android-startup-heavy | 24 target(s) |
 | [System scheduling evidence with explicit handoffs](./constructed/system-scheduling-evidence/) | cpu | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 5 target(s) |
-| [Thermal and userspace CPU frequency limit attribution](./constructed/thermal-frequency-limit/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 7 target(s) |
+| [Thermal and userspace CPU frequency limit attribution](./constructed/thermal-frequency-limit/) | power | Android 16 / API 36 (tested API 35-36) | android-scroll-customer | 9 target(s) |

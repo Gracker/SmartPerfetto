@@ -134,6 +134,23 @@ const INTENT_RULES: IntentRule[] = [
     ],
   },
   {
+    // Placed after startup/scrolling/anr so a tie keeps their existing routing
+    // ("图片加载慢导致滑动卡顿" stays scrolling). No bare "loading": it also
+    // matches "downloading" and loading-animation jank questions.
+    preset: 'loading',
+    confidence: 'high',
+    keywords: [
+      'page load',
+      'content load',
+      'slow to load',
+      '页面加载',
+      '加载慢',
+      '内容加载',
+      '图片加载',
+      '白屏',
+    ],
+  },
+  {
     // Heap dumps profile one process, so this needs --app; without one the
     // proposal keeps the system-wide memory preset. Bare "leak" stays on the
     // memory rule: wakelock, fd, and binder leaks are not heap questions.

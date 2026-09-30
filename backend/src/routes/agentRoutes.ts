@@ -18,8 +18,6 @@ import {SCENE_FINITE_RULE_VERSION} from '../agent/scene/sceneTimelineProposal';
 import {appendSceneAwareReplayEvent, includeLatestSceneReplay} from '../assistant/stream/sceneTimelineReplay';
 import {dispatchAnalysisRun, SmartPreviewSelectionError,
   type AnalysisRunDispatchDependencies} from '../assistant/application/analysisRunDispatchService';
-import * as fs from 'fs';
-import * as path from 'path';
 import {randomUUID} from 'crypto';
 import {getTraceProcessorService, type TraceProcessorLeaseQueryContext} from '../services/traceProcessorService';
 import {SessionLogger} from '../services/sessionLogger';
@@ -51,11 +49,7 @@ import {takeFinalizationContext, type RuntimeFinalizationContext} from '../agent
 import {resolveRuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import type {AnalysisCaseRetrievalState} from '../types/analysisDelivery';
 import {copyAnalysisDeliveryFields, projectStoredConclusionSourceMetadata} from '../services/security/analysisDeliveryProjection';
-import {
-  normalizeNarrativeForClient as sharedNormalizeNarrative,
-  resolveConclusionOutputModeForTurn,
-} from '../services/agentResultNormalizer';
-import { reportStore, persistReport } from './reportRoutes';
+import { persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
   authenticate,
@@ -78,15 +72,9 @@ import { sessionContextManager, EnhancedSessionContext } from '../agent/context/
 import { registerCoreTools, StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
 import { getSharedModelRouter } from '../agent/core/modelRouterSingleton';
 import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core/orchestratorTypes';
-import {
-  deriveConclusionSceneAspectsFromSkillIds,
-  resolveConclusionScene,
-} from '../agent/core/conclusionSceneTemplates';
-import { DEEP_REASON_LABEL } from '../utils/analysisNarrative';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
-import { sanitizeNarrativeForClient } from './narrativeSanitizer';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
 import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import { buildSmartSceneSelectionReport } from '../agent/scene/buildSmartChatReport';
@@ -131,7 +119,6 @@ import {
   hasTerminalReplayAfter,
   isTerminalSseEvent,
   parseLastEventId,
-  TERMINAL_SSE_EVENT_TYPES,
 } from '../assistant/stream/sessionSseReplay';
 
 import {
@@ -186,14 +173,13 @@ import type { IdentityResolutionV1 } from '../types/identityContract';
 import { SkillExecutor } from '../services/skillEngine/skillExecutor';
 import { composeFragmentSql } from '../services/skillEngine/skillFragments';
 import { skillRegistry, ensureSkillRegistryInitialized } from '../services/skillEngine/skillLoader';
-import type { ConversationTurn, Finding, Intent } from '../agent/types';
+import type { ConversationTurn } from '../agent/types';
 import {
   validateFeedbackInput,
 } from '../agentv3/selfImprove/feedbackEnricher';
 import {
   deriveTimelineStep,
   sanitizeConversationText,
-  summarizeDataEnvelopeForTimeline,
 } from '../services/timeline/conversationTimeline';
 import {patternExistsForFeedback} from '../agentv3/analysisPatternMemory';
 import { backendLogPath } from '../runtimePaths';
@@ -252,7 +238,6 @@ import type { CaseCandidateCaptureInput, CaseEvolutionConfig } from '../types/ca
 import type { CaseEvolutionEngine } from '../types/caseEvolution';
 import type { AgentRuntimeKind } from '../agentRuntime/runtimeKinds';
 import {createAnswerDraftRelay} from '../services/answerDraftRelay';
-import {getWorkspaceSkillRegistry} from '../services/skillPacks/workspaceSkillRegistryProvider';
 import {buildSkillRegistryAttribution} from '../services/selfEvolution/skillFingerprint';
 import {
   currentEffectiveSkillRegistry,
@@ -2462,93 +2447,6 @@ function recoverResultForSessionIfNeeded(
   return recovered && belongsToRun(recovered) ? recovered : null;
 }
 
-function buildFallbackIntentFromQuery(query?: string): Intent | null {
-  const primaryGoal = String(query || '').trim();
-  if (!primaryGoal) return null;
-
-  return {
-    primaryGoal,
-    aspects: [],
-    expectedOutputType: 'summary',
-    complexity: 'simple',
-    followUpType: 'initial',
-  };
-}
-
-export function resolveConclusionSceneIdHint(params: {
-  sessionId: string;
-  query?: string;
-  findings?: Finding[];
-  intent?: Intent;
-  dataEnvelopes?: DataEnvelope[];
-  currentTurn?: number;
-}): string | undefined {
-  const findings = Array.isArray(params.findings) ? params.findings : [];
-  let intent = params.intent;
-
-  if (!intent) {
-    const resolved = resolveSessionContextForReview(params.sessionId);
-    const turn = resolved ? getLastCompletedTurn(resolved.context) : null;
-    if (turn?.intent) {
-      intent = turn.intent;
-    }
-  }
-
-  if (!intent) {
-    intent = buildFallbackIntentFromQuery(params.query) || undefined;
-  }
-
-  if (!intent) return undefined;
-
-  const sceneEnvelopes = params.currentTurn === undefined
-    ? params.dataEnvelopes || []
-    : (params.dataEnvelopes || []).filter(envelope => {
-        const envelopeTurn = Number((envelope.meta as any)?.turn);
-        if (Number.isFinite(envelopeTurn)) return envelopeTurn === params.currentTurn;
-        return params.currentTurn === 1;
-      });
-  const evidenceAspects = deriveConclusionSceneAspectsFromSkillIds(
-    sceneEnvelopes.map(envelope => envelope.meta?.skillId),
-  );
-  const routedIntent = evidenceAspects.length > 0
-    ? {...intent, aspects: evidenceAspects}
-    : intent;
-
-  try {
-    return resolveConclusionScene({
-      intent: routedIntent,
-      findings,
-      deepReasonLabel: DEEP_REASON_LABEL,
-    }).selectedTemplate.id;
-  } catch {
-    return undefined;
-  }
-}
-
-function conclusionContractDeriveOptionsForSession(
-  session: AnalysisSession,
-  result: AgentRuntimeAnalysisResult,
-  sceneId: string | undefined,
-  requestedAnalysisMode?: AnalyzeMode,
-): {
-  existingContract?: ConclusionContract;
-  mode: ConclusionContract['mode'];
-  sceneId?: string;
-} {
-  const mode = resolveConclusionOutputModeForTurn({
-    existingMode: result.conclusionContract?.mode,
-    runSequence: session.runSequence,
-    requestedAnalysisMode,
-  });
-  return {
-    existingContract: result.conclusionContract
-      ? {...result.conclusionContract, mode} as ConclusionContract
-      : undefined,
-    mode,
-    ...(sceneId ? {sceneId} : {}),
-  };
-}
-
 // =============================================================================
 // Scene Reconstruction Types (kept for backward-compatible API responses)
 // =============================================================================
@@ -2894,13 +2792,14 @@ function handleSessionStream(
 
   // If analysis failed, send error
   if (streamStatus === 'failed') {
+    const error = projectStoredHttpError(session);
     sendReplayableSessionEvent(
       session,
       res,
       'error',
       {
-        error: session.error,
-        message: session.error,
+        error,
+        message: error,
         timestamp: Date.now(),
         ...buildStreamObservability(session, streamRunId),
       },
@@ -3072,9 +2971,7 @@ router.get('/:sessionId/status', async (req, res) => {
   }
 
   if (session.status === 'failed' || session.status === 'cancelled') {
-    response.error = privateKnowledge
-      ? projectOwnerAnalysisError(sessionId, session.error, sessionOutputLanguage(session))
-      : session.error;
+    response.error = projectStoredHttpError(session);
   }
 
   res.json(response);
@@ -3806,7 +3703,11 @@ registerSceneReconstructRoutes(router, {
     const session = getAuthorizedSession(req, res, sessionId);
     return Boolean(session && await ensureSceneHistoryAccessible(req, res, session));
   },
-  projectSceneResult: session => session.result ? projectStoredHttpResult(session, session.result) : undefined,
+  projectSceneResult: session => {
+    const stored = recoverResultForSessionIfNeeded(session.sessionId, session);
+    return stored ? projectStoredHttpResult(session, stored) : undefined;
+  },
+  projectSceneError: projectStoredHttpError,
   getRequestId,
   dispatchSceneAnalysis: input => dispatchAnalysisRun({...input, entry: 'scene_reconstruction'}, analysisRunDispatchDependencies()),
   cancelSceneRun: async (sessionId, runId) => {
@@ -3816,7 +3717,6 @@ registerSceneReconstructRoutes(router, {
   assistantAppService,
   isSceneReplayOnlyQuery,
   buildSceneReplayNarrative,
-  normalizeNarrativeForClient,
   sceneStoryService,
 });
 
@@ -4603,7 +4503,8 @@ async function detectScrollSessions(
     motion_events AS (
       SELECT
         read_time AS ts,
-        event_action
+        event_action,
+        physical_event_key
       FROM android_input_events_normalized
       WHERE event_type = 'MOTION'
         AND EXISTS (SELECT ok FROM input_exists)
@@ -4612,6 +4513,7 @@ async function detectScrollSessions(
       SELECT
         ts,
         event_action,
+        physical_event_key,
         SUM(CASE WHEN event_action = 'DOWN' THEN 1 ELSE 0 END) OVER (ORDER BY ts) AS gesture_id
       FROM motion_events
     ),
@@ -4620,11 +4522,12 @@ async function detectScrollSessions(
         gesture_id,
         MIN(ts) AS down_ts,
         MAX(CASE WHEN event_action = 'UP' THEN ts ELSE NULL END) AS up_ts,
-        COUNT(*) AS event_count
+        COUNT(DISTINCT physical_event_key) AS event_count
       FROM gesture_markers
       WHERE gesture_id > 0
       GROUP BY gesture_id
-      HAVING COUNT(*) >= 4
+      -- Physical events: monitor channels repeat every touch, so rows would pass a tap.
+      HAVING event_count >= 4
     ),
     frame_with_stats AS (
       SELECT
@@ -4859,7 +4762,6 @@ registerTeachingRoutes(router);
 registerAgentReportRoutes(router, {
   getSession: (sessionId) => assistantAppService.getSession(sessionId),
   recoverResultForSessionIfNeeded,
-  normalizeNarrativeForClient: narrative => narrative,
   buildClientFindings: copyStoredClientFindings,
   buildSessionResultContract,
   getCompletedPayload: ensureCompletedAnalysisResultPayload,
@@ -5295,7 +5197,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
         MAX_SESSION_AGENT_DIALOGUE,
       );
 
-      // Collect full agent responses for HTML report enrichment
+      // Collect agent responses for the analysis receipt's artifact ids
       if (normalizedUpdate.content.phase === 'task_completed') {
         pushWithSessionCap(
           session.agentResponses,
@@ -7177,108 +7079,6 @@ function buildSceneReplayNarrative(
     .join('\n');
 }
 
-// Delegates to the shared normalizer so CLI's buildReportHtml gets identical
-// conclusion text for the same run. The HTTP-specific pieces (scene replay,
-// sceneIdHint) stay inline in sendAgentDrivenResult.
-function normalizeNarrativeForClient(narrative: string): string {
-  return sharedNormalizeNarrative(narrative);
-}
-
-function conclusionHasEvidenceIndex(conclusion: string): boolean {
-  const text = conclusion || '';
-  return /(^|\n)\s*(?:##\s*)?(?:证据(?:表)?索引|evidence\s+index)(?=\s|$|[:：])/i.test(text);
-}
-
-function markdownCell(value: unknown, maxLen = 80): string {
-  return (
-    String(value ?? '')
-      .replace(/\s+/g, ' ')
-      .replace(/\|/g, '/')
-      .trim()
-      .slice(0, maxLen) || '-'
-  );
-}
-
-function buildConclusionEvidenceIndex(
-  envelopes: DataEnvelope[],
-  maxItems = 3,
-  language: OutputLanguage = configuredOutputLanguage(),
-): string {
-  if (!Array.isArray(envelopes) || envelopes.length === 0) return '';
-
-  const seen = new Set<string>();
-  const candidates: Array<{ title: string; source: string; evidence: string }> = [];
-  for (const env of envelopes) {
-    const meta = (env as any)?.meta || {};
-    const display = (env as any)?.display || {};
-    if (display.level === 'hidden') continue;
-
-    const title = markdownCell(display.title || meta.stepId || meta.source);
-    if (title === '-') continue;
-
-    const key = String(meta.evidenceRefId || `${meta.source || ''}:${meta.stepId || ''}:${title}`);
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const source = markdownCell(meta.source || meta.skillId || 'execute_sql');
-    const evidence = markdownCell(meta.evidenceRefId || meta.sourceToolCallId || '-', 36);
-    candidates.push({ title, source, evidence });
-  }
-
-  if (candidates.length === 0) return '';
-  const rows = candidates.slice(0, maxItems);
-  const omitted = Math.max(0, candidates.length - rows.length);
-  const summary = rows.map((item) => localize(
-    language,
-    `${item.title}（${item.source} / ${item.evidence}）`,
-    `${item.title} (${item.source} / ${item.evidence})`,
-  )).join(localize(language, '；', '; '));
-  return [
-    localize(language, '## 证据索引', '## Evidence Index'),
-    '',
-    localize(
-      language,
-      `关键数据来源：${summary}${omitted > 0 ? `；其余 ${omitted} 份结构化证据见报告数据详情。` : '。'}`,
-      `Key data sources: ${summary}${omitted > 0 ? `; ${omitted} additional structured evidence items are available in report details.` : '.'}`,
-    ),
-  ]
-    .filter(Boolean)
-    .join('\n');
-}
-
-function appendEvidenceIndexIfMissing(
-  conclusion: string,
-  envelopes: DataEnvelope[],
-  language: OutputLanguage = configuredOutputLanguage(),
-): string {
-  const normalized = conclusion || '';
-  if (conclusionHasEvidenceIndex(normalized)) return normalized;
-  const evidenceIndex = buildConclusionEvidenceIndex(envelopes, 3, language);
-  if (!evidenceIndex) return normalized;
-  return `${normalized.trim()}\n\n${evidenceIndex}`;
-}
-
-function augmentConclusionUpdateWithEvidenceIndex(session: AnalysisSession, update: StreamingUpdate): StreamingUpdate {
-  if (update.type !== 'conclusion') return update;
-  const content = update.content;
-  if (!content || typeof content !== 'object' || Array.isArray(content)) return update;
-  const conclusion = (content as Record<string, any>).conclusion;
-  if (typeof conclusion !== 'string') return update;
-  const augmented = appendEvidenceIndexIfMissing(
-    conclusion,
-    session.dataEnvelopes || [],
-    sessionOutputLanguage(session),
-  );
-  if (augmented === conclusion) return update;
-  return {
-    ...update,
-    content: {
-      ...(content as Record<string, any>),
-      conclusion: augmented,
-    },
-  };
-}
-
 function collectEvidenceRefsFromText(text: string | undefined): Set<string> {
   const refs = new Set<string>();
   const matches = String(text || '').match(/data:[A-Za-z0-9_.:-]+/g) || [];
@@ -7780,6 +7580,13 @@ function copyStoredClientFindings(findings: AgentRuntimeAnalysisResult['findings
   return findings.map((finding, index) => ({...finding, id: finding.id ?? `finding_${index + 1}`}));
 }
 
+/** A stored error may predate projection (startup and lease failures keep the raw message). */
+function projectStoredHttpError(session: AnalysisSession): string | undefined {
+  return sessionRunHasPrivateContext(session)
+    ? projectOwnerAnalysisError(session.sessionId, session.error, sessionOutputLanguage(session))
+    : session.error;
+}
+
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {
   return sessionRunHasPrivateContext(session)
     ? projectOwnerAnalysisResult(session.sessionId, result, sessionOutputLanguage(session))
@@ -8189,9 +7996,6 @@ export const agentRoutesPrivacyProjectionTestSeam = {
   scrubAuthorizationChangedSession,
   retireAuthorizationChangedSession,
   connectedStreamQuery,
-  conclusionHasEvidenceIndex,
-  buildConclusionEvidenceIndex,
-  appendEvidenceIndexIfMissing,
   privateFeedbackResponse,
   analysisCompletedData,
 };
@@ -8218,6 +8022,10 @@ export const agentRoutesCancellationTestSeam = {
     assistantAppService.setSession(sessionId, session),
   deleteSession: (sessionId: string) => assistantAppService.deleteSession(sessionId),
   cancelSessionRun,
+};
+
+export const agentRoutesSceneDetectionTestSeam = {
+  detectScrollSessions,
 };
 
 export default router;

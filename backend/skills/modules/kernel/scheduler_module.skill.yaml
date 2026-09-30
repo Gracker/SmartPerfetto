@@ -4,8 +4,8 @@
 
 # Kernel Scheduler Module Expert
 #
-# Provides CPU scheduling analysis capabilities for cross-domain experts.
-# Answers questions about thread scheduling delays, CPU utilization, and core affinity.
+# Provides CPU scheduling analysis capabilities.
+# Covers thread scheduling delays, CPU utilization, and core affinity.
 
 name: scheduler_module
 version: "1.0"
@@ -17,7 +17,7 @@ meta:
   description: "分析线程调度延迟、CPU 利用率和大小核分配"
   tags: ["kernel", "scheduler", "cpu", "runnable"]
 
-# Module metadata - identifies this as a module expert
+# Module metadata - architecture layer and component
 module:
   layer: kernel
   component: Scheduler
@@ -25,68 +25,6 @@ module:
     - runqueue
     - cfs
     - core_affinity
-  relatedModules:
-    - hardware_cpu
-    - framework_ams
-
-# Dialogue interface - how cross-domain experts interact with this module
-dialogue:
-  # Questions this module can answer
-  capabilities:
-    - id: thread_scheduling_delay
-      questionTemplate: "Why was thread {tid} delayed between {start_ts} and {end_ts}?"
-      requiredParams: [tid, start_ts, end_ts]
-      description: "Analyze why a specific thread had scheduling delays"
-
-    - id: cpu_utilization
-      questionTemplate: "What is the CPU utilization for package {package}?"
-      requiredParams: [package]
-      optionalParams: [start_ts, end_ts]
-      description: "Analyze CPU usage patterns"
-
-    - id: runnable_analysis
-      questionTemplate: "What threads are in runnable state competing with {tid}?"
-      requiredParams: [tid]
-      description: "Analyze runnable queue contention"
-
-  # Structured findings this module produces
-  findingsSchema:
-    - id: high_runnable_time
-      severity: warning
-      titleTemplate: "Thread scheduling delay: {delay_ms}ms in runnable state"
-      descriptionTemplate: "Thread {tid} waited {delay_ms}ms in runnable state with cause requiring direct contention evidence"
-      evidenceFields: [tid, delay_ms, core_type, waker_thread]
-
-    - id: cpu_throttling
-      severity: critical
-      titleTemplate: "Observed CPU frequency: avg {avg_freq_mhz}MHz"
-      descriptionTemplate: "Time-weighted CPU frequency is {avg_freq_mhz}MHz; thermal or policy limitation requires direct evidence"
-      evidenceFields: [avg_freq_mhz, max_freq_mhz, throttle_reason]
-
-    - id: small_core_bound
-      severity: warning
-      titleTemplate: "Observed small-core residency"
-      descriptionTemplate: "Thread {tid} running on small cores ({small_core_pct}%)"
-      evidenceFields: [tid, small_core_pct, big_core_pct]
-
-  # Suggestions for follow-up analysis
-  suggestionsSchema:
-    - id: check_binder_waker
-      condition: "waker_process != package"
-      targetModule: binder_module
-      questionTemplate: "What Binder calls did {waker_process} make to {package}?"
-      paramsMapping:
-        caller: waker_process
-        callee: package
-      priority: 1
-
-    - id: check_cpu_frequency
-      condition: "avg_freq_mhz < max_freq_mhz * 0.7"
-      targetModule: hardware_cpu_module
-      questionTemplate: "Why is CPU frequency low for core {core_id}?"
-      paramsMapping:
-        core_id: core_id
-      priority: 2
 
 prerequisites:
   modules:

@@ -25,7 +25,6 @@ import {
   isIssuedCodeAwareTextProjectionReceipt,
   projectCodeAwareStructuredText,
   sanitizeCodeAwareStructuredText,
-  sanitizeCodeAwareStructuredTextWithReceipt,
   sanitizeCodeAwareTextWithReceipt,
   type CodeAwareTextProjectionReceipt,
 } from '../security/codeAwareOutputRegistry';

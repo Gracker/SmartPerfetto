@@ -334,9 +334,10 @@ class SkillController {
   };
 
   /**
-   * Detect vendor from trace
+   * Detect vendor from trace metadata
    * POST /api/skills/detect-vendor
    * Body: { traceId }
+   * Response: SkillVendorDetection (schemaVersion trace_vendor@1)
    */
   detectVendor = async (req: Request, res: Response) => {
     const outputLanguage = requestOutputLanguage(req);
@@ -352,12 +353,8 @@ class SkillController {
       }
 
       const adapter = this.getAdapter();
-      const vendorResult = await adapter.detectVendor(traceId);
-
-      res.json({
-        vendor: vendorResult.vendor,
-        confidence: vendorResult.confidence,
-      });
+      // SkillVendorDetection is the response contract (trace_vendor@1).
+      res.json(await adapter.detectVendor(traceId));
     } catch (error) {
       console.error('[SkillController] Error detecting vendor:', error);
       const errorResponse = localizedFailure(outputLanguage, error, {

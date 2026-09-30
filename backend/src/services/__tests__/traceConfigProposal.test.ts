@@ -4,6 +4,7 @@
 
 import { describe, expect, it } from '@jest/globals';
 import { buildTraceConfigProposal } from '../traceConfigProposal';
+import {LOADING_ROUTING_CASES} from '../../../tests/helpers/traceConfigProposalRoutingCases';
 
 describe('buildTraceConfigProposal', () => {
   it('routes Camera first-frame requests ahead of generic startup', () => {
@@ -153,6 +154,28 @@ describe('buildTraceConfigProposal', () => {
       .toBe('power');
     expect(buildTraceConfigProposal({ request: 'inspect memory pressure and oom behavior', app: 'com.example.app' }).preset)
       .toBe('memory');
+  });
+
+  it.each(LOADING_ROUTING_CASES)('routes "$request" to $preset ($why)', ({request, preset}) => {
+    expect(buildTraceConfigProposal({request}).preset).toBe(preset);
+  });
+
+  it('maps content-loading requests to the loading preset with network, IO and binder evidence', () => {
+    const proposal = buildTraceConfigProposal({request: '分析页面加载为什么慢', app: 'com.example.app'});
+    expect(proposal.preset).toBe('loading');
+    expect(proposal.intent).toBe('network');
+    const textproto = proposal.config.textproto;
+    for (const expected of [
+      'name: "android.network_packets"',
+      'name: "android.input.inputevent"',
+      'name: "android.surfaceflinger.frametimeline"',
+      'ftrace_events: "sched/sched_waking"',
+      'ftrace_events: "binder/binder_transaction"',
+      'ftrace_events: "block/block_rq_issue"',
+      'atrace_categories: "network"',
+      'atrace_categories: "webview"',
+      'atrace_apps: "com.example.app"',
+    ]) expect(textproto).toContain(expected);
   });
 
   it('falls back to overview with low confidence when no intent matches', () => {

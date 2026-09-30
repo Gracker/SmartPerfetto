@@ -23,6 +23,7 @@ import {
   runCodebaseSelectionCommand,
   runCodebaseSymbolsCommand,
 } from '../codebase';
+import { resetCliEnvironmentForTesting } from '../../bootstrap';
 import {CodebaseManagementService} from '../../../services/codebase/codebaseManagementService';
 import {CodebaseRegistry, type IndexCoverage} from '../../../services/codebase/codebaseRegistry';
 import {PathSecurityGate} from '../../../services/codebase/pathSecurityGate';
@@ -44,6 +45,7 @@ const DEFAULT_SCOPE = {
 };
 
 beforeEach(() => {
+  resetCliEnvironmentForTesting();
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-codebase-'));
   sessionDir = path.join(tmpDir, 'sessions');
   root = path.join(tmpDir, 'repo');

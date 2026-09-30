@@ -4,8 +4,8 @@
 
 # Kernel Binder Module Expert
 #
-# Provides Binder IPC analysis capabilities for cross-domain experts.
-# Answers questions about cross-process calls, blocking transactions, and latency.
+# Provides Binder IPC analysis capabilities.
+# Covers cross-process calls, blocking transactions, and latency.
 
 name: binder_module
 version: "1.0"
@@ -25,59 +25,6 @@ module:
     - transaction
     - reply
     - async
-  relatedModules:
-    - framework_ams
-    - framework_wms
-    - kernel_scheduler
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: binder_blocking_calls
-      questionTemplate: "What Binder calls blocked thread {tid}?"
-      requiredParams: [tid]
-      optionalParams: [start_ts, end_ts]
-      description: "Find blocking Binder transactions for a thread"
-
-    - id: binder_latency
-      questionTemplate: "What is the Binder latency between {caller} and {callee}?"
-      requiredParams: [caller, callee]
-      description: "Analyze Binder transaction latency between processes"
-
-    - id: heavy_binder_users
-      questionTemplate: "What are the heaviest Binder users for package {package}?"
-      requiredParams: [package]
-      description: "Find processes making many Binder calls"
-
-  findingsSchema:
-    - id: long_binder_transaction
-      severity: critical
-      titleTemplate: "Long Binder transaction: {interface} took {dur_ms}ms"
-      descriptionTemplate: "Synchronous Binder call to {interface} blocked for {dur_ms}ms"
-      evidenceFields: [interface, dur_ms, caller_process, server_process]
-
-    - id: excessive_binder_calls
-      severity: warning
-      titleTemplate: "Excessive Binder calls: {call_count} calls to {interface}"
-      descriptionTemplate: "Process made {call_count} Binder calls totaling {total_ms}ms"
-      evidenceFields: [interface, call_count, total_ms]
-
-  suggestionsSchema:
-    - id: check_server_process
-      condition: "server_process != package"
-      targetModule: scheduler_module
-      questionTemplate: "Why was server process {server_process} slow?"
-      paramsMapping:
-        package: server_process
-      priority: 1
-
-    - id: check_gc_during_binder
-      condition: "dur_ms > 10"
-      targetModule: art_module
-      questionTemplate: "Was there GC during Binder call at {ts}?"
-      paramsMapping:
-        ts: start_ts
-      priority: 2
 
 prerequisites:
   modules:

@@ -515,7 +515,7 @@ Base path: `/api/agent/v1`
 | `POST` | `/scene-reconstruct` | 启动场景还原 |
 | `GET` | `/scene-reconstruct/:analysisId/stream` | 场景还原 SSE |
 | `GET` | `/scene-reconstruct/:analysisId/tracks` | 获取 tracks |
-| `GET` | `/scene-reconstruct/:analysisId/status` | 查询状态 |
+| `GET` | `/scene-reconstruct/:analysisId/status` | 查询状态；`result.narrative` 与 `/:sessionId/status` 的 `conclusion` 是同一份经 owner 投影的正文（仅场景回放类查询返回场景回放摘要），`error` 同样经投影 |
 | `POST` | `/scene-reconstruct/:analysisId/deep-dive` | 对某个场景深挖 |
 | `POST` | `/scene-reconstruct/:analysisId/cancel` | 取消 |
 | `DELETE` | `/scene-reconstruct/:analysisId` | 删除 |
@@ -534,6 +534,28 @@ Base path: `/api/skills`
 | `POST` | `/analyze` | 自动检测并执行 Skill |
 | `POST` | `/detect-intent` | 意图检测 |
 | `POST` | `/detect-vendor` | 厂商检测 |
+
+`POST /detect-vendor`（body `{traceId}`）从 trace `metadata` 解析设备身份，不扫描
+slice，结果按 trace 身份缓存。响应 schema `trace_vendor@1`：
+
+| 字段 | 说明 |
+|---|---|
+| `schemaVersion` | `trace_vendor@1` |
+| `vendor` | `pixel`、`xiaomi`、`oppo`、`vivo`、`honor`、`huawei`、`samsung`、`aosp`、`other`、`unknown` |
+| `brand` | 仅 `vendor = other` 时出现，归一化后的品牌（如 `nubia`） |
+| `confidence` | 数值：high 0.9、medium 0.7、low 0.4；`vendor = unknown` 或查询失败为 0 |
+| `vendorConfidence` | `high`、`medium`、`low` |
+| `soc` | `qualcomm`、`mtk`、`google_tensor`、`samsung_exynos`、`unknown` |
+| `os` | `android`、`harmonyos`、`unknown` |
+| `source` | `metadata_manufacturer`、`metadata_fingerprint`、`soc_model`、`trace_os`、`none`、`query_failed` |
+| `evidence` | 所用的 manufacturer、fingerprint brand、SoC 型号、SDK，以及冲突标记（`manufacturerBrandMismatch`、`osConflict`；多个设备身份冲突时为 `scopeConflict` 加各 scope 的 `scopeIdentities`） |
+
+契约变更：`aosp` 现在只表示 AOSP / generic 构建；没有身份信息的 trace 返回
+`unknown`（旧版本返回 `aosp`），查询失败返回 `unknown` + `source: query_failed`。
+`harmonyos` 不再是 `vendor` 值，只会出现在 `os`，且仅当格式检测判定为 HarmonyOS
+并且 trace 中没有任何 Android 身份时才出现。`POST /execute/:skillId` 与
+`POST /analyze` 的响应只在识别到 OEM 时（`vendor` 不是 `aosp`、`unknown`、`other`）
+带 `vendor` 字段。
 
 Admin path: `/api/admin`
 

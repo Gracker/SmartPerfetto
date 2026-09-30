@@ -25,6 +25,7 @@ export interface ReadonlySkillRegistrySnapshot {
   getAppliedOverlayIds(name: string): readonly string[];
   getVendorOverride(skillId: string, vendor: string): VendorOverride | undefined;
   getVendorOverridesForSkill(skillId: string): VendorOverride[];
+  hasVendorOverrides(skillId: string): boolean;
   getVendorOverrideLoadIssues(): VendorOverrideLoadIssue[];
   findMatchingSkill(question: string): SkillDefinition | undefined;
 }

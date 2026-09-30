@@ -26,7 +26,7 @@ export * from './types';
 
 // Graders
 export { CodeGrader, createCodeGrader } from './codeGrader';
-export { ModelGrader, createModelGrader, ModelGraderOptions } from './modelGrader';
+export { ModelGrader, createModelGrader, type ModelGraderOptions } from './modelGrader';
 export { ProcessGrader, createProcessGrader } from './processGrader';
 
 // Scenario Loading
@@ -35,7 +35,7 @@ export {
   loadAllScenarios,
   loadScenarioFile,
   getDefaultScenariosDir,
-  LoadOptions,
+  type LoadOptions,
 } from './scenarioLoader';
 
 // Runner
@@ -43,5 +43,5 @@ export {
   EvaluationRunner,
   createEvaluationRunner,
   runEvaluation,
-  RunnerOptions,
+  type RunnerOptions,
 } from './evaluationRunner';

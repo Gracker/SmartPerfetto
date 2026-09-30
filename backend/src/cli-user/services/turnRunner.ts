@@ -21,6 +21,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { resolveInvocationPath } from '../bootstrap';
 import type { CliPaths, SessionPaths } from '../io/paths';
 import { ensureSessionLayout, sessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
@@ -129,7 +130,7 @@ async function runStartSession(
   input: StartSessionInput,
   interrupt?: TurnInterruptController,
 ): Promise<TurnResult> {
-  const tracePath = path.resolve(input.tracePath);
+  const tracePath = resolveInvocationPath(input.tracePath);
   logText(ctx, `Loading trace: ${tracePath}`);
   // loadTraceFromFilePath throws on ENOENT; we let it propagate so there's
   // one source of truth for the existence check.
@@ -140,7 +141,7 @@ async function runStartSession(
   let referenceTraceId: string | undefined;
   let reportAppendix: { markdown: string; html: string } | undefined;
   if (input.referenceTracePath) {
-    referenceTracePath = path.resolve(input.referenceTracePath);
+    referenceTracePath = resolveInvocationPath(input.referenceTracePath);
     if (referenceTracePath === tracePath) {
       throw new Error('reference trace must be different from current trace');
     }
