@@ -4,8 +4,8 @@
 
 # Hardware GPU Module Expert
 #
-# Provides GPU hardware analysis capabilities for cross-domain experts.
-# Answers questions about GPU rendering, frequency, and memory.
+# Provides GPU hardware analysis capabilities.
+# Covers GPU rendering, frequency, and memory.
 
 name: gpu_module
 version: "1.0"
@@ -25,64 +25,6 @@ module:
     - frequency
     - rendering
     - memory
-  relatedModules:
-    - framework_surfaceflinger
-    - hardware_cpu
-    - hardware_memory
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: gpu_rendering_analysis
-      questionTemplate: "How is GPU rendering performing for package {package}?"
-      requiredParams: [package]
-      description: "Analyze GPU rendering performance"
-
-    - id: gpu_frequency_analysis
-      questionTemplate: "What is the GPU frequency during the trace?"
-      requiredParams: []
-      description: "Analyze GPU frequency and utilization"
-
-    - id: gpu_memory_analysis
-      questionTemplate: "What is the GPU memory usage?"
-      requiredParams: []
-      optionalParams: [package]
-      description: "Analyze GPU memory allocation"
-
-  findingsSchema:
-    - id: gpu_bottleneck
-      severity: critical
-      titleTemplate: "GPU bottleneck: render time {render_ms}ms exceeds frame budget"
-      descriptionTemplate: "GPU rendering taking {render_ms}ms, causing frame drops"
-      evidenceFields: [render_ms, frame_budget_ms, gpu_util_pct]
-
-    - id: gpu_frequency_low
-      severity: warning
-      titleTemplate: "GPU frequency low: {avg_freq_mhz}MHz"
-      descriptionTemplate: "GPU running at reduced frequency, possible thermal throttling"
-      evidenceFields: [avg_freq_mhz, max_freq_mhz]
-
-    - id: high_overdraw
-      severity: warning
-      titleTemplate: "High overdraw detected: {overdraw_ratio}x"
-      descriptionTemplate: "Screen pixels being drawn {overdraw_ratio} times on average"
-      evidenceFields: [overdraw_ratio]
-
-  suggestionsSchema:
-    - id: check_thermal_for_gpu
-      condition: "gpu_freq_low == true"
-      targetModule: thermal_module
-      questionTemplate: "Is thermal throttling affecting GPU?"
-      paramsMapping: {}
-      priority: 1
-
-    - id: check_surfaceflinger
-      condition: "composition_slow == true"
-      targetModule: surfaceflinger_module
-      questionTemplate: "What is causing slow GPU composition?"
-      paramsMapping:
-        package: package
-      priority: 1
 
 prerequisites: {}
 

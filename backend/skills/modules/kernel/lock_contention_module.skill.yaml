@@ -5,8 +5,8 @@
 # =============================================================================
 # Kernel Lock Contention Module Expert
 # =============================================================================
-# Provides lock/mutex contention analysis capabilities for cross-domain experts.
-# Answers questions about mutex waits, monitor contention, and synchronization issues.
+# Provides lock/mutex contention analysis capabilities.
+# Covers mutex waits, monitor contention, and synchronization issues.
 #
 # Key Analysis Areas:
 # - Mutex/Futex wait times
@@ -35,82 +35,6 @@ module:
     - futex
     - monitor
     - rwlock
-  relatedModules:
-    - kernel_scheduler
-    - framework_art
-    - app_third_party
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: lock_contention_overview
-      questionTemplate: "What lock contention exists for package {package}?"
-      requiredParams: [package]
-      description: "Overview of lock contention issues"
-
-    - id: monitor_contention
-      questionTemplate: "What Java monitor contention exists for package {package}?"
-      requiredParams: [package]
-      description: "Analyze synchronized block contention"
-
-    - id: mutex_wait_analysis
-      questionTemplate: "What mutex waits happened for thread {tid}?"
-      requiredParams: [tid]
-      optionalParams: [start_ts, end_ts]
-      description: "Analyze specific thread's mutex waits"
-
-    - id: lock_holder_analysis
-      questionTemplate: "Who is holding the lock that thread {tid} is waiting for?"
-      requiredParams: [tid]
-      description: "Find lock holder causing contention"
-
-  findingsSchema:
-    - id: high_lock_contention
-      severity: critical
-      titleTemplate: "High lock contention: {wait_ms}ms total wait"
-      descriptionTemplate: "Thread spent {wait_ms}ms waiting for locks"
-      evidenceFields: [wait_ms, lock_name, waiting_thread, holder_thread]
-
-    - id: monitor_contention_detected
-      severity: warning
-      titleTemplate: "Monitor contention: {contention_count} waits on {monitor}"
-      descriptionTemplate: "Java synchronized block causing contention"
-      evidenceFields: [monitor, contention_count, total_wait_ms, avg_wait_ms]
-
-    - id: potential_deadlock
-      severity: critical
-      titleTemplate: "Potential deadlock between {thread1} and {thread2}"
-      descriptionTemplate: "Circular lock dependency detected"
-      evidenceFields: [thread1, thread2, lock1, lock2]
-
-    - id: priority_inversion
-      severity: warning
-      titleTemplate: "Priority inversion: high priority thread waiting"
-      descriptionTemplate: "High priority thread {high_thread} waiting for low priority {low_thread}"
-      evidenceFields: [high_thread, low_thread, wait_ms]
-
-    - id: long_lock_hold
-      severity: warning
-      titleTemplate: "Long lock hold: {hold_ms}ms"
-      descriptionTemplate: "Lock held for {hold_ms}ms, causing others to wait"
-      evidenceFields: [hold_ms, holder_thread, lock_name]
-
-  suggestionsSchema:
-    - id: check_thread_state
-      condition: "wait_ms > 50"
-      targetModule: scheduler_module
-      questionTemplate: "What is the lock holder thread doing?"
-      paramsMapping:
-        tid: holder_tid
-      priority: 1
-
-    - id: check_gc_holding_lock
-      condition: "holder_thread contains 'GC'"
-      targetModule: art_module
-      questionTemplate: "Is GC holding locks during collection?"
-      paramsMapping:
-        package: package
-      priority: 1
 
 prerequisites:
   required_tables:

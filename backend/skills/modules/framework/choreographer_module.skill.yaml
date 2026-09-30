@@ -5,8 +5,8 @@
 # =============================================================================
 # Framework Choreographer Module Expert
 # =============================================================================
-# Provides Choreographer and VSYNC analysis capabilities for cross-domain experts.
-# Answers questions about frame timing, VSYNC signals, and render pipeline coordination.
+# Provides Choreographer and VSYNC analysis capabilities.
+# Covers frame timing, VSYNC signals, and render pipeline coordination.
 #
 # Key Analysis Areas:
 # - VSYNC signal timing and phase
@@ -36,88 +36,6 @@ module:
     - input_callback
     - animation_callback
     - traversal_callback
-  relatedModules:
-    - framework_surfaceflinger
-    - app_third_party
-    - hardware_gpu
-
-# Dialogue interface
-dialogue:
-  capabilities:
-    - id: frame_timing_analysis
-      questionTemplate: "What is the frame timing for package {package}?"
-      requiredParams: [package]
-      description: "Analyze doFrame timing and breakdown"
-
-    - id: vsync_analysis
-      questionTemplate: "What is the VSYNC timing pattern?"
-      requiredParams: []
-      description: "Analyze VSYNC signal timing"
-
-    - id: callback_breakdown
-      questionTemplate: "What is the doFrame callback breakdown for {package}?"
-      requiredParams: [package]
-      description: "Analyze Input/Animation/Traversal timing"
-
-    - id: frame_drop_analysis
-      questionTemplate: "Why were frames dropped for {package}?"
-      requiredParams: [package]
-      description: "Analyze frame drop causes"
-
-  findingsSchema:
-    - id: long_doframe
-      severity: critical
-      titleTemplate: "Long doFrame: {dur_ms}ms (exceeds frame budget)"
-      descriptionTemplate: "doFrame exceeded frame budget by {exceed_ms}ms"
-      evidenceFields: [dur_ms, exceed_ms, main_contributor]
-
-    - id: input_callback_slow
-      severity: warning
-      titleTemplate: "Slow input callback: {dur_ms}ms"
-      descriptionTemplate: "Input callback processing took {dur_ms}ms"
-      evidenceFields: [dur_ms, frame_ts]
-
-    - id: animation_callback_slow
-      severity: warning
-      titleTemplate: "Slow animation callback: {dur_ms}ms"
-      descriptionTemplate: "Animation callback took {dur_ms}ms"
-      evidenceFields: [dur_ms, frame_ts]
-
-    - id: traversal_callback_slow
-      severity: warning
-      titleTemplate: "Slow traversal (measure/layout/draw): {dur_ms}ms"
-      descriptionTemplate: "View traversal took {dur_ms}ms"
-      evidenceFields: [dur_ms, measure_ms, layout_ms, draw_ms]
-
-    - id: vsync_jitter
-      severity: warning
-      titleTemplate: "VSYNC jitter detected: {jitter_ms}ms"
-      descriptionTemplate: "VSYNC timing inconsistent, affecting frame pacing"
-      evidenceFields: [jitter_ms, avg_period_ms, expected_period_ms]
-
-  suggestionsSchema:
-    - id: check_main_thread_blocking
-      condition: "dur_ms > 32"
-      targetModule: scheduler_module
-      questionTemplate: "What was blocking main thread during frame {frame_ts}?"
-      paramsMapping:
-        ts: frame_ts
-        package: package
-      priority: 1
-
-    - id: check_gpu_rendering
-      condition: "traversal_dur_ms > 16"
-      targetModule: gpu_module
-      questionTemplate: "What was GPU doing during frame rendering?"
-      paramsMapping: {}
-      priority: 2
-
-    - id: check_surfaceflinger
-      condition: "frame_dropped == true"
-      targetModule: surfaceflinger_module
-      questionTemplate: "Did SurfaceFlinger contribute to frame drop?"
-      paramsMapping: {}
-      priority: 1
 
 prerequisites:
   required_tables:

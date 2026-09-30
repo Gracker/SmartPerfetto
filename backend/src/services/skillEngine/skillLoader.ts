@@ -7,17 +7,14 @@
  *
  * 加载 skill 文件，包括普通 skills 和 module expert skills
  *
- * Module Expert Skills:
- * - 位于 skills/modules/ 目录下
- * - 包含 module 和 dialogue 字段
- * - 可以被跨领域专家调用
+ * Module Expert Skills 位于 skills/modules/ 目录下，用 module 字段标明所属层级和组件。
  */
 
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
 import { validateProcessScopeDeclarations } from './skillValidator';
-import { SkillDefinition, ModuleLayer, DialogueCapability } from './types';
+import { SkillDefinition } from './types';
 import { generateRenderingPipelineDetectionSkill } from '../renderingPipelineDetectionSkillGenerator';
 import logger from '../../utils/logger';
 import { validateSkillConditions, validateFragmentReferences } from './skillValidator';
@@ -334,7 +331,6 @@ export interface SkillRootDescriptor {
 
 export class SkillRegistry {
   private skills: Map<string, SkillDefinition> = new Map();
-  private moduleSkills: Map<string, SkillDefinition> = new Map();  // Skills with module metadata
   private fragmentCache: Map<string, string> = new Map();  // SQL fragment path → content
   /** Vendor overrides keyed by base skill ID (from `extends` field) */
   private vendorOverrides: Map<string, VendorOverride[]> = new Map();
@@ -369,7 +365,7 @@ export class SkillRegistry {
 
     this.initialized = true;
     this.logDisplayContractSummary();
-    logger.info('SkillLoader', `Loaded ${this.skills.size} skills (${this.moduleSkills.size} module experts, ${this.vendorOverrides.size} vendor-overridden skills)`);
+    logger.info('SkillLoader', `Loaded ${this.skills.size} skills (${this.getAllSkills().filter(skill => skill.module).length} module experts, ${this.vendorOverrides.size} vendor-overridden skills)`);
   }
 
   private async loadSkillRoot(root: SkillRootDescriptor): Promise<void> {
@@ -521,12 +517,6 @@ export class SkillRegistry {
     }
     this.skills.set(skill.name, skill);
     this.skillOrigins.set(skill.name, this.originForRoot(root));
-
-    if (skill.module) {
-      this.moduleSkills.set(skill.name, skill);
-    } else {
-      this.moduleSkills.delete(skill.name);
-    }
   }
 
   /**
@@ -896,86 +886,9 @@ export class SkillRegistry {
     this.skills.set(skill.name, skill);
     this.skillOrigins.set(skill.name, { origin: 'built_in' });
 
-    // Keep moduleSkills map consistent
-    if (skill.module) {
-      this.moduleSkills.set(skill.name, skill);
-    } else {
-      this.moduleSkills.delete(skill.name);
-    }
-
     if (this.initialized && validation.displayIssues.length > 0) {
       this.logDisplayContractSummary();
     }
-  }
-
-  /**
-   * 获取所有模块专家 skills
-   */
-  getAllModuleSkills(): SkillDefinition[] {
-    return Array.from(this.moduleSkills.values());
-  }
-
-  /**
-   * 根据模块层级查找 skills
-   */
-  findSkillsByLayer(layer: ModuleLayer): SkillDefinition[] {
-    return Array.from(this.moduleSkills.values()).filter(
-      (skill) => skill.module?.layer === layer
-    );
-  }
-
-  /**
-   * 根据组件名查找 skill
-   */
-  findSkillByComponent(component: string): SkillDefinition | undefined {
-    return Array.from(this.moduleSkills.values()).find(
-      (skill) => skill.module?.component.toLowerCase() === component.toLowerCase()
-    );
-  }
-
-  /**
-   * 根据层级和组件查找 skill
-   */
-  findModuleSkill(layer: ModuleLayer, component: string): SkillDefinition | undefined {
-    return Array.from(this.moduleSkills.values()).find(
-      (skill) =>
-        skill.module?.layer === layer &&
-        skill.module?.component.toLowerCase() === component.toLowerCase()
-    );
-  }
-
-  /**
-   * 根据对话能力查找 skill
-   * 查找能够回答特定问题类型的模块
-   */
-  findSkillByCapability(capabilityId: string): SkillDefinition | undefined {
-    return Array.from(this.moduleSkills.values()).find((skill) =>
-      skill.dialogue?.capabilities?.some((cap) => cap.id === capabilityId)
-    );
-  }
-
-  /**
-   * 获取所有可用的对话能力
-   */
-  getAllCapabilities(): Array<{ skillName: string; capability: DialogueCapability }> {
-    const capabilities: Array<{ skillName: string; capability: DialogueCapability }> = [];
-
-    for (const skill of this.moduleSkills.values()) {
-      if (skill.dialogue?.capabilities) {
-        for (const cap of skill.dialogue.capabilities) {
-          capabilities.push({ skillName: skill.name, capability: cap });
-        }
-      }
-    }
-
-    return capabilities;
-  }
-
-  /**
-   * 检查 skill 是否为模块专家
-   */
-  isModuleSkill(skillName: string): boolean {
-    return this.moduleSkills.has(skillName);
   }
 
   /**
@@ -1038,7 +951,6 @@ export class SkillRegistry {
    */
   async reload(): Promise<void> {
     this.skills.clear();
-    this.moduleSkills.clear();
     this.fragmentCache.clear();
     this.vendorOverrides.clear();
     this.vendorOverrideLoadIssues = [];

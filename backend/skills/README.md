@@ -32,7 +32,7 @@ skills/
 ├── deep/                    # 深度分析 Skills (调用栈级)
 │   ├── cpu_profiling.skill.yaml
 │   └── callstack_analysis.skill.yaml
-├── modules/                 # 模块专家 Skills (跨领域专家系统)
+├── modules/                 # 模块专家 Skills (按架构层组织)
 │   ├── app/                 # 应用层模块
 │   │   └── third_party_module.skill.yaml
 │   ├── framework/           # 框架层模块
@@ -95,28 +95,11 @@ rg --files backend/skills | rg '\.skill\.yaml$' | wc -l
 
 ---
 
-## 模块专家系统 (Cross-Domain Expert System)
+## 模块专家 Skills
 
 ### 概述
 
-模块专家系统是 SmartPerfetto 的高级分析架构，模拟真实 Android 性能工程师的分析流程：
-
-```
-                    跨领域专家 (TypeScript "指挥官")
-    ┌─────────────────┬─────────────────┬─────────────────┐
-    │ PerformanceExpert│   PowerExpert   │  ThermalExpert  │
-    │ (卡顿/启动/延迟)  │ (功耗/待机/唤醒) │ (温度/热节流)   │
-    └────────┬─────────┴────────┬────────┴────────┬────────┘
-             │                   │                 │
-             │       对话协议 (Query/Response/Suggestion)
-             │                   │                 │
-    ┌────────▼───────────────────▼─────────────────▼────────┐
-    │                    模块专家 (YAML Skills)              │
-    ├─────────────┬─────────────┬─────────────┬─────────────┤
-    │  App 层     │ Framework 层 │ Kernel 层   │ Hardware 层 │
-    │ ThirdParty  │ AMS/SF/Input │ Sched/Binder│ CPU/GPU     │
-    └─────────────┴─────────────┴─────────────┴─────────────┘
-```
+`modules/` 下的 Skill 按 Android 架构层（App / Framework / Kernel / Hardware）组织，每个文件覆盖一个组件。它们是普通的 composite Skill：和其他 Skill 一样通过 `invoke_skill` 执行，结果以 DataEnvelope 返回，发现通过 `diagnostics` / `synthesize` 产出，没有单独的调度协议。
 
 ### 模块 Skills 一览
 
@@ -134,7 +117,7 @@ rg --files backend/skills | rg '\.skill\.yaml$' | wc -l
 
 ### 模块 Skill YAML 格式
 
-模块 Skill 在标准 Skill 基础上增加了 `module` 和 `dialogue` 字段：
+模块 Skill 在标准 Skill 基础上增加了 `module` 字段：
 
 ```yaml
 name: scheduler_module
@@ -147,7 +130,7 @@ meta:
   description: "分析线程调度延迟、CPU 利用率和大小核分配"
   tags: ["kernel", "scheduler", "cpu", "runnable"]
 
-# 模块元数据 - 标识这是一个模块专家
+# 模块元数据 - 标明所属架构层和组件
 module:
   layer: kernel                    # app | framework | kernel | hardware
   component: Scheduler             # 组件名称
@@ -155,42 +138,6 @@ module:
     - runqueue
     - cfs
     - core_affinity
-  relatedModules:                  # 关联模块
-    - hardware_cpu
-    - framework_ams
-
-# 对话接口 - 定义模块能回答的问题
-dialogue:
-  # 能力列表
-  capabilities:
-    - id: thread_scheduling_delay
-      questionTemplate: "Why was thread {tid} delayed between {start_ts} and {end_ts}?"
-      requiredParams: [tid, start_ts, end_ts]
-      description: "Analyze why a specific thread had scheduling delays"
-
-    - id: cpu_utilization
-      questionTemplate: "What is the CPU utilization for package {package}?"
-      requiredParams: [package]
-      optionalParams: [start_ts, end_ts]
-
-  # 结构化发现模式
-  findingsSchema:
-    - id: high_runnable_time
-      severity: warning
-      titleTemplate: "Thread scheduling delay: {delay_ms}ms in runnable state"
-      descriptionTemplate: "Thread {tid} waited {delay_ms}ms in runnable state"
-      evidenceFields: [tid, delay_ms, core_type, waker_thread]
-
-  # 建议模式 - 引导跨领域专家进行下一步分析
-  suggestionsSchema:
-    - id: check_binder_waker
-      condition: "waker_process != package"      # 触发条件
-      targetModule: binder_module                # 建议的下一个模块
-      questionTemplate: "What Binder calls did {waker_process} make to {package}?"
-      paramsMapping:                             # 参数映射
-        caller: waker_process
-        callee: package
-      priority: 1
 
 # 标准 Skill 字段...
 steps:
@@ -208,70 +155,11 @@ steps:
     synthesize: true
 ```
 
-### 对话协议
-
-跨领域专家通过结构化消息与模块专家交互：
-
-**Query (查询)**:
-```typescript
-{
-  queryId: "q_001",
-  targetModule: "scheduler_module",
-  questionId: "cpu_utilization",
-  params: { package: "com.example.app" },
-  timeRange: { start: 123456789, end: 987654321 }
-}
-```
-
-**Response (响应)**:
-```typescript
-{
-  queryId: "q_001",
-  success: true,
-  data: { ... },
-  findings: [
-    {
-      id: "high_runnable_time",
-      severity: "warning",
-      title: "Thread scheduling delay: 50ms",
-      evidence: { tid: 1234, delay_ms: 50 }
-    }
-  ],
-  suggestions: [
-    {
-      targetModule: "binder_module",
-      questionTemplate: "What Binder calls blocked thread?",
-      priority: 1
-    }
-  ],
-  confidence: 0.85
-}
-```
-
-### 假设管理
-
-跨领域专家通过假设-验证循环找到根因：
-
-1. **初始假设**: 根据用户查询和初步数据生成假设
-2. **证据收集**: 向模块专家查询收集支持/反驳证据
-3. **置信度更新**: 根据证据更新假设置信度
-4. **决策**: 当置信度超过阈值时确认根因，或继续探索
-
-```
-假设: "卡顿由主线程 Binder 调用导致"
-  ├─ [+0.3] scheduler_module: 主线程 Runnable 等待 50ms
-  ├─ [+0.4] binder_module: 发现 10 次同步 Binder 调用
-  └─ [-0.1] art_module: 无 GC 暂停
-最终置信度: 0.6 → 继续收集证据...
-```
-
 ### 创建新模块 Skill
 
 1. 在 `skills/modules/{layer}/` 下创建 YAML 文件
 2. 定义 `module` 字段标识层级和组件
-3. 定义 `dialogue.capabilities` 声明能回答的问题
-4. 定义 `dialogue.findingsSchema` 结构化输出格式
-5. 定义 `dialogue.suggestionsSchema` 引导后续分析
+3. 用标准 Skill 字段（`steps`、`diagnostics`、`synthesize`）产出证据和发现
 
 ---
 
