@@ -21,7 +21,6 @@ import {
   EvaluationResult,
   EvaluationRunSummary,
   EvaluationConfig,
-  GraderConfig,
   Finding,
 } from './types';
 import { loadScenarios, loadAllScenarios, LoadOptions } from './scenarioLoader';
@@ -569,8 +568,6 @@ export class EvaluationRunner {
     // Group by category
     const byCategory: Record<string, any> = {};
     for (const result of results) {
-      const scenario = result.scenarioId;
-      // Find the scenario to get its category
       const category = 'general'; // Default, would need scenario lookup
 
       if (!byCategory[category]) {

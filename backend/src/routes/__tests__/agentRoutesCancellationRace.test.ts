@@ -796,7 +796,7 @@ describe('agent analyze cancellation races', () => {
     });
 
     it('does not deliver a provisional answer for a deleted or superseded session', () => {
-      const {session, runId, finalizationRun} = liveSession('session-provisional-deleted');
+      const {session, finalizationRun} = liveSession('session-provisional-deleted');
       try {
         agentRoutesCancellationTestSeam.deleteSession(session.sessionId);
         expect(agentRoutesCancellationTestSeam.broadcastAnswer(session, 'body', finalizationRun, 'en', {provisional: true})).toBe(false);
@@ -824,7 +824,7 @@ describe('agent analyze cancellation races', () => {
     it('keeps a private provisional answer live-only and owner-projected', () => {
       process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
       const persist = jest.spyOn(agentEventStore, 'persistSerializedAgentEvent').mockImplementation(() => undefined as never);
-      const {session, runId, finalizationRun} = liveSession('session-provisional-private',
+      const {session, finalizationRun} = liveSession('session-provisional-private',
         {codeAwareMode: 'provider_send', codebaseIds: ['app-source']});
       try {
         const body = 'The source marker explains the wait.';
@@ -840,7 +840,7 @@ describe('agent analyze cancellation races', () => {
     });
 
     it('ignores a provisional answer for a run that no longer owns the session', () => {
-      const {session, runId, finalizationRun} = liveSession('session-provisional-stale');
+      const {session, finalizationRun} = liveSession('session-provisional-stale');
       try {
         session.activeRun = {...session.activeRun, runId: `${session.sessionId}:2`};
         agentRoutesCancellationTestSeam.broadcastAnswer(session, 'late body', finalizationRun, 'en', {provisional: true});

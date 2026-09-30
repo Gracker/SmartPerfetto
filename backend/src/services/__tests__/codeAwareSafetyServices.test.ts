@@ -679,7 +679,7 @@ describe('filterRagLookup', () => {
   });
 
   it('drops indexed chunks that fall outside the current selection and consent grant', async () => {
-    const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
+    const {codebaseId, sourceGeneration} = makeRegistry(true);
     const registryPath = path.join(tmpDir, 'registry.json');
     const envelope = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
     envelope.codebases[0].pathFilters = ['src'];

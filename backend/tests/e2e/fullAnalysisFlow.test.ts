@@ -50,15 +50,6 @@ interface SSEEvent {
   data: any;
 }
 
-interface AnalysisResult {
-  success: boolean;
-  sessionId: string;
-  conclusion?: string;
-  confidence?: number;
-  findings?: any[];
-  rounds?: number;
-}
-
 // =============================================================================
 // Global State for Cleanup
 // =============================================================================
@@ -237,16 +228,6 @@ async function cleanupSession(app: ReturnType<typeof createTestApp>, sessionId: 
 async function cleanupAllSessions(app: ReturnType<typeof createTestApp>): Promise<void> {
   for (const sessionId of activeSessions) {
     await cleanupSession(app, sessionId);
-  }
-}
-
-/**
- * Validate SSE event has correct structure
- */
-function validateEventStructure(event: SSEEvent, expectedFields: string[]): void {
-  expect(event.data).toBeDefined();
-  for (const field of expectedFields) {
-    expect(event.data[field]).toBeDefined();
   }
 }
 
@@ -830,12 +811,6 @@ describe('E2E: Data Integrity Validation', () => {
           if (envelope.data) {
             // If it's a table format, validate structure
             if (envelope.display?.format === 'table') {
-              // Should have columns or rows
-              const hasTableData = (
-                (envelope.data.columns && Array.isArray(envelope.data.columns)) ||
-                (envelope.data.rows && Array.isArray(envelope.data.rows))
-              );
-              // Table format should have some table data structure
               if (envelope.data.rows) {
                 expect(Array.isArray(envelope.data.rows)).toBe(true);
               }
@@ -1088,7 +1063,7 @@ describe('E2E: Performance Validation', () => {
   it('should complete analysis within reasonable time', async () => {
     const startTime = Date.now();
 
-    const { sessionId, result } = await runAnalysisToCompletion(
+    const { sessionId } = await runAnalysisToCompletion(
       app,
       traceId,
       '分析性能',

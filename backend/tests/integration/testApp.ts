@@ -23,7 +23,7 @@ import {
 } from '../../src/middleware/legacyAgentApi';
 
 // Import services
-import { TraceProcessorService, getTraceProcessorService } from '../../src/services/traceProcessorService';
+import { getTraceProcessorService } from '../../src/services/traceProcessorService';
 import { resolveTraceCase } from '../helpers/traceCorpus';
 import {
   deleteTraceMetadata,

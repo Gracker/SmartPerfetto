@@ -9,11 +9,11 @@
  */
 
 import { SessionPersistenceService } from '../sessionPersistenceService';
-import { createEntityStore, EntityStore } from '../../agent/context/entityStore';
+import { createEntityStore } from '../../agent/context/entityStore';
 import { EnhancedSessionContext } from '../../agent/context/enhancedSessionContext';
 import { FocusStore } from '../../agent/context/focusStore';
 import { createInitialTraceAgentState } from '../../agent/state/traceAgentState';
-import { StoredSession, StoredMessage } from '../../models/sessionSchema';
+import { StoredSession } from '../../models/sessionSchema';
 
 describe('SessionPersistenceService - Phase 3 Features', () => {
   let service: SessionPersistenceService;

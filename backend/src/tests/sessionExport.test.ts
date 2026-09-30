@@ -15,7 +15,6 @@ import { SessionPersistenceService } from '../services/sessionPersistenceService
 import { ResultExportService } from '../services/resultExportService';
 import {
   StoredSession,
-  StoredMessage,
   SqlQueryResult,
 } from '../models/sessionSchema';
 

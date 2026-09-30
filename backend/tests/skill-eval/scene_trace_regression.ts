@@ -11,12 +11,6 @@
 
 import { createSkillEvaluator, getTestTracePath, findStepInLayers } from './runner';
 
-type StepResultLike = {
-  success?: boolean;
-  error?: string;
-  data?: any[];
-};
-
 type TraceCase = {
   file: string;
   label: string;

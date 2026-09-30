@@ -5,7 +5,7 @@
  * provenance model for both the range atomic skill and the full composite skill.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
+import { it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
 const TRACE_FILE = 'scroll-demo-customer-scroll.pftrace';
