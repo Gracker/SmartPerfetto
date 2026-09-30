@@ -18,6 +18,7 @@ import {
   projectOwnerQuestion,
 } from '../services/security/privateAnalysisProjection';
 import {sessionRunHasPrivateContext} from '../assistant/application/agentAnalyzeSessionService';
+import {projectReportSessionState} from '../services/agentReportData';
 
 interface AgentReportRoutesDeps {
   getSession: (sessionId: string) => any;
@@ -77,24 +78,12 @@ export function registerAgentReportRoutes(
     const hypotheses = privateKnowledge
       ? projectOwnerStructuredValue(sessionId, rawHypotheses)
       : rawHypotheses;
-    const conversationTimeline = Array.isArray(session.conversationSteps)
-      ? session.conversationSteps
-      : [];
-
-    // Use snapshot as single source of truth for agentv3-specific state.
-    // Falls back to live getters for active sessions where snapshot hasn't been taken yet.
-    const snapshot = privateKnowledge
-      ? undefined
-      : SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId);
-    const analysisNotes = privateKnowledge ? [] : snapshot?.analysisNotes
-      ?? (typeof session.orchestrator?.getSessionNotes === 'function'
-        ? session.orchestrator.getSessionNotes(sessionId) : []);
-    const analysisPlan = privateKnowledge ? null : snapshot?.analysisPlan
-      ?? (typeof session.orchestrator?.getSessionPlan === 'function'
-        ? session.orchestrator.getSessionPlan(sessionId) : null);
-    const uncertaintyFlags = privateKnowledge ? [] : snapshot?.uncertaintyFlags
-      ?? (typeof session.orchestrator?.getSessionUncertaintyFlags === 'function'
-        ? session.orchestrator.getSessionUncertaintyFlags(sessionId) : []);
+    const {conversationTimeline, queryHistory, conclusionHistory, analysisNotes, analysisPlan, uncertaintyFlags} =
+      projectReportSessionState({
+        session,
+        privateKnowledge,
+        loadSnapshot: () => SessionPersistenceService.getInstance().loadSessionStateSnapshot(sessionId),
+      });
     const rawClaimSupport = result.claimSupport;
     const rawClaimVerification = result.claimVerificationResult;
     const rawIdentityResolutions = result.identityResolutions;
@@ -149,7 +138,7 @@ export function registerAgentReportRoutes(
         status: h.status,
         confidence: h.confidence,
       })),
-      conversationTimeline: (privateKnowledge ? projectOwnerStructuredValue(sessionId, conversationTimeline) : conversationTimeline).map((step: any) => ({
+      conversationTimeline: conversationTimeline.map(step => ({
         eventId: step.eventId,
         ordinal: step.ordinal,
         phase: step.phase,
@@ -158,8 +147,8 @@ export function registerAgentReportRoutes(
         timestamp: step.timestamp,
         sourceEventType: step.sourceEventType,
       })),
-      queryHistory: privateKnowledge ? [] : session.queryHistory || [],
-      conclusionHistory: privateKnowledge ? projectOwnerStructuredValue(sessionId, session.conclusionHistory || []) : session.conclusionHistory || [],
+      queryHistory,
+      conclusionHistory,
       analysisNotes,
       analysisPlan,
       uncertaintyFlags,

@@ -794,16 +794,19 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       packageName: effectivePackageName,
     });
 
-    // Shared mutable notes reference (used by both system prompt and MCP tools)
-    let notes = privateAnalysisContext ? undefined : this.sessionNotes.get(sessionId);
+    // Shared mutable notes reference (used by both system prompt and MCP tools).
+    // Session state stays in memory for a private run, as in the other
+    // runtimes: its creator's report and follow-ups read it, and a private
+    // snapshot drops it (takeSnapshot). Only the opaque SDK state is withheld.
+    let notes = this.sessionNotes.get(sessionId);
     if (!notes) {
       notes = [];
-      if (!privateAnalysisContext) this.sessionNotes.set(sessionId, notes);
+      this.sessionNotes.set(sessionId, notes);
     }
 
     const artifactStore = resolveRuntimeEvidenceStore(normalizedOptions, {sessionId, traceId},
-      () => privateAnalysisContext ? new ArtifactStore() : this.artifactStores.get(sessionId) ?? new ArtifactStore());
-    if (!privateAnalysisContext) this.artifactStores.set(sessionId, artifactStore);
+      () => this.artifactStores.get(sessionId) ?? new ArtifactStore());
+    this.artifactStores.set(sessionId, artifactStore);
     sessionState.artifactStore = artifactStore;
     // The detector's primary app becomes citable current-run evidence.
     const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
@@ -872,10 +875,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       ? loadLearnedSqlFixPairs(5, knowledgeScope, normalizedOptions) : [];
 
     // Shared mutable session state (same reference pattern as Claude runtime)
-    let planState = privateAnalysisContext ? undefined : this.sessionPlans.get(sessionId);
+    let planState = this.sessionPlans.get(sessionId);
     if (!planState) {
       planState = { current: null, history: [] };
-      if (!privateAnalysisContext) this.sessionPlans.set(sessionId, planState);
+      this.sessionPlans.set(sessionId, planState);
     }
     if (planState.current) {
       planState.history.push(planState.current);
@@ -884,17 +887,20 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     planState.current = null;
     resetPrePlanToolCallsForNewRun(planState);
 
-    let hypotheses = privateAnalysisContext ? undefined : this.sessionHypotheses.get(sessionId);
+    // Hypotheses and uncertainty flags belong to one turn, as in the other runtimes.
+    let hypotheses = this.sessionHypotheses.get(sessionId);
     if (!hypotheses) {
       hypotheses = [];
-      if (!privateAnalysisContext) this.sessionHypotheses.set(sessionId, hypotheses);
+      this.sessionHypotheses.set(sessionId, hypotheses);
     }
+    hypotheses.splice(0);
 
-    let uncertaintyFlags = privateAnalysisContext ? undefined : this.sessionUncertaintyFlags.get(sessionId);
+    let uncertaintyFlags = this.sessionUncertaintyFlags.get(sessionId);
     if (!uncertaintyFlags) {
       uncertaintyFlags = [];
-      if (!privateAnalysisContext) this.sessionUncertaintyFlags.set(sessionId, uncertaintyFlags);
+      this.sessionUncertaintyFlags.set(sessionId, uncertaintyFlags);
     }
+    uncertaintyFlags.splice(0);
 
     const watchdogWarning: { current: string | null } = { current: null };
     const isRunDeliverable = () => this.activeSessions.get(sessionId) === sessionState
@@ -1385,33 +1391,32 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       executionLease.throwIfAborted();
       applyFinalResultQualityGate({result, context: deliveryContext, deferFocusedEvidenceFinalization: true});
 
-      if (!privateAnalysisContext) {
-        executionLease.throwIfAborted();
-        sessionContext.addTurn(
-          query,
-          {
-            primaryGoal: query,
-            aspects: [],
-            expectedOutputType: 'diagnosis',
-            complexity: isQuickMode ? 'simple' : 'complex',
-            followUpType: previousTurns.length > 0 ? 'extend' : 'initial',
-          },
-          {
-            agentId: QODER_AGENT_RUNTIME_KIND,
-            success: result.success,
-            findings: result.findings,
-            confidence: result.confidence,
-            message: result.conclusion,
-            partial: result.partial,
-            completion: result.completion,
-            conclusionContract: result.conclusionContract,
-            analysisContextFingerprint: options.analysisContextFingerprint,
-            terminationReason: result.terminationReason,
-            terminationMessage: result.terminationMessage,
-          },
-          result.findings,
-        );
-      }
+      executionLease.throwIfAborted();
+      sessionContext.addTurn(
+        query,
+        {
+          primaryGoal: query,
+          aspects: [],
+          expectedOutputType: 'diagnosis',
+          complexity: isQuickMode ? 'simple' : 'complex',
+          followUpType: previousTurns.length > 0 ? 'extend' : 'initial',
+        },
+        {
+          agentId: QODER_AGENT_RUNTIME_KIND,
+          success: result.success,
+          findings: result.findings,
+          confidence: result.confidence,
+          message: result.conclusion,
+          partial: result.partial,
+          completion: result.completion,
+          conclusionContract: result.conclusionContract,
+          sourceDerived: privateAnalysisContext || undefined,
+          analysisContextFingerprint: options.analysisContextFingerprint,
+          terminationReason: result.terminationReason,
+          terminationMessage: result.terminationMessage,
+        },
+        result.findings,
+      );
 
       // Update session state
       executionLease.throwIfAborted();

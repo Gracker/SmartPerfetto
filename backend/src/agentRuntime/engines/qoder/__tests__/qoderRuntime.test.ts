@@ -2679,6 +2679,45 @@ describe('QoderRuntime', () => {
       expect(snapshot.agentDialogue).toEqual([]);
       expect(snapshot.agentResponses).toEqual([]);
     });
+
+    it('keeps a private run\'s turn and session state in memory like the other runtimes', async () => {
+      // The MCP context is built before the SDK query starts; each run writes into its own context.
+      mockQuery.mockImplementation(() => {
+        const context = mockCreateClaudeMcpServer.mock.calls.slice(-1)[0][0] as any;
+        const run = mockCreateClaudeMcpServer.mock.calls.length;
+        context.analysisNotes.push({section: 'observation', content: `Private run ${run} note`, priority: 'low', timestamp: run});
+        context.uncertaintyFlags.push({topic: 'wiki', assumption: `Private run ${run} assumption`, question: 'Confirm?'});
+        return createMockSdkStream([
+          {type: 'system', subtype: 'init', session_id: 'private-sdk-session'},
+          {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
+        ]);
+      });
+      const runtime = createRuntime();
+      await runtime.analyze('private question', 'session-1', 'trace-1', {knowledgeSourceIds: ['private-wiki']});
+
+      // The creator's report and follow-ups read this state; only the opaque SDK state is withheld.
+      expect(runtime.getSessionNotes('session-1')).toEqual([expect.objectContaining({content: 'Private run 1 note'})]);
+      expect(runtime.getSessionUncertaintyFlags('session-1')).toEqual([expect.objectContaining({
+        assumption: 'Private run 1 assumption'})]);
+      expect(runtime.getSdkSessionId('session-1')).toBeUndefined();
+      const turns = sessionContextManager.getOrCreate('session-1', 'trace-1').getAllTurns();
+      expect(turns).toHaveLength(1);
+      expect(turns[0].result).toMatchObject({sourceDerived: true});
+
+      // Notes carry over within the session; uncertainty flags belong to their own turn.
+      await runtime.analyze('private follow-up', 'session-1', 'trace-1', {knowledgeSourceIds: ['private-wiki']});
+      expect(runtime.getSessionNotes('session-1').map(note => note.content)).toEqual(['Private run 1 note', 'Private run 2 note']);
+      expect(runtime.getSessionUncertaintyFlags('session-1')).toEqual([expect.objectContaining({
+        assumption: 'Private run 2 assumption'})]);
+
+      const snapshot = runtime.takeSnapshot('session-1', 'trace-1', {
+        conversationSteps: [], queryHistory: [], conclusionHistory: [], agentDialogue: [], agentResponses: [],
+        dataEnvelopes: [], knowledgeSourceIds: ['private-wiki'], runSequence: 1, conversationOrdinal: 1,
+      } as any);
+      expect(snapshot.analysisNotes).toEqual([]);
+      expect(snapshot.uncertaintyFlags).toEqual([]);
+      expect(snapshot.artifacts).toBeUndefined();
+    });
   });
 
   describe('lifecycle', () => {

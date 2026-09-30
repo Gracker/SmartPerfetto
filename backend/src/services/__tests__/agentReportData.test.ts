@@ -17,6 +17,7 @@ import {HTMLReportGenerator} from '../htmlReportGenerator';
 import {clearCodeAwareOutputGuards, registerCodeAwareCanary, registerOnDemandSourceLookupForEcho} from '../security/codeAwareOutputRegistry';
 import {sanitizeSourceReference} from '../codebase/sourceUseDecision';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import {sessionContextManager} from '../../agent/context/enhancedSessionContext';
 
 describe('buildAgentDrivenReportData private knowledge projection', () => {
   const baseResult = (sessionId: string) => ({
@@ -45,6 +46,10 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
       'PRIVATE_ACTION_CANARY',
       'PRIVATE_STEP_CANARY',
       'PRIVATE_HISTORY_CANARY',
+      'PRIVATE_NOTE_CANARY',
+      'PRIVATE_PLAN_CANARY',
+      'PRIVATE_FLAG_CANARY',
+      'PRIVATE_DIALOGUE_CANARY',
     ].forEach(canary => registerCodeAwareCanary(sessionId, canary));
     const report = buildAgentDrivenReportData({
       session: {
@@ -54,20 +59,28 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
         codeAwareMode: 'provider_send',
         codebaseIds: ['private-app'],
         outputLanguage: 'en',
+        // A private run's snapshot carries none of this state; the report reads the live runtime.
         orchestrator: {
-          getSessionNotes: () => [{content: 'PRIVATE_NOTE_CANARY'}],
-          getSessionPlan: () => ({successCriteria: 'PRIVATE_PLAN_CANARY'}),
-          getSessionUncertaintyFlags: () => [{description: 'PRIVATE_FLAG_CANARY'}],
+          getSessionNotes: () => [{content: `${source} PRIVATE_NOTE_CANARY`}],
+          getSessionPlan: () => ({phases: [], successCriteria: `${source} PRIVATE_PLAN_CANARY`}),
+          getSessionUncertaintyFlags: () => [{topic: 'frame pacing', assumption: `${source} PRIVATE_FLAG_CANARY`,
+            question: 'Which thread schedules the frame?'}],
         },
         hypotheses: [{description: 'PRIVATE_HYPOTHESIS_CANARY'}],
-        agentDialogue: [{content: 'PRIVATE_DIALOGUE_CANARY'}],
+        agentDialogue: [{content: `${source} PRIVATE_DIALOGUE_CANARY`}],
         conversationSteps: [{text: `${source} PRIVATE_STEP_CANARY`}],
         dataEnvelopes: [{meta: {kind: 'sql'}, data: {rows: [[1]]}, display: {type: 'table'}}],
         agentResponses: [{response: 'PRIVATE_RESPONSE_CANARY'}],
-        runSequence: 1,
-        queryHistory: [{query: 'PRIVATE_QUERY_HISTORY_CANARY'}],
+        runSequence: 2,
+        queryHistory: [
+          {turn: 1, query: 'first look at scheduleFrame api_key="PRIVATE_HISTORY_SECRET_123456"', timestamp: 1, sourceDerived: true},
+          {turn: 2, query: 'analyze scheduleFrame jank api_key="PRIVATE_QUERY_SECRET_123456"', timestamp: 2, sourceDerived: true},
+        ],
         conclusionHistory: [{conclusion: 'PRIVATE_HISTORY_CANARY'}],
         _lastSnapshot: {
+          analysisNotes: [],
+          analysisPlan: null,
+          uncertaintyFlags: [],
           codebaseSnapshot: [{
             codebaseId: 'private-app',
             displayName: 'Private App',
@@ -131,15 +144,22 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
     expect(report.result.claimVerificationResult).toBeDefined();
     expect(report.result.identityResolutions).toHaveLength(1);
     expect(report.result.uiActionProposals).toHaveLength(1);
-    expect(report.dialogue).toEqual([]);
+    expect(report.dialogue).toEqual([{content: expect.stringContaining(source)}]);
     expect(report.conversationTimeline).toEqual([{text: expect.stringContaining(source)}]);
     expect(report).not.toHaveProperty('agentResponses');
-    expect(report.analysisNotes).toEqual([]);
-    expect(report.analysisPlan).toBeNull();
-    expect(report.uncertaintyFlags).toEqual([]);
+    // The creator reads the plan, notes and uncertainty flags a public run's report shows.
+    expect(report.analysisNotes).toEqual([{content: expect.stringContaining(source)}]);
+    expect(report.analysisPlan).toEqual({phases: [], successCriteria: expect.stringContaining(source)});
+    expect(report.uncertaintyFlags).toEqual([{topic: 'frame pacing', assumption: expect.stringContaining(source),
+      question: 'Which thread schedules the frame?'}]);
     expect(report.outputLanguage).toBe('en');
-    // The creator reads their own question, source names included; its credential stays masked.
+    // The creator reads their own questions, source names included; each credential stays masked.
     expect(report.query).toBe('analyze scheduleFrame jank api_key="[REDACTED_SECRET]"');
+    expect(report.queryHistory?.map(entry => entry.query)).toEqual([
+      'first look at scheduleFrame api_key="[REDACTED_SECRET]"',
+      'analyze scheduleFrame jank api_key="[REDACTED_SECRET]"',
+    ]);
+    expect(report.privateContext).toBe(true);
     expect(report.sourceContext).toEqual({
       selected: [{
         codebaseId: 'private-app',
@@ -178,6 +198,9 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
     expect(html).toContain('Private App');
     expect(html).toContain('Private Kernel');
     expect(html).toContain('Trace, Skill, and SQL evidence remain authoritative');
+    expect(html).toContain('Contains private source code or knowledge-base content, visible only to you');
+    expect(html).toContain('first look at scheduleFrame');
+    expect(html).not.toContain('PRIVATE_');
     expect(JSON.stringify(report)).not.toContain('PRIVATE_');
     clearCodeAwareOutputGuards(sessionId);
   });
@@ -402,5 +425,53 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
     expect(report.result.completion).toEqual(emptyResult.completion);
     expect(report.result.runtimeAppendix?.text).toBe('Separate runtime provenance.');
     expect(report.conclusionHistory?.[0].conclusion).toBe('Prior completed report.');
+  });
+
+  it('reads a public run\'s session state from its snapshot first and marks nothing owner-only', () => {
+    const sessionId = 'public-report-state';
+    const session = {sessionId, traceId: 'trace-a', query: 'second question', hypotheses: [], agentDialogue: [],
+      conversationSteps: [], dataEnvelopes: [], agentResponses: [], runSequence: 2, conclusionHistory: [],
+      queryHistory: [{turn: 1, query: 'first question', timestamp: 1}, {turn: 2, query: 'second question', timestamp: 2}],
+      orchestrator: {getSessionNotes: () => [{content: 'live note'}], getSessionPlan: () => null,
+        getSessionUncertaintyFlags: () => [{topic: 'live', assumption: 'live flag', question: 'live?'}]},
+      _lastSnapshot: {analysisNotes: [{content: 'snapshot note'}]}};
+    const report = buildAgentDrivenReportData({session: session as any, result: baseResult(sessionId)});
+
+    expect(report.analysisNotes).toEqual([{content: 'snapshot note'}]);
+    expect(report.uncertaintyFlags).toEqual([{topic: 'live', assumption: 'live flag', question: 'live?'}]);
+    expect(report.queryHistory).toEqual(session.queryHistory);
+    expect(report).not.toHaveProperty('privateContext');
+    expect(new HTMLReportGenerator().generateAgentDrivenHTML(report)).not.toContain('<div class="private-context-notice">');
+  });
+
+  it('summarizes every turn\'s findings of a private session under the owner projection', () => {
+    const sessionId = 'private-multi-turn-report';
+    const source = 'fun renderFrame() { inflateLayout() }';
+    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'turn-source', codebaseId: 'private-app',
+      filePath: 'Frame.kt', text: source}]);
+    registerCodeAwareCanary(sessionId, 'PRIVATE_TURN_CANARY');
+    const finding = (id: string, title: string) => ({id, title, severity: 'warning', description: title,
+      confidence: 0.7, source: 'test'}) as any;
+    const context = sessionContextManager.getOrCreate(sessionId, 'trace-a');
+    const intent = {primaryGoal: 'frames', aspects: [], expectedOutputType: 'diagnosis', complexity: 'complex',
+      followUpType: 'initial'} as any;
+    const firstFindings = [finding('first', `${source} PRIVATE_TURN_CANARY`)];
+    context.addTurn('first', intent, {agentId: 'test', success: true, findings: firstFindings} as any, firstFindings);
+    const secondFindings = [finding('second', 'second turn finding')];
+    context.addTurn('second', intent, {agentId: 'test', success: true, findings: secondFindings} as any, secondFindings);
+    try {
+      const report = buildAgentDrivenReportData({
+        session: {sessionId, traceId: 'trace-a', query: 'second', codeAwareMode: 'provider_send',
+          codebaseIds: ['private-app'], orchestrator: {}, hypotheses: [], agentDialogue: [], conversationSteps: [],
+          dataEnvelopes: [], agentResponses: [], runSequence: 2} as any,
+        result: {...baseResult(sessionId), findings: secondFindings},
+      });
+      expect(report.result.findings.map(item => item.id)).toEqual(['first', 'second']);
+      expect(report.result.findings[0].title).toContain(source);
+      expect(JSON.stringify(report)).not.toContain('PRIVATE_TURN_CANARY');
+    } finally {
+      sessionContextManager.remove(sessionId);
+      clearCodeAwareOutputGuards(sessionId);
+    }
   });
 });

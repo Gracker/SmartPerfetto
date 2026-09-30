@@ -201,6 +201,8 @@ export interface AgentDrivenReportData {
   backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
   /** Safe selected-vs-used source provenance for code-aware sessions. */
   sourceContext?: AgentReportSourceContext;
+  /** The reported run may have read private source or knowledge: the report is its creator's alone. */
+  privateContext?: boolean;
 }
 
 export class HTMLReportGenerator {
@@ -4149,6 +4151,10 @@ export class HTMLReportGenerator {
 	    .report-save-status {
 	      align-self: center; min-height: 18px; font-size: 12px; opacity: 0.9;
 	    }
+	    .private-context-notice {
+	      display: inline-block; margin-top: 12px; padding: 6px 12px; border-radius: 8px;
+	      background: rgba(255,255,255,0.2); font-size: 13px; font-weight: 600;
+	    }
 	    .badge {
 	      display: inline-block; padding: 4px 12px; border-radius: 12px;
 	      font-size: 12px; font-weight: 600;
@@ -4531,6 +4537,9 @@ export class HTMLReportGenerator {
 	        <span>⏱️ ${new Date(timestamp).toLocaleString(locale)}</span>
 	        <span class="badge badge-agent">Agent-Driven Architecture</span>
 	      </div>
+	      ${data.privateContext ? `<div class="private-context-notice">🔒 ${localize(outputLanguage,
+	        '含私有源码/知识库内容，仅本人可见',
+	        'Contains private source code or knowledge-base content, visible only to you')}</div>` : ''}
 	      <div class="report-actions">
 	        <button class="report-action-btn" type="button" onclick="saveSmartPerfettoReport()">💾 ${localize(outputLanguage, '保存网页文件', 'Save HTML Report')}</button>
 	        <span class="report-save-status" id="report-save-status"></span>

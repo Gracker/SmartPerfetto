@@ -53,6 +53,7 @@ const CONSUMER_FILES = [
   'routes/agentResumeRoutes.ts',
   'routes/agentReportRoutes.ts',
   'cli-user/services/cliAnalyzeService.ts',
+  'services/agentReportData.ts',
   'services/persistAgentSession.ts',
 ] as const;
 

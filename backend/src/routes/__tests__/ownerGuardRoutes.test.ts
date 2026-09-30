@@ -444,7 +444,8 @@ describe('owner guard for agent session routes', () => {
         outputLanguage: 'en',
         scenes: [],
         conversationSteps: [{text: 'PRIVATE_TIMELINE_CANARY'}],
-        queryHistory: [],
+        queryHistory: [{turn: 1, query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key="PRIVATE_QUERY_SECRET_123456"',
+          timestamp: 1}],
         conclusionHistory: [{conclusion: 'PRIVATE_HISTORY_CANARY'}],
         hypotheses: [],
         orchestrator: {
@@ -549,9 +550,12 @@ describe('owner guard for agent session routes', () => {
         resultContract: expect.any(Object),
         conversationTimeline: [{text: 'PRIVATE_TIMELINE_CANARY'}],
         conclusionHistory: [{conclusion: 'PRIVATE_HISTORY_CANARY'}],
-        analysisNotes: [],
-        analysisPlan: null,
-        uncertaintyFlags: [],
+        // The plan, notes and flags a public run's report shows are the creator's to read.
+        analysisNotes: ['PRIVATE_NOTE_CANARY'],
+        analysisPlan: {text: 'PRIVATE_PLAN_CANARY'},
+        uncertaintyFlags: ['PRIVATE_FLAG_CANARY'],
+        queryHistory: [{turn: 1, query: 'PRIVATE_QUERY_CANARY PRIVATE_REPORT_CANARY api_key=[REDACTED_SECRET]',
+          timestamp: 1}],
       }));
       // The log is written through the strict projection; the owner may locate it.
       expect(res.body.report.logFile).toBe('/tmp/private-session.log');
@@ -568,9 +572,8 @@ describe('owner guard for agent session routes', () => {
         conclusion: 'safe conclusion PRIVATE_REPORT_CANARY', partial: true, terminationReason: 'execution_error',
       }));
       // Ordinary source/query quotations are owner-visible; registered canaries
-      // and raw prompt/runtime state remain protected independently.
-      for (const canary of [...protectedCanaries, 'PRIVATE_QUERY_SECRET_123456', 'PRIVATE_NOTE_CANARY',
-        'PRIVATE_PLAN_CANARY', 'PRIVATE_FLAG_CANARY']) {
+      // and credentials remain protected independently.
+      for (const canary of [...protectedCanaries, 'PRIVATE_QUERY_SECRET_123456']) {
         expect(JSON.stringify(res.body)).not.toContain(canary);
       }
     } finally {

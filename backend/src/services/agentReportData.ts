@@ -17,6 +17,7 @@
 
 import {projectSceneTimelineForClient} from '../agent/scene/sceneTimelineProjection';
 import type { Finding } from '../agent/types';
+import type {AnalysisResult, IOrchestrator} from '../agent/core/orchestratorTypes';
 import type { AgentDrivenReportData } from './htmlReportGenerator';
 import type { AnalyzeManagedSession } from '../assistant/application/agentAnalyzeSessionService';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
@@ -135,8 +136,8 @@ interface ReportResultLike {
   findings: Finding[];
   hypotheses: AgentDrivenReportData['hypotheses'];
   conclusion: string;
-  sceneTimeline?: import('../agent/core/orchestratorTypes').AnalysisResult['sceneTimeline'];
-  sceneReport?: import('../agent/core/orchestratorTypes').AnalysisResult['sceneReport'];
+  sceneTimeline?: AnalysisResult['sceneTimeline'];
+  sceneReport?: AnalysisResult['sceneReport'];
   turnIntent?: AgentDrivenReportData['result']['turnIntent'];
   completion?: AgentDrivenReportData['result']['completion'];
   outputOrigin?: AgentDrivenReportData['result']['outputOrigin'];
@@ -169,6 +170,44 @@ export interface BuildAgentReportDataInput {
   privateContext: AnalysisPrivateContextMarker;
 }
 
+type ReportSessionState = Required<Pick<AgentDrivenReportData, 'queryHistory' | 'conclusionHistory' |
+  'conversationTimeline' | 'dialogue' | 'analysisNotes' | 'analysisPlan' | 'uncertaintyFlags'>>;
+type ReportSnapshotState = Partial<Pick<SessionStateSnapshot, 'analysisNotes' | 'analysisPlan' | 'uncertaintyFlags'>>;
+
+/**
+ * The session state a report shows, shared by the HTML builder and the report
+ * route: questions, conclusions, timeline, plan, notes and uncertainty flags.
+ * A public run reads its snapshot first. A private run's snapshot has none of
+ * the runtime state, since every runtime drops it before the product persists
+ * the snapshot, so its creator's report reads the live runtime state; all of
+ * it passes the owner projection.
+ */
+export function projectReportSessionState(input: {
+  session: {
+    sessionId: string;
+    queryHistory?: ReportSessionState['queryHistory'];
+    conclusionHistory?: ReportSessionState['conclusionHistory'];
+    conversationSteps?: ReportSessionState['conversationTimeline'];
+    agentDialogue?: ReportSessionState['dialogue'];
+    orchestrator?: Pick<IOrchestrator, 'getSessionNotes' | 'getSessionPlan' | 'getSessionUncertaintyFlags'>;
+  };
+  privateKnowledge: boolean;
+  loadSnapshot?: () => ReportSnapshotState | null | undefined;
+}): ReportSessionState {
+  const {session: {sessionId, orchestrator, ...session}, privateKnowledge} = input;
+  const snapshot = privateKnowledge ? undefined : input.loadSnapshot?.();
+  const state: ReportSessionState = {
+    queryHistory: session.queryHistory ?? [],
+    conclusionHistory: session.conclusionHistory ?? [],
+    conversationTimeline: Array.isArray(session.conversationSteps) ? session.conversationSteps : [],
+    dialogue: session.agentDialogue ?? [],
+    analysisNotes: snapshot?.analysisNotes ?? orchestrator?.getSessionNotes?.(sessionId) ?? [],
+    analysisPlan: snapshot?.analysisPlan ?? orchestrator?.getSessionPlan?.(sessionId) ?? null,
+    uncertaintyFlags: snapshot?.uncertaintyFlags ?? orchestrator?.getSessionUncertaintyFlags?.(sessionId) ?? [],
+  };
+  return privateKnowledge ? projectOwnerStructuredValue(sessionId, state) : state;
+}
+
 export function buildAgentDrivenReportData(
   input: BuildAgentReportDataInput,
 ): AgentDrivenReportData {
@@ -184,43 +223,36 @@ export function buildAgentDrivenReportData(
   // Cumulative findings: dedup across all persisted turns. `session.result`
   // only carries the current turn's findings, but multi-turn reports need
   // the full picture to stay consistent with the timeline section.
-  let cumulativeResult: ReportResultLike = privateKnowledge
-    ? projectOwnerAnalysisResult(
-        session.sessionId,
-        result as import('../agent/core/orchestratorTypes').AnalysisResult,
-        outputLanguage,
-      )
-    : result;
+  let cumulativeResult: ReportResultLike = result;
   try {
-    const ctx = sessionContextManager.get(session.sessionId, session.traceId);
-    if (ctx && !privateKnowledge) {
-      const allTurns = ctx.getAllTurns();
-      if (allTurns.length > 1) {
-        const allFindings = allTurns.flatMap((t) => t.findings || []);
-        const seen = new Set<string>();
-        const deduped = allFindings.filter((f) => {
-          if (seen.has(f.id)) return false;
-          seen.add(f.id);
-          return true;
-        });
-        cumulativeResult = { ...result, findings: deduped };
-      }
+    const allTurns = sessionContextManager.get(session.sessionId, session.traceId)?.getAllTurns() ?? [];
+    if (allTurns.length > 1) {
+      const allFindings = allTurns.flatMap((t) => t.findings || []);
+      const seen = new Set<string>();
+      const deduped = allFindings.filter((f) => {
+        if (seen.has(f.id)) return false;
+        seen.add(f.id);
+        return true;
+      });
+      cumulativeResult = { ...result, findings: deduped };
     }
   } catch {
     // Fallback to current turn only — non-fatal.
   }
+  if (privateKnowledge) {
+    cumulativeResult = projectOwnerAnalysisResult(
+      session.sessionId,
+      cumulativeResult as AnalysisResult,
+      outputLanguage,
+    );
+  }
 
   const traceInfo = getTraceProcessorService().getTrace(session.traceId);
   const traceStartNs = traceInfo?.metadata?.startTime;
-  const snapshot = (session as { _lastSnapshot?: {
-    analysisNotes?: unknown[];
-    analysisPlan?: unknown;
-    uncertaintyFlags?: unknown[];
-    comparisonReportSection?: AgentDrivenReportData['comparisonReportSection'];
-    backgroundKnowledgeReferences?: AgentDrivenReportData['backgroundKnowledgeReferences'];
-    codebaseSnapshot?: SessionStateSnapshot['codebaseSnapshot'];
-    codeLookupSummary?: SessionStateSnapshot['codeLookupSummary'];
-  } })._lastSnapshot;
+  // persistAgentTurn (HTTP and CLI) stashes the run's snapshot on the session.
+  const snapshot = (session as {_lastSnapshot?: Partial<Pick<SessionStateSnapshot, 'analysisNotes' | 'analysisPlan' |
+    'uncertaintyFlags' | 'comparisonReportSection' | 'backgroundKnowledgeReferences' | 'codebaseSnapshot' |
+    'codeLookupSummary'>>})._lastSnapshot;
   const hypotheses = privateKnowledge
     ? projectOwnerHypotheses(session.sessionId, session.hypotheses as any[])
     : session.hypotheses;
@@ -258,30 +290,13 @@ export function buildAgentDrivenReportData(
     } as AgentDrivenReportData['result'],
     ...(input.backendBaseUrl ? {backendBaseUrl: input.backendBaseUrl} : {}),
     hypotheses: hypotheses as AgentDrivenReportData['hypotheses'],
-    dialogue: privateKnowledge ? [] : session.agentDialogue as AgentDrivenReportData['dialogue'],
-    conversationTimeline: privateKnowledge
-      ? projectOwnerStructuredValue(session.sessionId, session.conversationSteps)
-      : session.conversationSteps as AgentDrivenReportData['conversationTimeline'],
+    ...projectReportSessionState({session, privateKnowledge, loadSnapshot: () => snapshot}),
     dataEnvelopes: (privateKnowledge
       ? projectOwnerDataEnvelopes(session.sessionId, session.dataEnvelopes as any[])
       : session.dataEnvelopes) as AgentDrivenReportData['dataEnvelopes'],
     timestamp: Date.now(),
     conversationTurns: session.runSequence || 1,
-    queryHistory: privateKnowledge ? [] : session.queryHistory || [],
-    conclusionHistory: privateKnowledge ? projectOwnerStructuredValue(session.sessionId, session.conclusionHistory || []) : session.conclusionHistory || [],
-    // Snapshot-first — the HTTP route's persistence step stashes `_lastSnapshot`
-    // on the session, the CLI's `persistTurnToBackend` does the same. Callers
-    // that skip the snapshot step (tests, partial builds) fall through to
-    // the orchestrator getters.
-    analysisNotes: privateKnowledge ? [] : (snapshot?.analysisNotes as AgentDrivenReportData['analysisNotes'])
-      ?? (typeof session.orchestrator.getSessionNotes === 'function'
-        ? session.orchestrator.getSessionNotes(session.sessionId) : []),
-    analysisPlan: privateKnowledge ? null : (snapshot?.analysisPlan as AgentDrivenReportData['analysisPlan'])
-      ?? (typeof session.orchestrator.getSessionPlan === 'function'
-        ? session.orchestrator.getSessionPlan(session.sessionId) : null),
-    uncertaintyFlags: privateKnowledge ? [] : (snapshot?.uncertaintyFlags as AgentDrivenReportData['uncertaintyFlags'])
-      ?? (typeof session.orchestrator.getSessionUncertaintyFlags === 'function'
-        ? session.orchestrator.getSessionUncertaintyFlags(session.sessionId) : []),
+    ...(privateKnowledge ? {privateContext: true} : {}),
     comparisonReportSection: privateKnowledge
       ? projectOwnerStructuredValue(
           session.sessionId,
