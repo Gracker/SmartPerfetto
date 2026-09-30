@@ -30,7 +30,8 @@ import {
 } from '../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import type {RunManifestScope} from '../types/selfEvolution';
-import type {AnalysisInvestigationContract, AnalysisInvestigationRequirement} from '../types/analysisInvestigation';
+import {INVESTIGATION_CONDITION_OPERATORS, type AnalysisInvestigationContract,
+  type AnalysisInvestigationRequirement} from '../types/analysisInvestigation';
 
 /**
  * Historical phase hint from strategy frontmatter `phase_hints`.
@@ -440,7 +441,7 @@ function parseInvestigationRequirement(value: unknown): AnalysisInvestigationReq
       // suppress the obligation on every run of the scene.
       if (!hasOnlyKeys(value.condition, ['kind', 'description', 'metric_id', 'operator', 'value'])
         || !nonEmptyString(value.condition.metric_id)
-        || !['gt', 'gte', 'lt', 'lte'].includes(String(value.condition.operator))
+        || !(INVESTIGATION_CONDITION_OPERATORS as readonly string[]).includes(String(value.condition.operator))
         || typeof value.condition.value !== 'number' || !Number.isFinite(value.condition.value)) {
         throw new Error('strategy_invalid_investigation_condition');
       }

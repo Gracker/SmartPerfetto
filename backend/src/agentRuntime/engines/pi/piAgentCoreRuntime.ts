@@ -2229,6 +2229,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
     const { toolDefinitions, sourceUse } = createClaudeMcpServer({
       sceneRunContext,
+      runId: executionLease.key.runId!,
       toolObserver, canInvokeTool, analysisHistoryReader,
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true

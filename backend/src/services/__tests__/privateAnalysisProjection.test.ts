@@ -896,7 +896,12 @@ describe('investigation assessment result surfaces', () => {
         value: 0, unit: 'ns', coverage: '100', denominator: '100'}],
       requirements: [{requirementId: 'scheduler', domain: 'scheduling', applicability: 'applicable',
         coverage: 'covered', acquisition: 'observed', evidenceStatus: 'observed', scopeMatch: 'matched',
-        contentLocations: [{start: 0, end: 20}], evidenceRecordIds: ['capture-1']}]};
+        contentLocations: [{start: 0, end: 20}], evidenceRecordIds: ['capture-1']}],
+      ledgerAcquisition: [{requirementId: 'scheduler', domain: 'scheduling', applicability: 'applicable',
+        declaredMetrics: ['system.thread.state.duration'], status: 'observed', observedMetrics: ['system.thread.state.duration']},
+      {requirementId: 'backpressure', domain: 'dependency_chain', applicability: 'not_applicable', declaredMetrics: [],
+        condition: {metricId: 'render.frame.buffer_stuffing.rate', operator: 'gte', value: 30, observed: 12, met: false},
+        status: 'not_declared', observedMetrics: []}]};
     result.investigationAssessment.binding.evidenceRecordsFingerprint = analysisDeliveryFingerprint(result.investigationAssessment.evidenceRecords);
     result.deliveryAssurance = {...result.deliveryAssurance!, investigation: 'passed', investigationEvidence: 'passed'};
     return result;
@@ -923,6 +928,25 @@ describe('investigation assessment result surfaces', () => {
       expect(copy.deliveryAssurance?.investigationEvidence).toBe('not_checked');
       expect(copy.completion).toEqual(result.completion);
     });
+
+  it('withdraws ledger acquisition with the rest of an invalidated assessment', () => {
+    const copy = projectPrivateAnalysisDelivery(withInvestigation(), {conclusion: 'changed body'}, text => text,
+      {privateMetadata: false});
+    expect(copy.investigationAssessment?.ledgerAcquisition).toEqual([
+      expect.objectContaining({requirementId: 'scheduler', applicability: 'applicable', status: 'unknown', observedMetrics: []}),
+      expect.objectContaining({requirementId: 'backpressure', applicability: 'unknown', status: 'unknown', observedMetrics: []})]);
+    expect(copy.deliveryAssurance?.investigation).toBe('not_checked');
+  });
+
+  it('drops a ledger row outside the closed vocabulary and invalidates its assessment', () => {
+    const result = withInvestigation();
+    const [row] = result.investigationAssessment!.ledgerAcquisition!;
+    result.investigationAssessment!.ledgerAcquisition = [{...row, status: 'proved'} as never];
+    const copy = copyAnalysisResultForSnapshot(result);
+    expect(copy.investigationAssessment?.ledgerAcquisition).toEqual([]);
+    expect(copy.investigationAssessment?.requirements[0].coverage).toBe('unknown');
+    expect(copy.deliveryAssurance?.investigation).toBe('not_checked');
+  });
 
   it('projects original scalar values without converting null, zero, false or exact ns strings', () => {
     const result = withInvestigation();

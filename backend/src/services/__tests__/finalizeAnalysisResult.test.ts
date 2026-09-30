@@ -13,8 +13,8 @@ import * as strategyTemplates from '../../agentv3/strategyLoader';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {createDataEnvelope} from '../../types/dataContract';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../types/identityContract';
-import {captureEvidenceTable} from '../evidence/evidenceCapture';
-import {attachInvestigationEvidence} from '../evidence/investigationEvidenceLedger';
+import {captureEvidenceTable, evidenceCaptureHash} from '../evidence/evidenceCapture';
+import {attachInvestigationEvidence, recordCaptureToolCall} from '../evidence/investigationEvidenceLedger';
 import type {EvidenceReadView} from '../evidence/evidenceReadView';
 import {finalizeAnalysisResult, type AnalysisFinalizationOwner} from '../finalizeAnalysisResult';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticAssessment';
@@ -32,7 +32,7 @@ import type {AnalysisRunSelection} from '../../agentRuntime/analysisRunSpec';
 import type {AnalysisInvestigationRequirement} from '../../types/analysisInvestigation';
 import {investigationRequirementNeedsReview} from '../finalInvestigationContractGate';
 import {createRunManifestLifecycle, withRunManifestLifecycle, clearRunManifestLifecyclesForTests} from '../selfEvolution/runManifestLifecycle';
-import {projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
+import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, projectPrivateAnalysisResult} from '../security/privateAnalysisProjection';
 
 const registry = buildStrategyRegistrySnapshotFromDefinitions({definitions: [], overlayGeneration: 'final-result-test'});
 
@@ -534,13 +534,15 @@ describe('issued investigation ledger through finalization', () => {
           settings.partialSibling && index === 1 ? 'partial' : 'observed'])};
       const witness = captureEvidenceTable(data);
       attachInvestigationEvidence(witness, {skillId: 'cpu_fixture', stepId: 'root', traceId: 'trace',
-        definitionFingerprint: 'producer-v1', selectedSqlHash: 'actual-sql', declaration: {
+        definitionFingerprint: evidenceCaptureHash('producer-v1'), selectedSqlHash: evidenceCaptureHash('actual-sql'), declaration: {
           window: {start: 'start', end: 'end'}, identity: {cpu: 'cpu'},
           metrics: valueColumns.map((column, index) => ({domain: 'cpu_frequency',
             metric_id: index === 0 ? 'system.cpu.frequency.time_weighted' : `system.cpu.frequency.sibling_${index}`,
             value: column, unit: 'kHz', status: 'status', aggregation: 'window_time_weighted'}))}});
       const envelope = createDataEnvelope(data, {type: 'skill_result', source: 'cpu_fixture', title: 'CPU',
-        traceId: 'trace', traceSide: 'current', sourceToolCallId: 'system-call', evidenceRefId: 'data:system', executionStatus: 'observed'});
+        traceId: 'trace', traceSide: 'current', sourceToolCallId: 'fixture:1:system', evidenceRefId: 'data:system', executionStatus: 'observed'});
+      // The runtime call id, not the synthetic producer id, joins a capture to its observation.
+      recordCaptureToolCall(witness, 'system-call');
       store.registerStandaloneEvidenceCapture(witness, {meta: envelope.meta, display: envelope.display, originRunId});
     }
     const strategy: StrategyDefinition = {scene: 'general', classificationDescription: 'General.', strategyKind: 'normal',
@@ -594,6 +596,25 @@ describe('issued investigation ledger through finalization', () => {
     expect(final.result.investigationAssessment?.evidenceRecords?.[0]).toMatchObject({originRunId,
       origin: originRunId === 'run' ? 'current_run' : 'reused'});
     expect(final.result.deliveryAssurance).toMatchObject({completion: 'passed', claims: 'passed', investigationEvidence: 'passed'});
+  });
+
+  // Every delivery surface reads the finalized assessment through an explicit
+  // field copier, and the projection treats any difference from its input as
+  // tampering. A field the finalizer emits but the copier does not know
+  // (`ledgerAcquisition` once) therefore turned every covered row into
+  // `coverage: unknown` on SSE, reports and snapshots.
+  it('delivers the finalized investigation assessment unchanged through owner and snapshot projection', async () => {
+    const final = await investigationRun().run();
+    const assessment = final.result.investigationAssessment!;
+    expect(assessment.status).toBe('checked');
+    expect(assessment.ledgerAcquisition).toEqual([expect.objectContaining({requirementId: 'system-frequency',
+      status: 'observed', observedMetrics: ['system.cpu.frequency.time_weighted']})]);
+    for (const delivered of [projectOwnerAnalysisResult(final.result.sessionId, final.result, 'en'),
+      copyAnalysisResultForSnapshot(final.result)]) {
+      expect(delivered.investigationAssessment).toEqual(assessment);
+      expect(delivered.investigationAssessment?.requirements[0]).toMatchObject({coverage: 'covered', acquisition: 'observed'});
+      expect(delivered.deliveryAssurance).toMatchObject({investigation: 'passed', investigationEvidence: 'passed'});
+    }
   });
 
   it('rejects a serialized ledger while preserving original claim evidence and native completion', async () => {

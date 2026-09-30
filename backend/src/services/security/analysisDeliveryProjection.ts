@@ -4,6 +4,9 @@
 
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import type {InvestigationEvidenceRecord} from '../evidence/investigationEvidenceLedger';
+import type {FinalInvestigationAssessment,
+  InvestigationLedgerAcquisitionRow} from '../../types/analysisInvestigationAssessment';
+import {INVESTIGATION_CONDITION_OPERATORS} from '../../types/analysisInvestigation';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {
   analysisDeliveryFingerprint,
@@ -52,6 +55,11 @@ function opaqueId(value: unknown): string {
     /^[A-Za-z0-9_.:-]+$/.test(value) ? value : '';
 }
 
+/** A text field projected for its audience, kept only when it is still an opaque identifier. */
+function projectedId(value: unknown, projectText: (text: string) => string): string {
+  return opaqueId(typeof value === 'string' ? projectText(value) : value);
+}
+
 function fingerprint(value: unknown): string {
   return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) ? value : '';
 }
@@ -70,7 +78,7 @@ function copyInvestigationEvidenceRecords(values: readonly unknown[], projectTex
         !member(raw.traceSide, ['current', 'reference']) ||
         !(raw.value === null || typeof raw.value === 'string' || typeof raw.value === 'boolean' ||
           (typeof raw.value === 'number' && Number.isFinite(raw.value)))) return [];
-    const id = (value: unknown) => opaqueId(typeof value === 'string' ? projectText(value) : value);
+    const id = (value: unknown) => projectedId(value, projectText);
     const optionalId = (key: 'evidenceRefId' | 'artifactId' | 'sourceToolCallId' | 'originRunId') =>
       raw[key] === undefined ? {} : {[key]: id(raw[key])};
     const nullableIdentity = (key: 'cpu' | 'ucpu' | 'machineId') => raw[key] === null
@@ -99,6 +107,32 @@ function copyInvestigationEvidenceRecords(values: readonly unknown[], projectTex
   }));
 }
 
+/** Exactly the row statuses the type allows; a status added there fails to compile here. */
+const LEDGER_ACQUISITION_STATUSES = Object.keys({observed: true, partial: true, evidence_absent: true,
+  not_applicable: true, not_declared: true, unknown: true,
+} satisfies Record<InvestigationLedgerAcquisitionRow['status'], true>) as InvestigationLedgerAcquisitionRow['status'][];
+
+/** An explicit public projection of the ledger-only acquisition rows. */
+function copyLedgerAcquisitionRows(values: readonly unknown[], projectText: (text: string) => string): InvestigationLedgerAcquisitionRow[] {
+  const id = (value: unknown) => projectedId(value, projectText);
+  const metrics = (value: unknown) => Array.isArray(value) ? value.map(id).filter(Boolean) : [];
+  const nullableFinite = (value: unknown): value is number | null =>
+    value === null || (typeof value === 'number' && Number.isFinite(value));
+  return preserveProjectedFieldOrder(values, values.flatMap(raw => {
+    if (!record(raw) || !member(raw.applicability, ['applicable', 'not_applicable', 'unknown']) ||
+        !member(raw.status, LEDGER_ACQUISITION_STATUSES)) return [];
+    const condition = raw.condition;
+    return [{requirementId: id(raw.requirementId), domain: id(raw.domain), applicability: raw.applicability,
+      declaredMetrics: metrics(raw.declaredMetrics),
+      ...(record(condition) && member(condition.operator, INVESTIGATION_CONDITION_OPERATORS) &&
+        typeof condition.value === 'number' && Number.isFinite(condition.value) && nullableFinite(condition.observed) &&
+        (condition.met === null || typeof condition.met === 'boolean')
+        ? {condition: {metricId: id(condition.metricId), operator: condition.operator, value: condition.value,
+          observed: condition.observed, met: condition.met}} : {}),
+      status: raw.status, observedMetrics: metrics(raw.observedMetrics)}];
+  }));
+}
+
 function candidate(value: AnalysisCandidateIdentity): AnalysisCandidateIdentity {
   return {
     candidateRef: opaqueId(value.candidateRef),
@@ -121,6 +155,15 @@ function copyAssuranceStatus(value: unknown): AnalysisAssuranceStatus {
   return member(value, ['not_applicable', 'not_checked', 'unavailable', 'coverage_incomplete', 'passed', 'failed'])
     ? value : 'not_checked';
 }
+
+/**
+ * Every top-level field `copyAnalysisDeliveryFields` copies for an investigation
+ * assessment. The projection treats any field it drops as tampering and
+ * withdraws the whole assessment, so a field added to the type without a
+ * copier fails to compile here instead of silently turning every row unknown.
+ */
+const COPIED_INVESTIGATION_ASSESSMENT_FIELDS = {schemaVersion: true, binding: true, status: true, requirements: true,
+  evidenceRecords: true, ledgerAcquisition: true} as const satisfies Record<keyof FinalInvestigationAssessment, true>;
 
 /** Explicit serialization only. These stored fields never issue current-run authority. */
 export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): AnalysisDeliveryFields {
@@ -219,6 +262,8 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       schemaVersion: 1, status: investigation.status,
       ...(Array.isArray(investigation.evidenceRecords)
         ? {evidenceRecords: copyInvestigationEvidenceRecords(investigation.evidenceRecords, text => text)} : {}),
+      ...(Array.isArray(investigation.ledgerAcquisition)
+        ? {ledgerAcquisition: copyLedgerAcquisitionRows(investigation.ledgerAcquisition, text => text)} : {}),
       binding: {...candidate(binding),
         conclusionContractFingerprint: fingerprint(binding.conclusionContractFingerprint),
         evidenceFingerprint: fingerprint(binding.evidenceFingerprint),
@@ -295,6 +340,8 @@ export function projectPrivateAnalysisDelivery(
     output.investigationAssessment = {...output.investigationAssessment,
       ...(output.investigationAssessment.evidenceRecords ? {evidenceRecords:
         copyInvestigationEvidenceRecords(output.investigationAssessment.evidenceRecords, projectText)} : {}),
+      ...(output.investigationAssessment.ledgerAcquisition ? {ledgerAcquisition:
+        copyLedgerAcquisitionRows(output.investigationAssessment.ledgerAcquisition, projectText)} : {}),
       requirements: output.investigationAssessment.requirements.map(requirement => ({...requirement,
         requirementId: opaqueId(projectText(requirement.requirementId)),
         domain: opaqueId(projectText(requirement.domain)),
@@ -334,6 +381,9 @@ export function projectPrivateAnalysisDelivery(
       status: investigation.status === 'checked' ? 'coverage_incomplete' : investigation.status,
       ...(investigation.evidenceRecords ? {evidenceRecords: investigation.evidenceRecords.map(row => ({...row,
         status: 'unknown' as const, origin: 'unknown' as const}))} : {}),
+      ...(investigation.ledgerAcquisition ? {ledgerAcquisition: investigation.ledgerAcquisition.map(row => ({...row,
+        applicability: row.applicability === 'not_applicable' ? 'unknown' as const : row.applicability,
+        status: 'unknown' as const, observedMetrics: []}))} : {}),
       binding: {...investigation.binding, conclusionFingerprint: '', conclusionContractFingerprint: '',
         evidenceFingerprint: '', intentFingerprint: '', ledgerFingerprint: '',
         ...(investigation.evidenceRecords !== undefined || investigation.binding.evidenceRecordsFingerprint !== undefined

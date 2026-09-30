@@ -2754,11 +2754,13 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     );
     const sceneDeadlineMs = resolveSceneProductScope(options, {runId: executionLease.key.runId!, sessionId, traceId})
       ? Date.now() + promptTimeout : undefined;
+    // The MCP server stamps tool captures with the run id finalization reads.
+    const runId = options.runId ?? crypto.randomUUID();
     const prep = await this.prepareAnalysis(
       query, sessionId, traceId, options,
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
       turnIntent, turnPolicy, resolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
-      () => toolAdmissionsOpen && !executionLease.signal.aborted, sceneDeadlineMs, executionLease.signal,
+      () => toolAdmissionsOpen && !executionLease.signal.aborted, sceneDeadlineMs, executionLease.signal, runId,
     );
     executionLease.throwIfAborted();
     const resolveFinalReportSceneType = () => prep.sceneType;
@@ -2795,7 +2797,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     // SDK maxSteps forces a text-only iteration; it does not guarantee a total call cap.
     // The native answer and final semantic review share one absolute budget.
     const deadlineMs = sceneDeadlineMs ?? Date.now() + promptTimeout;
-    const runId = options.runId ?? crypto.randomUUID();
     let attemptId = crypto.randomUUID();
     let turnLimitReached = false;
     let closeoutAccepted = false;
@@ -3184,6 +3185,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     canInvokeTool?: () => boolean,
     sceneDeadlineMs?: number,
     sceneSignal?: AbortSignal,
+    runId?: string,
   ): Promise<OpenCodeAnalysisPreparation> {
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -3305,6 +3307,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       artifactStore, sceneCoverageRegistry, signal: sceneSignal, canInvokeTool});
     const { toolDefinitions, sourceUse } = createClaudeMcpServer({
       sceneRunContext,
+      runId,
       toolObserver, canInvokeTool, analysisHistoryReader,
       strategyRegistry,
       conversationTraceAttached: options.assistantSurface === 'conversation'

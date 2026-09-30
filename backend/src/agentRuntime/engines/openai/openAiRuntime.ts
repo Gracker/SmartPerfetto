@@ -785,7 +785,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         ? createProgressAwareRunDeadline({baseBudgetMs: timeoutMs, perTurnMs, maxRunMs: config.maxRunTimeoutMs})
         : undefined;
       const context = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
-        config, sceneType, policy, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
+        config, runId, sceneType, policy, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
         analysisRunSpec, sessionContext, previousTurns, executionLease, runtimePerformance,
         historyReader, toolObserver: closeoutTape.observe,
         isActive: () => acceptsToolUpdates && !analysisAbortScope.signal.aborted &&
@@ -1456,6 +1456,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     options: AnalysisOptions,
     runtime: {
       config: OpenAIAgentConfig;
+      runId: string;
       sceneType: SceneType;
       policy: RuntimeTurnPolicy;
       turnIntent: AnalysisTurnIntent;
@@ -1532,6 +1533,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: runtime.scenePacing});
     const mcp = createClaudeMcpServer({
       sceneRunContext,
+      runId: runtime.runId,
       analysisHistoryReader: runtime.historyReader,
       toolObserver: runtime.toolObserver,
       canInvokeTool,

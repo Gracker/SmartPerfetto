@@ -192,6 +192,26 @@ export function attachInvestigationEvidence(witness: EvidenceTableWitness, bindi
   bindings.set(witness, freezeEvidenceValue(structuredClone(binding)));
 }
 
+/**
+ * The runtime tool call a capture was registered inside. Its `sourceToolCallId`
+ * is a synthetic producer id that no tool observation carries, so this is the
+ * only join between a capture and the invocation that produced it. Kept off the
+ * capture record: that record is serialized into provider snapshots and claim
+ * fingerprints, where a per-call id is neither useful nor stable.
+ */
+const captureToolCalls = new WeakMap<EvidenceTableWitness, string>();
+
+/** The first registration of a witness names its producing call; later ones never re-attribute it. */
+export function recordCaptureToolCall(witness: EvidenceTableWitness, toolCallId: string | undefined): void {
+  if (toolCallId && !captureToolCalls.has(witness)) captureToolCalls.set(witness, toolCallId);
+}
+
+function producingToolObservation<T>(toolStates: ReadonlyMap<string, T>,
+  {record, witness}: EvidenceReadRecord): T | undefined {
+  const toolCallId = captureToolCalls.get(witness);
+  return toolCallId ? toolStates.get(`${record.originRunId || ''}:${toolCallId}`) : undefined;
+}
+
 export type InvestigationToolObservation = {toolCallId: string; phase: 'started' | 'completed' | 'failed'; failed: boolean; success?: boolean; originRunId?: string};
 export function captureInvestigationToolObservation(event: RuntimeToolInvocationEvent): InvestigationToolObservation {
   return Object.freeze({toolCallId: event.toolCallId, phase: event.phase,
@@ -292,7 +312,7 @@ function buildScanRecords(captures: readonly EvidenceReadRecord[], options: Evid
       scanIssues.add('scan_scope_or_summary_unavailable'); continue;
     }
     if (!table.rows.length) {scanIssues.add('scan_summary_empty'); continue;}
-    const observation = toolStates.get(`${record.originRunId}:${record.meta.sourceToolCallId}`);
+    const observation = producingToolObservation(toolStates, {record, witness});
     const siblings = new Map<string, EvidenceReadRecord>();
     for (const candidate of captures) {
       const sibling = bindings.get(candidate.witness);
@@ -390,7 +410,7 @@ export function buildInvestigationEvidenceSnapshot(captures: readonly EvidenceRe
       incomplete('capture_execution_unavailable'); continue;
     }
     if (meta.executionStatus === 'skipped') {incomplete('capture_execution_skipped'); continue;}
-    const observation = meta.sourceToolCallId ? toolStates.get(`${record.originRunId || ''}:${meta.sourceToolCallId}`) : undefined;
+    const observation = producingToolObservation(toolStates, {record, witness});
     const toolChecked = observation?.phase === 'completed' && !observation.failed;
     if (!toolChecked) incomplete('capture_tool_observation_missing');
     if (new Set(table.columns).size !== table.columns.length) {incomplete('capture_columns_ambiguous'); continue;}

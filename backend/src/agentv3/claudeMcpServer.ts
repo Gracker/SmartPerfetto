@@ -1252,6 +1252,12 @@ export interface ClaudeMcpServerOptions {
   allowNewEvidence?: boolean;
   /** Runtime lease: no tool body may execute after acquisition closes. */
   canInvokeTool?: () => boolean;
+  /**
+   * The run id finalization reads evidence with (`currentRunId`). Tool-call
+   * captures and observations carry it, so the ledger can tell this run's
+   * acquisition from reused evidence; any other value reads as reused.
+   */
+  runId?: string;
   /** In-process, product-issued scene capability. Never reconstructed from tool JSON. */
   sceneRunContext?: SceneRunContext;
   /** Issued session-bound reader, never accepted from HTTP/SDK tool arguments. */
@@ -7789,6 +7795,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     runManifestAttributionSink,
     toolObserver: options.toolObserver,
     acquisitionObserver: event => { artifactStore?.observeInvestigationTool?.(event); },
+    runId: options.runId,
     requestScope: toolRequestScope,
     canInvokeTool: options.canInvokeTool,
     // A scene run must commit its timeline before its acquisition budget runs out.

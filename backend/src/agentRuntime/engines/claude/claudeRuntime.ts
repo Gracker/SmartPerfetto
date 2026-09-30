@@ -1009,6 +1009,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       executionLease.throwIfAborted();
 
       const ctx = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
+        runId,
         focusResult,
         sessionContext,
         previousTurns,
@@ -2400,6 +2401,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     traceId: string,
     options: AnalysisOptions,
     precomputed: {
+      runId?: string;
       turnIntent: AnalysisTurnIntent;
       turnPolicy: RuntimeTurnPolicy;
       strategyRegistry: ReadonlyStrategyRegistrySnapshot;
@@ -2738,6 +2740,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
     const { server: mcpServer, allowedTools, toolDefinitions, sourceUse } = createClaudeMcpServer({
       sceneRunContext,
+      runId: precomputed.runId,
       toolObserver: precomputed.toolObserver,
       analysisHistoryReader: precomputed.analysisHistoryReader,
       canInvokeTool,

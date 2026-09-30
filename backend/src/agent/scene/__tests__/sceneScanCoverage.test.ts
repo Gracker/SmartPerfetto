@@ -24,6 +24,7 @@ import {sceneRunState} from '../sceneRunContext';
 import type {SkillDefinition} from '../../../services/skillEngine/types';
 import {fingerprintSkillDefinition} from '../../../services/selfEvolution/skillFingerprint';
 import {androidInputEventsTableDdl} from '../../../../tests/helpers/androidInputEventsFixture';
+import {runWithinRuntimeToolInvocation} from '../../../agentRuntime/runtimeToolInvocationContext';
 
 const scope = {ownerKey: 'owner', runId: 'run', sessionId: 'session', traceId: 'trace'};
 const readOptions = {ownerKey: scope.ownerKey, currentRunId: scope.runId, allowedTraces: [{traceId: 'trace', traceSide: 'current' as const}]};
@@ -60,13 +61,15 @@ async function acquire(store = new ArtifactStore(), config: {summaryRows?: unkno
     result: createRuntimeToolResult({}, {facts: config.success === null ? {} : {success: config.success !== false}})}, originRunId);
   for (const display of result.displayResults) {
     if (config.omitFacts && display.stepId === 'facts') continue;
-    const register = () => {
+    const stepCall = display.stepId === 'facts' ? config.factCall || call : call;
+    // Registered inside the invocation that produced the step, as production does.
+    const register = () => runWithinRuntimeToolInvocation({toolCallId: stepCall}, async () => {
       const id = store.store({skillId: 'scan_fixture', stepId: display.stepId, data: display.data,
-        sourceToolCallId: display.stepId === 'facts' ? config.factCall || call : call,
+        sourceToolCallId: `invoke_skill:${stepCall}`,
         traceProvenance: buildTraceProcessorQueryProvenance({traceId, traceSide: 'current'}), executionStatus: display.executionStatus});
       store.registerEvidenceCapture(id, evidenceTableFor(display)!, {evidenceRefId: `ev:${id}`, originRunId});
-    };
-    register(); if (config.duplicateWitness) register();
+    });
+    await register(); if (config.duplicateWitness) await register();
   }
   return store;
 }
@@ -199,9 +202,11 @@ describe('scene scan producer coverage', () => {
       store.observeInvestigationTool({phase: 'completed', toolCallId: 'production', toolName: 'invoke_skill', params: {}, extra: {},
         result: createRuntimeToolResult({}, {facts: {success: true}})}, scope.runId);
       for (const display of result.displayResults) {
-        const id = store.store({skillId: raw.name, stepId: display.stepId, data: display.data, sourceToolCallId: 'production',
-          traceProvenance: buildTraceProcessorQueryProvenance({traceId: scope.traceId, traceSide: 'current'}), executionStatus: display.executionStatus});
-        store.registerEvidenceCapture(id, evidenceTableFor(display)!, {evidenceRefId: `ev:${id}`, originRunId: scope.runId});
+        await runWithinRuntimeToolInvocation({toolCallId: 'production'}, async () => {
+          const id = store.store({skillId: raw.name, stepId: display.stepId, data: display.data, sourceToolCallId: 'invoke_skill:1:production',
+            traceProvenance: buildTraceProcessorQueryProvenance({traceId: scope.traceId, traceSide: 'current'}), executionStatus: display.executionStatus});
+          store.registerEvidenceCapture(id, evidenceTableFor(display)!, {evidenceRefId: `ev:${id}`, originRunId: scope.runId});
+        });
       }
       const ledger = store.createEvidenceReadView(readOptions).investigationEvidence!();
       const scans = ledger.scans!;

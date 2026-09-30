@@ -991,6 +991,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       traceProcessorService, artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
     const mcp = createClaudeMcpServer({
       sceneRunContext,
+      runId: executionLease.key.runId!,
       allowNewEvidence: policy.allowNewEvidence,
       strategyRegistry: intentResolver.strategyRegistry,
       lightweight: usesLightweightToolCatalog(policy),
