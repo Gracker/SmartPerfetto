@@ -17,7 +17,6 @@ import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config'
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
 import simpleTraceRoutes from './routes/simpleTraceRoutes';
-import perfettoLocalRoutes from './routes/perfettoLocalRoutes';
 import sessionRoutes from './routes/sessionRoutes';
 import exportRoutes from './routes/exportRoutes';
 import templateAnalysisRoutes from './routes/templateAnalysisRoutes';
@@ -275,7 +274,6 @@ app.use(
   ),
   simpleTraceRoutes,
 );
-app.use('/api/perfetto', rejectEnterpriseUnscopedApi, perfettoLocalRoutes);
 app.use('/api/sessions', rejectEnterpriseUnscopedApi, sessionRoutes);
 app.use('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
 app.use('/api/export', exportRoutes);

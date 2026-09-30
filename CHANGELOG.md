@@ -26,6 +26,12 @@ Detailed commit-level history is available via `git log`.
   unused `analyze_frame` legacy agent tool, which built the same kind of query,
   and the SQL knowledge-base code that only these paths read are gone too,
   including the `PERFETTO_PATH` setting.
+- `/api/perfetto/*` (`/status`, `/start`, `/stop`, `/upload`, `/open-trace`,
+  `/load`) is gone and falls through to the generic JSON 404; nothing called it.
+  It started a second `trace_processor_shell --httpd` on a caller-supplied
+  server path, outside the trace processor pool and trace ownership checks.
+  Load traces through `/api/traces/upload` or the workspace trace API. The
+  backend no longer creates the upload directory at import time.
 
 ### Fixed
 - `scroll_session_analysis` counts frames of the target app only (issued

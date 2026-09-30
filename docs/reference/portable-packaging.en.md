@@ -202,9 +202,9 @@ restart the launcher.
 
 At startup, the portable package passes the writable upload directory to the
 backend through `UPLOAD_DIR` and creates `uploads/` under the user data root.
-Do not rely on package-local `backend/uploads`; this avoids readiness failures
-when the app is launched from a macOS `AppTranslocation` path or the app bundle
-is not writable. If a downloaded app starts under `AppTranslocation`, move it
+Do not rely on package-local `backend/uploads`; trace uploads would fail when
+the app is launched from a macOS `AppTranslocation` path or the app bundle is
+not writable. If a downloaded app starts under `AppTranslocation`, move it
 to `/Applications` before opening it. For a trusted, non-notarized package, you
 can also remove its quarantine attribute:
 
