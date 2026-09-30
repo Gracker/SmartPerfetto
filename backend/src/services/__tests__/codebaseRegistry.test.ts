@@ -24,6 +24,12 @@ let tmpDir: string;
 const enterpriseEnvKeys = [ENTERPRISE_FEATURE_FLAG_ENV, ENTERPRISE_DB_PATH_ENV, ENTERPRISE_MIGRATION_PHASE_ENV];
 const originalEnterpriseEnv = enterpriseEnvKeys.map(key => process.env[key]);
 
+function useRetiredEnterpriseStore(dbName: string): void {
+  process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+  process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, dbName);
+  process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'codebase-registry-test-'));
   for (const key of enterpriseEnvKeys) delete process.env[key];
@@ -643,5 +649,98 @@ describe('CodebaseRegistry', () => {
     const deleted = await registry.withIngestLease(ref.codebaseId, scope, lease => lease.deleteRegistration(), 'delete');
     expect(deleted.codebaseId).toBe(ref.codebaseId);
     expect(registry.get(ref.codebaseId, scope)).toBeUndefined();
+  });
+
+  it('fences a stale generation switch behind the enterprise ingest lease', async () => {
+    useRetiredEnterpriseStore('enterprise-fence.sqlite');
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const first = new CodebaseRegistry(path.join(tmpDir, 'first.json'));
+    const second = new CodebaseRegistry(path.join(tmpDir, 'second.json'));
+    const ref = first.register({kind: 'app_source', displayName: 'Fence', rootPath: tmpDir, ...scope});
+    const baseTime = 2_000_000_000_000;
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(baseTime);
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    let checked!: () => void;
+    const staleChecked = new Promise<void>(resolve => {
+      checked = resolve;
+    });
+    const staleRun = first.withIngestLease(ref.codebaseId, scope, async lease => {
+      lease.assertHeld(true);
+      checked();
+      await held;
+      return lease.activateIndexGeneration(ref.indexGeneration, {
+        lastIngestStatus: 'ok',
+        activeGeneration: 'stale-generation',
+      });
+    });
+    await staleChecked;
+
+    clock.mockReturnValue(baseTime + 10 * 60 * 1000 + 1);
+    await second.withIngestLease(ref.codebaseId, scope, lease =>
+      lease.activateIndexGeneration(ref.indexGeneration, {
+        lastIngestStatus: 'ok',
+        activeGeneration: 'current-generation',
+      }));
+    release();
+
+    await expect(staleRun).rejects.toThrow('codebase_reindex_lease_lost');
+    expect(first.get(ref.codebaseId, scope)).toEqual(expect.objectContaining({
+      activeGeneration: 'current-generation',
+      indexGeneration: ref.indexGeneration + 1,
+    }));
+  });
+
+  it('rejects fenced writes once the filesystem ingest lock is lost', async () => {
+    const stealLock = (registryName: string): void => {
+      const lockName = fs.readdirSync(tmpDir).find(name =>
+        name.startsWith(`${registryName}.ingest.`) && name.endsWith('.lock'));
+      expect(lockName).toBeDefined();
+      fs.writeFileSync(path.join(tmpDir, lockName!, 'owner.json'), JSON.stringify({token: 'intruder'}));
+    };
+    const activating = new CodebaseRegistry(path.join(tmpDir, 'fs-activate.json'));
+    const activateRef = activating.register({kind: 'app_source', displayName: 'Activate', rootPath: tmpDir});
+    await expect(activating.withIngestLease(activateRef.codebaseId, {}, lease => {
+      stealLock('fs-activate.json');
+      return lease.activateIndexGeneration(activateRef.indexGeneration, {
+        lastIngestStatus: 'ok',
+        activeGeneration: 'stale-generation',
+      });
+    })).rejects.toThrow('codebase_reindex_lease_lost');
+    expect(activating.get(activateRef.codebaseId, {})?.activeGeneration).not.toBe('stale-generation');
+
+    const deleting = new CodebaseRegistry(path.join(tmpDir, 'fs-delete.json'));
+    const deleteRef = deleting.register({kind: 'app_source', displayName: 'Delete', rootPath: tmpDir});
+    await expect(deleting.withIngestLease(deleteRef.codebaseId, {}, lease => {
+      lease.beginDeletion('user-a');
+      stealLock('fs-delete.json');
+      return lease.deleteRegistration();
+    }, 'delete')).rejects.toThrow('codebase_reindex_lease_lost');
+    expect(deleting.get(deleteRef.codebaseId, {})?.lifecycleState).toBe('deleting');
+  });
+
+  it('replicates fenced generation switches to the filesystem during dual-write', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise-dual.sqlite');
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'dual-write';
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const registryPath = path.join(tmpDir, 'dual.json');
+    const registry = new CodebaseRegistry(registryPath);
+    const ref = registry.register({kind: 'app_source', displayName: 'Dual', rootPath: tmpDir, ...scope});
+
+    await registry.withIngestLease(ref.codebaseId, scope, lease =>
+      lease.activateIndexGeneration(ref.indexGeneration, {
+        lastIngestStatus: 'ok',
+        activeGeneration: 'dual-generation',
+      }));
+
+    expect(fs.readdirSync(tmpDir).some(name => name.startsWith('dual.json.ingest.'))).toBe(false);
+    expect(fs.readFileSync(registryPath, 'utf8')).toContain('dual-generation');
+    expect(registry.get(ref.codebaseId, scope)).toEqual(expect.objectContaining({
+      activeGeneration: 'dual-generation',
+      indexGeneration: ref.indexGeneration + 1,
+    }));
   });
 });

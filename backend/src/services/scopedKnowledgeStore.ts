@@ -167,7 +167,7 @@ interface MutateOptions extends UpsertOptions {
   rowScope: string;
 }
 
-interface ScopedKnowledgeMutation<T> {
+export interface ScopedKnowledgeMutation<T> {
   kind: string;
   externalId: string;
   mutate: (current: T | undefined) => T;
