@@ -13,7 +13,7 @@ import type {
   AnalysisResult,
   IOrchestrator,
 } from '../../../agent/core/orchestratorTypes';
-import type { Finding, StreamingUpdate } from '../../../agent/types';
+import type { StreamingUpdate } from '../../../agent/types';
 import type { ArchitectureInfo } from '../../../agent/detectors/types';
 import { createArchitectureDetector } from '../../../agent/detectors/architectureDetector';
 import { sessionContextManager } from '../../../agent/context/enhancedSessionContext';

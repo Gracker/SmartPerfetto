@@ -173,31 +173,6 @@ export function extractFindingsFromSkillResult(skillResult: any): Finding[] {
   return findings;
 }
 
-/**
- * Merge findings from multiple sources, deduplicating by title and sorting by severity.
- */
-export function mergeFindings(sources: Finding[][]): Finding[] {
-  const merged: Finding[] = [];
-  const seenTitles = new Set<string>();
-
-  for (const source of sources) {
-    for (const finding of source) {
-      const normalizedTitle = finding.title.toLowerCase().trim();
-      if (!seenTitles.has(normalizedTitle)) {
-        seenTitles.add(normalizedTitle);
-        merged.push(finding);
-      }
-    }
-  }
-
-  const severityOrder: Record<string, number> = {
-    critical: 0, high: 1, warning: 2, medium: 3, low: 4, info: 5,
-  };
-  merged.sort((a, b) => (severityOrder[a.severity] ?? 5) - (severityOrder[b.severity] ?? 5));
-
-  return merged;
-}
-
 function extractDescription(text: string): string {
   const descMatch = text.match(/(?:描述[：:]|Description:)\s*(.+?)(?=\n(?:证据|建议|Evidence|Suggestion|\*\*\[)|$)/s);
   if (descMatch) return descMatch[1].trim().substring(0, 500);

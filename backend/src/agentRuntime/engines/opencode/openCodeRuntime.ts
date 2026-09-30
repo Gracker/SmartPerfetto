@@ -464,7 +464,6 @@ export function getOpenCodeRuntimeDiagnostics(
 ) {
   const modulePath = env[OPENCODE_SDK_MODULE_PATH_ENV]?.trim();
   const projectDir = env[OPENCODE_PROJECT_DIR_ENV]?.trim();
-  const modelJson = env[OPENCODE_MODEL_JSON_ENV]?.trim();
   const standaloneMcpEnabled = truthyEnv(env[OPENCODE_ENABLE_STANDALONE_MCP_ENV]);
   const selection: RuntimeSelection<string> = selectedProviderId
     ? {kind, source: 'provider', providerId: selectedProviderId}
@@ -1932,11 +1931,6 @@ function recordOpenCodeAssistantUsage(
       isRecord(message.info) ? message.info.usage ?? message.info.tokens : message,
     );
   }
-}
-
-function getLatestOpenCodeAssistantMessage(value: unknown): Record<string, unknown> | undefined {
-  const messages = getOpenCodeAssistantMessages(value);
-  return messages[messages.length - 1];
 }
 
 function isOpenCodeAssistantMessageComplete(message: Record<string, unknown> | undefined): boolean {

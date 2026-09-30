@@ -14,7 +14,7 @@ import {ensureSkillRegistryInitialized, skillRegistry} from '../../../services/s
 import {resolveEffectiveSkillRegistryForRuntime} from '../../../services/selfEvolution/effectiveRuntimeRegistryProvider';
 import {createArchitectureDetector} from '../../../agent/detectors/architectureDetector';
 import {sessionContextManager} from '../../../agent/context/enhancedSessionContext';
-import type {ConversationTurn, StreamingUpdate, Finding} from '../../../agent/types';
+import type {ConversationTurn, StreamingUpdate} from '../../../agent/types';
 import type {Hypothesis as ProtocolHypothesis} from '../../../agent/types/agentProtocol';
 import type {AnalysisOptions, AnalysisResult, AnalysisTerminationReason, IOrchestrator} from '../../../agent/core/orchestratorTypes';
 import type {ArchitectureInfo} from '../../../agent/detectors/types';
@@ -54,7 +54,7 @@ import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} fr
 import {createOpenAIToolsFromMcpDefinitions} from './openAiToolAdapter';
 import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
 import {verifyConclusion} from '../claude/claudeVerifier';
-import {SDK_SESSION_FRESHNESS_MS, buildQuickRunReceipt, buildEntityContext, buildRuntimeSessionMapKey, captureSkillDisplayEntities, collectRecentFindings, createRuntimeSkillNotesBudget, getLruCacheEntry, isFreshRuntimeEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
+import {SDK_SESSION_FRESHNESS_MS, buildQuickRunReceipt, buildRuntimeSessionMapKey, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, isFreshRuntimeEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
 import type {RuntimeSelection} from '../../runtimeSelection';
 import {RuntimeExecutionGuard, type RuntimeExecutionLease} from '../../runtimeExecutionGuard';
@@ -288,7 +288,6 @@ type OpenAIAnalysisSessionState = {
   artifactStore: ArtifactStore;
   notes: AnalysisNote[];
   analysisPlan: { current: AnalysisPlanV3 | null; history: AnalysisPlanV3[] };
-  previousPlan?: AnalysisPlanV3;
   hypotheses: Hypothesis[];
   uncertaintyFlags: UncertaintyFlag[];
 };
@@ -397,14 +396,6 @@ function compactProviderErrorMessage(error: unknown): string {
   return status ? `provider HTTP ${status}: ${text}` : `provider error: ${text}`;
 }
 
-function isMissingOpenAIPreviousResponseError(error: unknown, previousResponseId?: string): boolean {
-  if (!previousResponseId || !error || typeof error !== 'object') return false;
-  const outer = error as {status?: number; code?: unknown; param?: unknown; error?: {code?: unknown; param?: unknown}};
-  const code = outer.code ?? outer.error?.code;
-  const param = outer.param ?? outer.error?.param;
-  return param === 'previous_response_id' && (outer.status === 404 || code === 'response_not_found');
-}
-
 interface OpenAiReasoningFilterState {
   insideThink: boolean;
   pendingTagPrefix: string;
@@ -457,7 +448,6 @@ function filterOpenAiVisibleAnswerDelta(delta: string, state: OpenAiReasoningFil
 interface OpenAIRunInputResolution {
   input: string | AgentInputItem[];
   effectivePrompt: string;
-  previousResponseId?: string;
   shouldPersistRemoteSession: boolean;
 }
 
@@ -560,7 +550,6 @@ async function commitAfterProviderClose<T>(
 
 export const __testing = {
   RuntimeAnalysisAbortScope,
-  isMissingOpenAIPreviousResponseError,
   createOpenAiReasoningFilterState,
   filterOpenAiVisibleAnswerDelta,
   resolveOpenAIRunInput,
@@ -622,48 +611,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
 
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {
     setLruCacheEntry(this.architectureCache, traceId, architecture);
-  }
-
-  private forgetOpenAILastResponseId(sessionMapKey: string, reason: string): void {
-    const existing = this.sessionMap.get(sessionMapKey);
-    if (existing) {
-      this.sessionMap.set(sessionMapKey, {
-        ...existing,
-        lastResponseId: undefined,
-        runState: undefined,
-        updatedAt: Date.now(),
-      });
-    }
-    console.warn(
-      `[OpenAIRuntime] Discarded stale previousResponseId for ${sessionMapKey}` +
-      `${existing ? '' : ' (not present in memory)'}: ${reason}`,
-    );
-  }
-
-  private async retryWithoutPreviousResponse(params: {
-    query: string;
-    sessionId: string;
-    traceId: string;
-    options: AnalysisOptions;
-    sessionMapKey: string;
-    errorMessage: string;
-    outputLanguage: OutputLanguage;
-  }): Promise<void> {
-    this.forgetOpenAILastResponseId(params.sessionMapKey, params.errorMessage);
-    this.emitUpdate({
-      type: 'degraded',
-      content: {
-        module: 'openAiRuntime',
-        fallback: 'fresh_openai_run_after_missing_previous_response',
-        error: 'missing_previous_response',
-        message: localize(
-          params.outputLanguage,
-          'OpenAI 远端 previous response 已不可用，已清理旧 response id 并使用本地持久化上下文重新发起分析...',
-          'OpenAI previous response is no longer available. Retrying with persisted local context without previousResponseId...',
-        ),
-      },
-      timestamp: Date.now(),
-    });
   }
 
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
@@ -924,8 +871,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           modelCall = startAttemptModelCall();
           const stream = await Promise.race([
             runner.run(agent, runInput.input, {stream: true, maxTurns: attemptMaxTurns,
-              context: {signal: controller.signal}, signal: controller.signal,
-              ...(runInput.previousResponseId ? {previousResponseId: runInput.previousResponseId} : {})}),
+              context: {signal: controller.signal}, signal: controller.signal}),
             requestTimeout.promise, providerIdleTimeout.promise, cancellation,
           ]);
           const consume = async () => {
@@ -1032,7 +978,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 'The investigation time budget was exhausted; this limited conclusion uses only returned evidence, and unfinished questions still need investigation.');
           } else if (!recoveringOutputLimit && (finish.status === 'incomplete' && finish.reason === 'output_limit' ||
               finish.status === 'completed' && (bodyEmpty || protocolInvalid || declarationRequest)) &&
-              streamCompleted && rounds < maxTurns && Date.now() < runDeadline.current() && !runInput.previousResponseId) {
+              streamCompleted && rounds < maxTurns && Date.now() < runDeadline.current()) {
             // A declaration-only request wins over a full-answer continuation; framing
             // failures (no request) keep the continuation.
             const recoveryReason = finish.reason === 'output_limit' ? 'output_limit' : declarationRequest
@@ -1048,7 +994,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 finalHistory, finalLastResponseId, finalRunState,
                 hadDeclarations: nativeProtocol.status !== 'absent', ...(declarationRequest ? {declarationRequest} : {})};
               agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
-              runInput = {...runInput, input: recoveryInput, previousResponseId: undefined};
+              runInput = {...runInput, input: recoveryInput};
               continue;
             }
           }
@@ -1087,7 +1033,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 finalHistory, finalLastResponseId, finalRunState,
                 hadDeclarations: nativeProtocol.status !== 'absent'};
               agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
-              runInput = {...runInput, input: recoveryInput, previousResponseId: undefined};
+              runInput = {...runInput, input: recoveryInput};
               continue;
             }
           }
@@ -1113,7 +1059,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
                 hadDeclarations: inspectCandidateProtocol(conclusion).status !== 'absent'};
               deliveryDeadlineAt = Date.now() + deliveryWindowMs;
               agent = agent.clone({tools: [], modelSettings: {...agent.modelSettings, toolChoice: 'none'}});
-              runInput = {...runInput, input: [{role: 'user' as const, content: boundedPrompt}], previousResponseId: undefined};
+              runInput = {...runInput, input: [{role: 'user' as const, content: boundedPrompt}]};
               continue;
             }
           }
@@ -1423,7 +1369,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       analysisPlan.history.push(analysisPlan.current);
       if (analysisPlan.history.length > 3) analysisPlan.history.shift();
     }
-    const previousPlan = analysisPlan.current ?? undefined;
     analysisPlan.current = null;
     resetPrePlanToolCallsForNewRun(analysisPlan);
 
@@ -1443,7 +1388,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       artifactStore,
       notes,
       analysisPlan,
-      previousPlan,
       hypotheses,
       uncertaintyFlags,
     };
@@ -1509,7 +1453,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     // Registry loading is local capability discovery, not new trace/source evidence.
     await preflight('skill_registry', () => ensureSkillRegistryInitialized());
     executionLease?.throwIfAborted();
-    const {artifactStore, notes, analysisPlan, previousPlan, hypotheses, uncertaintyFlags} = this.resetAnalysisSessionState(sessionId, traceId, options);
+    const {artifactStore, notes, analysisPlan, hypotheses, uncertaintyFlags} = this.resetAnalysisSessionState(sessionId, traceId, options);
     // The detector's primary app becomes citable current-run evidence.
     const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
     const sqlErrorPartition = analysisContextMemoryPartitionKey(options);
@@ -1925,14 +1869,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
     entityStore: any,
   ): void {
     captureSkillDisplayEntities(displayResults, entityStore, 'openai-agent');
-  }
-
-  private collectPreviousFindings(sessionContext: any, maxTurns = 3): Finding[] {
-    return collectRecentFindings(sessionContext, { maxTurns, maxFindings: 5 });
-  }
-
-  private buildEntityContext(entityStore: any): string | undefined {
-    return buildEntityContext(entityStore);
   }
 
   private toProtocolHypothesis(h: Hypothesis): ProtocolHypothesis {

@@ -15,7 +15,6 @@ import {
 import { getProviderService, resetProviderService } from '../../services/providerManager';
 import {SECRET_STORE_MASTER_KEY_ENV} from '../../services/providerManager/localSecretStore';
 import { saveClaudeSessionMapToRuntimeSnapshots } from '../../services/runtimeSnapshotStore';
-import type { TraceProcessorService } from '../../services/traceProcessorService';
 import * as runtimePromptContext from '../../agentRuntime/runtimePromptContext';
 import {createRuntimePerformanceRecorder, createRuntimePerformanceRun} from '../../agentRuntime/runtimePerformance';
 import {evaluationRuntimeCapabilities} from '../../services/selfEvolution/evaluationRuntimeCapabilities';

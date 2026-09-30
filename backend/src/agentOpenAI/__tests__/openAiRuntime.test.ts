@@ -792,10 +792,6 @@ describe('OpenAI cancellation and bounded recovery', () => {
     expect(run.mock.calls[0][1]).toContain('"partial":true');
     expect(run.mock.calls[0][1]).not.toContain('expired');
   });
-  it('does not treat prose describing a missing response as a retry authorization', () => {
-    expect(__testing.isMissingOpenAIPreviousResponseError(new Error('No response found with id old'), 'old')).toBe(false);
-    expect(__testing.isMissingOpenAIPreviousResponseError({status: 404, param: 'previous_response_id'}, 'old')).toBe(true);
-  });
   it('does not commit when cancellation arrives while provider close is pending', async () => {
     const scope = new __testing.RuntimeAnalysisAbortScope(); const close = createDeferred<void>(); const commit = jest.fn();
     const pending = __testing.commitAfterProviderClose(() => close.promise, scope, commit);

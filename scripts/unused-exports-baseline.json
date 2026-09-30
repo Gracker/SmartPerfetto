@@ -120,7 +120,6 @@
     "src/agentRuntime/index.ts#buildQuickConversationContext",
     "src/agentRuntime/index.ts#buildRuntimeSessionMapKey",
     "src/agentRuntime/index.ts#captureSkillDisplayEntities",
-    "src/agentRuntime/index.ts#collectRecentFindings",
     "src/agentRuntime/index.ts#createAnalysisRunSpec",
     "src/agentRuntime/index.ts#createOpenCodeHardenedConfig",
     "src/agentRuntime/index.ts#createOpenCodeRuntimeDefinition",

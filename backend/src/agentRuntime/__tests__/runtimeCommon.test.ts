@@ -11,7 +11,6 @@ import {
   buildQuickMemoryContextPayload,
   buildTraceContextDataEnvelopes,
   buildRuntimeSessionMapKey,
-  collectRecentFindings,
   decorateTraceContextDatasets,
   formatTraceContext,
   isFreshRuntimeEntry,
@@ -180,19 +179,6 @@ describe('runtimeCommon', () => {
     expect(payload.tokenEstimate).toBeGreaterThan(0);
   });
 
-  it('collects the most recent findings consistently', () => {
-    const sessionContext = {
-      getAllTurns: () => [
-        { findings: [{ title: 'old' }] },
-        { findings: [{ title: 'recent-1' }, { title: 'recent-2' }] },
-      ],
-    };
-
-    expect(collectRecentFindings(sessionContext, { maxTurns: 1, maxFindings: 1 })).toEqual([
-      { title: 'recent-2' },
-    ]);
-  });
-
   it.each<RuntimeHypothesisSource>([
     'claude',
     'openai',
@@ -339,7 +325,6 @@ describe('runtimeCommon', () => {
         'formatTraceContext',
         'buildQuickConversationContext',
         'buildQuickMemoryContext',
-        'collectRecentFindings',
       ],
       runtimeEntities: [
         'buildEntityContext',

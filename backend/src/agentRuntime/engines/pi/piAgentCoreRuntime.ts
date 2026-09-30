@@ -157,7 +157,6 @@ import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
   DEFAULT_PROVIDER_STREAM_IDLE_TIMEOUT_MS,
-  summarizeExternalToolResult,
   type RuntimeTimeoutKind,
 } from '../../runtimeLimits';
 import {

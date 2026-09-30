@@ -11,8 +11,8 @@ import {
   applyCapturedEntities,
   CapturedEntities,
 } from '../entityCapture';
-import { createEntityStore, EntityStore } from '../../context/entityStore';
-import type { AgentResponse, AgentToolResult } from '../../types/agentProtocol';
+import { createEntityStore } from '../../context/entityStore';
+import type { AgentResponse } from '../../types/agentProtocol';
 
 describe('entityCapture', () => {
   describe('captureEntitiesFromResponses', () => {

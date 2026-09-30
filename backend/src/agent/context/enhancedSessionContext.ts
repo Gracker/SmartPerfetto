@@ -26,7 +26,6 @@ import type { AgentResponse } from '../types/agentProtocol';
 import {
   EntityStore,
   createEntityStore,
-  EntityStoreSnapshot,
 } from './entityStore';
 import {
   TraceAgentState,
@@ -342,7 +341,7 @@ export class EnhancedSessionContext {
 
         const kind: 'sql' | 'skill' | 'derived' = inferEvidenceKind(tr, meta);
         const title = `[${response.agentId}] ${toolName}`;
-        const digest = buildToolResultDigest(tr, { stageName: hint?.stageName, round: hint?.round });
+        const digest = buildToolResultDigest(tr);
 
         const key = `${state.traceId}|${kind}|${title}|${digest}`;
         const id = `ev_${crypto.createHash('sha1').update(key).digest('hex').slice(0, 12)}`;
@@ -1525,13 +1524,9 @@ function inferEvidenceKind(toolResult: any, meta: Record<string, any>): 'sql' | 
   return 'derived';
 }
 
-function buildToolResultDigest(
-  toolResult: any,
-  hint?: { stageName?: string; round?: number }
-): string {
+function buildToolResultDigest(toolResult: any): string {
   const success = !!toolResult?.success;
   const error = typeof toolResult?.error === 'string' ? toolResult.error : '';
-  const execMs = typeof toolResult?.executionTimeMs === 'number' ? toolResult.executionTimeMs : undefined;
   const meta = (toolResult as any)?.metadata && typeof (toolResult as any).metadata === 'object'
     ? (toolResult as any).metadata
     : {};

@@ -18,7 +18,6 @@ import { hasConcreteEnvValue } from '../../agentRuntime/envCredentialSources';
 import { LLM_REDACTION_VERSION, hashSha256, redactTextForLLM } from '../../utils/llmPrivacy';
 import {diagnosticLogIdentity} from '../../utils/logger';
 import {
-  ModelProvider,
   ModelStrength,
   TaskType,
   ModelProfile,
@@ -149,15 +148,6 @@ const TASK_STRENGTH_MAPPING: Record<TaskType, ModelStrength[]> = {
 };
 
 const DEFAULT_TASK_MODEL_MAPPING: Partial<Record<TaskType, string>> = {};
-
-// 默认配置
-const DEFAULT_CONFIG: Partial<ModelRouterConfig> = {
-  defaultModel: '',
-  fallbackChain: [],
-  enableEnsemble: false,
-  ensembleThreshold: 0.8,
-  taskModelMapping: DEFAULT_TASK_MODEL_MAPPING,
-};
 
 function createDefaultRouterConfig(
   models: ModelProfile[],

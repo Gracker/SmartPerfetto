@@ -67,7 +67,7 @@ describe('supersedeStore', () => {
 
   describe('startCanaryObservation', () => {
     it('promotes pending_review → active_canary and stamps observation start', () => {
-      const marker = newMarker('h_canary');
+      newMarker('h_canary');
       const promoted = store.startCanaryObservation({
         failureModeHash: 'h_canary',
         gitCommit: 'abc123',

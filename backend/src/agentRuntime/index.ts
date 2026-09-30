@@ -96,7 +96,6 @@ export {
   buildQuickConversationContext,
   buildRuntimeSessionMapKey,
   captureSkillDisplayEntities,
-  collectRecentFindings,
   createRuntimeSkillNotesBudget,
   formatTraceContext,
   getLruCacheEntry,

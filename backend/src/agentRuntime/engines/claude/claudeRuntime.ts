@@ -65,7 +65,7 @@ import {
   MAX_TURNS_TERMINATION_REASON,
   estimateAnalysisConfidence,
 } from '../../../agentv3/analysisTermination';
-import { extractFindingsFromText, extractFindingsFromSkillResult, mergeFindings } from '../../../agentv3/claudeFindingExtractor';
+import { extractFindingsFromText, extractFindingsFromSkillResult } from '../../../agentv3/claudeFindingExtractor';
 import {
   createQuickConfig,
   createSdkEnv,
@@ -176,7 +176,7 @@ function chooseClaudeConclusionText(input: {finalResult?: string; accumulatedAns
 }
 
 import { probeTraceCompleteness } from '../../../agentv3/traceCompletenessProber';
-import { localize, type OutputLanguage } from '../../../agentv3/outputLanguage';
+import { localize } from '../../../agentv3/outputLanguage';
 import { planPhaseUpdatedContent } from '../../../agentv3/planPhaseEvents';
 import { isPolicyRefusalResult } from '../../../agentv3/toolNarration';
 import {
