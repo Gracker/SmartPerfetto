@@ -17,7 +17,6 @@ import {isDeepStrictEqual} from 'node:util';
 import agentRoutes from '../routes/agentRoutes';
 import ragAdminRoutes from '../routes/ragAdminRoutes';
 import skillRoutes from '../routes/skillRoutes';
-import traceProcessorRoutes from '../routes/traceProcessorRoutes';
 import { getTraceProcessorService, type TraceInfo, type TraceProcessorService } from '../services/traceProcessorService';
 import { resolveAgentRuntimeSelection } from '../agentRuntime';
 import { getOpenAIRuntimeDiagnostics, hasOpenAICredentials } from '../agentOpenAI';
@@ -1805,7 +1804,6 @@ function createVerificationApp(): express.Express {
 
   app.use('/api/agent/v1', agentRoutes);
   app.use('/api/rag', ragAdminRoutes);
-  app.use('/api/trace-processor', traceProcessorRoutes);
   app.use('/api/skills', skillRoutes);
 
   app.use((_req, res) => {

@@ -15,7 +15,6 @@ import fs from 'fs';
 
 // Import routes
 import agentRoutes from '../../src/routes/agentRoutes';
-import traceProcessorRoutes from '../../src/routes/traceProcessorRoutes';
 import skillRoutes from '../../src/routes/skillRoutes';
 import {
   LEGACY_AGENT_API_BASE,
@@ -50,7 +49,6 @@ export function createTestApp() {
   // API routes (only the ones we need for testing)
   app.use('/api/agent/v1', agentRoutes);
   app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
-  app.use('/api/trace-processor', traceProcessorRoutes);
   app.use('/api/skills', skillRoutes);
 
   const assistantShellDir = path.resolve(process.cwd(), 'public/assistant-shell');
