@@ -677,7 +677,40 @@
           "interpretation",
           "throttle_detected"
         ],
-        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"
+        "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention",
+        "max_rows": 1,
+        "assertions": [
+          {
+            "column": "core_type",
+            "operator": "eq",
+            "value": "未知"
+          },
+          {
+            "column": "min_freq_mhz",
+            "operator": "eq",
+            "value": 960
+          },
+          {
+            "column": "max_freq_mhz",
+            "operator": "eq",
+            "value": 1200
+          },
+          {
+            "column": "freq_drop_pct",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "frequency_variation_detected",
+            "operator": "eq",
+            "value": 0
+          },
+          {
+            "column": "interpretation",
+            "operator": "contains",
+            "value": "不代表小核"
+          }
+        ]
       },
       {
         "id": "execute-cpu_time_per_frame",

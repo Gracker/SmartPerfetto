@@ -15045,43 +15045,43 @@
           "columns": {
             "core_type": {
               "label": {
-                "zh-CN": "核心类型",
+                "zh-CN": "核心类别",
                 "en": "Core Type"
               }
             },
             "start_freq_mhz": {
               "label": {
-                "zh-CN": "起始频率",
+                "zh-CN": "窗口内首采样均值",
                 "en": "Start Freq MHz"
               }
             },
             "end_freq_mhz": {
               "label": {
-                "zh-CN": "结束频率",
+                "zh-CN": "窗口内末采样均值",
                 "en": "End Freq MHz"
               }
             },
             "min_freq_mhz": {
               "label": {
-                "zh-CN": "最低频率",
+                "zh-CN": "类别最低频率",
                 "en": "Min Freq MHz"
               }
             },
             "max_freq_mhz": {
               "label": {
-                "zh-CN": "最高频率",
+                "zh-CN": "类别最高频率",
                 "en": "Max Freq MHz"
               }
             },
             "freq_drop_pct": {
               "label": {
-                "zh-CN": "降幅",
+                "zh-CN": "单轨最大频率跨度",
                 "en": "Freq Drop Pct"
               }
             },
             "frequency_variation_detected": {
               "label": {
-                "zh-CN": "观测到频率变化",
+                "zh-CN": "单轨跨度超 30%",
                 "en": "Frequency Variation Detected"
               }
             },
