@@ -15,6 +15,7 @@ import type { AgentRuntimeKind, ProviderScope } from '../../services/providerMan
 import { getTraceProcessorService } from '../../services/traceProcessorService';
 import {
   getSnapshotRuntimeKind,
+  snapshotProvesNoPrivateContext,
   getSnapshotRuntimeProviderId,
   getSnapshotRuntimeProviderSnapshotHash,
   type ProviderContinuityBreak,
@@ -282,6 +283,21 @@ function appendProviderContinuityBreak(
   ];
 }
 
+/**
+ * A restored session's continuity breaks: those it already had, plus one when
+ * its provider snapshot changed since, so the next query is told SDK state was
+ * dropped. Undefined when there are none.
+ */
+export function restoredContinuityBreaks(
+  existing: unknown,
+  changedFromProviderHash?: string | null,
+): ProviderContinuityBreak[] | undefined {
+  const breaks = typeof changedFromProviderHash === 'string'
+    ? appendProviderContinuityBreak(existing, changedFromProviderHash)
+    : normalizeContinuityBreaks(existing);
+  return breaks.length > 0 ? breaks : undefined;
+}
+
 export function buildAgentQueryWithContinuityNotice(
   query: string,
   continuityBreaks: readonly ProviderContinuityBreak[] | undefined,
@@ -478,8 +494,11 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
         typeof liveSessionProviderId === 'string' &&
         !providerSvc.getRawProvider(liveSessionProviderId, providerScope),
       );
+      // A session without a provider profile is pinned to its runtime, as its
+      // restore resolved it; a changed default runtime is not a change to it.
       const liveSessionProviderSnapshotHash = existingSession?.providerSnapshotHash && !liveSessionProviderMissing
-        ? resolveProviderSnapshotHash(liveSessionProviderId)
+        ? resolveProviderSnapshotHash(liveSessionProviderId,
+          liveSessionProviderId ? undefined : existingSession.runtimeKind)
         : null;
       const liveSessionProviderSnapshotMismatch = Boolean(
         existingSession &&
@@ -597,9 +616,11 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
         });
       }
 
-      if (persistedSession && persistedSession.traceId === traceId) {
-        const stateSnapshot =
-          this.sessionPersistenceService.loadSessionStateSnapshot(requestedSessionId);
+      // Runtime state comes back only from a record that proves it read no
+      // private material, and it is that record which is restored.
+      if (persistedSession && persistedSession.traceId === traceId &&
+        snapshotProvesNoPrivateContext(persistedContinuitySnapshot)) {
+        const stateSnapshot = persistedContinuitySnapshot;
         registerSessionBackgroundKnowledgeReferences(
           requestedSessionId,
           stateSnapshot?.backgroundKnowledgeReferences ?? [],
@@ -724,10 +745,9 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               sceneSnapshotResult.sceneTimeline.traceId === traceId &&
               sceneSnapshotResult.sceneTimeline.runId === restoredRun?.runId
               ? sceneSnapshotResult : recoveredResult;
-            const restoredContinuityBreaks = snapshotProviderHashMismatch && typeof snapshotProviderHash === 'string'
-              ? appendProviderContinuityBreak(stateSnapshot?.continuityBreaks, snapshotProviderHash)
-              : normalizeContinuityBreaks(stateSnapshot?.continuityBreaks);
-            const restoredAgentQuery = buildAgentQueryWithContinuityNotice(query, restoredContinuityBreaks);
+            const continuityBreaks = restoredContinuityBreaks(stateSnapshot?.continuityBreaks,
+              snapshotProviderHashMismatch ? snapshotProviderHash : undefined);
+            const restoredAgentQuery = buildAgentQueryWithContinuityNotice(query, continuityBreaks);
             const restoredLineage = stateSnapshot?.lineage ?? persistedSession.metadata?.lineage;
 
             const restoredLogger = this.createSessionLogger(requestedSessionId);
@@ -810,7 +830,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
               analysisContextFingerprint: input.analysisContextFingerprint,
               androidInternalsPackPin: stateSnapshot?.androidInternalsPackPin,
               agentQuery: restoredAgentQuery,
-              continuityBreaks: restoredContinuityBreaks.length > 0 ? restoredContinuityBreaks : undefined,
+              continuityBreaks,
               lineage: restoredLineage,
               referenceTraceId: effectiveReferenceTraceId,
               comparisonSource:
@@ -869,7 +889,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
           `[AgentRoutes] Requested session ${requestedSessionId} has no persisted context, creating new session`
         );
       } else {
-        console.log(`[AgentRoutes] Requested session ${requestedSessionId} not found, creating new session`);
+        console.log(`[AgentRoutes] Requested session ${requestedSessionId} not found or not restorable, creating new session`);
       }
     }
 

@@ -55,7 +55,8 @@ export function analysisHasPrivateContext(selection: AnalysisContextSelection): 
 export function privateContextRestrictsAudience(
   marker: AnalysisPrivateContextMarker | undefined,
 ): boolean {
-  return marker === undefined || marker === 'unknown' || marker.codebase || marker.knowledge;
+  const decoded = decodePrivateContextJson(marker);
+  return decoded === 'unknown' || decoded.codebase || decoded.knowledge;
 }
 
 /** Union of the contexts an artifact was derived from; any unknown input stays unknown. */
@@ -63,7 +64,8 @@ export function unionPrivateContexts(
   markers: readonly AnalysisPrivateContextMarker[],
 ): AnalysisPrivateContextMarker {
   const union = {codebase: false, knowledge: false};
-  for (const marker of markers) {
+  for (const input of markers) {
+    const marker = decodePrivateContextJson(input);
     if (marker === 'unknown') return 'unknown';
     union.codebase ||= marker.codebase;
     union.knowledge ||= marker.knowledge;
@@ -79,8 +81,9 @@ const KNOWLEDGE_BIT = 2;
  * deserialized from before markers existed) is stored as unknown.
  */
 export function encodePrivateContextColumn(marker: AnalysisPrivateContextMarker | undefined): number | null {
-  if (marker === undefined || marker === 'unknown') return null;
-  return (marker.codebase ? CODEBASE_BIT : 0) | (marker.knowledge ? KNOWLEDGE_BIT : 0);
+  const decoded = decodePrivateContextJson(marker);
+  if (decoded === 'unknown') return null;
+  return (decoded.codebase ? CODEBASE_BIT : 0) | (decoded.knowledge ? KNOWLEDGE_BIT : 0);
 }
 
 export function decodePrivateContextColumn(value: unknown): AnalysisPrivateContextMarker {
@@ -90,7 +93,12 @@ export function decodePrivateContextColumn(value: unknown): AnalysisPrivateConte
   return {codebase: (value & CODEBASE_BIT) !== 0, knowledge: (value & KNOWLEDGE_BIT) !== 0};
 }
 
-/** JSON metadata holds the marker itself; anything else reads back as unknown. */
+/**
+ * A marker as read back from anywhere: JSON metadata, snapshots, older records
+ * or memory. Only an object whose two fields are booleans is a marker, so a
+ * missing, partial or mistyped one is unknown and therefore restricted; "no
+ * private context" needs an explicit `false` on both.
+ */
 export function decodePrivateContextJson(value: unknown): AnalysisPrivateContextMarker {
   if (!value || typeof value !== 'object') return 'unknown';
   const {codebase, knowledge} = value as Record<string, unknown>;

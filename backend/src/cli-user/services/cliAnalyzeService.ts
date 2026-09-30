@@ -130,7 +130,6 @@ import {
 import {
   projectOwnerAnalysisError,
   projectOwnerReportError,
-  privateAnalysisQueryMessage,
   projectOwnerAnalysisResult,
   projectOwnerProvisionalConclusion,
 } from '../../services/security/privateAnalysisProjection';
@@ -665,13 +664,11 @@ export class CliAnalyzeService {
       throw new Error(`run_manifest_runtime_missing:${sessionId}`);
     }
     const resolvedScope = resolveKnowledgeScope(knowledgeScope);
-    // A private-knowledge run records the projected message in the durable row,
-    // never the user's own query — same rule as the HTTP run scope.
     const analysisRunScope = cliAnalysisRunScope(session, {
       sessionId,
       runId: run.runId,
       traceId,
-      query: primaryPrivateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : input.query,
+      query: input.query,
       mode: requestedAnalysisMode,
       privateContext: primaryPrivateContext,
     });

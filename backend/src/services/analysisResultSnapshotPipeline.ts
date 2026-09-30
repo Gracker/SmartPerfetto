@@ -28,7 +28,6 @@ import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import {
-  privateAnalysisQueryMessage,
   projectOwnerDataEnvelopes,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
@@ -580,7 +579,6 @@ function ensureSnapshotParentGraph(
   db: Database.Database,
   input: CompletedAnalysisSnapshotInput,
   now: number,
-  runQuestion: string,
 ): void {
   if (!input.tenantId || !input.workspaceId || !input.runId) return;
 
@@ -647,7 +645,7 @@ function ensureSnapshotParentGraph(
     sessionId: input.sessionId,
     mode: 'agent',
     status: 'completed',
-    question: runQuestion,
+    question: input.query,
     startedAt: now,
     completedAt: now,
     heartbeatAt: now,
@@ -680,7 +678,7 @@ export function persistCompletedAnalysisResultSnapshot(
     reportAssessment: _assessment, investigationAssessment: _investigation, deliveryAssurance: _assurance, ...inputWithoutDelivery} = input;
   const durableInput: CompletedAnalysisSnapshotInput = privateKnowledge
     ? {
-        // The creator's snapshot keeps their question and trace label; the run row does not.
+        // The creator's snapshot keeps their question and trace label; the run store keeps none.
         ...inputWithoutDelivery,
         query: sanitizeOwnerCodeAwareText(input.sessionId, input.query),
         ...(input.traceLabel ? {traceLabel: sanitizeOwnerCodeAwareText(input.sessionId, input.traceLabel)} : {}),
@@ -708,9 +706,7 @@ export function persistCompletedAnalysisResultSnapshot(
 
   const db = openEnterpriseDb();
   try {
-    // A run row's question is read only by tenant export; a private run's stays a placeholder.
-    ensureSnapshotParentGraph(db, durableInput, snapshot.createdAt,
-      privateKnowledge ? privateAnalysisQueryMessage(outputLanguage) : input.query);
+    ensureSnapshotParentGraph(db, durableInput, snapshot.createdAt);
     return createAnalysisResultSnapshotRepository(db).createSnapshot(snapshot);
   } finally {
     db.close();

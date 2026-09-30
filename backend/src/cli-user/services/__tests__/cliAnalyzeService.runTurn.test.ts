@@ -18,8 +18,6 @@ import {buildStrategyRegistrySnapshotFromDefinitions} from '../../../agentv3/str
 import {analysisDeliveryFingerprint} from '../../../types/analysisDelivery';
 import {createAnalysisHistoryReader, resolveAnalysisHistoryReader, toAnalysisHistoryTurn, type AnalysisHistoryReader} from '../../../agentRuntime/analysisHistory';
 import {AnalysisHistoryStore} from '../../../services/analysisHistoryStore';
-import {privateAnalysisQueryMessage} from '../../../services/security/privateAnalysisProjection';
-import {parseOutputLanguage} from '../../../agentv3/outputLanguage';
 
 const mockAnalyze = jest.fn<IOrchestrator['analyze']>();
 const mockPersistAgentTurn = jest.fn();
@@ -415,11 +413,10 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       }),
     }));
     expect(output.codeAwareMode).toBe('metadata_only');
-    // The run row is durable enterprise state; a private-knowledge question is
-    // recorded as the projected message, never the user's own query.
-    const [runScope] = mockPersistAnalysisRunState.mock.calls[0] as [{query?: string}];
-    expect(runScope.query).toBe(privateAnalysisQueryMessage(
-      parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE)));
+    // The run row is durable enterprise state. The scope carries the run's own
+    // marker, by which the run store keeps no question text for a private run.
+    const [runScope] = mockPersistAnalysisRunState.mock.calls[0] as [{privateContext?: unknown}];
+    expect(runScope.privateContext).toEqual({codebase: true, knowledge: false});
     // The receipt points the owner at their own turn file, as it does without private context.
     expect(output.result.analysisReceipt?.outputs.cliTurnPath).toBe(cliTurnBinding.resolveCliTurnPath('', 1));
     expect(events).toContainEqual(expect.objectContaining({

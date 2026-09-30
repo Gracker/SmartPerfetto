@@ -35,7 +35,7 @@ import {
 } from '../services/codebase/sourceUseDecision';
 import type { AgentRuntimeKind } from '../services/providerManager/types';
 import type {OutputLanguage} from './outputLanguage';
-import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
+import {analysisHasPrivateContext, privateContextRestrictsAudience} from '../services/security/analysisPrivateContext';
 import type {AnalysisPrivateContextMarker} from '../services/security/analysisPrivateContext';
 
 export type ComparisonSourceKind = 'raw_trace_pair' | 'analysis_result_snapshots';
@@ -328,6 +328,29 @@ export function getSnapshotRuntimeProviderSnapshotHash(
     return provider.providerSnapshotHash ?? null;
   }
   return snapshot?.agentRuntimeProviderSnapshotHash;
+}
+
+/**
+ * Whether a persisted session proves it carries no private context, so its
+ * runtime state may be restored. Its runs' fixed markers decide. A snapshot
+ * without run markers (one written before markers existed, and every private
+ * snapshot, whose projection drops its runs) must record its fingerprint,
+ * which dates it after the selection was recorded in full, and a selection
+ * without private material. Everything else (a restricted, unknown or
+ * malformed marker, an older or rebuilt snapshot, no snapshot) is not
+ * restorable.
+ */
+export function snapshotProvesNoPrivateContext(
+  snapshot: Pick<SessionStateSnapshot, 'activeRun' | 'lastRun' | 'analysisContextFingerprint' |
+    'codeAwareMode' | 'codebaseIds' | 'knowledgeSourceIds'> | null | undefined,
+): boolean {
+  if (!snapshot) return false;
+  const runs: unknown[] = [snapshot.activeRun, snapshot.lastRun].filter(run => run !== undefined && run !== null);
+  if (!runs.every((run): run is SnapshotRunContext => typeof run === 'object')) return false;
+  // Once any run carries a marker, every run must: one public run cannot
+  // vouch for another whose marker is missing.
+  if (runs.some(run => 'privateContext' in run)) return runs.every(run => !privateContextRestrictsAudience(run.privateContext));
+  return Boolean(snapshot.analysisContextFingerprint) && !analysisHasPrivateContext(snapshot);
 }
 
 export function getClaudeSnapshotEngineState(

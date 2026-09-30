@@ -42,10 +42,7 @@ import {
 } from '../services/resourceOwnership';
 import {assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../services/resolvedAnalysisContext';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
-import {
-  projectOwnerAnalysisError,
-  privateAnalysisQueryMessage,
-} from '../services/security/privateAnalysisProjection';
+import {projectOwnerAnalysisError} from '../services/security/privateAnalysisProjection';
 import {readTraceMetadataForContext} from '../services/traceMetadataStore';
 import {getTraceProcessorService} from '../services/traceProcessorService';
 import {getProviderService, type ProviderScope} from '../services/providerManager';
@@ -107,9 +104,8 @@ function runScope(
     traceId: session.traceContext.kind === 'attached'
       ? session.traceContext.traceId
       : `conversation-no-trace:${session.sessionId}`,
-    query: privateContextRestrictsAudience(run.privateContext)
-      ? privateAnalysisQueryMessage(session.outputLanguage ?? configuredOutputLanguage())
-      : run.query,
+    // The run store keeps no question text for a run with private context.
+    query: run.query,
     mode: 'conversation',
     privateContext: run.privateContext,
   };
@@ -128,7 +124,7 @@ function sessionDescriptor(session: ConversationSession, run: ConversationRun): 
     outputLanguage: session.outputLanguage, codeAwareMode: session.codeAwareMode,
     codebaseIds: session.codebaseIds, knowledgeSourceIds: session.knowledgeSourceIds,
     status: session.status, createdAt: session.createdAt, lastActivityAt: session.lastActivityAt,
-    // The creator's conversation record keeps the question; only the run row takes the placeholder.
+    // The creator's conversation record keeps the question; the run store keeps none.
     lastRun: {runId: run.runId, query: run.query, turnIndex: run.turnIndex,
       status: run.status, startedAt: run.startedAt, completedAt: run.completedAt,
       ...(privateContextRestrictsAudience(run.privateContext) ? {sourceDerived: true} : {})},

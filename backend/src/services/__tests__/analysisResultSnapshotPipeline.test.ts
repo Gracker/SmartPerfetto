@@ -1014,6 +1014,8 @@ describe('analysis result snapshot pipeline', () => {
         `).all(sessionId);
         const run = db.prepare('SELECT question FROM analysis_runs WHERE id = ?').get('run-private');
         expect(JSON.stringify({rows, run})).not.toContain(canary);
+        // The run store keeps no question text for a private run.
+        expect(run).toEqual({question: ''});
         expect(rows).toHaveLength(1);
         expect((rows[0] as any).conclusion_contract_json).not.toBeNull();
         expect((rows[0] as any).claim_support_json).not.toBeNull();

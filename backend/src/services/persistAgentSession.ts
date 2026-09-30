@@ -422,9 +422,8 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
             referenceTraceId: session.referenceTraceId,
             comparisonSource: session.comparisonSource,
           },
-          question: privateKnowledge
-            ? privateAnalysisQueryMessage(outputLanguage)
-            : query,
+          // Like a run row, a private session's row keeps no question text.
+          question: privateKnowledge ? '' : query,
         });
       }
       if (privateKnowledge) {

@@ -4,7 +4,10 @@
 
 import express from 'express';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
-import type { AnalyzeSessionRunContext } from '../assistant/application/agentAnalyzeSessionService';
+import {
+  restoredContinuityBreaks,
+  type AnalyzeSessionRunContext,
+} from '../assistant/application/agentAnalyzeSessionService';
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
@@ -21,8 +24,10 @@ import {
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
   getSnapshotRuntimeProviderSnapshotHash,
+  snapshotProvesNoPrivateContext,
 } from '../agentv3/sessionStateSnapshot';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
+import {registerSessionBackgroundKnowledgeReferences} from '../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
 import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult} from '../services/security/privateAnalysisProjection';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
@@ -99,8 +104,11 @@ export function registerAgentResumeRoutes(
 
     try {
       const persistenceService = SessionPersistenceService.getInstance();
-
-      if (!persistenceService.hasSessionContext(sessionId)) {
+      // Runtime state comes back only from a session that proves it read no
+      // private material; any other session starts over, as a missing one does.
+      const snapshot = persistenceService.hasSessionContext(sessionId)
+        ? persistenceService.loadSessionStateSnapshot(sessionId) : null;
+      if (!snapshotProvesNoPrivateContext(snapshot)) {
         return res.status(404).json({
           success: false,
           error: 'Session not found in persistence',
@@ -159,7 +167,6 @@ export function registerAgentResumeRoutes(
         workspaceId: requestContext.workspaceId,
         userId: requestContext.userId,
       };
-      const snapshot = persistenceService.loadSessionStateSnapshot(sessionId);
       const snapshotRuntimeKind = getSnapshotRuntimeKind(snapshot);
       const snapshotProviderId = getSnapshotRuntimeProviderId(snapshot);
       const snapshotProviderHash = getSnapshotRuntimeProviderSnapshotHash(snapshot);
@@ -174,16 +181,21 @@ export function registerAgentResumeRoutes(
           hint: 'This persisted session was created with a Provider Manager profile that no longer exists. Recreate the provider or start a new chat.',
         });
       }
-      const restoredProviderSnapshotHash = resolveProviderRuntimeSnapshot(
-        providerSvc,
-        restoredProviderId,
-        restoredProviderId ? undefined : snapshotRuntimeKind,
-        providerScope,
-      ).snapshotHash;
+      const {snapshotHash: restoredProviderSnapshotHash, snapshot: {runtimeKind: restoredRuntimeKind}} =
+        resolveProviderRuntimeSnapshot(
+          providerSvc,
+          restoredProviderId,
+          restoredProviderId ? undefined : snapshotRuntimeKind,
+          providerScope,
+        );
       const providerSnapshotChanged = Boolean(
         snapshotProviderHash &&
         snapshotProviderHash !== restoredProviderSnapshotHash,
       );
+      // A provider change drops SDK state; the break is recorded here, since
+      // the resumed session already carries the new hash the next analysis sees.
+      const continuityBreaks = restoredContinuityBreaks(snapshot?.continuityBreaks,
+        providerSnapshotChanged ? snapshotProviderHash : undefined);
       const orchestrator = createAgentOrchestrator({
         traceProcessorService: getTraceProcessorService(),
         providerId: restoredProviderId,
@@ -271,6 +283,9 @@ export function registerAgentResumeRoutes(
         orchestrator.restoreArchitectureCache(effectiveTraceId, persistedSession.metadata.architectureSnapshot);
       }
 
+      // As a restore through analysis does, once nothing can fail any more:
+      // later snapshots read the session's knowledge references from this registry.
+      registerSessionBackgroundKnowledgeReferences(sessionId, snapshot?.backgroundKnowledgeReferences ?? []);
       deps.sessionStore.setSession(sessionId, {
         orchestrator,
         sessionId,
@@ -285,11 +300,22 @@ export function registerAgentResumeRoutes(
         workspaceId: owner.workspaceId,
         userId: owner.userId,
         providerId: restoredProviderId,
+        runtimeKind: restoredRuntimeKind,
         providerSnapshotHash: restoredProviderSnapshotHash,
         providerSnapshotChanged: providerSnapshotChanged || undefined,
         providerSnapshotChangeReason: providerSnapshotChanged
           ? 'provider_snapshot_hash_mismatch'
           : undefined,
+        // The next analysis compares its authorization with the one this
+        // session ran under; without it every resumed session looked changed
+        // and was replaced, losing its history.
+        analysisContextFingerprint: snapshot?.analysisContextFingerprint,
+        outputLanguage: snapshot?.outputLanguage,
+        codeAwareMode: snapshot?.codeAwareMode,
+        codebaseIds: snapshot?.codebaseIds,
+        knowledgeSourceIds: snapshot?.knowledgeSourceIds,
+        androidInternalsPackPin: snapshot?.androidInternalsPackPin,
+        continuityBreaks,
         lineage: snapshot?.lineage ?? persistedSession.metadata?.lineage,
         referenceTraceId: snapshot?.referenceTraceId,
         comparisonSource: snapshot?.comparisonSource,

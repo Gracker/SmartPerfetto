@@ -8,6 +8,7 @@ import type { EnterpriseRepositoryScope } from './enterpriseRepository';
 import {
   decodePrivateContextColumn,
   encodePrivateContextColumn,
+  unrestrictedPrivateContextSql,
   type AnalysisPrivateContextMarker,
 } from './security/analysisPrivateContext';
 
@@ -106,9 +107,12 @@ export interface AnalysisRunRowSeed {
 /**
  * The one writer of new analysis_runs rows. Several stores may create a run's
  * row first; whichever does fixes its private-context marker, which nothing
- * rewrites afterwards.
+ * rewrites afterwards. A run that may have read private material stores no
+ * question text: its only reader, tenant export, omits it, and a row that
+ * never held the text cannot leak it.
  */
 export function insertAnalysisRunIfMissing(db: Database.Database, row: AnalysisRunRowSeed): void {
+  const privateContext = encodePrivateContextColumn(row.privateContext);
   db.prepare(`
     INSERT OR IGNORE INTO analysis_runs
       (id, tenant_id, workspace_id, session_id, mode, status, question, started_at, completed_at,
@@ -118,10 +122,12 @@ export function insertAnalysisRunIfMissing(db: Database.Database, row: AnalysisR
        @heartbeatAt, @updatedAt, @privateContext)
   `).run({
     ...row,
+    // Same test as the update below: only a row stored as public holds text.
+    question: privateContext === 0 ? row.question : '',
     completedAt: row.completedAt ?? null,
     heartbeatAt: row.heartbeatAt ?? null,
     updatedAt: row.updatedAt ?? null,
-    privateContext: encodePrivateContextColumn(row.privateContext),
+    privateContext,
   });
 }
 
@@ -233,7 +239,7 @@ export function persistAnalysisRunState(
     db.prepare(`
       UPDATE analysis_runs
       SET status = ?,
-          question = CASE WHEN ? <> '' THEN ? ELSE question END,
+          question = CASE WHEN ? <> '' AND ${unrestrictedPrivateContextSql('private_context')} THEN ? ELSE question END,
           heartbeat_at = ?,
           updated_at = ?,
           completed_at = CASE WHEN ? THEN COALESCE(completed_at, ?) ELSE completed_at END,

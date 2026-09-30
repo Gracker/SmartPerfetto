@@ -1533,9 +1533,8 @@ function baseAgentEventScopeFromSession(
     sessionId: session.sessionId,
     runId: run.runId,
     traceId: session.traceId,
-    query: privateContextRestrictsAudience(run.privateContext)
-      ? privateAnalysisQueryMessage(sessionOutputLanguage(session))
-      : run.query || session.query,
+    // The run store keeps no question text for a run with private context.
+    query: run.query || session.query,
     privateContext: run.privateContext,
   };
 }
@@ -7501,7 +7500,7 @@ function ensureCompletedAnalysisFinalArtifacts(
         reportId: finalArtifacts.reportId,
         sceneType: result.turnIntent?.status === 'resolved' ? result.turnIntent.sceneId
           : result.conclusionContract?.metadata?.sceneId ?? 'general',
-        // The snapshot pipeline keeps the creator's question and writes the run row's placeholder.
+        // The snapshot keeps the creator's question; the run store keeps none.
         query: session.query,
         traceLabel: session.traceId,
         conclusion: privateKnowledge

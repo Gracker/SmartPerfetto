@@ -430,9 +430,10 @@ describe('agent route private projections', () => {
       .toEqual({codebase: true, knowledge: false});
     expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, second.runId)?.privateContext)
       .toEqual({codebase: false, knowledge: false});
-    // The question each run's records carry follows the run, not the session's current selection.
+    // Each run's records carry that run's question and marker; the run store
+    // keeps no question text for the private one.
     expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, first.runId)?.query)
-      .not.toBe('first');
+      .toBe('first');
     expect(agentRoutesPrivacyProjectionTestSeam.baseAgentEventScopeFromSession(session, second.runId)?.query)
       .toBe('second');
   });
@@ -704,8 +705,7 @@ describe('agent route private projections', () => {
             .all('run-private-runtime'),
         };
         expect(JSON.stringify(graph)).not.toContain(canary);
-        expect((graph.run as any).question)
-          .toMatch(/原始内容未持久化|original content not persisted/);
+        expect((graph.run as any).question).toBe('');
       } finally {
         db.close();
       }

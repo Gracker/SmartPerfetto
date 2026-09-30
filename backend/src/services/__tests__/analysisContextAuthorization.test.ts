@@ -9,6 +9,7 @@ import {join} from 'path';
 import {afterEach, describe, expect, it} from '@jest/globals';
 
 import {authorizeAnalysisContext} from '../analysisContextAuthorization';
+import {buildAnalysisContextAuthorizationFingerprint} from '../resolvedAnalysisContext';
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
 
@@ -117,5 +118,28 @@ describe('authorizeAnalysisContext', () => {
       allowed: false,
       payload: {code: 'ANALYSIS_CONTEXT_SOURCE_UNAVAILABLE'},
     });
+  });
+});
+
+describe('analysis context authorization fingerprint', () => {
+  // A resumed session is continued only when the request's fingerprint equals
+  // the one it ran under, so the value must survive a reload of the registry.
+  it('is stable across a registry reload and changes with consent, selection policy and scope', () => {
+    const codebaseId = registerCodebase();
+    const registryPath = join(roots[roots.length - 1], 'codebases.json');
+    const selection = {codeAwareMode: 'provider_send' as const, codebaseIds: [codebaseId]};
+    const fingerprint = (registry: CodebaseRegistry, owner = scope) =>
+      buildAnalysisContextAuthorizationFingerprint(selection, owner, {codebaseRegistry: registry, knowledgeRegistry});
+
+    const original = fingerprint(codebaseRegistry);
+    expect(fingerprint(new CodebaseRegistry(registryPath))).toBe(original);
+    expect(fingerprint(new CodebaseRegistry(registryPath), {...scope, userId: 'user-b'})).not.toBe(original);
+
+    new CodebaseRegistry(registryPath).updateSelectionPolicy(codebaseId, scope, {pathFilters: ['app/']});
+    const afterPolicy = fingerprint(new CodebaseRegistry(registryPath));
+    expect(afterPolicy).not.toBe(original);
+
+    new CodebaseRegistry(registryPath).setProviderConsent(codebaseId, scope, false, scope.userId);
+    expect(fingerprint(new CodebaseRegistry(registryPath))).not.toBe(afterPolicy);
   });
 });

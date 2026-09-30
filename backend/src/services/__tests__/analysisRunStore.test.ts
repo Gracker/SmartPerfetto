@@ -93,6 +93,24 @@ describe('analysis run store', () => {
     }
   });
 
+  it('keeps no question text for a run that may have read private material', () => {
+    const runIds = ['run-public', 'run-private', 'run-unknown'];
+    persistAnalysisRunState(scope({runId: 'run-public'}), 'running');
+    persistAnalysisRunState(scope({runId: 'run-private', privateContext: {codebase: true, knowledge: false}}), 'running');
+    persistAnalysisRunState(scope({runId: 'run-unknown', privateContext: 'unknown'}), 'running');
+    // A later write carries the question again; only a row stored as public takes it.
+    for (const runId of runIds) {
+      persistAnalysisRunState(scope({runId, query: 'follow-up question', privateContext: NO_PRIVATE_CONTEXT}), 'completed');
+    }
+    const db = openEnterpriseDb();
+    try {
+      const question = (id: string) => (db.prepare('SELECT question FROM analysis_runs WHERE id = ?').get(id) as {question: string}).question;
+      expect(runIds.map(question)).toEqual(['follow-up question', '', '']);
+    } finally {
+      db.close();
+    }
+  });
+
   it('persists run lifecycle and heartbeat with workspace scope', () => {
     const runScope = scope();
 

@@ -881,6 +881,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: 'fingerprint-public',
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -936,6 +937,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue({} as any);
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: 'fingerprint-public',
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -1009,6 +1011,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: 'fingerprint-public',
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -1104,6 +1107,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: 'fingerprint-public',
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-pi',
       traceId: 'trace-pi',
@@ -1181,6 +1185,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: 'fingerprint-public',
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-1',
       traceId: 'trace-1',
@@ -1227,6 +1232,35 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     );
   });
 
+  const gateRun = (privateContext: unknown) => ({runId: 'run-1', requestId: 'req-1', sequence: 1, query: 'q',
+    startedAt: 1, status: 'completed', privateContext});
+  test.each([
+    ['recorded public selection', {analysisContextFingerprint: 'fp'}, true],
+    // Written before the selection was recorded in full, so nothing proves it.
+    ['no fingerprint', {}, false],
+    ['recorded private selection', {analysisContextFingerprint: 'fp', codeAwareMode: 'provider_send', codebaseIds: ['app']}, false],
+    ['public run marker', {lastRun: gateRun({codebase: false, knowledge: false})}, true],
+    ['restricted run marker', {analysisContextFingerprint: 'fp', lastRun: gateRun({codebase: true, knowledge: false})}, false],
+    ['malformed run marker', {analysisContextFingerprint: 'fp', lastRun: gateRun({})}, false],
+    // One public run cannot vouch for another whose marker is missing.
+    ['mixed run markers', {analysisContextFingerprint: 'fp', lastRun: gateRun({codebase: false, knowledge: false}),
+      activeRun: {runId: 'run-2', requestId: 'req-2', sequence: 2, query: 'q', startedAt: 2, status: 'running'}}, false],
+    ['a run that is not an object', {analysisContextFingerprint: 'fp', lastRun: 'run-1'}, false],
+  ])('restores runtime state only from a record that proves it read no private material: %s', (_label, fields, restorable) => {
+    sessionPersistenceService.getSession.mockReturnValue({id: 'persisted-gate', traceId: 'trace-1', question: '',
+      createdAt: 1, updatedAt: 1, metadata: {tenantId: 't', workspaceId: 'w', userId: 'u'}, messages: []});
+    sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
+    sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({version: 1, snapshotTimestamp: 1,
+      sessionId: 'persisted-gate', traceId: 'trace-1', conversationSteps: [], queryHistory: [], conclusionHistory: [],
+      agentDialogue: [], agentResponses: [], dataEnvelopes: [], hypotheses: [], analysisNotes: [], analysisPlan: null,
+      planHistory: [], uncertaintyFlags: [], runSequence: 1, conversationOrdinal: 0, ...fields});
+    const prepared = service.prepareSession({traceId: 'trace-1', query: 'follow-up',
+      requestedSessionId: 'persisted-gate', options: {}});
+    expect(prepared.isNewSession).toBe(!restorable);
+    // A record that cannot prove it is public has nothing loaded or restored.
+    if (!restorable) expect(sessionPersistenceService.loadSessionContext).not.toHaveBeenCalled();
+  });
+
   test('inherits reference trace identity from a persisted comparison snapshot', () => {
     sessionPersistenceService.getSession.mockReturnValue({
       id: 'persisted-compare-1',
@@ -1242,6 +1276,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     sessionPersistenceService.loadSessionContext.mockReturnValue(createRestoredContext());
     sessionPersistenceService.loadSessionStateSnapshot.mockReturnValue({
       version: 1,
+      analysisContextFingerprint: 'fingerprint-public',
       snapshotTimestamp: Date.now(),
       sessionId: 'persisted-compare-1',
       traceId: 'trace-1',

@@ -15,6 +15,7 @@ import {
   resolveAnalysisPrivateContext,
   unionPrivateContexts,
   unrestrictedPrivateContextSql,
+  type AnalysisPrivateContextMarker,
 } from '../analysisPrivateContext';
 
 describe('analysis private context marker', () => {
@@ -75,6 +76,18 @@ describe('analysis private context marker', () => {
     }
     for (const malformed of [null, undefined, true, {codebase: 'yes', knowledge: false}, {codebase: true}]) {
       expect(decodePrivateContextJson(malformed)).toBe('unknown');
+    }
+  });
+
+  it('restricts, stores and combines a malformed marker as unknown', () => {
+    // Markers also come back from snapshots and older records, so only an
+    // explicit false/false proves the absence of private context.
+    const malformed = [{}, {codebase: false}, {knowledge: false}, {codebase: false, knowledge: null},
+      {codebase: 0, knowledge: false}, null, 'restricted', 0] as unknown as AnalysisPrivateContextMarker[];
+    for (const marker of malformed) {
+      expect(privateContextRestrictsAudience(marker)).toBe(true);
+      expect(encodePrivateContextColumn(marker)).toBeNull();
+      expect(unionPrivateContexts([NO_PRIVATE_CONTEXT, marker])).toBe('unknown');
     }
   });
 
