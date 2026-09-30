@@ -56,6 +56,7 @@ steps:
       title: "限频证据（cpufreq policy 上限）"
       columns:
         - {name: has_limit_track, label: "有限频轨道", type: boolean}
+        - {name: has_max_limit_data, label: "有有效上限样本", type: boolean}
         - {name: episode_count, label: "限频区段数", type: number}
         - {name: policy_count, label: "涉及 policy 数", type: number}
         - {name: deepest_depth_pct, label: "最大限频深度", type: percentage}
@@ -63,30 +64,39 @@ steps:
         - {name: reference_max_limit_khz, label: "参考上限", type: number}
         - {name: reference_basis, label: "参考依据", type: string}
         - {name: evidence_status, label: "证据状态", type: string}
+        - {name: limit_evidence_missing_reason, label: "缺失原因", type: string}
         - {name: next_step, label: "下一步", type: string}
         - {name: evidence_scope, label: "证据范围", type: string}
     sql: |
       WITH system_windows AS (
         SELECT 0 AS window_id, ${start_ts} AS window_start_ts, ${end_ts} AS window_end_ts
       )
+      -- Limit evidence needs at least one VALID max-limit sample. An empty or
+      -- invalid-only max track, or a min-only capture, is missing evidence and
+      -- must never read as "no limit episode in range".
       SELECT
-        CASE WHEN EXISTS (SELECT 1 FROM cpu_counter_track
-          WHERE type = 'cpu_max_frequency_limit') THEN 1 ELSE 0 END AS has_limit_track,
-        COUNT(e.episode_id) AS episode_count,
-        COUNT(DISTINCT e.policy_cpu) AS policy_count,
-        ROUND(MAX(e.depth_pct), 1) AS deepest_depth_pct,
-        MIN(e.min_limit_khz) AS min_limit_khz,
-        MAX(e.reference_max_limit_khz) AS reference_max_limit_khz,
-        MAX(e.reference_basis) AS reference_basis,
+        CASE WHEN ds.max_limit_track_count > 0 THEN 1 ELSE 0 END AS has_limit_track,
+        ds.has_max_limit_data,
+        e.episode_count, e.policy_count, e.deepest_depth_pct,
+        e.min_limit_khz, e.reference_max_limit_khz, e.reference_basis,
         CASE
-          WHEN NOT EXISTS (SELECT 1 FROM cpu_counter_track WHERE type = 'cpu_max_frequency_limit')
-            THEN 'limit_track_unavailable'
-          WHEN COUNT(e.episode_id) > 0 THEN 'freq_limit_observed'
+          WHEN ds.has_max_limit_data = 0 THEN 'limit_track_unavailable'
+          WHEN e.episode_count > 0 THEN 'freq_limit_observed'
           ELSE 'no_limit_episode_in_range'
         END AS evidence_status,
+        ds.limit_evidence_missing_reason,
         '用 cpu_frequency_limit_attribution 判断触发方与限频前负载' AS next_step,
         'observation_not_causal' AS evidence_scope
-      FROM system_cpu_freq_limit_episodes e
+      FROM system_cpu_freq_limit_data_status ds
+      CROSS JOIN (
+        SELECT COUNT(*) AS episode_count,
+          COUNT(DISTINCT policy_cpu) AS policy_count,
+          ROUND(MAX(depth_pct), 1) AS deepest_depth_pct,
+          MIN(min_limit_khz) AS min_limit_khz,
+          MAX(reference_max_limit_khz) AS reference_max_limit_khz,
+          MAX(reference_basis) AS reference_basis
+        FROM system_cpu_freq_limit_episodes
+      ) e
     save_as: limit_evidence
 
   # Step 1: 初始化 CPU 拓扑视图（供后续步骤 JOIN）

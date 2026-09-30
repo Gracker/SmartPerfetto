@@ -15,10 +15,15 @@
 #
 # It has no triggers on purpose: it is a drill-down, not an entry point.
 #
-# Nothing here establishes causality. A cooling device that is active while a
-# limit is in force proves the kernel thermal framework was mitigating at the
-# same time; the cdev_update event does not state which cpufreq policy the
-# device governs. A thermal daemon that ran shortly before the limit is a
+# The trigger verdict is NOT decided here. It is read from the shared
+# fragment (system_cpu_freq_limit_episode_verdicts.sql), scoped to the parent's
+# analysis window, so this detail and the parent summary always agree: the
+# same best class, the same per-onset mix, and never an onset after the window.
+#
+# Nothing here establishes causality on its own. A cooling device counts as the
+# one that applied a limit only when the shared association fragment tied it to
+# this policy by transition/limit-change timing AND the limit write followed its
+# tightening. A thermal daemon that ran shortly before the limit is a
 # candidate, not a cause - it also runs when nothing is throttled.
 # =============================================================================
 
@@ -51,14 +56,26 @@ inputs:
     type: string
     required: false
     description: "区段标识（由上层传入）"
+  - name: trace_episode_id
+    type: string
+    required: false
+    description: "全 trace 区段标识（policy%d-tep%d，由上层传入）；缺省时按 policy_cpu 与 episode_start_ts 定位"
   - name: episode_start_ts
     type: timestamp
     required: true
-    description: "区段开始时间戳(ns)"
+    description: "限频起点时间戳(ns)：上层传入全 trace 区段的起点，不是窗口裁剪后的开始"
   - name: episode_end_ts
     type: timestamp
     required: true
     description: "区段结束时间戳(ns)"
+  - name: window_start_ts
+    type: timestamp
+    required: false
+    description: "上层分析窗口起点(ns)；判定只使用在该窗口内生效的限频写入。缺省使用 episode_start_ts"
+  - name: window_end_ts
+    type: timestamp
+    required: false
+    description: "上层分析窗口终点(ns)；缺省使用 episode_end_ts"
   - name: policy_cpu
     type: number
     required: false
@@ -67,11 +84,6 @@ inputs:
     type: string
     required: false
     description: "核心类型（可能为 unknown）"
-  - name: starts_at_data_start
-    type: number
-    required: false
-    default: 0
-    description: "区段首个样本即轨道首样本时为 1，表示起点在数据之外、不可知"
   - name: lookback_ms
     type: number
     required: false
@@ -87,6 +99,31 @@ inputs:
     required: false
     default: 50
     description: "散热设备档位变更与限频时刻的重合容差(ms)；重合才视为该次限频由内核热控直接施加"
+  - name: episode_drop_pct
+    type: number
+    required: false
+    default: 10
+    description: "判定限频区段的降幅阈值（相对本 trace 观测到的最大上限，%）；须与定位 trace_episode_id 的父级一致"
+  - name: merge_gap_ms
+    type: number
+    required: false
+    default: 500
+    description: "限频区段合并间隔(ms)；须与定位 trace_episode_id 的父级一致"
+  - name: cdev_policy_pair_ms
+    type: number
+    required: false
+    default: 1
+    description: "散热设备档位变更与其后 policy 上限变更的前向配对窗口(ms)"
+  - name: cdev_policy_min_transitions
+    type: number
+    required: false
+    default: 3
+    description: "判定散热设备与 policy 关联所需的最少档位变更次数"
+  - name: cdev_policy_min_pair_pct
+    type: number
+    required: false
+    default: 80
+    description: "判定关联所需的配对占比与同向占比下限(%)"
   - name: package
     type: string
     required: false
@@ -154,7 +191,6 @@ steps:
         - {name: who_start_ts, label: "归因窗口开始", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: who_end_ts, label: "归因窗口结束", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: who_window_clipped, label: "归因窗口被数据边界裁剪", type: boolean}
-        - {name: starts_at_data_start, label: "起点未知", type: boolean}
         - {name: data_start_ts, label: "数据起点", type: timestamp, unit: ns, hidden: true}
         - {name: data_end_ts, label: "数据终点", type: timestamp, unit: ns, hidden: true}
         - {name: window_basis, label: "窗口依据", type: string}
@@ -175,7 +211,6 @@ steps:
         CASE WHEN ${episode_start_ts} - CAST(${who_window_ms|2000} * 1000000 AS INTEGER) < db.data_start_ts
           OR ${episode_start_ts} + CAST(${who_window_ms|2000} * 1000000 AS INTEGER) > db.data_end_ts
           THEN 1 ELSE 0 END AS who_window_clipped,
-        ${starts_at_data_start|0} AS starts_at_data_start,
         db.data_start_ts, db.data_end_ts,
         printf('lookback_ms=%s;who_window_ms=%s;clipped_to_observed_data_bounds',
           ${lookback_ms|10000}, ${who_window_ms|2000}) AS window_basis
@@ -192,7 +227,10 @@ steps:
     process_scope:
       role: global_context
     sql_fragments:
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
       - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
     display:
       level: summary
       layer: list
@@ -201,8 +239,11 @@ steps:
         - {name: ts, label: "时间", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: rel_to_limit_ns, label: "相对限频时刻", type: duration, unit: ns}
         - {name: cdev_name, label: "散热设备", type: string}
-        - {name: cdev_kind_hint, label: "疑似作用域", type: string}
-        - {name: cdev_kind_basis, label: "判定依据", type: string}
+        - {name: cdev_kind_hint, label: "名称提示", type: string}
+        - {name: cdev_kind_basis, label: "提示依据", type: string}
+        - {name: association_status, label: "与 policy 的时序关联", type: string}
+        - {name: associated_policy_cpu, label: "关联 policy 首核", type: number}
+        - {name: tied_to_this_policy, label: "关联本 policy", type: boolean}
         - {name: prev_state, label: "变更前", type: number}
         - {name: state, label: "变更后", type: number}
         - {name: direction, label: "方向", type: string}
@@ -219,9 +260,12 @@ steps:
       SELECT s.raw_start_ts AS ts,
         s.raw_start_ts - ${episode_start_ts} AS rel_to_limit_ns,
         s.cdev_name, s.cdev_kind_hint, s.cdev_kind_basis,
+        a.association_status, a.associated_policy_cpu,
+        CASE WHEN a.associated_policy_cpu = ${policy_cpu} THEN 1 ELSE 0 END AS tied_to_this_policy,
         s.prev_state, s.state, s.direction, s.dur_ns, s.cooling_source,
         'observation_not_causal' AS evidence_scope
       FROM thermal_cooling_spans s
+      LEFT JOIN thermal_cdev_policy_association a ON a.cdev_track_id = s.cdev_track_id
       WHERE s.raw_start_ts >= s.window_start_ts AND s.raw_start_ts < s.window_end_ts
       ORDER BY ABS(s.raw_start_ts - ${episode_start_ts})
       LIMIT 50
@@ -499,7 +543,9 @@ steps:
     save_as: non_cpu_heat_context
 
   # ---------------------------------------------------------------------------
-  # Verdict
+  # Verdict - read from the shared fragment, never re-derived here. who_verdict
+  # resolves the episode once (trace_episode_id, else policy + onset time);
+  # limit_onsets lists that episode's in-window onsets by its id.
   # ---------------------------------------------------------------------------
   - id: who_verdict
     type: atomic
@@ -507,131 +553,120 @@ steps:
     process_scope:
       role: global_context
     sql_fragments:
+      - fragments/system_sched_spans.sql
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
       - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
       - fragments/thermal_signal_signatures.sql
+      - fragments/system_cpu_freq_limit_episode_verdicts.sql
     display:
       level: key
       layer: overview
       title: "谁触发了这次限频（证据判定）"
       columns:
         - {name: episode_id, label: "区段", type: string}
+        - {name: trace_episode_id, label: "全 trace 区段", type: string}
         - {name: policy_cpu, label: "policy 首核", type: number}
         - {name: core_type, label: "核心类型", type: string}
         - {name: who_verdict, label: "判定", type: string}
-        - {name: cooling_transition_coincident, label: "档位变更与限频时刻重合", type: boolean}
-        - {name: cooling_nearest_transition_ns, label: "最近档位变更时间差", type: duration, unit: ns}
-        - {name: cooling_nearest_transition_ts, label: "最近档位变更时刻", type: timestamp, unit: ns, clickAction: navigate_timeline}
-        - {name: cooling_active_ns, label: "区段内散热设备生效时长", type: duration, unit: ns}
-        - {name: cooling_devices_active, label: "生效散热设备数", type: number}
-        - {name: cooling_transitions_in_who_window, label: "归因窗口内散热档位变更", type: number}
-        - {name: daemon_ran_before_limit_ns, label: "限频前守护进程运行", type: duration, unit: ns}
-        - {name: daemon_threads_before_limit, label: "限频前活跃守护线程数", type: number}
+        - {name: trigger_class, label: "触发分类", type: string}
+        - {name: trigger_class_rank, label: "分类等级", type: number}
+        - {name: onset_trigger_mix, label: "逐次写入分类", type: string}
+        - {name: onset_count, label: "窗口内限频写入次数", type: number}
+        - {name: confirmed_onset_count, label: "由关联散热设备施加的写入", type: number}
+        - {name: causal_onset_count, label: "收紧或起点未知的写入", type: number}
+        - {name: onset_ts, label: "限频起点", type: timestamp, unit: ns, clickAction: navigate_timeline}
         - {name: onset_observed, label: "起点可观测", type: boolean}
         - {name: onset_note, label: "起点说明", type: string}
+        - {name: paired_cooling_device, label: "配对散热设备", type: string}
+        - {name: cooling_policy_association, label: "散热设备关联", type: string}
+        - {name: tied_cooling_device, label: "关联散热设备", type: string}
         - {name: thresholds, label: "阈值", type: string}
-        - {name: verdict_basis, label: "判定依据", type: string}
+        - {name: verdict_scope, label: "判定范围", type: string}
         - {name: interpretation, label: "解释边界", type: string}
         - {name: evidence_scope, label: "证据范围", type: string}
     sql: |
-      WITH win AS (
-        SELECT ${episode_windows.data[0].who_start_ts} AS who_start_ts,
-          ${episode_windows.data[0].who_end_ts} AS who_end_ts
-      ),
-      -- One window covering both the episode and its who-window, so the same
-      -- cooling spans answer "was cooling active during the episode" and "did a
-      -- cooling transition coincide with the limit change".
-      system_windows AS (
+      WITH system_windows AS (
         SELECT 0 AS window_id,
-          MIN(${episode_start_ts}, (SELECT who_start_ts FROM win)) AS window_start_ts,
-          MAX(${episode_end_ts}, (SELECT who_end_ts FROM win)) AS window_end_ts
-      ),
-      cooling AS (
-        SELECT
-          COALESCE(SUM(CASE WHEN s.is_cooling_active
-            AND s.raw_start_ts < ${episode_end_ts}
-            AND s.raw_end_ts > ${episode_start_ts} THEN s.dur_ns ELSE 0 END), 0) AS cooling_active_ns,
-          COUNT(DISTINCT CASE WHEN s.is_cooling_active
-            AND s.raw_start_ts < ${episode_end_ts}
-            AND s.raw_end_ts > ${episode_start_ts} THEN s.cdev_name END) AS cooling_devices_active
-        FROM thermal_cooling_spans s WHERE s.dur_ns > 0
-      ),
-      cooling_transitions AS (
-        SELECT s.raw_start_ts AS ts, ABS(s.raw_start_ts - ${episode_start_ts}) AS delta_ns
-        FROM thermal_cooling_spans s
-        WHERE s.direction IN ('tightened', 'relaxed')
-          AND s.raw_start_ts >= (SELECT who_start_ts FROM win)
-          AND s.raw_start_ts < (SELECT who_end_ts FROM win)
-      ),
-      cooling_who AS (
-        SELECT COUNT(*) AS cooling_transitions_in_who_window,
-          MIN(delta_ns) AS cooling_nearest_transition_ns,
-          (SELECT ts FROM cooling_transitions ORDER BY delta_ns LIMIT 1) AS cooling_nearest_transition_ts
-        FROM cooling_transitions
-      ),
-      daemon_activity AS (
-        SELECT
-          COALESCE(SUM(MIN(s.ts + s.dur, ${episode_start_ts}) - MAX(s.ts, (SELECT who_start_ts FROM win))), 0) AS daemon_ran_before_limit_ns,
-          COUNT(DISTINCT s.utid) AS daemon_threads_before_limit
-        FROM thermal_daemon_threads d JOIN sched_slice s ON s.utid = d.utid AND s.dur > 0
-        WHERE s.ts < ${episode_start_ts} AND s.ts + s.dur > (SELECT who_start_ts FROM win)
-      ),
-      facts AS (
-        SELECT c.cooling_active_ns, c.cooling_devices_active,
-          cw.cooling_transitions_in_who_window,
-          cw.cooling_nearest_transition_ns, cw.cooling_nearest_transition_ts,
-          d.daemon_ran_before_limit_ns, d.daemon_threads_before_limit,
-          CASE WHEN cw.cooling_nearest_transition_ns IS NOT NULL
-            AND cw.cooling_nearest_transition_ns <= CAST(${cooling_coincidence_ms|50} * 1000000 AS INTEGER)
-            THEN 1 ELSE 0 END AS cooling_transition_coincident
-        FROM cooling c CROSS JOIN cooling_who cw CROSS JOIN daemon_activity d
+          COALESCE(${window_start_ts}, ${episode_start_ts}) AS window_start_ts,
+          COALESCE(${window_end_ts}, ${episode_end_ts}) AS window_end_ts
       )
-      SELECT
-        '${episode_id}' AS episode_id,
-        ${policy_cpu} AS policy_cpu,
-        '${core_type}' AS core_type,
-        -- Ordering is deliberate. A cooling-device transition at the same
-        -- instant as the limit change is the kernel thermal framework applying
-        -- that cap. A daemon that ran just before it is the next best
-        -- candidate. Cooling that was merely active in the background during
-        -- the episode is weaker than both and is only used when nothing
-        -- sharper is available.
-        CASE
-          WHEN f.cooling_transition_coincident = 1 THEN 'thermal_cooling_device_confirmed'
-          WHEN f.daemon_ran_before_limit_ns > 0 THEN 'userspace_thermal_daemon_active_before_limit'
-          WHEN f.cooling_active_ns > 0 THEN 'thermal_cooling_device_confirmed'
-          WHEN ${starts_at_data_start|0} = 1 THEN 'onset_unknown_capped_at_data_start'
-          ELSE 'limit_changed_no_thermal_evidence'
-        END AS who_verdict,
-        f.cooling_transition_coincident,
-        f.cooling_nearest_transition_ns, f.cooling_nearest_transition_ts,
-        f.cooling_active_ns, f.cooling_devices_active,
-        f.cooling_transitions_in_who_window,
-        f.daemon_ran_before_limit_ns, f.daemon_threads_before_limit,
-        CASE WHEN ${starts_at_data_start|0} = 1 THEN 0 ELSE 1 END AS onset_observed,
-        CASE WHEN ${starts_at_data_start|0} = 1
-          THEN '区段首个样本即该轨道首个样本：限频起点在记录数据之外，不可观测'
-          ELSE '限频起点落在记录数据之内' END AS onset_note,
-        printf('who_window_ms=%s;cooling_coincidence_ms=%s',
-          ${who_window_ms|2000}, ${cooling_coincidence_ms|50}) AS thresholds,
-        printf('coincident=%d;nearest_transition_ns=%s;cooling_active_ns=%d;daemon_before_limit_ns=%d',
-          f.cooling_transition_coincident,
-          COALESCE(CAST(f.cooling_nearest_transition_ns AS TEXT), 'none'),
-          f.cooling_active_ns, f.daemon_ran_before_limit_ns) AS verdict_basis,
-        CASE
-          WHEN f.cooling_transition_coincident = 1
-            THEN '内核散热设备的档位变更与本次限频时刻重合：热控框架在此刻施加了抑温动作。cdev_update 事件不声明该设备治理的是哪个 cpufreq policy，对应关系仍需核对。'
-          WHEN f.daemon_ran_before_limit_ns > 0
-            THEN '限频前的归因窗口内有名字匹配温控守护签名的线程在运行：这是候选触发方，不是因果证明；该类守护进程在未限频时同样会周期性运行。'
-          WHEN f.cooling_active_ns > 0
-            THEN '区段期间内核散热设备处于非零档位，但没有与限频时刻重合的档位变更：属于并存的背景热控，不能确定是本次限频的施加者。'
-          WHEN ${starts_at_data_start|0} = 1
-            THEN '限频起点在数据之外，无法观测触发时刻；已有数据不足以判定触发方。'
-          ELSE '限频发生了，但窗口内既没有内核散热设备活动，也没有匹配温控签名的守护进程活动：触发方未确定，可能是非热的策略限频，也可能是本 trace 未采集到相应事件。'
-        END AS interpretation,
+      SELECT v.episode_id, v.trace_episode_id, v.policy_cpu, v.core_type,
+        v.episode_verdict AS who_verdict,
+        v.trigger_class, v.trigger_class_rank, v.onset_trigger_mix,
+        v.onset_count, v.confirmed_onset_count, v.causal_onset_count,
+        v.onset_ts, v.onset_observed,
+        CASE v.onset_basis
+          WHEN 'first_observed_sample' THEN '区段首个样本即该轨道首个样本：限频起点在记录数据之外，不可观测'
+          WHEN 'onset_after_invalid_sample' THEN '区段首个样本紧跟在无效上限样本之后：写入前的状态不可观测'
+          ELSE '限频起点落在记录数据之内'
+        END AS onset_note,
+        v.best_paired_cdev_name AS paired_cooling_device,
+        v.cooling_policy_association, v.tied_cooling_device,
+        printf('who_window_ms=%s;cooling_coincidence_ms=%s;cdev_policy_pair_ms=%s;cdev_policy_min_transitions=%s;cdev_policy_min_pair_pct=%s',
+          ${who_window_ms|2000}, ${cooling_coincidence_ms|50}, ${cdev_policy_pair_ms|1},
+          ${cdev_policy_min_transitions|3}, ${cdev_policy_min_pair_pct|80}) AS thresholds,
+        v.verdict_scope,
+        v.class_note AS interpretation,
         'observation_not_causal' AS evidence_scope
-      FROM facts f
+      FROM system_cpu_freq_limit_episode_verdicts v
+      WHERE v.window_id = 0 AND (v.trace_episode_id = '${trace_episode_id}'
+        OR ('${trace_episode_id}' = '' AND v.policy_cpu = ${policy_cpu}
+          AND v.onset_ts <= ${episode_start_ts} AND v.trace_episode_end_ts > ${episode_start_ts}))
+      ORDER BY v.onset_ts
+      LIMIT 1
     save_as: who_verdict
+
+  - id: limit_onsets
+    type: atomic
+    name: "逐次限频写入判定"
+    optional: true
+    condition: "who_verdict.data?.length > 0"
+    process_scope:
+      role: global_context
+    sql_fragments:
+      - fragments/system_sched_spans.sql
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
+      - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
+      - fragments/thermal_signal_signatures.sql
+      - fragments/system_cpu_freq_limit_episode_verdicts.sql
+    display:
+      level: detail
+      layer: list
+      title: "本区段在分析窗口内生效的每次限频写入"
+      columns:
+        - {name: onset_ts, label: "写入时刻", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: value_end_ts, label: "该值失效", type: timestamp, unit: ns, hidden: true}
+        - {name: prev_valid_limit_khz, label: "写入前上限", type: number}
+        - {name: limit_khz, label: "写入后上限", type: number}
+        - {name: direction, label: "方向", type: string}
+        - {name: direction_basis, label: "方向依据", type: string}
+        - {name: onset_verdict, label: "写入判定", type: string}
+        - {name: trigger_class, label: "触发分类", type: string}
+        - {name: cooling_basis, label: "散热设备依据", type: string}
+        - {name: paired_cdev_name, label: "配对散热设备", type: string}
+        - {name: pair_lead_ns, label: "档位变更领先", type: duration, unit: ns}
+        - {name: daemon_slices, label: "写入前守护进程调度片", type: number}
+        - {name: evidence_scope, label: "证据范围", type: string}
+    on_empty: "该区段在分析窗口内没有可判定的限频写入。"
+    sql: |
+      WITH system_windows AS (
+        SELECT 0 AS window_id,
+          COALESCE(${window_start_ts}, ${episode_start_ts}) AS window_start_ts,
+          COALESCE(${window_end_ts}, ${episode_end_ts}) AS window_end_ts
+      )
+      SELECT o.onset_ts, o.value_end_ts, o.prev_valid_limit_khz, o.limit_khz,
+        o.direction, o.direction_basis, o.onset_verdict, o.trigger_class, o.cooling_basis,
+        o.paired_cdev_name, o.pair_lead_ns, o.daemon_slices, o.evidence_scope
+      FROM system_cpu_freq_limit_window_onset_verdicts o
+      WHERE o.window_id = 0 AND o.scope_key = '${who_verdict.data[0].episode_id}'
+      ORDER BY o.onset_ts
+      LIMIT 100
+    save_as: limit_onsets
 
 output:
   format: layered
-  default_expanded: [who_verdict, who_cooling, who_daemon]
+  default_expanded: [who_verdict, limit_onsets, who_cooling, who_daemon]

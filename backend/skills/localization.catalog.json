@@ -10,8 +10,8 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1366,
-    "explicitColumnCount": 4979
+    "stepCount": 1367,
+    "explicitColumnCount": 5034
   },
   "skills": {
     "ams_module": {
@@ -11801,6 +11801,12 @@
                 "en": "Episode Id"
               }
             },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "全 trace 区段",
+                "en": "Trace Episode Id"
+              }
+            },
             "policy_cpu": {
               "label": {
                 "zh-CN": "policy 首核",
@@ -11837,6 +11843,18 @@
                 "en": "Episode Dur ns"
               }
             },
+            "onset_ts": {
+              "label": {
+                "zh-CN": "限频起点",
+                "en": "Onset Ts"
+              }
+            },
+            "onset_observed": {
+              "label": {
+                "zh-CN": "起点可观测",
+                "en": "Onset Observed"
+              }
+            },
             "min_limit_khz": {
               "label": {
                 "zh-CN": "最低上限",
@@ -11863,7 +11881,7 @@
             },
             "starts_at_data_start": {
               "label": {
-                "zh-CN": "起点未知",
+                "zh-CN": "区段含轨道首样本",
                 "en": "Starts At Data Start"
               }
             },
@@ -11952,6 +11970,30 @@
               "label": {
                 "zh-CN": "方向",
                 "en": "Direction"
+              }
+            },
+            "direction_basis": {
+              "label": {
+                "zh-CN": "方向依据",
+                "en": "Direction Basis"
+              }
+            },
+            "limit_value_valid": {
+              "label": {
+                "zh-CN": "有效样本",
+                "en": "Limit Value Valid"
+              }
+            },
+            "event_role": {
+              "label": {
+                "zh-CN": "事件角色",
+                "en": "Event Role"
+              }
+            },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "所属全 trace 区段",
+                "en": "Trace Episode Id"
               }
             },
             "dur_ns": {
@@ -12119,6 +12161,24 @@
                 "en": "Limit Evidence"
               }
             },
+            "invalid_sample_count": {
+              "label": {
+                "zh-CN": "无效样本数",
+                "en": "Invalid Sample Count"
+              }
+            },
+            "invalid_limit_ns": {
+              "label": {
+                "zh-CN": "无效样本时长",
+                "en": "Invalid Limit ns"
+              }
+            },
+            "data_quality_note": {
+              "label": {
+                "zh-CN": "数据质量",
+                "en": "Data Quality Note"
+              }
+            },
             "limit_source": {
               "label": {
                 "zh-CN": "数据来源",
@@ -12144,6 +12204,18 @@
               "label": {
                 "zh-CN": "限频证据",
                 "en": "Limit Evidence"
+              }
+            },
+            "limit_classification": {
+              "label": {
+                "zh-CN": "分类",
+                "en": "Limit Classification"
+              }
+            },
+            "limit_evidence_missing_reason": {
+              "label": {
+                "zh-CN": "缺失原因",
+                "en": "Limit Evidence Missing Reason"
               }
             },
             "required_ftrace_event": {
@@ -12459,10 +12531,40 @@
                 "en": "Classification"
               }
             },
+            "classification_scope": {
+              "label": {
+                "zh-CN": "分类范围",
+                "en": "Classification Scope"
+              }
+            },
             "episode_count": {
               "label": {
                 "zh-CN": "区段数",
                 "en": "Episode Count"
+              }
+            },
+            "onset_count": {
+              "label": {
+                "zh-CN": "限频写入次数",
+                "en": "Onset Count"
+              }
+            },
+            "confirmed_onset_count": {
+              "label": {
+                "zh-CN": "由关联散热设备施加的写入",
+                "en": "Confirmed Onset Count"
+              }
+            },
+            "causal_onset_count": {
+              "label": {
+                "zh-CN": "收紧或起点未知的写入",
+                "en": "Causal Onset Count"
+              }
+            },
+            "onset_trigger_mix": {
+              "label": {
+                "zh-CN": "逐次写入分类",
+                "en": "Onset Trigger Mix"
               }
             },
             "deepest_depth_pct": {
@@ -12483,28 +12585,40 @@
                 "en": "Cooling Confirmed Episodes"
               }
             },
-            "coincident_transition_episodes": {
-              "label": {
-                "zh-CN": "档位变更与限频重合的区段",
-                "en": "Coincident Transition Episodes"
-              }
-            },
-            "cooling_active_episodes": {
-              "label": {
-                "zh-CN": "区段内散热设备生效的区段",
-                "en": "Cooling Active Episodes"
-              }
-            },
             "daemon_suspected_episodes": {
               "label": {
-                "zh-CN": "守护进程先于限频活动的区段",
+                "zh-CN": "以守护进程为最强证据的区段",
                 "en": "Daemon Suspected Episodes"
+              }
+            },
+            "cooling_background_episodes": {
+              "label": {
+                "zh-CN": "仅有关联散热设备背景活动的区段",
+                "en": "Cooling Background Episodes"
+              }
+            },
+            "cooling_unassociated_episodes": {
+              "label": {
+                "zh-CN": "仅有未关联散热设备活动的区段",
+                "en": "Cooling Unassociated Episodes"
               }
             },
             "onset_unknown_episodes": {
               "label": {
                 "zh-CN": "起点不可观测的区段",
                 "en": "Onset Unknown Episodes"
+              }
+            },
+            "tied_cooling_devices": {
+              "label": {
+                "zh-CN": "与 policy 时序关联的散热设备数",
+                "en": "Tied Cooling Devices"
+              }
+            },
+            "cooling_transition_coverage": {
+              "label": {
+                "zh-CN": "采集到散热设备档位变化",
+                "en": "Cooling Transition Coverage"
               }
             },
             "top_episode_id": {
@@ -12614,6 +12728,12 @@
                 "en": "Episode Id"
               }
             },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "全 trace 区段",
+                "en": "Trace Episode Id"
+              }
+            },
             "policy_cpu": {
               "label": {
                 "zh-CN": "policy 首核",
@@ -12650,6 +12770,18 @@
                 "en": "Episode Dur ns"
               }
             },
+            "onset_ts": {
+              "label": {
+                "zh-CN": "限频起点",
+                "en": "Onset Ts"
+              }
+            },
+            "onset_observed": {
+              "label": {
+                "zh-CN": "起点可观测",
+                "en": "Onset Observed"
+              }
+            },
             "min_limit_khz": {
               "label": {
                 "zh-CN": "最低上限",
@@ -12682,7 +12814,7 @@
             },
             "starts_at_data_start": {
               "label": {
-                "zh-CN": "起点未知",
+                "zh-CN": "区段含轨道首样本",
                 "en": "Starts At Data Start"
               }
             },
@@ -12732,6 +12864,18 @@
               "label": {
                 "zh-CN": "归因窗口结束",
                 "en": "Who End Ts"
+              }
+            },
+            "window_start_ts": {
+              "label": {
+                "zh-CN": "分析窗口开始",
+                "en": "Window Start Ts"
+              }
+            },
+            "window_end_ts": {
+              "label": {
+                "zh-CN": "分析窗口结束",
+                "en": "Window End Ts"
               }
             },
             "package": {
@@ -12800,6 +12944,36 @@
                 "en": "kernel_daemon_share_pct"
               }
             },
+            "cdev_policy_pair_ms": {
+              "label": {
+                "zh-CN": "CdevPolicyPairms",
+                "en": "cdev_policy_pair_ms"
+              }
+            },
+            "cdev_policy_min_transitions": {
+              "label": {
+                "zh-CN": "CdevPolicyMinTransitions",
+                "en": "cdev_policy_min_transitions"
+              }
+            },
+            "cdev_policy_min_pair_pct": {
+              "label": {
+                "zh-CN": "CdevPolicyMinPairPct",
+                "en": "cdev_policy_min_pair_pct"
+              }
+            },
+            "episode_drop_pct": {
+              "label": {
+                "zh-CN": "EpisodeDropPct",
+                "en": "episode_drop_pct"
+              }
+            },
+            "merge_gap_ms": {
+              "label": {
+                "zh-CN": "MergeGapms",
+                "en": "merge_gap_ms"
+              }
+            },
             "thresholds": {
               "label": {
                 "zh-CN": "阈值",
@@ -12833,6 +13007,18 @@
               "label": {
                 "zh-CN": "限频证据",
                 "en": "Limit Evidence"
+              }
+            },
+            "classification": {
+              "label": {
+                "zh-CN": "分类",
+                "en": "Classification"
+              }
+            },
+            "limit_evidence_missing_reason": {
+              "label": {
+                "zh-CN": "缺失原因",
+                "en": "Limit Evidence Missing Reason"
               }
             },
             "required_ftrace_event": {
@@ -13074,12 +13260,6 @@
                 "en": "Who Window Clipped"
               }
             },
-            "starts_at_data_start": {
-              "label": {
-                "zh-CN": "起点未知",
-                "en": "Starts At Data Start"
-              }
-            },
             "data_start_ts": {
               "label": {
                 "zh-CN": "数据起点",
@@ -13096,6 +13276,93 @@
               "label": {
                 "zh-CN": "窗口依据",
                 "en": "Window Basis"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
+        "limit_onsets": {
+          "title": {
+            "zh-CN": "本区段在分析窗口内生效的每次限频写入",
+            "en": "Limit Onsets"
+          },
+          "columns": {
+            "onset_ts": {
+              "label": {
+                "zh-CN": "写入时刻",
+                "en": "Onset Ts"
+              }
+            },
+            "value_end_ts": {
+              "label": {
+                "zh-CN": "该值失效",
+                "en": "Value End Ts"
+              }
+            },
+            "prev_valid_limit_khz": {
+              "label": {
+                "zh-CN": "写入前上限",
+                "en": "Prev Valid Limit Khz"
+              }
+            },
+            "limit_khz": {
+              "label": {
+                "zh-CN": "写入后上限",
+                "en": "Limit Khz"
+              }
+            },
+            "direction": {
+              "label": {
+                "zh-CN": "方向",
+                "en": "Direction"
+              }
+            },
+            "direction_basis": {
+              "label": {
+                "zh-CN": "方向依据",
+                "en": "Direction Basis"
+              }
+            },
+            "onset_verdict": {
+              "label": {
+                "zh-CN": "写入判定",
+                "en": "Onset Verdict"
+              }
+            },
+            "trigger_class": {
+              "label": {
+                "zh-CN": "触发分类",
+                "en": "Trigger Class"
+              }
+            },
+            "cooling_basis": {
+              "label": {
+                "zh-CN": "散热设备依据",
+                "en": "Cooling Basis"
+              }
+            },
+            "paired_cdev_name": {
+              "label": {
+                "zh-CN": "配对散热设备",
+                "en": "Paired Cdev Name"
+              }
+            },
+            "pair_lead_ns": {
+              "label": {
+                "zh-CN": "档位变更领先",
+                "en": "Pair Lead ns"
+              }
+            },
+            "daemon_slices": {
+              "label": {
+                "zh-CN": "写入前守护进程调度片",
+                "en": "Daemon Slices"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
               }
             }
           },
@@ -13285,14 +13552,32 @@
             },
             "cdev_kind_hint": {
               "label": {
-                "zh-CN": "疑似作用域",
+                "zh-CN": "名称提示",
                 "en": "Cdev Kind Hint"
               }
             },
             "cdev_kind_basis": {
               "label": {
-                "zh-CN": "判定依据",
+                "zh-CN": "提示依据",
                 "en": "Cdev Kind Basis"
+              }
+            },
+            "association_status": {
+              "label": {
+                "zh-CN": "与 policy 的时序关联",
+                "en": "Association Status"
+              }
+            },
+            "associated_policy_cpu": {
+              "label": {
+                "zh-CN": "关联 policy 首核",
+                "en": "Associated Policy CPU"
+              }
+            },
+            "tied_to_this_policy": {
+              "label": {
+                "zh-CN": "关联本 policy",
+                "en": "Tied To This Policy"
               }
             },
             "prev_state": {
@@ -13445,6 +13730,12 @@
                 "en": "Episode Id"
               }
             },
+            "trace_episode_id": {
+              "label": {
+                "zh-CN": "全 trace 区段",
+                "en": "Trace Episode Id"
+              }
+            },
             "policy_cpu": {
               "label": {
                 "zh-CN": "policy 首核",
@@ -13463,52 +13754,46 @@
                 "en": "Who Verdict"
               }
             },
-            "cooling_transition_coincident": {
+            "trigger_class": {
               "label": {
-                "zh-CN": "档位变更与限频时刻重合",
-                "en": "Cooling Transition Coincident"
+                "zh-CN": "触发分类",
+                "en": "Trigger Class"
               }
             },
-            "cooling_nearest_transition_ns": {
+            "trigger_class_rank": {
               "label": {
-                "zh-CN": "最近档位变更时间差",
-                "en": "Cooling Nearest Transition ns"
+                "zh-CN": "分类等级",
+                "en": "Trigger Class Rank"
               }
             },
-            "cooling_nearest_transition_ts": {
+            "onset_trigger_mix": {
               "label": {
-                "zh-CN": "最近档位变更时刻",
-                "en": "Cooling Nearest Transition Ts"
+                "zh-CN": "逐次写入分类",
+                "en": "Onset Trigger Mix"
               }
             },
-            "cooling_active_ns": {
+            "onset_count": {
               "label": {
-                "zh-CN": "区段内散热设备生效时长",
-                "en": "Cooling Active ns"
+                "zh-CN": "窗口内限频写入次数",
+                "en": "Onset Count"
               }
             },
-            "cooling_devices_active": {
+            "confirmed_onset_count": {
               "label": {
-                "zh-CN": "生效散热设备数",
-                "en": "Cooling Devices Active"
+                "zh-CN": "由关联散热设备施加的写入",
+                "en": "Confirmed Onset Count"
               }
             },
-            "cooling_transitions_in_who_window": {
+            "causal_onset_count": {
               "label": {
-                "zh-CN": "归因窗口内散热档位变更",
-                "en": "Cooling Transitions In Who Window"
+                "zh-CN": "收紧或起点未知的写入",
+                "en": "Causal Onset Count"
               }
             },
-            "daemon_ran_before_limit_ns": {
+            "onset_ts": {
               "label": {
-                "zh-CN": "限频前守护进程运行",
-                "en": "Daemon Ran Before Limit ns"
-              }
-            },
-            "daemon_threads_before_limit": {
-              "label": {
-                "zh-CN": "限频前活跃守护线程数",
-                "en": "Daemon Threads Before Limit"
+                "zh-CN": "限频起点",
+                "en": "Onset Ts"
               }
             },
             "onset_observed": {
@@ -13523,16 +13808,34 @@
                 "en": "Onset Note"
               }
             },
+            "paired_cooling_device": {
+              "label": {
+                "zh-CN": "配对散热设备",
+                "en": "Paired Cooling Device"
+              }
+            },
+            "cooling_policy_association": {
+              "label": {
+                "zh-CN": "散热设备关联",
+                "en": "Cooling Policy Association"
+              }
+            },
+            "tied_cooling_device": {
+              "label": {
+                "zh-CN": "关联散热设备",
+                "en": "Tied Cooling Device"
+              }
+            },
             "thresholds": {
               "label": {
                 "zh-CN": "阈值",
                 "en": "Thresholds"
               }
             },
-            "verdict_basis": {
+            "verdict_scope": {
               "label": {
-                "zh-CN": "判定依据",
-                "en": "Verdict Basis"
+                "zh-CN": "判定范围",
+                "en": "Verdict Scope"
               }
             },
             "interpretation": {
@@ -14657,6 +14960,12 @@
                 "en": "Has Limit Track"
               }
             },
+            "has_max_limit_data": {
+              "label": {
+                "zh-CN": "有有效上限样本",
+                "en": "Has Max Limit Data"
+              }
+            },
             "episode_count": {
               "label": {
                 "zh-CN": "限频区段数",
@@ -14697,6 +15006,12 @@
               "label": {
                 "zh-CN": "证据状态",
                 "en": "Evidence Status"
+              }
+            },
+            "limit_evidence_missing_reason": {
+              "label": {
+                "zh-CN": "缺失原因",
+                "en": "Limit Evidence Missing Reason"
               }
             },
             "next_step": {
@@ -43447,7 +43762,7 @@
         },
         "direct_limit_evidence": {
           "title": {
-            "zh-CN": "直接限频证据（限频区段 x 散热设备）",
+            "zh-CN": "直接限频证据（限频区段 x 关联散热设备）",
             "en": "Direct Limit Evidence"
           },
           "columns": {
@@ -43477,7 +43792,7 @@
             },
             "cooling_confirmed_episodes": {
               "label": {
-                "zh-CN": "与散热设备同期的区段",
+                "zh-CN": "由关联散热设备施加的区段",
                 "en": "Cooling Confirmed Episodes"
               }
             },
@@ -43489,14 +43804,38 @@
             },
             "has_cdev_data": {
               "label": {
-                "zh-CN": "有内核散热设备数据",
+                "zh-CN": "采集到散热设备档位变化",
                 "en": "Has Cdev Data"
+              }
+            },
+            "freq_limit_classification": {
+              "label": {
+                "zh-CN": "限频触发分类",
+                "en": "Freq Limit Classification"
+              }
+            },
+            "is_confirmed": {
+              "label": {
+                "zh-CN": "已核验由内核热控施加",
+                "en": "Is Confirmed"
+              }
+            },
+            "onset_trigger_mix": {
+              "label": {
+                "zh-CN": "逐次限频写入分类",
+                "en": "Onset Trigger Mix"
               }
             },
             "thermal_throttling_evidence": {
               "label": {
                 "zh-CN": "热节流证据",
                 "en": "Thermal Throttling Evidence"
+              }
+            },
+            "class_note": {
+              "label": {
+                "zh-CN": "分类说明",
+                "en": "Class Note"
               }
             },
             "next_step": {

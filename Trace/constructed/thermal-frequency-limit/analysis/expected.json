@@ -38,12 +38,15 @@
       "semantic_step": "limit_episodes",
       "required_columns": [
         "episode_id",
+        "trace_episode_id",
         "policy_cpu",
         "core_type",
         "topology_source",
         "episode_start_ts",
         "episode_end_ts",
         "episode_dur_ns",
+        "onset_ts",
+        "onset_observed",
         "min_limit_khz",
         "reference_max_limit_khz",
         "depth_pct",
@@ -55,7 +58,19 @@
         "thresholds",
         "evidence_scope"
       ],
-      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit"
+      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit",
+      "assertions": [
+        {
+          "column": "trace_episode_id",
+          "operator": "eq",
+          "value": "policy10-tep1"
+        },
+        {
+          "column": "onset_observed",
+          "operator": "eq",
+          "value": 1
+        }
+      ]
     },
     {
       "id": "execute-thermal_cooling_device_timeline",
@@ -211,11 +226,11 @@
       "source_file": "backend/skills/composite/cpu_frequency_limit_episode.skill.yaml",
       "parameters": {
         "episode_id": "policy10-ep1",
+        "trace_episode_id": "policy10-tep1",
         "episode_start_ts": "506733884657456",
         "episode_end_ts": "506734884657456",
         "policy_cpu": 10,
         "core_type": "unknown",
-        "starts_at_data_start": 0,
         "lookback_ms": 10000,
         "who_window_ms": 2000,
         "cooling_coincidence_ms": 50,
@@ -229,6 +244,7 @@
         "before_workload",
         "before_anomalies",
         "non_cpu_heat_context",
+        "limit_onsets",
         "who_verdict"
       ],
       "required_sql_steps": [
@@ -237,6 +253,7 @@
         "who_daemon",
         "temperature_context",
         "non_cpu_heat_context",
+        "limit_onsets",
         "who_verdict"
       ],
       "forced_sql_steps": [],
@@ -245,25 +262,136 @@
       "semantic_step": "who_verdict",
       "required_columns": [
         "episode_id",
+        "trace_episode_id",
         "policy_cpu",
         "core_type",
         "who_verdict",
-        "cooling_transition_coincident",
-        "cooling_nearest_transition_ns",
-        "cooling_nearest_transition_ts",
-        "cooling_active_ns",
-        "cooling_devices_active",
-        "cooling_transitions_in_who_window",
-        "daemon_ran_before_limit_ns",
-        "daemon_threads_before_limit",
+        "trigger_class",
+        "trigger_class_rank",
+        "onset_trigger_mix",
+        "onset_count",
+        "confirmed_onset_count",
+        "causal_onset_count",
+        "onset_ts",
         "onset_observed",
         "onset_note",
+        "paired_cooling_device",
+        "cooling_policy_association",
+        "tied_cooling_device",
         "thresholds",
-        "verdict_basis",
+        "verdict_scope",
         "interpretation",
         "evidence_scope"
       ],
-      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit"
+      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit",
+      "assertions": [
+        {
+          "column": "who_verdict",
+          "operator": "eq",
+          "value": "thermal_cooling_device_confirmed"
+        },
+        {
+          "column": "trigger_class",
+          "operator": "eq",
+          "value": "THERMAL_LIMIT_CONFIRMED"
+        },
+        {
+          "column": "onset_trigger_mix",
+          "operator": "eq",
+          "value": "THERMAL_LIMIT_CONFIRMED:2"
+        },
+        {
+          "column": "onset_observed",
+          "operator": "eq",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "execute-cpu_frequency_limit_episode-clipped-window",
+      "type": "skill",
+      "target": "cpu_frequency_limit_episode",
+      "mode": "semantic",
+      "source_file": "backend/skills/composite/cpu_frequency_limit_episode.skill.yaml",
+      "parameters": {
+        "episode_id": "policy10-ep1",
+        "trace_episode_id": "policy10-tep1",
+        "episode_start_ts": "506733884657456",
+        "episode_end_ts": "506734884657456",
+        "policy_cpu": 10,
+        "core_type": "unknown",
+        "lookback_ms": 10000,
+        "who_window_ms": 2000,
+        "cooling_coincidence_ms": 50,
+        "package": "com.smartperfetto.fixture",
+        "window_start_ts": "506734084657456",
+        "window_end_ts": "506734884657456"
+      },
+      "required_steps": [
+        "episode_windows",
+        "who_cooling",
+        "who_daemon",
+        "temperature_context",
+        "before_workload",
+        "before_anomalies",
+        "non_cpu_heat_context",
+        "limit_onsets",
+        "who_verdict"
+      ],
+      "required_sql_steps": [
+        "episode_windows",
+        "who_cooling",
+        "who_daemon",
+        "temperature_context",
+        "non_cpu_heat_context",
+        "limit_onsets",
+        "who_verdict"
+      ],
+      "forced_sql_steps": [],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "who_verdict",
+      "required_columns": [
+        "episode_id",
+        "trace_episode_id",
+        "policy_cpu",
+        "core_type",
+        "who_verdict",
+        "trigger_class",
+        "trigger_class_rank",
+        "onset_trigger_mix",
+        "onset_count",
+        "confirmed_onset_count",
+        "causal_onset_count",
+        "onset_ts",
+        "onset_observed",
+        "onset_note",
+        "paired_cooling_device",
+        "cooling_policy_association",
+        "tied_cooling_device",
+        "thresholds",
+        "verdict_scope",
+        "interpretation",
+        "evidence_scope"
+      ],
+      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit",
+      "assertions": [
+        {
+          "column": "trigger_class",
+          "operator": "eq",
+          "value": "THERMAL_LIMIT_CONFIRMED"
+        },
+        {
+          "column": "onset_ts",
+          "operator": "eq",
+          "value": 506733884657456
+        },
+        {
+          "column": "onset_observed",
+          "operator": "eq",
+          "value": 1
+        }
+      ]
     },
     {
       "id": "execute-cpu_frequency_limit_attribution",
@@ -308,12 +436,15 @@
       "semantic_step": "episodes",
       "required_columns": [
         "episode_id",
+        "trace_episode_id",
         "policy_cpu",
         "core_type",
         "topology_source",
         "episode_start_ts",
         "episode_end_ts",
         "episode_dur_ns",
+        "onset_ts",
+        "onset_observed",
         "min_limit_khz",
         "reference_max_limit_khz",
         "reference_basis",
@@ -328,6 +459,8 @@
         "window_clipped_to_data_start",
         "who_start_ts",
         "who_end_ts",
+        "window_start_ts",
+        "window_end_ts",
         "package",
         "process_name",
         "lookback_ms",
@@ -339,10 +472,258 @@
         "spin_switches_per_s",
         "waker_per_s",
         "kernel_daemon_share_pct",
+        "cdev_policy_pair_ms",
+        "cdev_policy_min_transitions",
+        "cdev_policy_min_pair_pct",
         "thresholds",
         "evidence_scope"
       ],
-      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit"
+      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit",
+      "assertions": [
+        {
+          "column": "trace_episode_id",
+          "operator": "eq",
+          "value": "policy10-tep1"
+        },
+        {
+          "column": "onset_observed",
+          "operator": "eq",
+          "value": 1
+        }
+      ]
+    },
+    {
+      "id": "execute-cpu_frequency_limit_attribution-clipped-onset",
+      "type": "skill",
+      "target": "cpu_frequency_limit_attribution",
+      "mode": "semantic",
+      "source_file": "backend/skills/composite/cpu_frequency_limit_attribution.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "lookback_ms": 10000,
+        "who_window_ms": 2000,
+        "max_episodes": 3,
+        "start_ts": "506734084657456"
+      },
+      "required_steps": [
+        "data_check",
+        "analysis_window",
+        "limit_overview",
+        "cooling_overview",
+        "episodes",
+        "episode_drilldown",
+        "attribution_summary",
+        "vendor_signal_discovery",
+        "no_limit_throttle_observation",
+        "no_limit_capture_advice",
+        "diagnosis"
+      ],
+      "required_sql_steps": [
+        "data_check",
+        "analysis_window",
+        "episodes",
+        "attribution_summary",
+        "vendor_signal_discovery",
+        "no_limit_capture_advice"
+      ],
+      "forced_sql_steps": [
+        "episodes",
+        "attribution_summary",
+        "no_limit_capture_advice"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "attribution_summary",
+      "required_columns": [
+        "classification",
+        "classification_scope",
+        "episode_count",
+        "onset_count",
+        "confirmed_onset_count",
+        "causal_onset_count",
+        "onset_trigger_mix",
+        "deepest_depth_pct",
+        "longest_episode_ns",
+        "cooling_confirmed_episodes",
+        "daemon_suspected_episodes",
+        "cooling_background_episodes",
+        "cooling_unassociated_episodes",
+        "onset_unknown_episodes",
+        "tied_cooling_devices",
+        "cooling_transition_coverage",
+        "top_episode_id",
+        "top_before_start_ts",
+        "top_before_end_ts",
+        "target_running_ns",
+        "total_running_ns",
+        "target_share_pct",
+        "target_dominated_before_limit",
+        "target_scope",
+        "description",
+        "evidence_scope"
+      ],
+      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit",
+      "assertions": [
+        {
+          "column": "classification",
+          "operator": "eq",
+          "value": "THERMAL_LIMIT_CONFIRMED"
+        },
+        {
+          "column": "onset_trigger_mix",
+          "operator": "eq",
+          "value": "THERMAL_LIMIT_CONFIRMED:2,THERMAL_DAEMON_SUSPECTED:1"
+        }
+      ]
+    },
+    {
+      "id": "execute-thermal_throttling-rank1-episodes",
+      "type": "skill",
+      "target": "thermal_throttling",
+      "mode": "semantic",
+      "source_file": "backend/skills/composite/thermal_throttling.skill.yaml",
+      "parameters": {
+        "enable_expert_probes": true,
+        "thermal_predictor_high_drop_pct": 30,
+        "thermal_predictor_medium_drop_pct": 15,
+        "thermal_predictor_high_core_ratio_pct": 50,
+        "thermal_predictor_medium_core_ratio_pct": 25,
+        "thermal_predictor_core_drop_threshold_pct": 30,
+        "gpu_transition_threshold_pct": 12,
+        "gpu_downshift_warning_pct": 25
+      },
+      "required_steps": [
+        "data_check",
+        "expert_analysis_window",
+        "thermal_predictor_probe",
+        "direct_limit_evidence",
+        "thermal_overview",
+        "cpu_freq_overview",
+        "gpu_power_probe",
+        "thermal_timeline",
+        "frequency_drop_events",
+        "thermal_freq_correlation",
+        "high_temp_periods",
+        "root_cause_classification",
+        "thermal_diagnosis",
+        "no_data_fallback"
+      ],
+      "required_sql_steps": [
+        "data_check",
+        "expert_analysis_window",
+        "direct_limit_evidence",
+        "thermal_overview",
+        "cpu_freq_overview",
+        "thermal_timeline",
+        "frequency_drop_events",
+        "thermal_freq_correlation",
+        "high_temp_periods",
+        "root_cause_classification",
+        "no_data_fallback"
+      ],
+      "forced_sql_steps": [
+        "expert_analysis_window",
+        "direct_limit_evidence",
+        "thermal_overview",
+        "cpu_freq_overview",
+        "thermal_timeline",
+        "frequency_drop_events",
+        "thermal_freq_correlation",
+        "high_temp_periods",
+        "root_cause_classification",
+        "no_data_fallback"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "direct_limit_evidence",
+      "required_columns": [
+        "episode_count",
+        "policy_count",
+        "deepest_depth_pct",
+        "longest_episode_ns",
+        "cooling_confirmed_episodes",
+        "onset_unknown_episodes",
+        "has_cdev_data",
+        "freq_limit_classification",
+        "onset_trigger_mix",
+        "thermal_throttling_evidence",
+        "next_step",
+        "evidence_scope"
+      ],
+      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit",
+      "assertions": [
+        {
+          "column": "episode_count",
+          "operator": "eq",
+          "value": 2
+        },
+        {
+          "column": "cooling_confirmed_episodes",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "freq_limit_classification",
+          "operator": "eq",
+          "value": "THERMAL_LIMIT_CONFIRMED"
+        }
+      ]
+    },
+    {
+      "id": "execute-cpu_throttling_in_range-limit-evidence",
+      "type": "skill",
+      "target": "cpu_throttling_in_range",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/cpu_throttling_in_range.skill.yaml",
+      "parameters": {
+        "start_ts": "${trace_start}",
+        "end_ts": "${trace_end}"
+      },
+      "required_steps": [
+        "limit_evidence",
+        "init_cpu_topology",
+        "throttle_detection"
+      ],
+      "required_sql_steps": [
+        "limit_evidence",
+        "throttle_detection"
+      ],
+      "forced_sql_steps": [],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "limit_evidence",
+      "required_columns": [
+        "has_limit_track",
+        "has_max_limit_data",
+        "episode_count",
+        "policy_count",
+        "deepest_depth_pct",
+        "min_limit_khz",
+        "reference_max_limit_khz",
+        "reference_basis",
+        "evidence_status",
+        "limit_evidence_missing_reason",
+        "next_step",
+        "evidence_scope"
+      ],
+      "required_marker": "SmartPerfetto::CASE::thermal-frequency-limit",
+      "assertions": [
+        {
+          "column": "has_max_limit_data",
+          "operator": "eq",
+          "value": 1
+        },
+        {
+          "column": "evidence_status",
+          "operator": "eq",
+          "value": "freq_limit_observed"
+        },
+        {
+          "column": "episode_count",
+          "operator": "eq",
+          "value": 2
+        }
+      ]
     },
     {
       "id": "strategy-power",

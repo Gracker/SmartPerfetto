@@ -65,6 +65,9 @@ sql_fragments:
   backend/skills/fragments/thermal_cooling_spans.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/thermal_cooling_spans.sql
+  backend/skills/fragments/thermal_cdev_policy_association.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/thermal_cdev_policy_association.sql
   backend/skills/fragments/thermal_signal_signatures.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/thermal_signal_signatures.sql
