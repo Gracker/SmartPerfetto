@@ -2,6 +2,9 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
+# v2.3: freq_ramp_slow 只在整帧每个大核都有频率观测时成立
+#   （fragments/system_cpu_big_freq_coverage.sql，与 batch_frame_root_cause 共用）；
+#   拓扑未知或覆盖不全时 ramp_to_high_ms 为 NULL，不再把空窗口算成整帧爬升
 # v2.2: root_cause_summary 与 scrolling_analysis batch_frame_root_cause 共用
 #   fragments/system_cpu_freq_limit_frame_binding.sql 判定 thermal_throttling /
 #   cpu_max_limited；"大核平均频率 < 1200MHz" 只作频率观测，不再声称限频或温控
@@ -10,7 +13,7 @@
 #   根因因此依赖 init_cpu_topology 物化的 _cpu_topology
 # v2.0: Replaced inline CPU topology CTEs with shared _cpu_topology VIEW
 name: jank_frame_detail
-version: "2.2"
+version: "2.3"
 type: composite
 category: rendering
 tier: S
@@ -1055,7 +1058,7 @@ steps:
       role: target
       binding: effective_target_processes
       context_fields:
-        global_context: [frame_budget_ms, primary_cause, secondary_info]
+        global_context: [frame_budget_ms, primary_cause, secondary_info, ramp_to_high_ms, freq_ramp_evidence]
         peer_context: [deep_reason]
       limitations:
         - "根因分类结合目标线程、全局 CPU/VSync 资源及对端信息；混合解释文本不是目标进程的独立实测指标。"
@@ -1063,6 +1066,7 @@ steps:
       - fragments/system_thread_state_spans.sql
       - fragments/system_cpu_frequency_spans.sql
       - fragments/system_sched_spans.sql
+      - fragments/system_cpu_big_freq_coverage.sql
       - fragments/system_cpu_freq_limit_spans.sql
       - fragments/system_cpu_freq_limit_episodes.sql
       - fragments/thermal_cooling_spans.sql
@@ -1207,6 +1211,16 @@ steps:
         - name: rt_freq_limit_policy_cpu
           label: "RenderThread 限频 policy"
           type: number
+          hidden: true
+        - name: ramp_to_high_ms
+          label: "大核升频延迟"
+          type: duration
+          format: duration_ms
+          unit: ms
+          hidden: true
+        - name: freq_ramp_evidence
+          label: "大核升频观测"
+          type: string
           hidden: true
     sql: |
       -- 根因分析: 综合四象限、CPU频率、耗时操作等数据，输出明确的根因结论
@@ -1457,7 +1471,12 @@ steps:
           SUM(freq_khz*1.0*dur_ns)/NULLIF(SUM(dur_ns),0) as avg_khz
         FROM big_freq_window
       ),
-      big_freq_ramp AS (
+      -- 频率爬升只在整帧每个大核频率都有观测时计时（fragments/system_cpu_big_freq_coverage.sql）；
+      -- 拓扑未知或覆盖不全时为 NULL，不能把"没有观测"当成"一直没升到高频"。
+      frame_freq_ramp_evidence AS (
+        SELECT freq_ramp_evidence FROM system_cpu_big_freq_coverage WHERE window_id='frame'
+      ),
+      big_freq_ramp_timing AS (
         SELECT
           ROUND(
             (
@@ -1484,6 +1503,11 @@ steps:
           ) as ramp_to_2g_ms
         FROM big_freq_window b
         CROSS JOIN big_freq_stats s
+      ),
+      -- 聚合在空窗口上也返回一行（MIN 为 NULL → COALESCE 成整帧），所以证据门控在聚合之后
+      big_freq_ramp AS (
+        SELECT r.* FROM big_freq_ramp_timing r CROSS JOIN frame_freq_ramp_evidence e
+        WHERE e.freq_ramp_evidence = 'observed'
       ),
       system_target_threads AS (
         SELECT 'frame' AS window_id,t.upid,tt.utid,tt.thread_type AS role
@@ -1705,6 +1729,7 @@ steps:
           (SELECT top_little_avg_freq_mhz FROM top_slice_freq) as top_little_avg_freq_mhz,
           (SELECT ramp_to_high_ms FROM big_freq_ramp) as ramp_to_high_ms,
           (SELECT ramp_to_2g_ms FROM big_freq_ramp) as ramp_to_2g_ms,
+          (SELECT freq_ramp_evidence FROM frame_freq_ramp_evidence) as freq_ramp_evidence,
           (SELECT overlap_ms FROM binder_overlap) as binder_overlap_ms,
           (SELECT max_overlap_ms FROM binder_overlap) as binder_max_overlap_ms,
           (SELECT overlap_server FROM binder_overlap) as binder_overlap_server,
@@ -1801,9 +1826,11 @@ steps:
               AND COALESCE(top_big_max_freq_mhz, 0) > 0
               AND top_big_avg_freq_mhz < top_big_max_freq_mhz * 0.55
               THEN 'big_core_low_freq'
-            -- P6: 频率爬升慢（仅适用于边际情况：slice 在 1x-2x 帧预算区间）
+            -- P6: 频率爬升慢（仅适用于边际情况：slice 在 1x-2x 帧预算区间），且整帧
+            -- 每个大核的频率都有观测；否则爬升时间未知，落到 P7 兜底
             WHEN slice_dur > slice_critical_ms
-              AND COALESCE(ramp_to_high_ms, 0) > freq_ramp_critical_ms
+              AND freq_ramp_evidence = 'observed'
+              AND ramp_to_high_ms > freq_ramp_critical_ms
               AND COALESCE(top_slice_offset_ms, 0) <= ramp_to_high_ms
               THEN 'freq_ramp_slow'
             -- P7: 工作负载超时兜底（1x-2x 帧预算，无特定供给侧因素）
@@ -2094,6 +2121,7 @@ steps:
           top_big_avg_freq_mhz,
           top_big_max_freq_mhz,
           ramp_to_high_ms,
+          freq_ramp_evidence,
           binder_overlap_ms,
           lock_contention_ms,
           render_sync_wait_ms,
@@ -2170,6 +2198,9 @@ steps:
         rt_freq_limit_state,
         rt_freq_limit_binding_ns,
         rt_freq_limit_policy_cpu,
+        -- 大核频率爬升（fragments/system_cpu_big_freq_coverage.sql），无完整观测时为 NULL
+        ramp_to_high_ms,
+        freq_ramp_evidence,
         CASE
           WHEN cause_type IN ('slice', 'blocking', 'io_blocking') THEN 'trigger'
           WHEN cause_type IN ('sched_latency', 'cpu_contention', 'small_core', 'freq_limit', 'low_freq', 'cpu_overload') THEN 'supply'
