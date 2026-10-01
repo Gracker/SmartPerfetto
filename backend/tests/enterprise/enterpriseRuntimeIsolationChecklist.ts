@@ -108,7 +108,7 @@ export const RUNTIME_ISOLATION_CHECKLIST = [
         file: 'backend/src/scripts/verifyEnterpriseMultiTenantWindows.ts',
         patterns: [
           'frontendAndAgentUseLeaseHolders',
-          "holderType: 'frontend_http_rpc'",
+          'frontendHolderInput(frontendWindow',
           "holderType: 'agent_run'",
           "holderType: 'report_generation'",
         ],

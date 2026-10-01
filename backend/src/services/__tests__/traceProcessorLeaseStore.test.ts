@@ -5,6 +5,7 @@
 import Database from 'better-sqlite3';
 import { applyEnterpriseMinimalSchema } from '../enterpriseSchema';
 import {
+  frontendHolderRef,
   resolveHolderTtlPolicy,
   TraceProcessorLeaseStore,
   type TraceProcessorHolderType,
@@ -34,6 +35,37 @@ function seedGraph(db: Database.Database, traceId = 'trace-a'): void {
       (?, 'tenant-a', 'workspace-a', ?, 'ready', ?)
   `).run(traceId, `/tmp/${traceId}.pftrace`, now);
 }
+
+describe('frontendHolderRef', () => {
+  it('is stable per user and window and distinct across users and windows', () => {
+    const windowA = frontendHolderRef({userId: 'user-a', windowId: 'window-a'});
+
+    expect(frontendHolderRef({userId: 'user-a', windowId: 'window-a'})).toBe(windowA);
+    expect(new Set([
+      windowA,
+      frontendHolderRef({userId: 'user-a', windowId: 'window-b'}),
+      frontendHolderRef({userId: 'user-b', windowId: 'window-a'}),
+      frontendHolderRef({userId: 'user-a'}),
+      frontendHolderRef({userId: 'user-b'}),
+      // A delimiter in either part must not let two identities meet.
+      frontendHolderRef({userId: 'user-a:window-a'}),
+      frontendHolderRef({userId: 'user', windowId: 'a:window-a'}),
+    ]).size).toBe(7);
+  });
+
+  it('treats an absent and an empty window id as the same windowless client', () => {
+    expect(frontendHolderRef({userId: 'user-a', windowId: ''})).toBe(frontendHolderRef({userId: 'user-a'}));
+  });
+
+  it('does not disclose the user or window in the ref', () => {
+    const ref = frontendHolderRef({userId: 'alice@example.test', windowId: 'window-a'});
+    expect(ref).toMatch(/^frontend:[0-9a-f]{32}$/);
+  });
+
+  it('requires a user', () => {
+    expect(() => frontendHolderRef({userId: ' ', windowId: 'window-a'})).toThrow('userId is required');
+  });
+});
 
 describe('TraceProcessorLeaseStore', () => {
   let db: Database.Database;

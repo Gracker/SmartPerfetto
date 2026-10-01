@@ -8642,7 +8642,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::rendering-jank",
             "assertions": [
@@ -9115,6 +9117,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -12734,6 +12737,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -12960,6 +12964,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13176,6 +13181,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13397,6 +13403,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13465,6 +13472,16 @@
                 "column": "reason_code",
                 "operator": "eq",
                 "value": "workload_heavy"
+              },
+              {
+                "column": "ramp_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank"
@@ -13608,6 +13625,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13819,6 +13837,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -14030,6 +14049,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -14241,6 +14261,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -14457,6 +14478,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -14625,7 +14647,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -14752,7 +14776,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -14879,7 +14905,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -14890,13 +14918,18 @@
               },
               {
                 "column": "reason_code",
-                "operator": "ne",
-                "value": "thermal_throttling"
+                "operator": "eq",
+                "value": "workload_heavy"
               },
               {
-                "column": "reason_code",
-                "operator": "ne",
-                "value": "cpu_max_limited"
+                "column": "ramp_to_high_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ]
           },
@@ -14996,7 +15029,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -15007,13 +15042,18 @@
               },
               {
                 "column": "reason_code",
-                "operator": "ne",
-                "value": "thermal_throttling"
+                "operator": "eq",
+                "value": "workload_heavy"
               },
               {
-                "column": "reason_code",
-                "operator": "ne",
-                "value": "cpu_max_limited"
+                "column": "ramp_to_high_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ]
           },
@@ -15113,7 +15153,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -15124,13 +15166,18 @@
               },
               {
                 "column": "reason_code",
-                "operator": "ne",
-                "value": "thermal_throttling"
+                "operator": "eq",
+                "value": "workload_heavy"
               },
               {
-                "column": "reason_code",
-                "operator": "ne",
-                "value": "cpu_max_limited"
+                "column": "ramp_to_high_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ]
           }
@@ -18162,6 +18209,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",

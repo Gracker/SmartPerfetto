@@ -946,6 +946,7 @@
           "big_avg_freq_mhz",
           "big_max_freq_mhz",
           "ramp_ms",
+          "freq_ramp_evidence",
           "top_slice_little_pct",
           "top_slice_big_pct",
           "top_slice_runnable_pct",

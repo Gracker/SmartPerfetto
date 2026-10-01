@@ -2867,6 +2867,7 @@ steps:
       - fragments/android_input_events_normalized.sql
       - fragments/system_cpu_frequency_spans.sql
       - fragments/system_sched_spans.sql
+      - fragments/system_cpu_big_freq_coverage.sql
       - fragments/system_thread_state_spans.sql
       - fragments/effective_target_processes.sql
       - fragments/vsync_config.sql
@@ -3058,6 +3059,10 @@ steps:
           label: "升频延迟"
           type: duration
           format: duration_ms
+          hidden: true
+        - name: freq_ramp_evidence
+          label: "大核升频观测"
+          type: string
           hidden: true
         - name: top_slice_little_pct
           label: "小核占比%"
@@ -3300,7 +3305,7 @@ steps:
       role: target
       binding: effective_target_processes
       context_fields:
-        global_context: [big_avg_freq_mhz, big_max_freq_mhz, ramp_ms, frame_budget_ms, vsync_source, device_peak_freq_mhz, cpu_freq_clusters_json, freq_timeline_json]
+        global_context: [big_avg_freq_mhz, big_max_freq_mhz, ramp_ms, freq_ramp_evidence, frame_budget_ms, vsync_source, device_peak_freq_mhz, cpu_freq_clusters_json, freq_timeline_json]
         peer_context: [binder_calls_json]
     sql: |
       -- 批量帧根因分类：对采样上限内的消费端真实掉帧执行简化版根因决策树
@@ -3662,6 +3667,8 @@ steps:
       ),
       -- BATCH_FRAME_IDENTITY_FREQ_CTE_END
       -- ========== 8. Per-frame: 频率爬升延迟 ==========
+      -- 只对整帧每个大核都有频率观测的帧计时（fragments/system_cpu_big_freq_coverage.sql，
+      -- 与 jank_frame_detail 同一证据判定，高频阈值各自不同）；其余帧 ramp 为 NULL，不是"瞬间升到高频"的 0
       frame_peak_freq AS (
         SELECT f.window_id AS frame_key,MAX(f.freq_khz) AS peak_khz
         FROM system_cpu_frequency_spans f JOIN system_cpu_topology ct ON ct.ucpu=f.ucpu
@@ -3672,6 +3679,7 @@ steps:
           ROUND((MIN(CASE WHEN f.freq_khz>=p.peak_khz*0.7 THEN f.clipped_start_ts END)-f.window_start_ts)/1e6,2) AS ramp_to_high_ms
         FROM system_cpu_frequency_spans f JOIN system_cpu_topology ct ON ct.ucpu=f.ucpu
         JOIN frame_peak_freq p ON p.frame_key=f.window_id
+        JOIN system_cpu_big_freq_coverage cov ON cov.window_id=f.window_id AND cov.freq_ramp_evidence='observed'
         WHERE ct.core_type IN ('prime','big','medium') GROUP BY f.window_id,f.window_start_ts
       ),
       -- ========== 9. Per-frame: Binder 同步与 top slice 重叠 ==========
@@ -4269,7 +4277,8 @@ steps:
           rtq.render_q4b_pct as render_q4b_pct,
           pff.big_avg_freq_mhz as big_avg_freq_mhz,
           pff.big_max_freq_mhz as big_max_freq_mhz,
-          COALESCE(pfr.ramp_to_high_ms, 0) as ramp_to_high_ms,
+          pfr.ramp_to_high_ms,
+          cov.freq_ramp_evidence,
           COALESCE(pfb.binder_overlap_ms, 0) as binder_overlap_ms,
           COALESCE(pfgc.gc_overlap_ms, 0) as gc_overlap_ms,
           COALESCE(pfgc.gc_count, 0) as gc_count,
@@ -4340,6 +4349,7 @@ steps:
         LEFT JOIN render_thread_quadrants rtq ON rtq.frame_key = fl.frame_key
         LEFT JOIN per_frame_freq pff ON pff.frame_key = fl.frame_key
         LEFT JOIN per_frame_ramp pfr ON pfr.frame_key = fl.frame_key
+        LEFT JOIN system_cpu_big_freq_coverage cov ON cov.window_id = fl.frame_key
         LEFT JOIN per_frame_binder pfb ON pfb.frame_key = fl.frame_key
         LEFT JOIN per_frame_gc pfgc ON pfgc.frame_key = fl.frame_key
         LEFT JOIN gpu_fence_per_frame gf ON gf.frame_key = fl.frame_key
@@ -4438,8 +4448,9 @@ steps:
               AND big_avg_freq_mhz > 0 AND big_max_freq_mhz > 0
               AND big_avg_freq_mhz < big_max_freq_mhz * 0.55
               THEN 'big_core_low_freq'
-            -- P6: 频率爬升慢（边际情况：slice 在 1x-2x 帧预算区间）
+            -- P6: 频率爬升慢（边际情况：slice 在 1x-2x 帧预算区间），且整帧每个大核都有频率观测
             WHEN top_slice_ms > slice_critical_ms
+              AND freq_ramp_evidence = 'observed'
               AND ramp_to_high_ms > freq_ramp_critical_ms
               AND top_slice_offset_ms <= ramp_to_high_ms
               THEN 'freq_ramp_slow'
@@ -4590,6 +4601,7 @@ steps:
         big_avg_freq_mhz,
         big_max_freq_mhz,
         ramp_to_high_ms as ramp_ms,
+        freq_ramp_evidence,
         -- Top Slice CPU 分布
         little_run_pct as top_slice_little_pct,
         big_run_pct as top_slice_big_pct,

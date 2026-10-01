@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1368,
-    "explicitColumnCount": 5097
+    "explicitColumnCount": 5100
   },
   "skills": {
     "ams_module": {
@@ -22897,6 +22897,18 @@
                 "zh-CN": "RenderThread 限频 policy",
                 "en": "Rt Freq Limit Policy CPU"
               }
+            },
+            "ramp_to_high_ms": {
+              "label": {
+                "zh-CN": "大核升频延迟",
+                "en": "Ramp To High ms"
+              }
+            },
+            "freq_ramp_evidence": {
+              "label": {
+                "zh-CN": "大核升频观测",
+                "en": "Freq Ramp Evidence"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -34249,6 +34261,12 @@
               "label": {
                 "zh-CN": "升频延迟",
                 "en": "Ramp ms"
+              }
+            },
+            "freq_ramp_evidence": {
+              "label": {
+                "zh-CN": "大核升频观测",
+                "en": "Freq Ramp Evidence"
               }
             },
             "top_slice_little_pct": {

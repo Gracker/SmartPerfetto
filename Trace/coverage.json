@@ -9311,7 +9311,7 @@
           },
           {
             "id": "root_cause_summary",
-            "sha256": "4abae76fa17cb77770086613dae93a1d7f3b28e6dc7be6a4915e9ad24b96234e",
+            "sha256": "e4188118f0c1a35dd5216a07f8fb6c4eb4422f802b7c8d21f679b345a1fea1a5",
             "required_columns": [
               "primary_cause",
               "deep_reason",
@@ -9344,7 +9344,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ]
           }
         ]
@@ -11084,7 +11086,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "073fdcd138d1351e2485c58551364b0b9876a4066aa42b48795d0ae228c10133",
+            "sha256": "76d89ae1c5ec80b0842030f2cf961d09bbd9ce012c734b5c0fe6738a0f03730e",
             "required_columns": [
               "system_evidence_json",
               "frame_id",
@@ -11124,6 +11126,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",

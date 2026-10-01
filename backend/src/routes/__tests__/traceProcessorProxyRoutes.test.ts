@@ -15,6 +15,7 @@ import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpr
 import { EnterpriseApiKeyService } from '../../services/enterpriseApiKeyService';
 import type { EnterpriseRepositoryScope } from '../../services/enterpriseRepository';
 import {
+  frontendHolderRef,
   getTraceProcessorLeaseStore,
   setTraceProcessorLeaseStoreForTests,
   type TraceProcessorLeaseRecord,
@@ -51,6 +52,7 @@ const scope: EnterpriseRepositoryScope = {
   workspaceId: 'workspace-a',
   userId: 'user-a',
 };
+const WINDOW_A_HOLDER = frontendHolderRef({userId: 'user-a', windowId: 'window-a'});
 
 let tmpDir: string;
 let dbPath: string;
@@ -82,14 +84,25 @@ function makeApp(): express.Express {
 }
 
 function ssoHeaders(req: request.Test, workspaceId = 'workspace-a'): request.Test {
-  return req
-    .set('X-SmartPerfetto-SSO-User-Id', 'user-a')
-    .set('X-SmartPerfetto-SSO-Email', 'user-a@example.test')
+  return userSsoHeaders(req, {workspaceId});
+}
+
+function userSsoHeaders(
+  req: request.Test,
+  options: {userId?: string; workspaceId?: string; windowId?: string | null; correlationId?: string} = {},
+): request.Test {
+  const userId = options.userId ?? 'user-a';
+  const windowId = options.windowId === undefined ? 'window-a' : options.windowId;
+  let next = req
+    .set('X-SmartPerfetto-SSO-User-Id', userId)
+    .set('X-SmartPerfetto-SSO-Email', `${userId}@example.test`)
     .set('X-SmartPerfetto-SSO-Tenant-Id', 'tenant-a')
-    .set('X-SmartPerfetto-SSO-Workspace-Id', workspaceId)
+    .set('X-SmartPerfetto-SSO-Workspace-Id', options.workspaceId ?? 'workspace-a')
     .set('X-SmartPerfetto-SSO-Roles', 'analyst')
-    .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write')
-    .set('X-Window-Id', 'window-a');
+    .set('X-SmartPerfetto-SSO-Scopes', 'trace:read,trace:write');
+  if (windowId) next = next.set('X-Window-Id', windowId);
+  if (options.correlationId) next = next.set('X-Correlation-Id', options.correlationId);
+  return next;
 }
 
 function adminHeaders(req: request.Test, workspaceId = 'workspace-a'): request.Test {
@@ -156,9 +169,9 @@ async function withUpgradeProxy(run: (proxyPort: number) => Promise<void>): Prom
   }
 }
 
-function frontendHolder(holderRef: string) {
+function frontendHolder(windowId: string) {
   return getTraceProcessorLeaseStore().getLeaseById(scope, lease.id)
-    ?.holders.find(holder => holder.holderRef === holderRef);
+    ?.holders.find(holder => holder.holderType === 'frontend_http_rpc' && holder.windowId === windowId);
 }
 
 let apiKeyDb: ReturnType<typeof openEnterpriseDb> | undefined;
@@ -218,8 +231,9 @@ function createReadyLease(): TraceProcessorLeaseRecord {
   const store = getTraceProcessorLeaseStore();
   let next = store.acquireHolder(scope, 'trace-a', {
     holderType: 'frontend_http_rpc',
-    holderRef: 'window-a',
+    holderRef: WINDOW_A_HOLDER,
     windowId: 'window-a',
+    metadata: {userId: 'user-a'},
   });
   next = store.markStarting(scope, next.id);
   return store.markReady(scope, next.id);
@@ -509,13 +523,13 @@ describe('trace processor lease proxy routes', () => {
       },
       holder: {
         holderType: 'frontend_http_rpc',
-        holderRef: 'window-a',
+        holderRef: WINDOW_A_HOLDER,
         windowId: 'window-a',
         frontendVisibility: 'hidden',
       },
     });
     const updated = getTraceProcessorLeaseStore().getLeaseById(scope, lease.id);
-    const holder = updated?.holders.find(item => item.holderRef === 'window-a');
+    const holder = updated?.holders.find(item => item.holderRef === WINDOW_A_HOLDER);
     expect(holder).toBeDefined();
     expect(holder?.metadata).toEqual(expect.objectContaining({
       frontendVisibility: 'hidden',
@@ -528,7 +542,7 @@ describe('trace processor lease proxy routes', () => {
   it('reacquires the frontend holder on heartbeat after the window holder disappeared', async () => {
     const app = makeApp();
     const store = getTraceProcessorLeaseStore();
-    store.releaseHolder(scope, lease.id, 'frontend_http_rpc', 'window-a');
+    store.releaseHolder(scope, lease.id, 'frontend_http_rpc', WINDOW_A_HOLDER);
     expect(store.getLeaseById(scope, lease.id)?.holderCount).toBe(0);
     const before = Date.now();
 
@@ -549,12 +563,12 @@ describe('trace processor lease proxy routes', () => {
       },
       holder: {
         holderType: 'frontend_http_rpc',
-        holderRef: 'window-a',
+        holderRef: WINDOW_A_HOLDER,
         frontendVisibility: 'offline',
       },
     });
     const reacquired = store.getLeaseById(scope, lease.id);
-    const holder = reacquired?.holders.find(item => item.holderRef === 'window-a');
+    const holder = reacquired?.holders.find(item => item.holderRef === WINDOW_A_HOLDER);
     expect(holder).toBeDefined();
     expect(holder?.metadata).toEqual(expect.objectContaining({
       frontendVisibility: 'offline',
@@ -576,6 +590,71 @@ describe('trace processor lease proxy routes', () => {
     expect(res.body).toEqual({
       success: false,
       error: 'frontend visibility must be visible, hidden, or offline',
+    });
+  });
+
+  describe('frontend holder identity', () => {
+    function frontendHolders() {
+      return (getTraceProcessorLeaseStore().getLeaseById(scope, lease.id)?.holders ?? [])
+        .filter(holder => holder.holderType === 'frontend_http_rpc');
+    }
+
+    function frontendHolderRefs(): string[] {
+      return frontendHolders().map(holder => holder.holderRef).sort();
+    }
+
+    it('keeps one holder for a client without a window id across requests', async () => {
+      const app = makeApp();
+      const client = {windowId: null};
+
+      expect((await userSsoHeaders(request(app).post(`/api/tp/${lease.id}/status`), client)).status).toBe(200);
+      expect((await userSsoHeaders(
+        request(app)
+          .post(`/api/tp/${lease.id}/query`)
+          .set('Content-Type', 'application/x-protobuf')
+          .send(Buffer.from([1])),
+        client,
+      )).status).toBe(200);
+      const heartbeat = await userSsoHeaders(
+        request(app).post(`/api/tp/${lease.id}/heartbeat`).send({visibility: 'visible'}),
+        client,
+      );
+      expect(heartbeat.status).toBe(200);
+
+      const windowlessHolder = frontendHolderRef({userId: 'user-a'});
+      expect(heartbeat.body.holder).toMatchObject({holderRef: windowlessHolder, windowId: null});
+      expect(frontendHolderRefs()).toEqual([WINDOW_A_HOLDER, windowlessHolder].sort());
+    });
+
+    it('does not merge windows that reuse one correlation id', async () => {
+      const app = makeApp();
+
+      for (const windowId of ['window-a', 'window-b']) {
+        const res = await userSsoHeaders(
+          request(app).post(`/api/tp/${lease.id}/heartbeat`).send({visibility: 'visible'}),
+          {windowId, correlationId: 'shared-correlation'},
+        );
+        expect(res.status).toBe(200);
+      }
+
+      const windowBHolder = frontendHolderRef({userId: 'user-a', windowId: 'window-b'});
+      expect(frontendHolderRefs()).toEqual([WINDOW_A_HOLDER, windowBHolder].sort());
+    });
+
+    it('keeps another user with the same window id off the existing holder', async () => {
+      const app = makeApp();
+
+      const res = await userSsoHeaders(
+        request(app).post(`/api/tp/${lease.id}/heartbeat`).send({visibility: 'visible'}),
+        {userId: 'user-b', windowId: 'window-a'},
+      );
+      expect(res.status).toBe(200);
+
+      const userBHolder = frontendHolderRef({userId: 'user-b', windowId: 'window-a'});
+      expect(frontendHolderRefs()).toEqual([WINDOW_A_HOLDER, userBHolder].sort());
+      const holders = frontendHolders();
+      expect(holders.find(holder => holder.holderRef === WINDOW_A_HOLDER)?.metadata?.userId).toBe('user-a');
+      expect(holders.find(holder => holder.holderRef === userBHolder)?.metadata?.userId).toBe('user-b');
     });
   });
 
@@ -737,7 +816,7 @@ describe('trace processor lease proxy routes', () => {
       expect(echoed).toContain('ping-through-proxy');
       // The upgrade has no Express request, yet resolves the same request id.
       const holder = getTraceProcessorLeaseStore().getLeaseById(scope, lease.id)
-        ?.holders.find(item => item.holderRef === 'window-a');
+        ?.holders.find(item => item.holderRef === WINDOW_A_HOLDER);
       expect(holder?.metadata).toEqual(expect.objectContaining({requestId: 'wscorrelation:1'}));
     } finally {
       for (const socket of proxySockets) {
@@ -755,7 +834,10 @@ describe('trace processor lease proxy routes', () => {
         'X-SmartPerfetto-SSO-Tenant-Id': 'tenant-a',
       });
       expect(status).toBe(101);
-      expect(frontendHolder('window-q')?.metadata).toEqual(expect.objectContaining({userId: 'user-a'}));
+      expect(frontendHolder('window-q')).toMatchObject({
+        holderRef: frontendHolderRef({userId: 'user-a', windowId: 'window-q'}),
+        metadata: expect.objectContaining({userId: 'user-a'}),
+      });
     });
   });
 
@@ -766,7 +848,10 @@ describe('trace processor lease proxy routes', () => {
       const status = await upgradeStatus(proxyPort,
         `/api/tp/${lease.id}/websocket?tenantId=tenant-a&workspaceId=workspace-a&windowId=window-dev&userId=user-a`);
       expect(status).toBe(101);
-      expect(frontendHolder('window-dev')?.metadata).toEqual(expect.objectContaining({userId: 'user-a'}));
+      expect(frontendHolder('window-dev')).toMatchObject({
+        holderRef: frontendHolderRef({userId: 'user-a', windowId: 'window-dev'}),
+        metadata: expect.objectContaining({userId: 'user-a'}),
+      });
     });
   });
 
