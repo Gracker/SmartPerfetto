@@ -25,6 +25,7 @@ import {
   type FailureCategory,
 } from './failureTaxonomy';
 import { scanContent, formatThreats } from './contentScanner';
+import { logStoredReadFailure, parseStoredJson } from '../../utils/storedData';
 
 /** Strict JSON shape emitted by the review agent. Anything else is rejected. */
 export interface ReviewAgentNoteEmission {
@@ -303,10 +304,10 @@ export function readSkillNotesFile(filePath: string): SkillNotesFile {
     return { schemaVersion: 1, skillId: path.basename(filePath, '.notes.json'), notes: [], lastUpdated: 0, totalBytes: 0 };
   }
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+    const parsed = parseStoredJson<Partial<SkillNotesFile>>(fs.readFileSync(filePath, 'utf-8'), 'skill notes');
     if (parsed && Array.isArray(parsed.notes)) return parsed as SkillNotesFile;
   } catch (err) {
-    console.warn('[skillNotesWriter] failed to parse', filePath, (err as Error).message);
+    logStoredReadFailure('[skillNotesWriter] Notes file unreadable, using empty notes', err, {path: filePath});
   }
   return { schemaVersion: 1, skillId: path.basename(filePath, '.notes.json'), notes: [], lastUpdated: 0, totalBytes: 0 };
 }

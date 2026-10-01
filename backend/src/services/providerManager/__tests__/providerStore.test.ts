@@ -6,6 +6,7 @@ import os from 'os';
 import path from 'path';
 import { ProviderStore } from '../providerStore';
 import type { ProviderConfig } from '../types';
+import { warningsDuring } from '../../../../tests/helpers/consoleWarnings';
 
 function makeTmpDir(): string {
   return path.join(os.tmpdir(), `provider-store-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -43,6 +44,16 @@ describe('ProviderStore', () => {
   it('initializes with empty array when file does not exist', () => {
     store.load();
     expect(store.getAll()).toEqual([]);
+  });
+
+  it('logs an unreadable providers.json by position, never its keys', async () => {
+    // Unquoted, so the parser would quote the key around it.
+    await fsp.writeFile(path.join(dir, 'providers.json'), '[{"connection":{"apiKey":sk-PROVIDER-CANARY-9e1}}]');
+    const warnings = warningsDuring(() => store.load());
+    expect(store.getAll()).toEqual([]);
+    expect(warnings).toEqual([['[ProviderStore] providers.json unreadable, starting fresh',
+      expect.objectContaining({store: 'providers.json', reason: 'invalid_json'})]]);
+    expect(JSON.stringify(warnings)).not.toContain('PROVIDER-CANARY');
   });
 
   it('loads existing providers from file', async () => {

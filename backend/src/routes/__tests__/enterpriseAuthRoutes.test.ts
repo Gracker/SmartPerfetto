@@ -17,6 +17,7 @@ import {
   EnterpriseOidcClient,
   type EnterpriseOidcUserInfo,
 } from '../../services/enterpriseOidcClient';
+import { warningsDuringAsync } from '../../../tests/helpers/consoleWarnings';
 
 const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
 const originalCookieSecret = process.env.SMARTPERFETTO_SSO_COOKIE_SECRET;
@@ -495,6 +496,39 @@ describe('enterprise auth routes', () => {
       .expect(302);
 
     expect(callback.headers.location).toBe('https://app.example.test:10000/');
+  });
+
+  test('treats a session whose stored auth context cannot be parsed as unauthenticated, quoting none of it', async () => {
+    process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
+    process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
+    process.env.SMARTPERFETTO_OIDC_REDIRECT_URI = 'https://app.example.test:3000/api/auth/oidc/callback';
+    process.env.SMARTPERFETTO_SERVER_SECRET = 'test-server-secret-at-least-32-bytes';
+    process.env.FRONTEND_URL = 'https://app.example.test:10000';
+    delete process.env.SMARTPERFETTO_SSO_COOKIE_SECRET;
+    const service = new EnterpriseSsoService(db);
+    EnterpriseSsoService.setInstanceForTests(service);
+    const {app, captured} = makeApp(service, {
+      issuer: 'https://idp.example.test', subject: 'alice-sub', email: 'alice@example.test',
+      claims: {sub: 'alice-sub'},
+    });
+    const login = await request(app).get('/api/auth/oidc/login?returnTo=/assistant-shell').expect(302);
+    const callback = await request(app)
+      .get(`/api/auth/oidc/callback?code=code-123&state=${captured.state}`)
+      .set('Cookie', login.headers['set-cookie'][0].split(';')[0])
+      .expect(302);
+    const cookie = sessionCookieFrom(callback);
+    // Unquoted, so the parser would quote the IdP claims around it.
+    db.prepare('UPDATE sso_sessions SET auth_context_json = ?').run('{"email":[SSO-CANARY-7a3 x]}');
+
+    let body: unknown;
+    const warnings = await warningsDuringAsync(async () => {
+      body = (await request(app).get('/api/auth/session').set('Cookie', cookie).expect(200)).body;
+    });
+    expect(body).toMatchObject({authenticated: false});
+    expect(JSON.stringify(body)).not.toContain('SSO-CANARY');
+    expect(warnings.length).toBeGreaterThan(0);
+    expect(JSON.stringify(warnings)).not.toContain('SSO-CANARY');
   });
 
   test('treats malformed session cookies as unauthenticated', async () => {

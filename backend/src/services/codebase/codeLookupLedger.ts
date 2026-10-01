@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {backendLogPath} from '../../runtimePaths';
+import {logStoredReadFailure, tryParseStoredJson} from '../../utils/storedData';
 import {
   sanitizeSourceIncompleteReason,
   sanitizeSourceReferences,
@@ -171,10 +172,15 @@ export class CodeLookupLedger {
     );
     if (!fs.existsSync(sidecarPath)) return ledger;
     const raw = fs.readFileSync(sidecarPath, 'utf-8');
-    for (const line of raw.split('\n')) {
+    for (const [index, line] of raw.split('\n').entries()) {
       if (!line.trim()) continue;
-      const parsed = JSON.parse(line) as Partial<CodeLookupLedgerEntry>;
-      const entry = normalizeLedgerEntry(parsed);
+      // A lookup names private source, so the error names only its line.
+      const parsed = tryParseStoredJson<Partial<CodeLookupLedgerEntry>>(line, 'code lookup ledger', {startLine: index + 1});
+      if (!parsed.ok) {
+        logStoredReadFailure('[CodeLookupLedger] Ledger unreadable', parsed.error, {sessionId, path: sidecarPath, line: index + 1});
+        throw parsed.error;
+      }
+      const entry = normalizeLedgerEntry(parsed.value);
       ledger.auditEntries.push(entry);
       if (
         authorizationFingerprint === undefined ||

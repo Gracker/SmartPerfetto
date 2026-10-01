@@ -12,6 +12,7 @@ import type {
   SelfEvolutionPersistenceCapability,
 } from '../../types/selfEvolution';
 import {atomicWriteFileSync} from '../../utils/atomicFileWriter';
+import {parseStoredJson} from '../../utils/storedData';
 
 const DISTRIBUTIONS = new Set(['source', 'docker', 'portable', 'npm']);
 const CHANNELS = new Set(['stable', 'nightly']);
@@ -138,7 +139,10 @@ export function loadLastReconciledBuildIdentity(
 ): LastReconciledBuildIdentityRecordV1 | null {
   const filePath = options.filePath ?? defaultFilePath();
   if (!fs.existsSync(filePath)) return null;
-  return parseRecord(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+  return parseRecord(parseStoredJson(
+    fs.readFileSync(filePath, 'utf8'),
+    'reconciled build identity record',
+  ));
 }
 
 export function saveLastReconciledBuildIdentity(

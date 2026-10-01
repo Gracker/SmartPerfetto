@@ -12,6 +12,7 @@ import type {ConversationRuntimeOutcome, ConversationTraceContext} from '../assi
 import type {AnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {AnalysisHistoryStore, type AnalysisHistoryScope} from './analysisHistoryStore';
 import {openEnterpriseDb, resolveEnterpriseDbPath} from './enterpriseDb';
+import {parseStoredJson} from '../utils/storedData';
 
 const RUNTIME_TYPE = 'conversation-logical-session@1';
 type WithoutRuntimeResult<T> = T extends unknown ? Omit<T, 'finalResult' | 'recoveryStatus'> : never;
@@ -97,7 +98,12 @@ export class ConversationSessionStore {
       snapshotId({...owner, sessionId}), RUNTIME_TYPE, owner.tenantId, owner.workspaceId, sessionId, owner.userId,
     ) as {snapshot_json: string} | undefined;
     if (!row) return undefined;
-    const parsed: ConversationSessionDescriptor = JSON.parse(row.snapshot_json);
+    let parsed: ConversationSessionDescriptor;
+    try {
+      parsed = parseStoredJson<ConversationSessionDescriptor>(row.snapshot_json, 'conversation descriptor');
+    } catch {
+      throw new Error('conversation_recovery_descriptor_invalid');
+    }
     if (parsed.version !== 1 || parsed.sessionId !== sessionId || parsed.userId !== owner.userId ||
       parsed.tenantId !== owner.tenantId || parsed.workspaceId !== owner.workspaceId ||
       !parsed.lastRun?.runId || !Number.isSafeInteger(parsed.lastRun.turnIndex) || parsed.lastRun.turnIndex < 0 ||

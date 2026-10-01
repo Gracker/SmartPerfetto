@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {Credential} from '@earendil-works/pi-ai';
+import {parseStoredJson} from '../../../utils/storedData';
 
 export type PiAgentCoreEnv = Record<string, string | undefined>;
 
@@ -170,7 +171,8 @@ function thinkingBudgets(value: unknown): Record<string, number> | undefined {
 }
 
 export function parsePiAgentCoreModelConfig(rawModel: string): PiAgentCoreModelConfig {
-  const parsed = JSON.parse(rawModel) as unknown;
+  // The model JSON can hold an API key; its author gets the position instead.
+  const parsed = parseStoredJson(rawModel, 'Pi model JSON', {authored: true});
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('model JSON must be an object');
   }

@@ -12,6 +12,7 @@ import type {
   InstalledSkillPackRecord,
   SkillPackRecordMetadata,
 } from './skillPackTypes';
+import {parseStoredJson} from '../../utils/storedData';
 
 export interface SkillRegistryEntryRow extends Record<string, unknown> {
   id: string;
@@ -35,7 +36,7 @@ function recordId(scope: EnterpriseRepositoryScope, packId: string): string {
 
 function parseMetadata(row: SkillRegistryEntryRow): SkillPackRecordMetadata | null {
   if (!row.metadata_json) return null;
-  const parsed: unknown = JSON.parse(row.metadata_json);
+  const parsed: unknown = parseStoredJson(row.metadata_json, 'skill pack metadata');
   if (!parsed || typeof parsed !== 'object') return null;
   const metadata = parsed as Partial<SkillPackRecordMetadata>;
   if (metadata.schemaVersion !== 1 || typeof metadata.packId !== 'string') return null;

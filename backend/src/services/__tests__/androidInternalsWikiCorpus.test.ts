@@ -97,6 +97,16 @@ describe('Android Internals Wiki corpus', () => {
     }));
   });
 
+  it('reports unparsable frontmatter by position, never quoting it in the error', () => {
+    write('src/bad.md', '---\ntitle: [WIKI-CANARY-6f0 private\nstatus: finalized\n---\n# Body');
+
+    const [article] = (scanAndroidInternalsWiki as any)(tmpDir).articles;
+
+    // The error reaches the audit report as its reason; the article's own fields are its content.
+    expect(article).toEqual(expect.objectContaining({metadataValid: false,
+      metadataError: 'frontmatter is not valid YAML (line 3, column 1)'}));
+  });
+
   it('marks a deleted tracked article with a Chinese path as dirty', () => {
     write('src/消息队列.md', article('消息队列', 'finalized', ['handler'], 'Body'));
     require('child_process').execFileSync('git', ['init', '-q', tmpDir]);

@@ -18,6 +18,7 @@ import type {
   SelfEvolutionPersistenceCapability,
   SkillOverlayDeltaV1,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import type {EvaluationInjectionRefV1} from './evaluationInjectionContext';
 import {
   canonicalContentHash,
@@ -747,6 +748,8 @@ export function resolveEvaluationRoleVariant(input: {
   });
 }
 
+const TREATMENT_ARTIFACT_RECORD = 'evaluation treatment artifact';
+
 export class EvaluationTreatmentArtifactStore {
   private readonly persistence: SelfEvolutionPersistenceCapability;
   private readonly databasePath: string;
@@ -783,7 +786,7 @@ export class EvaluationTreatmentArtifactStore {
         | undefined;
       if (existing) {
         const stored = parseEvaluationTreatmentArtifact(
-          JSON.parse(existing.artifact_json),
+          parseStoredJson(existing.artifact_json, TREATMENT_ARTIFACT_RECORD),
         );
         if (stored.contentHash !== artifact.contentHash) {
           throw new Error('evaluation_treatment_artifact_conflict');
@@ -833,7 +836,9 @@ export class EvaluationTreatmentArtifactStore {
         | TreatmentRow
         | undefined;
       return row
-        ? parseEvaluationTreatmentArtifact(JSON.parse(row.artifact_json))
+        ? parseEvaluationTreatmentArtifact(
+            parseStoredJson(row.artifact_json, TREATMENT_ARTIFACT_RECORD),
+          )
         : undefined;
     }
     const payload = this.ephemeral.get(

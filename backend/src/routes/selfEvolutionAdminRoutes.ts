@@ -10,6 +10,7 @@ import {
 } from 'express';
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
+import {selfEvolutionErrorCode} from '../services/selfEvolution/selfEvolutionErrorCode';
 import {
   getSelfEvolutionAdminService,
 } from '../services/selfEvolution/selfEvolutionAdminRuntime';
@@ -89,12 +90,7 @@ function terminal(event: SelfEvolutionOperationEvent): boolean {
 }
 
 function sendError(response: Response, error: unknown): void {
-  const rawCode = error instanceof Error
-    ? error.message
-    : 'self_evolution_request_failed';
-  const code = /^[a-z0-9_:-]{1,160}$/.test(rawCode)
-    ? rawCode
-    : 'self_evolution_request_failed';
+  const code = selfEvolutionErrorCode(error, 'self_evolution_request_failed');
   const status = errorStatus(code);
   response.status(status).json({
     success: false,
@@ -254,9 +250,7 @@ export function createSelfEvolutionAdminRoutes(
               type: 'failed',
               stage: 'failed',
               message: 'operation_stream_failed',
-              errorCode: error instanceof Error
-                ? error.message
-                : 'self_evolution_request_failed',
+              errorCode: selfEvolutionErrorCode(error, 'self_evolution_request_failed'),
               createdAt: Date.now(),
             });
             res.end();

@@ -24,6 +24,7 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
 } from '../rag/sourceFileSelection';
 import type {RagChunk} from '../../types/sparkContracts';
+import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
 
 let tmpDir: string;
 let storagePath: string;
@@ -463,8 +464,10 @@ describe('RagStore — persistence', () => {
       .toEqual(['bounded-1', 'bounded-2']);
   });
 
-  it('survives a corrupted on-disk JSON without losing the file', () => {
-    fs.writeFileSync(storagePath, 'not-json{', 'utf-8');
+  it('survives a corrupted on-disk JSON without losing or quoting the file', () => {
+    // Unquoted, so the parser quotes the text around it: another scope's chunk.
+    const corrupt = '{"chunks":[{"snippet":[RAG-CANARY-19d2 x]}]}';
+    fs.writeFileSync(storagePath, corrupt, 'utf-8');
     const store = new RagStore(storagePath);
     expect(store.getChunk('a')).toBeUndefined();
     // Corrupted file is preserved for operator inspection.
@@ -473,8 +476,12 @@ describe('RagStore — persistence', () => {
     // operator artifact until it is explicitly repaired.
     store.addChunk(makeChunk({chunkId: 'a'}));
     expect(store.getChunk('a')).toBeDefined();
-    expect(() => store.flush()).toThrow('rag_store_invalid_storage_requires_recovery');
-    expect(fs.readFileSync(storagePath, 'utf-8')).toBe('not-json{');
+    const warnings = warningsDuring(() => {
+      expect(() => store.flush()).toThrow(/^rag_store_invalid_storage_requires_recovery:invalid_json$/);
+    });
+    expect(warnings).toHaveLength(1);
+    expect(JSON.stringify(warnings)).not.toContain('RAG-CANARY');
+    expect(fs.readFileSync(storagePath, 'utf-8')).toBe(corrupt);
   });
 
   it('does not overwrite an unsupported schema during a later flush', () => {

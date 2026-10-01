@@ -14,6 +14,7 @@ import {resolveApplicationBuildIdentity} from '../applicationUpdate/buildIdentit
 import {loadLastReconciledBuildIdentity} from './buildIdentityStore';
 import {migrateLegacySelfImproveData} from './legacyDataMigration';
 import {probeSelfEvolutionPersistence} from './persistenceCapability';
+import {selfEvolutionErrorCode} from './selfEvolutionErrorCode';
 import {
   loadSelfEvolutionConfig,
   validateSelfEvolutionConfig,
@@ -53,7 +54,7 @@ function loadBuildIdentityState(
     return {
       status: 'invalid',
       record: null,
-      errorCode: (error as Error).message || 'invalid_build_identity_state',
+      errorCode: selfEvolutionErrorCode(error, 'invalid_build_identity_state'),
     };
   }
 }

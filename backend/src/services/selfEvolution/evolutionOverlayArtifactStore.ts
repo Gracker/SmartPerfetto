@@ -11,6 +11,7 @@ import type {
   SelfEvolutionPersistenceCapability,
 } from '../../types/selfEvolution';
 import {atomicWriteFileSync} from '../../utils/atomicFileWriter';
+import {parseStoredJson} from '../../utils/storedData';
 import {canonicalJsonString} from './canonicalJson';
 import {parseEvolutionOverlayArtifactV1} from './evolutionOverlayContract';
 
@@ -63,7 +64,7 @@ export class EvolutionOverlayArtifactStore {
     }
     this.assertRegularFile(filePath);
     return parseEvolutionOverlayArtifactV1(
-      JSON.parse(fs.readFileSync(filePath, 'utf8')),
+      parseStoredJson(fs.readFileSync(filePath, 'utf8'), 'overlay artifact'),
     );
   }
 

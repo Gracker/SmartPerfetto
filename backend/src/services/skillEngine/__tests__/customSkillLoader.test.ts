@@ -383,4 +383,18 @@ describe('custom skill loading', () => {
       packVersion: '1',
     }])).rejects.toThrow('skill_validation_failed:invalid_batch');
   });
+
+  it('rejects a pack skill it cannot parse by file and position, never quoting the pack', async () => {
+    await fs.mkdir(path.join(tmpDir, 'composite'), {recursive: true});
+    await fs.writeFile(path.join(tmpDir, 'composite', 'broken.skill.yaml'),
+      ['name: broken', 'meta: [PACK-CANARY-8c2 private', 'steps: []', ''].join('\n'), 'utf-8');
+
+    const registry = new SkillRegistry();
+    await expect(registry.loadSkillRoots([{
+      rootPath: tmpDir,
+      origin: 'external_pack',
+      packId: 'broken-pack',
+      packVersion: '1',
+    }])).rejects.toThrow(/^broken\.skill\.yaml: skill file is not valid YAML \(line 3, column 1\)$/);
+  });
 });

@@ -49,6 +49,7 @@ import { promises as fsp } from 'fs';
 import { atomicWriteFile } from '../../utils/atomicFileWriter';
 import type { SceneReport } from '../../agent/scene/types';
 import type { SceneRouteProfile } from '../../agent/config/domainManifest';
+import { logStoredReadFailure, parseStoredJson } from '../../utils/storedData';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -147,7 +148,7 @@ export class FileSystemSceneReportStore implements SceneReportStore {
   private async readIndex(): Promise<IndexFile> {
     try {
       const raw = await fsp.readFile(this.indexPath, 'utf8');
-      const parsed = JSON.parse(raw) as Partial<IndexFile>;
+      const parsed = parseStoredJson<Partial<IndexFile>>(raw, 'scene report index');
       if (
         parsed.version !== 1 ||
         typeof parsed.byHash !== 'object' || parsed.byHash === null ||
@@ -158,12 +159,7 @@ export class FileSystemSceneReportStore implements SceneReportStore {
       }
       return parsed as IndexFile;
     } catch (err: any) {
-      if (err?.code !== 'ENOENT') {
-        console.warn(
-          '[SceneReportStore] index.json unreadable, resetting:',
-          err?.message ?? err,
-        );
-      }
+      if (err?.code !== 'ENOENT') logStoredReadFailure('[SceneReportStore] index.json unreadable, resetting', err);
       return this.emptyIndex();
     }
   }
@@ -237,7 +233,7 @@ export class FileSystemSceneReportStore implements SceneReportStore {
   async loadById(reportId: string): Promise<SceneReport | null> {
     try {
       const raw = await fsp.readFile(this.reportPath(reportId), 'utf8');
-      const report = JSON.parse(raw) as SceneReport;
+      const report = parseStoredJson<SceneReport>(raw, 'scene report');
       if (report?.generatedBy?.pipelineVersion !== SUPPORTED_PIPELINE_VERSION) {
         return null;
       }
@@ -249,12 +245,7 @@ export class FileSystemSceneReportStore implements SceneReportStore {
       }
       return report;
     } catch (err: any) {
-      if (err?.code !== 'ENOENT') {
-        console.warn(
-          `[SceneReportStore] loadById(${reportId}) failed:`,
-          err?.message ?? err,
-        );
-      }
+      if (err?.code !== 'ENOENT') logStoredReadFailure('[SceneReportStore] Report unreadable', err, {reportId});
       return null;
     }
   }

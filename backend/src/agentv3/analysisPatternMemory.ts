@@ -64,6 +64,7 @@ import {
 } from '../services/selfEvolution/evaluationInjectionContext';
 import { bucketPackageDomain } from '../services/caseEvolution/domainBucket';
 import type {EffectiveFeedbackV1} from '../types/selfEvolution';
+import {parseStoredJson} from '../utils/storedData';
 
 export const PATTERN_BUCKET_KNOWLEDGE_KIND = 'analysis_pattern_bucket';
 const PATTERN_BUCKET_ROW_SCOPE_PREFIX = 'pattern-memory:';
@@ -203,20 +204,10 @@ function backupCorruptStore(filePath: string, label: string, err: unknown): void
   }
 }
 
-/**
- * Parse one store file; a missing file is empty, an unreadable one throws.
- * The parser's message quotes the text around the error, which may belong to
- * an entry no run may read, so a parse failure is reported without it.
- */
+/** Parse one store file; a missing file is empty, an unreadable one throws. */
 function readPatternStoreFile<T>(filePath: string, label: string): T[] {
   if (!fs.existsSync(filePath)) return [];
-  const text = fs.readFileSync(filePath, 'utf-8');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    throw new Error(`${label} store is not valid JSON`);
-  }
+  const parsed = parseStoredJson(fs.readFileSync(filePath, 'utf-8'), `${label} store`);
   if (!Array.isArray(parsed)) {
     throw new Error(`${label} store root must be an array`);
   }

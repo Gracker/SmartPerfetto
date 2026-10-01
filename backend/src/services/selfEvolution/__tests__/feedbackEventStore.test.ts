@@ -236,6 +236,19 @@ describe('FeedbackEventStore', () => {
     store.close();
   });
 
+  it('refuses an unreadable stored record without quoting another member\'s feedback', async () => {
+    const store = openStore();
+    await store.append(input());
+    const db = new Database(dbPath);
+    try {
+      db.prepare('UPDATE effective_feedback SET actor_json = ?').run('{"userId":[FEEDBACK-CANARY-8d6 x]}');
+    } finally {
+      db.close();
+    }
+    expect(() => store.listEffective()).toThrow(/^feedback record is not valid JSON$/);
+    store.close();
+  });
+
   it('catches up a fsynced event left behind before SQLite projection', () => {
     const event = loggedEvent();
     fs.writeFileSync(logPath, `${JSON.stringify(event)}\n`);

@@ -16,6 +16,7 @@ import type {
   RunManifestScope,
   SelfEvolutionPersistenceCapability,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import {
   canonicalContentHash,
   canonicalJsonString,
@@ -210,11 +211,21 @@ function baselineCacheKey(
   });
 }
 
-function parsePayload<T>(
+// Readers for the store's rows and its in-memory payloads.
+function parseStoredEvalCase(payload: string): EvalCaseV1 {
+  return parseEvalCase(parseStoredJson(payload, 'eval case record'));
+}
+
+function parseStoredEvalScore(payload: string): EvalScoreV1 {
+  return parseEvalScore(parseStoredJson(payload, 'eval score record'));
+}
+
+function parseStoredEnvironmentProof(
   payload: string,
-  parser: (value: unknown) => T,
-): T {
-  return parser(JSON.parse(payload));
+): EvaluationEnvironmentProofV1 {
+  return parseEvaluationEnvironmentProof(
+    parseStoredJson(payload, 'evaluation environment proof record'),
+  );
 }
 
 function touchMapValue<T>(map: Map<string, T>, key: string, value: T): void {
@@ -586,13 +597,13 @@ export class EvalCaseStore {
         FROM eval_cases
         WHERE tenant_id = ? AND workspace_id = ? AND case_id = ?
       `).get(scope.tenantId, scope.workspaceId, caseId) as EvalCaseRow | undefined;
-      return row ? parsePayload(row.case_json, parseEvalCase) : undefined;
+      return row ? parseStoredEvalCase(row.case_json) : undefined;
     }
     const key = caseKey(scope, caseId);
     const payload = this.ephemeralCases.get(key);
     if (!payload) return undefined;
     touchMapValue(this.ephemeralCases, key, payload);
-    return parsePayload(payload, parseEvalCase);
+    return parseStoredEvalCase(payload);
   }
 
   listCases(
@@ -613,10 +624,10 @@ export class EvalCaseStore {
             WHERE tenant_id = ? AND workspace_id = ?
             ORDER BY created_at, case_id
           `).all(scope.tenantId, scope.workspaceId)) as EvalCaseRow[];
-      return rows.map(row => parsePayload(row.case_json, parseEvalCase));
+      return rows.map(row => parseStoredEvalCase(row.case_json));
     }
     return [...this.ephemeralCases.values()]
-      .map(payload => parsePayload(payload, parseEvalCase))
+      .map(payload => parseStoredEvalCase(payload))
       .filter(evalCase =>
         sameScope(evalCase.scope, scope)
         && (!evalSetId || evalCase.evalSetId === evalSetId))
@@ -670,13 +681,13 @@ export class EvalCaseStore {
         FROM eval_scores
         WHERE tenant_id = ? AND workspace_id = ? AND score_key = ?
       `).get(scope.tenantId, scope.workspaceId, key) as EvalScoreRow | undefined;
-      return row ? parsePayload(row.score_json, parseEvalScore) : undefined;
+      return row ? parseStoredEvalScore(row.score_json) : undefined;
     }
     const scopedKey = scopedScoreKey(scope, key);
     const entry = this.ephemeralScores.get(scopedKey);
     if (!entry) return undefined;
     touchMapValue(this.ephemeralScores, scopedKey, entry);
-    return parsePayload(entry.scorePayload, parseEvalScore);
+    return parseStoredEvalScore(entry.scorePayload);
   }
 
   getProof(
@@ -690,14 +701,14 @@ export class EvalCaseStore {
         WHERE tenant_id = ? AND workspace_id = ? AND proof_id = ?
       `).get(scope.tenantId, scope.workspaceId, proofId) as ProofRow | undefined;
       return row
-        ? parsePayload(row.proof_json, parseEvaluationEnvironmentProof)
+        ? parseStoredEnvironmentProof(row.proof_json)
         : undefined;
     }
     const key = proofKey(scope, proofId);
     const payload = this.ephemeralProofs.get(key);
     if (!payload) return undefined;
     touchMapValue(this.ephemeralProofs, key, payload);
-    return parsePayload(payload, parseEvaluationEnvironmentProof);
+    return parseStoredEnvironmentProof(payload);
   }
 
   getScoreWithProof(
@@ -1372,7 +1383,7 @@ export class EvalCaseStore {
     }
     const entry = this.ephemeralScores.get(scopedScoreKey(scope, key));
     return entry
-      ? parsePayload(entry.proofPayload, parseEvaluationEnvironmentProof)
+      ? parseStoredEnvironmentProof(entry.proofPayload)
       : undefined;
   }
 
@@ -1521,9 +1532,9 @@ export class EvalCaseStore {
       const payload = this.ephemeralCases.get(oldest);
       this.ephemeralCases.delete(oldest);
       if (payload) {
-        const evalCase = parsePayload(payload, parseEvalCase);
+        const evalCase = parseStoredEvalCase(payload);
         for (const [key, entry] of this.ephemeralScores) {
-          const score = parsePayload(entry.scorePayload, parseEvalScore);
+          const score = parseStoredEvalScore(entry.scorePayload);
           if (
             sameScope(score.scope, evalCase.scope)
             && score.caseId === evalCase.caseId
@@ -1552,15 +1563,11 @@ export class EvalCaseStore {
     entry: EphemeralScoreEntry,
   ): void {
     this.ephemeralScores.delete(key);
-    const proof = parsePayload(
-      entry.proofPayload,
-      parseEvaluationEnvironmentProof,
-    );
+    const proof = parseStoredEnvironmentProof(entry.proofPayload);
     const proofStillReferenced = [...this.ephemeralScores.values()].some(
       candidate => {
-        const candidateProof = parsePayload(
+        const candidateProof = parseStoredEnvironmentProof(
           candidate.proofPayload,
-          parseEvaluationEnvironmentProof,
         );
         return candidateProof.proofId === proof.proofId
           && sameScope(candidateProof.scope, proof.scope);

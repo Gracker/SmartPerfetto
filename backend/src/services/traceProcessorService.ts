@@ -35,6 +35,7 @@ import {
 import {currentRunManifestAttributionSink} from './selfEvolution/runManifestLifecycle';
 import {splitSqlStatements} from './sqlStdlibDependencyAnalyzer';
 import type {ResolveCapabilityTraceProcessorIdentityInput} from './capabilityManifestRuntimeIdentity';
+import {parseStoredJson} from '../utils/storedData';
 
 export interface TraceInfo {
   id: string;
@@ -1174,7 +1175,7 @@ export class TraceProcessorService extends EventEmitter {
       // Try to load metadata from JSON file
       if (fs.existsSync(metadataPath)) {
         const metadataRaw = fs.readFileSync(metadataPath, 'utf8');
-        const metadata = JSON.parse(metadataRaw);
+        const metadata = parseStoredJson<Record<string, any>>(metadataRaw, 'trace metadata');
         traceInfo = {
           id: traceId,
           filename: metadata.filename || `${traceId}.trace`,

@@ -52,6 +52,7 @@ import {
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {assertNotRetiredCaseWrite, isRetiredCaseEdge} from './retiredCaseData';
+import {logStoredReadFailure, parseStoredJson} from '../utils/storedData';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -105,16 +106,16 @@ export class CaseGraph {
     if (!fs.existsSync(this.storagePath)) return;
     try {
       const raw = fs.readFileSync(this.storagePath, 'utf-8');
-      const parsed = JSON.parse(raw) as StorageEnvelope;
+      const parsed = parseStoredJson<StorageEnvelope>(raw, 'case graph');
       if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.edges)) {
         this.loadError = new Error('Case graph schema is invalid');
         return;
       }
       for (const e of parsed.edges) this.edges.set(edgeKey(e), e);
-    } catch {
-      // Corrupted JSON: file preserved, in-memory cache stays empty. The parse
-      // error quotes the file, so the message does not carry it.
+    } catch (error) {
+      // Corrupted JSON: file preserved, in-memory cache stays empty.
       this.loadError = new Error('Case graph is unreadable');
+      logStoredReadFailure('[CaseGraph] Case graph unreadable, file preserved', error, {path: this.storagePath});
     }
   }
 

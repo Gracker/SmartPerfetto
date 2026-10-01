@@ -7,7 +7,7 @@ import {execFileSync} from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import yaml from 'js-yaml';
+import {parseStoredYaml} from '../../utils/storedData';
 
 import {hardenedGitEnvironment, hardenedGitPrefixArguments} from '../codebase/subprocessHardening';
 
@@ -119,7 +119,8 @@ export function scanAndroidInternalsWiki(
     let parsed: Record<string, unknown> | null = null;
     let metadataError: string | undefined;
     try {
-      const loaded = yaml.load(frontmatter);
+      // The frontmatter starts on the file's second line, after its opening `---`.
+      const loaded = parseStoredYaml(frontmatter, 'frontmatter', {authored: true, startLine: 2});
       if (!loaded || typeof loaded !== 'object' || Array.isArray(loaded)) {
         throw new Error('frontmatter must be a mapping');
       }

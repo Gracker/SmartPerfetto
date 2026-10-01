@@ -2,11 +2,15 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {parseStrategyContribution} from '../../agentv3/strategyLoader';
+import {
+  parseStrategyContribution,
+  type PhaseHint,
+} from '../../agentv3/strategyLoader';
 import type {
   CurationProposalV1,
   ProposalCandidateMaterializationV1,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import {parseSkillOverlayDeltaV1} from './effectiveSkillComposer';
 import {
   createEvaluationTreatmentArtifact,
@@ -20,6 +24,9 @@ import {
   proposalDraftContentHash,
 } from './proposalGateContract';
 import {parseM6DraftProposal} from './proposalContract';
+
+// A delta's content is read back from a stored proposal.
+const DELTA_CONTENT = 'proposal delta content';
 
 export interface ProposalTreatmentBaseV1 {
   skillRegistryFingerprint: string;
@@ -77,7 +84,7 @@ function materializeEntry(
       const hintId = parseJsonString(match[2]);
       const after = delta.after === undefined
         ? undefined
-        : JSON.parse(delta.after);
+        : parseStoredJson<PhaseHint>(delta.after, DELTA_CONTENT);
       return {
         kind: 'phase_hint_delta',
         op: delta.op,
@@ -111,7 +118,7 @@ function materializeEntry(
       };
     case 'strategy_section': {
       const contribution = parseStrategyContribution(
-        JSON.parse(delta.after ?? ''),
+        parseStoredJson(delta.after ?? '', DELTA_CONTENT),
       );
       if (
         contribution.contributionId !== delta.operationId
@@ -128,7 +135,9 @@ function materializeEntry(
       return {kind: 'strategy_contribution', contribution};
     }
     case 'skill_overlay_delta': {
-      const parsed = parseSkillOverlayDeltaV1(JSON.parse(delta.after ?? ''));
+      const parsed = parseSkillOverlayDeltaV1(
+        parseStoredJson(delta.after ?? '', DELTA_CONTENT),
+      );
       if (!parsed.ok) {
         throw new Error('proposal_treatment_skill_overlay_invalid');
       }
@@ -167,7 +176,7 @@ function materializeEntry(
 }
 
 function parseJsonString(value: string): string {
-  const parsed = JSON.parse(value);
+  const parsed = parseStoredJson(value, 'proposal delta anchor');
   if (typeof parsed !== 'string' || JSON.stringify(parsed) !== value) {
     throw new Error('proposal_treatment_anchor_not_canonical');
   }

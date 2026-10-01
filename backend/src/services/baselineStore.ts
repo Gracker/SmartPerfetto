@@ -47,6 +47,7 @@ import {
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {logStoredReadFailure, parseStoredJson} from '../utils/storedData';
 
 /** Minimum sample count enforced for `status='published'`. */
 export const BASELINE_PUBLISH_MIN_SAMPLES = 3;
@@ -118,7 +119,7 @@ export class BaselineStore {
     if (!fs.existsSync(this.storagePath)) return;
     try {
       const raw = fs.readFileSync(this.storagePath, 'utf-8');
-      const parsed = JSON.parse(raw) as StorageEnvelope;
+      const parsed = parseStoredJson<StorageEnvelope>(raw, 'baseline store');
       if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.baselines)) {
         this.loadError = new Error('Baseline store schema is invalid');
         return;
@@ -128,9 +129,8 @@ export class BaselineStore {
       }
     } catch (error) {
       // Corrupted JSON: empty cache, file preserved for inspection.
-      this.loadError = new Error(
-        `Baseline store is unreadable: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.loadError = new Error('Baseline store is unreadable');
+      logStoredReadFailure('[BaselineStore] Baseline store unreadable, file preserved', error, {path: this.storagePath});
     }
   }
 

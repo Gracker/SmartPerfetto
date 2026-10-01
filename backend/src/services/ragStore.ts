@@ -30,6 +30,7 @@ import {backendLogPath} from '../runtimePaths';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {tokenizeRagText} from './rag/searchTokens';
 import {assertNotRetiredCaseWrite, isRetiredRagChunk} from './retiredCaseData';
+import {logStoredReadFailure, parseStoredJson, storedDataReason} from '../utils/storedData';
 
 import {
   type RagChunk,
@@ -268,11 +269,14 @@ function backfillChunk(chunk: RagChunk): RagChunk {
   };
 }
 
+const RAG_STORE_NAME = 'local RAG store';
+
 /**
  * Local file-backed RAG store. Writers coordinate through the shared
  * filesystem registry lock and merge pending mutations with the latest
  * on-disk state before each atomic replacement.
  */
+
 export class RagStore {
   private readonly storagePath: string;
   private readonly chunks = new Map<string, RagChunk>();
@@ -326,7 +330,7 @@ export class RagStore {
     try {
       this.assertStorageFileWithinBudget();
       const raw = fs.readFileSync(this.storagePath, 'utf-8');
-      const parsed = JSON.parse(raw) as StorageEnvelope;
+      const parsed = parseStoredJson<StorageEnvelope>(raw, RAG_STORE_NAME);
       if ((parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) || !Array.isArray(parsed.chunks)) {
         // Schema mismatch: leave in-memory empty; do not delete the file
         // so the operator can inspect it.
@@ -1094,7 +1098,7 @@ export class RagStore {
     if (fs.existsSync(this.storagePath)) {
       try {
         this.assertStorageFileWithinBudget();
-        const parsed = JSON.parse(fs.readFileSync(this.storagePath, 'utf8')) as StorageEnvelope;
+        const parsed = parseStoredJson<StorageEnvelope>(fs.readFileSync(this.storagePath, 'utf8'), RAG_STORE_NAME);
         if ((parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) || !Array.isArray(parsed.chunks)) {
           throw new Error('unsupported_schema');
         }
@@ -1102,9 +1106,8 @@ export class RagStore {
         for (const chunk of parsed.chunks) merged.set(chunk.chunkId, backfillChunk(chunk));
       } catch (error) {
         if (error instanceof LocalRagStorageBudgetError) throw error;
-        throw new Error(
-          `rag_store_invalid_storage_requires_recovery:${error instanceof Error ? error.message : String(error)}`,
-        );
+        logStoredReadFailure('[RagStore] Storage file unreadable, writes need recovery', error, {path: this.storagePath});
+        throw new Error(`rag_store_invalid_storage_requires_recovery:${storedDataReason(error)}`);
       }
     }
     for (const chunkId of this.pendingDeletes) merged.delete(chunkId);

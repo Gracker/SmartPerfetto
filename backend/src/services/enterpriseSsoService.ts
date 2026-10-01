@@ -16,6 +16,7 @@ import {
 } from './enterpriseAuditService';
 import { openEnterpriseDb } from './enterpriseDb';
 import type { EnterpriseOidcUserInfo } from './enterpriseOidcClient';
+import { logStoredReadFailure, tryParseStoredJson } from '../utils/storedData';
 
 const SESSION_COOKIE_NAME = 'sp_sso_session';
 const STATE_COOKIE_NAME = 'sp_oidc_state';
@@ -695,13 +696,19 @@ export class EnterpriseSsoService {
       SELECT * FROM sso_sessions WHERE id = ?
     `).get(sessionId);
     if (!row || row.revoked_at || row.expires_at <= nowMs()) return null;
+    const authContext = tryParseStoredJson<StoredSsoSession['authContext']>(row.auth_context_json, 'SSO session auth context');
+    // An unreadable session is an invalid one; its IdP claims never reach the response.
+    if (!authContext.ok) {
+      logStoredReadFailure('[EnterpriseSso] SSO session unreadable, treated as invalid', authContext.error, {sessionId: row.id});
+      return null;
+    }
     return {
       id: row.id,
       tenantId: row.tenant_id,
       workspaceId: row.workspace_id ?? undefined,
       userId: row.user_id,
       selectedWorkspaceId: row.selected_workspace_id ?? undefined,
-      authContext: JSON.parse(row.auth_context_json),
+      authContext: authContext.value,
       createdAt: row.created_at,
       expiresAt: row.expires_at,
       revokedAt: row.revoked_at ?? undefined,

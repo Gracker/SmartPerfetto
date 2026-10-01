@@ -1610,6 +1610,21 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.details).toBe(original);
   });
 
+
+  it('rejects an unparsable model JSON by position, never quoting it: it can hold an API key', async () => {
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        // Unquoted, so the parser would quote the key around it.
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: '{"provider":"openai","apiKey":sk-PI-CANARY-3d9}'},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader: loadFakePiProviderRuntime,
+      },
+    );
+    await expect(runtime.analyze('question', 'session-pi-model-json', 'trace-pi', {analysisMode: 'fast'}))
+      .rejects.toThrow(new RegExp(`^${PI_AGENT_CORE_MODEL_JSON_ENV} must be valid JSON: Pi model JSON is not valid JSON$`));
+  });
   it('clears failed Pi SDK module loads so the next request can retry the same fingerprint', async () => {
     FakePiAgent.promptMessages = [{
       role: 'assistant',

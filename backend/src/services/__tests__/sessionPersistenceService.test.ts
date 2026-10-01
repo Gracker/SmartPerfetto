@@ -14,6 +14,8 @@ import { EnhancedSessionContext } from '../../agent/context/enhancedSessionConte
 import { FocusStore } from '../../agent/context/focusStore';
 import { createInitialTraceAgentState } from '../../agent/state/traceAgentState';
 import { StoredSession } from '../../models/sessionSchema';
+import { inspect } from 'util';
+import { consoleCallsDuring, warningsDuring } from '../../../tests/helpers/consoleWarnings';
 
 describe('SessionPersistenceService - Phase 3 Features', () => {
   let service: SessionPersistenceService;
@@ -596,5 +598,53 @@ describe('SessionPersistenceService - Phase 3 Features', () => {
       }));
       service.deleteSession(sessionId);
     });
+  });
+});
+
+describe('SessionPersistenceService - unreadable stored JSON', () => {
+  // Unquoted, so V8 quotes the text around it in its own message.
+  const CANARY = 'SESSION-CANARY-5c1e';
+  const service = SessionPersistenceService.getInstance();
+  const db = (service as unknown as {db: {prepare(sql: string): {run(...values: unknown[]): unknown}}}).db;
+  const id = `test_unreadable_${Date.now()}`;
+  const session = (): StoredSession => ({id, traceId: `trace_${id}`, traceName: 'trace', question: 'question',
+    createdAt: Date.now(), updatedAt: Date.now(), metadata: {ownerUserId: 'owner-1'}, messages: [
+      {id: `msg_${id}_1`, role: 'assistant', content: 'answer', timestamp: Date.now(),
+        sqlResult: {columns: ['a'], rows: [[1]], rowCount: 1} as never}]});
+  afterEach(() => { service.deleteSession(id); });
+
+  test('reads a session whose owner metadata cannot be parsed as missing, and quotes none of it', () => {
+    expect(service.saveSession(session())).toBe(true);
+    db.prepare('UPDATE sessions SET metadata = ? WHERE id = ?').run(`{"ownerUserId":[${CANARY} x]}`, id);
+    const warnings = warningsDuring(() => {
+      expect(service.getSession(id)).toBeNull();
+      // Skipped, yet still counted: the page math stays that of the stored rows.
+      expect(service.listSessions({traceId: `trace_${id}`})).toMatchObject({sessions: [], totalCount: 1, hasMore: false});
+    });
+    expect(warnings).toHaveLength(2);
+    expect(JSON.stringify(warnings)).not.toContain(CANARY);
+  });
+
+  test('loads no context from an unparsable nested snapshot, and logs none of its text', () => {
+    // The metadata is valid JSON; the snapshot inside it is a JSON string of its own.
+    expect(service.saveSession({...session(), metadata: {ownerUserId: 'owner-1',
+      sessionContextSnapshot: `[${CANARY} x]`} as never})).toBe(true);
+    let context: unknown = 'not loaded';
+    const errors = consoleCallsDuring('error', () => { context = service.loadSessionContext(id); });
+    expect(context).toBeNull();
+    expect(errors).toHaveLength(1);
+    // V8 quotes the ten or so characters at the failure.
+    expect(inspect(errors, {depth: 5})).not.toContain('SESSION-CA');
+  });
+
+  test('drops only the SQL result it cannot parse', () => {
+    expect(service.saveSession(session())).toBe(true);
+    db.prepare('UPDATE messages SET sql_result = ? WHERE id = ?').run(`[${CANARY}]`, `msg_${id}_1`);
+    let read: StoredSession | null = null;
+    const warnings = warningsDuring(() => { read = service.getSession(id); });
+    expect(read!.metadata?.ownerUserId).toBe('owner-1');
+    expect(read!.messages).toHaveLength(1);
+    expect(read!.messages[0].sqlResult).toBeUndefined();
+    expect(JSON.stringify(warnings)).not.toContain(CANARY);
   });
 });

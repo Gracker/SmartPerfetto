@@ -23,6 +23,7 @@ import type {
   ProposalSqlRegressionProofV1,
   RunManifestScope,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import {
   ScopedLeaseLostError,
   ScopedOutbox,
@@ -67,6 +68,14 @@ import {
 import type {ProposalBaseSnapshotV1} from './proposalSemanticGate';
 import {assertTrustedProposalPairedReplayProof} from './proposalPairedReplayGate';
 import {assertTrustedProposalSqlRegressionProof} from './proposalSqlRegression';
+
+const PROPOSAL_RECORD = 'curation proposal record';
+const ACTION_RECORD = 'proposal action record';
+const APPLIED_REVISION_RECORD = 'applied proposal revision record';
+const CHANNEL_ARTIFACT_RECORD = 'proposal channel artifact record';
+const GATE_RESULT_RECORD = 'proposal gate result record';
+const GATE_EVIDENCE_RECORD = 'proposal gate evidence record';
+const CURATION_JOB_RECORD = 'curation job record';
 
 export type ProposalGateEvidenceKind =
   | 'materialization_plan'
@@ -265,7 +274,9 @@ export class ProposalStore {
       proposalId,
     ) as {proposal_json: string} | undefined;
     return row
-      ? parseCurationProposalV1(JSON.parse(row.proposal_json))
+      ? parseCurationProposalV1(
+          parseStoredJson(row.proposal_json, PROPOSAL_RECORD),
+        )
       : undefined;
   }
 
@@ -283,7 +294,9 @@ export class ProposalStore {
       idempotencyKey,
     ) as {proposal_json: string} | undefined;
     return row
-      ? parseCurationProposalV1(JSON.parse(row.proposal_json))
+      ? parseCurationProposalV1(
+          parseStoredJson(row.proposal_json, PROPOSAL_RECORD),
+        )
       : undefined;
   }
 
@@ -297,8 +310,9 @@ export class ProposalStore {
       scope.tenantId,
       scope.workspaceId,
     ) as Array<{proposal_json: string}>;
-    return rows.map(row =>
-      parseCurationProposalV1(JSON.parse(row.proposal_json)));
+    return rows.map(row => parseCurationProposalV1(
+      parseStoredJson(row.proposal_json, PROPOSAL_RECORD),
+    ));
   }
 
   accept(
@@ -493,7 +507,9 @@ export class ProposalStore {
       SELECT action_json FROM proposal_actions WHERE action_id = ?
     `).get(actionId) as {action_json: string} | undefined;
     return row
-      ? parseProposalActionRecordV1(JSON.parse(row.action_json))
+      ? parseProposalActionRecordV1(
+          parseStoredJson(row.action_json, ACTION_RECORD),
+        )
       : undefined;
   }
 
@@ -511,8 +527,9 @@ export class ProposalStore {
         )
       ORDER BY created_at, action_id
     `).all() as Array<{action_json: string}>;
-    return rows.map(row =>
-      parseProposalActionRecordV1(JSON.parse(row.action_json)));
+    return rows.map(row => parseProposalActionRecordV1(
+      parseStoredJson(row.action_json, ACTION_RECORD),
+    ));
   }
 
   commitAppliedRevision(input: {
@@ -538,7 +555,9 @@ export class ProposalStore {
         WHERE action_id = ?
       `).get(input.actionId) as {revision_json: string} | undefined;
       if (prior) {
-        return parseAppliedProposalRevisionV1(JSON.parse(prior.revision_json));
+        return parseAppliedProposalRevisionV1(
+          parseStoredJson(prior.revision_json, APPLIED_REVISION_RECORD),
+        );
       }
       const action = this.getAction(input.actionId);
       if (!action || action.state !== 'executing') {
@@ -632,8 +651,9 @@ export class ProposalStore {
       WHERE proposal_id = ?
       ORDER BY ordinal
     `).all(proposalId) as Array<{revision_json: string}>;
-    return rows.map(row =>
-      parseAppliedProposalRevisionV1(JSON.parse(row.revision_json)));
+    return rows.map(row => parseAppliedProposalRevisionV1(
+      parseStoredJson(row.revision_json, APPLIED_REVISION_RECORD),
+    ));
   }
 
   recordChannelArtifact(input: Omit<
@@ -657,7 +677,7 @@ export class ProposalStore {
       ) as {revision_json: string} | undefined;
       if (prior) {
         const existing = parseProposalChannelArtifactRevisionV1(
-          JSON.parse(prior.revision_json),
+          parseStoredJson(prior.revision_json, CHANNEL_ARTIFACT_RECORD),
         );
         if (
           existing.state === 'active'
@@ -718,7 +738,7 @@ export class ProposalStore {
       ) as {revision_json: string} | undefined;
       if (!prior) throw new Error('proposal_channel_artifact_not_found');
       const current = parseProposalChannelArtifactRevisionV1(
-        JSON.parse(prior.revision_json),
+        parseStoredJson(prior.revision_json, CHANNEL_ARTIFACT_RECORD),
       );
       if (current.state === 'revoked') return current;
       const {
@@ -764,8 +784,9 @@ export class ProposalStore {
       WHERE proposal_id = ?
       ORDER BY ordinal
     `).all(proposalId) as Array<{revision_json: string}>;
-    return rows.map(row =>
-      parseProposalChannelArtifactRevisionV1(JSON.parse(row.revision_json)));
+    return rows.map(row => parseProposalChannelArtifactRevisionV1(
+      parseStoredJson(row.revision_json, CHANNEL_ARTIFACT_RECORD),
+    ));
   }
 
   beginGateAttempt(input: {
@@ -900,7 +921,7 @@ export class ProposalStore {
           throw new Error('curation_gate_attempt_result_missing');
         }
         const existingResult = parseProposalGateResultV1(
-          JSON.parse(attempt.gate_result_json),
+          parseStoredJson(attempt.gate_result_json, GATE_RESULT_RECORD),
         );
         if (
           canonicalJsonString(existingResult.checks)
@@ -1124,7 +1145,7 @@ export class ProposalStore {
       attemptOrdinal: row.attempt_ordinal,
       gateResultContentHash: row.gate_result_hash,
       binding: parseRepositoryTargetBindingV1(
-        JSON.parse(row.artifact_json),
+        parseStoredJson(row.artifact_json, GATE_EVIDENCE_RECORD),
       ),
     });
   }
@@ -1286,7 +1307,7 @@ export class ProposalStore {
       row.evidence_kind,
       parseGateEvidence(
         row.evidence_kind,
-        JSON.parse(row.artifact_json),
+        parseStoredJson(row.artifact_json, GATE_EVIDENCE_RECORD),
       ),
     ]));
   }
@@ -1774,7 +1795,10 @@ export class ProposalStore {
         changes: 1,
         job: {
           jobId: selected.job_id,
-          candidate: JSON.parse(row.input_json) as SelectedCurationCandidate,
+          candidate: parseStoredJson<SelectedCurationCandidate>(
+            row.input_json,
+            CURATION_JOB_RECORD,
+          ),
           attempts: row.attempts,
         },
         scope: {...input.scope!},
@@ -1819,7 +1843,10 @@ export class ProposalStore {
         WHERE job_id = ?
       `).get(fence.jobId) as {input_json: string} | undefined;
       if (!job) throw new Error('curation_job_not_found');
-      const candidate = JSON.parse(job.input_json) as SelectedCurationCandidate;
+      const candidate = parseStoredJson<SelectedCurationCandidate>(
+        job.input_json,
+        CURATION_JOB_RECORD,
+      );
       assertProposalMatchesCandidate(candidate, proposal);
       const payload = canonicalJsonString(proposal);
       const inserted = this.db.prepare(`
@@ -2467,7 +2494,7 @@ function gateAttemptRecord(
     ...(row.gate_result_json
       ? {
           gateResult: parseProposalGateResultV1(
-            JSON.parse(row.gate_result_json),
+            parseStoredJson(row.gate_result_json, GATE_RESULT_RECORD),
           ),
         }
       : {}),

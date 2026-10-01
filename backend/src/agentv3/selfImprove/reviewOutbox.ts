@@ -24,6 +24,7 @@ import Database from 'better-sqlite3';
 import * as path from 'path';
 import * as fs from 'fs';
 import {backendDataPath} from '../../runtimePaths';
+import {parseStoredJson} from '../../utils/storedData';
 import {
   openSqliteReadSnapshot,
   type SqliteReadSnapshot,
@@ -202,7 +203,7 @@ function rowToJob(row: {
     leaseUntil: row.lease_until,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    payload: JSON.parse(row.payload_json),
+    payload: parseStoredJson(row.payload_json, 'review outbox payload'),
     lastError: row.last_error,
   };
 }

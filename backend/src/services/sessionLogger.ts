@@ -19,6 +19,16 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { backendLogPath } from '../runtimePaths';
+import { parseStoredJson } from '../utils/storedData';
+
+function parseLogLines(content: string): LogEntry[] {
+  // Lines the trim drops still count, so a record keeps its file line.
+  const firstLine = content.slice(0, content.length - content.trimStart().length).split('\n').length;
+  return content
+    .trim()
+    .split('\n')
+    .flatMap((line, index) => line ? [parseStoredJson<LogEntry>(line, 'session log', {startLine: firstLine + index})] : []);
+}
 
 // =============================================================================
 // Types
@@ -298,12 +308,7 @@ export class SessionLogger {
       if (!fs.existsSync(this.logFile)) {
         return [];
       }
-      const content = fs.readFileSync(this.logFile, 'utf-8');
-      return content
-        .trim()
-        .split('\n')
-        .filter((line) => line)
-        .map((line) => JSON.parse(line));
+      return parseLogLines(fs.readFileSync(this.logFile, 'utf-8'));
     } catch (err) {
       console.error('[SessionLogger] Failed to read logs:', err);
       return [];
@@ -412,9 +417,7 @@ class SessionLoggerManager {
           const filePath = path.join(this.logDir, file);
 
           try {
-            const content = fs.readFileSync(filePath, 'utf-8');
-            const lines = content.trim().split('\n').filter((l) => l);
-            const logs: LogEntry[] = lines.map((l) => JSON.parse(l));
+            const logs = parseLogLines(fs.readFileSync(filePath, 'utf-8'));
 
             if (logs.length > 0) {
               const components = new Set<string>();
@@ -480,13 +483,7 @@ class SessionLoggerManager {
       for (const file of files) {
         try {
           const filePath = path.join(this.logDir, file);
-          const content = fs.readFileSync(filePath, 'utf-8');
-          const logs = content
-            .trim()
-            .split('\n')
-            .filter((l) => l)
-            .map((l) => JSON.parse(l));
-          allLogs.push(...logs);
+          allLogs.push(...parseLogLines(fs.readFileSync(filePath, 'utf-8')));
         } catch { /* skip individual file parse errors */ }
       }
 

@@ -11,6 +11,7 @@ import type {
   BatchTraceRunStatus,
   BatchTraceRunV1,
 } from './batchTraceTypes';
+import { parseStoredJson } from '../../utils/storedData';
 
 interface BatchTraceRunRow {
   run_json: string;
@@ -27,7 +28,7 @@ function stringifyJson(value: unknown): string {
 
 function parseRun(row: BatchTraceRunRow | undefined): BatchTraceRunV1 | null {
   if (!row) return null;
-  return JSON.parse(row.run_json) as BatchTraceRunV1;
+  return parseStoredJson<BatchTraceRunV1>(row.run_json, 'batch trace run');
 }
 
 function boundedLimit(limit: number | undefined): number {

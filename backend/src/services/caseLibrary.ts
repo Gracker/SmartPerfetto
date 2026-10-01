@@ -49,6 +49,7 @@ import {
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {assertNotRetiredCaseWrite, isRetiredCaseNode} from './retiredCaseData';
+import {logStoredReadFailure, parseStoredJson} from '../utils/storedData';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -95,7 +96,7 @@ export class CaseLibrary {
     if (!fs.existsSync(this.storagePath)) return;
     try {
       const raw = fs.readFileSync(this.storagePath, 'utf-8');
-      const parsed = JSON.parse(raw) as StorageEnvelope;
+      const parsed = parseStoredJson<StorageEnvelope>(raw, 'case library');
       if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.cases)) {
         this.loadError = new Error('Case library schema is invalid');
         return;
@@ -103,9 +104,8 @@ export class CaseLibrary {
       for (const c of parsed.cases) this.cases.set(c.caseId, c);
     } catch (error) {
       // Corrupted JSON: file preserved, in-memory cache stays empty.
-      this.loadError = new Error(
-        `Case library is unreadable: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      this.loadError = new Error('Case library is unreadable');
+      logStoredReadFailure('[CaseLibrary] Case library unreadable, file preserved', error, {path: this.storagePath});
     }
   }
 

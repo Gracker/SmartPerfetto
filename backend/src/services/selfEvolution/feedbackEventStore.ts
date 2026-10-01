@@ -30,6 +30,7 @@ import {
 } from '../../types/selfEvolution';
 import {withFilesystemRegistryLockAsync} from '../filesystemRegistryLock';
 import {canonicalContentHash, canonicalJsonString} from './canonicalJson';
+import {parseStoredJson} from '../../utils/storedData';
 
 export interface FeedbackEventStoreOptions {
   scope: RunManifestScope;
@@ -330,6 +331,9 @@ function assertFeedbackEvent(value: unknown): asserts value is FeedbackEventV1 {
   eventTargetId(event as FeedbackEventV1);
 }
 
+/** Another member's feedback can be selected by id, so a parse error never quotes the record. */
+const FEEDBACK_RECORD = 'feedback record';
+
 function parseEffectiveRow(row: EffectiveFeedbackRow): EffectiveFeedbackV1 {
   return {
     feedbackId: row.feedback_id,
@@ -340,7 +344,7 @@ function parseEffectiveRow(row: EffectiveFeedbackRow): EffectiveFeedbackV1 {
     ...(row.run_manifest_id ? {runManifestId: row.run_manifest_id} : {}),
     sessionId: row.session_id,
     rating: row.rating,
-    dimensions: JSON.parse(row.dimensions_json) as FeedbackDimension[],
+    dimensions: parseStoredJson<FeedbackDimension[]>(row.dimensions_json, FEEDBACK_RECORD),
     ...(row.comment !== null ? {comment: row.comment} : {}),
     targetKind: row.target_kind,
     targetId: row.target_id,
@@ -349,7 +353,7 @@ function parseEffectiveRow(row: EffectiveFeedbackRow): EffectiveFeedbackV1 {
       ? {caseCandidateId: row.case_candidate_id}
       : {}),
     source: row.source,
-    actor: JSON.parse(row.actor_json) as EffectiveFeedbackV1['actor'],
+    actor: parseStoredJson<EffectiveFeedbackV1['actor']>(row.actor_json, FEEDBACK_RECORD),
     scope: {
       tenantId: '',
       workspaceId: '',
@@ -451,7 +455,7 @@ export class FeedbackEventStore {
             throw new Error('feedback_idempotency_conflict');
           }
           return {
-            event: JSON.parse(existing.eventJson) as FeedbackEventV1,
+            event: parseStoredJson<FeedbackEventV1>(existing.eventJson, FEEDBACK_RECORD),
             idempotent: true,
             storage: this.storage,
           };
@@ -736,7 +740,7 @@ export class FeedbackEventStore {
     if (!current || current.current_event_id !== input.supersedesEventId) {
       throw new Error('feedback_supersedes_fork');
     }
-    const supersededEvent = JSON.parse(superseded.eventJson) as FeedbackEventV1;
+    const supersededEvent = parseStoredJson<FeedbackEventV1>(superseded.eventJson, FEEDBACK_RECORD);
     const nextTargetId = eventTargetId(input);
     if (
       supersededEvent.sessionId !== input.sessionId ||

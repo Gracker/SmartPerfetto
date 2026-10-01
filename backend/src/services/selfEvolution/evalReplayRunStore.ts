@@ -13,6 +13,7 @@ import type {
   RunManifestScope,
   SelfEvolutionPersistenceCapability,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import {
   canonicalContentHash,
   canonicalJsonString,
@@ -134,6 +135,9 @@ const TASK_STATES = new Set<ReplayTaskState>([
   'inconclusive',
   'cancelled',
 ]);
+
+const RUN_SPEC_RECORD = 'replay run spec record';
+const REPLAY_TASK_RECORD = 'replay task record';
 
 function scopeKey(scope: RunManifestScope): string {
   return `${scope.tenantId}\0${scope.workspaceId}`;
@@ -462,7 +466,9 @@ export class EvalReplayRunStore {
         spec.runId,
       ) as ReplayRunSpecRow | undefined;
       if (existing) {
-        const parsed = parseReplayRunSpecV1(JSON.parse(existing.spec_json));
+        const parsed = parseReplayRunSpecV1(
+          parseStoredJson(existing.spec_json, RUN_SPEC_RECORD),
+        );
         if (parsed.contentHash !== spec.contentHash) {
           throw new Error('eval_replay_run_spec_conflict');
         }
@@ -510,7 +516,9 @@ export class EvalReplayRunStore {
       `).get(scope.tenantId, scope.workspaceId, runId) as
         | ReplayRunSpecRow
         | undefined;
-    return row ? parseReplayRunSpecV1(JSON.parse(row.spec_json)) : undefined;
+      return row
+        ? parseReplayRunSpecV1(parseStoredJson(row.spec_json, RUN_SPEC_RECORD))
+        : undefined;
     }
     const payload = this.ephemeralRunSpecs.get(
       `${scopeKey(scope)}\0${runId}`,
@@ -610,7 +618,9 @@ export class EvalReplayRunStore {
       `).get(scope.tenantId, scope.workspaceId, taskId) as
         | ReplayTaskRow
         | undefined;
-      return row ? parseTask(JSON.parse(row.task_json)) : undefined;
+      return row
+        ? parseTask(parseStoredJson(row.task_json, REPLAY_TASK_RECORD))
+        : undefined;
     }
     const payload = this.ephemeral.get(taskKey(scope, taskId));
     return payload ? parseTask(JSON.parse(payload)) : undefined;
@@ -634,7 +644,8 @@ export class EvalReplayRunStore {
             WHERE tenant_id = ? AND workspace_id = ?
             ORDER BY run_id, task_id
           `).all(scope.tenantId, scope.workspaceId)) as ReplayTaskRow[];
-      return rows.map(row => parseTask(JSON.parse(row.task_json)));
+      return rows.map(row =>
+        parseTask(parseStoredJson(row.task_json, REPLAY_TASK_RECORD)));
     }
     return [...this.ephemeral.values()]
       .map(payload => parseTask(JSON.parse(payload)))

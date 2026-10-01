@@ -14,6 +14,7 @@ import type {
   RunManifestScope,
   SelfEvolutionPersistenceCapability,
 } from '../../types/selfEvolution';
+import {parseStoredJson} from '../../utils/storedData';
 import {
   canonicalContentHash,
   canonicalJsonString,
@@ -396,7 +397,12 @@ export class EvaluationReplayPublisher implements ReplayResultPublisher {
         resultRef,
       ) as PublishedRow | undefined;
       return row
-        ? parsePublishedRecord(JSON.parse(row.record_json))
+        ? parsePublishedRecord(
+            parseStoredJson<EvaluationReplayPublishedRecordV1>(
+              row.record_json,
+              'published replay result',
+            ),
+          )
         : undefined;
     }
     const payload = this.ephemeral.get(scopedKey(scope, resultRef));

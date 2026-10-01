@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import crypto from 'crypto';
 import os from 'os';
 import path from 'path';
+import {warningsDuring} from '../../../../tests/helpers/consoleWarnings';
 import {
   LocalEncryptedSecretStore,
   SECRET_STORE_ALLOW_LOCAL_MASTER_KEY_ENV,
@@ -330,18 +331,18 @@ describe('LocalEncryptedSecretStore', () => {
     warnSpy.mockRestore();
   });
 
-  it('fails closed instead of overwriting malformed encrypted storage', async () => {
-    await fs.writeFile(
-      path.join(tmpDir, 'provider-secrets.enc.json'),
-      '{not-json',
-      'utf-8',
-    );
+  it('fails closed instead of overwriting malformed encrypted storage, quoting none of it', async () => {
+    // Unquoted, so the parser would quote it: another tenant's ref names and ciphertext.
+    const corrupt = '{"entries":{"secret:provider:t:w:u:id":[SECRET-STORE-CANARY x]}}';
+    await fs.writeFile(path.join(tmpDir, 'provider-secrets.enc.json'), corrupt, 'utf-8');
     const store = new LocalEncryptedSecretStore(tmpDir);
-
-    expect(() => store.put('secret:provider:new', {openaiApiKey: 'must-not-write'}))
-      .toThrow(/secret_store_invalid_storage_requires_recovery/);
+    const warnings = warningsDuring(() => {
+      expect(() => store.put('secret:provider:new', {openaiApiKey: 'must-not-write'}))
+        .toThrow(/^secret_store_invalid_storage_requires_recovery:invalid_json$/);
+    });
+    expect(JSON.stringify(warnings)).not.toContain('SECRET-STORE-CANARY');
     await expect(fs.readFile(path.join(tmpDir, 'provider-secrets.enc.json'), 'utf-8'))
-      .resolves.toBe('{not-json');
+      .resolves.toBe(corrupt);
   });
 
   it('merges writes from separate store instances under the shared filesystem lock', () => {

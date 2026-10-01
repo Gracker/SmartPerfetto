@@ -37,6 +37,7 @@ import {
 import { agentSessionConfig } from '../../config';
 import { loadPromptTemplate, renderTemplate } from '../../agentv3/strategyLoader';
 import {renderAnalysisHistoryContext, toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
+import {parseStoredJson} from '../../utils/storedData';
 
 // =============================================================================
 // Semantic Working Memory (v2.0)
@@ -1311,7 +1312,8 @@ export class EnhancedSessionContext {
    * Deserialize context from persistence
    */
   static deserialize(json: string): EnhancedSessionContext {
-    const data = JSON.parse(json);
+    // Persisted inside a session's metadata, which a client picks by id.
+    const data = parseStoredJson<any>(json, 'session context snapshot');
     const ctx = new EnhancedSessionContext(data.sessionId, data.traceId);
     ctx.turns = data.turns;
     ctx.nextTurnIndex = Math.max(Number.isSafeInteger(data.nextTurnIndex) ? data.nextTurnIndex : 0,

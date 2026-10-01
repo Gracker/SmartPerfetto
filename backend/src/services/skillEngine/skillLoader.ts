@@ -12,11 +12,11 @@
 
 import fs from 'fs';
 import path from 'path';
-import yaml from 'js-yaml';
 import { validateProcessScopeDeclarations } from './skillValidator';
 import { SkillDefinition } from './types';
 import { generateRenderingPipelineDetectionSkill } from '../renderingPipelineDetectionSkillGenerator';
 import logger from '../../utils/logger';
+import { parseStoredYaml, StoredDataError } from '../../utils/storedData';
 import { validateSkillConditions, validateFragmentReferences } from './skillValidator';
 import { validateSkillBatchAnalysis } from './skillBatchAnalysis';
 import { builtInSkillsDir, readSkillFragmentFile, skillFragmentKey } from './skillFragments';
@@ -26,6 +26,16 @@ import {
   validateSkillDisplayContract,
 } from './displayContractValidator';
 import type { SkillOriginMetadata, SkillPackTrustState } from '../skillPacks/skillPackTypes';
+
+/** A skill file can come from a workspace's pack; its author gets a position, never a quote. */
+function loadSkillYaml(content: string): unknown {
+  return parseStoredYaml(content, 'skill file', {authored: true});
+}
+
+/** A pack's author reads this, so it names the pack's own file. */
+function packLoadError(file: string, error: unknown): unknown {
+  return error instanceof StoredDataError ? new Error(`${file}: ${error.message}`) : error;
+}
 
 // =============================================================================
 // Skill Normalization (Backward Compatibility)
@@ -585,7 +595,7 @@ export class SkillRegistry {
       } else if (entry.name.endsWith('.skill.yaml') || entry.name.endsWith('.skill.yml')) {
         try {
           const content = fs.readFileSync(fullPath, 'utf-8');
-          const loaded = yaml.load(content) as any;
+          const loaded = loadSkillYaml(content) as any;
           const skill = normalizeSkillDefinition(loaded, fullPath);
 
           if (skill && skill.name) {
@@ -598,7 +608,7 @@ export class SkillRegistry {
           }
         } catch (error: any) {
           if (root?.origin === 'external_pack') {
-            throw error;
+            throw packLoadError(entry.name, error);
           }
           logger.error('SkillLoader', `Failed to load ${fullPath}:`, error.message);
         }
@@ -621,7 +631,7 @@ export class SkillRegistry {
       const filePath = path.join(dir, file);
       try {
         const content = fs.readFileSync(filePath, 'utf-8');
-        const skill = yaml.load(content) as SkillDefinition;
+        const skill = loadSkillYaml(content) as SkillDefinition;
 
         if (skill && skill.name && skill.type === 'pipeline_definition') {
           this.registerLoadedSkill(skill, filePath, root);
@@ -629,7 +639,7 @@ export class SkillRegistry {
         }
       } catch (error: any) {
         if (root?.origin === 'external_pack') {
-          throw error;
+          throw packLoadError(file, error);
         }
         logger.error('SkillLoader', `Failed to load pipeline ${file}:`, error.message);
       }
@@ -656,7 +666,7 @@ export class SkillRegistry {
         const filePath = path.join(vendorDir, file);
         try {
           const content = fs.readFileSync(filePath, 'utf-8');
-          const raw = parseVendorOverrideSource(yaml.load(content));
+          const raw = parseVendorOverrideSource(loadSkillYaml(content));
 
           // Normalize the base skill ID: "composite/startup_analysis" → "startup_analysis"
           const baseSkillId = raw.extends.includes('/')
@@ -809,7 +819,7 @@ export class SkillRegistry {
       const filePath = path.join(dir, file);
       try {
         const content = fs.readFileSync(filePath, 'utf-8');
-        const loaded = yaml.load(content) as any;
+        const loaded = loadSkillYaml(content) as any;
         const skill = normalizeSkillDefinition(loaded, filePath);
 
         if (skill && skill.name) {
@@ -818,7 +828,7 @@ export class SkillRegistry {
         }
       } catch (error: any) {
         if (root?.origin === 'external_pack') {
-          throw error;
+          throw packLoadError(file, error);
         }
         logger.error('SkillLoader', `Failed to load ${file}:`, error.message);
       }
@@ -841,7 +851,7 @@ export class SkillRegistry {
       : path.join(skillsDir, relativeSkillPath);
     try {
       const content = fs.readFileSync(filePath, 'utf-8');
-      const loaded: unknown = yaml.load(content);
+      const loaded = loadSkillYaml(content);
       const skill = normalizeSkillDefinition(loaded, filePath);
 
       if (!skill?.name) {

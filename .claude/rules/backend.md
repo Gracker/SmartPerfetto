@@ -632,8 +632,8 @@ Important whitelisted examples:
   written before the DB was. Their reads never create, migrate or change the
   store: the DB opens read-only on the live file (not an
   `openSqliteReadSnapshot` copy of the large, busy sessions DB; SQLite may
-  leave empty WAL sidecars), an unreadable store file is reported without the
-  parser's quote of its text, and a DB bucket row that cannot be decoded is
+  leave empty WAL sidecars), an unreadable store file is reported as in
+  "Stored Data Errors" below, and a DB bucket row that cannot be decoded is
   reported rather than counted empty (a run still reads it as empty). A save
   or rewrite whose authoritative write failed rejects before the DB copy
   changes.
@@ -686,6 +686,33 @@ signal, not an automatic quick/full decision.
 - Historical report/snapshot reads project stored results without invoking a
   new finalizer or granting new evidence authority. Normal read authorization
   still applies; persisted captures cannot recreate private execution witnesses.
+
+## Stored Data Errors
+
+A store never quotes its own text. V8's `Unexpected token` errors carry the
+characters around the failure (a short input whole) and js-yaml errors carry a
+snippet, and that text can be another scope's knowledge, source, credentials
+or a private run; a store's error then travels on through routes that echo
+`error.message`, reports, SSE, persisted error codes and logs.
+
+- Parse persisted JSON and YAML (store files, DB columns, registered knowledge,
+  packs, JSONL records) with `utils/storedData.ts`. Its `StoredDataError` says
+  `<store> is not valid JSON|YAML`, keeps only a file line and column (pass
+  `startLine` for a fragment or a JSONL record) and has no `cause`, which Node
+  would print. Text its reader wrote (a provider's model JSON, a pack or wiki
+  file) is parsed with `authored: true`, which adds the position to the message.
+- Never put a parser's message, stack or the error object into a thrown error,
+  response, report, SSE event, persisted `errorCode`/`reason` or tool result,
+  and never log it. A store with its own recovery code keeps it with
+  `storedDataReason` (`...requires_recovery:invalid_json`). A read failure is
+  logged once through `logStoredReadFailure`, with the path or row id as context.
+- Replacing the message changes no failure semantics. A reader that degrades
+  uses `tryParseStoredJson`: a row picked by a client id whose owner data cannot
+  be read is missing, as a deleted one would be; a store that failed closed on
+  a parse error still does.
+- A store test writes an unquoted canary (and a digit canary for positions)
+  and asserts that no message, response, report or log line contains it;
+  `tests/helpers/consoleWarnings.ts` captures the log lines.
 
 ## TypeScript Conventions
 

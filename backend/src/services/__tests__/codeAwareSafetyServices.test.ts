@@ -49,6 +49,7 @@ import {LLMEchoOutputStream, type CodeRef} from '../security/llmEchoOutputFilter
 import {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
 import {parseConclusionContractSidecar, renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {projectConclusionProtocol, projectConclusionContractForDisplay} from '../security/conclusionProtocolProjection';
+import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
 
 let tmpDir: string;
 const CODEBASE_SCOPE = {
@@ -226,6 +227,23 @@ function makeRegistry(sendToProvider: boolean): {
 }
 
 describe('CodeLookupLedger', () => {
+  it('refuses an unparsable record by its number, quoting none of the lookups', () => {
+    const ledgerPath = path.join(tmpDir, 'ledger.jsonl');
+    fs.writeFileSync(ledgerPath, [
+      JSON.stringify({turn: 1, ts: 1, toolName: 'lookup_app_source', codebaseId: 'cb_1', chunkIds: ['chunk-a'],
+        consentApplied: true, tokensSpent: 1, outcome: 'success', legacyPath: false}),
+      '{"chunkIds":[LEDGER-CANARY-0e5 x]}',
+      '',
+    ].join('\n'));
+    const warnings = warningsDuring(() => {
+      expect(() => CodeLookupLedger.restore('session-a', 100, 1, ledgerPath))
+        .toThrow(/^code lookup ledger is not valid JSON$/);
+    });
+    expect(warnings).toEqual([['[CodeLookupLedger] Ledger unreadable', expect.objectContaining({
+      sessionId: 'session-a', line: 2, store: 'code lookup ledger', reason: 'invalid_json'})]]);
+    expect(JSON.stringify(warnings)).not.toContain('LEDGER-CA');
+  });
+
   it('persists append-only lookup entries and restores caps', async () => {
     const ledgerPath = path.join(tmpDir, 'ledger.jsonl');
     const ledger = new CodeLookupLedger('session-a', 100, 1, ledgerPath);

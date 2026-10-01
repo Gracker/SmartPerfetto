@@ -7,6 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {describe, it, expect, beforeEach, afterEach} from '@jest/globals';
+import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
 
 import {CaseLibrary} from '../caseLibrary';
 import {
@@ -249,13 +250,18 @@ describe('CaseLibrary — persistence', () => {
     expect(lib2.getCase('a')).toBeDefined();
   });
 
-  it('preserves corrupted JSON and refuses to overwrite it', () => {
-    fs.writeFileSync(storagePath, 'not-json{', 'utf-8');
-    const lib = new CaseLibrary(storagePath);
-    expect(lib.getCase('a')).toBeUndefined();
-    expect(fs.existsSync(storagePath)).toBe(true);
-    expect(() => lib.saveCase(makeCase({caseId: 'a'}))).toThrow(/unreadable/);
-    expect(fs.readFileSync(storagePath, 'utf-8')).toBe('not-json{');
+  it('preserves corrupted JSON and refuses to overwrite it, quoting none of it', () => {
+    // Unquoted, so the parser quotes the text around it: another workspace's case.
+    const corrupt = '{"cases":[{"title":[CASE-CANARY-4b8e x]}]}';
+    fs.writeFileSync(storagePath, corrupt, 'utf-8');
+    const warnings = warningsDuring(() => {
+      const lib = new CaseLibrary(storagePath);
+      expect(lib.getCase('a')).toBeUndefined();
+      expect(fs.existsSync(storagePath)).toBe(true);
+      expect(() => lib.saveCase(makeCase({caseId: 'a'}))).toThrow(/^Case library is unreadable$/);
+    });
+    expect(JSON.stringify(warnings)).not.toContain('CASE-CANARY');
+    expect(fs.readFileSync(storagePath, 'utf-8')).toBe(corrupt);
   });
 
   it('getStats counts cases by status', () => {

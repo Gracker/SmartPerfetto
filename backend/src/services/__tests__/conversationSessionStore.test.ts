@@ -149,6 +149,13 @@ describe('logical conversation durability', () => {
     expect(store.listTurns(newer).some(entry => entry.answer === 'LATE_OLD_ANSWER')).toBe(false);
   });
 
+  it('refuses an unparsable descriptor with its fixed code, quoting none of it', () => {
+    const store = new ConversationSessionStore(db);
+    store.save(descriptor(), turn());
+    db.prepare('UPDATE runtime_snapshots SET snapshot_json = ?').run('{"lastRun":[CONVERSATION-CANARY-1b4 x]}');
+    expect(() => store.load(owner, scope.sessionId)).toThrow(/^conversation_recovery_descriptor_invalid$/);
+  });
+
   it('stores only the descriptor allowlist even when a caller passes private runtime fields', () => {
     const input = {...descriptor(), runtime: {secret: 'SDK_SECRET'}, sdkTranscript: ['HIDDEN_SDK_HISTORY'],
       evidenceWitness: 'LIVE_WITNESS', lastOutcome: {kind: 'answered' as const, message: 'public',

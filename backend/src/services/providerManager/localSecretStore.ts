@@ -10,6 +10,7 @@ import {resolveAuthConfig} from '../../config';
 import {deriveServerSecret} from '../../security/serverSecret';
 import {withFilesystemRegistryLock} from '../filesystemRegistryLock';
 import {providerDataPath} from './providerPaths';
+import {logStoredReadFailure, parseStoredJson, storedDataReason} from '../../utils/storedData';
 
 const sodium = require('sodium-native') as {
   crypto_secretbox_easy: (ciphertext: Buffer, message: Buffer, nonce: Buffer, key: Buffer) => void;
@@ -521,12 +522,12 @@ export class LocalEncryptedSecretStore {
         this.key,
       );
       if (!ok) throw new Error('secretbox authentication failed');
-      const parsed = JSON.parse(plaintext.toString('utf-8'));
+      const parsed = parseStoredJson(plaintext.toString('utf-8'), 'decrypted secret');
       return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
         ? parsed as Record<string, string>
         : {};
     } catch (err) {
-      console.warn('[LocalSecretStore] Failed to decrypt secret:', (err as Error).message);
+      logStoredReadFailure('[LocalSecretStore] Failed to decrypt secret', err);
       return {};
     }
   }
@@ -591,7 +592,7 @@ export class LocalEncryptedSecretStore {
   private readFileUnlocked(persistMigration: boolean): EncryptedSecretFile {
     if (!fs.existsSync(this.filePath)) return emptySecretFile();
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.filePath, 'utf-8'));
+      const parsed = parseStoredJson<any>(fs.readFileSync(this.filePath, 'utf-8'), 'secret store');
       if (parsed && parsed.version === 2 && parsed.entries && typeof parsed.entries === 'object') {
         return parsed as EncryptedSecretFile;
       }
@@ -602,9 +603,8 @@ export class LocalEncryptedSecretStore {
       }
       throw new Error('unsupported secret store schema');
     } catch (error) {
-      throw new Error(
-        `secret_store_invalid_storage_requires_recovery:${error instanceof Error ? error.message : String(error)}`,
-      );
+      logStoredReadFailure('[LocalSecretStore] Secret store unreadable, writes need recovery', error, {path: this.filePath});
+      throw new Error(`secret_store_invalid_storage_requires_recovery:${storedDataReason(error)}`);
     }
   }
 

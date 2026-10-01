@@ -15,6 +15,7 @@ import {
 import { recordEnterpriseAuditEvent } from '../enterpriseAuditService';
 import type { ProviderConfig, ProviderConnection, ProviderScope } from './types';
 import { LocalEncryptedSecretStore } from './localSecretStore';
+import { logStoredReadFailure, parseStoredJson } from '../../utils/storedData';
 import {
   localProviderMutationScope,
   ProviderMutationGenerationStore,
@@ -307,10 +308,10 @@ export class ProviderStore {
     if (!fs.existsSync(this.filePath)) return;
     try {
       const raw = fs.readFileSync(this.filePath, 'utf-8');
-      const arr: ProviderConfig[] = JSON.parse(raw);
+      const arr = parseStoredJson<ProviderConfig[]>(raw, 'providers.json');
       for (const p of arr) this.providers.set(p.id, p);
     } catch (err) {
-      console.warn('[ProviderStore] Failed to load providers.json, starting fresh:', (err as Error).message);
+      logStoredReadFailure('[ProviderStore] providers.json unreadable, starting fresh', err, {path: this.filePath});
     }
   }
 
