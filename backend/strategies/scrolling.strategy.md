@@ -569,7 +569,7 @@ invoke_skill("frame_production_gap", { process_name: "<包名>", start_ts: "<滑
 Phase 1 的 `batch_frame_root_cause` 已包含每个**已分析帧**的完整统计数据。先检查 root-cause X/Y coverage；可行动分类仍需按 Phase 1.9 补齐机制证据，terminal codes 按其证据边界直接收口：
 - MainThread 四象限（Q1 大核运行 / Q2 小核运行 / Q3 调度等待 / Q4 休眠）
 - RenderThread 四象限（render_q1 大核 / render_q3 调度 / render_q4 休眠）
-- CPU 大核频率（big_avg_freq_mhz / big_max_freq_mhz）+ 升频延迟（ramp_ms）
+- CPU 大核频率（big_avg_freq_mhz / big_max_freq_mhz）+ 升频延迟（ramp_ms；只在 freq_ramp_evidence = observed，即整帧每个大核频率都有观测时有值；为空表示升频时间未知，不是 0）
 - Binder 同步重叠（binder_overlap_ms）+ GC 重叠（gc_overlap_ms）
 - Input 管线证据（input_stage / input_slice_ms / input_handling_ms / input_event_count / input_events_json）
 - 根因分类（reason_code）+ 关键操作（top_slice_name / top_slice_ms）
@@ -652,7 +652,7 @@ invoke_skill("jank_frame_detail", {
    - 主线程：Q1=XX% Q2=XX% Q3=XX% Q4=XX%
    - RenderThread：Q1=XX% Q3=XX% Q4=XX%
    - 关键操作：[top_slice_name] 耗时 XXms
-   - CPU 频率：均频 XXMHz / 峰频 XXMHz，升频延迟 XXms
+   - CPU 频率：均频 XXMHz / 峰频 XXMHz，升频延迟 XXms（ramp_ms 为空时写“升频未观测”）
    - Binder: XXms / GC: XXms
    - Input: 阶段 [input_stage] / 重叠 XXms / 最慢处理 XXms（如有 input 证据）
    ```
