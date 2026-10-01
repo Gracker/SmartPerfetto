@@ -8,6 +8,7 @@ import { loadPromptTemplate, renderTemplate } from '../../agentv3/strategyLoader
 import { backendLogPath } from '../../runtimePaths';
 import type { CaseEvidenceSignature, CaseKnowledgeQuality } from '../../types/caseKnowledge';
 import type { CaseNode, CurationStatus } from '../../types/sparkContracts';
+import { caseAppliesToArchitecture } from '../caseArchitecture';
 import { CaseLibrary } from '../caseLibrary';
 import type { KnowledgeScope } from '../scopedKnowledgeStore';
 import {
@@ -179,9 +180,7 @@ function isStructuralMatch(
   if (!knowledge) return false;
   if (sceneType && knowledge.scene !== sceneType) return false;
   if (sceneType && knowledge.domainPack !== `${sceneType}.v1`) return false;
-  const caseArchitecture = knowledge.context?.architectureType;
-  if (!architectureType || !caseArchitecture || caseArchitecture === 'unknown') return true;
-  return String(caseArchitecture).toLowerCase() === architectureType.toLowerCase();
+  return caseAppliesToArchitecture(caseNode, architectureType);
 }
 
 function compareBackgroundCases(a: CaseNode, b: CaseNode): number {

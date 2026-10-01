@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 
 import type { CaseNode } from '../../../types/sparkContracts';
 import { CaseLibrary } from '../../caseLibrary';
+import { ingestCaseKnowledge } from '../../caseIngester';
 import {
   buildCaseBackgroundContext,
   buildRuntimeCaseBackgroundContext,
@@ -51,7 +52,7 @@ function caseNode(caseId: string, status: CaseNode['status'], quality: 'curated'
         responsibility: 'app',
         severity: 'warning',
       },
-      context: { architectureType: 'android' },
+      context: { app_architecture: 'standard' },
       evidenceSignatures: {
         required: [{ field: 'reason_code', op: 'eq', value: 'shader_compile' }],
         supportive: [{ field: 'render_slices', op: 'contains_any', value: ['makePipeline'] }],
@@ -68,7 +69,7 @@ describe('buildCaseBackgroundContext', () => {
   it('returns undefined when prompt injection is off by default', () => {
     library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
 
-    expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
+    expect(buildCaseBackgroundContext('scrolling', 'STANDARD', undefined, {
       library,
       config: loadCaseEvolutionConfig({}),
     })).toBeUndefined();
@@ -78,7 +79,7 @@ describe('buildCaseBackgroundContext', () => {
     library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
     library.saveCase(caseNode('learned:draft', 'draft', 'imported'));
 
-    const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
+    const context = buildCaseBackgroundContext('scrolling', 'STANDARD', undefined, {
       library,
       config: loadCaseEvolutionConfig({
         CASE_EVOLUTION_RETRIEVE_ENABLED: '1',
@@ -95,7 +96,7 @@ describe('buildCaseBackgroundContext', () => {
   it('renders an English-only context when English output is configured', () => {
     library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
 
-    const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
+    const context = buildCaseBackgroundContext('scrolling', 'STANDARD', undefined, {
       library,
       config: loadCaseEvolutionConfig({
         CASE_EVOLUTION_RETRIEVE_ENABLED: '1',
@@ -115,7 +116,7 @@ describe('buildCaseBackgroundContext', () => {
 
     expect(buildRuntimeCaseBackgroundContext({
       sceneType: 'scrolling',
-      architectureType: 'android',
+      architectureType: 'STANDARD',
       outputLanguage: 'en',
       privateAnalysisContext: true,
     }, {
@@ -130,7 +131,7 @@ describe('buildCaseBackgroundContext', () => {
   it('includes drafts only when the high-risk includeDrafts flag is explicitly valid', () => {
     library.saveCase(caseNode('learned:draft', 'draft', 'imported'));
 
-    const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
+    const context = buildCaseBackgroundContext('scrolling', 'STANDARD', undefined, {
       library,
       config: loadCaseEvolutionConfig({
         CASE_EVOLUTION_RETRIEVE_ENABLED: '1',
@@ -145,7 +146,7 @@ describe('buildCaseBackgroundContext', () => {
   it('silently drops the segment when it exceeds its dedicated prompt budget', () => {
     library.saveCase(caseNode('learned:reviewed', 'reviewed', 'imported'));
 
-    expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
+    expect(buildCaseBackgroundContext('scrolling', 'STANDARD', undefined, {
       library,
       config: loadCaseEvolutionConfig({
         CASE_EVOLUTION_RETRIEVE_ENABLED: '1',
@@ -153,5 +154,105 @@ describe('buildCaseBackgroundContext', () => {
       }),
       maxTokens: 10,
     })).toBeUndefined();
+  });
+});
+
+describe('buildCaseBackgroundContext with curated Markdown cases', () => {
+  const repoCasesDir = path.resolve(__dirname, '../../../../knowledge/cases');
+  const injectionConfig = loadCaseEvolutionConfig({
+    CASE_EVOLUTION_RETRIEVE_ENABLED: '1',
+    CASE_EVOLUTION_PROMPT_INJECT_ENABLED: '1',
+  });
+
+  /** Ingest Markdown exactly as `npm run ingest:cases` does, into this test's stores. */
+  function ingest(casesDir: string): void {
+    ingestCaseKnowledge({
+      casesDir,
+      caseLibrary: library,
+      caseGraphPath: path.join(tmpDir, 'case_graph.json'),
+      ragStorePath: path.join(tmpDir, 'rag_store.json'),
+    });
+  }
+
+  /** Copies of the repository's shader case under another id and architecture declaration. */
+  function writeVariant(casesDir: string, caseId: string, appArchitecture: string): void {
+    const source = fs.readFileSync(
+      path.join(repoCasesDir, 'scrolling', 'scroll_shader_compile_pixel8_001.md'),
+      'utf-8',
+    );
+    const variant = source
+      .replace('case_id: scroll_shader_compile_pixel8_001', `case_id: ${caseId}`)
+      .replace('  app_architecture: standard\n', `  app_architecture: ${appArchitecture}\n`);
+    expect(variant).toContain(`app_architecture: ${appArchitecture}`);
+    fs.mkdirSync(path.join(casesDir, 'scrolling'), { recursive: true });
+    fs.writeFileSync(path.join(casesDir, 'scrolling', `${caseId}.md`), variant);
+  }
+
+  function background(architectureType: string | undefined): string | undefined {
+    return buildCaseBackgroundContext('scrolling', architectureType, undefined, {
+      library,
+      config: injectionConfig,
+      maxTokens: 10_000,
+      topK: 10,
+    });
+  }
+
+  it('keeps the repository View-system cases out of a Flutter analysis', () => {
+    ingest(repoCasesDir);
+
+    expect(background('FLUTTER')).toBeUndefined();
+  });
+
+  it('injects the repository View-system cases into a View-system analysis', () => {
+    ingest(repoCasesDir);
+
+    const context = background('STANDARD');
+
+    expect(context).toContain('scroll_shader_compile_pixel8_001');
+    expect(context).toContain('scroll_scheduler_freq_mixed_001');
+  });
+
+  it.each([undefined, 'unknown', 'UNKNOWN'])(
+    'does not rule cases out when the trace architecture is %p',
+    architectureType => {
+      ingest(repoCasesDir);
+
+      expect(background(architectureType)).toContain('scroll_shader_compile_pixel8_001');
+    },
+  );
+
+  it('matches a declared architecture list and an explicit any', () => {
+    const casesDir = path.join(tmpDir, 'cases');
+    writeVariant(casesDir, 'scroll_view_or_compose_001', '[standard, compose]');
+    writeVariant(casesDir, 'scroll_any_architecture_001', 'any');
+    writeVariant(casesDir, 'scroll_flutter_only_001', 'flutter');
+    ingest(casesDir);
+
+    const compose = background('COMPOSE');
+    expect(compose).toContain('scroll_view_or_compose_001');
+    expect(compose).toContain('scroll_any_architecture_001');
+    expect(compose).not.toContain('scroll_flutter_only_001');
+
+    const flutter = background('FLUTTER');
+    expect(flutter).toContain('scroll_flutter_only_001');
+    expect(flutter).toContain('scroll_any_architecture_001');
+    expect(flutter).not.toContain('scroll_view_or_compose_001');
+  });
+
+  it('does not inject a stored case whose architecture predates the contract', () => {
+    ingest(repoCasesDir);
+    const stored = library.getCase('scroll_scheduler_freq_mixed_001')!;
+    library.saveCase({
+      ...stored,
+      knowledge: {
+        ...stored.knowledge!,
+        context: { ...stored.knowledge!.context, app_architecture: 'android_view_standard' },
+      },
+    });
+
+    const context = background('STANDARD');
+
+    expect(context).toContain('scroll_shader_compile_pixel8_001');
+    expect(context).not.toContain('scroll_scheduler_freq_mixed_001');
   });
 });

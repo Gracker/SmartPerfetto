@@ -26,6 +26,7 @@ import {
   scanContent as defaultScanContent,
   type ThreatMatch,
 } from '../../agentv3/selfImprove/contentScanner';
+import { detectedCaseArchitecture } from '../caseArchitecture';
 import { validateCaseDomainPack } from '../caseDomainPacks';
 import { CaseLibrary } from '../caseLibrary';
 
@@ -438,7 +439,7 @@ function validateDomainReview(
       severity: review.proposed.severity,
     },
     context: {
-      app_architecture: candidate.provenance.architectureType,
+      ...detectedCaseArchitecture(candidate.provenance.architectureType),
       source_candidate_id: candidate.candidateId,
     },
     evidence_signatures: review.proposed.evidenceSignatures,

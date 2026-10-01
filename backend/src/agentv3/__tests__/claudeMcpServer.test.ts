@@ -794,6 +794,75 @@ describe('createClaudeMcpServer', () => {
       });
     });
 
+    it('recalls curated cases only for the detected architecture, leaving manual cases to their key', async () => {
+      const viewCase = {
+        schemaVersion: 1,
+        source: 'curated_markdown_case',
+        createdAt: 1,
+        caseId: 'case-view-shader',
+        title: 'View-system shader case',
+        status: 'published',
+        redactionState: 'redacted',
+        tags: ['shader_compile'],
+        findings: [],
+        knowledge: {
+          sourceFile: 'cases/case-view-shader.md',
+          body: '',
+          quality: 'curated',
+          scene: 'scrolling',
+          domainPack: 'scrolling.v1',
+          taxonomy: {
+            primary_root_cause: 'shader_compile',
+            secondary_root_causes: [],
+            responsibility: 'app',
+            severity: 'warning',
+          },
+          context: { app_architecture: 'standard' },
+          evidenceSignatures: {
+            required: [{ field: 'reason_code', op: 'eq', value: 'shader_compile' }],
+            supportive: [],
+          },
+          recommendations: { app: [], oem: [] },
+        },
+      };
+      const manualCase = {
+        schemaVersion: 1,
+        source: 'manual',
+        createdAt: 1,
+        caseId: 'case-manual',
+        title: 'Manual case',
+        status: 'published',
+        redactionState: 'redacted',
+        tags: ['shader_compile'],
+        findings: [],
+      };
+      const caseLibrary = { listCases: jest.fn(() => [viewCase, manualCase]) };
+      const ragStore = { search: jest.fn(() => ({ results: [] })) };
+      const recall = async (architecture: string) => {
+        const { tools } = createTestServer({
+          sceneType: 'scrolling',
+          caseLibrary,
+          ragStore,
+          cachedArchitecture: { type: architecture, confidence: 0.9, evidence: [] },
+        });
+        const byTags = await callTool(tools, 'recall_similar_case', { tags: ['shader_compile'] });
+        const byEvidence = await callTool(tools, 'recall_similar_case', {
+          root_cause: 'shader_compile',
+          evidence_signatures: { reason_code: 'shader_compile' },
+        });
+        return {
+          byTags: byTags.hits.map((hit: { caseId: string }) => hit.caseId).sort(),
+          byEvidence: byEvidence.hits.map((hit: { caseId: string }) => hit.caseId),
+        };
+      };
+
+      expect(await recall('FLUTTER')).toEqual({ byTags: ['case-manual'], byEvidence: [] });
+      expect(await recall('STANDARD')).toEqual({
+        byTags: ['case-manual', 'case-view-shader'],
+        byEvidence: ['case-view-shader'],
+      });
+    });
+
     it('recalls similar analysis results as navigation-only MCP hints', async () => {
       const current = analysisSnapshot('current');
       const similar = analysisSnapshot('similar', {
