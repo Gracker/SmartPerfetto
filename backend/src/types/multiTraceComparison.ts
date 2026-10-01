@@ -152,6 +152,10 @@ export interface NormalizedMetricSource {
   type: NormalizedMetricSourceType;
   skillId?: string;
   stepId?: string;
+  /** Child step of an iterator envelope whose per-item section supplied the value. */
+  section?: string;
+  /** Index of that iterator item (the event window the value describes). */
+  itemIndex?: number;
   dataEnvelopeId?: string;
   reportId?: string;
   messageId?: string;

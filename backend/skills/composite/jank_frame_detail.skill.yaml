@@ -944,6 +944,8 @@ steps:
     optional: true
 
   # ===== P0: 大小核迁移分析 (引用 atomic skill) =====
+  # The child begins with a cpu_topology_view reference; frame_diagnosis reads
+  # the migration rows, never that setup step's result.
   - id: task_migration
     skill: task_migration_in_range
     params:
@@ -951,6 +953,7 @@ steps:
       end_ts: "${end_ts}"
       package: "${package}"
     save_as: migration_data
+    save_from: migration_analysis
     optional: true
 
   # ===== P0: GPU 渲染操作分析 (引用 atomic skill) =====
@@ -988,12 +991,14 @@ steps:
     optional: true
 
   # ===== P0: CPU 簇负载分析 (引用 atomic skill) =====
+  # As task_migration: bind the cluster rows, not the topology setup step.
   - id: cpu_cluster_load
     skill: cpu_cluster_load_in_range
     params:
       start_ts: "${start_ts}"
       end_ts: "${end_ts}"
     save_as: cluster_load_data
+    save_from: cluster_load
     optional: true
 
   # ===== P0: 内存页面错误分析 (引用 atomic skill) =====
@@ -2341,21 +2346,27 @@ steps:
           - "检查是否有密集计算任务"
 
       # ===== 高优先级：大小核迁移 =====
+      # Placement observations, not causes; a frequency limit is one candidate
+      # only freq_limit_evidence can confirm. migration_data[0] is the thread
+      # with the most migrations, not necessarily the UI thread or one on this
+      # frame's critical path. Templates stay within the portable expression
+      # subset (no ternary, no Math.*): the public runtime evaluates them too.
       - condition: "migration_data?.data?.length > 0 && migration_data.data[0]?.big_to_little > 2"
         severity: warning
-        diagnosis: "${migration_data.data[0].thread_name} 从大核迁移到小核 ${migration_data.data[0].big_to_little}次"
+        diagnosis: "${migration_data.data[0].thread_name} 从大核组（超大/大/中核）迁移到小核 ${migration_data.data[0].big_to_little} 次，小核迁回大核组 ${migration_data.data[0].little_to_big} 次（迁移次数最多的线程）"
         confidence: high
         suggestions:
-          - "检查系统温控策略是否过于激进"
-          - "考虑绑定 UI 线程到大核"
+          - "迁移次数只说明调度把该线程放到了不同核组，不说明原因；可能的解释包括负载均衡、EAS 能效放置、uclamp/cpuset 限制、线程负载低于上迁阈值，需结合调度数据核对"
+          - "迁移本身不是限频或温控证据；频率上限可能降低大核可用容量并影响放置，是否限频以本帧的 CPU 限频证据为准"
+          - "先确认该线程是否在本帧关键路径上，再对照它在小核上的运行时长与 Runnable 等待判断迁移的影响"
 
       - condition: "migration_data?.data?.length > 0 && migration_data.data[0]?.unknown_core_ns === 0 && migration_data.data[0]?.big_core_pct < 30"
         severity: warning
         diagnosis: "${migration_data.data[0].thread_name} 大核组（超大/大/中核）运行占比仅 ${migration_data.data[0].big_core_pct}%"
         confidence: high
         suggestions:
-          - "UI 线程未能获得足够大核资源"
-          - "检查调度器配置"
+          - "大核组占比低不说明资源不足；可能的解释包括线程负载低而被放在小核、cpuset/uclamp 限制、大核组繁忙，需对照该线程的 Runnable 等待与大核簇负载区分"
+          - "占比本身不是限频或温控证据；频率上限可能降低大核可用容量并影响放置，是否限频以本帧的 CPU 限频证据为准"
 
       # ===== 高优先级：GPU 操作 =====
       - condition: "gpu_data?.data?.find(g => g.operation === 'GPU Fence Wait')?.total_ms > 3"
@@ -2460,13 +2471,17 @@ steps:
           - "检查 cpu_throttling_in_range 的 limit_evidence 步骤为何未产出结果"
 
       # ===== 高优先级：CPU 簇负载 =====
+      # load_pct is Running time over all of the tier's cores while awake; it
+      # carries no frequency and says nothing on its own about which threads
+      # waited, so a cluster rule states the tier it measured and leaves the
+      # effect on this frame to scheduling data and freq_limit_evidence.
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '大核簇')?.load_pct > 90"
         severity: critical
         diagnosis: "大核簇负载 ${cluster_load_data.data.find(c => c.cluster === '大核簇')?.load_pct}%，接近跑满"
         confidence: high
         suggestions:
-          - "大核资源严重不足"
-          - "检查是否有后台密集计算任务"
+          - "检查占用大核簇的线程，区分本帧关键线程与后台密集计算任务"
+          - "负载只按 Running 时间计算、不反映运行频率；频率偏低时同样的工作可能占用更长时间，是否限频以本帧的 CPU 限频证据为准"
           - "考虑优化或推迟非关键任务"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '超大核簇')?.load_pct > 90"
@@ -2474,32 +2489,34 @@ steps:
         diagnosis: "超大核簇负载 ${cluster_load_data.data.find(c => c.cluster === '超大核簇')?.load_pct}%，接近跑满"
         confidence: high
         suggestions:
-          - "超大核资源严重不足，关键线程可能被迫落到大核或更小的核"
+          - "关键线程是否因此被放到其他核组或排队，需对照其核组占比与 Runnable 等待"
           - "检查是否有后台密集计算任务占用超大核"
+          - "负载只按 Running 时间计算、不反映运行频率；频率偏低时同样的工作可能占用更长时间，是否限频以本帧的 CPU 限频证据为准"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '中核簇')?.load_pct > 90"
         severity: warning
         diagnosis: "中核簇负载 ${cluster_load_data.data.find(c => c.cluster === '中核簇')?.load_pct}%，接近跑满"
         confidence: high
         suggestions:
-          - "中核簇跑满时从大核迁出的任务无处可去，调度会继续挤压大核或落到小核"
+          - "需要中核的任务可能排队或被放到其他核组，需对照关键线程的核组占比与 Runnable 等待"
           - "检查是否有后台密集计算任务占用中核"
+          - "负载只按 Running 时间计算、不反映运行频率；频率偏低时同样的工作可能占用更长时间，是否限频以本帧的 CPU 限频证据为准"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '小核簇')?.load_pct > 95"
         severity: warning
         diagnosis: "小核簇负载 ${cluster_load_data.data.find(c => c.cluster === '小核簇')?.load_pct}%，几乎跑满"
         confidence: high
         suggestions:
-          - "系统整体负载很高"
+          - "运行在小核的任务可能排队；小核簇跑满不代表其他核组也满载，需对照其他核组负载"
           - "后台任务可能挤占资源"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '大核簇')?.load_pct > 70 && cluster_load_data?.data?.find(c => c.cluster === '小核簇')?.load_pct > 70"
         severity: warning
-        diagnosis: "CPU 整体负载高: 大核 ${cluster_load_data.data.find(c => c.cluster === '大核簇')?.load_pct}%, 小核 ${cluster_load_data.data.find(c => c.cluster === '小核簇')?.load_pct}%"
+        diagnosis: "大核簇与小核簇负载均高于 70%: 大核簇 ${cluster_load_data.data.find(c => c.cluster === '大核簇')?.load_pct}%, 小核簇 ${cluster_load_data.data.find(c => c.cluster === '小核簇')?.load_pct}%"
         confidence: high
         suggestions:
-          - "系统 CPU 资源紧张"
-          - "多任务竞争导致调度延迟"
+          - "多任务竞争是否造成本帧关键线程的调度延迟，以 Runnable 与调度延迟数据为准"
+          - "检查同时占用大核与小核的后台任务"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '大核簇')?.max_single_core_pct > 95"
         severity: info
@@ -2599,14 +2616,14 @@ steps:
           - "检查是否有 IO 操作或锁等待"
           - "考虑使用异步 IO"
 
-      # Q2 小核运行占比高 - 说明调度可能有问题
+      # Q2 小核运行占比高 - 放置观测，与上方迁移规则同理，不是原因
       - condition: "quadrant_data?.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage > 60"
         severity: info
         diagnosis: "主线程主要运行在小核 (${quadrant_data.data.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage}%)"
         confidence: medium
         suggestions:
-          - "检查系统温控是否限制大核"
-          - "考虑提高线程优先级"
+          - "小核运行占比高本身不说明调度异常；可能的解释包括主线程负载低而被放在小核、cpuset/uclamp 限制、大核组繁忙，需对照主线程的 Runnable 等待与大核簇负载区分"
+          - "占比本身不是限频或温控证据；频率上限可能降低大核可用容量并影响放置，是否限频以本帧的 CPU 限频证据为准"
 
       # ===== 主线程耗时操作 =====
       - condition: "main_slices?.data?.length > 0 && main_slices.data[0]?.dur_ms > 5"

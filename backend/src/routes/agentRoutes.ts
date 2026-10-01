@@ -59,6 +59,7 @@ import {
   type RequestContext,
 } from '../middleware/auth';
 import { createRequestId, requestIdOf } from '../middleware/requestId';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   ownersMatch,
@@ -3517,12 +3518,12 @@ router.post('/:sessionId/interaction', async (req, res) => {
       sessionId,
       focusCount: 0,
     });
-  } catch (error: any) {
-    console.error(`[Interaction] Error recording interaction for session ${sessionId}:`, error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to record interaction',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'interaction_record_failed',
+      error: 'Failed to record interaction',
+      logLabel: '[Interaction] Error recording interaction',
+    }, error);
   }
 });
 
@@ -3585,12 +3586,12 @@ router.get('/:sessionId/focus', (req, res) => {
       focuses,
       context,
     });
-  } catch (error: any) {
-    console.error(`[Focus] Error getting focus for session ${sessionId}:`, error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to get focus state',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'focus_read_failed',
+      error: 'Failed to get focus state',
+      logLabel: '[Focus] Error getting focus',
+    }, error);
   }
 });
 

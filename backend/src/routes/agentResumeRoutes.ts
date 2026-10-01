@@ -13,6 +13,7 @@ import { getProviderService } from '../services/providerManager';
 import { sendProviderStoreUnreadableIfPresent } from './providerStoreHttp';
 import { resolveProviderRuntimeSnapshot } from '../services/providerManager/providerSnapshot';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   normalizeResourceOwner,
@@ -359,7 +360,7 @@ export function registerAgentResumeRoutes(
             : null,
         },
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (sendAiDisabledErrorIfPresent(res, error)) {
         return;
       }
@@ -367,11 +368,11 @@ export function registerAgentResumeRoutes(
       if (sendProviderStoreUnreadableIfPresent(res, error)) {
         return;
       }
-      console.error('[AgentRoutes] Session restore failed:', error);
-      return res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to restore session',
-      });
+      sendRouteFailure(res, {
+        code: 'session_restore_failed',
+        error: 'Failed to restore session',
+        logLabel: '[AgentRoutes] Session restore failed',
+      }, error);
     }
   });
 }

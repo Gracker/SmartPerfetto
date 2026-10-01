@@ -7623,7 +7623,7 @@
           },
           {
             "id": "cpu_core_analysis",
-            "sha256": "9f45895f52db5ea5eeb6bd33b7e251b6e87240beef6eba3ac68877b0f0d68f17",
+            "sha256": "c87ad6f118493d06b3ba6bdeff5cfe7599e368796d810d3f398f84f044a15efb",
             "required_columns": [
               "upid",
               "utid",
@@ -7640,7 +7640,10 @@
               "running_pct",
               "used_ucpus",
               "used_cpus",
-              "classify_method"
+              "classify_method",
+              "unknown_core_ns",
+              "main_thread_count",
+              "big_core_pct_definition"
             ]
           },
           {
@@ -11453,7 +11456,7 @@
           },
           {
             "id": "cpu_core_analysis",
-            "sha256": "059c1430f96c2c1ed77f46eb2b3b3ab54e337407d0ba990ef551ebac02717be4",
+            "sha256": "44c908dafa0de0b1362bbe79d0ed18227791e76a6d89d0e1b598593a2b95a224",
             "required_columns": [
               "thread_type",
               "big_core_ms",
@@ -11464,7 +11467,10 @@
               "used_cpus",
               "classify_method",
               "unknown_core_ms",
-              "unknown_core_pct"
+              "unknown_core_pct",
+              "unknown_core_ns",
+              "main_thread_count",
+              "big_core_pct_definition"
             ]
           },
           {
@@ -12328,7 +12334,7 @@
           },
           {
             "id": "core_distribution",
-            "sha256": "6b88083f63949dd4ef89009c07cc5403098573797d2846f49fcd03ab73eca5eb",
+            "sha256": "2fda67d75376d18eac775ee078b44195cdf23ed4788993a66484191cd3aea9f4",
             "required_columns": [
               "thread_name",
               "tid",
@@ -12338,8 +12344,7 @@
               "medium_core_pct",
               "little_core_pct",
               "unknown_core_pct",
-              "unknown_core_ms",
-              "big_core_pct_definition"
+              "unknown_core_ms"
             ]
           },
           {

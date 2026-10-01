@@ -723,9 +723,11 @@ OIDC subject. Different users may have the same workspace display name, but
 their user IDs, workspace IDs, memberships, and data scopes remain separate.
 The OIDC frontend does not let users change the workspace, backend URL, or API
 key. Tenant identity is derived only from the normalized issuer and cannot be
-overridden by a user claim. Built-in OIDC cannot be combined with
-`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` or the legacy
-`SMARTPERFETTO_API_KEY`.
+overridden by a user claim. Built-in OIDC cannot be combined with an enabled
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS` (any of `true`, `1`, `yes`, `on`,
+`enabled`) or the legacy `SMARTPERFETTO_API_KEY`; under OIDC neither HTTP
+requests nor the Trace Processor WebSocket accept trusted SSO headers or
+enterprise API keys.
 OIDC automatically uses the scoped database as the only read and write
 authority. No enterprise migration phase is required, and OIDC rejects the
 `legacy` and `dual-write` modes that do not preserve user-level isolation.

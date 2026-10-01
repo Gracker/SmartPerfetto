@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1368,
-    "explicitColumnCount": 5092
+    "explicitColumnCount": 5097
   },
   "skills": {
     "ams_module": {
@@ -9340,6 +9340,24 @@
                 "zh-CN": "核判定来源",
                 "en": "Classify Method"
               }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核运行(ns)",
+                "en": "Unknown Core ns"
+              }
+            },
+            "main_thread_count": {
+              "label": {
+                "zh-CN": "主线程数",
+                "en": "Main Thread Count"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核占比口径",
+                "en": "Big Core Pct Definition"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -14338,12 +14356,6 @@
               "label": {
                 "zh-CN": "未知核类型运行时间",
                 "en": "Unknown Core ms"
-              }
-            },
-            "big_core_pct_definition": {
-              "label": {
-                "zh-CN": "大核组口径",
-                "en": "Big Core Pct Definition"
               }
             }
           },
@@ -38562,6 +38574,24 @@
               "label": {
                 "zh-CN": "未知核类型占比",
                 "en": "Unknown Core Pct"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核运行(ns)",
+                "en": "Unknown Core ns"
+              }
+            },
+            "main_thread_count": {
+              "label": {
+                "zh-CN": "主线程数",
+                "en": "Main Thread Count"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核占比口径",
+                "en": "Big Core Pct Definition"
               }
             }
           },
