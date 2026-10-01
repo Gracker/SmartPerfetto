@@ -8,6 +8,7 @@ import path from 'path';
 import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
+import { stableStringify } from '../utils/stableJson';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
 import { openEnterpriseDb } from './enterpriseDb';
 import { resolveEnterpriseDataRoot } from './traceMetadataStore';
@@ -82,22 +83,6 @@ export class TenantPurgeWindowError extends Error {
 
 function sha256(value: string): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
-}
-
-function stableStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (!value || typeof value !== 'object') return value;
-  const input = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(input).sort()) {
-    const child = input[key];
-    if (child !== undefined) out[key] = canonicalize(child);
-  }
-  return out;
 }
 
 function assertSafeTenantId(tenantId: string): string {

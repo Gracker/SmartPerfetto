@@ -106,13 +106,12 @@ function sanitizeValue(
       .filter(item => item !== undefined);
   }
   if (isRecord(value)) {
-    const out: Record<string, unknown> = {};
-    for (const [key, child] of Object.entries(value)) {
+    return Object.fromEntries(Object.entries(value).flatMap(([key, child]) => {
       const clean = sanitizeValue(child, `${path}.${key}`, warnings, errors);
-      if (clean !== undefined) out[key] = clean;
-      else warnings.push(`omitted unsupported field at ${path}.${key}`);
-    }
-    return out;
+      if (clean !== undefined) return [[key, clean]];
+      warnings.push(`omitted unsupported field at ${path}.${key}`);
+      return [];
+    }));
   }
   warnings.push(`omitted unsupported value at ${path}`);
   return undefined;
