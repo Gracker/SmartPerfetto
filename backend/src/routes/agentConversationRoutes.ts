@@ -49,7 +49,13 @@ import {
 } from '../services/security/privateAnalysisProjection';
 import {readTraceMetadataForContext} from '../services/traceMetadataStore';
 import {getTraceProcessorService} from '../services/traceProcessorService';
-import {getProviderService, type ProviderScope} from '../services/providerManager';
+import {
+  getProviderService,
+  ProviderStoreUnreadableError,
+  type ProviderScope,
+  type ProviderService,
+} from '../services/providerManager';
+import {sendProviderStoreUnreadableIfPresent} from './providerStoreHttp';
 import {resolveProviderRuntimeSnapshot} from '../services/providerManager/providerSnapshot';
 import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
 import {requireAiEnabledForHttp} from './aiCapabilityPolicyHttp';
@@ -398,17 +404,20 @@ async function startConversation(req: express.Request, res: express.Response): P
       userId: requestContext.userId,
     };
     const providerService = getProviderService();
-    const activeProviderId = providerService.getRawEffectiveProvider(providerScope)?.id ?? null;
     const providerFollowsActive = previous
       ? previous.providerFollowsActive ?? true
       : providerId === undefined;
-    const effectiveProviderId = previous
-      ? previous.providerId !== undefined
-        ? previous.providerId
-        : activeProviderId
-      : providerId !== undefined
-        ? providerId
-        : activeProviderId;
+    const pinnedProviderId = previous ? previous.providerId : providerId;
+    // Read the active provider only when it decides the pin or must still match
+    // it, so an explicit pin (including env's null) survives an unreadable
+    // providers.json, which leaves the active provider unknown.
+    let activeProviderId: string | null = null;
+    if (providerFollowsActive || pinnedProviderId === undefined) {
+      const active = readActiveProviderId(res, providerService, providerScope);
+      if (active === undefined) return;
+      activeProviderId = active;
+    }
+    const effectiveProviderId = pinnedProviderId !== undefined ? pinnedProviderId : activeProviderId;
     if (previous && providerFollowsActive && effectiveProviderId !== activeProviderId) {
       res.status(409).json({
         success: false,
@@ -426,6 +435,8 @@ async function startConversation(req: express.Request, res: express.Response): P
         providerScope,
       );
     } catch (error) {
+      // A pin missing from an unreadable providers.json is unknown, not deleted.
+      if (sendProviderStoreUnreadableIfPresent(res, error)) return;
       res.status(404).json({
         success: false,
         code: 'PROVIDER_NOT_FOUND',
@@ -522,9 +533,21 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
     metadata.analysisContextFingerprint!);
   const provider = getProviderService();
   const owner = ownerFieldsFromContext(context);
-  const pin = resolveProviderRuntimeSnapshot(provider, metadata.providerId, metadata.runtimeKind, owner);
+  let pin: ReturnType<typeof resolveProviderRuntimeSnapshot>;
+  let activeProviderId: string | null | undefined;
+  try {
+    pin = resolveProviderRuntimeSnapshot(provider, metadata.providerId, metadata.runtimeKind, owner);
+    if (metadata.providerFollowsActive) activeProviderId = provider.getRawEffectiveProvider(owner)?.id ?? null;
+  } catch (error) {
+    // A pin that depends on an unreadable providers.json cannot be checked. A
+    // live conversation keeps the runtime it has (its next run is checked when
+    // it starts); recovery would build a new one, so it waits for the file.
+    if (live && error instanceof ProviderStoreUnreadableError) return live;
+    if (sendProviderStoreUnreadableIfPresent(res, error)) return undefined;
+    throw error;
+  }
   if (pin.snapshotHash !== metadata.providerSnapshotHash || pin.snapshot.runtimeKind !== metadata.runtimeKind ||
-    (metadata.providerFollowsActive && (provider.getRawEffectiveProvider(owner)?.id ?? null) !== metadata.providerId)) {
+    (metadata.providerFollowsActive && activeProviderId !== metadata.providerId)) {
     res.status(409).json({success: false, code: 'CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
       error: 'Start a new conversation after changing the AI provider configuration'});
     return undefined;
@@ -539,6 +562,24 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
     providerSnapshotHash: stored!.providerSnapshotHash, analysisContextFingerprint: stored!.analysisContextFingerprint,
     runtimeOptions,
   });
+}
+
+/**
+ * The active provider's id (null: none). While providers.json is unreadable
+ * the active provider is unknown: answers 409 `provider_store_unreadable` and
+ * returns undefined rather than letting the run fall back to env.
+ */
+function readActiveProviderId(
+  res: express.Response,
+  providerService: ProviderService,
+  providerScope: ProviderScope,
+): string | null | undefined {
+  try {
+    return providerService.getRawEffectiveProvider(providerScope)?.id ?? null;
+  } catch (error) {
+    if (sendProviderStoreUnreadableIfPresent(res, error)) return undefined;
+    throw error;
+  }
 }
 
 function sourceHistoryTurnAccessible(session: ConversationSession, turnId: string | undefined): boolean {

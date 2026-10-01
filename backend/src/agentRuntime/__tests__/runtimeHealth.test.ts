@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import { jest } from '@jest/globals';
 import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -101,6 +102,25 @@ describe('buildRuntimeHealthPayload', () => {
       });
     },
   );
+
+  it('stays healthy but unconfigured while providers.json is unreadable, even with env credentials', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-env-only';
+    const canary = 'sk-canary-health-7f3a';
+    await fsp.writeFile(path.join(dir, 'providers.json'), `[{"id":"gw","isActive":true,"connection":{"apiKey":"${canary}"}`);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const payload = buildRuntimeHealthPayload();
+      expect(payload.status).toBe('OK');
+      expect(payload.aiEngine).toMatchObject({
+        configured: false,
+        credentialSource: 'provider-store-unreadable',
+        providerStore: {status: 'unreadable', code: 'provider_store_unreadable'},
+      });
+      expect(JSON.stringify(payload)).not.toContain(canary);
+    } finally {
+      warn.mockRestore();
+    }
+  });
 
   it('does not borrow an ambient key for a selected provider missing its own key', () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ambient';

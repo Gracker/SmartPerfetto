@@ -39,6 +39,7 @@ import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments'
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
 import { sqlScopeEvidence, resultScopeProvenance, resultScopeLimitations } from './scopeEvidence';
+import { SYNTHESIZE_SUMMARY_STEP_ID, exposedStepResult, hasMeaningfulData, selectReferencedSkillStep, selectedStepResult } from './referencedSkillStep';
 import {attachInvestigationEvidence, investigationCaptureFields, validateInvestigationEvidenceDeclarations} from '../evidence/investigationEvidenceLedger';
 import {attachEvidenceTable, captureEvidenceTable, capturedEvidenceTable, evidenceTableFor, evidenceCaptureHash,
   type CapturedFieldSemantics} from '../evidence/evidenceCapture';
@@ -205,7 +206,8 @@ export function normalizeLayer(layer: string | undefined): DisplayLayer | undefi
 /** The innermost scope that binds a root name, and the raw value it holds there. */
 type RootBinding =
   | { source: 'item' | 'variable' | 'param' | 'inherited'; value: any }
-  | { source: 'result'; value: any; result: StepResult };
+  // `result` is the step the value comes from; a failed Skill reference has none.
+  | { source: 'result'; value: any; result?: StepResult };
 
 class ExpressionEvaluator {
   private static warnedConditionMessages = new Set<string>();
@@ -396,35 +398,19 @@ class ExpressionEvaluator {
 
   /**
    * Unwrap SkillExecutionResult-like objects from referenced skills.
-   * save_as on `skill:` steps stores nested result objects, while most YAML
-   * expressions expect plain row arrays at `.data`.
+   * A bound value can still hold a nested Skill result (a child step that is
+   * itself a Skill reference), while most YAML expressions expect plain row
+   * arrays at `.data`; it unwraps to the step a save_as of it would bind.
    */
   private static unwrapSkillResultData(value: any): any {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
       return value;
     }
 
-    const maybeSkillResult = value as Record<string, any>;
-    // Full SkillExecutionResult from a referenced skill step.
-    // Prefer explicit `data` if present; otherwise fallback to raw step outputs.
-    if (Object.prototype.hasOwnProperty.call(maybeSkillResult, 'rawResults')) {
-      if (Object.prototype.hasOwnProperty.call(maybeSkillResult, 'data')) {
-        return maybeSkillResult.data;
-      }
+    const selected = selectReferencedSkillStep(value);
+    if (selected) return selected.data;
 
-      const raw = maybeSkillResult.rawResults;
-      if (raw && typeof raw === 'object') {
-        const rootStepData = (raw as any)?.root?.data;
-        if (rootStepData !== undefined) {
-          return rootStepData;
-        }
-        for (const step of Object.values(raw as Record<string, any>)) {
-          if (step && typeof step === 'object' && Object.prototype.hasOwnProperty.call(step, 'data')) {
-            return (step as any).data;
-          }
-        }
-      }
-    }
+    const maybeSkillResult = value as Record<string, any>;
 
     // StepResult-like object.
     if (
@@ -461,7 +447,10 @@ class ExpressionEvaluator {
     }
     if (context.variables[name] !== undefined) return { source: 'variable', value: context.variables[name] };
     const result = context.results[name];
-    if (result) return { source: 'result', value: result.data, result };
+    if (result) {
+      const step = exposedStepResult(result);
+      return { source: 'result', value: step?.data, result: step };
+    }
     if (context.params?.[name] !== undefined) return { source: 'param', value: context.params[name] };
     if (context.inherited?.[name] !== undefined) return { source: 'inherited', value: context.inherited[name] };
     return undefined;
@@ -1746,7 +1735,7 @@ export class SkillExecutor {
     return rawResults.every(entry => {
       if (!entry || typeof entry !== 'object') return true;
       const data = (entry as {data?: unknown}).data;
-      return !this.hasMeaningfulData(data);
+      return !hasMeaningfulData(data);
     });
   }
 
@@ -2036,27 +2025,6 @@ export class SkillExecutor {
   }
 
   /**
-   * Execute a step-based skill (composite/deep/iterator/diagnostic, and legacy atomic skills without root-level `sql`).
-   * Mutates `context.results` / `context.variables` and appends into `displayResults` / `diagnostics` / `synthesizeData`.
-   */
-  private hasMeaningfulData(value: any): boolean {
-    if (Array.isArray(value)) return value.length > 0;
-    if (value === null || value === undefined) return false;
-    if (typeof value === 'string') return value.trim().length > 0;
-    if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') return true;
-    if (typeof value === 'object') {
-      if (Array.isArray((value as any).rows)) return (value as any).rows.length > 0;
-      if (Array.isArray((value as any).diagnostics)) return (value as any).diagnostics.length > 0;
-      return Object.keys(value).length > 0;
-    }
-    return false;
-  }
-
-  private extractSaveAsValue(stepResult: StepResult): any {
-    return this.extractSelectedStepResult(stepResult).data;
-  }
-
-  /**
    * Bind a successful step's `save_as` variable and its scope provenance.
    * A Skill reference with `save_from` binds exactly that child step. When that
    * step did not observe a result (failed, skipped, optional query error), the
@@ -2068,7 +2036,7 @@ export class SkillExecutor {
     if (!('save_as' in step) || !step.save_as) return;
     const selected = 'save_from' in step && step.save_from && stepResult.stepType === 'skill'
       ? this.namedChildStepResult(stepResult, step.save_from)
-      : this.extractSelectedStepResult(stepResult);
+      : selectedStepResult(stepResult);
     if (!selected) {
       context.variables[step.save_as] = null;
       if (context.variableScopes) delete context.variableScopes[step.save_as];
@@ -2098,70 +2066,10 @@ export class SkillExecutor {
       : undefined;
   }
 
-  private extractSelectedStepResult(stepResult: StepResult): StepResult {
-    // Most steps already store direct row arrays/objects in stepResult.data.
-    if (stepResult.stepType !== 'skill') {
-      return stepResult;
-    }
-
-    const nested = stepResult.data as any;
-    if (!nested || typeof nested !== 'object') {
-      return stepResult;
-    }
-
-    // Future-proof: if nested result already exposes .data directly, use it.
-    if (Object.prototype.hasOwnProperty.call(nested, 'data')) {
-      return { ...stepResult, data: nested.data, ...scopeMetadata(resultScopeProvenance(nested)) };
-    }
-
-    // SkillExecutionResult currently exposes payloads via rawResults.
-    // Step-based child skills often begin with DDL/setup steps that correctly
-    // return [] (for example DROP/CREATE VIEW). Prefer the first meaningful
-    // payload so a parent `skill:` step exposes the actual read step instead
-    // of a setup step's empty result.
-    const rawResults = nested.rawResults;
-    if (rawResults && typeof rawResults === 'object') {
-      if ((rawResults as any).root?.data !== undefined) {
-        return (rawResults as any).root;
-      }
-      const dataSteps = Object.values(rawResults as Record<string, any>)
-        .filter((step) => step && typeof step === 'object' && Object.prototype.hasOwnProperty.call(step, 'data'));
-      const displayStepIds = Array.isArray(nested.displayResults)
-        ? nested.displayResults
-          .map((displayResult: any) => displayResult?.stepId)
-          .filter((stepId: any): stepId is string =>
-            typeof stepId === 'string' &&
-            stepId.length > 0 &&
-            stepId !== '__synthesize_summary__')
-        : [];
-      for (const stepId of displayStepIds) {
-        const displayedStep = (rawResults as Record<string, any>)[stepId];
-        if (
-          displayedStep &&
-          typeof displayedStep === 'object' &&
-          Object.prototype.hasOwnProperty.call(displayedStep, 'data') &&
-          this.hasMeaningfulData(displayedStep.data)
-        ) {
-          return displayedStep;
-        }
-      }
-      const meaningfulStep = dataSteps.find((step) => this.hasMeaningfulData((step as any).data));
-      if (meaningfulStep) {
-        return meaningfulStep as StepResult;
-      }
-      if (dataSteps.length > 0) {
-        return dataSteps[dataSteps.length - 1] as StepResult;
-      }
-      for (const step of Object.values(rawResults as Record<string, any>)) {
-        if (step && typeof step === 'object' && Object.prototype.hasOwnProperty.call(step, 'data')) {
-          return step as StepResult;
-        }
-      }
-    }
-
-    return stepResult;
-  }
-
+  /**
+   * Execute a step-based skill (composite/deep/iterator/diagnostic, and legacy atomic skills without root-level `sql`).
+   * Mutates `context.results` / `context.variables` and appends into `displayResults` / `diagnostics` / `synthesizeData`.
+   */
   private async executeStepBasedSkill(
     skill: SkillDefinition,
     skillId: string,
@@ -2805,7 +2713,7 @@ export class SkillExecutor {
         const step = skill.steps[i];
         const stepResult = await this.executeStep(step, execContext, skill.name);
         const layerStepResult = stepResult.stepType === 'skill'
-          ? { ...stepResult, ...this.extractSelectedStepResult(stepResult), stepId: step.id, stepType: stepResult.stepType }
+          ? { ...stepResult, ...selectedStepResult(stepResult), stepId: step.id, stepType: stepResult.stepType }
           : stepResult;
 
         // Save result to context
@@ -4242,9 +4150,8 @@ export class SkillExecutor {
     }
 
     // Skill 引用步骤返回的是嵌套 SkillExecutionResult，展示时需要先解包到真实数据。
-    const data = stepResult.stepType === 'skill'
-      ? this.extractSaveAsValue(stepResult)
-      : stepResult.data;
+    const selected = selectedStepResult(stepResult);
+    const data = selected.data;
 
     // Extract column definitions from config (runtime data may be ColumnDefinition[] even though type says string[])
     // This happens because skill YAML is loaded dynamically and contains full column definitions
@@ -4310,11 +4217,11 @@ export class SkillExecutor {
       layer: config.layer,         // 分层展示层级
       format: config.format || 'table',
       data: displayData,
-      ...scopeMetadata(resultScopeProvenance(this.extractSelectedStepResult(stepResult))),
+      ...scopeMetadata(resultScopeProvenance(selected)),
       ...executionState,
       highlight: config.highlight,
       // A skipped step never ran its query; showing the authored SQL would imply it did.
-      sql: skipped ? undefined : this.extractSelectedStepResult(stepResult).sql || sql,
+      sql: skipped ? undefined : selected.sql || sql,
       expandable: config.expandable,           // 是否支持展开查看详细分析
       metadataFields: config.metadataFields,   // 提取到元数据的字段
       hidden_columns: config.hidden_columns,   // 隐藏的列
@@ -4322,7 +4229,6 @@ export class SkillExecutor {
       collapsible: config.collapsible,         // 是否可折叠
       defaultCollapsed: config.defaultCollapsed, // 是否默认折叠
     };
-    const selected = this.extractSelectedStepResult(stepResult);
     const witness = evidenceTableFor(selected);
     const table = witness && capturedEvidenceTable(witness);
     const directMapping = Array.isArray(data) && selected.data === data && table &&
@@ -4797,7 +4703,7 @@ export class SkillExecutor {
 
     return {
       ...scopeMetadata(mergeScopeProvenance(synthesizeData.filter(item => item.success).map(resultScopeProvenance))),
-      stepId: '__synthesize_summary__',
+      stepId: SYNTHESIZE_SUMMARY_STEP_ID,
       title: '洞见摘要',
       level: 'key',
       layer: 'overview',

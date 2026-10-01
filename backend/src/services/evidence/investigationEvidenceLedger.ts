@@ -244,10 +244,13 @@ export interface CompactInvestigationEvidenceSnapshot {
   readonly complete: boolean;
 }
 
-/** Bounded provider projection. Cohorts are kept whole and never selected by success or value. */
-function compactInvestigationEvidenceWithin(snapshot: InvestigationEvidenceSnapshot,
-  maxBytes: number, ceilingBytes: number): CompactInvestigationEvidenceSnapshot | undefined {
-  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > ceilingBytes) return undefined;
+/**
+ * The cohorts of a provider projection in ledger order, each with the bytes its
+ * records serialize to, and the exact size of a view keeping some of them.
+ * A view serializes as its record-free envelope with the records spliced into
+ * `"records":[]`, so each record is serialized once rather than once per cohort.
+ */
+function compactCohorts(snapshot: InvestigationEvidenceSnapshot) {
   const groups = new Map<string, CompactInvestigationEvidenceRecord[]>();
   for (const record of snapshot.records) {
     const {recordId, captureId, domain, metricId, status, origin, originRunId, traceId, traceSide,
@@ -258,23 +261,36 @@ function compactInvestigationEvidenceWithin(snapshot: InvestigationEvidenceSnaps
       window, upid, utid, cpu, ucpu, machineId, windowId, role, aggregation, value, unit, coverage, denominator});
     groups.set(key, group);
   }
-  const envelope = (records: CompactInvestigationEvidenceRecord[]): CompactInvestigationEvidenceSnapshot => {
-    const omittedRecordCount = snapshot.records.length - records.length;
-    return {schemaVersion: 'compact_investigation_evidence@1', fingerprint: snapshot.fingerprint, byteBudget: maxBytes,
+  const cohorts = [...groups.values()].map(records => ({records,
+    bytes: records.reduce((sum, record) => sum + Buffer.byteLength(JSON.stringify(record), 'utf8'), 0)}));
+  const envelope = (records: CompactInvestigationEvidenceRecord[], byteBudget: number,
+    kept = records.length): CompactInvestigationEvidenceSnapshot => {
+    const omittedRecordCount = snapshot.records.length - kept;
+    return {schemaVersion: 'compact_investigation_evidence@1', fingerprint: snapshot.fingerprint, byteBudget,
       records, omittedRecordCount, issues: [...new Set([...snapshot.issues,
         ...(omittedRecordCount ? ['investigation_provider_view_omitted_records'] : [])])].sort(),
       ...(snapshot.incompleteCaptureIds ? {incompleteCaptureIds: [...snapshot.incompleteCaptureIds]} : {}),
       complete: snapshot.complete && omittedRecordCount === 0};
   };
-  const fits = (view: CompactInvestigationEvidenceSnapshot) => Buffer.byteLength(JSON.stringify(view), 'utf8') <= maxBytes;
-  let view = envelope([]);
-  if (!fits(view)) return undefined;
-  for (const group of groups.values()) {
-    const candidate = envelope([...view.records, ...group]);
-    if (!fits(candidate)) break;
-    view = candidate;
+  const viewBytes = (kept: number, recordBytes: number, byteBudget: number) =>
+    Buffer.byteLength(JSON.stringify(envelope([], byteBudget, kept)), 'utf8') + recordBytes + Math.max(0, kept - 1);
+  return {cohorts, envelope, viewBytes};
+}
+
+/** Bounded provider projection. Cohorts are kept whole and never selected by success or value. */
+function compactInvestigationEvidenceWithin(snapshot: InvestigationEvidenceSnapshot,
+  maxBytes: number, ceilingBytes: number): CompactInvestigationEvidenceSnapshot | undefined {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > ceilingBytes) return undefined;
+  const {cohorts, envelope, viewBytes} = compactCohorts(snapshot);
+  if (viewBytes(0, 0, maxBytes) > maxBytes) return undefined;
+  const records: CompactInvestigationEvidenceRecord[] = [];
+  let recordBytes = 0;
+  for (const cohort of cohorts) {
+    if (viewBytes(records.length + cohort.records.length, recordBytes + cohort.bytes, maxBytes) > maxBytes) break;
+    records.push(...cohort.records);
+    recordBytes += cohort.bytes;
   }
-  return freezeEvidenceValue(view);
+  return freezeEvidenceValue(envelope(records, maxBytes));
 }
 
 /** Preserve the existing general provider-view contract and its 64 KiB ceiling. */
@@ -287,6 +303,35 @@ export function compactInvestigationEvidence(snapshot: InvestigationEvidenceSnap
 export function compactInvestigationEvidenceForSemantic(snapshot: InvestigationEvidenceSnapshot,
   maxBytes: number): CompactInvestigationEvidenceSnapshot | undefined {
   return compactInvestigationEvidenceWithin(snapshot, maxBytes, FINAL_SEMANTIC_INPUT_BYTE_LIMIT);
+}
+
+/**
+ * The only budgets at which the semantic projection changes: entry k is the
+ * least budget whose view keeps the first k cohorts, up to the shared ceiling.
+ * Sizing the final prompt over these instead of over every byte count visits
+ * each distinct ledger view at most once.
+ */
+export function investigationEvidenceSemanticBudgets(snapshot: InvestigationEvidenceSnapshot): number[] {
+  const {cohorts, viewBytes} = compactCohorts(snapshot);
+  const budgets: number[] = [];
+  // The view states its own budget, so take the least budget at least as large as
+  // the view naming it, and never below an earlier entry: a view that drops its
+  // omission issue shrinks, yet the greedy selection must still admit every prefix.
+  const admit = (kept: number, recordBytes: number): boolean => {
+    let budget = Math.max(viewBytes(kept, recordBytes, 0), budgets[budgets.length - 1] ?? 0);
+    while (viewBytes(kept, recordBytes, budget) > budget) budget++;
+    if (budget > FINAL_SEMANTIC_INPUT_BYTE_LIMIT) return false;
+    budgets.push(budget);
+    return true;
+  };
+  if (!admit(0, 0)) return budgets;
+  let kept = 0, recordBytes = 0;
+  for (const cohort of cohorts) {
+    kept += cohort.records.length;
+    recordBytes += cohort.bytes;
+    if (!admit(kept, recordBytes)) break;
+  }
+  return budgets;
 }
 
 /** Independent from metric presence/identity: an empty successful sibling is meaningful for a scan. */

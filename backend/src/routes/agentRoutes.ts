@@ -58,6 +58,7 @@ import {
   requireRequestContext,
   type RequestContext,
 } from '../middleware/auth';
+import { createRequestId, requestIdOf } from '../middleware/requestId';
 import {
   isOwnedByContext,
   ownersMatch,
@@ -269,38 +270,6 @@ const PRIVATE_ANALYSIS_EVENT_PROJECTION_VERSION = 1;
 
 const router = express.Router();
 
-interface AgentRequestWithObservability extends express.Request {
-  assistantRequestId?: string;
-}
-
-const REQUEST_ID_HEADER = 'x-request-id';
-const MAX_REQUEST_ID_LENGTH = 128;
-
-function sanitizeRequestId(raw: unknown): string {
-  const text = String(raw || '').trim();
-  if (!text) return '';
-  const normalized = text.replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, MAX_REQUEST_ID_LENGTH);
-  return normalized;
-}
-
-function generateRequestId(): string {
-  return `req-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function resolveRequestIdFromRequest(req: express.Request): string {
-  const headerId = req.header(REQUEST_ID_HEADER) || req.header('x-correlation-id') || req.header('x-amzn-trace-id');
-  const bodyId =
-    req.body && typeof req.body === 'object' && !Array.isArray(req.body)
-      ? (req.body as Record<string, unknown>).requestId
-      : undefined;
-
-  return sanitizeRequestId(headerId) || sanitizeRequestId(bodyId) || generateRequestId();
-}
-
-function getRequestId(req: express.Request): string {
-  return (req as AgentRequestWithObservability).assistantRequestId || resolveRequestIdFromRequest(req);
-}
-
 function normalizeRunSequence(value: unknown): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.floor(Number(value)));
@@ -463,7 +432,7 @@ function startSessionRun(
 
   const run: AnalyzeSessionRunContext = {
     runId: buildRunId(session.sessionId, nextSequence),
-    requestId: sanitizeRequestId(requestId) || generateRequestId(),
+    requestId,
     sequence: nextSequence,
     query,
     startedAt: Date.now(),
@@ -1221,14 +1190,6 @@ function sendCancelSessionRunResult(res: express.Response, result: CancelSession
   const response = projectCancelSessionRunResult(result);
   return res.status(response.status).json(response.body);
 }
-
-// Attach/echo requestId for all agent endpoints.
-router.use((req, res, next) => {
-  const requestId = resolveRequestIdFromRequest(req);
-  (req as AgentRequestWithObservability).assistantRequestId = requestId;
-  res.setHeader(REQUEST_ID_HEADER, requestId);
-  next();
-});
 
 // Apply API-key auth and RequestContext to all Agent endpoints (dev fallback still applies when key is not configured).
 router.use(authenticate);
@@ -2599,7 +2560,7 @@ async function handleAnalyzeRequest(
   res: express.Response,
   requestedSessionIdOverride?: string,
 ): Promise<void> {
-  const response = await dispatchAnalysisRun({entry: 'analysis', requestId: getRequestId(req),
+  const response = await dispatchAnalysisRun({entry: 'analysis', requestId: requestIdOf(req),
     context: requireRequestContext(req), body: req.body ?? {}, requestedSessionIdOverride},
     analysisRunDispatchDependencies());
   res.status(response.status).json(response.body);
@@ -3686,7 +3647,6 @@ registerSceneReconstructRoutes(router, {
     return stored ? projectStoredHttpResult(session, stored) : undefined;
   },
   projectSceneError: projectStoredHttpError,
-  getRequestId,
   dispatchSceneAnalysis: input => dispatchAnalysisRun({...input, entry: 'scene_reconstruction'}, analysisRunDispatchDependencies()),
   cancelSceneRun: async (sessionId, runId) => {
     const result = await cancelSessionRun(sessionId, runId, 'Scene reconstruction cancelled by user');
@@ -4972,7 +4932,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     initializeCancelStateForRun(session, session.activeRun!);
     session.runSequence = Math.max(normalizeRunSequence(session.runSequence), normalizeRunSequence(inputRun.sequence));
   } else if (!session.activeRun) {
-    const fallback = startSessionRun(session, query, generateRequestId());
+    const fallback = startSessionRun(session, query, createRequestId());
     if (!fallback) return;
     setCurrentSessionRun(session, {
       ...fallback,

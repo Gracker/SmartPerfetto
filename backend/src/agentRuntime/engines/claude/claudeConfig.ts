@@ -420,7 +420,7 @@ export function isClaudeQuotaError(message: string): boolean {
 }
 
 export interface CredentialSourceHint {
-  source: 'provider-manager' | 'env-or-default';
+  source: 'provider-manager' | 'env-or-default' | 'provider-store-unreadable';
   providerName?: string;
   providerType?: string;
   providerRuntime?: string;
@@ -433,13 +433,20 @@ export function getCredentialSourceHint(
   providerScope?: ProviderScope,
 ): CredentialSourceHint {
   const envCredentialSources = collectEnvCredentialSources(process.env, 'env');
-  const { getProviderService } = require('../../../services/providerManager');
+  const { getProviderService, ProviderStoreUnreadableError } = require('../../../services/providerManager');
   const svc = getProviderService();
-  const provider = typeof providerId === 'string'
-    ? svc.getRawProvider(providerId, providerScope)
-    : providerId === null
-      ? undefined
-      : svc.getRawEffectiveProvider(providerScope);
+  let provider;
+  try {
+    provider = typeof providerId === 'string'
+      ? svc.getRawProvider(providerId, providerScope)
+      : providerId === null
+        ? undefined
+        : svc.getRawEffectiveProvider(providerScope);
+  } catch (error) {
+    // This explains another failure, so it must not throw in its place.
+    if (!(error instanceof ProviderStoreUnreadableError)) throw error;
+    return { source: 'provider-store-unreadable', envCredentialSources, providerOverridesEnv: false };
+  }
 
   if (provider) {
     return {
@@ -461,6 +468,13 @@ export function getCredentialSourceHint(
 
 function credentialSourceHintText(hint: CredentialSourceHint | undefined, lang: OutputLanguage): string {
   if (!hint) return '';
+  if (hint.source === 'provider-store-unreadable') {
+    return '\n\n' + localize(
+      lang,
+      '当前凭证来源未知：providers.json 无法读取，无法确定 active provider。请修复或移走该文件后重试。',
+      'Current credential source is unknown: providers.json could not be read, so the active provider cannot be determined. Repair or move the file, then retry.',
+    );
+  }
   if (hint.source === 'provider-manager') {
     const providerLabel = `${hint.providerName || 'unnamed'}${hint.providerType ? ` (${hint.providerType})` : ''}`;
     const overrideText = hint.providerOverridesEnv
