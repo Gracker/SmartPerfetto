@@ -944,6 +944,8 @@ steps:
     optional: true
 
   # ===== P0: 大小核迁移分析 (引用 atomic skill) =====
+  # The child begins with a cpu_topology_view reference; frame_diagnosis reads
+  # the migration rows, never that setup step's result.
   - id: task_migration
     skill: task_migration_in_range
     params:
@@ -951,6 +953,7 @@ steps:
       end_ts: "${end_ts}"
       package: "${package}"
     save_as: migration_data
+    save_from: migration_analysis
     optional: true
 
   # ===== P0: GPU 渲染操作分析 (引用 atomic skill) =====
@@ -988,12 +991,14 @@ steps:
     optional: true
 
   # ===== P0: CPU 簇负载分析 (引用 atomic skill) =====
+  # As task_migration: bind the cluster rows, not the topology setup step.
   - id: cpu_cluster_load
     skill: cpu_cluster_load_in_range
     params:
       start_ts: "${start_ts}"
       end_ts: "${end_ts}"
     save_as: cluster_load_data
+    save_from: cluster_load
     optional: true
 
   # ===== P0: 内存页面错误分析 (引用 atomic skill) =====
