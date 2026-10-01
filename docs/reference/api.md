@@ -37,6 +37,24 @@ ID（见下文），与响应头 `X-Request-Id` 相同。完整的异常消息�
 同一个 ID 用于鉴权请求上下文、Agent 接口返回的 `requestId`、分析 run 的观测信息、
 Trace Processor 代理的 WebSocket 升级和服务端日志。请求体里的 `requestId` 字段不参与解析。
 
+## 路由级失败
+
+接口自己捕获的下游失败（存储、文件系统、trace processor、密钥库、导出等）统一返回：
+
+```json
+{"success": false, "code": "report_read_failed", "error": "Failed to get report", "requestId": "req-…"}
+```
+
+`code` 稳定，标识失败的操作（如 `session_list_failed`、`provider_operation_failed`、
+`trace_processor_proxy_failed`），调用方应按 `code` 判断而不是 `error` 文本。`error` 是固定文案，
+不包含异常消息；`requestId` 与 `X-Request-Id` 的取值规则同上。异常消息和调用栈只写入该路由的
+服务端日志行，用 `requestId` 关联。
+
+SmartPerfetto 自己为调用方编写的校验错误保留可操作的文案，通常附带 `code`，例如 Provider
+Manager 输入（`provider_invalid_request` 400、`provider_not_found` 404）、trace 列表分页
+（`INVALID_TRACE_LIST_PAGE`）、Agent 日志级别（`invalid_log_level`）、Agent 分析参数、RAG 检索
+参数、目录选择器和企业工作区管理。
+
 ## OIDC 鉴权
 
 | 方法 | 路径 | 说明 |

@@ -16,6 +16,7 @@
 
 import express from 'express';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
+import { sendRouteFailure } from '../middleware/routeFailure';
 
 const router = express.Router();
 
@@ -74,8 +75,12 @@ router.get('/', async (req, res) => {
     });
 
     res.json({ success: true, ...result });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'An unknown error occurred' });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'session_list_failed',
+      error: 'Failed to list sessions',
+      logLabel: '[SessionRoutes] List sessions error',
+    }, error);
   }
 });
 
@@ -98,8 +103,12 @@ router.get('/export', async (req, res) => {
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Content-Disposition', `attachment; filename="sessions-${Date.now()}.json"`);
     res.send(jsonData);
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'An unknown error occurred' });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'session_export_failed',
+      error: 'Failed to export sessions',
+      logLabel: '[SessionRoutes] Export sessions error',
+    }, error);
   }
 });
 
@@ -124,8 +133,12 @@ router.get('/:id', async (req, res) => {
     }
 
     res.json({ success: true, session });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'An unknown error occurred' });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'session_read_failed',
+      error: 'Failed to read session',
+      logLabel: '[SessionRoutes] Read session error',
+    }, error);
   }
 });
 
@@ -146,8 +159,12 @@ router.delete('/:id', async (req, res) => {
 
     const deleted = getSessionPersistenceService().deleteSession(id);
     res.json({ success: true, deleted });
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'An unknown error occurred' });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'session_delete_failed',
+      error: 'Failed to delete session',
+      logLabel: '[SessionRoutes] Delete session error',
+    }, error);
   }
 });
 

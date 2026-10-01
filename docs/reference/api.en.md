@@ -48,6 +48,29 @@ analysis run's observability id, the Trace Processor proxy's WebSocket upgrade
 id, and the id in server logs. A `requestId` field in the request body is not
 read.
 
+## Route-Level Failures
+
+When an endpoint catches a downstream failure itself (storage, filesystem,
+trace processor, secret store, export), it answers with the same shape:
+
+```json
+{"success": false, "code": "report_read_failed", "error": "Failed to get report", "requestId": "req-…"}
+```
+
+`code` is stable and names the failed operation (`session_list_failed`,
+`provider_operation_failed`, `trace_processor_proxy_failed`, …); branch on it,
+not on `error`. `error` is fixed text that never contains the exception
+message, and `requestId` / `X-Request-Id` follow the rules above. The message
+and stack go only to the server log line of that route, correlated by
+`requestId`.
+
+Validation errors written by SmartPerfetto for the caller keep their
+actionable text, usually with a `code`: for example Provider Manager input
+(`provider_invalid_request` 400, `provider_not_found` 404), trace list paging
+(`INVALID_TRACE_LIST_PAGE`), agent log level (`invalid_log_level`), Agent
+analyze options, RAG search input, the directory picker, and enterprise
+workspace administration.
+
 ## OIDC Authentication
 
 | Method | Path | Purpose |

@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import express from 'express';
 import { featureFlagsConfig } from '../config';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 import { getSessionLoggerManager } from '../services/sessionLogger';
 import { getLogLevel, setLogLevel, type LogLevel } from '../utils/logger';
@@ -41,11 +42,12 @@ export function registerAgentLogsRoutes(router: express.Router): void {
         sessions,
         count: sessions.length,
       });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'agent_logs_list_failed',
+        error: 'Failed to list agent logs',
+        logLabel: '[AgentLogs] List logs error',
+      }, error);
     }
   });
 
@@ -68,11 +70,12 @@ export function registerAgentLogsRoutes(router: express.Router): void {
         logs,
         count: logs.length,
       });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'agent_logs_read_failed',
+        error: 'Failed to read agent logs',
+        logLabel: '[AgentLogs] Read logs error',
+      }, error);
     }
   });
 
@@ -92,11 +95,12 @@ export function registerAgentLogsRoutes(router: express.Router): void {
         errorCount: logs.filter((l) => l.level === 'error').length,
         warnCount: logs.filter((l) => l.level === 'warn').length,
       });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'agent_logs_read_failed',
+        error: 'Failed to read agent logs',
+        logLabel: '[AgentLogs] Read error logs error',
+      }, error);
     }
   });
 
@@ -120,10 +124,12 @@ export function registerAgentLogsRoutes(router: express.Router): void {
           ? 'Reverted to env var default'
           : `Log level set to '${level}'`,
       });
-    } catch (error: any) {
+    } catch (error: unknown) {
+      // setLogLevel's own validation text names the valid levels.
       res.status(400).json({
         success: false,
-        error: error.message,
+        code: 'invalid_log_level',
+        error: error instanceof Error ? error.message : 'Invalid log level',
       });
     }
   });
@@ -226,11 +232,12 @@ export function registerAgentLogsRoutes(router: express.Router): void {
           byTool: byToolSummary,
         },
       });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'agent_metrics_summary_failed',
+        error: 'Failed to summarize agent metrics',
+        logLabel: '[AgentLogs] Metrics summary error',
+      }, error);
     }
   });
 
@@ -247,11 +254,12 @@ export function registerAgentLogsRoutes(router: express.Router): void {
         deletedCount,
         message: `Deleted ${deletedCount} log files older than ${maxAgeDays} days`,
       });
-    } catch (error: any) {
-      res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'agent_logs_cleanup_failed',
+        error: 'Failed to clean up agent logs',
+        logLabel: '[AgentLogs] Cleanup error',
+      }, error);
     }
   });
 }

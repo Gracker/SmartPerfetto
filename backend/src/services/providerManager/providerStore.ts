@@ -17,6 +17,7 @@ import type { ProviderConfig, ProviderConnection, ProviderScope } from './types'
 import { LocalEncryptedSecretStore } from './localSecretStore';
 import { atomicWriteFileSync } from '../../utils/atomicFileWriter';
 import { isPlainJsonObject } from '../../utils/isPlainJsonObject';
+import { providerNotFound } from './providerRequestError';
 import {
   localProviderMutationScope,
   ProviderMutationGenerationStore,
@@ -587,7 +588,7 @@ export class ProviderStore {
         const resolved = resolveProviderScope(scope);
         const existing = this.getEnterpriseRowById(id);
         if (existing && !this.getWritableEnterpriseRowById(id, resolved)) {
-          throw new Error(`Provider not found: ${id}`);
+          throw providerNotFound(id);
         }
       }
       return localProviderMutationScope();
@@ -596,7 +597,7 @@ export class ProviderStore {
     const row = oidcWriteIsolation
       ? this.getWritableEnterpriseRowById(id, resolved)
       : this.getAccessibleEnterpriseRowById(id, resolved);
-    if (!row) throw new Error(`Provider not found: ${id}`);
+    if (!row) throw providerNotFound(id);
     return {
       level: row.scope,
       tenantId: row.tenant_id,
@@ -662,7 +663,7 @@ export class ProviderStore {
       ? this.getWritableEnterpriseRowById(provider.id, resolved)
       : this.getAccessibleEnterpriseRowById(provider.id, resolved);
     if (oidcWriteIsolation && !existing && this.getEnterpriseRowById(provider.id)) {
-      throw new Error(`Provider not found: ${provider.id}`);
+      throw providerNotFound(provider.id);
     }
     const effectiveScope = existing?.scope ?? (resolved.userId ? 'personal' : 'workspace');
     const workspaceId = effectiveScope === 'org' ? null : resolved.workspaceId;
@@ -733,7 +734,7 @@ export class ProviderStore {
           updatedAt: toEpochMs(provider.updatedAt),
         });
         if (result.changes !== 1) {
-          throw new Error(`Provider not found: ${provider.id}`);
+          throw providerNotFound(provider.id);
         }
       } else {
         db.prepare(`
