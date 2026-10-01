@@ -98,17 +98,21 @@ describe('enterprise feature flag', () => {
     });
   });
 
-  it('rejects trusted identity headers when the built-in OIDC flow is active', () => {
-    expect(() => resolveAuthConfig({
-      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
-      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
-      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
-      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
-      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
-      SMARTPERFETTO_SSO_TRUSTED_HEADERS: 'true',
-      FRONTEND_URL: 'https://app.example.test',
-    })).toThrow(/cannot be combined/);
-  });
+  // Every spelling request authentication honours must also stop startup.
+  it.each(['true', '1', 'yes', 'on', 'enabled', ' TRUE '])(
+    'rejects trusted identity headers (%s) when the built-in OIDC flow is active',
+    (value) => {
+      expect(() => resolveAuthConfig({
+        SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+        SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+        SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+        SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+        SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+        SMARTPERFETTO_SSO_TRUSTED_HEADERS: value,
+        FRONTEND_URL: 'https://app.example.test',
+      })).toThrow(/cannot be combined/);
+    },
+  );
 
   it('rejects the legacy static API key when the built-in OIDC flow is active', () => {
     expect(() => resolveAuthConfig({

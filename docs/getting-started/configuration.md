@@ -634,8 +634,10 @@ Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email prof
 同一个 Issuer 下，每个 OIDC Subject 只创建一个由后端管理的个人工作区。不同用户的
 工作区显示名称可以相同，但内部 User ID、Workspace ID、成员关系和所有数据范围都不同；
 OIDC 前端不会允许用户修改工作区、后端地址或 API Key。租户 ID 只由标准化 Issuer
-稳定派生，不接受用户 Claim 覆盖。内置 OIDC 不能和
-`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` 或旧的 `SMARTPERFETTO_API_KEY` 同时启用。
+稳定派生，不接受用户 Claim 覆盖。内置 OIDC 不能和启用的
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS`（`true`、`1`、`yes`、`on`、`enabled` 任一值）
+或旧的 `SMARTPERFETTO_API_KEY` 同时启用；OIDC 下 HTTP 请求和 Trace Processor
+WebSocket 都不接受可信 SSO Header 或企业 API Key。
 OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要再配置企业迁移阶段，也不允许
 回退到会忽略用户范围的 `legacy` 或 `dual-write` 模式。
 

@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import {redactUrlForDiagnostics} from '../../agentRuntime/envCredentialSources';
 import { mergeIsolatedProviderEnv } from './envIsolation';
+import { providerNotFound } from './providerRequestError';
 import type { ProviderService } from './providerService';
 import type { AgentRuntimeKind, ProviderConfig, ProviderScope, ProviderTuning } from './types';
 
@@ -474,7 +475,7 @@ export function resolveProviderRuntimeSnapshot(
   const snapshot = typeof providerId === 'string'
     ? (() => {
         const provider = providerService.getRawProvider(providerId, providerScope);
-        if (!provider) throw new Error(`Provider not found: ${providerId}`);
+        if (!provider) throw providerNotFound(providerId);
         return providerRuntimeSnapshot(providerService, provider, providerScope);
       })()
     : envRuntimeSnapshot(runtimeOverride);

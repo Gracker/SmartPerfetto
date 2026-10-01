@@ -5,6 +5,7 @@
 import { Router, type Response } from 'express';
 
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import {
   createEnterpriseWorkspace,
@@ -99,8 +100,11 @@ function sendControlPlaneError(res: Response, error: unknown): void {
     res.status(error.status).json({ success: false, error: error.message });
     return;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  res.status(500).json({ success: false, error: message || 'Enterprise admin control plane failed' });
+  sendRouteFailure(res, {
+    code: 'enterprise_admin_failed',
+    error: 'Enterprise admin control plane failed',
+    logLabel: '[EnterpriseTenantRoutes] Control plane error',
+  }, error);
 }
 
 function requireTenantConfirmation(body: unknown, tenantId: string): string | null {
@@ -243,11 +247,12 @@ router.post('/tombstone', (req, res) => {
       success: true,
       tombstone,
     });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to tombstone tenant',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'tenant_tombstone_failed',
+      error: 'Failed to tombstone tenant',
+      logLabel: '[EnterpriseTenantRoutes] Tombstone error',
+    }, error);
   } finally {
     db.close();
   }

@@ -21,6 +21,12 @@ import {
   STANDARD_COMPARISON_METRICS,
 } from '../types/multiTraceComparison';
 import { isSignificantComparisonDelta } from './comparisonSignificance';
+import {
+  classifyContractedMetric,
+  isWithheldMetric,
+  producerContractFor,
+  type ComparisonMetricProducerContract,
+} from './comparisonMetricProducerContract';
 
 export interface BuildComparisonMatrixOptions {
   baselineSnapshotId?: string;
@@ -146,12 +152,12 @@ function buildDelta(
   baselineMetric: NormalizedMetricValue | undefined,
   candidateMetric: NormalizedMetricValue | undefined,
   direction: NormalizedMetricDirection,
-  definitionsDiffer: boolean,
+  refused: boolean,
 ): ComparisonDelta {
   const baselineValue = metricNumericValue(baselineMetric);
   const candidateValue = metricNumericValue(candidateMetric);
   const deltaValue =
-    baselineValue === undefined || candidateValue === undefined || definitionsDiffer
+    baselineValue === undefined || candidateValue === undefined || refused
       ? null
       : candidateValue - baselineValue;
   const deltaPct =
@@ -209,6 +215,34 @@ function buildMatrixGroups(rows: ComparisonMatrixRow[]): ComparisonMatrixGroup[]
   }));
 }
 
+/**
+ * Why two present values must not be subtracted, or undefined when they may.
+ * A metric with a producer contract compares only values an admitted producer
+ * declared under the current definition; any other history is named by its
+ * provenance. Other metrics compare under equal declarations.
+ */
+function deltaRefusal(
+  metricKey: ComparisonMetricKey,
+  contract: ComparisonMetricProducerContract | undefined,
+  baselineSnapshotId: string,
+  baselineMetric: NormalizedMetricValue,
+  snapshotId: string,
+  metric: NormalizedMetricValue,
+): string | undefined {
+  if (contract) {
+    const baselineClass = classifyContractedMetric(contract, baselineMetric.source);
+    const candidateClass = classifyContractedMetric(contract, metric.source);
+    if (baselineClass === 'current' && candidateClass === 'current') return undefined;
+    return `Metric ${metricKey} is comparable only under ${contract.definition} from its admitted producers; ` +
+      `${baselineSnapshotId} is ${baselineClass} and ${snapshotId} is ${candidateClass}; delta not computed`;
+  }
+  const baselineDefinition = baselineMetric.source?.metricDefinition ?? 'undeclared';
+  const candidateDefinition = metric.source?.metricDefinition ?? 'undeclared';
+  if (baselineDefinition === candidateDefinition) return undefined;
+  return `Metric ${metricKey} uses different definitions in ${baselineSnapshotId} ` +
+    `(${baselineDefinition}) and ${snapshotId} (${candidateDefinition}); delta not computed`;
+}
+
 export function buildComparisonMatrix(
   snapshots: AnalysisResultSnapshot[],
   options: BuildComparisonMatrixOptions = {},
@@ -231,13 +265,16 @@ export function buildComparisonMatrix(
 
   for (const metricKey of metricKeys) {
     const metricsBySnapshot = new Map<string, NormalizedMetricValue | undefined>();
+    // A value its producer contract withheld is missing, with the contract's reason.
+    const withheldReasons = new Map<string, string>();
     for (const snapshot of snapshots) {
-      metricsBySnapshot.set(
-        snapshot.id,
-        snapshot.metrics.find(metric => metric.key === metricKey),
-      );
+      const metric = snapshot.metrics.find(item => item.key === metricKey);
+      const withheld = metric && isWithheldMetric(metric);
+      if (withheld) withheldReasons.set(snapshot.id, metric.missingReason!);
+      metricsBySnapshot.set(snapshot.id, withheld ? undefined : metric);
     }
     const definition = resolveMetricDefinition(metricKey, metricsBySnapshot);
+    const contract = producerContractFor(metricKey);
     const baselineMetric = metricsBySnapshot.get(baselineSnapshotId);
     const cells: ComparisonMatrixCell[] = [];
     const missingSnapshotIds: string[] = [];
@@ -248,7 +285,7 @@ export function buildComparisonMatrix(
         missingSnapshotIds.push(snapshot.id);
         missingMatrix[snapshot.id] = {
           ...(missingMatrix[snapshot.id] || {}),
-          [metricKey]: missingReasonForMetric(metricKey),
+          [metricKey]: withheldReasons.get(snapshot.id) ?? missingReasonForMetric(metricKey),
         };
         continue;
       }
@@ -260,16 +297,12 @@ export function buildComparisonMatrix(
       .filter(snapshot => snapshot.id !== baselineSnapshotId)
       .map(snapshot => {
         const metric = metricsBySnapshot.get(snapshot.id);
-        // Values compare only under the definition their producers declared.
-        const baselineDefinition = baselineMetric?.source?.metricDefinition ?? 'undeclared';
-        const candidateDefinition = metric?.source?.metricDefinition ?? 'undeclared';
-        const definitionsDiffer = !!baselineMetric && !!metric && baselineDefinition !== candidateDefinition;
-        if (definitionsDiffer) {
-          warnings.push(`Metric ${metricKey} uses different definitions in ${baselineSnapshotId} ` +
-            `(${baselineDefinition}) and ${snapshot.id} (${candidateDefinition}); delta not computed`);
-        }
+        const refusal = baselineMetric && metric
+          ? deltaRefusal(metricKey, contract, baselineSnapshotId, baselineMetric, snapshot.id, metric)
+          : undefined;
+        if (refusal) warnings.push(refusal);
         return buildDelta(baselineSnapshotId, snapshot.id, metricKey, baselineMetric, metric,
-          definition.direction, definitionsDiffer);
+          definition.direction, refusal !== undefined);
       });
 
     rows.push({

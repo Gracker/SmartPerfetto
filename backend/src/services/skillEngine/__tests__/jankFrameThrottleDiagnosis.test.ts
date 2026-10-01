@@ -8,7 +8,7 @@ import yaml from 'js-yaml';
 import {describe, expect, it, jest} from '@jest/globals';
 import {createSkillExecutor} from '../skillExecutor';
 import {readSkillFragmentFile, skillFragmentKey} from '../skillFragments';
-import type {DiagnosticResult, SkillDefinition} from '../types';
+import type {DiagnosticResult, SkillDefinition, SkillExecutionResult} from '../types';
 
 /**
  * jank_frame_detail's frame_diagnosis may assert a CPU frequency limit only
@@ -83,12 +83,16 @@ const bigRange = (min: number, max: number, coreType = 'big'): Rows => [
 
 type QueryAnswer = Table | {columns: string[]; rows: unknown[][]; error: string};
 
+/** A query's rows, or 'error' to make that query fail. */
+const reply = (rows: Rows | 'error'): QueryAnswer =>
+  rows === 'error' ? {columns: [], rows: [], error: 'query failed'} : table(rows);
+
 /** Runs `steps` as one Skill against a trace processor that answers each query with `answer`. */
-async function runSteps(
+async function runSkill(
   steps: unknown[],
   answer: (sql: string) => QueryAnswer | undefined,
   setup: (executor: ReturnType<typeof createSkillExecutor>) => void = () => {},
-): Promise<DiagnosticResult[]> {
+): Promise<SkillExecutionResult> {
   const tp = {
     query: jest.fn(async (_traceId: string, sql: string) => answer(sql) ?? {columns: [], rows: []}),
     touchTrace: jest.fn(),
@@ -100,7 +104,11 @@ async function runSteps(
     name: 'jank_frame_detail_under_test', type: 'composite', version: '1',
     meta: {display_name: 'under test', description: 'under test'}, steps,
   } as SkillDefinition);
-  return (await executor.execute('jank_frame_detail_under_test', 'trace-1', {start_ts: 1, end_ts: 2})).diagnostics;
+  return executor.execute('jank_frame_detail_under_test', 'trace-1', {start_ts: 1, end_ts: 2});
+}
+
+async function runSteps(...args: Parameters<typeof runSkill>): Promise<DiagnosticResult[]> {
+  return (await runSkill(...args)).diagnostics;
 }
 
 function diagnose(scenario: Scenario): Promise<DiagnosticResult[]> {
@@ -110,10 +118,7 @@ function diagnose(scenario: Scenario): Promise<DiagnosticResult[]> {
     fresh(stepOf(PARENT, 'cpu_throttling')),
     fresh(stepOf(PARENT, 'frame_diagnosis')),
   ], sql => {
-    if (sql.includes('has_limit_track')) {
-      if (scenario.limit === 'error') return {columns: [], rows: [], error: 'limit query failed'};
-      return table(scenario.limit);
-    }
+    if (sql.includes('has_limit_track')) return reply(scenario.limit);
     if (sql.includes('freq_drop_pct')) return table(scenario.throttle ?? []);
     if (sql.includes('stub_freq_data')) return table(scenario.freq ?? []);
     if (sql.includes('stub_freq_timeline')) return table(scenario.timeline ?? []);
@@ -128,8 +133,19 @@ function diagnose(scenario: Scenario): Promise<DiagnosticResult[]> {
 
 const LIMIT_ASSERTION = '帧窗口内观测到 CPU 限频';
 const RANGE_OBSERVATION = '核组频率最高';
-const find = (diagnostics: DiagnosticResult[], marker: string) =>
-  diagnostics.filter(d => d.diagnosis.includes(marker));
+const find = (diagnostics: DiagnosticResult[], ...markers: string[]) =>
+  diagnostics.filter(d => markers.some(marker => d.diagnosis.includes(marker)));
+
+const RULES = JSON.stringify(stepOf(PARENT, 'frame_diagnosis').rules);
+/** Fields frame_diagnosis reads from a row of `name`, as `.data[0]` or `.data.find(c => c.cluster === '…')`. */
+function rowFieldsRead(name: string): string[] {
+  const row = String.raw`\??\.data(?:\??\.?\[0\]|\??\.find\(c => c\.cluster === '[^']+'\))\??\.(\w+)`;
+  return [...RULES.matchAll(new RegExp(name + row, 'g'))].map(m => m[1]);
+}
+const undeclared = (fields: string[], step: any) => {
+  const columns = new Set(step.display.columns.map((column: any) => column.name));
+  return fields.filter(field => !columns.has(field));
+};
 
 describe('jank_frame_detail frequency-limit diagnosis', () => {
   it('asserts a limit from the evidence row even when the window holds no cpufreq sample', async () => {
@@ -215,17 +231,14 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
     const binding = stepOf(PARENT, 'cpu_throttling');
     expect(binding).toMatchObject({save_as: 'freq_limit_evidence', save_from: 'limit_evidence'});
     const evidenceStep = stepOf(CHILD, binding.save_from);
-    const columns = new Set(evidenceStep.display.columns.map((column: any) => column.name));
-
-    const rules = JSON.stringify(stepOf(PARENT, 'frame_diagnosis').rules);
-    const fields = [...rules.matchAll(/freq_limit_evidence\??\.data\??\.?\[0\]\??\.(\w+)/g)].map(m => m[1]);
+    const fields = rowFieldsRead(binding.save_as);
     expect(fields.length).toBeGreaterThan(0);
-    expect(fields.filter(field => !columns.has(field))).toEqual([]);
+    expect(undeclared(fields, evidenceStep)).toEqual([]);
 
-    const statuses = [...rules.matchAll(/evidence_status [!=]== '(\w+)'/g)].map(m => m[1]);
+    const statuses = [...RULES.matchAll(/evidence_status [!=]== '(\w+)'/g)].map(m => m[1]);
     expect(statuses.filter(status => !evidenceStep.sql.includes(`'${status}'`))).toEqual([]);
     const spansFragment = fs.readFileSync(path.join(skillsDir, 'fragments/system_cpu_freq_limit_spans.sql'), 'utf8');
-    const reasons = [...rules.matchAll(/limit_evidence_missing_reason === '(\w+)'/g)].map(m => m[1]);
+    const reasons = [...RULES.matchAll(/limit_evidence_missing_reason === '(\w+)'/g)].map(m => m[1]);
     expect(reasons.length).toBeGreaterThan(0);
     expect(reasons.filter(reason => !spansFragment.includes(`'${reason}'`))).toEqual([]);
   });
@@ -263,5 +276,98 @@ describe('jank_frame_detail frame_diagnosis values', () => {
     const heavy = find(await diagnoseFrom({gc_data: gc(3.3)}), 'GC 严重影响帧渲染');
     expect(heavy.map(d => d.diagnosis)).toEqual(['GC 严重影响帧渲染：总重叠 3.3ms']);
     expect(find(await diagnoseFrom({gc_data: gc(3)}), 'GC 严重影响帧渲染')).toHaveLength(0);
+  });
+});
+
+/**
+ * task_migration_in_range and cpu_cluster_load_in_range both begin with a
+ * cpu_topology_view reference, whose rows are present on any real trace.
+ * `save_from` names the read step: the default selection binds an unobserved
+ * read step as `[]`, and a selection that let the topology result count as
+ * data would bind it in place of the rows. The real children run here, the
+ * topology reference included.
+ */
+const TOPOLOGY_CHILD = loadSkill('atomic/cpu_topology_view.skill.yaml');
+/** The jank_frame_detail steps whose child begins with that reference, and each child. */
+const TOPOLOGY_BACKED = new Map(['task_migration', 'cpu_cluster_load']
+  .map(id => [id, loadSkill(`atomic/${stepOf(PARENT, id).skill}.skill.yaml`)]));
+
+const TOPOLOGY_ROWS: Rows = [
+  {cpu_id: 0, universe_source: 'cpu', capacity: 400, core_type: 'little', topology_source: 'capacity'},
+  {cpu_id: 4, universe_source: 'cpu', capacity: 1024, core_type: 'big', topology_source: 'capacity'},
+];
+const MIGRATION_ROWS: Rows = [{thread_name: 'RenderThread', migration_count: 9, big_to_little: 5,
+  little_to_big: 4, big_core_pct: 20, unknown_core_ns: 0, unique_cpus: 6}];
+const CLUSTER_ROWS: Rows = [
+  {cluster: '大核簇', core_count: 3, load_pct: 95, max_single_core_pct: 99},
+  {cluster: '小核簇', core_count: 4, load_pct: 40, max_single_core_pct: 50},
+];
+
+async function runTopologyBacked(answers: {migration: Rows | 'error'; cluster: Rows | 'error'}) {
+  const result = await runSkill([
+    ...[...TOPOLOGY_BACKED.keys()].map(id => fresh(stepOf(PARENT, id))),
+    fresh(stepOf(PARENT, 'frame_diagnosis')),
+  ], sql => {
+    if (sql.includes('big_to_little')) return reply(answers.migration);
+    if (sql.includes('max_single_core_pct')) return reply(answers.cluster);
+    if (sql.includes('FROM _cpu_topology') && !sql.includes('CREATE')) return table(TOPOLOGY_ROWS);
+    return undefined;
+  }, executor => {
+    executor.setFragmentRegistry(FRAGMENTS);
+    executor.registerSkill(fresh(TOPOLOGY_CHILD));
+    for (const child of TOPOLOGY_BACKED.values()) executor.registerSkill(fresh(child));
+  });
+  const inputs = (result.rawResults?.frame_diagnosis?.data as {inputs: Record<string, unknown>}).inputs;
+  return {diagnostics: result.diagnostics, inputs};
+}
+
+const MIGRATION_FINDINGS = ['从大核迁移到小核', '运行占比仅'];
+const CLUSTER_FINDINGS = ['大核簇负载', '大核簇中有核心接近'];
+
+describe('jank_frame_detail topology-backed child bindings', () => {
+  it('binds the read steps rows, and the rules cite them', async () => {
+    const {diagnostics, inputs} = await runTopologyBacked({migration: MIGRATION_ROWS, cluster: CLUSTER_ROWS});
+    expect(inputs.migration_data).toEqual(MIGRATION_ROWS);
+    expect(inputs.cluster_load_data).toEqual(CLUSTER_ROWS);
+    expect(find(diagnostics, ...MIGRATION_FINDINGS).map(d => d.diagnosis)).toEqual([
+      'RenderThread 从大核迁移到小核 5次',
+      'RenderThread 大核组（超大/大/中核）运行占比仅 20%',
+    ]);
+    expect(find(diagnostics, ...CLUSTER_FINDINGS).map(d => d.diagnosis)).toEqual([
+      '大核簇负载 95%，接近跑满',
+      '大核簇中有核心接近 100% (99%)',
+    ]);
+    // Evidence is drawn only from `name.data` in a condition, which the cluster rules do not write.
+    expect(find(diagnostics, ...MIGRATION_FINDINGS).map(d => d.evidence?.migration_data?._firstRow))
+      .toEqual([MIGRATION_ROWS[0], MIGRATION_ROWS[0]]);
+  });
+
+  it('binds an empty read step as empty, never the topology reference before it', async () => {
+    const {diagnostics, inputs} = await runTopologyBacked({migration: [], cluster: []});
+    expect(inputs.migration_data).toEqual([]);
+    expect(inputs.cluster_load_data).toEqual([]);
+    expect(find(diagnostics, ...MIGRATION_FINDINGS, ...CLUSTER_FINDINGS)).toEqual([]);
+  });
+
+  it('leaves the binding without data when the read step observed nothing', async () => {
+    const {diagnostics, inputs} = await runTopologyBacked({migration: 'error', cluster: 'error'});
+    expect(inputs.migration_data).toBeNull();
+    expect(inputs.cluster_load_data).toBeNull();
+    expect(find(diagnostics, ...MIGRATION_FINDINGS, ...CLUSTER_FINDINGS)).toEqual([]);
+  });
+
+  it('reads only fields the named child step declares and cluster names its SQL emits', () => {
+    for (const [id, child] of TOPOLOGY_BACKED) {
+      const binding = stepOf(PARENT, id);
+      const readStep = stepOf(child, binding.save_from);
+      expect(readStep.type).toBe('atomic');
+      const fields = rowFieldsRead(binding.save_as);
+      expect(fields.length).toBeGreaterThan(0);
+      expect(undeclared(fields, readStep)).toEqual([]);
+    }
+    const clusterSql = stepOf(TOPOLOGY_BACKED.get('cpu_cluster_load'), 'cluster_load').sql;
+    const clusters = [...RULES.matchAll(/c\.cluster === '([^']+)'/g)].map(m => m[1]);
+    expect(clusters.length).toBeGreaterThan(0);
+    expect(clusters.filter(cluster => !clusterSql.includes(`'${cluster}'`))).toEqual([]);
   });
 });

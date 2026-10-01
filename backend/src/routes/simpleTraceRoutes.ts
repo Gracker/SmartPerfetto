@@ -12,6 +12,7 @@ import { pipeline } from 'stream/promises';
 import { uuidv4 } from '../utils/uuid';
 import { resolveFeatureConfig } from '../config';
 import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import { getPortPool } from '../services/portPool';
@@ -504,18 +505,21 @@ function ownedTraceIdForProcessorKey(processorKey: string, ownedTraceIds: Set<st
   return null;
 }
 
+/** The caller's `limit` query is invalid; its text is ours and safe to return. */
+class TraceListLimitError extends RangeError {}
+
 function traceListOptions(req: Request): {limit: number; cursor?: string} {
   const rawLimit = req.query.limit;
   const rawCursor = req.query.cursor;
   if (rawLimit !== undefined && typeof rawLimit !== 'string') {
-    throw new RangeError('Trace list limit must be a single integer');
+    throw new TraceListLimitError('Trace list limit must be a single integer');
   }
   if (rawCursor !== undefined && typeof rawCursor !== 'string') {
     throw new InvalidTraceMetadataCursorError();
   }
   const limit = rawLimit === undefined ? DEFAULT_TRACE_LIST_LIMIT : Number(rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TRACE_LIST_LIMIT) {
-    throw new RangeError(`Trace list limit must be between 1 and ${MAX_TRACE_LIST_LIMIT}`);
+    throw new TraceListLimitError(`Trace list limit must be between 1 and ${MAX_TRACE_LIST_LIMIT}`);
   }
   return {limit, ...(rawCursor ? {cursor: rawCursor} : {})};
 }
@@ -1079,18 +1083,18 @@ router.get('/', async (req, res) => {
       ...page,
       traces: page.traces.map(normalizeTraceCatalogFilename),
     });
-  } catch (error: any) {
-    if (error instanceof InvalidTraceMetadataCursorError || error instanceof RangeError) {
+  } catch (error: unknown) {
+    if (error instanceof InvalidTraceMetadataCursorError || error instanceof TraceListLimitError) {
       return res.status(400).json({
         error: error.message,
         code: 'INVALID_TRACE_LIST_PAGE',
       });
     }
-    console.error('List traces error:', error);
-    res.status(500).json({
+    sendRouteFailure(res, {
+      code: 'trace_list_failed',
       error: 'Failed to list traces',
-      details: error.message
-    });
+      logLabel: '[Traces] List traces error',
+    }, error);
   }
 });
 
@@ -1206,12 +1210,12 @@ router.get('/stats', async (req, res) => {
         },
       },
     });
-  } catch (error: any) {
-    console.error('[Traces] Stats error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'trace_stats_failed',
+      error: 'Failed to collect trace stats',
+      logLabel: '[Traces] Stats error',
+    }, error);
   }
 });
 
@@ -1263,12 +1267,12 @@ router.post('/cleanup', async (req, res) => {
       message: `Cleanup complete. Released ${staleCount} port allocations.`,
       stats: portPool.getStats(),
     });
-  } catch (error: any) {
-    console.error('[Traces] Cleanup error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'trace_cleanup_failed',
+      error: 'Failed to clean up trace resources',
+      logLabel: '[Traces] Cleanup error',
+    }, error);
   }
 });
 
@@ -1331,12 +1335,12 @@ router.post('/register-rpc', async (req, res) => {
       message: `External RPC connection registered successfully`,
     });
 
-  } catch (error: any) {
-    console.error('[Traces] Register RPC error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'trace_rpc_register_failed',
+      error: 'Failed to register external RPC connection',
+      logLabel: '[Traces] Register RPC error',
+    }, error);
   }
 });
 
