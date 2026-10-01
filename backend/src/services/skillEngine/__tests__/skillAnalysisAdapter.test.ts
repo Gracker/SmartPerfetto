@@ -197,6 +197,40 @@ describe('SkillAnalysisAdapter layered conversion', () => {
     );
   });
 
+  it('unwraps a nested skill result to the step a save_as of it would bind, not a leading setup step', () => {
+    const adapter = createAdapter();
+    const layeredResult = {
+      layers: {
+        overview: {
+          inner: {
+            stepId: 'inner',
+            stepType: 'skill',
+            success: true,
+            data: {
+              skillId: 'setup_then_rows_child',
+              success: true,
+              rawResults: {
+                setup: {stepId: 'setup', stepType: 'atomic', success: true, data: []},
+                rows: {stepId: 'rows', stepType: 'atomic', success: true, data: [{source: 'picked-row'}]},
+              },
+              displayResults: [{stepId: 'rows'}],
+            },
+            executionTimeMs: 1,
+            display: {title: 'Inner', level: 'key', format: 'table'},
+          },
+        },
+        list: {},
+        session: {},
+        deep: {},
+      },
+      defaultExpanded: ['overview'],
+      metadata: {skillName: 'wrapper_child', version: '1.0', executedAt: new Date().toISOString()},
+    } as unknown as LayeredResult;
+
+    const [first] = (adapter as any).convertLayeredResultToDisplayResults(layeredResult);
+    expect(first.data).toEqual([{source: 'picked-row'}]);
+  });
+
   it('falls back to nested displayResults payload when rawResults is absent', () => {
     const adapter = createAdapter();
 

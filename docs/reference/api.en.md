@@ -13,6 +13,41 @@ Authorization: Bearer <token>
 `SMARTPERFETTO_API_KEY` is the deployment-operator credential. Enterprise
 users should use durable API keys with explicit roles and scopes.
 
+## Unhandled Errors
+
+Error contracts that an endpoint declares itself (for example
+`{success: false, code, error}`) are unchanged. An exception no route handled,
+which reaches the global fallback, returns only fixed content under every
+`NODE_ENV`:
+
+```json
+{"success": false, "code": "unhandled_error", "error": "Internal Server Error", "requestId": "req-…"}
+```
+
+The HTTP status is the exception's own 4xx/5xx status, otherwise 500. `error`
+is that status's standard name (such as `Bad Request` or `Payload Too Large`,
+or `Request failed` for a status Node has no name for); it never contains the
+exception message or a stack trace, and a malformed JSON body is not quoted
+back. `requestId` is the request's id (see below) and equals the
+`X-Request-Id` response header. The full message and stack go
+only to the server log's `[UnhandledError]` line, correlated by `requestId`;
+the raw request body a body-parse error carries is not logged. There is no
+switch that echoes exception messages.
+
+## Request IDs
+
+Each request gets exactly one request id when it reaches the backend. Every
+response, including CORS rejections, body-parse failures, 404s and unhandled
+errors, carries it in the `X-Request-Id` header, which CORS exposes to
+browsers. The id is the first of the caller's `X-Request-Id`,
+`X-Correlation-Id` and `X-Amzn-Trace-Id` headers that is non-empty after
+sanitizing (only `A-Z a-z 0-9 . _ : -` are kept, at most 128 characters), else
+a generated `req-<epoch ms>-<random hex>`. The same id is the authenticated
+request context's id, the `requestId` that Agent endpoints return, the
+analysis run's observability id, the Trace Processor proxy's WebSocket upgrade
+id, and the id in server logs. A `requestId` field in the request body is not
+read.
+
 ## OIDC Authentication
 
 | Method | Path | Purpose |
@@ -673,7 +708,7 @@ Proposals, operations, overlays, and reconciliation results are isolated by
 | `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | Apply an accepted proposal; body requires a unique `actionId` |
 | `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | Revert an applied proposal; body requires a unique `actionId` |
 | `GET` | `/overlays` | `self_evolution:read` | Overlay registry entries for the current workspace |
-| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report |
+| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report; an issue `message` is an error code or the fixed text for its `reasonCode`, and `contentHash` names the stored report |
 
 The control plane is off by default. `SELF_EVOLUTION_ENABLED=true` is required
 for curation/gate/accept/reject/export. Apply/revert additionally require

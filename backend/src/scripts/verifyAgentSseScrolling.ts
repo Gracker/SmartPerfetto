@@ -15,6 +15,7 @@ import path from 'path';
 import {createHash, randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import agentRoutes from '../routes/agentRoutes';
+import { requestIdMiddleware } from '../middleware/requestId';
 import ragAdminRoutes from '../routes/ragAdminRoutes';
 import skillRoutes from '../routes/skillRoutes';
 import { getTraceProcessorService, type TraceInfo, type TraceProcessorService } from '../services/traceProcessorService';
@@ -1794,6 +1795,7 @@ function normalizeProviderIdArg(value: string): string | null {
 function createVerificationApp(): express.Express {
   const app = express();
 
+  app.use(requestIdMiddleware);
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));

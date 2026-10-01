@@ -16,6 +16,8 @@ import {
   type RequestContext,
   type RequestContextAuthType,
 } from '../middleware/auth';
+import { getFirstHeaderValue, getHeaderValue, parseHeaderList, sanitizeContextId } from '../middleware/requestHeaders';
+import { requestIdOf } from '../middleware/requestId';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import {
@@ -75,35 +77,6 @@ interface ProxyTarget {
   scope: EnterpriseRepositoryScope;
 }
 
-function sanitizeContextId(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-}
-
-function getHeader(req: IncomingMessage, name: string): string {
-  const value = req.headers[name.toLowerCase()];
-  if (Array.isArray(value)) return value[0] || '';
-  return typeof value === 'string' ? value : '';
-}
-
-function getFirstHeader(req: IncomingMessage, names: string[]): string {
-  for (const name of names) {
-    const value = getHeader(req, name);
-    if (value.trim()) return value;
-  }
-  return '';
-}
-
-function parseHeaderList(req: IncomingMessage, names: string[], fallback: string[]): string[] {
-  const raw = getFirstHeader(req, names);
-  if (!raw.trim()) return fallback;
-  const parsed = raw
-    .split(',')
-    .map(value => sanitizeContextId(value))
-    .filter(Boolean);
-  return parsed.length > 0 ? parsed : fallback;
-}
-
 function trustedHeadersEnabled(): boolean {
   const value = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
   return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value || '').trim().toLowerCase());
@@ -121,7 +94,7 @@ function defaultScopesForAuthType(authType: RequestContextAuthType): string[] {
 
 function resolveTrustedSsoIdentity(req: IncomingMessage): RequestIdentity | null {
   if (!trustedHeadersEnabled()) return null;
-  const userId = sanitizeContextId(getFirstHeader(req, [
+  const userId = sanitizeContextId(getFirstHeaderValue(req, [
     'x-smartperfetto-sso-user-id',
     'x-sso-user-id',
     'x-auth-request-user',
@@ -131,12 +104,12 @@ function resolveTrustedSsoIdentity(req: IncomingMessage): RequestIdentity | null
   return {
     userId,
     authType: 'sso',
-    tenantId: sanitizeContextId(getFirstHeader(req, [
+    tenantId: sanitizeContextId(getFirstHeaderValue(req, [
       'x-smartperfetto-sso-tenant-id',
       'x-sso-tenant-id',
       'x-tenant-id',
     ])) || undefined,
-    workspaceId: sanitizeContextId(getFirstHeader(req, [
+    workspaceId: sanitizeContextId(getFirstHeaderValue(req, [
       'x-smartperfetto-sso-workspace-id',
       'x-sso-workspace-id',
       'x-workspace-id',
@@ -159,30 +132,27 @@ function queryValue(req: IncomingMessage, key: string): string {
 
 function contextFromIdentity(req: IncomingMessage, identity: RequestIdentity): RequestContext {
   const authType = identity.authType;
-  const requestId =
-    sanitizeContextId(getHeader(req, 'x-request-id')) ||
-    `ws-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const windowId =
-    sanitizeContextId(getHeader(req, 'x-window-id')) ||
+    sanitizeContextId(getHeaderValue(req, 'x-window-id')) ||
     queryValue(req, 'windowId') ||
     undefined;
 
   return {
     tenantId:
       identity.tenantId ||
-      sanitizeContextId(getFirstHeader(req, ['x-tenant-id', 'x-sso-tenant-id'])) ||
+      sanitizeContextId(getFirstHeaderValue(req, ['x-tenant-id', 'x-sso-tenant-id'])) ||
       queryValue(req, 'tenantId') ||
       DEFAULT_TENANT_ID,
     workspaceId:
       identity.workspaceId ||
-      sanitizeContextId(getFirstHeader(req, ['x-workspace-id', 'x-sso-workspace-id'])) ||
+      sanitizeContextId(getFirstHeaderValue(req, ['x-workspace-id', 'x-sso-workspace-id'])) ||
       queryValue(req, 'workspaceId') ||
       DEFAULT_WORKSPACE_ID,
     userId: identity.userId,
     authType,
     roles: identity.roles ?? defaultRolesForAuthType(authType),
     scopes: identity.scopes ?? defaultScopesForAuthType(authType),
-    requestId,
+    requestId: requestIdOf(req),
     ...(windowId ? { windowId } : {}),
   };
 }
@@ -211,7 +181,7 @@ function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): Re
     req.headers['sec-websocket-protocol'],
     leaseId,
   );
-  if (capabilityContext) return capabilityContext;
+  if (capabilityContext) return {...capabilityContext, requestId: requestIdOf(req)};
 
   if (!resolveFeatureConfig().enterprise && !process.env.SMARTPERFETTO_API_KEY?.trim()) {
     return contextFromIdentity(req, {

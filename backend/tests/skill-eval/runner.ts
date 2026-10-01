@@ -13,6 +13,7 @@ import { TraceProcessorService } from '../../src/services/traceProcessorService'
 import { SkillExecutor, createSkillExecutor, LayeredResult } from '../../src/services/skillEngine/skillExecutor';
 import { SkillDefinition, StepResult, SkillExecutionResult, SkillExecutionContext } from '../../src/services/skillEngine/types';
 import { validateSkillInputs } from '../../src/services/skillEngine/skillValidator';
+import { selectedStepResult } from '../../src/services/skillEngine/referencedSkillStep';
 import { normalizeSkillDefinition } from '../../src/services/skillEngine/skillLoader';
 import { assertEffectiveProcessScope } from '../../src/services/processIdentity/effectiveProcessScope';
 import yaml from 'js-yaml';
@@ -391,9 +392,8 @@ export class SkillEvaluator {
       const stepResult = await executor.executeStep(executionStep, context, this.skill.name) as StepResult;
       if (stepResult.success) {
         context.results[step.id] = stepResult;
-        if ('save_as' in step && step.save_as) {
-          context.variables[step.save_as] = executor.extractSaveAsValue(stepResult);
-        }
+        // The production binding, so save_from and its unobserved-step rule apply here too.
+        executor.bindSaveAs(step, stepResult, context);
       }
 
       results.push({
@@ -444,33 +444,9 @@ export class SkillEvaluator {
   }
 
   private extractStepData(stepResult: StepResult): any[] {
-    // Non-skill steps generally store row arrays directly.
-    if (Array.isArray(stepResult.data)) {
-      return stepResult.data;
-    }
-
-    // For `skill` reference steps, unwrap nested SkillExecutionResult payloads.
-    if (stepResult.stepType === 'skill' && stepResult.data && typeof stepResult.data === 'object') {
-      const nested = stepResult.data as any;
-
-      if (Array.isArray(nested.data)) {
-        return nested.data;
-      }
-
-      const rawResults = nested.rawResults;
-      if (rawResults && typeof rawResults === 'object') {
-        if (Array.isArray((rawResults as any).root?.data)) {
-          return (rawResults as any).root.data;
-        }
-        for (const step of Object.values(rawResults as Record<string, any>)) {
-          if (step && typeof step === 'object' && Array.isArray((step as any).data)) {
-            return (step as any).data;
-          }
-        }
-      }
-    }
-
-    return [];
+    // A `skill` reference step exposes the child step its save_as would bind.
+    const data = selectedStepResult(stepResult).data;
+    return Array.isArray(data) ? data : [];
   }
 
   /**
