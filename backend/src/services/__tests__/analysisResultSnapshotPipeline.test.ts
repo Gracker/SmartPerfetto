@@ -521,6 +521,36 @@ describe('analysis result snapshot pipeline', () => {
     ]));
   });
 
+  test.each<[string, (env: DataEnvelope) => void]>([
+    ['meta', env => { env.meta.traceSide = 'reference'; }],
+    ['the envelope', env => { (env as any).traceSide = 'reference'; }],
+    ['trace provenance', env => { (env as any).traceProvenance = {traceSide: 'reference'}; }],
+    ['another trace id', env => { env.meta.traceId = 'trace-b'; }],
+  ])('reads no metric from an envelope of the other trace, marked by %s', (_name, mark) => {
+    const startupEnvelope = (stepId: string, rows: unknown[][]): DataEnvelope => {
+      const base = envelope();
+      return {...base, meta: {...base.meta, stepId}, data: {columns: ['total_ms', 'first_frame_ms', 'running_ms'], rows}};
+    };
+    const reference = startupEnvelope('reference_summary', [[9999, 8888, 7777]]);
+    mark(reference);
+    const snapshotOf = (dataEnvelopes: DataEnvelope[]) => buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', traceId: 'trace-a', sessionId: 'session-a',
+      runId: 'run-a', query: 'compare startup', dataEnvelopes, createdAt: 1234,
+    });
+
+    expect(snapshotOf([reference])?.metrics).toEqual([]);
+    const current = startupEnvelope('summary', [[1450.5, 620, 300]]);
+    current.meta.traceId = 'trace-a';
+    const snapshot = snapshotOf([reference, current]);
+    expect(snapshot?.metrics.map(({key, value, source}) => ({key, value, stepId: source.stepId}))).toEqual([
+      {key: 'startup.total_ms', value: 1450.5, stepId: 'summary'},
+      {key: 'startup.first_frame_ms', value: 620, stepId: 'summary'},
+      {key: 'cpu.main_thread_running_ms', value: 300, stepId: 'summary'},
+    ]);
+    // The reference envelope stays in the evidence refs for comparison provenance.
+    expect(snapshot?.evidenceRefs.map(ref => ref.metadata?.stepId)).toContain('reference_summary');
+  });
+
   test('uses stable DataEnvelope evidence refs without collapsing SQL comparison tables', () => {
     const currentSql = {
       ...envelope(),

@@ -28,6 +28,8 @@ import {BaselineStore} from '../services/baselineStore';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 import type {BaselineRecord} from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
+import {sendRouteError} from '../middleware/routeFailure';
+import {KnowledgeCurationError} from '../services/knowledgeCurationError';
 
 /** Default store lives under the backend log root next to the other
  * long-lived agent-state JSON files. */
@@ -69,10 +71,11 @@ export function createBaselineRoutes(store?: BaselineStore): ExpressRouter {
       s.addBaseline(record, scope);
       return res.status(201).json({success: true, baseline: record});
     } catch (err) {
-      return res.status(400).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return sendRouteError(res, err, {
+        code: 'baseline_save_failed',
+        error: 'Failed to save baseline',
+        logLabel: '[BaselineRoutes] Save error',
+      }, [KnowledgeCurationError]);
     }
   });
 

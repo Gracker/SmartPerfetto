@@ -27,6 +27,7 @@ import {
 } from './aospManifest';
 import {RagStore} from '../ragStore';
 import {assertCodebaseRootIdentity, resolveSourcePathPatterns} from '../rag/sourceFileSelection';
+import {PublicRequestError} from '../../utils/publicRequestError';
 
 export type CodebaseManagementErrorCode =
   | 'CODEBASE_AUDIT_FAILED'
@@ -46,15 +47,17 @@ export type CodebaseManagementErrorCode =
   | 'PENDING_GENERATION_NOT_FOUND'
   | 'PENDING_GENERATION_STALE';
 
-export class CodebaseManagementError extends Error {
+/** A codebase management failure with sanitized text: fixed for unknown causes (see toError). */
+export class CodebaseManagementError extends PublicRequestError {
+  declare readonly code: CodebaseManagementErrorCode;
+
   constructor(
-    public readonly code: CodebaseManagementErrorCode,
-    public readonly status: number,
+    code: CodebaseManagementErrorCode,
+    status: number,
     message: string,
     public readonly details?: Readonly<Record<string, string | number | boolean>>,
   ) {
-    super(message);
-    this.name = 'CodebaseManagementError';
+    super(code, message, status);
   }
 }
 

@@ -9,6 +9,7 @@ import {createAgentOrchestrator} from '../agentRuntime';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {getConversationSessionStore, type ConversationSessionDescriptor} from '../services/conversationSessionStore';
 import {
+  ConversationRequestError,
   ConversationSessionService,
   conversationRunUsesPrivateKnowledge,
   type ConversationRun,
@@ -41,7 +42,11 @@ import {
   ownerFieldsFromContext,
   sendResourceNotFound,
 } from '../services/resourceOwnership';
-import {assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../services/resolvedAnalysisContext';
+import {
+  AnalysisContextAuthorizationChangedError,
+  assertCurrentAnalysisContextAuthorization,
+  buildAnalysisContextAuthorizationFingerprint,
+} from '../services/resolvedAnalysisContext';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 import {
   projectOwnerAnalysisError,
@@ -56,14 +61,21 @@ import {
   type ProviderService,
 } from '../services/providerManager';
 import {sendProviderStoreUnreadableIfPresent} from './providerStoreHttp';
+import {sendPublicRequestError, sendRouteError, type PublicErrorClass} from '../middleware/routeFailure';
+import {ProviderRequestError} from '../services/providerManager/providerRequestError';
 import {resolveProviderRuntimeSnapshot} from '../services/providerManager/providerSnapshot';
 import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
 import {requireAiEnabledForHttp} from './aiCapabilityPolicyHttp';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions} from './agent/normalizeAnalyzeOptions';
-import {resolvePrimaryConversationSourceUse} from '../assistant/runtime/conversationSourcePolicy';
 
 const CONVERSATION_RUN_HEARTBEAT_MS = 30_000;
 const heartbeatTimers = new Map<string, NodeJS.Timeout>();
+/** Errors whose text a conversation route returns: written by the conversation and authorization layers. */
+const CONVERSATION_PUBLIC_ERRORS: readonly PublicErrorClass[] = [
+  ConversationRequestError,
+  AnalysisContextAuthorizationChangedError,
+  ProviderRequestError,
+];
 
 export function shouldCloseConversationStream(input: {
   eventType?: string;
@@ -153,10 +165,7 @@ function settleRun(session: ConversationSession, run: ConversationRun): void {
       : run.outcome?.kind === 'needs_user_input'
         ? 'awaiting_user'
         : 'completed';
-  const error = run.error && conversationRunUsesPrivateKnowledge(session, run)
-    ? projectOwnerAnalysisError(undefined, run.error, session.outputLanguage ?? configuredOutputLanguage())
-    : run.error;
-  persistAnalysisRunState(runScope(session, run), status, {error});
+  persistAnalysisRunState(runScope(session, run), status, {error: run.error});
   const descriptor = sessionDescriptor(session, run);
   const turn = session.historyTurns.find(turn => turn.id === run.runId);
   if (!turn) throw new Error('conversation_finalized_history_missing');
@@ -203,6 +212,9 @@ const conversationSessionService = new ConversationSessionService({
     heartbeatTimers.set(run.runId, timer);
   },
   onRunSettled: settleRun,
+  projectRunError: (session, run, error) => conversationRunUsesPrivateKnowledge(session, run)
+    ? projectOwnerAnalysisError(undefined, error, session.outputLanguage ?? configuredOutputLanguage())
+    : undefined,
 });
 
 async function ensureTraceAccessible(
@@ -237,8 +249,6 @@ function requireConversationRunPermission(
 }
 
 async function startConversation(req: express.Request, res: express.Response): Promise<void> {
-  let privateKnowledge = false;
-  let failureLanguage = configuredOutputLanguage();
   try {
     const requestContext = requireConversationRunPermission(req, res);
     if (!requestContext) return;
@@ -281,7 +291,7 @@ async function startConversation(req: express.Request, res: express.Response): P
         ...(req.body?.options ?? {}), analysisMode: 'fast'},
       {endpoint: '/analyze', hasReferenceTraceId: false, ...(traceId ? {traceId} : {})},
     );
-    failureLanguage = options.outputLanguage ?? configuredOutputLanguage();
+    const failureLanguage = options.outputLanguage ?? configuredOutputLanguage();
     const analysisContextAuthorization = authorizeAnalysisContext({
       selection: options,
       scope: knowledgeScopeFromRequestContext(requestContext),
@@ -293,17 +303,6 @@ async function startConversation(req: express.Request, res: express.Response): P
         .json(analysisContextAuthorization.payload);
       return;
     }
-    privateKnowledge = Boolean(
-      options.knowledgeSourceIds?.length ||
-      (
-        options.codebaseIds?.length &&
-        resolvePrimaryConversationSourceUse({
-          query,
-          codeAwareMode: options.codeAwareMode,
-          codebaseIds: options.codebaseIds,
-        }) === 'explicit'
-      ),
-    );
     const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
       options,
       knowledgeScopeFromRequestContext(requestContext),
@@ -437,11 +436,15 @@ async function startConversation(req: express.Request, res: express.Response): P
     } catch (error) {
       // A pin missing from an unreadable providers.json is unknown, not deleted.
       if (sendProviderStoreUnreadableIfPresent(res, error)) return;
-      res.status(404).json({
-        success: false,
-        code: 'PROVIDER_NOT_FOUND',
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (error instanceof ProviderRequestError && error.code === 'provider_not_found') {
+        sendPublicRequestError(res, new ConversationRequestError('PROVIDER_NOT_FOUND', error.message, 404));
+        return;
+      }
+      sendRouteError(res, error, {
+        code: 'CONVERSATION_PROVIDER_UNAVAILABLE',
+        error: 'The conversation AI provider could not be resolved',
+        logLabel: '[AgentConversation] Provider pin error',
+      }, [ProviderRequestError]);
       return;
     }
     if (
@@ -493,11 +496,13 @@ async function startConversation(req: express.Request, res: express.Response): P
       });
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(/not found/i.test(message) ? 404 : /in progress|cancellation/i.test(message) ? 409 : 500).json({
-      success: false,
-      error: privateKnowledge ? projectOwnerAnalysisError(undefined, message, failureLanguage) : message,
-    });
+    // Typed conversation and authorization errors carry text we wrote; any
+    // other failure (stores, Trace loading, runtime setup) gets fixed text.
+    sendRouteError(res, error, {
+      code: 'CONVERSATION_START_FAILED',
+      error: 'Failed to start the conversation',
+      logLabel: '[AgentConversation] Start error',
+    }, CONVERSATION_PUBLIC_ERRORS);
   }
 }
 
@@ -732,8 +737,11 @@ async function cancelConversation(req: express.Request, res: express.Response): 
     res.json({success: true, sessionId: session.sessionId, runId,
       status: result.status === 'review_stop_requested' ? result.status : result.outcome.kind});
   } catch (error: unknown) {
-    const message = error instanceof Error ? error.message : String(error);
-    res.status(/not found/i.test(message) ? 404 : 409).json({success: false, error: message});
+    sendRouteError(res, error, {
+      code: 'CONVERSATION_CANCEL_FAILED',
+      error: 'Failed to stop the conversation run',
+      logLabel: '[AgentConversation] Cancel error',
+    }, CONVERSATION_PUBLIC_ERRORS);
   }
 }
 
@@ -753,9 +761,15 @@ async function getFullHandoff(req: express.Request, res: express.Response): Prom
 function conversationReadRoute(handler: (req: express.Request, res: express.Response) => Promise<void>) {
   return (req: express.Request, res: express.Response): void => {
     void handler(req, res).catch(error => {
-      if (!res.headersSent) res.status(/not found/i.test(String(error)) ? 404 : 409).json({success: false,
-        code: 'CONVERSATION_RECOVERY_UNAVAILABLE', error: error instanceof Error ? error.message : String(error)});
-      else res.end();
+      if (res.headersSent) {
+        res.end();
+        return;
+      }
+      sendRouteError(res, error, {
+        code: 'CONVERSATION_READ_FAILED',
+        error: 'Failed to read the conversation',
+        logLabel: '[AgentConversation] Read error',
+      }, CONVERSATION_PUBLIC_ERRORS);
     });
   };
 }

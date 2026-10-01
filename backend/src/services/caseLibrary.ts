@@ -48,6 +48,7 @@ import {
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {KnowledgeCurationError} from './knowledgeCurationError';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -126,7 +127,7 @@ export class CaseLibrary {
   saveCase(record: CaseNode, scope?: KnowledgeScope): void {
     this.load();
     if (record.status === 'published') {
-      throw new Error(
+      throw new KnowledgeCurationError('case_save_rejected',
         `Use publishCase() to advance a case to 'published'; saveCase() rejects published records to keep the gate auditable`,
       );
     }
@@ -243,14 +244,14 @@ export class CaseLibrary {
     this.load();
     const trimmedReviewer = opts.reviewer?.trim();
     if (!trimmedReviewer) {
-      throw new Error(
+      throw new KnowledgeCurationError('case_publish_rejected',
         `Cannot publish case '${caseId}' without a reviewer signoff`,
       );
     }
     const publish = (existing: CaseNode | undefined): CaseNode => {
-      if (!existing) throw new Error(`Cannot publish case '${caseId}': not found`);
+      if (!existing) throw new KnowledgeCurationError('case_not_found', `Cannot publish case '${caseId}': not found`, 404);
       if (existing.redactionState !== 'redacted') {
-        throw new Error(
+        throw new KnowledgeCurationError('case_publish_rejected',
           `Cannot publish case '${caseId}': redactionState='${existing.redactionState}' (must be 'redacted')`,
         );
       }
@@ -303,10 +304,10 @@ export class CaseLibrary {
     this.load();
     const reason = opts.reason?.trim();
     if (!reason) {
-      throw new Error(`archiveCase requires a non-empty reason`);
+      throw new KnowledgeCurationError('case_archive_rejected', 'archiveCase requires a non-empty reason');
     }
     const archive = (existing: CaseNode | undefined): CaseNode => {
-      if (!existing) throw new Error(`Cannot archive case '${caseId}': not found`);
+      if (!existing) throw new KnowledgeCurationError('case_not_found', `Cannot archive case '${caseId}': not found`, 404);
       return {
         ...existing,
         ...makeSparkProvenance({
