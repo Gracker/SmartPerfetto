@@ -633,10 +633,12 @@ Important whitelisted examples:
   store: the DB opens read-only on the live file (not an
   `openSqliteReadSnapshot` copy of the large, busy sessions DB; SQLite may
   leave empty WAL sidecars), an unreadable store file is reported as in
-  "Stored Data Errors" below, and a DB bucket row that cannot be decoded is
-  reported rather than counted empty (a run still reads it as empty). A save
-  or rewrite whose authoritative write failed rejects before the DB copy
-  changes.
+  "Stored Data Errors" below, and a DB bucket row that cannot be decoded, or a
+  DB without the knowledge table, is reported rather than counted empty (a run
+  reads either as empty). A run's recall (`recall_patterns`, the pattern
+  prefetch) also opens the DB read-only; legacy file recall still moves a
+  corrupt store aside. A save or rewrite whose authoritative write failed
+  rejects before the DB copy changes.
 - Curated cases reach an analysis (background, `recall_similar_case`,
   finalization hits, similarity hints) only through
   `CaseLibrary.listAdmittedCases`: published or reviewed, `redacted`, and

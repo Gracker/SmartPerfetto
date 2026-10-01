@@ -106,7 +106,11 @@ export function listScopedKnowledgePartitions(
 }
 
 interface KnowledgeReadOptions {
-  /** Never create or migrate the database; with no database yet, read nothing. */
+  /**
+   * Never create or migrate the database. With no database yet, read nothing;
+   * with no knowledge table yet, read nothing, or throw
+   * `knowledge_store_unmigrated` when `requireReadable`.
+   */
   readOnly?: boolean;
   /** A row that exists but cannot be decoded throws instead of reading as missing. */
   requireReadable?: boolean;
@@ -843,14 +847,21 @@ function withKnowledgeDb<T>(
   }
 }
 
-/** Undefined for a read-only read when no database exists yet. */
+/** A read-only connection cannot create or migrate the schema it would read (`KnowledgeReadOptions.readOnly`). */
 function readKnowledgeDb<T>(
   opts: KnowledgeReadOptions,
   fn: (db: Database.Database) => T,
 ): T | undefined {
   if (!opts.readOnly) return withKnowledgeDb(fn);
   const db = openEnterpriseDbReadOnly();
-  return db ? withKnowledgeDb(fn, db) : undefined;
+  if (!db) return undefined;
+  return withKnowledgeDb(() => {
+    if (!db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memory_entries'`).get()) {
+      if (opts.requireReadable) throw new Error('knowledge_store_unmigrated');
+      return undefined;
+    }
+    return fn(db);
+  }, db);
 }
 
 function mutateScopedKnowledgeRecordInDb<T>(

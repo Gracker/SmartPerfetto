@@ -6,9 +6,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import Database from 'better-sqlite3';
 
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
+import * as enterpriseDb from '../../services/enterpriseDb';
 import {ENTERPRISE_DB_PATH_ENV} from '../../services/enterpriseDb';
 import {
   ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV,
@@ -17,14 +19,21 @@ import {
 import {
   getScopedKnowledgeRecord,
   mutateScopedKnowledgeRecord,
+  resolveKnowledgeScope,
+  scopedKnowledgeRowId,
   type KnowledgeScope,
 } from '../../services/scopedKnowledgeStore';
-import type {AnalysisPatternEntry} from '../types';
+import type {AnalysisPatternEntry, NegativePatternEntry} from '../types';
 import {resolveDurableLearningPermission, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {
+  buildNegativePatternSection,
+  buildPatternContextSection,
+  matchNegativePatterns,
   matchPatterns,
+  matchQuickPatternsAsBackup,
   readPatternBucketCensus,
+  type PatternBucketId,
   saveAnalysisPattern,
   setSupersedeStoreForTesting,
   sweepAllPatternMemoryPartitions,
@@ -211,5 +220,108 @@ describe('analysis pattern memory enterprise buckets', () => {
     expect(bucketB.map(entry => entry.id)).toEqual(scopeBSeed.map(entry => entry.id));
     expect(matchPatterns(newFeatures, scopeA)[0]?.keyInsights).toContain('new tenant-a insight');
     expect(matchPatterns(newFeatures, scopeB)).toHaveLength(0);
+  });
+});
+
+// `recall_patterns` and the prompt prefetch read pattern memory on every run;
+// in the knowledge database that read must never create, migrate or write it.
+describe('pattern recall from the knowledge database', () => {
+  const features = ['arch:a-0', 'scene:a-0'];
+  const databasePath = () => enterpriseDb.resolveEnterpriseDbPath();
+  const negativeEntry: NegativePatternEntry = {
+    id: 'negative-a',
+    traceFeatures: features,
+    sceneType: 'a-0',
+    failedApproaches: [{type: 'sql_error', approach: 'naive_join', reason: 'Cartesian blowup on large traces'}],
+    createdAt: Date.now() - 1_000,
+    matchCount: 0,
+    status: 'confirmed',
+    provenance: {sourceTenantId: scopeA.tenantId!, sourceWorkspaceId: scopeA.workspaceId!},
+    learningAdmission: ADMISSION,
+  };
+  const seedBucket = (bucket: PatternBucketId, record: unknown[]) =>
+    mutateScopedKnowledgeRecord<unknown[]>('analysis_pattern_bucket', bucket, scopeA, () => record,
+      {rowScope: `pattern-memory:${bucket}`});
+
+  /** Runs `recall` and asserts it opened no writable connection. */
+  function recallReadOnly<T>(recall: () => T): T {
+    const writable = jest.spyOn(enterpriseDb, 'openEnterpriseDb');
+    try {
+      const result = recall();
+      expect(writable).not.toHaveBeenCalled();
+      return result;
+    } finally {
+      writable.mockRestore();
+    }
+  }
+
+  it('reads every bucket, commits still in the WAL included, without writing a byte', () => {
+    // While one connection stays open, the seed commits stay in the WAL, as on a live server.
+    const writer = enterpriseDb.openEnterpriseDb();
+    try {
+      seedBucket('positive', seededPatterns(scopeA, 'a').slice(0, 1));
+      seedBucket('negative', [negativeEntry]);
+      seedBucket('quick', [{...seededPatterns(scopeA, 'q')[0], traceFeatures: features}]);
+      const files = () => [databasePath(), `${databasePath()}-wal`].map(file => fs.readFileSync(file));
+      const before = files();
+      expect(before[1].length).toBeGreaterThan(0);
+
+      const recalled = recallReadOnly(() => ({
+        positive: matchPatterns(features, scopeA).map(match => match.id),
+        quick: matchQuickPatternsAsBackup(features, scopeA).map(match => match.id),
+        negative: matchNegativePatterns(features, scopeA).map(match => match.id),
+        prompt: [buildPatternContextSection(features, scopeA), buildNegativePatternSection(features, scopeA)],
+      }));
+
+      expect(recalled).toMatchObject({
+        positive: ['a-0'], quick: ['q-0'], negative: ['negative-a'], prompt: [expect.any(String), expect.any(String)],
+      });
+      files().forEach((file, index) => expect(file.equals(before[index])).toBe(true));
+    } finally {
+      writer.close();
+    }
+  });
+
+  it('reads nothing and creates no database before one exists', () => {
+    expect(recallReadOnly(() => matchPatterns(features, scopeA))).toEqual([]);
+    expect(fs.existsSync(databasePath())).toBe(false);
+  });
+
+  it('reads nothing from a database without the knowledge table, and adds none', () => {
+    new Database(databasePath()).close();
+
+    let matches: unknown;
+    expect(() => {
+      matches = recallReadOnly(() => matchPatterns(features, scopeA));
+    }).not.toThrow();
+    expect(matches).toEqual([]);
+
+    const tables = new Database(databasePath(), {readonly: true});
+    try {
+      expect(tables.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all()).toEqual([]);
+    } finally {
+      tables.close();
+    }
+  });
+
+  it('reads a knowledge table from before the RAG columns were added', () => {
+    const old = new Database(databasePath());
+    try {
+      old.exec(`CREATE TABLE memory_entries (
+        id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, workspace_id TEXT NOT NULL, scope TEXT NOT NULL,
+        source_run_id TEXT, content_json TEXT NOT NULL, embedding_ref TEXT,
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)`);
+      const scope = resolveKnowledgeScope(scopeA);
+      old.prepare(`INSERT INTO memory_entries (id, tenant_id, workspace_id, scope, content_json, created_at, updated_at)
+        VALUES (?, ?, ?, 'pattern-memory:positive', ?, 1, 1)`).run(
+        scopedKnowledgeRowId('analysis_pattern_bucket', 'positive', scope), scope.tenantId, scope.workspaceId,
+        JSON.stringify({schemaVersion: 1, kind: 'analysis_pattern_bucket', externalId: 'positive',
+          sourceTenantId: scope.tenantId, sourceWorkspaceId: scope.workspaceId,
+          record: seededPatterns(scopeA, 'a').slice(0, 1)}));
+    } finally {
+      old.close();
+    }
+
+    expect(recallReadOnly(() => matchPatterns(features, scopeA)).map(match => match.id)).toEqual(['a-0']);
   });
 });

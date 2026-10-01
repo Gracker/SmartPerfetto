@@ -534,10 +534,11 @@ function replacePatternBucketScope<T>(
 }
 
 /**
- * One scope's bucket in the DB, freshly parsed. A run reads an undecodable
- * row as an empty bucket, as it always has. A maintainer's inspection opens
- * the DB read-only (never creating or migrating it) and reads a missing row
- * as empty, but reports an undecodable one instead of counting it empty.
+ * One scope's bucket in the DB, freshly parsed over a read-only connection, so
+ * recall never creates, migrates or writes it (the `recall_patterns` read-only
+ * contract). A missing database or row reads as empty; a database without the
+ * knowledge table, or an undecodable row, reads as empty for a run and is
+ * reported by an inspection.
  */
 function readPatternBucketRecord<T>(
   spec: PatternBucketSpec<T>,
@@ -548,7 +549,7 @@ function readPatternBucketRecord<T>(
   let row: ScopedKnowledgeRecord<unknown> | undefined;
   try {
     row = getScopedKnowledgeRecord<unknown>(PATTERN_BUCKET_KNOWLEDGE_KIND, spec.externalId, scope,
-      {readOnly: inspect, requireReadable: inspect});
+      {readOnly: true, requireReadable: inspect});
   } catch (err) {
     throw errorMessage(err) === 'knowledge_record_unreadable' ? unreadablePartition(spec, scope) : err;
   }
@@ -677,7 +678,7 @@ function inspectPatternBucket<T>(spec: PatternBucketSpec<T>, scope?: KnowledgeSc
 /** Every partition of a bucket in the authoritative store, read without side effects. */
 function readEveryPatternPartition<T>(spec: PatternBucketSpec<T>): T[][] {
   if (!enterpriseKnowledgeStoreEnabled()) return [inspectPatternBucket(spec)];
-  return listScopedKnowledgePartitions([patternBucketRowScope(spec.externalId)], {readOnly: true})
+  return listScopedKnowledgePartitions([patternBucketRowScope(spec.externalId)], {readOnly: true, requireReadable: true})
     .map(scope => inspectPatternBucket(spec, scope));
 }
 

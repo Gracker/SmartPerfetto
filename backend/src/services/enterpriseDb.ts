@@ -35,8 +35,8 @@ export function openEnterpriseDb(dbPath = resolveEnterpriseDbPath()): Database.D
 }
 
 /**
- * A connection for maintainer reads that never creates the database, migrates
- * its schema or changes its data; undefined when no database exists yet.
+ * A connection for reads that never create the database, migrate its schema
+ * or change its data; undefined when no database exists yet.
  * SQLite may leave empty WAL sidecars behind when none existed. It reads the
  * live file rather than an openSqliteReadSnapshot copy: this database is
  * large, and a running server keeps changing it while it would be copied.

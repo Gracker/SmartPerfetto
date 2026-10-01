@@ -256,10 +256,8 @@ describe('runFailureModeHashMigration', () => {
     bare.exec('CREATE TABLE unrelated (x)');
     bare.close();
     const bareBefore = fs.readFileSync(dbPath);
-    // better-sqlite3 keeps the SqliteError class of the first test realm that
-    // loaded it, which toThrow() does not recognize as an Error; read the reason.
     const failure = await runFailureModeHashMigration({apply: false}).then(() => undefined, (err: Error) => err);
-    expect(failure?.message).toBe('no such table: memory_entries');
+    expect(failure?.message).toBe('knowledge_store_unmigrated');
     expect(fs.readFileSync(dbPath).equals(bareBefore)).toBe(true);
     fs.rmSync(dbPath);
 
