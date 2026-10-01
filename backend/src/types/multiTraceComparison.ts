@@ -152,6 +152,12 @@ export interface NormalizedMetricSource {
   messageId?: string;
   sql?: string;
   backfillRunId?: string;
+  /**
+   * Definition the producer declared for this value (a `<column>_definition`
+   * on its row). Values compare only under the same declaration; historical
+   * and undeclared values have none.
+   */
+  metricDefinition?: string;
 }
 
 export interface NormalizedMetricValue {

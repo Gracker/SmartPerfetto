@@ -14,6 +14,8 @@ import {createDataEnvelope} from '../../types/dataContract';
 import {buildEvidenceContract} from '../evidence/evidenceContractBuilder';
 import {runDeterministicClaimVerifier} from '../verifier/deterministicClaimVerifier';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
+import {buildCompletedAnalysisResultSnapshot} from '../analysisResultSnapshotPipeline';
+import {buildDeterministicComparisonResult} from '../comparisonResultService';
 
 const capabilityManifest: CapabilityManifestAttributionV1 = {
   schemaVersion: 'capability_manifest_attribution@1',
@@ -639,4 +641,76 @@ describe('scene report reference JSON round-trip', () => {
       expect(JSON.parse(row.summary_json).sceneReport).toEqual(sceneReport);
     } finally {db.close();}
   });
+});
+
+// cpu_profiling's big_core_pct changed from prime+big to prime+big+medium and
+// now declares that on its rows. Snapshots compare a metric only under the
+// same declaration, read back through the store as comparisons do.
+describe('declared metric definitions across persistence', () => {
+  const DECLARED = 'core_tier_group:prime+big+medium@2';
+  const owners = {
+    old: {userId: 'user-a', traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a'},
+    new: {userId: 'user-b', traceId: 'trace-b', sessionId: 'session-b', runId: 'run-b'},
+  };
+
+  function storedSnapshot(db: Database.Database, owner: keyof typeof owners, row: Record<string, unknown>) {
+    const envelope = createDataEnvelope({columns: Object.keys(row), rows: [Object.values(row)]}, {
+      type: 'skill_result', source: 'cpu_profiling:core_distribution', skillId: 'cpu_profiling',
+      stepId: 'core_distribution', title: '大小核调度分布',
+    });
+    const built = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
+      ...owners[owner], query: 'cpu profiling', conclusion: 'CPU profiled', dataEnvelopes: [envelope]});
+    const repository = createAnalysisResultSnapshotRepository(db);
+    repository.createSnapshot(built!);
+    return repository.getSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: owners[owner].userId}, built!.id)!;
+  }
+
+  function compare(db: Database.Database, baseline: Record<string, unknown>, candidate: Record<string, unknown>) {
+    const before = storedSnapshot(db, 'old', baseline);
+    const after = storedSnapshot(db, 'new', candidate);
+    const result = buildDeterministicComparisonResult([before, after],
+      {baselineSnapshotId: before.id, metricKeys: ['cpu.big_core_pct']});
+    return {before, after, result, delta: result.matrix.rows[0].deltas[0]};
+  }
+
+  function withDb<T>(run: (db: Database.Database) => T): T {
+    const db = new Database(':memory:');
+    try {
+      applyEnterpriseMinimalSchema(db);
+      seedGraph(db);
+      return run(db);
+    } finally { db.close(); }
+  }
+
+  test('keeps a pre-change value out of the delta and says why', () => withDb(db => {
+    const {before, after, result, delta} = compare(db,
+      {thread_name: 'main', big_core_pct: 10},
+      {thread_name: 'main', big_core_pct: 90, big_core_pct_definition: DECLARED});
+    expect(before.metrics.find(metric => metric.key === 'cpu.big_core_pct')?.source).not.toHaveProperty('metricDefinition');
+    expect(after.metrics.find(metric => metric.key === 'cpu.big_core_pct')?.source.metricDefinition).toBe(DECLARED);
+    expect(delta).toMatchObject({deltaValue: null, deltaPct: null, assessment: 'unknown'});
+    expect(result.significantChanges).toEqual([]);
+    const warning = `Metric cpu.big_core_pct uses different definitions in ${before.id} (undeclared) and ${after.id} (${DECLARED}); delta not computed`;
+    expect(result.matrix.warnings).toContain(warning);
+    expect(result.conclusion.uncertainty).toContain(warning);
+  }));
+
+  test('compares values under the same declaration', () => withDb(db => {
+    const {result, delta} = compare(db,
+      {big_core_pct: 90, big_core_pct_definition: DECLARED},
+      {big_core_pct: 60, big_core_pct_definition: DECLARED});
+    expect(delta).toMatchObject({deltaValue: -30});
+    expect(result.matrix.warnings.filter(warning => warning.includes('definitions'))).toEqual([]);
+  }));
+
+  test('leaves undeclared values comparing as before', () => withDb(db => {
+    expect(compare(db, {big_core_pct: 10}, {big_core_pct: 20}).delta).toMatchObject({deltaValue: 10});
+  }));
+
+  test('takes a definition only from the row that declares it beside the value', () => withDb(db => {
+    const declarationOnly = storedSnapshot(db, 'old', {big_core_pct_definition: DECLARED, total_ms: 5});
+    expect(declarationOnly.metrics.find(metric => metric.key === 'cpu.big_core_pct')).toBeUndefined();
+    const blank = storedSnapshot(db, 'new', {big_core_pct: 40, big_core_pct_definition: '  '});
+    expect(blank.metrics.find(metric => metric.key === 'cpu.big_core_pct')?.source).not.toHaveProperty('metricDefinition');
+  }));
 });

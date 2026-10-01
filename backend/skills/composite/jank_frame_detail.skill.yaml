@@ -2349,9 +2349,9 @@ steps:
           - "检查系统温控策略是否过于激进"
           - "考虑绑定 UI 线程到大核"
 
-      - condition: "migration_data?.data?.length > 0 && migration_data.data[0]?.big_core_pct < 30"
+      - condition: "migration_data?.data?.length > 0 && migration_data.data[0]?.unknown_core_ns === 0 && migration_data.data[0]?.big_core_pct < 30"
         severity: warning
-        diagnosis: "${migration_data.data[0].thread_name} 大核运行占比仅 ${migration_data.data[0].big_core_pct}%"
+        diagnosis: "${migration_data.data[0].thread_name} 大核组（超大/大/中核）运行占比仅 ${migration_data.data[0].big_core_pct}%"
         confidence: high
         suggestions:
           - "UI 线程未能获得足够大核资源"

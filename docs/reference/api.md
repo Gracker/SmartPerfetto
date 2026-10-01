@@ -731,6 +731,12 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId` | 获取 comparison |
 | `GET` | `/:comparisonId/stream` | 订阅 comparison stream |
 
+Skill 结果行可以用同行的 `<列名>_definition` 字符串声明该指标列的口径（例如
+`cpu_profiling` 的 `big_core_pct_definition`），snapshot 把它保存为指标
+`source.metricDefinition`。两个 snapshot 的同一指标声明不同（含一方未声明）时，
+comparison 不计算 delta（`deltaValue: null`、`assessment: "unknown"`），并在
+`matrix.warnings` 与结论 `uncertainty` 中写明两侧口径。未声明的历史指标之间照常比较。
+
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 
 | 方法 | 路径 | 说明 |

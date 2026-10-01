@@ -11628,6 +11628,7 @@
               "total_cpu_ms",
               "big_core_ms",
               "little_core_ms",
+              "unknown_core_ms",
               "slice_count",
               "avg_slice_ms"
             ],
@@ -12403,6 +12404,7 @@
               "big_to_little",
               "little_to_big",
               "big_core_pct",
+              "unknown_core_ns",
               "unique_cpus"
             ],
             "required_marker": "SmartPerfetto::CASE::scheduler-cpu-contention"

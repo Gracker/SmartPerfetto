@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1367,
-    "explicitColumnCount": 5071
+    "explicitColumnCount": 5084
   },
   "skills": {
     "ams_module": {
@@ -5872,7 +5872,7 @@
             },
             "big_core_ms": {
               "label": {
-                "zh-CN": "大核运行",
+                "zh-CN": "大核组运行（超大/大/中核）",
                 "en": "Big Core ms"
               }
             },
@@ -5880,6 +5880,12 @@
               "label": {
                 "zh-CN": "小核运行",
                 "en": "Little Core ms"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Core ms"
               }
             },
             "total_running_ms": {
@@ -5927,6 +5933,12 @@
               "label": {
                 "zh-CN": "Q2 小核 Running",
                 "en": "Q2 Little Running ms"
+              }
+            },
+            "unknown_running_ms": {
+              "label": {
+                "zh-CN": "未知核类型 Running",
+                "en": "Unknown Running ms"
               }
             },
             "q3_runnable_ms": {
@@ -10835,6 +10847,24 @@
                 "zh-CN": "核心数",
                 "en": "Core Count"
               }
+            },
+            "tier": {
+              "label": {
+                "zh-CN": "Tier",
+                "en": "tier"
+              }
+            },
+            "big_group_percent": {
+              "label": {
+                "zh-CN": "大核组（超大/大/中核）占比",
+                "en": "Big Group Percent"
+              }
+            },
+            "unknown_time_ns": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Time ns"
+              }
             }
           },
           "synthesizeLabels": {
@@ -11341,8 +11371,14 @@
             },
             "big_core_percent": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Percent"
+              }
+            },
+            "unknown_core_percent": {
+              "label": {
+                "zh-CN": "未知核类型占比",
+                "en": "Unknown Core Percent"
               }
             }
           },
@@ -14276,13 +14312,13 @@
             },
             "big_core_pct": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Pct"
               }
             },
             "medium_core_pct": {
               "label": {
-                "zh-CN": "中核占比",
+                "zh-CN": "其中中核占比",
                 "en": "Medium Core Pct"
               }
             },
@@ -14290,6 +14326,24 @@
               "label": {
                 "zh-CN": "小核占比",
                 "en": "Little Core Pct"
+              }
+            },
+            "unknown_core_pct": {
+              "label": {
+                "zh-CN": "未知核类型占比",
+                "en": "Unknown Core Pct"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型运行时间",
+                "en": "Unknown Core ms"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核组口径",
+                "en": "Big Core Pct Definition"
               }
             }
           },
@@ -14465,8 +14519,20 @@
             },
             "avg_big_core_usage_pct": {
               "label": {
-                "zh-CN": "大核使用率",
+                "zh-CN": "样本线程平均大核组占比",
                 "en": "Avg Big Core Usage Pct"
+              }
+            },
+            "big_core_sample_threads": {
+              "label": {
+                "zh-CN": "大小核样本线程数",
+                "en": "Big Core Sample Threads"
+              }
+            },
+            "classified_sample_threads": {
+              "label": {
+                "zh-CN": "拓扑已分类样本线程数",
+                "en": "Classified Sample Threads"
               }
             },
             "latency_severity": {
@@ -14648,7 +14714,7 @@
             },
             "big_core_ms": {
               "label": {
-                "zh-CN": "大核时间",
+                "zh-CN": "大核组时间（超大/大/中核）",
                 "en": "Big Core ms"
               }
             },
@@ -14656,6 +14722,12 @@
               "label": {
                 "zh-CN": "小核时间",
                 "en": "Little Core ms"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型时间",
+                "en": "Unknown Core ms"
               }
             },
             "slice_count": {
@@ -43227,8 +43299,14 @@
             },
             "big_core_pct": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Pct"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Core ns"
               }
             },
             "unique_cpus": {

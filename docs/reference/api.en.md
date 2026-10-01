@@ -839,6 +839,15 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId` | Get comparison |
 | `GET` | `/:comparisonId/stream` | Subscribe to comparison stream |
 
+A Skill result row may declare the definition of a metric column with a
+`<column>_definition` string on the same row (for example `cpu_profiling`'s
+`big_core_pct_definition`); the snapshot stores it as the metric's
+`source.metricDefinition`. When two snapshots declare different definitions for
+the same metric (including one side undeclared), the comparison computes no delta
+(`deltaValue: null`, `assessment: "unknown"`) and names both definitions in
+`matrix.warnings` and the conclusion `uncertainty`. Undeclared historical metrics
+keep comparing as before.
+
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 
 | Method | Path | Purpose |

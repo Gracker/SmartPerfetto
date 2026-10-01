@@ -157,7 +157,7 @@ steps:
           SUM(CASE WHEN core_type = 'big' THEN dur_ns ELSE 0 END) AS big_running_ns,
           SUM(CASE WHEN core_type = 'medium' THEN dur_ns ELSE 0 END) AS medium_running_ns,
           SUM(CASE WHEN core_type = 'little' THEN dur_ns ELSE 0 END) AS little_running_ns,
-          SUM(CASE WHEN core_type NOT IN ('big', 'medium', 'little') THEN dur_ns ELSE 0 END) AS unknown_core_running_ns,
+          SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ns ELSE 0 END) AS unknown_core_running_ns,
           SUM(CASE WHEN is_unfinished THEN dur_ns ELSE 0 END) AS unfinished_ns
         FROM busy_spans
         GROUP BY window_id, utid, upid
