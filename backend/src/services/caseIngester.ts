@@ -18,10 +18,12 @@ import {
   makeSparkProvenance,
 } from '../types/sparkContracts';
 import {CaseGraph} from './caseGraph';
-import {CaseLibrary} from './caseLibrary';
+import {CaseLibrary, type CuratedCaseView} from './caseLibrary';
 import {RagStore, getDefaultRagStore} from './ragStore';
 import type {KnowledgeScope} from './scopedKnowledgeStore';
 import {validateCaseKnowledgeFiles} from './caseSchemaValidator';
+import type {CaseCurationGrant} from './security/caseCuration';
+import {storedJsonContentHash} from './selfEvolution/canonicalJson';
 
 export const GENERATED_CASE_SOURCE = 'curated_markdown_case';
 const GENERATED_EDGE_PREFIX = 'case-edge:';
@@ -29,6 +31,8 @@ const GENERATED_RAG_URI_PREFIX = 'case://';
 
 export interface CaseKnowledgeIngestOptions {
   casesDir: string;
+  /** The operator's authority, which attests every case written (`caseCurationGrantForMarkdownIngest`). */
+  grant: CaseCurationGrant;
   caseLibraryPath?: string;
   caseGraphPath?: string;
   ragStorePath?: string;
@@ -86,7 +90,7 @@ export function ingestCaseKnowledge(
   removeStaleGeneratedCases(library, targetCaseIds, options.knowledgeScope);
   let writtenCaseCount = 0;
   for (const entry of cases) {
-    writeCaseNode(library, entry, warnings, options.knowledgeScope);
+    writeCaseNode(library, entry, options.grant, warnings, options.knowledgeScope);
     writtenCaseCount++;
   }
   if (options.failAfterStore === 'caseLibrary') {
@@ -132,36 +136,49 @@ function removeStaleGeneratedCases(
   }
 }
 
+/**
+ * The import attests every case it writes under the operator's grant; the
+ * reviewer of a published case is the one the case names, or the curator who
+ * published this same content earlier.
+ */
 function writeCaseNode(
   library: CaseLibrary,
   entry: ValidatedCaseKnowledgeFile,
+  grant: CaseCurationGrant,
   warnings: string[],
   scope?: KnowledgeScope,
 ): void {
-  const target = buildCaseNode(entry, library.getCase(entry.frontmatter.case_id, scope));
-  const existing = library.getCase(target.caseId, scope);
-  const preserved = mergeRuntimeCuration(existing, target, warnings);
+  const existing = library.getCaseForCuration(entry.frontmatter.case_id, scope);
+  const target = buildCaseNode(entry, existing?.createdAt);
+  const unchanged = !!existing && markdownContentHash(existing) === markdownContentHash(target);
+  // A re-import of unchanged content by the same curator keeps that curator's curation time.
+  if (unchanged && target.curatedBy && existing.curatedBy === target.curatedBy && existing.curatedAt !== undefined) {
+    target.curatedAt = existing.curatedAt;
+  }
+  const preserved = mergeRuntimeCuration(existing, target, unchanged, warnings);
   if (preserved.status === 'published') {
-    const reviewer = preserved.curatedBy ?? entry.frontmatter.curator;
-    if (!reviewer) {
+    if (!preserved.curatedBy) {
       throw new Error(
         `Cannot publish case '${preserved.caseId}' without curator provenance`,
       );
     }
-    library.saveCase({...preserved, status: 'reviewed'}, scope);
-    library.publishCase(
-      preserved.caseId,
-      {reviewer, curatedAt: preserved.curatedAt},
-      scope,
-    );
+    library.saveCase({...preserved, status: 'reviewed'}, grant, scope);
+    library.publishCase(preserved.caseId, {reviewer: preserved.curatedBy, curatedAt: preserved.curatedAt}, grant, scope);
     return;
   }
-  library.saveCase(preserved, scope);
+  library.saveCase(preserved, grant, scope);
 }
 
+/**
+ * A curator who raised a Markdown case's status through the API attested the
+ * content it had then; a re-import keeps that curation only while the stored
+ * copy is still attested and the content unchanged. A raised status nobody
+ * attested, such as one written before attestations, is not kept.
+ */
 function mergeRuntimeCuration(
-  existing: CaseNode | undefined,
+  existing: CuratedCaseView | undefined,
   target: CaseNode,
+  unchanged: boolean,
   warnings: string[],
 ): CaseNode {
   if (
@@ -169,6 +186,12 @@ function mergeRuntimeCuration(
     existing.source !== GENERATED_CASE_SOURCE ||
     statusRank(existing.status) <= statusRank(target.status)
   ) {
+    return target;
+  }
+  if (!existing.curation || !unchanged) {
+    warnings.push(
+      `did not keep the ${existing.status} status of case '${target.caseId}': ${existing.curation ? 'its Markdown content changed since' : 'no curator attested it'}; review and publish it again`,
+    );
     return target;
   }
   warnings.push(
@@ -196,16 +219,22 @@ function statusRank(status: CurationStatus): number {
   }
 }
 
+/** What Markdown defines of a case, apart from the file it was read from. */
+function markdownContentHash(node: CaseNode): string {
+  const knowledge = node.knowledge && {...node.knowledge, sourceFile: undefined};
+  return storedJsonContentHash({title: node.title, tags: node.tags, findings: node.findings, knowledge});
+}
+
 function buildCaseNode(
   entry: ValidatedCaseKnowledgeFile,
-  existing?: CaseNode,
+  createdAt = Date.now(),
 ): CaseNode {
   const frontmatter = entry.frontmatter;
   const curator = frontmatter.curator?.trim();
   const status = frontmatter.status as CurationStatus;
   return {
     ...makeSparkProvenance({source: GENERATED_CASE_SOURCE}),
-    createdAt: existing?.createdAt ?? Date.now(),
+    createdAt,
     caseId: frontmatter.case_id,
     title: frontmatter.title,
     status,
@@ -216,7 +245,7 @@ function buildCaseNode(
       severity: frontmatter.taxonomy.severity as CaseFindingSeverity,
       title: finding.title,
     })),
-    ...(curator ? {curatedBy: curator, curatedAt: existing?.curatedAt ?? Date.now()} : {}),
+    ...(curator ? {curatedBy: curator, curatedAt: Date.now()} : {}),
     knowledge: {
       sourceFile: path.normalize(entry.filePath),
       body: entry.body,

@@ -892,7 +892,13 @@ deleting, publishing and archiving cases and adding or removing edges need
 `self_evolution:curate`, and the curator and reviewer are the signed-in
 identity, never a name in the body. Learned cases are retired: ids beginning
 `learned:` and cases of learned origin are no longer returned, and writing them
-is refused.
+is refused. Analyses read only published or reviewed cases that are `redacted`
+and carry a curation attestation: creating or publishing a case attests its
+current content, while archiving keeps a case's admission and never grants
+one. Every returned case carries `analysisAdmitted` and `curation` (issuer,
+actor, issuedAt); a POST body's copies of these are ignored. A case written
+before attestations needs one again: send a reviewed case back as GET returned
+it, and publish a published case again.
 
 The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API.
 

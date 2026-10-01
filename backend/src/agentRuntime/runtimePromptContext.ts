@@ -35,9 +35,7 @@ import {
   buildPatternContextSection,
   extractTraceFeatures,
 } from '../agentv3/analysisPatternMemory';
-import {buildRuntimeCaseBackgroundContext} from '../services/caseEvolution/caseBackgroundContext';
-import {analysisHasPrivateContext} from '../services/security/analysisPrivateContext';
-import type {AnalysisContextSelection} from '../services/resolvedAnalysisContext';
+import {buildCaseBackgroundContext} from '../services/caseEvolution/caseBackgroundContext';
 import type {KnowledgeScope} from '../services/scopedKnowledgeStore';
 
 function freezeComparisonContext<T>(value: T, seen = new Set<object>()): T {
@@ -258,9 +256,8 @@ export interface RuntimeMemoryContext {
 
 /**
  * The cross-session memory an automatic prefetch puts into a prompt, the tier
- * `allowAutomaticPrefetch` gates. Admitted pattern memory is public-run
- * material that every run reads, a private one included; the curated case
- * background stays closed to a run whose selection carries private material.
+ * `allowAutomaticPrefetch` gates. Every run reads the same admitted memory, a
+ * private one included (`security/durableLearning.ts`, `security/caseCuration.ts`).
  */
 export function buildRuntimeMemoryContext(input: {
   allowAutomaticPrefetch: boolean;
@@ -269,7 +266,6 @@ export function buildRuntimeMemoryContext(input: {
   packageName?: string;
   knowledgeScope?: KnowledgeScope;
   outputLanguage: OutputLanguage;
-  selection: AnalysisContextSelection;
 }): RuntimeMemoryContext {
   if (!input.allowAutomaticPrefetch) return {};
   const {sceneType, architectureType, knowledgeScope, outputLanguage} = input;
@@ -277,8 +273,7 @@ export function buildRuntimeMemoryContext(input: {
   return {
     patternContext: buildPatternContextSection(features, knowledgeScope),
     negativePatternContext: buildNegativePatternSection(features, knowledgeScope),
-    caseBackgroundContext: buildRuntimeCaseBackgroundContext({sceneType, architectureType, knowledgeScope,
-      outputLanguage, privateAnalysisContext: analysisHasPrivateContext(input.selection)}),
+    caseBackgroundContext: buildCaseBackgroundContext(sceneType, architectureType, knowledgeScope, {outputLanguage}),
   };
 }
 

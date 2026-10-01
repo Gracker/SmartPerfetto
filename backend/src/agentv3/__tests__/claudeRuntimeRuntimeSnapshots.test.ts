@@ -54,6 +54,7 @@ import * as claudeMcpServer from '../claudeMcpServer';
 import * as claudeSystemPrompt from '../claudeSystemPrompt';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
 import * as analysisPatternMemory from '../analysisPatternMemory';
+import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import {
   createRuntimeSourceFinalizationFixture,
   SOURCE_FINALIZATION_CANARY,
@@ -1364,6 +1365,7 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       {enableSubAgents: false, enableVerification: false});
     const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
     const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+    const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
     claudeSdkMock.__setQueryImplementation(async function* () {
       yield {type: 'result', subtype: 'success', num_turns: 1, result: 'done'};
     });
@@ -1378,7 +1380,8 @@ describe('ClaudeRuntime enterprise runtime_snapshots session map', () => {
       const prompt = JSON.stringify(claudeSdkMock.__getQueryCalls().slice(-1)[0].options.systemPrompt);
       expect(prompt).toContain('PATTERN_MEMORY_SECTION');
       expect(prompt).toContain('NEGATIVE_MEMORY_SECTION');
-    } finally {context?.dispose(); patterns.mockRestore(); negative.mockRestore(); sessionContextManager.remove(sessionId);}
+      expect(prompt).toContain('CASE_BACKGROUND_SECTION');
+    } finally {context?.dispose(); patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); sessionContextManager.remove(sessionId);}
   });
 
   // A negative pattern records what failed during the run (here an SQL error

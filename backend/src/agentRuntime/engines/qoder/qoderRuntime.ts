@@ -815,7 +815,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       traceCompleteness,
       ...buildRuntimeMemoryContext({
         allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
-        packageName: effectivePackageName, knowledgeScope, outputLanguage, selection: options,
+        packageName: effectivePackageName, knowledgeScope, outputLanguage,
       }),
       comparison: comparisonContext,
       codeAwareMode: options?.codeAwareMode,

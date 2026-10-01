@@ -52,6 +52,8 @@ interface KnowledgeEnvelope<T> {
   sourceWorkspaceId: string;
   sourceRunId?: string;
   record: T;
+  /** See `UpsertOptions.attestation`. */
+  attestation?: unknown;
 }
 
 export interface KnowledgeScope {
@@ -73,6 +75,7 @@ export interface ScopedKnowledgeRecord<T> {
   externalId: string;
   rowScope: string;
   record: T;
+  attestation?: unknown;
   sourceRunId?: string;
   createdAt: number;
   updatedAt: number;
@@ -122,6 +125,13 @@ interface UpsertOptions {
   updatedAt?: number;
   sourceRunId?: string;
   embeddingRef?: string;
+  /**
+   * A writer's proof about the record, kept in the row envelope beside it so a
+   * caller that shapes only the record cannot supply it. It survives only a
+   * write that sets it again: any other write, one by an older version that
+   * rebuilds the envelope included, drops it.
+   */
+  attestation?: unknown;
 }
 
 export interface ScopedKnowledgeUpsert<T> {
@@ -329,37 +339,41 @@ export function mutateScopedKnowledgeRecord<T>(
  * Atomically update one SQLite record and a synchronous replica side effect.
  * The side effect runs after the database write but before COMMIT, so a file
  * lock/persist failure rolls the SQLite transaction back instead of leaving a
- * silently successful half-write.
+ * silently successful half-write. `withReplica` holds a replica's own lock
+ * around the read, the mutation and the side effect, for a mutation that must
+ * see the replica as it will be written; it is entered inside the transaction,
+ * so locks are still taken database first.
  */
 export function mutateScopedKnowledgeRecordWithSideEffect<T>(
   kind: string,
   externalId: string,
   scopeInput: KnowledgeScope | undefined,
-  mutate: (current: T | undefined) => {record: T; rowScope: string},
-  sideEffect: (record: T, current: T | undefined) => void,
+  mutate: (current: T | undefined, currentAttestation: unknown) =>
+    {record: T; rowScope: string; attestation?: unknown},
+  sideEffect: (record: T, current: T | undefined, attestation: unknown) => void,
   opts: UpsertOptions = {},
+  withReplica: <R>(body: () => R) => R = body => body(),
 ): T {
   const scope = resolveKnowledgeScope(scopeInput);
   return withKnowledgeDb((db) => {
-    const tx = db.transaction(() => {
+    const tx = db.transaction(() => withReplica(() => {
       ensureEnterpriseKnowledgeGraph(db, scope);
       const repo = createEnterpriseWorkspaceRepository<KnowledgeEntryRow>(db, 'memory_entries');
       const rowId = scopedKnowledgeRowId(kind, externalId, scope);
       const existing = repo.getById(scope, rowId);
-      const current = existing
-        ? parseKnowledgeRow<T>(kind, existing)?.record
-        : undefined;
-      const next = mutate(current);
+      const parsed = existing ? parseKnowledgeRow<T>(kind, existing) : undefined;
+      const current = parsed?.record;
+      const next = mutate(current, parsed?.attestation);
       upsertScopedKnowledgeRecordInDb(db, repo, scope, {
         kind,
         externalId,
         rowScope: next.rowScope,
         record: next.record,
-        options: opts,
+        options: {...opts, attestation: next.attestation},
       });
-      sideEffect(next.record, current);
+      sideEffect(next.record, current, next.attestation);
       return next.record;
-    });
+    }));
     return tx.immediate();
   });
 }
@@ -911,6 +925,7 @@ function upsertScopedKnowledgeRecordInDb<T>(
     sourceWorkspaceId: scope.workspaceId,
     ...(sourceRunId ? {sourceRunId} : {}),
     record: entry.record,
+    attestation: options.attestation,
   };
   const updateValues = {
     scope: entry.rowScope,
@@ -1064,6 +1079,7 @@ function parseKnowledgeRow<T>(
       externalId: parsed.externalId,
       rowScope: row.scope,
       record: parsed.record,
+      ...(parsed.attestation !== undefined ? {attestation: parsed.attestation} : {}),
       ...(row.source_run_id ? {sourceRunId: row.source_run_id} : {}),
       createdAt: row.created_at,
       updatedAt: row.updated_at,

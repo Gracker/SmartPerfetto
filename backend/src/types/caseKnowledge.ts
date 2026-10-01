@@ -18,8 +18,10 @@ export type CaseKnowledgeRecommendationPriority = 'P0' | 'P1' | 'P2' | 'P3';
 export type CaseEvidenceSignatureOperator = 'eq' | 'contains_any' | 'gte' | 'lte';
 export type CaseKnowledgeMatchStrength = 'strong' | 'partial' | 'background';
 
+export type CuratedCaseStatus = Extract<CaseKnowledgeStatus, 'published' | 'reviewed'>;
+
 /** Only cases a curator reviewed or published reach an analysis. */
-export const CURATED_CASE_STATUSES: readonly CaseKnowledgeStatus[] = ['published', 'reviewed'];
+export const CURATED_CASE_STATUSES: readonly CuratedCaseStatus[] = ['published', 'reviewed'];
 
 /**
  * How recall and the case background order cases: higher first. (Markdown

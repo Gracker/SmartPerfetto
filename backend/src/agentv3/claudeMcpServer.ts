@@ -174,6 +174,8 @@ import {
 import {ProjectMemory} from './projectMemory';
 import {CaseLibrary} from '../services/caseLibrary';
 import { createCaseRetriever } from '../services/caseEvolution/caseRecommendationRetriever';
+import { recallCasesByTags } from '../services/caseEvolution/caseTagRecall';
+import { CURATED_CASE_STATUSES } from '../types/caseKnowledge';
 import {
   DEFAULT_DEV_USER_ID,
   DEFAULT_TENANT_ID,
@@ -5746,11 +5748,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     'Read-only over the case library. Returns up to top_k cases ranked by tag-overlap score; published cases rank above reviewed when scores tie. ' +
     'When the result is empty the agent must NOT fabricate prior cases — say "no matching prior case in the library" explicitly.',
     {
-      tags: z.array(z.string()).optional().describe('Tag tokens to score against. Without tags, results rank by published > reviewed > others.'),
+      tags: z.array(z.string()).optional().describe('Tag tokens to score against. Without tags, published cases rank above reviewed ones.'),
       app_id: z.string().optional().describe('Restrict to cases whose key.appId matches.'),
       device_id: z.string().optional().describe('Restrict to cases whose key.deviceId matches.'),
       cuj: z.string().optional().describe('Restrict to cases whose key.cuj matches.'),
-      include_unpublished: z.boolean().optional().describe('Include reviewed/draft cases (default false — only published surface to the agent).'),
+      include_unpublished: z.boolean().optional().describe('Also include reviewed cases (default false: published only). Draft and private cases are never returned.'),
       top_k: z.number().int().min(1).max(20).optional().describe('Maximum cases returned (1-20, default 5).'),
       scene: z.string().optional().describe('Optional scene for evidence-gated case retrieval (for example scrolling).'),
       domain_pack: z.string().optional().describe('Optional case domain pack for evidence-gated retrieval (default scrolling.v1 for scrolling).'),
@@ -5759,7 +5761,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
     async ({ tags, app_id, device_id, cuj, include_unpublished, top_k, scene, domain_pack, root_cause, evidence_signatures }) => {
       const library = options.caseLibrary ?? getCaseLibrary();
-      const wantedTags = tags ? new Set(tags) : null;
       const limit = top_k ?? 5;
 
       if (evidence_signatures && typeof evidence_signatures === 'object') {
@@ -5778,7 +5779,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           evidenceSignatures: evidence_signatures as Record<string, unknown>,
           textQuery: [effectiveRootCause, ...(tags ?? [])].join(' '),
           topK: limit,
-          includeStatuses: include_unpublished ? ['published', 'reviewed'] : ['published'],
+          includeStatuses: include_unpublished ? CURATED_CASE_STATUSES : ['published'],
         });
         return {
           content: [{
@@ -5788,51 +5789,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         };
       }
 
-      // Pull either published-only or published+reviewed depending on the
-      // include_unpublished flag. Drafts and private cases never surface
-      // through this tool — those are operator-side concerns.
-      const allCases = include_unpublished
-        ? [
-            ...library.listCases({status: 'published'}, knowledgeScope),
-            ...library.listCases({status: 'reviewed'}, knowledgeScope),
-          ]
-        : library.listCases({status: 'published'}, knowledgeScope);
-
-      const candidates: Array<{caseScore: number; case: typeof allCases[number]}> = [];
-      for (const c of allCases) {
-        if (app_id && c.key?.appId !== app_id) continue;
-        if (device_id && c.key?.deviceId !== device_id) continue;
-        if (cuj && c.key?.cuj !== cuj) continue;
-        let score = 0;
-        if (wantedTags) {
-          for (const t of c.tags) if (wantedTags.has(t)) score += 1;
-          if (score === 0) continue;
-          score = score / Math.max(wantedTags.size, 1);
-        } else {
-          // Without tags, prefer published over reviewed; both above 0.
-          score = c.status === 'published' ? 1 : 0.5;
-        }
-        candidates.push({caseScore: score, case: c});
-      }
-
-      candidates.sort((a, b) => {
-        if (a.caseScore !== b.caseScore) return b.caseScore - a.caseScore;
-        // Tie-break: published before reviewed before others.
-        const rank = (s: string): number =>
-          s === 'published' ? 0 : s === 'reviewed' ? 1 : 2;
-        return rank(a.case.status) - rank(b.case.status);
-      });
-
-      const hits = candidates.slice(0, limit).map(c => ({
-        caseId: c.case.caseId,
-        score: c.caseScore,
-        title: c.case.title,
-        status: c.case.status,
-        tags: c.case.tags,
-        findings: c.case.findings,
-        traceArtifactId: c.case.traceArtifactId,
-        traceUnavailableReason: c.case.traceUnavailableReason,
-      }));
+      const hits = recallCasesByTags(library, {
+        tags,
+        appId: app_id,
+        deviceId: device_id,
+        cuj,
+        includeReviewed: include_unpublished,
+        topK: limit,
+      }, knowledgeScope);
 
       return {
         content: [{

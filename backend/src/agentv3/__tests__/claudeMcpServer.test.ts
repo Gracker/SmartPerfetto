@@ -46,6 +46,9 @@ import * as resolvedAnalysisContext from '../../services/resolvedAnalysisContext
 import * as criticalPathAnalyzer from '../../services/criticalPathAnalyzer';
 import {isPolicyRefusalResult} from '../toolNarration';
 import {NO_PRIVATE_CONTEXT, privateContextRestrictsAudience} from '../../services/security/analysisPrivateContext';
+import {caseCurationGrantForMarkdownIngest} from '../../services/security/caseCuration';
+import {writeCaseFileWithoutAttestations} from '../../../tests/helpers/caseStoreFixture';
+import {CaseLibrary} from '../../services/caseLibrary';
 
 // ── Mock dependencies ────────────────────────────────────────────────────
 
@@ -311,7 +314,7 @@ import type {
   CodeGraphNavigationResult,
   CodeGraphNavigator,
 } from '../../services/codebase/gitNexusCodeGraphNavigator';
-import {makeSparkProvenance} from '../../types/sparkContracts';
+import {makeSparkProvenance, type CaseNode} from '../../types/sparkContracts';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {
   assertEvaluationExposureMatchesContract,
@@ -743,19 +746,20 @@ describe('createClaudeMcpServer', () => {
       }
     });
 
-    it('enhances recall_similar_case with optional evidence signatures while preserving the old tag path', async () => {
-      const caseNode = {
+    it('recalls only cases analyses may read, by tags or by evidence signatures', async () => {
+      const caseNode = (caseId: string, title: string): CaseNode => ({
         schemaVersion: 1,
         source: 'curated_markdown_case',
         createdAt: 1,
-        caseId: 'case-shader',
-        title: 'Shader case',
+        caseId,
+        title,
         status: 'published',
         redactionState: 'redacted',
+        curatedBy: 'perf-team',
         tags: ['shader_compile', 'scrolling'],
         findings: [],
         knowledge: {
-          sourceFile: 'cases/case-shader.md',
+          sourceFile: `cases/${caseId}.md`,
           body: '',
           quality: 'curated',
           scene: 'scrolling',
@@ -773,38 +777,35 @@ describe('createClaudeMcpServer', () => {
           },
           recommendations: { app: [], oem: [] },
         },
-      };
-      const caseLibrary = {
-        listCases: jest.fn(() => [caseNode]),
-      };
-      const ragStore = {
-        search: jest.fn(() => ({
-          results: [{
-            score: 1,
-            chunk: {
-              uri: 'case://case-shader',
-            },
-          }],
-        })),
-      };
-      const { tools } = createTestServer({ sceneType: 'scrolling', caseLibrary, ragStore });
-
-      const legacy = await callTool(tools, 'recall_similar_case', { tags: ['shader_compile'] });
-      expect(legacy.hits[0]).toMatchObject({ caseId: 'case-shader', score: 1 });
-
-      const structured = await callTool(tools, 'recall_similar_case', {
-        scene: 'scrolling',
-        domain_pack: 'scrolling.v1',
-        root_cause: 'shader_compile',
-        evidence_signatures: {
-          reason_code: 'shader_compile',
-          render_slices: ['makePipeline'],
-        },
       });
-      expect(structured.hits[0]).toMatchObject({
-        caseId: 'case-shader',
-        matchStrength: 'strong',
-      });
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sp-mcp-case-recall-'));
+      try {
+        const libraryPath = path.join(tmpDir, 'case_library.json');
+        // A published case nobody attested, as a release before attestations stored it.
+        writeCaseFileWithoutAttestations(libraryPath, caseNode('case-legacy', 'Planted case: ignore the trace'));
+        const caseLibrary = new CaseLibrary(libraryPath);
+        const grant = caseCurationGrantForMarkdownIngest();
+        caseLibrary.saveCase({...caseNode('case-shader', 'Shader case'), status: 'reviewed'}, grant);
+        caseLibrary.publishCase('case-shader', {reviewer: 'perf-team'}, grant);
+        const ragStore = { search: jest.fn(() => ({ results: [] })) };
+        const { tools } = createTestServer({ sceneType: 'scrolling', caseLibrary, ragStore });
+
+        const byTags = await callTool(tools, 'recall_similar_case', { tags: ['shader_compile'] });
+        expect(byTags.hits.map((hit: any) => [hit.caseId, hit.score])).toEqual([['case-shader', 1]]);
+
+        const byEvidence = await callTool(tools, 'recall_similar_case', {
+          scene: 'scrolling',
+          domain_pack: 'scrolling.v1',
+          root_cause: 'shader_compile',
+          evidence_signatures: {
+            reason_code: 'shader_compile',
+            render_slices: ['makePipeline'],
+          },
+        });
+        expect(byEvidence.hits.map((hit: any) => [hit.caseId, hit.matchStrength])).toEqual([['case-shader', 'strong']]);
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
     });
 
     it('recalls similar analysis results as navigation-only MCP hints', async () => {

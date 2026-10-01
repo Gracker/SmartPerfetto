@@ -30,6 +30,9 @@ import {
 import type { CaseNode, RagChunk } from '../../types/sparkContracts';
 import analysisResultRoutes from '../analysisResultRoutes';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {caseCurationGrantForMarkdownIngest} from '../../services/security/caseCuration';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 const originalLogDir = process.env.SMARTPERFETTO_BACKEND_LOG_DIR;
@@ -188,8 +191,8 @@ function addPublishedCase(): void {
       },
     },
   };
-  library.saveCase(record);
-  library.publishCase(record.caseId, { reviewer: 'test' });
+  library.saveCase(record, curator);
+  library.publishCase(record.caseId, {reviewer: 'test'}, curator);
   const chunk: RagChunk = {
     chunkId: 'case:case-shader:summary',
     kind: 'case_library',

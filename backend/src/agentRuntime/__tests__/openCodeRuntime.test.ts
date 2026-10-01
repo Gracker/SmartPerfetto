@@ -47,6 +47,7 @@ import * as turnIntentModule from '../analysisTurnIntent';
 import * as sqlKnowledgeBase from '../../services/sqlKnowledgeBase';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
 import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
+import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
 import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import * as traceCompletenessProber from '../../agentv3/traceCompletenessProber';
@@ -955,6 +956,7 @@ describe('OpenCode native turn intent and delivery', () => {
     'prefetches admitted cross-session experience for a private %s run as for a public one', mode => withBackendDataDir(async () => {
       const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
       const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+      const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
       try {
         const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}});
         await harness.runtime.analyze('the whole scene', `private-experience-${mode}`, 'trace-opencode', {
@@ -964,7 +966,8 @@ describe('OpenCode native turn intent and delivery', () => {
         expect(negative).toHaveBeenCalled();
         expect(harness.prompts[1].body.system).toContain('PATTERN_MEMORY_SECTION');
         expect(harness.prompts[1].body.system).toContain('NEGATIVE_MEMORY_SECTION');
-      } finally { patterns.mockRestore(); negative.mockRestore(); }
+        expect(harness.prompts[1].body.system).toContain('CASE_BACKGROUND_SECTION');
+      } finally { patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); }
     }));
 
   it('renders an issued focus-app evidence locator in both prompt variants', async () => withBackendDataDir(async () => {

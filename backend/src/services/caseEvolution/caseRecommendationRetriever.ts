@@ -10,7 +10,8 @@ import {
   type CaseKnowledgeRecommendation,
   type CaseKnowledgeReportRecommendation,
   type CaseKnowledgeResponsibility,
-  type CaseKnowledgeStatus,
+  type CuratedCaseStatus,
+  CURATED_CASE_STATUSES,
 } from '../../types/caseKnowledge';
 import type { CaseNode } from '../../types/sparkContracts';
 import { CaseLibrary } from '../caseLibrary';
@@ -30,7 +31,7 @@ export interface CaseRecommendationQuery {
   evidenceRefIds?: readonly string[];
   textQuery?: string;
   topK?: number;
-  includeStatuses?: readonly CaseKnowledgeStatus[];
+  includeStatuses?: readonly CuratedCaseStatus[];
 }
 
 export interface CaseRecommendationHit extends CaseKnowledgeReportRecommendation {
@@ -62,7 +63,7 @@ type RankedCase = {
   keywordScore: number;
 };
 
-const DEFAULT_STATUSES: readonly CaseKnowledgeStatus[] = ['published'];
+const DEFAULT_STATUSES: readonly CuratedCaseStatus[] = ['published'];
 
 export function evaluateCaseEvidenceSignature(
   signature: CaseEvidenceSignature,
@@ -98,19 +99,15 @@ export function evaluateCaseEvidenceSignature(
 }
 
 export function createCaseRetriever(deps: CaseRetrieverDeps): { retrieve(query: CaseRecommendationQuery): CaseRecommendationHit[] } {
-  // A retriever serves one retrieval, so each status is listed once for all its queries.
-  const casesByStatus = new Map<CaseKnowledgeStatus, CaseNode[]>();
-  const listCases = (status: CaseKnowledgeStatus): CaseNode[] => {
-    let cases = casesByStatus.get(status);
-    if (!cases) casesByStatus.set(status, cases = deps.library.listCases({ status }, deps.scope));
-    return cases;
-  };
+  // A retriever serves one retrieval, so the admitted cases are listed once for all its queries.
+  let admitted: CaseNode[] | undefined;
   return {
     retrieve(query: CaseRecommendationQuery) {
-      const statuses = query.includeStatuses && query.includeStatuses.length > 0
+      const statuses: readonly string[] = query.includeStatuses && query.includeStatuses.length > 0
         ? query.includeStatuses
         : DEFAULT_STATUSES;
-      const cases = statuses.flatMap(listCases);
+      admitted ??= deps.library.listAdmittedCases(CURATED_CASE_STATUSES, deps.scope);
+      const cases = admitted.filter(caseNode => statuses.includes(caseNode.status));
       const keywordScores = buildKeywordScoreMap(deps.ragStore, query, deps.scope);
       const ranked: RankedCase[] = [];
       for (const caseNode of cases) {

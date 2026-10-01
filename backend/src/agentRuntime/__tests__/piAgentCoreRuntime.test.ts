@@ -46,6 +46,7 @@ import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../../agentv3/strategyLoader';
 import * as systemPromptModule from '../../agentv3/claudeSystemPrompt';
 import * as analysisPatternMemory from '../../agentv3/analysisPatternMemory';
+import * as caseBackgroundContext from '../../services/caseEvolution/caseBackgroundContext';
 import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
 import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import {registerCodeAwareCanary, revokeCodeAwareOutputGuards, clearCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
@@ -1157,6 +1158,7 @@ describe('experimental Pi agent-core runtime contract', () => {
       recommendedComplexity: 'full', deliverable: 'report'};
     const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
     const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+    const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
     const buildPrompt = jest.spyOn(systemPromptModule, 'buildSystemPrompt');
     const runtime = new PiAgentCoreRuntime(
       createFakeTraceProcessorService(),
@@ -1174,9 +1176,10 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(patterns).toHaveBeenCalledTimes(1);
       expect(negative).toHaveBeenCalledTimes(1);
       expect(buildPrompt).toHaveBeenCalledWith(expect.objectContaining({
-        patternContext: 'PATTERN_MEMORY_SECTION', negativePatternContext: 'NEGATIVE_MEMORY_SECTION'}));
+        patternContext: 'PATTERN_MEMORY_SECTION', negativePatternContext: 'NEGATIVE_MEMORY_SECTION',
+        caseBackgroundContext: 'CASE_BACKGROUND_SECTION'}));
     } finally {
-      patterns.mockRestore(); negative.mockRestore(); buildPrompt.mockRestore();
+      patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); buildPrompt.mockRestore();
       sessionContextManager.remove('session-pi-private-experience');
     }
   });

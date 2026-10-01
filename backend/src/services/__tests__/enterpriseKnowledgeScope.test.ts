@@ -26,6 +26,9 @@ import {
   type RagChunk,
   makeSparkProvenance,
 } from '../../types/sparkContracts';
+import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -256,8 +259,8 @@ describe('enterprise knowledge scope', () => {
       makeMemoryEntry({insight: 'tenant b memory'}),
       scopeB,
     );
-    caseLibrary.saveCase(makeCase({title: 'Tenant A case'}), scopeA);
-    caseLibrary.saveCase(makeCase({title: 'Tenant B case'}), scopeB);
+    caseLibrary.saveCase(makeCase({title: 'Tenant A case'}), curator, scopeA);
+    caseLibrary.saveCase(makeCase({title: 'Tenant B case'}), curator, scopeB);
     caseGraph.addEdge(makeEdge({note: 'tenant-a'}), scopeA);
     caseGraph.addEdge(makeEdge({note: 'tenant-b'}), scopeB);
 

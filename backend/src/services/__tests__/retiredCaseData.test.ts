@@ -25,6 +25,9 @@ import {RagStore} from '../ragStore';
 import * as retiredCaseData from '../retiredCaseData';
 import {isRetiredRagChunk, RETIRED_RAG_CHUNK_SQL} from '../retiredCaseData';
 import {upsertScopedKnowledgeRecord, type KnowledgeScope} from '../scopedKnowledgeStore';
+import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 const ENV_KEYS = [
   ENTERPRISE_FEATURE_FLAG_ENV,
@@ -182,13 +185,13 @@ function openStores() {
 function seedStores() {
   const stores = openStores();
   const {library, rag, graph} = stores;
-  library.saveCase(scrollingCase('case-a'), scope);
-  library.saveCase(scrollingCase('case-b'), scope);
+  library.saveCase(scrollingCase('case-a'), curator, scope);
+  library.saveCase(scrollingCase('case-b'), curator, scope);
   rag.addChunks([caseChunk('case-a'), caseChunk('case-b')], scope);
   graph.addEdge(caseEdge('edge-ab', 'case-a', 'case-b', 0.1), scope);
   writeAsBeforeRetirement(() => {
-    library.saveCase(learnedCase(LEARNED), scope);
-    library.saveCase(learnedCase(DISGUISED), scope);
+    library.saveCase(learnedCase(LEARNED), curator, scope);
+    library.saveCase(learnedCase(DISGUISED), curator, scope);
     rag.addChunks([
       caseChunk(LEARNED, `case://learned/${LEARNED}`),
       caseChunk(LAUNDERED),
@@ -262,10 +265,10 @@ describe.each(PHASES)('retired learned cases in $name storage', phase => {
     const {library, rag, graph} = seedStores();
     const refused = /retired_case_data_write_refused/;
 
-    expect(() => library.saveCase(learnedCase('learned:new'), scope)).toThrow(refused);
-    expect(() => library.saveCase(learnedCase('case-new'), scope)).toThrow(refused);
-    expect(() => library.publishCase(LEARNED, {reviewer: 'curator'}, scope)).toThrow(/not found/);
-    expect(() => library.archiveCase(DISGUISED, {reason: 'stale'}, scope)).toThrow(/not found/);
+    expect(() => library.saveCase(learnedCase('learned:new'), curator, scope)).toThrow(refused);
+    expect(() => library.saveCase(learnedCase('case-new'), curator, scope)).toThrow(refused);
+    expect(() => library.publishCase(LEARNED, {reviewer: 'curator'}, curator, scope)).toThrow(/not found/);
+    expect(() => library.archiveCase(DISGUISED, {reason: 'stale'}, curator, scope)).toThrow(/not found/);
     expect(() => rag.addChunk(caseChunk('learned:new'), scope)).toThrow(refused);
     expect(() => rag.addChunk(caseChunk('case-new', 'case://learned/case-new'), scope)).toThrow(refused);
     expect(() => graph.addEdge(caseEdge('case-learned-edge:new', 'case-a', 'case-b'), scope)).toThrow(refused);

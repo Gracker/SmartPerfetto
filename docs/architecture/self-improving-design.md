@@ -21,7 +21,7 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 | Legacy FeedbackPipeline | 已退役 | 旧 `feedbackPipeline.ts` 已删除，不再存在第二套“反馈→学习产物”状态机 |
 | Curated/runtime Skill Notes 注入 | 已接入，默认关闭 | `SELF_IMPROVE_NOTES_INJECT_ENABLED=1`；quick path 预算默认 0 |
 | 学习 case（capture/review/ingest） | 已退役 | 管线、worker、CLI 与指标端点已删除；旧数据不再被读取、导出或写入，见下文 |
-| 人工 case 检索与背景注入 | 已接入，默认关闭 | `CASE_EVOLUTION_RETRIEVE_ENABLED`；背景注入另需 `CASE_EVOLUTION_PROMPT_INJECT_ENABLED` |
+| 人工 case 准入与读取 | 已接入 | 分析只读取策展证明有效的 case；终结召回需 `CASE_EVOLUTION_RETRIEVE_ENABLED`，背景注入另需 `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`（均默认关闭）；`recall_similar_case` 与 similarity case hint 按需读取 |
 | Legacy ReviewWorker | 组件和单测存在，未接入应用启动 | `SELF_IMPROVE_REVIEW_ENABLED` 只影响已显式构造的 worker |
 | Strategy auto-patch | 已删除 | 只能生成不参与运行时的 `phase_hints`；`SELF_IMPROVE_AUTOPATCH_ENABLED` 没有读取点 |
 | Skill SQL auto-patch | 不支持 | 没有生产入口，不允许模型直接修改 Skill SQL |
@@ -153,7 +153,7 @@ npm run test:scene-trace-regression
 Case 知识只来自人工策展：Markdown 经 `npm --prefix backend run ingest:cases` 导入（与
 `validate:cases` 共用同一校验），或经 `/api/cases` 写入。读取只需登录；写入、删除、发布、
 归档和边的增删要求 `self_evolution:curate`，curator 与 reviewer 取自登录身份，请求体里的
-名字不被采用。两个开关都默认关闭：
+名字不被采用。分析只读取策展证明有效的 case（见下文"策展准入"）。两个开关都默认关闭：
 
 - `CASE_EVOLUTION_RETRIEVE_ENABLED`：Web 分析终结前，用本次 trace 自己的帧簇数据
   （`scrolling_analysis` 的 `batch_frame_root_cause`）匹配人工 case 的证据签名。命中由
@@ -163,8 +163,54 @@ Case 知识只来自人工策展：Markdown 经 `npm --prefix backend run ingest
   这样标注。召回失败只记日志（固定文案），结果不带推荐。召回不进入语义复核，也不决定报告
   要求：模型在写答案时看不到命中，scrolling 因此不再有引用 case 的要求，`strong_case_retrieval`
   条件已退役（自定义策略仍声明时按 `invalid_condition` 处理）。CLI、对话与 scene run 不召回。
-- `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`：把 published / reviewed case 作为背景注入 system
-  prompt，需要检索同时开启；草稿从不注入，私有 run 不注入。
+- `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`：把已准入的 case 作为背景注入 system prompt，需要检索
+  同时开启。
+
+`recall_similar_case`（模型按需调用）与 similarity case hint（用户按需请求）不受这两个开关
+控制，库里没有已准入 case 时返回空。
+
+### 策展准入
+
+分析只读取 curator 为其当前内容背书过的 case（`backend/src/services/security/caseCuration.ts`）。
+旧的 `/api/cases` 只要求登录、按请求体原样保存（包括 `source` 与 reviewer），所以记录里的字段证明
+不了背书。证明（attestation）存放在记录之外：knowledge DB 中是 `memory_entries` 行信封的
+`attestation`，本地 case 文件中是与 `cases` 并列的 `attestations`。请求体只能塑造记录；写入方不
+重新设置证明就会丢掉它，按固定字段重建信封的旧版本与只写 `{schemaVersion, cases}` 的旧版本
+`persist()` 都是如此。直接修改存储文件或数据库、备份与恢复属于可信的运营操作。证明是结构性的，
+不签名：本地模式没有持久密钥，CLI 与服务端不共享密钥，轮换 API key 或 SSO 密钥会让全部 case 失效。
+
+只有两处签发证明：`/api/cases` 的写入（要求 `self_evolution:curate`，`issuer: curator_api`，
+`actor` 为登录身份），以及运营者运行的 Markdown ingest（`issuer: markdown_ingest`，由命令入口签发
+一次）。证明绑定整条记录规范化 JSON 的 sha256，任何不经签发路径的修改都会让它失效，只改状态也
+一样；`actor` 与 `issuedAt` 只是审计信息。
+
+- 保存是完整策展，签发。API 保存的 `curatedBy` 是登录身份，请求体里的 `analysisAdmitted` 与
+  `curation` 被丢弃。
+- publish 是 reviewer 对当前内容的签字，签发，也是已发布旧 case 的补戳入口。
+- archive 是维护：只有原先已准入的 case 才为归档后的内容重签。dual-write 下文件与 DB 两份副本在
+  文件锁内一起判定，一份的有效证明不能替另一份补位；cutover 之后以 DB 副本为准。
+- 重新 ingest 时，只有当前副本带有效证明、且 Markdown 内容（title、tags、findings、knowledge，
+  不含绝对路径 sourceFile）不变，才沿用此前经 API 提升的状态、curator 与 curatedAt；否则按
+  Markdown 自身声明处理并告警。没有人证明过的状态提升（例如引入准入之前写入的）不会被沿用。
+- Markdown 自己声明的 curator 与内容都不变时，curatedAt 沿用上次导入的时间。
+
+准入（`isAnalysisAdmittedCase`）要求状态为 published 或 reviewed、`redactionState` 为 `redacted`
+（作者或 curator 的共享声明；Markdown 写了 curator 才视为 redacted），且证明有效。所以没写
+curator、也没有可沿用的已证明策展的 Markdown case 不会被读取。删掉 Markdown 的 curator 并不撤销
+已有的 API 策展；要撤销，用 `/api/cases` 把它改回草稿或删除。签发即授权：该存储范围内的每个 run，私有 run 也在内，都可以把
+case 的分析字段放进 prompt 与工具结果，进而发给该 run 的 AI provider。存储范围在 DB 中是
+workspace 的全部用户，在本地 case 文件与 dual-write 的读取侧是该存储路径的单一共享库。
+
+背景注入、召回器（终结命中、`recall_similar_case` 证据分支、similarity case hint）与
+`recall_similar_case` 标签召回（进程内与独立 MCP 共用）都只经过 `CaseLibrary.listAdmittedCases`。
+`GET /api/cases` 仍返回全部 case，每条附带 `analysisAdmitted` 与 `curation`（issuer、actor、
+issuedAt）。dual-write 的文件写入在 DB COMMIT 之前完成，不是跨介质的原子提交；副本分歧在下一次
+写入时被发现。
+
+升级之后，引入准入之前写入的 case 不再被分析读取，直到补戳：Markdown case 重新运行
+`ingest:cases`；经 API 写入的 reviewed case 用 GET 读回后原样 POST；published case 重新
+`POST /api/cases/:caseId/publish`。补戳就是为当前内容背书，应先复核。分析读取跳过这类 case 时
+每个进程告警一次，只报数量。撤销 curator 权限不会追溯失效他已背书的内容。
 
 从分析结果学出 case 的管线（capture → outbox → review worker → sidecar / ingest，以及
 promote、rederive、retract CLI 和 `/api/admin/case-evolution/metrics`）已删除：它无法证明
@@ -311,6 +357,7 @@ npm run self-improve:migrate-failure-mode-hash -- --apply
 | Skill Notes 运行时预算 | `backend/src/agentRuntime/runtimeSkillNotes.ts` |
 | Legacy review/patch 组件 | `backend/src/agentv3/selfImprove/` |
 | Case 检索、背景注入与配置 | `backend/src/services/caseEvolution/` |
+| 人工 case 的策展准入 | `backend/src/services/security/caseCuration.ts`、`backend/src/services/caseLibrary.ts` |
 | 学习 case 的退役判定 | `backend/src/services/retiredCaseData.ts` |
 | Worker 启动/停止 | `backend/src/index.ts` |
 | 指标端点 | `backend/src/routes/strategyAdminRoutes.ts` |

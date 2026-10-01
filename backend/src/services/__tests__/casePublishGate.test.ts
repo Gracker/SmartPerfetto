@@ -10,6 +10,7 @@ import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
 
 import {ingestCaseKnowledge} from '../caseIngester';
 import {CaseLibrary} from '../caseLibrary';
+import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
 
 let tmpDir: string;
 let casesDir: string;
@@ -100,6 +101,7 @@ Published Markdown case body.
 function ingest() {
   return ingestCaseKnowledge({
     casesDir,
+    grant: caseCurationGrantForMarkdownIngest(),
     caseLibraryPath,
     caseGraphPath,
     ragStorePath,

@@ -3358,7 +3358,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
 
     const memoryContext = buildRuntimeMemoryContext({
       allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
-      packageName: effectivePackageName, knowledgeScope, outputLanguage, selection: options,
+      packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     if (turnPolicy.onDemandContext) {
       const quickMemoryPayload = buildQuickMemoryContextPayload({

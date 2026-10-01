@@ -49,28 +49,11 @@ export interface BuildCaseBackgroundContextOptions {
   outputLanguage?: OutputLanguage;
 }
 
-export interface RuntimeCaseBackgroundContextInput {
-  sceneType?: string;
-  architectureType?: string;
-  knowledgeScope?: KnowledgeScope;
-  outputLanguage: OutputLanguage;
-  privateAnalysisContext: boolean;
-}
-
-/** Shared privacy and localization boundary for every production runtime. */
-export function buildRuntimeCaseBackgroundContext(
-  input: RuntimeCaseBackgroundContextInput,
-  opts: BuildCaseBackgroundContextOptions = {},
-): string | undefined {
-  if (input.privateAnalysisContext) return undefined;
-  return buildCaseBackgroundContext(
-    input.sceneType,
-    input.architectureType,
-    input.knowledgeScope,
-    {...opts, outputLanguage: input.outputLanguage},
-  );
-}
-
+/**
+ * The curated cases a run's prompt starts with, when both case switches are
+ * on: the same admitted cases for every run, a private one included
+ * (`security/caseCuration.ts`).
+ */
 export function buildCaseBackgroundContext(
   sceneType: string | undefined,
   architectureType?: string,
@@ -138,17 +121,8 @@ function findBackgroundCases(opts: {
   topK: number;
   knowledgeScope?: KnowledgeScope;
 }): CaseNode[] {
-  const seen = new Set<string>();
-  const candidates: CaseNode[] = [];
-  for (const status of CURATED_CASE_STATUSES) {
-    for (const caseNode of opts.library.listCases({status}, opts.knowledgeScope)) {
-      if (seen.has(caseNode.caseId)) continue;
-      seen.add(caseNode.caseId);
-      if (!isStructuralMatch(caseNode, opts.sceneType, opts.architectureType)) continue;
-      candidates.push(caseNode);
-    }
-  }
-  return candidates
+  return opts.library.listAdmittedCases(CURATED_CASE_STATUSES, opts.knowledgeScope)
+    .filter(caseNode => isStructuralMatch(caseNode, opts.sceneType, opts.architectureType))
     .sort(compareBackgroundCases)
     .slice(0, Math.max(1, opts.topK));
 }

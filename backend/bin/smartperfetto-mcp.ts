@@ -55,6 +55,7 @@ import {
 } from '../src/services/baselineDiffer';
 import {ProjectMemory} from '../src/agentv3/projectMemory';
 import {CaseLibrary} from '../src/services/caseLibrary';
+import {recallCasesByTags} from '../src/services/caseEvolution/caseTagRecall';
 
 const LOGS_DIR = path.resolve(__dirname, '../logs');
 const RAG_PATH = path.join(LOGS_DIR, 'rag_store.json');
@@ -349,39 +350,19 @@ function buildRegistry(): McpToolRegistry {
         top_k: z.number().int().min(1).max(20).optional(),
       },
       async ({tags, app_id, device_id, cuj, include_unpublished, top_k}) => {
-        const limit = top_k ?? 5;
-        const allCases = include_unpublished
-          ? [
-              ...caseLibrary.listCases({status: 'published'}),
-              ...caseLibrary.listCases({status: 'reviewed'}),
-            ]
-          : caseLibrary.listCases({status: 'published'});
-        const wantedTags = tags ? new Set(tags) : null;
-        const hits: Array<{caseScore: number; caseId: string}> = [];
-        for (const c of allCases) {
-          if (app_id && c.key?.appId !== app_id) continue;
-          if (device_id && c.key?.deviceId !== device_id) continue;
-          if (cuj && c.key?.cuj !== cuj) continue;
-          let score = 0;
-          if (wantedTags) {
-            for (const t of c.tags) if (wantedTags.has(t)) score += 1;
-            if (score === 0) continue;
-            score = score / Math.max(wantedTags.size, 1);
-          } else {
-            score = c.status === 'published' ? 1 : 0.5;
-          }
-          hits.push({caseScore: score, caseId: c.caseId});
-        }
-        hits.sort((a, b) => b.caseScore - a.caseScore);
+        const hits = recallCasesByTags(caseLibrary, {
+          tags,
+          appId: app_id,
+          deviceId: device_id,
+          cuj,
+          includeReviewed: include_unpublished,
+          topK: top_k,
+        });
         return {
           content: [
             {
               type: 'text' as const,
-              text: JSON.stringify({
-                success: true,
-                hits: hits.slice(0, limit),
-                count: Math.min(hits.length, limit),
-              }),
+              text: JSON.stringify({success: true, hits, count: hits.length}),
             },
           ],
         };

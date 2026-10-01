@@ -2646,7 +2646,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const {patternContext, negativePatternContext, caseBackgroundContext} = buildRuntimeMemoryContext({
       allowAutomaticPrefetch: turnPolicy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
       packageName: effectivePackageName, knowledgeScope, outputLanguage: runtimeConfig.outputLanguage,
-      selection: options,
     });
 
     // Phase 6: Session-scoped artifact store + analysis notes

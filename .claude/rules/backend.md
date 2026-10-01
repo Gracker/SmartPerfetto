@@ -637,6 +637,22 @@ Important whitelisted examples:
   reported rather than counted empty (a run still reads it as empty). A save
   or rewrite whose authoritative write failed rejects before the DB copy
   changes.
+- Curated cases reach an analysis (background, `recall_similar_case`,
+  finalization hits, similarity hints) only through
+  `CaseLibrary.listAdmittedCases`: published or reviewed, `redacted`, and
+  attested for their exact current content (`services/security/caseCuration.ts`).
+  The attestation lives in the store envelope (the knowledge row envelope, or
+  `attestations` beside `cases` in the case file), never in the record: a
+  request body shapes only the record, and a writer that does not set it
+  again, an older version's included, drops it. Only two paths issue one:
+  `/api/cases` writes (`self_evolution:curate`) and Markdown ingest, whose
+  command issues the operator's grant once. A save or a publish attests; an
+  archive only carries forward an attestation the case had in every copy,
+  judged in dual-write under the file lock; a re-import keeps an earlier API
+  curation only while the stored copy is attested and the Markdown content
+  unchanged. An attestation grants every run of the store's scope, private
+  runs included, the case's analysis fields; the admin routes show
+  `analysisAdmitted` and `curation` for each case.
 
 Keep scoped selection questions lightweight. A selected slice/range is a scope
 signal, not an automatic quick/full decision.

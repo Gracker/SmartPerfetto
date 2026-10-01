@@ -19,6 +19,10 @@ import {
   type CaseNode,
   makeSparkProvenance,
 } from '../../types/sparkContracts';
+import {caseCurationGrantForMarkdownIngest} from '../../services/security/caseCuration';
+import {writeCaseFileWithoutAttestations} from '../../../tests/helpers/caseStoreFixture';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 let tmpDir: string;
 let library: CaseLibrary;
@@ -118,24 +122,24 @@ describe('POST /api/cases', () => {
 
 describe('GET /api/cases', () => {
   it('lists cases with count', async () => {
-    library.saveCase(makeCase({caseId: 'a'}));
-    library.saveCase(makeCase({caseId: 'b'}));
+    library.saveCase(makeCase({caseId: 'a'}), curator);
+    library.saveCase(makeCase({caseId: 'b'}), curator);
     const res = await request(app).get('/api/cases');
     expect(res.status).toBe(200);
     expect(res.body.count).toBe(2);
   });
 
   it('filters by status', async () => {
-    library.saveCase(makeCase({caseId: 'a', status: 'draft'}));
-    library.saveCase(makeCase({caseId: 'b', status: 'reviewed'}));
+    library.saveCase(makeCase({caseId: 'a', status: 'draft'}), curator);
+    library.saveCase(makeCase({caseId: 'b', status: 'reviewed'}), curator);
     const res = await request(app).get('/api/cases?status=reviewed');
     expect(res.body.count).toBe(1);
     expect(res.body.cases[0].caseId).toBe('b');
   });
 
   it('filters by tag', async () => {
-    library.saveCase(makeCase({caseId: 'a', tags: ['scrolling']}));
-    library.saveCase(makeCase({caseId: 'b', tags: ['anr']}));
+    library.saveCase(makeCase({caseId: 'a', tags: ['scrolling']}), curator);
+    library.saveCase(makeCase({caseId: 'b', tags: ['anr']}), curator);
     const res = await request(app).get('/api/cases?tag=scrolling');
     expect(res.body.count).toBe(1);
     expect(res.body.cases[0].caseId).toBe('a');
@@ -144,7 +148,7 @@ describe('GET /api/cases', () => {
 
 describe('GET / DELETE /api/cases/:caseId', () => {
   it('returns 200 + case body for known id', async () => {
-    library.saveCase(makeCase({caseId: 'a'}));
+    library.saveCase(makeCase({caseId: 'a'}), curator);
     const res = await request(app).get('/api/cases/a');
     expect(res.status).toBe(200);
     expect(res.body.case.caseId).toBe('a');
@@ -156,7 +160,7 @@ describe('GET / DELETE /api/cases/:caseId', () => {
   });
 
   it('DELETE removes the case', async () => {
-    library.saveCase(makeCase({caseId: 'a'}));
+    library.saveCase(makeCase({caseId: 'a'}), curator);
     const res = await request(app).delete('/api/cases/a');
     expect(res.status).toBe(200);
     expect(library.getCase('a')).toBeUndefined();
@@ -165,7 +169,7 @@ describe('GET / DELETE /api/cases/:caseId', () => {
 
 describe('POST /api/cases/:caseId/publish', () => {
   it('publishes a redacted case with the signed-in curator as reviewer', async () => {
-    library.saveCase(makeCase({caseId: 'a', redactionState: 'redacted'}));
+    library.saveCase(makeCase({caseId: 'a', redactionState: 'redacted'}), curator);
     const res = await request(app)
       .post('/api/cases/a/publish')
       .send({reviewer: 'someone-else'});
@@ -175,7 +179,7 @@ describe('POST /api/cases/:caseId/publish', () => {
   });
 
   it('returns 400 when redactionState != redacted', async () => {
-    library.saveCase(makeCase({caseId: 'a', redactionState: 'partial'}));
+    library.saveCase(makeCase({caseId: 'a', redactionState: 'partial'}), curator);
     const res = await request(app)
       .post('/api/cases/a/publish')
       .send({reviewer: 'chris'});
@@ -193,7 +197,7 @@ describe('POST /api/cases/:caseId/publish', () => {
 
 describe('POST /api/cases/:caseId/archive', () => {
   it('archives a case with reason', async () => {
-    library.saveCase(makeCase({caseId: 'a'}));
+    library.saveCase(makeCase({caseId: 'a'}), curator);
     const res = await request(app)
       .post('/api/cases/a/archive')
       .send({reason: 'archived after 90 days'});
@@ -205,7 +209,7 @@ describe('POST /api/cases/:caseId/archive', () => {
   });
 
   it('returns 400 when reason is missing', async () => {
-    library.saveCase(makeCase({caseId: 'a'}));
+    library.saveCase(makeCase({caseId: 'a'}), curator);
     const res = await request(app).post('/api/cases/a/archive').send({});
     expect(res.status).toBe(400);
   });
@@ -273,9 +277,68 @@ describe('Edge endpoints', () => {
   });
 });
 
+const writeAsBeforeAttestations = (record: CaseNode) =>
+  writeCaseFileWithoutAttestations(path.join(tmpDir, 'cases.json'), record);
+
+describe('case curation through the API', () => {
+  it('attests what a curator writes, never what a request body claims', async () => {
+    const res = await request(app).post('/api/cases').send({
+      ...makeCase({caseId: 'a', status: 'reviewed', redactionState: 'redacted'}),
+      analysisAdmitted: false,
+      curation: {issuer: 'markdown_ingest', actor: 'someone-else', issuedAt: 1},
+    });
+
+    expect(res.status).toBe(201);
+    expect(res.body.case).toMatchObject({
+      caseId: 'a',
+      analysisAdmitted: true,
+      curation: {issuer: 'curator_api', actor: DEFAULT_DEV_USER_ID, issuedAt: expect.any(Number)},
+    });
+    expect(library.getCase('a')).not.toHaveProperty('curation');
+    expect(library.getCase('a')).not.toHaveProperty('analysisAdmitted');
+    expect(library.listAdmittedCases(['reviewed']).map(c => c.caseId)).toEqual(['a']);
+  });
+
+  it('tells curators which cases analyses read', async () => {
+    writeAsBeforeAttestations(makeCase({caseId: 'c', status: 'reviewed', redactionState: 'redacted'}));
+    library.saveCase(makeCase({caseId: 'a', status: 'reviewed', redactionState: 'redacted'}), curator);
+    library.saveCase(makeCase({caseId: 'b', status: 'reviewed', redactionState: 'raw'}), curator);
+
+    const res = await request(app).get('/api/cases');
+
+    expect(res.body.cases.map((c: {caseId: string; analysisAdmitted: boolean}) => [c.caseId, c.analysisAdmitted]))
+      .toEqual([['a', true], ['b', false], ['c', false]]);
+  });
+
+  it('makes a case written before attestations readable once a curator sends it back or publishes it', async () => {
+    writeAsBeforeAttestations(makeCase({caseId: 'a', status: 'reviewed', redactionState: 'redacted'}));
+    writeAsBeforeAttestations(makeCase({caseId: 'b', status: 'published', redactionState: 'redacted', curatedBy: 'old'}));
+    const read = await request(app).get('/api/cases/a');
+    expect(read.body.case.analysisAdmitted).toBe(false);
+
+    const saved = await request(app).post('/api/cases').send(read.body.case);
+    const published = await request(app).post('/api/cases/b/publish').send({});
+
+    expect([saved.status, published.status]).toEqual([201, 200]);
+    expect([saved.body.case.analysisAdmitted, published.body.case.analysisAdmitted]).toEqual([true, true]);
+    expect(published.body.case.curatedBy).toBe(DEFAULT_DEV_USER_ID);
+  });
+
+  it('never makes a case readable by archiving it', async () => {
+    writeAsBeforeAttestations(makeCase({caseId: 'a', status: 'reviewed', redactionState: 'redacted'}));
+    library.saveCase(makeCase({caseId: 'b', status: 'reviewed', redactionState: 'redacted'}), curator);
+
+    const legacy = await request(app).post('/api/cases/a/archive').send({reason: 'stale'});
+    const attested = await request(app).post('/api/cases/b/archive').send({reason: 'stale'});
+
+    expect([legacy.body.case.analysisAdmitted, attested.body.case.analysisAdmitted]).toEqual([false, true]);
+    expect(attested.body.case.curation).toMatchObject({issuer: 'curator_api', actor: DEFAULT_DEV_USER_ID});
+  });
+});
+
 describe('case curation permission', () => {
   it('lets a signed-in user without self_evolution:curate read but not write', async () => {
-    library.saveCase(makeCase({caseId: 'a', redactionState: 'redacted'}));
+    library.saveCase(makeCase({caseId: 'a', redactionState: 'redacted'}), curator);
     graph.addEdge(makeEdge({edgeId: 'e1'}));
 
     expect((await asAnalyst(request(app).get('/api/cases'))).status).toBe(200);

@@ -232,6 +232,7 @@ import {inspectCandidateProtocol} from '../../../../services/canonicalAnalysisRe
 import {createSceneRuntimeMatrixFixture} from '../../../../../tests/helpers/sceneRuntimeMatrixFixture';
 import {candidateWithPopulation} from '../../../../../tests/helpers/conclusionDeclarationFixture';
 import * as analysisPatternMemory from '../../../../agentv3/analysisPatternMemory';
+import * as caseBackgroundContext from '../../../../services/caseEvolution/caseBackgroundContext';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../../../services/security/durableLearning';
 import type {ClaudeMcpServerOptions} from '../../../../agentv3/claudeMcpServer';
 import {NO_PRIVATE_CONTEXT} from '../../../../services/security/analysisPrivateContext';
@@ -2691,6 +2692,7 @@ describe('QoderRuntime', () => {
     it('prefetches admitted cross-session experience for a private run as for a public one', async () => {
       const patterns = jest.spyOn(analysisPatternMemory, 'buildPatternContextSection').mockReturnValue('PATTERN_MEMORY_SECTION');
       const negative = jest.spyOn(analysisPatternMemory, 'buildNegativePatternSection').mockReturnValue('NEGATIVE_MEMORY_SECTION');
+      const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
       mockQuery.mockReturnValue(createMockSdkStream([
         {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
       ]));
@@ -2703,7 +2705,8 @@ describe('QoderRuntime', () => {
         const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
         expect(systemPrompt).toContain('PATTERN_MEMORY_SECTION');
         expect(systemPrompt).toContain('NEGATIVE_MEMORY_SECTION');
-      } finally { patterns.mockRestore(); negative.mockRestore(); }
+        expect(systemPrompt).toContain('CASE_BACKGROUND_SECTION');
+      } finally { patterns.mockRestore(); negative.mockRestore(); cases.mockRestore(); }
     });
 
     it('keeps a private run\'s turn and session state in memory like the other runtimes', async () => {

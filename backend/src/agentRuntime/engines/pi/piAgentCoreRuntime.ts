@@ -2287,7 +2287,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     }
     const memoryContext = buildRuntimeMemoryContext({
       allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
-      packageName: effectivePackageName, knowledgeScope, outputLanguage, selection: options,
+      packageName: effectivePackageName, knowledgeScope, outputLanguage,
     });
     const traceInfo = this.traceProcessorService.getTrace(traceId);
     const systemPromptEnv = normalizeOptionalString(this.env[PI_AGENT_CORE_SYSTEM_PROMPT_ENV]);

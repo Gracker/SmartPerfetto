@@ -7,6 +7,7 @@ import path from 'path';
 
 import {ingestCaseKnowledge} from '../../services/caseIngester';
 import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
+import {caseCurationGrantForMarkdownIngest} from '../../services/security/caseCuration';
 
 const colors = {
   green: (s: string) => `\x1b[32m${s}\x1b[0m`,
@@ -49,7 +50,8 @@ export const ingestCommand = new Command('ingest')
     }
 
     try {
-      const result = ingestCaseKnowledge({casesDir});
+      // Whoever runs this command is the operator whose authority attests the imported cases.
+      const result = ingestCaseKnowledge({casesDir, grant: caseCurationGrantForMarkdownIngest()});
       console.log(`${colors.green('DONE')} Ingested ${result.caseCount} case file(s)`);
       console.log(`  CaseLibrary: ${colors.gray(result.caseLibraryPath)}`);
       console.log(`  CaseGraph:   ${colors.gray(result.caseGraphPath)}`);

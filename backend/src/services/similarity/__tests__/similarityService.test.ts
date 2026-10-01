@@ -20,6 +20,9 @@ import { openEnterpriseDb } from '../../enterpriseDb';
 import { RagStore } from '../../ragStore';
 import { createTraceSimilarityService } from '../similarityService';
 import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
+import {caseCurationGrantForMarkdownIngest} from '../../security/caseCuration';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 const originalDbPath = process.env.SMARTPERFETTO_ENTERPRISE_DB_PATH;
 
@@ -153,8 +156,8 @@ function addPublishedCase(library: CaseLibrary, ragStore: RagStore): void {
       },
     },
   };
-  library.saveCase(record);
-  library.publishCase(record.caseId, { reviewer: 'test' });
+  library.saveCase(record, curator);
+  library.publishCase(record.caseId, {reviewer: 'test'}, curator);
   const chunk: RagChunk = {
     chunkId: 'case:case-shader:summary',
     kind: 'case_library',

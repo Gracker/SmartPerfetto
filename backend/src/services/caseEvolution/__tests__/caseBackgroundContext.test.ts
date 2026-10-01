@@ -10,11 +10,12 @@ import { afterEach, beforeEach, describe, expect, it } from '@jest/globals';
 
 import type { CaseNode } from '../../../types/sparkContracts';
 import { CaseLibrary } from '../../caseLibrary';
-import {
-  buildCaseBackgroundContext,
-  buildRuntimeCaseBackgroundContext,
-} from '../caseBackgroundContext';
+import { buildCaseBackgroundContext } from '../caseBackgroundContext';
 import { loadCaseEvolutionConfig } from '../caseEvolutionConfig';
+import {caseCurationGrantForMarkdownIngest} from '../../security/caseCuration';
+import {writeCaseFileWithoutAttestations} from '../../../../tests/helpers/caseStoreFixture';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 let tmpDir: string;
 let library: CaseLibrary;
@@ -66,7 +67,7 @@ function caseNode(caseId: string, status: CaseNode['status'], quality: 'curated'
 
 describe('buildCaseBackgroundContext', () => {
   it('returns undefined when prompt injection is off by default', () => {
-    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'), curator);
 
     expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
@@ -75,8 +76,8 @@ describe('buildCaseBackgroundContext', () => {
   });
 
   it('surfaces reviewed background cases without copying recommendation text', () => {
-    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
-    library.saveCase(caseNode('case-draft', 'draft', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'), curator);
+    library.saveCase(caseNode('case-draft', 'draft', 'imported'), curator);
 
     const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
@@ -93,7 +94,7 @@ describe('buildCaseBackgroundContext', () => {
   });
 
   it('renders an English-only context when English output is configured', () => {
-    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'), curator);
 
     const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
@@ -110,25 +111,26 @@ describe('buildCaseBackgroundContext', () => {
     expect(context).not.toMatch(/可能相关|状态：|关键证据条件/);
   });
 
-  it('does not inject durable case memory into a private source or RAG analysis', () => {
-    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
+  it('injects only cases analyses may read: undeclared or unattested reviewed cases stay out', () => {
+    writeCaseFileWithoutAttestations(path.join(tmpDir, 'case_library.json'), caseNode('case-legacy', 'reviewed', 'curated'));
+    library.saveCase({...caseNode('case-raw', 'reviewed', 'curated'), redactionState: 'raw'}, curator);
+    library.saveCase(caseNode('case-attested', 'reviewed', 'imported'), curator);
 
-    expect(buildRuntimeCaseBackgroundContext({
-      sceneType: 'scrolling',
-      architectureType: 'android',
-      outputLanguage: 'en',
-      privateAnalysisContext: true,
-    }, {
+    const context = buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
       config: loadCaseEvolutionConfig({
         CASE_EVOLUTION_RETRIEVE_ENABLED: '1',
         CASE_EVOLUTION_PROMPT_INJECT_ENABLED: '1',
       }),
-    })).toBeUndefined();
+    });
+
+    expect(context).toContain('case-attested');
+    expect(context).not.toContain('case-legacy');
+    expect(context).not.toContain('case-raw');
   });
 
   it('never injects drafts: the retired draft switch is ignored', () => {
-    library.saveCase(caseNode('case-draft', 'draft', 'curated'));
+    library.saveCase(caseNode('case-draft', 'draft', 'curated'), curator);
 
     expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,
@@ -141,7 +143,7 @@ describe('buildCaseBackgroundContext', () => {
   });
 
   it('silently drops the segment when it exceeds its dedicated prompt budget', () => {
-    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'));
+    library.saveCase(caseNode('case-reviewed', 'reviewed', 'imported'), curator);
 
     expect(buildCaseBackgroundContext('scrolling', 'android', undefined, {
       library,

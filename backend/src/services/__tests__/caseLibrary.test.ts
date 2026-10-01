@@ -14,6 +14,9 @@ import {
   type CaseNode,
   makeSparkProvenance,
 } from '../../types/sparkContracts';
+import {caseCurationGrantForMarkdownIngest} from '../security/caseCuration';
+
+const curator = caseCurationGrantForMarkdownIngest();
 
 let tmpDir: string;
 let storagePath: string;
@@ -49,7 +52,7 @@ describe('CaseLibrary — basic CRUD', () => {
   it('saves and reads back a draft case', () => {
     const lib = new CaseLibrary(storagePath);
     const c = makeCase();
-    lib.saveCase(c);
+    lib.saveCase(c, curator);
     expect(lib.getCase(c.caseId)).toEqual(c);
   });
 
@@ -60,15 +63,15 @@ describe('CaseLibrary — basic CRUD', () => {
 
   it('removeCase returns true when present', () => {
     const lib = new CaseLibrary(storagePath);
-    lib.saveCase(makeCase({caseId: 'a'}));
+    lib.saveCase(makeCase({caseId: 'a'}), curator);
     expect(lib.removeCase('a')).toBe(true);
     expect(lib.removeCase('a')).toBe(false);
   });
 
   it('replaces a case on re-save with the same id', () => {
     const lib = new CaseLibrary(storagePath);
-    lib.saveCase(makeCase({caseId: 'a', title: 'old'}));
-    lib.saveCase(makeCase({caseId: 'a', title: 'new'}));
+    lib.saveCase(makeCase({caseId: 'a', title: 'old'}), curator);
+    lib.saveCase(makeCase({caseId: 'a', title: 'new'}), curator);
     expect(lib.getCase('a')?.title).toBe('new');
   });
 
@@ -76,8 +79,8 @@ describe('CaseLibrary — basic CRUD', () => {
     const first = new CaseLibrary(storagePath);
     const second = new CaseLibrary(storagePath);
 
-    first.saveCase(makeCase({caseId: 'a'}));
-    second.saveCase(makeCase({caseId: 'b'}));
+    first.saveCase(makeCase({caseId: 'a'}), curator);
+    second.saveCase(makeCase({caseId: 'b'}), curator);
 
     expect(new CaseLibrary(storagePath).listCases().map(item => item.caseId)).toEqual(['a', 'b']);
   });
@@ -93,6 +96,7 @@ describe('CaseLibrary — saveCase rejects status=published', () => {
           redactionState: 'redacted',
           curatedBy: 'someone',
         }),
+        curator,
       ),
     ).toThrow(/publishCase/);
   });
@@ -102,22 +106,22 @@ describe('CaseLibrary — publishCase double-control gate', () => {
   it('rejects publish without an existing case', () => {
     const lib = new CaseLibrary(storagePath);
     expect(() =>
-      lib.publishCase('missing', {reviewer: 'chris'}),
+      lib.publishCase('missing', {reviewer: 'chris'}, curator),
     ).toThrow(/not found/);
   });
 
   it('rejects publish without reviewer name', () => {
     const lib = new CaseLibrary(storagePath);
-    lib.saveCase(makeCase({caseId: 'a'}));
-    expect(() => lib.publishCase('a', {reviewer: '   '})).toThrow(
+    lib.saveCase(makeCase({caseId: 'a'}), curator);
+    expect(() => lib.publishCase('a', {reviewer: '   '}, curator)).toThrow(
       /reviewer signoff/,
     );
   });
 
   it('rejects publish when redactionState is not redacted', () => {
     const lib = new CaseLibrary(storagePath);
-    lib.saveCase(makeCase({caseId: 'a', redactionState: 'partial'}));
-    expect(() => lib.publishCase('a', {reviewer: 'chris'})).toThrow(
+    lib.saveCase(makeCase({caseId: 'a', redactionState: 'partial'}), curator);
+    expect(() => lib.publishCase('a', {reviewer: 'chris'}, curator)).toThrow(
       /redactionState/,
     );
   });
@@ -126,8 +130,9 @@ describe('CaseLibrary — publishCase double-control gate', () => {
     const lib = new CaseLibrary(storagePath);
     lib.saveCase(
       makeCase({caseId: 'a', redactionState: 'redacted'}),
+      curator,
     );
-    const published = lib.publishCase('a', {reviewer: 'chris'});
+    const published = lib.publishCase('a', {reviewer: 'chris'}, curator);
     expect(published.status).toBe('published');
     expect(published.curatedBy).toBe('chris');
     expect(published.curatedAt).toBeGreaterThan(0);
@@ -140,8 +145,9 @@ describe('CaseLibrary — publishCase double-control gate', () => {
     const lib = new CaseLibrary(storagePath);
     lib.saveCase(
       makeCase({caseId: 'a', redactionState: 'redacted'}),
+      curator,
     );
-    const published = lib.publishCase('a', {reviewer: '  chris  '});
+    const published = lib.publishCase('a', {reviewer: '  chris  '}, curator);
     expect(published.curatedBy).toBe('chris');
   });
 });
@@ -151,10 +157,11 @@ describe('CaseLibrary — archiveCase', () => {
     const lib = new CaseLibrary(storagePath);
     lib.saveCase(
       makeCase({caseId: 'a', traceArtifactId: 'artifact-001'}),
+      curator,
     );
     const archived = lib.archiveCase('a', {
       reason: 'archived after 90 days',
-    });
+    }, curator);
     expect(archived.traceArtifactId).toBeUndefined();
     expect(archived.traceUnavailableReason).toBe(
       'archived after 90 days',
@@ -167,23 +174,23 @@ describe('CaseLibrary — archiveCase', () => {
 
   it('rejects archive without a reason', () => {
     const lib = new CaseLibrary(storagePath);
-    lib.saveCase(makeCase({caseId: 'a'}));
-    expect(() => lib.archiveCase('a', {reason: '  '})).toThrow(
+    lib.saveCase(makeCase({caseId: 'a'}), curator);
+    expect(() => lib.archiveCase('a', {reason: '  '}, curator)).toThrow(
       /reason/,
     );
   });
 
   it('rejects archive when case is missing', () => {
     const lib = new CaseLibrary(storagePath);
-    expect(() => lib.archiveCase('missing', {reason: 'x'})).toThrow(
+    expect(() => lib.archiveCase('missing', {reason: 'x'}, curator)).toThrow(
       /not found/,
     );
   });
 
   it('preserves other fields on archive', () => {
     const lib = new CaseLibrary(storagePath);
-    lib.saveCase(makeCase({caseId: 'a', tags: ['scrolling']}));
-    const archived = lib.archiveCase('a', {reason: 'x'});
+    lib.saveCase(makeCase({caseId: 'a', tags: ['scrolling']}), curator);
+    const archived = lib.archiveCase('a', {reason: 'x'}, curator);
     expect(archived.tags).toEqual(['scrolling']);
     expect(archived.findings).toHaveLength(1);
   });
@@ -193,6 +200,7 @@ describe('CaseLibrary — listing', () => {
   function seed(lib: CaseLibrary): void {
     lib.saveCase(
       makeCase({caseId: 'a', tags: ['scrolling'], educationalLevel: 'novice'}),
+      curator,
     );
     lib.saveCase(
       makeCase({
@@ -200,6 +208,7 @@ describe('CaseLibrary — listing', () => {
         tags: ['anr'],
         educationalLevel: 'intermediate',
       }),
+      curator,
     );
     lib.saveCase(
       makeCase({
@@ -207,8 +216,9 @@ describe('CaseLibrary — listing', () => {
         redactionState: 'redacted',
         tags: ['memory'],
       }),
+      curator,
     );
-    lib.publishCase('c', {reviewer: 'chris'});
+    lib.publishCase('c', {reviewer: 'chris'}, curator);
   }
 
   it('lists everything sorted by id by default', () => {
@@ -245,7 +255,7 @@ describe('CaseLibrary — listing', () => {
 describe('CaseLibrary — persistence', () => {
   it('persists across instances', () => {
     const lib1 = new CaseLibrary(storagePath);
-    lib1.saveCase(makeCase({caseId: 'a'}));
+    lib1.saveCase(makeCase({caseId: 'a'}), curator);
     const lib2 = new CaseLibrary(storagePath);
     expect(lib2.getCase('a')).toBeDefined();
   });
@@ -258,7 +268,7 @@ describe('CaseLibrary — persistence', () => {
       const lib = new CaseLibrary(storagePath);
       expect(lib.getCase('a')).toBeUndefined();
       expect(fs.existsSync(storagePath)).toBe(true);
-      expect(() => lib.saveCase(makeCase({caseId: 'a'}))).toThrow(/^Case library is unreadable$/);
+      expect(() => lib.saveCase(makeCase({caseId: 'a'}), curator)).toThrow(/^Case library is unreadable$/);
     });
     expect(JSON.stringify(warnings)).not.toContain('CASE-CANARY');
     expect(fs.readFileSync(storagePath, 'utf-8')).toBe(corrupt);
@@ -266,12 +276,13 @@ describe('CaseLibrary — persistence', () => {
 
   it('getStats counts cases by status', () => {
     const lib = new CaseLibrary(storagePath);
-    lib.saveCase(makeCase({caseId: 'a', status: 'draft'}));
-    lib.saveCase(makeCase({caseId: 'b', status: 'reviewed'}));
+    lib.saveCase(makeCase({caseId: 'a', status: 'draft'}), curator);
+    lib.saveCase(makeCase({caseId: 'b', status: 'reviewed'}), curator);
     lib.saveCase(
       makeCase({caseId: 'c', redactionState: 'redacted'}),
+      curator,
     );
-    lib.publishCase('c', {reviewer: 'chris'});
+    lib.publishCase('c', {reviewer: 'chris'}, curator);
     expect(lib.getStats()).toEqual({
       draft: 1,
       reviewed: 1,

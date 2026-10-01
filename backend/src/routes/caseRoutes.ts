@@ -29,6 +29,7 @@ import {authenticate, requireRequestContext} from '../middleware/auth';
 import {hasRbacPermission, sendForbidden} from '../services/rbac';
 import {CaseLibrary} from '../services/caseLibrary';
 import {CaseGraph} from '../services/caseGraph';
+import {caseCurationGrantForRequest} from '../services/security/caseCuration';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 import type {
   CaseEdge,
@@ -64,8 +65,12 @@ function requireCurationForWrites(req: Request, res: Response, next: NextFunctio
   sendForbidden(res, 'Case curation requires self_evolution:curate permission');
 }
 
-/** Test/factory hook. Pass explicit stores; default singletons
- * point at `backend/logs/case_library.json` + `case_graph.json`. */
+/**
+ * Test/factory hook. Pass explicit stores; default singletons point at
+ * `backend/logs/case_library.json` + `case_graph.json`. Every case these
+ * routes return says whether analyses read it and who last vouched for it
+ * (`security/caseCuration.ts`).
+ */
 export function createCaseRoutes(
   library?: CaseLibrary,
   graph?: CaseGraph,
@@ -151,7 +156,7 @@ export function createCaseRoutes(
       tag?: string;
       level?: string;
     };
-    const cases = lib.listCases({
+    const cases = lib.listCasesForCuration({
       status: status as CurationStatus | undefined,
       anyOfTags: tag ? [tag] : undefined,
       educationalLevel: level as CaseEducationalLevel | undefined,
@@ -169,11 +174,10 @@ export function createCaseRoutes(
         error: 'Body must be a CaseNode with caseId, title, status',
       });
     }
-    // The curator is whoever is signed in, never a name the body supplies.
-    const c: CaseNode = {...body, curatedBy: context.userId};
     try {
-      lib.saveCase(c, scope);
-      return res.status(201).json({success: true, case: c});
+      // The curator is whoever is signed in, never a name the body supplies.
+      const saved = lib.saveCase(body, caseCurationGrantForRequest(context), scope);
+      return res.status(201).json({success: true, case: saved});
     } catch (err) {
       return res.status(400).json({
         success: false,
@@ -184,7 +188,7 @@ export function createCaseRoutes(
 
   router.get('/:caseId', (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const c = lib.getCase(req.params.caseId, scope);
+    const c = lib.getCaseForCuration(req.params.caseId, scope);
     if (!c) {
       return res.status(404).json({
         success: false,
@@ -207,12 +211,15 @@ export function createCaseRoutes(
     res.json({success: true});
   });
 
-  /** POST /api/cases/:caseId/publish — the signed-in curator is the reviewer. */
+  /**
+   * POST /api/cases/:caseId/publish — the signed-in curator is the reviewer
+   * and attests the case's current content.
+   */
   router.post('/:caseId/publish', (req, res) => {
     const context = requireRequestContext(req);
     const scope = knowledgeScopeFromRequestContext(context);
     try {
-      const published = lib.publishCase(req.params.caseId, {reviewer: context.userId}, scope);
+      const published = lib.publishCase(req.params.caseId, {}, caseCurationGrantForRequest(context), scope);
       return res.json({success: true, case: published});
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -221,12 +228,13 @@ export function createCaseRoutes(
     }
   });
 
-  /** POST /api/cases/:caseId/archive — body `{reason}`. */
+  /** POST /api/cases/:caseId/archive — body `{reason}`; never makes analyses read a case they did not. */
   router.post('/:caseId/archive', (req, res) => {
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
     const reason = (req.body?.reason ?? '') as string;
     try {
-      const archived = lib.archiveCase(req.params.caseId, {reason}, scope);
+      const archived = lib.archiveCase(req.params.caseId, {reason}, caseCurationGrantForRequest(context), scope);
       return res.json({success: true, case: archived});
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
