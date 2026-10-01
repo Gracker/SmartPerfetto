@@ -668,6 +668,7 @@ describe('trace processor lease proxy routes', () => {
             'Sec-WebSocket-Version': '13',
             'Sec-WebSocket-Protocol': capability.protocol,
             Origin: 'http://127.0.0.1:54321',
+            'X-Correlation-Id': 'ws correlation:1',
           },
         });
         req.setTimeout(5000, () => {
@@ -699,6 +700,10 @@ describe('trace processor lease proxy routes', () => {
 
       expect(echoed).toContain('101 Switching Protocols');
       expect(echoed).toContain('ping-through-proxy');
+      // The upgrade has no Express request, yet resolves the same request id.
+      const holder = getTraceProcessorLeaseStore().getLeaseById(scope, lease.id)
+        ?.holders.find(item => item.holderRef === 'window-a');
+      expect(holder?.metadata).toEqual(expect.objectContaining({requestId: 'wscorrelation:1'}));
     } finally {
       for (const socket of proxySockets) {
         socket.destroy();

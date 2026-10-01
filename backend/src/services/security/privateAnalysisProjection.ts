@@ -153,13 +153,16 @@ function projectPrivateCodeLookupSummary(
     summary.sourceUseDecision,
     currentSelectedCodebaseIds,
   );
+  const boundedCount = (count: number | undefined) => Math.max(0, Math.min(1_000_000, Math.floor(count || 0)));
+  const unreadableRecordCount = boundedCount(summary.unreadableRecordCount);
   return {
-    lookupCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.lookupCount || 0))),
-    patchCount: Math.max(0, Math.min(1_000_000, Math.floor(summary.patchCount || 0))),
+    lookupCount: boundedCount(summary.lookupCount),
+    patchCount: boundedCount(summary.patchCount),
     referencedCodebaseIds,
     ...(usedCodebaseIds?.length ? {usedCodebaseIds} : {}),
     ...(usedKnowledgeSources?.length ? {usedKnowledgeSources} : {}),
     ...(sourceUseDecision ? {sourceUseDecision} : {}),
+    ...(unreadableRecordCount > 0 ? {unreadableRecordCount} : {}),
   };
 }
 

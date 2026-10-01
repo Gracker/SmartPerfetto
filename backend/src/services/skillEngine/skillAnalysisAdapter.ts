@@ -12,6 +12,7 @@
 import { scopeMetadata, type EvidenceScopeProvenanceV1 } from '../../types/identityContract';
 import { resultScopeProvenance } from './scopeEvidence';
 import { nonObservedStepState } from './stepExecutionState';
+import { selectReferencedSkillStep } from './referencedSkillStep';
 import { TraceProcessorService } from '../traceProcessorService';
 import {
   failedTraceVendorResolution,
@@ -957,16 +958,9 @@ export class SkillAnalysisAdapter {
       return (nested as any).data ?? {};
     }
 
-    const rawResults = (nested as any).rawResults;
-    if (rawResults && typeof rawResults === 'object') {
-      if ((rawResults as any).root?.data !== undefined) {
-        return (rawResults as any).root.data ?? {};
-      }
-      for (const step of Object.values(rawResults as Record<string, any>)) {
-        if (step && typeof step === 'object' && Object.prototype.hasOwnProperty.call(step, 'data')) {
-          return (step as any).data ?? {};
-        }
-      }
+    const selected = selectReferencedSkillStep(nested);
+    if (selected) {
+      return selected.data ?? {};
     }
 
     const nestedDisplayResults = Array.isArray((nested as any).displayResults)

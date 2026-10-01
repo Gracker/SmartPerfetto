@@ -10,7 +10,7 @@ import {SkillExecutor} from '../../skillEngine/skillExecutor';
 import {buildTraceProcessorQueryProvenance} from '../../traceProcessorConnectionModel';
 import {captureEvidenceTable, evidenceTableFor} from '../evidenceCapture';
 import {isIssuedInvestigationEvidenceSnapshot, investigationEvidenceFingerprint, compactInvestigationEvidence,
-  compactInvestigationEvidenceForSemantic,
+  compactInvestigationEvidenceForSemantic, investigationEvidenceSemanticBudgets,
   investigationCaptureFields, validateInvestigationEvidenceDeclarations, LEDGER_PER_METRIC_BUDGET,
   type InvestigationEvidenceDeclaration, type InvestigationEvidenceSnapshot} from '../investigationEvidenceLedger';
 import type {RuntimeToolInvocationEvent} from '../../../agentRuntime/runtimeToolObserver';
@@ -364,6 +364,22 @@ describe('bounded investigation provider view', () => {
     expect(semantic.omittedRecordCount).toBe(0);
     expect(semantic.complete).toBe(snapshot.complete);
     expect(compactInvestigationEvidenceForSemantic(snapshot, FINAL_SEMANTIC_INPUT_BYTE_LIMIT + 1)).toBeUndefined();
+  });
+
+  // Finalization sizes its prompt only at these budgets, so each must be the
+  // least one admitting its cohort, measured against the real serialization.
+  it('places each semantic budget exactly where one more whole cohort fits', async () => {
+    const snapshot = await largeSnapshot();
+    const budgets = investigationEvidenceSemanticBudgets(snapshot);
+    expect(budgets).toHaveLength(31);
+    expect(compactInvestigationEvidenceForSemantic(snapshot, budgets[0] - 1)).toBeUndefined();
+    budgets.forEach((budget, cohorts) => {
+      const view = compactInvestigationEvidenceForSemantic(snapshot, budget)!;
+      expect(view.records).toHaveLength(10 * cohorts);
+      expect(Buffer.byteLength(JSON.stringify(view), 'utf8')).toBeLessThanOrEqual(budget);
+      expect(Buffer.byteLength(JSON.stringify({...view, byteBudget: budget - 1}), 'utf8')).toBeGreaterThan(budget - 1);
+      if (cohorts > 0) expect(compactInvestigationEvidenceForSemantic(snapshot, budget - 1)!.records).toHaveLength(10 * (cohorts - 1));
+    });
   });
 
   it('retains complete small evidence and incomplete capture provenance', async () => {
