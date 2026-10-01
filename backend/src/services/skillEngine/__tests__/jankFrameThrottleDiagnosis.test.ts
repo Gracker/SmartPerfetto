@@ -133,8 +133,13 @@ function diagnose(scenario: Scenario): Promise<DiagnosticResult[]> {
 
 const LIMIT_ASSERTION = '帧窗口内观测到 CPU 限频';
 const RANGE_OBSERVATION = '核组频率最高';
+/** How a hint defers a frequency cause to the frame's limit evidence. */
+const LIMIT_DEFERRAL = '是否限频以本帧的 CPU 限频证据为准';
 const find = (diagnostics: DiagnosticResult[], ...markers: string[]) =>
   diagnostics.filter(d => markers.some(marker => d.diagnosis.includes(marker)));
+const texts = (diagnostics: DiagnosticResult[]) => diagnostics.flatMap(d => [d.diagnosis, ...(d.suggestions ?? [])]);
+/** Wording that names a thermal cause. */
+const THERMAL_CAUSE = /温控降频|温控策略|温度|过热|散热/;
 
 const RULES = JSON.stringify(stepOf(PARENT, 'frame_diagnosis').rules);
 /** Fields frame_diagnosis reads from a row of `name`, as `.data[0]` or `.data.find(c => c.cluster === '…')`. */
@@ -164,8 +169,8 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
     const diagnostics = await diagnose({limit: OBSERVED, freq: bigRange(1000, 2400)});
     expect(find(diagnostics, LIMIT_ASSERTION)).toHaveLength(1);
     expect(find(diagnostics, RANGE_OBSERVATION)).toHaveLength(0);
-    for (const text of diagnostics.flatMap(d => [d.diagnosis, ...(d.suggestions ?? [])])) {
-      expect(text).not.toMatch(/温度过高|过热|散热/);
+    for (const text of texts(diagnostics)) {
+      expect(text).not.toMatch(THERMAL_CAUSE);
     }
   });
 
@@ -222,9 +227,20 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
       .flatMap(d => d.suggestions ?? []);
     expect(hints).toHaveLength(4);
     for (const text of hints) {
-      expect(text).not.toMatch(/温控降频|温控策略|温度/);
+      expect(text).not.toMatch(THERMAL_CAUSE);
     }
-    expect(hints.filter(text => text.includes('是否限频以本帧的 CPU 限频证据为准'))).toHaveLength(2);
+    expect(hints.filter(text => text.includes(LIMIT_DEFERRAL))).toHaveLength(2);
+  });
+
+  it('names thermal control only in rules that read the frame limit evidence or root cause', () => {
+    // Negations that defer a frequency cause to the limit evidence are not a cause.
+    const deferrals = ['不是限频或温控证据', '不能说明温控或限频'];
+    const offenders = stepOf(PARENT, 'frame_diagnosis').rules
+      .filter((rule: any) => !/freq_limit_evidence|root_cause/.test(rule.condition))
+      .flatMap((rule: any) => [rule.diagnosis, ...(rule.suggestions ?? [])])
+      .filter((text: string) => /温控|温度|过热|散热|thermal/i.test(
+        deferrals.reduce((rest, deferral) => rest.split(deferral).join(''), text)));
+    expect(offenders).toEqual([]);
   });
 
   it('reads only fields and values the child evidence step can produce', () => {
@@ -321,8 +337,13 @@ async function runTopologyBacked(answers: {migration: Rows | 'error'; cluster: R
   return {diagnostics: result.diagnostics, inputs};
 }
 
-const MIGRATION_FINDINGS = ['从大核迁移到小核', '运行占比仅'];
-const CLUSTER_FINDINGS = ['大核簇负载', '大核簇中有核心接近'];
+const MIGRATION_FINDINGS = ['迁移到小核', '运行占比仅'];
+const CLUSTER_FINDINGS = ['簇负载', '簇中有核心接近'];
+
+const clusterRow = (cluster: string, loadPct: number, maxSingleCorePct = 80) =>
+  ({cluster, core_count: 2, load_pct: loadPct, max_single_core_pct: maxSingleCorePct});
+/** Wording that asserts a cause, a thread identity or a scope these rows do not establish. */
+const UNEVIDENCED_CAUSE = new RegExp(`${THERMAL_CAUSE.source}|UI 线程|资源严重不足|资源紧张|导致调度延迟|整体负载|整机`);
 
 describe('jank_frame_detail topology-backed child bindings', () => {
   it('binds the read steps rows, and the rules cite them', async () => {
@@ -330,7 +351,7 @@ describe('jank_frame_detail topology-backed child bindings', () => {
     expect(inputs.migration_data).toEqual(MIGRATION_ROWS);
     expect(inputs.cluster_load_data).toEqual(CLUSTER_ROWS);
     expect(find(diagnostics, ...MIGRATION_FINDINGS).map(d => d.diagnosis)).toEqual([
-      'RenderThread 从大核迁移到小核 5次',
+      'RenderThread 从大核组（超大/大/中核）迁移到小核 5 次，小核迁回大核组 4 次（迁移次数最多的线程）',
       'RenderThread 大核组（超大/大/中核）运行占比仅 20%',
     ]);
     expect(find(diagnostics, ...CLUSTER_FINDINGS).map(d => d.diagnosis)).toEqual([
@@ -340,6 +361,56 @@ describe('jank_frame_detail topology-backed child bindings', () => {
     // Evidence is drawn only from `name.data` in a condition, which the cluster rules do not write.
     expect(find(diagnostics, ...MIGRATION_FINDINGS).map(d => d.evidence?.migration_data?._firstRow))
       .toEqual([MIGRATION_ROWS[0], MIGRATION_ROWS[0]]);
+  });
+
+  it('keeps the migration and cluster-load hints free of an unevidenced cause', async () => {
+    // The thread with the most migrations is not the UI thread, and every tier is saturated.
+    const migration: Rows = [
+      {...MIGRATION_ROWS[0], thread_name: 'Thread-7'},
+      {...MIGRATION_ROWS[0], thread_name: 'RenderThread', migration_count: 4, big_to_little: 3},
+    ];
+    const cluster = [clusterRow('超大核簇', 95), clusterRow('大核簇', 95, 99), clusterRow('中核簇', 95),
+      clusterRow('小核簇', 96)];
+    const {diagnostics} = await runTopologyBacked({migration, cluster});
+    const migrationFindings = find(diagnostics, ...MIGRATION_FINDINGS);
+    expect(migrationFindings.map(d => d.severity)).toEqual(['warning', 'warning']);
+    for (const finding of migrationFindings) expect(finding.diagnosis).toMatch(/^Thread-7 /);
+    const clusterFindings = find(diagnostics, ...CLUSTER_FINDINGS);
+    const bigTierSaturated = ['大核簇负载 95%，接近跑满', '超大核簇负载 95%，接近跑满', '中核簇负载 95%，接近跑满'];
+    expect(clusterFindings.map(d => [d.diagnosis, d.severity])).toEqual([
+      [bigTierSaturated[0], 'critical'],
+      [bigTierSaturated[1], 'critical'],
+      [bigTierSaturated[2], 'warning'],
+      ['小核簇负载 96%，几乎跑满', 'warning'],
+      ['大核簇与小核簇负载均高于 70%: 大核簇 95%, 小核簇 96%', 'warning'],
+      ['大核簇中有核心接近 100% (99%)', 'info'],
+    ]);
+
+    for (const text of texts([...migrationFindings, ...clusterFindings])) {
+      expect(text).not.toMatch(UNEVIDENCED_CAUSE);
+    }
+    // Placement and Running-time share carry no frequency: the migration and the
+    // big-tier saturation hints defer to the limit evidence.
+    const deferring = [...migrationFindings,
+      ...clusterFindings.filter(d => bigTierSaturated.includes(d.diagnosis))];
+    expect(deferring).toHaveLength(5);
+    for (const finding of deferring) {
+      expect(finding.suggestions?.some(text => text.includes(LIMIT_DEFERRAL))).toBe(true);
+    }
+  });
+
+  it('states only the tiers a cluster rule measured', async () => {
+    const littleOnly = find((await runTopologyBacked({migration: [],
+      cluster: [clusterRow('大核簇', 40), clusterRow('小核簇', 96)]})).diagnostics, ...CLUSTER_FINDINGS);
+    expect(littleOnly.map(d => d.diagnosis)).toEqual(['小核簇负载 96%，几乎跑满']);
+
+    const bigAndLittle = find((await runTopologyBacked({migration: [], cluster: [clusterRow('超大核簇', 20),
+      clusterRow('大核簇', 75), clusterRow('中核簇', 20), clusterRow('小核簇', 75)]})).diagnostics, ...CLUSTER_FINDINGS);
+    expect(bigAndLittle.map(d => d.diagnosis)).toEqual(['大核簇与小核簇负载均高于 70%: 大核簇 75%, 小核簇 75%']);
+
+    for (const text of texts([...littleOnly, ...bigAndLittle])) {
+      expect(text).not.toMatch(UNEVIDENCED_CAUSE);
+    }
   });
 
   it('binds an empty read step as empty, never the topology reference before it', async () => {
