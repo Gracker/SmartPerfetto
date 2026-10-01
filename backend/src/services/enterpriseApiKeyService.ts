@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import crypto from 'crypto';
-import type { Request } from 'express';
+import type { IncomingMessage } from 'http';
 import type Database from 'better-sqlite3';
 import type { RequestContext, RequestContextAuthType } from '../middleware/auth';
 import { sanitizeContextId } from '../utils/contextId';
@@ -144,7 +144,7 @@ function parseApiKeyToken(token: string | undefined): ApiKeyTokenParts | null {
   return sanitizeContextId(id) === id && secret.length >= 32 ? { id, secret } : null;
 }
 
-export function extractEnterpriseApiKeyToken(req: Request): string | undefined {
+export function extractEnterpriseApiKeyToken(req: IncomingMessage): string | undefined {
   const authHeader = req.headers.authorization;
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice('Bearer '.length).trim();
@@ -157,7 +157,7 @@ export function extractEnterpriseApiKeyToken(req: Request): string | undefined {
   return undefined;
 }
 
-export function requestHasEnterpriseApiKeyCredential(req: Request): boolean {
+export function requestHasEnterpriseApiKeyCredential(req: IncomingMessage): boolean {
   return Boolean(extractEnterpriseApiKeyToken(req));
 }
 
@@ -321,7 +321,7 @@ export class EnterpriseApiKeyService {
     return row ? rowToRecord(row) : null;
   }
 
-  resolveRequestIdentityFromRequest(req: Request): RequestApiKeyIdentity | null {
+  resolveRequestIdentityFromRequest(req: IncomingMessage): RequestApiKeyIdentity | null {
     const parts = parseApiKeyToken(extractEnterpriseApiKeyToken(req));
     if (!parts) return null;
     const row = this.getRow(parts.id);

@@ -4,6 +4,7 @@
 
 import crypto from 'crypto';
 import type { Request } from 'express';
+import type { IncomingMessage } from 'http';
 import type Database from 'better-sqlite3';
 import { resolveAuthConfig } from '../config';
 import type { RequestContextAuthType } from '../middleware/auth';
@@ -142,7 +143,7 @@ function parseCookieHeader(header: string | undefined): Map<string, string> {
   return cookies;
 }
 
-function bearerTokenFromRequest(req: Request): string | undefined {
+function bearerTokenFromRequest(req: IncomingMessage): string | undefined {
   const authHeader = req.headers.authorization;
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     return authHeader.slice('Bearer '.length).trim();
@@ -327,7 +328,7 @@ export class EnterpriseSsoService {
     `).get(tenantId, userId));
   }
 
-  resolveRequestIdentityFromRequest(req: Request): RequestSsoIdentity | null {
+  resolveRequestIdentityFromRequest(req: IncomingMessage): RequestSsoIdentity | null {
     const token = this.extractSessionToken(req);
     if (!token) return null;
     const session = this.getSessionFromToken(token);
@@ -628,7 +629,7 @@ export class EnterpriseSsoService {
     return listEnterpriseAuditEvents(this.db);
   }
 
-  private extractSessionToken(req: Request): string | undefined {
+  private extractSessionToken(req: IncomingMessage): string | undefined {
     const bearer = bearerTokenFromRequest(req);
     if (bearer?.startsWith(SESSION_TOKEN_PREFIX)) return bearer;
     const cookieToken = parseCookieHeader(req.headers.cookie).get(SESSION_COOKIE_NAME);

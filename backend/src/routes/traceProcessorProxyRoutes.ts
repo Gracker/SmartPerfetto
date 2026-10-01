@@ -6,17 +6,17 @@ import express, { Router, type Request, type Response } from 'express';
 import type { IncomingMessage } from 'http';
 import net, { type Socket } from 'net';
 import type { Duplex } from 'stream';
-import { resolveFeatureConfig, serverConfig } from '../config';
+import { serverConfig } from '../config';
 import {
+  allowsDevIdentity,
   authenticate,
+  buildRequestContext,
   DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
+  resolveCredentialIdentity,
+  type ContextIdentity,
   type RequestContext,
-  type RequestContextAuthType,
 } from '../middleware/auth';
-import { getFirstHeaderValue, getHeaderValue, parseHeaderList } from '../middleware/requestHeaders';
 import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from '../middleware/requestId';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
@@ -30,8 +30,6 @@ import {
 } from '../services/traceProcessorLeaseStore';
 import { normalizeTraceProcessorQueryPriority } from '../services/traceProcessorSqlWorker';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
-import { EnterpriseSsoService } from '../services/enterpriseSsoService';
-import { EnterpriseApiKeyService } from '../services/enterpriseApiKeyService';
 import type { EnterpriseRepositoryScope } from '../services/enterpriseRepository';
 import {
   issueTraceProcessorProxyCapability,
@@ -63,120 +61,38 @@ class TraceProcessorProxyError extends Error {
   }
 }
 
-interface RequestIdentity {
-  userId: string;
-  authType: RequestContextAuthType;
-  tenantId?: string;
-  workspaceId?: string;
-  roles?: string[];
-  scopes?: string[];
-}
-
 interface ProxyTarget {
   lease: TraceProcessorLeaseRecord;
   port: number;
   scope: EnterpriseRepositoryScope;
 }
 
-function trustedHeadersEnabled(): boolean {
-  const value = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
-  return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value || '').trim().toLowerCase());
+/**
+ * The upgrade request's RequestContext. A browser cannot set headers on a
+ * WebSocket upgrade, so the query string supplies scope after the headers;
+ * everything else follows HTTP authentication through buildRequestContext.
+ */
+function upgradeRequestContext(
+  req: IncomingMessage,
+  query: URLSearchParams,
+  identity: ContextIdentity,
+): RequestContext {
+  return buildRequestContext(req, identity, {
+    tenantId: queryId(query, 'tenantId'),
+    workspaceId: queryId(query, 'workspaceId'),
+    windowId: queryId(query, 'windowId'),
+  });
 }
 
-function defaultRolesForAuthType(authType: RequestContextAuthType): string[] {
-  return authType === 'dev' ? ['org_admin'] : ['analyst'];
-}
-
-function defaultScopesForAuthType(authType: RequestContextAuthType): string[] {
-  return authType === 'dev'
-    ? ['*']
-    : ['trace:read', 'trace:write', 'agent:run', 'report:read'];
-}
-
-function resolveTrustedSsoIdentity(req: IncomingMessage): RequestIdentity | null {
-  if (!trustedHeadersEnabled()) return null;
-  const userId = sanitizeContextId(getFirstHeaderValue(req, [
-    'x-smartperfetto-sso-user-id',
-    'x-sso-user-id',
-    'x-auth-request-user',
-  ]));
-  if (!userId) return null;
-
-  return {
-    userId,
-    authType: 'sso',
-    tenantId: sanitizeContextId(getFirstHeaderValue(req, [
-      'x-smartperfetto-sso-tenant-id',
-      'x-sso-tenant-id',
-      'x-tenant-id',
-    ])) || undefined,
-    workspaceId: sanitizeContextId(getFirstHeaderValue(req, [
-      'x-smartperfetto-sso-workspace-id',
-      'x-sso-workspace-id',
-      'x-workspace-id',
-    ])) || undefined,
-    roles: parseHeaderList(req, [
-      'x-smartperfetto-sso-roles',
-      'x-sso-roles',
-    ], defaultRolesForAuthType('sso')),
-    scopes: parseHeaderList(req, [
-      'x-smartperfetto-sso-scopes',
-      'x-sso-scopes',
-    ], defaultScopesForAuthType('sso')),
-  };
-}
-
-function queryValue(req: IncomingMessage, key: string): string {
-  const url = new URL(req.url || '/', 'http://127.0.0.1');
-  return sanitizeContextId(url.searchParams.get(key) || '');
-}
-
-function contextFromIdentity(req: IncomingMessage, identity: RequestIdentity): RequestContext {
-  const authType = identity.authType;
-  const windowId =
-    sanitizeContextId(getHeaderValue(req, 'x-window-id')) ||
-    queryValue(req, 'windowId') ||
-    undefined;
-
-  return {
-    tenantId:
-      identity.tenantId ||
-      sanitizeContextId(getFirstHeaderValue(req, ['x-tenant-id', 'x-sso-tenant-id'])) ||
-      queryValue(req, 'tenantId') ||
-      DEFAULT_TENANT_ID,
-    workspaceId:
-      identity.workspaceId ||
-      sanitizeContextId(getFirstHeaderValue(req, ['x-workspace-id', 'x-sso-workspace-id'])) ||
-      queryValue(req, 'workspaceId') ||
-      DEFAULT_WORKSPACE_ID,
-    userId: identity.userId,
-    authType,
-    roles: identity.roles ?? defaultRolesForAuthType(authType),
-    scopes: identity.scopes ?? defaultScopesForAuthType(authType),
-    requestId: requestIdOf(req),
-    ...(windowId ? { windowId } : {}),
-  };
+function queryId(query: URLSearchParams, key: string): string {
+  return sanitizeContextId(query.get(key) || '');
 }
 
 function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): RequestContext | null {
-  const trustedIdentity = resolveTrustedSsoIdentity(req);
-  if (trustedIdentity) return contextFromIdentity(req, trustedIdentity);
-
-  try {
-    const ssoIdentity = EnterpriseSsoService.getInstance()
-      .resolveRequestIdentityFromRequest(req as Request);
-    if (ssoIdentity) return contextFromIdentity(req, ssoIdentity);
-  } catch {
-    // Fall through to API key or dev fallback.
-  }
-
-  try {
-    const apiKeyIdentity = EnterpriseApiKeyService.getInstance()
-      .resolveRequestIdentityFromRequest(req as Request);
-    if (apiKeyIdentity) return contextFromIdentity(req, apiKeyIdentity);
-  } catch {
-    // Fall through to dev fallback.
-  }
+  const query = new URL(req.url || '/', 'http://127.0.0.1').searchParams;
+  const credential = resolveCredentialIdentity(req);
+  if (credential.kind === 'identity') return upgradeRequestContext(req, query, credential.identity);
+  if (credential.kind === 'rejected') return null;
 
   const capabilityContext = resolveTraceProcessorProxyCapability(
     req.headers['sec-websocket-protocol'],
@@ -184,9 +100,9 @@ function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): Re
   );
   if (capabilityContext) return {...capabilityContext, requestId: requestIdOf(req)};
 
-  if (!resolveFeatureConfig().enterprise && !process.env.SMARTPERFETTO_API_KEY?.trim()) {
-    return contextFromIdentity(req, {
-      userId: queryValue(req, 'userId') || DEFAULT_DEV_USER_ID,
+  if (allowsDevIdentity()) {
+    return upgradeRequestContext(req, query, {
+      userId: queryId(query, 'userId') || DEFAULT_DEV_USER_ID,
       authType: 'dev',
     });
   }

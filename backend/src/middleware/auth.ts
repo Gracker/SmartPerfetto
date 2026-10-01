@@ -4,8 +4,9 @@
 
 import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
+import type { IncomingMessage } from 'http';
 import { ErrorResponse } from '../types';
-import { isOidcConfigurationPresent, resolveFeatureConfig } from '../config';
+import { isOidcConfigurationPresent, isSsoTrustedHeadersEnabled, resolveFeatureConfig } from '../config';
 import {
   EnterpriseApiKeyService,
   requestHasEnterpriseApiKeyCredential,
@@ -38,7 +39,6 @@ interface AuthenticatedRequest extends Request {
 }
 
 const API_KEY_ENV = 'SMARTPERFETTO_API_KEY';
-const SSO_TRUSTED_HEADERS_ENV = 'SMARTPERFETTO_SSO_TRUSTED_HEADERS';
 const SSO_SESSION_TOKEN_PREFIX = 'sp_sso_';
 const SSO_SESSION_COOKIE_NAME = 'sp_sso_session';
 export const DEFAULT_TENANT_ID = 'default-dev-tenant';
@@ -98,6 +98,22 @@ interface ResolvedIdentity {
   scopes?: string[];
 }
 
+/** The parts of an identity that shape its RequestContext. */
+export type ContextIdentity = Pick<
+  ResolvedIdentity,
+  'userId' | 'authType' | 'tenantId' | 'workspaceId' | 'roles' | 'scopes'
+>;
+
+/**
+ * Scope values a caller supplies outside the headers, consulted after them.
+ * Only the WebSocket upgrade path has any: a browser cannot set headers on it.
+ */
+interface RequestContextFallbacks {
+  tenantId?: string;
+  workspaceId?: string;
+  windowId?: string;
+}
+
 const getProvidedApiKey = (req: Request): string | undefined => {
   const authHeader = req.headers.authorization;
   if (authHeader && authHeader.startsWith('Bearer ')) {
@@ -110,20 +126,8 @@ const getProvidedApiKey = (req: Request): string | undefined => {
   return undefined;
 };
 
-const requestHasSsoSessionCredential = (req: Request): boolean => {
-  const authHeader = req.headers.authorization;
-  if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    return authHeader.slice('Bearer '.length).trim().startsWith(SSO_SESSION_TOKEN_PREFIX);
-  }
-  return typeof req.headers.cookie === 'string'
-    && req.headers.cookie.split(';').some((cookie) => {
-      const [name, value = ''] = cookie.trim().split('=');
-      return name === SSO_SESSION_COOKIE_NAME
-        && decodeURIComponent(value).startsWith(SSO_SESSION_TOKEN_PREFIX);
-    });
-};
-
-const requestHasOidcSessionCredential = (req: Request): boolean => {
+/** A malformed session cookie counts as no session rather than throwing. */
+const requestHasSessionCredential = (req: IncomingMessage): boolean => {
   const authHeader = req.headers.authorization;
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     return authHeader.slice('Bearer '.length).trim().startsWith(SSO_SESSION_TOKEN_PREFIX);
@@ -154,11 +158,6 @@ const safeEquals = (a: string, b: string): boolean => {
 const hashApiKey = (apiKey: string): string =>
   crypto.createHash('sha256').update(apiKey).digest('hex').slice(0, 8);
 
-const truthyEnv = (value: string | undefined): boolean => {
-  if (!value) return false;
-  return ['1', 'true', 'yes', 'on', 'enabled'].includes(value.trim().toLowerCase());
-};
-
 const sanitizeHeaderText = (value: unknown): string => {
   if (typeof value !== 'string') return '';
   return value.trim().replace(/[\r\n]/g, '').slice(0, 320);
@@ -172,18 +171,31 @@ const defaultScopesForAuthType = (authType: RequestContextAuthType): string[] =>
     ? ['*']
     : ['trace:read', 'trace:write', 'agent:run', 'report:read'];
 
-const buildRequestContext = (req: Request, identity: ResolvedIdentity): RequestContext => {
+/**
+ * The RequestContext of a resolved identity, shared by HTTP authentication and
+ * the trace-processor WebSocket upgrade. An API-key identity without a bound
+ * workspace gets the default one: neither headers nor fallbacks select it.
+ */
+export const buildRequestContext = (
+  req: IncomingMessage,
+  identity: ContextIdentity,
+  fallbacks: RequestContextFallbacks = {},
+): RequestContext => {
   const tenantId = identity.tenantId
     || sanitizeContextId(getFirstHeaderValue(req, ['x-tenant-id', 'x-sso-tenant-id']))
+    || fallbacks.tenantId
     || DEFAULT_TENANT_ID;
   const workspaceId = identity.workspaceId || (
     identity.authType === 'api_key'
       ? DEFAULT_WORKSPACE_ID
       : sanitizeContextId(getFirstHeaderValue(req, ['x-workspace-id', 'x-sso-workspace-id']))
+        || fallbacks.workspaceId
         || DEFAULT_WORKSPACE_ID
   );
   const requestId = requestIdOf(req);
-  const windowId = sanitizeContextId(getHeaderValue(req, 'x-window-id')) || undefined;
+  const windowId = sanitizeContextId(getHeaderValue(req, 'x-window-id'))
+    || fallbacks.windowId
+    || undefined;
 
   return {
     tenantId,
@@ -221,8 +233,9 @@ const makeStaticApiKeyIdentity = (req: Request, apiKey: string): ResolvedIdentit
   scopes: ['*'],
 });
 
-const resolveTrustedSsoIdentity = (req: Request): ResolvedIdentity | null => {
-  if (!truthyEnv(process.env[SSO_TRUSTED_HEADERS_ENV])) return null;
+/** The identity a trusted SSO proxy asserted in headers, when that trust is enabled. */
+const resolveTrustedSsoIdentity = (req: IncomingMessage): ResolvedIdentity | null => {
+  if (!isSsoTrustedHeadersEnabled(process.env)) return null;
 
   const userId = sanitizeContextId(getFirstHeaderValue(req, [
     'x-smartperfetto-sso-user-id',
@@ -261,6 +274,66 @@ const resolveTrustedSsoIdentity = (req: Request): ResolvedIdentity | null => {
   };
 };
 
+type CredentialResolution =
+  | {
+    kind: 'identity';
+    identity: ResolvedIdentity;
+    source: 'trusted_headers' | 'sso_session' | 'enterprise_api_key';
+  }
+  | { kind: 'rejected'; details: string }
+  | { kind: 'none' };
+
+/**
+ * The identity carried by a request's SSO or enterprise credential: trusted SSO
+ * headers, then an SSO/OIDC session, then an enterprise API key. HTTP
+ * authentication and the trace-processor WebSocket upgrade both use it, so the
+ * trust rules cannot drift apart. Built-in OIDC accepts neither trusted headers
+ * nor enterprise API keys. A credential that is present but unusable is
+ * `rejected` (a failing lookup only in enterprise mode); `none` leaves the
+ * caller to its own fallbacks.
+ */
+export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResolution => {
+  const oidcConfigured = isOidcConfigurationPresent(process.env);
+
+  const trustedIdentity = oidcConfigured ? null : resolveTrustedSsoIdentity(req);
+  if (trustedIdentity) {
+    return { kind: 'identity', identity: trustedIdentity, source: 'trusted_headers' };
+  }
+
+  if (requestHasSessionCredential(req)) {
+    try {
+      const sessionIdentity = EnterpriseSsoService.getInstance().resolveRequestIdentityFromRequest(req);
+      if (sessionIdentity) return { kind: 'identity', identity: sessionIdentity, source: 'sso_session' };
+    } catch (error) {
+      if (resolveFeatureConfig(process.env).enterprise) {
+        return { kind: 'rejected', details: error instanceof Error ? error.message : 'Invalid SSO session' };
+      }
+    }
+  }
+
+  if (!oidcConfigured && requestHasEnterpriseApiKeyCredential(req)) {
+    try {
+      const apiKeyIdentity = EnterpriseApiKeyService.getInstance().resolveRequestIdentityFromRequest(req);
+      return apiKeyIdentity
+        ? { kind: 'identity', identity: apiKeyIdentity, source: 'enterprise_api_key' }
+        : { kind: 'rejected', details: 'Invalid or expired API key' };
+    } catch (error) {
+      if (resolveFeatureConfig(process.env).enterprise) {
+        return { kind: 'rejected', details: error instanceof Error ? error.message : 'Invalid or expired API key' };
+      }
+    }
+  }
+
+  return { kind: 'none' };
+};
+
+/**
+ * Whether an unauthenticated request may act as the local dev identity: no
+ * operator API key and not enterprise mode (which built-in OIDC implies).
+ */
+export const allowsDevIdentity = (): boolean =>
+  !process.env[API_KEY_ENV] && !resolveFeatureConfig(process.env).enterprise;
+
 const attachIdentity = (req: AuthenticatedRequest, identity: ResolvedIdentity): void => {
   req.user = {
     id: identity.userId,
@@ -298,56 +371,20 @@ export const authenticate = async (
   next: NextFunction
 ): Promise<void> => {
   const oidcConfigured = isOidcConfigurationPresent(process.env);
-  const ssoIdentity = oidcConfigured ? null : resolveTrustedSsoIdentity(req);
-  if (ssoIdentity) {
-    attachIdentity(req, ssoIdentity);
-    next();
+  const credential = resolveCredentialIdentity(req);
+  if (credential.kind === 'rejected') {
+    sendUnauthorized(res, credential.details);
     return;
   }
-
-  const hasSessionCredential = oidcConfigured
-    ? requestHasOidcSessionCredential(req)
-    : requestHasSsoSessionCredential(req);
-  if (hasSessionCredential) {
-    try {
-      const ssoService = EnterpriseSsoService.getInstance();
-      const sessionIdentity = ssoService.resolveRequestIdentityFromRequest(req);
-      if (sessionIdentity) {
-        if (oidcConfigured && !enforceSsoCookieMutationProtection(req, res, ssoService)) return;
-        attachIdentity(req, sessionIdentity);
-        next();
-        return;
-      }
-    } catch (error) {
-      if (resolveFeatureConfig(process.env).enterprise) {
-        sendUnauthorized(
-          res,
-          error instanceof Error ? error.message : 'Invalid SSO session',
-        );
-        return;
-      }
-    }
-  }
-
-  if (!oidcConfigured && requestHasEnterpriseApiKeyCredential(req)) {
-    try {
-      const apiKeyIdentity = EnterpriseApiKeyService.getInstance().resolveRequestIdentityFromRequest(req);
-      if (apiKeyIdentity) {
-        attachIdentity(req, apiKeyIdentity);
-        next();
-        return;
-      }
-      sendUnauthorized(res, 'Invalid or expired API key');
+  if (credential.kind === 'identity') {
+    if (credential.source === 'sso_session'
+      && oidcConfigured
+      && !enforceSsoCookieMutationProtection(req, res, EnterpriseSsoService.getInstance())) {
       return;
-    } catch (error) {
-      if (resolveFeatureConfig(process.env).enterprise) {
-        sendUnauthorized(
-          res,
-          error instanceof Error ? error.message : 'Invalid or expired API key',
-        );
-        return;
-      }
     }
+    attachIdentity(req, credential.identity);
+    next();
+    return;
   }
 
   if (oidcConfigured) {
@@ -355,14 +392,14 @@ export const authenticate = async (
     return;
   }
 
-  const configuredKey = process.env[API_KEY_ENV];
-  if (!configuredKey) {
-    if (resolveFeatureConfig(process.env).enterprise) {
-      sendUnauthorized(res, 'Enterprise mode requires SSO or API key authentication');
-      return;
-    }
+  if (allowsDevIdentity()) {
     attachIdentity(req, makeDevIdentity());
     next();
+    return;
+  }
+  const configuredKey = process.env[API_KEY_ENV];
+  if (!configuredKey) {
+    sendUnauthorized(res, 'Enterprise mode requires SSO or API key authentication');
     return;
   }
 
