@@ -97,6 +97,14 @@ function hasConfiguredValue(value: string | undefined): boolean {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/**
+ * Whether request headers from a trusted SSO proxy carry identity. The OIDC
+ * startup guard and request authentication must read the flag identically.
+ */
+export function isSsoTrustedHeadersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseFeatureFlag(env.SMARTPERFETTO_SSO_TRUSTED_HEADERS);
+}
+
 export function isOidcConfigurationPresent(env: NodeJS.ProcessEnv = process.env): boolean {
   return OIDC_CONFIG_ENV_KEYS.some(key => hasConfiguredValue(env[key]));
 }
@@ -133,7 +141,7 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthCon
         `OIDC mode requires ${SMARTPERFETTO_SERVER_SECRET_ENV} (at least 32 bytes)`,
       );
     }
-    if (parseBoolEnv('SMARTPERFETTO_SSO_TRUSTED_HEADERS', false, env)) {
+    if (isSsoTrustedHeadersEnabled(env)) {
       throw new Error('OIDC mode cannot be combined with SMARTPERFETTO_SSO_TRUSTED_HEADERS');
     }
     const urls = new Map<string, URL>();

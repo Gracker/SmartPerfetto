@@ -3,12 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { IncomingMessage } from 'http';
-
-/** Keep a caller-supplied identifier to a bounded, header- and log-safe charset. */
-export const sanitizeContextId = (value: unknown): string => {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-};
+import { sanitizeContextId } from '../utils/contextId';
 
 export const getHeaderValue = (req: IncomingMessage, name: string): string => {
   const value = req.headers[name.toLowerCase()];

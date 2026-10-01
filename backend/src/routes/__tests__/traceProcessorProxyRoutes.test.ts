@@ -12,6 +12,7 @@ import path from 'path';
 import request from 'supertest';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
+import { EnterpriseApiKeyService } from '../../services/enterpriseApiKeyService';
 import type { EnterpriseRepositoryScope } from '../../services/enterpriseRepository';
 import {
   getTraceProcessorLeaseStore,
@@ -35,6 +36,15 @@ const originalEnv = {
   apiKey: process.env.SMARTPERFETTO_API_KEY,
   capabilitySecret: process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
 };
+const oidcEnv: Record<string, string> = {
+  SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+  SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+  SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+  SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+  SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+  FRONTEND_URL: 'https://app.example.test',
+};
+const originalOidcEnv = Object.fromEntries(Object.keys(oidcEnv).map(key => [key, process.env[key]]));
 
 const scope: EnterpriseRepositoryScope = {
   tenantId: 'tenant-a',
@@ -104,6 +114,67 @@ async function listen(server: Server): Promise<number> {
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('server did not bind to a TCP port');
   return address.port;
+}
+
+/** Attempt a WebSocket upgrade; resolves 101 when the proxy tunnelled it, else the HTTP status. */
+async function upgradeStatus(
+  proxyPort: number,
+  urlPath: string,
+  headers: Record<string, string> = {},
+): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const req = http.request({host: '127.0.0.1', port: proxyPort, path: urlPath, headers: {
+      Upgrade: 'websocket', Connection: 'Upgrade', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
+      'Sec-WebSocket-Version': '13', ...headers,
+    }});
+    req.setTimeout(5000, () => req.destroy(new Error('websocket upgrade timed out')));
+    req.on('response', res => {res.resume(); resolve(res.statusCode ?? 0);});
+    req.on('upgrade', (res, socket) => {socket.destroy(); resolve(res.statusCode ?? 0);});
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+async function withUpgradeProxy(run: (proxyPort: number) => Promise<void>): Promise<void> {
+  const proxyServer = http.createServer(makeApp());
+  // Upgraded sockets leave the server's connection tracking, so close them here.
+  const proxySockets = new Set<NetSocket>();
+  proxyServer.on('connection', socket => {
+    proxySockets.add(socket);
+    socket.on('close', () => proxySockets.delete(socket));
+  });
+  proxyServer.on('upgrade', (req, socket, head) => {
+    if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
+    socket.destroy();
+  });
+  const proxyPort = await listen(proxyServer);
+  try {
+    await run(proxyPort);
+  } finally {
+    for (const socket of proxySockets) socket.destroy();
+    await closeServer(proxyServer);
+  }
+}
+
+function frontendHolder(holderRef: string) {
+  return getTraceProcessorLeaseStore().getLeaseById(scope, lease.id)
+    ?.holders.find(holder => holder.holderRef === holderRef);
+}
+
+let apiKeyDb: ReturnType<typeof openEnterpriseDb> | undefined;
+
+function useEnterpriseApiKeyService(): EnterpriseApiKeyService {
+  apiKeyDb = openEnterpriseDb(dbPath);
+  const service = new EnterpriseApiKeyService(apiKeyDb);
+  EnterpriseApiKeyService.setInstanceForTests(service);
+  return service;
+}
+
+function createEnterpriseApiKey(service: EnterpriseApiKeyService, options: {workspaceId?: null} = {}): string {
+  return service.createApiKey({
+    tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a', authType: 'sso',
+    roles: ['org_admin'], scopes: ['*'], requestId: 'seed-api-key',
+  }, options).token;
 }
 
 async function closeServer(server?: Server): Promise<void> {
@@ -263,6 +334,10 @@ afterEach(async () => {
     TRACE_PROCESSOR_CAPABILITY_SECRET_ENV,
     originalEnv.capabilitySecret,
   );
+  for (const [key, value] of Object.entries(originalOidcEnv)) restoreEnvValue(key, value);
+  EnterpriseApiKeyService.resetForTests();
+  apiKeyDb?.close();
+  apiKeyDb = undefined;
   resetTraceProcessorProxyCapabilitiesForTests();
   await fs.rm(tmpDir, { recursive: true, force: true });
 });
@@ -289,69 +364,29 @@ describe('trace processor lease proxy routes', () => {
     const privateLease = store.acquireHolder(scope, 'trace-a', {holderType: 'agent_run', holderRef: 'private-websocket',
       metadata: {analysisRunPrivate: true}}, {mode: 'isolated'});
     store.markStarting(scope, privateLease.id); store.markReady(scope, privateLease.id);
-    const proxyServer = http.createServer(makeApp());
-    proxyServer.on('upgrade', (req, socket, head) => {handleTraceProcessorProxyUpgrade(req, socket, head);});
-    const proxyPort = await listen(proxyServer);
-    try {
-      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
-      const capability = issueTraceProcessorProxyCapability({context: {
-        tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a', authType: 'api_key',
-        roles: ['api_key'], scopes: ['trace:read'], requestId: 'private-upgrade', windowId: 'window-a',
-      }, leaseId: privateLease.id});
-      const status = await new Promise<number | undefined>((resolve, reject) => {
-        const req = http.request({host: '127.0.0.1', port: proxyPort, path: `/api/tp/${privateLease.id}/websocket`, headers: {
-          Upgrade: 'websocket', Connection: 'Upgrade', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
-          'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Protocol': capability.protocol,
-        }});
-        req.setTimeout(5000, () => req.destroy(new Error('private websocket response timeout')));
-        req.on('response', res => {res.resume(); resolve(res.statusCode);});
-        req.on('upgrade', (_res, socket) => {socket.destroy(); reject(new Error('Private websocket unexpectedly upgraded'));});
-        req.on('error', reject); req.end();
-      });
-      expect(status).toBe(403);
-      expect(store.getLeaseById(scope, privateLease.id)?.holders.map(holder => holder.holderType)).toEqual(['agent_run']);
-      expect(exposeNativePortMock).not.toHaveBeenCalled();
-      expect(upstreamSockets.size).toBe(0);
-    } finally {await closeServer(proxyServer);}
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+    const capability = issueTraceProcessorProxyCapability({context: {
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a', authType: 'api_key',
+      roles: ['api_key'], scopes: ['trace:read'], requestId: 'private-upgrade', windowId: 'window-a',
+    }, leaseId: privateLease.id});
+    await withUpgradeProxy(async proxyPort => {
+      expect(await upgradeStatus(proxyPort, `/api/tp/${privateLease.id}/websocket`, {
+        'Sec-WebSocket-Protocol': capability.protocol,
+      })).toBe(403);
+    });
+    expect(store.getLeaseById(scope, privateLease.id)?.holders.map(holder => holder.holderType)).toEqual(['agent_run']);
+    expect(exposeNativePortMock).not.toHaveBeenCalled();
+    expect(upstreamSockets.size).toBe(0);
   });
 
   it('rejects unauthenticated websocket upgrades when a legacy API key is configured', async () => {
     process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
     process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
     process.env.SMARTPERFETTO_API_KEY = 'configured-legacy-key';
-    const app = makeApp();
-    const proxyServer = http.createServer(app);
-    proxyServer.on('upgrade', (req, socket, head) => {
-      if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
-      socket.destroy();
+    await withUpgradeProxy(async proxyPort => {
+      expect(await upgradeStatus(proxyPort,
+        `/api/tp/${lease.id}/websocket?tenantId=tenant-a&workspaceId=workspace-a`)).toBe(401);
     });
-    const proxyPort = await listen(proxyServer);
-
-    try {
-      const status = await new Promise<number>((resolve, reject) => {
-        const req = http.request({
-          host: '127.0.0.1',
-          port: proxyPort,
-          path: `/api/tp/${lease.id}/websocket?tenantId=tenant-a&workspaceId=workspace-a`,
-          headers: {
-            Upgrade: 'websocket',
-            Connection: 'Upgrade',
-            'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==',
-            'Sec-WebSocket-Version': '13',
-          },
-        });
-        req.on('response', response => resolve(response.statusCode ?? 0));
-        req.on('upgrade', (_response, socket) => {
-          socket.destroy();
-          reject(new Error('unauthenticated websocket unexpectedly upgraded'));
-        });
-        req.on('error', reject);
-        req.end();
-      });
-      expect(status).toBe(401);
-    } finally {
-      await closeServer(proxyServer);
-    }
   });
 
   it('proxies status and query bytes through the scoped lease', async () => {
@@ -710,5 +745,89 @@ describe('trace processor lease proxy routes', () => {
       }
       await closeServer(proxyServer);
     }
+  });
+  // The upgrade resolves identity through the same function as HTTP auth; the
+  // query string only adds scope a browser cannot send as a header.
+  it('resolves a trusted SSO upgrade with the HTTP defaults and query scope', async () => {
+    await withUpgradeProxy(async proxyPort => {
+      const status = await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket?workspaceId=workspace-a&windowId=window-q`, {
+        'X-SmartPerfetto-SSO-User-Id': 'user-a',
+        'X-SmartPerfetto-SSO-Tenant-Id': 'tenant-a',
+      });
+      expect(status).toBe(101);
+      expect(frontendHolder('window-q')?.metadata).toEqual(expect.objectContaining({userId: 'user-a'}));
+    });
+  });
+
+  it('resolves a local dev upgrade from the query string', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+    await withUpgradeProxy(async proxyPort => {
+      const status = await upgradeStatus(proxyPort,
+        `/api/tp/${lease.id}/websocket?tenantId=tenant-a&workspaceId=workspace-a&windowId=window-dev&userId=user-a`);
+      expect(status).toBe(101);
+      expect(frontendHolder('window-dev')?.metadata).toEqual(expect.objectContaining({userId: 'user-a'}));
+    });
+  });
+
+  it('never trusts SSO identity headers on an upgrade under built-in OIDC', async () => {
+    Object.assign(process.env, oidcEnv);
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'yes';
+    await withUpgradeProxy(async proxyPort => {
+      const status = await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket`, {
+        'X-SmartPerfetto-SSO-User-Id': 'user-a',
+        'X-SmartPerfetto-SSO-Tenant-Id': 'tenant-a',
+        'X-SmartPerfetto-SSO-Workspace-Id': 'workspace-a',
+        'X-Window-Id': 'forged-window',
+      });
+      expect(status).not.toBe(101);
+      expect(frontendHolder('forged-window')).toBeUndefined();
+      expect(exposeNativePortMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('accepts no enterprise API key on an upgrade under built-in OIDC', async () => {
+    Object.assign(process.env, oidcEnv);
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+    const token = createEnterpriseApiKey(useEnterpriseApiKeyService());
+    await withUpgradeProxy(async proxyPort => {
+      expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket`, {
+        Authorization: `Bearer ${token}`,
+      })).toBe(401);
+      expect(exposeNativePortMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('keeps an unbound enterprise API key in the default workspace on an upgrade', async () => {
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+    const service = useEnterpriseApiKeyService();
+    const boundToken = createEnterpriseApiKey(service);
+    const unboundToken = createEnterpriseApiKey(service, {workspaceId: null});
+    await withUpgradeProxy(async proxyPort => {
+      expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket`, {
+        Authorization: `Bearer ${boundToken}`,
+      })).toBe(101);
+      // As over HTTP, neither the query nor a header selects its workspace.
+      expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket?workspaceId=workspace-a`, {
+        Authorization: `Bearer ${unboundToken}`,
+        'X-Workspace-Id': 'workspace-a',
+      })).toBe(404);
+    });
+  });
+
+  it('rejects an unusable enterprise API key instead of falling back to a capability', async () => {
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+    useEnterpriseApiKeyService();
+    const capability = issueTraceProcessorProxyCapability({context: {
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a', authType: 'api_key',
+      roles: ['api_key'], scopes: ['trace:read'], requestId: 'capability-request', windowId: 'window-cap',
+    }, leaseId: lease.id});
+    await withUpgradeProxy(async proxyPort => {
+      expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket`, {
+        Authorization: 'Bearer spak_revoked-or-unknown',
+        'Sec-WebSocket-Protocol': capability.protocol,
+      })).toBe(401);
+      expect(frontendHolder('window-cap')).toBeUndefined();
+    });
   });
 });

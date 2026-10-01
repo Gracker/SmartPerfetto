@@ -4,7 +4,7 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import { getRequestContext } from './auth';
-import { sanitizeContextId } from './requestHeaders';
+import { sanitizeContextId } from '../utils/contextId';
 import { sendResourceNotFound } from '../services/resourceOwnership';
 
 type WorkspaceScopedRequest = Request & {
