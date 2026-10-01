@@ -106,7 +106,7 @@ import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 // =============================================================================
 
 import { DisplayLayer } from './types';
-import { nonObservedStepState, type StepExecutionState } from './stepExecutionState';
+import { isObservedStepResult, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
 
 /**
  * Synthesize Data - 标记为 synthesize 的步骤数据
@@ -435,7 +435,7 @@ class ExpressionEvaluator {
    * docs/reference/skill-system.md, 解析优先级): iteration item, save_as, step
    * result, input, inherited. Every name reader resolves here, so a calling
    * Skill's value never stands in for this Skill's own binding. A `null`
-   * save_as counts as bound: a `save_from` step that observed nothing stops here.
+   * save_as counts as bound: a step that ran without observing a result stops here.
    */
   static resolveRootBinding(name: string, context: SkillExecutionContext): RootBinding | undefined {
     const item = context.currentItem;
@@ -2025,25 +2025,45 @@ export class SkillExecutor {
   }
 
   /**
-   * Bind a successful step's `save_as` variable and its scope provenance.
-   * A Skill reference with `save_from` binds exactly that child step. When that
-   * step did not observe a result (failed, skipped, optional query error), the
-   * variable holds no data (`null`): expression lookup stops there, so neither
-   * another step's rows nor an earlier or inherited value can be read in its
-   * place. A genuinely empty result still binds `[]`.
+   * Record a step that ran, the same way on both execution paths: its result
+   * under its id, then its declared `save_as`. A result is recorded when it
+   * succeeded, was skipped by its condition, found its exact scope unavailable,
+   * or is a failed query or Skill result (a conditional returns its branch's
+   * result); failed results of other step types are not recorded.
+   */
+  private recordStepResult(step: SkillStep, stepResult: StepResult, context: SkillExecutionContext): void {
+    if (stepResult.success || stepResult.code === 'condition_not_met' || isQueryOrSkillResult(stepResult)) {
+      context.results[step.id] = stepResult;
+    }
+    this.bindSaveAs(step, stepResult, context);
+  }
+
+  /**
+   * Bind a step's declared `save_as` once the step ran. A successful step binds
+   * its selected data; a Skill reference with `save_from` binds exactly that
+   * child step. When the step did not succeed, or the named child step observed
+   * nothing (failed, skipped, optional query error, absent), the variable is
+   * `null`: lookup stops there, so neither another step's rows nor an input, an
+   * earlier or an inherited value can be read in its place. A genuinely empty
+   * result, and an optional step that was skipped or whose query errored, bind
+   * `[]`. The binding carries the scope of the one result it names, never the
+   * reference step's aggregate over its child steps. A step skipped by its
+   * condition did not run, so it never replaces a binding an earlier step of
+   * this Skill made: alternative steps can declare one name under exclusive
+   * conditions.
    */
   private bindSaveAs(step: SkillStep, stepResult: StepResult, context: SkillExecutionContext): void {
     if (!('save_as' in step) || !step.save_as) return;
-    const selected = 'save_from' in step && step.save_from && stepResult.stepType === 'skill'
-      ? this.namedChildStepResult(stepResult, step.save_from)
-      : selectedStepResult(stepResult);
-    if (!selected) {
-      context.variables[step.save_as] = null;
-      if (context.variableScopes) delete context.variableScopes[step.save_as];
-      return;
-    }
-    context.variables[step.save_as] = selected.data;
-    if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(selected);
+    if (stepResult.code === 'condition_not_met' && Object.prototype.hasOwnProperty.call(context.variables, step.save_as)) return;
+    // Only a reference step that ran has child steps to select from.
+    const saveFrom = 'save_from' in step && stepResult.stepType === 'skill' && stepResult.code !== 'condition_not_met'
+      ? step.save_from : undefined;
+    const source = saveFrom
+      ? this.namedChildStepResult(stepResult, saveFrom)
+      : stepResult.success ? selectedStepResult(stepResult) : stepResult;
+    const observed = stepResult.success && source !== undefined && (!saveFrom || isObservedStepResult(source));
+    context.variables[step.save_as] = observed ? source.data ?? null : null;
+    if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(source);
   }
 
   /**
@@ -2058,12 +2078,10 @@ export class SkillExecutor {
     return undefined;
   }
 
+  /** The named child step's result, whatever its outcome; undefined when no such step ran. */
   private namedChildStepResult(stepResult: StepResult, stepId: string): StepResult | undefined {
     const named = (stepResult.data as any)?.rawResults?.[stepId];
-    return named && typeof named === 'object' && named.success !== false
-      && Object.prototype.hasOwnProperty.call(named, 'data') && !nonObservedStepState(named)
-      ? named as StepResult
-      : undefined;
+    return named && typeof named === 'object' ? named as StepResult : undefined;
   }
 
   /**
@@ -2104,13 +2122,9 @@ export class SkillExecutor {
         synthesizeData.push(this.createSynthesizeData(step, stepResult, displayConfig, config));
       }
 
+      this.recordStepResult(step, stepResult, context);
+
       if (stepResult.success) {
-        // 保存结果
-        context.results[step.id] = stepResult;
-
-        // 如果有 save_as，保存到变量
-        this.bindSaveAs(step, stepResult, context);
-
         // 收集需要展示的结果
         if (this.shouldDisplay(step)) {
           // Substitute template variables (e.g., ${startup_id}) in display config
@@ -2152,19 +2166,12 @@ export class SkillExecutor {
         }
       } else {
         if (stepResult.code === 'exact_scope_unavailable') {
-          context.results[step.id] = stepResult;
           displayResults.push(this.createDisplayResult(step.id, ('name' in step ? step.name : undefined) || step.id,
             { ...stepResult, data: { text: stepResult.error } }, this.getDisplayConfig(step)));
           continue;
         }
-        if (stepResult.code === 'condition_not_met') {
-          context.results[step.id] = stepResult;
-          continue;
-        }
-        const isSkillFailure = stepResult.stepType === 'skill';
-        const isQueryFailure = stepResult.stepType === 'atomic';
-        if (isSkillFailure || isQueryFailure) {
-          context.results[step.id] = stepResult;
+        if (stepResult.code === 'condition_not_met') continue;
+        if (isQueryOrSkillResult(stepResult)) {
           const optional = 'optional' in step && Boolean(step.optional);
           if (!optional) {
             return {
@@ -2716,13 +2723,7 @@ export class SkillExecutor {
           ? { ...stepResult, ...selectedStepResult(stepResult), stepId: step.id, stepType: stepResult.stepType }
           : stepResult;
 
-        // Save result to context
-        if (stepResult.success) {
-          execContext.results[step.id] = stepResult;
-
-          // Save to variables if save_as is specified
-          this.bindSaveAs(step, stepResult, execContext);
-        }
+        this.recordStepResult(step, stepResult, execContext);
 
         // IMPORTANT: Add display config from step definition to stepResult
         // This is needed for organizeByLayer to correctly place results in layers

@@ -207,8 +207,8 @@ steps:
         - key: core_count
           label: 核心数
       insights:
-        - condition: "core_type.includes('big') && percent < (big_core_threshold_pct || 30)"
-          template: "大核使用率仅 {{percent}}%，建议优化调度策略"
+        - condition: "tier === 'big' && unknown_time_ns === 0 && big_group_percent < (big_core_threshold_pct || 30)"
+          template: "大核组（超大/大/中核）使用率仅 {{big_group_percent}}%，建议优化调度策略"
     display:
       level: key
       layer: overview
@@ -240,6 +240,9 @@ steps:
         - name: core_count
           label: "核心数"
           type: number
+        - {name: tier, label: "tier", type: string, hidden: true}
+        - {name: big_group_percent, label: "大核组（超大/大/中核）占比", type: percentage, hidden: true}
+        - {name: unknown_time_ns, label: "未知核类型运行", type: duration, unit: ns, hidden: true}
     process_scope:
       role: target
       binding: effective_target_processes
@@ -262,16 +265,15 @@ steps:
         END as core_type,
         ct.capacity,
         SUM(ss.dur) / 1e6 as total_time_ms,
-        ROUND(100.0 * SUM(ss.dur) / (
-          SELECT SUM(dur) FROM clipped_sched ss2
-          JOIN thread t2 ON ss2.utid = t2.utid
-          JOIN effective_target_processes p2 ON t2.upid = p2.upid
-          WHERE p2.upid = ${target_process.data[0].upid}
-            AND (${start_ts} IS NULL OR ss2.ts + ss2.dur > ${start_ts})
-            AND (${end_ts} IS NULL OR ss2.ts < ${end_ts})
-        ), 1) as percent,
+        ROUND(100.0 * SUM(ss.dur) / NULLIF(SUM(SUM(ss.dur)) OVER (), 0), 1) as percent,
         COUNT(*) as slice_count,
-        COUNT(DISTINCT ss.cpu) as core_count
+        COUNT(DISTINCT ss.cpu) as core_count,
+        COALESCE(ct.core_type, 'unknown') as tier,
+        -- Process-wide rollup repeated on every tier row; unknown time is
+        -- unrounded so rules can require a fully classified process.
+        ROUND(100.0 * SUM(SUM(CASE WHEN ct.core_type IN ('prime', 'big', 'medium') THEN ss.dur ELSE 0 END)) OVER ()
+          / NULLIF(SUM(SUM(ss.dur)) OVER (), 0), 1) as big_group_percent,
+        SUM(SUM(CASE WHEN COALESCE(ct.core_type, 'unknown') NOT IN ('prime', 'big', 'medium', 'little') THEN ss.dur ELSE 0 END)) OVER () as unknown_time_ns
       FROM clipped_sched ss
       JOIN thread t ON ss.utid = t.utid
       JOIN effective_target_processes p ON t.upid = p.upid
@@ -335,7 +337,11 @@ steps:
           label: "线程类型"
           type: string
         - name: big_core_percent
-          label: "大核占比"
+          label: "大核组占比（超大/大/中核）"
+          type: percentage
+          format: percentage
+        - name: unknown_core_percent
+          label: "未知核类型占比"
           type: percentage
           format: percentage
     process_scope:
@@ -360,7 +366,8 @@ steps:
         ROUND(AVG(ss.dur) / 1e6, 3) as avg_slice_ms,
         CASE t.tid WHEN p.pid THEN 'main' ELSE 'worker' END as thread_type,
         -- 大核使用率
-        ROUND(100.0 * SUM(CASE WHEN ct.core_type IN ('big', 'prime', 'medium') THEN ss.dur ELSE 0 END) / NULLIF(SUM(ss.dur), 0), 1) as big_core_percent
+        ROUND(100.0 * SUM(CASE WHEN ct.core_type IN ('prime', 'big', 'medium') THEN ss.dur ELSE 0 END) / NULLIF(SUM(ss.dur), 0), 1) as big_core_percent,
+        ROUND(100.0 * SUM(CASE WHEN COALESCE(ct.core_type, 'unknown') NOT IN ('prime', 'big', 'medium', 'little') THEN ss.dur ELSE 0 END) / NULLIF(SUM(ss.dur), 0), 1) as unknown_core_percent
       FROM clipped_sched ss
       JOIN thread t ON ss.utid = t.utid
       JOIN effective_target_processes p ON t.upid = p.upid
@@ -1060,17 +1067,18 @@ steps:
           - "[Verify] 重新执行 cpu_analysis，确认 core_stats/main_thread_states/runnable_delays 均有数据"
         evidence_fields: [core_stats.data, main_thread_states.data, runnable_delays.data, blocked_functions.data]
 
-      # 大核使用率低
+      # 大核组使用率低：大核组 = 超大核 + 大核 + 中核；含未分类核时间时不判定
       - condition: |
           (core_stats?.data?.length || 0) > 0 &&
-          ((core_stats.data.find(c => (c.core_type || '').includes('big') || (c.core_type || '').includes('prime'))?.percent) || 0) < (big_core_threshold_pct || 30)
+          core_stats.data[0].unknown_time_ns === 0 &&
+          core_stats.data[0].big_group_percent < (big_core_threshold_pct || 30)
         severity: warning
-        diagnosis: "大核使用率偏低 (<${big_core_threshold_pct || 30}%)"
+        diagnosis: "大核组（超大/大/中核）使用率 ${core_stats.data[0].big_group_percent}% 偏低 (<${big_core_threshold_pct || 30}%)"
         confidence: medium
         suggestions:
           - "[Owner] Runtime/App | [Priority] P1 | [Action] 检查关键线程优先级与调度组"
           - "[Owner] System | [Priority] P1 | [Action] 评估 PowerHint/调频策略对关键线程的影响"
-          - "[Verify] 对比优化前后 big/prime 核占比与帧稳定性"
+          - "[Verify] 对比优化前后大核组（超大/大/中核）占比与帧稳定性"
         evidence_fields: [core_stats.data]
 
       # 主线程 Running 比例低

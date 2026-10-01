@@ -10,6 +10,12 @@ import type {
   SelfEvolutionLifecycleSnapshot,
 } from '../../types/selfEvolution';
 import {
+  createUpgradeReconciliationReportV1,
+} from '../../services/selfEvolution/evolutionOverlayContract';
+import {
+  EvolutionOverlayRegistry,
+} from '../../services/selfEvolution/evolutionOverlayRegistry';
+import {
   SelfEvolutionAdminService,
   type SelfEvolutionAdminDependencies,
 } from '../../services/selfEvolution/selfEvolutionAdminService';
@@ -154,6 +160,65 @@ describe('selfEvolutionAdminRoutes', () => {
     expect(dependencies.apply).not.toHaveBeenCalled();
     service.close();
   });
+
+  it('serves a stored reconciliation report without the parser text its issue quoted', async () => {
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    let parserMessage = '';
+    try {
+      // Unquoted, so V8 quotes the canary in its message.
+      JSON.parse('{"steps":[SECRET-OVERLAY-CANARY x]}');
+    } catch (error) {
+      parserMessage = (error as Error).message;
+    }
+    expect(parserMessage).toContain('SECRET');
+    const stored = reconciliationReport(parserMessage);
+    const registry = new EvolutionOverlayRegistry({
+      databasePath: ':memory:',
+      persistence: {
+        ...lifecycle().persistence,
+        persistence: 'available',
+        reason: undefined,
+      },
+    });
+    registry.saveReport(stored);
+    const dependencies = fixture();
+    dependencies.latestReconciliation = jest.fn(scope =>
+      registry.latestReport(scope) ?? null);
+    const service = new SelfEvolutionAdminService(dependencies);
+    const app = makeApp(service);
+
+    const reconciliation = await withIdentity(
+      request(app).get('/api/admin/self-evolution/reconciliation'),
+      {role: 'analyst'},
+    ).expect(200);
+    const overview = await withIdentity(
+      request(app).get('/api/admin/self-evolution/overview'),
+      {role: 'analyst'},
+    ).expect(200);
+
+    for (const report of [
+      reconciliation.body.report,
+      overview.body.latestReconciliation,
+    ]) {
+      expect(JSON.stringify(report)).not.toContain('SECRET');
+      expect(report.contentHash).toBe(stored.contentHash);
+      expect(report.issues).toEqual([{
+        ...stored.issues[0],
+        message: 'Overlay artifact could not be loaded',
+      }]);
+    }
+    expect(registry.latestReport({
+      tenantId: 'tenant-a',
+      workspaceId: 'workspace-a',
+    })).toEqual(stored);
+    const otherWorkspace = await withIdentity(
+      request(app).get('/api/admin/self-evolution/reconciliation'),
+      {role: 'analyst', workspaceId: 'workspace-b'},
+    ).expect(200);
+    expect(otherWorkspace.body.report).toBeNull();
+    service.close();
+    registry.close();
+  });
 });
 
 function makeApp(service: SelfEvolutionAdminService): express.Express {
@@ -244,6 +309,35 @@ function lifecycle(): SelfEvolutionLifecycleSnapshot {
     warnings: [],
     errors: [],
   };
+}
+
+function reconciliationReport(message: string) {
+  return createUpgradeReconciliationReportV1({
+    reportId: 'report-test-0001',
+    scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+    previousBuildIdentity: null,
+    currentBuildIdentity: lifecycle().currentBuildIdentity,
+    candidateGeneration: '1'.repeat(64),
+    publishedGeneration: '1'.repeat(64),
+    byBaseRelation: {
+      unchanged: [], changed: [], absorbed: [], missing: [], incompatible: [],
+    },
+    byValidationState: {pending: [], passed: [], failed: [], error: []},
+    byActivationState: {
+      active: [], inactive: [], quarantined: [], obsolete: [], disabled: [],
+    },
+    issues: [{
+      schemaVersion: 1,
+      issueId: 'overlay:issue-test-0001',
+      source: 'overlay',
+      kind: 'validation_error',
+      overlayId: 'overlay_test',
+      baseId: 'startup_analysis',
+      reasonCode: 'overlay_artifact_invalid',
+      message,
+    }],
+    createdAt: 20,
+  });
 }
 
 function proposal(): CurationProposalV1 {

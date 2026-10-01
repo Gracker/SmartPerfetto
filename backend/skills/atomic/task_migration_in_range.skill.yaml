@@ -81,9 +81,10 @@ steps:
           label: "小→大"
           type: number
         - name: big_core_pct
-          label: "大核占比"
+          label: "大核组占比（超大/大/中核）"
           type: percentage
           format: percentage
+        - {name: unknown_core_ns, label: "未知核类型运行", type: duration, unit: ns, hidden: true}
         - name: unique_cpus
           label: "使用核心数"
           type: number
@@ -114,6 +115,7 @@ steps:
        SUM(CASE WHEN prev_core_type IN ('prime','big','medium') AND core_type='little' THEN 1 ELSE 0 END) AS big_to_little,
        SUM(CASE WHEN prev_core_type='little' AND core_type IN ('prime','big','medium') THEN 1 ELSE 0 END) AS little_to_big,
        SUM(CASE WHEN core_type IN ('prime','big','medium') THEN dur_ns ELSE 0 END)*100.0/SUM(dur_ns) AS big_core_pct,
+       SUM(CASE WHEN core_type NOT IN ('prime','big','medium','little') THEN dur_ns ELSE 0 END) AS unknown_core_ns,
        COUNT(DISTINCT ucpu) AS unique_cpus,
        'migration_observation_not_cache_miss_or_affinity_proof' AS migration_evidence
       FROM runs GROUP BY window_id,utid ORDER BY migration_count DESC

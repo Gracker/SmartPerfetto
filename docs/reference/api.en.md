@@ -708,7 +708,7 @@ Proposals, operations, overlays, and reconciliation results are isolated by
 | `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | Apply an accepted proposal; body requires a unique `actionId` |
 | `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | Revert an applied proposal; body requires a unique `actionId` |
 | `GET` | `/overlays` | `self_evolution:read` | Overlay registry entries for the current workspace |
-| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report |
+| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report; an issue `message` is an error code or the fixed text for its `reasonCode`, and `contentHash` names the stored report |
 
 The control plane is off by default. `SELF_EVOLUTION_ENABLED=true` is required
 for curation/gate/accept/reject/export. Apply/revert additionally require
@@ -873,6 +873,15 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId/report/export` | Export comparison report |
 | `GET` | `/:comparisonId` | Get comparison |
 | `GET` | `/:comparisonId/stream` | Subscribe to comparison stream |
+
+A Skill result row may declare the definition of a metric column with a
+`<column>_definition` string on the same row (for example `cpu_profiling`'s
+`big_core_pct_definition`); the snapshot stores it as the metric's
+`source.metricDefinition`. When two snapshots declare different definitions for
+the same metric (including one side undeclared), the comparison computes no delta
+(`deltaValue: null`, `assessment: "unknown"`) and names both definitions in
+`matrix.warnings` and the conclusion `uncertainty`. Undeclared historical metrics
+keep comparing as before.
 
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 

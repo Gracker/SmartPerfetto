@@ -25,6 +25,17 @@
 # Legacy joins use local CPU numbers: multi-machine or duplicate metadata stays
 # unknown and retains one row per local CPU to avoid multiplying sched durations.
 #
+# Rollup contract (also binds fragments/system_sched_spans.sql, whose
+# capacity taxonomy has no 'prime'):
+#   - Per-tier outputs report core_type rows as they are.
+#   - Two-way rollups: big group = prime + big + medium; little = little only.
+#     Time on 'unknown' cores is its own bucket, never folded into either, and
+#     every big-group output carries an unknown sibling, so a missing topology
+#     never reads as 0% big. A medium column beside a big-group column is an
+#     "of which" breakdown of the big group.
+#   - Unknown = NOT IN ('prime', 'big', 'medium', 'little').
+#   coreTierRollupContract.test.ts checks every tier list in the Skills against this.
+#
 # Usage: Call this skill as a `type: skill` step at the beginning of any
 # composite skill that needs CPU topology. Then JOIN _cpu_topology in SQL:
 #   JOIN _cpu_topology ct ON ss.cpu = ct.cpu_id

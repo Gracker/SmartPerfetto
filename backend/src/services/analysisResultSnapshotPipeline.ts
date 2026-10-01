@@ -368,15 +368,23 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function getRowNumber(row: Record<string, unknown>, candidates: string[]): number | null {
-  const byNormalizedName = new Map<string, unknown>();
-  for (const [key, value] of Object.entries(row)) {
-    byNormalizedName.set(normalizeFieldName(key), value);
-  }
+/**
+ * The first candidate field with a numeric value, plus the definition its
+ * producer declared for it in a `<field>_definition` string on the same row.
+ * Only a producer row declares; a column name alone never implies one.
+ */
+function getRowMetric(
+  byNormalizedName: ReadonlyMap<string, unknown>,
+  candidates: string[],
+): {value: number; definition?: string} | null {
   for (const candidate of candidates) {
-    const value = byNormalizedName.get(normalizeFieldName(candidate));
-    const parsed = toNumber(value);
-    if (parsed !== null) return parsed;
+    const field = normalizeFieldName(candidate);
+    const value = toNumber(byNormalizedName.get(field));
+    if (value === null) continue;
+    const definition = byNormalizedName.get(`${field}definition`);
+    return typeof definition === 'string' && definition.trim()
+      ? {value, definition: definition.trim()}
+      : {value};
   }
   return null;
 }
@@ -420,11 +428,15 @@ function extractStandardMetrics(envelopes: DataEnvelope[] = []): NormalizedMetri
     // App metrics never read a field the result declares trace-wide or peer.
     const outsideTarget = outsideTargetScopeFields(env.meta?.scopeProvenance);
     for (const row of payloadRows(env)) {
-      const targetRow = Object.fromEntries(Object.entries(row).filter(([column]) => !outsideTarget(column)));
+      const entries = Object.entries(row);
+      const byNormalizedName = new Map(entries.map(([key, value]) => [normalizeFieldName(key), value]));
+      const targetByNormalizedName = new Map(entries.filter(([key]) => !outsideTarget(key))
+        .map(([key, value]) => [normalizeFieldName(key), value]));
       for (const definition of STANDARD_COMPARISON_METRICS) {
-        const value = getRowNumber(standardMetricDescribesApp(definition) ? targetRow : row,
+        const metric = getRowMetric(standardMetricDescribesApp(definition) ? targetByNormalizedName : byNormalizedName,
           METRIC_FIELD_CANDIDATES[definition.key]);
-        if (value === null) continue;
+        if (metric === null) continue;
+        const {value} = metric;
         const normalizedValue = definition.key === 'scrolling.jank_rate_pct' && value > 0 && value <= 1
           ? value * 100
           : value;
@@ -438,7 +450,10 @@ function extractStandardMetrics(envelopes: DataEnvelope[] = []): NormalizedMetri
           direction: definition.direction,
           aggregation: definition.aggregation,
           confidence: 0.75,
-          source: metricSourceFromEnvelope(env),
+          source: {
+            ...metricSourceFromEnvelope(env),
+            ...(metric.definition ? {metricDefinition: metric.definition} : {}),
+          },
         });
       }
     }
