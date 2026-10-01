@@ -176,7 +176,7 @@ expectIncludes(criticalPathRoute, read(criticalPathRoute), [
 const skillControllerPath = 'backend/src/controllers/skillController.ts';
 expectIncludes(skillControllerPath, read(skillControllerPath), [
   'localizedError(',
-  'localizedFailure(',
+  'sendLocalizedFailure(',
   "zh: '缺少 Skill ID'",
   "zh: '无法执行 Skill'",
 ]);

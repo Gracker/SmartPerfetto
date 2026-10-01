@@ -38,6 +38,7 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
+import {codebaseNotFound, invalidCodebaseMetadata} from '../codebase/codebaseRequestError';
 
 const DEFAULT_MAX_CHUNK_CHARS = 2200;
 
@@ -91,10 +92,10 @@ export class AppSourceIngester {
   async ingest(codebaseId: string, opts: AppSourceIngestOptions = {}): Promise<AppSourceIngestResult> {
     const ref = this.registry.get(codebaseId, opts.scope);
     if (!ref) {
-      throw new Error(`Codebase '${codebaseId}' not found`);
+      throw codebaseNotFound(codebaseId);
     }
     if (ref.kind !== 'app_source') {
-      throw new Error(`Codebase '${codebaseId}' is kind=${ref.kind}; app source ingestion requires app_source`);
+      throw invalidCodebaseMetadata(`Codebase '${codebaseId}' is kind=${ref.kind}; app source ingestion requires app_source`);
     }
     const effectiveScope = codebaseScopeFromRef(ref);
     return this.registry.withIngestLease(codebaseId, effectiveScope, lease =>

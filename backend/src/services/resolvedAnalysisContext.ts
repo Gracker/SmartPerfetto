@@ -13,6 +13,7 @@ import {
   getDefaultExternalKnowledgeSourceRegistry,
 } from './externalKnowledgeSourceRegistry';
 import type {KnowledgeScope} from './scopedKnowledgeStore';
+import {PublicRequestError} from '../utils/publicRequestError';
 
 export interface AnalysisContextSelection {
   codeAwareMode?: CodeAwareMode;
@@ -20,12 +21,11 @@ export interface AnalysisContextSelection {
   knowledgeSourceIds?: readonly string[];
 }
 
-export class AnalysisContextAuthorizationChangedError extends Error {
-  readonly code = 'analysis_context_changed_restart_required';
+export class AnalysisContextAuthorizationChangedError extends PublicRequestError {
+  declare readonly code: 'analysis_context_changed_restart_required';
 
   constructor() {
-    super('analysis_context_changed_restart_required');
-    this.name = 'AnalysisContextAuthorizationChangedError';
+    super('analysis_context_changed_restart_required', 'analysis_context_changed_restart_required', 409);
   }
 }
 

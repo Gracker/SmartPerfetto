@@ -4,7 +4,8 @@
 
 import express from 'express';
 import request from 'supertest';
-import { sendRouteFailure } from '../routeFailure';
+import { sendRouteError, sendRouteFailure } from '../routeFailure';
+import { PublicRequestError, thrownReasonCode } from '../../utils/publicRequestError';
 
 const CANARY = 'canary-91c2 /srv/secret/reports.db SELECT key FROM provider_secrets';
 
@@ -110,5 +111,46 @@ describe('sendRouteFailure', () => {
     expect(res.headers['content-disposition']).toBeUndefined();
     expect(res.headers['content-type']).toMatch(/^application\/json/);
     expect(res.body.code).toBe('download_failed');
+  });
+
+  test('echoes only the public error classes the route lists', async () => {
+    class ListedError extends PublicRequestError {}
+    class OtherError extends PublicRequestError {}
+    const app = express();
+    app.get('/:which', (req, res) => {
+      const error = req.params.which === 'listed'
+        ? new ListedError('thing_not_found', 'Thing t1 not found', 404)
+        : new OtherError('other_not_found', CANARY, 404);
+      sendRouteError(res, error, {code: 'thing_failed', error: 'Thing failed', logLabel: '[Test] Thing'}, [ListedError]);
+    });
+
+    const listed = await request(app).get('/listed').set('X-Request-Id', 'req-public');
+    expect(listed.status).toBe(404);
+    expect(listed.body).toEqual({success: false, code: 'thing_not_found', error: 'Thing t1 not found', requestId: 'req-public'});
+    expect(listed.headers['x-request-id']).toBe('req-public');
+
+    const other = await request(app).get('/other');
+    expect(other.status).toBe(500);
+    expect(other.body.code).toBe('thing_failed');
+    expect(other.text).not.toContain('canary-91c2');
+  });
+});
+
+describe('thrownReasonCode', () => {
+  test.each([
+    ['root_outside_allowlist', 'root_outside_allowlist'],
+    ['source_chunk_limit_exceeded:5000', 'source_chunk_limit_exceeded'],
+    ['source_changed_during_ingest:docs/a b.md', undefined],
+    ['source_changed_during_ingest:docs/secret.md', 'source_changed_during_ingest'],
+    ['Codebase \'x\' not found', undefined],
+    ['ENOENT: no such file or directory', undefined],
+    ['SQLITE_BUSY', undefined],
+    ['', undefined],
+  ])('%j -> %j', (message, expected) => {
+    expect(thrownReasonCode(new Error(message))).toBe(expected);
+  });
+
+  test('is undefined for a non-Error', () => {
+    expect(thrownReasonCode('root_not_found')).toBeUndefined();
   });
 });
