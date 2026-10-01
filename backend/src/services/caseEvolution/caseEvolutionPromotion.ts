@@ -8,6 +8,11 @@ import * as path from 'path';
 import { backendLogPath } from '../../runtimePaths';
 import type { CaseKnowledgeRecommendation } from '../../types/caseKnowledge';
 import type { CaseFindingLink, CaseNode } from '../../types/sparkContracts';
+import {
+  CASE_APP_ARCHITECTURE_FIELD,
+  detectedCaseArchitecture,
+  validateCaseAppArchitecture,
+} from '../caseArchitecture';
 import { CaseLibrary } from '../caseLibrary';
 import type { KnowledgeScope } from '../scopedKnowledgeStore';
 
@@ -119,17 +124,12 @@ function writeCaseMarkdown(caseNode: CaseNode, markdownRoot?: string): string {
   if (caseNode.findings.length === 0) {
     throw new Error(`case '${caseNode.caseId}' has no findings; cannot emit validator-passing Markdown`);
   }
+  const exportableContext = exportableCaseContext(caseNode.caseId, caseNode.knowledge.context);
   const root = markdownRoot ?? path.resolve(__dirname, '..', '..', '..', 'knowledge', 'cases');
   const dir = path.join(root, caseNode.knowledge.scene);
   fs.mkdirSync(dir, { recursive: true });
   const target = path.join(dir, `${caseNode.caseId}.md`);
   const fm = caseNode.knowledge;
-  // The caseEvolution.v1 marker is a runtime-only audit artifact (candidateId,
-  // feedback counts). It must NOT be re-exported into curated Markdown — on
-  // re-ingest the curated path would otherwise inherit stale learned-provenance.
-  const exportableContext = Object.fromEntries(
-    Object.entries(fm.context).filter(([key]) => key !== 'caseEvolution.v1'),
-  );
   const markdown = [
     '---',
     `case_id: ${caseNode.caseId}`,
@@ -175,6 +175,25 @@ function writeCaseMarkdown(caseNode: CaseNode, markdownRoot?: string): string {
   ].join('\n');
   fs.writeFileSync(target, markdown, 'utf-8');
   return target;
+}
+
+/**
+ * The context a curated Markdown case may carry. The caseEvolution.v1 marker is
+ * a runtime-only audit artifact (candidateId, feedback counts); re-exported, the
+ * curated path would inherit stale learned provenance on re-ingest. Cases
+ * learned before the `app_architecture` contract stored the detected type under
+ * `architectureType`; it is exported under the contract's field, and a case
+ * with neither cannot pass `validate:cases`.
+ */
+function exportableCaseContext(caseId: string, context: Record<string, unknown>): Record<string, unknown> {
+  const { 'caseEvolution.v1': _marker, architectureType: legacyArchitecture, ...rest } = context;
+  const declared = validateCaseAppArchitecture(rest[CASE_APP_ARCHITECTURE_FIELD]).ok
+    ? rest[CASE_APP_ARCHITECTURE_FIELD]
+    : detectedCaseArchitecture(legacyArchitecture)[CASE_APP_ARCHITECTURE_FIELD];
+  if (!declared) {
+    throw new Error(`case '${caseId}' declares no ${CASE_APP_ARCHITECTURE_FIELD}; cannot emit validator-passing Markdown`);
+  }
+  return { ...rest, [CASE_APP_ARCHITECTURE_FIELD]: declared };
 }
 
 /** Quote a YAML mapping key so dotted runtime keys (e.g. caseEvolution.v1)

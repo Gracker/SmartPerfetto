@@ -13,7 +13,7 @@ taxonomy:
   responsibility: mixed
   severity: warning
 context:
-  app_architecture: android_view_standard
+  app_architecture: standard
   device_vendor: generic_android
   os_version: Android 14+
   refresh_rate_hz: 120

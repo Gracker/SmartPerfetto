@@ -173,6 +173,7 @@ import {
 } from '../services/baselineDiffer';
 import {ProjectMemory} from './projectMemory';
 import {CaseLibrary} from '../services/caseLibrary';
+import { caseAppliesToArchitecture } from '../services/caseArchitecture';
 import { createCaseRetriever } from '../services/caseEvolution/caseRecommendationRetriever';
 import {
   DEFAULT_DEV_USER_ID,
@@ -5724,6 +5725,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           scene: effectiveScene,
           domainPack: domain_pack || (effectiveScene === 'scrolling' ? 'scrolling.v1' : effectiveScene),
           rootCause: effectiveRootCause,
+          architectureType: options.cachedArchitecture?.type,
           audiences: ['app', 'oem'],
           evidenceSignatures: evidence_signatures as Record<string, unknown>,
           textQuery: [effectiveRootCause, ...(tags ?? [])].join(' '),
@@ -5753,6 +5755,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         if (app_id && c.key?.appId !== app_id) continue;
         if (device_id && c.key?.deviceId !== device_id) continue;
         if (cuj && c.key?.cuj !== cuj) continue;
+        if (!caseAppliesToArchitecture(c, options.cachedArchitecture?.type)) continue;
         let score = 0;
         if (wantedTags) {
           for (const t of c.tags) if (wantedTags.has(t)) score += 1;

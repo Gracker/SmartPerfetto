@@ -146,6 +146,9 @@ describe('caseCandidateIngester', () => {
       sourceFile: 'logs/case_candidates/cand-ingest-1.json',
       domainPack: 'scrolling.v1',
     });
+    // The detected FLUTTER trace becomes the case's app_architecture declaration.
+    expect(learned.knowledge?.context).toMatchObject({ app_architecture: 'flutter' });
+    expect(learned.knowledge?.context).not.toHaveProperty('architectureType');
     expect(learned.findings[0]).toMatchObject({
       id: 'f1',
       severity: 'critical',

@@ -168,6 +168,17 @@ Review 输出必须经过 schema/关系类型/证据引用验证和匿名化。�
 证据验证的背景，不会自动成为 claim evidence。发布或撤回 learned case 使用专用 CLI，
 不能直接改运行时数据库或生成 YAML。
 
+Case 适用的渲染架构由 `context.app_architecture` 声明，词表就是架构检测器的
+`RENDERING_ARCHITECTURE_TYPES` 的小写拼写（`standard`、`flutter`、`compose` 等）。可写
+`any`、单个架构或不重复的架构列表；`unknown` 不是声明。`validate:cases` 要求每个
+Markdown case 都写这个字段，值不在闭集内就判定失败。learned case 写入的是来源 trace
+检测到的架构，检测不到时不写。背景注入、`recall_similar_case` 和报告推荐检索都用
+`services/caseArchitecture.ts` 的同一个判定：trace 架构未知时不按架构过滤；trace 架构
+已知时，只有声明了 `any` 或包含该架构的 case 才算适用。没有声明、或者声明了闭集外的值
+（比如这份契约之前入库的 `android_view_standard`）都不适用，需要重跑
+`npm run ingest:cases` 更新。不带 case knowledge 的手工 case 按 App/Device/CUJ key
+检索，不受这个判定约束。
+
 ## Failure taxonomy 与证据边界
 
 `FailureCategory` 和 `computeFailureModeHash()` 使用稳定枚举字段建立失败身份。模型生成

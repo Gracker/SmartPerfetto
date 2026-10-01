@@ -12,6 +12,7 @@ import type {
 } from '../../types/caseKnowledge';
 import type { CaseEdge, CaseFindingLink, CaseNode, RagChunk, SparkEvidenceRef } from '../../types/sparkContracts';
 import { makeSparkProvenance } from '../../types/sparkContracts';
+import { detectedCaseArchitecture } from '../caseArchitecture';
 import { CaseGraph } from '../caseGraph';
 import { CaseLibrary } from '../caseLibrary';
 import { RagStore } from '../ragStore';
@@ -249,7 +250,7 @@ function buildKnowledgeExtension(
       severity: review.proposed.severity,
     },
     context: {
-      architectureType: candidate.provenance.architectureType,
+      ...detectedCaseArchitecture(candidate.provenance.architectureType),
       frameCount: candidate.cluster.frameCount,
       percentage: candidate.cluster.percentage,
       representativeFrame: candidate.cluster.representativeFrame,
