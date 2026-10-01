@@ -2699,6 +2699,150 @@ describe('Skill Reference save_from 绑定', () => {
 });
 
 // =============================================================================
+// Test Suite: a Skill reference read by step id
+// =============================================================================
+
+describe('Skill Reference 按步骤 id 读取', () => {
+  let executor: SkillExecutor;
+  let mockTraceProcessor: any;
+  let chat: jest.Mock<(...args: any[]) => any>;
+
+  // `setup` returns [] first and carries a global_context scope; the displayed
+  // `rows` step holds the data a default save_as binds.
+  const child: SkillDefinition = {
+    name: 'setup_then_rows_child',
+    type: 'composite',
+    version: '1.0',
+    meta: createMeta('Setup Then Rows Child'),
+    steps: [
+      {id: 'setup', type: 'atomic', sql: 'CREATE /*setup*/ VIEW v AS SELECT 1',
+        process_scope: {role: 'global_context'}} as any,
+      {id: 'rows', type: 'atomic', sql: 'SELECT /*rows*/ 1', display: {level: 'summary'}},
+    ],
+  };
+  // A required step fails after `rows` already returned data.
+  const failingChild: SkillDefinition = {...child, name: 'failing_after_rows_child',
+    steps: [...child.steps!, {id: 'boom', type: 'atomic', sql: 'SELECT /*boom*/ 1'}]};
+  // The child's selected step is itself a reference to `child`.
+  const wrapperChild: SkillDefinition = {...child, name: 'wrapper_child',
+    steps: [{id: 'inner', skill: 'setup_then_rows_child', display: {level: 'summary'}} as any]};
+
+  // `ref` is read by its step id in every reader; `aliased` binds a reference to `alias`.
+  function readers(ref: Record<string, unknown>, aliased?: Record<string, unknown>): SkillDefinition {
+    const alias = aliased ? ' alias=${alias.data[0].source|none}' : '';
+    return {
+      name: 'read_by_id_parent',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Read By Id Parent'),
+      steps: [
+        {id: 'ref', ...ref} as any,
+        ...(aliased ? [{id: 'aliased', save_as: 'alias', ...aliased} as any] : []),
+        {id: 'sql_probe', type: 'atomic', sql: "SELECT /*sqlprobe*/ '${ref.data[0].source|none}'", optional: true},
+        {id: 'each', type: 'iterator', source: 'ref', item_skill: 'echo_source', optional: true} as any,
+        {id: 'sum', type: 'ai_summary', inputs: ['ref'], prompt: 'summarize'} as any,
+        {id: 'probe', type: 'diagnostic', inputs: aliased ? ['ref', 'alias'] : ['ref'], rules: [
+          {condition: 'ref.data == null', diagnosis: 'UNBOUND', confidence: 'high'},
+          {condition: "ref.data?.[0]?.source === 'picked-row'", diagnosis: 'COND picked-row', confidence: 'high'},
+          {condition: 'true', diagnosis: 'id=${ref.data[0].source|none}' + alias, confidence: 'high',
+            evidence_fields: ['ref[0].source', 'alias[0].source']},
+        ]} as any,
+      ],
+    };
+  }
+
+  type Path = 'execute' | 'executeCompositeSkill';
+
+  async function read(skill: SkillDefinition, path: Path, inherited: Record<string, unknown> = {}) {
+    executor.registerSkill(skill);
+    mockTraceProcessor.query.mockClear();
+    chat.mockClear();
+    const steps: Record<string, any> = path === 'execute'
+      ? (await executor.execute(skill.name, 'trace-1', {}, inherited)).rawResults ?? {}
+      : Object.fromEntries(((await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1', inherited}))
+        .stepResults ?? []).map(step => [step.stepId, step]));
+    const diagnostics: any[] = steps.probe?.data?.diagnostics ?? [];
+    const prompt = String(chat.mock.calls[0]?.[0] ?? '');
+    return {
+      diagnoses: diagnostics.map(d => d.diagnosis),
+      evidence: diagnostics.find(d => d.diagnosis.startsWith('id='))?.evidence,
+      sql: mockTraceProcessor.query.mock.calls
+        .map((call: any[]) => String(call[1]))
+        .filter((sql: string) => sql.includes('/*sqlprobe*/'))
+        .map((sql: string) => sql.match(/'([^']*)'/)?.[1]),
+      iterated: steps.each?.data?.map?.((entry: any) => entry.item.source),
+      ai: prompt.includes('picked-row') ? 'picked-row' : prompt.includes('"missing": true') ? 'missing' : prompt,
+      provenance: JSON.stringify(steps.probe?.scopeProvenance ?? null),
+      inputs: steps.probe?.data?.inputs ?? {},
+    };
+  }
+
+  beforeEach(() => {
+    mockTraceProcessor = createMockTraceProcessorService();
+    mockTraceProcessor.query.mockImplementation(async (_trace: string, sql: string) => {
+      if (sql.includes('/*rows*/')) return {columns: ['source'], rows: [['picked-row']]};
+      if (sql.includes('/*boom*/')) return {columns: [], rows: [], error: 'boom'};
+      return {columns: [], rows: []};
+    });
+    chat = jest.fn<(...args: any[]) => any>().mockResolvedValue('{"summary":"ok"}');
+    executor = createSkillExecutor(mockTraceProcessor, {chat} as any);
+    for (const skill of [child, failingChild, wrapperChild]) executor.registerSkill(skill);
+    executor.registerSkill({name: 'echo_source', type: 'atomic', version: '1.0',
+      meta: createMeta('Echo Source'), sql: 'SELECT /*echo*/ 1'});
+  });
+
+  const paths: Path[] = ['execute', 'executeCompositeSkill'];
+  const inherited = {ref: {data: [{source: 'inherited-row'}]}};
+
+  it.each(paths)('reads the child step its default save_as binds, in every reader (%s)', async path => {
+    const reading = await read(readers({skill: 'setup_then_rows_child'}, {skill: 'setup_then_rows_child'}), path);
+    expect(reading).toMatchObject({
+      diagnoses: ['COND picked-row', 'id=picked-row alias=picked-row'],
+      evidence: {'ref[0].source': 'picked-row', 'alias[0].source': 'picked-row'},
+      sql: ['picked-row'],
+      iterated: ['picked-row'],
+      ai: 'picked-row',
+    });
+    // Provenance is the selected step's, not the merged scope of the whole child.
+    expect(reading.provenance).not.toContain('global_context');
+  });
+
+  it.each(paths)('lets save_from choose only the save_as binding, never the read by id (%s)', async path => {
+    const reading = await read(readers({skill: 'setup_then_rows_child'},
+      {skill: 'setup_then_rows_child', save_from: 'setup'}), path);
+    expect(reading.diagnoses).toEqual(['COND picked-row', 'id=picked-row alias=none']);
+  });
+
+  it.each(paths)('unwraps a grandchild result the same way for the id and the save_as (%s)', async path => {
+    const reading = await read(readers({skill: 'wrapper_child'}, {skill: 'wrapper_child'}), path);
+    expect(reading.diagnoses).toEqual(['COND picked-row', 'id=picked-row alias=picked-row']);
+    // Selection is one level deep: both inputs hold the grandchild Skill result itself.
+    expect(reading.inputs.ref).toMatchObject({skillId: 'setup_then_rows_child'});
+    expect(reading.inputs.alias).toMatchObject({skillId: 'setup_then_rows_child'});
+  });
+
+  // Both paths record the failed reference and bind its save_as to null, so
+  // neither partial child rows nor the inherited value is read.
+  it.each(paths)('exposes no child data, and does not fall back, once the reference failed (%s)', async path => {
+    const reading = await read(readers({skill: 'failing_after_rows_child', optional: true}), path, inherited);
+    expect(reading).toMatchObject({diagnoses: ['UNBOUND', 'id=none'], sql: ['none'], iterated: undefined, ai: 'missing'});
+    expect(reading.evidence).toBeUndefined();
+    expect(reading.provenance).toBe('null');
+    expect(JSON.stringify(reading)).not.toMatch(/picked-row|inherited-row/);
+  });
+
+  it('treats a required condition skip as unbound and an optional one as an empty result', async () => {
+    const required = await read(readers({skill: 'setup_then_rows_child', condition: 'false'}), 'execute', inherited);
+    expect(required).toMatchObject({diagnoses: ['UNBOUND', 'id=none'], sql: ['none'], ai: 'missing'});
+    for (const path of paths) {
+      const optional = await read(readers({skill: 'setup_then_rows_child', condition: 'false', optional: true}),
+        path, inherited);
+      expect(optional).toMatchObject({diagnoses: ['id=none'], sql: ['none'], iterated: []});
+    }
+  });
+});
+
+// =============================================================================
 // Test Suite: one name-resolution order for every reader
 // =============================================================================
 
@@ -4807,6 +4951,36 @@ describe('SkillExecutor - Pipeline Step', () => {
     const result = await executor.execute('pipeline_source_binding', 'trace-1');
     const bundle = result.rawResults?.pipeline_bundle?.data as any;
     expect(bundle.activeRenderingProcesses.map((p: any) => p.processName)).toEqual(['com.bound.app']);
+  });
+
+  it('reads a Skill reference source by step id as its default save_as would, and nothing once it failed', async () => {
+    mockTraceProcessor.query.mockImplementation(async (_trace: string, sql: string) => {
+      if (sql.includes('/*procs*/')) return {columns: ['upid', 'process_name'], rows: [[2, 'com.bound.app']]};
+      if (sql.includes('/*boom*/')) return {columns: [], rows: [], error: 'boom'};
+      if (sql.includes('/*setup*/')) return {columns: [], rows: []};
+      return {columns: ['primary_pipeline_id'], rows: [['ANDROID_VIEW_STANDARD_BLAST']]};
+    });
+    const childSteps = [
+      {id: 'setup', type: 'atomic', sql: 'CREATE /*setup*/ VIEW v AS SELECT 1'},
+      {id: 'procs', type: 'atomic', sql: 'SELECT /*procs*/ 1', display: {level: 'detail'}},
+    ] as any[];
+    executor.registerSkill({name: 'setup_procs_child', type: 'composite', version: '1.0',
+      meta: createMeta('Setup Procs Child'), steps: childSteps});
+    executor.registerSkill({name: 'failing_procs_child', type: 'composite', version: '1.0',
+      meta: createMeta('Failing Procs Child'), steps: [...childSteps, {id: 'boom', type: 'atomic', sql: 'SELECT /*boom*/ 1'}]});
+    const processes = async (child: string) => {
+      executor.registerSkill({name: 'pipeline_source_by_id', type: 'composite', version: '1.0',
+        meta: createMeta('Pipeline Source By Id'), steps: [
+          {id: 'pipeline_result', type: 'atomic', sql: 'SELECT 1', save_as: 'pipeline_result'},
+          {id: 'active_rendering_processes', skill: child, optional: true} as any,
+          {id: 'pipeline_bundle', type: 'pipeline', save_as: 'pipeline_bundle'} as any,
+        ]});
+      const result = await executor.execute('pipeline_source_by_id', 'trace-1');
+      return (result.rawResults?.pipeline_bundle?.data as any).activeRenderingProcesses.map((p: any) => p.processName);
+    };
+
+    expect(await processes('setup_procs_child')).toEqual(['com.bound.app']);
+    expect(await processes('failing_procs_child')).toEqual([]);
   });
 });
 

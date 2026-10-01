@@ -16,6 +16,8 @@ import fs from 'fs';
 // Import routes
 import agentRoutes from '../../src/routes/agentRoutes';
 import skillRoutes from '../../src/routes/skillRoutes';
+import { unhandledErrorHandler } from '../../src/middleware/unhandledErrorHandler';
+import { requestIdMiddleware } from '../../src/middleware/requestId';
 import {
   LEGACY_AGENT_API_BASE,
   rejectLegacyAgentApi,
@@ -37,6 +39,7 @@ export function createTestApp() {
   const app = express();
 
   // Middleware
+  app.use(requestIdMiddleware);
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -65,14 +68,7 @@ export function createTestApp() {
     });
   });
 
-  // Error handler
-  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    console.error('Test app error:', err.message);
-    res.status(err.status || 500).json({
-      error: 'Internal server error',
-      message: err.message,
-    });
-  });
+  app.use(unhandledErrorHandler);
 
   return app;
 }

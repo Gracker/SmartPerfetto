@@ -72,6 +72,28 @@ describe('runtime guard', () => {
       .toMatchObject({ok: true, status: 'ok'});
   });
 
+  test('refuses an unreadable providers.json instead of falling back to env credentials', () => {
+    process.env.CLAUDE_BINARY_PATH = createExecutableStub(tmpDir);
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    fs.writeFileSync(path.join(tmpDir, 'providers.json'), '[{"id":', 'utf-8');
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(() => assertAnalysisRuntimeReady()).toThrow('providers.json could not be read');
+      // An explicit env choice is not a guess about the active provider.
+      expect(assertAnalysisRuntimeReady({providerId: null}).diagnostics.configured).toBe(true);
+      const report = collectDoctorReport(tmpDir);
+      expect(report.ok).toBe(false);
+      expect(report.checks.find(check => check.name === 'runtime')).toMatchObject({
+        ok: false,
+        status: 'error',
+        message: expect.stringContaining('providers.json could not be read'),
+        details: {code: 'provider_store_unreadable'},
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test('rejects Claude runtime when explicit SDK binary path is not executable', () => {
     process.env.CLAUDE_BINARY_PATH = path.join(tmpDir, 'missing-claude-binary');
     expect(() => assertAnalysisRuntimeReady()).toThrow('native binary is not executable');

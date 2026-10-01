@@ -228,8 +228,11 @@ outputs:
     startup_id: "${startup_data.data[0].startup_id}"
 ```
 
-带 `save_as` 的引用步骤只绑定被引用 Skill 的一个步骤结果。默认取第一个有数据的展示步骤；
-父 Skill 要读具体字段时，用 `save_from` 指明步骤：
+带 `save_as` 的引用步骤只绑定被引用 Skill 的一个步骤结果：有 `root` 步骤时取它，否则取第一个有数据的
+展示步骤，再否则取第一个有数据的步骤，都没有数据时取最后一个返回了结果的步骤（开头返回 `[]` 的建表/准备步骤因此不会被选中）。按步骤 id 读取引用步骤
+——表达式里的 `${step_id.data...}`、诊断与 AI 步骤的 `inputs`、iterator/pipeline 的 `source`——读到的也是这个
+默认选中的步骤及其范围来源。父 Skill 要读具体字段时，用 `save_from` 指明步骤（它只改变 `save_as` 的绑定，
+按步骤 id 读取仍是默认选择）：
 
 ```yaml
 - id: cpu_throttling
@@ -238,9 +241,14 @@ outputs:
   save_from: limit_evidence   # 被引用 Skill 的顶层步骤 id
 ```
 
-该步骤未观测到结果（失败、条件跳过、可选查询出错或不存在）时，`save_as` 绑定为 `null`，引擎不会退回
-其他步骤；真正的空结果绑定 `[]`。引用步骤本身失败时同样绑定 `null`，即使目标步骤已有数据。
+该步骤未观测到结果（失败、条件跳过、可选查询出错或不存在）时，`save_as` 绑定为 `null`，查找不会退回其他
+步骤，也不会退回同名输入或继承值；真正的空结果绑定 `[]`。引用步骤本身失败（子 Skill 失败、required 条件不满足）
+时同样绑定 `null`，即使目标步骤已有数据；按步骤 id 也读不到它的任何子步骤数据，包括失败前已经返回的部分结果。
 `save_from` 只在父 Skill 的顶层步骤生效，`validate:skills` 会拒绝不存在的目标步骤。
+
+默认选中的子步骤本身又是 Skill 引用时，绑定的是孙 Skill 的结果对象：表达式经 `.data` 访问时按同一规则再
+选一层，诊断与 AI 的 `inputs` 拿到的是这个结果对象，iterator 不能遍历它。`save_from` 只能选直接子 Skill
+的顶层步骤、不能穿透到孙 Skill：需要具体字段时，用它绑定子 Skill 中真正的读取步骤，而不是那个引用步骤。
 
 ### 4.3 iterator — 遍历数据行
 
@@ -354,7 +362,7 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 
 1. **当前迭代项**（仅 iterator `filter`）: `item` 和它自己的字段 → `currentItem`
 2. **保存的变量**: `${save_as_name}` → `variables[save_as_name]`；值为 `null` 也算已绑定
-3. **步骤结果**: `${step_id}` → `results[step_id].data`；成功的步骤、条件跳过的步骤、exact scope 不可用的步骤以及失败的查询或 Skill 引用都会记录结果（两条执行路径相同）
+3. **步骤结果**: `${step_id}` → `results[step_id].data`；成功的步骤、条件跳过的步骤、exact scope 不可用的步骤以及失败的查询或 Skill 引用都会记录结果（两条执行路径相同）。Skill 引用步骤是它默认 `save_as` 会绑定的子步骤数据（见 4.2），引用失败时没有数据
 4. **输入参数**: `${package}` → `params.package`（含声明的 `default`）
 5. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`，即调用方 Skill 的继承值和它的 `save_as`
 

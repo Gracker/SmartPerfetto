@@ -84,8 +84,13 @@ steps:
 | `pipeline` | Detect or describe rendering pipeline behavior |
 
 A `skill` step with `save_as` binds one of the referenced Skill's step
-results. By default the engine picks the first displayed step that returned
-data. When the parent reads specific fields, name the step with `save_from`:
+results: its `root` step when there is one, else the first displayed step that
+returned data, else the first step that returned data, else the last step that
+returned a result (so a leading setup step that returns `[]` is never picked). Reading the reference step by its id — a
+`${step_id.data...}` expression, diagnostic and AI step `inputs`, an iterator
+or pipeline `source` — reads that same default step and its scope provenance.
+When the parent reads specific fields, name the step with `save_from` (it
+changes only the `save_as` binding; a read by step id keeps the default):
 
 ```yaml
 - id: cpu_throttling
@@ -95,11 +100,22 @@ data. When the parent reads specific fields, name the step with `save_from`:
 ```
 
 If that step did not observe a result (failed, skipped by its condition, an
-optional query error, or absent), `save_as` binds `null`; the engine never
-falls back to another step. A genuinely empty result binds `[]`. A reference
-step that fails binds `null` too, even when the named step returned data.
+optional query error, or absent), `save_as` binds `null`; lookup never falls
+back to another step or to a same-named input or inherited value. A genuinely
+empty result binds `[]`. When the reference step itself fails (the child Skill
+failed, or a required condition was not met), it binds `null` too, even when
+the named step returned data, and a read by its step id sees none of the
+child's data, including partial results returned before the failure.
 `save_from` is honoured only on a top-level step of the parent, and
 `validate:skills` rejects an unknown target step.
+
+When the default child step is itself a Skill reference, the binding holds the
+grandchild Skill's result: expressions reading `.data` select one more level by
+the same rule, diagnostic and AI `inputs` receive that result object, and an
+iterator cannot iterate it. `save_from` selects only a top-level step of the
+direct child and cannot reach into the grandchild: when the parent needs
+specific fields, bind the child's own read step rather than that reference
+step.
 
 ## Rendering Pipeline Catalog
 
@@ -124,7 +140,7 @@ Skill parameters use `${param|default}`. Placeholders, `condition`, iterator `fi
 
 1. **Current iteration item** (iterator `filter` only): `item` and its own fields → `currentItem`
 2. **Saved variable**: `${save_as_name}` → `variables[save_as_name]`; a `null` value counts as bound
-3. **Step result**: `${step_id}` → `results[step_id].data`; both execution paths record successful steps, condition-skipped steps, steps whose exact scope was unavailable, and failed query or Skill reference steps
+3. **Step result**: `${step_id}` → `results[step_id].data`; both execution paths record successful steps, condition-skipped steps, steps whose exact scope was unavailable, and failed query or Skill reference steps. For a Skill reference this is the child step data its default `save_as` would bind (see above), and no data once the reference failed
 4. **Input**: `${package}` → `params.package`, including a declared `default`
 5. **Inherited context**: `${parent_var}` → `inherited[parent_var]`, the calling Skill's inherited values and `save_as` bindings
 

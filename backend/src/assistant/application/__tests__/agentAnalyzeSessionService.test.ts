@@ -675,6 +675,89 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(existing.orchestrator.cleanupSession).toHaveBeenCalledWith(existing.sessionId);
   });
 
+  describe('while providers.json is unreadable', () => {
+    let warnSpy: ReturnType<typeof jest.spyOn>;
+
+    function createActiveOpenAiProvider(): string {
+      const provider = getProviderService().create({
+        name: 'Gateway',
+        category: 'official',
+        type: 'openai',
+        models: {primary: 'gpt-gateway', light: 'gpt-gateway-light'},
+        connection: {agentRuntime: 'openai-agents-sdk', openaiApiKey: 'sk-gateway-openai'},
+      });
+      getProviderService().activate(provider.id);
+      return provider.id;
+    }
+
+    async function breakProvidersFile(): Promise<void> {
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await fs.writeFile(path.join(providerDataDir, 'providers.json'), '[{"id":');
+    }
+
+    function expectStoreUnreadableRefusal(prepare: () => unknown): void {
+      let caught: unknown;
+      try {
+        prepare();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AnalyzeSessionPreparationError);
+      expect(caught).toMatchObject({code: 'provider_store_unreadable', httpStatus: 409});
+    }
+
+    afterEach(() => warnSpy?.mockRestore());
+
+    test('refuses a new session that follows the active provider instead of pinning env', async () => {
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      expectStoreUnreadableRefusal(() => service.prepareSession({traceId: 'trace-1', query: 'q', options: {}}));
+      expect(mockCreateAgentOrchestrator).not.toHaveBeenCalled();
+    });
+
+    test('still pins env when the request chooses it explicitly', async () => {
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      const prepared = service.prepareSession({traceId: 'trace-1', query: 'q', providerId: null, options: {}});
+      expect(prepared.isNewSession).toBe(true);
+      expect(prepared.session.providerId).toBeNull();
+    });
+
+    test('continues a live env-pinned session without reading the active provider', async () => {
+      const existing = createSession('agent-session-env', 'trace-1');
+      existing.providerId = null;
+      existing.providerSnapshotHash = providerSnapshotHash(null);
+      assistantAppService.setSession(existing.sessionId, existing);
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      const prepared = service.prepareSession({
+        traceId: 'trace-1', query: 'follow-up', requestedSessionId: existing.sessionId, options: {},
+      });
+      expect(prepared.isNewSession).toBe(false);
+      expect(prepared.sessionId).toBe(existing.sessionId);
+    });
+
+    test('keeps a provider-pinned live session instead of retiring it as deleted', async () => {
+      const providerId = createActiveOpenAiProvider();
+      const existing = createSession('agent-session-pinned', 'trace-1');
+      existing.orchestrator = {cleanupSession: jest.fn()} as any;
+      existing.providerId = providerId;
+      existing.providerSnapshotHash = providerSnapshotHash(providerId);
+      existing.runtimeKind = 'openai-agents-sdk';
+      assistantAppService.setSession(existing.sessionId, existing);
+      await breakProvidersFile();
+
+      expectStoreUnreadableRefusal(() => service.prepareSession({
+        traceId: 'trace-1', query: 'follow-up', requestedSessionId: existing.sessionId, options: {},
+      }));
+      expect(existing.orchestrator.cleanupSession).not.toHaveBeenCalled();
+      expect(assistantAppService.getSession(existing.sessionId)).toBe(existing);
+    });
+  });
+
   test('keeps live sessions pinned when workspace default provider changes', () => {
     enableEnterpriseProviderStore();
     const workspaceScope: ProviderScope = {
