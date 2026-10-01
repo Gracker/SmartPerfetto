@@ -94,11 +94,12 @@ data. When the parent reads specific fields, name the step with `save_from`:
   save_from: limit_evidence   # a top-level step id of the referenced Skill
 ```
 
-If that step did not observe a result (failed, skipped by its condition, or
-an optional query error), `save_as` stays unbound; the engine never falls back
-to another step. A genuinely empty result binds `[]`. `save_from` is honoured
-only on a top-level step of the parent, and `validate:skills` rejects an
-unknown target step.
+If that step did not observe a result (failed, skipped by its condition, an
+optional query error, or absent), `save_as` binds `null`; the engine never
+falls back to another step. A genuinely empty result binds `[]`. A reference
+step that fails binds `null` too, even when the named step returned data.
+`save_from` is honoured only on a top-level step of the parent, and
+`validate:skills` rejects an unknown target step.
 
 ## Rendering Pipeline Catalog
 
@@ -122,12 +123,14 @@ hashes, and references.
 Skill parameters use `${param|default}`. Placeholders, `condition`, iterator `filter`, diagnostic and AI step `inputs`, and input evidence scope all resolve a root name in one order; the first scope that binds it wins:
 
 1. **Current iteration item** (iterator `filter` only): `item` and its own fields → `currentItem`
-2. **Saved variable**: `${save_as_name}` → `variables[save_as_name]`; a `null` value counts as bound (an unobserved `save_from` step binds `null`)
-3. **Step result**: `${step_id}` → `results[step_id].data`
+2. **Saved variable**: `${save_as_name}` → `variables[save_as_name]`; a `null` value counts as bound
+3. **Step result**: `${step_id}` → `results[step_id].data`; both execution paths record successful steps, condition-skipped steps, steps whose exact scope was unavailable, and failed query or Skill reference steps
 4. **Input**: `${package}` → `params.package`, including a declared `default`
 5. **Inherited context**: `${parent_var}` → `inherited[parent_var]`, the calling Skill's inherited values and `save_as` bindings
 
 A Skill's own binding therefore hides a caller's value of the same name, and a `save_as` reads its declared binding (including the child step `save_from` selects) rather than a same-named step result. A step's `save_as` may not reuse another step's id (`validate:skills` reports `save_as_step_id_collision`); naming the binding after its own step is the usual form. Once a scope binds the root name, lookup never falls back to a lower scope (a `null` variable does not yield to a same-named input). When the full path then resolves to `null` or `undefined` (unbound, bound to `null`, `[0]` of an empty array, a missing field), the inline `|default` applies, then the type default (`''` inside SQL quotes, otherwise `NULL`). The engine escapes substituted values to reduce SQL injection risk.
+
+A step that declares `save_as` always binds that name once it ran: the selected data on success (`[]` for an optional step skipped by its condition or whose query errored), and `null`, carrying that step's own result scope (with `save_from`, the named child step's scope, or none when that step is absent), when the step did not succeed (a non-optional step skipped by its condition, an unavailable exact scope, or a failed step of any type, including a failed optional Skill reference). A step skipped by its condition did not run, so it never replaces a binding an earlier step of the same Skill made; alternative steps under exclusive conditions can therefore declare one name.
 
 ## Display Configuration
 

@@ -2596,6 +2596,43 @@ describe('Skill Reference save_from 绑定', () => {
     expect(diagnoses(await probeViaExecute(parent({save_from: saveFrom}, true)))).toEqual(['UNBOUND']);
   });
 
+  it('binds an optional reference skipped by its condition as an empty row set, like a plain save_as', async () => {
+    answer({rows: [['detail']]});
+    const skipped = parent({save_from: 'detail', condition: 'false'});
+    expect(diagnoses(await probeViaExecute(skipped))).toEqual(['BOUND []']);
+    expect(await probeViaComposite(skipped)).toEqual(['BOUND []']);
+  });
+
+  // The binding names one child step, so it carries that step's scope or none:
+  // never the reference step's aggregate over every child step.
+  const scopeEntries = (provenance: any) => provenance?.entries?.map((entry: any) =>
+    ({role: entry.role, sourceStepId: entry.sourceStepId, availability: entry.availability}));
+
+  it('carries no scope when the named step does not exist, even though other child steps have one', async () => {
+    answer({rows: [['detail']]});
+    const result = await probeViaExecute(parent({save_from: 'missing'}));
+    expect(diagnoses(result)).toEqual(['UNBOUND']);
+    expect(result.diagnostics[0].scopeProvenance).toBeUndefined();
+    const layered = await executor.executeCompositeSkill(parent({save_from: 'missing'}), {}, {traceId: 'trace-1'});
+    expect(layered.stepResults?.find(step => step.stepId === 'probe')?.scopeProvenance).toBeUndefined();
+  });
+
+  it('binds null with the named step\'s own scope when the reference step fails after observing it', async () => {
+    executor.registerSkill({...child, name: 'failing_after_detail', steps: [...child.steps!,
+      {id: 'required_tail', skill: 'broken_grandchild'} as any]});
+    answer({rows: [['detail']]});
+    const failingRef = parent({skill: 'failing_after_detail', save_from: 'detail'});
+    const result = await probeViaExecute(failingRef);
+    expect(diagnoses(result)).toEqual(['UNBOUND']);
+    expect(scopeEntries(result.diagnostics[0].scopeProvenance))
+      .toEqual([{role: 'global_context', sourceStepId: 'detail', availability: 'available'}]);
+    const layered = await executor.executeCompositeSkill(failingRef, {}, {traceId: 'trace-1'});
+    const probe = layered.stepResults?.find(step => step.stepId === 'probe');
+    expect(probe?.data?.diagnostics?.map((d: any) => d.diagnosis)).toEqual(['UNBOUND']);
+    expect(scopeEntries(probe?.scopeProvenance))
+      .toEqual([{role: 'global_context', sourceStepId: 'detail', availability: 'available'}]);
+  });
+
   // The reference step's id equals its save_as, so `results.picked` (the whole
   // child result, whose default pick is `overview`) and `variables.picked` (the
   // save_from binding) share one name. Every reader must see the binding.
@@ -2644,18 +2681,19 @@ describe('Skill Reference save_from 绑定', () => {
       expect((await compositeProbe())?.data?.diagnostics?.map((d: any) => d.diagnosis)).toEqual(['BOUND [] simple=none']);
     });
 
-    it('stays unbound, with no evidence or provenance borrowed from the raw result, when the named step fails', async () => {
+    it('stays unbound, with only the failed named step\'s own scope and no evidence, when the named step fails', async () => {
       answer({error: 'detail failed'});
+      const unavailableDetail = [{role: 'global_context', sourceStepId: 'detail', availability: 'unavailable'}];
       const result = await probeViaExecute(sameName);
       expect(diagnoses(result)).toEqual(['UNBOUND none']);
       expect(result.diagnostics[0].evidence).toBeUndefined();
-      expect(result.diagnostics[0].scopeProvenance).toBeUndefined();
+      expect(scopeEntries(result.diagnostics[0].scopeProvenance)).toEqual(unavailableDetail);
       expect(probeSql()).toEqual([expect.stringContaining("'none'")]);
 
       const probe = await compositeProbe();
       expect(probe?.data?.diagnostics?.map((d: any) => d.diagnosis)).toEqual(['UNBOUND none']);
       expect(probe?.data?.diagnostics?.[0]?.evidence).toBeUndefined();
-      expect(probe?.scopeProvenance).toBeUndefined();
+      expect(scopeEntries(probe?.scopeProvenance)).toEqual(unavailableDetail);
     });
   });
 });
@@ -2681,7 +2719,6 @@ describe('表达式名字解析顺序', () => {
       {name: 'use_local', type: 'boolean', required: false, default: true},
     ],
     steps: [
-      // Not optional: a skipped step leaves `shared` unbound (an optional skip binds []).
       {id: 'make_local', type: 'atomic', sql: 'SELECT /*local*/ 1', save_as: 'shared', condition: 'use_local === true'},
       {id: 'sql_probe', type: 'atomic', sql: "SELECT /*sqlprobe*/ '${shared.data[0].source|none}'", optional: true},
       {id: 'probe', type: 'diagnostic', inputs: ['shared'], rules: [
@@ -2693,6 +2730,9 @@ describe('表达式名字解析顺序', () => {
       ]} as any,
     ],
   };
+  // The steps after `make_local` that read `shared`; alone they declare nothing.
+  const readers = probe.steps!.slice(1);
+  const inputProbe: SkillDefinition = {...probe, name: 'input_probe', steps: readers};
 
   const scoped = (source: string) => ({data: [{source}]});
 
@@ -2704,16 +2744,19 @@ describe('表达式名字解析顺序', () => {
     return {sql, diagnoses: (diagnostics ?? []).map(d => d.diagnosis)};
   }
 
-  const viaExecute = async (params: Record<string, unknown>, inherited: Record<string, unknown>) =>
-    readings((await executor.execute('scope_probe', 'trace-1', params, inherited)).diagnostics);
-  const viaComposite = async (params: Record<string, unknown>, inherited: Record<string, unknown>) =>
-    readings((await executor.executeCompositeSkill(probe, params, {traceId: 'trace-1', inherited}))
+  type Run = (params: Record<string, unknown>, inherited: Record<string, unknown>, skill?: SkillDefinition) =>
+    Promise<ReturnType<typeof readings>>;
+  const viaExecute: Run = async (params, inherited, skill = probe) =>
+    readings((await executor.execute(skill.name, 'trace-1', params, inherited)).diagnostics);
+  const viaComposite: Run = async (params, inherited, skill = probe) =>
+    readings((await executor.executeCompositeSkill(skill, params, {traceId: 'trace-1', inherited}))
       .stepResults?.find(step => step.stepId === 'probe')?.data?.diagnostics);
 
   const expectAll = (source: string) => ({
     sql: [source],
     diagnoses: [`simple=${source} complex=${source}`, `cond=${source}`],
   });
+  const expectUnobserved = {sql: ['none'], diagnoses: ['simple=none complex=']};
 
   beforeEach(() => {
     mockTraceProcessor = createMockTraceProcessorService();
@@ -2724,6 +2767,7 @@ describe('表达式名字解析顺序', () => {
     });
     executor = createSkillExecutor(mockTraceProcessor);
     executor.registerSkill(probe);
+    executor.registerSkill(inputProbe);
   });
 
   it.each([
@@ -2733,9 +2777,17 @@ describe('表达式名字解析顺序', () => {
     const inherited = {shared: scoped('inherited')};
     expect(await run({shared: scoped('param')}, inherited)).toEqual(expectAll('local'));
     mockTraceProcessor.query.mockClear();
-    expect(await run({shared: scoped('param'), use_local: false}, inherited)).toEqual(expectAll('param'));
+    expect(await run({shared: scoped('param')}, inherited, inputProbe)).toEqual(expectAll('param'));
     mockTraceProcessor.query.mockClear();
-    expect(await run({use_local: false}, inherited)).toEqual(expectAll('inherited'));
+    expect(await run({}, inherited, inputProbe)).toEqual(expectAll('inherited'));
+  });
+
+  it.each([
+    ['execute', viaExecute],
+    ['executeCompositeSkill', viaComposite],
+  ])('binds null when the step declaring the name is skipped, hiding the input and inherited values (%s)', async (_path, run) => {
+    expect(await run({shared: scoped('param'), use_local: false}, {shared: scoped('inherited')}))
+      .toEqual(expectUnobserved);
   });
 
   it('does not let a parent save_as of the same name shadow the child binding', async () => {
@@ -2755,11 +2807,84 @@ describe('表达式名字解析顺序', () => {
 
   it('lets an optional skipped step bind [], which hides the input and inherited values', async () => {
     const optionalSkip = {...probe, name: 'optional_skip_probe',
-      steps: [{...probe.steps![0], optional: true} as any, ...probe.steps!.slice(1)]};
+      steps: [{...probe.steps![0], optional: true} as any, ...readers]};
     executor.registerSkill(optionalSkip);
     const result = await executor.execute('optional_skip_probe', 'trace-1',
       {shared: scoped('param'), use_local: false}, {shared: scoped('inherited')});
-    expect(readings(result.diagnostics)).toEqual({sql: ['none'], diagnoses: ['simple=none complex=']});
+    expect(readings(result.diagnostics)).toEqual(expectUnobserved);
+  });
+
+  // Alternative steps may declare one name under exclusive conditions; the one
+  // that did not run leaves the other's binding in place, in either order.
+  it.each([
+    ['execute', viaExecute],
+    ['executeCompositeSkill', viaComposite],
+  ])('keeps an alternative step\'s binding when a skipped step declares the same name (%s)', async (_path, run) => {
+    const alternatives = (skipped: Record<string, unknown>, order: 'skipped_last' | 'skipped_first'): SkillDefinition => {
+      const ran = {id: 'ran', type: 'atomic', sql: 'SELECT /*local*/ 1', save_as: 'shared'};
+      const gated = {id: 'gated', type: 'atomic', sql: 'SELECT /*stale*/ 1', save_as: 'shared', condition: 'false', ...skipped};
+      return {...probe, name: `alternatives_${order}_${skipped.optional ? 'optional' : 'required'}`,
+        steps: [...(order === 'skipped_last' ? [ran, gated] : [gated, ran]) as any[], ...readers]};
+    };
+    for (const skipped of [{}, {optional: true}]) {
+      for (const order of ['skipped_last', 'skipped_first'] as const) {
+        const skill = alternatives(skipped, order);
+        executor.registerSkill(skill);
+        mockTraceProcessor.query.mockClear();
+        expect(await run({shared: scoped('param')}, {shared: scoped('inherited')}, skill)).toEqual(expectAll('local'));
+      }
+    }
+  });
+
+  // A failed step binds its save_as to null on both paths, whatever its type and
+  // whether or not its result is recorded under its id.
+  describe.each([
+    ['execute', viaExecute],
+    ['executeCompositeSkill', viaComposite],
+  ])('a failed step declaring the name (%s)', (_path, run) => {
+    const failing = (step: Record<string, unknown>): SkillDefinition =>
+      ({...probe, name: `failing_${String(step.id)}`, steps: [{...step, save_as: 'shared'} as any, ...readers]});
+
+    beforeEach(() => {
+      executor.registerSkill({name: 'broken_child', type: 'atomic', version: '1.0',
+        meta: createMeta('Broken Child'), sql: 'SELECT /*broken*/ 1'});
+      mockTraceProcessor.query.mockImplementation(async (_trace: string, sql: string) =>
+        sql.includes('/*broken*/') ? {columns: [], rows: [], error: 'broken'} : {columns: [], rows: []});
+    });
+
+    it.each([
+      ['an optional Skill reference', {id: 'ref', skill: 'broken_child', optional: true}],
+      ['an iterator with no source', {id: 'each', type: 'iterator', source: 'absent_rows', item_skill: 'broken_child'}],
+      ['an optional conditional whose branch fails', {id: 'branch', type: 'conditional', optional: true,
+        conditions: [{when: 'true', then: 'broken_child'}]}],
+    ])('hides the input and inherited values for %s', async (_case, step) => {
+      const skill = failing(step);
+      executor.registerSkill(skill);
+      expect(await run({shared: scoped('param')}, {shared: scoped('inherited')}, skill)).toEqual(expectUnobserved);
+    });
+
+    it('stops at a failed optional Skill reference whose id is the name', async () => {
+      const skill: SkillDefinition = {...probe, name: 'failing_id',
+        steps: [{id: 'shared', skill: 'broken_child', optional: true} as any, ...readers]};
+      executor.registerSkill(skill);
+      expect(await run({shared: scoped('param')}, {shared: scoped('inherited')}, skill)).toEqual(expectUnobserved);
+    });
+  });
+
+  // Recording follows the type of the result a step returns: a conditional
+  // returns its branch's Skill result, so its failure is recorded.
+  it('records a failed conditional branch but not a failed iterator in rawResults', async () => {
+    executor.registerSkill({name: 'broken_child', type: 'atomic', version: '1.0',
+      meta: createMeta('Broken Child'), sql: 'SELECT /*broken*/ 1'});
+    mockTraceProcessor.query.mockResolvedValue({columns: [], rows: [], error: 'broken'});
+    const skill: SkillDefinition = {...probe, name: 'failing_mixed', steps: [
+      {id: 'each', type: 'iterator', source: 'absent_rows', item_skill: 'broken_child'} as any,
+      {id: 'branch', type: 'conditional', optional: true, conditions: [{when: 'true', then: 'broken_child'}]} as any,
+    ]};
+    executor.registerSkill(skill);
+    const result = await executor.execute(skill.name, 'trace-1');
+    expect(result.rawResults?.branch).toMatchObject({success: false, stepType: 'skill'});
+    expect(Object.keys(result.rawResults ?? {})).not.toContain('each');
   });
 
   describe('iterator filter', () => {
