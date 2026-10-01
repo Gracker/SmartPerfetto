@@ -152,6 +152,8 @@ function buildCaseHints(input: {
     rootCause: query.rootCause,
     secondaryRootCauses: query.secondaryRootCauses,
     responsibility: query.responsibility,
+    // A similarity signature records no rendering architecture, so it cannot rule a case out.
+    architectureType: undefined,
     audiences: query.audiences ?? ['app'],
     evidenceSignatures: input.signature.caseEvidenceSignatures,
     topK: input.limit,

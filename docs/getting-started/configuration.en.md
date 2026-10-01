@@ -656,6 +656,20 @@ configured twice. Set `FRONTEND_URL` only when the browser-visible frontend
 origin differs, such as HTTPS or a reverse proxy. When the browser cannot infer
 the backend address, set `SMARTPERFETTO_BACKEND_PUBLIC_URL`.
 
+By default the backend admits browser origins on `localhost` / `127.0.0.1` at the
+frontend port (plus the 8080, 5173 and 5174 development ports) and
+`FRONTEND_URL`; `CORS_ORIGINS` (comma-separated) replaces that list. A Trace
+Processor WebSocket authenticated by a session cookie, trusted SSO headers, or
+the keyless local identity accepts only those origins too: a page anywhere else,
+including a same-site sibling subdomain or another local port, gets 403. A
+session-cookie connection must also send an Origin. A connection authenticated
+by a credential the page itself holds (an enterprise API key, a Bearer session
+token, or the Trace Processor capability protocol) is not Origin-checked, but a
+request that carries the session cookie and no `Authorization: Bearer` header
+(for example, the cookie plus a capability) follows the cookie rule. A reverse proxy
+must not strip the browser's `Origin` header, or trusted-SSO-header mode loses
+this check.
+
 URL Trace downloads reject private, reserved, and RFC 2544 `198.18.0.0/15`
 addresses by default. If a local TUN maps a trusted public hostname to fake IP,
 the deployment operator may list exact comma-separated hostnames in
@@ -734,7 +748,8 @@ authority. No enterprise migration phase is required, and OIDC rejects the
 
 Production mode requires HTTPS for the issuer, callback, and frontend URL and
 uses Secure cookies by default. Only controlled test deployments may explicitly
-set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`; this permits plaintext HTTP
+set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` (any of `true`, `1`, `yes`,
+`on`, `enabled`, like the other switches); this permits plaintext HTTP
 and disables Secure cookies by default, so it must not be used on an untrusted
 network. `FRONTEND_URL` must be the browser-visible frontend origin, and
 must not be a container-internal address. The frontend URL and OIDC callback

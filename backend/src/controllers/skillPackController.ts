@@ -4,6 +4,7 @@
 
 import type { Request, Response } from 'express';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteReasonError } from '../middleware/routeFailure';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { repositoryScopeFromRequestContext } from '../services/enterpriseRepository';
 import { SkillPackInstallService } from '../services/skillPacks/skillPackInstallService';
@@ -23,9 +24,13 @@ function paramString(req: Request, name: string): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-function errorStatus(error: unknown): number {
-  const message = error instanceof Error ? error.message : String(error);
-  return message === 'skill_pack_not_found' ? 404 : 400;
+/** Skill pack services throw reason tokens; anything else gets fixed text. */
+function sendSkillPackError(res: Response, error: unknown, operation: string): void {
+  sendRouteReasonError(res, error, reason => (reason === 'skill_pack_not_found' ? 404 : 400), {
+    code: 'skill_pack_operation_failed',
+    error: 'Skill pack operation failed',
+    logLabel: `[SkillPacks] ${operation} error`,
+  });
 }
 
 function createInstallService(db: ReturnType<typeof openEnterpriseDb>): SkillPackInstallService {
@@ -81,10 +86,7 @@ export function createSkillPackController() {
         );
         res.json({ success: true, skillPack: record });
       } catch (error) {
-        res.status(errorStatus(error)).json({
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        sendSkillPackError(res, error, 'Install');
       } finally {
         db.close();
       }
@@ -112,10 +114,7 @@ export function createSkillPackController() {
         );
         res.json({ success: true, skillPack: record });
       } catch (error) {
-        res.status(errorStatus(error)).json({
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        sendSkillPackError(res, error, 'Enable');
       } finally {
         db.close();
       }
@@ -137,10 +136,7 @@ export function createSkillPackController() {
         );
         res.json({ success: true, skillPack: record });
       } catch (error) {
-        res.status(errorStatus(error)).json({
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        sendSkillPackError(res, error, 'Remove');
       } finally {
         db.close();
       }

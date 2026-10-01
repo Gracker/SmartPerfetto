@@ -11,6 +11,7 @@ import type {
   CaseKnowledgeStatus,
 } from '../../types/caseKnowledge';
 import type { CaseNode } from '../../types/sparkContracts';
+import { caseAppliesToArchitecture } from '../caseArchitecture';
 import { CaseLibrary } from '../caseLibrary';
 import { RagStore } from '../ragStore';
 import type { KnowledgeScope } from '../scopedKnowledgeStore';
@@ -24,6 +25,11 @@ export interface CaseRecommendationQuery {
   secondaryRootCauses?: string[];
   responsibility?: CaseKnowledgeResponsibility;
   audiences: Array<'app' | 'oem'>;
+  /**
+   * The trace's detected rendering architecture; cases declared for another
+   * one are not retrieved. Required so each caller states whether it knows it.
+   */
+  architectureType: string | undefined;
   context?: Record<string, unknown>;
   evidenceSignatures: Record<string, unknown>;
   textQuery?: string;
@@ -155,7 +161,7 @@ function matchesStructuredQuery(caseNode: CaseNode, query: CaseRecommendationQue
   const rootCauses = new Set([query.rootCause, ...(query.secondaryRootCauses ?? [])]);
   if (!rootCauses.has(taxonomy.primary_root_cause)) return false;
   if (query.responsibility && !responsibilityCompatible(taxonomy.responsibility, query.responsibility)) return false;
-  return true;
+  return caseAppliesToArchitecture(caseNode, query.architectureType);
 }
 
 function responsibilityCompatible(caseResp: CaseKnowledgeResponsibility, queryResp: CaseKnowledgeResponsibility): boolean {

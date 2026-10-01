@@ -6,9 +6,8 @@ import express, { Router, type Request, type Response } from 'express';
 import type { IncomingMessage } from 'http';
 import net, { type Socket } from 'net';
 import type { Duplex } from 'stream';
-import { serverConfig } from '../config';
+import { isKeylessLocalMode, serverConfig } from '../config';
 import {
-  allowsDevIdentity,
   authenticate,
   buildRequestContext,
   DEFAULT_DEV_USER_ID,
@@ -19,12 +18,17 @@ import {
 } from '../middleware/auth';
 import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from '../middleware/requestId';
+import {
+  isOriginAllowedForRequirement,
+  type BrowserOriginRequirement,
+} from '../security/requestOriginPolicy';
 import { sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import {
   frontendHolderInput,
   getTraceProcessorLeaseStore,
+  TraceProcessorLeaseUnavailableError,
   type FrontendHolderVisibility,
   type TraceProcessorHolderInput,
   type TraceProcessorLeaseRecord,
@@ -90,10 +94,30 @@ function queryId(query: URLSearchParams, key: string): string {
   return sanitizeContextId(query.get(key) || '');
 }
 
-function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): RequestContext | null {
+/**
+ * An upgrade skips Express, so no CORS check has admitted its Origin; an
+ * ambient credential needs one before any lease work.
+ */
+function requireUpgradeOrigin(
+  req: IncomingMessage,
+  requirement: BrowserOriginRequirement,
+  allowedOrigins: ReadonlySet<string>,
+): void {
+  if (isOriginAllowedForRequirement(req.headers.origin, requirement, allowedOrigins)) return;
+  throw new TraceProcessorProxyError(403, 'Trace processor WebSocket Origin is not allowed');
+}
+
+function resolveUpgradeRequestContext(
+  req: IncomingMessage,
+  leaseId: string,
+  allowedOrigins: ReadonlySet<string>,
+): RequestContext | null {
   const query = new URL(req.url || '/', 'http://127.0.0.1').searchParams;
   const credential = resolveCredentialIdentity(req);
-  if (credential.kind === 'identity') return upgradeRequestContext(req, query, credential.identity);
+  if (credential.kind === 'identity') {
+    requireUpgradeOrigin(req, credential.originRequirement, allowedOrigins);
+    return upgradeRequestContext(req, query, credential.identity);
+  }
   if (credential.kind === 'rejected') return null;
 
   const capabilityContext = resolveTraceProcessorProxyCapability(
@@ -102,7 +126,9 @@ function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): Re
   );
   if (capabilityContext) return {...capabilityContext, requestId: requestIdOf(req)};
 
-  if (allowsDevIdentity()) {
+  if (isKeylessLocalMode()) {
+    // Keyless local mode authenticates by network position, which any page shares.
+    requireUpgradeOrigin(req, 'if_present', allowedOrigins);
     return upgradeRequestContext(req, query, {
       userId: queryId(query, 'userId') || DEFAULT_DEV_USER_ID,
       authType: 'dev',
@@ -331,12 +357,10 @@ async function heartbeatLease(req: Request, res: Response): Promise<void> {
   try {
     lease = store.acquireHolderForLease(scope, lease.id, holder);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('not acquirable')) {
-      throw new TraceProcessorProxyError(409, message);
-    }
-    if (message.includes('not found')) {
-      throw new TraceProcessorProxyError(404, 'Trace processor lease not found');
+    if (error instanceof TraceProcessorLeaseUnavailableError) {
+      throw error.reason === 'not_acquirable'
+        ? new TraceProcessorProxyError(409, error.message)
+        : new TraceProcessorProxyError(404, 'Trace processor lease not found');
     }
     throw error;
   }
@@ -441,7 +465,7 @@ function sendProxyError(res: Response, error: unknown): void {
   }, error);
 }
 
-function writeUpgradeError(socket: Duplex, statusCode: number, message: string): void {
+export function writeUpgradeError(socket: Duplex, statusCode: number, message: string): void {
   if (!socket.writable) return;
   socket.write(
     `HTTP/1.1 ${statusCode} ${message}\r\n`
@@ -538,8 +562,9 @@ async function proxyWebSocket(
   socket: Duplex,
   head: Buffer,
   leaseId: string,
+  allowedOrigins: ReadonlySet<string>,
 ): Promise<void> {
-  const context = resolveUpgradeRequestContext(req, leaseId);
+  const context = resolveUpgradeRequestContext(req, leaseId, allowedOrigins);
   if (!context) {
     throw new TraceProcessorProxyError(401, 'Trace processor WebSocket requires authentication');
   }
@@ -624,28 +649,39 @@ router.post('/:leaseId/restart', express.json({ limit: '32kb' }), async (req, re
   }
 });
 
+/**
+ * Routes a trace-processor WebSocket upgrade. `allowedOrigins` is the
+ * normalized browser origin set the HTTP API admits through CORS.
+ */
 export function handleTraceProcessorProxyUpgrade(
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  allowedOrigins: ReadonlySet<string>,
 ): boolean {
   const url = new URL(req.url || '/', 'http://127.0.0.1');
   const match = url.pathname.match(/^\/api\/tp\/([^/]+)\/websocket$/);
   if (!match) return false;
 
-  const leaseId = sanitizeContextId(decodeURIComponent(match[1]));
+  // This listener is synchronous: a malformed escape any page can send must
+  // not escape it as an uncaught URIError, which shuts the backend down.
+  let leaseId: string;
+  try {
+    leaseId = sanitizeContextId(decodeURIComponent(match[1]));
+  } catch {
+    leaseId = '';
+  }
   if (!leaseId) {
     writeUpgradeError(socket, 400, 'leaseId is required');
     return true;
   }
 
-  void proxyWebSocket(req, socket, head, leaseId).catch((error) => {
+  void proxyWebSocket(req, socket, head, leaseId, allowedOrigins).catch((error) => {
     if (error instanceof TraceProcessorProxyError) {
       writeUpgradeError(socket, error.statusCode, error.message);
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('[TraceProcessorProxy] WebSocket proxy error:', message);
+    console.error('[TraceProcessorProxy] WebSocket proxy error:', error);
     writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   return true;

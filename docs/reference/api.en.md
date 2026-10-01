@@ -50,8 +50,10 @@ read.
 
 ## Route-Level Failures
 
-When an endpoint catches a downstream failure itself (storage, filesystem,
-trace processor, secret store, export), it answers with the same shape:
+When an endpoint (including the SQL, Skill, Skill pack and batch trace
+endpoints implemented under `backend/src/controllers/`) catches a downstream
+failure itself (storage, filesystem, trace processor, secret store, export,
+model call), it answers with the same shape:
 
 ```json
 {"success": false, "code": "report_read_failed", "error": "Failed to get report", "requestId": "req-…"}
@@ -64,12 +66,67 @@ message, and `requestId` / `X-Request-Id` follow the rules above. The message
 and stack go only to the server log line of that route, correlated by
 `requestId`.
 
-Validation errors written by SmartPerfetto for the caller keep their
-actionable text, usually with a `code`: for example Provider Manager input
-(`provider_invalid_request` 400, `provider_not_found` 404), trace list paging
-(`INVALID_TRACE_LIST_PAGE`), agent log level (`invalid_log_level`), Agent
-analyze options, RAG search input, the directory picker, and enterprise
-workspace administration.
+Errors SmartPerfetto writes for the caller keep their actionable text: the
+same shape, with that text as `error` and the error's own HTTP status. In the
+backend they are domain subclasses of `PublicRequestError`, and each route
+echoes only the subclasses it lists; any other exception gets fixed text.
+For example:
+
+- Provider Manager input (`provider_invalid_request` 400, `provider_not_found`
+  404), trace list paging (`INVALID_TRACE_LIST_PAGE`), agent log level
+  (`invalid_log_level`), Agent analyze options, RAG search input, the
+  directory picker, and enterprise workspace administration.
+- Conversations: `CONVERSATION_NOT_FOUND` 404, `CONVERSATION_QUERY_REQUIRED`
+  400, a changed conversation context (`CONVERSATION_TRACE_CHANGED`,
+  `CONVERSATION_PROVIDER_CHANGED`, `CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`,
+  `ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED`, or the lowercase
+  `analysis_context_changed_restart_required` when a source or knowledge grant
+  no longer holds at recovery) 409, `RUN_ALREADY_ACTIVE` 409,
+  `CANCELLATION_IN_PROGRESS` 409, and stopping a run that is no longer active
+  `CONVERSATION_RUN_NOT_ACTIVE` 409. The error type decides the status; the
+  message text is no longer matched.
+- URL upload: `INVALID_TRACE_URL` 400, `TRACE_URL_TIMEOUT` 504,
+  `TRACE_URL_REDIRECT_INVALID` 502.
+- Knowledge curation (baselines, cases, memory promotion), enterprise API key
+  creation, a refused OIDC login (`oidc_subject_tenant_conflict` 403), trace
+  config proposals, template analysis (`unknown_template` 400, and
+  `template_data_unavailable` 422 when the trace lacks the data), feedback
+  writes (input validation 400, supersede/idempotency conflicts 409), codebase
+  and external knowledge source field validation, and batch trace requests.
+
+The services behind RAG administration, Skill packs and batch traces throw
+machine reason codes as their messages (`root_outside_allowlist`,
+`source_chunk_limit_exceeded:5000`). These endpoints return the reason code
+itself as `code` and `error`, without the detail after the first `:` (an id,
+path or size), and log the original message at warn level; a message that is
+not a reason code gets fixed text. Self-Evolution keeps its
+`{success: false, error: <code>}` shape and returns the whole lowercase reason
+code (only `a-z 0-9 _ : -`, possibly with an id after `:`); any other
+exception is `self_evolution_request_failed`.
+
+Failure records read later through other endpoints carry no exception text
+either: a comparison run's `error` is `Comparison failed`; a tenant purge job
+(`GET /api/tenant/purge/:jobId`) keeps only the purge-window and
+missing-tombstone texts in `error` and adds `errorCode`
+(`tenant_purge_window_open`, `tenant_tombstone_not_found`,
+`tenant_purge_failed`); a failed report generation sets `reportError` to
+`report generation failed`; and a trace that trace_processor_shell cannot load
+after upload answers `trace_processor_shell could not load the trace`. A trace
+upload `details` field is kept only for explanations we write (a rejected URL,
+a file that is too large) and never carries exception text. In a batch trace
+submitted through the API, a failed trace keeps only its reason code (else
+`batch_trace_failed`) in `error` and its diagnostic, while a local CLI batch
+keeps the whole message; each skipped file's `reason` in a codebase reindex
+result keeps only its reason code (else `source_file_unreadable`). In
+enterprise mode an SSO session or API key lookup failure answers 401 with
+fixed text. Records written before this change keep their stored text.
+
+Analysis run failures are the exception: the Agent analysis `error` SSE
+event, the `error` of `/status`, and the conversation `run_failed` event carry
+the runtime or model provider's failure reason (authentication, quota),
+because it is the only thing the session owner can act on. A run that uses
+private knowledge (source code, external knowledge sources) returns only the
+owner-projected text on every one of them.
 
 ## OIDC Authentication
 
@@ -185,7 +242,7 @@ for local and compatibility flows.
 | `/api/workspaces/:workspaceId/agent` | Workspace-scoped agent analysis, SSE, turns, and feedback |
 | `/api/workspaces/:workspaceId/providers` | Workspace-scoped Provider Manager profiles |
 | `/api/workspaces/:workspaceId/analysis-results` | Analysis-result snapshot list, read, and update |
-| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state |
+| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state; a window is identified by (user, windowId), and other users' windows are listed only as pointers to analysis results you can read |
 | `/api/workspaces/:workspaceId/comparisons` | Multi-result comparison create, read, stream, and export |
 | `/api/workspaces/:workspaceId/trace-config` | Side-effect-free trace config proposals |
 | `/api/workspaces/:workspaceId/skill-packs` | Local-directory Skill Pack preview, install, enable/disable, and remove |

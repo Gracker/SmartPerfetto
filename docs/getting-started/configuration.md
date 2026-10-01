@@ -579,6 +579,16 @@ Node/Docker/PaaS 兼容 fallback。Perfetto UI 端口使用
 域名或反向代理）时才显式设置 `FRONTEND_URL`。浏览器无法安全推导后端地址时，显式设置
 `SMARTPERFETTO_BACKEND_PUBLIC_URL`。
 
+后端接受的浏览器 Origin 默认是本机 `localhost` / `127.0.0.1` 上的前端端口（以及
+8080、5173、5174 开发端口）加上 `FRONTEND_URL`；`CORS_ORIGINS`（逗号分隔）会整体
+替换这份列表。Trace Processor WebSocket 由 Session Cookie、可信 SSO Header 或本地
+免密身份认证时，同样只接受这些 Origin，其他页面（包括同站的兄弟子域名或本机其他端口）
+发起的连接返回 403。Session Cookie 认证的连接还必须带 Origin。由页面自己持有的凭据
+（企业 API Key、Bearer Session Token、Trace Processor 能力协议）认证的连接不检查
+Origin；但请求带着 Session Cookie 且没有 `Authorization: Bearer` 头时（例如 Cookie
+加能力协议），按 Cookie 的规则检查。反向代理不能剥掉浏览器
+的 `Origin` 头，否则可信 SSO Header 模式下的这层检查不生效。
+
 URL Trace 下载默认拒绝所有私有、保留和 RFC 2544 `198.18.0.0/15` 地址。若本机
 TUN 代理把可信公网域名解析为 fake-IP，部署管理员可以通过
 `SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS` 以逗号分隔精确主机名；不要配置
@@ -642,7 +652,8 @@ OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要
 回退到会忽略用户范围的 `legacy` 或 `dual-write` 模式。
 
 生产模式默认要求 Issuer、回调和前端 URL 全部使用 HTTPS，并使用 Secure Cookie。
-只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`；该开关会
+只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`（`true`、`1`、
+`yes`、`on`、`enabled` 任一值，与其他开关相同）；该开关会
 允许明文 HTTP 并默认关闭 Secure Cookie，不能用于不可信网络。`FRONTEND_URL` 必须是
 浏览器实际访问的前端 Origin，不能填写容器内部地址。前端 URL 与 OIDC 回调必须使用相同
 协议和主机，端口可以不同；前端默认直接从回调地址的 Origin 推导后端地址，不需要再填写

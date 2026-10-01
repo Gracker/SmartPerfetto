@@ -11,7 +11,7 @@ import request from 'supertest';
 
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
-import { stableStringify } from '../../services/enterpriseTenantExportService';
+import { stableStringify } from '../../utils/stableJson';
 import exportRoutes from '../exportRoutes';
 
 const originalEnv = {
@@ -227,6 +227,39 @@ describe('enterprise tenant export route', () => {
     } finally {
       db.close();
     }
+  });
+
+  it('exports and hashes content under an own __proto__ key in stored JSON', async () => {
+    await seedTenantExportFixture();
+    const setTraceMetadata = (metadata: string) => {
+      const db = openEnterpriseDb(dbPath);
+      try {
+        db.prepare(`UPDATE trace_assets SET metadata_json = ? WHERE id = 'trace-a'`).run(metadata);
+      } finally {
+        db.close();
+      }
+    };
+    const exportTraceMetadata = async (build: string) => {
+      setTraceMetadata(`{"device":"pixel","__proto__":{"build":"${build}","apiKey":"sk-proto-secret"}}`);
+      const res = await ssoHeaders(request(makeApp()).get('/api/export/tenant'));
+      expect(res.status).toBe(200);
+      // Re-hash what the client received, as a downstream verifier would.
+      expect(res.body.bundleSha256).toBe(
+        `sha256:${crypto.createHash('sha256').update(stableStringify(res.body.bundle)).digest('hex')}`,
+      );
+      return res;
+    };
+
+    const first = await exportTraceMetadata('A1');
+    const metadata = first.body.bundle.traces[0].metadata;
+    expect(Object.getOwnPropertyDescriptor(metadata, '__proto__')?.value).toEqual({
+      build: 'A1',
+      apiKey: '[redacted]',
+    });
+    expect(JSON.stringify(first.body.bundle)).not.toContain('sk-proto-secret');
+
+    const second = await exportTraceMetadata('A2');
+    expect(stableStringify(second.body.bundle.traces)).not.toBe(stableStringify(first.body.bundle.traces));
   });
 
   it('requires tenant export privileges', async () => {

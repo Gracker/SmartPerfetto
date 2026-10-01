@@ -207,12 +207,11 @@ function normalizeForJson(value: unknown): JsonValue | undefined {
       .filter((item): item is JsonValue => item !== undefined);
   }
   if (typeof value === 'object') {
-    const out: { [key: string]: JsonValue } = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const normalized = normalizeForJson((value as Record<string, unknown>)[key]);
-      if (normalized !== undefined) out[key] = normalized;
-    }
-    return out;
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().flatMap((key) => {
+      const normalized = normalizeForJson(record[key]);
+      return normalized === undefined ? [] : [[key, normalized]];
+    }));
   }
   return undefined;
 }

@@ -12,7 +12,7 @@ import type { Server } from 'http';
 import type { Duplex } from 'stream';
 
 // Import configuration
-import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
+import { isKeylessLocalMode, resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
@@ -44,7 +44,10 @@ import comparisonRoutes from './routes/comparisonRoutes';
 import traceConfigProposalRoutes from './routes/traceConfigProposalRoutes';
 import skillPackRoutes from './routes/skillPackRoutes';
 import batchTraceRoutes from './routes/batchTraceRoutes';
-import traceProcessorProxyRoutes, { handleTraceProcessorProxyUpgrade } from './routes/traceProcessorProxyRoutes';
+import traceProcessorProxyRoutes, {
+  handleTraceProcessorProxyUpgrade,
+  writeUpgradeError,
+} from './routes/traceProcessorProxyRoutes';
 import applicationUpdateRoutes from './routes/applicationUpdateRoutes';
 import {authenticate, requireRequestContext} from './middleware/auth';
 import { collectEnvCredentialSources } from './agentRuntime/envCredentialSources';
@@ -64,6 +67,7 @@ import {
   requireWorkspaceRouteContext,
 } from './middleware/workspaceRouteContext';
 import {
+  hostnameOfHostHeader,
   isCorsOriginAllowed,
   isLoopbackRequestHostname,
   isSsoCookieMutationOriginAllowed,
@@ -155,11 +159,15 @@ app.use(express.json({ limit: serverConfig.bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 
 // In keyless local mode, reject Host-header DNS rebinding even though the
-// process itself listens only on loopback by default.
+// process itself listens only on loopback by default. WebSocket upgrades skip
+// Express, so the upgrade dispatch below applies the same rule.
+const UNTRUSTED_KEYLESS_HOST = 'Untrusted Host in local keyless mode';
+function isUntrustedKeylessHost(hostname: string): boolean {
+  return isKeylessLocalMode() && !isLoopbackRequestHostname(hostname);
+}
 app.use('/api', (req, res, next) => {
-  const keylessLocalMode = !process.env.SMARTPERFETTO_API_KEY && !resolveFeatureConfig(process.env).enterprise;
-  if (keylessLocalMode && !isLoopbackRequestHostname(req.hostname)) {
-    res.status(403).json({success: false, error: 'Untrusted Host in local keyless mode'});
+  if (isUntrustedKeylessHost(req.hostname)) {
+    res.status(403).json({success: false, error: UNTRUSTED_KEYLESS_HOST});
     return;
   }
   next();
@@ -534,7 +542,11 @@ async function startBackend(): Promise<void> {
   server.on('upgrade', (req, socket, head) => {
     upgradedSockets.add(socket);
     socket.once('close', () => upgradedSockets.delete(socket));
-    if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
+    if (isUntrustedKeylessHost(hostnameOfHostHeader(req.headers.host))) {
+      writeUpgradeError(socket, 403, UNTRUSTED_KEYLESS_HOST);
+      return;
+    }
+    if (handleTraceProcessorProxyUpgrade(req, socket, head, corsAllowedOrigins)) return;
     socket.destroy();
   });
 

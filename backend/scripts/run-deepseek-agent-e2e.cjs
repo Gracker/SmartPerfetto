@@ -55,10 +55,12 @@ const PRIVATE_SOURCE_CANARY = 'SEMANTIC_DELTA_PRIVATE_SOURCE_CANARY_NEVER_EMIT';
 
 // Independent FrameTimeline population oracle for these E2E suites:
 // count one frame per (upid, frame_id), including separate process instances.
+// The slice-id fallback is prefixed: a slice id is not a frame token and must
+// not merge with a token of the same digits.
 const FRAME_FACT_SQL = `INCLUDE PERFETTO MODULE android.frames.timeline;
 WITH per_frame AS (
   SELECT upid, COALESCE(NULLIF(name, ''), CAST(surface_frame_token AS TEXT),
-    CAST(display_frame_token AS TEXT), CAST(id AS TEXT)) AS frame_id,
+    CAST(display_frame_token AS TEXT), 'slice:' || id) AS frame_id,
     MAX(CASE WHEN jank_type IS NOT NULL AND jank_type != 'None' THEN 1 ELSE 0 END) AS is_jank
   FROM actual_frame_timeline_slice WHERE ts IS NOT NULL AND dur IS NOT NULL AND dur >= 0
   GROUP BY upid, frame_id

@@ -6,6 +6,7 @@ import { describe, expect, it } from '@jest/globals';
 
 import type { ConclusionContract } from '../../../agent/core/conclusionContract';
 import type { CaseKnowledgeReportRecommendation } from '../../../types/caseKnowledge';
+import type { CaseRecommendationQuery } from '../caseRecommendationRetriever';
 import {
   attachCaseHitsToContractSync,
   verifyAndPruneCaseRecommendations,
@@ -66,6 +67,23 @@ describe('attachCaseHitsToContractSync', () => {
     expect(result.contract).not.toBe(input);
     expect(result.contract.caseRecommendations).toHaveLength(8);
     expect(result.contract.caseRecommendations?.[0].caseId).toBe('case-0');
+  });
+
+  it('retrieves for the trace architecture the run detected', () => {
+    const queries: CaseRecommendationQuery[] = [];
+    attachCaseHitsToContractSync({
+      conclusionContract: contract(),
+      dataEnvelopes: [],
+      sceneType: 'scrolling',
+      architectureType: 'FLUTTER',
+      retrieve: query => {
+        queries.push(query);
+        return [];
+      },
+    });
+
+    expect(queries.length).toBeGreaterThan(0);
+    expect(queries.every(query => query.architectureType === 'FLUTTER')).toBe(true);
   });
 });
 

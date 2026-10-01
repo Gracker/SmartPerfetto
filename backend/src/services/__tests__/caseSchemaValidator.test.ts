@@ -31,7 +31,7 @@ taxonomy:
   responsibility: app
   severity: critical
 context:
-  app_architecture: android_view_standard
+  app_architecture: standard
   device_vendor: pixel
   os_version: Android 15
   refresh_rate_hz: 120
@@ -147,6 +147,40 @@ describe('caseSchemaValidator', () => {
     expect(result.issues.map(issue => issue.message).join('\n')).toMatch(
       /evidence_refs/,
     );
+  });
+
+  it.each([
+    ['any', 'any'],
+    ['one detector architecture', 'flutter'],
+    ['a list of detector architectures', '[standard, compose]'],
+  ])('accepts context.app_architecture as %s', (_label, value) => {
+    const parsed = parseValid(
+      validCase().replace('app_architecture: standard', `app_architecture: ${value}`),
+    );
+
+    expect(validateParsedCaseFiles([parsed]).ok).toBe(true);
+  });
+
+  it.each([
+    ['missing', ''],
+    ['a value outside the detector vocabulary', '  app_architecture: android_view_standard\n'],
+    ['the detector spelling instead of the case spelling', '  app_architecture: STANDARD\n'],
+    ['unknown, which declares nothing', '  app_architecture: unknown\n'],
+    ['any mixed into a list', '  app_architecture: [any, standard]\n'],
+    ['an empty list', '  app_architecture: []\n'],
+    ['a list with a repeated architecture', '  app_architecture: [standard, standard]\n'],
+  ])('rejects context.app_architecture when it is %s', (_label, line) => {
+    const parsed = parseValid(
+      validCase().replace('  app_architecture: standard\n', line),
+    );
+
+    const result = validateParsedCaseFiles([parsed]);
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.issues).toEqual([
+      expect.objectContaining({fieldPath: 'context.app_architecture'}),
+    ]);
   });
 
   it('rejects duplicate case_id values across files', () => {

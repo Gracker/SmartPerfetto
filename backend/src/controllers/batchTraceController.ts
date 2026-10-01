@@ -4,6 +4,8 @@
 
 import type { Request, Response } from 'express';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteReasonError } from '../middleware/routeFailure';
+import { BatchTraceRequestError } from '../services/batchTrace/batchTraceRequestError';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { repositoryScopeFromRequestContext } from '../services/enterpriseRepository';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
@@ -90,10 +92,16 @@ function selectedSnapshotIds(run: BatchTraceRunV1, ordinals: number[]): string[]
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
+/**
+ * Typed request errors keep their text; the reason tokens batch services throw
+ * keep their code (404 for a `*_not_found` one); anything else gets fixed text.
+ */
 function errorResponse(res: Response, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  const status = message.includes('not_found') || message.includes('not found') ? 404 : 400;
-  res.status(status).json({ success: false, error: message });
+  sendRouteReasonError(res, error, reason => (reason.endsWith('not_found') ? 404 : 400), {
+    code: 'batch_trace_request_failed',
+    error: 'Batch trace request failed',
+    logLabel: '[BatchTrace] Request error',
+  }, [BatchTraceRequestError]);
 }
 
 export function createBatchTraceController() {

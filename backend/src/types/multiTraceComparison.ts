@@ -102,6 +102,11 @@ export const STANDARD_COMPARISON_METRICS: readonly NormalizedMetricDefinition[] 
   { key: 'trace.capture_config_summary', label: 'Capture config', group: 'environment', unit: 'text', direction: 'neutral', aggregation: 'single' },
 ] as const;
 
+/** Standard metrics describe the analysed app; only trace environment metrics read any scope. */
+export function standardMetricDescribesApp(definition: Pick<NormalizedMetricDefinition, 'group'>): boolean {
+  return definition.group !== 'environment';
+}
+
 export const STANDARD_COMPARISON_METRIC_KEYS = STANDARD_COMPARISON_METRICS.map(metric => metric.key);
 
 export interface TraceComparisonMetadata {
@@ -279,7 +284,7 @@ export interface AnalysisResultWindowState {
   tenantId: string;
   workspaceId: string;
   windowId: string;
-  userId?: string;
+  userId: string;
   traceId?: string;
   backendTraceId?: string;
   activeSessionId?: string;

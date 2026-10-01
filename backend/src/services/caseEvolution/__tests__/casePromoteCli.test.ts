@@ -47,7 +47,11 @@ beforeEach(() => {
         responsibility: 'app',
         severity: 'warning',
       },
-      context: { 'caseEvolution.v1': { candidateId: 'cand-promote', supportingEvidence: 3, contradictingEvidence: 0, supported: true } },
+      // Learned before the app_architecture contract: the detected type sits under the legacy key.
+      context: {
+        architectureType: 'FLUTTER',
+        'caseEvolution.v1': { candidateId: 'cand-promote', supportingEvidence: 3, contradictingEvidence: 0, supported: true },
+      },
       evidenceSignatures: { required: [{ field: 'reason_code', op: 'eq', value: 'shader_compile' }], supportive: [] },
       recommendations: { app: [], oem: [] },
     },
@@ -109,6 +113,22 @@ describe('promoteCaseCandidate', () => {
     expect(emitted).toContain('confidence: high');
     expect(emitted).toContain('evidence_refs: ["data-envelope:ev-1"]');
     expect(emitted).not.toContain('caseEvolution.v1');
+    expect(emitted).toContain('  app_architecture: flutter\n');
+    expect(emitted).not.toContain('architectureType');
+  });
+
+  it('refuses to render a learned case whose architecture was never established', () => {
+    const stored = library.getCase('learned:cand-promote')!;
+    library.saveCase({
+      ...stored,
+      knowledge: { ...stored.knowledge!, context: { architectureType: 'unknown' } },
+    });
+    const markdownRoot = path.join(tmpDir, 'knowledge', 'cases');
+
+    const result = promoteCaseCandidate('cand-promote', { to: 'markdown', library, markdownRoot });
+
+    expect(result).toMatchObject({ ok: false, reason: 'io_error' });
+    expect(fs.existsSync(path.join(markdownRoot, 'scrolling', 'learned:cand-promote.md'))).toBe(false);
   });
 });
 
