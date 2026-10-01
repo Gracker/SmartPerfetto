@@ -708,7 +708,7 @@ Proposals, operations, overlays, and reconciliation results are isolated by
 | `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | Apply an accepted proposal; body requires a unique `actionId` |
 | `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | Revert an applied proposal; body requires a unique `actionId` |
 | `GET` | `/overlays` | `self_evolution:read` | Overlay registry entries for the current workspace |
-| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report |
+| `GET` | `/reconciliation` | `self_evolution:read` | Latest upgrade reconciliation report; an issue `message` is an error code or the fixed text for its `reasonCode`, and `contentHash` names the stored report |
 
 The control plane is off by default. `SELF_EVOLUTION_ENABLED=true` is required
 for curation/gate/accept/reject/export. Apply/revert additionally require

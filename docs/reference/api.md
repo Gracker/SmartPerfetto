@@ -615,7 +615,7 @@ Base path: `/api/admin/self-evolution`
 | `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | 应用已接受提案；body 必须包含唯一 `actionId` |
 | `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | 回滚已应用提案；body 必须包含唯一 `actionId` |
 | `GET` | `/overlays` | `self_evolution:read` | 当前 workspace 的 overlay registry entries |
-| `GET` | `/reconciliation` | `self_evolution:read` | 最近 upgrade reconciliation report |
+| `GET` | `/reconciliation` | `self_evolution:read` | 最近 upgrade reconciliation report；issue `message` 只返回错误码或按 `reasonCode` 的固定文案，`contentHash` 标识存储的报告 |
 
 控制面默认关闭。`SELF_EVOLUTION_ENABLED=true` 才允许策展/gate/接受/拒绝/导出；
 apply/revert 还要求 `SELF_EVOLUTION_APPLY=true` 和可写、包外 user data root。依赖
