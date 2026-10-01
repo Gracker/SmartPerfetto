@@ -15,6 +15,10 @@ import { authenticate, requireRequestContext, type RequestContext } from '../mid
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
 import { requireAiEnabledForHttp } from './aiCapabilityPolicyHttp';
+import {
+  PROVIDER_STORE_UNREADABLE_CODE,
+  ProviderStoreUnreadableError,
+} from '../services/providerManager/providerStore';
 
 const router = express.Router();
 
@@ -44,6 +48,21 @@ function providerScopeForRequest(req: express.Request): ProviderScope {
   };
 }
 
+/** The stored-profile state, so a client can tell an empty store from an unreadable one. */
+function providerStoreState(): {status: 'ok'} | {status: 'unreadable'; code: string} {
+  return getProviderService().getStoreStatus() === 'unreadable'
+    ? {status: 'unreadable', code: PROVIDER_STORE_UNREADABLE_CODE}
+    : {status: 'ok'};
+}
+
+function sendProviderMutationError(res: express.Response, err: any): void {
+  if (err instanceof ProviderStoreUnreadableError) {
+    res.status(409).json({success: false, code: err.code, error: err.message});
+    return;
+  }
+  res.status(err.message.includes('not found') ? 404 : 400).json({success: false, error: err.message});
+}
+
 function recordProviderAudit(
   context: RequestContext,
   action:
@@ -69,7 +88,11 @@ function recordProviderAudit(
 
 router.get('/', (req, res) => {
   const svc = getProviderService();
-  res.json({ success: true, providers: svc.list(providerScopeForRequest(req)) });
+  res.json({
+    success: true,
+    providers: svc.list(providerScopeForRequest(req)),
+    store: providerStoreState(),
+  });
 });
 
 router.get('/templates', (_req, res) => {
@@ -117,11 +140,12 @@ router.get('/effective', (req, res) => {
   const svc = getProviderService();
   const scope = providerScopeForRequest(req);
   const env = svc.getEffectiveEnv(scope);
+  const store = providerStoreState();
   if (env) {
     const active = svc.list(scope).find(p => p.isActive);
-    res.json({ success: true, source: 'provider-manager', provider: active, env: maskEnvKeys(env) });
+    res.json({ success: true, source: 'provider-manager', provider: active, env: maskEnvKeys(env), store });
   } else {
-    res.json({ success: true, source: 'env-fallback', provider: null });
+    res.json({ success: true, source: 'env-fallback', provider: null, store });
   }
 });
 
@@ -151,7 +175,7 @@ router.post('/', (req, res) => {
     });
     res.status(201).json({ success: true, provider: svc.get(provider.id, scope) });
   } catch (err: any) {
-    res.status(400).json({ success: false, error: err.message });
+    sendProviderMutationError(res, err);
   }
 });
 
@@ -168,8 +192,7 @@ router.patch('/:id', (req, res) => {
     });
     res.json({ success: true, provider: svc.get(req.params.id, scope) });
   } catch (err: any) {
-    const status = err.message.includes('not found') ? 404 : 400;
-    res.status(status).json({ success: false, error: err.message });
+    sendProviderMutationError(res, err);
   }
 });
 
@@ -185,21 +208,24 @@ router.delete('/:id', (req, res) => {
     });
     res.json({ success: true });
   } catch (err: any) {
-    const status = err.message.includes('not found') ? 404 : 400;
-    res.status(status).json({ success: false, error: err.message });
+    sendProviderMutationError(res, err);
   }
 });
 
 router.post('/deactivate', (req, res) => {
-  const svc = getProviderService();
-  const context = requireRequestContext(req);
-  const scope = providerScopeForRequest(req);
-  const active = svc.list(scope).find(provider => provider.isActive);
-  svc.deactivateAll(scope);
-  recordProviderAudit(context, 'provider.deactivated', active?.id, {
-    type: active?.type,
-  });
-  res.json({ success: true });
+  try {
+    const svc = getProviderService();
+    const context = requireRequestContext(req);
+    const scope = providerScopeForRequest(req);
+    const active = svc.list(scope).find(provider => provider.isActive);
+    svc.deactivateAll(scope);
+    recordProviderAudit(context, 'provider.deactivated', active?.id, {
+      type: active?.type,
+    });
+    res.json({ success: true });
+  } catch (err: any) {
+    sendProviderMutationError(res, err);
+  }
 });
 
 router.post('/:id/activate', (req, res) => {
@@ -214,8 +240,7 @@ router.post('/:id/activate', (req, res) => {
     });
     res.json({ success: true });
   } catch (err: any) {
-    const status = err.message.includes('not found') ? 404 : 400;
-    res.status(status).json({ success: false, error: err.message });
+    sendProviderMutationError(res, err);
   }
 });
 
@@ -235,8 +260,7 @@ router.post('/:id/runtime', (req, res) => {
     });
     res.json({ success: true, provider: svc.get(req.params.id, scope) });
   } catch (err: any) {
-    const status = err.message.includes('not found') ? 404 : 400;
-    res.status(status).json({ success: false, error: err.message });
+    sendProviderMutationError(res, err);
   }
 });
 
@@ -253,8 +277,7 @@ router.post('/:id/rotate-secret', (req, res) => {
     });
     res.json({ success: true, secretVersion, provider: svc.get(req.params.id, scope) });
   } catch (err: any) {
-    const status = err.message.includes('not found') ? 404 : 400;
-    res.status(status).json({ success: false, error: err.message });
+    sendProviderMutationError(res, err);
   }
 });
 

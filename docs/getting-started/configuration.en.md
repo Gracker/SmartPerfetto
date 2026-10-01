@@ -174,6 +174,12 @@ npm CLI does not use the Web UI `Connection` settings. Its Provider store defaul
 to `~/.smartperfetto/runtime/data/providers.json`, while a source Web backend
 defaults to `backend/data/providers.json`. A Web Provider profile affects the CLI
 only when both processes explicitly use the same `SMARTPERFETTO_BACKEND_DATA_DIR`.
+If a hand edit leaves `providers.json` not a valid provider array (a JSON syntax
+error, a missing or repeated `id`, and so on), the backend still starts but never
+overwrites the file with an empty list: the Providers page and `smp provider list`
+report that the file cannot be read, every create, update, activate, deactivate,
+and delete returns `provider_store_unreadable`, and analyses use the system
+default (`.env`). Repair or move the file and refresh; no restart is needed.
 For first-time CLI setup, run:
 
 ```bash

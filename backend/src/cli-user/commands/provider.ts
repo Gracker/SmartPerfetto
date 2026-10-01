@@ -34,13 +34,20 @@ export interface ProviderCommandBaseArgs {
 export async function runProviderListCommand(args: ProviderCommandBaseArgs): Promise<number> {
   bootstrap({ envFile: args.envFile, sessionDir: args.sessionDir, requireLlm: false });
   const format = args.format ?? 'text';
-  const providers = await withConsoleLogToStderr(format !== 'text', async () => getProviderService().list());
+  const {providers, storeStatus} = await withConsoleLogToStderr(format !== 'text', async () => {
+    const svc = getProviderService();
+    return {providers: svc.list(), storeStatus: svc.getStoreStatus()};
+  });
 
   if (format === 'json' || format === 'ndjson') {
-    console.log(JSON.stringify({ ok: true, providers }, null, format === 'json' ? 2 : 0));
+    console.log(JSON.stringify({ ok: true, providers, store: {status: storeStatus} }, null, format === 'json' ? 2 : 0));
     return 0;
   }
 
+  if (storeStatus === 'unreadable') {
+    console.log('(providers.json could not be read; provider changes are refused until it is repaired; using env/default runtime)');
+    return 0;
+  }
   if (providers.length === 0) {
     console.log('(no providers configured; using env/default runtime)');
     return 0;

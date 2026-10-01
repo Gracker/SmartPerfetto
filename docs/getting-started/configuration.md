@@ -146,6 +146,11 @@ npm CLI 不使用 Web UI 的 `Connection` 配置。CLI Provider store 默认是
 `~/.smartperfetto/runtime/data/providers.json`，源码 Web 后端默认是
 `backend/data/providers.json`。只有两个进程显式使用同一个
 `SMARTPERFETTO_BACKEND_DATA_DIR` 时，网页 Provider profile 才会作用于 CLI。
+手工编辑后若 `providers.json` 不是合法的 Provider 数组（JSON 语法错误、缺少或重复
+`id` 等），后端照常启动，但不会用空列表覆盖它：Providers 页和 `smp provider list`
+提示文件无法读取，所有新增、修改、激活、停用和删除都返回
+`provider_store_unreadable`，分析按系统默认配置（`.env`）运行。修复或移走该文件后
+刷新即可恢复，无需重启。
 第一次用 CLI 时，推荐运行：
 
 ```bash

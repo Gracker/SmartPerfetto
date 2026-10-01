@@ -1,10 +1,12 @@
 // backend/src/services/providerManager/__tests__/providerService.test.ts
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
+import { jest } from '@jest/globals';
 import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
 import { ProviderService } from '../providerService';
+import { ProviderStoreUnreadableError } from '../providerStore';
 import type { ProviderCreateInput } from '../types';
 
 function makeTmpDir(): string {
@@ -723,6 +725,48 @@ describe('ProviderService', () => {
       svc.update(p.id, { name: 'Renamed' });
       expect(svc.get(p.id)!.name).toBe('Renamed');
       expect(svc.getEnvForProvider(p.id)!.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
+    });
+  });
+
+  describe('unreadable providers.json', () => {
+    it('starts, and refuses every mutation before taking a mutation lease', async () => {
+      const file = path.join(dir, 'providers.json');
+      const seed = new ProviderService(path.join(dir, 'bootstrap.json'));
+      const created = seed.create(validInput);
+      seed.activate(created.id);
+      const content = await fsp.readFile(path.join(dir, 'bootstrap.json'), 'utf-8');
+      const broken = content.slice(0, content.length - 3);
+      await fsp.writeFile(file, broken);
+
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        const broke = new ProviderService(file);
+        expect(broke.getStoreStatus()).toBe('unreadable');
+        expect(broke.list()).toEqual([]);
+        const generation = broke.getMutationGeneration();
+
+        const mutations: Array<() => unknown> = [
+          () => broke.create(validInput),
+          () => broke.update(created.id, { name: 'x' }),
+          () => broke.delete(created.id),
+          () => broke.activate(created.id),
+          () => broke.deactivateAll(),
+          () => broke.switchAgentRuntime(created.id, 'openai-agents-sdk'),
+          () => broke.rotateSecret(created.id),
+        ];
+        for (const mutate of mutations) {
+          expect(mutate).toThrow(ProviderStoreUnreadableError);
+        }
+        expect(broke.getMutationGeneration()).toEqual(generation);
+        expect(broke.listInFlightMutations()).toEqual([]);
+        expect(await fsp.readFile(file, 'utf-8')).toBe(broken);
+
+        await fsp.writeFile(file, content);
+        expect(broke.getStoreStatus()).toBe('ok');
+        expect(broke.getRawEffectiveProvider()?.id).toBe(created.id);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
 });

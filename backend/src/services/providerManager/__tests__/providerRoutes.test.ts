@@ -102,6 +102,75 @@ describe('Provider Routes', () => {
     expect(res.body.providers).toEqual([]);
   });
 
+  it('serves the API with an unreadable providers.json, refuses writes, and never echoes the file', async () => {
+    const canary = 'sk-canary-route-5e8c1d';
+    const broken = `[{"id":"kept","isActive":true,"models":{},"connection":{"apiKey":"${canary}"}}`;
+    const file = path.join(dir, 'providers.json');
+    await fsp.writeFile(file, broken);
+    const consoleSpies = (['log', 'info', 'warn', 'error'] as const)
+      .map(method => jest.spyOn(console, method).mockImplementation(() => undefined));
+    const bodies: string[] = [];
+    try {
+      const list = await request(app).get('/api/v1/providers');
+      expect(list.status).toBe(200);
+      expect(list.body.providers).toEqual([]);
+      expect(list.body.store).toEqual({status: 'unreadable', code: 'provider_store_unreadable'});
+      bodies.push(list.text);
+
+      const effective = await request(app).get('/api/v1/providers/effective');
+      expect(effective.status).toBe(200);
+      expect(effective.body.store.status).toBe('unreadable');
+      bodies.push(effective.text);
+
+      const writes: Array<() => request.Test> = [
+        () => request(app).post('/api/v1/providers').send({
+          name: 'New',
+          category: 'official',
+          type: 'anthropic',
+          models: {primary: 'claude-sonnet-5', light: 'claude-haiku-4-5'},
+          connection: {apiKey: 'sk-new'},
+        }),
+        () => request(app).patch('/api/v1/providers/kept').send({name: 'Renamed'}),
+        () => request(app).delete('/api/v1/providers/kept'),
+        () => request(app).post('/api/v1/providers/kept/activate'),
+        () => request(app).post('/api/v1/providers/deactivate'),
+        () => request(app).post('/api/v1/providers/kept/runtime').send({agentRuntime: 'openai-agents-sdk'}),
+        () => request(app).post('/api/v1/providers/kept/rotate-secret'),
+      ];
+      for (const write of writes) {
+        const res = await write();
+        expect(res.status).toBe(409);
+        expect(res.body).toMatchObject({success: false, code: 'provider_store_unreadable'});
+        bodies.push(res.text);
+      }
+      expect(await fsp.readFile(file, 'utf-8')).toBe(broken);
+
+      const consoleOutput = JSON.stringify(consoleSpies.map(spy => spy.mock.calls));
+      for (const text of [...bodies, consoleOutput]) {
+        expect(text).not.toContain(canary);
+      }
+
+      await fsp.writeFile(file, JSON.stringify([{
+        id: 'kept',
+        name: 'Kept',
+        category: 'official',
+        type: 'anthropic',
+        isActive: true,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+        models: {primary: 'claude-sonnet-5', light: 'claude-haiku-4-5'},
+        connection: {apiKey: 'sk-repaired-key'},
+      }]));
+      const repaired = await request(app).get('/api/v1/providers');
+      expect(repaired.body.store).toEqual({status: 'ok'});
+      expect(repaired.body.providers.map((p: {id: string}) => p.id)).toEqual(['kept']);
+      const renamed = await request(app).patch('/api/v1/providers/kept').send({name: 'Renamed'});
+      expect(renamed.status).toBe(200);
+    } finally {
+      for (const spy of consoleSpies) spy.mockRestore();
+    }
+  });
+
   it('GET /api/v1/providers/templates returns provider templates including custom runtime entry', async () => {
     const res = await request(app).get('/api/v1/providers/templates');
     expect(res.status).toBe(200);

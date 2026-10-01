@@ -6,7 +6,7 @@ import os from 'os';
 
 import { uuidv4 } from '../../utils/uuid';
 import logger from '../../utils/logger';
-import { ProviderStore } from './providerStore';
+import { ProviderStore, type ProviderStoreStatus } from './providerStore';
 import type {
   AgentRuntimeKind,
   OpenAIProtocol,
@@ -213,6 +213,10 @@ export class ProviderService {
     this.store.load();
   }
 
+  getStoreStatus(): ProviderStoreStatus {
+    return this.store.getStatus();
+  }
+
   list(scope?: ProviderScope): ProviderConfig[] {
     return this.store.getAll(scope).map(maskProvider);
   }
@@ -369,6 +373,9 @@ export class ProviderService {
   }
 
   deactivateAll(scope?: ProviderScope): void {
+    // An unreadable store has no visible active provider; succeeding here would
+    // leave the file's active profile in place once it is repaired.
+    this.store.assertWritable();
     const current = this.store.getActiveWriteScope(scope);
     if (current) {
       this.runProviderMutation(
@@ -455,6 +462,8 @@ export class ProviderService {
     begin: () => ProviderMutationLease,
     operation: () => T,
   ): T {
+    // Refuse before the lease, which would otherwise bump the mutation generation.
+    this.store.assertWritable();
     const lease = begin();
     try {
       const result = operation();

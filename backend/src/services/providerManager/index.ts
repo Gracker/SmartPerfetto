@@ -44,6 +44,8 @@ export function getProviderService(): ProviderService {
     const active = instance.list().find(p => p.isActive);
     if (active) {
       console.log(`[ProviderManager] Active: "${active.name}" (${active.type}, ${active.models.primary})`);
+    } else if (instance.getStoreStatus() === 'unreadable') {
+      console.log('[ProviderManager] providers.json could not be read, using env fallback');
     } else {
       console.log('[ProviderManager] No active provider configured, using env fallback');
     }
