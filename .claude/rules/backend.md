@@ -562,6 +562,9 @@ scorer fixtures test scoring mechanics only.
   outside the package is available.
 - Keep operation streams scope-bound and bounded. Browser consumers require
   fetch-based SSE so Authorization and workspace headers remain attached.
+- Serve reconciliation reports through `projectReconciliationReportForAdmin`:
+  older stored issue messages quote parser input. Never rewrite stored reports
+  or their `contentHash` to remove it.
 - Contribution export creates a local deidentified artifact and never uploads,
   commits, opens a PR, or changes the TypeScript runtime.
 - External L2 judge use requires a versioned rubric, sampled/disputed routing,
