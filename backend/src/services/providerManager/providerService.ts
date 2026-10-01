@@ -6,7 +6,11 @@ import os from 'os';
 
 import { uuidv4 } from '../../utils/uuid';
 import logger from '../../utils/logger';
-import { ProviderStore } from './providerStore';
+import {
+  ProviderStore,
+  ProviderStoreUnreadableError,
+  type ProviderStoreStatus,
+} from './providerStore';
 import type {
   AgentRuntimeKind,
   OpenAIProtocol,
@@ -213,6 +217,10 @@ export class ProviderService {
     this.store.load();
   }
 
+  getStoreStatus(): ProviderStoreStatus {
+    return this.store.getStatus();
+  }
+
   list(scope?: ProviderScope): ProviderConfig[] {
     return this.store.getAll(scope).map(maskProvider);
   }
@@ -369,6 +377,9 @@ export class ProviderService {
   }
 
   deactivateAll(scope?: ProviderScope): void {
+    // An unreadable store has no visible active provider; succeeding here would
+    // leave the file's active profile in place once it is repaired.
+    this.store.assertWritable();
     const current = this.store.getActiveWriteScope(scope);
     if (current) {
       this.runProviderMutation(
@@ -398,13 +409,13 @@ export class ProviderService {
   }
 
   getEffectiveEnv(scope?: ProviderScope): Record<string, string> | null {
-    const active = this.store.getActive(scope);
+    const active = this.getRawEffectiveProvider(scope);
     if (!active) return null;
     return this.toEnvVars(active);
   }
 
   getEnvForProvider(id: string, scope?: ProviderScope): Record<string, string> | null {
-    const provider = this.store.get(id, scope);
+    const provider = this.getRawProvider(id, scope);
     if (!provider) return null;
     return this.toEnvVars(provider);
   }
@@ -414,12 +425,30 @@ export class ProviderService {
     return this.toEnvVars(provider);
   }
 
+  /**
+   * The active provider an analysis without an explicit provider follows
+   * (undefined: none, so the env/default runtime applies).
+   */
   getRawEffectiveProvider(scope?: ProviderScope): ProviderConfig | undefined {
-    return this.store.getActive(scope);
+    return this.readAnalysisProvider(undefined, scope);
   }
 
+  /** The provider an analysis pinned to `id` uses (undefined: deleted). */
   getRawProvider(id: string, scope?: ProviderScope): ProviderConfig | undefined {
-    return this.store.get(id, scope);
+    return this.readAnalysisProvider(id, scope);
+  }
+
+  /**
+   * While providers.json is unreadable, the provider an analysis would use is
+   * unknown, not absent: the file may name a gateway env does not reach, and a
+   * pinned profile may still be in it. Throwing `ProviderStoreUnreadableError`
+   * keeps callers from falling back to env or treating a pin as deleted.
+   * `providerId: null` (explicit env) never reads the store.
+   */
+  private readAnalysisProvider(id: string | undefined, scope?: ProviderScope): ProviderConfig | undefined {
+    const read = this.store.readProvider(id, scope);
+    if (read.status === 'unreadable') throw new ProviderStoreUnreadableError('read');
+    return read.provider;
   }
 
   getMutationGeneration(
@@ -455,6 +484,8 @@ export class ProviderService {
     begin: () => ProviderMutationLease,
     operation: () => T,
   ): T {
+    // Refuse before the lease, which would otherwise bump the mutation generation.
+    this.store.assertWritable();
     const lease = begin();
     try {
       const result = operation();

@@ -572,7 +572,10 @@ describe('issued investigation ledger through finalization', () => {
           evidenceRecordIds: selected ? [selected.recordId] : [], scopeMatch: selected ? 'matched' : 'unknown',
           evidenceStatus: settings.explanationOnly ? 'not_applicable' : selected ? 'observed' : 'not_checked'}))})};
     });
-    attachFinalizationContext(result, {runId: 'run', sessionId: result.sessionId, deadlineMs: Date.now() + 10_000,
+    // Beyond Jest's own timeout: these tests assert what the review sees, never how
+    // fast it is built. Prompt sizing is synchronous, so on a loaded machine any
+    // wall-clock budget lapsed before dispatch and the review ended `timeout`.
+    attachFinalizationContext(result, {runId: 'run', sessionId: result.sessionId, deadlineMs: Date.now() + 10 * 60_000,
       strategyRegistry: pinned, traceIdentity: {currentTraceId: 'trace'},
       turnIntent: {schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: pinned.registryFingerprint,
         taskKind: 'investigation', sceneId: 'general', scope: 'scene_wide', recommendedComplexity: 'full',
