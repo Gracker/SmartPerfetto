@@ -132,7 +132,7 @@ export function resolveTraceProcessorProxyCapability(
   protocolHeader: string | string[] | undefined,
   leaseId: string,
   now = Date.now(),
-): RequestContext | null {
+): Omit<RequestContext, 'requestId'> | null {
   const protocols = splitProtocols(protocolHeader);
   const protocol = protocols.find(value => value.startsWith(CAPABILITY_PROTOCOL_PREFIX));
   if (!protocol) return null;
@@ -158,7 +158,6 @@ export function resolveTraceProcessorProxyCapability(
     authType: payload.authType,
     roles: ['analyst'],
     scopes: ['trace:read'],
-    requestId: `ws-cap-${crypto.randomUUID()}`,
     ...(payload.windowId ? {windowId: payload.windowId} : {}),
   };
 }

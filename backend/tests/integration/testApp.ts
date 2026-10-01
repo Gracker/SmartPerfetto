@@ -17,6 +17,7 @@ import fs from 'fs';
 import agentRoutes from '../../src/routes/agentRoutes';
 import skillRoutes from '../../src/routes/skillRoutes';
 import { unhandledErrorHandler } from '../../src/middleware/unhandledErrorHandler';
+import { requestIdMiddleware } from '../../src/middleware/requestId';
 import {
   LEGACY_AGENT_API_BASE,
   rejectLegacyAgentApi,
@@ -38,6 +39,7 @@ export function createTestApp() {
   const app = express();
 
   // Middleware
+  app.use(requestIdMiddleware);
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));

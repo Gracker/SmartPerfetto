@@ -4,7 +4,7 @@
 
 import { STATUS_CODES } from 'http';
 import type { ErrorRequestHandler } from 'express';
-import { getRequestContext, resolveRequestId } from './auth';
+import { REQUEST_ID_HEADER, requestIdOf } from './requestId';
 
 export const UNHANDLED_ERROR_CODE = 'unhandled_error';
 
@@ -35,12 +35,7 @@ function loggableError(err: unknown): unknown {
  * the log line.
  */
 export const unhandledErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
-  // Keep an id a route already sent, then the authenticated one; body parsing
-  // fails before authentication, so fall back to the caller's own header.
-  const sentRequestId = res.getHeader('X-Request-Id');
-  const requestId = (typeof sentRequestId === 'string' && sentRequestId)
-    || getRequestContext(req)?.requestId
-    || resolveRequestId(req);
+  const requestId = requestIdOf(req);
   const status = responseStatus(err);
   console.error('[UnhandledError]', {
     requestId,
@@ -58,7 +53,7 @@ export const unhandledErrorHandler: ErrorRequestHandler = (err, req, res, next) 
 
   res
     .status(status)
-    .set('X-Request-Id', requestId)
+    .set(REQUEST_ID_HEADER, requestId)
     .json({
       success: false,
       code: UNHANDLED_ERROR_CODE,

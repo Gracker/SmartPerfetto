@@ -28,12 +28,25 @@ The HTTP status is the exception's own 4xx/5xx status, otherwise 500. `error`
 is that status's standard name (such as `Bad Request` or `Payload Too Large`,
 or `Request failed` for a status Node has no name for); it never contains the
 exception message or a stack trace, and a malformed JSON body is not quoted
-back. The `X-Request-Id` response header equals `requestId`: an id the route
-already sent, else the authenticated request-context id, else the caller's
-sanitized `X-Request-Id` header, else a new id. The full message and stack go
+back. `requestId` is the request's id (see below) and equals the
+`X-Request-Id` response header. The full message and stack go
 only to the server log's `[UnhandledError]` line, correlated by `requestId`;
 the raw request body a body-parse error carries is not logged. There is no
 switch that echoes exception messages.
+
+## Request IDs
+
+Each request gets exactly one request id when it reaches the backend. Every
+response, including CORS rejections, body-parse failures, 404s and unhandled
+errors, carries it in the `X-Request-Id` header, which CORS exposes to
+browsers. The id is the first of the caller's `X-Request-Id`,
+`X-Correlation-Id` and `X-Amzn-Trace-Id` headers that is non-empty after
+sanitizing (only `A-Z a-z 0-9 . _ : -` are kept, at most 128 characters), else
+a generated `req-<epoch ms>-<random hex>`. The same id is the authenticated
+request context's id, the `requestId` that Agent endpoints return, the
+analysis run's observability id, the Trace Processor proxy's WebSocket upgrade
+id, and the id in server logs. A `requestId` field in the request body is not
+read.
 
 ## OIDC Authentication
 

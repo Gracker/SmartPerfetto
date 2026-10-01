@@ -4,6 +4,7 @@
 
 import express from 'express';
 import request from 'supertest';
+import { requestIdMiddleware, requestIdOf } from '../requestId';
 import { UNHANDLED_ERROR_CODE, unhandledErrorHandler } from '../unhandledErrorHandler';
 
 const CANARY = 'canary-7f3a /srv/secret/path.db SELECT * FROM provider_keys';
@@ -96,24 +97,22 @@ describe('unhandledErrorHandler', () => {
     expect(res.text).not.toContain('canary-7f3a');
   });
 
-  test('prefers an id the route already sent over the authenticated one', async () => {
-    const res = await request(appThrowing(() => canaryError(), (req, res) => {
-      (req as any).requestContext = { requestId: 'context-id' };
-      res.setHeader('X-Request-Id', 'route-id');
-    })).get('/boom');
+  test('answers with the id the request already carries', async () => {
+    let seenByRoute = '';
+    const app = express();
+    app.use(requestIdMiddleware);
+    app.get('/boom', async (req) => {
+      seenByRoute = requestIdOf(req);
+      throw canaryError();
+    });
+    app.use(unhandledErrorHandler);
 
-    expect(res.body.requestId).toBe('route-id');
-    expect(res.headers['x-request-id']).toBe('route-id');
-  });
+    const res = await request(app).get('/boom');
 
-  test('reuses the authenticated request id', async () => {
-    const res = await request(appThrowing(() => canaryError(), (req) => {
-      (req as any).requestContext = { requestId: 'context-id' };
-    })).get('/boom');
-
-    expect(res.body.requestId).toBe('context-id');
-    expect(res.headers['x-request-id']).toBe('context-id');
-    expect(loggedText()).toContain('context-id');
+    expect(seenByRoute).toMatch(/^req-/);
+    expect(res.body.requestId).toBe(seenByRoute);
+    expect(res.headers['x-request-id']).toBe(seenByRoute);
+    expect(loggedText()).toContain(seenByRoute);
   });
 
   test('keeps the raw body of a malformed JSON request out of the response and the log', async () => {
