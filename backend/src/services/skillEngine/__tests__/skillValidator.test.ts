@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { validateSkillInputs, validateSkillConditions, validateFragmentReferences, validateNormalizedStdlibReads, validateProcessScopeDeclarations } from '../skillValidator';
-import { extractRootVariables, JS_BUILTINS } from '../expressionUtils';
+import { extractRootVariables, JS_BUILTINS, parseEvidenceField, readEvidenceField } from '../expressionUtils';
 import type { SkillDefinition, SkillInput } from '../types';
 
 // =============================================================================
@@ -58,6 +58,49 @@ describe('extractRootVariables', () => {
 // =============================================================================
 // validateSkillInputs
 // =============================================================================
+
+// =============================================================================
+// Diagnostic evidence fields: a read-only grammar walked over plain data
+// =============================================================================
+
+describe('readEvidenceField', () => {
+  const read = (field: string, data: unknown) => {
+    const path = parseEvidenceField(field);
+    if (!path) throw new Error(`not an evidence field: ${field}`);
+    return readEvidenceField(path, data);
+  };
+
+  it('reads own data only: no getter, inherited member, function value or replaced method', () => {
+    let getterRan = false;
+    const row = Object.defineProperty({x: 1}, 'y', {enumerable: true, get: () => { getterRan = true; return 2; }});
+    expect(read('rows.data[0].y', [row])).toBeUndefined();
+    expect(getterRan).toBe(false);
+    expect(read('rows.data[0].toString', [{x: 1}])).toBeUndefined();
+    expect(read('rows.data[0].fn', [{fn: () => 1}])).toBeUndefined();
+    // A sparse slot never falls through to the prototype.
+    const proto = Object.create(Array.prototype, {0: {value: {x: 'inherited'}}});
+    const sparse: unknown[] = Object.setPrototypeOf(new Array(1), proto);
+    expect(read('rows.data[0]?.x', sparse)).toBeUndefined();
+    const rows: any = [{x: 1}, {x: 2}];
+    rows.find = () => { throw new Error('called'); };
+    rows.filter = () => { throw new Error('called'); };
+    expect(read('rows.data.find(r => r.x > 1)?.x', rows)).toBe(2);
+    expect(read('rows.data.filter(r => r.x >= 1).length', rows)).toBe(2);
+  });
+
+  it('compares scalars only, so no conversion runs and nothing throws', () => {
+    const hostile = JSON.parse('{"toString":null,"valueOf":null}');
+    expect(read('rows.data.find(r => r.x > 0)', [{x: hostile}, {x: 3}])).toEqual({x: 3});
+    expect(read('rows.data.filter(r => r.x != null).length', [{x: [1]}, {x: 0}, {}])).toBe(1);
+  });
+
+  it('rejects inherited members in every position', () => {
+    for (const field of ['rows.data.find(r => r.constructor !== null)', 'rows.data.filter(r => r.__proto__ != null)',
+      'rows.data[0].prototype', 'rows.data.constructor']) {
+      expect(parseEvidenceField(field)).toBeUndefined();
+    }
+  });
+});
 
 describe('validateSkillInputs', () => {
   const makeInput = (overrides: Partial<SkillInput> & { name: string }): SkillInput => ({

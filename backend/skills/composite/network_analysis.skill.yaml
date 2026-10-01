@@ -725,7 +725,7 @@ steps:
       level: key
       layer: overview
       title: "问题诊断"
-    inputs: [network_overview, app_traffic_ranking, transport_distribution, large_transfers, network_power_cost]
+    inputs: [network_overview, app_traffic_ranking, transport_distribution, large_transfers, network_power_cost, port_analysis]
     rules:
       # 大流量应用
       - condition: "network_overview.data[0]?.total_mb > ${heavy_traffic_critical_mb|100}"

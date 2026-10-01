@@ -12,6 +12,7 @@ import {
   validateNormalizedStdlibReads,
   validateSkillConditions,
 } from '../skillEngine/skillValidator';
+import {blankStringLiterals, freeRootOccurrences, parseEvidenceField} from '../skillEngine/expressionUtils';
 import type {SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
@@ -27,7 +28,7 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '2';
+export const IN_PROCESS_VALIDATOR_VERSION = '3';
 
 export type InProcessValidationSeverity = 'error' | 'warning';
 
@@ -287,6 +288,7 @@ export function validateSkillDefinitionInProcess(
     ));
   }
   issues.push(...validateDiagnosticConfidence(skill));
+  issues.push(...validateDiagnosticReads(skill));
   issues.push(...validateSaveFromPlacement(skill));
   if (options.definitions) issues.push(...validateSaveFromTargets(skill, options.definitions));
   if (options.fragmentCache) {
@@ -324,6 +326,85 @@ function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidati
   });
   return issues;
 }
+
+/**
+ * A diagnostic step's `inputs` are the step data its rules read: they are what
+ * the step reports as `data.inputs` and the only names an evidence field may
+ * cite. Skill parameters stay readable (thresholds) but are not evidence.
+ *
+ * An evidence field must parse as the read-only grammar the executor reads
+ * (parseEvidenceField), rooted at an input. For a condition and `${...}`
+ * placeholders this is a lint over arbitrary JS: it finds step data the rule
+ * reads without declaring it, and, outside placeholders (where `${rows[0].x}`
+ * is a valid simple path), JS access to step data other than through `.data`,
+ * which is always undefined. Arrow parameters bind inside their callback only.
+ */
+function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  const stepData = new Set<string>();
+  visitSteps(skill.steps ?? [], step => {
+    if (typeof step.id === 'string') stepData.add(step.id);
+    const saveAs = 'save_as' in step ? step.save_as : undefined;
+    if (typeof saveAs === 'string') stepData.add(saveAs);
+  });
+  visitSteps(skill.steps ?? [], (step, path) => {
+    if (step.type !== 'diagnostic') return;
+    const report = (code: string, fieldPath: string, message: string) =>
+      issues.push(issue('error', code, skill.name, fieldPath, message));
+    if (!Array.isArray(step.inputs) || !step.inputs.every(name => typeof name === 'string')) {
+      report('diagnostic_inputs_missing', `${path}.inputs`,
+        'A diagnostic step must declare inputs as a list of step names (it may be empty).');
+    }
+    const inputs = new Set(Array.isArray(step.inputs) ? step.inputs : []);
+    const reportUndeclared = (names: Iterable<string>, fieldPath: string) => {
+      const undeclared = [...new Set(names)].filter(name => stepData.has(name) && !inputs.has(name));
+      if (undeclared.length > 0) {
+        report('diagnostic_input_undeclared', fieldPath,
+          `Reads step data ${undeclared.map(name => `'${name}'`).join(', ')} not listed in this diagnostic step's inputs.`);
+      }
+    };
+    (step.rules ?? []).forEach((rule, index) => {
+      const rulePath = `${path}.rules[${index}]`;
+      if (typeof rule.condition === 'string') {
+        const fieldPath = `${rulePath}.condition`;
+        reportUndeclared(freeRootOccurrences(rule.condition).map(({name}) => name), fieldPath);
+        const js = rule.condition.replace(PLACEHOLDER_PATTERN, '0');
+        const blanked = blankStringLiterals(js);
+        const misread = freeRootOccurrences(js).find(({name, end}) =>
+          stepData.has(name) && /^\s*(?:\?\.|\.|\[)/.test(blanked.slice(end))
+          && !/^\s*\??\.\s*data\b/.test(blanked.slice(end)));
+        if (misread) {
+          report('diagnostic_step_data_shape', fieldPath,
+            `Step data '${misread.name}' is read as '${misread.name}.data...'; any other access is always undefined.`);
+        }
+      }
+      (rule.evidence_fields ?? []).forEach((field, fieldIndex) => {
+        const fieldPath = `${rulePath}.evidence_fields[${fieldIndex}]`;
+        const parsed = typeof field === 'string' ? parseEvidenceField(field) : undefined;
+        if (!parsed) {
+          report('diagnostic_evidence_field_shape', fieldPath,
+            'An evidence field is `input.data` followed by `.column`, `[n]`, `.length` or '
+            + '`.find(r => r.column OP literal)` / `.filter(...)`, each optionally `?.`.');
+        } else if (stepData.has(parsed.root)) {
+          reportUndeclared([parsed.root], fieldPath);
+        } else if (!inputs.has(parsed.root)) {
+          report('diagnostic_evidence_field_root', fieldPath,
+            `An evidence field cites this step's inputs only; '${parsed.root}' is not one.`);
+        }
+      });
+      const templates = [rule.diagnosis, ...(rule.suggestions ?? [])];
+      templates.forEach((template, templateIndex) => {
+        if (typeof template !== 'string') return;
+        const bodies = [...template.matchAll(PLACEHOLDER_PATTERN)].map(match => match[1]).join('\n');
+        reportUndeclared(freeRootOccurrences(bodies).map(({name}) => name),
+          `${rulePath}.${templateIndex === 0 ? 'diagnosis' : `suggestions[${templateIndex - 1}]`}`);
+      });
+    });
+  });
+  return issues;
+}
+
+const PLACEHOLDER_PATTERN = /\$\{([^}]+)\}/g;
 
 /**
  * `save_from` is bound only by the top-level step loops of the executor, so a

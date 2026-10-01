@@ -315,15 +315,30 @@ outputs:
 ```yaml
 - id: diagnose
   type: diagnostic
+  inputs: [startups]
   rules:
-    - id: slow_startup
-      condition: "startups.data[0].dur_ms > 2000"
+    - condition: "startups.data[0]?.dur_ms > 2000"
       severity: critical
-      message: "启动时间超过 2 秒"
+      confidence: high
+      diagnosis: "启动耗时 ${startups.data[0].dur_ms}ms，超过 2 秒"
       suggestions:
         - "检查 Application.onCreate 耗时"
         - "优化 ContentProvider 初始化"
+      evidence_fields:
+        - startups.data[0]?.dur_ms
+        - startups.data.length
 ```
+
+`inputs` 列出规则读到的每个步骤（step id 或 `save_as`），它们就是步骤上报的
+`data.inputs`，也是 `evidence_fields` 唯一能引用的名字；阈值等 Skill 参数照常可读。
+evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}` 模板：以某个 input 的
+`name.data`（或 `name?.data`）开头，后接任意个 `.column`、`[n]`、`.length`、
+`.find(r => r.column OP literal)` / `.filter(...)`（OP 为比较运算，literal 为数字、带引号字符串、
+布尔或 `null`），每段都可写成 `?.`。它读的就是 condition 里 `name.data` 的同一个值，只读对象自有的数据属性，不调用函数、
+不写数据；谓词只比较标量，缺失或非标量的值一律不匹配。值上报前有界：行集变成 `{_rowCount, _firstRow}`，行只保留标量字段，长字符串截断。
+`validate:skills` 拒绝：不符合该语法或根不在 `inputs` 的 evidence field、读了不在 `inputs`
+里的步骤、condition 不经 `.data` 读步骤数据（`${...}` 占位符里 `name[0].x` 仍合法），以及没有
+`inputs` 的 diagnostic 步骤。
 
 ### 4.7 pipeline — 渲染管线检测
 

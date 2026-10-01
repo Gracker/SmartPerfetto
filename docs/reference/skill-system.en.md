@@ -117,6 +117,41 @@ direct child and cannot reach into the grandchild: when the parent needs
 specific fields, bind the child's own read step rather than that reference
 step.
 
+A `diagnostic` step lists in `inputs` every step it reads (by step id or
+`save_as`); those inputs are its reported `data.inputs` and the only names an
+`evidence_fields` entry may cite. Each rule has a `condition`, a `diagnosis`
+template, a literal `confidence`, optional `suggestions` and optional
+`evidence_fields`:
+
+```yaml
+- id: diagnose
+  type: diagnostic
+  inputs: [startups]
+  rules:
+    - condition: "startups.data[0]?.dur_ms > 2000"
+      severity: critical
+      confidence: high
+      diagnosis: "Startup took ${startups.data[0].dur_ms}ms"
+      evidence_fields:
+        - startups.data[0]?.dur_ms
+        - startups.data.length
+```
+
+An evidence field is a read-only path, not a JavaScript expression or a
+`${...}` template: an input's `name.data` (or `name?.data`), then any of
+`.column`, `[n]`, `.length` and `.find(r => r.column OP literal)` /
+`.filter(...)` (OP is a comparison, literal a number, quoted string, boolean or
+`null`), each optionally `?.`. It reads the same value the condition sees as
+`name.data`, reads own data properties only, calls nothing and writes nothing;
+a predicate compares scalar values, and a missing or non-scalar value never
+matches. Its value is bounded before it
+is reported: a row set becomes `{_rowCount, _firstRow}`, a row keeps its
+scalar fields, and long strings are cut. `validate:skills` rejects an evidence
+field outside that grammar or rooted outside `inputs`, a rule that reads a step
+missing from `inputs`, a condition that reads step data other than through
+`.data` (inside a `${...}` placeholder `name[0].x` is still valid), and a
+diagnostic step without `inputs`.
+
 ## Rendering Pipeline Catalog
 
 `docs/rendering_pipelines/*.md` is synchronized from a pinned

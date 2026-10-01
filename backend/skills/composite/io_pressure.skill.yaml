@@ -651,6 +651,7 @@ steps:
   - id: io_diagnostic
     type: diagnostic
     name: "IO 诊断"
+    inputs: [io_overview, root_cause]
     rules:
       - condition: "(io_overview?.data?.[0]?.severity) === 'critical'"
         severity: critical

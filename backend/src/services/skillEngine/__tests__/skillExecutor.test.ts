@@ -1465,6 +1465,198 @@ describe('Diagnostic Step 执行', () => {
 });
 
 // =============================================================================
+// Test Suite: diagnostic rule evidence_fields
+// =============================================================================
+
+/** Runs a diagnostic step after atomic steps that bind each seed's rows to its name. */
+async function runSeededDiagnostic(step: any, seeds: Record<string, Record<string, unknown>[]>) {
+  const traceProcessor = createMockTraceProcessorService();
+  traceProcessor.query.mockImplementation(async (_trace: string, sql: string) => {
+    const rows = seeds[String(sql.match(/\/\*seed:(\w+)\*\//)?.[1])] ?? [];
+    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+    return {columns, rows: rows.map(row => columns.map(column => row[column]))};
+  });
+  const executor = createSkillExecutor(traceProcessor);
+  const skill: SkillDefinition = {
+    name: `seeded_${step.id}`,
+    type: 'composite',
+    version: '1.0',
+    meta: createMeta(`Seeded ${step.id}`),
+    steps: [
+      ...Object.keys(seeds).map(name =>
+        ({id: `seed_${name}`, type: 'atomic', sql: `SELECT /*seed:${name}*/ 1`, save_as: name} as SkillStep)),
+      step,
+    ],
+  };
+  executor.registerSkill(skill);
+  return executor.execute(skill.name, 'trace-1');
+}
+
+// An evidence field is an expression in the rule condition dialect, read from the
+// diagnostic step's declared inputs only, and bounded before it leaves the step.
+describe('Diagnostic evidence_fields', () => {
+  const longName = 'x'.repeat(1000);
+
+  async function evidenceFor(fields: string[], condition = 'true'): Promise<Record<string, any> | undefined> {
+    const result = await runSeededDiagnostic(
+      {id: 'diagnose', type: 'diagnostic', inputs: ['rows'], rules: [
+        {condition, confidence: 'high', diagnosis: 'hit', evidence_fields: fields},
+      ]},
+      {
+        rows: [{source: 'a', dur_ms: 5, label: longName}, {source: 'b', dur_ms: 9, label: 'short'}],
+        other: [{source: 'undeclared'}],
+      },
+    );
+    expect(result.diagnostics.map(d => d.diagnosis)).toEqual(['hit']);
+    return result.diagnostics[0].evidence;
+  }
+
+  it('resolves every authored field form through the condition evaluator', async () => {
+    const evidence = await evidenceFor([
+      'rows.data[0].source',
+      'rows.data[1]?.dur_ms',
+      'rows?.data?.[1]?.source',
+      'rows.data.length',
+      'rows.data.find(r => r.dur_ms > 6)?.source',
+      "rows.data.filter(r => r.source === 'a').length",
+    ]);
+    expect(evidence).toMatchObject({
+      'rows.data[0].source': 'a',
+      'rows.data[1]?.dur_ms': 9,
+      'rows?.data?.[1]?.source': 'b',
+      'rows.data.length': 2,
+      'rows.data.find(r => r.dur_ms > 6)?.source': 'b',
+      "rows.data.filter(r => r.source === 'a').length": 1,
+    });
+  });
+
+  it('bounds a row set, a row and a long string', async () => {
+    const evidence = await evidenceFor(['rows.data', 'rows.data[0]', 'rows.data[0].label']);
+    const firstRow = {source: 'a', dur_ms: 5, label: expect.stringMatching(/^x+…$/)};
+    expect(evidence?.['rows.data']).toEqual({_rowCount: 2, _firstRow: firstRow});
+    expect(evidence?.['rows.data[0]']).toEqual(firstRow);
+    expect(String(evidence?.['rows.data[0].label']).length).toBeLessThan(300);
+    expect(JSON.stringify(evidence)).not.toContain(longName);
+  });
+
+  it('reads nothing outside the read-only grammar: no call, write, inherited member or global', async () => {
+    const result = await runSeededDiagnostic(
+      {id: 'diagnose', type: 'diagnostic', inputs: ['rows'], rules: [
+        {condition: 'true', confidence: 'high', diagnosis: 'hit', evidence_fields: [
+          'rows.data.pop()', 'rows.data[0].source = "x"', 'rows.data.constructor', 'rows.data[0].toString',
+          'rows.data.hasOwnProperty', 'this', 'rows.data.length',
+        ]},
+        {condition: 'true', confidence: 'high', diagnosis: 'after', evidence_fields: ['rows.data.length']},
+      ]},
+      {rows: [{source: 'a'}, {source: 'b'}]},
+    );
+    expect(result.diagnostics.map(d => d.evidence)).toEqual([{'rows.data.length': 2}, {'rows.data.length': 2}]);
+  });
+
+  it('projects a row through own data only and isolates a failing read, in both evidence paths', async () => {
+    const executor = createSkillExecutor(createMockTraceProcessorService());
+    const trap = Object.defineProperty({x: 1}, 'y', {enumerable: true, get: () => { throw new Error('getter ran'); }});
+    const skill: SkillDefinition = {
+      name: 'getter_rows', type: 'composite', version: '1.0', meta: createMeta('Getter Rows'),
+      steps: [{id: 'diagnose', type: 'diagnostic', inputs: ['rows', 'bad'], rules: [
+        {condition: 'rows.data.length > 0 && bad.data != null', confidence: 'high', diagnosis: 'hit',
+          evidence_fields: ['rows.data[0]', 'rows.data', 'rows.data[0].x', 'bad.data']},
+      ]} as any],
+    };
+    executor.registerSkill(skill);
+    // A value whose keys cannot be listed fails its own evidence entries only.
+    const bad = new Proxy({}, {ownKeys: () => { throw new Error('keys'); }});
+    const result = await executor.execute(skill.name, 'trace-1', {}, {rows: {data: [trap]}, bad: {data: bad}});
+    expect(result.diagnostics.map(d => d.diagnosis)).toEqual(['hit']);
+    expect(result.diagnostics[0].evidence).toEqual({
+      'rows.data[0]': {x: 1, y: undefined},
+      'rows.data': {_rowCount: 1, _firstRow: {x: 1, y: undefined}},
+      'rows.data[0].x': 1,
+      rows: {_rowCount: 1, _firstRow: {x: 1, y: undefined}},
+    });
+  });
+
+  it('reads the jump timestamp through own data only and loses only it when that read fails', async () => {
+    const executor = createSkillExecutor(createMockTraceProcessorService());
+    const skill: SkillDefinition = {
+      name: 'timestamp_rows', type: 'composite', version: '1.0', meta: createMeta('Timestamp Rows'),
+      steps: [{id: 'diagnose', type: 'diagnostic', inputs: ['rows'], rules: [
+        // A parameter keeps its raw value, so `rows` itself is the row array the timestamp is read from.
+        {condition: 'rows.data === undefined && rows.length > 0', confidence: 'high', diagnosis: 'hit'},
+      ]} as any],
+    };
+    executor.registerSkill(skill);
+    let getterRan = false;
+    const getterRow = Object.defineProperty({}, 'ts', {enumerable: true, get: () => { getterRan = true; return 1; }});
+    // Even a read that throws loses only the timestamp.
+    const throwingRow = new Proxy({}, {getOwnPropertyDescriptor: () => { throw new Error('descriptor'); }});
+    const run = async (rows: unknown[]) => (await executor.execute(skill.name, 'trace-1', {rows})).diagnostics;
+    // A sparse slot never falls through to a row the prototype holds.
+    const inherited = Object.setPrototypeOf(new Array(1), Object.create(Array.prototype, {0: {value: {ts: 99}}}));
+    for (const rows of [[getterRow, {ts: 5}], new Array(1), inherited, [throwingRow]]) {
+      expect((await run(rows)).map(d => [d.diagnosis, d.evidence?._perfettoTs])).toEqual([['hit', undefined]]);
+    }
+    expect(getterRan).toBe(false);
+    expect((await run([{start_ts: 42}])).map(d => d.evidence?._perfettoTs)).toEqual(['42']);
+  });
+
+  it('omits a field rooted outside the step inputs and one that never reads through .data', async () => {
+    const evidence = await evidenceFor(['other.data[0].source', 'rows[0].source', 'rows.data[5]?.source']);
+    expect(evidence).toBeUndefined();
+  });
+
+  it('summarizes a condition source as a bounded sample, apart from the row a field cites', async () => {
+    const evidence = await evidenceFor(['rows.data.find(r => r.dur_ms > 6)'], 'rows.data.find(r => r.dur_ms > 6) != null');
+    expect(evidence).toEqual({
+      'rows.data.find(r => r.dur_ms > 6)': {source: 'b', dur_ms: 9, label: 'short'},
+      rows: {_rowCount: 2, _firstRow: {source: 'a', dur_ms: 5, label: expect.stringMatching(/^x+…$/)}},
+    });
+  });
+});
+
+// The diagnostic steps of real Skills, run verbatim on seeded input rows.
+describe('Real diagnostic steps', () => {
+  function realStep(file: string, stepId: string): any {
+    const skill: any = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills', file), 'utf8'));
+    const step = skill.steps.find((candidate: any) => candidate.id === stepId);
+    if (!step) throw new Error(`${file} has no step ${stepId}`);
+    return step;
+  }
+
+  it('resolves every authored evidence field of lock_contention_module, including the undeclared input it read', async () => {
+    const step = realStep('modules/kernel/lock_contention_module.skill.yaml', 'lock_diagnosis');
+    const result = await runSeededDiagnostic(step, {
+      lock_overview: [{lock_event: 'futex', total_wait_ms: 150}],
+      monitor_contention: [{monitor_event: 'monitor contention', wait_ms: 20, waiting_thread: 'worker'}],
+      blocked_threads: Array.from({length: 4}, () => ({state: 'D'})),
+      main_thread_locks: [{lock_event: 'monitor', wait_ms: 12}],
+      thread_contention_pairs: [{thread_name: 'worker', blocked_pct: 40}],
+    });
+    expect(result.diagnostics).toHaveLength(step.rules.length);
+    step.rules.forEach((rule: any, index: number) => {
+      for (const field of rule.evidence_fields) {
+        expect([field, result.diagnostics[index].evidence?.[field]]).toEqual([field, expect.anything()]);
+      }
+    });
+    expect(result.diagnostics[4].evidence).toMatchObject({
+      'thread_contention_pairs.data[0]?.thread_name': 'worker',
+      'thread_contention_pairs.data[0]?.blocked_pct': 40,
+    });
+  });
+
+  it('runs the io_pressure diagnosis on its declared inputs', async () => {
+    const result = await runSeededDiagnostic(realStep('composite/io_pressure.skill.yaml', 'io_diagnostic'), {
+      io_overview: [{severity: 'critical', total_io_wait_ms: 500, affected_threads: 3}],
+      root_cause: [{root_cause_type: 'IO_FS_BOUND', primary_pct: 70}],
+    });
+    expect(result.diagnostics.map(d => d.diagnosis)).toEqual([
+      'IO 压力严重: 总等待 500ms, 影响 3 个线程',
+      '文件系统操作是主要 IO 瓶颈 (70%)',
+    ]);
+  });
+});
+
+// =============================================================================
 // Test Suite: Conditional Step 执行
 // =============================================================================
 
@@ -2648,7 +2840,7 @@ describe('Skill Reference save_from 绑定', () => {
         {id: 'probe', type: 'diagnostic', inputs: ['picked'], rules: [
           // `picked.data` in a condition makes the rule attach that input as evidence.
           {condition: 'picked.data == null', diagnosis: 'UNBOUND ${picked.data[0].source|none}', confidence: 'high'},
-          {condition: 'Array.isArray(picked?.data)', confidence: 'high', evidence_fields: ['picked[0].source'],
+          {condition: 'Array.isArray(picked?.data)', confidence: 'high', evidence_fields: ['picked.data[0].source'],
             diagnosis: 'BOUND ${JSON.stringify(picked.data)} simple=${picked.data[0].source|none}'},
         ]} as any,
       ],
@@ -2664,13 +2856,13 @@ describe('Skill Reference save_from 绑定', () => {
       answer({rows: [['detail']]});
       const result = await probeViaExecute(sameName);
       expect(diagnoses(result)).toEqual(['BOUND [{"source":"detail"}] simple=detail']);
-      expect(result.diagnostics[0].evidence).toEqual({'picked[0].source': 'detail'});
+      expect(result.diagnostics[0].evidence).toEqual({'picked.data[0].source': 'detail'});
       expect(JSON.stringify(result.diagnostics[0].scopeProvenance)).toContain('global_context');
       expect(probeSql()).toEqual([expect.stringContaining("'detail'")]);
 
       const probe = await compositeProbe();
       expect(probe?.data?.diagnostics?.map((d: any) => d.diagnosis)).toEqual(['BOUND [{"source":"detail"}] simple=detail']);
-      expect(probe?.data?.diagnostics?.[0]?.evidence).toEqual({'picked[0].source': 'detail'});
+      expect(probe?.data?.diagnostics?.[0]?.evidence).toEqual({'picked.data[0].source': 'detail'});
       expect(JSON.stringify(probe?.scopeProvenance)).toContain('global_context');
       expect(probeSql()).toEqual([expect.stringContaining("'detail'"), expect.stringContaining("'detail'")]);
     });
@@ -2745,7 +2937,7 @@ describe('Skill Reference 按步骤 id 读取', () => {
           {condition: 'ref.data == null', diagnosis: 'UNBOUND', confidence: 'high'},
           {condition: "ref.data?.[0]?.source === 'picked-row'", diagnosis: 'COND picked-row', confidence: 'high'},
           {condition: 'true', diagnosis: 'id=${ref.data[0].source|none}' + alias, confidence: 'high',
-            evidence_fields: ['ref[0].source', 'alias[0].source']},
+            evidence_fields: ['ref.data[0].source', 'alias.data[0].source']},
         ]} as any,
       ],
     };
@@ -2798,7 +2990,7 @@ describe('Skill Reference 按步骤 id 读取', () => {
     const reading = await read(readers({skill: 'setup_then_rows_child'}, {skill: 'setup_then_rows_child'}), path);
     expect(reading).toMatchObject({
       diagnoses: ['COND picked-row', 'id=picked-row alias=picked-row'],
-      evidence: {'ref[0].source': 'picked-row', 'alias[0].source': 'picked-row'},
+      evidence: {'ref.data[0].source': 'picked-row', 'alias.data[0].source': 'picked-row'},
       sql: ['picked-row'],
       iterated: ['picked-row'],
       ai: 'picked-row',

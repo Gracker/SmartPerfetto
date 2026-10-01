@@ -675,7 +675,7 @@ steps:
       level: key
       layer: overview
       title: "问题诊断"
-    inputs: [binder_overview, main_thread_binder, binder_blocking, server_response]
+    inputs: [binder_check, binder_overview, main_thread_binder, binder_blocking, server_response]
     rules:
       # 数据不足时显式声明，避免误判
       - condition: "binder_check?.data?.[0]?.status !== 'available'"

@@ -35,6 +35,7 @@ import {
   SynthesizeConfig,
 } from './types';
 import { validateSkillInputs } from './skillValidator';
+import { ownDataValue, parseEvidenceField, readEvidenceField } from './expressionUtils';
 import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments';
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
@@ -165,6 +166,39 @@ export interface LayeredResult {
   partial?: boolean;
   /** YAML 中标记为 synthesize: true 的步骤数据，用于最终总结 */
   synthesizeData?: SynthesizeData[];
+}
+
+/** Diagnostic evidence bounds (string code points, keys per row): evidence reaches LLM payloads. */
+const EVIDENCE_STRING_MAX_CHARS = 256;
+const EVIDENCE_MAX_KEYS = 64;
+
+/**
+ * evidence 值的有界投影：行集只留行数和首行，行只留一层标量字段，长字符串截断。
+ * 只读自有数据属性（不执行 getter），不递归：嵌套值只留占位，深层或循环的值都是固定大小。
+ */
+function boundEvidenceValue(value: unknown): unknown {
+  if (!Array.isArray(value)) return boundEvidenceRow(value);
+  return value.length === 0
+    ? { _rowCount: 0 }
+    : { _rowCount: value.length, _firstRow: boundEvidenceRow(ownDataValue(value, '0')) };
+}
+
+function boundEvidenceRow(value: unknown): unknown {
+  if (Array.isArray(value)) return `[Array(${value.length})]`;
+  if (!value || typeof value !== 'object') return truncateEvidenceString(value);
+  return Object.fromEntries(Object.keys(value).slice(0, EVIDENCE_MAX_KEYS).map(key => {
+    const field = ownDataValue(value, key);
+    return [key, Array.isArray(field) ? `[Array(${field.length})]`
+      : field && typeof field === 'object' ? '[Object]' : truncateEvidenceString(field)];
+  }));
+}
+
+function truncateEvidenceString(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length <= EVIDENCE_STRING_MAX_CHARS) return value;
+  const codePoints = Array.from(value);
+  return codePoints.length > EVIDENCE_STRING_MAX_CHARS
+    ? `${codePoints.slice(0, EVIDENCE_STRING_MAX_CHARS).join('')}…`
+    : value;
 }
 
 function getSkillExecutionSignal(inherited: Record<string, any> | undefined): AbortSignal | undefined {
@@ -454,6 +488,15 @@ class ExpressionEvaluator {
     if (context.params?.[name] !== undefined) return { source: 'param', value: context.params[name] };
     if (context.inherited?.[name] !== undefined) return { source: 'inherited', value: context.inherited[name] };
     return undefined;
+  }
+
+  /** What `name.data` reads in a rule expression; undefined when the name is unbound. */
+  static readDataView(name: string, context: SkillExecutionContext): unknown {
+    const binding = this.resolveRootBinding(name, context);
+    if (!binding) return undefined;
+    return binding.source === 'result' || binding.source === 'variable'
+      ? this.unwrapSkillResultData(binding.value)
+      : (binding.value as any)?.data;
   }
 
   /** The value a root name holds, without the `.data` wrapper expressions see. */
@@ -3434,6 +3477,7 @@ export class SkillExecutor {
     for (const inputName of step.inputs) {
       inputs[inputName] = ExpressionEvaluator.resolveRootValue(inputName, context);
     }
+    const inputNames: ReadonlySet<string> = new Set(step.inputs);
 
     // 评估规则
     for (const rule of step.rules) {
@@ -3451,7 +3495,7 @@ export class SkillExecutor {
         const diagnosis = ExpressionEvaluator.evaluate(rule.diagnosis, context);
 
         // 收集 evidence 数据
-        const evidence = this.collectDiagnosticEvidence(rule, inputs);
+        const evidence = this.collectDiagnosticEvidence(rule, inputs, inputNames, context);
 
         // Evaluate suggestions templates (e.g., "${root_cause.data[0].secondary_info}")
         const evaluatedSuggestions = rule.suggestions?.map((s: string) =>
@@ -3498,49 +3542,43 @@ export class SkillExecutor {
   }
 
   /**
-   * 收集诊断结论的数据依据
-   * 从 rule.evidence_fields 或自动从 condition 解析引用的数据源
+   * 收集诊断结论的数据依据：rule.evidence_fields 加上 condition 引用的数据源。
+   * evidence field 是 condition 方言的只读子集（parseEvidenceField），从 condition
+   * 里 `x.data` 的同一个值读起，只能读本 diagnostic step 声明的 inputs；它不经
+   * JS 求值，不会调用函数或写数据。每个值都经 boundEvidenceValue 截断：evidence
+   * 会进 _diagnostics artifact、CLI JSON 和 LLM payload。
    */
   private collectDiagnosticEvidence(
     rule: any,
-    inputs: Record<string, any>
+    inputs: Record<string, any>,
+    inputNames: ReadonlySet<string>,
+    context: SkillExecutionContext,
   ): Record<string, any> {
     const evidence: Record<string, any> = {};
 
     // 1. 如果规则定义了 evidence_fields，使用它们
-    if (rule.evidence_fields && Array.isArray(rule.evidence_fields)) {
+    if (Array.isArray(rule.evidence_fields)) {
       for (const field of rule.evidence_fields) {
-        const value = this.resolveEvidenceField(field, inputs);
-        if (value !== undefined) {
-          evidence[field] = value;
-        }
+        const path = parseEvidenceField(String(field));
+        if (!path || !inputNames.has(path.root)) continue;
+        this.recordEvidence(evidence, field, () =>
+          readEvidenceField(path, ExpressionEvaluator.readDataView(path.root, context)));
       }
     }
 
-    // 2. 自动从 condition 中提取数据源引用
+    // 2. condition 读到的数据源样本（行数 + 首行），不是规则命中的那一行；
+    //    读的是 condition 里 `source.data` 的同一个值
     const conditionSources = this.extractDataSources(rule.condition);
     for (const source of conditionSources) {
-      // 只提取第一行数据作为 evidence（避免数据过大）
-      const sourceData = inputs[source];
-      if (sourceData && !evidence[source]) {
-        if (Array.isArray(sourceData) && sourceData.length > 0) {
-          // 只取第一条记录的关键字段
-          const firstRow = sourceData[0];
-          evidence[source] = {
-            _summary: `共 ${sourceData.length} 条记录`,
-            _firstRow: this.extractKeyFields(firstRow),
-          };
-        } else if (typeof sourceData === 'object') {
-          evidence[source] = this.extractKeyFields(sourceData);
-        }
-      }
+      if (!inputNames.has(source) || source in evidence) continue;
+      this.recordEvidence(evidence, source, () => {
+        const sourceData = ExpressionEvaluator.readDataView(source, context);
+        return sourceData && typeof sourceData === 'object' ? sourceData : undefined;
+      });
     }
 
     // 3. 添加时间戳用于 Perfetto 跳转
-    const tsField = this.findTimestampField(inputs, conditionSources);
-    if (tsField) {
-      evidence._perfettoTs = tsField;
-    }
+    this.recordEvidence(evidence, '_perfettoTs', () => this.findTimestampField(inputs, conditionSources));
 
     return Object.keys(evidence).length > 0 ? evidence : undefined as any;
   }
@@ -3563,30 +3601,14 @@ export class SkillExecutor {
   }
 
   /**
-   * 解析 evidence_fields 中的字段路径
-   * 支持格式: "source.field" 或 "source.data[0].field"
+   * 记录一条 evidence 的有界投影；读取或投影失败只丢这一条，不影响诊断本身。
    */
-  private resolveEvidenceField(
-    field: string,
-    inputs: Record<string, any>
-  ): any {
+  private recordEvidence(evidence: Record<string, any>, key: string, read: () => unknown): void {
     try {
-      // 尝试从 inputs 中解析
-      const parts = field.split('.');
-      let value: any = inputs;
-      for (const part of parts) {
-        if (value === undefined) return undefined;
-        // 处理数组索引，如 data[0]
-        const arrayMatch = part.match(/^(\w+)\[(\d+)\]$/);
-        if (arrayMatch) {
-          value = value[arrayMatch[1]]?.[parseInt(arrayMatch[2])];
-        } else {
-          value = value[part];
-        }
-      }
-      return value;
-    } catch {
-      return undefined;
+      const value = read();
+      if (value !== undefined) evidence[key] = boundEvidenceValue(value);
+    } catch (error: any) {
+      logger.debug('SkillExecutor', `Evidence ${key} failed: ${error?.message}`);
     }
   }
 
@@ -3617,18 +3639,20 @@ export class SkillExecutor {
     for (const source of sources) {
       const data = inputs[source];
       if (Array.isArray(data) && data.length > 0) {
-        const firstRow = data[0];
-        // 常见的时间戳字段名
+        const firstRow = ownDataValue(data, '0');
+        // 常见的时间戳字段名；只读自有的标量数据属性
         const tsFields = ['ts', 'start_ts', 'timestamp', 'begin_ts'];
         for (const field of tsFields) {
-          if (firstRow[field] !== undefined && firstRow[field] !== null) {
-            return String(firstRow[field]);
+          const ts = ownDataValue(firstRow, field);
+          if (typeof ts === 'number' || typeof ts === 'bigint' || (typeof ts === 'string' && ts !== '')) {
+            return String(ts);
           }
         }
       }
     }
     return undefined;
   }
+
 
   /**
    * 执行 AI 决策步骤
