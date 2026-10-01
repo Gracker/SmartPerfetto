@@ -378,9 +378,6 @@ function truncateProjectionValue(value: unknown, depth = 0): unknown {
   if (Array.isArray(value)) {
     return value.slice(0, 20).map((item) => truncateProjectionValue(item, depth + 1));
   }
-  const out: Record<string, unknown> = {};
-  for (const [key, item] of Object.entries(value as Record<string, unknown>).slice(0, 40)) {
-    out[key] = truncateProjectionValue(item, depth + 1);
-  }
-  return out;
+  return Object.fromEntries(Object.entries(value).slice(0, 40)
+    .map(([key, item]) => [key, truncateProjectionValue(item, depth + 1)]));
 }

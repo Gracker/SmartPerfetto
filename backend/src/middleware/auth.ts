@@ -6,7 +6,13 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import type { IncomingMessage } from 'http';
 import { ErrorResponse } from '../types';
-import { isOidcConfigurationPresent, isSsoTrustedHeadersEnabled, resolveFeatureConfig } from '../config';
+import {
+  isKeylessLocalMode,
+  isOidcConfigurationPresent,
+  isSsoTrustedHeadersEnabled,
+  resolveFeatureConfig,
+  SMARTPERFETTO_API_KEY_ENV,
+} from '../config';
 import {
   EnterpriseApiKeyService,
   requestHasEnterpriseApiKeyCredential,
@@ -38,7 +44,6 @@ interface AuthenticatedRequest extends Request {
   requestContext?: RequestContext;
 }
 
-const API_KEY_ENV = 'SMARTPERFETTO_API_KEY';
 const SSO_SESSION_TOKEN_PREFIX = 'sp_sso_';
 const SSO_SESSION_COOKIE_NAME = 'sp_sso_session';
 export const DEFAULT_TENANT_ID = 'default-dev-tenant';
@@ -336,13 +341,6 @@ export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResol
   return { kind: 'none' };
 };
 
-/**
- * Whether an unauthenticated request may act as the local dev identity: no
- * operator API key and not enterprise mode (which built-in OIDC implies).
- */
-export const allowsDevIdentity = (): boolean =>
-  !process.env[API_KEY_ENV] && !resolveFeatureConfig(process.env).enterprise;
-
 const attachIdentity = (req: AuthenticatedRequest, identity: ResolvedIdentity): void => {
   req.user = {
     id: identity.userId,
@@ -401,12 +399,12 @@ export const authenticate = async (
     return;
   }
 
-  if (allowsDevIdentity()) {
+  if (isKeylessLocalMode()) {
     attachIdentity(req, makeDevIdentity());
     next();
     return;
   }
-  const configuredKey = process.env[API_KEY_ENV];
+  const configuredKey = process.env[SMARTPERFETTO_API_KEY_ENV];
   if (!configuredKey) {
     sendUnauthorized(res, 'Enterprise mode requires SSO or API key authentication');
     return;

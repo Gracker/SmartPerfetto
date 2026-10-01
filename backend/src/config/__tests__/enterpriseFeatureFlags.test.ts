@@ -7,12 +7,24 @@ import {
   DEFAULT_BACKEND_PORT,
   DEFAULT_FRONTEND_PORT,
   ENTERPRISE_FEATURE_FLAG_ENV,
+  isKeylessLocalMode,
   resolveAuthConfig,
   resolveFeatureConfig,
   resolveServerConfig,
   SMARTPERFETTO_BACKEND_PORT_ENV,
   SMARTPERFETTO_FRONTEND_PORT_ENV,
 } from '../index';
+
+function oidcEnv(scheme: 'http' | 'https'): NodeJS.ProcessEnv {
+  return {
+    SMARTPERFETTO_OIDC_ISSUER_URL: `${scheme}://idp.example.test`,
+    SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+    SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+    SMARTPERFETTO_OIDC_REDIRECT_URI: `${scheme}://app.example.test/api/auth/oidc/callback`,
+    SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+    FRONTEND_URL: `${scheme}://app.example.test`,
+  };
+}
 
 describe('enterprise feature flag', () => {
   it('defaults enterprise mode off', () => {
@@ -97,6 +109,26 @@ describe('enterprise feature flag', () => {
       cookieSecure: false,
     });
   });
+
+  // The OIDC client reads the override by the same rule (enterpriseOidcClient tests).
+  const plaintextOidcEnv = (override: string): NodeJS.ProcessEnv => ({
+    ...oidcEnv('http'),
+    SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP: override,
+  });
+
+  it.each(['1', 'yes', 'on', 'enabled', ' TRUE '])(
+    'accepts plaintext OIDC URLs for the insecure override spelling %p',
+    (value) => {
+      expect(resolveAuthConfig(plaintextOidcEnv(value)).allowInsecureHttp).toBe(true);
+    },
+  );
+
+  it.each(['', '0', 'false', 'no', 'off', 'disabled', 'maybe'])(
+    'keeps rejecting plaintext OIDC URLs for the insecure override %p',
+    (value) => {
+      expect(() => resolveAuthConfig(plaintextOidcEnv(value))).toThrow(/absolute HTTPS URL/);
+    },
+  );
 
   // Every spelling request authentication honours must also stop startup.
   it.each(['true', '1', 'yes', 'on', 'enabled', ' TRUE '])(
@@ -211,5 +243,29 @@ describe('server port config', () => {
       'http://localhost:11000',
       'http://127.0.0.1:11000',
     ]));
+  });
+});
+
+describe('operator API key and keyless local mode', () => {
+  it('runs keyless only without an operator key and outside enterprise mode', () => {
+    expect(isKeylessLocalMode({})).toBe(true);
+    expect(isKeylessLocalMode({ SMARTPERFETTO_API_KEY: 'operator-key' })).toBe(false);
+  });
+
+  it.each(['1', 'true', 'yes', 'on', 'enabled'])(
+    'requires authentication for the enterprise spelling %p',
+    (value) => {
+      expect(isKeylessLocalMode({ [ENTERPRISE_FEATURE_FLAG_ENV]: value })).toBe(false);
+    },
+  );
+
+  // The authenticator demands the exact configured key, so a whitespace-only
+  // value locks the API; auth mode and the OIDC conflict check must agree.
+  it('treats a whitespace-only operator key as configured', () => {
+    const env = { SMARTPERFETTO_API_KEY: '   ' } as NodeJS.ProcessEnv;
+    expect(resolveAuthConfig(env).mode).toBe('api_key');
+    expect(isKeylessLocalMode(env)).toBe(false);
+    expect(() => resolveAuthConfig({ ...oidcEnv('https'), ...env }))
+      .toThrow(/cannot be combined with SMARTPERFETTO_API_KEY/);
   });
 });
