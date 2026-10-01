@@ -11,6 +11,7 @@ import { TraceProcessorService } from '../traceProcessorService';
 import { FourQuadrantAnalyzer, FourQuadrantResult } from './fourQuadrantAnalysis';
 import { CpuCoreAnalyzer, CpuCoreDistribution } from './cpuCoreAnalysis';
 import { FrameStatsAnalyzer, FrameStatsResult } from './frameStatsAnalysis';
+import { TemplateAnalysisError, templateDataUnavailable } from './templateAnalysisError';
 
 export type AnalysisTemplateName =
   | 'four_quadrant'
@@ -135,7 +136,7 @@ export class AnalysisTemplateManager {
         return await this.executeFrameStats(context);
 
       default:
-        throw new Error(`Unknown template: ${templateName}`);
+        throw new TemplateAnalysisError('unknown_template', `Unknown template: ${templateName}`);
     }
   }
 
@@ -159,7 +160,7 @@ export class AnalysisTemplateManager {
     const mainThreadUtid = await this.findMainThread(context.traceId);
 
     if (!mainThreadUtid) {
-      throw new Error('Could not find main thread');
+      throw templateDataUnavailable('Could not find main thread');
     }
 
     return await this.cpuCoreAnalyzer.analyze(context.traceId, mainThreadUtid);

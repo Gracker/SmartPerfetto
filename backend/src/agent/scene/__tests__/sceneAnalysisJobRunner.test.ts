@@ -285,6 +285,19 @@ describe('SceneAnalysisJobRunner', () => {
     ]);
   });
 
+  it('keeps a row column named __proto__ in projection samples', async () => {
+    const exec = new ManualSkillExecutor();
+    const { runner } = buildRunner(exec, { concurrency: 1 });
+
+    runner.enqueue([makeInterval('proto')]);
+    await flush();
+    exec.resolveNext({ displayResults: [JSON.parse('{"id":1,"__proto__":{"thread":"main"}}')] });
+    await runner.waitForAllDone();
+
+    const [row] = runner.getJobs()[0].result?.projection?.topRowsSample ?? [];
+    expect(JSON.stringify(row)).toBe('{"id":1,"__proto__":{"thread":"main"}}');
+  });
+
   it('bounds projection samples below the report payload cap', async () => {
     const exec = new ManualSkillExecutor();
     const { runner } = buildRunner(exec, { concurrency: 1 });

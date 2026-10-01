@@ -6,7 +6,13 @@ import { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import type { IncomingMessage } from 'http';
 import { ErrorResponse } from '../types';
-import { isOidcConfigurationPresent, isSsoTrustedHeadersEnabled, resolveFeatureConfig } from '../config';
+import {
+  isKeylessLocalMode,
+  isOidcConfigurationPresent,
+  isSsoTrustedHeadersEnabled,
+  resolveFeatureConfig,
+  SMARTPERFETTO_API_KEY_ENV,
+} from '../config';
 import {
   EnterpriseApiKeyService,
   requestHasEnterpriseApiKeyCredential,
@@ -38,7 +44,6 @@ interface AuthenticatedRequest extends Request {
   requestContext?: RequestContext;
 }
 
-const API_KEY_ENV = 'SMARTPERFETTO_API_KEY';
 const SSO_SESSION_TOKEN_PREFIX = 'sp_sso_';
 const SSO_SESSION_COOKIE_NAME = 'sp_sso_session';
 export const DEFAULT_TENANT_ID = 'default-dev-tenant';
@@ -284,6 +289,15 @@ type CredentialResolution =
   | { kind: 'none' };
 
 /**
+ * A credential lookup that threw (storage, secret): the caller gets fixed text,
+ * the cause goes to the log under the request id.
+ */
+const rejectedLookup = (req: IncomingMessage, details: string, error: unknown): CredentialResolution => {
+  console.error('[Auth] Credential lookup failed', {requestId: requestIdOf(req), details}, error);
+  return { kind: 'rejected', details };
+};
+
+/**
  * The identity carried by a request's SSO or enterprise credential: trusted SSO
  * headers, then an SSO/OIDC session, then an enterprise API key. HTTP
  * authentication and the trace-processor WebSocket upgrade both use it, so the
@@ -306,7 +320,7 @@ export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResol
       if (sessionIdentity) return { kind: 'identity', identity: sessionIdentity, source: 'sso_session' };
     } catch (error) {
       if (resolveFeatureConfig(process.env).enterprise) {
-        return { kind: 'rejected', details: error instanceof Error ? error.message : 'Invalid SSO session' };
+        return rejectedLookup(req, 'Invalid SSO session', error);
       }
     }
   }
@@ -319,20 +333,13 @@ export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResol
         : { kind: 'rejected', details: 'Invalid or expired API key' };
     } catch (error) {
       if (resolveFeatureConfig(process.env).enterprise) {
-        return { kind: 'rejected', details: error instanceof Error ? error.message : 'Invalid or expired API key' };
+        return rejectedLookup(req, 'Invalid or expired API key', error);
       }
     }
   }
 
   return { kind: 'none' };
 };
-
-/**
- * Whether an unauthenticated request may act as the local dev identity: no
- * operator API key and not enterprise mode (which built-in OIDC implies).
- */
-export const allowsDevIdentity = (): boolean =>
-  !process.env[API_KEY_ENV] && !resolveFeatureConfig(process.env).enterprise;
 
 const attachIdentity = (req: AuthenticatedRequest, identity: ResolvedIdentity): void => {
   req.user = {
@@ -392,12 +399,12 @@ export const authenticate = async (
     return;
   }
 
-  if (allowsDevIdentity()) {
+  if (isKeylessLocalMode()) {
     attachIdentity(req, makeDevIdentity());
     next();
     return;
   }
-  const configuredKey = process.env[API_KEY_ENV];
+  const configuredKey = process.env[SMARTPERFETTO_API_KEY_ENV];
   if (!configuredKey) {
     sendUnauthorized(res, 'Enterprise mode requires SSO or API key authentication');
     return;

@@ -121,15 +121,8 @@ function sanitizeLogValue(value: any, depth: number, seen: WeakSet<object>): any
     return value.slice(0, MAX_ARRAY_ITEMS).map((item) => sanitizeLogValue(item, depth + 1, seen));
   }
 
-  const sanitized: Record<string, any> = {};
-  for (const [key, nested] of Object.entries(value)) {
-    if (SENSITIVE_KEY_PATTERN.test(key)) {
-      sanitized[key] = REDACTED;
-      continue;
-    }
-    sanitized[key] = sanitizeLogValue(nested, depth + 1, seen);
-  }
-  return sanitized;
+  return Object.fromEntries(Object.entries(value).map(([key, nested]) =>
+    [key, SENSITIVE_KEY_PATTERN.test(key) ? REDACTED : sanitizeLogValue(nested, depth + 1, seen)]));
 }
 
 export function sanitizeLogData(data: any): any {

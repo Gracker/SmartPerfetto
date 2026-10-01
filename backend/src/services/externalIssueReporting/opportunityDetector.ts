@@ -21,6 +21,7 @@ import {
   type ExternalIssueSignalV1,
 } from '../../types/externalIssueReporting';
 import type {ExternalIssueSourceRun} from './sourceRunResolver';
+import {REPORT_GENERATION_FAILED} from '../analysisReceiptBuilder';
 
 const LOW_SCENE_CONFIDENCE = 0.65;
 
@@ -189,11 +190,13 @@ export function detectExternalIssueOpportunity(
       kind: 'report_generation_failed',
       severity: 'error',
       identity: reportError,
-      summary: localize(
-        language,
-        `分析报告生成失败：${reportError}`,
-        `Analysis report generation failed: ${reportError}`,
-      ),
+      summary: reportError === REPORT_GENERATION_FAILED
+        ? localize(language, '分析报告生成失败。', 'Analysis report generation failed.')
+        : localize(
+          language,
+          `分析报告生成失败：${reportError}`,
+          `Analysis report generation failed: ${reportError}`,
+        ),
     }));
   }
 

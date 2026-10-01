@@ -9,6 +9,14 @@ import type { RequestContext, RequestContextAuthType } from '../middleware/auth'
 import { sanitizeContextId } from '../utils/contextId';
 import { openEnterpriseDb } from './enterpriseDb';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
+import { PublicRequestError } from '../utils/publicRequestError';
+
+/** An API key request the caller has to change: an invalid field or a delegation it may not make. */
+export class ApiKeyRequestError extends PublicRequestError {
+  constructor(message: string) {
+    super('invalid_api_key_request', message);
+  }
+}
 
 export const ENTERPRISE_API_KEY_PREFIX = 'spak_';
 
@@ -116,10 +124,10 @@ function normalizeExpiresAt(value: unknown): number | undefined {
       ? Number.parseInt(value, 10)
       : Date.parse(String(value));
   if (!Number.isFinite(parsed)) {
-    throw new Error('expiresAt must be a Unix millisecond timestamp or ISO date string');
+    throw new ApiKeyRequestError('expiresAt must be a Unix millisecond timestamp or ISO date string');
   }
   if (parsed <= nowMs()) {
-    throw new Error('expiresAt must be in the future');
+    throw new ApiKeyRequestError('expiresAt must be in the future');
   }
   return parsed;
 }
@@ -202,35 +210,35 @@ export class EnterpriseApiKeyService {
       || context.scopes.includes('api_key:delegate_org');
     const requestedTenantId = sanitizeContextId(input.tenantId);
     if (requestedTenantId && requestedTenantId !== context.tenantId) {
-      throw new Error('tenantId must match the authenticated RequestContext');
+      throw new ApiKeyRequestError('tenantId must match the authenticated RequestContext');
     }
     const requestedWorkspaceId = sanitizeContextId(input.workspaceId);
     if (requestedWorkspaceId && requestedWorkspaceId !== context.workspaceId) {
-      throw new Error('workspaceId must match the authenticated RequestContext');
+      throw new ApiKeyRequestError('workspaceId must match the authenticated RequestContext');
     }
     if (input.workspaceId === null && !canDelegateOrg) {
-      throw new Error('Only an org admin can create a tenant-wide API key');
+      throw new ApiKeyRequestError('Only an org admin can create a tenant-wide API key');
     }
     if (input.ownerUserId === null) {
-      throw new Error('API keys must retain an accountable owner');
+      throw new ApiKeyRequestError('API keys must retain an accountable owner');
     }
     const requestedOwnerUserId = sanitizeContextId(input.ownerUserId) || context.userId;
     if (requestedOwnerUserId !== context.userId && !canDelegateOrg) {
-      throw new Error('Only an org admin can create an API key for another user');
+      throw new ApiKeyRequestError('Only an org admin can create an API key for another user');
     }
     const tenantId = context.tenantId;
     const workspaceId = input.workspaceId === null ? undefined : context.workspaceId;
     const ownerUserId = this.existingUserId(tenantId, requestedOwnerUserId);
-    if (!ownerUserId) throw new Error('API key owner must be an active tenant user');
+    if (!ownerUserId) throw new ApiKeyRequestError('API key owner must be an active tenant user');
     const scopes = normalizeScopes(input.scopes);
     if (!canDelegateOrg) {
       if (scopes.includes('*')) {
-        throw new Error('Workspace administrators cannot delegate wildcard scope');
+        throw new ApiKeyRequestError('Workspace administrators cannot delegate wildcard scope');
       }
       const callerScopes = new Set(context.scopes);
       const unsupportedScope = scopes.find(scope => !callerScopes.has(scope));
       if (unsupportedScope) {
-        throw new Error(`Cannot delegate scope not held by caller: ${unsupportedScope}`);
+        throw new ApiKeyRequestError(`Cannot delegate scope not held by caller: ${unsupportedScope}`);
       }
     }
     const expiresAt = normalizeExpiresAt(input.expiresAt);

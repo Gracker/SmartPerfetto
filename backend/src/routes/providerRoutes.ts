@@ -12,7 +12,7 @@ import {
 import type { AgentRuntimeKind, ProviderCreateInput, ProviderScope, ProviderUpdateInput } from '../services/providerManager';
 import { testProviderConnection } from '../services/providerManager/connectionTester';
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
-import { sendRouteFailure } from '../middleware/routeFailure';
+import { sendRouteError } from '../middleware/routeFailure';
 import { ProviderRequestError } from '../services/providerManager/providerRequestError';
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
@@ -166,19 +166,11 @@ router.get('/:id', (req, res) => {
  */
 function sendProviderError(res: express.Response, error: unknown, operation: string): void {
   if (sendProviderStoreUnreadableIfPresent(res, error)) return;
-  if (error instanceof ProviderRequestError) {
-    res.status(error.code === 'provider_not_found' ? 404 : 400).json({
-      success: false,
-      code: error.code,
-      error: error.message,
-    });
-    return;
-  }
-  sendRouteFailure(res, {
+  sendRouteError(res, error, {
     code: 'provider_operation_failed',
     error: 'Provider operation failed',
     logLabel: `[ProviderRoutes] ${operation} error`,
-  }, error);
+  }, [ProviderRequestError]);
 }
 
 router.post('/', (req, res) => {

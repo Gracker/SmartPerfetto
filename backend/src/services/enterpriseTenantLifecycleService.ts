@@ -8,6 +8,7 @@ import path from 'path';
 import type Database from 'better-sqlite3';
 
 import type { RequestContext } from '../middleware/auth';
+import { stableStringify } from '../utils/stableJson';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
 import { openEnterpriseDb } from './enterpriseDb';
 import { resolveEnterpriseDataRoot } from './traceMetadataStore';
@@ -73,7 +74,18 @@ export class TenantPurgeBlockedError extends Error {
   }
 }
 
+export class TenantTombstoneNotFoundError extends Error {
+  readonly code = 'tenant_tombstone_not_found';
+
+  constructor() {
+    super('Tenant tombstone not found');
+    this.name = 'TenantTombstoneNotFoundError';
+  }
+}
+
 export class TenantPurgeWindowError extends Error {
+  readonly code = 'tenant_purge_window_open';
+
   constructor(readonly purgeAfter: number) {
     super('Tenant purge window has not elapsed');
     this.name = 'TenantPurgeWindowError';
@@ -82,22 +94,6 @@ export class TenantPurgeWindowError extends Error {
 
 function sha256(value: string): string {
   return `sha256:${crypto.createHash('sha256').update(value).digest('hex')}`;
-}
-
-function stableStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (!value || typeof value !== 'object') return value;
-  const input = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(input).sort()) {
-    const child = input[key];
-    if (child !== undefined) out[key] = canonicalize(child);
-  }
-  return out;
 }
 
 function assertSafeTenantId(tenantId: string): string {
@@ -318,7 +314,7 @@ export async function purgeTenantNow(
   assertSafeTenantId(context.tenantId);
   const tombstone = getTenantTombstoneRow(db, context.tenantId);
   if (!tombstone || tombstone.status === 'purged') {
-    throw new Error('Tenant tombstone not found');
+    throw new TenantTombstoneNotFoundError();
   }
   if (tombstone.purge_after > now) {
     throw new TenantPurgeWindowError(tombstone.purge_after);

@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import express from 'express';
 import fs from 'fs';
 import type { IncomingMessage } from 'http';
@@ -286,6 +286,27 @@ describe('authenticate RequestContext', () => {
       EnterpriseApiKeyService.resetForTests();
       db.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers a failing credential lookup with fixed text and logs the cause', () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_ENTERPRISE = 'true';
+    const canary = 'canary-auth /srv/enterprise.sqlite SQLITE_CORRUPT';
+    EnterpriseApiKeyService.setInstanceForTests({
+      resolveRequestIdentityFromRequest: () => {
+        throw new Error(canary);
+      },
+    } as unknown as EnterpriseApiKeyService);
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(resolveCredentialIdentity(headerRequest({
+        authorization: 'Bearer spak_not-a-real-key',
+      }))).toEqual({ kind: 'rejected', details: 'Invalid or expired API key' });
+      expect(errorLog.mock.calls.flat()).toContainEqual(new Error(canary));
+    } finally {
+      errorLog.mockRestore();
+      EnterpriseApiKeyService.resetForTests();
     }
   });
 

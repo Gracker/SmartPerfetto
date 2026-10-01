@@ -47,6 +47,7 @@ import {
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {KnowledgeCurationError} from './knowledgeCurationError';
 
 /** Minimum sample count enforced for `status='published'`. */
 export const BASELINE_PUBLISH_MIN_SAMPLES = 3;
@@ -255,7 +256,7 @@ export class BaselineStore {
 
     const sampleCount = record.sampleCount ?? 0;
     if (sampleCount < BASELINE_PUBLISH_MIN_SAMPLES) {
-      throw new Error(
+      throw new KnowledgeCurationError('baseline_publish_rejected',
         `Baseline '${record.baselineId}' cannot be published with sampleCount=${sampleCount} (minimum ${BASELINE_PUBLISH_MIN_SAMPLES})`,
       );
     }
@@ -264,7 +265,7 @@ export class BaselineStore {
       keyHasIdentifiableInfo(record.key) &&
       record.redactionState !== 'redacted'
     ) {
-      throw new Error(
+      throw new KnowledgeCurationError('baseline_publish_rejected',
         `Baseline '${record.baselineId}' cannot be published with redactionState='${record.redactionState}' — key carries identifiable info`,
       );
     }
