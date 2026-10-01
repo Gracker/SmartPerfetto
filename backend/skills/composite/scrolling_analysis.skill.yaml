@@ -2777,6 +2777,13 @@ steps:
       - fragments/effective_target_processes.sql
       - fragments/vsync_config.sql
       - fragments/root_cause_sample_cap.sql
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
+      - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
+      - fragments/thermal_signal_signatures.sql
+      - fragments/system_cpu_freq_limit_episode_verdicts.sql
+      - fragments/system_cpu_freq_limit_frame_binding.sql
     synthesize:
       role: list
       groupBy:
@@ -3038,6 +3045,81 @@ steps:
           label: "设备峰值频率"
           type: number
           hidden: true
+        - name: freq_ceiling_ratio_pct
+          label: "大核峰频/设备峰值"
+          type: percentage
+          format: percentage
+          hidden: true
+        - name: freq_limit_state
+          label: "主线程限频状态"
+          type: string
+          hidden: true
+        - name: freq_limit_basis
+          label: "限频触发依据"
+          type: string
+          hidden: true
+        - name: freq_limit_onset_confirmed
+          label: "热控施加已确认"
+          type: number
+          hidden: true
+        - name: freq_limit_onset_ts
+          label: "上限值写入时间"
+          type: timestamp
+          unit: ns
+          hidden: true
+        - name: freq_limit_cooling_basis
+          label: "散热设备关联"
+          type: string
+          hidden: true
+        - name: freq_limit_policy_cpu
+          label: "限频 policy"
+          type: number
+          hidden: true
+        - name: freq_limit_mhz
+          label: "频率上限"
+          type: number
+          hidden: true
+        - name: freq_limit_depth_pct
+          label: "上限低于观测最高上限"
+          type: percentage
+          format: percentage
+          hidden: true
+        - name: freq_limit_binding_ratio
+          label: "运行频率/上限"
+          type: number
+          hidden: true
+        - name: freq_limit_onset_binding_ns
+          label: "该上限值约束运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: freq_limit_binding_ns
+          label: "跨上限值约束运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: freq_limit_run_ns
+          label: "关键操作运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: freq_limit_trace_episode_id
+          label: "限频区段"
+          type: string
+          hidden: true
+        - name: rt_freq_limit_state
+          label: "RenderThread 限频状态"
+          type: string
+          hidden: true
+        - name: rt_freq_limit_binding_ns
+          label: "RenderThread 上限约束运行时长"
+          type: duration
+          unit: ns
+          hidden: true
+        - name: rt_freq_limit_policy_cpu
+          label: "RenderThread 限频 policy"
+          type: number
+          hidden: true
         - name: file_io_overlap_ms
           label: "文件IO重叠"
           type: duration
@@ -3128,7 +3210,8 @@ steps:
         peer_context: [binder_calls_json]
     sql: |
       -- 批量帧根因分类：对采样上限内的消费端真实掉帧执行简化版根因决策树
-      -- 与 jank_frame_detail 的 root_cause_summary 使用相同优先级 CASE 树
+      -- 与 jank_frame_detail 的 root_cause_summary 对齐的只有 direct-evidence（锁 / RT 同步）
+      -- 与限频（P4.5/P4.6，同一 frame binding fragment）两族，其余优先级各自不同
       -- 区别：jank_frame_detail 是单帧深钻，此步骤是带覆盖率的批量分类
       WITH
       -- ========== 1. VSync 配置 ==========
@@ -3142,10 +3225,11 @@ steps:
           ROUND(MAX(vsync_period_ns / 1e6 * 0.18, 1.5), 2) as binder_overlap_critical_ms
         FROM vsync_config
       ),
-      -- ========== 1b. 设备峰值频率（全 trace 大核最高频率，用于温控/限频检测）==========
-      -- 不加 start_ts/end_ts 过滤 — 求设备硬件频率上限
-      -- 用 MAX — P95 会被大量空闲低频样本主导（CPU 大部分时间低频运行）
-      -- 优先级已从 P0.6 下调到 P4.5，配合 60% 阈值足以防止误判
+      -- ========== 1b. 设备峰值频率（全 trace 大核最高观测频率，仅作观测列）==========
+      -- 不加 start_ts/end_ts 过滤；用 MAX — P95 会被大量空闲低频样本主导。
+      -- 它不是硬件上限，也不是限频证据：频率低于峰值既可能是被限频，也可能只是负载
+      -- 下降。限频根因只读 system_cpu_freq_limit_frame_binding（policy 上限轨道 ×
+      -- 线程实际运行时间），不再由这个比例判定。
       device_peak_freq AS (
         SELECT COALESCE(ROUND(MAX(c.value) / 1000, 0), 0) as device_peak_freq_mhz
         FROM counter c
@@ -3370,6 +3454,7 @@ steps:
           s.dur as slice_dur_ns,
           ROUND(s.dur / 1e6, 2) as slice_dur_ms,
           ROUND((s.ts - fl.frame_start) / 1e6, 2) as slice_offset_ms,
+          ptr.utid as slice_utid,
           ROW_NUMBER() OVER (PARTITION BY fl.frame_key ORDER BY s.dur DESC) as rn
         FROM jank_frame_list fl
         JOIN per_frame_thread_roles ptr ON ptr.frame_key = fl.frame_key AND ptr.role = 'main'
@@ -3389,6 +3474,19 @@ steps:
       system_target_threads AS (
         SELECT ptr.frame_key AS window_id,fl.upid,ptr.utid,ptr.role
         FROM per_frame_thread_roles ptr JOIN jank_frame_list fl ON fl.frame_key=ptr.frame_key
+      ),
+      -- The interval the frequency-limit state of each role is attributed to: the
+      -- top slice clipped to the frame, on the thread that ran it (the same clip as
+      -- top_slice_states, so P4.5/P4.6 judge the work that top_slice_ms measures;
+      -- other main-role threads such as Flutter *.ui never count), and the whole
+      -- frame for RenderThread, whose state is diagnostic only.
+      system_work_intervals AS (
+        SELECT ts_top.frame_key AS window_id,'main' AS role,ts_top.slice_utid AS utid,
+          MAX(ts_top.slice_ts,fl.frame_start) AS work_start_ts,
+          MIN(ts_top.slice_ts+ts_top.slice_dur_ns,fl.frame_end) AS work_end_ts
+        FROM top_slices ts_top JOIN jank_frame_list fl ON fl.frame_key=ts_top.frame_key
+        UNION ALL
+        SELECT frame_key,'render',NULL,frame_start,frame_end FROM jank_frame_list
       ),
       frame_system_states AS (
         SELECT s.*,COALESCE(ct.core_type,'unknown') AS core_type
@@ -4119,10 +4217,28 @@ steps:
           COALESCE(pfid.input_events_json, '[]') as input_events_json,
           COALESCE(pfisd.input_slices_json, '[]') as input_slices_json,
           COALESCE(pfse.system_evidence_json, '[]') AS system_evidence_json,
-          dpf.device_peak_freq_mhz
+          dpf.device_peak_freq_mhz,
+          flm.freq_limit_state,
+          flm.freq_limit_basis,
+          flm.freq_limit_onset_confirmed,
+          flm.freq_limit_onset_ts,
+          flm.freq_limit_cooling_basis,
+          flm.policy_cpu AS freq_limit_policy_cpu,
+          ROUND(flm.limit_khz / 1000.0, 1) AS freq_limit_mhz,
+          flm.depth_pct AS freq_limit_depth_pct,
+          flm.binding_ratio AS freq_limit_binding_ratio,
+          flm.onset_binding_ns AS freq_limit_onset_binding_ns,
+          flm.binding_ns AS freq_limit_binding_ns,
+          flm.run_ns AS freq_limit_run_ns,
+          flm.trace_episode_id AS freq_limit_trace_episode_id,
+          flr.freq_limit_state AS rt_freq_limit_state,
+          flr.binding_ns AS rt_freq_limit_binding_ns,
+          flr.policy_cpu AS rt_freq_limit_policy_cpu
         FROM jank_frame_list fl
         CROSS JOIN timing_config tc
         CROSS JOIN device_peak_freq dpf
+        LEFT JOIN system_cpu_freq_limit_frame_binding flm ON flm.window_id=fl.frame_key AND flm.role='main'
+        LEFT JOIN system_cpu_freq_limit_frame_binding flr ON flr.window_id=fl.frame_key AND flr.role='render'
         LEFT JOIN per_frame_system_evidence pfse ON pfse.frame_key=fl.frame_key
         LEFT JOIN top_slices ts ON ts.frame_key = fl.frame_key
         LEFT JOIN per_frame_cpu_mix pcm ON pcm.frame_key = fl.frame_key
@@ -4149,7 +4265,7 @@ steps:
         LEFT JOIN per_frame_input_detail pfid ON pfid.frame_key = fl.frame_key
         LEFT JOIN per_frame_input_slice_detail pfisd ON pfisd.frame_key = fl.frame_key
       ),
-      -- ========== 11. 根因分类（与 jank_frame_detail 相同优先级 CASE 树） ==========
+      -- ========== 11. 根因分类（direct-evidence 与限频两族与 jank_frame_detail 对齐） ==========
       classified AS (
         SELECT *,
           CASE
@@ -4211,17 +4327,17 @@ steps:
             -- P4: 重度业务负载（>2× 帧预算，即使满频也会超时）
             WHEN top_slice_ms > frame_budget_ms * 2.0
               THEN 'workload_heavy'
-            -- P4.5: 温控降频 — 帧内大核最高频率显著低于设备 P95 峰值（<60%）
-            -- 放在 workload_heavy 之后：如果帧有明确的 App 侧直接原因（Binder/GC/heavy workload），
-            -- 优先归因到直接原因。温控降频是供给侧约束，仅在无更强直接原因时才作为主因
-            WHEN device_peak_freq_mhz > 0 AND big_max_freq_mhz > 0
-              AND big_max_freq_mhz < device_peak_freq_mhz * 0.60
-              AND top_slice_ms > slice_critical_ms
+            -- P4.5: 温控限频 — 主线程 top slice 的运行时间受 policy 频率上限约束
+            -- （freq_limit_state = capped_binding），且约束它的那个上限值由与该 policy
+            -- 时序关联的散热设备升档写入（该值自身的 onset verdict 为 confirmed，且不是
+            -- 靠多个上限值拼出的约束）。放在 workload_heavy 之后：供给侧约束仅在无更强
+            -- 直接原因时才作为主因。频率比设备峰值低不是限频证据，不参与判定。
+            WHEN top_slice_ms > slice_critical_ms AND freq_limit_state = 'capped_binding'
+              AND freq_limit_onset_confirmed = 1 AND freq_limit_basis <> 'mixed_limit_values_in_frame'
               THEN 'thermal_throttling'
-            -- P4.6: CPU 最大频率被限 — 中等程度限频（60%-75%）
-            WHEN device_peak_freq_mhz > 0 AND big_max_freq_mhz > 0
-              AND big_max_freq_mhz < device_peak_freq_mhz * 0.75
-              AND top_slice_ms > slice_critical_ms
+            -- P4.6: CPU 最大频率被限 — 上限约束了主线程，但该上限值的触发方未由帧内
+            -- 证据确定（放宽后的值、写入时刻不可观测、未配对的收紧、多值拼接等）。
+            WHEN top_slice_ms > slice_critical_ms AND freq_limit_state = 'capped_binding'
               THEN 'cpu_max_limited'
             -- P5: 大核低频（边际情况：slice 在 1x-2x 帧预算区间）
             WHEN top_slice_ms > slice_critical_ms AND big_run_pct >= 40
@@ -4315,7 +4431,7 @@ steps:
           WHEN reason_code = 'prediction_error' THEN 'FrameTimeline 预测误差: SurfaceFlinger scheduler 的预测呈现时间发生漂移；孤立事件通常不代表用户可感知 App 卡顿'
           WHEN reason_code = 'app_jank_unattributed' THEN 'App Deadline Missed 已确认，但当前帧缺少 Binder/GC/锁/Input/调度等直接证据，底层原因保持未归因'
           WHEN reason_code = 'frame_timeline_unattributed' THEN 'FrameTimeline 标记为 Unknown Jank；当前 trace 没有 App、SF 或帧内直接机制证据，异常保留但根因未归因'
-          WHEN reason_code = 'thermal_throttling' THEN '温控降频: 大核最高 ' || big_max_freq_mhz || 'MHz (设备峰值 ' || device_peak_freq_mhz || 'MHz, 仅 ' || ROUND(100.0 * big_max_freq_mhz / NULLIF(device_peak_freq_mhz, 0), 0) || '%)'
+          WHEN reason_code = 'thermal_throttling' THEN '温控限频: "' || top_slice_name || '" 运行 ' || ROUND(freq_limit_run_ns / 1e6, 2) || 'ms 中有 ' || ROUND(freq_limit_onset_binding_ns / 1e6, 2) || 'ms 受 policy' || freq_limit_policy_cpu || ' 上限 ' || freq_limit_mhz || 'MHz 约束（低于观测最高上限 ' || freq_limit_depth_pct || '%，运行频率/上限 ' || freq_limit_binding_ratio || '）；该上限值由与该 policy 时序关联的散热设备升档写入' || CASE WHEN freq_limit_binding_ns > freq_limit_onset_binding_ns THEN '；跨全部上限值共受约束 ' || ROUND(freq_limit_binding_ns / 1e6, 2) || 'ms' ELSE '' END
           WHEN reason_code = 'binder_sync_blocking' THEN '同步Binder阻塞: "' || top_slice_name || '" 中 Binder 重叠 ' || binder_overlap_ms || 'ms'
           WHEN reason_code = 'lock_contention' THEN 'Monitor锁竞争: 主线程在帧窗口内直接等待 ' || lock_contention_ms || 'ms'
           WHEN reason_code = 'render_sync_wait' THEN 'UI→RenderThread同步等待: 主线程 postAndWait/syncFrameState 重叠 ' || render_sync_wait_ms || 'ms'
@@ -4328,7 +4444,7 @@ steps:
           WHEN reason_code = 'gpu_fence_wait' THEN 'GPU Fence等待: 最长 ' || ROUND(max_fence_dur_ns / 1e6, 2) || 'ms'
           WHEN reason_code = 'render_thread_heavy' THEN 'RT负载过重: RenderThread 运行占比 ' || (render_q1_pct + render_q2_pct) || '%, 等待仅 ' || render_q4b_pct || '%'
           WHEN reason_code = 'workload_heavy' THEN '负载过重: "' || top_slice_name || '" 耗时 ' || top_slice_ms || 'ms (预算 ' || frame_budget_ms || 'ms)'
-          WHEN reason_code = 'cpu_max_limited' THEN 'CPU限频: 大核最高 ' || big_max_freq_mhz || 'MHz (设备峰值 ' || device_peak_freq_mhz || 'MHz, ' || ROUND(100.0 * big_max_freq_mhz / NULLIF(device_peak_freq_mhz, 0), 0) || '%), "' || top_slice_name || '" 耗时 ' || top_slice_ms || 'ms'
+          WHEN reason_code = 'cpu_max_limited' THEN 'CPU限频生效: "' || top_slice_name || '" 运行 ' || ROUND(freq_limit_run_ns / 1e6, 2) || 'ms 中有 ' || ROUND(freq_limit_onset_binding_ns / 1e6, 2) || 'ms 受 policy' || freq_limit_policy_cpu || ' 上限 ' || freq_limit_mhz || 'MHz 约束（低于观测最高上限 ' || freq_limit_depth_pct || '%，运行频率/上限 ' || freq_limit_binding_ratio || '）' || CASE WHEN freq_limit_binding_ns > freq_limit_onset_binding_ns THEN '；跨全部上限值共受约束 ' || ROUND(freq_limit_binding_ns / 1e6, 2) || 'ms' ELSE '' END || '；触发方未由帧内证据确定（' || COALESCE(freq_limit_basis, 'onset_unclassified') || '）'
           WHEN reason_code = 'big_core_low_freq' THEN '大核低频: 平均 ' || big_avg_freq_mhz || 'MHz (峰值 ' || big_max_freq_mhz || 'MHz)'
           WHEN reason_code = 'freq_ramp_slow' THEN '升频慢: ' || ramp_to_high_ms || 'ms 才达高频'
           WHEN reason_code = 'scheduling_delay' THEN '调度等待: Q3=' || main_q3_pct || '%'
@@ -4399,8 +4515,27 @@ steps:
         -- 帧预算参考
         frame_budget_ms,
         vsync_source,
-        -- 设备峰值频率（温控/限频参考）
+        -- 设备峰值频率（观测列，不是硬件上限，也不是限频证据）
         device_peak_freq_mhz,
+        ROUND(100.0 * big_max_freq_mhz / NULLIF(device_peak_freq_mhz, 0), 1) AS freq_ceiling_ratio_pct,
+        -- 主线程 top slice 的频率上限约束（fragments/system_cpu_freq_limit_frame_binding.sql）
+        freq_limit_state,
+        freq_limit_basis,
+        freq_limit_onset_confirmed,
+        CASE WHEN freq_limit_onset_ts IS NOT NULL THEN printf('%d', freq_limit_onset_ts) END AS freq_limit_onset_ts,
+        freq_limit_cooling_basis,
+        freq_limit_policy_cpu,
+        freq_limit_mhz,
+        freq_limit_depth_pct,
+        freq_limit_binding_ratio,
+        freq_limit_onset_binding_ns,
+        freq_limit_binding_ns,
+        freq_limit_run_ns,
+        freq_limit_trace_episode_id,
+        -- RenderThread 的同一判定，仅供诊断，不进入 reason_code
+        rt_freq_limit_state,
+        rt_freq_limit_binding_ns,
+        rt_freq_limit_policy_cpu,
         -- 文件 IO 重叠
         file_io_overlap_ms,
         -- Input pipeline 证据
@@ -4444,11 +4579,17 @@ steps:
       - fragments/system_cpu_frequency_spans.sql
       - fragments/system_sched_spans.sql
       - fragments/effective_target_processes.sql
+      - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/system_cpu_freq_limit_episodes.sql
+      - fragments/thermal_cooling_spans.sql
+      - fragments/thermal_cdev_policy_association.sql
+      - fragments/thermal_signal_signatures.sql
+      - fragments/system_cpu_freq_limit_episode_verdicts.sql
     process_scope:
       role: target
       binding: effective_target_processes
       context_fields:
-        global_context: [video_during_scroll, video_slice_count, trace_peak_freq_mhz, tail_min_freq_mhz, thermal_trending, frequency_decline_observed, thermal_evidence]
+        global_context: [video_during_scroll, video_slice_count, trace_peak_freq_mhz, tail_min_freq_mhz, thermal_trending, frequency_decline_observed, thermal_evidence, freq_limit_classification, freq_limit_episode_count, freq_limit_confirmed_episode_count, freq_limit_trace_summary]
         peer_context: [non_app_big_core_pct, background_cpu_heavy]
     sql: |
       WITH
@@ -4522,11 +4663,29 @@ steps:
           AND th.tail_min_freq_mhz < th.trace_peak_freq_mhz * 0.70
           AND (SELECT threshold FROM cpufreq_tail_threshold) > COALESCE(${start_ts}, 0)
           THEN 1 WHEN th.trace_peak_freq_mhz IS NULL THEN NULL ELSE 0 END as frequency_decline_observed,
-        NULL AS thermal_trending,
-        'temperature_or_throttle_evidence_required' AS thermal_evidence,
+        -- Frequency-limit facts come only from the shared verdict layer. Window 0
+        -- is this analysis window: its classification is the only in-window
+        -- statement. thermal_trending is whether the limit trigger in the window
+        -- is a confirmed kernel cooling write (NULL when the trace has no valid max
+        -- limit sample); thermal_evidence keeps the window classification under
+        -- its historical name. freq_limit_trace_summary is trace-wide context and
+        -- says nothing about a limit during this window.
+        CASE WHEN fw.has_max_limit_data = 1 THEN fw.is_confirmed END AS thermal_trending,
+        fw.freq_limit_classification AS thermal_evidence,
+        fw.freq_limit_classification,
+        fw.episode_count AS freq_limit_episode_count,
+        fw.confirmed_episode_count AS freq_limit_confirmed_episode_count,
+        fw.onset_trigger_mix AS freq_limit_onset_trigger_mix,
+        fw.class_note AS freq_limit_class_note,
+        fw.limit_evidence_missing_reason AS freq_limit_evidence_missing_reason,
+        ft.freq_limit_classification AS freq_limit_trace_summary,
+        ft.classification_scope AS freq_limit_trace_summary_scope,
         bg.non_app_big_core_pct as non_app_big_core_pct,
         CASE WHEN bg.non_app_big_core_pct > 60 THEN 1 WHEN bg.non_app_big_core_pct IS NULL THEN NULL ELSE 0 END as background_cpu_heavy
       FROM video_check v, interpolation_check i, thermal_check th, background_cpu bg
+      CROSS JOIN system_cpu_freq_limit_window_summary fw
+      CROSS JOIN system_cpu_freq_limit_trace_summary ft
+      WHERE fw.window_id = 0
     save_as: global_context
 
   # ==========================================================================

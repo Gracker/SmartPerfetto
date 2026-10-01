@@ -146,12 +146,17 @@ steps:
           label: "线程"
           type: string
         - name: big_core_ms
-          label: "大核运行"
+          label: "大核组运行（超大/大/中核）"
           type: duration
           format: duration_ms
           unit: ms
         - name: little_core_ms
           label: "小核运行"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: unknown_core_ms
+          label: "未知核类型运行"
           type: duration
           format: duration_ms
           unit: ms
@@ -188,8 +193,9 @@ steps:
       )
       SELECT
         'MainThread' as thread_type,
-        ROUND(SUM(CASE WHEN core_type IN ('prime', 'big') THEN dur_ms ELSE 0 END), 2) as big_core_ms,
-        ROUND(SUM(CASE WHEN core_type IN ('medium', 'little') THEN dur_ms ELSE 0 END), 2) as little_core_ms,
+        ROUND(SUM(CASE WHEN core_type IN ('prime', 'big', 'medium') THEN dur_ms ELSE 0 END), 2) as big_core_ms,
+        ROUND(SUM(CASE WHEN core_type = 'little' THEN dur_ms ELSE 0 END), 2) as little_core_ms,
+        ROUND(SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ms ELSE 0 END), 2) as unknown_core_ms,
         ROUND(SUM(dur_ms), 2) as total_running_ms,
         ROUND(100.0 * SUM(dur_ms) / ${dur_ms}, 1) as running_pct
       FROM cpu_time
@@ -216,6 +222,11 @@ steps:
           unit: ms
         - name: q2_little_running_ms
           label: "Q2 小核 Running"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: unknown_running_ms
+          label: "未知核类型 Running"
           type: duration
           format: duration_ms
           unit: ms
@@ -253,9 +264,11 @@ steps:
           ts.blocked_function,
           SUM(
             MIN(ts.ts + ts.dur, ${binder_end_ts}) - MAX(ts.ts, ${binder_ts})
-          ) / 1e6 as dur_ms
+          ) / 1e6 as dur_ms,
+          COALESCE(ct.core_type, 'unknown') as core_type
         FROM thread_state ts
         JOIN main_thread mt ON ts.utid = mt.utid
+        LEFT JOIN _cpu_topology ct ON ts.cpu = ct.cpu_id
         WHERE ts.ts < ${binder_end_ts}
           AND ts.ts + ts.dur > ${binder_ts}
         GROUP BY ts.state, ts.cpu, ts.blocked_function
@@ -263,8 +276,9 @@ steps:
       quadrant_data AS (
         SELECT
           CASE
-            WHEN state = 'Running' AND COALESCE((SELECT core_type FROM _cpu_topology WHERE cpu_id = thread_states.cpu), 'unknown') IN ('prime', 'big') THEN 'Q1_big_running'
-            WHEN state = 'Running' THEN 'Q2_little_running'
+            WHEN state = 'Running' AND core_type IN ('prime', 'big', 'medium') THEN 'Q1_big_running'
+            WHEN state = 'Running' AND core_type = 'little' THEN 'Q2_little_running'
+            WHEN state = 'Running' THEN 'unknown_running'
             WHEN state IN ('R', 'R+') THEN 'Q3_runnable'
             WHEN state IN ('S', 'D', 'I') THEN 'Q4_sleeping'
             ELSE 'other'
@@ -276,6 +290,7 @@ steps:
         'MainThread' as thread_type,
         ROUND(SUM(CASE WHEN quadrant = 'Q1_big_running' THEN dur_ms ELSE 0 END), 2) as q1_big_running_ms,
         ROUND(SUM(CASE WHEN quadrant = 'Q2_little_running' THEN dur_ms ELSE 0 END), 2) as q2_little_running_ms,
+        ROUND(SUM(CASE WHEN quadrant = 'unknown_running' THEN dur_ms ELSE 0 END), 2) as unknown_running_ms,
         ROUND(SUM(CASE WHEN quadrant = 'Q3_runnable' THEN dur_ms ELSE 0 END), 2) as q3_runnable_ms,
         ROUND(SUM(CASE WHEN quadrant = 'Q4_sleeping' THEN dur_ms ELSE 0 END), 2) as q4_sleeping_ms,
         ROUND(SUM(dur_ms), 2) as total_ms,

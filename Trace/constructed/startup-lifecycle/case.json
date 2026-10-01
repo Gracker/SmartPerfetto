@@ -367,6 +367,7 @@
           "tid",
           "role",
           "total_cpu_ms",
+          "returned_total_cpu_ms",
           "q1_big_running_ms",
           "q2_little_running_ms",
           "q3_runnable_ms",

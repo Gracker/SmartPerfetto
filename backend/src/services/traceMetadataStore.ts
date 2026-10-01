@@ -7,6 +7,7 @@ import fs from 'fs/promises';
 import type Database from 'better-sqlite3';
 import type { RequestContext } from '../middleware/auth';
 import { openEnterpriseDb } from './enterpriseDb';
+import { getTracesDir } from './traceUploadPaths';
 import {
   createEnterpriseWorkspaceRepository,
   repositoryScopeFromRequestContext,
@@ -64,17 +65,9 @@ interface TraceAssetRow extends Record<string, unknown> {
 const SAFE_TRACE_ID_RE = /^[a-zA-Z0-9._:-]+$/;
 export const ENTERPRISE_DATA_DIR_ENV = 'SMARTPERFETTO_DATA_DIR';
 
-export function getUploadRoot(): string {
-  return process.env.UPLOAD_DIR || './uploads';
-}
-
 export function resolveEnterpriseDataRoot(env: NodeJS.ProcessEnv = process.env): string {
   const configured = env[ENTERPRISE_DATA_DIR_ENV];
   return path.resolve(configured && configured.trim().length > 0 ? configured : 'data');
-}
-
-export function getTracesDir(): string {
-  return path.join(getUploadRoot(), 'traces');
 }
 
 function enterpriseTraceStoreEnabled(env: NodeJS.ProcessEnv = process.env): boolean {

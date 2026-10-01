@@ -146,11 +146,12 @@ function buildDelta(
   baselineMetric: NormalizedMetricValue | undefined,
   candidateMetric: NormalizedMetricValue | undefined,
   direction: NormalizedMetricDirection,
+  definitionsDiffer: boolean,
 ): ComparisonDelta {
   const baselineValue = metricNumericValue(baselineMetric);
   const candidateValue = metricNumericValue(candidateMetric);
   const deltaValue =
-    baselineValue === undefined || candidateValue === undefined
+    baselineValue === undefined || candidateValue === undefined || definitionsDiffer
       ? null
       : candidateValue - baselineValue;
   const deltaPct =
@@ -226,6 +227,7 @@ export function buildComparisonMatrix(
   const missingMatrix: Record<string, Record<string, string>> = {};
   const evidenceRefsById = new Map<string, EvidenceRef>();
   const rows: ComparisonMatrixRow[] = [];
+  const warnings: string[] = [];
 
   for (const metricKey of metricKeys) {
     const metricsBySnapshot = new Map<string, NormalizedMetricValue | undefined>();
@@ -256,14 +258,19 @@ export function buildComparisonMatrix(
 
     const deltas = snapshots
       .filter(snapshot => snapshot.id !== baselineSnapshotId)
-      .map(snapshot => buildDelta(
-        baselineSnapshotId,
-        snapshot.id,
-        metricKey,
-        baselineMetric,
-        metricsBySnapshot.get(snapshot.id),
-        definition.direction,
-      ));
+      .map(snapshot => {
+        const metric = metricsBySnapshot.get(snapshot.id);
+        // Values compare only under the definition their producers declared.
+        const baselineDefinition = baselineMetric?.source?.metricDefinition ?? 'undeclared';
+        const candidateDefinition = metric?.source?.metricDefinition ?? 'undeclared';
+        const definitionsDiffer = !!baselineMetric && !!metric && baselineDefinition !== candidateDefinition;
+        if (definitionsDiffer) {
+          warnings.push(`Metric ${metricKey} uses different definitions in ${baselineSnapshotId} ` +
+            `(${baselineDefinition}) and ${snapshot.id} (${candidateDefinition}); delta not computed`);
+        }
+        return buildDelta(baselineSnapshotId, snapshot.id, metricKey, baselineMetric, metric,
+          definition.direction, definitionsDiffer);
+      });
 
     rows.push({
       metricKey,
@@ -280,7 +287,6 @@ export function buildComparisonMatrix(
     });
   }
 
-  const warnings: string[] = [];
   for (const row of rows) {
     if (!row.baseline) {
       warnings.push(`Baseline is missing metric ${row.metricKey}`);

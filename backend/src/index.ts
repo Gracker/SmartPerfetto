@@ -17,7 +17,6 @@ import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config'
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
 import simpleTraceRoutes from './routes/simpleTraceRoutes';
-import perfettoLocalRoutes from './routes/perfettoLocalRoutes';
 import exportRoutes from './routes/exportRoutes';
 import templateAnalysisRoutes from './routes/templateAnalysisRoutes';
 import skillRoutes from './routes/skillRoutes';
@@ -70,6 +69,8 @@ import {
   normalizeCorsOrigins,
 } from './security/requestOriginPolicy';
 import {rejectEnterpriseUnscopedApi} from './middleware/enterpriseRouteBoundary';
+import {unhandledErrorHandler} from './middleware/unhandledErrorHandler';
+import {REQUEST_ID_HEADER, requestIdMiddleware} from './middleware/requestId';
 import {hasRbacPermission, sendForbidden} from './services/rbac';
 import {getSmartPerfettoVersion} from './version';
 
@@ -100,6 +101,8 @@ import {
 const app = express();
 const activeHttpResponses = createActiveHttpResponseTracker();
 app.use(activeHttpResponses.middleware);
+// One request id per request, before CORS and body parsing so their failures carry it too.
+app.use(requestIdMiddleware);
 const PORT = serverConfig.port;
 const NODE_ENV = serverConfig.nodeEnv;
 const corsAllowedOrigins = normalizeCorsOrigins(serverConfig.corsOrigins);
@@ -118,6 +121,7 @@ app.use(cors({
     callback(new Error(`CORS blocked: ${requestOrigin}`));
   },
   credentials: true,
+  exposedHeaders: [REQUEST_ID_HEADER],
 }));
 
 // A browser session cookie may authenticate every API surface. CORS controls
@@ -274,7 +278,6 @@ app.use(
   ),
   simpleTraceRoutes,
 );
-app.use('/api/perfetto', rejectEnterpriseUnscopedApi, perfettoLocalRoutes);
 app.use('/api/sessions', rejectRemovedSessionsApi);
 app.use('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
 app.use('/api/export', exportRoutes);
@@ -343,16 +346,7 @@ app.use((req, res) => {
   });
 });
 
-// Global error handler
-app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error('Unhandled error:', err);
-
-  res.status(err.status || 500).json({
-    error: 'Internal server error',
-    message: NODE_ENV === 'development' ? err.message : 'Something went wrong',
-    ...(NODE_ENV === 'development' && { stack: err.stack }),
-  });
-});
+app.use(unhandledErrorHandler);
 
 // Initialize services
 function recoverInterruptedEnterpriseRuns(): void {

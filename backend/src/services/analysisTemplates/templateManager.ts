@@ -179,13 +179,7 @@ export class AnalysisTemplateManager {
     } catch (error) {
       // 降级到基于 slice 的分析
       console.warn('Frame timeline not available, falling back to slice-based analysis');
-
-      // 需要找到进程名
-      const processName = await this.findMainProcess(context.traceId);
-      return await frameStatsAnalyzer.analyzeFromSlices(
-        context.traceId,
-        processName || 'unknown'
-      );
+      return await frameStatsAnalyzer.analyzeFromSlices(context.traceId);
     }
   }
 
@@ -207,29 +201,6 @@ export class AnalysisTemplateManager {
       }
     } catch (error) {
       console.error('Failed to find main thread:', error);
-    }
-    return null;
-  }
-
-  /**
-   * 查找主进程名称
-   */
-  private async findMainProcess(traceId: string): Promise<string | null> {
-    try {
-      const query = `
-        SELECT name
-        FROM process
-        WHERE name IS NOT NULL
-        ORDER BY upid
-        LIMIT 1
-      `;
-
-      const result = await this.traceProcessor.query(traceId, query);
-      if (result && result.rows && result.rows.length > 0) {
-        return result.rows[0][0] as string;
-      }
-    } catch (error) {
-      console.error('Failed to find main process:', error);
     }
     return null;
   }

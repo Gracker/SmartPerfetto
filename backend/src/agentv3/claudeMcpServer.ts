@@ -149,7 +149,7 @@ import {hasValidPlanSkipDisposition, resolvePlanPhaseForCall} from './planPhaseS
 import {getAnalysisPlanCompletionStatus} from './planCompletionStatus';
 import { formatToolCallNarration, type ToolNarrationOptions } from './toolNarration';
 import { planPhaseUpdatedContent } from './planPhaseEvents';
-import type { ArtifactStore, CompactArtifactSummary } from './artifactStore';
+import { ArtifactStore, type CompactArtifactSummary } from './artifactStore';
 import {resolveArtifactAccessPolicy} from './artifactAccessPolicy';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import {
@@ -506,6 +506,35 @@ function coercePlanString(value: unknown): string | undefined {
   }
   return undefined;
 }
+
+/** One row window for fetch_artifact: the schema the model sees and the handler agree on it. */
+const FETCH_ARTIFACT_ROW_LIMIT = { min: 1, max: 200 } as const;
+
+/**
+ * Governance reasons that stop a source or knowledge call, with what the model
+ * should do instead. A reason absent from these maps (an inactive index, invalid
+ * codebase metadata, a failed `git apply --check`) is a failure and still counts
+ * toward the circuit breaker's failure rate.
+ */
+const SOURCE_ACCESS_REFUSAL_ACTIONS: Readonly<Record<string, string>> = {
+  source_reference_limit_exceeded: 'continue_with_existing_source_evidence',
+  no_send_to_provider_consent: 'continue_without_this_codebase',
+};
+const PATCH_REFUSAL_ACTIONS: Readonly<Record<string, string>> = {
+  missing_context_chunk: 'lookup_source_before_patch',
+  prior_lookup_required: 'lookup_source_before_patch',
+  inactive_codebase_generation: 'lookup_source_before_patch',
+  multi_codebase_not_supported_phase1: 'propose_one_codebase_per_patch',
+  no_send_to_provider_consent: 'continue_without_patch',
+  source_path_outside_provider_grant: 'continue_without_patch',
+  budget_exceeded: 'continue_without_patch',
+};
+// `source_not_found_or_out_of_scope` also covers a source deleted mid-run, so it stays a failure.
+const KNOWLEDGE_ACCESS_REFUSAL_REASONS: ReadonlySet<string> = new Set([
+  'source_not_whitelisted',
+  'right_to_use_not_acknowledged',
+  'provider_send_not_consented',
+]);
 
 function coerceOptionalInteger(
   value: unknown,
@@ -1031,8 +1060,6 @@ const ERROR_FIX_PAIR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  */
 const REASONING_NUDGE_ZH = '\n\n[REFLECT] 在执行下一步之前：这个数据的关键发现是什么？是否支持/反驳你的假设？如有重要推断，请用 submit_hypothesis 或 write_analysis_note 记录。';
 const REASONING_NUDGE_EN = '\n\n[REFLECT] Before the next action: what is the key finding from this data? Does it support or refute your hypothesis? If there is an important inference, record it with submit_hypothesis or write_analysis_note.';
-/** Compatibility export for runtime callers; summary length no longer controls plan completion. */
-export const MIN_PHASE_SUMMARY_CHARS = 15;
 
 function sqlErrorLogFile(scope?: KnowledgeScope): string {
   if (!enterpriseKnowledgeStoreEnabled() && !scope) {
@@ -1426,6 +1453,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const retrievedData = <T extends Record<string, unknown>>(payload: T): T & {
     dataTrust: 'untrusted_retrieved_data';
   } => ({...payload, dataTrust: 'untrusted_retrieved_data'});
+  // A governance refusal names what to do instead. `action_required` is what keeps
+  // it out of the circuit breaker's failure rate (isPolicyRefusalResult); a missing
+  // capability (an unavailable pack, an inactive index) has no such instruction.
+  const policyRefusal = (
+    action: string,
+    payload: Record<string, unknown>,
+    resultOptions: {isError?: boolean} = {},
+  ) => createRuntimeToolResult({success: false, action_required: action, ...payload}, resultOptions);
+  const sourceBudgetRefusal = (payload: Record<string, unknown>) =>
+    policyRefusal('continue_with_existing_source_evidence', retrievedData(payload));
+  // Every lookup that takes a codebase id falls back to the selected ones when it is omitted.
+  const codebaseIdRefusal = (unsupportedReason: string, error?: string) =>
+    policyRefusal('retry_without_codebase_id', {...(error ? {error} : {}), unsupportedReason}, {isError: true});
   const ragToolResult = (
     result: RagRetrievalResult | SanitizedRagResult,
     shape: 'inline' | 'nested',
@@ -1848,14 +1888,22 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       ...reference,
       lookupKind: codeAwareMode === 'provider_send' && reference.text ? 'body' : 'metadata',
     }));
+    // A search keeps what it admitted; a read without its one reference fails.
+    const searchIncomplete = admitted.incompleteReason && toolName === 'search_codebase';
+    const readIncomplete = admitted.incompleteReason && toolName !== 'search_codebase';
+    const success = readIncomplete ? false : result.success;
+    const unsupportedReason = readIncomplete ? admitted.incompleteReason : result.unsupportedReason;
+    const refusalAction = success ? undefined : SOURCE_ACCESS_REFUSAL_ACTIONS[unsupportedReason ?? ''];
     const delivered = {
       ...result,
       ...(result.matches ? {matches: admitted.items} : {}),
       ...(result.reference ? {reference: admitted.items[0]} : {}),
       sourceReferences: admitted.references,
-      ...(admitted.incompleteReason ? toolName === 'search_codebase'
+      ...(searchIncomplete
         ? {coverageComplete: false, truncated: true, searchIncompleteReason: admitted.incompleteReason}
-        : {success: false, unsupportedReason: admitted.incompleteReason} : {}),
+        : {}),
+      ...(readIncomplete ? {success, unsupportedReason} : {}),
+      ...(refusalAction ? {action_required: refusalAction} : {}),
     };
     const incompleteReasons = [
       delivered.searchIncompleteReason,
@@ -4201,8 +4249,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       offset: z.coerce.number().int().min(0).optional().describe(
         'Row offset for pagination (detail="rows" only). Default: 0. Use with limit to select a targeted row window.'
       ),
-      limit: z.coerce.number().int().min(0).max(200).optional().describe(
-        'Maximum rows to return (detail="rows" only, 1-200). Ignored for summary/full. Default for rows: 50.'
+      limit: z.coerce.number().int().min(FETCH_ARTIFACT_ROW_LIMIT.min).max(FETCH_ARTIFACT_ROW_LIMIT.max).optional().describe(
+        `Maximum rows to return (detail="rows" only, ${FETCH_ARTIFACT_ROW_LIMIT.min}-${FETCH_ARTIFACT_ROW_LIMIT.max}). Ignored for summary/full. Default for rows: ${ArtifactStore.DEFAULT_PAGE_SIZE}.`
       ),
       purpose: z.string().optional().describe(
         'One short sentence explaining why this artifact is needed for the current plan phase. Used in the user-visible timeline.'
@@ -4220,19 +4268,24 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
               ? 'complete_summary_already_available'
               : undefined;
         if (blockedReason) {
-          return {
-            content: [{ type: 'text' as const, text: JSON.stringify({
-              success: false,
-              error: 'artifact_access_policy_blocked',
-              reason: blockedReason,
-              artifactId,
-              requestedDetail: effectiveDetail,
-              hint: blockedReason === 'summary_required_before_rows'
-                ? 'Fetch detail="summary" for this artifact first.'
-                : 'Use the existing summary aggregate and report any remaining evidence boundary.',
-            }) }],
-            isError: true,
-          };
+          // A governance refusal, not a broken tool: action_required keeps it out of
+          // failure-rate monitoring. Unlike a malformed pagination below, the call is
+          // not attributed: a producer context would auto-start a pending plan phase
+          // for a read the policy itself refused.
+          const nextStep = summaryState
+            ? {
+              action_required: 'use_existing_artifact_summary',
+              hint: 'Use the existing summary aggregate and report any remaining evidence boundary.',
+            }
+            : {action_required: 'fetch_artifact', hint: 'Fetch detail="summary" for this artifact.'};
+          return createRuntimeToolResult({
+            success: false,
+            error: 'artifact_access_policy_blocked',
+            reason: blockedReason,
+            artifactId,
+            requestedDetail: effectiveDetail,
+            ...nextStep,
+          }, {isError: true});
         }
       }
       const usesPagination = effectiveDetail === 'rows';
@@ -4240,7 +4293,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         ? coerceOptionalInteger(offset, 'offset', { min: 0 })
         : {};
       const normalizedLimit = usesPagination
-        ? coerceOptionalInteger(limit, 'limit', { min: 1, max: 200 })
+        ? coerceOptionalInteger(limit, 'limit', FETCH_ARTIFACT_ROW_LIMIT)
         : {};
       const paginationErrors = [normalizedOffset.error, normalizedLimit.error].filter(Boolean);
       const producerReason = purpose || localize(
@@ -4449,15 +4502,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         placement: 'mcp:lookup_knowledge',
       });
       if (!decision.allowed) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({
-              success: false,
-              unsupportedReason: 'evaluation_injection_filtered',
-            }),
-          }],
-        };
+        return policyRefusal('continue_without_filtered_knowledge', {
+          unsupportedReason: 'evaluation_injection_filtered',
+        });
       }
       runManifestAttributionSink?.recordInjection(
         'knowledgeDocs',
@@ -4531,34 +4578,28 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const sourceId = normalizeOptionalToolString(knowledge_source_id) ??
           (knowledgeSourceIds.length === 1 ? knowledgeSourceIds[0] : undefined);
         if (!sourceId || !knowledgeSourceIds.includes(sourceId) || !knowledgeScope) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                unsupportedReason: 'private_knowledge_source_not_whitelisted',
-                authorizedKnowledgeSourceIds: knowledgeSourceIds,
-              }),
-            }],
-          };
+          return policyRefusal(
+            knowledgeSourceIds.length > 0 && knowledgeScope
+              ? 'use_authorized_knowledge_source_id'
+              : 'continue_without_private_knowledge',
+            {
+              unsupportedReason: 'private_knowledge_source_not_whitelisted',
+              authorizedKnowledgeSourceIds: knowledgeSourceIds,
+            },
+          );
         }
         const access = externalKnowledgeRegistry.evaluateAccess(
           sourceId,
           knowledgeScope,
           knowledgeSourceIds,
         );
-        if (!access.allowed || !access.source.activeGeneration) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                unsupportedReason: access.allowed
-                  ? 'private_knowledge_index_not_active'
-                  : access.reason,
-              }),
-            }],
-          };
+        if (!access.allowed) {
+          return KNOWLEDGE_ACCESS_REFUSAL_REASONS.has(access.reason)
+            ? policyRefusal('continue_without_private_knowledge', {unsupportedReason: access.reason})
+            : createRuntimeToolResult({success: false, unsupportedReason: access.reason});
+        }
+        if (!access.source.activeGeneration) {
+          return createRuntimeToolResult({success: false, unsupportedReason: 'private_knowledge_index_not_active'});
         }
         const pinnedGeneration = pinnedKnowledgeSourceGenerations[sourceId];
         if (!pinnedGeneration) {
@@ -4749,19 +4790,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const symbolExact = normalizeOptionalToolString(symbol);
       const pathPrefix = normalizeOptionalToolString(path_prefix);
       if (codebaseId && !codebaseIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not whitelisted for this session'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_not_whitelisted', 'Requested codebase is not whitelisted for this session');
       }
       const selectedAospIds = codebaseIds.filter(id =>
         codebaseRegistry.get(id, knowledgeScope)?.kind === 'aosp');
       const effectiveCodebaseIds = codebaseId ? [codebaseId] : selectedAospIds;
       if (codebaseId && !selectedAospIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not a registered AOSP source'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered AOSP source');
       }
       const result = await observeSourceOperation('lookup_aosp_source', effectiveCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
@@ -4813,19 +4848,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const codebaseId = normalizeOptionalToolString(codebase_id);
       const vendorId = normalizeOptionalToolString(vendor);
       if (codebaseId && !codebaseIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not whitelisted for this session'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_not_whitelisted', 'Requested codebase is not whitelisted for this session');
       }
       const selectedOemIds = codebaseIds.filter(id =>
         codebaseRegistry.get(id, knowledgeScope)?.kind === 'oem_sdk');
       const effectiveCodebaseIds = codebaseId ? [codebaseId] : selectedOemIds;
       if (codebaseId && !selectedOemIds.includes(codebaseId)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({success: false, error: 'Requested codebase is not a registered OEM SDK source'})}],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered OEM SDK source');
       }
       const result = await observeSourceOperation('lookup_oem_sdk', effectiveCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
@@ -4920,13 +4949,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     async ({status, reason}) => {
       const current = sourceUseDecision;
       if (!current) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_not_required',
-          })}],
-          isError: true,
-        };
+        return policyRefusal('continue_without_source_use_decision', {
+          unsupportedReason: 'source_use_decision_not_required',
+        }, {isError: true});
       }
       const normalizedReason = reason.trim();
       if (
@@ -4934,36 +4959,27 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         normalizedReason.length > 1000 ||
         /[\u0000-\u001f\u007f]/.test(normalizedReason)
       ) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_reason_invalid',
-          })}],
-          isError: true,
-        };
+        return policyRefusal('retry_with_valid_reason', {
+          unsupportedReason: 'source_use_decision_reason_invalid',
+          reasonConstraints: {minChars: 30, maxChars: 1000, singleLine: true},
+        }, {isError: true});
       }
       const allowedStatuses = new Set(
         loadSourceInvestigationPolicy().default.stopStates,
       );
       if (!allowedStatuses.has(status)) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_status_not_allowed',
-            status,
-          })}],
-          isError: true,
-        };
+        return policyRefusal('retry_with_allowed_status', {
+          unsupportedReason: 'source_use_decision_status_not_allowed',
+          status,
+          allowedStatuses: [...allowedStatuses],
+        }, {isError: true});
       }
       if (current.status !== 'pending' || current.attemptedTools.length > 0) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'source_use_decision_conflict',
-            currentStatus: current.status,
-          })}],
-          isError: true,
-        };
+        // Recorded lookups already decide the status; a stop decision cannot override them.
+        return policyRefusal('continue_with_recorded_source_use', {
+          unsupportedReason: 'source_use_decision_conflict',
+          currentStatus: current.status,
+        }, {isError: true});
       }
       explicitSourceUseDecisionReason = normalizedReason;
       commitSourceUseDecision({
@@ -4986,6 +5002,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     {annotations: {readOnlyHint: false}},
   );
 
+  // Omission resolves only when exactly one codebase is selected, so name them instead.
+  const codebaseIdRequiredRefusal = () =>
+    policyRefusal('list_codebases', {unsupportedReason: 'whitelisted_codebase_id_required'}, {isError: true});
   const resolveOnDemandCodebaseId = (requested: unknown): string | undefined => {
     const codebaseId = normalizeOptionalToolString(requested);
     if (codebaseId) return codebaseIds.includes(codebaseId) ? codebaseId : undefined;
@@ -5120,13 +5139,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
       }
       const sourceBudgetStop = consumeSourceBudget('search');
       if (sourceBudgetStop) {
@@ -5140,15 +5153,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: 0,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            matches: [],
-            truncated: false,
-            unsupportedReason: sourceBudgetStop,
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          matches: [],
+          truncated: false,
+          unsupportedReason: sourceBudgetStop,
+        });
       }
       const sourceLookupStartedAt = Date.now();
       const result = await onDemandSourceAccess.search({
@@ -5181,22 +5191,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: Date.now() - sourceLookupStartedAt,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            matches: [],
-            truncated: false,
-            backend: result.backend,
-            coverageComplete: result.coverageComplete,
-            ...(result.searchIncompleteReason
-              ? {searchIncompleteReason: result.searchIncompleteReason}
-              : {}),
-            enumerationBackend: result.enumerationBackend,
-            backendFidelity: result.backendFidelity,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          matches: [],
+          truncated: false,
+          backend: result.backend,
+          coverageComplete: result.coverageComplete,
+          ...(result.searchIncompleteReason
+            ? {searchIncompleteReason: result.searchIncompleteReason}
+            : {}),
+          enumerationBackend: result.enumerationBackend,
+          backendFidelity: result.backendFidelity,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
       const delivered = observeOnDemandSourceLookup('search_codebase', result);
       if (delivered.success && codeAwareMode === 'provider_send') {
@@ -5233,13 +5240,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
       }
       const sourceBudgetStop = consumeSourceBudget('read');
       if (sourceBudgetStop) {
@@ -5253,14 +5254,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: 0,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            truncated: false,
-            unsupportedReason: sourceBudgetStop,
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          truncated: false,
+          unsupportedReason: sourceBudgetStop,
+        });
       }
       const sourceLookupStartedAt = Date.now();
       const result = await onDemandSourceAccess.read({
@@ -5293,14 +5291,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           outcome: 'budget_exceeded',
           durationMs: Date.now() - sourceLookupStartedAt,
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            truncated: false,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          truncated: false,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
       const delivered = observeOnDemandSourceLookup('read_codebase_file', result);
       const presentation = delivered.success
@@ -5342,13 +5337,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
       }
       const result = await observeSourceOperation('query_code_graph', [codebaseId], () => codeGraphNavigator.query({
         codebaseId,
@@ -5372,17 +5361,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            references: [],
-            processes: [],
-            graph: result.graph,
-            truncated: false,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          references: [],
+          processes: [],
+          graph: result.graph,
+          truncated: false,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
       const delivered = observeGraphSourceLookup('query_code_graph', result);
       await recordCodeGraphLookup({
@@ -5413,13 +5399,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'whitelisted_codebase_id_required',
-          })}],
-          isError: true,
-        };
+        return codebaseIdRequiredRefusal();
       }
       const result = await observeSourceOperation('inspect_code_symbol', [codebaseId], () => codeGraphNavigator.inspectSymbol({
         codebaseId,
@@ -5444,17 +5424,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           returnedReferenceCount: 0,
           outcome: 'budget_exceeded',
         });
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
-            success: false,
-            codebaseId,
-            references: [],
-            processes: [],
-            graph: result.graph,
-            truncated: false,
-            unsupportedReason: 'budget_exceeded',
-          }))}],
-        };
+        return sourceBudgetRefusal({
+          codebaseId,
+          references: [],
+          processes: [],
+          graph: result.graph,
+          truncated: false,
+          unsupportedReason: 'budget_exceeded',
+        });
       }
       const delivered = observeGraphSourceLookup('inspect_code_symbol', result);
       await recordCodeGraphLookup({
@@ -5493,13 +5470,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
       const allowed = requestedIds.filter(id => codebaseIds.includes(id));
       if (allowed.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({success: false, error: 'No requested codebase is whitelisted for this session'}),
-          }],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
       }
       const raw = await observeSourceOperation('lookup_app_source', allowed, () => ragStore.search(query, {
         topK: top_k ?? 5,
@@ -5539,27 +5510,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
       const allowed = requestedIds.filter(id => codebaseIds.includes(id));
       if (allowed.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({success: false, error: 'No requested codebase is whitelisted for this session'}),
-          }],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
       }
       const kernelRefs = allowed
         .map(id => codebaseRegistry.get(id, knowledgeScope))
         .filter(ref => ref?.kind === 'kernel_source');
       const vendors = new Set(kernelRefs.map(ref => ref!.vendor).filter(Boolean));
       if (!codebaseId && !vendorId && vendors.size > 1) {
-        return {
-          content: [{type: 'text' as const, text: JSON.stringify({
-            success: false,
-            unsupportedReason: 'vendor_required_for_multi_vendor_kernel_lookup',
-            vendors: Array.from(vendors).sort(),
-          })}],
-          isError: true,
-        };
+        return policyRefusal('retry_with_vendor_or_codebase_id', {
+          unsupportedReason: 'vendor_required_for_multi_vendor_kernel_lookup',
+          vendors: Array.from(vendors).sort(),
+        }, {isError: true});
       }
       const raw = await observeSourceOperation('lookup_kernel_source', kernelRefs.map(ref => ref!.codebaseId), () => ragStore.search(query, {
         topK: top_k ?? 5,
@@ -5602,13 +5563,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
       const allowed = requestedIds.filter(id => codebaseIds.includes(id));
       if (allowed.length === 0) {
-        return {
-          content: [{
-            type: 'text' as const,
-            text: JSON.stringify({success: false, error: 'No requested codebase is whitelisted for this session'}),
-          }],
-          isError: true,
-        };
+        return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
       }
       const resolver = new SymbolResolver(ragStore, knowledgeScope, codebaseRegistry);
       const results = await observeSourceOperation('resolve_symbol', allowed, () => allowed.map(id => {
@@ -5690,10 +5645,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       });
       await codeLookupLedger?.flush();
       assertPrivateAnalysisContextCurrent();
-      return {
-        content: [{type: 'text' as const, text: JSON.stringify({success: result.patchStatus !== 'unverified', result})}],
-        ...(result.patchStatus === 'unverified' ? {isError: true} : {}),
-      };
+      if (result.patchStatus !== 'unverified') {
+        return createRuntimeToolResult({success: true, result});
+      }
+      const refusalAction = PATCH_REFUSAL_ACTIONS[result.unsupportedReason ?? ''];
+      return refusalAction
+        ? policyRefusal(refusalAction, {result}, {isError: true})
+        : createRuntimeToolResult({success: false, result}, {isError: true});
     },
     {annotations: {readOnlyHint: false}},
   );
@@ -6270,7 +6228,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         content: planPhaseUpdatedContent({phaseId, status: nextStatus, summary: phase.summary ?? '', phaseName: phase.name, origin: 'model'}),
         timestamp: Date.now(),
       });
-      const completion = getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 0});
+      const completion = getAnalysisPlanCompletionStatus(plan);
       return createRuntimeToolResult({
         success: true, allPhasesComplete: completion.complete,
         ...(completion.unresolvedExpectations?.length ? {
@@ -6439,6 +6397,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             text: JSON.stringify({
               success: false,
               error: localize(outputLanguage, '还没有提交 plan，请先调用 submit_plan。', 'No plan submitted yet. Call submit_plan first.'),
+              action_required: 'submit_plan',
             }),
           }],
           isError: true,
@@ -7727,8 +7686,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
     async request => {
       try { return createRuntimeToolResult(options.analysisHistoryReader!.read(request)); }
-      catch { return createRuntimeToolResult({success: false, action_required: 'use_available_history',
-        unsupportedReason: 'analysis_history_unavailable'}, {isError: true}); }
+      catch { return policyRefusal('use_available_history',
+        {unsupportedReason: 'analysis_history_unavailable'}, {isError: true}); }
     },
     {annotations: {readOnlyHint: true}},
   ) : null;

@@ -105,6 +105,14 @@ Click actions should be explicit, for example:
 - Keep product-only provider, session, artifact, DataEnvelope, streaming, and
   frontend semantics in SmartPerfetto. The public projection contains portable
   workflows, SQL, methodology, pipeline knowledge, and local scripts.
+- The public runtime evaluates step `condition`, iterator `filter`, Skill
+  `params` written as one whole `${...}`, and diagnostic rule `condition`,
+  `diagnosis` and `suggestions` with its own portable expression subset
+  (Perfetto-Skills `runtime/expressions.py`). The exporter parses every one of
+  them with that parser, so a construct outside it fails the sync rather than a
+  public run. Compute derived or rounded numbers in SQL and cite the column; a
+  rule `confidence` is a literal level or number, never a template; never put
+  `AND`/`OR` inside a quoted string of a condition or filter.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set

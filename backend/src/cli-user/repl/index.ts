@@ -294,7 +294,7 @@ async function handleResume(ctx: ReplContext, sessionId: string): Promise<Loaded
 }
 
 function refreshSession(ctx: ReplContext, sessionId: string): LoadedSession {
-  // Re-read config from disk — turnCount/lastTurnAt/sdkSessionId just changed.
+  // Re-read config from disk — turnCount/lastTurnAt just changed.
   const reloaded = tryLoadSession(ctx.paths, sessionId);
   if (!reloaded) {
     throw new Error(`internal: session ${sessionId} missing after turn commit`);

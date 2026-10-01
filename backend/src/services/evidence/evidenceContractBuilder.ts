@@ -933,8 +933,6 @@ function relationContextStatus(
 function evaluateOverlap(
   subject: EvidenceAnchorV1,
   object: EvidenceAnchorV1 | undefined,
-  subjectMatch: EnvelopeMatch | undefined,
-  objectMatch: EnvelopeMatch | undefined,
 ): RelationEvaluation {
   if (subject.missing || !object || object.missing) {
     return {status: 'candidate', reasonCode: 'relation_anchor_missing'};
@@ -1012,7 +1010,6 @@ function evaluateBinaryRelation(
 
 
 function evaluateComparisonDelta(
-  candidate: EvidenceRelationCandidateV1,
   subject: EvidenceAnchorV1,
   object: EvidenceAnchorV1 | undefined,
 ): RelationEvaluation {
@@ -1169,11 +1166,11 @@ function buildRelations(
     const evaluation: RelationEvaluation = hasEndpointValueMismatch
       ? {status: 'rejected', reasonCode: 'relation_endpoint_value_mismatch'}
       : candidate.kind === 'overlap'
-        ? evaluateOverlap(subject, object, subjectMatch, objectMatch)
+        ? evaluateOverlap(subject, object)
         : BINARY_RELATION_KINDS.has(candidate.kind)
           ? evaluateBinaryRelation(candidate, subject, object, proof, subjectMatch, objectMatch, proofMatch)
           : candidate.kind === 'comparison_delta'
-            ? evaluateComparisonDelta(candidate, subject, object)
+            ? evaluateComparisonDelta(subject, object)
             : {status: 'candidate', reasonCode: 'derived_not_verified'};
     const directEvidenceAnchorIds = Array.from(new Set(
       [subject.anchorId, object?.anchorId, proof?.anchorId].filter((value): value is string => Boolean(value)),
@@ -1206,7 +1203,6 @@ function buildRelations(
 }
 
 function supportLevelForClaim(
-  claim: ConclusionContractClaimItem,
   kind: ClaimKindV1,
   anchors: EvidenceAnchorV1[],
 ): EvidenceSupportLevel {
@@ -1263,7 +1259,7 @@ function buildClaimSupport(
   const anchors = unique.map(ref => buildAnchor(claimId, ref, findEnvelopeForRef(envelopes, ref, prepared,
     bindingEligibility === 'ineligible' ? 'binding_ineligible' : undefined)));
   const kind = inferClaimKind(claim, references);
-  const supportLevel = supportLevelForClaim(claim, kind, anchors);
+  const supportLevel = supportLevelForClaim(kind, anchors);
   return {
     claimId,
     kind,

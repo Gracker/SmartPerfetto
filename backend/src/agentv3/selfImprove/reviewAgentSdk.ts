@@ -6,7 +6,7 @@
  * Claude SDK call for the background review agent.
  *
  * Completely independent from the main analysis runtime: no resume, no
- * `claude_session_map.json` writes, no MCP tools. The agent receives a
+ * persisted session, no MCP tools. The agent receives a
  * structured payload describing what went wrong in a previous analysis and
  * must respond with strict JSON matching ReviewAgentNoteEmission. Anything
  * else is rejected upstream by skillNotesWriter and the job is failed.
@@ -14,7 +14,7 @@
  * See docs/architecture/self-improving-design.md "存储与安全".
  */
 
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { claudeSdkQuery as sdkQuery } from '../../agentRuntime/engines/claude/claudeSdkQuery';
 import { createSdkEnv, getSdkBinaryOption } from '../claudeConfig';
 import { FAILURE_CATEGORIES, FAILURE_CATEGORY_DESCRIPTIONS } from './failureTaxonomy';
 import type { ReviewJobPayload, ReviewExecutionResult } from './reviewWorker';

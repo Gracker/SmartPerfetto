@@ -28,6 +28,8 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from '@jest/globals';
 import request from 'supertest';
 import { createTestApp, loadTestTrace, cleanupTrace, wait } from '../integration/testApp';
+import { getTraceProcessorService } from '../../src/services/traceProcessorService';
+import { queryRows } from '../../src/utils/traceProcessorRowUtils';
 
 // =============================================================================
 // Test Configuration
@@ -97,7 +99,7 @@ async function collectSSEFromUrl(
       .get(`/api/agent/v1/${sessionId}/stream`)
       .set('Accept', 'text/event-stream')
       .buffer(false)
-      .parse((res, callback) => {
+      .parse((res, _callback) => {
         let buffer = '';
         let currentEvent = '';
         let currentData = '';
@@ -310,30 +312,6 @@ function findEnvelopeByStep(envelopes: any[], stepId: string): any | undefined {
     const source = String(envelope?.meta?.source || '');
     return source.includes(`:${stepId}`) || source.includes(`#${stepId}`);
   });
-}
-
-async function queryTraceRows(
-  app: ReturnType<typeof createTestApp>,
-  traceId: string,
-  sql: string
-): Promise<Record<string, any>[]> {
-  const candidatePaths = [
-    `/api/trace-processor/${traceId}/query`,
-    `/api/traces/${traceId}/query`,
-  ];
-
-  for (const path of candidatePaths) {
-    const response = await request(app)
-      .get(path)
-      .query({ q: sql });
-
-    if (response.status === 404) continue;
-    expect(response.status).toBe(200);
-    expect(response.body?.error).toBeFalsy();
-    return toRowObjects(response.body);
-  }
-
-  throw new Error(`Trace query endpoint not found for trace ${traceId}`);
 }
 
 function readNumericMetric(
@@ -881,7 +859,7 @@ describe('E2E: Data Integrity Validation', () => {
     } else {
       // Degraded/no-LLM mode may not emit performance_summary envelopes.
       // Fall back to deterministic SQL baseline directly from trace processor.
-      const fallbackRows = await queryTraceRows(app, traceId, `
+      const fallbackRows = await queryRows(getTraceProcessorService(), traceId, `
         WITH
           vsync_intervals AS (
             SELECT

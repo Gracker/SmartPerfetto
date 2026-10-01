@@ -530,7 +530,8 @@ describe('policy refusal vs tool malfunction', () => {
     }],
     ['an artifact read that must summarize first', {
       success: false,
-      error: 'summary_required_before_rows',
+      error: 'artifact_access_policy_blocked',
+      reason: 'summary_required_before_rows',
       action_required: 'fetch_artifact',
     }],
   ])('recognises %s as a refusal', (_label, body) => {

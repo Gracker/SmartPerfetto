@@ -15,8 +15,9 @@ import fs from 'fs';
 
 // Import routes
 import agentRoutes from '../../src/routes/agentRoutes';
-import traceProcessorRoutes from '../../src/routes/traceProcessorRoutes';
 import skillRoutes from '../../src/routes/skillRoutes';
+import { unhandledErrorHandler } from '../../src/middleware/unhandledErrorHandler';
+import { requestIdMiddleware } from '../../src/middleware/requestId';
 import {
   LEGACY_AGENT_API_BASE,
   rejectLegacyAgentApi,
@@ -38,19 +39,19 @@ export function createTestApp() {
   const app = express();
 
   // Middleware
+  app.use(requestIdMiddleware);
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
   app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
   // Health check
-  app.get('/health', (req, res) => {
+  app.get('/health', (_req, res) => {
     res.json({ status: 'OK', timestamp: new Date().toISOString() });
   });
 
   // API routes (only the ones we need for testing)
   app.use('/api/agent/v1', agentRoutes);
   app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
-  app.use('/api/trace-processor', traceProcessorRoutes);
   app.use('/api/skills', skillRoutes);
 
   const assistantShellDir = path.resolve(process.cwd(), 'public/assistant-shell');
@@ -67,14 +68,7 @@ export function createTestApp() {
     });
   });
 
-  // Error handler
-  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error('Test app error:', err.message);
-    res.status(err.status || 500).json({
-      error: 'Internal server error',
-      message: err.message,
-    });
-  });
+  app.use(unhandledErrorHandler);
 
   return app;
 }

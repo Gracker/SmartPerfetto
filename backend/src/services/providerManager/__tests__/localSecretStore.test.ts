@@ -179,7 +179,7 @@ describe('LocalEncryptedSecretStore', () => {
     const secretDir = path.join(tmpDir, 'windows-dpapi-timeout-contract');
     let generatedMasterKey = '';
     const execFileSyncMock = jest.fn((
-      command: string,
+      _command: string,
       args: string[],
       options: {
         encoding: string;

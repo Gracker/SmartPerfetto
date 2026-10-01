@@ -34,7 +34,7 @@ class SkillAdminController {
    * List all skills with admin metadata
    * GET /api/admin/skills
    */
-  listSkills = async (req: Request, res: Response) => {
+  listSkills = async (_req: Request, res: Response) => {
     try {
       await this.ensureInitialized();
 
@@ -411,7 +411,7 @@ class SkillAdminController {
    * List all vendors
    * GET /api/admin/vendors
    */
-  listVendors = async (req: Request, res: Response) => {
+  listVendors = async (_req: Request, res: Response) => {
     try {
       if (!fs.existsSync(VENDORS_DIR)) {
         return res.json({ vendors: [] });
@@ -508,7 +508,7 @@ class SkillAdminController {
    * Reload all skills
    * POST /api/admin/skills/reload
    */
-  reloadSkills = async (req: Request, res: Response) => {
+  reloadSkills = async (_req: Request, res: Response) => {
     try {
       await skillRegistry.reload();
 

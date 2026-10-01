@@ -49,19 +49,12 @@ export interface IOrchestrator {
   reset(): void;
   /** Best-effort, idempotent cancellation for a specific in-flight session. */
   abortSession?(sessionId: string, referenceTraceId?: string): void | Promise<void>;
-  /** Clean up all session-scoped state for a specific session (agentv3: artifacts, notes, session map). */
+  /** Clean up all session-scoped state for a specific session (agentv3: artifacts, notes, plans). */
   cleanupSession?(sessionId: string): void;
   /** Historical focus-store hook. Guard with: typeof orchestrator.getFocusStore === 'function'. */
   getFocusStore?(): any;
   /** Optional focus-tracking hook for frontend interaction capture. */
   recordUserInteraction?(interaction: any): void;
-  /** SDK session ID for runtimes that expose one. */
-  getSdkSessionId?(sessionId: string, referenceTraceId?: string): string | undefined;
-  /**
-   * @deprecated P1-7: Dead code — sessionMap is loaded from `claude_session_map.json` at construction.
-   * Kept for backward compatibility but never called from route layer.
-   */
-  restoreSessionMapping?(sessionId: string, sdkSessionId: string, referenceTraceId?: string): void;
   /** Restore a cached architecture result from persistence (agentv3). */
   restoreArchitectureCache?(traceId: string, architecture: any): void;
   /** Get cached architecture for persistence (agentv3). */

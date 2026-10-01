@@ -13,6 +13,7 @@ import {
 } from '../config';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
 import { ENTERPRISE_MINIMAL_SCHEMA_TABLES } from './enterpriseSchema';
+import { getUploadRoot } from './traceUploadPaths';
 
 export const ENTERPRISE_MIGRATION_PHASE_ENV = 'SMARTPERFETTO_ENTERPRISE_MIGRATION_PHASE';
 export const ENTERPRISE_MIGRATION_SNAPSHOT_DIR_ENV = 'SMARTPERFETTO_ENTERPRISE_MIGRATION_SNAPSHOT_DIR';
@@ -207,16 +208,12 @@ export function enterpriseDbWritesEnabled(env: NodeJS.ProcessEnv = process.env):
   return resolveEnterpriseMigrationPlan(env).writeDb;
 }
 
-export function legacyFilesystemReadAuthorityEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return resolveEnterpriseMigrationPlan(env).readAuthority === 'filesystem';
-}
-
 export function legacyFilesystemWritesEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return resolveEnterpriseMigrationPlan(env).writeFilesystem;
 }
 
 function resolveUploadRoot(env: NodeJS.ProcessEnv): string {
-  return path.resolve(env[UPLOAD_DIR_ENV] || './uploads');
+  return path.resolve(getUploadRoot(env));
 }
 
 function resolveDataRoot(env: NodeJS.ProcessEnv): string {

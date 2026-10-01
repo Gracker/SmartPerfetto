@@ -59,7 +59,7 @@ class SqlController {
   };
 
   // Endpoint to get available Perfetto tables and their schema
-  getTablesSchema = async (req: Request, res: Response) => {
+  getTablesSchema = async (_req: Request, res: Response) => {
     try {
       const tables = [
         {

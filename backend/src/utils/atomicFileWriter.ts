@@ -28,12 +28,12 @@ function makeTmpPath(target: string): string {
 /** Atomic write — synchronous variant. */
 export function atomicWriteFileSync(target: string, content: string | Buffer): void {
   const tmp = makeTmpPath(target);
-  fs.writeFileSync(tmp, content);
   try {
+    fs.writeFileSync(tmp, content);
     fs.renameSync(tmp, target);
   } catch (err) {
-    // Cross-device rename / ENOSPC / similar — drop the orphaned tmp before
-    // surfacing the error so we don't leak file handles.
+    // A partial write (ENOSPC) or a failed rename (cross-device) — drop the
+    // orphaned tmp before surfacing the error.
     try { fs.unlinkSync(tmp); } catch { /* ignore */ }
     throw err;
   }
@@ -42,8 +42,8 @@ export function atomicWriteFileSync(target: string, content: string | Buffer): v
 /** Atomic write — asynchronous variant, for fs/promises call sites. */
 export async function atomicWriteFile(target: string, content: string | Buffer): Promise<void> {
   const tmp = makeTmpPath(target);
-  await fsp.writeFile(tmp, content);
   try {
+    await fsp.writeFile(tmp, content);
     await fsp.rename(tmp, target);
   } catch (err) {
     await fsp.unlink(tmp).catch(() => undefined);

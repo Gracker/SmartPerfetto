@@ -568,6 +568,32 @@ describe('SkillExecutor trusted exact UPID execution', () => {
     expect(query.mock.calls.map(call => call[1]).join('\n')).not.toContain('unsafe_named_buffer_track');
   });
 
+  it('binds an exact-scope-unavailable step\'s save_as to null that keeps its unavailable scope', async () => {
+    const { executor } = makeExecutor();
+    const skill: SkillDefinition = { ...native, name: 'partial_bound', type: 'composite', sql: undefined, steps: [
+      { id: 'buffer', type: 'atomic', sql: 'SELECT * FROM unsafe_named_buffer_track', save_as: 'buffer_rows',
+        process_scope: { role: 'target', exact_unavailable: 'No UPID relationship exists for this track' } },
+      { id: 'probe', type: 'diagnostic', inputs: ['buffer_rows'], rules: [
+        { condition: 'buffer_rows?.data == null', diagnosis: 'UNOBSERVED', confidence: 'high' },
+        { condition: 'buffer_rows?.data != null', diagnosis: 'BOUND ${JSON.stringify(buffer_rows.data)}', confidence: 'high' },
+      ] } as any,
+    ] };
+    executor.registerSkill(skill);
+    const inherited = { buffer_rows: { data: [{ source: 'caller' }] } };
+    const entries = (provenance: any) => provenance?.entries?.map((entry: any) =>
+      ({ sourceStepId: entry.sourceStepId, availability: entry.availability }));
+    const unavailable = [{ sourceStepId: 'buffer', availability: 'unavailable' }];
+
+    const result = await executor.execute(skill.name, 'trace', { upid: 42 }, inherited);
+    expect(result.diagnostics.map(d => d.diagnosis)).toEqual(['UNOBSERVED']);
+    expect(entries(result.diagnostics[0].scopeProvenance)).toEqual(unavailable);
+
+    const layered = await executor.executeCompositeSkill(skill, { upid: 42 }, { traceId: 'trace', inherited });
+    const probe = layered.stepResults?.find(step => step.stepId === 'probe');
+    expect(probe?.data?.diagnostics?.map((d: any) => d.diagnosis)).toEqual(['UNOBSERVED']);
+    expect(entries(probe?.scopeProvenance)).toEqual(unavailable);
+  });
+
   it('preflights the whole composite before an earlier target step can run', async () => {
     const { executor, query } = makeExecutor();
     executor.registerSkill({ ...native, name: 'unmigrated_child', process_scope: undefined });

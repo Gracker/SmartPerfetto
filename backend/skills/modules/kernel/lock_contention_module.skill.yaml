@@ -291,7 +291,9 @@ steps:
     rules:
       - condition: "main_thread_locks.data.length > 0"
         diagnosis: "主线程检测到 ${main_thread_locks.data.length} 次锁等待，最长 ${main_thread_locks.data[0]?.wait_ms}ms"
-        confidence: critical
+        # One >1ms lock-like wait is an observation, not proof of impact.
+        severity: info
+        confidence: low
         suggestions:
           - "主线程不应等待锁"
           - "将竞争资源的访问移至后台线程"

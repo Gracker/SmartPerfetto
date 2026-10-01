@@ -26,8 +26,22 @@ Detailed commit-level history is available via `git log`.
   unused `analyze_frame` legacy agent tool, which built the same kind of query,
   and the SQL knowledge-base code that only these paths read are gone too,
   including the `PERFETTO_PATH` setting.
+- `/api/perfetto/*` (`/status`, `/start`, `/stop`, `/upload`, `/open-trace`,
+  `/load`) is gone and falls through to the generic JSON 404; nothing called it.
+  It started a second `trace_processor_shell --httpd` on a caller-supplied
+  server path, outside the trace processor pool and trace ownership checks.
+  Load traces through `/api/traces/upload` or the workspace trace API. The
+  backend no longer creates the upload directory at import time.
+- Agent endpoints no longer take a request id from a `requestId` field in the
+  request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 
 ### Fixed
+- Every request now has one request id. Without a caller `X-Request-Id`, an
+  Agent request's `X-Request-Id` header, analysis run and logs carried one id
+  and its authenticated request context another, so they could not be
+  correlated. One middleware now resolves it before CORS and body parsing and
+  every consumer reads that id; the header is exposed to cross-origin browsers
+  (see Request IDs in `docs/reference/api.en.md`).
 - `scroll_session_analysis` counts frames of the target app only (issued
   process scope, else the exact package or its `name:*` subprocesses) instead
   of every main thread's `doFrame`.

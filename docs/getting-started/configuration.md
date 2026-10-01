@@ -146,6 +146,14 @@ npm CLI 不使用 Web UI 的 `Connection` 配置。CLI Provider store 默认是
 `~/.smartperfetto/runtime/data/providers.json`，源码 Web 后端默认是
 `backend/data/providers.json`。只有两个进程显式使用同一个
 `SMARTPERFETTO_BACKEND_DATA_DIR` 时，网页 Provider profile 才会作用于 CLI。
+手工编辑后若 `providers.json` 不是合法的 Provider 数组（JSON 语法错误、缺少或重复
+`id` 等），后端照常启动，但不会用空列表覆盖它：Providers 页和 `smp provider list`
+提示文件无法读取，所有新增、修改、激活、停用和删除都返回
+`provider_store_unreadable`。跟随 active provider 或绑定某个 profile 的分析同样以该
+code（HTTP 409）拒绝，而不是回落到 `.env`：文件里可能配置的是另一个网关或账号，
+此时 active provider 是“未知”而不是“没有”。`/health` 与 `smp doctor` 会报告 AI
+未配置。显式选择系统默认配置（`providerId: null`）的请求或会话仍按 `.env` 运行。
+修复或移走该文件后刷新即可恢复，无需重启。
 第一次用 CLI 时，推荐运行：
 
 ```bash
@@ -177,7 +185,7 @@ SmartPerfetto 后端支持这些 runtime path：
 - `openai-agents-sdk`：OpenAI runtime。适合 OpenAI Responses API、Ollama 和支持流式 function/tool calling 的 OpenAI-compatible gateway。
 - `pi-agent-core`：可选 public runtime。真实模型配置下复用 SmartPerfetto 共享 prompt、SQL/Skill、plan/hypothesis 和 report/claim-verification 管线；后端只在选择这个 runtime 时动态加载 `@earendil-works/pi-agent-core`，不会启用 `.pi` project discovery、package extension、shell tool 或 file tool。
 - `opencode`：可选 public runtime。它会启动加固隔离的 OpenCode server，使用显式 OpenAI-compatible 或 OpenCode model 配置，只暴露 request-scoped SmartPerfetto MCP 工具；不会读取用户自己的 OpenCode CLI 登录态、project config、extension，也不会启用内建 file/shell/web/edit tools。
-- `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT，并禁止私有知识分析复用 provider session 或持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
+- `qoder-agent-sdk`：可选 public runtime。它只暴露 request-scoped SmartPerfetto MCP 工具，支持本机 `qodercli` 登录态或 PAT；每轮都开启新的 provider session，不持久化 opaque state。SDK/CLI 有独立条款，因此 SDK 是显式启用的 optional peer，默认不会安装。
 
 这些 runtime 是互斥选择的后端编排路径。配置 OpenAI runtime 时不需要先安装或登录 Claude Code；配置 Claude API 时也不需要 OpenAI key，但本机 Claude Code 登录态不能替代 Claude Agent SDK 的显式凭据。Pi Agent Core、OpenCode 和 Qoder 与两者独立。真实模型路径应通过启动/滑动 E2E 验证分析质量；fake-stream 只用于 smoke/test，不能代表等价分析效果。
 
@@ -266,7 +274,7 @@ OPENAI_MODEL=gpt-5.4-mini
 OPENAI_LIGHT_MODEL=gpt-5.4-mini
 ```
 
-官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径；切到它会失去 Responses 侧的会话续接能力，例如 SmartPerfetto OpenAI runtime 使用的 `previousResponseId`。
+官方 OpenAI 直连应保持 `OPENAI_AGENTS_PROTOCOL=responses`。`chat_completions` 是兼容网关兜底，不是官方 OpenAI 的推荐路径。两种协议都不会续接之前的 provider response：每个问题都从新的模型上下文加 SmartPerfetto 有界的 typed history 开始。
 
 Ollama 或 OpenAI-compatible gateway 走 Chat Completions 协议：
 
@@ -499,8 +507,8 @@ OpenAI runtime 的 `maxTurns × per-turn timeout`（full 模式再受上面的�
 总时长，并在其中固定预留一次无工具交付调用；小于初始预算时按初始预算处理，即它只限制延期，不缩短原预算。
 调查仍超时且本轮已有返回数据时，后端用这次预留调用基于已返回数据给出有限结论，结果标记 `partial` / `timeout`；
 没有返回数据或交付调用也超时，则保留“未生成可交付结论”。OpenAI 的
-`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制跨 continuation/session 持有的
-provider history；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` 默认 4 MiB，只限制本轮续写/恢复调用可重发的
+当前 run transcript，超出时不会完整重发；Artifact、DataEnvelope、报告和证据来源不会因此被截断。
 
 `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`（默认 15000，不低于 10000，高于 SQLite 5 秒 busy
 timeout）限制用户停止核验（Web、对话或 CLI Ctrl-C）之后 run 保存结论可用的时间，只在这类停止时
@@ -523,7 +531,7 @@ timeout）限制用户停止核验（Web、对话或 CLI Ctrl-C）之后 run 保
 后续提问默认继承有界历史摘要，并可按需回查完整旧轮；来源、用户或 Trace 的权限边界
 不会因历史继承而扩大。更早正文不需要每轮全部发送给模型。
 
-前端会把选择持久化到 `localStorage['ai-analysis-mode']`。中途切换模式会清空当前 `agentSessionId`，让后端开启新的 SDK session。
+前端会把选择持久化到 `localStorage['ai-analysis-mode']`。中途切换模式会清空当前 `agentSessionId`，让后端开启新的 agent session。
 
 ### 证据保留预算
 
@@ -649,6 +657,11 @@ MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 ```
+
+`UPLOAD_DIR` 是上传根目录，相对路径按后端进程的工作目录解析。上传的 trace 文件与其元数据保存在
+`${UPLOAD_DIR}/traces`；上传接口、元数据和后端重启后按 traceId 重新加载 trace 都使用这同一个目录。
+`SMARTPERFETTO_TRACE_UPLOAD_DIR` 只在需要把 trace 目录单独放到别处时设置，它会同时覆盖上述三处
+（npm CLI 用它把 trace 副本放在自己的 home 下）。
 
 默认不需要手动设置 `TRACE_PROCESSOR_PATH`。普通 `./start.sh` 和开发模式 `./scripts/start-dev.sh` 都优先使用经过固定 SHA256 校验的 prebuilt。显式的 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径：启动和 backend `predev` 只检查文件存在、可执行以及 `--version`，不会改权限、按固定 SHA 替换或向该路径下载。
 

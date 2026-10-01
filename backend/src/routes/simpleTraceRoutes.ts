@@ -57,6 +57,7 @@ import {
   type TraceMetadata,
   writeTraceMetadata,
 } from '../services/traceMetadataStore';
+import { getUploadRoot } from '../services/traceUploadPaths';
 import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 import {
   canDeleteTraceResource,
@@ -829,7 +830,7 @@ async function streamResponseBodyToTempFile(
 
 // GET /api/traces/health - Health check for auto-upload feature
 // This endpoint allows the frontend to quickly check if the backend is available
-router.get('/health', (req, res) => {
+router.get('/health', (_req, res) => {
   res.json({
     available: true,
     version: '1.0',
@@ -841,12 +842,12 @@ router.use(attachRequestContext);
 
 // Configure multer for file uploads
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
+  destination: (req, _file, cb) => {
     let tracesDir: string;
     try {
       tracesDir = getWritableTraceDirForContext(requireRequestContext(req));
     } catch (error) {
-      cb(error as Error, process.env.UPLOAD_DIR || './uploads');
+      cb(error as Error, getUploadRoot());
       return;
     }
 
@@ -854,7 +855,7 @@ const storage = multer.diskStorage({
       .then(() => cb(null, tracesDir))
       .catch((error) => cb(error, tracesDir));
   },
-  filename: (req, file, cb) => {
+  filename: (_req, _file, cb) => {
     cb(null, tempUploadFilename());
   },
 });

@@ -4,7 +4,7 @@
 
 import { serverConfig } from '../config';
 import { collectEnvCredentialSources } from './envCredentialSources';
-import { resolveAgentRuntimeSelection } from './runtimeSelection';
+import { resolveAgentRuntimeSelectionForDiagnostics } from './runtimeSelection';
 import { getProviderService } from '../services/providerManager';
 import { getSmartPerfettoVersion } from '../version';
 import {
@@ -19,7 +19,7 @@ import {
 
 export function buildRuntimeHealthPayload(now: Date = new Date()) {
   const aiPolicy = getAiCapabilityPolicy();
-  const runtimeSelection = resolveAgentRuntimeSelection();
+  const {selection: runtimeSelection, providerStoreError} = resolveAgentRuntimeSelectionForDiagnostics();
   const providerSvc = getProviderService();
   const activeProvider = providerSvc.list().find(p => p.isActive);
   const selectedDiagnostics = getRuntimeDiagnostics(runtimeSelection, {
@@ -43,11 +43,18 @@ export function buildRuntimeHealthPayload(now: Date = new Date()) {
       providerMode: selectedProviderMode,
       aiEnabled: aiPolicy.aiEnabled,
       ...(aiPolicy.disabledReason ? { disabledReason: aiPolicy.disabledReason } : {}),
-      configured: selectedDiagnostics.configured,
+      // An analysis that follows the active provider is refused while
+      // providers.json is unreadable, whatever env would configure.
+      configured: selectedDiagnostics.configured && !providerStoreError,
       source: runtimeSelection.source,
-      credentialSource: runtimeSelection.source === 'provider'
-        ? 'provider-manager'
-        : 'env-or-default',
+      credentialSource: providerStoreError
+        ? 'provider-store-unreadable'
+        : runtimeSelection.source === 'provider'
+          ? 'provider-manager'
+          : 'env-or-default',
+      ...(providerStoreError
+        ? {providerStore: {status: 'unreadable', code: providerStoreError.code}}
+        : {}),
       envCredentialSources: envSources,
       providerOverridesEnv,
       ...(activeProvider ? {

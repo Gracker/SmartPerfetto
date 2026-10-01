@@ -47,6 +47,7 @@
         "src/scripts/runScrollingTest.ts!",
         "src/scripts/runScrollingTestRealData.ts!",
         "src/scripts/verifyAgentSseScrolling.ts!",
+        "src/scripts/verifyAgentSseStopSemantics.ts!",
         "src/scripts/verifyCodeAwareSemanticDelta.ts!",
         "src/scripts/verifyEnterpriseMultiTenantWindows.ts!",
         "src/services/canonicalAnalysisResult.ts!",

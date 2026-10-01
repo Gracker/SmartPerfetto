@@ -37,6 +37,17 @@ import { isTraceProcessorQueryCancelledError } from '../traceProcessorCancellati
 import * as traceFormatDetector from '../traceFormatDetector';
 import { listTraceCases, resolveTraceCase } from '../../../tests/helpers/traceCorpus';
 
+/** Registers an upload under a fresh id, as production callers do with their own ids. */
+async function initializeUpload(
+  service: TraceProcessorService,
+  filename: string,
+  size: number,
+): Promise<string> {
+  const traceId = uuidv4();
+  await service.initializeUploadWithId(traceId, filename, size);
+  return traceId;
+}
+
 // =============================================================================
 // Test Environment Detection
 // =============================================================================
@@ -281,27 +292,6 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
       }
     });
 
-    it('should initialize upload with unique traceId', async () => {
-      const traceId = await service.initializeUpload('test.trace', 1000);
-
-      expect(traceId).toBeDefined();
-      expect(typeof traceId).toBe('string');
-      expect(traceId.length).toBeGreaterThan(0);
-
-      const trace = service.getTrace(traceId);
-      expect(trace).toBeDefined();
-      expect(trace?.filename).toBe('test.trace');
-      expect(trace?.size).toBe(1000);
-      expect(trace?.status).toBe('uploading');
-    });
-
-    it('should generate unique traceIds for each upload', async () => {
-      const traceId1 = await service.initializeUpload('test1.trace', 1000);
-      const traceId2 = await service.initializeUpload('test2.trace', 2000);
-
-      expect(traceId1).not.toBe(traceId2);
-    });
-
     it('should initialize upload with specific ID', async () => {
       const specificId = 'my-custom-trace-id';
       await service.initializeUploadWithId(specificId, 'custom.trace', 500);
@@ -310,6 +300,8 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
       expect(trace).toBeDefined();
       expect(trace?.id).toBe(specificId);
       expect(trace?.filename).toBe('custom.trace');
+      expect(trace?.size).toBe(500);
+      expect(trace?.status).toBe('uploading');
     });
 
     it('should emit trace-initialized event', async () => {
@@ -317,7 +309,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
         service.on('trace-initialized', resolve);
       });
 
-      const traceId = await service.initializeUpload('event-test.trace', 100);
+      const traceId = await initializeUpload(service, 'event-test.trace', 100);
       const emittedTrace = await eventPromise;
 
       expect(emittedTrace.id).toBe(traceId);
@@ -332,9 +324,9 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
     });
 
     it('should list all traces', async () => {
-      await service.initializeUpload('trace1.trace', 100);
-      await service.initializeUpload('trace2.trace', 200);
-      await service.initializeUpload('trace3.trace', 300);
+      await initializeUpload(service, 'trace1.trace', 100);
+      await initializeUpload(service, 'trace2.trace', 200);
+      await initializeUpload(service, 'trace3.trace', 300);
 
       const traces = service.getAllTraces();
       expect(traces.length).toBe(3);
@@ -342,7 +334,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
 
     it('should track upload and process times', async () => {
       const beforeTime = new Date();
-      const traceId = await service.initializeUpload('time-test.trace', 100);
+      const traceId = await initializeUpload(service, 'time-test.trace', 100);
       const afterTime = new Date();
 
       const trace = service.getTrace(traceId);
@@ -353,7 +345,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
 
   describe('Touch Trace (Access Time Tracking)', () => {
     it('should update lastAccessTime on touch', async () => {
-      const traceId = await service.initializeUpload('touch-test.trace', 100);
+      const traceId = await initializeUpload(service, 'touch-test.trace', 100);
       const trace = service.getTrace(traceId);
 
       // Initially, lastAccessTime is undefined
@@ -372,7 +364,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
     });
 
     it('should update lastAccessTime each time touched', async () => {
-      const traceId = await service.initializeUpload('multi-touch.trace', 100);
+      const traceId = await initializeUpload(service, 'multi-touch.trace', 100);
 
       service.touchTrace(traceId);
       const firstTouch = service.getTrace(traceId)?.lastAccessTime?.getTime();
@@ -389,7 +381,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
 
   describe('Trace Activity Detection', () => {
     it('should detect active trace (recently accessed)', async () => {
-      const traceId = await service.initializeUpload('active-test.trace', 100);
+      const traceId = await initializeUpload(service, 'active-test.trace', 100);
       service.touchTrace(traceId);
 
       // With default 30 minute timeout, should be active
@@ -398,7 +390,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
     });
 
     it('should detect inactive trace based on old upload time', async () => {
-      const traceId = await service.initializeUpload('inactive-test.trace', 100);
+      const traceId = await initializeUpload(service, 'inactive-test.trace', 100);
 
       // Manually set old upload time to simulate an old trace
       const trace = service.getTrace(traceId);
@@ -420,7 +412,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
 
   describe('Delete Trace', () => {
     it('should delete trace from memory', async () => {
-      const traceId = await service.initializeUpload('delete-test.trace', 100);
+      const traceId = await initializeUpload(service, 'delete-test.trace', 100);
       expect(service.getTrace(traceId)).toBeDefined();
 
       await service.deleteTrace(traceId);
@@ -428,7 +420,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
     });
 
     it('should emit trace-deleted event', async () => {
-      const traceId = await service.initializeUpload('delete-event.trace', 100);
+      const traceId = await initializeUpload(service, 'delete-event.trace', 100);
 
       const eventPromise = new Promise<string>((resolve) => {
         service.on('trace-deleted', resolve);
@@ -448,7 +440,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
 
   describe('Cleanup Logic', () => {
     it('should cleanup old and idle traces', async () => {
-      const traceId = await service.initializeUpload('cleanup-test.trace', 100);
+      const traceId = await initializeUpload(service, 'cleanup-test.trace', 100);
 
       // Manually set old upload time
       const trace = service.getTrace(traceId);
@@ -463,7 +455,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
     });
 
     it('should skip active traces during cleanup', async () => {
-      const traceId = await service.initializeUpload('active-cleanup.trace', 100);
+      const traceId = await initializeUpload(service, 'active-cleanup.trace', 100);
 
       // Set old upload time but touch recently
       const trace = service.getTrace(traceId);
@@ -480,7 +472,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
     });
 
     it('should skip young traces during cleanup', async () => {
-      const traceId = await service.initializeUpload('young-trace.trace', 100);
+      const traceId = await initializeUpload(service, 'young-trace.trace', 100);
 
       // Default upload time is now - should not be cleaned
       await service.cleanup(1 * 60 * 60 * 1000, 1);
@@ -578,7 +570,7 @@ describe('TraceProcessorService - Unit Tests (Mocked)', () => {
 
   describe('Get Trace With Port', () => {
     it('should return trace info without port when no processor', async () => {
-      const traceId = await service.initializeUpload('no-port.trace', 100);
+      const traceId = await initializeUpload(service, 'no-port.trace', 100);
 
       const result = service.getTraceWithPort(traceId);
       expect(result).toBeDefined();
@@ -766,7 +758,7 @@ describe('PortPool - Unit Tests', () => {
     it('should emit released event', (done) => {
       pool.allocate('release-event');
 
-      pool.on('released', ({ port, traceId }) => {
+      pool.on('released', ({ traceId }) => {
         expect(traceId).toBe('release-event');
         done();
       });
@@ -979,7 +971,7 @@ describe('TraceProcessorService - Integration Tests', () => {
   describe('Trace Lifecycle', () => {
     it('should handle full upload -> process -> query -> delete lifecycle', async () => {
       // 1. Initialize upload
-      const traceId = await service.initializeUpload('lifecycle-test.trace', 1000);
+      const traceId = await initializeUpload(service, 'lifecycle-test.trace', 1000);
       expect(service.getTrace(traceId)?.status).toBe('uploading');
 
       // 2. Load from file (simulates completing upload)
@@ -1148,11 +1140,6 @@ describe('Error Handling', () => {
       } catch {
         // Ignore
       }
-    });
-
-    it('should handle chunk upload for non-existent trace', async () => {
-      await expect(service.uploadChunk('non-existent', Buffer.from('test'), 0))
-        .rejects.toThrow('not found');
     });
 
     it('should handle complete upload for non-existent trace', async () => {

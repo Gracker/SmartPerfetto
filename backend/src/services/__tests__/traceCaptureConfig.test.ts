@@ -23,8 +23,8 @@ import {
 const SYSTEM_PRESET_CONFIG_SHA256: Record<string, string> = {
   'startup|com.example.app': 'ac1bee0b74b81db156c280c3cd34d8c66b3adbf60546ccff80c4427619e72eb0',
   'startup|*': '195594ba6f365d8e96451340c9353b8da96ff0ca9e34e59b3ce0b4e771ce9eb9',
-  'scrolling|com.example.app': 'a1e1a05fabf789275dae9049bd5c92d34a7ff3e9d2d6c12a1678a5c8a0855861',
-  'scrolling|*': 'f14ddc0ae89afba2e1e871ce15f2aaa44aaaea6ea6640410d36ad723480bd2ad',
+  'scrolling|com.example.app': 'ea46cb5a999a0a343e6092172d128a5e224b0e6e9de82e2d7d90e1a59873645f',
+  'scrolling|*': 'a0515eb7321bff8c9add90e8d7225ca95dddb1acb50bdbba61e5566a3926c0f9',
   'camera|com.example.app': '1a5ce16d753c0c1015ecf2b2ba2359f442aebfc154da40d98d15622c0f2f6f5c',
   'camera|*': 'de1b7d888ff01da394af3fccabb0242cfa6161318bf5cef4ca599284d981c511',
   'anr|com.example.app': 'aa023370b010e7caf50780e2f94cbd0f0adff50c8726b7b33a59f2bec52574cd',
@@ -188,7 +188,7 @@ describe('shared trace capture config rendering', () => {
     }
   });
 
-  it.each(['cpu', 'power', 'full'] as const)(
+  it.each(['cpu', 'power', 'full', 'scrolling'] as const)(
     'gives the %s preset thermal zone and cooling device events',
     (presetId) => {
       const config = renderAndroidTraceConfig({

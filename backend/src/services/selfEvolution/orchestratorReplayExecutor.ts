@@ -390,11 +390,7 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
         signal: controller.signal,
         isAuthoritative: scopedReplay.isAuthoritative,
       }, () => {
-        const attempt = this.executeAttempt(
-          scopedReplay,
-          capabilities,
-          budgetLimits,
-        );
+        const attempt = this.executeAttempt(scopedReplay);
         this.inFlight.set(key, attempt);
         void attempt.then(
           () => {
@@ -433,8 +429,6 @@ export class OrchestratorReplayExecutor implements ReplayExecutor {
 
   private async executeAttempt(
     replay: ReplayExecutorInput,
-    capabilities: EvaluationRuntimeCapabilitiesV1,
-    budgetLimits: EvaluationBudgetLimitsV1,
   ): Promise<ReplayExecutorResult> {
     if (!replay.candidateId) {
       throw new Error('evaluation_candidate_id_missing');

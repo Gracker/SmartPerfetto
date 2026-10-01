@@ -45,7 +45,7 @@ class ManualSkillExecutor implements SceneSkillExecutor {
   public callCount = 0;
 
   async execute(
-    skillId: string,
+    _skillId: string,
     _traceId: string,
     params: Record<string, any>,
   ): Promise<SceneSkillExecutionResult> {

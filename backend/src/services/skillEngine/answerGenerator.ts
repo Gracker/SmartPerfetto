@@ -324,7 +324,7 @@ export class AnswerGenerator {
     const uniqueSuggestions = [...new Set(allSuggestions)];
 
     if (uniqueSuggestions.length === 0) {
-      return this.generateNoSuggestionAnswer(context);
+      return this.generateNoSuggestionAnswer();
     }
 
     const subject = this.extractProblemSubject(originalQuestion);
@@ -493,7 +493,7 @@ export class AnswerGenerator {
   /**
    * 生成无建议回答
    */
-  private generateNoSuggestionAnswer(context: AnswerContext): string {
+  private generateNoSuggestionAnswer(): string {
     return `基于当前分析结果，性能表现正常，暂无具体优化建议。` +
            `\n\n如需深入分析，可以尝试：` +
            `\n1. 提供更长时间的 trace 数据` +

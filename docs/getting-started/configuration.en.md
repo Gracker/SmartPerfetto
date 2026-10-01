@@ -174,6 +174,17 @@ npm CLI does not use the Web UI `Connection` settings. Its Provider store defaul
 to `~/.smartperfetto/runtime/data/providers.json`, while a source Web backend
 defaults to `backend/data/providers.json`. A Web Provider profile affects the CLI
 only when both processes explicitly use the same `SMARTPERFETTO_BACKEND_DATA_DIR`.
+If a hand edit leaves `providers.json` not a valid provider array (a JSON syntax
+error, a missing or repeated `id`, and so on), the backend still starts but never
+overwrites the file with an empty list: the Providers page and `smp provider list`
+report that the file cannot be read, and every create, update, activate,
+deactivate, and delete returns `provider_store_unreadable`. Analyses that follow
+the active provider, or are pinned to a profile, are refused with the same code
+(HTTP 409) instead of falling back to `.env`, because the file may name a
+different gateway or account: the active provider is unknown, not absent.
+`/health` and `smp doctor` report AI as unconfigured. A request or session that
+explicitly chooses the system default (`providerId: null`) still runs on `.env`.
+Repair or move the file and refresh; no restart is needed.
 For first-time CLI setup, run:
 
 ```bash
@@ -210,7 +221,7 @@ SmartPerfetto has these runtime paths:
 - `openai-agents-sdk`: the OpenAI runtime. Use it for OpenAI Responses API, Ollama, and OpenAI-compatible gateways that support streaming function/tool calling.
 - `pi-agent-core`: optional public runtime. With a real model config it reuses SmartPerfetto's shared prompt, SQL/Skill, planning/hypothesis, and report/claim-verification pipeline. It dynamically loads `@earendil-works/pi-agent-core` and does not enable `.pi` project discovery, package extensions, shell tools, or file tools.
 - `opencode`: optional public runtime. It runs a hardened isolated OpenCode server, feeds it explicit OpenAI-compatible or OpenCode model configuration, and exposes only request-scoped SmartPerfetto MCP tools. It does not read the user's OpenCode CLI login, project config, extensions, or built-in file/shell/web/edit tools.
-- `qoder-agent-sdk`: optional public runtime. It exposes only request-scoped SmartPerfetto MCP tools, supports a local `qodercli` login or PAT, and keeps private-knowledge runs out of provider session resume and durable opaque state. Its SDK/CLI terms are separate, so the SDK is an opt-in optional peer and is not installed by default.
+- `qoder-agent-sdk`: optional public runtime. It exposes only request-scoped SmartPerfetto MCP tools, supports a local `qodercli` login or PAT, and starts a fresh provider session every turn without durable opaque state. Its SDK/CLI terms are separate, so the SDK is an opt-in optional peer and is not installed by default.
 
 These runtimes are mutually selected backend orchestration paths. OpenAI runtime setup does not require installing or logging in to Claude Code; Claude API setup does not require an OpenAI key. Pi Agent Core, OpenCode, and Qoder setup are separate from both. Real-model analysis quality should be verified with startup/scrolling E2E; fake-stream is smoke/test-only and does not represent parity.
 
@@ -300,7 +311,7 @@ OPENAI_MODEL=gpt-5.4-mini
 OPENAI_LIGHT_MODEL=gpt-5.4-mini
 ```
 
-Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path; switching to it disables Responses-side session continuation such as the `previousResponseId` used by the SmartPerfetto OpenAI runtime.
+Keep official OpenAI direct connections on `OPENAI_AGENTS_PROTOCOL=responses`. `chat_completions` is a compatibility fallback for gateways, not the recommended official OpenAI path. Neither protocol resumes an earlier provider response: every question starts from fresh model context plus SmartPerfetto's bounded typed history.
 
 Ollama or OpenAI-compatible gateways:
 
@@ -565,8 +576,8 @@ extensions and never shortens the original budget. When investigation still time
 out after data has returned, that reserved call gives a limited conclusion from the
 returned data, marked `partial` / `timeout`; with no returned data, or if the delivery
 call also times out, the run ends without a deliverable conclusion.
-`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` default to 4 MiB and only bound provider history
-retained across continuations or sessions. It does not truncate Artifacts,
+`AGENT_MAX_HISTORY_BYTES` / `OPENAI_MAX_HISTORY_BYTES` default to 4 MiB and only bound the current-run
+transcript a recovery or continuation call may resend; a larger transcript is never resent in full. It does not truncate Artifacts,
 DataEnvelopes, reports, or evidence provenance.
 
 `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS` (default 15000, never below 10000, above
@@ -743,6 +754,14 @@ MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 ```
+
+`UPLOAD_DIR` is the upload root; a relative path resolves against the backend
+process's working directory. Uploaded trace files and their metadata live in
+`${UPLOAD_DIR}/traces`, and the upload routes, the metadata, and reloading a
+trace by id after a backend restart all use that one directory. Set
+`SMARTPERFETTO_TRACE_UPLOAD_DIR` only to move the trace directory elsewhere; it
+overrides all three together (the npm CLI uses it to keep trace copies under
+its own home).
 
 `TRACE_PROCESSOR_PATH` usually does not need manual configuration.
 `./start.sh` and `./scripts/start-dev.sh` prefer SHA256-pinned prebuilts. An

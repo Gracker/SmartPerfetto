@@ -1678,6 +1678,13 @@ describe('createClaudeMcpServer', () => {
       expect(skillResult.artifacts[0]).not.toHaveProperty('preview');
       expect(skillResult.hint).toContain('forbids raw artifact rows');
 
+      const rowsBeforeSummary = await tools.get('fetch_artifact')!.handler({artifactId, detail: 'rows', limit: 1});
+      expect(isPolicyRefusalResult(rowsBeforeSummary)).toBe(true);
+      expect(JSON.parse(rowsBeforeSummary.content[0].text)).toMatchObject({
+        reason: 'raw_rows_forbidden',
+        action_required: 'fetch_artifact',
+      });
+
       const summary = await callTool(tools, 'fetch_artifact', {
         artifactId,
         detail: 'summary',
@@ -1696,16 +1703,14 @@ describe('createClaudeMcpServer', () => {
         artifactId,
         detail: 'full',
       });
-      expect(rows).toMatchObject({
+      const blocked = {
         success: false,
         error: 'artifact_access_policy_blocked',
         reason: 'raw_rows_forbidden',
-      });
-      expect(full).toMatchObject({
-        success: false,
-        error: 'artifact_access_policy_blocked',
-        reason: 'raw_rows_forbidden',
-      });
+        action_required: 'use_existing_artifact_summary',
+      };
+      expect(rows).toMatchObject(blocked);
+      expect(full).toMatchObject(blocked);
       expect(artifactStore.fetch).toHaveBeenCalledTimes(fetchCallsBeforeBlockedRequests);
     });
 
@@ -1723,7 +1728,10 @@ describe('createClaudeMcpServer', () => {
         detail: 'rows',
         limit: 1,
       });
-      expect(beforeSummary.reason).toBe('summary_required_before_rows');
+      expect(beforeSummary).toMatchObject({
+        reason: 'summary_required_before_rows',
+        action_required: 'fetch_artifact',
+      });
       expect(artifactStore.fetch).not.toHaveBeenCalled();
 
       const summary = await callTool(tools, 'fetch_artifact', {
@@ -1736,7 +1744,10 @@ describe('createClaudeMcpServer', () => {
         detail: 'rows',
         limit: 1,
       });
-      expect(afterCompleteSummary.reason).toBe('complete_summary_already_available');
+      expect(afterCompleteSummary).toMatchObject({
+        reason: 'complete_summary_already_available',
+        action_required: 'use_existing_artifact_summary',
+      });
 
       mockSkillExecutor.execute.mockResolvedValueOnce({
         skillId: 'scrolling_analysis',
@@ -1761,7 +1772,18 @@ describe('createClaudeMcpServer', () => {
         detail: 'rows',
         limit: 1,
       });
-      expect(secondArtifactRows.reason).toBe('summary_required_before_rows');
+      expect(secondArtifactRows).toMatchObject({
+        reason: 'summary_required_before_rows',
+        action_required: 'fetch_artifact',
+      });
+    });
+
+    it('rejects a zero row limit in both the schema and the handler', async () => {
+      const {tools} = createTestServer();
+
+      expect(tools.get('fetch_artifact')?.schema?.limit.safeParse(0).success).toBe(false);
+      const zeroRows = await callTool(tools, 'fetch_artifact', {artifactId: 'art-1', detail: 'rows', limit: 0});
+      expect(zeroRows.error).toContain('limit must be >= 1');
     });
 
     it('allows minimum rows after an incomplete per-artifact summary', async () => {
@@ -6980,6 +7002,20 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('revise_plan (P1-3)', () => {
+    it('refuses a revision before any plan exists as a policy refusal', async () => {
+      const {tools} = createTestServer();
+      const result = await tools.get('revise_plan')!.handler({
+        updatedPhases: [{id: 'p1', name: 'Phase 1', goal: 'G1', expectedTools: ['execute_sql']}],
+        reason: 'No plan was submitted',
+      });
+
+      expect(JSON.parse(result.content[0].text)).toMatchObject({
+        error: '还没有提交 plan，请先调用 submit_plan。',
+        action_required: 'submit_plan',
+      });
+      expect(isPolicyRefusalResult(result)).toBe(true);
+    });
+
     it('should allow revising a plan', async () => {
       const { tools, analysisPlan } = createTestServer();
       // Submit initial plan
@@ -10258,5 +10294,105 @@ describe('model-facing tool descriptions', () => {
     for (const definition of toolDefinitions) {
       expect(definition.shared.description).not.toMatch(/<!--|SPDX|Copyright \(C\)/);
     }
+  });
+});
+
+// A governance refusal carries `action_required`, which keeps it out of the circuit
+// breaker's failure rate; a missing capability carries no instruction and still counts.
+describe('source and knowledge governance refusals', () => {
+  const callRaw = (tools: Map<string, ToolDef>, name: string, params: Record<string, any>) =>
+    tools.get(name)!.handler(params, undefined);
+  const expectRefusal = (raw: any, expected: Record<string, unknown>) => {
+    expect(JSON.parse(raw.content[0].text)).toMatchObject({success: false, ...expected});
+    expect(isPolicyRefusalResult(raw)).toBe(true);
+  };
+
+  it('refuses an exhausted source budget with what to do instead', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'metadata_only',
+      codebaseIds: ['app-codebase'],
+      sourceUsePolicy: {phase: 'explicit', maxSearchCalls: 0, maxReadCalls: 0},
+    });
+
+    expectRefusal(await callRaw(tools, 'search_codebase', {query: 'StartupHooks'}), {
+      unsupportedReason: 'source_search_budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence',
+    });
+    expectRefusal(await callRaw(tools, 'read_codebase_file', {file_path: 'src/StartupHooks.kt'}), {
+      unsupportedReason: 'source_read_budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence',
+    });
+  });
+
+  it('refuses a codebase outside the session whitelist', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'metadata_only',
+      codebaseIds: ['app-a', 'app-b'],
+    });
+
+    expectRefusal(await callRaw(tools, 'search_codebase', {query: 'StartupHooks'}), {
+      unsupportedReason: 'whitelisted_codebase_id_required',
+      action_required: 'list_codebases',
+    });
+    expectRefusal(await callRaw(tools, 'lookup_app_source', {query: 'StartupHooks', codebase_id: 'other'}), {
+      unsupportedReason: 'codebase_not_whitelisted',
+      action_required: 'retry_without_codebase_id',
+    });
+    expectRefusal(await callRaw(tools, 'lookup_aosp_source', {query: 'Looper', codebase_id: 'other'}), {
+      unsupportedReason: 'codebase_not_whitelisted',
+      action_required: 'retry_without_codebase_id',
+    });
+  });
+
+  it('refuses a source-use decision the current state does not admit', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'metadata_only',
+      codebaseIds: ['app-codebase'],
+    });
+
+    expectRefusal(await callRaw(tools, 'record_source_use_decision', {
+      status: 'not_needed',
+      reason: 'The trace evidence is conclusive\u0000 and requires no source.',
+    }), {
+      unsupportedReason: 'source_use_decision_reason_invalid',
+      action_required: 'retry_with_valid_reason',
+      reasonConstraints: {minChars: 30, maxChars: 1000, singleLine: true},
+    });
+  });
+
+  it('refuses a patch whose context was never looked up', async () => {
+    const {tools} = createTestServer({
+      codeAwareMode: 'provider_send',
+      codebaseIds: ['app-codebase'],
+    });
+
+    expectRefusal(await callRaw(tools, 'propose_patch', {
+      context_chunk_ids: ['chunk-never-looked-up'],
+      problem: 'Startup hook blocks the main thread.',
+    }), {
+      result: expect.objectContaining({patchStatus: 'unverified', unsupportedReason: 'missing_context_chunk'}),
+      action_required: 'lookup_source_before_patch',
+    });
+  });
+
+  it('refuses a private knowledge source that is not authorized for the request', async () => {
+    const {tools} = createTestServer();
+
+    expectRefusal(await callRaw(tools, 'lookup_blog_knowledge', {
+      query: 'Handler', source: 'android_internals_wiki', knowledge_source_id: 'wiki-a',
+    }), {
+      unsupportedReason: 'private_knowledge_source_not_whitelisted',
+      action_required: 'continue_without_private_knowledge',
+    });
+  });
+
+  it('keeps an unavailable capability a failure, not a refusal', async () => {
+    const {tools} = createTestServer();
+
+    const raw = await callRaw(tools, 'lookup_blog_knowledge', {query: 'Handler', source: 'android_internals_pack'});
+    const payload = JSON.parse(raw.content[0].text);
+    expect(payload).toMatchObject({success: false, unsupportedReason: 'android_internals_pack_unavailable'});
+    expect(payload).not.toHaveProperty('action_required');
+    expect(isPolicyRefusalResult(raw)).toBe(false);
   });
 });

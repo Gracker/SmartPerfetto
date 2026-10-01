@@ -566,6 +566,9 @@ scorer fixtures test scoring mechanics only.
   outside the package is available.
 - Keep operation streams scope-bound and bounded. Browser consumers require
   fetch-based SSE so Authorization and workspace headers remain attached.
+- Serve reconciliation reports through `projectReconciliationReportForAdmin`:
+  older stored issue messages quote parser input. Never rewrite stored reports
+  or their `contentHash` to remove it.
 - Contribution export creates a local deidentified artifact and never uploads,
   commits, opens a PR, or changes the TypeScript runtime.
 - External L2 judge use requires a versioned rubric, sampled/disputed routing,
@@ -687,6 +690,17 @@ signal, not an automatic quick/full decision.
 - Existing live sessions keep their pinned provider unless an explicit
   `providerId` override changes it.
 - Persisted sessions restore the provider/runtime snapshot before continuing.
+  A snapshot holds no provider-bound engine state: every runtime's
+  `engineState` keeps only the provider pin, and no runtime persists or
+  restores a native session, transcript or directory. So when the snapshot's
+  hash no longer matches the resolved provider (a model, base URL or key
+  change), restore is unchanged: notes, plan, hypotheses, flags, artifacts and
+  architecture come back as they would without the change. No runtime carries
+  native context across turns, so the model gets no "context was reset" notice;
+  `continuityBreaks` is an audit record only. Keep new runtime state
+  product-owned; state that is only valid for one provider must not enter the
+  snapshot. A live session whose hash changes is still revoked and replaced
+  by a new clean session.
 - `providerId: null` means use env/default fallback and ignore Provider Manager.
 - If a persisted snapshot references a deleted provider, fail with an explicit
   provider-not-found error instead of silently falling back.

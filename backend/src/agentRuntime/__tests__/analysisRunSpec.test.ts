@@ -8,7 +8,6 @@ import type { RunManifestAttributionSink } from '../../types/selfEvolution';
 import { buildComplexityClassifierInput } from '../../agentv3/queryComplexityContext';
 import type { RuntimeSelection } from '../runtimeSelection';
 import {
-  buildRuntimeSessionMapKey,
   formatTraceContext,
   knowledgeScopeFromAnalysisOptions,
   providerScopeFromAnalysisOptions,
@@ -75,7 +74,6 @@ describe('AnalysisRunSpec shadow mode', () => {
       sessionId: 'session-1',
       traceId: 'trace-current',
       referenceTraceId: 'trace-ref',
-      sessionMapKey: buildRuntimeSessionMapKey('session-1', 'trace-ref'),
     });
     expect(spec.scopes.provider).toEqual(providerScopeFromAnalysisOptions(options));
     expect(spec.scopes.knowledge).toEqual(knowledgeScopeFromAnalysisOptions(options));

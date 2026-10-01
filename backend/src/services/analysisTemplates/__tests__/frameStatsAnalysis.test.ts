@@ -83,7 +83,7 @@ describe('FrameStatsAnalyzer', () => {
     }
     const { analyzer } = createAnalyzerWithRows(rows, ['ts', 'dur_ms', 'name']);
 
-    const result = await analyzer.analyzeFromSlices('trace-1', 'com.demo.app');
+    const result = await analyzer.analyzeFromSlices('trace-1');
 
     expect(result.summary.jankCount).toBe(120);
     expect(result.jankFrames).toHaveLength(100);

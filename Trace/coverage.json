@@ -813,6 +813,7 @@
       "rendering-jank",
       "scene-observation-contracts",
       "scheduler-cpu-contention",
+      "scrolling-frequency-limit-jank",
       "source-analysis-semantic",
       "startup-lifecycle",
       "system-scheduling-evidence",
@@ -1403,9 +1404,10 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "b69509c1b1dbf19d9a1271f3e43e556bcb0b8bbcfe091b63dc49a5748d7003e5",
+            "sha256": "e67e1d090ccd9f9aa852107ff2666c3ce82e821bc0653f022887c22e88e8c8b9",
             "required_columns": [
               "anr_ts",
+              "window_start_ts",
               "timeout_ns",
               "timeout_ms",
               "timeout_source",
@@ -2583,13 +2585,14 @@
         "steps": [
           {
             "id": "cpu_time_by_core",
-            "sha256": "c090cdaf287f065c7124ce9a8d2fd6026af34de51e820b83b8813098fcbbcc49",
+            "sha256": "db99465b692197ba7daeeff3554c24d938c10362d3534f67639cb24d1bf0902b",
             "required_columns": [
               "thread_name",
               "process_name",
               "total_cpu_ms",
               "big_core_ms",
               "little_core_ms",
+              "unknown_core_ms",
               "slice_count",
               "avg_slice_ms"
             ]
@@ -2685,7 +2688,7 @@
           },
           {
             "id": "throttle_detection",
-            "sha256": "b05718b0a1b67eea7b25d86f3c3319f8b697d3b7c1d5f053fa86359c57f197ce",
+            "sha256": "291cab9f82f8d802d4157e7b367a1d66c72d56c01486e857f75d1f6511daa55f",
             "required_columns": [
               "core_type",
               "start_freq_mhz",
@@ -2861,7 +2864,7 @@
         "steps": [
           {
             "id": "workload_by_thread",
-            "sha256": "700c05c795445dea86e8060b077848917f93acbecf619ebd744f054a77b6d99a",
+            "sha256": "7ad89e189e80f1bd95b05a0a00ac68d0c60c96adbb13ff37a633a2fd82a75b3b",
             "required_columns": [
               "window_id",
               "window_start_ts",
@@ -5193,7 +5196,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "f1bbaf788239459b91cc6763f6f0fc2c5f0b3e668f941f100e40651b394c0fd2",
+            "sha256": "0bfadc3213e18cd4e448db51709acf19302adbb2f570f8ae9d63c884ad4d4503",
             "required_columns": [
               "window_start_ts",
               "window_end_ts",
@@ -5204,6 +5207,7 @@
               "tid",
               "role",
               "total_cpu_ms",
+              "returned_total_cpu_ms",
               "q1_big_running_ms",
               "q2_little_running_ms",
               "q3_runnable_ms",
@@ -5663,7 +5667,7 @@
         "steps": [
           {
             "id": "migration_analysis",
-            "sha256": "808ad6bacf4997965855b0032d40e0b6c5ffc7c0ac21069f5d8acc47114372db",
+            "sha256": "fcdaee31558c48739d95220adabf79d827f2ee86431139c69717ab0f6f3a9bb0",
             "required_columns": [
               "window_id",
               "window_start_ts",
@@ -5677,6 +5681,7 @@
               "big_to_little",
               "little_to_big",
               "big_core_pct",
+              "unknown_core_ns",
               "unique_cpus"
             ]
           }
@@ -7132,22 +7137,24 @@
           },
           {
             "id": "cpu_core_analysis",
-            "sha256": "cf1df1d27b4e2889a761cc8634655ba0ccd6ea0dd85397ddb4cf39563f5fbacc",
+            "sha256": "abb712ce0aabc0452f7b8dfd3651db28170e065d19f3afe707f5e0f88d55a672",
             "required_columns": [
               "thread_type",
               "big_core_ms",
               "little_core_ms",
+              "unknown_core_ms",
               "total_running_ms",
               "running_pct"
             ]
           },
           {
             "id": "quadrant_analysis",
-            "sha256": "f00b698b35dcdb3e32882474546334cefb702e9085d9c91575e9330fdad4c5ad",
+            "sha256": "3f090e4b1d346eab1db432ddd38314a7896dcaae140fa520849ccd45a3eb758d",
             "required_columns": [
               "thread_type",
               "q1_big_running_ms",
               "q2_little_running_ms",
+              "unknown_running_ms",
               "q3_runnable_ms",
               "q4_sleeping_ms",
               "total_ms",
@@ -7722,7 +7729,7 @@
           },
           {
             "id": "core_type_stats",
-            "sha256": "9f85227dc1f0ab4b8f37526ddedac04a4daa4d4b174776118a9e7931e509e97d",
+            "sha256": "06a2ff81322bd8ea569f38daf0b13a61ae2e6e7ea29f03336985b0a67844ac83",
             "required_columns": [
               "upid",
               "window_start_ts",
@@ -7732,12 +7739,15 @@
               "total_time_ms",
               "percent",
               "slice_count",
-              "core_count"
+              "core_count",
+              "tier",
+              "big_group_percent",
+              "unknown_time_ns"
             ]
           },
           {
             "id": "thread_cpu_usage",
-            "sha256": "aa31e8dca61f26d008e7c8548094c2ae3691d4a69ccd557b7dd27c0952c660fc",
+            "sha256": "327259075983248dbece7e5c03dd5906a55f17fbf3e3cb64bc6d794d751022de",
             "required_columns": [
               "upid",
               "window_start_ts",
@@ -7749,7 +7759,8 @@
               "sched_count",
               "avg_slice_ms",
               "thread_type",
-              "big_core_percent"
+              "big_core_percent",
+              "unknown_core_percent"
             ]
           },
           {
@@ -9266,13 +9277,14 @@
           },
           {
             "id": "gc_in_frame",
-            "sha256": "ed0d4ade1ea124e8e2fc69ef6581b913612e4640fd22c9ac92d91c8cee83cce1",
+            "sha256": "a2038afaa33250807ff10232828241fa82b2771d3de973d3332d3115eb44e801",
             "required_columns": [
               "gc_type",
               "gc_count",
               "total_dur_ms",
               "overlap_ms",
-              "max_dur_ms"
+              "max_dur_ms",
+              "total_overlap_ms"
             ]
           },
           {
@@ -9296,7 +9308,7 @@
           },
           {
             "id": "root_cause_summary",
-            "sha256": "b0a56177b67966bc6212cb6c9dd089d98c3778b3f172c044170310691957934b",
+            "sha256": "4abae76fa17cb77770086613dae93a1d7f3b28e6dc7be6a4915e9ad24b96234e",
             "required_columns": [
               "primary_cause",
               "deep_reason",
@@ -9313,7 +9325,23 @@
               "jank_type",
               "lock_contention_ms",
               "render_sync_wait_ms",
-              "render_sync_rt_work_ms"
+              "render_sync_rt_work_ms",
+              "freq_limit_state",
+              "freq_limit_basis",
+              "freq_limit_onset_confirmed",
+              "freq_limit_onset_ts",
+              "freq_limit_cooling_basis",
+              "freq_limit_policy_cpu",
+              "freq_limit_mhz",
+              "freq_limit_depth_pct",
+              "freq_limit_binding_ratio",
+              "freq_limit_onset_binding_ns",
+              "freq_limit_binding_ns",
+              "freq_limit_run_ns",
+              "freq_limit_trace_episode_id",
+              "rt_freq_limit_state",
+              "rt_freq_limit_binding_ns",
+              "rt_freq_limit_policy_cpu"
             ]
           }
         ]
@@ -11039,7 +11067,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "846864df4a5e9d4a0efae8a2c7f6cfb46aa292d885e1dd30c3393c840787d52b",
+            "sha256": "073fdcd138d1351e2485c58551364b0b9876a4066aa42b48795d0ae228c10133",
             "required_columns": [
               "system_evidence_json",
               "frame_id",
@@ -11095,6 +11123,23 @@
               "frame_budget_ms",
               "vsync_source",
               "device_peak_freq_mhz",
+              "freq_ceiling_ratio_pct",
+              "freq_limit_state",
+              "freq_limit_basis",
+              "freq_limit_onset_confirmed",
+              "freq_limit_onset_ts",
+              "freq_limit_cooling_basis",
+              "freq_limit_policy_cpu",
+              "freq_limit_mhz",
+              "freq_limit_depth_pct",
+              "freq_limit_binding_ratio",
+              "freq_limit_onset_binding_ns",
+              "freq_limit_binding_ns",
+              "freq_limit_run_ns",
+              "freq_limit_trace_episode_id",
+              "rt_freq_limit_state",
+              "rt_freq_limit_binding_ns",
+              "rt_freq_limit_policy_cpu",
               "file_io_overlap_ms",
               "input_event_count",
               "input_move_count",
@@ -11118,7 +11163,7 @@
           },
           {
             "id": "global_context_flags",
-            "sha256": "95ff2e7ea7f453c6bdf6bcc48a7042b25e38ce6ee6804acb97ffcaf9a9a49c6a",
+            "sha256": "58f55a8eeefe92781f5e7ba5c53d0a524417d8d8476fc4ab2e09bfec06e6c6b4",
             "required_columns": [
               "video_during_scroll",
               "video_slice_count",
@@ -11129,6 +11174,14 @@
               "frequency_decline_observed",
               "thermal_trending",
               "thermal_evidence",
+              "freq_limit_classification",
+              "freq_limit_episode_count",
+              "freq_limit_confirmed_episode_count",
+              "freq_limit_onset_trigger_mix",
+              "freq_limit_class_note",
+              "freq_limit_evidence_missing_reason",
+              "freq_limit_trace_summary",
+              "freq_limit_trace_summary_scope",
               "non_app_big_core_pct",
               "background_cpu_heavy"
             ]
@@ -12261,7 +12314,7 @@
           },
           {
             "id": "core_distribution",
-            "sha256": "445ede2a430d8e4f95f03ac43e6c663fa12b64b9cd066395107fb8f6feb226e7",
+            "sha256": "6b88083f63949dd4ef89009c07cc5403098573797d2846f49fcd03ab73eca5eb",
             "required_columns": [
               "thread_name",
               "tid",
@@ -12269,7 +12322,10 @@
               "total_ms",
               "big_core_pct",
               "medium_core_pct",
-              "little_core_pct"
+              "little_core_pct",
+              "unknown_core_pct",
+              "unknown_core_ms",
+              "big_core_pct_definition"
             ]
           },
           {
@@ -12309,13 +12365,15 @@
           },
           {
             "id": "profiling_conclusion",
-            "sha256": "17da28666a3c835650e718d801a7bb65c7b0b24aa1a7312462c8b4a1e584eb45",
+            "sha256": "1d73b7cbbb67f422c8e54054faff2fb4961717f1f89394e5384b4b1f386a5ba6",
             "required_columns": [
               "top_cpu_thread",
               "top_thread_cpu_ms",
               "avg_sched_latency_ms",
               "worst_sched_latency_ms",
               "avg_big_core_usage_pct",
+              "big_core_sample_threads",
+              "classified_sample_threads",
               "latency_severity",
               "suggestion"
             ]

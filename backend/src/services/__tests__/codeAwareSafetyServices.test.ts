@@ -237,10 +237,10 @@ describe('CodeLookupLedger', () => {
     ].join('\n'));
     const warnings = warningsDuring(() => {
       expect(() => CodeLookupLedger.restore('session-a', 100, 1, ledgerPath))
-        .toThrow(/^code lookup ledger is not valid JSON$/);
+        .toThrow(/^code_lookup_ledger_corrupt_record: line 2$/);
     });
     expect(warnings).toEqual([['[CodeLookupLedger] Ledger unreadable', expect.objectContaining({
-      sessionId: 'session-a', line: 2, store: 'code lookup ledger', reason: 'invalid_json'})]]);
+      sessionId: 'session-a', path: ledgerPath, line: 2})]]);
     expect(JSON.stringify(warnings)).not.toContain('LEDGER-CA');
   });
 

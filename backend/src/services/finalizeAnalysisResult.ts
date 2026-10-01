@@ -31,7 +31,7 @@ import {projectConclusionSemanticInput} from './security/conclusionProtocolProje
 import {projectStoredConclusionSourceMetadata} from './security/analysisDeliveryProjection';
 import {compactSemanticEvidenceSnapshot} from './evidence/semanticEvidenceSnapshot';
 import {compactSemanticSourceSnapshot} from './evidence/semanticSourceSnapshot';
-import {compactInvestigationEvidenceForSemantic} from './evidence/investigationEvidenceLedger';
+import {compactInvestigationEvidenceForSemantic, investigationEvidenceSemanticBudgets} from './evidence/investigationEvidenceLedger';
 import {applySourceLocationProofs} from './codebase/sourceLocationProof';
 import {isUnusedSourceDecision, type SourceExecutionScopeV1, type SourceUseDecisionV1} from './codebase/sourceUseDecision';
 import {projectOwnerClaimVerification, projectOwnerClaimSupport,
@@ -548,15 +548,19 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       } else {
         // Select the largest complete-cohort ledger projection that fits the exact
         // shared prompt assembly. Every candidate crosses the same security boundary.
-        let low = 0, high = FINAL_SEMANTIC_INPUT_BYTE_LIMIT;
+        // The search runs over the budgets where a cohort enters the view, so each
+        // round sizes a distinct view: the prompt is assembled synchronously and
+        // its cost comes out of the review's own deadline.
+        const budgets = investigationEvidenceSemanticBudgets(context.investigationEvidence);
+        let low = 0, high = budgets.length - 1;
         let best: FinalSemanticSnapshot | undefined;
-        let smallestOverLimit: {budget: number; snapshot: FinalSemanticSnapshot} | undefined;
+        let smallestOverLimit: FinalSemanticSnapshot | undefined;
         let unsafe: FinalSemanticSnapshot | undefined;
         let templateUnavailable: FinalSemanticSnapshot | undefined;
         while (low <= high) {
-          const budget = Math.floor((low + high) / 2);
-          const ledger = compactInvestigationEvidenceForSemantic(context.investigationEvidence, budget);
-          if (!ledger) {low = budget + 1; continue;}
+          const index = Math.floor((low + high) / 2);
+          const ledger = compactInvestigationEvidenceForSemantic(context.investigationEvidence, budgets[index]);
+          if (!ledger) break;
           const value = {...snapshot, investigationEvidence: ledger};
           const projected = projectSnapshot(value);
           const candidateSnapshot = safeProjection(value, projected);
@@ -567,17 +571,18 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
           catch {templateUnavailable = candidateSnapshot; break;}
           if (!assembled) {templateUnavailable = candidateSnapshot; break;}
           const bytes = Buffer.byteLength(assembled.prompt, 'utf8');
-          if (bytes <= FINAL_SEMANTIC_INPUT_BYTE_LIMIT) {best = candidateSnapshot; low = budget + 1;}
-          else {
-            if (!smallestOverLimit || budget < smallestOverLimit.budget) smallestOverLimit = {budget, snapshot: candidateSnapshot};
-            high = budget - 1;
-          }
+          if (bytes <= FINAL_SEMANTIC_INPUT_BYTE_LIMIT) {best = candidateSnapshot; low = index + 1;}
+          // The search only moves down after an overflow, so the latest one is the smallest.
+          else {smallestOverLimit = candidateSnapshot; high = index - 1;}
         }
-        const baseProjection = safeProjection(snapshot, projectSnapshot(snapshot));
-        const noLedgerFits = baseProjection.inputCoverage === 'complete'
-          ? {...baseProjection, inputCoverage: 'incomplete' as const, inputProjectionIssue: 'semantic_input_limit' as const}
-          : baseProjection;
-        safeSnapshot = unsafe ?? templateUnavailable ?? best ?? smallestOverLimit?.snapshot ?? noLedgerFits;
+        // The ledger-free view is projected only when no ledger view was selected.
+        const noLedgerFits = (): FinalSemanticSnapshot => {
+          const baseProjection = safeProjection(snapshot, projectSnapshot(snapshot));
+          return baseProjection.inputCoverage === 'complete'
+            ? {...baseProjection, inputCoverage: 'incomplete', inputProjectionIssue: 'semantic_input_limit'}
+            : baseProjection;
+        };
+        safeSnapshot = unsafe ?? templateUnavailable ?? best ?? smallestOverLimit ?? noLedgerFits();
       }
       assertOwner(owner);
       const report = (event: FinalizationProgressEvent) => {

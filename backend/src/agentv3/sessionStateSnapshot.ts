@@ -123,6 +123,34 @@ export interface ProviderContinuityBreak {
   reason: ProviderContinuityBreakReason;
 }
 
+function isProviderContinuityBreak(value: unknown): value is ProviderContinuityBreak {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const candidate = value as Partial<ProviderContinuityBreak>;
+  return typeof candidate.at === 'number'
+    && Number.isFinite(candidate.at)
+    && typeof candidate.previousProviderHash === 'string'
+    && candidate.previousProviderHash.length > 0
+    && candidate.reason === 'provider_snapshot_hash_mismatch';
+}
+
+/**
+ * The valid continuity-break audit carried by a persisted snapshot, plus one
+ * entry when this restore found the provider snapshot changed from
+ * `changedFromProviderHash`. Every restore path must carry it forward, because
+ * the next persisted snapshot is written from the live session.
+ */
+export function continuityBreaksAfterRestore(
+  existing: unknown,
+  changedFromProviderHash: string | null | undefined,
+): ProviderContinuityBreak[] {
+  const breaks = Array.isArray(existing) ? existing.filter(isProviderContinuityBreak) : [];
+  if (!changedFromProviderHash) return breaks;
+  return [
+    ...breaks,
+    {at: Date.now(), previousProviderHash: changedFromProviderHash, reason: 'provider_snapshot_hash_mismatch'},
+  ];
+}
+
 export type SessionLineageReason = 'cli-level3-degraded';
 
 export interface SessionLineage {
@@ -131,35 +159,41 @@ export interface SessionLineage {
   at: number;
 }
 
-export interface ClaudeSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. Claude runs start from fresh physical
+ * context, write `{}` here and never read the SDK session id back.
+ */
+interface ClaudeSnapshotEngineState {
   sdkSessionId?: string;
   sdkSessionMode?: 'full';
 }
 
+/**
+ * Shape of legacy stored content only. OpenAI runs start from fresh physical
+ * context, write `{}` here and never read these fields back.
+ */
 export interface OpenAISnapshotEngineState {
   history?: unknown[];
   lastResponseId?: string;
   runState?: string;
 }
 
-export type ThirdPartyOpaqueDegradedReason =
-  | 'not_json_serializable'
-  | 'too_large'
+type ThirdPartyOpaqueDegradedReason =
   | 'missing_required_fields'
   | 'state_unavailable'
   | 'session_restore_failed';
 
-export interface PiAgentCoreOpaqueState {
+interface PiAgentCoreOpaqueState {
   version: 1;
   messages?: unknown[];
   messageCount: number;
   originalMessageCount?: number;
   truncated?: boolean;
   byteSize?: number;
-  degradedReason?: ThirdPartyOpaqueDegradedReason;
+  degradedReason?: 'not_json_serializable' | 'too_large';
 }
 
-export interface OpenCodeOpaqueState {
+interface OpenCodeOpaqueState {
   version: 1;
   openCodeSessionId?: string;
   projectDir?: string;
@@ -168,21 +202,34 @@ export interface OpenCodeOpaqueState {
   degradedReason?: ThirdPartyOpaqueDegradedReason;
 }
 
-export interface PiAgentCoreSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. Pi runs start from fresh physical
+ * context, write `{}` here and never read the transcript back.
+ */
+interface PiAgentCoreSnapshotEngineState {
   opaque?: PiAgentCoreOpaqueState;
 }
 
-export interface OpenCodeSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. OpenCode runs create a fresh native
+ * session in directories derived from the SmartPerfetto session id, write `{}`
+ * here and never read the stored session id or directories back.
+ */
+interface OpenCodeSnapshotEngineState {
   opaque?: OpenCodeOpaqueState;
 }
 
-export interface QoderOpaqueState {
+interface QoderOpaqueState {
   version: 1;
   sdkSessionId?: string;
   degradedReason?: ThirdPartyOpaqueDegradedReason;
 }
 
-export interface QoderSnapshotEngineState {
+/**
+ * Shape of legacy stored content only. Qoder runs start from fresh physical
+ * context, write `{}` here and never read the SDK session id back.
+ */
+interface QoderSnapshotEngineState {
   opaque?: QoderOpaqueState;
 }
 
@@ -242,65 +289,52 @@ function createSnapshotEngineProviderState(
 }
 
 export function createClaudeSnapshotEngineState(
-  input: EngineProviderStateInput & ClaudeSnapshotEngineState,
+  input: EngineProviderStateInput,
 ): SnapshotEngineState {
   return {
     kind: 'claude-agent-sdk',
     provider: createSnapshotEngineProviderState(input),
-    claude: {
-      sdkSessionId: input.sdkSessionId,
-      sdkSessionMode: input.sdkSessionMode,
-    },
+    claude: {},
   };
 }
 
 export function createOpenAISnapshotEngineState(
-  input: EngineProviderStateInput & OpenAISnapshotEngineState,
+  input: EngineProviderStateInput,
 ): SnapshotEngineState {
   return {
     kind: 'openai-agents-sdk',
     provider: createSnapshotEngineProviderState(input),
-    openai: {
-      history: input.history,
-      lastResponseId: input.lastResponseId,
-      runState: input.runState,
-    },
+    openai: {},
   };
 }
 
 export function createPiAgentCoreSnapshotEngineState(
-  input: EngineProviderStateInput & PiAgentCoreSnapshotEngineState = {},
+  input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
     kind: 'pi-agent-core',
     provider: createSnapshotEngineProviderState(input),
-    pi: {
-      opaque: input.opaque,
-    },
+    pi: {},
   };
 }
 
 export function createOpenCodeSnapshotEngineState(
-  input: EngineProviderStateInput & OpenCodeSnapshotEngineState = {},
+  input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
     kind: 'opencode',
     provider: createSnapshotEngineProviderState(input),
-    opencode: {
-      opaque: input.opaque,
-    },
+    opencode: {},
   };
 }
 
 export function createQoderSnapshotEngineState(
-  input: EngineProviderStateInput & QoderSnapshotEngineState = {},
+  input: EngineProviderStateInput = {},
 ): SnapshotEngineState {
   return {
     kind: 'qoder-agent-sdk',
     provider: createSnapshotEngineProviderState(input),
-    qoder: {
-      opaque: input.opaque,
-    },
+    qoder: {},
   };
 }
 
@@ -353,105 +387,6 @@ export function snapshotProvesNoPrivateContext(
   return Boolean(snapshot.analysisContextFingerprint) && !analysisHasPrivateContext(snapshot);
 }
 
-export function getClaudeSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState' | 'sdkSessionId' | 'sdkSessionMode'>,
-): ClaudeSnapshotEngineState | undefined {
-  if (snapshot.engineState) {
-    return snapshot.engineState.kind === 'claude-agent-sdk'
-      ? snapshot.engineState.claude
-      : undefined;
-  }
-  if (snapshot.sdkSessionId || snapshot.sdkSessionMode) {
-    return {
-      sdkSessionId: snapshot.sdkSessionId,
-      sdkSessionMode: snapshot.sdkSessionMode,
-    };
-  }
-  return undefined;
-}
-
-export function getOpenAISnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState' | 'openAIHistory' | 'openAILastResponseId' | 'openAIRunState' | 'sdkSessionId'>,
-): OpenAISnapshotEngineState | undefined {
-  if (snapshot.engineState) {
-    return snapshot.engineState.kind === 'openai-agents-sdk'
-      ? snapshot.engineState.openai
-      : undefined;
-  }
-  if (snapshot.openAIHistory || snapshot.openAILastResponseId || snapshot.openAIRunState || snapshot.sdkSessionId) {
-    return {
-      history: snapshot.openAIHistory,
-      lastResponseId: snapshot.openAILastResponseId || snapshot.sdkSessionId,
-      runState: snapshot.openAIRunState,
-    };
-  }
-  return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-export function getPiAgentCoreSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState'>,
-): PiAgentCoreSnapshotEngineState | undefined {
-  if (snapshot.engineState?.kind !== 'pi-agent-core') return undefined;
-  const opaque = snapshot.engineState.pi.opaque;
-  if (!isRecord(opaque) || opaque.version !== 1) return undefined;
-  return {
-    opaque: {
-      version: 1,
-      messages: Array.isArray(opaque.messages) ? opaque.messages : undefined,
-      messageCount: typeof opaque.messageCount === 'number' ? opaque.messageCount : 0,
-      originalMessageCount: typeof opaque.originalMessageCount === 'number'
-        ? opaque.originalMessageCount
-        : undefined,
-      truncated: typeof opaque.truncated === 'boolean' ? opaque.truncated : undefined,
-      byteSize: typeof opaque.byteSize === 'number' ? opaque.byteSize : undefined,
-      degradedReason: typeof opaque.degradedReason === 'string'
-        ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
-        : undefined,
-    },
-  };
-}
-
-export function getOpenCodeSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState'>,
-): OpenCodeSnapshotEngineState | undefined {
-  if (snapshot.engineState?.kind !== 'opencode') return undefined;
-  const opaque = snapshot.engineState.opencode.opaque;
-  if (!isRecord(opaque) || opaque.version !== 1) return undefined;
-  return {
-    opaque: {
-      version: 1,
-      openCodeSessionId: typeof opaque.openCodeSessionId === 'string' ? opaque.openCodeSessionId : undefined,
-      projectDir: typeof opaque.projectDir === 'string' ? opaque.projectDir : undefined,
-      homeDir: typeof opaque.homeDir === 'string' ? opaque.homeDir : undefined,
-      configDir: typeof opaque.configDir === 'string' ? opaque.configDir : undefined,
-      degradedReason: typeof opaque.degradedReason === 'string'
-        ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
-        : undefined,
-    },
-  };
-}
-
-export function getQoderSnapshotEngineState(
-  snapshot: Pick<SessionStateSnapshot, 'engineState'>,
-): QoderSnapshotEngineState | undefined {
-  if (snapshot.engineState?.kind !== 'qoder-agent-sdk') return undefined;
-  const opaque = snapshot.engineState.qoder.opaque;
-  if (!isRecord(opaque) || opaque.version !== 1) return undefined;
-  return {
-    opaque: {
-      version: 1,
-      sdkSessionId: typeof opaque.sdkSessionId === 'string' ? opaque.sdkSessionId : undefined,
-      degradedReason: typeof opaque.degradedReason === 'string'
-        ? opaque.degradedReason as ThirdPartyOpaqueDegradedReason
-        : undefined,
-    },
-  };
-}
-
 function normalizeSourceUseSnapshotFields(
   rawSourceUseDecision: unknown,
   rawCodeLookupSummary: CodeLookupSummary | undefined,
@@ -484,6 +419,18 @@ function normalizeSourceUseSnapshotFields(
   };
 }
 
+/** Every runtime's engine state now holds only its provider pin. */
+const PROVIDER_ONLY_ENGINE_STATE: Record<
+  AgentRuntimeKind,
+  (input: EngineProviderStateInput) => SnapshotEngineState
+> = {
+  'claude-agent-sdk': createClaudeSnapshotEngineState,
+  'openai-agents-sdk': createOpenAISnapshotEngineState,
+  'pi-agent-core': createPiAgentCoreSnapshotEngineState,
+  'opencode': createOpenCodeSnapshotEngineState,
+  'qoder-agent-sdk': createQoderSnapshotEngineState,
+};
+
 export function normalizeSessionStateSnapshot(
   snapshot: SessionStateSnapshot,
 ): SessionStateSnapshot {
@@ -503,39 +450,10 @@ export function normalizeSessionStateSnapshot(
         : undefined
     );
 
-  if (!snapshot.engineState && runtimeKind === 'claude-agent-sdk') {
+  if (!snapshot.engineState && runtimeKind) {
     normalizedSnapshot = {
       ...snapshot,
-      engineState: createClaudeSnapshotEngineState({
-        providerId: snapshot.agentRuntimeProviderId,
-        providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
-        sdkSessionId: snapshot.sdkSessionId,
-        sdkSessionMode: snapshot.sdkSessionMode,
-      }),
-    };
-  } else if (!snapshot.engineState && runtimeKind === 'openai-agents-sdk') {
-    normalizedSnapshot = {
-      ...snapshot,
-      engineState: createOpenAISnapshotEngineState({
-        providerId: snapshot.agentRuntimeProviderId,
-        providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
-        history: snapshot.openAIHistory,
-        lastResponseId: snapshot.openAILastResponseId || snapshot.sdkSessionId,
-        runState: snapshot.openAIRunState,
-      }),
-    };
-  } else if (!snapshot.engineState && runtimeKind === 'pi-agent-core') {
-    normalizedSnapshot = {
-      ...snapshot,
-      engineState: createPiAgentCoreSnapshotEngineState({
-        providerId: snapshot.agentRuntimeProviderId,
-        providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
-      }),
-    };
-  } else if (!snapshot.engineState && runtimeKind === 'opencode') {
-    normalizedSnapshot = {
-      ...snapshot,
-      engineState: createOpenCodeSnapshotEngineState({
+      engineState: PROVIDER_ONLY_ENGINE_STATE[runtimeKind]({
         providerId: snapshot.agentRuntimeProviderId,
         providerSnapshotHash: snapshot.agentRuntimeProviderSnapshotHash,
       }),
@@ -634,9 +552,11 @@ export interface SessionStateSnapshot {
   architecture?: ArchitectureInfo;
   /** Canonical engine-local runtime state. Product/report state stays top-level. */
   engineState?: SnapshotEngineState;
-  /** Legacy Claude/OpenAI runtime mirror kept during the compatible M7 split. */
+  /**
+   * Legacy Claude runtime mirrors, no longer written. Still read to infer the
+   * runtime kind of snapshots that predate `agentRuntimeKind`/`engineState`.
+   */
   sdkSessionId?: string;
-  /** Legacy Claude runtime mirror kept during the compatible M7 split. */
   sdkSessionMode?: 'full';
 
   // --- Backend Runtime State (legacy mirrors; use helpers above for reads) ---
@@ -649,12 +569,11 @@ export interface SessionStateSnapshot {
    */
   agentRuntimeProviderId?: string | null;
   /**
-   * Non-secret hash of the provider/runtime configuration that created the SDK
-   * session. Resume may only reuse sdkSessionId when this still matches the
-   * current resolved provider snapshot.
+   * Non-secret hash of the provider/runtime configuration that produced the
+   * snapshot, compared with the current resolved provider snapshot on restore.
    */
   agentRuntimeProviderSnapshotHash?: string | null;
-  /** Append-only provider/runtime continuity breaks that forced fresh SDK context. */
+  /** Append-only audit of provider snapshot changes observed when this session was restored. */
   continuityBreaks?: ProviderContinuityBreak[];
   /** Authorization partition for source/RAG continuation. */
   analysisContextFingerprint?: string;
@@ -664,11 +583,12 @@ export interface SessionStateSnapshot {
   backgroundKnowledgeReferences?: import('../types/sparkContracts').BackgroundKnowledgeReference[];
   /** Backend-session ancestry when a user-visible session had to bridge to a fresh backend session. */
   lineage?: SessionLineage;
-  /** OpenAI Agents SDK history for cross-restart multi-turn continuation. */
+  /**
+   * Legacy OpenAI Agents SDK mirrors, no longer written. Still read to infer the
+   * runtime kind of snapshots that predate `agentRuntimeKind`/`engineState`.
+   */
   openAIHistory?: unknown[];
-  /** Last provider response ID from the OpenAI Agents SDK run. */
   openAILastResponseId?: string;
-  /** Reserved serialized OpenAI run state for future SDK-native restoration. */
   openAIRunState?: string;
   /** Code-aware analysis mode persisted with the session. */
   codeAwareMode?: CodeAwareMode;
@@ -718,8 +638,8 @@ export interface SessionStateSnapshot {
 /**
  * Session-level fields provided by the route layer to `takeSnapshot()`.
  *
- * ClaudeRuntime reads its own Maps (notes, plans, flags, artifacts, architecture,
- * sdkSessionId) internally. The route layer provides the session-scoped arrays
+ * ClaudeRuntime reads its own Maps (notes, plans, flags, artifacts, architecture)
+ * internally. The route layer provides the session-scoped arrays
  * that live in the AnalysisSession object.
  */
 export interface SessionFieldsForSnapshot {
@@ -750,7 +670,7 @@ export interface SessionFieldsForSnapshot {
   agentRuntimeProviderId?: string | null;
   /** Non-secret hash of the resolved provider/runtime configuration. */
   agentRuntimeProviderSnapshotHash?: string | null;
-  /** Append-only provider/runtime continuity breaks that forced fresh SDK context. */
+  /** Append-only audit of provider snapshot changes observed when this session was restored. */
   continuityBreaks?: ProviderContinuityBreak[];
   analysisContextFingerprint?: string;
   androidInternalsPackPin?: SessionStateSnapshot['androidInternalsPackPin'];

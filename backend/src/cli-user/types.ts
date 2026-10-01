@@ -95,8 +95,6 @@ export interface CliSessionConfig {
   agentRuntimeKind?: BackendAgentRuntimeKind;
   /** Non-secret provider/runtime snapshot hash captured for diagnostics. */
   providerSnapshotHash?: string | null;
-  /** SDK session id for Claude Agent SDK context resume (agentv3 only). */
-  sdkSessionId?: string;
   /** Claude model actually used — preserved for consistency across resumes. */
   model?: string;
   /** Code-aware mode selected for this analysis turn, if any. */

@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1367,
-    "explicitColumnCount": 5034
+    "explicitColumnCount": 5084
   },
   "skills": {
     "ams_module": {
@@ -3178,6 +3178,12 @@
                 "en": "ANR Ts"
               }
             },
+            "window_start_ts": {
+              "label": {
+                "zh-CN": "窗口起点",
+                "en": "Window Start Ts"
+              }
+            },
             "timeout_ns": {
               "label": {
                 "zh-CN": "超时时长(ns)",
@@ -5866,7 +5872,7 @@
             },
             "big_core_ms": {
               "label": {
-                "zh-CN": "大核运行",
+                "zh-CN": "大核组运行（超大/大/中核）",
                 "en": "Big Core ms"
               }
             },
@@ -5874,6 +5880,12 @@
               "label": {
                 "zh-CN": "小核运行",
                 "en": "Little Core ms"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Core ms"
               }
             },
             "total_running_ms": {
@@ -5921,6 +5933,12 @@
               "label": {
                 "zh-CN": "Q2 小核 Running",
                 "en": "Q2 Little Running ms"
+              }
+            },
+            "unknown_running_ms": {
+              "label": {
+                "zh-CN": "未知核类型 Running",
+                "en": "Unknown Running ms"
               }
             },
             "q3_runnable_ms": {
@@ -10829,6 +10847,24 @@
                 "zh-CN": "核心数",
                 "en": "Core Count"
               }
+            },
+            "tier": {
+              "label": {
+                "zh-CN": "Tier",
+                "en": "tier"
+              }
+            },
+            "big_group_percent": {
+              "label": {
+                "zh-CN": "大核组（超大/大/中核）占比",
+                "en": "Big Group Percent"
+              }
+            },
+            "unknown_time_ns": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Time ns"
+              }
             }
           },
           "synthesizeLabels": {
@@ -11335,8 +11371,14 @@
             },
             "big_core_percent": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Percent"
+              }
+            },
+            "unknown_core_percent": {
+              "label": {
+                "zh-CN": "未知核类型占比",
+                "en": "Unknown Core Percent"
               }
             }
           },
@@ -14270,13 +14312,13 @@
             },
             "big_core_pct": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Pct"
               }
             },
             "medium_core_pct": {
               "label": {
-                "zh-CN": "中核占比",
+                "zh-CN": "其中中核占比",
                 "en": "Medium Core Pct"
               }
             },
@@ -14284,6 +14326,24 @@
               "label": {
                 "zh-CN": "小核占比",
                 "en": "Little Core Pct"
+              }
+            },
+            "unknown_core_pct": {
+              "label": {
+                "zh-CN": "未知核类型占比",
+                "en": "Unknown Core Pct"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型运行时间",
+                "en": "Unknown Core ms"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核组口径",
+                "en": "Big Core Pct Definition"
               }
             }
           },
@@ -14459,8 +14519,20 @@
             },
             "avg_big_core_usage_pct": {
               "label": {
-                "zh-CN": "大核使用率",
+                "zh-CN": "样本线程平均大核组占比",
                 "en": "Avg Big Core Usage Pct"
+              }
+            },
+            "big_core_sample_threads": {
+              "label": {
+                "zh-CN": "大小核样本线程数",
+                "en": "Big Core Sample Threads"
+              }
+            },
+            "classified_sample_threads": {
+              "label": {
+                "zh-CN": "拓扑已分类样本线程数",
+                "en": "Classified Sample Threads"
               }
             },
             "latency_severity": {
@@ -14642,7 +14714,7 @@
             },
             "big_core_ms": {
               "label": {
-                "zh-CN": "大核时间",
+                "zh-CN": "大核组时间（超大/大/中核）",
                 "en": "Big Core ms"
               }
             },
@@ -14650,6 +14722,12 @@
               "label": {
                 "zh-CN": "小核时间",
                 "en": "Little Core ms"
+              }
+            },
+            "unknown_core_ms": {
+              "label": {
+                "zh-CN": "未知核类型时间",
+                "en": "Unknown Core ms"
               }
             },
             "slice_count": {
@@ -15045,43 +15123,43 @@
           "columns": {
             "core_type": {
               "label": {
-                "zh-CN": "核心类型",
+                "zh-CN": "核心类别",
                 "en": "Core Type"
               }
             },
             "start_freq_mhz": {
               "label": {
-                "zh-CN": "起始频率",
+                "zh-CN": "窗口内首采样均值",
                 "en": "Start Freq MHz"
               }
             },
             "end_freq_mhz": {
               "label": {
-                "zh-CN": "结束频率",
+                "zh-CN": "窗口内末采样均值",
                 "en": "End Freq MHz"
               }
             },
             "min_freq_mhz": {
               "label": {
-                "zh-CN": "最低频率",
+                "zh-CN": "类别最低频率",
                 "en": "Min Freq MHz"
               }
             },
             "max_freq_mhz": {
               "label": {
-                "zh-CN": "最高频率",
+                "zh-CN": "类别最高频率",
                 "en": "Max Freq MHz"
               }
             },
             "freq_drop_pct": {
               "label": {
-                "zh-CN": "降幅",
+                "zh-CN": "单轨最大频率跨度",
                 "en": "Freq Drop Pct"
               }
             },
             "frequency_variation_detected": {
               "label": {
-                "zh-CN": "观测到频率变化",
+                "zh-CN": "单轨跨度超 30%",
                 "en": "Frequency Variation Detected"
               }
             },
@@ -22237,6 +22315,12 @@
                 "zh-CN": "最大单次",
                 "en": "Max Dur ms"
               }
+            },
+            "total_overlap_ms": {
+              "label": {
+                "zh-CN": "总重叠",
+                "en": "Total Overlap ms"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -22704,6 +22788,102 @@
               "label": {
                 "zh-CN": "RenderThread同步阶段工作",
                 "en": "Render Sync Rt Work ms"
+              }
+            },
+            "freq_limit_state": {
+              "label": {
+                "zh-CN": "主线程限频状态",
+                "en": "Freq Limit State"
+              }
+            },
+            "freq_limit_basis": {
+              "label": {
+                "zh-CN": "限频触发依据",
+                "en": "Freq Limit Basis"
+              }
+            },
+            "freq_limit_onset_confirmed": {
+              "label": {
+                "zh-CN": "热控施加已确认",
+                "en": "Freq Limit Onset Confirmed"
+              }
+            },
+            "freq_limit_onset_ts": {
+              "label": {
+                "zh-CN": "上限值写入时间",
+                "en": "Freq Limit Onset Ts"
+              }
+            },
+            "freq_limit_cooling_basis": {
+              "label": {
+                "zh-CN": "散热设备关联",
+                "en": "Freq Limit Cooling Basis"
+              }
+            },
+            "freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "限频 policy",
+                "en": "Freq Limit Policy CPU"
+              }
+            },
+            "freq_limit_mhz": {
+              "label": {
+                "zh-CN": "频率上限",
+                "en": "Freq Limit MHz"
+              }
+            },
+            "freq_limit_depth_pct": {
+              "label": {
+                "zh-CN": "上限低于观测最高上限",
+                "en": "Freq Limit Depth Pct"
+              }
+            },
+            "freq_limit_binding_ratio": {
+              "label": {
+                "zh-CN": "运行频率/上限",
+                "en": "Freq Limit Binding Ratio"
+              }
+            },
+            "freq_limit_onset_binding_ns": {
+              "label": {
+                "zh-CN": "该上限值约束运行时长",
+                "en": "Freq Limit Onset Binding ns"
+              }
+            },
+            "freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "跨上限值约束运行时长",
+                "en": "Freq Limit Binding ns"
+              }
+            },
+            "freq_limit_run_ns": {
+              "label": {
+                "zh-CN": "关键操作运行时长",
+                "en": "Freq Limit Run ns"
+              }
+            },
+            "freq_limit_trace_episode_id": {
+              "label": {
+                "zh-CN": "限频区段",
+                "en": "Freq Limit Trace Episode Id"
+              }
+            },
+            "rt_freq_limit_state": {
+              "label": {
+                "zh-CN": "RenderThread 限频状态",
+                "en": "Rt Freq Limit State"
+              }
+            },
+            "rt_freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "RenderThread 上限约束运行时长",
+                "en": "Rt Freq Limit Binding ns"
+              }
+            },
+            "rt_freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "RenderThread 限频 policy",
+                "en": "Rt Freq Limit Policy CPU"
               }
             }
           },
@@ -34155,6 +34335,108 @@
                 "en": "Device Peak Freq MHz"
               }
             },
+            "freq_ceiling_ratio_pct": {
+              "label": {
+                "zh-CN": "大核峰频/设备峰值",
+                "en": "Freq Ceiling Ratio Pct"
+              }
+            },
+            "freq_limit_state": {
+              "label": {
+                "zh-CN": "主线程限频状态",
+                "en": "Freq Limit State"
+              }
+            },
+            "freq_limit_basis": {
+              "label": {
+                "zh-CN": "限频触发依据",
+                "en": "Freq Limit Basis"
+              }
+            },
+            "freq_limit_onset_confirmed": {
+              "label": {
+                "zh-CN": "热控施加已确认",
+                "en": "Freq Limit Onset Confirmed"
+              }
+            },
+            "freq_limit_onset_ts": {
+              "label": {
+                "zh-CN": "上限值写入时间",
+                "en": "Freq Limit Onset Ts"
+              }
+            },
+            "freq_limit_cooling_basis": {
+              "label": {
+                "zh-CN": "散热设备关联",
+                "en": "Freq Limit Cooling Basis"
+              }
+            },
+            "freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "限频 policy",
+                "en": "Freq Limit Policy CPU"
+              }
+            },
+            "freq_limit_mhz": {
+              "label": {
+                "zh-CN": "频率上限",
+                "en": "Freq Limit MHz"
+              }
+            },
+            "freq_limit_depth_pct": {
+              "label": {
+                "zh-CN": "上限低于观测最高上限",
+                "en": "Freq Limit Depth Pct"
+              }
+            },
+            "freq_limit_binding_ratio": {
+              "label": {
+                "zh-CN": "运行频率/上限",
+                "en": "Freq Limit Binding Ratio"
+              }
+            },
+            "freq_limit_onset_binding_ns": {
+              "label": {
+                "zh-CN": "该上限值约束运行时长",
+                "en": "Freq Limit Onset Binding ns"
+              }
+            },
+            "freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "跨上限值约束运行时长",
+                "en": "Freq Limit Binding ns"
+              }
+            },
+            "freq_limit_run_ns": {
+              "label": {
+                "zh-CN": "关键操作运行时长",
+                "en": "Freq Limit Run ns"
+              }
+            },
+            "freq_limit_trace_episode_id": {
+              "label": {
+                "zh-CN": "限频区段",
+                "en": "Freq Limit Trace Episode Id"
+              }
+            },
+            "rt_freq_limit_state": {
+              "label": {
+                "zh-CN": "RenderThread 限频状态",
+                "en": "Rt Freq Limit State"
+              }
+            },
+            "rt_freq_limit_binding_ns": {
+              "label": {
+                "zh-CN": "RenderThread 上限约束运行时长",
+                "en": "Rt Freq Limit Binding ns"
+              }
+            },
+            "rt_freq_limit_policy_cpu": {
+              "label": {
+                "zh-CN": "RenderThread 限频 policy",
+                "en": "Rt Freq Limit Policy CPU"
+              }
+            },
             "file_io_overlap_ms": {
               "label": {
                 "zh-CN": "文件IO重叠",
@@ -37844,6 +38126,12 @@
                 "en": "Total CPU ms"
               }
             },
+            "returned_total_cpu_ms": {
+              "label": {
+                "zh-CN": "返回线程 CPU 时间合计",
+                "en": "Returned Total CPU ms"
+              }
+            },
             "q1_big_running_ms": {
               "label": {
                 "zh-CN": "Q1 大核运行",
@@ -38396,6 +38684,12 @@
               "label": {
                 "zh-CN": "CPU 时间",
                 "en": "Total CPU ms"
+              }
+            },
+            "returned_total_cpu_ms": {
+              "label": {
+                "zh-CN": "返回线程 CPU 时间合计",
+                "en": "Returned Total CPU ms"
               }
             },
             "q1_big_running_ms": {
@@ -43005,8 +43299,14 @@
             },
             "big_core_pct": {
               "label": {
-                "zh-CN": "大核占比",
+                "zh-CN": "大核组占比（超大/大/中核）",
                 "en": "Big Core Pct"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核类型运行",
+                "en": "Unknown Core ns"
               }
             },
             "unique_cpus": {

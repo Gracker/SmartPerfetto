@@ -284,7 +284,7 @@ describe('runStdioLoop', () => {
     const registry = new McpToolRegistry();
     registry.registerSdk(
       stubSdkTool({
-        handler: async (args: unknown) => ({
+        handler: async () => ({
           content: [{type: 'text', text: 'echo'}],
         }),
       }),

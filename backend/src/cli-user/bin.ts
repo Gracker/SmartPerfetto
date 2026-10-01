@@ -7,8 +7,10 @@
  * `smartperfetto` CLI entry point.
  *
  * All async work routes through command handlers that return an exit code.
- * We call `process.exit(code)` explicitly to ensure the process terminates
- * even if some module has a stray setInterval / active handle we missed.
+ * We exit explicitly to ensure the process terminates even if some module has
+ * a stray setInterval / active handle we missed — after a bounded flush of
+ * stdout/stderr (exitAfterFlush), because a pipe discards queued output on
+ * process.exit. Signal exits stay immediate.
  */
 
 // Must stay first: loads env files before any module below reads process.env.
@@ -17,6 +19,7 @@ import {Command, CommanderError, Option} from 'commander';
 import * as fs from 'fs';
 import * as path from 'path';
 import { bootstrap } from './bootstrap';
+import { exitAfterFlush } from './exitAfterFlush';
 import { createRenderer, parseOutputFormat, parseTextJsonFormat, type OutputFormat } from './repl/renderer';
 import { CliAnalyzeService } from './services/cliAnalyzeService';
 import { runRepl } from './repl';
@@ -94,14 +97,14 @@ function installFatalHandlers(): void {
   process.on('uncaughtException', (err) => {
     console.error(`Fatal: uncaught exception: ${err.message}`);
     if (process.env.DEBUG) console.error(err.stack);
-    process.exit(1);
+    void exitAfterFlush(1);
   });
 
   process.on('unhandledRejection', (reason) => {
     const message = reason instanceof Error ? reason.message : String(reason);
     console.error(`Fatal: unhandled promise rejection: ${message}`);
     if (process.env.DEBUG && reason instanceof Error) console.error(reason.stack);
-    process.exit(1);
+    void exitAfterFlush(1);
   });
 
   process.once('SIGTERM', () => {
@@ -148,7 +151,7 @@ function main(): void {
     });
     const exitCode = await fn();
     notice.flush();
-    process.exit(exitCode);
+    await exitAfterFlush(exitCode);
   };
   const collectRepeatedOption = (value: string, previous: string[] = []): string[] => [...previous, value];
   const codeAwareMode = (value?: string): CodeAwareMode | undefined => {
@@ -236,7 +239,7 @@ function main(): void {
       const query = opts.query ?? g.query ?? g.prompt;
       if (!query?.trim()) {
         console.error('Fatal: resume requires --query <question>.');
-        process.exit(2);
+        return exitAfterFlush(2);
       }
       await runAndExit(() => runResumeCommand({
         sessionId,
@@ -758,7 +761,7 @@ function main(): void {
       const query = opts.query ?? g.query;
       if (!query?.trim()) {
         console.error('Fatal: compare requires --query <question>.');
-        process.exit(2);
+        return exitAfterFlush(2);
       }
       await runAndExit(() => runCompareCommand({
         currentTrace,
@@ -929,7 +932,7 @@ function main(): void {
     }
     if (g.prompt || g.query) {
       console.error('Fatal: --prompt/--query requires --file <trace> for one-shot analysis.');
-      process.exit(2);
+      return exitAfterFlush(2);
     }
 
     await runAndExit(() => runReplCommand({
@@ -943,11 +946,11 @@ function main(): void {
 
   program.parseAsync(process.argv).catch((err: Error) => {
     if (err instanceof CommanderError) {
-      process.exit(err.exitCode === 0 ? 0 : 2);
+      return exitAfterFlush(err.exitCode === 0 ? 0 : 2);
     }
     console.error(localize(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), `致命错误：${err.message}`, `Fatal: ${err.message}`));
     if (process.env.DEBUG) console.error(err.stack);
-    process.exit(2);
+    return exitAfterFlush(2);
   });
 }
 

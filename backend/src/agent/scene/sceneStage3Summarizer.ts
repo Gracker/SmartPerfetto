@@ -17,7 +17,7 @@
  * without aborting the pipeline.
  */
 
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
+import { claudeSdkQuery as sdkQuery } from '../../agentRuntime/engines/claude/claudeSdkQuery';
 import {createSdkEnv, loadClaudeConfig} from '../../agentv3/claudeConfig';
 import {loadPromptTemplate, renderTemplate} from '../../agentv3/strategyLoader';
 import {isolatedClaudeOneShotOptions} from '../../services/oneShotModelCall';

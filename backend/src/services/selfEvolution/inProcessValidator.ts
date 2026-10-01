@@ -25,7 +25,7 @@ import {
   strategySkillCallTexts,
   type StrategySkillInputs,
 } from '../../agentv3/strategySkillCalls';
-import {validateSkillStepListRuntime} from './skillStepRuntimeValidator';
+import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
 export const IN_PROCESS_VALIDATOR_VERSION = '2';
 
@@ -202,6 +202,21 @@ function validateDefinitionShape(
       }
     }
     });
+    // Expressions resolve a save_as binding before a step result of the same
+    // name, so another step's id reused as a save_as would never be readable.
+    // A separate pass: the colliding id may belong to a later step.
+    visitSteps(skill.steps ?? [], (step, path) => {
+      const saveAs = 'save_as' in step ? step.save_as : undefined;
+      if (typeof saveAs === 'string' && saveAs !== step.id && stepIds.has(saveAs)) {
+        issues.push(issue(
+          'error',
+          'save_as_step_id_collision',
+          skill.name,
+          `${path}.save_as`,
+          `save_as '${saveAs}' is the id of another step; name the binding after its own step or choose a distinct name.`,
+        ));
+      }
+    });
   }
   if (includeSqlGuardrails && hasRootSql) {
     for (const guardrail of analyzeSqlGuardrails(skill.sql!, {
@@ -225,6 +240,8 @@ export function validateSkillDefinitionInProcess(
     fragmentCache?: ReadonlyMap<string, string>;
     includeStructuralChecks?: boolean;
     sqlGuardrailMode?: 'default' | 'disabled';
+    /** The complete registry by name; when present, `save_from` targets are checked against it. */
+    definitions?: ReadonlyMap<string, SkillDefinition>;
   } = {},
 ): InProcessValidationIssue[] {
   const issues = options.includeStructuralChecks === false
@@ -269,6 +286,9 @@ export function validateSkillDefinitionInProcess(
       readIssue.message,
     ));
   }
+  issues.push(...validateDiagnosticConfidence(skill));
+  issues.push(...validateSaveFromPlacement(skill));
+  if (options.definitions) issues.push(...validateSaveFromTargets(skill, options.definitions));
   if (options.fragmentCache) {
     for (const warning of validateFragmentReferences(
       skill,
@@ -280,6 +300,92 @@ export function validateSkillDefinitionInProcess(
         skill.name,
         warning.stepId,
         warning.message,
+      ));
+    }
+  }
+  return issues;
+}
+
+/**
+ * A diagnostic rule's confidence must be a literal level or number even when
+ * structural checks are off: the executor maps anything else to 0.5 and the
+ * public runtime would publish the text, so a template there silently misreports.
+ */
+function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  visitSteps(skill.steps ?? [], (step, path) => {
+    if (step.type !== 'diagnostic') return;
+    (step.rules ?? []).forEach((rule, index) => {
+      if (rule.confidence !== undefined && !isDiagnosticConfidence(rule.confidence)) {
+        issues.push(issue('error', 'diagnostic_confidence_invalid', skill.name, `${path}.rules[${index}].confidence`,
+          `Diagnostic rule confidence must be high, medium, low or a number, got ${JSON.stringify(rule.confidence)}.`));
+      }
+    });
+  });
+  return issues;
+}
+
+/**
+ * `save_from` is bound only by the top-level step loops of the executor, so a
+ * nested one would pass validation and never bind.
+ */
+function validateSaveFromPlacement(skill: SkillDefinition): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  const topLevel = new Set<SkillStep>(skill.steps ?? []);
+  visitSteps(skill.steps ?? [], (step, path) => {
+    const problem = saveFromPlacementProblem(step, topLevel.has(step));
+    if (problem) {
+      issues.push(issue('error', 'save_from_invalid', skill.name, `${path}.save_from`, `save_from ${problem}.`));
+    }
+  });
+  return issues;
+}
+
+function saveFromPlacementProblem(step: SkillStep, topLevel: boolean): string | undefined {
+  const saveFrom = (step as {save_from?: unknown}).save_from;
+  if (saveFrom === undefined) return undefined;
+  if (typeof saveFrom !== 'string' || saveFrom.trim() === '') return 'must name a step of the referenced Skill';
+  if (!('skill' in step) || typeof step.skill !== 'string') return 'is valid only on a Skill reference step';
+  if (!step.save_as) return 'requires save_as';
+  if (!topLevel) return 'is honoured only on a top-level step';
+  return undefined;
+}
+
+/** Top-level Skill references that bind a named child step, by position. */
+function saveFromBindings(skill: SkillDefinition): Array<{index: number; target: string; stepId: string}> {
+  return (skill.steps ?? []).flatMap((step, index) =>
+    'skill' in step && typeof step.skill === 'string' && typeof step.save_from === 'string' && step.save_from.trim()
+      ? [{index, target: step.skill, stepId: step.save_from}]
+      : []);
+}
+
+/**
+ * A top-level Skill reference's `save_from` must name a top-level step of the
+ * referenced Skill: those are the only child results the executor can bind.
+ * `definitions` is the complete registry, so a target outside it is missing.
+ */
+function validateSaveFromTargets(
+  skill: SkillDefinition,
+  definitions: ReadonlyMap<string, SkillDefinition>,
+): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  for (const {index, target: targetId, stepId} of saveFromBindings(skill)) {
+    const target = definitions.get(targetId);
+    if (!target) {
+      issues.push(issue(
+        'error',
+        'save_from_target_missing',
+        skill.name,
+        `steps[${index}].save_from`,
+        `Referenced Skill '${targetId}' does not exist, so save_from '${stepId}' cannot bind.`,
+      ));
+    } else if (!(target.steps ?? []).some(childStep => childStep.id === stepId)) {
+      issues.push(issue(
+        'error',
+        'save_from_step_missing',
+        skill.name,
+        `steps[${index}].save_from`,
+        `Referenced Skill '${targetId}' has no top-level step '${stepId}'.`,
       ));
     }
   }
@@ -347,9 +453,20 @@ export function validateSkillDefinitionsInProcess(
     issues.push(...validateSkillDefinitionInProcess(definition, {
       fragmentCache: input.fragmentCache,
       sqlGuardrailMode: input.sqlGuardrailMode,
+      definitions: input.validateReferences !== false ? byId : undefined,
     }));
     if (input.validateReferences !== false) {
       issues.push(...validateSkillReferences(definition, knownSkillIds));
+    }
+  }
+  if (input.validateReferences !== false) {
+    // save_from makes a child's step ids part of its parents' contract, so a
+    // change to an affected Skill re-checks the unchanged parents binding it.
+    const selected = new Set(selectedIds);
+    for (const parent of byId.values()) {
+      if (!selected.has(parent.name) && saveFromBindings(parent).some(binding => selected.has(binding.target))) {
+        issues.push(...validateSaveFromTargets(parent, byId));
+      }
     }
   }
   return {

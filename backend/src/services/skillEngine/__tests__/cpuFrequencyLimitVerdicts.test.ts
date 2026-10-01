@@ -92,9 +92,28 @@ class Fixture {
       CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER, name TEXT, is_idle INTEGER);
       CREATE TABLE sched_slice(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, cpu INTEGER,
         ucpu INTEGER, end_state TEXT, priority INTEGER);
+      CREATE TABLE thread_state(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT, cpu INTEGER,
+        ucpu INTEGER, io_wait INTEGER, blocked_function TEXT, waker_utid INTEGER, irq_context INTEGER);
+      CREATE TABLE cpu_frequency_counters(id INTEGER PRIMARY KEY, track_id INTEGER, cpu INTEGER, ucpu INTEGER,
+        ts INTEGER, dur INTEGER, freq INTEGER);
+      CREATE TABLE slice(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, dur INTEGER, name TEXT);
+      CREATE TABLE thread_track(id INTEGER PRIMARY KEY, utid INTEGER);
+      CREATE TABLE actual_frame_timeline_slice(ts INTEGER, dur INTEGER, upid INTEGER, display_frame_token INTEGER);
       INSERT INTO process VALUES (1, 1000, 'com.example.app', 10100);
       INSERT INTO thread VALUES (1, 1, 1000, 'main', 0);
+      INSERT INTO thread VALUES (2, 1, 1002, 'RenderThread', 0);
     `);
+  }
+
+  /** A Running interval of the app's main (utid 1) or RenderThread (utid 2); ts/dur in ns. */
+  running(utid: number, cpu: number, ts: number, dur: number): void {
+    this.db.prepare(`INSERT INTO thread_state VALUES (NULL,?,?,?,'Running',?,?,NULL,NULL,NULL,NULL)`)
+      .run(utid, ts, dur, cpu, cpu);
+  }
+
+  /** A CPU frequency span in kHz; ts/dur in ns. */
+  frequency(cpu: number, ts: number, dur: number, khz: number): void {
+    this.db.prepare('INSERT INTO cpu_frequency_counters VALUES (NULL,?,?,?,?,?,?)').run(500 + cpu, cpu, cpu, ts, dur, khz);
   }
 
   maxTrack(policy: number): number { return this.cpuTrack(policy, 'cpu_max_frequency_limit'); }
@@ -752,6 +771,300 @@ describe('shared frequency-limit verdict layer (SQLite fixtures)', () => {
   });
 });
 
+const FRAME_FRAGMENTS = ['system_sched_spans', 'system_thread_state_spans', 'system_cpu_frequency_spans',
+  ...VERDICT_FRAGMENTS.map(name => name.replace(/\.sql$/, '')).filter(name => name !== 'system_sched_spans'),
+  'system_cpu_freq_limit_frame_binding'].map(name => `${name}.sql`);
+
+/**
+ * One frame window 'f' over the fixture app's threads: RenderThread (utid 2)
+ * has role render, every other thread of upid 1 role main. A main work interval
+ * belongs to the top slice's thread (utid 1 unless given), a render interval
+ * to every render thread, as scrolling_analysis defines them. Rows keyed by role.
+ */
+function frameBinding(db: Database.Database, work: Array<['main' | 'render', number, number, number?]>,
+  window: [number, number] = [0, 10_000 * MS], numbers: Record<string, number> = {}): Record<string, any> {
+  const leadingCtes = [
+    `system_windows AS (SELECT 'f' AS window_id, ${window[0]} AS window_start_ts, ${window[1]} AS window_end_ts)`,
+    `system_target_threads AS (SELECT 'f' AS window_id, upid, utid,
+      CASE name WHEN 'RenderThread' THEN 'render' ELSE 'main' END AS role FROM thread WHERE upid = 1)`,
+    `system_work_intervals AS (${work.map(([role, start, end, utid]) =>
+      `SELECT 'f' AS window_id, '${role}' AS role, ${utid ?? (role === 'main' ? 1 : 'NULL')} AS utid,
+        ${start} AS work_start_ts, ${end} AS work_end_ts`).join(' UNION ALL ')})`,
+  ];
+  const rows = db.prepare(composeFragmentSql({leadingCtes, fragments: FRAME_FRAGMENTS, numbers,
+    select: 'SELECT * FROM system_cpu_freq_limit_frame_binding'})).all() as any[];
+  return Object.fromEntries(rows.map(row => [row.role, row]));
+}
+
+/**
+ * Policy 6 (cluster 2 = CPUs 6 and 7) tied to its cooling device, capped from
+ * 2000 ms at 1800 MHz by a forward-paired tightening (confirmed).
+ */
+function confirmedCapOnPolicy6(): {f: Fixture; limit: number; d: number} {
+  const f = new Fixture();
+  const limit = f.maxTrack(6);
+  f.put(limit, 10 * MS, 2_400_000);
+  const d = f.cooling('thermal-cpufreq-2');
+  f.tie(d, limit, 100);
+  f.put(d, 2000 * MS, 2);
+  f.put(limit, 2000 * MS + 100_000, 1_800_000);
+  return {f, limit, d};
+}
+
+const MAIN_WORK: ['main', number, number] = ['main', 3000 * MS, 3010 * MS];
+
+describe('per-frame frequency-limit binding (system_cpu_freq_limit_frame_binding)', () => {
+  it('binding on a policy member CPU under a confirmed tightening is capped_binding with the onset confirmed', () => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.running(1, 7, 3000 * MS, 10 * MS);
+      f.frequency(7, 2900 * MS, 200 * MS, 1_800_000);
+      expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'capped_binding',
+        policy_cpu: 6, membership_basis: 'cpu_cluster_id', limit_khz: 1_800_000, reference_max_limit_khz: 2_400_000,
+        depth_pct: 25, binding_ratio: 1, run_ns: 10 * MS, binding_ns: 10 * MS, onset_binding_ns: 10 * MS,
+        freq_limit_onset_class: 'THERMAL_LIMIT_CONFIRMED', freq_limit_basis: 'THERMAL_LIMIT_CONFIRMED',
+        freq_limit_onset_confirmed: 1, freq_limit_onset_ts: 2000 * MS + 100_000, trace_episode_id: 'policy6-tep1',
+        freq_limit_cooling_basis: 'limit_set_by_paired_policy_cooling_transition'});
+    } finally { f.close(); }
+  });
+
+  it.each([
+    ['running below the cap', 1_500_000, 'capped_not_binding'],
+    ['running at 90% of the cap', 1_620_000, 'capped_binding'],
+  ])('%s', (_label, khz, state) => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.running(1, 7, 3000 * MS, 10 * MS);
+      f.frequency(7, 2900 * MS, 200 * MS, khz);
+      expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: state, trace_episode_id: 'policy6-tep1'});
+    } finally { f.close(); }
+  });
+
+  it('at the observed maximum limit, before the tightening, is not a limit', () => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.running(1, 7, 1000 * MS, 10 * MS);
+      f.frequency(7, 900 * MS, 200 * MS, 2_400_000);
+      expect(frameBinding(f.db, [['main', 1000 * MS, 1010 * MS]]).main)
+        .toMatchObject({freq_limit_state: 'at_observed_max_limit', policy_cpu: 6, freq_limit_onset_confirmed: 0});
+    } finally { f.close(); }
+  });
+
+  it.each([
+    ['before the policy\'s first sample', (f: Fixture) => f.running(1, 7, 2 * MS, 6 * MS), 2 * MS],
+    ['under an invalid (zero) sample', (f: Fixture) => f.running(1, 7, 4100 * MS, 6 * MS), 4100 * MS],
+  ])('%s is limit_state_unknown', (_label, run, start) => {
+    const {f, limit} = confirmedCapOnPolicy6();
+    try {
+      f.put(limit, 4000 * MS, 0);
+      run(f);
+      f.frequency(7, 0, 5000 * MS, 1_800_000);
+      expect(frameBinding(f.db, [['main', start, start + 6 * MS]]).main).toMatchObject({freq_limit_state: 'limit_state_unknown'});
+    } finally { f.close(); }
+  });
+
+  it('without a valid max-limit sample every frame is limit_track_unavailable', () => {
+    const f = new Fixture();
+    try {
+      f.put(f.minTrack(6), 10 * MS, 500_000);
+      f.running(1, 7, 3000 * MS, 10 * MS);
+      f.frequency(7, 2900 * MS, 200 * MS, 1_800_000);
+      expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'limit_track_unavailable', run_ns: 0});
+    } finally { f.close(); }
+  });
+
+  it('running on CPUs no max limit governs is threads_not_on_limited_policy', () => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.running(1, 4, 3000 * MS, 10 * MS);
+      f.frequency(4, 2900 * MS, 200 * MS, 1_800_000);
+      expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'threads_not_on_limited_policy',
+        limited_policy_ns: 0, policy_cpu: null});
+    } finally { f.close(); }
+  });
+
+  it('a thread that mostly sleeps through its work interval is insufficient_running', () => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.running(1, 7, 3000 * MS, 4 * MS);
+      f.frequency(7, 2900 * MS, 200 * MS, 1_800_000);
+      // A frame the cap did not reach carries no trigger facts.
+      expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'insufficient_running',
+        running_share: 0.4, freq_limit_basis: null, freq_limit_onset_class: null, trace_episode_id: null});
+    } finally { f.close(); }
+  });
+
+  it('missing frequency is frequency_unavailable, never capped_not_binding', () => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.running(1, 7, 3000 * MS, 10 * MS);
+      f.frequency(7, 3000 * MS, 4 * MS, 1_000_000);
+      expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'frequency_unavailable',
+        freq_covered_ns: 4 * MS});
+    } finally { f.close(); }
+  });
+
+  describe('policy membership', () => {
+    it('a cluster holding two policy leaders keeps each policy to its leader', () => {
+      const f = new Fixture();
+      try {
+        for (const policy of [0, 2]) {
+          const t = f.maxTrack(policy);
+          f.put(t, 10 * MS, 2_400_000);
+          f.put(t, 1000 * MS, 1_800_000);
+        }
+        f.running(1, 1, 3000 * MS, 10 * MS);
+        f.frequency(1, 2900 * MS, 200 * MS, 1_800_000);
+        f.running(2, 0, 3000 * MS, 10 * MS);
+        f.frequency(0, 2900 * MS, 200 * MS, 1_800_000);
+        const rows = frameBinding(f.db, [MAIN_WORK, ['render', 3000 * MS, 3010 * MS]]);
+        expect(rows.main).toMatchObject({freq_limit_state: 'threads_not_on_limited_policy'});
+        expect(rows.render).toMatchObject({freq_limit_state: 'capped_binding', policy_cpu: 0,
+          membership_basis: 'policy_leader_only'});
+      } finally { f.close(); }
+    });
+
+    it('without cluster information only the leader belongs to its policy', () => {
+      const {f} = confirmedCapOnPolicy6();
+      try {
+        f.db.exec('UPDATE cpu SET cluster_id = NULL');
+        f.running(1, 7, 3000 * MS, 10 * MS);
+        f.running(2, 6, 3000 * MS, 10 * MS);
+        f.frequency(7, 2900 * MS, 200 * MS, 1_800_000);
+        f.frequency(6, 2900 * MS, 200 * MS, 1_800_000);
+        const rows = frameBinding(f.db, [MAIN_WORK, ['render', 3000 * MS, 3010 * MS]]);
+        expect(rows.main).toMatchObject({freq_limit_state: 'threads_not_on_limited_policy'});
+        expect(rows.render).toMatchObject({freq_limit_state: 'capped_binding', membership_basis: 'policy_leader_only'});
+      } finally { f.close(); }
+    });
+
+    it('a leader ordinal shared by two machines has no members at all', () => {
+      const {f} = confirmedCapOnPolicy6();
+      try {
+        f.db.exec('INSERT INTO cpu VALUES (8, 6, 1, 3, 1024)');
+        f.running(1, 6, 3000 * MS, 10 * MS);
+        f.frequency(6, 2900 * MS, 200 * MS, 1_800_000);
+        expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'threads_not_on_limited_policy',
+          limited_policy_ns: 0});
+      } finally { f.close(); }
+    });
+  });
+
+  describe('the frame reads the verdict of the value in force for its binding work', () => {
+    it('a capped relaxation is never confirmed, even after a confirmed tightening', () => {
+      const {f, limit} = confirmedCapOnPolicy6();
+      try {
+        f.put(limit, 2500 * MS, 2_000_000);
+        f.running(1, 7, 3000 * MS, 10 * MS);
+        f.frequency(7, 2900 * MS, 200 * MS, 2_000_000);
+        expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'capped_binding',
+          limit_khz: 2_000_000, freq_limit_onset_class: 'LIMIT_RELAXED', freq_limit_basis: 'LIMIT_RELAXED',
+          freq_limit_onset_confirmed: 0, freq_limit_cooling_basis: 'cap_value_set_by_relaxation'});
+      } finally { f.close(); }
+    });
+
+    it('a value first observed already capped has an unknown onset', () => {
+      const f = new Fixture();
+      try {
+        const limit = f.maxTrack(6);
+        f.put(limit, 10 * MS, 1_800_000);
+        f.put(limit, 5000 * MS, 2_400_000);
+        f.running(1, 7, 3000 * MS, 10 * MS);
+        f.frequency(7, 2900 * MS, 200 * MS, 1_800_000);
+        expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'capped_binding',
+          freq_limit_onset_class: 'LIMIT_ONSET_UNKNOWN', freq_limit_onset_confirmed: 0});
+      } finally { f.close(); }
+    });
+
+    it.each([
+      ['binds 3 ms of 10 alongside an unconfirmed value binding 2 ms', 3, 'mixed_limit_values_in_frame', 0],
+      ['binds 6 ms of 10 on its own', 6, 'THERMAL_LIMIT_CONFIRMED', 1],
+    ])('a confirmed value that %s', (_label, confirmedMs, basis, confirmed) => {
+      const {f, limit} = confirmedCapOnPolicy6();
+      try {
+        const split = (3000 + confirmedMs) * MS;
+        f.put(limit, split, 1_500_000); // a second, unpaired tightening
+        f.running(1, 7, 3000 * MS, 10 * MS);
+        f.frequency(7, 2900 * MS, split - 2900 * MS, 1_800_000);
+        f.frequency(7, split, 2 * MS, 1_500_000);
+        f.frequency(7, split + 2 * MS, 3100 * MS - split - 2 * MS, 1_000_000);
+        const main = frameBinding(f.db, [MAIN_WORK]).main;
+        expect(main).toMatchObject({freq_limit_state: 'capped_binding', freq_limit_basis: basis,
+          freq_limit_onset_confirmed: confirmed, onset_binding_ns: confirmedMs * MS, limit_khz: 1_800_000});
+        expect(main.binding_ns).toBe((confirmedMs + 2) * MS);
+      } finally { f.close(); }
+    });
+
+    it.each([
+      ['the default 50% threshold: the earlier value is selected but binds too little alone', {},
+        'mixed_limit_values_in_frame', 0],
+      ['a 40% threshold: the earlier, confirmed value alone is enough', {freq_limit_binding_min_pct: 40},
+        'THERMAL_LIMIT_CONFIRMED', 1],
+    ])('equal binding time selects the earlier value, never the one capped longer (%s)',
+      (_label, numbers, basis, confirmed) => {
+        const {f, limit} = confirmedCapOnPolicy6();
+        try {
+          f.put(limit, 3004 * MS, 1_500_000); // a later, unpaired tightening
+          f.running(1, 7, 3000 * MS, 10 * MS);
+          f.frequency(7, 2900 * MS, 104 * MS, 1_800_000); // 1800 MHz value: binding = capped = 4 ms
+          f.frequency(7, 3004 * MS, 4 * MS, 1_500_000); // 1500 MHz value: binding 4 ms ...
+          f.frequency(7, 3008 * MS, 92 * MS, 1_000_000); // ... capped 6 ms
+          expect(frameBinding(f.db, [MAIN_WORK], undefined, numbers).main).toMatchObject({
+            freq_limit_state: 'capped_binding', limit_khz: 1_800_000, onset_binding_ns: 4 * MS,
+            binding_ns: 8 * MS, freq_limit_onset_ts: 2000 * MS + 100_000, freq_limit_basis: basis,
+            freq_limit_onset_confirmed: confirmed});
+        } finally { f.close(); }
+      });
+
+    it('a paired tightening after the work interval, inside the frame, does not apply', () => {
+      const f = new Fixture();
+      try {
+        const limit = f.maxTrack(6);
+        f.put(limit, 10 * MS, 2_400_000);
+        const d = f.cooling('thermal-cpufreq-2');
+        f.tie(d, limit, 100);
+        f.put(limit, 2000 * MS, 2_000_000); // unpaired
+        f.put(d, 3020 * MS, 2);
+        f.put(limit, 3020 * MS + 100_000, 1_800_000); // paired, after the work
+        f.running(1, 7, 3000 * MS, 10 * MS);
+        f.frequency(7, 2900 * MS, 200 * MS, 2_000_000);
+        expect(frameBinding(f.db, [MAIN_WORK], [2990 * MS, 3050 * MS]).main).toMatchObject({
+          freq_limit_state: 'capped_binding', limit_khz: 2_000_000, freq_limit_onset_ts: 2000 * MS,
+          freq_limit_onset_confirmed: 0});
+      } finally { f.close(); }
+    });
+  });
+
+  it('another main-role thread binding under a confirmed cap never counts for the top slice\'s thread', () => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.db.exec("INSERT INTO thread VALUES (3, 1, 1003, '1.ui', 0)");
+      f.running(1, 6, 3000 * MS, 10 * MS); // the top slice's thread, below the cap
+      f.frequency(6, 2900 * MS, 200 * MS, 1_000_000);
+      f.running(3, 7, 3000 * MS, 10 * MS); // a second main-role thread, at the cap
+      f.frequency(7, 2900 * MS, 200 * MS, 1_800_000);
+      expect(frameBinding(f.db, [MAIN_WORK]).main).toMatchObject({freq_limit_state: 'capped_not_binding',
+        run_ns: 10 * MS, binding_ns: 0, freq_limit_onset_confirmed: 0});
+      // The same interval attributed to the other thread binds.
+      expect(frameBinding(f.db, [['main', 3000 * MS, 3010 * MS, 3]]).main).toMatchObject({
+        freq_limit_state: 'capped_binding', freq_limit_onset_confirmed: 1});
+    } finally { f.close(); }
+  });
+
+  it('RenderThread binding on a capped policy never moves the main thread\'s state', () => {
+    const {f} = confirmedCapOnPolicy6();
+    try {
+      f.running(1, 1, 3000 * MS, 10 * MS);
+      f.frequency(1, 2900 * MS, 200 * MS, 1_000_000);
+      f.running(2, 7, 2995 * MS, 40 * MS);
+      f.frequency(7, 2900 * MS, 200 * MS, 1_800_000);
+      const rows = frameBinding(f.db, [MAIN_WORK, ['render', 2990 * MS, 3050 * MS]], [2990 * MS, 3050 * MS]);
+      expect(rows.main).toMatchObject({freq_limit_state: 'threads_not_on_limited_policy'});
+      expect(rows.render).toMatchObject({freq_limit_state: 'capped_binding', policy_cpu: 6, binding_ns: 40 * MS});
+    } finally { f.close(); }
+  });
+});
+
 /** The closed class tables, read from the fragment itself. */
 function classTables(db: Database.Database): {classes: any[]; verdicts: any[]} {
   return {
@@ -789,6 +1102,27 @@ describe('closed trigger-class and onset-verdict tables', () => {
         ['NO_LIMIT_EPISODE', null, 'session', 0],
         ['LIMIT_EVIDENCE_MISSING', null, 'session', 0],
       ]);
+    } finally { f.close(); }
+  });
+});
+
+/** scrolling_analysis global_context_flags over one analysis window, as authored. */
+function scrollingContext(db: Database.Database, window: {start_ts: number; end_ts: number}): any {
+  return stepQuery(db, 'composite/scrolling_analysis.skill.yaml', 'global_context_flags',
+    {...window, '__process_scope.upid': 'NULL'})[0];
+}
+
+describe('scrolling global context is window-scoped (R-scroll-window)', () => {
+  it('a paired onset after the scroll window confirms only the trace-wide summary', () => {
+    const {f, limit, d} = tiedPolicy();
+    try {
+      f.put(d, 700 * MS, 2);
+      f.put(limit, 700 * MS + 100_000, 1_800_000);
+      expect(scrollingContext(f.db, {start_ts: 0, end_ts: 200 * MS})).toMatchObject({
+        freq_limit_classification: 'NO_LIMIT_EPISODE', thermal_trending: 0,
+        freq_limit_trace_summary: 'THERMAL_LIMIT_CONFIRMED', freq_limit_trace_summary_scope: 'trace_wide'});
+      expect(scrollingContext(f.db, {start_ts: 0, end_ts: 1000 * MS})).toMatchObject({
+        freq_limit_classification: 'THERMAL_LIMIT_CONFIRMED', thermal_trending: 1});
     } finally { f.close(); }
   });
 });
@@ -895,6 +1229,12 @@ describe('consumers report the fragment classification (behavioural equivalence)
         expect(who).toMatchObject({trigger_class: e.trigger_class, who_verdict: e.episode_verdict,
           onset_trigger_mix: e.onset_trigger_mix, interpretation: e.class_note});
       }
+      const scrolling = scrollingContext(f.db, window);
+      expect(scrolling).toMatchObject({freq_limit_classification: ws.freq_limit_classification,
+        thermal_evidence: ws.freq_limit_classification, freq_limit_episode_count: ws.episode_count,
+        freq_limit_confirmed_episode_count: ws.confirmed_episode_count, freq_limit_class_note: ws.class_note,
+        thermal_trending: ws.has_max_limit_data === 1 ? ws.is_confirmed : null,
+        freq_limit_trace_summary: trace.freq_limit_classification, freq_limit_trace_summary_scope: 'trace_wide'});
       if (trace.has_max_limit_data !== 1) {
         expect(stepQuery(f.db, 'composite/cpu_frequency_limit_attribution.skill.yaml', 'no_limit_capture_advice')[0].classification)
           .toBe(trace.freq_limit_classification);
@@ -920,6 +1260,7 @@ describe('frequency-limit verdict single source (contract)', () => {
   const OWNED_FRAGMENTS = [
     'system_cpu_freq_limit_spans.sql', 'system_cpu_freq_limit_episodes.sql', 'thermal_cooling_spans.sql',
     'thermal_cdev_policy_association.sql', 'system_cpu_freq_limit_episode_verdicts.sql',
+    'system_cpu_freq_limit_frame_binding.sql',
   ];
   const definedCtes = new Set(OWNED_FRAGMENTS.flatMap(name =>
     [...fragmentText[name].matchAll(/^([a-z_]+) AS (?:MATERIALIZED )?\(/gm)].map(m => m[1])));
@@ -931,7 +1272,17 @@ describe('frequency-limit verdict single source (contract)', () => {
     'system_cpu_freq_limit_onset_verdicts', 'system_cpu_freq_limit_window_onset_verdicts',
     'system_cpu_freq_limit_episode_verdicts', 'system_cpu_freq_limit_window_summary', 'system_cpu_freq_limit_trace_summary',
     'thermal_cooling_spans', 'thermal_cooling_transition_coverage', 'thermal_cdev_policy_association',
+    'system_cpu_freq_limit_frame_binding',
   ];
+  // Consumers that read no more than a named subset of the output CTEs. A
+  // frame reads the verdict of its value onset only through the frame binding,
+  // and the scroll-wide context only through the window/trace summaries; it
+  // never re-derives cooling or thermal evidence.
+  const NARROW_CONSUMERS: Record<string, string[]> = {
+    'composite/scrolling_analysis.skill.yaml#batch_frame_root_cause': ['system_cpu_freq_limit_frame_binding'],
+    'composite/scrolling_analysis.skill.yaml#global_context_flags':
+      ['system_cpu_freq_limit_window_summary', 'system_cpu_freq_limit_trace_summary'],
+  };
   // Raw sources only a fragment may read. A step that needs one for something
   // other than limit/cooling evidence is listed with its reason.
   const RAW_SOURCE = /\b(cpu_max_frequency_limit|cpu_min_frequency_limit|cooling_device_counter|_flv_\w+)\b/;
@@ -1000,10 +1351,20 @@ describe('frequency-limit verdict single source (contract)', () => {
     expect(Object.keys(RAW_SOURCE_READERS).filter(key => !readers.includes(key))).toEqual([]);
   });
 
+  it('scrolling reads only its named slice of the verdict layer', () => {
+    for (const [key, allowed] of Object.entries(NARROW_CONSUMERS)) {
+      const step = allSteps.find(candidate => candidate.key === key);
+      expect(step).toBeDefined();
+      const read = [...new Set(step!.sql.match(/\b[a-z_]+\b/g) ?? [])].filter(name => definedCtes.has(name)).sort();
+      expect({key, read}).toEqual({key, read: [...allowed].sort()});
+    }
+  });
+
   it('no consumer derives limit direction, capping or validity on its own', () => {
     const LOCAL_RULE = /\b(LAG|LEAD)\s*\([^)]*\b(value|limit_khz|state)\b|reference_max_limit_khz\s*\*|\b(value|limit_khz)\s*(>|>=|<>|!=)\s*0\b/i;
     const limitSteps = allSteps.filter(({sql}) => /system_cpu_freq_limit_|thermal_cooling_|thermal_cdev_/.test(sql));
     expect(limitSteps.length).toBeGreaterThan(5);
+    expect(limitSteps.map(({key}) => key)).toEqual(expect.arrayContaining(Object.keys(NARROW_CONSUMERS)));
     expect(limitSteps.filter(({sql}) => LOCAL_RULE.test(sql)).map(({key}) => key)).toEqual([]);
   });
 

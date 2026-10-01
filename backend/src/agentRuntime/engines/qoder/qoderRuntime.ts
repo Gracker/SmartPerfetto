@@ -48,9 +48,7 @@ import type {
 } from '../../../agentv3/types';
 import {
   createQoderSnapshotEngineState,
-  getQoderSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
-  type QoderOpaqueState,
   type SessionFieldsForSnapshot,
   type SessionStateSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
@@ -177,8 +175,6 @@ interface QoderSdkOptions {
   permissionMode?: string;
   settingSources?: unknown[];
   abortController?: AbortController;
-  resume?: string;
-  sessionId?: string;
   pathToQoderCLIExecutable?: string;
   mcpServers?: Record<string, unknown>;
   env?: Record<string, string | undefined>;
@@ -388,7 +384,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionHypotheses = new Map<string, Hypothesis[]>();
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
-  private readonly sessionOpaqueStates = new Map<string, QoderOpaqueState>();
   private readonly executionGuard = new RuntimeExecutionGuard();
 
   constructor(
@@ -532,7 +527,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       } finally {
         try {
           if (this.activeSessions.get(sessionId) === sessionState) {
-            if (executionLease.signal.aborted) this.sessionOpaqueStates.delete(sessionId);
             this.activeSessions.delete(sessionId);
           }
           executionLease.settle();
@@ -575,7 +569,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       assertActive: assertAuthorized,
     });
     const privateAnalysisContext = analysisHasPrivateContext(normalizedOptions);
-    if (privateAnalysisContext) this.sessionOpaqueStates.delete(sessionId);
     const knowledgeScope = knowledgeScopeFromAnalysisOptions(normalizedOptions);
 
     let sdkModulePromise: Promise<QoderSdkModule> | undefined;
@@ -1179,16 +1172,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             // This receipt terminates the current attempt. A later stale message
             // cannot replace its body, session identity or completion facts.
             return;
-          } else if (msgType === 'system') {
-            if (isRecord(message)) {
-              const subtype = message.subtype;
-              if (subtype === 'init' && !privateAnalysisContext) {
-                const initSessionId = message.session_id ?? message.sessionId;
-                if (typeof initSessionId === 'string') {
-                  this.sessionOpaqueStates.set(sessionId, { version: 1, sdkSessionId: initSessionId });
-                }
-              }
-            }
           }
         }
       };
@@ -1407,7 +1390,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       return result;
     } catch (error) {
       // The outer run owns cancellation/timeout finalization. A late attempt
-      // must not clear a newer run's opaque state or publish another result.
+      // must not publish another result.
       if (executionLease.signal.aborted) throw error;
       const totalDurationMs = Date.now() - startTime;
       const errorMessage = describeQoderSdkError(error);
@@ -1417,8 +1400,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         || (error instanceof Error && error.name === 'AbortError')
         || isTraceProcessorQueryCancelledError(error);
 
-      // A failed/cancelled attempt is not a resumable proof of conversation state.
-      this.sessionOpaqueStates.delete(sessionId);
       if (!isAborted) this.emitUpdate({
         type: 'error', content: {message: safeErrorMessage}, timestamp: Date.now(),
       });
@@ -1533,12 +1514,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     this.sessionHypotheses.clear();
     this.sessionUncertaintyFlags.clear();
     this.architectureCache.clear();
-    this.sessionOpaqueStates.clear();
     this.artifactStores.clear();
   }
 
   async abortSession(sessionId: string): Promise<void> {
-    this.sessionOpaqueStates.delete(sessionId);
     await this.executionGuard.abortSession(sessionId);
     const session = this.activeSessions.get(sessionId);
     if (!session) return;
@@ -1554,11 +1533,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
     this.artifactStores.delete(sessionId);
-    this.sessionOpaqueStates.delete(sessionId);
-  }
-
-  getSdkSessionId(sessionId: string): string | undefined {
-    return this.sessionOpaqueStates.get(sessionId)?.sdkSessionId;
   }
 
   // -------------------------------------------------------------------------
@@ -1586,10 +1560,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
-    const opaque = privateKnowledge
-      ? undefined
-      : this.sessionOpaqueStates.get(sessionId)
-        ?? { version: 1, degradedReason: 'state_unavailable' as const };
 
     return {
       version: 1,
@@ -1606,7 +1576,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       engineState: createQoderSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-        opaque,
       }),
       agentRuntimeKind: QODER_AGENT_RUNTIME_KIND,
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
@@ -1640,10 +1609,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       } catch {
         // Ignore malformed legacy artifact snapshots
       }
-    }
-    const opaque = getQoderSnapshotEngineState(snapshot)?.opaque;
-    if (opaque) {
-      this.sessionOpaqueStates.set(sessionId, opaque);
     }
   }
 

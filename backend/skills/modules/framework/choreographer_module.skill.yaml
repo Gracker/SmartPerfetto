@@ -288,7 +288,8 @@ steps:
     rules:
       - condition: "doframe_overview.data[0]?.jank_rate_pct > 10"
         diagnosis: "卡顿率 ${doframe_overview.data[0]?.jank_rate_pct}%，超过 10% 阈值"
-        confidence: critical
+        severity: critical
+        confidence: high
         suggestions:
           - "分析卡顿帧的具体原因"
           - "优化主线程耗时操作"
@@ -300,7 +301,8 @@ steps:
 
       - condition: "doframe_overview.data[0]?.max_dur_ms > 100"
         diagnosis: "最长帧时间 ${doframe_overview.data[0]?.max_dur_ms}ms，严重影响体验"
-        confidence: critical
+        severity: critical
+        confidence: high
         suggestions:
           - "分析该帧的详细调用栈"
           - "检查是否有 ANR 风险"
@@ -328,7 +330,8 @@ steps:
 
       - condition: "long_frames.data.filter(f => f.jank_severity === 'jank_5plus_frames').length > 0"
         diagnosis: "检测到 ${long_frames.data.filter(f => f.jank_severity === 'jank_5plus_frames').length} 个严重卡顿帧 (丢失 5+ 帧)"
-        confidence: critical
+        severity: critical
+        confidence: high
         suggestions:
           - "这些帧可能导致明显卡顿感知"
           - "需要重点分析这些时间点"

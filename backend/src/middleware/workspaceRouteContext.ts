@@ -4,6 +4,7 @@
 
 import type { NextFunction, Request, Response } from 'express';
 import { getRequestContext } from './auth';
+import { sanitizeContextId } from './requestHeaders';
 import { sendResourceNotFound } from '../services/resourceOwnership';
 
 type WorkspaceScopedRequest = Request & {
@@ -12,13 +13,8 @@ type WorkspaceScopedRequest = Request & {
   };
 };
 
-function sanitizeWorkspaceId(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-}
-
 export function bindWorkspaceRouteContext(req: Request, res: Response, next: NextFunction): void {
-  const workspaceId = sanitizeWorkspaceId(req.params.workspaceId);
+  const workspaceId = sanitizeContextId(req.params.workspaceId);
   if (!workspaceId) {
     res.status(400).json({
       success: false,

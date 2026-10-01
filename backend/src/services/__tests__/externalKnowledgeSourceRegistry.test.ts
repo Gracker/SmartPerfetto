@@ -15,6 +15,7 @@ import {
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
 } from '../externalKnowledgeSourceRegistry';
+import {getScopedKnowledgeRecord} from '../scopedKnowledgeStore';
 
 let tmpDir: string;
 
@@ -237,6 +238,29 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     await expect(firstRun).resolves.toBe('first');
     await expect(second.withIngestLease('source-a', scope, () => 'second'))
       .resolves.toBe('second');
+  });
+
+  it('renews the enterprise lease row on every fence check', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise-renew.sqlite');
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
+    const scope = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'renew.json'));
+    const baseTime = 2_000_000_000_000;
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(baseTime);
+    const leaseExpiry = (): number | undefined => getScopedKnowledgeRecord<{expiresAt: number}>(
+      'external_knowledge_ingest_lease',
+      'source-a',
+      scope,
+    )?.record.expiresAt;
+
+    await registry.withIngestLease('source-a', scope, lease => {
+      for (let step = 1; step <= 3; step += 1) {
+        clock.mockReturnValue(baseTime + step);
+        lease.assertHeld();
+        expect(leaseExpiry()).toBe(baseTime + step + 10 * 60 * 1000);
+      }
+    });
   });
 
   it('atomically fences activation after an earlier lease check becomes stale', async () => {

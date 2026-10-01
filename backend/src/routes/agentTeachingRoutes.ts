@@ -85,7 +85,6 @@ export function registerTeachingRoutes(router: express.Router): void {
       );
     } catch (error: any) {
       console.error('[AgentRoutes] Teaching pipeline error:', error);
-      console.error('[AgentRoutes] Stack trace:', error.stack);
       res.status(500).json({
         success: false,
         error:
@@ -97,7 +96,6 @@ export function registerTeachingRoutes(router: express.Router): void {
           ) === 'en'
             ? 'Failed to detect pipeline'
             : '渲染管线检测失败'),
-        stack: process.env.NODE_ENV !== 'production' ? error.stack : undefined,
       });
     }
   });

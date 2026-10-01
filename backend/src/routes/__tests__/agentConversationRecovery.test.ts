@@ -13,7 +13,7 @@ import * as runtime from '../../agentRuntime';
 import * as authorization from '../../services/resolvedAnalysisContext';
 import type {IOrchestrator} from '../../agent/core/orchestratorTypes';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
-import {getProviderService} from '../../services/providerManager';
+import {getProviderService, resetProviderService} from '../../services/providerManager';
 import {resolveProviderRuntimeSnapshot} from '../../services/providerManager/providerSnapshot';
 import {getConversationSessionStore, resetConversationSessionStoreForTests,
   type ConversationSessionDescriptor} from '../../services/conversationSessionStore';
@@ -156,6 +156,47 @@ describe('conversation live-only drafts', () => {
     expect(data).not.toHaveProperty('seqId');
     const completed = String((await response).body).split('\n\n').find(frame => frame.includes('event: run_completed'))!;
     expect(completed).toMatch(/^id: \d+$/m);
+  });
+});
+
+describe('conversation routes while providers.json is unreadable', () => {
+  const previousProviderDir = process.env.PROVIDER_DATA_DIR_OVERRIDE;
+  beforeEach(() => {
+    const providerDir = path.join(tmp, 'providers');
+    fs.mkdirSync(providerDir, {recursive: true});
+    fs.writeFileSync(path.join(providerDir, 'providers.json'), '[{"id":');
+    process.env.PROVIDER_DATA_DIR_OVERRIDE = providerDir;
+    resetProviderService();
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    if (previousProviderDir === undefined) delete process.env.PROVIDER_DATA_DIR_OVERRIDE;
+    else process.env.PROVIDER_DATA_DIR_OVERRIDE = previousProviderDir;
+    resetProviderService();
+  });
+
+  it('refuses a new conversation that follows the active provider instead of running on env', async () => {
+    const response = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({success: false, code: 'provider_store_unreadable'});
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('refuses to recover a conversation that follows the active provider', async () => {
+    storeSnapshot({providerFollowsActive: true});
+    const historyRead = jest.spyOn(getConversationSessionStore(), 'listTurns');
+    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe('provider_store_unreadable');
+    expect(historyRead).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it('recovers a conversation pinned explicitly to env, which does not depend on the file', async () => {
+    storeSnapshot();
+    const response = await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`);
+    expect(response.status).toBe(200);
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({providerId: null}));
   });
 });
 

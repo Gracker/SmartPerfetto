@@ -18,7 +18,6 @@
  * It keeps:
  *   - prepareSession / analyze / conclusion capture
  *   - HTML report generation (written to CLI's session folder, not /api/reports)
- *   - sdkSessionId surfacing for subsequent resume
  */
 
 import * as fs from 'fs';
@@ -27,7 +26,7 @@ import {randomUUID} from 'crypto';
 import { AssistantApplicationService } from '../../assistant/application/assistantApplicationService';
 import {
   AgentAnalyzeSessionService,
-  buildAgentQueryWithContinuityNotice,
+  resolveAgentQuery,
   type AnalyzeManagedSession,
 } from '../../assistant/application/agentAnalyzeSessionService';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
@@ -234,7 +233,6 @@ export interface RunTurnInput {
 export interface RunTurnOutput {
   sessionId: string;
   traceId: string;
-  sdkSessionId?: string;
   result: AnalysisResult;
   /** Absolute path to the generated HTML report, or undefined if generation failed. */
   reportHtml?: string;
@@ -496,7 +494,7 @@ export class CliAnalyzeService {
    * Resume-only path: try to reload an existing trace by its original id,
    * preserving identity so the persisted session's `traceId` still matches.
    * Returns true on success, false if the trace file has been evicted from
-   * `uploads/traces/` (caller should then degrade to a fresh load).
+   * the trace directory (caller should then degrade to a fresh load).
    */
   async reloadTraceById(traceId: string): Promise<boolean> {
     await this.ensureTraceProcessorAvailable();
@@ -750,10 +748,7 @@ export class CliAnalyzeService {
         let context: RuntimeFinalizationContext | undefined;
         let contextTransferred = false;
         let finalQualityIssue: FinalResultQualityIssue | undefined;
-        const agentQuery =
-          session.agentQuery && session.query === input.query
-            ? session.agentQuery
-            : buildAgentQueryWithContinuityNotice(input.query, session.continuityBreaks);
+        const agentQuery = resolveAgentQuery(session, input.query);
         try {
           // The run may learn across sessions only under the marker its run record carries.
           let runtimeOptions: AnalysisOptions = withDurableLearningPermission({
@@ -995,12 +990,6 @@ export class CliAnalyzeService {
           );
         }
 
-        // SDK/session id is runtime-specific and exposed only through the orchestrator hook.
-        const sdkSessionId =
-          typeof orchestrator.getSdkSessionId === 'function'
-            ? orchestrator.getSdkSessionId(sessionId, effectiveReferenceTraceId)
-            : undefined;
-
         assertActive();
         const reportOutput = this.buildReportHtml(session, result, primaryPrivateContext);
         const durableResult = primaryPrivateKnowledge
@@ -1011,7 +1000,6 @@ export class CliAnalyzeService {
         return {
           sessionId,
           traceId,
-          sdkSessionId,
           result: durableResult,
           reportHtml: reportOutput.html,
           reportError: projectOwnerReportError(primaryPrivateKnowledge, sessionId, reportOutput.error, outputLanguage),
@@ -1254,7 +1242,6 @@ async function runCliE2eFakeTurn(input: RunTurnInput, traceId: string): Promise<
   const output: RunTurnOutput = {
     sessionId,
     traceId,
-    sdkSessionId: `cli-e2e-fake-${sessionId}`,
     model: 'cli-e2e-fake',
     providerId: null,
     agentRuntimeKind: 'openai-agents-sdk',

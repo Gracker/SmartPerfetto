@@ -80,6 +80,9 @@ sql_fragments:
   backend/skills/fragments/system_cpu_freq_limit_episode_verdicts.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_cpu_freq_limit_episode_verdicts.sql
+  backend/skills/fragments/system_cpu_freq_limit_frame_binding.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/system_cpu_freq_limit_frame_binding.sql
   backend/skills/fragments/effective_target_processes.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/effective_target_processes.sql
@@ -1812,9 +1815,6 @@ strategies:
     workflow: scene-reconstruction
     disposition: exported
     destination: references/generated/strategies/prompt-scene-stage3-summary.template.md
-  backend/strategies/prompt-session-continuity-break.template.md:
-    disposition: product-only
-    reason: SmartPerfetto runtime, session, case, language, or codebase orchestration
   backend/strategies/report-runtime-recovery-contract-section-en.template.md:
     disposition: product-only
     reason: SmartPerfetto report rendering and runtime recovery surface

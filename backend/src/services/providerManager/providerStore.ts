@@ -15,6 +15,8 @@ import {
 import { recordEnterpriseAuditEvent } from '../enterpriseAuditService';
 import type { ProviderConfig, ProviderConnection, ProviderScope } from './types';
 import { LocalEncryptedSecretStore } from './localSecretStore';
+import { atomicWriteFileSync } from '../../utils/atomicFileWriter';
+import { isPlainJsonObject } from '../../utils/isPlainJsonObject';
 import { logStoredReadFailure, parseStoredJson } from '../../utils/storedData';
 import {
   localProviderMutationScope,
@@ -282,8 +284,86 @@ function writableProviderWhere(): string {
   `;
 }
 
+export const PROVIDER_STORE_UNREADABLE_CODE = 'provider_store_unreadable';
+
+export type ProviderStoreStatus = 'ok' | 'unreadable';
+
+/**
+ * What was refused because providers.json exists but cannot be read or
+ * validated: a write, or a read deciding which provider an analysis uses (the
+ * file may name a gateway, so env could reach a different endpoint or account).
+ */
+type ProviderStoreUnreadableOperation = 'write' | 'read';
+
+const PROVIDER_STORE_UNREADABLE_MESSAGES: Record<ProviderStoreUnreadableOperation, string> = {
+  write: 'providers.json could not be read; repair or move the file before changing providers',
+  read: 'providers.json could not be read, so the AI provider for this analysis is unknown; '
+    + 'repair or move the file, or choose the system default (env) explicitly',
+};
+
+export class ProviderStoreUnreadableError extends Error {
+  readonly code = PROVIDER_STORE_UNREADABLE_CODE;
+  /** A conflict with the file's state, which the user can repair. */
+  readonly httpStatus = 409;
+
+  constructor(operation: ProviderStoreUnreadableOperation = 'write') {
+    super(PROVIDER_STORE_UNREADABLE_MESSAGES[operation]);
+    this.name = 'ProviderStoreUnreadableError';
+  }
+}
+
+/**
+ * Identifies one version of the file (undefined: no file). ctime is included so
+ * a permission repair counts as a new version.
+ */
+function fileVersion(filePath: string): string | undefined {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    // Any other stat failure is a file that exists but cannot be read.
+    return `stat:${(err as NodeJS.ErrnoException).code ?? 'unknown'}`;
+  }
+}
+
+/**
+ * Accepts the stored array only if every entry can be written back unchanged:
+ * an entry the Map could not hold (no id, or a repeated id) would be dropped by
+ * the next persist.
+ */
+function parseLegacyProviders(raw: string): Map<string, ProviderConfig> {
+  // An empty file holds no profiles; a Windows editor may prepend a BOM.
+  const text = raw.replace(/^\uFEFF/, '');
+  if (text.trim().length === 0) return new Map();
+  const value = parseStoredJson<unknown>(text, 'providers.json');
+  if (!Array.isArray(value)) throw new Error('providers.json is not an array');
+  const providers = new Map<string, ProviderConfig>();
+  for (const entry of value) {
+    if (!isPlainJsonObject(entry)
+      || typeof entry.id !== 'string' || entry.id.length === 0
+      || providers.has(entry.id)
+      || !isPlainJsonObject(entry.models)
+      || !isPlainJsonObject(entry.connection)) {
+      throw new Error('providers.json holds an invalid provider entry');
+    }
+    providers.set(entry.id, entry as unknown as ProviderConfig);
+  }
+  return providers;
+}
+
+function findActive(providers: Iterable<ProviderConfig>): ProviderConfig | undefined {
+  for (const provider of providers) {
+    if (provider.isActive) return provider;
+  }
+  return undefined;
+}
+
 export class ProviderStore {
+  /** A cache of the file version `loadedVersion`; empty while that version is unreadable. */
   private providers = new Map<string, ProviderConfig>();
+  private loadedVersion?: string;
+  private unreadable = false;
   private filePath: string;
   private secretStore?: LocalEncryptedSecretStore;
   private readonly mutationGenerations: ProviderMutationGenerationStore;
@@ -302,23 +382,48 @@ export class ProviderStore {
     });
   }
 
+  /**
+   * Reads providers.json. A missing or empty file is an empty store; a file that
+   * cannot be read or validated makes the store unreadable instead, so no write
+   * can persist a partial view over it. Nothing from a rejected file is
+   * published.
+   */
   load(): void {
     if (enterpriseProviderStoreEnabled()) return;
-    this.providers.clear();
-    if (!fs.existsSync(this.filePath)) return;
+    const version = fileVersion(this.filePath);
+    const alreadyWarned = this.unreadable && this.loadedVersion === version;
+    this.loadedVersion = version;
+    this.providers = new Map();
+    this.unreadable = false;
+    if (version === undefined) return;
     try {
-      const raw = fs.readFileSync(this.filePath, 'utf-8');
-      const arr = parseStoredJson<ProviderConfig[]>(raw, 'providers.json');
-      for (const p of arr) this.providers.set(p.id, p);
+      this.providers = parseLegacyProviders(fs.readFileSync(this.filePath, 'utf-8'));
     } catch (err) {
-      logStoredReadFailure('[ProviderStore] providers.json unreadable, starting fresh', err, {path: this.filePath});
+      this.unreadable = true;
+      if (!alreadyWarned) {
+        logStoredReadFailure('[ProviderStore] providers.json could not be read; provider writes are refused until it is repaired',
+          err, {path: this.filePath});
+      }
     }
+  }
+
+  /** `unreadable` while providers.json exists but cannot be read or validated. */
+  getStatus(): ProviderStoreStatus {
+    if (enterpriseProviderStoreEnabled()) return 'ok';
+    this.syncWithFile();
+    return this.unreadable ? 'unreadable' : 'ok';
+  }
+
+  /** Throws `ProviderStoreUnreadableError` before any write while the file is unreadable. */
+  assertWritable(): void {
+    if (this.getStatus() === 'unreadable') throw new ProviderStoreUnreadableError();
   }
 
   getAll(scope?: ProviderScope): ProviderConfig[] {
     if (enterpriseProviderStoreEnabled()) {
       return this.getAllEnterprise(scope);
     }
+    this.syncWithFile();
     return Array.from(this.providers.values());
   }
 
@@ -326,14 +431,30 @@ export class ProviderStore {
     if (enterpriseProviderStoreEnabled()) {
       return this.getEnterprise(id, scope);
     }
+    this.syncWithFile();
     return this.providers.get(id);
   }
 
   getActive(scope?: ProviderScope): ProviderConfig | undefined {
-    for (const p of this.getAll(scope)) {
-      if (p.isActive) return p;
+    return findActive(this.getAll(scope));
+  }
+
+  /**
+   * The active provider (`id` undefined) or the provider `id`, read under one
+   * file version together with its status: checking the status and reading
+   * separately could find the file readable, then read an empty store broken
+   * in between, which would look like "no such provider".
+   */
+  readProvider(
+    id: string | undefined,
+    scope?: ProviderScope,
+  ): {status: 'unreadable'} | {status: 'ok'; provider?: ProviderConfig} {
+    if (enterpriseProviderStoreEnabled()) {
+      return {status: 'ok', provider: id === undefined ? this.getActive(scope) : this.getEnterprise(id, scope)};
     }
-    return undefined;
+    this.syncWithFile();
+    if (this.unreadable) return {status: 'unreadable'};
+    return {status: 'ok', provider: id === undefined ? findActive(this.providers.values()) : this.providers.get(id)};
   }
 
   getActivePeer(id: string, scope?: ProviderScope): ProviderConfig | undefined {
@@ -351,6 +472,7 @@ export class ProviderStore {
   }
 
   set(provider: ProviderConfig, scope?: ProviderScope): void {
+    this.assertWritable();
     if (!enterpriseProviderStoreEnabled()) {
       this.providers.set(provider.id, provider);
       this.persist();
@@ -361,6 +483,7 @@ export class ProviderStore {
   }
 
   delete(id: string, scope?: ProviderScope): boolean {
+    this.assertWritable();
     let deleted = false;
     if (!enterpriseProviderStoreEnabled()) {
       deleted = this.providers.delete(id);
@@ -837,14 +960,22 @@ export class ProviderStore {
     };
   }
 
+  /**
+   * Re-reads the file when it is not the version the cache holds: a repaired
+   * file is picked up without a restart, and a file edited (or broken) since
+   * the last load is never overwritten by the stale cache.
+   */
+  private syncWithFile(): void {
+    if (fileVersion(this.filePath) !== this.loadedVersion) this.load();
+  }
+
   private persist(): void {
     if (!legacyProviderWritesEnabled()) return;
     const dir = path.dirname(this.filePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${this.filePath}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(this.getAll(), null, 2));
-    fs.renameSync(tmp, this.filePath);
+    atomicWriteFileSync(this.filePath, JSON.stringify(Array.from(this.providers.values()), null, 2));
     try { fs.chmodSync(this.filePath, 0o600); } catch { /* Windows */ }
+    this.loadedVersion = fileVersion(this.filePath);
   }
 
   private readSecretVersionFromPolicy(row: ProviderCredentialRow): number | undefined {

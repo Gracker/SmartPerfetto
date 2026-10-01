@@ -391,10 +391,17 @@ describe('cross-scene canonical system consumers', () => {
         CREATE TABLE thread_track(id INTEGER,utid INTEGER);
         CREATE TABLE slice(track_id INTEGER,ts INTEGER,dur INTEGER,name TEXT);
         CREATE TABLE actual_frame_timeline_slice(ts INTEGER,upid INTEGER,display_frame_token INTEGER);
+        CREATE TABLE cpu_counter_track(id INTEGER,cpu INTEGER,type TEXT,name TEXT);
+        CREATE TABLE counter_track(id INTEGER,type TEXT,name TEXT,dimension_arg_set_id INTEGER);
+        CREATE TABLE counter(id INTEGER,track_id INTEGER,ts INTEGER,value REAL);
+        CREATE TABLE args(arg_set_id INTEGER,key TEXT,string_value TEXT);
       `);
+      // The decline stays an observation; with no max-limit track the only
+      // frequency-limit statement is that the evidence is missing.
       expect(query(db, 'scrolling_analysis', 'global_context_flags', {start_ts:'0',end_ts:'10000000000'}))
         .toEqual([expect.objectContaining({frequency_decline_observed:1,thermal_trending:null,
-          thermal_evidence:'temperature_or_throttle_evidence_required'})]);
+          thermal_evidence:'LIMIT_EVIDENCE_MISSING',freq_limit_classification:'LIMIT_EVIDENCE_MISSING',
+          freq_limit_trace_summary:'LIMIT_EVIDENCE_MISSING'})]);
     } finally { db.close(); }
   });
 
@@ -408,5 +415,48 @@ describe('cross-scene canonical system consumers', () => {
       expect(step.sql).not.toContain("state = 'R'");
       expect(step.sql).not.toContain("core_type NOT IN ('prime', 'big')");
     }
+  });
+});
+
+// Totals a diagnosis cites are computed in SQL: the portable runtime that also
+// renders these templates has no rounding or ternary.
+describe('SQL-computed values cited by diagnostic templates', () => {
+  it('jank GC total sums the per-type overlaps as displayed, so rounding cannot cross the threshold', () => {
+    const db = fixture();
+    try {
+      // Two GC types each overlap the 10-40ms window by 1.504ms: 1.5 + 1.5, not round(3.008).
+      db.exec(`CREATE TABLE android_garbage_collection_events(tid INTEGER,upid INTEGER,gc_type TEXT,gc_ts INTEGER,gc_dur INTEGER);
+        INSERT INTO android_garbage_collection_events VALUES
+          (100,42,'young',38496000,2000000),(100,42,'full',9000000,2504000),
+          (101,43,'young',20000000,5000000),(100,42,'young',45000000,1000000);`);
+      const rows = query(db, 'jank_frame_detail', 'gc_in_frame');
+      expect(rows).toEqual([
+        expect.objectContaining({gc_type: expect.any(String), overlap_ms: 1.5, total_overlap_ms: 3}),
+        expect.objectContaining({gc_type: expect.any(String), overlap_ms: 1.5, total_overlap_ms: 3}),
+      ]);
+    } finally { db.close(); }
+  });
+
+  it('startup critical tasks total only the threads it returns, after the top_k cut', () => {
+    const db = fixture();
+    try {
+      db.exec(`INSERT INTO thread_state VALUES(8,2,10000000,3000000,'Running',1,1,NULL,NULL,NULL,NULL);`);
+      const all = query(db, 'atomic/startup_critical_tasks', 'root');
+      expect(all.map(row => row.utid)).toEqual([1, 2]);
+      expect(all.map(row => row.returned_total_cpu_ms)).toEqual([13, 13]);
+      const top = query(db, 'atomic/startup_critical_tasks', 'root', {top_k: '1'});
+      expect(top).toEqual([expect.objectContaining({utid: 1, total_cpu_ms: 10, returned_total_cpu_ms: 10, total_observed_threads: 2})]);
+    } finally { db.close(); }
+  });
+
+  it('ANR context gives the exact integer window start of its decimal-string timestamps', () => {
+    const db = fixture();
+    try {
+      db.exec(`CREATE TABLE android_anrs(ts INTEGER,process_name TEXT,pid INTEGER,upid INTEGER,anr_type TEXT,error_id TEXT,default_anr_dur_ms INTEGER,anr_dur_ms INTEGER);
+        INSERT INTO android_anrs VALUES(9007199254742101,'com.example.app',100,42,'INPUT_DISPATCHING_TIMEOUT','e1',5000,0);`);
+      const rows = query(db, 'atomic/anr_context_in_range', 'root', {anr_type: ''});
+      expect(rows).toEqual([expect.objectContaining({
+        anr_ts: '9007199254742101', timeout_ns: '5000000000', window_start_ts: '9007194254742101'})]);
+    } finally { db.close(); }
   });
 });

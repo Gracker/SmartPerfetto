@@ -588,7 +588,7 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(second.session.continuityBreaks).toBeUndefined();
     expect(second.session.conversationSteps).toEqual([]);
     expect(second.session.query).toBe('second follow-up');
-    expect(second.session.agentQuery).toBe('second follow-up');
+    expect(second.session.agentQuery).toBeUndefined();
   });
 
   test('reuses an in-memory session with its pinned provider when active provider changed elsewhere', () => {
@@ -673,6 +673,89 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(prepared.sessionId).not.toBe(existing.sessionId);
     expect(prepared.session.providerId).toBe(replacementProvider.id);
     expect(existing.orchestrator.cleanupSession).toHaveBeenCalledWith(existing.sessionId);
+  });
+
+  describe('while providers.json is unreadable', () => {
+    let warnSpy: ReturnType<typeof jest.spyOn>;
+
+    function createActiveOpenAiProvider(): string {
+      const provider = getProviderService().create({
+        name: 'Gateway',
+        category: 'official',
+        type: 'openai',
+        models: {primary: 'gpt-gateway', light: 'gpt-gateway-light'},
+        connection: {agentRuntime: 'openai-agents-sdk', openaiApiKey: 'sk-gateway-openai'},
+      });
+      getProviderService().activate(provider.id);
+      return provider.id;
+    }
+
+    async function breakProvidersFile(): Promise<void> {
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      await fs.writeFile(path.join(providerDataDir, 'providers.json'), '[{"id":');
+    }
+
+    function expectStoreUnreadableRefusal(prepare: () => unknown): void {
+      let caught: unknown;
+      try {
+        prepare();
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(AnalyzeSessionPreparationError);
+      expect(caught).toMatchObject({code: 'provider_store_unreadable', httpStatus: 409});
+    }
+
+    afterEach(() => warnSpy?.mockRestore());
+
+    test('refuses a new session that follows the active provider instead of pinning env', async () => {
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      expectStoreUnreadableRefusal(() => service.prepareSession({traceId: 'trace-1', query: 'q', options: {}}));
+      expect(mockCreateAgentOrchestrator).not.toHaveBeenCalled();
+    });
+
+    test('still pins env when the request chooses it explicitly', async () => {
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      const prepared = service.prepareSession({traceId: 'trace-1', query: 'q', providerId: null, options: {}});
+      expect(prepared.isNewSession).toBe(true);
+      expect(prepared.session.providerId).toBeNull();
+    });
+
+    test('continues a live env-pinned session without reading the active provider', async () => {
+      const existing = createSession('agent-session-env', 'trace-1');
+      existing.providerId = null;
+      existing.providerSnapshotHash = providerSnapshotHash(null);
+      assistantAppService.setSession(existing.sessionId, existing);
+      createActiveOpenAiProvider();
+      await breakProvidersFile();
+
+      const prepared = service.prepareSession({
+        traceId: 'trace-1', query: 'follow-up', requestedSessionId: existing.sessionId, options: {},
+      });
+      expect(prepared.isNewSession).toBe(false);
+      expect(prepared.sessionId).toBe(existing.sessionId);
+    });
+
+    test('keeps a provider-pinned live session instead of retiring it as deleted', async () => {
+      const providerId = createActiveOpenAiProvider();
+      const existing = createSession('agent-session-pinned', 'trace-1');
+      existing.orchestrator = {cleanupSession: jest.fn()} as any;
+      existing.providerId = providerId;
+      existing.providerSnapshotHash = providerSnapshotHash(providerId);
+      existing.runtimeKind = 'openai-agents-sdk';
+      assistantAppService.setSession(existing.sessionId, existing);
+      await breakProvidersFile();
+
+      expectStoreUnreadableRefusal(() => service.prepareSession({
+        traceId: 'trace-1', query: 'follow-up', requestedSessionId: existing.sessionId, options: {},
+      }));
+      expect(existing.orchestrator.cleanupSession).not.toHaveBeenCalled();
+      expect(assistantAppService.getSession(existing.sessionId)).toBe(existing);
+    });
   });
 
   test('keeps live sessions pinned when workspace default provider changes', () => {
@@ -1066,13 +1149,22 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       reason: 'provider_snapshot_hash_mismatch',
       at: expect.any(Number),
     }));
-    expect(prepared.session.agentQuery).toContain('provider SDK conversation context was reset');
-    expect(prepared.session.agentQuery).toContain('follow-up');
+    expect(prepared.session.agentQuery).toBeUndefined();
     expect(prepared.session.tenantId).toBe('tenant-a');
-    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
+    expect(restoredOrchestrator.restoreFromSnapshot).toHaveBeenCalledWith(
+      'persisted-1',
+      'trace-1',
+      expect.objectContaining({
+        // Restored as persisted: no runtime reads a legacy engine payload.
+        engineState: expect.objectContaining({
+          kind: 'openai-agents-sdk',
+          provider: {providerId: provider.id, providerSnapshotHash: originalHash},
+        }),
+      }),
+    );
   });
 
-  test('skips Pi opaque snapshot restore after a scoped API-key rotation', () => {
+  test('restores Pi product state but not a legacy stored transcript after a scoped API-key rotation', () => {
     const provider = getProviderService().create({
       name: 'Pi Provider',
       category: 'custom',
@@ -1094,6 +1186,8 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       custom: {envOverrides: {DEEPSEEK_API_KEY: 'second-pi-secret'}},
     });
     const nextHash = providerSnapshotHash(provider.id);
+    const piNote = {section: 'finding', content: 'main thread blocked on binder', priority: 'high', timestamp: 1};
+    const piArtifacts = [{id: 'art-1', skillId: 'startup_analysis', createdAt: 1}];
 
     sessionPersistenceService.getSession.mockReturnValue({
       id: 'persisted-pi',
@@ -1118,10 +1212,11 @@ describe('AgentAnalyzeSessionService session continuity', () => {
       agentResponses: [],
       dataEnvelopes: [],
       hypotheses: [],
-      analysisNotes: [],
+      analysisNotes: [piNote],
       analysisPlan: null,
       planHistory: [],
       uncertaintyFlags: [],
+      artifacts: piArtifacts,
       engineState: {
         kind: 'pi-agent-core',
         provider: {
@@ -1152,8 +1247,19 @@ describe('AgentAnalyzeSessionService session continuity', () => {
     expect(nextHash).not.toBe(originalHash);
     expect(prepared.session.providerSnapshotHash).toBe(nextHash);
     expect(prepared.session.providerSnapshotChanged).toBe(true);
-    expect(prepared.session.agentQuery).toContain('provider SDK conversation context was reset');
-    expect(restoredOrchestrator.restoreFromSnapshot).not.toHaveBeenCalled();
+    expect(prepared.session.agentQuery).toBeUndefined();
+    expect(restoredOrchestrator.restoreFromSnapshot).toHaveBeenCalledWith(
+      'persisted-pi',
+      'trace-pi',
+      expect.objectContaining({
+        analysisNotes: [piNote],
+        artifacts: piArtifacts,
+        engineState: expect.objectContaining({
+          kind: 'pi-agent-core',
+          provider: {providerId: provider.id, providerSnapshotHash: originalHash},
+        }),
+      }),
+    );
   });
 
   test('restores a persisted env-fallback session without reading the active provider', () => {

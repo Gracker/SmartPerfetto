@@ -17,6 +17,7 @@ import type {
 import type {
   EvolutionGenerationHeadV1,
 } from './evolutionOverlayRegistry';
+import {projectReconciliationReportForAdmin} from './reconciliationReportView';
 
 const MAX_OPERATIONS = 100;
 const MAX_OPERATIONS_PER_SCOPE = 20;
@@ -181,8 +182,9 @@ export class SelfEvolutionAdminService {
       proposalCounts: countProposalStates(proposals),
       overlayCounts: countOverlayStates(overlays),
       generationHead: this.dependencies.generationHead(scope),
-      latestReconciliation:
+      latestReconciliation: projectReconciliationReportForAdmin(
         this.dependencies.latestReconciliation(scope),
+      ),
       operations: {
         running: scopedOperations.filter(operation =>
           operation.state === 'running').length,
@@ -340,7 +342,9 @@ export class SelfEvolutionAdminService {
   reconciliation(
     scope: RunManifestScope,
   ): UpgradeReconciliationReportV1 | null {
-    return this.dependencies.latestReconciliation(scope);
+    return projectReconciliationReportForAdmin(
+      this.dependencies.latestReconciliation(scope),
+    );
   }
 
   operationalMetrics(scope: RunManifestScope): {

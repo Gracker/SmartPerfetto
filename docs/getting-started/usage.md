@@ -179,7 +179,7 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 这个 slice 前后有没有 Binder 或调度问题？
 ```
 
-多轮追问会复用 session。切换 conversation/fast/full/auto 模式会开启新的 SDK session，避免轻量上下文和完整上下文混用。
+多轮追问会复用 session。切换 conversation/fast/full/auto 模式会开启新的后端 agent session，避免轻量上下文和完整上下文混用。
 
 `/anr` 和 `/jank` 使用与普通分析相同的后端证据、claim verification 和报告链路；AI 被策略禁用时，这两个命令也会被阻止。
 

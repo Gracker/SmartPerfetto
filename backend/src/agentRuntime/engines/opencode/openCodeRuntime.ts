@@ -34,7 +34,6 @@ import {activateSceneRuntime, resolveSceneProductScope} from '../../../agent/sce
 import {
   createClaudeMcpServer,
   loadLearnedSqlFixPairs,
-  MIN_PHASE_SUMMARY_CHARS,
 } from '../../../agentv3/claudeMcpServer';
 import {
   buildQuickSystemPrompt,
@@ -54,13 +53,8 @@ import type {
   AnalysisPlanV3,
   ClaudeAnalysisContext,
   Hypothesis,
-  PlanPhase,
   UncertaintyFlag,
 } from '../../../agentv3/types';
-import {
-  getAnalysisPlanCompletionStatus,
-  type AnalysisPlanCompletionStatus,
-} from '../../../agentv3/planCompletionStatus';
 import {
   recordPlanOrPrePlanToolCall,
   resetPrePlanToolCallsForNewRun,
@@ -68,9 +62,7 @@ import {
 } from '../../../agentv3/planToolCallRecorder';
 import {
   createOpenCodeSnapshotEngineState,
-  getOpenCodeSnapshotEngineState,
   projectSessionFieldsForDurableSnapshot,
-  type OpenCodeOpaqueState,
   type SessionFieldsForSnapshot,
   type SessionStateSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
@@ -247,10 +239,6 @@ interface OpenCodeClient {
       body?: { title?: string };
       query?: { directory?: string };
     }): Promise<OpenCodeSdkResponse<OpenCodeSession> | OpenCodeSession>;
-    get?(input: {
-      path: { id: string };
-      query?: { directory?: string };
-    }): Promise<OpenCodeSdkResponse<OpenCodeSession> | OpenCodeSession>;
     prompt(input: OpenCodePromptInput): Promise<unknown>;
     promptAsync?(input: OpenCodePromptInput): Promise<unknown>;
     status?(input?: { query?: { directory?: string } }): Promise<unknown>;
@@ -291,9 +279,6 @@ interface OpenCodeSdkModule {
 
 interface OpenCodeActiveSession {
   openCodeSessionId?: string;
-  projectDir?: string;
-  homeDir?: string;
-  configDir?: string;
   server?: OpenCodeServerHandle;
   client?: OpenCodeClient;
   closeBridge?: () => Promise<void>;
@@ -1250,33 +1235,6 @@ function cleanupStaleEphemeralOpenCodeDirs(now = Date.now()): void {
   }
 }
 
-function openCodeOpaqueDirsExist(opaque: OpenCodeOpaqueState): boolean {
-  return Boolean(
-    opaque.projectDir &&
-    opaque.homeDir &&
-    opaque.configDir &&
-    fs.existsSync(opaque.projectDir) &&
-    fs.existsSync(opaque.homeDir) &&
-    fs.existsSync(opaque.configDir),
-  );
-}
-
-function createOpenCodeOpaqueState(
-  openCodeSessionId: string | undefined,
-  dirs: OpenCodeSessionDirs,
-): OpenCodeOpaqueState {
-  if (!openCodeSessionId) {
-    return { version: 1, degradedReason: 'state_unavailable' };
-  }
-  return {
-    version: 1,
-    openCodeSessionId,
-    projectDir: dirs.projectDir,
-    homeDir: dirs.homeDir,
-    configDir: dirs.configDir,
-  };
-}
-
 function resolveOpenCodeCliPath(): string {
   const packageJsonPath = require.resolve('opencode-ai/package.json');
   const packageRoot = path.dirname(packageJsonPath);
@@ -1904,13 +1862,57 @@ function hasOpenCodeAssistantBaselineBoundary(
   ));
 }
 
+const OPENCODE_MESSAGE_WINDOW_KEYS = ['messages', 'items', 'result'] as const;
+
+function locateOpenCodeRawMessageWindow(
+  messagesResponse: unknown,
+): {window: unknown[]; key?: typeof OPENCODE_MESSAGE_WINDOW_KEYS[number]} | undefined {
+  if (Array.isArray(messagesResponse)) return {window: messagesResponse};
+  if (!isRecord(messagesResponse)) return undefined;
+  const key = OPENCODE_MESSAGE_WINDOW_KEYS.find(candidate => Array.isArray(messagesResponse[candidate]));
+  return key ? {window: messagesResponse[key] as unknown[], key} : undefined;
+}
+
 function getOpenCodeRawMessageWindowCount(messagesResponse: unknown): number {
-  if (Array.isArray(messagesResponse)) return messagesResponse.length;
-  if (!isRecord(messagesResponse)) return 0;
-  for (const key of ['messages', 'items', 'result']) {
-    if (Array.isArray(messagesResponse[key])) return messagesResponse[key].length;
+  return locateOpenCodeRawMessageWindow(messagesResponse)?.window.length ?? 0;
+}
+
+function getOpenCodeMessageCreatedAt(message: unknown): number | undefined {
+  if (!isRecord(message)) return undefined;
+  const info = isRecord(message.info) ? message.info : message;
+  const created = isRecord(info.time) ? info.time.created : undefined;
+  return typeof created === 'number' && Number.isFinite(created) ? created : undefined;
+}
+
+/**
+ * Every window consumer assumes newest-first, which the `order: 'desc'` query
+ * requests but the server does not guarantee (it has been observed returning
+ * chronological windows). Reorder by creation time, native id breaking ties,
+ * only when every entry carries one; otherwise keep the server's order and
+ * report it, since ids alone are not a documented ordering.
+ */
+function normalizeOpenCodeMessageWindow(messagesResponse: unknown, onMissingCreatedAt: () => void): unknown {
+  const located = locateOpenCodeRawMessageWindow(messagesResponse);
+  if (!located || located.window.length === 0) return messagesResponse;
+  const entries = located.window.map(message => ({
+    message,
+    createdAt: getOpenCodeMessageCreatedAt(message),
+    id: isRecord(message) ? getOpenCodeAssistantMessageId(message) : undefined,
+  }));
+  if (entries.some(entry => entry.createdAt === undefined)) {
+    onMissingCreatedAt();
+    return messagesResponse;
   }
-  return 0;
+  if (entries.length < 2) return messagesResponse;
+  const newestFirst = entries.sort((left, right) => (
+    right.createdAt! - left.createdAt! ||
+    (left.id !== undefined && right.id !== undefined && left.id !== right.id
+      ? (left.id < right.id ? 1 : -1)
+      : 0)
+  )).map(entry => entry.message);
+  return located.key
+    ? {...messagesResponse as Record<string, unknown>, [located.key]: newestFirst}
+    : newestFirst;
 }
 
 function nextOpenCodeMessageWindowLimit(limit: number): number {
@@ -2103,11 +2105,18 @@ export async function runOpenCodePrompt(
   const awaitOperation = <T>(operation: () => Promise<T> | T): Promise<T> =>
     awaitOpenCodePromptOperation(operation, waitOptions);
   const throwIfStopped = (): void => throwIfOpenCodePromptStopped(waitOptions);
+  let missingCreatedAtReported = false;
+  const normalizeMessageWindow = (messagesResponse: unknown): unknown =>
+    normalizeOpenCodeMessageWindow(messagesResponse, () => {
+      if (missingCreatedAtReported) return;
+      missingCreatedAtReported = true;
+      console.warn('[OpenCode] message window lacks created times; server order kept');
+    });
   const fetchMessagesWindow = async (limit: number, context = 'OpenCode messages'): Promise<unknown> =>
-    unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
+    normalizeMessageWindow(unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
       path: {id: sessionId},
       query: {directory: projectDir, limit, order: 'desc'},
-    })), context);
+    })), context));
   const recordFirstAssistantMessage = (): void => {
     try {
       onFirstAssistantMessage?.();
@@ -2144,12 +2153,7 @@ export async function runOpenCodePrompt(
   };
   if (opencode.client.session.promptAsync && opencode.client.session.messages) {
     throwIfStopped();
-    const baselineMessagesResponse = resumedSession
-      ? unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
-          path: {id: sessionId},
-          query: {directory: projectDir, limit: 1, order: 'desc'},
-        })), 'OpenCode messages')
-      : undefined;
+    const baselineMessagesResponse = resumedSession ? await fetchMessagesWindow(1) : undefined;
     throwIfStopped();
     const baselineWatermark = createOpenCodeAssistantMessageWatermark(
       getOpenCodeAssistantMessages(baselineMessagesResponse)[0],
@@ -2185,7 +2189,7 @@ export async function runOpenCodePrompt(
         rawMessagesResponse = await awaitOperation(readMessages);
         statusResponse = await awaitOperation(readStatus);
       }
-      messagesResponse = unwrapSdkData(rawMessagesResponse, 'OpenCode messages');
+      messagesResponse = normalizeMessageWindow(unwrapSdkData(rawMessagesResponse, 'OpenCode messages'));
       throwIfStopped();
       const newAssistantMessages = await resolveOpenCodeCurrentTurnMessages({
         initialMessagesResponse: messagesResponse,
@@ -2252,10 +2256,7 @@ export async function runOpenCodePrompt(
 
   throwIfStopped();
   const baselineMessagesResponse = resumedSession && opencode.client.session.messages
-    ? unwrapSdkData(await awaitOperation(() => opencode.client.session.messages!({
-        path: { id: sessionId },
-        query: { directory: projectDir, limit: 1, order: 'desc' },
-      })), 'OpenCode messages')
+    ? await fetchMessagesWindow(1)
     : undefined;
   throwIfStopped();
   const baselineWatermark = createOpenCodeAssistantMessageWatermark(
@@ -2295,32 +2296,6 @@ export async function runOpenCodePrompt(
     ...(turnLimitReached ? {turnLimitReached: true, turnLimitCandidate} : {}) };
 }
 
-export function getOpenCodePlanCompletionStatus(plan: AnalysisPlanV3 | null): AnalysisPlanCompletionStatus & {
-  pending: string[];
-} {
-  const status = getAnalysisPlanCompletionStatus(plan, {
-    minSummaryChars: MIN_PHASE_SUMMARY_CHARS,
-  });
-  const pending = status.hasPlan
-    ? status.pendingPhases.map((phase: any) => phase.id || phase.title || 'unknown')
-    : [];
-  return { ...status, complete: !status.hasPlan || status.complete, pending };
-}
-
-/** @deprecated Final output does not implicitly complete a model-submitted plan. */
-export function completeOpenCodeFinalReportPhaseIfDelivered(
-  _plan: AnalysisPlanV3 | null,
-  _conclusion: string,
-  _outputLanguage: string,
-  _now: () => number = Date.now,
-): PlanPhase | undefined {
-  return undefined;
-}
-
-export function sanitizeOpenCodeConclusionText(conclusion: string): string {
-  return conclusion.trim();
-}
-
 export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   private readonly env: EnvLike;
   private readonly moduleLoader: OpenCodeSdkModuleLoader;
@@ -2335,7 +2310,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   private readonly sessionHypotheses = new Map<string, Hypothesis[]>();
   private readonly sessionUncertaintyFlags = new Map<string, UncertaintyFlag[]>();
   private readonly architectureCache = new Map<string, ArchitectureInfo>();
-  private readonly sessionOpaqueStates = new Map<string, OpenCodeOpaqueState>();
   private readonly executionGuard = new RuntimeExecutionGuard();
 
   constructor(
@@ -2349,51 +2323,17 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     this.selection = input.selection as RuntimeSelection<OpenCodeRuntimeKind>;
   }
 
-  private emitOpenCodeStateDegraded(reason: string, fallback = 'fresh_session'): void {
-    this.emitUpdate({
-      type: 'degraded',
-      content: {
-        module: 'opencode',
-        fallback,
-        reason,
-        message: 'OpenCode session state unavailable; started a fresh OpenCode session with SmartPerfetto context.',
-      },
-      timestamp: Date.now(),
-    });
-  }
-
   private resolveSessionDirs(sessionId: string, privateKnowledge = false): {
     dirs: OpenCodeSessionDirs;
-    restoredOpenCodeSessionId?: string;
     ephemeralRoot?: string;
   } {
     if (privateKnowledge) {
-      this.sessionOpaqueStates.delete(sessionId);
       const ephemeral = createEphemeralOpenCodeSessionDirs();
       return {dirs: ephemeral, ephemeralRoot: ephemeral.ephemeralRoot};
     }
-    const restored = this.sessionOpaqueStates.get(sessionId);
-    if (restored?.degradedReason) {
-      this.emitOpenCodeStateDegraded(restored.degradedReason);
-      this.sessionOpaqueStates.delete(sessionId);
-      return { dirs: createDurableOpenCodeSessionDirs(sessionId, this.env) };
-    }
-    if (restored?.openCodeSessionId && openCodeOpaqueDirsExist(restored)) {
-      return {
-        dirs: {
-          projectDir: restored.projectDir!,
-          homeDir: restored.homeDir!,
-          configDir: restored.configDir!,
-        },
-        // Reuse isolated provider directories, but logical history is injected
-        // from SmartPerfetto's authorized context into a fresh native session.
-      };
-    }
-    if (restored) {
-      this.emitOpenCodeStateDegraded('missing_required_fields');
-      this.sessionOpaqueStates.delete(sessionId);
-    }
-    return { dirs: createDurableOpenCodeSessionDirs(sessionId, this.env) };
+    // Every turn of a session reuses the same isolated directories, derived from
+    // the session id; each turn still starts a fresh native OpenCode session.
+    return {dirs: createDurableOpenCodeSessionDirs(sessionId, this.env)};
   }
 
   private async createOpenCodeInstance(
@@ -2404,44 +2344,11 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     return createOpenCodeInstanceWithExplicitEnv(sdk, dirs, this.env, options);
   }
 
-  private async canReuseOpenCodeSession(
-    client: OpenCodeClient,
-    openCodeSessionId: string,
-    projectDir: string,
-  ): Promise<boolean> {
-    try {
-      if (client.session.get) {
-        const existing = unwrapSdkData(await client.session.get({
-          path: { id: openCodeSessionId },
-          query: { directory: projectDir },
-        }), 'OpenCode restored session get');
-        return Boolean(existing?.id);
-      }
-      if (client.session.messages) {
-        unwrapSdkData(await client.session.messages({
-          path: { id: openCodeSessionId },
-          query: { directory: projectDir, limit: 1, order: 'asc' },
-        }), 'OpenCode restored session messages');
-        return true;
-      }
-    } catch {
-      return false;
-    }
-    return false;
-  }
-
-  private async resolveOpenCodeSessionId(
+  private async createOpenCodeSession(
     client: OpenCodeClient,
     sessionId: string,
     projectDir: string,
-    restoredOpenCodeSessionId?: string,
   ): Promise<string> {
-    if (restoredOpenCodeSessionId) {
-      const reusable = await this.canReuseOpenCodeSession(client, restoredOpenCodeSessionId, projectDir);
-      if (reusable) return restoredOpenCodeSessionId;
-      this.emitOpenCodeStateDegraded('session_restore_failed');
-      this.sessionOpaqueStates.delete(sessionId);
-    }
     const created = unwrapSdkData(await client.session.create({
       query: { directory: projectDir },
       body: { title: `SmartPerfetto ${sessionId}` },
@@ -2540,7 +2447,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     }
     executionLease.throwIfAborted();
     const privateKnowledge = analysisHasPrivateContext(options ?? {});
-    const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
+    const {dirs, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
     );
@@ -2562,18 +2469,14 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         client: opencode.client,
         abortController,
         aborted: false,
-        projectDir: dirs.projectDir,
-        homeDir: dirs.homeDir,
-        configDir: dirs.configDir,
       };
       this.activeSessions.set(sessionId, activeSession);
       executionLease.throwIfAborted();
       this.currentServer = opencode.server;
-      const openCodeSessionId = await this.resolveOpenCodeSessionId(
+      const openCodeSessionId = await this.createOpenCodeSession(
         opencode.client,
         sessionId,
         dirs.projectDir,
-        restoredOpenCodeSessionId,
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
@@ -2598,12 +2501,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }
       executionLease.throwIfAborted();
     } finally {
-      if (activeSession && !privateKnowledge && !executionLease.signal.aborted) {
-        this.sessionOpaqueStates.set(sessionId, createOpenCodeOpaqueState(
-          activeSession.openCodeSessionId,
-          dirs,
-        ));
-      }
       await this.closeSessionHandle(sessionId, activeSession);
       if (ephemeralRoot) fs.rmSync(ephemeralRoot, {recursive: true, force: true});
     }
@@ -2774,7 +2671,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       throw error;
     }
     const privateKnowledge = analysisHasPrivateContext(options);
-    const {dirs, restoredOpenCodeSessionId, ephemeralRoot} = this.resolveSessionDirs(
+    const {dirs, ephemeralRoot} = this.resolveSessionDirs(
       sessionId,
       privateKnowledge,
     );
@@ -2824,20 +2721,16 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         closeBridge: () => bridge.close().catch(() => undefined),
         abortController,
         aborted: false,
-        projectDir: dirs.projectDir,
-        homeDir: dirs.homeDir,
-        configDir: dirs.configDir,
       };
       bridgeOwnedByActiveSession = true;
       unownedOpenCodeInstance = undefined;
       this.activeSessions.set(sessionId, activeSession);
       executionLease.throwIfAborted();
       this.currentServer = opencode.server;
-      const openCodeSessionId = await this.resolveOpenCodeSessionId(
+      const openCodeSessionId = await this.createOpenCodeSession(
         opencode.client,
         sessionId,
         dirs.projectDir,
-        restoredOpenCodeSessionId,
       );
       activeSession.openCodeSessionId = openCodeSessionId;
       this.currentSessionId = openCodeSessionId;
@@ -2858,9 +2751,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       if (!promptSession) {
         throw new Error('OpenCode active session was not registered before prompt execution');
       }
-      let resumedPromptSession = Boolean(
-        restoredOpenCodeSessionId && openCodeSessionId === restoredOpenCodeSessionId,
-      );
+      let resumedPromptSession = false;
       const runAnalysisPrompt = async (text: string) => {
         if (Date.now() >= deadlineMs) throw openCodePromptTimeoutError(promptTimeout);
         const promptResult = await runOpenCodePrompt(opencode, {
@@ -2914,12 +2805,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       conclusion = acceptedMessage ? extractTextParts(acceptedMessage).trim() : '';
     } finally {
       toolAdmissionsOpen = false;
-      if (activeSession && !privateKnowledge && !executionLease.signal.aborted) {
-        this.sessionOpaqueStates.set(sessionId, createOpenCodeOpaqueState(
-          activeSession.openCodeSessionId,
-          dirs,
-        ));
-      }
       await this.closeSessionHandle(sessionId, activeSession);
       if (!activeSession && unownedOpenCodeInstance) {
         await Promise.resolve(unownedOpenCodeInstance.server.close()).catch(() => undefined);
@@ -3458,7 +3343,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     this.executionGuard.clear();
     this.currentSessionId = undefined;
     void this.abortAllSessions();
-    this.sessionOpaqueStates.clear();
     this.architectureCache.clear();
     this.removeAllListeners();
   }
@@ -3470,7 +3354,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     this.sessionPlans.delete(sessionId);
     this.sessionHypotheses.delete(sessionId);
     this.sessionUncertaintyFlags.delete(sessionId);
-    this.sessionOpaqueStates.delete(sessionId);
     fs.rmSync(openCodeSessionRoot(sessionId), {recursive: true, force: true});
   }
 
@@ -3517,26 +3400,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const durableFields = projectSessionFieldsForDurableSnapshot(sessionFields);
     const planState = this.sessionPlans.get(sessionId);
     const artifactStore = this.artifactStores.get(sessionId);
-    const activeSession = this.activeSessions.get(sessionId);
-    let activeOpaque: OpenCodeOpaqueState | undefined;
-    if (activeSession) {
-      const activeDirs: OpenCodeSessionDirs = (
-        activeSession.projectDir &&
-        activeSession.homeDir &&
-        activeSession.configDir
-      ) ? {
-          projectDir: activeSession.projectDir,
-          homeDir: activeSession.homeDir,
-          configDir: activeSession.configDir,
-        }
-        : createDurableOpenCodeSessionDirs(sessionId, this.env);
-      activeOpaque = createOpenCodeOpaqueState(activeSession.openCodeSessionId, activeDirs);
-    }
-    const opaque = privateKnowledge
-      ? undefined
-      : this.sessionOpaqueStates.get(sessionId)
-        ?? activeOpaque
-        ?? {version: 1, degradedReason: 'state_unavailable' as const};
     return {
       version: 1,
       snapshotTimestamp: Date.now(),
@@ -3552,7 +3415,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       engineState: createOpenCodeSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
-        opaque,
       }),
       agentRuntimeKind: OPENCODE_RUNTIME_KIND,
       agentRuntimeProviderId: sessionFields.agentRuntimeProviderId,
@@ -3586,10 +3448,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       } catch {
         // Ignore malformed legacy artifact snapshots.
       }
-    }
-    const opaque = getOpenCodeSnapshotEngineState(snapshot)?.opaque;
-    if (opaque) {
-      this.sessionOpaqueStates.set(sessionId, opaque);
     }
   }
 

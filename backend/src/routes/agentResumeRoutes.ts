@@ -4,15 +4,13 @@
 
 import express from 'express';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
-import {
-  restoredContinuityBreaks,
-  type AnalyzeSessionRunContext,
-} from '../assistant/application/agentAnalyzeSessionService';
+import type { AnalyzeSessionRunContext } from '../assistant/application/agentAnalyzeSessionService';
 import { getTraceProcessorService } from '../services/traceProcessorService';
 import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { getProviderService } from '../services/providerManager';
+import { sendProviderStoreUnreadableIfPresent } from './providerStoreHttp';
 import { resolveProviderRuntimeSnapshot } from '../services/providerManager/providerSnapshot';
 import { requireRequestContext } from '../middleware/auth';
 import {
@@ -23,6 +21,7 @@ import {
 import {
   getSnapshotRuntimeKind,
   getSnapshotRuntimeProviderId,
+  continuityBreaksAfterRestore,
   getSnapshotRuntimeProviderSnapshotHash,
   snapshotProvesNoPrivateContext,
 } from '../agentv3/sessionStateSnapshot';
@@ -192,10 +191,12 @@ export function registerAgentResumeRoutes(
         snapshotProviderHash &&
         snapshotProviderHash !== restoredProviderSnapshotHash,
       );
-      // A provider change drops SDK state; the break is recorded here, since
-      // the resumed session already carries the new hash the next analysis sees.
-      const continuityBreaks = restoredContinuityBreaks(snapshot?.continuityBreaks,
-        providerSnapshotChanged ? snapshotProviderHash : undefined);
+      // A provider change is recorded here, since the resumed session already
+      // carries the new hash the next analysis sees.
+      const continuityBreaks = continuityBreaksAfterRestore(
+        snapshot?.continuityBreaks,
+        providerSnapshotChanged ? snapshotProviderHash : undefined,
+      );
       const orchestrator = createAgentOrchestrator({
         traceProcessorService: getTraceProcessorService(),
         providerId: restoredProviderId,
@@ -227,7 +228,7 @@ export function registerAgentResumeRoutes(
         turnCount: restoredContext.getAllTurns().length,
       });
       if (providerSnapshotChanged) {
-        logger.warn('AgentRoutes', 'Provider snapshot changed; SDK session state will not be restored', {
+        logger.warn('AgentRoutes', 'Provider snapshot changed since the snapshot was saved; continuity break recorded', {
           providerId: restoredProviderId,
           previousProviderSnapshotHash: snapshotProviderHash,
           nextProviderSnapshotHash: restoredProviderSnapshotHash,
@@ -268,8 +269,9 @@ export function registerAgentResumeRoutes(
       const owner = normalizeResourceOwner(persistedSession.metadata);
 
       // Unified snapshot restoration — all fields populated from single source
-      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture, engine state)
-      if (snapshot && !providerSnapshotChanged && typeof orchestrator.restoreFromSnapshot === 'function') {
+      // Restore runtime maps (notes, plans, hypotheses, flags, artifacts, architecture).
+      // They hold no provider-bound engine state, so a provider snapshot change restores them unchanged.
+      if (snapshot && typeof orchestrator.restoreFromSnapshot === 'function') {
         orchestrator.restoreFromSnapshot(sessionId, effectiveTraceId, snapshot);
         logger.info('AgentRoutes', 'ClaudeRuntime Maps restored from snapshot', {
           notes: snapshot.analysisNotes.length,
@@ -315,7 +317,7 @@ export function registerAgentResumeRoutes(
         codebaseIds: snapshot?.codebaseIds,
         knowledgeSourceIds: snapshot?.knowledgeSourceIds,
         androidInternalsPackPin: snapshot?.androidInternalsPackPin,
-        continuityBreaks,
+        continuityBreaks: continuityBreaks.length > 0 ? continuityBreaks : undefined,
         lineage: snapshot?.lineage ?? persistedSession.metadata?.lineage,
         referenceTraceId: snapshot?.referenceTraceId,
         comparisonSource: snapshot?.comparisonSource,
@@ -388,6 +390,10 @@ export function registerAgentResumeRoutes(
       });
     } catch (error: any) {
       if (sendAiDisabledErrorIfPresent(res, error)) {
+        return;
+      }
+      // providers.json unreadable: the active or pinned provider is unknown.
+      if (sendProviderStoreUnreadableIfPresent(res, error)) {
         return;
       }
       console.error('[AgentRoutes] Session restore failed:', error);

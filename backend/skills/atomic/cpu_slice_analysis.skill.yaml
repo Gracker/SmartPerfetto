@@ -65,11 +65,15 @@ steps:
           type: duration
           format: duration_ms
         - name: big_core_ms
-          label: "大核时间"
+          label: "大核组时间（超大/大/中核）"
           type: duration
           format: duration_ms
         - name: little_core_ms
           label: "小核时间"
+          type: duration
+          format: duration_ms
+        - name: unknown_core_ms
+          label: "未知核类型时间"
           type: duration
           format: duration_ms
         - name: slice_count
@@ -104,8 +108,9 @@ steps:
         tt.thread_name,
         tt.process_name,
         SUM(cs.dur) / 1e6 as total_cpu_ms,
-        SUM(CASE WHEN cs.core_type IN ('prime', 'big') THEN cs.dur ELSE 0 END) / 1e6 as big_core_ms,
-        SUM(CASE WHEN cs.core_type IN ('medium', 'little') THEN cs.dur ELSE 0 END) / 1e6 as little_core_ms,
+        SUM(CASE WHEN cs.core_type IN ('prime', 'big', 'medium') THEN cs.dur ELSE 0 END) / 1e6 as big_core_ms,
+        SUM(CASE WHEN cs.core_type = 'little' THEN cs.dur ELSE 0 END) / 1e6 as little_core_ms,
+        SUM(CASE WHEN cs.core_type NOT IN ('prime', 'big', 'medium', 'little') THEN cs.dur ELSE 0 END) / 1e6 as unknown_core_ms,
         COUNT(*) as slice_count,
         AVG(cs.dur) / 1e6 as avg_slice_ms
       FROM target_threads tt

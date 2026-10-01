@@ -7,10 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {backendLogPath} from '../runtimePaths';
-import {
-  withFilesystemRegistryLock,
-  withFilesystemRegistryLockAsync,
-} from './filesystemRegistryLock';
+import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {
   enterpriseKnowledgeDbWritesEnabled,
   enterpriseKnowledgeStoreEnabled,
@@ -18,9 +15,13 @@ import {
   legacyKnowledgeFilesystemWritesEnabled,
   listScopedKnowledgeRecords,
   mutateScopedKnowledgeRecord,
-  mutateScopedKnowledgeRecordPair,
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
+import {
+  type ScopedIngestLease,
+  type ScopedIngestLeaseConfig,
+  withScopedIngestLease,
+} from './scopedIngestLease';
 
 export interface ExternalKnowledgeScope {
   tenantId?: string;
@@ -92,14 +93,14 @@ interface StorageEnvelope {
 
 const REGISTRY_KNOWLEDGE_KIND = 'external_knowledge_source';
 const REGISTRY_ROW_SCOPE = 'external-knowledge-source';
-const INGEST_LEASE_KNOWLEDGE_KIND = 'external_knowledge_ingest_lease';
-const INGEST_LEASE_ROW_SCOPE = 'external-knowledge-ingest-lease';
-const INGEST_LEASE_TTL_MS = 10 * 60 * 1000;
-
-interface ExternalKnowledgeIngestLease {
-  ownerToken: string;
-  expiresAt: number;
-}
+const INGEST_LEASE: ScopedIngestLeaseConfig = {
+  kind: 'external_knowledge_ingest_lease',
+  rowScope: 'external-knowledge-ingest-lease',
+  ttlMs: 10 * 60 * 1000,
+  inProgressError: 'external_knowledge_reindex_in_progress',
+  lostError: 'external_knowledge_reindex_lease_lost',
+  logPrefix: 'ExternalKnowledgeSourceRegistry',
+};
 
 export interface ExternalKnowledgeIngestLeaseGuard {
   /** Unique generation seed; prevents a later lease from reusing staged chunk ids. */
@@ -295,117 +296,32 @@ export class ExternalKnowledgeSourceRegistry {
     scope: ExternalKnowledgeScope,
     operation: (lease: ExternalKnowledgeIngestLeaseGuard) => Promise<T> | T,
   ): Promise<T> {
-    const ownerToken = randomUUID();
-    const localLeaseKey = `${sourceId}\0${scopeKey(scope)}`;
-    const useDistributedLease = enterpriseKnowledgeDbWritesEnabled();
-    if (!useDistributedLease) {
-      const leasePath = `${this.storagePath}.ingest.${createHash('sha256')
-        .update(localLeaseKey)
-        .digest('hex')
-        .slice(0, 24)}`;
-      return withFilesystemRegistryLockAsync(
-        leasePath,
-        'external_knowledge_reindex_in_progress',
-        async filesystemLease => {
-          const assertHeld = (): void => {
-            try {
-              filesystemLease.assertHeld();
-            } catch {
-              throw new Error('external_knowledge_reindex_lease_lost');
-            }
-          };
-          const lease: ExternalKnowledgeIngestLeaseGuard = {
-            operationId: ownerToken,
-            assertHeld,
-            activateGeneration: input => {
-              assertHeld();
-              return this.mutateSource(sourceId, scope, source => this.activateSource(sourceId, source, input));
-            },
-            clearActiveGeneration: () => {
-              assertHeld();
-              return this.mutateSource(sourceId, scope, source => this.clearSource(sourceId, source));
-            },
-          };
-          return operation(lease);
-        },
-        INGEST_LEASE_TTL_MS,
-      );
-    }
-    if (useDistributedLease) {
-      mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
-        INGEST_LEASE_KNOWLEDGE_KIND,
-        sourceId,
-        scope,
-        current => {
-          const now = Date.now();
-          if (current && current.expiresAt > now) {
-            throw new Error('external_knowledge_reindex_in_progress');
-          }
-          return {ownerToken, expiresAt: now + INGEST_LEASE_TTL_MS};
-        },
-        {rowScope: INGEST_LEASE_ROW_SCOPE},
-      );
-    }
-
-    const lease: ExternalKnowledgeIngestLeaseGuard = {
-      operationId: ownerToken,
-      assertHeld: () => {
-        if (useDistributedLease) {
-          mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
-            INGEST_LEASE_KNOWLEDGE_KIND,
-            sourceId,
-            scope,
-            current => {
-              const now = Date.now();
-              if (
-                current?.ownerToken !== ownerToken ||
-                current.expiresAt <= now
-              ) {
-                throw new Error('external_knowledge_reindex_lease_lost');
-              }
-              return {...current, expiresAt: now + INGEST_LEASE_TTL_MS};
-            },
-            {rowScope: INGEST_LEASE_ROW_SCOPE},
-          );
-        }
-      },
-      activateGeneration: input => this.mutateSourceWithLease(
-        sourceId,
-        scope,
-        ownerToken,
-        useDistributedLease,
-        source => this.activateSource(sourceId, source, input),
-      ),
-      clearActiveGeneration: () => this.mutateSourceWithLease(
-        sourceId,
-        scope,
-        ownerToken,
-        useDistributedLease,
-        source => this.clearSource(sourceId, source),
-      ),
-    };
-
-    try {
-      return await operation(lease);
-    } finally {
-      if (useDistributedLease) {
-        try {
-          mutateScopedKnowledgeRecord<ExternalKnowledgeIngestLease>(
-            INGEST_LEASE_KNOWLEDGE_KIND,
-            sourceId,
-            scope,
-            current => current?.ownerToken === ownerToken
-              ? {...current, expiresAt: 0}
-              : current ?? {ownerToken: 'released', expiresAt: 0},
-            {rowScope: INGEST_LEASE_ROW_SCOPE},
-          );
-        } catch (error) {
-          console.warn(
-            `[ExternalKnowledgeSourceRegistry] Lease release failed for ${sourceId}: ${error instanceof Error ? error.message : String(error)}`,
-          );
-        }
-      }
-    }
+    return withScopedIngestLease(
+      INGEST_LEASE,
+      sourceId,
+      scope,
+      {registryPath: this.storagePath, key: `${sourceId}\0${scopeKey(scope)}`},
+      lease => operation({
+        operationId: lease.ownerToken,
+        // The wiki ingester calls assertHeld() only as a fence: before staging,
+        // before each chunk batch and before the staged count that gates
+        // activation. Throttling would skip exactly the checks that must reach
+        // the lease row, so every call is a durable check.
+        assertHeld: () => lease.assertHeld(true),
+        activateGeneration: input => this.mutateSourceWithLease(
+          sourceId,
+          scope,
+          lease,
+          source => this.activateSource(sourceId, source, input),
+        ),
+        clearActiveGeneration: () => this.mutateSourceWithLease(
+          sourceId,
+          scope,
+          lease,
+          source => this.clearSource(sourceId, source),
+        ),
+      }),
+    );
   }
 
   private activateSource(
@@ -447,46 +363,31 @@ export class ExternalKnowledgeSourceRegistry {
   private mutateSourceWithLease(
     sourceId: string,
     scope: ExternalKnowledgeScope,
-    ownerToken: string,
-    useDistributedLease: boolean,
+    lease: ScopedIngestLease,
     mutate: (source: ExternalKnowledgeSource | undefined) => ExternalKnowledgeSource,
   ): ExternalKnowledgeSource {
+    if (!lease.distributed) {
+      lease.assertHeld(true);
+      return this.mutateSource(sourceId, scope, mutate);
+    }
     const activate = (): ExternalKnowledgeSource => {
-      const now = Date.now();
-      const result = mutateScopedKnowledgeRecordPair<
-        ExternalKnowledgeIngestLease,
-        ExternalKnowledgeSource
-      >(
-        {
-          kind: INGEST_LEASE_KNOWLEDGE_KIND,
-          externalId: sourceId,
-          options: {rowScope: INGEST_LEASE_ROW_SCOPE},
-          mutate: current => {
-            if (current?.ownerToken !== ownerToken || current.expiresAt <= now) {
-              throw new Error('external_knowledge_reindex_lease_lost');
-            }
-            return {...current, expiresAt: now + INGEST_LEASE_TTL_MS};
-          },
+      const updated = lease.mutateFenced<ExternalKnowledgeSource>({
+        kind: REGISTRY_KNOWLEDGE_KIND,
+        externalId: sourceId,
+        options: {rowScope: REGISTRY_ROW_SCOPE},
+        mutate: current => {
+          if (current && !sameScope(current.scope, scope)) {
+            throw new Error(`External knowledge source '${sourceId}' not found`);
+          }
+          return mutate(current);
         },
-        {
-          kind: REGISTRY_KNOWLEDGE_KIND,
-          externalId: sourceId,
-          options: {rowScope: REGISTRY_ROW_SCOPE},
-          mutate: current => {
-            if (current && !sameScope(current.scope, scope)) {
-              throw new Error(`External knowledge source '${sourceId}' not found`);
-            }
-            return mutate(current);
-          },
-        },
-        scope,
-      );
+      });
       if (legacyKnowledgeFilesystemWritesEnabled()) {
         this.load(true);
-        this.sources.set(sourceId, result.second);
+        this.sources.set(sourceId, updated);
         this.persist();
       }
-      return result.second;
+      return updated;
     };
     return legacyKnowledgeFilesystemWritesEnabled()
       ? withFilesystemRegistryLock(

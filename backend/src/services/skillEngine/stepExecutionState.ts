@@ -26,6 +26,21 @@ export function nonObservedStepState(stepResult: StepResult): StepExecutionState
   }
 }
 
+/** Whether a step result carries an observation: it succeeded, holds data, and was not a non-observed outcome. */
+export function isObservedStepResult(stepResult: StepResult): boolean {
+  return stepResult.success !== false && Object.prototype.hasOwnProperty.call(stepResult, 'data')
+    && !nonObservedStepState(stepResult);
+}
+
+/**
+ * A query or Skill result (a conditional returns its branch's). Its failure is
+ * recorded under the step id and ends the Skill unless the step is optional.
+ * exact_scope_unavailable results are atomic.
+ */
+export function isQueryOrSkillResult(stepResult: StepResult): boolean {
+  return stepResult.stepType === 'skill' || stepResult.stepType === 'atomic';
+}
+
 function conditionSkippedMessage(condition: string | undefined): string {
   const language = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const text = condition?.trim() || '?';

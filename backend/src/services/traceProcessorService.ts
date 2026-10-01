@@ -25,6 +25,7 @@ import {
   type TraceProcessorHolderType,
 } from './traceProcessorLeaseStore';
 import { traceProcessorProcessorKey } from './traceProcessorConnectionModel';
+import { getTracesDir } from './traceUploadPaths';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
 import {
   raceWithTraceProcessorCancellation,
@@ -194,7 +195,6 @@ export class TraceProcessorService extends EventEmitter {
   private processors: Map<string, TraceProcessor> = new Map();
   /** Service-level mapping owner; shared external processors may expose another alias's traceId. */
   private processorTraceIds: Map<string, string> = new Map();
-  private uploads: Map<string, any> = new Map();
   private uploadDir: string;
   /** Guards against concurrent auto-recovery for the same trace. */
   private recoveryInProgress: Map<string, Promise<TraceProcessor>> = new Map();
@@ -216,7 +216,7 @@ export class TraceProcessorService extends EventEmitter {
     new AsyncLocalStorage<TraceProcessorLeaseQueryContext | TraceProcessorLeaseQueryContextMap>();
 
   constructor(
-    uploadDir = resolveDefaultTraceUploadDir(),
+    uploadDir = getTracesDir(),
     private readonly leaseRestartPolicy: TraceProcessorLeaseRestartPolicy = {},
   ) {
     super();
@@ -387,25 +387,6 @@ export class TraceProcessorService extends EventEmitter {
   }
 
   /**
-   * Initialize a trace upload
-   */
-  public async initializeUpload(filename: string, size: number): Promise<string> {
-    const traceId = uuidv4();
-    const traceInfo: TraceInfo = {
-      id: traceId,
-      filename,
-      size,
-      uploadTime: new Date(),
-      status: 'uploading',
-    };
-
-    this.storeTraceInfo(traceInfo, 'local_file');
-    this.emit('trace-initialized', traceInfo);
-
-    return traceId;
-  }
-
-  /**
    * Initialize a trace upload with a specific ID
    * Use this when you already have a trace ID (e.g., from a file upload)
    */
@@ -499,52 +480,12 @@ export class TraceProcessorService extends EventEmitter {
   }
 
   /**
-   * Handle chunk upload for large files
-   */
-  public async uploadChunk(traceId: string, chunk: Buffer, offset: number): Promise<void> {
-    const trace = this.traces.get(traceId);
-    if (!trace) {
-      throw new Error(`Trace ${traceId} not found`);
-    }
-
-    const filePath = this.getTraceFilePath(traceId);
-
-    // Create write stream if not exists
-    if (!this.uploads.has(traceId)) {
-      const writeStream = fs.createWriteStream(filePath, { flags: 'w' });
-      this.uploads.set(traceId, writeStream);
-    }
-
-    const writeStream = this.uploads.get(traceId);
-
-    // Write chunk at specific offset
-    return new Promise((resolve, reject) => {
-      // For simplicity, we'll append chunks
-      // In production, you might want to use random access for better performance
-      writeStream.write(chunk, (error: any) => {
-        if (error) {
-          reject(error);
-        } else {
-          resolve();
-        }
-      });
-    });
-  }
-
-  /**
    * Complete the upload and start processing
    */
   public async completeUpload(traceId: string): Promise<void> {
     const trace = this.traces.get(traceId);
     if (!trace) {
       throw new Error(`Trace ${traceId} not found`);
-    }
-
-    // Close write stream
-    const writeStream = this.uploads.get(traceId);
-    if (writeStream) {
-      writeStream.end();
-      this.uploads.delete(traceId);
     }
 
     // Update status
@@ -1726,11 +1667,6 @@ export class TraceProcessorService extends EventEmitter {
     const lastAccess = trace.lastAccessTime?.getTime() ?? trace.uploadTime.getTime();
     return (now - lastAccess) <= idleTimeout;
   }
-}
-
-function resolveDefaultTraceUploadDir(): string {
-  const configured = process.env.SMARTPERFETTO_TRACE_UPLOAD_DIR?.trim();
-  return configured || './uploads/traces';
 }
 
 // Singleton instance for sharing across route modules

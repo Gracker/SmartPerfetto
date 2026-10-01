@@ -46,8 +46,13 @@ const DIAGNOSTIC_CONFIDENCE_LEVELS = new Set([
   'low',
   'medium',
   'high',
-  'critical',
 ]);
+
+/** A rule confidence is a literal: no runtime interpolates it, so a template or severity word is wrong. */
+export function isDiagnosticConfidence(value: unknown): boolean {
+  return (typeof value === 'number' && Number.isFinite(value))
+    || (typeof value === 'string' && DIAGNOSTIC_CONFIDENCE_LEVELS.has(value));
+}
 
 function isRecord(value: unknown): value is RecordValue {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -530,16 +535,7 @@ function validateDiagnosticRules(
       ])
       || !isNonEmptyString(rule.condition)
       || !isNonEmptyString(rule.diagnosis)
-      || (
-        (
-          typeof rule.confidence !== 'number'
-          || !Number.isFinite(rule.confidence)
-        )
-        && (
-          typeof rule.confidence !== 'string'
-          || !DIAGNOSTIC_CONFIDENCE_LEVELS.has(rule.confidence)
-        )
-      )
+      || !isDiagnosticConfidence(rule.confidence)
       || (
         rule.severity !== undefined
         && rule.severity !== 'info'
@@ -637,12 +633,14 @@ function validateStep(
       return hasOnlyKeys(value, [
         ...common,
         'skill',
+        'save_from',
         'params',
         'condition',
         'on_empty',
         'optional',
       ])
         && validateRequiredString(value, 'skill', path, issues)
+        && validateOptionalString(value, 'save_from', path, issues)
         && (
           value.params === undefined
           || isRecord(value.params)

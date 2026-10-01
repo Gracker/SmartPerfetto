@@ -105,14 +105,13 @@ describe('trace processor capability source', () => {
     fs.rmSync(tempDir, {recursive: true, force: true});
   });
 
-  it('records local or external source at all six TraceInfo creation seams', async () => {
+  it('records local or external source at all five TraceInfo creation seams', async () => {
     const service = new TraceProcessorService(tempDir);
     jest.spyOn(TraceProcessorFactory, 'create')
       .mockImplementation(async traceId => fakeProcessor(traceId) as WorkingTraceProcessor);
     jest.spyOn(TraceProcessorFactory, 'createFromExternalRpc')
       .mockImplementation(async traceId => fakeProcessor(traceId) as never);
 
-    const uploadId = await service.initializeUpload('upload.trace', 12);
     await service.initializeUploadWithId('fixed-upload', 'fixed.trace', 13);
 
     const storedPath = writeFile(path.join(tempDir, 'stored-source.pftrace'));
@@ -132,7 +131,7 @@ describe('trace processor capability source', () => {
 
     await service.registerExternalRpc('external', 19001, 'external trace');
 
-    for (const traceId of [uploadId, 'fixed-upload', 'stored', diskId, directId]) {
+    for (const traceId of ['fixed-upload', 'stored', diskId, directId]) {
       expect(service.getTraceSourceKind(traceId)).toBe('local_file');
     }
     expect(service.getTraceSourceKind('external')).toBe('external_rpc');

@@ -56,23 +56,23 @@ describe('producer-owned tool facts', () => {
   });
 });
 
-describe('optional plan completion across budgets', () => {
-  it.each([true, false])('has no missing-plan obligation with quickMode=%s', quickMode => {
+describe('optional plan completion', () => {
+  it('has no missing-plan obligation', () => {
     for (const plan of [null, undefined]) {
-      expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+      expect(getAnalysisPlanCompletionStatus(plan))
         .toEqual({complete: true, hasPlan: false, pendingPhases: []});
     }
   });
 
-  it.each([true, false])('keeps empty or malformed submitted plans incomplete with quickMode=%s', quickMode => {
+  it('keeps empty or malformed submitted plans incomplete', () => {
     for (const phases of [[], undefined, {}, [null], [{id: 'p1'}]]) {
       const plan = {phases, successCriteria: 'Resolve', submittedAt: 1, toolCallLog: []} as unknown as AnalysisPlanV3;
-      expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+      expect(getAnalysisPlanCompletionStatus(plan))
         .toMatchObject({complete: false, hasPlan: true});
     }
   });
 
-  it.each([true, false])('requires actual successful evidence for submitted plans with quickMode=%s', quickMode => {
+  it('requires actual successful evidence for submitted plans', () => {
     const plan: AnalysisPlanV3 = {
       phases: [{id: 'p1', name: 'Inspect', goal: 'Read requested evidence', status: 'completed',
         summary: 'The evidence was inspected.', expectedTools: ['execute_sql']}],
@@ -81,14 +81,42 @@ describe('optional plan completion across budgets', () => {
     recordPlanOrPrePlanToolCall({current: plan}, {
       toolName: 'execute_sql', toolCallId: 'denied', resultFacts: {success: false, planPhaseId: 'p1'},
     });
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+    expect(getAnalysisPlanCompletionStatus(plan))
       .toMatchObject({complete: false, hasPlan: true});
     recordPlanOrPrePlanToolCall({current: plan}, {
       toolName: 'execute_sql', toolCallId: 'success', resultFacts: {success: true, planPhaseId: 'p1'},
     });
     plan.phases[0].status = 'completed';
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10, quickMode}))
+    expect(getAnalysisPlanCompletionStatus(plan))
       .toMatchObject({complete: true, hasPlan: true});
+  });
+
+  it('closes a skipped phase only with a valid disposition', () => {
+    const plan: AnalysisPlanV3 = {
+      phases: [
+        {id: 'p1', name: 'Review', goal: 'Assess available evidence', expectedTools: [], status: 'completed'},
+        {id: 'p2', name: 'Optional follow-up', goal: 'Resolve additional evidence', expectedTools: [],
+          status: 'skipped', skipDisposition: {kind: 'evidence_unavailable'}},
+      ],
+      successCriteria: 'Answer within available evidence', submittedAt: 1, toolCallLog: [],
+    };
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({complete: true, pendingPhases: []});
+
+    delete plan.phases[1].skipDisposition;
+    expect(getAnalysisPlanCompletionStatus(plan).pendingPhases.map(phase => phase.id)).toEqual(['p2']);
+  });
+
+  it('reports the missing skill call of a completed phase as an evidence gap', () => {
+    const status = getAnalysisPlanCompletionStatus({
+      phases: [{
+        id: 'p-frame-detail', name: '代表帧深钻', goal: '调用 jank_frame_detail 获取代表掉帧调用栈',
+        expectedTools: ['invoke_skill'], expectedCalls: [{tool: 'invoke_skill', skillId: 'jank_frame_detail'}],
+        status: 'completed', summary: '已完成代表帧根因分析，并整理出主线程阻塞调用栈证据。',
+      }],
+      successCriteria: 'Resolve', submittedAt: 1, toolCallLog: [],
+    });
+    expect(status).toMatchObject({complete: false, pendingPhases: [expect.objectContaining({id: 'p-frame-detail'})]});
+    expect(status.evidenceGaps?.[0].missingExpectedCalls).toEqual([{tool: 'invoke_skill', skillId: 'jank_frame_detail'}]);
   });
 });
 
@@ -146,16 +174,16 @@ describe('actual call identity and evidence completion', () => {
     expect(plan.phases[1].status).toBe('in_progress');
     expect(updates).toEqual(['p1']);
     expect(plan.phases[0].summary).toBeUndefined();
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 15}).pendingPhases.map(phase => phase.id))
+    expect(getAnalysisPlanCompletionStatus(plan).pendingPhases.map(phase => phase.id))
       .toEqual(['p2']);
     recordPlanOrPrePlanToolCall(tracker, {toolName: 'execute_sql', toolCallId: 'current', resultFacts: {success: true, planPhaseId: 'p2'}});
     plan.phases[1].status = 'completed';
     plan.phases[1].summary = 'The requested current-phase evidence was collected.';
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 15}).complete).toBe(true);
+    expect(getAnalysisPlanCompletionStatus(plan).complete).toBe(true);
     expect(verifyPlanAdherence(plan).filter(issue => issue.type === 'missing_reasoning')).toEqual([]);
     const backfill = plan.toolCallLog.find(call => call.toolCallId === 'backfill')!;
     backfill.success = false;
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 15}).pendingPhases.map(phase => phase.id))
+    expect(getAnalysisPlanCompletionStatus(plan).pendingPhases.map(phase => phase.id))
       .toEqual(['p1']);
   });
 
@@ -1017,7 +1045,7 @@ describe('recordPlanToolCall', () => {
         missingGenericToolEvidence: true,
       }),
     ]);
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: false,
       pendingPhases: [plan.phases[0]],
     });
@@ -1050,7 +1078,7 @@ describe('recordPlanToolCall', () => {
       recordPlanToolCall(plan, {toolName, resultFacts: {success: true, planPhaseId: 'p1'}});
     }
     expect(findCompletedPhaseEvidenceGaps(plan)).toEqual([]);
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10}).complete).toBe(true);
+    expect(getAnalysisPlanCompletionStatus(plan).complete).toBe(true);
   });
 
   it.each(['pending', 'attempted'])('keeps plan completion independent of a pending source ledger: %s', status => {
@@ -1076,7 +1104,7 @@ describe('recordPlanToolCall', () => {
     };
     plan.sourceUseDecisionStatus = status as AnalysisPlanV3['sourceUseDecisionStatus'];
 
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: true,
       pendingPhases: [],
     });
@@ -1115,7 +1143,7 @@ describe('recordPlanToolCall', () => {
       }],
     };
 
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: true,
       pendingPhases: [],
     });
@@ -1179,7 +1207,7 @@ describe('recordPlanToolCall', () => {
       ],
     };
 
-    expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+    expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
       complete: true,
       pendingPhases: [],
     });
@@ -1210,7 +1238,7 @@ describe('recordPlanToolCall', () => {
       };
       plan.sourceUseDecisionStatus = status as AnalysisPlanV3['sourceUseDecisionStatus'];
 
-      expect(getAnalysisPlanCompletionStatus(plan, {minSummaryChars: 10})).toMatchObject({
+      expect(getAnalysisPlanCompletionStatus(plan)).toMatchObject({
         complete: true,
         pendingPhases: [],
       });

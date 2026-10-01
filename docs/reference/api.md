@@ -12,6 +12,31 @@ Authorization: Bearer <token>
 `SMARTPERFETTO_API_KEY` 是部署运维凭证；企业用户应使用带明确角色和 scope 的持久化
 API key。
 
+## 未处理错误
+
+接口自己声明的错误契约（例如 `{success: false, code, error}`）保持不变。路由没有自行处理、
+落到全局兜底的异常，在任何 `NODE_ENV` 下都只返回固定内容：
+
+```json
+{"success": false, "code": "unhandled_error", "error": "Internal Server Error", "requestId": "req-…"}
+```
+
+HTTP 状态取异常自带的 4xx/5xx 状态，否则为 500。`error` 是该状态的标准名称（如
+`Bad Request`、`Payload Too Large`；Node 没有命名的状态码为 `Request failed`），不包含
+异常消息和调用栈，请求体 JSON 格式错误也不回显请求内容。`requestId` 就是该请求的请求
+ID（见下文），与响应头 `X-Request-Id` 相同。完整的异常消息和调用栈只写入服务端日志的
+`[UnhandledError]` 行，用 `requestId` 关联；请求体解析错误附带的原始请求体不写入日志。
+没有回显异常消息的调试开关。
+
+## 请求 ID
+
+每个请求在进入后端时确定唯一一个请求 ID，所有响应（包括 CORS 拒绝、请求体解析失败、
+404 和未处理错误）都带 `X-Request-Id` 响应头，并通过 CORS 暴露给浏览器。ID 依次取调用方的
+`X-Request-Id`、`X-Correlation-Id`、`X-Amzn-Trace-Id` 请求头中第一个清洗后非空的值（只保留
+`A-Z a-z 0-9 . _ : -`，最长 128 字符），都没有时生成 `req-<毫秒时间戳>-<随机十六进制>`。
+同一个 ID 用于鉴权请求上下文、Agent 接口返回的 `requestId`、分析 run 的观测信息、
+Trace Processor 代理的 WebSocket 升级和服务端日志。请求体里的 `requestId` 字段不参与解析。
+
 ## OIDC 鉴权
 
 | 方法 | 路径 | 说明 |
@@ -591,7 +616,7 @@ Base path: `/api/admin/self-evolution`
 | `POST` | `/proposals/:proposalId/apply` | `self_evolution:apply` | 应用已接受提案；body 必须包含唯一 `actionId` |
 | `POST` | `/proposals/:proposalId/revert` | `self_evolution:revert` | 回滚已应用提案；body 必须包含唯一 `actionId` |
 | `GET` | `/overlays` | `self_evolution:read` | 当前 workspace 的 overlay registry entries |
-| `GET` | `/reconciliation` | `self_evolution:read` | 最近 upgrade reconciliation report |
+| `GET` | `/reconciliation` | `self_evolution:read` | 最近 upgrade reconciliation report；issue `message` 只返回错误码或按 `reasonCode` 的固定文案，`contentHash` 标识存储的报告 |
 
 控制面默认关闭。`SELF_EVOLUTION_ENABLED=true` 才允许策展/gate/接受/拒绝/导出；
 apply/revert 还要求 `SELF_EVOLUTION_APPLY=true` 和可写、包外 user data root。依赖
@@ -731,6 +756,12 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId/report/export` | 导出 comparison report |
 | `GET` | `/:comparisonId` | 获取 comparison |
 | `GET` | `/:comparisonId/stream` | 订阅 comparison stream |
+
+Skill 结果行可以用同行的 `<列名>_definition` 字符串声明该指标列的口径（例如
+`cpu_profiling` 的 `big_core_pct_definition`），snapshot 把它保存为指标
+`source.metricDefinition`。两个 snapshot 的同一指标声明不同（含一方未声明）时，
+comparison 不计算 delta（`deltaValue: null`、`assessment: "unknown"`），并在
+`matrix.warnings` 与结论 `uncertainty` 中写明两侧口径。未声明的历史指标之间照常比较。
 
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 

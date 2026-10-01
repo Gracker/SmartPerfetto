@@ -15,6 +15,7 @@ import {assertEffectiveProcessScope} from '../../src/services/processIdentity/ef
 import {
   assertExpectationRows,
   loadCorpus,
+  resolveFrameTokens,
   resolveParameterTokens,
   runCorpusRegression,
   sqlResultState,
@@ -245,6 +246,86 @@ describe('Trace corpus regression runner', () => {
       upid: 30,
       utid: 40,
       package: 'com.smartperfetto.fixture',
+    });
+  });
+
+  describe('frame-anchored parameter tokens', () => {
+    const FIXTURE = {fixture_upid: 7, fixture_process_found: true};
+    // Frames by (upid, layer_name, ts, dur); SQLite runs the resolver's own SQL.
+    const frameQuery = (frames: Array<[number, string, bigint | number, number]>) => {
+      const db = new Database(':memory:');
+      db.defaultSafeIntegers(true);
+      db.exec('CREATE TABLE actual_frame_timeline_slice(upid INTEGER, layer_name TEXT, ts INTEGER, dur INTEGER)');
+      const insert = db.prepare('INSERT INTO actual_frame_timeline_slice VALUES (?, ?, ?, ?)');
+      for (const frame of frames) insert.run(...frame);
+      const query = jest.fn(async (sql: string) => {
+        const statement = db.prepare(sql);
+        return {columns: statement.columns().map(column => column.name), rows: statement.raw().all() as any[][]};
+      });
+      return {db, query};
+    };
+
+    it('queries nothing when no parameter names a frame token', async () => {
+      const {db, query} = frameQuery([]);
+      try {
+        const parameters = {start_ts: '10', end_ts: '${trace_end}', label: 'frame_start:L', package: 'p'};
+        await expect(resolveFrameTokens(parameters, FIXTURE, query, 'case-a')).resolves.toEqual(parameters);
+        expect(query).not.toHaveBeenCalled();
+      } finally { db.close(); }
+    });
+
+    it('resolves both bounds of the one fixture frame on that layer, other processes excluded', async () => {
+      const {db, query} = frameQuery([[7, 'LayerT', 1000, 30], [8, 'LayerT', 5000, 40], [7, 'LayerL', 2000, 10]]);
+      try {
+        await expect(resolveFrameTokens(
+          {start_ts: '${frame_start:LayerT}', end_ts: '${frame_end:LayerT}', upid: 7}, FIXTURE, query, 'case-a'))
+          .resolves.toEqual({start_ts: '1000', end_ts: '1030', upid: 7});
+        expect(query).toHaveBeenCalledTimes(1);
+      } finally { db.close(); }
+    });
+
+    it.each([
+      ['no frame on the layer', [[7, 'Other', 1000, 30]], 'matches 0 frames of fixture upid 7'],
+      ['the layer only in another process', [[8, 'LayerT', 1000, 30]], 'matches 0 frames of fixture upid 7'],
+      ['two frames on the layer', [[7, 'LayerT', 1000, 30], [7, 'LayerT', 2000, 30]], 'matches 2 frames'],
+      ['a zero-duration frame', [[7, 'LayerT', 1000, 0]], 'without a positive duration'],
+      ['an unfinished frame', [[7, 'LayerT', 1000, -1]], 'without a positive duration'],
+    ] as Array<[string, Array<[number, string, number, number]>, string]>)('rejects %s', async (_label, frames, message) => {
+      const {db, query} = frameQuery(frames);
+      try {
+        await expect(resolveFrameTokens({start_ts: '${frame_start:LayerT}'}, FIXTURE, query, 'case-a'))
+          .rejects.toThrow(`case-a: frame token layer "LayerT" `);
+        await expect(resolveFrameTokens({start_ts: '${frame_start:LayerT}'}, FIXTURE, query, 'case-a'))
+          .rejects.toThrow(message);
+      } finally { db.close(); }
+    });
+
+    it('rejects a frame token when the trace has no fixture process, before querying', async () => {
+      const {db, query} = frameQuery([[0, 'LayerT', 1000, 30]]);
+      try {
+        await expect(resolveFrameTokens({end_ts: '${frame_end:LayerT}'},
+          {fixture_upid: 0, fixture_process_found: false}, query, 'case-b'))
+          .rejects.toThrow('case-b: frame token layer "LayerT" needs the com.smartperfetto.fixture process');
+        expect(query).not.toHaveBeenCalled();
+      } finally { db.close(); }
+    });
+
+    it('matches a layer name with quotes literally', async () => {
+      const layer = "TX - O'Brien's layer' OR '1'='1";
+      const {db, query} = frameQuery([[7, layer, 1000, 30], [7, 'Other', 3000, 30]]);
+      try {
+        await expect(resolveFrameTokens({start_ts: `\${frame_start:${layer}}`}, FIXTURE, query, 'case-a'))
+          .resolves.toEqual({start_ts: '1000'});
+      } finally { db.close(); }
+    });
+
+    it('keeps nanosecond bounds past 2^53 exact', async () => {
+      const {db, query} = frameQuery([[7, 'LayerT', 9_007_199_254_740_993n, 30_000_001]]);
+      try {
+        await expect(resolveFrameTokens(
+          {start_ts: '${frame_start:LayerT}', end_ts: '${frame_end:LayerT}'}, FIXTURE, query, 'case-a'))
+          .resolves.toEqual({start_ts: '9007199254740993', end_ts: '9007199284740994'});
+      } finally { db.close(); }
     });
   });
 
