@@ -35,6 +35,7 @@ import {
   type OutputLanguage,
 } from '../agentv3/outputLanguage';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   ownerFieldsFromContext,
@@ -234,12 +235,12 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
             }
           : null,
       });
-    } catch (error: any) {
-      console.error('[AgentRoutes] Scene reconstruction preview error:', error);
-      return res.status(500).json({
-        success: false,
-        error: error?.message ?? 'Failed to compute scene reconstruction preview',
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'scene_preview_failed',
+        error: 'Failed to compute scene reconstruction preview',
+        logLabel: '[AgentRoutes] Scene reconstruction preview error',
+      }, error);
     }
   });
 
@@ -272,12 +273,12 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         success: true,
         report: projectSceneReport(report, outputLanguage),
       });
-    } catch (error: any) {
-      console.error('[AgentRoutes] getReport error:', error);
-      return res.status(500).json({
-        success: false,
-        error: error?.message ?? 'Failed to load scene reconstruction report',
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'scene_report_read_failed',
+        error: 'Failed to load scene reconstruction report',
+        logLabel: '[AgentRoutes] getReport error',
+      }, error);
     }
   });
 
@@ -331,15 +332,15 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
           options: {...analysisOptions, outputLanguage, analysisMode: 'full'}}});
       return res.status(response.status).json({...response.body,
         ...(response.body.sessionId ? {analysisId: response.body.sessionId} : {})});
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (sendAiDisabledErrorIfPresent(res, error)) {
         return;
       }
-      console.error('[AgentRoutes] Scene reconstruction start error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Failed to start scene reconstruction',
-      });
+      sendRouteFailure(res, {
+        code: 'scene_reconstruction_start_failed',
+        error: 'Failed to start scene reconstruction',
+        logLabel: '[AgentRoutes] Scene reconstruction start error',
+      }, error);
     }
   });
 
@@ -459,12 +460,12 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
         description: route.description,
         result: result.displayResults,
       });
-    } catch (error: any) {
-      console.error('[AgentRoutes] Deep-dive error:', error);
-      res.status(500).json({
-        success: false,
-        error: error.message || 'Deep-dive analysis failed',
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'scene_deep_dive_failed',
+        error: 'Deep-dive analysis failed',
+        logLabel: '[AgentRoutes] Deep-dive error',
+      }, error);
     }
   });
 

@@ -5,6 +5,7 @@ import { jest } from '@jest/globals';
 import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
+import { ProviderRequestError } from '../providerRequestError';
 import { ProviderService } from '../providerService';
 import { ProviderStoreUnreadableError } from '../providerStore';
 import type { ProviderCreateInput } from '../types';
@@ -46,6 +47,43 @@ describe('ProviderService', () => {
 
     it('throws on missing name', () => {
       expect(() => svc.create({ ...validInput, name: '' })).toThrow();
+    });
+  });
+
+  describe('caller-fixable errors are typed so routes can return their text', () => {
+    function thrown(run: () => unknown): ProviderRequestError {
+      try {
+        run();
+      } catch (error) {
+        expect(error).toBeInstanceOf(ProviderRequestError);
+        return error as ProviderRequestError;
+      }
+      throw new Error('expected a ProviderRequestError');
+    }
+
+    it.each([
+      ['no body', undefined, 'Request body must be an object'],
+      ['no connection', { ...validInput, connection: undefined }, 'connection is required'],
+      ['non-string name', { ...validInput, name: 42 }, 'Provider name is required'],
+      ['unsupported runtime', { ...validInput, type: 'openai', connection: { agentRuntime: 'claude-agent-sdk' } },
+        'Provider type "openai" does not support claude-agent-sdk'],
+    ])('create rejects %s as an invalid request', (_name, input, message) => {
+      const error = thrown(() => svc.create(input as unknown as ProviderCreateInput));
+      expect(error.code).toBe('provider_invalid_request');
+      expect(error.message).toBe(message);
+    });
+
+    it('update rejects malformed fields as an invalid request', () => {
+      const p = svc.create(validInput);
+      expect(thrown(() => svc.update(p.id, undefined as never)).code).toBe('provider_invalid_request');
+      expect(thrown(() => svc.update(p.id, { name: 7 } as never)).message).toBe('Provider name must be a string');
+      expect(thrown(() => svc.update(p.id, { connection: 'x' } as never)).message).toBe('connection must be an object');
+    });
+
+    it('an unknown id is a not-found error with its original text', () => {
+      const error = thrown(() => svc.activate('fake-id'));
+      expect(error.code).toBe('provider_not_found');
+      expect(error.message).toBe('Provider not found: fake-id');
     });
   });
 
