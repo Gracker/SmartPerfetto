@@ -151,7 +151,7 @@ function boundedLimit(limit: number | undefined): number {
   return limit;
 }
 
-function readableClause(scope: SnapshotAccessScope, alias = 's'): {
+export function readableClause(scope: SnapshotAccessScope, alias = 's'): {
   sql: string;
   params: Record<string, string | number | null>;
 } {

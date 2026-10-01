@@ -185,7 +185,7 @@ for local and compatibility flows.
 | `/api/workspaces/:workspaceId/agent` | Workspace-scoped agent analysis, SSE, turns, and feedback |
 | `/api/workspaces/:workspaceId/providers` | Workspace-scoped Provider Manager profiles |
 | `/api/workspaces/:workspaceId/analysis-results` | Analysis-result snapshot list, read, and update |
-| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state |
+| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state; a window is identified by (user, windowId), and other users' windows are listed only as pointers to analysis results you can read |
 | `/api/workspaces/:workspaceId/comparisons` | Multi-result comparison create, read, stream, and export |
 | `/api/workspaces/:workspaceId/trace-config` | Side-effect-free trace config proposals |
 | `/api/workspaces/:workspaceId/skill-packs` | Local-directory Skill Pack preview, install, enable/disable, and remove |
