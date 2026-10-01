@@ -178,7 +178,7 @@ function openTrace(capacities: Array<number | null>, slices: Slice[]): Database.
     CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER, name TEXT, is_main_thread INTEGER, is_idle INTEGER);
     CREATE TABLE cpu(id INTEGER PRIMARY KEY, cpu INTEGER, machine_id INTEGER, cluster_id INTEGER, capacity INTEGER);
     CREATE TABLE sched_slice(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, cpu INTEGER, ucpu INTEGER, end_state TEXT, priority INTEGER);
-    CREATE TABLE thread_state(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT, cpu INTEGER, ucpu INTEGER, blocked_function TEXT, io_wait INTEGER, waker_utid INTEGER);
+    CREATE TABLE thread_state(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT, cpu INTEGER, ucpu INTEGER, blocked_function TEXT, io_wait INTEGER, waker_utid INTEGER, irq_context INTEGER);
     CREATE TABLE cpu_counter_track(id INTEGER, cpu INTEGER, name TEXT);
     CREATE TABLE counter(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, value REAL);
     CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
@@ -498,6 +498,34 @@ describe('cpu.big_core_pct producer rows', () => {
     const classified = {...rows[0], unknown_core_ns: 0};
     expect((await diagnose(rule, {...inputs, cpu_core: [classified]})).filter(d => d.diagnosis.includes('大核占比偏低')))
       .toHaveLength(1);
+  });
+
+  it('anr_detail does not report little-core placement on rounded-away unknown time', async () => {
+    // main: 10 ms big, 60 ms little, 14 ms Runnable (16%), and in one case 4 us
+    // on an unidentified CPU; only that unknown time decides the rule.
+    const quadrant = (unknownNs: number) => withTrace([100, 400, 1024], [[1, 2, 10], [1, 0, 60]], db => {
+      db.prepare("INSERT INTO thread_state(utid, ts, dur, state, cpu, ucpu) VALUES (1, 80000000, 10000000, 'R', NULL, NULL)").run();
+      if (unknownNs > 0) {
+        db.prepare("INSERT INTO thread_state(utid, ts, dur, state, cpu, ucpu) VALUES (1, 90000000, ?, 'Running', 9, 99)")
+          .run(unknownNs);
+      }
+      db.prepare('UPDATE trace_bounds SET end_ts = 100000000').run();
+      return stepRows(db, 'composite/anr_detail.skill.yaml', 'main_thread_quadrant', {
+        anr_ts: 100000000, timeout_ns: 100000000, upid: 1, pid: 100, process_name: 'com.example.app',
+        '__process_scope.upid': 1});
+    });
+    const rule = stepOf(loadYaml('composite/anr_detail.skill.yaml'), 'anr_event_diagnosis');
+    const placement = async (rows: Array<Record<string, unknown>>) => (await diagnose(rule, {
+      quadrant: rows, direct_blocker_candidates: [{direct_blocker_type: 'scheduler_pressure', confidence: 'medium'}],
+    })).filter(d => d.diagnosis.startsWith('主线程运行时间主要在小核'));
+
+    const unknown = await quadrant(4000);
+    expect(unknown).toEqual([expect.objectContaining({
+      q1_big_running_ms: 10, q2_little_running_ms: 60, unknown_running_ms: 0, unknown_running_ns: 4000})]);
+    expect(await placement(unknown)).toEqual([]);
+    const classified = await quadrant(0);
+    expect(classified).toEqual([expect.objectContaining({unknown_running_ns: 0, runnable_pct: 16.3})]);
+    expect(await placement(classified)).toHaveLength(1);
   });
 });
 
