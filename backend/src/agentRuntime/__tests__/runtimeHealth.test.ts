@@ -16,6 +16,12 @@ const ENV_KEYS = [
   'SMARTPERFETTO_API_KEY',
   'SMARTPERFETTO_ENTERPRISE',
   'SMARTPERFETTO_OIDC_ISSUER_URL',
+  'SMARTPERFETTO_OIDC_CLIENT_ID',
+  'SMARTPERFETTO_OIDC_CLIENT_SECRET',
+  'SMARTPERFETTO_OIDC_REDIRECT_URI',
+  'SMARTPERFETTO_SERVER_SECRET',
+  'SMARTPERFETTO_SSO_TRUSTED_HEADERS',
+  'FRONTEND_URL',
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
   'ANTHROPIC_BASE_URL',
@@ -102,6 +108,27 @@ describe('buildRuntimeHealthPayload', () => {
       });
     },
   );
+
+  // authRequired mirrors the request authenticator, including every enterprise
+  // spelling and a whitespace-only operator key (which locks the API).
+  it.each([
+    [{}, false],
+    [{SMARTPERFETTO_ENTERPRISE: '1'}, true],
+    [{SMARTPERFETTO_ENTERPRISE: 'yes'}, true],
+    [{SMARTPERFETTO_ENTERPRISE: 'off'}, false],
+    [{SMARTPERFETTO_API_KEY: '   '}, true],
+    [{
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'https://app.example.test',
+    }, true],
+  ])('reports authRequired for %p as %p', (env, expected) => {
+    Object.assign(process.env, env);
+    expect(buildRuntimeHealthPayload().aiEngine.authRequired).toBe(expected);
+  });
 
   it('stays healthy but unconfigured while providers.json is unreadable, even with env credentials', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-env-only';

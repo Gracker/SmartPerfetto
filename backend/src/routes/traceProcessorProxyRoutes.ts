@@ -6,9 +6,8 @@ import express, { Router, type Request, type Response } from 'express';
 import type { IncomingMessage } from 'http';
 import net, { type Socket } from 'net';
 import type { Duplex } from 'stream';
-import { serverConfig } from '../config';
+import { isKeylessLocalMode, serverConfig } from '../config';
 import {
-  allowsDevIdentity,
   authenticate,
   buildRequestContext,
   DEFAULT_DEV_USER_ID,
@@ -102,7 +101,7 @@ function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): Re
   );
   if (capabilityContext) return {...capabilityContext, requestId: requestIdOf(req)};
 
-  if (allowsDevIdentity()) {
+  if (isKeylessLocalMode()) {
     return upgradeRequestContext(req, query, {
       userId: queryId(query, 'userId') || DEFAULT_DEV_USER_ID,
       authType: 'dev',

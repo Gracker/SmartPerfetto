@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {resolveAuthConfig} from '../../config';
 import {
   createPkceChallenge,
   EnterpriseOidcClient,
@@ -204,6 +205,26 @@ describe('EnterpriseOidcClient', () => {
     })?.issuerUrl).toBe(
       'https://idp.example.test/application/o/smartperfetto',
     );
+  });
+
+  // With HTTPS URLs both readers accept any flag value, so a spelling only one
+  // of them honoured would let the client allow insecure discovery endpoints
+  // the startup guard believes are refused. The full spelling set is covered
+  // by the config tests.
+  test.each([
+    ['yes', true], [' TRUE ', true], ['0', false], ['maybe', false],
+  ])('reads the insecure HTTP flag %p exactly as the startup guard does', (value, expected) => {
+    const env = {
+      SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP: value,
+      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'secret-a',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+      FRONTEND_URL: 'https://app.example.test',
+    };
+    expect(resolveOidcRuntimeConfig(env)?.allowInsecureHttp).toBe(expected);
+    expect(resolveAuthConfig(env).allowInsecureHttp).toBe(expected);
   });
 
   test('passes the insecure HTTP extension to discovery only when enabled', async () => {
