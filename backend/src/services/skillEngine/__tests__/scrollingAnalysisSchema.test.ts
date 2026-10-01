@@ -15,6 +15,11 @@ import type {SkillDefinition} from '../types';
 import {SCROLLING_V1_REASON_CODES} from '../../caseDomainPacks';
 
 // Execute maintained SQL fragments in the legacy named fixtures as well.
+// fragments/system_cpu_big_freq_coverage.sql: a ramp over the P6 threshold, and
+// every evidence state under which it must not name freq_ramp_slow.
+const SLOW_RAMP = {ramp_to_high_ms: 5, top_slice_offset_ms: 1};
+const UNOBSERVED_RAMP_EVIDENCE = ['big_core_topology_unknown', 'big_core_freq_incomplete', 'machine_scope_ambiguous', null];
+
 function createScopedSqlFixture(): Database.Database {
   const db = new Database(':memory:');
   const prepare = db.prepare.bind(db);
@@ -450,6 +455,12 @@ describe('scrolling_analysis skill schema', () => {
         // RenderThread binding is diagnostic only.
         expect(evaluate({freq_limit_state: 'threads_not_on_limited_policy', rt_freq_limit_state: 'capped_binding'}))
           .toBe('workload_heavy');
+        // A ramp names freq_ramp_slow only when every big CPU was observed for the frame.
+        expect(evaluate({...SLOW_RAMP, freq_ramp_evidence: 'observed'})).toBe('freq_ramp_slow');
+        for (const evidence of UNOBSERVED_RAMP_EVIDENCE) {
+          expect({evidence, reason: evaluate({...SLOW_RAMP, freq_ramp_evidence: evidence})})
+            .toEqual({evidence, reason: 'workload_heavy'});
+        }
       } finally { db.close(); }
     });
 
@@ -618,6 +629,12 @@ describe('scrolling_analysis skill schema', () => {
         // SF responsibility: the same binding evidence names no App-side limit.
         expect(reason({...binding, freq_limit_onset_confirmed: 1, jank_responsibility: 'SF'})).toBe('workload_heavy');
         expect(reason({...binding, jank_responsibility: 'SF'})).toBe('workload_heavy');
+        // A ramp names freq_ramp_slow only when every big CPU was observed for the frame.
+        expect(reason({...SLOW_RAMP, freq_ramp_evidence: 'observed'})).toBe('freq_ramp_slow');
+        for (const evidence of UNOBSERVED_RAMP_EVIDENCE) {
+          expect({evidence, reason: reason({...SLOW_RAMP, freq_ramp_evidence: evidence})})
+            .toEqual({evidence, reason: 'workload_heavy'});
+        }
       } finally { db.close(); }
     });
 
@@ -3017,9 +3034,62 @@ describe('single-frame exact UPID SQL semantics', () => {
         frame_dur_ms: 100, main_io_block_ms: 2, reason_code: 'binder_sync_blocking'});
       expect(root.deep_reason).toContain('surfaceflinger');
       expect(step('root_cause_summary').process_scope.context_fields).toEqual({
-        global_context: ['frame_budget_ms', 'primary_cause', 'secondary_info'], peer_context: ['deep_reason'],
+        global_context: ['frame_budget_ms', 'primary_cause', 'secondary_info', 'ramp_to_high_ms', 'freq_ramp_evidence'],
+        peer_context: ['deep_reason'],
       });
     } finally {db.close();}
+  });
+
+  it('times the big-core frequency ramp only from complete big-tier observation', () => {
+    // The full root-cause SQL on a frame P6 can reach: no Binder or monitor wait,
+    // top slice 20 ms (1x-2x of the 16.67 ms budget), starting 10 ms into the
+    // 0..100 ms frame. cpu0 is the only big CPU (capacity 1024 vs 300): 1 GHz
+    // until 50 ms, then 2 GHz, so the big tier reaches high frequency at 50 ms.
+    const ramp = (setup: string) => {
+      const db = fixture();
+      try {
+        db.exec(`DELETE FROM android_binder_txns WHERE client_upid=42;
+          DELETE FROM android_monitor_contention WHERE upid=42; ${setup}`);
+        const row = db.prepare(sqlFor('root_cause_summary', 42)).get() as Record<string, unknown>;
+        return {reason_code: row.reason_code, ramp_to_high_ms: row.ramp_to_high_ms,
+          freq_ramp_evidence: row.freq_ramp_evidence};
+      } finally {db.close();}
+    };
+    const cpu0 = (rows: string) => `DELETE FROM cpu_frequency_counters WHERE cpu=0;
+      INSERT INTO cpu_frequency_counters(cpu,ts,dur,freq,track_id,ucpu) VALUES ${rows};
+      UPDATE cpu_frequency_counters SET id=rowid;`;
+    const unobserved = (state: string) => ({reason_code: 'workload_heavy', ramp_to_high_ms: null, freq_ramp_evidence: state});
+
+    expect(ramp('')).toEqual({reason_code: 'freq_ramp_slow', ramp_to_high_ms: 50, freq_ramp_evidence: 'observed'});
+    // Already high when the frame starts: a measured 0, not a missing value.
+    expect(ramp('UPDATE cpu_frequency_counters SET freq=2000000 WHERE cpu=0;'))
+      .toEqual({reason_code: 'workload_heavy', ramp_to_high_ms: 0, freq_ramp_evidence: 'observed'});
+    // No big tier: nothing to time, so no frequency reason (was the whole 100 ms frame).
+    expect(ramp('UPDATE cpu SET capacity=NULL;')).toEqual(unobserved('big_core_topology_unknown'));
+    // A big CPU first sampled inside the frame, a dropped negative sample, a missing tail.
+    expect(ramp(cpu0('(0,50000000,50000000,2000000,0,0)'))).toEqual(unobserved('big_core_freq_incomplete'));
+    expect(ramp(cpu0(`(0,0,10000000,1000000,0,0),(0,10000000,40000000,-1,0,0),
+      (0,50000000,50000000,2000000,0,0)`))).toEqual(unobserved('big_core_freq_incomplete'));
+    expect(ramp(cpu0('(0,0,50000000,1000000,0,0),(0,50000000,30000000,2000000,0,0)')))
+      .toEqual(unobserved('big_core_freq_incomplete'));
+    // Coverage is the union per CPU: a span nested in an earlier, longer one does not end
+    // coverage (an adjacent-end check would see a gap at 20..30 ms), and spans that abut cover.
+    expect(ramp(cpu0(`(0,0,60000000,1000000,0,0),(0,10000000,10000000,1000000,1,0),
+      (0,30000000,20000000,1000000,1,0),(0,50000000,50000000,2000000,0,0)`)))
+      .toEqual({reason_code: 'freq_ramp_slow', ramp_to_high_ms: 50, freq_ramp_evidence: 'observed'});
+    // Overlap is not coverage: 150 ms of spans that leave 60..70 ms unobserved.
+    expect(ramp(cpu0(`(0,0,60000000,1000000,0,0),(0,0,60000000,1000000,1,0),
+      (0,70000000,30000000,2000000,0,0)`))).toEqual(unobserved('big_core_freq_incomplete'));
+    // Every big CPU must be covered: a second, fully observed big CPU does not cover cpu0's gap.
+    const secondBig = `INSERT INTO cpu VALUES (2,2,0,0,1024);
+      INSERT INTO cpu_frequency_counters(cpu,ts,dur,freq,track_id,ucpu) VALUES (2,0,100000000,1000000,2,2);
+      UPDATE cpu_frequency_counters SET id=rowid;`;
+    expect(ramp(secondBig)).toEqual({reason_code: 'freq_ramp_slow', ramp_to_high_ms: 50, freq_ramp_evidence: 'observed'});
+    expect(ramp(secondBig + cpu0('(0,0,40000000,1000000,0,0),(0,50000000,50000000,2000000,0,0)')))
+      .toEqual(unobserved('big_core_freq_incomplete'));
+    // CPUs of two machines (duplicate ordinals): the frame names no machine, so no single big tier.
+    expect(ramp('INSERT INTO cpu VALUES (2,0,1,0,1024),(3,1,1,1,300);'))
+      .toEqual(unobserved('machine_scope_ambiguous'));
   });
 
   it('runs the frequency-limit binding in the full root-cause SQL and leaves the reason unchanged without limit data', () => {

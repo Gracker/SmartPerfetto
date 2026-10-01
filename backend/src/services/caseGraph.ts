@@ -49,6 +49,7 @@ import {
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
+import {KnowledgeCurationError} from './knowledgeCurationError';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -117,7 +118,7 @@ export class CaseGraph {
   addEdge(edge: CaseEdge, scope?: KnowledgeScope): void {
     this.load();
     if (edge.fromCaseId === edge.toCaseId) {
-      throw new Error(
+      throw new KnowledgeCurationError('case_edge_rejected',
         `Self-loops are not permitted: edge '${edge.edgeId}' has fromCaseId === toCaseId === '${edge.fromCaseId}'`,
       );
     }

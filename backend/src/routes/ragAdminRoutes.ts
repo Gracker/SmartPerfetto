@@ -36,6 +36,16 @@ import {
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
 import {
+  logRouteFailure,
+  sendRouteError,
+  sendRouteReasonError,
+} from '../middleware/routeFailure';
+import {messageReasonCode, thrownReasonCode} from '../utils/publicRequestError';
+import {
+  CodebaseRequestError,
+  invalidCodebaseMetadata,
+} from '../services/codebase/codebaseRequestError';
+import {
   RagSearchInputError,
   RagStore,
   getDefaultRagStore,
@@ -75,6 +85,7 @@ import {codeAwareFeatureEnabled} from '../services/codebase/codeAwareFeature';
 import {
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
+  KnowledgeSourceRequestError,
   type ExternalKnowledgeSource,
 } from '../services/externalKnowledgeSourceRegistry';
 import {AndroidInternalsWikiIngester} from '../services/androidInternalsWiki/androidInternalsWikiIngester';
@@ -156,12 +167,12 @@ function optionalRequestString(
 ): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string') {
-    throw new Error(`\`${fieldName}\` must be a string when provided`);
+    throw invalidCodebaseMetadata(`\`${fieldName}\` must be a string when provided`);
   }
   const trimmed = value.trim();
   if (!trimmed) return undefined;
   if (trimmed.length > 1024 || trimmed.includes('\0')) {
-    throw new Error(`\`${fieldName}\` must be at most 1024 characters`);
+    throw invalidCodebaseMetadata(`\`${fieldName}\` must be at most 1024 characters`);
   }
   return trimmed;
 }
@@ -193,13 +204,21 @@ function routeParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
 
+const PENDING_GENERATION_FAILURE = {
+  code: 'CODEBASE_PENDING_FAILED',
+  error: 'Codebase pending generation request failed',
+};
+
 function pendingCandidateGenerationId(value: unknown): string {
   if (
     typeof value !== 'string' ||
     value.length === 0 ||
     value.length > 256 ||
     value.includes('\0')
-  ) throw new Error('`candidateGenerationId` must be a non-empty string of at most 256 characters');
+  ) {
+    throw new CodebaseRequestError('PENDING_GENERATION_ID_INVALID',
+      '`candidateGenerationId` must be a non-empty string of at most 256 characters');
+  }
   return value;
 }
 
@@ -381,9 +400,10 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         },
       });
     } catch (error) {
-      return res.status(400).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
+      return sendRouteReasonError(res, error, 400, {
+        code: 'knowledge_source_preview_failed',
+        error: 'Knowledge source preview failed',
+        logLabel: '[RagAdmin] Knowledge source preview error',
       });
     }
   });
@@ -437,10 +457,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       });
       return res.json({success: true, source: sanitizeExternalKnowledgeSource(source)});
     } catch (error) {
-      return res.status(400).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      return sendRouteReasonError(res, error, 400, {
+        code: 'knowledge_source_register_failed',
+        error: 'Knowledge source registration failed',
+        logLabel: '[RagAdmin] Knowledge source register error',
+      }, [KnowledgeSourceRequestError]);
     }
   });
 
@@ -466,10 +487,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         const result = await androidInternalsWikiIngester.ingest(sourceId, scope);
         return res.json({success: true, result});
       } catch (error) {
-        return res.status(400).json({
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        return sendRouteReasonError(res, error, 400, {
+          code: 'knowledge_source_reindex_failed',
+          error: 'Knowledge source reindex failed',
+          logLabel: '[RagAdmin] Knowledge source reindex error',
+        }, [KnowledgeSourceRequestError]);
       }
     },
   );
@@ -495,10 +517,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         );
         return res.json({success: true, source: sanitizeExternalKnowledgeSource(source)});
       } catch (error) {
-        return res.status(404).json({
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        return sendRouteError(res, error, {
+          code: 'knowledge_source_consent_failed',
+          error: 'Knowledge source consent update failed',
+          logLabel: '[RagAdmin] Knowledge source consent error',
+        }, [KnowledgeSourceRequestError]);
       }
     },
   );
@@ -532,10 +555,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           });
         });
       } catch (error) {
-        return res.status(409).json({
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        return sendRouteReasonError(res, error, 409, {
+          code: 'knowledge_source_index_delete_failed',
+          error: 'Knowledge source index deletion failed',
+          logLabel: '[RagAdmin] Knowledge source index delete error',
+        }, [KnowledgeSourceRequestError]);
       }
     },
   );
@@ -594,10 +618,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           },
         });
       } catch (error) {
-        return res.status(400).json({
-          success: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        return sendRouteReasonError(res, error, 400, {
+          code: 'knowledge_source_audit_failed',
+          error: 'Knowledge source audit failed',
+          logLabel: '[RagAdmin] Knowledge source audit error',
+        }, [KnowledgeSourceRequestError]);
       }
     },
   );
@@ -707,9 +732,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       if (error instanceof NativeDirectoryPickerError) {
         return sendDirectoryPickerError(res, error);
       }
-      const status = error instanceof CodebaseManagementError ? error.status : 400;
-      const reason = error instanceof Error ? error.message : String(error);
-      return res.status(status).json({success: false, error: reason});
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_PREVIEW_FAILED',
+        error: 'Codebase preview failed',
+        logLabel: '[RagAdmin] Codebase preview error',
+      }, [CodebaseManagementError]);
     }
   });
 
@@ -776,10 +803,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       normalizedBuildId = optionalRequestString(buildId, 'buildId');
       normalizedLicenseTag = optionalRequestString(licenseTag, 'licenseTag');
     } catch (error) {
-      return res.status(400).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_REGISTER_FAILED',
+        error: 'Codebase registration failed',
+        logLabel: '[RagAdmin] Codebase register input error',
+      }, [CodebaseRequestError]);
     }
     if (Array.isArray(symbolMapPaths) && symbolMapPaths.length > 0) {
       return res.status(501).json({
@@ -878,7 +906,13 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       if (error instanceof NativeDirectoryPickerError) {
         return sendDirectoryPickerError(res, error);
       }
-      res.status(400).json({success: false, error: error instanceof Error ? error.message : String(error)});
+      // Path gate and registry rejections are reason tokens; filesystem and
+      // database failures get fixed text.
+      return sendRouteReasonError(res, error, 400, {
+        code: 'CODEBASE_REGISTER_FAILED',
+        error: 'Codebase registration failed',
+        logLabel: '[RagAdmin] Codebase register error',
+      }, [CodebaseRequestError]);
     }
   });
 
@@ -888,11 +922,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     try {
       return res.json({success: true, codebase: codebaseManagementService.get(codebaseId, scope)});
     } catch (error) {
-      const status = error instanceof CodebaseManagementError ? error.status : 500;
-      return res.status(status).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_READ_FAILED',
+        error: 'Failed to read codebase',
+        logLabel: '[RagAdmin] Codebase read error',
+      }, [CodebaseManagementError]);
     }
   });
 
@@ -993,18 +1027,21 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
     const sendIndexFailure = async (error: unknown) => {
       const capacityExceeded = isSourceChunkLimitExceeded(error);
+      const code = capacityExceeded ? 'CODEBASE_INDEX_CAPACITY_EXCEEDED' : 'CODEBASE_INDEX_FAILED';
+      const requestId = logRouteFailure(res, '[RagAdmin] Codebase index error', 400, code, error);
       const onDemandAvailable = await codebaseManagementService.onDemandAvailable(codebaseId, scope);
       const message = capacityExceeded
         ? 'Optional source index reached its capacity; this index attempt was rolled back.'
         : 'Optional source index could not be built.';
-      // Preserve the legacy error field for API consumers while new UIs use
-      // the stable code and a fresh root check rather than guessing from prose.
+      // The legacy error field keeps the request error or the ingester's
+      // reason token; new UIs use the stable code and a fresh root check.
       return res.status(400).json({
         success: false,
-        code: capacityExceeded ? 'CODEBASE_INDEX_CAPACITY_EXCEEDED' : 'CODEBASE_INDEX_FAILED',
-        error: error instanceof Error ? error.message : String(error),
+        code,
+        error: error instanceof CodebaseRequestError ? error.message : thrownReasonCode(error) ?? message,
         message,
         onDemandAvailable,
+        requestId,
       });
     };
     try {
@@ -1016,7 +1053,15 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       if (!result.activationDisposition || !result.coverage) {
         return await sendIndexFailure(new Error(result.errors[0]?.reason ?? 'codebase_reindex_blocked_by_security'));
       }
-      res.json({success: true, result});
+      // A skipped file's reason can be a raw filesystem error with an absolute
+      // path; the caller gets its reason token only.
+      res.json({success: true, result: {
+        ...result,
+        errors: result.errors.map(fileError => ({
+          ...fileError,
+          reason: messageReasonCode(fileError.reason) ?? 'source_file_unreadable',
+        })),
+      }});
     } catch (error) {
       return await sendIndexFailure(error);
     }
@@ -1028,11 +1073,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     try {
       return res.json({success: true, audit: codebaseManagementService.audit(codebaseId, scope)});
     } catch (error) {
-      const status = error instanceof CodebaseManagementError ? error.status : 500;
-      return res.status(status).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_AUDIT_FAILED',
+        error: 'Codebase audit failed',
+        logLabel: '[RagAdmin] Codebase audit error',
+      }, [CodebaseManagementError]);
     }
   });
 
@@ -1078,14 +1123,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           );
       return res.json({success: true, codebase});
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status = error instanceof CodebaseManagementError
-        ? error.status
-        : message.includes('not found') ? 404 : 409;
-      return res.status(status).json({
-        success: false,
-        error: message,
-      });
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_CONSENT_FAILED',
+        error: 'Codebase consent update failed',
+        logLabel: '[RagAdmin] Codebase consent error',
+      }, [CodebaseManagementError]);
     }
   });
 
@@ -1097,11 +1139,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       const codebase = await codebaseManagementService.updateSelection(codebaseId, body, scope);
       return res.json({success: true, codebase});
     } catch (error) {
-      const status = error instanceof CodebaseManagementError ? error.status : 400;
-      return res.status(status).json({
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_SELECTION_FAILED',
+        error: 'Codebase selection update failed',
+        logLabel: '[RagAdmin] Codebase selection error',
+      }, [CodebaseManagementError]);
     }
   });
 
@@ -1112,7 +1154,10 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     try {
       candidateGenerationId = pendingCandidateGenerationId(req.body?.candidateGenerationId);
     } catch (error) {
-      return res.status(400).json({success: false, error: (error as Error).message});
+      return sendRouteError(res, error, {
+        ...PENDING_GENERATION_FAILURE,
+        logLabel: '[RagAdmin] Pending generation input error',
+      }, [CodebaseRequestError]);
     }
     if (!Number.isInteger(selectionPolicyRevision) || !Number.isInteger(grantRevision)) {
       return res.status(400).json({
@@ -1130,9 +1175,10 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       );
       return res.json({success: true, codebase});
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const status = error instanceof CodebaseManagementError ? error.status : 409;
-      return res.status(status).json({success: false, error: message});
+      return sendRouteError(res, error, {
+        ...PENDING_GENERATION_FAILURE,
+        logLabel: '[RagAdmin] Pending generation accept error',
+      }, [CodebaseManagementError]);
     }
   });
 
@@ -1142,7 +1188,10 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     try {
       candidateGenerationId = pendingCandidateGenerationId(req.body?.candidateGenerationId);
     } catch (error) {
-      return res.status(400).json({success: false, error: (error as Error).message});
+      return sendRouteError(res, error, {
+        ...PENDING_GENERATION_FAILURE,
+        logLabel: '[RagAdmin] Pending generation input error',
+      }, [CodebaseRequestError]);
     }
     try {
       const codebase = await codebaseManagementService.rejectPending(
@@ -1152,13 +1201,10 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       );
       return res.json({success: true, codebase});
     } catch (error) {
-      const status = error instanceof CodebaseManagementError ? error.status : 409;
-      return res.status(status).json({
-        success: false,
-        error: error instanceof CodebaseManagementError && error.code === 'CODEBASE_NOT_FOUND'
-          ? 'codebase_not_found'
-          : error instanceof Error ? error.message : String(error),
-      });
+      return sendRouteError(res, error, {
+        ...PENDING_GENERATION_FAILURE,
+        logLabel: '[RagAdmin] Pending generation reject error',
+      }, [CodebaseManagementError]);
     }
   });
 

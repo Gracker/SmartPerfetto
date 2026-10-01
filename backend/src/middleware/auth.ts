@@ -284,6 +284,15 @@ type CredentialResolution =
   | { kind: 'none' };
 
 /**
+ * A credential lookup that threw (storage, secret): the caller gets fixed text,
+ * the cause goes to the log under the request id.
+ */
+const rejectedLookup = (req: IncomingMessage, details: string, error: unknown): CredentialResolution => {
+  console.error('[Auth] Credential lookup failed', {requestId: requestIdOf(req), details}, error);
+  return { kind: 'rejected', details };
+};
+
+/**
  * The identity carried by a request's SSO or enterprise credential: trusted SSO
  * headers, then an SSO/OIDC session, then an enterprise API key. HTTP
  * authentication and the trace-processor WebSocket upgrade both use it, so the
@@ -306,7 +315,7 @@ export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResol
       if (sessionIdentity) return { kind: 'identity', identity: sessionIdentity, source: 'sso_session' };
     } catch (error) {
       if (resolveFeatureConfig(process.env).enterprise) {
-        return { kind: 'rejected', details: error instanceof Error ? error.message : 'Invalid SSO session' };
+        return rejectedLookup(req, 'Invalid SSO session', error);
       }
     }
   }
@@ -319,7 +328,7 @@ export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResol
         : { kind: 'rejected', details: 'Invalid or expired API key' };
     } catch (error) {
       if (resolveFeatureConfig(process.env).enterprise) {
-        return { kind: 'rejected', details: error instanceof Error ? error.message : 'Invalid or expired API key' };
+        return rejectedLookup(req, 'Invalid or expired API key', error);
       }
     }
   }

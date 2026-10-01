@@ -10,6 +10,7 @@ import {
 } from 'express';
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
+import {logRouteFailure} from '../middleware/routeFailure';
 import {
   getSelfEvolutionAdminService,
 } from '../services/selfEvolution/selfEvolutionAdminRuntime';
@@ -88,14 +89,26 @@ function terminal(event: SelfEvolutionOperationEvent): boolean {
   return event.type === 'completed' || event.type === 'failed';
 }
 
-function sendError(response: Response, error: unknown): void {
-  const rawCode = error instanceof Error
+const SELF_EVOLUTION_FALLBACK_CODE = 'self_evolution_request_failed';
+
+/**
+ * Self-Evolution services throw reason codes as their messages; anything else
+ * is answered with the fallback code.
+ */
+function selfEvolutionErrorCode(error: unknown): string {
+  return error instanceof Error && /^[a-z0-9_:-]{1,160}$/.test(error.message)
     ? error.message
-    : 'self_evolution_request_failed';
-  const code = /^[a-z0-9_:-]{1,160}$/.test(rawCode)
-    ? rawCode
-    : 'self_evolution_request_failed';
+    : SELF_EVOLUTION_FALLBACK_CODE;
+}
+
+function sendError(response: Response, error: unknown): void {
+  const code = selfEvolutionErrorCode(error);
   const status = errorStatus(code);
+  // Known codes are expected states (disabled, not found, conflict); only an
+  // unrecognized exception needs its message and stack in the log.
+  if (code === SELF_EVOLUTION_FALLBACK_CODE) {
+    logRouteFailure(response, '[SelfEvolutionAdmin] Request error', status, code, error);
+  }
   response.status(status).json({
     success: false,
     error: code,
@@ -248,15 +261,15 @@ export function createSelfEvolutionAdminRoutes(
         if (res.headersSent) {
           unsubscribe();
           if (heartbeat) clearInterval(heartbeat);
+          const errorCode = selfEvolutionErrorCode(error);
+          logRouteFailure(res, '[SelfEvolutionAdmin] Operation stream error', 500, errorCode, error);
           if (!res.writableEnded) {
             sendSseEvent(res, {
               sequence: 0,
               type: 'failed',
               stage: 'failed',
               message: 'operation_stream_failed',
-              errorCode: error instanceof Error
-                ? error.message
-                : 'self_evolution_request_failed',
+              errorCode,
               createdAt: Date.now(),
             });
             res.end();

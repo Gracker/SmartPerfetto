@@ -7,6 +7,7 @@ import http, {type IncomingMessage} from 'http';
 import https from 'https';
 import net from 'net';
 import tls from 'tls';
+import {PublicRequestError} from '../utils/publicRequestError';
 
 const MAX_REDIRECTS = 5;
 export const TRACE_URL_TRUSTED_FAKE_IP_HOSTS_ENV =
@@ -18,6 +19,12 @@ export class PublicHttpUrlRejectedError extends Error {
     this.name = 'PublicHttpUrlRejectedError';
   }
 }
+
+/** The remote trace URL timed out or redirected badly; the caller has to fix the URL or its server. */
+export class PublicHttpFetchError extends PublicRequestError {}
+
+const urlTimedOut = (message: string) => new PublicHttpFetchError('TRACE_URL_TIMEOUT', message, 504);
+const redirectInvalid = (message: string) => new PublicHttpFetchError('TRACE_URL_REDIRECT_INVALID', message, 502);
 
 export interface PublicHttpDownloadResponse {
   status: number;
@@ -197,7 +204,7 @@ function requestPinned(
       agent: false,
       createConnection,
     } as any, resolve);
-    request.setTimeout(timeoutMs, () => request.destroy(new Error('Trace URL request timed out')));
+    request.setTimeout(timeoutMs, () => request.destroy(urlTimedOut('Trace URL request timed out')));
     request.once('error', reject);
     request.end();
   });
@@ -219,15 +226,15 @@ export async function downloadPublicHttpUrl(
       );
     }
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw new Error('Trace URL request timed out');
+    if (remaining <= 0) throw urlTimedOut('Trace URL request timed out');
     const pinned = await resolvePinnedPublicAddress(current);
     const response = await requestPinned(current, pinned.address, remaining);
     const status = response.statusCode ?? 502;
     if (status >= 300 && status < 400) {
       const location = response.headers.location;
       response.resume();
-      if (!location) throw new Error('Trace URL redirect omitted Location');
-      if (redirectCount === MAX_REDIRECTS) throw new Error('Trace URL exceeded redirect limit');
+      if (!location) throw redirectInvalid('Trace URL redirect omitted Location');
+      if (redirectCount === MAX_REDIRECTS) throw redirectInvalid('Trace URL exceeded redirect limit');
       current = new URL(location, current);
       continue;
     }
@@ -244,7 +251,7 @@ export async function downloadPublicHttpUrl(
       finalUrl: current,
     }, deadline);
   }
-  throw new Error('Trace URL exceeded redirect limit');
+  throw redirectInvalid('Trace URL exceeded redirect limit');
 }
 
 function armResponseDeadline(
@@ -253,7 +260,7 @@ function armResponseDeadline(
 ): PublicHttpDownloadResponse {
   const remaining = Math.max(1, deadline - Date.now());
   const timer = setTimeout(() => {
-    response.body.destroy(new Error('Trace URL response deadline exceeded'));
+    response.body.destroy(urlTimedOut('Trace URL response deadline exceeded'));
   }, remaining);
   timer.unref?.();
   const clear = () => clearTimeout(timer);

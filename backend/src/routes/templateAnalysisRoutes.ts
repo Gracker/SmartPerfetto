@@ -9,7 +9,9 @@
 
 import express from 'express';
 import { getTraceProcessorService } from '../services/traceProcessorService';
+import { sendRouteError } from '../middleware/routeFailure';
 import { AnalysisTemplateManager } from '../services/analysisTemplates/templateManager';
+import { TemplateAnalysisError } from '../services/analysisTemplates/templateAnalysisError';
 
 const router = express.Router();
 
@@ -56,12 +58,12 @@ router.post('/auto', async (req, res) => {
       summary: result.summary,
       data: result.data,
     });
-  } catch (error: any) {
-    console.error('Template analysis error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteError(res, error, {
+      code: 'template_analysis_failed',
       error: 'Template analysis failed',
-      message: error.message,
-    });
+      logLabel: '[TemplateAnalysis] Template analysis error',
+    }, [TemplateAnalysisError]);
   }
 });
 
@@ -101,12 +103,12 @@ router.post('/four-quadrant', async (req, res) => {
       success: true,
       data: result,
     });
-  } catch (error: any) {
-    console.error('Four quadrant analysis error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteError(res, error, {
+      code: 'four_quadrant_analysis_failed',
       error: 'Four quadrant analysis failed',
-      message: error.message,
-    });
+      logLabel: '[TemplateAnalysis] Four quadrant analysis error',
+    }, [TemplateAnalysisError]);
   }
 });
 
@@ -146,12 +148,12 @@ router.post('/cpu-core', async (req, res) => {
       success: true,
       data: result,
     });
-  } catch (error: any) {
-    console.error('CPU core analysis error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteError(res, error, {
+      code: 'cpu_core_analysis_failed',
       error: 'CPU core analysis failed',
-      message: error.message,
-    });
+      logLabel: '[TemplateAnalysis] CPU core analysis error',
+    }, [TemplateAnalysisError]);
   }
 });
 
@@ -191,12 +193,12 @@ router.post('/frame-stats', async (req, res) => {
       success: true,
       data: result,
     });
-  } catch (error: any) {
-    console.error('Frame stats analysis error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteError(res, error, {
+      code: 'frame_stats_analysis_failed',
       error: 'Frame stats analysis failed',
-      message: error.message,
-    });
+      logLabel: '[TemplateAnalysis] Frame stats analysis error',
+    }, [TemplateAnalysisError]);
   }
 });
 

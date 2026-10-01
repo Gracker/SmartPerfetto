@@ -74,7 +74,18 @@ export class TenantPurgeBlockedError extends Error {
   }
 }
 
+export class TenantTombstoneNotFoundError extends Error {
+  readonly code = 'tenant_tombstone_not_found';
+
+  constructor() {
+    super('Tenant tombstone not found');
+    this.name = 'TenantTombstoneNotFoundError';
+  }
+}
+
 export class TenantPurgeWindowError extends Error {
+  readonly code = 'tenant_purge_window_open';
+
   constructor(readonly purgeAfter: number) {
     super('Tenant purge window has not elapsed');
     this.name = 'TenantPurgeWindowError';
@@ -303,7 +314,7 @@ export async function purgeTenantNow(
   assertSafeTenantId(context.tenantId);
   const tombstone = getTenantTombstoneRow(db, context.tenantId);
   if (!tombstone || tombstone.status === 'purged') {
-    throw new Error('Tenant tombstone not found');
+    throw new TenantTombstoneNotFoundError();
   }
   if (tombstone.purge_after > now) {
     throw new TenantPurgeWindowError(tombstone.purge_after);

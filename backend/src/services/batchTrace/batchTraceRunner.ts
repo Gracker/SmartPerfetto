@@ -38,8 +38,11 @@ import {
   type BatchTraceInputV1,
   type BatchTraceResultV1,
   type BatchTraceRunV1,
+  type BatchTraceSurface,
   type RunBatchSkillInput,
 } from './batchTraceTypes';
+import { BatchTraceRequestError, invalidBatchTraceRequest } from './batchTraceRequestError';
+import { thrownReasonCode } from '../../utils/publicRequestError';
 
 export interface BatchTraceRunnerDeps {
   traceProcessor?: TraceProcessorService;
@@ -100,6 +103,16 @@ function unsupportedSkillError(skill: SkillDefinition): Error | null {
   return null;
 }
 
+/**
+ * A per-trace failure as the run records it. An API run is served back to
+ * workspace clients, so it keeps only the reason token (a trace load error can
+ * carry a server path); the local CLI owner gets the whole message.
+ */
+function traceFailureMessage(surface: BatchTraceSurface, error: unknown): string {
+  if (surface === 'cli') return error instanceof Error ? error.message : String(error);
+  return thrownReasonCode(error) ?? 'batch_trace_failed';
+}
+
 function statusForResults(results: BatchTraceResultV1[]): BatchTraceRunV1['status'] {
   const completed = results.filter(result => result.status === 'completed').length;
   if (completed === results.length) return 'completed';
@@ -126,13 +139,13 @@ async function resolveTraceId(
   input: BatchTraceInputV1,
 ): Promise<{ traceId: string; batchLocal: boolean }> {
   if (input.source === 'local_path') {
-    if (!input.tracePath) throw new Error('local batch input missing tracePath');
+    if (!input.tracePath) throw invalidBatchTraceRequest('local batch input missing tracePath');
     return {
       traceId: await traceProcessor.loadTraceFromFilePath(input.tracePath),
       batchLocal: true,
     };
   }
-  if (!input.traceId) throw new Error('workspace batch input missing traceId');
+  if (!input.traceId) throw invalidBatchTraceRequest('workspace batch input missing traceId');
   const trace = await traceProcessor.getOrLoadTrace(input.traceId);
   if (!trace) throw new Error(`trace_not_found:${input.traceId}`);
   return {
@@ -172,7 +185,7 @@ export async function runBatchSkill(
     await ensureSkillRegistryInitialized();
   }
   const skill = registry.getSkill(input.skillId);
-  if (!skill) throw new Error(`unknown skill:${input.skillId}`);
+  if (!skill) throw new BatchTraceRequestError('unknown_skill', `unknown skill:${input.skillId}`, 404);
   const unsupported = unsupportedSkillError(skill);
   if (unsupported) throw unsupported;
 
@@ -282,6 +295,10 @@ export async function runBatchSkill(
         ...(skillResult.error ? { error: skillResult.error } : {}),
       });
     } catch (error) {
+      const message = traceFailureMessage(input.surface, error);
+      if (input.surface === 'api') {
+        console.error('[BatchTrace] Trace failed', {runId, ordinal: traceInput.ordinal}, error);
+      }
       recordResult({
         ordinal: traceInput.ordinal,
         input: { ...traceInput, label: inputLabel(traceInput) },
@@ -289,9 +306,9 @@ export async function runBatchSkill(
         status: 'failed',
         metrics: [],
         evidenceEnvelopeIds: [],
-        diagnostics: [{ severity: 'error', message: error instanceof Error ? error.message : String(error) }],
+        diagnostics: [{ severity: 'error', message }],
         executionTimeMs: Date.now() - start,
-        error: error instanceof Error ? error.message : String(error),
+        error: message,
       });
     } finally {
       if (lease && scope && leaseStore) {

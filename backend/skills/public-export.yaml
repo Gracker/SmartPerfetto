@@ -56,6 +56,9 @@ sql_fragments:
   backend/skills/fragments/system_cpu_frequency_spans.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_cpu_frequency_spans.sql
+  backend/skills/fragments/system_cpu_big_freq_coverage.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/system_cpu_big_freq_coverage.sql
   backend/skills/fragments/system_cpu_freq_limit_spans.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/system_cpu_freq_limit_spans.sql
