@@ -551,6 +551,33 @@ describe('analysis result snapshot pipeline', () => {
     expect(snapshot?.evidenceRefs.map(ref => ref.metadata?.stepId)).toContain('reference_summary');
   });
 
+  test('keeps trace-wide frame counts out of app scrolling metrics', () => {
+    const scoped = (stepId: string, rows: Record<string, unknown>[], role: 'target' | 'global_context') => ({
+      ...envelope(),
+      meta: {...envelope().meta, source: 'scrolling_analysis', skillId: 'scrolling_analysis', stepId,
+        evidenceRefId: `data:${stepId}`, scopeProvenance: {version: 'process_scope_evidence@1' as const, entries: [{role,
+          scope: role === 'target'
+            ? {mode: 'exact_upid' as const, upid: 885, traceId: 'trace-a', traceSide: 'current' as const}
+            : {mode: 'unscoped' as const, traceId: 'trace-a', traceSide: 'current' as const}}]}},
+      data: {rows} as any,
+    });
+    const snapshot = buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a',
+      query: '分析滑动性能',
+      dataEnvelopes: [
+        scoped('frame_timeline_population', [{total_frames: 697, jank_frames: 21, trace_duration_ms: 7816}], 'global_context'),
+        scoped('performance_summary', [{total_frames: 347, janky_frames: 7}], 'target'),
+      ],
+      createdAt: 1234,
+    });
+
+    expect(snapshot?.metrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({key: 'scrolling.frame_count', value: 347}),
+      expect.objectContaining({key: 'scrolling.jank_count', value: 7}),
+      expect.objectContaining({key: 'trace.duration_ms', value: 7816}),
+    ]));
+  });
+
   test('uses stable DataEnvelope evidence refs without collapsing SQL comparison tables', () => {
     const currentSql = {
       ...envelope(),
