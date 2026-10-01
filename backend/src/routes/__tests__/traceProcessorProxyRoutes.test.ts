@@ -13,6 +13,7 @@ import request from 'supertest';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpriseDb';
 import { EnterpriseApiKeyService } from '../../services/enterpriseApiKeyService';
+import { EnterpriseSsoService } from '../../services/enterpriseSsoService';
 import type { EnterpriseRepositoryScope } from '../../services/enterpriseRepository';
 import {
   frontendHolderRef,
@@ -21,6 +22,7 @@ import {
   type TraceProcessorLeaseRecord,
 } from '../../services/traceProcessorLeaseStore';
 import { setTraceProcessorServiceForTests } from '../../services/traceProcessorService';
+import { normalizeCorsOrigins } from '../../security/requestOriginPolicy';
 import {
   TRACE_PROCESSOR_CAPABILITY_SECRET_ENV,
   issueTraceProcessorProxyCapability,
@@ -53,6 +55,8 @@ const scope: EnterpriseRepositoryScope = {
   userId: 'user-a',
 };
 const WINDOW_A_HOLDER = frontendHolderRef({userId: 'user-a', windowId: 'window-a'});
+/** The origins CORS admits in these tests: FRONTEND_URL and the local loopback UI. */
+const ALLOWED_ORIGINS = normalizeCorsOrigins([oidcEnv.FRONTEND_URL, 'http://127.0.0.1:10000']);
 
 let tmpDir: string;
 let dbPath: string;
@@ -157,7 +161,7 @@ async function withUpgradeProxy(run: (proxyPort: number) => Promise<void>): Prom
     socket.on('close', () => proxySockets.delete(socket));
   });
   proxyServer.on('upgrade', (req, socket, head) => {
-    if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
+    if (handleTraceProcessorProxyUpgrade(req, socket, head, ALLOWED_ORIGINS)) return;
     socket.destroy();
   });
   const proxyPort = await listen(proxyServer);
@@ -350,6 +354,7 @@ afterEach(async () => {
   );
   for (const [key, value] of Object.entries(originalOidcEnv)) restoreEnvValue(key, value);
   EnterpriseApiKeyService.resetForTests();
+  EnterpriseSsoService.resetForTests();
   apiKeyDb?.close();
   apiKeyDb = undefined;
   resetTraceProcessorProxyCapabilitiesForTests();
@@ -731,34 +736,21 @@ describe('trace processor lease proxy routes', () => {
   });
 
   it('tunnels API-key browser websocket upgrades with a scoped capability', async () => {
-    const app = makeApp();
-    const proxyServer = http.createServer(app);
-    const proxySockets = new Set<NetSocket>();
-    proxyServer.on('connection', socket => {
-      proxySockets.add(socket);
-      socket.on('close', () => proxySockets.delete(socket));
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+    const capability = issueTraceProcessorProxyCapability({
+      context: {
+        tenantId: 'tenant-a',
+        workspaceId: 'workspace-a',
+        userId: 'user-a',
+        authType: 'api_key',
+        roles: ['api_key'],
+        scopes: ['trace:read'],
+        requestId: 'upload-request',
+        windowId: 'window-a',
+      },
+      leaseId: lease.id,
     });
-    proxyServer.on('upgrade', (req, socket, head) => {
-      if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
-      socket.destroy();
-    });
-    const proxyPort = await listen(proxyServer);
-
-    try {
-      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
-      const capability = issueTraceProcessorProxyCapability({
-        context: {
-          tenantId: 'tenant-a',
-          workspaceId: 'workspace-a',
-          userId: 'user-a',
-          authType: 'api_key',
-          roles: ['api_key'],
-          scopes: ['trace:read'],
-          requestId: 'upload-request',
-          windowId: 'window-a',
-        },
-        leaseId: lease.id,
-      });
+    await withUpgradeProxy(async proxyPort => {
       const echoed = await new Promise<string>((resolve, reject) => {
         const timeout = setTimeout(() => {
           reject(new Error('websocket tunnel timed out'));
@@ -818,12 +810,7 @@ describe('trace processor lease proxy routes', () => {
       const holder = getTraceProcessorLeaseStore().getLeaseById(scope, lease.id)
         ?.holders.find(item => item.holderRef === WINDOW_A_HOLDER);
       expect(holder?.metadata).toEqual(expect.objectContaining({requestId: 'wscorrelation:1'}));
-    } finally {
-      for (const socket of proxySockets) {
-        socket.destroy();
-      }
-      await closeServer(proxyServer);
-    }
+    });
   });
   // The upgrade resolves identity through the same function as HTTP auth; the
   // query string only adds scope a browser cannot send as a header.
@@ -889,8 +876,9 @@ describe('trace processor lease proxy routes', () => {
     const boundToken = createEnterpriseApiKey(service);
     const unboundToken = createEnterpriseApiKey(service, {workspaceId: null});
     await withUpgradeProxy(async proxyPort => {
+      // A page cannot attach an API key ambiently, so its Origin is not checked.
       expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket`, {
-        Authorization: `Bearer ${boundToken}`,
+        Authorization: `Bearer ${boundToken}`, Origin: 'https://evil.example.test',
       })).toBe(101);
       // As over HTTP, neither the query nor a header selects its workspace.
       expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket?workspaceId=workspace-a`, {
@@ -913,6 +901,138 @@ describe('trace processor lease proxy routes', () => {
         'Sec-WebSocket-Protocol': capability.protocol,
       })).toBe(401);
       expect(frontendHolder('window-cap')).toBeUndefined();
+    });
+  });
+  // A browser attaches a session cookie, a trusted proxy's session or, in
+  // keyless local mode, nothing at all to any page's WebSocket, and no CORS
+  // check runs on an upgrade. The Origin decides before any lease work.
+  it('answers a malformed lease id escape with 400 instead of throwing', async () => {
+    await withUpgradeProxy(async proxyPort => {
+      expect(await upgradeStatus(proxyPort, '/api/tp/%E0/websocket')).toBe(400);
+      // The server still serves upgrades afterwards.
+      expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket?workspaceId=workspace-a`, {
+        'X-SmartPerfetto-SSO-User-Id': 'user-a', 'X-SmartPerfetto-SSO-Tenant-Id': 'tenant-a',
+      })).toBe(101);
+    });
+  });
+
+  describe('upgrade Origin policy', () => {
+    const SIBLING_ORIGIN = 'https://evil.example.test';
+    const sessionPath = () => `/api/tp/${lease.id}/websocket?windowId=window-o`;
+
+    function useSessionIdentity(): void {
+      jest.spyOn(EnterpriseSsoService.getInstance(), 'resolveRequestIdentityFromRequest').mockReturnValue({
+        userId: 'user-a', email: 'user-a@example.test', subscription: 'enterprise', authType: 'sso',
+        tenantId: 'tenant-a', workspaceId: 'workspace-a', roles: ['analyst'], scopes: ['trace:read'],
+      });
+    }
+
+    function expectNoLeaseWork(): void {
+      expect(frontendHolder('window-o')).toBeUndefined();
+      expect(exposeNativePortMock).not.toHaveBeenCalled();
+    }
+
+    describe('with an OIDC session cookie', () => {
+      beforeEach(() => {
+        Object.assign(process.env, oidcEnv);
+        process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+        useSessionIdentity();
+      });
+
+      it('tunnels an upgrade from FRONTEND_URL', async () => {
+        await withUpgradeProxy(async proxyPort => {
+          expect(await upgradeStatus(proxyPort, sessionPath(), {
+            Cookie: 'sp_sso_session=sp_sso_token', Origin: oidcEnv.FRONTEND_URL,
+          })).toBe(101);
+          expect(frontendHolder('window-o')).toBeDefined();
+        });
+      });
+
+      it.each([
+        ['a same-site sibling origin', {Origin: SIBLING_ORIGIN}],
+        ['no Origin', {}],
+        ['an opaque Origin', {Origin: 'null'}],
+      ])('rejects an upgrade from %s before acquiring a holder', async (_label, headers: Record<string, string>) => {
+        await withUpgradeProxy(async proxyPort => {
+          expect(await upgradeStatus(proxyPort, sessionPath(), {
+            Cookie: 'sp_sso_session=sp_sso_token', ...headers,
+          })).toBe(403);
+          expectNoLeaseWork();
+        });
+      });
+
+      it('lets the cookie, not an accompanying capability, decide', async () => {
+        const capability = issueTraceProcessorProxyCapability({context: {
+          tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a', authType: 'sso',
+          roles: ['analyst'], scopes: ['trace:read'], requestId: 'capability-request', windowId: 'window-o',
+        }, leaseId: lease.id});
+        await withUpgradeProxy(async proxyPort => {
+          expect(await upgradeStatus(proxyPort, sessionPath(), {
+            Cookie: 'sp_sso_session=sp_sso_token',
+            'Sec-WebSocket-Protocol': capability.protocol,
+            Origin: SIBLING_ORIGIN,
+          })).toBe(403);
+          expectNoLeaseWork();
+        });
+      });
+
+      it('does not check the Origin of a bearer session token, which no page attaches ambiently', async () => {
+        await withUpgradeProxy(async proxyPort => {
+          expect(await upgradeStatus(proxyPort, sessionPath(), {
+            Authorization: 'Bearer sp_sso_token', Cookie: 'sp_sso_session=sp_sso_token', Origin: SIBLING_ORIGIN,
+          })).toBe(101);
+        });
+      });
+    });
+
+    it('rejects a trusted SSO upgrade from a foreign Origin', async () => {
+      await withUpgradeProxy(async proxyPort => {
+        const headers = {'X-SmartPerfetto-SSO-User-Id': 'user-a', 'X-SmartPerfetto-SSO-Tenant-Id': 'tenant-a'};
+        expect(await upgradeStatus(proxyPort, `${sessionPath()}&workspaceId=workspace-a`, {
+          ...headers, Origin: SIBLING_ORIGIN,
+        })).toBe(403);
+        expectNoLeaseWork();
+        expect(await upgradeStatus(proxyPort, `${sessionPath()}&workspaceId=workspace-a`, {
+          ...headers, Origin: oidcEnv.FRONTEND_URL,
+        })).toBe(101);
+      });
+    });
+
+    describe('in keyless local mode', () => {
+      const devPath = () =>
+        `/api/tp/${lease.id}/websocket?tenantId=tenant-a&workspaceId=workspace-a&windowId=window-o&userId=user-a`;
+
+      beforeEach(() => {
+        process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'false';
+        process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'false';
+      });
+
+      it('tunnels an upgrade from the local UI origin', async () => {
+        await withUpgradeProxy(async proxyPort => {
+          expect(await upgradeStatus(proxyPort, devPath(), {Origin: 'http://127.0.0.1:10000'})).toBe(101);
+        });
+      });
+
+      it.each([
+        ['another local port', 'http://localhost:3000'],
+        ['an opaque origin', 'null'],
+      ])('rejects an upgrade from %s', async (_label, origin) => {
+        await withUpgradeProxy(async proxyPort => {
+          expect(await upgradeStatus(proxyPort, devPath(), {Origin: origin})).toBe(403);
+          expectNoLeaseWork();
+        });
+      });
+
+      // A rebinding page is same-origin with its own Host, so the backend's
+      // origin must never be inferred from Host.
+      it('rejects a DNS-rebinding upgrade whose Origin matches its Host', async () => {
+        await withUpgradeProxy(async proxyPort => {
+          expect(await upgradeStatus(proxyPort, devPath(), {
+            Host: `evil.example.test:${proxyPort}`, Origin: `http://evil.example.test:${proxyPort}`,
+          })).toBe(403);
+          expectNoLeaseWork();
+        });
+      });
     });
   });
 });

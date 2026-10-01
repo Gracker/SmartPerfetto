@@ -15,6 +15,7 @@ import { EnterpriseSsoService } from '../services/enterpriseSsoService';
 import { getFirstHeaderValue, getHeaderValue, parseHeaderList } from './requestHeaders';
 import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from './requestId';
+import type { BrowserOriginRequirement } from '../security/requestOriginPolicy';
 
 type RequestContextAuthType = 'sso' | 'api_key' | 'dev';
 
@@ -126,13 +127,19 @@ const getProvidedApiKey = (req: Request): string | undefined => {
   return undefined;
 };
 
-/** A malformed session cookie counts as no session rather than throwing. */
-const requestHasSessionCredential = (req: IncomingMessage): boolean => {
+/**
+ * How a request carries its SSO session, if it does: any Bearer header decides,
+ * so a session cookie counts only without one. A malformed session cookie
+ * counts as no session rather than throwing.
+ */
+const sessionCredentialTransport = (req: IncomingMessage): 'bearer' | 'cookie' | undefined => {
   const authHeader = req.headers.authorization;
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
-    return authHeader.slice('Bearer '.length).trim().startsWith(SSO_SESSION_TOKEN_PREFIX);
+    return authHeader.slice('Bearer '.length).trim().startsWith(SSO_SESSION_TOKEN_PREFIX)
+      ? 'bearer'
+      : undefined;
   }
-  return typeof req.headers.cookie === 'string'
+  const hasCookie = typeof req.headers.cookie === 'string'
     && req.headers.cookie.split(';').some((cookie) => {
       const part = cookie.trim();
       const separator = part.indexOf('=');
@@ -144,6 +151,7 @@ const requestHasSessionCredential = (req: IncomingMessage): boolean => {
         return false;
       }
     });
+  return hasCookie ? 'cookie' : undefined;
 };
 
 const safeEquals = (a: string, b: string): boolean => {
@@ -279,6 +287,12 @@ type CredentialResolution =
     kind: 'identity';
     identity: ResolvedIdentity;
     source: 'trusted_headers' | 'sso_session' | 'enterprise_api_key';
+    /**
+     * The Origin this credential needs where CORS does not run. Trusted headers
+     * come from a proxy's own browser session, so they are as ambient as a
+     * cookie; bearer tokens and API keys must be held by the page.
+     */
+    originRequirement: BrowserOriginRequirement;
   }
   | { kind: 'rejected'; details: string }
   | { kind: 'none' };
@@ -297,13 +311,21 @@ export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResol
 
   const trustedIdentity = oidcConfigured ? null : resolveTrustedSsoIdentity(req);
   if (trustedIdentity) {
-    return { kind: 'identity', identity: trustedIdentity, source: 'trusted_headers' };
+    return { kind: 'identity', identity: trustedIdentity, source: 'trusted_headers', originRequirement: 'if_present' };
   }
 
-  if (requestHasSessionCredential(req)) {
+  const sessionTransport = sessionCredentialTransport(req);
+  if (sessionTransport) {
     try {
       const sessionIdentity = EnterpriseSsoService.getInstance().resolveRequestIdentityFromRequest(req);
-      if (sessionIdentity) return { kind: 'identity', identity: sessionIdentity, source: 'sso_session' };
+      if (sessionIdentity) {
+        return {
+          kind: 'identity',
+          identity: sessionIdentity,
+          source: 'sso_session',
+          originRequirement: sessionTransport === 'cookie' ? 'required' : 'none',
+        };
+      }
     } catch (error) {
       if (resolveFeatureConfig(process.env).enterprise) {
         return { kind: 'rejected', details: error instanceof Error ? error.message : 'Invalid SSO session' };
@@ -315,7 +337,7 @@ export const resolveCredentialIdentity = (req: IncomingMessage): CredentialResol
     try {
       const apiKeyIdentity = EnterpriseApiKeyService.getInstance().resolveRequestIdentityFromRequest(req);
       return apiKeyIdentity
-        ? { kind: 'identity', identity: apiKeyIdentity, source: 'enterprise_api_key' }
+        ? { kind: 'identity', identity: apiKeyIdentity, source: 'enterprise_api_key', originRequirement: 'none' }
         : { kind: 'rejected', details: 'Invalid or expired API key' };
     } catch (error) {
       if (resolveFeatureConfig(process.env).enterprise) {
