@@ -16,7 +16,7 @@ import type {
 } from '../../types/claimVerification';
 import {
   getCapturedAnchorFacts,
-  unreadableEvidenceAnchorReason,
+  uncheckedEvidenceAnchorReason,
   type CapturedFieldSemantics,
   type EvidenceScalar,
 } from '../evidence/evidenceCapture';
@@ -148,8 +148,8 @@ function verifyAnchor(anchor: EvidenceAnchorV1, ineligible: boolean): ClaimRefer
   // An ineligible binding is never read, so how its anchor failed is moot.
   if (ineligible) return [{...base, status: 'ineligible', message: 'claim binding is ineligible'}];
   const failure = anchorFailure(anchor);
-  // Only an issued read outcome can show the product failed to read; the reason string alone cannot.
-  if (failure) return [{...base, status: unreadableEvidenceAnchorReason(anchor) ? 'not_checked' : 'missing', message: failure}];
+  // Only an issued mark can leave a missing reference unchecked; the reason string alone cannot.
+  if (failure) return [{...base, status: uncheckedEvidenceAnchorReason(anchor) ? 'not_checked' : 'missing', message: failure}];
   const facts = getCapturedAnchorFacts(anchor);
   if (!facts) return [{...base, status: 'not_checked', message: anchor.missingReason || 'immutable execution capture is unavailable'}];
   if (!anchor.cells?.length) return [{...base, status: 'not_checked', message: 'no expected cell value was supplied'}];
@@ -495,11 +495,11 @@ function verifyClaim(claim: ClaimSupportV1): {result: ClaimVerificationClaimResu
   const ineligible = claim.bindingEligibility === 'ineligible';
   if (ineligible) issues.push({claimId: claim.claimId, severity: 'warning', code: 'binding_ineligible',
     message: 'the conclusion declaration was not admitted for verification'});
-  const unreadable = ineligible ? new Set<string>() : new Set(claim.anchors.flatMap(anchor => {
-    const reason = unreadableEvidenceAnchorReason(anchor);
+  const unchecked = ineligible ? new Set<string>() : new Set(claim.anchors.flatMap(anchor => {
+    const reason = uncheckedEvidenceAnchorReason(anchor);
     return reason ? [reason] : [];
   }));
-  for (const reason of unreadable) {
+  for (const reason of unchecked) {
     issues.push({claimId: claim.claimId, severity: 'warning', code: 'claim_reference_unverified', message: reason});
   }
   if (evaluated.status === 'rejected' || evaluated.status === 'candidate') issues.push({

@@ -322,6 +322,43 @@ describe('runtime execution evidence read view', () => {
     if (kind !== 'global') expect(anchor.missing).toBe(true);
   });
 
+  // A whole-result citation spanning target and global fields cannot bind the
+  // target identity. Unless the cited row itself conflicts, that is unverified
+  // evidence, not a contradicted reference.
+  const unverified = [expect.objectContaining({severity: 'warning', code: 'claim_reference_unverified',
+    message: 'cited_scope_identity_unbound'})];
+  it.each([
+    ['one row', [[42, 2, 16]], 'cited_scope_identity_unbound', 'not_checked', 'not_checked', 'not_checked', unverified],
+    ['several rows, none selected', [[42, 2, 16], [42, 3, 16]], 'cited_scope_identity_unbound', 'not_checked',
+      'not_checked', 'not_checked', unverified],
+    ['a row of another process', [[43, 2, 16]], 'captured_identity_conflict', 'missing', 'unsupported', 'failed',
+      [expect.objectContaining({severity: 'error', code: 'claim_reference_missing'})]],
+  ] as const)('classifies a whole-result citation of mixed process scope with %s', async (
+    _label, rows, reason, referenceStatus, claimStatus, verificationStatus, issues) => {
+    const store = new ArtifactStore();
+    const scope: EvidenceScopeProvenanceV1 = {version: 'process_scope_evidence@1', entries: [
+      {...targetScope.entries[0], fields: ['upid', 'metric']},
+      {role: 'global_context', scope: {mode: 'unscoped', traceId: 'trace', traceSide: 'current'}, fields: ['vsync']},
+    ]};
+    const {id} = add(store, {columns: ['upid', 'metric', 'vsync'], rows: rows.map(row => [...row])}, {scope});
+    const conclusionContract: ConclusionContract = {...contract({artifactId: id}), claims: [
+      {id: 'context', kind: 'categorical', text: 'Display context', references: [{artifactId: id}]}]};
+    const preparedEvidence = await prepareClaimEvidence({conclusionContract,
+      evidenceReadView: store.createEvidenceReadView(readOptions)});
+    const {anchors, claimSupport} = buildEvidenceContract({conclusionContract, preparedEvidence});
+    expect(anchors[0]).toMatchObject({missing: true, missingReason: reason, confidence: 0});
+    expect(anchors[0].identity).toBeUndefined();
+    expect(anchors[0].cells).toBeUndefined();
+    const verification = runDeterministicClaimVerifier({claimSupport});
+    expect(verification.claimResults[0].referenceCells.map(cell => cell.status)).toEqual([referenceStatus]);
+    expect(verification.claimResults[0].status).toBe(claimStatus);
+    expect(verification.status).toBe(verificationStatus);
+    expect(verification.issues).toEqual(issues);
+    // A copied anchor carries no issued mark: its reason string cannot downgrade a missing reference.
+    const copied = runDeterministicClaimVerifier({claimSupport: structuredClone(claimSupport)});
+    expect(copied.claimResults[0].referenceCells.map(cell => cell.status)).toEqual(['missing']);
+  });
+
   it('does not read or bind any positive reference for invalid machine declarations', async () => {
     const conclusionContract = contract({artifactId: 'art-1', rowIndex: 0, column: 'metric'});
     const resolveReferences = jest.fn(async () => []);

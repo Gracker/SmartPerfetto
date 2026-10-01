@@ -41,7 +41,7 @@ import {copyScopeProvenance, scopeProvenanceForFields,
 import {evidenceReferenceKey, preparedReferenceResolution, preparedEvidenceBindingEligibility, preparedEvidenceMatchesInput,
   type PreparedClaimEvidence} from './claimEvidencePreparation';
 import {bindReadResolutionToAnchor, evidenceReadFailureIsUnreadable, type EvidenceReadResolution} from './evidenceReadView';
-import {getCapturedAnchorFacts, markUnreadableEvidenceAnchor} from './evidenceCapture';
+import {getCapturedAnchorFacts, markIdentityUnboundEvidenceAnchor, markUnreadableEvidenceAnchor} from './evidenceCapture';
 
 export interface BuildEvidenceContractInput {
   conclusionContract?: ConclusionContract | null;
@@ -887,10 +887,30 @@ function buildAnchor(
   const requiresTargetIdentity = scopeProvenance?.entries.some(entry => entry.role === 'target' && entry.scope.mode !== 'unscoped');
   if (identity?.status === 'error' || (requiresTargetIdentity && identity?.status !== 'verified')) {
     anchor.missing = true;
-    anchor.missingReason = 'captured_identity_conflict';
     anchor.confidence = 0;
+    if (identity?.status !== 'error' && citationLeavesTargetIdentityUnbound(envelope, row, ref, scopeProvenance)) {
+      anchor.missingReason = 'cited_scope_identity_unbound';
+      markIdentityUnboundEvidenceAnchor(anchor);
+    } else {
+      anchor.missingReason = 'captured_identity_conflict';
+    }
   } else if (match.readResolution) bindReadResolutionToAnchor(anchor, match.readResolution);
   return anchor;
+}
+
+/**
+ * A citation of a whole result whose fields mix target and other scopes binds
+ * no identity, though nothing conflicts: had it named only the target fields,
+ * the same row and provenance would have bound the target identity. That is
+ * unverified, not contradicted. A conflicting row, identity or resolution
+ * fails the target-only derivation too and stays a conflict.
+ */
+function citationLeavesTargetIdentityUnbound(envelope: DataEnvelope, row: Record<string, unknown> | undefined,
+  ref: ConclusionContractClaimReference, provenance: EvidenceScopeProvenanceV1 | undefined): boolean {
+  if (ref.column || !provenance) return false;
+  const target = provenance.entries.filter(entry => entry.role === 'target');
+  if (target.length === 0 || target.length === provenance.entries.length) return false;
+  return deriveIdentity(envelope, row, {...provenance, entries: target})?.status === 'verified';
 }
 
 function canonicalBigIntRange(anchor: EvidenceAnchorV1): {start: bigint; end: bigint} | undefined {

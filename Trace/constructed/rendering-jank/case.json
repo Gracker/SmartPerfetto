@@ -1187,6 +1187,7 @@
           "init_cpu_topology",
           "frame_timeline_check",
           "vsync_config",
+          "frame_timeline_population",
           "buffer_tx_coverage_probe",
           "performance_summary",
           "buffer_tx_performance_fallback",
@@ -1216,6 +1217,7 @@
           "main_thread_work_cadence",
           "frame_timeline_check",
           "vsync_config",
+          "frame_timeline_population",
           "buffer_tx_coverage_probe",
           "performance_summary",
           "buffer_tx_performance_fallback",
@@ -1238,6 +1240,7 @@
         ],
         "forced_sql_steps": [
           "vsync_config",
+          "frame_timeline_population",
           "buffer_tx_coverage_probe",
           "performance_summary",
           "buffer_tx_performance_fallback",
