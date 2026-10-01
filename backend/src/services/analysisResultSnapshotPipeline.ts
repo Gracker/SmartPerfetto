@@ -144,6 +144,17 @@ function envelopeTraceValue(
     : undefined;
 }
 
+/**
+ * A raw-trace comparison session holds envelopes from both traces. One marked
+ * as the reference side, or stamped with another trace id, measured a
+ * different trace; an unmarked envelope is the session's own trace.
+ */
+function measuresTrace(env: DataEnvelope, traceId: string): boolean {
+  if (envelopeTraceValue(env, 'traceSide') === 'reference') return false;
+  const envelopeTraceId = envelopeTraceValue(env, 'traceId');
+  return envelopeTraceId === undefined || envelopeTraceId === traceId;
+}
+
 function dataEnvelopeRefId(env: DataEnvelope, duplicateEvidenceRefIds: Set<string> = new Set()): string {
   if (env.meta?.evidenceRefId) {
     if (duplicateEvidenceRefIds.has(env.meta.evidenceRefId) && env.meta.sourceToolCallId) {
@@ -455,9 +466,8 @@ interface ProducerUnit {
 
 /** The first admitted producer unit in one envelope that returned rows. */
 function firstProducerUnit(contract: ComparisonMetricProducerContract, env: DataEnvelope): ProducerUnit | undefined {
-  // Only Skill execution writes skill_result envelopes; a reference-trace side
-  // measures a different trace than the snapshot.
-  if (env.meta?.type !== 'skill_result' || envelopeTraceValue(env, 'traceSide') === 'reference') return undefined;
+  // Only Skill execution writes skill_result envelopes.
+  if (env.meta?.type !== 'skill_result') return undefined;
   const {skillId, stepId} = env.meta;
   for (const producer of contract.producers) {
     if (producer.skillId !== skillId || producer.stepId !== stepId) continue;
@@ -521,9 +531,10 @@ function extractContractedMetric(
   return undefined;
 }
 
-function extractStandardMetrics(envelopes: DataEnvelope[] = []): NormalizedMetricValue[] {
+function extractStandardMetrics(traceId: string, envelopes: DataEnvelope[] = []): NormalizedMetricValue[] {
+  const ownTraceEnvelopes = envelopes.filter(env => measuresTrace(env, traceId));
   const byKey = new Map<string, NormalizedMetricValue>();
-  for (const env of envelopes) {
+  for (const env of ownTraceEnvelopes) {
     for (const row of payloadRows(env)) {
       const byNormalizedName = new Map(Object.entries(row).map(([key, value]) => [normalizeFieldName(key), value]));
       for (const definition of STANDARD_COMPARISON_METRICS) {
@@ -542,7 +553,7 @@ function extractStandardMetrics(envelopes: DataEnvelope[] = []): NormalizedMetri
     }
   }
   for (const contract of COMPARISON_METRIC_PRODUCER_CONTRACTS) {
-    const metric = extractContractedMetric(contract, envelopes);
+    const metric = extractContractedMetric(contract, ownTraceEnvelopes);
     if (metric) byKey.set(contract.metricKey, metric);
   }
   return [...byKey.values()];
@@ -577,7 +588,7 @@ export function buildCompletedAnalysisResultSnapshot(
   const headline = firstNonEmptyLine(input.conclusion)
     || input.terminationMessage
     || 'Analysis completed';
-  const metrics = extractStandardMetrics(input.dataEnvelopes);
+  const metrics = extractStandardMetrics(input.traceId, input.dataEnvelopes);
   const hasComparableMetric = metrics.some(metric => !isWithheldMetric(metric));
   const partialReasons: string[] = [];
   if (input.partial) {

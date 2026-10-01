@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { serverConfig } from '../config';
+import { isKeylessLocalMode, serverConfig } from '../config';
 import { collectEnvCredentialSources } from './envCredentialSources';
 import { resolveAgentRuntimeSelectionForDiagnostics } from './runtimeSelection';
 import { getProviderService } from '../services/providerManager';
@@ -64,9 +64,7 @@ export function buildRuntimeHealthPayload(now: Date = new Date()) {
           type: activeProvider.type,
         },
       } : {}),
-      authRequired: !!process.env.SMARTPERFETTO_API_KEY
-        || process.env.SMARTPERFETTO_ENTERPRISE === 'true'
-        || !!process.env.SMARTPERFETTO_OIDC_ISSUER_URL,
+      authRequired: !isKeylessLocalMode(),
       diagnostics: selectedDiagnostics,
     },
   };

@@ -59,6 +59,7 @@ function parseFeatureFlag(value: string | undefined, defaultValue: boolean = fal
 export const ENTERPRISE_FEATURE_FLAG_ENV = 'SMARTPERFETTO_ENTERPRISE';
 export const SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV = 'SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP';
 export const SMARTPERFETTO_SERVER_SECRET_ENV = 'SMARTPERFETTO_SERVER_SECRET';
+export const SMARTPERFETTO_API_KEY_ENV = 'SMARTPERFETTO_API_KEY';
 export const SMARTPERFETTO_BACKEND_PORT_ENV = 'SMARTPERFETTO_BACKEND_PORT';
 export const SMARTPERFETTO_FRONTEND_PORT_ENV = 'SMARTPERFETTO_FRONTEND_PORT';
 export const SMARTPERFETTO_BACKEND_PUBLIC_PORT_ENV = 'SMARTPERFETTO_BACKEND_PUBLIC_PORT';
@@ -105,6 +106,24 @@ export function isSsoTrustedHeadersEnabled(env: NodeJS.ProcessEnv = process.env)
   return parseFeatureFlag(env.SMARTPERFETTO_SSO_TRUSTED_HEADERS);
 }
 
+/**
+ * Whether built-in OIDC may use plaintext HTTP. The startup guard and the OIDC
+ * client must read the flag identically: a spelling only one of them honoured
+ * would let the client accept insecure discovery endpoints the guard refused.
+ */
+export function isOidcInsecureHttpAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseFeatureFlag(env[SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV]);
+}
+
+/**
+ * Whether the operator API key is set. Any non-empty value counts, even one
+ * that is only whitespace: the authenticator then demands that exact key, so
+ * auth mode and startup checks must not treat it as absent.
+ */
+export function isOperatorApiKeyConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env[SMARTPERFETTO_API_KEY_ENV]);
+}
+
 export function isOidcConfigurationPresent(env: NodeJS.ProcessEnv = process.env): boolean {
   return OIDC_CONFIG_ENV_KEYS.some(key => hasConfiguredValue(env[key]));
 }
@@ -117,9 +136,8 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthCon
   const oidcConfigured = isOidcConfigurationPresent(env);
   const mode: SmartPerfettoAuthMode = oidcConfigured
     ? 'oidc'
-    : hasConfiguredValue(env.SMARTPERFETTO_API_KEY) ? 'api_key' : 'local';
-  const allowInsecureHttp = mode === 'oidc'
-    && parseBoolEnv(SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV, false, env);
+    : isOperatorApiKeyConfigured(env) ? 'api_key' : 'local';
+  const allowInsecureHttp = mode === 'oidc' && isOidcInsecureHttpAllowed(env);
 
   if (mode === 'oidc') {
     const missing = OIDC_CONFIG_ENV_KEYS.filter(key => !hasConfiguredValue(env[key]));
@@ -131,7 +149,7 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthCon
     if (!hasConfiguredValue(env.FRONTEND_URL)) {
       throw new Error('OIDC mode requires FRONTEND_URL for the post-login redirect');
     }
-    if (hasConfiguredValue(env.SMARTPERFETTO_API_KEY)) {
+    if (isOperatorApiKeyConfigured(env)) {
       throw new Error('OIDC mode cannot be combined with SMARTPERFETTO_API_KEY');
     }
     const serverSecret = env[SMARTPERFETTO_SERVER_SECRET_ENV]?.trim()
@@ -243,6 +261,16 @@ export function resolveFeatureConfig(env: NodeJS.ProcessEnv = process.env): Feat
     enterprise: parseFeatureFlag(env[ENTERPRISE_FEATURE_FLAG_ENV], false)
       || resolveAuthConfig(env).oidcEnabled,
   };
+}
+
+/**
+ * Whether the API runs without authentication, so an unauthenticated request
+ * acts as the local dev identity: no operator API key and not enterprise mode
+ * (which built-in OIDC implies). Request and WebSocket authentication, the
+ * local Host guard and the health report all read this one predicate.
+ */
+export function isKeylessLocalMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !isOperatorApiKeyConfigured(env) && !resolveFeatureConfig(env).enterprise;
 }
 
 export const featureConfig = resolveFeatureConfig();

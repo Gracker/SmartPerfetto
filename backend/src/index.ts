@@ -12,7 +12,7 @@ import type { Server } from 'http';
 import type { Duplex } from 'stream';
 
 // Import configuration
-import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
+import { isKeylessLocalMode, resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
@@ -157,8 +157,7 @@ app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 // In keyless local mode, reject Host-header DNS rebinding even though the
 // process itself listens only on loopback by default.
 app.use('/api', (req, res, next) => {
-  const keylessLocalMode = !process.env.SMARTPERFETTO_API_KEY && !resolveFeatureConfig(process.env).enterprise;
-  if (keylessLocalMode && !isLoopbackRequestHostname(req.hostname)) {
+  if (isKeylessLocalMode() && !isLoopbackRequestHostname(req.hostname)) {
     res.status(403).json({success: false, error: 'Untrusted Host in local keyless mode'});
     return;
   }

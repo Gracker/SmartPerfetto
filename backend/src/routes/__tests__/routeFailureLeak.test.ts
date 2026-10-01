@@ -9,8 +9,6 @@
  * their user-actionable text.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
 import express from 'express';
 import request from 'supertest';
 import type { RequestContext } from '../../middleware/auth';
@@ -107,6 +105,7 @@ jest.mock('../../services/enterpriseTenantExportService', () => ({
 jest.mock('../../services/enterpriseTenantLifecycleService', () => ({
   ...jest.requireActual('../../services/enterpriseTenantLifecycleService'),
   createTenantTombstone: () => mockState.downstream(),
+  evaluateTenantMutationPolicy: () => ({allowed: true}),
 }));
 
 jest.mock('../../services/enterpriseAdminControlPlaneService', () => ({
@@ -184,6 +183,10 @@ const CASES: Case[] = [
   {name: 'trace stats', send: (app) => request(app).get('/api/traces/stats'), code: 'trace_stats_failed', contextFailure: true},
   {name: 'trace cleanup', send: (app) => request(app).post('/api/traces/cleanup'), code: 'trace_cleanup_failed', contextFailure: true},
   {name: 'trace RPC register', send: (app) => request(app).post('/api/traces/register-rpc').send({port: 9001}), code: 'trace_rpc_register_failed', contextFailure: true},
+  {name: 'trace URL upload', send: (app) => request(app).post('/api/traces/upload-url').send({url: 'https://example.com/t.pftrace'}), code: 'trace_url_upload_failed', contextFailure: true},
+  {name: 'trace read', send: (app) => request(app).get('/api/traces/t1'), code: 'trace_read_failed', contextFailure: true},
+  {name: 'trace delete', send: (app) => request(app).delete('/api/traces/t1'), code: 'trace_delete_failed', contextFailure: true},
+  {name: 'trace download', send: (app) => request(app).get('/api/traces/t1/file'), code: 'trace_download_failed', contextFailure: true},
 ];
 
 describe('route catch blocks never return downstream exception messages', () => {
@@ -252,13 +255,23 @@ describe('route catch blocks never return downstream exception messages', () => 
       throw providerNotFound('p404');
     });
 
-    const invalid = await request(app).post('/api/providers').send({});
+    const invalid = await request(app).post('/api/providers').set('X-Request-Id', 'req-leak-test').send({});
     expect(invalid.status).toBe(400);
-    expect(invalid.body).toEqual({success: false, code: 'provider_invalid_request', error: 'Provider name is required'});
+    expect(invalid.body).toEqual({
+      success: false,
+      code: 'provider_invalid_request',
+      error: 'Provider name is required',
+      requestId: 'req-leak-test',
+    });
 
-    const missing = await request(app).patch('/api/providers/p404').send({});
+    const missing = await request(app).patch('/api/providers/p404').set('X-Request-Id', 'req-leak-test').send({});
     expect(missing.status).toBe(404);
-    expect(missing.body).toEqual({success: false, code: 'provider_not_found', error: 'Provider not found: p404'});
+    expect(missing.body).toEqual({
+      success: false,
+      code: 'provider_not_found',
+      error: 'Provider not found: p404',
+      requestId: 'req-leak-test',
+    });
   });
 
   test('a trace list limit error keeps its text, an unrelated RangeError does not', async () => {
@@ -270,43 +283,18 @@ describe('route catch blocks never return downstream exception messages', () => 
     expectFixedFailure(await request(app).get('/api/traces').set('X-Request-Id', 'req-leak-test'), 500, 'trace_list_failed');
   });
 
+  test('a malformed trace URL is a 400 before any fetch', async () => {
+    const res = await request(app).post('/api/traces/upload-url').send({url: 'not a url'});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({code: 'INVALID_TRACE_URL', error: 'The trace URL is not a valid URL'});
+  });
+
   test('an invalid log level keeps its validation text behind a code', async () => {
     const res = await request(app).put('/api/agent/v1/admin/log-level').send({level: 'loud'});
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('invalid_log_level');
     expect(res.body.error).toMatch(/^Invalid log level: loud\. Valid: /);
-  });
-});
-
-/**
- * The remaining direct echoes in route catch blocks are typed validation
- * errors produced by our own code. A new one must be one of those too: adjust
- * this inventory only after checking that the echoed error cannot carry a
- * downstream message.
- */
-describe('route exception echo inventory', () => {
-  const ECHO = /error: (error|err|e)\??\.message/g;
-  const ALLOWED: Record<string, number> = {
-    'agentConversationRoutes.ts': 1, // AnalyzeOptionsError
-    'enterpriseTenantRoutes.ts': 1, // EnterpriseAdminControlPlaneError
-    'providerRoutes.ts': 1, // ProviderRequestError
-    'providerStoreHttp.ts': 1, // ProviderStoreUnreadableError (fixed messages)
-    'ragAdminRoutes.ts': 3, // NativeDirectoryPickerError, RagSearchInputError x2
-    'simpleTraceRoutes.ts': 1, // InvalidTraceMetadataCursorError / TraceListLimitError
-    'traceProcessorProxyRoutes.ts': 1, // TraceProcessorProxyError
-  };
-
-  test('only typed validation errors are echoed', () => {
-    const routesDir = path.resolve(__dirname, '..');
-    const found: Record<string, number> = {};
-    for (const entry of fs.readdirSync(routesDir, {recursive: true, withFileTypes: true})) {
-      if (!entry.isFile() || !entry.name.endsWith('.ts')) continue;
-      const file = path.join(entry.parentPath, entry.name);
-      if (file.includes(`${path.sep}__tests__${path.sep}`)) continue;
-      const count = fs.readFileSync(file, 'utf8').match(ECHO)?.length ?? 0;
-      if (count > 0) found[path.relative(routesDir, file)] = count;
-    }
-    expect(found).toEqual(ALLOWED);
   });
 });

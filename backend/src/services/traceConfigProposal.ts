@@ -13,6 +13,14 @@ import {
   type CapturePresetId,
 } from './traceCaptureConfig';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
+import { PublicRequestError } from '../utils/publicRequestError';
+
+/** An invalid proposal request; its text names the field to fix. */
+export class TraceConfigProposalInputError extends PublicRequestError {
+  constructor(message: string) {
+    super('invalid_trace_config_proposal', message);
+  }
+}
 
 export type TraceConfigProposalConfidence = 'high' | 'medium' | 'low';
 
@@ -299,7 +307,7 @@ export function buildTraceConfigProposal(input: TraceConfigProposalInput): Trace
   const outputLanguage = input.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const request = normalizeRequest(input.request);
   if (!request) {
-    throw new Error('request is required');
+    throw new TraceConfigProposalInputError('request is required');
   }
 
   const match = classifyRequest(request);
@@ -419,7 +427,7 @@ function normalizeApp(value: string | undefined): string {
 function normalizeDuration(value: number | undefined, fallback: number): number {
   const duration = value ?? fallback;
   if (!Number.isFinite(duration) || duration <= 0) {
-    throw new Error('durationSeconds must be a positive number');
+    throw new TraceConfigProposalInputError('durationSeconds must be a positive number');
   }
   return duration;
 }

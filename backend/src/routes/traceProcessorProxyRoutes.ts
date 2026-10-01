@@ -6,9 +6,8 @@ import express, { Router, type Request, type Response } from 'express';
 import type { IncomingMessage } from 'http';
 import net, { type Socket } from 'net';
 import type { Duplex } from 'stream';
-import { serverConfig } from '../config';
+import { isKeylessLocalMode, serverConfig } from '../config';
 import {
-  allowsDevIdentity,
   authenticate,
   buildRequestContext,
   DEFAULT_DEV_USER_ID,
@@ -25,6 +24,7 @@ import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionMo
 import {
   frontendHolderInput,
   getTraceProcessorLeaseStore,
+  TraceProcessorLeaseUnavailableError,
   type FrontendHolderVisibility,
   type TraceProcessorHolderInput,
   type TraceProcessorLeaseRecord,
@@ -102,7 +102,7 @@ function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): Re
   );
   if (capabilityContext) return {...capabilityContext, requestId: requestIdOf(req)};
 
-  if (allowsDevIdentity()) {
+  if (isKeylessLocalMode()) {
     return upgradeRequestContext(req, query, {
       userId: queryId(query, 'userId') || DEFAULT_DEV_USER_ID,
       authType: 'dev',
@@ -331,12 +331,10 @@ async function heartbeatLease(req: Request, res: Response): Promise<void> {
   try {
     lease = store.acquireHolderForLease(scope, lease.id, holder);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('not acquirable')) {
-      throw new TraceProcessorProxyError(409, message);
-    }
-    if (message.includes('not found')) {
-      throw new TraceProcessorProxyError(404, 'Trace processor lease not found');
+    if (error instanceof TraceProcessorLeaseUnavailableError) {
+      throw error.reason === 'not_acquirable'
+        ? new TraceProcessorProxyError(409, error.message)
+        : new TraceProcessorProxyError(404, 'Trace processor lease not found');
     }
     throw error;
   }
@@ -644,8 +642,7 @@ export function handleTraceProcessorProxyUpgrade(
       writeUpgradeError(socket, error.statusCode, error.message);
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('[TraceProcessorProxy] WebSocket proxy error:', message);
+    console.error('[TraceProcessorProxy] WebSocket proxy error:', error);
     writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   return true;

@@ -92,6 +92,21 @@ describe('caseAnonymizer', () => {
     expect(bucketPackageDomain('')).toBe('unknown');
   });
 
+  it('keeps an own __proto__ key as anonymized data instead of a prototype', () => {
+    const base = candidate();
+    const withProto = {
+      ...base,
+      cluster: {...base.cluster, ...JSON.parse('{"__proto__":{"note":"seen in com.example.demo.app"}}')},
+    };
+    const result = anonymizeCaseEvolutionInput(withProto, review());
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error(result.errors.join(', '));
+    expect(Object.getPrototypeOf(result.candidate.cluster)).toBe(Object.prototype);
+    const kept = Object.getOwnPropertyDescriptor(result.candidate.cluster, '__proto__')?.value;
+    expect(kept).toEqual({note: expect.not.stringContaining('com.example.demo.app')});
+  });
+
   it('replaces package names and app data paths before ingest', () => {
     const result = anonymizeCaseEvolutionInput(candidate(), review());
 
