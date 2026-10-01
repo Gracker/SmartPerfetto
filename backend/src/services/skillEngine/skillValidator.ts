@@ -25,7 +25,7 @@ import {
   SkillInputValidationError,
   ValidatedParams,
 } from './types';
-import { extractRootVariables } from './expressionUtils';
+import { CONTEXTUAL_KEYWORDS, extractRootVariables } from './expressionUtils';
 import { sqlScopeDeclarationError } from './processScopeSql';
 
 // =============================================================================
@@ -212,6 +212,18 @@ const IMPLICIT_PARAMS = new Set([
 ]);
 
 /**
+ * Names a condition may read without a declaration: contextual keywords, which
+ * also act as keywords, and host names existing Skill packs read undeclared.
+ * The evaluator still resolves both through the Skill scopes like any name.
+ */
+const UNCHECKED_CONDITION_NAMES: ReadonlySet<string> = new Set([...CONTEXTUAL_KEYWORDS, 'console', 'globalThis', 'window']);
+/**
+ * Only ASCII names are checked: without a parser, a local declaration reads
+ * as a root, and existing packs may declare non-ASCII locals.
+ */
+const CHECKED_CONDITION_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * Validate all condition expressions in a skill definition.
  *
  * For each step's `condition` field, extracts root variables and checks that
@@ -221,7 +233,8 @@ const IMPLICIT_PARAMS = new Set([
  *   - A context dependency (skill.context[])
  *   - A prior step ID (context.results[stepId])
  *   - A prior step's save_as variable
- *   - A JS built-in (filtered by extractRootVariables)
+ *   - A language global or local name (not returned by extractRootVariables)
+ *   - An unchecked name (UNCHECKED_CONDITION_NAMES, non-ASCII names)
  *
  * Also validates iterator step `source` references.
  */
@@ -246,6 +259,8 @@ export function validateSkillConditions(skill: SkillDefinition): SkillValidation
       const vars = extractRootVariables(stepAny.condition);
       for (const v of vars) {
         if (
+          !CHECKED_CONDITION_NAME.test(v) ||
+          UNCHECKED_CONDITION_NAMES.has(v) ||
           declaredInputs.has(v) ||
           IMPLICIT_PARAMS.has(v) ||
           contextDeps.has(v) ||

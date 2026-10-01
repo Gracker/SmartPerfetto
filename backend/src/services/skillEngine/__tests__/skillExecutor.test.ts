@@ -3288,6 +3288,81 @@ describe('表达式名字解析顺序', () => {
   });
 });
 
+// An expression reads its root names from the Skill scopes; a name no scope
+// binds is either a standard global (parseFloat keeps its meaning) or undefined.
+describe('表达式作用域绑定', () => {
+  let executor: SkillExecutor;
+  let mockTraceProcessor: any;
+
+  const probe: SkillDefinition = {
+    name: 'binding_probe',
+    type: 'composite',
+    version: '1.0',
+    meta: createMeta('Binding Probe'),
+    inputs: [
+      {name: 'vals', type: 'array', required: false},
+      {name: '$scale', type: 'number', required: false},
+      {name: 'flag', type: 'number', required: false},
+      {name: '阈值', type: 'number', required: false},
+      // Named like a standard global: expressions still read the global.
+      {name: 'Boolean', type: 'boolean', required: false},
+    ],
+    steps: [
+      {id: 'rows', type: 'atomic', sql: 'SELECT /*rows*/ 1', save_as: 'rows'},
+      {id: 'gated', type: 'atomic', sql: 'SELECT /*gated*/ 1',
+        condition: 'parseFloat(rows.data[0].v) > 1 && isFinite(parseInt(rows.data[0].v)) && !isNaN(rows.data[0].v)'},
+      {id: 'diagnose', type: 'diagnostic', inputs: ['rows'], rules: [
+        {condition: 'parseFloat(rows.data[0].v) > 1', confidence: 'high',
+          diagnosis: 'PARSE v=${parseFloat(rows.data[0].v) * 2}'},
+        // A reserved word inside a string literal is not a name to bind.
+        {condition: "rows.data[0].kind === 'enum'", confidence: 'high', diagnosis: 'RESERVED_IN_STRING'},
+        {condition: 'Math.max(...vals) === 3', confidence: 'high', diagnosis: 'SPREAD'},
+        {condition: '$scale > 1', confidence: 'high', diagnosis: 'DOLLAR'},
+        // A host global is not part of the expression language: unbound, it stays undefined.
+        {condition: "typeof process === 'undefined'", confidence: 'high', diagnosis: 'HOST_UNDEFINED'},
+        {condition: 'Boolean(flag)', confidence: 'high', diagnosis: 'GLOBAL_FIRST'},
+        {condition: '阈值 > 1', confidence: 'high', diagnosis: 'UNICODE_NAME'},
+        // An escape inside a literal is not a name, even though the scope scan sees it.
+        {condition: '"\\u0030" === "0" && /\\u002D/.test("-") && "\\u{1F600}".length === 2',
+          confidence: 'high', diagnosis: 'ESCAPE_IN_LITERAL'},
+        {condition: 'true /* \\u{110000} */ && String.raw`\\u{FFFFFFFF}`.length > 0 // \\u{110000}',
+          confidence: 'high', diagnosis: 'OUT_OF_RANGE_ESCAPE'},
+      ]} as any,
+      {id: 'each', type: 'iterator', source: 'rows', item_skill: 'echo_item',
+        // `window` is an item field (click_response_analysis has one): bound like any other field.
+        filter: 'parseFloat(v) > 1 && window === 1'} as any,
+    ],
+  };
+
+  beforeEach(() => {
+    mockTraceProcessor = createMockTraceProcessorService();
+    mockTraceProcessor.query.mockImplementation(async (_trace: string, sql: string) => {
+      if (sql.includes('/*rows*/')) {
+        return {columns: ['name', 'v', 'kind', 'window'], rows: [['a', '2.5', 'enum', 1], ['b', '0.5', 'x', 1]]};
+      }
+      return {columns: ['one'], rows: [[1]]};
+    });
+    executor = createSkillExecutor(mockTraceProcessor);
+    executor.registerSkill({name: 'echo_item', type: 'atomic', version: '1.0',
+      meta: createMeta('Echo Item'), sql: 'SELECT /*echo*/ 1'});
+    executor.registerSkill(probe);
+  });
+
+  it('binds what the Skill scopes resolve and leaves standard globals to the language', async () => {
+    const result = await executor.execute('binding_probe', 'trace-1', {vals: [1, 3], $scale: 2, flag: 1, Boolean: false, 阈值: 2});
+    const sql = mockTraceProcessor.query.mock.calls.map((call: any[]) => String(call[1]));
+    expect({
+      stepCondition: sql.some((text: string) => text.includes('/*gated*/')),
+      diagnoses: result.diagnostics.map(d => d.diagnosis),
+      iterated: result.rawResults?.each?.data?.map((entry: any) => entry.item.name),
+    }).toEqual({
+      stepCondition: true,
+      diagnoses: ['PARSE v=5', 'RESERVED_IN_STRING', 'SPREAD', 'DOLLAR', 'HOST_UNDEFINED', 'GLOBAL_FIRST', 'UNICODE_NAME', 'ESCAPE_IN_LITERAL', 'OUT_OF_RANGE_ESCAPE'],
+      iterated: ['a'],
+    });
+  });
+});
+
 // =============================================================================
 // Test Suite: 表达式评估（通过 SQL 变量替换测试）
 // =============================================================================

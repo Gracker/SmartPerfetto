@@ -383,4 +383,38 @@ describe('custom skill loading', () => {
       packVersion: '1',
     }])).rejects.toThrow('skill_validation_failed:invalid_batch');
   });
+
+  it('loads an external pack whose conditions read only declared or local names', async () => {
+    const atomicDir = path.join(tmpDir, 'atomic');
+    await fs.mkdir(atomicDir, {recursive: true});
+    const write = (name: string, condition: string, inputs: string[] = []) => fs.writeFile(
+      path.join(atomicDir, `${name}.skill.yaml`),
+      [
+        `name: ${name}`,
+        'version: "1"',
+        'type: composite',
+        'meta:',
+        `  display_name: ${name}`,
+        '  description: Condition reference contract',
+        ...(inputs.length ? ['inputs:', ...inputs.flatMap(input => [`  - name: ${input}`, '    type: number'])] : []),
+        'steps:',
+        '  - id: rows',
+        '    type: atomic',
+        `    condition: ${JSON.stringify(condition)}`,
+        '    sql: SELECT 1 AS value',
+        '',
+      ].join('\n'),
+      'utf-8',
+    );
+    const load = () => new SkillRegistry().loadSkillRoots([{
+      rootPath: tmpDir, origin: 'external_pack', packId: 'condition-pack', packVersion: '1',
+    }]);
+
+    await write('local_names', "(window => window > 0)(1) && ({console: 1}).console === 1 && parseFloat('2') > 1 && ${true} && ${Math.PI} > 3");
+    await write('declared_window', 'window > 0', ['window']);
+    await expect(load()).resolves.toBeUndefined();
+
+    await write('free_name', "(() => { if (true) /'/; return undeclared_value > 0; })()");
+    await expect(load()).rejects.toThrow('skill_validation_failed:free_name');
+  });
 });

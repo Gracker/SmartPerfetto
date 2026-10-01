@@ -5,14 +5,435 @@
 /**
  * Expression Utilities
  *
- * Shared helpers for extracting variable references from JS/condition expressions.
- * Used by skillValidator (load-time checks), skillExecutor (runtime evaluation),
- * and CLI validate command.
+ * The vocabulary Skill expressions share between the runtime evaluator
+ * (skillExecutor's ExpressionEvaluator) and load-time validation, the
+ * root-name extraction validation uses, and diagnostic evidence fields.
  */
 
 /**
- * JavaScript built-in identifiers that should be ignored when extracting
- * user-defined variable references from condition expressions.
+ * Standard ECMAScript globals a Skill expression may use. A listed name always
+ * means the language global: the evaluator never binds it to a Skill value
+ * (the Perfetto-Skills runtime likewise reads `Boolean(...)` as the builtin),
+ * and the validator does not ask for it to be declared. Every other name is
+ * read from the Skill scopes, and is `undefined` when none binds it; host
+ * globals (`process`, `console`, `window`) are therefore not reachable by
+ * name. This is the expression language's vocabulary, not a sandbox:
+ * expressions run through `new Function`.
+ */
+export const EXPRESSION_GLOBALS: ReadonlySet<string> = new Set([
+  'Infinity', 'NaN', 'undefined',
+  'isFinite', 'isNaN', 'parseFloat', 'parseInt',
+  'decodeURI', 'decodeURIComponent', 'encodeURI', 'encodeURIComponent',
+  'Array', 'BigInt', 'Boolean', 'Date', 'Error', 'Intl', 'JSON', 'Map', 'Math',
+  'Number', 'Object', 'RegExp', 'Set', 'String', 'Symbol',
+]);
+
+/** Words a sloppy-mode `new Function(name, …)` rejects as a parameter name. */
+const RESERVED_WORDS: ReadonlySet<string> = new Set([
+  'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default',
+  'delete', 'do', 'else', 'enum', 'export', 'extends', 'false', 'finally', 'for',
+  'function', 'if', 'import', 'in', 'instanceof', 'new', 'null', 'return', 'super',
+  'switch', 'this', 'throw', 'true', 'try', 'typeof', 'var', 'void', 'while', 'with',
+]);
+
+/** Reserved words that are values, so what follows them is an operator. */
+const VALUE_WORDS: ReadonlySet<string> = new Set(['false', 'null', 'super', 'this', 'true']);
+
+/** Contextual keywords: legal variable names that also act as keywords (`x of y`, `await p`). */
+export const CONTEXTUAL_KEYWORDS: ReadonlySet<string> = new Set(['async', 'await', 'let', 'of', 'static', 'yield']);
+
+/**
+ * The Skill placeholders ExpressionEvaluator.evaluate substitutes. A text that
+ * is one whole `${…}` (with no `${` inside) holds a single expression;
+ * otherwise each `${…}` runs to its first `}`.
+ */
+export const WHOLE_SKILL_PLACEHOLDER = /^\$\{(.+)\}$/s;
+export const SKILL_PLACEHOLDER = /\$\{([^}]+)\}/g;
+
+const PATH_SOURCE = String.raw`[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*`;
+const SIMPLE_PATH = new RegExp(`^${PATH_SOURCE}$`);
+const PATH_WITH_DEFAULT = new RegExp(String.raw`^(${PATH_SOURCE})\|([^|].*)$`);
+
+/** A placeholder path read through scopes (`step.data[0].field`), not a JS expression. */
+export function isSimplePath(path: string): boolean {
+  return SIMPLE_PATH.test(path.trim());
+}
+
+/** The `path|default` form of a placeholder, or null when it is not one. */
+export function parsePathWithDefault(raw: string): {actualPath: string; defaultValue: string} | null {
+  const match = raw.trim().match(PATH_WITH_DEFAULT);
+  return match ? {actualPath: match[1].trim(), defaultValue: match[2].trim()} : null;
+}
+
+const ID_ESCAPE = String.raw`\\u(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]+\})`;
+const ID_PART = String.raw`[\p{ID_Continue}$\u200C\u200D]`;
+/** A JS IdentifierName, Unicode letters and `\u` escapes included; use with the `u` flag. */
+const IDENTIFIER_SOURCE = String.raw`(?:[\p{ID_Start}$_]|${ID_ESCAPE})(?:${ID_PART}|${ID_ESCAPE})*`;
+const IDENTIFIER_AT = new RegExp(IDENTIFIER_SOURCE, 'uy');
+// Not inside a longer identifier, nor right after an escape's backslash.
+const IDENTIFIER_SCAN = new RegExp(String.raw`(?<![\p{ID_Continue}$\u200C\u200D\\])${IDENTIFIER_SOURCE}`, 'gu');
+const DECODED_IDENTIFIER = new RegExp(String.raw`^[\p{ID_Start}$_]${ID_PART}*$`, 'u');
+
+/** Every identifier written in `text`, property names and words inside literals included. */
+export function identifierMatches(text: string): RegExpExecArray[] {
+  const matches: RegExpExecArray[] = [];
+  IDENTIFIER_SCAN.lastIndex = 0;
+  for (let match; (match = IDENTIFIER_SCAN.exec(text)) !== null;) matches.push(match);
+  return matches;
+}
+
+/**
+ * The name an identifier spells, with its `\u` escapes decoded. An escape
+ * beyond U+10FFFF (legal in a comment or `String.raw`) stays as written, which
+ * no binding can name.
+ */
+export function decodeIdentifier(raw: string): string {
+  if (!raw.includes('\\')) return raw;
+  return raw.replace(/\\u(?:\{([0-9a-fA-F]+)\}|([0-9a-fA-F]{4}))/g,
+    (escape, braced: string | undefined, fixed: string | undefined) => {
+      const codePoint = parseInt(braced ?? fixed!, 16);
+      return codePoint <= 0x10FFFF ? String.fromCodePoint(codePoint) : escape;
+    });
+}
+
+/**
+ * Whether an expression can read `name` as a variable, and so whether it can be
+ * bound as a `new Function` parameter: a decoded identifier that is not a
+ * reserved word. An escape in a literal (`"0"`) decodes to no such name.
+ */
+export function isBindableName(name: string): boolean {
+  return DECODED_IDENTIFIER.test(name) && !RESERVED_WORDS.has(name);
+}
+
+/**
+ * `start` is a word's source offset and `property` marks a word written after
+ * `.`/`?.`; `flags` is a regex literal's flags span, which an identifier scan
+ * sees as a name. A literal's `text` is only its kind's first character.
+ */
+type Token = {kind: 'word' | 'literal' | 'punct'; text: string; start?: number; property?: boolean; flags?: [number, number]};
+
+const REGEX_FLAG = /[\w$]/;
+const DIGIT = /[0-9]/;
+// Every character that ends a line, and so a `//` comment or a regex literal.
+const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
+// Longest first; `?.` before a digit is a conditional followed by a number.
+const MULTI_PUNCT = ['...', '=>', '?.', '++', '--'];
+/** Words whose parenthesized head is a statement head, so `if (x) /re/` starts a regex. */
+const CONTROL_WORDS: ReadonlySet<string> = new Set(['catch', 'for', 'if', 'switch', 'while', 'with']);
+
+function skipQuoted(src: string, start: number): number {
+  const quote = src[start];
+  for (let i = start + 1; i < src.length; i++) {
+    if (src[i] === '\\') i++;
+    else if (src[i] === quote) return i + 1;
+  }
+  return src.length;
+}
+
+/** The end of the regex literal at `start`, and where its flags begin. */
+function skipRegex(src: string, start: number): {end: number; flagsStart: number} {
+  let inClass = false;
+  for (let i = start + 1; i < src.length; i++) {
+    const c = src[i];
+    if (c === '\\') i++;
+    else if (c === '[') inClass = true;
+    else if (c === ']') inClass = false;
+    else if (c === '/' && !inClass) {
+      const flagsStart = ++i;
+      while (i < src.length && REGEX_FLAG.test(src[i])) i++;
+      return {end: i, flagsStart};
+    } else if (LINE_TERMINATOR.test(c)) return {end: i, flagsStart: i};
+  }
+  return {end: src.length, flagsStart: src.length};
+}
+
+/**
+ * Whether the last token ends an operand, so that `/` divides rather than
+ * starting a regex. Without parsing, a `}` (object literal or block) and a
+ * contextual keyword (`of`, `yield`, `await`, … or a variable of that name)
+ * leave it undecided: `maybe`.
+ */
+type OperandEnd = 'yes' | 'no' | 'maybe';
+
+interface LexState {
+  i: number;
+  tokens: Token[];
+  /** For each open bracket, what its closer ends: a call/group or index an operand, a control head none. */
+  closers: OperandEnd[];
+  endsOperand: OperandEnd;
+}
+
+/**
+ * Lex from `state` until the end, returning false, or until a `/` that could
+ * be either a regex or a division, returning true with `state.i` on it.
+ * Template literals hold no `${…}` code here: extraction substitutes every
+ * `${…}` first, as evaluateCondition does.
+ */
+function lexUntilAmbiguous(src: string, state: LexState): boolean {
+  const {tokens, closers} = state;
+  const push = (token: Token, ends: OperandEnd) => { tokens.push(token); state.endsOperand = ends; };
+
+  while (state.i < src.length) {
+    const i = state.i;
+    const c = src[i];
+    if (/\s/.test(c)) { state.i++; continue; }
+    if (src.startsWith('//', i)) {
+      const end = src.slice(i).search(LINE_TERMINATOR);
+      state.i = end < 0 ? src.length : i + end;
+      continue;
+    }
+    if (src.startsWith('/*', i)) {
+      const end = src.indexOf('*/', i + 2);
+      state.i = end < 0 ? src.length : end + 2;
+      continue;
+    }
+    if (c === '/') {
+      if (state.endsOperand === 'maybe') return true;
+      if (state.endsOperand === 'no') {
+        const {end, flagsStart} = skipRegex(src, i);
+        state.i = end;
+        push({kind: 'literal', text: '/', flags: [flagsStart, end]}, 'yes');
+        continue;
+      }
+    }
+    if (c === '\'' || c === '"' || c === '`') { state.i = skipQuoted(src, i); push({kind: 'literal', text: c}, 'yes'); continue; }
+    IDENTIFIER_AT.lastIndex = i;
+    const identifier = IDENTIFIER_AT.exec(src)?.[0];
+    if (identifier) {
+      const word = decodeIdentifier(identifier);
+      const prev = tokens[tokens.length - 1]?.text;
+      state.i += identifier.length;
+      // A property name (`obj.return`) is an operand whatever the word.
+      if (prev === '.' || prev === '?.') push({kind: 'word', text: word, start: i, property: true}, 'yes');
+      else if (CONTEXTUAL_KEYWORDS.has(word)) push({kind: 'word', text: word, start: i}, 'maybe');
+      else push({kind: 'word', text: word, start: i}, RESERVED_WORDS.has(word) && !VALUE_WORDS.has(word) ? 'no' : 'yes');
+      continue;
+    }
+    if (DIGIT.test(c) || (c === '.' && DIGIT.test(src[i + 1] ?? ''))) {
+      let j = i + 1;
+      while (j < src.length && /[\w.]/.test(src[j])) j++;
+      state.i = j;
+      push({kind: 'literal', text: '0'}, 'yes');
+      continue;
+    }
+    const multi = MULTI_PUNCT.find(p => src.startsWith(p, i) && !(p === '?.' && DIGIT.test(src[i + 2] ?? '')));
+    if (multi) {
+      state.i += multi.length;
+      // Postfix `x++ / y` still ends an operand; prefix `++x` leaves the state as it was.
+      push({kind: 'punct', text: multi}, multi === '++' || multi === '--' ? state.endsOperand : 'no');
+      continue;
+    }
+    state.i++;
+    const prev = tokens[tokens.length - 1];
+    if (c === '(') closers.push(prev?.kind === 'word' && !prev.property && CONTROL_WORDS.has(prev.text) ? 'no' : 'yes');
+    else if (c === '[') closers.push('yes');
+    else if (c === '{') closers.push('maybe');
+    const closed = c === ')' || c === ']' || c === '}' ? closers.pop() : undefined;
+    push({kind: 'punct', text: c}, closed ?? 'no');
+  }
+  return false;
+}
+
+/** At most this many lexings per condition; beyond it extraction falls back to the coarse scan. */
+const MAX_LEXINGS = 64;
+
+/**
+ * Every token list `src` lexes to when each undecided `/` is read both as a
+ * regex and as a division, or undefined beyond {@link MAX_LEXINGS}.
+ */
+function lexings(src: string): Token[][] | undefined {
+  const done: Token[][] = [];
+  const pending: LexState[] = [{i: 0, tokens: [], closers: [], endsOperand: 'no'}];
+  while (pending.length > 0) {
+    const state = pending.pop()!;
+    if (!lexUntilAmbiguous(src, state)) { done.push(state.tokens); continue; }
+    if (done.length + pending.length + 2 > MAX_LEXINGS) return undefined;
+    for (const endsOperand of ['yes', 'no'] as const) {
+      pending.push({...state, tokens: [...state.tokens], closers: [...state.closers], endsOperand});
+    }
+  }
+  return done;
+}
+
+/** Index of the opener matching the closer at `close`, scanning backward. */
+function matchingOpener(tokens: Token[], close: number): number {
+  const pairs: Record<string, string> = {')': '(', ']': '[', '}': '{'};
+  const stack: string[] = [];
+  for (let i = close; i >= 0; i--) {
+    const text = tokens[i].text;
+    if (tokens[i].kind !== 'punct') continue;
+    if (pairs[text]) stack.push(pairs[text]);
+    else if (text === '(' || text === '[' || text === '{') {
+      if (stack.pop() !== text) return -1;
+      if (stack.length === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/** The innermost bracket open at `index`, or undefined at top level. */
+function enclosingOpener(tokens: Token[], index: number): string | undefined {
+  let closed = 0;
+  for (let i = index - 1; i >= 0; i--) {
+    const {kind, text} = tokens[i];
+    if (kind !== 'punct') continue;
+    if (text === ')' || text === ']' || text === '}') closed++;
+    else if (text === '(' || text === '[' || text === '{') {
+      if (closed === 0) return text;
+      closed--;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Names an arrow function in `tokens` declares as parameters: the binding
+ * positions of its parameter list, including destructuring targets, but not
+ * destructuring keys (`{key: name}`), nor what a default (`= value`) or a
+ * computed key (`{[key]: name}`) reads.
+ */
+function arrowParameterNames(tokens: Token[]): Set<string> {
+  const params = new Set<string>();
+  tokens.forEach((token, i) => {
+    if (token.text !== '=>') return;
+    const head = tokens[i - 1];
+    if (head?.kind === 'word') { params.add(head.text); return; }
+    const open = head?.text === ')' ? matchingOpener(tokens, i - 1) : -1;
+    if (open < 0) return;
+    const openers: string[] = [];
+    // While set, words are reads: a default until its `,` or the bracket around it
+    // closes, a computed key until its own `]` closes.
+    let read: {depth: number; computedKey: boolean} | undefined;
+    for (let j = open + 1; j < i - 1; j++) {
+      const {kind, text} = tokens[j];
+      const prev = tokens[j - 1].text;
+      if (kind === 'punct' && (text === '(' || text === '[' || text === '{')) {
+        if (!read && text === '[' && openers[openers.length - 1] === '{' && (prev === '{' || prev === ',')) {
+          read = {depth: openers.length, computedKey: true};
+        }
+        openers.push(text);
+      } else if (kind === 'punct' && (text === ')' || text === ']' || text === '}')) {
+        openers.pop();
+        if (read && (read.computedKey ? openers.length === read.depth : openers.length < read.depth)) read = undefined;
+      } else if (text === '=' && !read) read = {depth: openers.length, computedKey: false};
+      else if (text === ',' && read && !read.computedKey && openers.length === read.depth) read = undefined;
+      else if (kind === 'word' && !read && tokens[j + 1]?.text !== ':') params.add(text);
+    }
+  });
+  return params;
+}
+
+/** A name a scope could bind: not a reserved word, not a language global. */
+const isScopeName = (name: string) => isBindableName(name) && !EXPRESSION_GLOBALS.has(name);
+
+/** Root names one lexing of a condition reads: no property, static key or arrow parameter. */
+function rootsOfLexing(tokens: Token[]): string[] {
+  const params = arrowParameterNames(tokens);
+  return tokens.filter((token, i) => {
+    if (token.kind !== 'word' || token.property || params.has(token.text) || !isScopeName(token.text)) return false;
+    const prev = tokens[i - 1]?.text;
+    return !(tokens[i + 1]?.text === ':' && (prev === '{' || prev === ',') && enclosingOpener(tokens, i) === '{');
+  }).map(token => token.text);
+}
+
+/** The engine compiles once per identifier; a longer condition gets the coarse scan. */
+const MAX_PROBED_IDENTIFIERS = 1000;
+
+/** Whether the engine compiles `body` as a function body, without running it. */
+function compiles(body: string): boolean {
+  try {
+    new Function(body);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Offsets of the identifiers the engine reads as code in `code`, or undefined
+ * when the condition does not compile or is too long to probe. Each identifier
+ * is probed by appending `#`: a string, template text, regex or comment stays
+ * valid with it, while in code an identifier followed by `#` is always a
+ * syntax error.
+ */
+function engineCodeIdentifiers(code: string, identifiers: RegExpExecArray[]): Set<number> | undefined {
+  if (identifiers.length > MAX_PROBED_IDENTIFIERS || !compiles(`return ${code}`)) return undefined;
+  const inCode = new Set<number>();
+  for (const {index, 0: text} of identifiers) {
+    const end = index + text.length;
+    if (!compiles(`return ${code.slice(0, end)}#${code.slice(end)}`)) inCode.add(index);
+  }
+  return inCode;
+}
+
+/**
+ * Whether a lexing reads as code exactly the identifiers the engine does: a
+ * misread regex, string or comment boundary always moves some identifier
+ * across it. Regex flags are the one code-side identifier a lexing does not
+ * hold as a word.
+ */
+function agreesWithEngine(tokens: Token[], identifiers: RegExpExecArray[], inCode: Set<number>): boolean {
+  const words = new Set(tokens.filter(token => token.kind === 'word').map(token => token.start));
+  const flags = tokens.flatMap(token => token.flags ? [token.flags] : []);
+  return identifiers.every(({index}) => words.has(index)
+    ? inCode.has(index)
+    : !inCode.has(index) || flags.some(([from, to]) => index >= from && index < to));
+}
+
+/**
+ * The conservative reading when the engine cannot confirm a lexing: ASCII
+ * identifiers outside naively paired quotes, not written after `.`. Words in
+ * regexes, templates and comments read as roots, and a misread quote pair can
+ * hide the names between its quotes.
+ */
+function coarseRootScan(code: string): string[] {
+  const stripped = code.replace(/'[^']*'|"[^"]*"/g, '""');
+  return [...stripped.matchAll(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g)]
+    .filter(match => !stripped.slice(0, match.index).trim().endsWith('.'))
+    .map(match => match[0])
+    .filter(isScopeName);
+}
+
+/** The roots a Skill placeholder's inner text reads: a `path|default` its path's root, anything else as JS. */
+function placeholderRoots(inner: string): string[] {
+  const path = parsePathWithDefault(inner)?.actualPath;
+  return path ? [path.split(/[.[]/)[0]] : extractRootVariables(inner);
+}
+
+/**
+ * Root names a Skill condition reads from its scope, for load-time validation.
+ * Skill placeholders are read and substituted first, as
+ * ExpressionEvaluator.evaluate does (also inside quotes). In the JS, literals,
+ * comments, property names, static object keys (`{k: v}`), arrow parameters,
+ * reserved words and {@link EXPRESSION_GLOBALS} are not roots; a parameter
+ * name is excluded across the whole expression, so a free use of it elsewhere
+ * goes unreported. Contextual keywords are reported, since they may be names.
+ *
+ * Where only parsing could tell a regex from a division, every reading is
+ * lexed, and only readings the engine confirms identifier by identifier count;
+ * their roots are combined. When the condition does not compile, or no
+ * reading is confirmed, {@link coarseRootScan} answers instead.
+ *
+ * The evaluator does not use this: its scope must bind a superset of the
+ * names an expression may read, so it scans candidates without lexing.
+ */
+export function extractRootVariables(expr: string): string[] {
+  const roots = new Set<string>();
+  const readPlaceholder = (inner: string) => placeholderRoots(inner).forEach(root => roots.add(root));
+  const whole = expr.match(WHOLE_SKILL_PLACEHOLDER);
+  let code = '0';
+  if (whole && !whole[1].includes('${')) readPlaceholder(whole[1]);
+  else code = expr.replace(SKILL_PLACEHOLDER, (_match, inner: string) => { readPlaceholder(inner); return ' 0 '; });
+  const identifiers = identifierMatches(code);
+  const inCode = engineCodeIdentifiers(code, identifiers);
+  const confirmed = inCode && lexings(code)?.filter(tokens => agreesWithEngine(tokens, identifiers, inCode));
+  for (const name of confirmed?.length ? confirmed.flatMap(rootsOfLexing) : coarseRootScan(code)) roots.add(name);
+  return Array.from(roots);
+}
+
+/**
+ * Names {@link rootIdentifierOccurrences} skips: keywords and the built-in
+ * globals it treats as never declared.
  */
 export const JS_BUILTINS = new Set([
   // Literals & keywords
@@ -31,20 +452,6 @@ export const JS_BUILTINS = new Set([
   'console', 'window', 'globalThis',
 ]);
 
-/**
- * Extract root variable names from a JS-like expression string.
- *
- * Examples:
- *   "performance_summary.data[0]?.app_jank_rate > 10" => ["performance_summary"]
- *   "jank_stats.data.find(j => j.jank_type)"          => ["jank_stats", "j"]
- *   "typeof foo !== 'undefined' && bar > 0"            => ["foo", "bar"]
- *
- * Variables that appear after a `.` (property access) are filtered out.
- * JS keywords and built-in globals are excluded via {@link JS_BUILTINS}.
- */
-export function extractRootVariables(expr: string): string[] {
-  return Array.from(new Set(rootIdentifierOccurrences(expr).map(occurrence => occurrence.name)));
-}
 
 export interface RootIdentifierOccurrence {
   name: string;

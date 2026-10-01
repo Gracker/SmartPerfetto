@@ -35,7 +35,10 @@ import {
   SynthesizeConfig,
 } from './types';
 import { validateSkillInputs } from './skillValidator';
-import { ownDataValue, parseEvidenceField, readEvidenceField } from './expressionUtils';
+import {
+  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, WHOLE_SKILL_PLACEHOLDER, decodeIdentifier, identifierMatches, isBindableName,
+  isSimplePath, ownDataValue, parseEvidenceField, parsePathWithDefault, readEvidenceField,
+} from './expressionUtils';
 import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments';
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
@@ -261,16 +264,8 @@ class ExpressionEvaluator {
    * 支持：${variable}、${step.field}、比较运算符等
    */
   static evaluate(expression: string, context: SkillExecutionContext): any {
-    const parsePathWithDefault = (raw: string): { actualPath: string; defaultValue: string } | null => {
-      const m = raw.trim().match(
-        /^([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*)\|([^|].*)$/
-      );
-      if (!m) return null;
-      return { actualPath: m[1].trim(), defaultValue: m[2].trim() };
-    };
-
     // 检查是否是完整的 ${...} 表达式（整个字符串被包裹）
-    const fullExprMatch = expression.match(/^\$\{(.+)\}$/s);
+    const fullExprMatch = expression.match(WHOLE_SKILL_PLACEHOLDER);
     // 如果内部还包含 ${...}，说明这是一个模板串（如 "${a} + ${b}"），不要当成单个 JS 表达式执行
     if (fullExprMatch && !fullExprMatch[1].includes('${')) {
       const innerExpr = fullExprMatch[1].trim();
@@ -295,13 +290,7 @@ class ExpressionEvaluator {
 
     // 替换 ${xxx} 格式的变量
     // 简单路径走 resolvePath；复杂表达式走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
-    const isSimplePath = (path: string): boolean => {
-      const p = path.trim();
-      // 仅允许：标识符 + ".prop" + "[0]" 组合（不支持 ?. / 函数调用 / 算术运算等）
-      return /^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$/.test(p);
-    };
-
-    result = result.replace(/\$\{([^}]+)\}/g, (_match, path) => {
+    result = result.replace(SKILL_PLACEHOLDER, (_match, path) => {
       const rawPath = String(path ?? '').trim();
 
       // Support ${varName|defaultValue} syntax
@@ -356,13 +345,12 @@ class ExpressionEvaluator {
     options?: { suppressErrorLog?: boolean }
   ): any {
     try {
-      // 从表达式中提取根变量名
-      const rootVarNames = this.extractRootVariables(expr);
-
-      // 构建作用域对象。未找到的名字也显式注入 undefined，避免 ReferenceError（例如 expr: "package"）
+      // 构建作用域对象。标准全局（parseFloat、Math…）和保留字不绑定；其余名字按 Skill 作用域解析，
+      // 未找到的也显式注入 undefined，避免 ReferenceError（例如 expr: "package"）
       const scope: Record<string, any> = {};
 
-      for (const varName of rootVarNames) {
+      for (const varName of this.scopeCandidates(expr)) {
+        if (!isBindableName(varName) || EXPRESSION_GLOBALS.has(varName)) continue;
         const binding = this.resolveRootBinding(varName, context);
         scope[varName] = binding?.source === 'result' || binding?.source === 'variable'
           ? this.wrapAsDataScope(binding.value)
@@ -393,38 +381,20 @@ class ExpressionEvaluator {
   }
 
   /**
-   * 从表达式中提取根变量名
+   * 从表达式中提取根变量名，用于绑定求值作用域
    * "performance_summary.data[0]?.app_jank_rate > 10" => ["performance_summary"]
-   * "jank_stats.data.find(j => j.jank_type)" => ["jank_stats"]
+   * "jank_stats.data.find(j => j.jank_type)" => ["jank_stats", "j"]
+   *
+   * 结果必须是表达式可能读到的根名的超集：漏掉一个就是 ReferenceError，规则静默不触发；
+   * 多出来的名字（字面量里的词、对象键、关键字）只会被跳过或绑定为 undefined。所以这里
+   * 不剥离字面量，只排除属性名（`.x`、`?.x`，但 `...x` 是展开的根名）；哪些名字不绑定
+   * 由求值时决定。校验用的 extractRootVariables 求精确，不能用来绑定作用域。
    */
-  private static extractRootVariables(expr: string): string[] {
+  private static scopeCandidates(expr: string): string[] {
     const varNames = new Set<string>();
-
-    // 匹配标识符开头的词（不是关键字）
-    const identifierRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
-    const jsKeywords = new Set([
-      'true', 'false', 'null', 'undefined', 'if', 'else', 'return',
-      'function', 'var', 'let', 'const', 'new', 'this', 'typeof',
-      'instanceof', 'in', 'of', 'for', 'while', 'do', 'break', 'continue',
-      'switch', 'case', 'default', 'try', 'catch', 'finally', 'throw',
-      'async', 'await', 'class', 'extends', 'super', 'import', 'export',
-      'NaN', 'Infinity', 'Math', 'JSON', 'Array', 'Object', 'String',
-      'Number', 'Boolean', 'Date', 'RegExp', 'Error', 'Map', 'Set',
-    ]);
-
-    let match;
-    while ((match = identifierRegex.exec(expr)) !== null) {
-      const name = match[1];
-      // 跳过 JavaScript 关键字和内置对象
-      if (!jsKeywords.has(name)) {
-        // 检查是否是表达式开头或者在运算符后面（说明是根变量）
-        const beforeMatch = expr.substring(0, match.index);
-        const lastChar = beforeMatch.trim().slice(-1);
-        // 如果之前没有 . 则是根变量
-        if (lastChar !== '.') {
-          varNames.add(name);
-        }
-      }
+    for (const match of identifierMatches(expr)) {
+      const before = expr.substring(0, match.index).trimEnd();
+      if (!before.endsWith('.') || before.endsWith('...')) varNames.add(decodeIdentifier(match[0]));
     }
 
     return Array.from(varNames);

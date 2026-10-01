@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { validateSkillInputs, validateSkillConditions, validateFragmentReferences, validateNormalizedStdlibReads, validateProcessScopeDeclarations } from '../skillValidator';
-import { extractRootVariables, JS_BUILTINS, parseEvidenceField, readEvidenceField } from '../expressionUtils';
+import { extractRootVariables, EXPRESSION_GLOBALS, isBindableName, parseEvidenceField, readEvidenceField } from '../expressionUtils';
 import type { SkillDefinition, SkillInput } from '../types';
 
 // =============================================================================
@@ -30,10 +30,109 @@ describe('extractRootVariables', () => {
     expect(result).toEqual(['foo']);
   });
 
-  it('handles complex chained expressions', () => {
-    const result = extractRootVariables('jank_stats.data.find(j => j.jank_type)');
-    expect(result).toContain('jank_stats');
-    expect(result).toContain('j');
+  it('does not report arrow parameters', () => {
+    expect(extractRootVariables('jank_stats.data.find(j => j.jank_type)')).toEqual(['jank_stats']);
+    expect(extractRootVariables('rows.some((r, i) => r.v > limit + i)')).toEqual(['rows', 'limit']);
+    expect(extractRootVariables('(window => window > 0)(1)')).toEqual([]);
+  });
+
+  // A quote, backtick or slash inside a literal or comment must not hide the code after it.
+  it.each<[string, string[]]>([
+    ["'it\\'s' === label && status === 'ok'", ['label', 'status']],
+    ["`'` + x + `'`", ['x']],
+    ["/'/.test(label) && status === 'ok'", ['label', 'status']],
+    ["x /* ' */ + y", ['x', 'y']],
+    ['x // trailing comment names q', ['x']],
+    // A `//` comment ends at every line terminator, not only LF.
+    ...['\n', '\r', '\u2028', '\u2029'].map((eol): [string, string[]] => [`(true // comment${eol} && undeclared > 0)`, ['undeclared']]),
+    ['`total of ${obj.p} items` + tail', ['obj', 'tail']],
+    ['true /* \\u{110000} */ && x // \\u{FFFFFFFF}', ['x']],
+  ])('reads the code around literals and comments: %s', (expr, roots) => {
+    expect(extractRootVariables(expr).sort()).toEqual([...roots].sort());
+  });
+
+  it.each([
+    ['a / b / c', ['a', 'b', 'c']],
+    ['(a) / b /g', ['a', 'b', 'g']],
+    ['x in /re/.source', ['x']],
+    // After a statement head or a block, `/` starts a regex; after a call or object literal it divides.
+    ["(() => { if (true) /'/; return undeclared > 0; })()", ['undeclared']],
+    ["(() => { {} /'/; while (x) /\"/; return undeclared > 0; })()", ['x', 'undeclared']],
+    ["(() => { try {} finally {} /`/; return f(a) / b / c; })()", ['f', 'a', 'b', 'c']],
+    ['({k: 1}) / a / b + {k: 2}.k / c / d', ['a', 'b', 'c', 'd']],
+    // A Unicode or escaped identifier is a name, so the `/` after it divides.
+    ['settings.数值 / divisor && undeclared > 0', ['settings', 'divisor', 'undeclared']],
+    ['settings.é / divisor && 速度 > \\u0061bc', ['settings', 'divisor', '速度', 'abc']],
+  ])('tells division from a regex literal: %s', (expr, roots) => {
+    expect(extractRootVariables(expr)).toEqual(roots);
+  });
+
+  it('reads optional chains, spread and object values but not property names or static keys', () => {
+    expect(extractRootVariables('x?.y ?? z?.[w]')).toEqual(['x', 'z', 'w']);
+    expect(extractRootVariables('Math.max(...vals)')).toEqual(['vals']);
+    expect(extractRootVariables('({window: 1, k: a ? b : c}).window')).toEqual(['a', 'b', 'c']);
+    expect(extractRootVariables('({total})[key]')).toEqual(['total', 'key']);
+    expect(extractRootVariables('({[slot]: 1})')).toEqual(['slot']);
+  });
+
+  // A contextual keyword may be a name, so it is reported; it never hides a later root.
+  it('reports contextual keywords as names, and never lets them hide a later root', () => {
+    expect(extractRootVariables('async > 0 && of > 0 && let > 0')).toEqual(['async', 'of', 'let']);
+    expect(extractRootVariables('rows.map(async r => r)')).toEqual(['rows', 'async']);
+    expect(extractRootVariables('settings.async && ({async: 1}) && (await / divisor) && undeclared > 0').sort())
+      .toEqual(['await', 'divisor', 'settings', 'undeclared']);
+  });
+
+  // Without parsing, `/` after `}` or a contextual keyword may be a regex or a division:
+  // both readings are lexed, so neither can swallow the code after it.
+  it.each([
+    "(() => { try { throw 1; } catch {} /'/; return undeclared > 0; })()",
+    "(() => { label: {} /'/; return undeclared > 0; })()",
+    "(() => { switch (1) { case 1: {} /\"/; } return undeclared > 0; })()",
+    "(() => { class C {} /`/; return undeclared > 0; })()",
+    "(() => { 1\n{} /'/; return undeclared > 0; })()",
+    '(() => { return\n{} /\'/; })() || undeclared > 0',
+    'function(){} / divisor || undeclared > 0',
+    '(() => { for (; {} / divisor || undeclared > 0;) return true; return false; })()',
+    "(() => { for (item of /'/.source) return undeclared > 0; return false; })()",
+    "(g => g.next().value)((function*() { yield /'/; return undeclared > 0; })())",
+    "(async () => await /'/.test(x)) && undeclared > 0",
+    // Lexed wrong, then caught by the engine check and answered by the coarse scan.
+    ...["'", '"', '`'].flatMap(q => [
+      `(() => { outer: while (true) { break outer\n/${q}/; } return undeclared > 0; })()`,
+      `(() => { outer: while (true) { continue outer\n/${q}/; } return undeclared > 0; })()`,
+      `(() => {\n<!-- ${q} comment\nreturn undeclared > 0;\n})()`,
+      `(() => {\n--> ${q} comment\nreturn undeclared > 0;\n})()`,
+    ]),
+  ])('keeps the roots after an undecided slash: %s', expr => {
+    expect(extractRootVariables(expr)).toContain('undeclared');
+  });
+
+  // The coarse scan pairs the quotes in `'it\'s' … 'z'` and loses `u`, so each case
+  // shows that the lexer itself, not the fallback, read the slash, regex or flags right.
+  it.each([
+    ['(() => { if (x) /\'/.test(a); return true; })()', ['a', 'x']],
+    ["(() => { label: {} /'/.test(a); return true; })()", ['a']],
+    ['function(){} / n', ['n']],
+    ['(counter++ / divisor / limit) > 0', ['counter', 'divisor', 'limit']],
+    ['obj.return / divisor / limit > 0', ['divisor', 'limit', 'obj']],
+    ['/x/gi.test(t)', ['t']],
+  ])('reads %s precisely', (expr, roots) => {
+    const tail = " && s === 'it\\'s' || u === 'z'";
+    expect(extractRootVariables(expr + tail).sort()).toEqual([...roots, 's', 'u'].sort());
+  });
+
+  it('falls back to the coarse scan when the condition does not compile', () => {
+    expect(extractRootVariables("status === 'ok' OR missing").sort()).toEqual(['OR', 'missing', 'status']);
+  });
+
+  it('reads what an arrow parameter default or computed key reads, not the parameters or destructuring keys', () => {
+    expect(extractRootVariables('rows.some((row = threshold) => row > 0)')).toEqual(['rows', 'threshold']);
+    expect(extractRootVariables('rows.some(({v: value = floor, w}, [a, b] = pair) => value > w + a + b)'))
+      .toEqual(['rows', 'floor', 'pair']);
+    expect(extractRootVariables('(({[key]: value}) => value > 0)(obj)')).toEqual(['key', 'obj']);
+    expect(extractRootVariables('(({[settings.key]: value, [pick()]: other}) => value > other)(obj) && settings.enabled'))
+      .toEqual(['settings', 'pick', 'obj']);
   });
 
   it('returns empty for pure builtins', () => {
@@ -241,6 +340,38 @@ describe('validateSkillConditions', () => {
     });
     const warnings = validateSkillConditions(skill);
     expect(warnings).toHaveLength(0);
+  });
+
+  it('checks ASCII roots that are not declared, global or exempt', () => {
+    const conditionWarnings = (condition: string, inputs: SkillDefinition['inputs'] = []) =>
+      validateSkillConditions(makeSkill({inputs, steps: [{id: 's', type: 'atomic', sql: 'SELECT 1', condition} as any]}))
+        .map(w => w.message);
+    expect(conditionWarnings('parseFloat(String(1.5)) > 1 && !isNaN(1)')).toEqual([]);
+    expect(conditionWarnings('limit > 0', [{name: 'limit', type: 'number', required: false}])).toEqual([]);
+    // Host names and contextual keywords are exempt; non-ASCII names, which may be locals, are not checked.
+    expect(conditionWarnings('window > 0 && console && globalThis && async && of')).toEqual([]);
+    for (const local of ['(function(阈值) { return 阈值 > 0; })(1)', '(function($window) { return $window > 0; })(1)']) {
+      expect([local, conditionWarnings(local)]).toEqual([local, []]);
+    }
+    expect(conditionWarnings("'it\\'s' === label")).toEqual([
+      "Condition references unknown variable 'label' in expression: 'it\\'s' === label",
+    ]);
+  });
+
+  // evaluateCondition substitutes every `${…}` placeholder, inside quotes too, before the JS runs.
+  it('reads the root of each Skill placeholder in a condition', () => {
+    const roots = (condition: string) => extractRootVariables(condition).sort();
+    expect(roots("'${mode|full}' !== 'overview' && ${enabled|true} == true")).toEqual(['enabled', 'mode']);
+    expect(roots('${rows.data[0].v|0} > ${limit}')).toEqual(['limit', 'rows']);
+    expect(roots('${a.data?.[0]?.v ?? b} > 0')).toEqual(['a', 'b']);
+    // A whole-text placeholder is one expression, `}` included; a default never spans lines.
+    expect(roots('${rows.some(r => { return r.x > lim })}')).toEqual(['lim', 'rows']);
+    expect(roots('${a|x\ny}')).toEqual(['a', 'x', 'y']);
+    // A placeholder without a default is JS: literals and language globals read no root.
+    for (const constant of ['${true}', '${Infinity}', '${Math.PI} > 3', '${parseFloat}', '${undefined}']) {
+      expect([constant, roots(constant)]).toEqual([constant, []]);
+    }
+    expect(roots('${step.data[0].v} > 1')).toEqual(['step']);
   });
 
   it('warns for unknown variable in condition', () => {
@@ -455,19 +586,24 @@ describe('validateFragmentReferences', () => {
 });
 
 // =============================================================================
-// JS_BUILTINS sanity
+// Expression vocabulary
 // =============================================================================
 
-describe('JS_BUILTINS', () => {
-  it('contains common keywords', () => {
-    expect(JS_BUILTINS.has('true')).toBe(true);
-    expect(JS_BUILTINS.has('false')).toBe(true);
-    expect(JS_BUILTINS.has('typeof')).toBe(true);
-    expect(JS_BUILTINS.has('Math')).toBe(true);
+describe('expression vocabulary', () => {
+  it('lists only globals the language defines', () => {
+    for (const name of EXPRESSION_GLOBALS) expect(name in globalThis).toBe(true);
+    // Host globals and the global object itself are not part of it.
+    for (const name of ['globalThis', 'process', 'console', 'window', 'Function', 'eval', 'Promise']) {
+      expect(EXPRESSION_GLOBALS.has(name)).toBe(false);
+    }
   });
 
-  it('does not contain user variable names', () => {
-    expect(JS_BUILTINS.has('foo')).toBe(false);
-    expect(JS_BUILTINS.has('performance_summary')).toBe(false);
+  it('calls a name bindable exactly when new Function accepts it as a parameter', () => {
+    const accepts = (name: string) => { try { new Function(name, ''); return true; } catch { return false; } };
+    for (const name of ['enum', 'default', 'this', 'typeof', 'null', 'class', 'let', 'yield', 'await',
+      'async', 'static', 'of', 'package', 'implements', 'arguments', 'eval', 'window', 'undefined',
+      '数值', 'é', '$x', '_', '0', '-', '😀', 'a-b']) {
+      expect([name, isBindableName(name)]).toEqual([name, accepts(name)]);
+    }
   });
 });

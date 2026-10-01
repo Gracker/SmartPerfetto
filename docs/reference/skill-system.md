@@ -383,6 +383,8 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 
 所以本 Skill 自己的绑定总会遮住调用方的同名值；`save_as` 先于同名步骤结果，读到的是它声明的绑定（包括 `save_from` 选中的子步骤）。一个步骤的 `save_as` 不能使用另一个步骤的 id（`validate:skills` 报 `save_as_step_id_collision`），以自身 id 命名则是常规写法。根名字一旦在某层找到就不再向更低的层回退（例如 `null` 变量不会让位给同名输入参数）；完整路径最终解析为 `null`/`undefined` 时（未绑定、绑定为 `null`、空数组取 `[0]`、字段不存在），再使用 `|默认值` 和下面的智能默认值。
 
+表达式（`condition`、iterator `filter`、`${...}` 里的 JS 表达式、诊断文案）里有一组名字始终是语言自带的标准全局，不从上面五层解析：`Infinity`、`NaN`、`undefined`、`isFinite`、`isNaN`、`parseFloat`、`parseInt`、`decodeURI`、`decodeURIComponent`、`encodeURI`、`encodeURIComponent`、`Array`、`BigInt`、`Boolean`、`Date`、`Error`、`Intl`、`JSON`、`Map`、`Math`、`Number`、`Object`、`RegExp`、`Set`、`String`、`Symbol`（清单在 `expressionUtils.ts` 的 `EXPRESSION_GLOBALS`）。所以输入、`save_as` 或数据列取了其中某个名字时，表达式读不到它。其余名字（包括 `window`、`process`、`console` 这类宿主全局名）都按五层解析，五层都没有就是 `undefined`；保留字（如 `enum`、`default`）不会被当成名字，写在字符串里也不影响求值。`validate:skills` 对步骤 `condition` 用同一套名字检查未声明的引用：占位符 `${path|默认值}` 读的是 `path` 的根名字（引号里也算），箭头函数参数和对象字面量的静态键不算引用。只检查 ASCII 名字；上下文关键字（`async`、`await`、`let`、`of`、`static`、`yield`）和 `window`、`console`、`globalThis` 不要求声明。字符串、模板、正则和注释的边界以 JS 引擎的编译结果为准；条件编译不过或无法确认时退回粗扫描（成对引号之外、不在 `.` 之后的标识符），正则、模板和注释里的词可能被当成引用。
+
 声明了 `save_as` 的步骤执行后总会绑定这个名字：成功时绑定选中的数据（可选步骤被条件跳过或查询出错时为 `[]`）；步骤没有成功（非可选步骤被条件跳过、exact scope 不可用、任何类型的步骤失败，包括失败的可选 Skill 引用）时绑定 `null`，带上该步骤自身结果的 scope（`save_from` 带上目标子步骤的 scope，目标不存在时不带 scope）。被条件跳过的步骤没有执行，不会覆盖本 Skill 前面步骤已经做出的绑定，所以互斥条件下的多个备选步骤可以声明同一个名字。
 
 ### 智能默认值
