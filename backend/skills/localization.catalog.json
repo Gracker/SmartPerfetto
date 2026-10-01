@@ -10,8 +10,8 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1367,
-    "explicitColumnCount": 5092
+    "stepCount": 1368,
+    "explicitColumnCount": 5100
   },
   "skills": {
     "ams_module": {
@@ -34754,6 +34754,63 @@
             "en": "Frame Timeline Check"
           },
           "columns": {},
+          "synthesizeLabels": {}
+        },
+        "frame_timeline_population": {
+          "title": {
+            "zh-CN": "整个 Trace · 所有进程 · FrameTimeline 原始标签",
+            "en": "Whole trace · all processes · raw FrameTimeline tags (jank tags include Buffer Stuffing)"
+          },
+          "columns": {
+            "total_frames": {
+              "label": {
+                "zh-CN": "FrameTimeline 帧数（全部进程）",
+                "en": "Total Frames"
+              }
+            },
+            "jank_frames": {
+              "label": {
+                "zh-CN": "带 jank 标签的帧（含 Buffer Stuffing，非感知掉帧）",
+                "en": "Jank Frames"
+              }
+            },
+            "process_count": {
+              "label": {
+                "zh-CN": "有帧的进程数",
+                "en": "Process Count"
+              }
+            },
+            "unattributed_frames": {
+              "label": {
+                "zh-CN": "无进程归属的帧",
+                "en": "Unattributed Frames"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "trace_start_ts": {
+              "label": {
+                "zh-CN": "Trace 起点",
+                "en": "Trace Start Ts"
+              }
+            },
+            "trace_end_ts": {
+              "label": {
+                "zh-CN": "Trace 终点",
+                "en": "Trace End Ts"
+              }
+            },
+            "frame_population_evidence": {
+              "label": {
+                "zh-CN": "证据状态",
+                "en": "Frame Population Evidence"
+              }
+            }
+          },
           "synthesizeLabels": {}
         },
         "frame_variance_probe": {

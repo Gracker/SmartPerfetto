@@ -138,16 +138,27 @@ describe('evidenceContractBuilder', () => {
         expect(build('metric', wrong).anchors[0].missing).toBe(true);
       }
     });
+    const otherSide = {...resolution, target: {...resolution.target, traceSide: 'reference' as const}};
+    const ambiguous = {...resolution, status: 'ambiguous' as const};
+    const wrongProcess = {...resolution, processes: [{...resolution.processes[0], upid: 43}]};
     it('cannot transfer target identity from a different row instance or root side', () => {
       expect(build('metric', mixed, 43).anchors[0].identity).toBeUndefined();
-      const otherSide = {...resolution, target: {...resolution.target, traceSide: 'reference' as const}};
       expect(build('metric', mixed, 42, otherSide).anchors[0].identity).toBeUndefined();
-      const ambiguous = {...resolution, status: 'ambiguous' as const};
       expect(build('metric', mixed, 42, ambiguous).anchors[0].identity).toBeUndefined();
       const wrongTarget = {...resolution, target: {...resolution.target, upid: 43}};
       expect(build('metric', mixed, 42, wrongTarget).anchors[0].identity).toBeUndefined();
-      const wrongProcess = {...resolution, processes: [{...resolution.processes[0], upid: 43}]};
       expect(build('metric', mixed, 42, wrongProcess).anchors[0].identity).toBeUndefined();
+    });
+    it('leaves a whole-row citation of mixed scope unbound only when its target part would bind', () => {
+      expect(build().anchors[0]).toMatchObject({missing: true, missingReason: 'cited_scope_identity_unbound'});
+      for (const conflicting of [build(undefined, mixed, 43), build(undefined, mixed, 42, otherSide),
+        build(undefined, mixed, 42, ambiguous), build(undefined, mixed, 42, wrongProcess)]) {
+        expect(conflicting.anchors[0]).toMatchObject({missing: true, missingReason: 'captured_identity_conflict'});
+      }
+      const targetOnly = {version: mixed.version, entries: [mixed.entries[0]]};
+      const bound = build(undefined, targetOnly).anchors[0];
+      expect(bound).toMatchObject({identity: {status: 'verified'}});
+      expect(bound.missing).not.toBe(true);
     });
     it('preserves pure global context without borrowing a verified target', () => {
       const global = {version: mixed.version, entries: [mixed.entries[1]]};

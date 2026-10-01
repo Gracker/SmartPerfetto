@@ -5,9 +5,11 @@
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import type {AnalysisReceipt, DataEnvelope, ExpandableRowData} from '../types/dataContract';
+import {outsideTargetScopeFields} from '../types/identityContract';
 import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
   STANDARD_COMPARISON_METRICS,
+  standardMetricDescribesApp,
   type AnalysisResultSceneType,
   type AnalysisResultSnapshot,
   type EvidenceRef,
@@ -535,11 +537,17 @@ function extractStandardMetrics(traceId: string, envelopes: DataEnvelope[] = [])
   const ownTraceEnvelopes = envelopes.filter(env => measuresTrace(env, traceId));
   const byKey = new Map<string, NormalizedMetricValue>();
   for (const env of ownTraceEnvelopes) {
+    // App metrics never read a field the result declares trace-wide or peer.
+    const outsideTarget = outsideTargetScopeFields(env.meta?.scopeProvenance);
     for (const row of payloadRows(env)) {
-      const byNormalizedName = new Map(Object.entries(row).map(([key, value]) => [normalizeFieldName(key), value]));
+      const entries = Object.entries(row);
+      const byNormalizedName = new Map(entries.map(([key, value]) => [normalizeFieldName(key), value]));
+      const targetByNormalizedName = new Map(entries.filter(([key]) => !outsideTarget(key))
+        .map(([key, value]) => [normalizeFieldName(key), value]));
       for (const definition of STANDARD_COMPARISON_METRICS) {
         if (producerContractFor(definition.key) || byKey.has(definition.key)) continue;
-        const metric = getRowMetric(byNormalizedName, METRIC_FIELD_CANDIDATES[definition.key as UncontractedMetricKey]);
+        const metric = getRowMetric(standardMetricDescribesApp(definition) ? targetByNormalizedName : byNormalizedName,
+          METRIC_FIELD_CANDIDATES[definition.key as UncontractedMetricKey]);
         if (metric === null) continue;
         const {value} = metric;
         const normalizedValue = definition.key === 'scrolling.jank_rate_pct' && value > 0 && value <= 1

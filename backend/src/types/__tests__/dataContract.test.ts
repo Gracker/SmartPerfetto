@@ -23,7 +23,7 @@ import {
   validateDataEnvelope,
   type AnalysisCompletedEvent,
 } from '../dataContract';
-import {copyScopeProvenance, identityForScopeEvidence, mergeScopeProvenance, scopeMetadata,
+import {copyScopeProvenance, identityForScopeEvidence, mergeScopeProvenance, outsideTargetScopeFields, scopeMetadata,
   scopeProvenanceForFields, type EvidenceScopeProvenanceV1, type IdentityResolutionV1} from '../identityContract';
 
 describe('DataEnvelope process scope provenance', () => {
@@ -111,6 +111,18 @@ describe('DataEnvelope process scope provenance', () => {
     expect(scopeMetadata({version: 'process_scope_evidence@1', entries: [{...scopedEntry, fields: []}]}).appliedProcessScope).toBeUndefined();
     expect(copyScopeProvenance({version: 'process_scope_evidence@1', entries: [{...scopedEntry, reason: undefined}]}))
       .toEqual({version: 'process_scope_evidence@1', entries: [scopedEntry]});
+  });
+
+  it('marks a field outside the target only from a positive non-target declaration', () => {
+    const outsideTarget = outsideTargetScopeFields(provenance);
+    expect(outsideTarget('frames')).toBe(false);
+    expect(outsideTarget('refresh_rate')).toBe(true);
+    const peer = {...provenance.entries[1], role: 'peer_context' as const, fields: undefined};
+    expect(outsideTargetScopeFields({version: provenance.version, entries: [peer]})('any_field')).toBe(true);
+    // Legacy and unlisted fields keep their old reading; invalid provenance asserts nothing.
+    expect(outsideTargetScopeFields(undefined)('frames')).toBe(false);
+    expect(outsideTarget('unknown')).toBe(false);
+    expect(outsideTargetScopeFields({version: 'process_scope_evidence@1', entries: 'bad'})('frames')).toBe(false);
   });
 });
 
