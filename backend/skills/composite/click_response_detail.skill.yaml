@@ -458,6 +458,9 @@ steps:
         - name: classify_method
           label: "核判定来源"
           type: string
+        - {name: unknown_core_ns, label: "未知核运行(ns)", type: number, hidden: true}
+        - {name: main_thread_count, label: "主线程数", type: number, hidden: true}
+        - {name: big_core_pct_definition, label: "大核占比口径", type: string, hidden: true}
     sql: |
       WITH system_windows AS (
         SELECT 0 AS window_id, COALESCE(${event_ts}, (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
@@ -478,7 +481,12 @@ steps:
         ROUND(100.0*SUM(CASE WHEN core_type='little' THEN dur_ns ELSE 0 END)/NULLIF(SUM(dur_ns),0),1) AS little_core_pct,
         ROUND(100.0*SUM(dur_ns)/NULLIF(MAX(window_end_ts-window_start_ts),0),1) AS running_pct,
         GROUP_CONCAT(DISTINCT cpu) AS used_cpus,GROUP_CONCAT(DISTINCT ucpu) AS used_ucpus,GROUP_CONCAT(DISTINCT topology_source) AS classify_method,
-        MIN(priority) AS priority_min,MAX(priority) AS priority_max,'not_recorded_in_sched_slice' AS scheduling_policy_evidence
+        MIN(priority) AS priority_min,MAX(priority) AS priority_max,'not_recorded_in_sched_slice' AS scheduling_policy_evidence,
+        -- Comparison producer contract for cpu.big_core_pct (comparisonMetricProducerContract.ts):
+        -- unrounded unknown time, the main threads merged into this row, and the declared definition.
+        SUM(CASE WHEN core_type NOT IN ('prime','big','medium','little') THEN dur_ns ELSE 0 END) AS unknown_core_ns,
+        COUNT(DISTINCT utid) AS main_thread_count,
+        'main_thread_running:core_tier_group:prime+big+medium@3' AS big_core_pct_definition
       FROM scene_sched GROUP BY window_id,upid,utid
     save_as: cpu_core
 
@@ -797,7 +805,7 @@ steps:
           - "将阻塞操作移到后台线程"
 
       # 大核占比偏低 + Runnable 明显（仅在判定来源可信且有调度证据时触发）
-      - condition: "cpu_core.data[0]?.unknown_running_ms === 0 && cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.total_running_ms > 20 && quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0 && !(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
+      - condition: "cpu_core.data[0]?.unknown_core_ns === 0 && cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.total_running_ms > 20 && quadrant.data[0]?.q3_runnable_ms > 20 && (sched_delay.data[0]?.severe_count || 0) > 0 && !(cpu_core.data[0]?.classify_method || '').includes('cpu_id_fallback')"
         severity: warning
         diagnosis: "主线程大核占比偏低（${cpu_core.data[0].big_core_pct}%）且 Runnable 等待 ${quadrant.data[0].q3_runnable_ms}ms，存在调度供给不足迹象"
         confidence: medium

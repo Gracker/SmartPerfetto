@@ -11,6 +11,10 @@ import {createSkillExecutor} from '../skillExecutor';
 import {normalizeSkillDefinition} from '../skillLoader';
 import type {DiagnosticResult, SkillDefinition} from '../types';
 import {renderStepSql} from '../../../../tests/helpers/skillFragmentSql';
+import {displayResultToEnvelope} from '../../../types/dataContract';
+import {localizeSkillDisplayResults} from '../../skillLocalization';
+import {buildCompletedAnalysisResultSnapshot} from '../../analysisResultSnapshotPipeline';
+import {BIG_CORE_PCT_DEFINITION} from '../../comparisonMetricProducerContract';
 
 /**
  * The big/little rollup contract over CPU core tiers, documented in
@@ -204,6 +208,15 @@ function openTrace(capacities: Array<number | null>, slices: Slice[]): Database.
   return db;
 }
 
+const windowOf = (db: Database.Database) => db.prepare('SELECT end_ts FROM trace_bounds').pluck().get() as number;
+
+let fragments: Map<string, string> | undefined;
+/** The built-in SQL fragments keyed as the loader registers them. */
+function fragmentRegistry(): Map<string, string> {
+  fragments ??= new Map(skillSources().filter(({file}) => file.startsWith('fragments/')).map(({file, text}) => [file, text]));
+  return fragments;
+}
+
 /** Runs `use` over a fresh trace and closes it afterwards. */
 async function withTrace<T>(capacities: Array<number | null>, slices: Slice[],
   use: (db: Database.Database) => T | Promise<T>): Promise<T> {
@@ -220,7 +233,8 @@ const MAIN_ON_EVERY_TIER: Slice[] = [[1, 5, 10], [1, 4, 10], [1, 2, 40], [1, 0, 
  * Skill whose required process-identity gate needs Android tables a fixture
  * does not model; the step SQL and its substitution are unchanged.
  */
-async function runSkill(db: Database.Database, skillFile: string, params: Record<string, unknown>, stepIds?: string[]) {
+/** A Skill executor whose queries run on `db`, Perfetto-only syntax stripped. */
+function sqliteExecutor(db: Database.Database) {
   const query = jest.fn(async (_traceId: string, sql: string) => {
     const sqliteSql = sql.replace(/INCLUDE PERFETTO MODULE [^;]+;/g, '')
       .replace(/CREATE\s+PERFETTO\s+TABLE/gi, 'CREATE TABLE').trim();
@@ -236,7 +250,11 @@ async function runSkill(db: Database.Database, skillFile: string, params: Record
       return {columns: [], rows: [], error: (error as Error).message};
     }
   });
-  const executor = createSkillExecutor({query, touchTrace: jest.fn(), getTraceWithPort: jest.fn(async () => ({port: 1}))} as any);
+  return createSkillExecutor({query, touchTrace: jest.fn(), getTraceWithPort: jest.fn(async () => ({port: 1}))} as any);
+}
+
+async function runSkill(db: Database.Database, skillFile: string, params: Record<string, unknown>, stepIds?: string[]) {
+  const executor = sqliteExecutor(db);
   for (const rel of ['atomic/cpu_topology_view.skill.yaml', skillFile]) {
     executor.registerSkill(normalizeSkillDefinition(fresh(loadYaml(rel)), path.join(skillsDir, rel)) as SkillDefinition);
   }
@@ -274,7 +292,7 @@ describe('cpu_slice_analysis over a four-tier SoC', () => {
 describe('binder_detail over a four-tier SoC', () => {
   it('rolls medium into big and gives unknown Running its own bucket', async () => {
     const {rows} = await withTrace(FOUR_TIERS, MAIN_ON_EVERY_TIER, db => {
-      const end = db.prepare('SELECT end_ts FROM trace_bounds').pluck().get() as number;
+      const end = windowOf(db);
       return runSkill(db, 'composite/binder_detail.skill.yaml', {
         binder_ts: 0, binder_end_ts: end, dur_ms: end / MS, process_name: 'com.example.app',
       }, ['init_cpu_topology', 'cpu_core_analysis', 'quadrant_analysis']);
@@ -297,7 +315,6 @@ describe('cpu_profiling over a four-tier SoC', () => {
     expect(rows('core_distribution')).toEqual([expect.objectContaining({
       thread_name: 'main', total_ms: 100, big_core_pct: 60, medium_core_pct: 40, little_core_pct: 20,
       unknown_core_pct: 20, unknown_core_ms: close(20),
-      big_core_pct_definition: 'core_tier_group:prime+big+medium@2',
     })]);
   });
 
@@ -415,5 +432,118 @@ describe('jank_frame_detail migration big-group rule', () => {
       .toEqual(['main 大核组（超大/大/中核）运行占比仅 10%']);
     const unknown = firstThread(await migration([null, null, null], [[1, 2, 10], [1, 0, 90]]));
     expect(lowBig(await diagnose(RULE, {migration_data: unknown}, {start_ts: 1, end_ts: 2}))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cpu.big_core_pct producers (comparisonMetricProducerContract.ts): the main
+// thread's row with unrounded unknown time, through the production projection.
+// ---------------------------------------------------------------------------
+
+describe('cpu.big_core_pct producer rows', () => {
+  const PRODUCERS: Array<[string, string, (end: number) => Record<string, string | number>]> = [
+    ['composite/startup_detail.skill.yaml', 'cpu_core_analysis', end => ({
+      start_ts: 0, end_ts: end, package: 'com.example.app', '__process_scope.upid': 1})],
+    ['composite/click_response_detail.skill.yaml', 'cpu_core_analysis', end => ({
+      event_ts: 0, event_end_ts: end, process_name: 'com.example.app', '__process_scope.upid': 1})],
+  ];
+  const producerRows = (capacities: Array<number | null>, slices: Slice[], [file, step, vars]: typeof PRODUCERS[number],
+    extra?: (db: Database.Database) => void) => withTrace(capacities, slices, db => {
+    extra?.(db);
+    return stepRows(db, file, step, vars(windowOf(db)));
+  });
+
+  it.each(PRODUCERS)('%s declares one classified main thread', async (...producer) => {
+    // system_cpu_topology: 100 little, 400 medium, 1024 big; main 60 big, 10 medium, 30 little.
+    expect(await producerRows([100, 400, 1024], [[1, 2, 60], [1, 1, 10], [1, 0, 30], [2, 2, 50]], producer)).toEqual([
+      expect.objectContaining({big_core_pct: 70, unknown_core_ns: 0, main_thread_count: 1,
+        big_core_pct_definition: BIG_CORE_PCT_DEFINITION}),
+    ]);
+  });
+
+  it.each(PRODUCERS)('%s keeps a few microseconds of unknown time that its ms columns round away', async (...producer) => {
+    // 6 us on a classified big core, 4 us on a CPU with no identity: total 0.010 ms.
+    const rows = await producerRows([100, 400, 1024], [], producer, db => {
+      db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, 100, 6000, 2, 2, 'S', 120), (1, 200000, 4000, 9, 99, 'S', 120)").run();
+      db.prepare('UPDATE trace_bounds SET end_ts = 1000000').run();
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({unknown_core_ns: 4000, main_thread_count: 1});
+    // The rounded fields read as no unknown time at all.
+    expect(rows[0].unknown_core_ms ?? rows[0].unknown_running_ms).toBe(0);
+  });
+
+  it('startup_detail does not pass the big-core gate on 0.04% unknown time', async () => {
+    // main: 99.96 ms on little, 0.04 ms on an unidentified CPU; unknown_core_pct rounds to 0.
+    const rows = await producerRows([100, 400, 1024], [[1, 0, 99.96]], PRODUCERS[0], db => {
+      db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, 500000000, 40000, 9, 99, 'S', 120)").run();
+      db.prepare('UPDATE trace_bounds SET end_ts = 600000000').run();
+    });
+    expect(rows[0]).toMatchObject({unknown_core_pct: 0, unknown_core_ns: 40000, big_core_pct: 0});
+    const rule = stepOf(loadYaml('composite/startup_detail.skill.yaml'), 'startup_diagnosis');
+    const diagnoses = (await diagnose(rule, {cpu_core: rows, quadrant: [{q3_runnable_ms: 80}]})).map(d => d.diagnosis);
+    expect(diagnoses.filter(d => d.includes('大核占比偏低'))).toEqual([]);
+    expect(diagnoses.filter(d => d.includes('核类型未知'))).toHaveLength(1);
+  });
+
+  it('click_response_detail does not pass the big-core gate on rounded-away unknown time', async () => {
+    const rows = await producerRows([100, 400, 1024], [[1, 0, 99.996]], PRODUCERS[1], db => {
+      db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, 500000000, 4000, 9, 99, 'S', 120)").run();
+      db.prepare('UPDATE trace_bounds SET end_ts = 600000000').run();
+    });
+    expect(rows[0]).toMatchObject({unknown_running_ms: 0, unknown_core_ns: 4000, big_core_pct: 0});
+    const rule = stepOf(loadYaml('composite/click_response_detail.skill.yaml'), 'click_diagnosis');
+    const inputs = {cpu_core: rows, quadrant: [{q3_runnable_ms: 80}], sched_delay: [{severe_count: 1}]};
+    expect((await diagnose(rule, inputs)).filter(d => d.diagnosis.includes('大核占比偏低'))).toEqual([]);
+    const classified = {...rows[0], unknown_core_ns: 0};
+    expect((await diagnose(rule, {...inputs, cpu_core: [classified]})).filter(d => d.diagnosis.includes('大核占比偏低')))
+      .toHaveLength(1);
+  });
+});
+
+describe('cpu.big_core_pct through the production projection', () => {
+  // The real steps, normalized as the loader does (fragment resolution included).
+  const mini = (name: string, steps: any[]) => normalizeSkillDefinition({name, type: 'composite', version: '1',
+    meta: {display_name: name, description: name}, steps}, path.join(skillsDir, `composite/${name}.skill.yaml`)) as SkillDefinition;
+  const startupDetail = () => mini('startup_detail', [fresh(stepOf(loadYaml('composite/startup_detail.skill.yaml'), 'cpu_core_analysis'))]);
+
+  /** Executes `name`, then projects its display results the way invoke_skill emits envelopes. */
+  async function snapshotMetric(db: Database.Database, skills: SkillDefinition[], name: string, params: Record<string, unknown>) {
+    const executor = sqliteExecutor(db);
+    executor.setFragmentRegistry(fragmentRegistry());
+    for (const skill of skills) executor.registerSkill(skill);
+    const result = await executor.execute(name, 'trace-1', params);
+    const displayResults = localizeSkillDisplayResults(name, result.displayResults, 'zh-CN') ?? [];
+    const envelopes = displayResults.map(dr => displayResultToEnvelope(dr as any, name, (dr as any).columnDefinitions));
+    const snapshot = buildCompletedAnalysisResultSnapshot({tenantId: 't', workspaceId: 'w', traceId: 'trace-1',
+      sessionId: 's', runId: 'r', query: 'startup', conclusion: 'done', dataEnvelopes: envelopes});
+    return snapshot!.metrics.find(metric => metric.key === 'cpu.big_core_pct');
+  }
+
+  it('admits a direct startup_detail row with its hidden columns intact', async () => {
+    const metric = await withTrace([100, 400, 1024], [[1, 2, 60], [1, 1, 10], [1, 0, 30]], db =>
+      snapshotMetric(db, [startupDetail()], 'startup_detail', {start_ts: 0, end_ts: windowOf(db), package: 'com.example.app'}));
+    expect(metric).toMatchObject({value: 70, source: {skillId: 'startup_detail', stepId: 'cpu_core_analysis',
+      metricDefinition: BIG_CORE_PCT_DEFINITION}});
+  });
+
+  it('withholds a direct row whose CPU topology is unknown', async () => {
+    const metric = await withTrace([null, null, null], [[1, 2, 60], [1, 0, 40]], db =>
+      snapshotMetric(db, [startupDetail()], 'startup_detail', {start_ts: 0, end_ts: windowOf(db), package: 'com.example.app'}));
+    expect(metric).toMatchObject({value: null, missingReason: 'producer_contract:unknown_core_time'});
+  });
+
+  it('reads the startup_analysis iterator item that returned rows', async () => {
+    const metric = await withTrace([100, 400, 1024], [[1, 2, 60], [1, 0, 40]], db => {
+      const end = windowOf(db);
+      // Item 0 is a window with no main-thread running time; item 1 covers the trace.
+      const source = {id: 'startups', type: 'atomic', save_as: 'startups', sql:
+        `SELECT 1 AS startup_id, ${end + 1} AS start_ts, ${end + 2} AS end_ts, 1 AS dur_ms, 'com.example.app' AS package, 'cold' AS startup_type ` +
+        `UNION ALL SELECT 2, 0, ${end}, ${end / MS}, 'com.example.app', 'cold'`};
+      const iterator = fresh(stepOf(loadYaml('composite/startup_analysis.skill.yaml'), 'analyze_startups'));
+      return snapshotMetric(db, [startupDetail(), mini('startup_analysis', [source, iterator])], 'startup_analysis', {});
+    });
+    expect(metric).toMatchObject({value: 60, source: {skillId: 'startup_analysis', stepId: 'analyze_startups',
+      section: 'cpu_core_analysis', itemIndex: 1, metricDefinition: BIG_CORE_PCT_DEFINITION}});
   });
 });

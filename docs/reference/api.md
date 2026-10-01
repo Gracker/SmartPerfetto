@@ -731,11 +731,30 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId` | 获取 comparison |
 | `GET` | `/:comparisonId/stream` | 订阅 comparison stream |
 
-Skill 结果行可以用同行的 `<列名>_definition` 字符串声明该指标列的口径（例如
-`cpu_profiling` 的 `big_core_pct_definition`），snapshot 把它保存为指标
-`source.metricDefinition`。两个 snapshot 的同一指标声明不同（含一方未声明）时，
+Skill 结果行可以用同行的 `<列名>_definition` 字符串声明该指标列的口径，snapshot
+把它保存为指标 `source.metricDefinition`。两个 snapshot 的同一指标声明不同（含一方未声明）时，
 comparison 不计算 delta（`deltaValue: null`、`assessment: "unknown"`），并在
 `matrix.warnings` 与结论 `uncertainty` 中写明两侧口径。未声明的历史指标之间照常比较。
+
+`cpu.big_core_pct` 另有生产者合同（`backend/src/services/comparisonMetricProducerContract.ts`），
+不再按列名取第一个 `big_core_pct`：
+
+- 口径 `main_thread_running:core_tier_group:prime+big+medium@3`：所选事件窗口内**一个**主线程
+  Running 时间中大核组（超大/大/中核）的占比，且该线程没有落在未分类核上的时间。它描述被选中的那一个
+  启动或慢输入事件，不是整场分析的汇总。
+- 只认这些来源（按信封的顶层 `skillId` + 展示 `stepId`）：`startup_detail` / `click_response_detail`
+  的 `cpu_core_analysis`，以及 `startup_analysis.analyze_startups`、
+  `click_response_analysis.analyze_slow_events` 迭代项里的 `cpu_core_analysis` 分节（`source.section`
+  与 `source.itemIndex` 记录是哪一项）。其他 Skill 的同名列、`type: skill` 嵌套步骤、raw SQL、
+  前端预查询和参考 trace 一侧的信封都不是候选。
+- 第一个返回行的候选单元决定结果：必须恰好一行、行内 `big_core_pct_definition` 等于上述口径、
+  `main_thread_count = 1`、未舍入的 `unknown_core_ns = 0`（数值类型）。不满足时指标以
+  `value: null` 与 `missingReason: "producer_contract:<原因>"`（`ambiguous_population`、
+  `definition_mismatch`、`unknown_core_time`、`unknown_core_time_unverified`、`value_unavailable`）
+  存入 snapshot，不会改取后面另一个线程、事件或信封的值；comparison 把它列为缺失并给出该原因。
+- 只有双方都是准入生产者按当前口径声明的值才计算 delta。历史值按来源分类后一律不计算 delta，
+  warning 写明类别：`legacy_admitted_producer`（准入生产者的旧值，未核对未知核时间）、
+  `outside_contract`（其他 Skill 步骤，含 `cpu_profiling` 早先的 `@2` 声明）、`non_skill_source`。
 
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 
