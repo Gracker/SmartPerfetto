@@ -5,7 +5,8 @@
 import crypto from 'crypto';
 import type { IncomingMessage } from 'http';
 import type { RequestHandler } from 'express';
-import { getHeaderValue, sanitizeContextId } from './requestHeaders';
+import { getHeaderValue } from './requestHeaders';
+import { sanitizeContextId } from '../utils/contextId';
 
 export const REQUEST_ID_HEADER = 'X-Request-Id';
 

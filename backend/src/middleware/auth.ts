@@ -11,7 +11,8 @@ import {
   requestHasEnterpriseApiKeyCredential,
 } from '../services/enterpriseApiKeyService';
 import { EnterpriseSsoService } from '../services/enterpriseSsoService';
-import { getFirstHeaderValue, getHeaderValue, parseHeaderList, sanitizeContextId } from './requestHeaders';
+import { getFirstHeaderValue, getHeaderValue, parseHeaderList } from './requestHeaders';
+import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from './requestId';
 
 type RequestContextAuthType = 'sso' | 'api_key' | 'dev';

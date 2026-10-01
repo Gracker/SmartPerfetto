@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import type { Request } from 'express';
 import type Database from 'better-sqlite3';
 import type { RequestContext, RequestContextAuthType } from '../middleware/auth';
+import { sanitizeContextId } from '../utils/contextId';
 import { openEnterpriseDb } from './enterpriseDb';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
 
@@ -74,11 +75,6 @@ function nowMs(): number {
   return Date.now();
 }
 
-function sanitizeId(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-}
-
 function sanitizeScope(value: unknown): string {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim();
@@ -145,7 +141,7 @@ function parseApiKeyToken(token: string | undefined): ApiKeyTokenParts | null {
   if (separator <= 0) return null;
   const id = payload.slice(0, separator);
   const secret = payload.slice(separator + 1);
-  return sanitizeId(id) === id && secret.length >= 32 ? { id, secret } : null;
+  return sanitizeContextId(id) === id && secret.length >= 32 ? { id, secret } : null;
 }
 
 export function extractEnterpriseApiKeyToken(req: Request): string | undefined {
@@ -204,11 +200,11 @@ export class EnterpriseApiKeyService {
     const canDelegateOrg = context.roles.includes('org_admin')
       || context.scopes.includes('*')
       || context.scopes.includes('api_key:delegate_org');
-    const requestedTenantId = sanitizeId(input.tenantId);
+    const requestedTenantId = sanitizeContextId(input.tenantId);
     if (requestedTenantId && requestedTenantId !== context.tenantId) {
       throw new Error('tenantId must match the authenticated RequestContext');
     }
-    const requestedWorkspaceId = sanitizeId(input.workspaceId);
+    const requestedWorkspaceId = sanitizeContextId(input.workspaceId);
     if (requestedWorkspaceId && requestedWorkspaceId !== context.workspaceId) {
       throw new Error('workspaceId must match the authenticated RequestContext');
     }
@@ -218,7 +214,7 @@ export class EnterpriseApiKeyService {
     if (input.ownerUserId === null) {
       throw new Error('API keys must retain an accountable owner');
     }
-    const requestedOwnerUserId = sanitizeId(input.ownerUserId) || context.userId;
+    const requestedOwnerUserId = sanitizeContextId(input.ownerUserId) || context.userId;
     if (requestedOwnerUserId !== context.userId && !canDelegateOrg) {
       throw new Error('Only an org admin can create an API key for another user');
     }
@@ -300,7 +296,7 @@ export class EnterpriseApiKeyService {
   }
 
   revokeApiKey(context: RequestContext, idInput: string): EnterpriseApiKeyRecord | null {
-    const id = sanitizeId(idInput);
+    const id = sanitizeContextId(idInput);
     const existing = id ? this.getRowForContext(context, id) : null;
     if (!existing || existing.revoked_at) return null;
     const revokedAt = nowMs();

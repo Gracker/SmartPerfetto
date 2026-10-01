@@ -16,7 +16,8 @@ import {
   type RequestContext,
   type RequestContextAuthType,
 } from '../middleware/auth';
-import { getFirstHeaderValue, getHeaderValue, parseHeaderList, sanitizeContextId } from '../middleware/requestHeaders';
+import { getFirstHeaderValue, getHeaderValue, parseHeaderList } from '../middleware/requestHeaders';
+import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from '../middleware/requestId';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';

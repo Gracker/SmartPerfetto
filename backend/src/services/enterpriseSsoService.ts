@@ -7,6 +7,7 @@ import type { Request } from 'express';
 import type Database from 'better-sqlite3';
 import { resolveAuthConfig } from '../config';
 import type { RequestContextAuthType } from '../middleware/auth';
+import { sanitizeContextId } from '../utils/contextId';
 import {deriveServerSecret} from '../security/serverSecret';
 import {
   listEnterpriseAuditEvents,
@@ -105,11 +106,6 @@ export interface RequestSsoIdentity {
 
 function nowMs(): number {
   return Date.now();
-}
-
-function sanitizeId(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
 }
 
 function safeString(value: unknown): string | undefined {
@@ -575,7 +571,7 @@ export class EnterpriseSsoService {
         reason: 'OIDC personal workspace is assigned by the server and cannot be changed',
       };
     }
-    const workspaceId = sanitizeId(workspaceIdInput);
+    const workspaceId = sanitizeContextId(workspaceIdInput);
     const membership = this.listMemberships(session.tenantId, session.userId)
       .find(item => item.workspaceId === workspaceId);
     if (!membership) {
@@ -845,7 +841,7 @@ export class EnterpriseSsoService {
 
   private resolveTenantId(userInfo: EnterpriseOidcUserInfo): string | null {
     if (!resolveAuthConfig(process.env).oidcEnabled) {
-      const claimTenant = sanitizeId(claimString(userInfo, [
+      const claimTenant = sanitizeContextId(claimString(userInfo, [
         'smartperfetto_tenant_id',
         'tenant_id',
         'https://smartperfetto.dev/tenant_id',
@@ -930,7 +926,7 @@ export class EnterpriseSsoService {
     userInfo: EnterpriseOidcUserInfo,
     memberships: WorkspaceMembership[],
   ): WorkspaceMembership | null {
-    const claimWorkspace = sanitizeId(claimString(userInfo, [
+    const claimWorkspace = sanitizeContextId(claimString(userInfo, [
       'smartperfetto_workspace_id',
       'workspace_id',
       'https://smartperfetto.dev/workspace_id',
