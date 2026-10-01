@@ -29,7 +29,11 @@ import {
 } from '../../services/traceMetadataStore';
 import { setTraceProcessorServiceForTests } from '../../services/traceProcessorService';
 import { persistAnalysisRunState, resetAnalysisRunStoreForTests } from '../../services/analysisRunStore';
-import { getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests } from '../../services/traceProcessorLeaseStore';
+import {
+  frontendHolderRef,
+  getTraceProcessorLeaseStore,
+  setTraceProcessorLeaseStoreForTests,
+} from '../../services/traceProcessorLeaseStore';
 import { TraceProcessorFactory } from '../../services/workingTraceProcessor';
 import {getPortPool} from '../../services/portPool';
 import * as traceMetadataStore from '../../services/traceMetadataStore';
@@ -1139,6 +1143,41 @@ describe('enterprise trace metadata routes', () => {
       }),
       expect.objectContaining({id: traceId, filename}),
     ]));
+  });
+
+  it('keeps one frontend holder for a client without a window id across trace requests', async () => {
+    const app = makeApp();
+    const sourceTracePath = path.join(tmpDir, 'windowless.trace');
+    await fs.writeFile(sourceTracePath, 'windowless');
+    fakeTraceProcessorService.getTraceWithPort.mockImplementation((traceId: unknown) => ({
+      id: String(traceId),
+      filename: 'windowless.trace',
+      size: 'windowless'.length,
+      uploadTime: new Date(),
+      status: 'ready',
+      port: 9555,
+    }));
+
+    const uploadRes = await ssoHeaders(
+      request(app)
+        .post('/api/traces/upload')
+        .attach('file', sourceTracePath),
+    );
+    expect(uploadRes.status).toBe(200);
+    const traceId = uploadRes.body.trace.id as string;
+    // Each request has its own request id, and the session id differs too.
+    for (const sessionId of ['pane-a', 'pane-b']) {
+      const res = await ssoHeaders(request(app).get(`/api/traces/${traceId}?sessionId=${sessionId}`));
+      expect(res.status).toBe(200);
+      expect(res.body.trace.leaseId).toBe(uploadRes.body.trace.leaseId);
+    }
+
+    expect(readTraceProcessorLeases(traceId)).toEqual([
+      expect.objectContaining({
+        holder_type: 'frontend_http_rpc',
+        holder_ref: frontendHolderRef({userId: 'user-a'}),
+      }),
+    ]);
   });
 
   it('reports trace_processor startup failures without creating a frontend lease', async () => {

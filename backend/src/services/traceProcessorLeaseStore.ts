@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type Database from 'better-sqlite3';
+import { createHash } from 'crypto';
 import { uuidv4 } from '../utils/uuid';
 import { openEnterpriseDb, resolveEnterpriseDbPath } from './enterpriseDb';
 import type { EnterpriseRepositoryScope } from './enterpriseRepository';
@@ -155,6 +156,41 @@ function parseMetadata(raw: string | null): Record<string, unknown> | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Identity of a frontend holder: one per (user, browser window), or one per
+ * user for a client that sends no window id. Holders are upserted by this ref
+ * and shared leases are shared across users, so it must be stable across a
+ * window's requests and must not let one user's ref match another's. A request
+ * or correlation id is neither: it changes per request, and a caller may reuse
+ * one across windows. The digest keeps the ref opaque and bounded; it is not a
+ * privacy boundary, and the window id and user stay readable in their own fields.
+ */
+export function frontendHolderRef(identity: {userId: string; windowId?: string}): string {
+  assertNonEmpty(identity.userId, 'userId');
+  const digest = createHash('sha256')
+    .update(JSON.stringify([identity.userId, identity.windowId || null]))
+    .digest('hex');
+  return `frontend:${digest.slice(0, 32)}`;
+}
+
+/**
+ * A frontend holder whose ref, window id and recorded user all come from one
+ * identity, so the ref upsert and current-page checks that read the window id
+ * and user cannot drift apart.
+ */
+export function frontendHolderInput(
+  identity: {userId: string; windowId?: string},
+  extra: Omit<TraceProcessorHolderInput, 'holderType' | 'holderRef' | 'windowId'> = {},
+): TraceProcessorHolderInput {
+  return {
+    ...extra,
+    holderType: 'frontend_http_rpc',
+    holderRef: frontendHolderRef(identity),
+    windowId: identity.windowId,
+    metadata: {...extra.metadata, userId: identity.userId},
+  };
 }
 
 function metadataForHolder(holder: TraceProcessorHolderInput): string | null {

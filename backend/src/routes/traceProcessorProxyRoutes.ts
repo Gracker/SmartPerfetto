@@ -23,6 +23,7 @@ import { sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import {
+  frontendHolderInput,
   getTraceProcessorLeaseStore,
   type FrontendHolderVisibility,
   type TraceProcessorHolderInput,
@@ -124,19 +125,14 @@ function frontendHolderForContext(
   metadata: Record<string, unknown> = {},
   frontendVisibility?: FrontendHolderVisibility,
 ): TraceProcessorHolderInput {
-  const holderRef = context.windowId || context.requestId || context.userId;
-  return {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: context.windowId,
+  return frontendHolderInput(context, {
     ...(frontendVisibility ? { frontendVisibility } : {}),
     metadata: {
       requestId: context.requestId,
-      userId: context.userId,
       proxy: 'trace_processor',
       ...metadata,
     },
-  };
+  });
 }
 
 function parseFrontendVisibility(value: unknown): FrontendHolderVisibility {

@@ -16,7 +16,7 @@ import {
   writeTraceMetadata,
 } from '../services/traceMetadataStore';
 import { getTracesDir } from '../services/traceUploadPaths';
-import { TraceProcessorLeaseStore } from '../services/traceProcessorLeaseStore';
+import { frontendHolderInput, frontendHolderRef, TraceProcessorLeaseStore } from '../services/traceProcessorLeaseStore';
 import {
   TP_ADMISSION_CONTROL_ENV,
   TP_ESTIMATE_MULTIPLIER_ENV,
@@ -190,6 +190,10 @@ function leaseScope(wc: WindowContext): EnterpriseRepositoryScope {
     workspaceId: wc.context.workspaceId,
     userId: wc.context.userId,
   };
+}
+
+function frontendWindowIdentity(wc: WindowContext): {userId: string; windowId: string} {
+  return {userId: wc.context.userId, windowId: wc.context.windowId ?? wc.label};
 }
 
 function seedIdentity(db: Database.Database, wc: WindowContext): void {
@@ -563,19 +567,16 @@ async function scenarioD3(
   const store = new TraceProcessorLeaseStore(db);
   const aScope = leaseScope(userAWindow1);
   const bScope = leaseScope(userBWindow1);
-  const frontendHolderRef = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
 
-  let frontendLease = store.acquireHolder(aScope, aUpload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: frontendHolderRef,
-    windowId: frontendHolderRef,
+  let frontendLease = store.acquireHolder(aScope, aUpload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       scenario: 'D3',
       workload: 'timeline',
       priority: 'p0',
     },
-  });
+  }));
   store.markStarting(aScope, frontendLease.id);
   frontendLease = store.markReady(aScope, frontendLease.id);
 
@@ -759,22 +760,20 @@ async function scenarioD4(
   const upload = await simulateUpload(db, userAWindow1, tracePath, 'd4-user-a-crash.pftrace');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const windowId = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
+  const windowHolderRef = frontendHolderRef(frontendWindow);
   const runId = `run-${crypto.randomUUID()}`;
   const startedAt = 1_777_100_000_000;
   const oldInternalPort: number = 9810;
   const newInternalPort: number = 9811;
 
-  let lease = store.acquireHolder(scope, upload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  let lease = store.acquireHolder(scope, upload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       scenario: 'D4',
       internalPort: oldInternalPort,
     },
-  }, { now: startedAt });
+  }), { now: startedAt });
   store.markStarting(scope, lease.id);
   lease = store.markReady(scope, lease.id);
   lease = store.acquireHolderForLease(scope, lease.id, {
@@ -794,18 +793,15 @@ async function scenarioD4(
   const crashedLease = store.markCrashed(scope, lease.id);
   const restartingLease = store.markRestarting(scope, lease.id);
   const readyLease = store.markReady(scope, lease.id);
-  const recoveredLease = store.acquireHolderForLease(scope, readyLease.id, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  const recoveredLease = store.acquireHolderForLease(scope, readyLease.id, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       scenario: 'D4',
       recovery: 'processor-restart',
       internalPort: newInternalPort,
     },
-  }, { now: startedAt + 2 });
-  const frontendHolder = recoveredLease.holders.find(holder => holder.holderRef === windowId);
+  }), { now: startedAt + 2 });
+  const frontendHolder = recoveredLease.holders.find(holder => holder.holderRef === windowHolderRef);
   const agentHolder = recoveredLease.holders.find(holder => holder.holderRef === runId);
 
   const checks = {
@@ -850,33 +846,28 @@ async function scenarioD5(
   const upload = await simulateUpload(db, userAWindow1, tracePath, 'd5-user-a-sleep.pftrace');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const holderRef = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
+  const holderRef = frontendHolderRef(frontendWindow);
   const startedAt = 1_777_000_000_000;
   const offlineAt = startedAt + 30_000;
   const insideGraceAt = offlineAt + 30 * 60 * 1000 - 1;
   const afterGraceAt = offlineAt + 30 * 60 * 1000 + 1;
   const recoveredAt = afterGraceAt + 1_000;
 
-  let lease = store.acquireHolder(scope, upload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: holderRef,
+  let lease = store.acquireHolder(scope, upload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: { scenario: 'D5' },
-  }, { now: startedAt });
+  }), { now: startedAt });
   store.markStarting(scope, lease.id);
   lease = store.markReady(scope, lease.id);
 
-  lease = store.acquireHolderForLease(scope, lease.id, {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: holderRef,
+  lease = store.acquireHolderForLease(scope, lease.id, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'offline',
     metadata: {
       heartbeat: 'frontend',
       scenario: 'D5',
     },
-  }, { now: offlineAt });
+  }), { now: offlineAt });
   const offlineHolder = lease.holders.find(holder => holder.holderRef === holderRef);
 
   const insideGraceSweep = store.sweepExpired(insideGraceAt);
@@ -885,17 +876,14 @@ async function scenarioD5(
   const afterGraceSweep = store.sweepExpired(afterGraceAt);
   const afterGraceLease = store.getLeaseById(scope, lease.id);
 
-  const recoveredLease = store.acquireHolderForLease(scope, lease.id, {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: holderRef,
+  const recoveredLease = store.acquireHolderForLease(scope, lease.id, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: {
       heartbeat: 'frontend',
       scenario: 'D5',
       recovery: 'pageshow',
     },
-  }, { now: recoveredAt });
+  }), { now: recoveredAt });
   const recoveredHolder = recoveredLease.holders.find(holder => holder.holderRef === holderRef);
 
   const checks = {
@@ -1044,16 +1032,13 @@ async function scenarioD7(
   const run = createAnalysisRun(db, userAWindow1, upload, 'running');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const windowId = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
   const reportId = `report-${crypto.randomUUID()}`;
 
-  let lease = store.acquireHolder(scope, upload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  let lease = store.acquireHolder(scope, upload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: { scenario: 'D7' },
-  });
+  }));
   store.markStarting(scope, lease.id);
   lease = store.markReady(scope, lease.id);
   lease = store.acquireHolderForLease(scope, lease.id, {
@@ -1509,18 +1494,15 @@ async function scenarioD10(
   const candidateUpload = await simulateUpload(db, userAWindow1, tracePath, 'd10-rejected-new-lease.pftrace');
   const store = new TraceProcessorLeaseStore(db);
   const scope = leaseScope(userAWindow1);
-  const windowId = userAWindow1.context.windowId ?? userAWindow1.label;
+  const frontendWindow = frontendWindowIdentity(userAWindow1);
   const activeRssBytes = 448 * mib;
   const budgetBytes = 512 * mib;
   const minEstimateBytes = 128 * mib;
 
-  let activeLease = store.acquireHolder(scope, activeUpload.traceId, {
-    holderType: 'frontend_http_rpc',
-    holderRef: windowId,
-    windowId,
+  let activeLease = store.acquireHolder(scope, activeUpload.traceId, frontendHolderInput(frontendWindow, {
     frontendVisibility: 'visible',
     metadata: { scenario: 'D10' },
-  });
+  }));
   store.markStarting(scope, activeLease.id);
   activeLease = store.markReady(scope, activeLease.id);
   activeLease = store.recordRss(scope, activeLease.id, activeRssBytes);

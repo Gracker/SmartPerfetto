@@ -23,6 +23,7 @@ import {
   recordEnterpriseAuditEventForContext,
 } from '../services/enterpriseAuditService';
 import {
+  frontendHolderInput,
   getTraceProcessorLeaseStore,
   type TraceProcessorLeaseMode,
   type TraceProcessorLeaseRecord,
@@ -606,32 +607,24 @@ function acquireFrontendTraceLease(
   if (!enterpriseLeasesEnabled() && options.requestedMode !== 'isolated') {
     return null;
   }
-  const holderRef =
-    context.windowId ||
-    options.sessionId ||
-    context.requestId ||
-    context.userId;
   const decision = decideLeaseModeForTrace(
     context,
     traceId,
     'frontend_http_rpc',
     options.requestedMode,
   );
+  const holder = frontendHolderInput(context, {
+    sessionId: options.sessionId,
+    metadata: {
+      requestId: context.requestId,
+      leaseModeReason: decision.reason,
+      leaseModeSignals: decision.signals,
+    },
+  });
   const lease = getTraceProcessorLeaseStore().acquireHolder(
     leaseScopeFromContext(context),
     traceId,
-    {
-      holderType: 'frontend_http_rpc',
-      holderRef,
-      windowId: context.windowId,
-      sessionId: options.sessionId,
-      metadata: {
-        requestId: context.requestId,
-        userId: context.userId,
-        leaseModeReason: decision.reason,
-        leaseModeSignals: decision.signals,
-      },
-    },
+    holder,
     { mode: decision.mode },
   );
   const readyLease = options.deferReady
@@ -640,7 +633,7 @@ function acquireFrontendTraceLease(
   return {
     lease: readyLease,
     decision,
-    holderRef,
+    holderRef: holder.holderRef,
   };
 }
 
