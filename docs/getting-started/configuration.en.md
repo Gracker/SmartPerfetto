@@ -177,9 +177,14 @@ only when both processes explicitly use the same `SMARTPERFETTO_BACKEND_DATA_DIR
 If a hand edit leaves `providers.json` not a valid provider array (a JSON syntax
 error, a missing or repeated `id`, and so on), the backend still starts but never
 overwrites the file with an empty list: the Providers page and `smp provider list`
-report that the file cannot be read, every create, update, activate, deactivate,
-and delete returns `provider_store_unreadable`, and analyses use the system
-default (`.env`). Repair or move the file and refresh; no restart is needed.
+report that the file cannot be read, and every create, update, activate,
+deactivate, and delete returns `provider_store_unreadable`. Analyses that follow
+the active provider, or are pinned to a profile, are refused with the same code
+(HTTP 409) instead of falling back to `.env`, because the file may name a
+different gateway or account: the active provider is unknown, not absent.
+`/health` and `smp doctor` report AI as unconfigured. A request or session that
+explicitly chooses the system default (`providerId: null`) still runs on `.env`.
+Repair or move the file and refresh; no restart is needed.
 For first-time CLI setup, run:
 
 ```bash

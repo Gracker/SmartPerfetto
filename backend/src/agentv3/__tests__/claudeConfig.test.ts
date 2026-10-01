@@ -14,12 +14,14 @@ import {
   getClaudeRuntimeDiagnostics,
   hasClaudeCredentials,
   getClaudeSdkBinaryDiagnostics,
+  getCredentialSourceHint,
   getSdkBinaryOption,
   isClaudeQuotaError,
   loadClaudeConfig,
   resetSdkBinaryOptionCache,
   resolveClaudeSdkPermissionOptions,
 } from '../claudeConfig';
+import { resetProviderService } from '../../services/providerManager';
 
 const ORIGINAL_QUICK_MAX_TURNS = process.env.CLAUDE_QUICK_MAX_TURNS;
 const ORIGINAL_MAX_TURNS = process.env.CLAUDE_MAX_TURNS;
@@ -526,6 +528,38 @@ describe('explainClaudeRuntimeError', () => {
     expect(explained).toContain('Anthropic-compatible Messages API');
     expect(explained).toContain('OpenAI-compatible path');
     expect(explained).not.toContain('CC Switch');
+  });
+});
+
+describe('getCredentialSourceHint', () => {
+  const originalProviderDir = process.env.PROVIDER_DATA_DIR_OVERRIDE;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'smartperfetto-credential-hint-'));
+    fs.writeFileSync(path.join(dir, 'providers.json'), '[{"id":');
+    process.env.PROVIDER_DATA_DIR_OVERRIDE = dir;
+    resetProviderService();
+  });
+
+  afterEach(() => {
+    if (originalProviderDir === undefined) delete process.env.PROVIDER_DATA_DIR_OVERRIDE;
+    else process.env.PROVIDER_DATA_DIR_OVERRIDE = originalProviderDir;
+    resetProviderService();
+    fs.rmSync(dir, {recursive: true, force: true});
+  });
+
+  it('explains an unreadable providers.json instead of throwing inside an error explanation', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const hint = getCredentialSourceHint();
+      expect(hint.source).toBe('provider-store-unreadable');
+      expect(explainClaudeRuntimeError('Invalid API key', 'en', hint))
+        .toContain('providers.json could not be read');
+      expect(getCredentialSourceHint(null).source).toBe('env-or-default');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

@@ -120,6 +120,10 @@ describe('Provider Routes', () => {
       const effective = await request(app).get('/api/v1/providers/effective');
       expect(effective.status).toBe(200);
       expect(effective.body.store.status).toBe('unreadable');
+      // Analyses that follow the active provider are refused, so neither the
+      // provider nor the env fallback is the effective source.
+      expect(effective.body.source).toBe('provider-store-unreadable');
+      expect(effective.body.provider).toBeNull();
       bodies.push(effective.text);
 
       const writes: Array<() => request.Test> = [

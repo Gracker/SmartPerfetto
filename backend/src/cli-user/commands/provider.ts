@@ -8,7 +8,7 @@ import { bootstrap } from '../bootstrap';
 import type { OutputFormat } from '../repl/renderer';
 import { getProviderService } from '../../services/providerManager';
 import { testProviderConnection } from '../../services/providerManager/connectionTester';
-import { resolveAgentRuntimeSelection } from '../../agentRuntime/runtimeSelection';
+import { resolveAgentRuntimeSelectionForDiagnostics } from '../../agentRuntime/runtimeSelection';
 import { getRuntimeDiagnostics } from '../../agentRuntime/runtimeDiagnostics';
 import {
   EXPERIMENTAL_OPENCODE_RUNTIME_KIND,
@@ -45,7 +45,7 @@ export async function runProviderListCommand(args: ProviderCommandBaseArgs): Pro
   }
 
   if (storeStatus === 'unreadable') {
-    console.log('(providers.json could not be read; provider changes are refused until it is repaired; using env/default runtime)');
+    console.log('(providers.json could not be read; provider changes and analyses that follow the active provider are refused until it is repaired)');
     return 0;
   }
   if (providers.length === 0) {
@@ -105,7 +105,15 @@ export async function runProviderTestCommand(args: ProviderTestCommandArgs): Pro
     });
   }
 
-  const selection = await withConsoleLogToStderr(format !== 'text', async () => resolveAgentRuntimeSelection());
+  const {selection, providerStoreError} = await withConsoleLogToStderr(
+    format !== 'text',
+    async () => resolveAgentRuntimeSelectionForDiagnostics(),
+  );
+  if (providerStoreError) {
+    return writeResult(format, {
+      ok: false, target: 'system', code: providerStoreError.code, error: providerStoreError.message,
+    });
+  }
   const providerId = selection.source === 'provider' ? selection.providerId ?? null : null;
   if (providerId) {
     const provider = svc.getRaw(providerId);

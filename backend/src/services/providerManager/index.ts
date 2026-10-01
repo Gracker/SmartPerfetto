@@ -19,7 +19,7 @@ export type {
   ProviderType,
 } from './types';
 export { ProviderService } from './providerService';
-export { ProviderStore } from './providerStore';
+export { ProviderStore, ProviderStoreUnreadableError } from './providerStore';
 export { officialTemplates } from './templates';
 export {
   getProviderModelCatalogService,
@@ -45,7 +45,7 @@ export function getProviderService(): ProviderService {
     if (active) {
       console.log(`[ProviderManager] Active: "${active.name}" (${active.type}, ${active.models.primary})`);
     } else if (instance.getStoreStatus() === 'unreadable') {
-      console.log('[ProviderManager] providers.json could not be read, using env fallback');
+      console.log('[ProviderManager] providers.json could not be read; analyses that follow the active provider are refused until it is repaired');
     } else {
       console.log('[ProviderManager] No active provider configured, using env fallback');
     }

@@ -15,10 +15,8 @@ import { authenticate, requireRequestContext, type RequestContext } from '../mid
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
 import { requireAiEnabledForHttp } from './aiCapabilityPolicyHttp';
-import {
-  PROVIDER_STORE_UNREADABLE_CODE,
-  ProviderStoreUnreadableError,
-} from '../services/providerManager/providerStore';
+import { sendProviderStoreUnreadableIfPresent } from './providerStoreHttp';
+import { PROVIDER_STORE_UNREADABLE_CODE } from '../services/providerManager/providerStore';
 
 const router = express.Router();
 
@@ -56,10 +54,7 @@ function providerStoreState(): {status: 'ok'} | {status: 'unreadable'; code: str
 }
 
 function sendProviderMutationError(res: express.Response, err: any): void {
-  if (err instanceof ProviderStoreUnreadableError) {
-    res.status(409).json({success: false, code: err.code, error: err.message});
-    return;
-  }
+  if (sendProviderStoreUnreadableIfPresent(res, err)) return;
   res.status(err.message.includes('not found') ? 404 : 400).json({success: false, error: err.message});
 }
 
@@ -139,8 +134,14 @@ router.get('/:id/models', async (req, res) => {
 router.get('/effective', (req, res) => {
   const svc = getProviderService();
   const scope = providerScopeForRequest(req);
-  const env = svc.getEffectiveEnv(scope);
   const store = providerStoreState();
+  if (store.status === 'unreadable') {
+    // The active provider is unknown, and analyses that follow it are refused
+    // rather than run on env, so neither source would be true here.
+    res.json({ success: true, source: 'provider-store-unreadable', provider: null, store });
+    return;
+  }
+  const env = svc.getEffectiveEnv(scope);
   if (env) {
     const active = svc.list(scope).find(p => p.isActive);
     res.json({ success: true, source: 'provider-manager', provider: active, env: maskEnvKeys(env), store });

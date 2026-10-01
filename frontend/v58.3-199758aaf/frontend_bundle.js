@@ -191231,7 +191231,7 @@ WHERE
 		return code === PROVIDER_STORE_UNREADABLE_CODE || store?.status === "unreadable";
 	}
 	function providerStoreUnreadableMessage() {
-		return uiText("providers.json 无法读取，已暂停所有提供商修改，当前按系统默认配置（.env）运行。请修复或移走该文件后刷新。", "providers.json could not be read, so provider changes are paused and the system default (.env) is in use. Repair or move the file, then refresh.");
+		return uiText("providers.json 无法读取，已暂停所有提供商修改；跟随当前提供商的分析也会被拒绝，不会改用系统默认配置（.env）。请修复或移走该文件后刷新。", "providers.json could not be read, so provider changes are paused and analyses that follow the active provider are refused rather than run on the system default (.env). Repair or move the file, then refresh.");
 	}
 	/** A failed provider request, carrying the backend's reason when it gave one. */
 	var ProviderRequestError = class extends Error {
@@ -200029,8 +200029,8 @@ WHERE
 	}
 	//#endregion
 	//#region \0perfetto:version:ui/src/virtual/version
-	var VERSION$2 = "v58.3-fcf5a066a";
-	var SCM_REVISION = "fcf5a066a5317d0c761df1074c6248a9a8976593";
+	var VERSION$2 = "v58.3-199758aaf";
+	var SCM_REVISION = "199758aaf00d3c089f1f755bf9d7ed8f7e360e39";
 	//#endregion
 	//#region ../../ui/src/base/logging.ts
 	var errorHandlers = [];
@@ -353829,7 +353829,7 @@ Trace processor RPC API: ${tpStatus.apiVersion}
 		function forceWasm() {
 			AppImpl.instance.httpRpc.newEngineMode = "FORCE_BUILTIN_WASM";
 		}
-		if (tpStatus.versionCode !== "" && tpStatus.versionCode !== "v58.3-fcf5a066a") {
+		if (tpStatus.versionCode !== "" && tpStatus.versionCode !== "v58.3-199758aaf") {
 			const url = await isVersionAvailable(tpStatus.versionCode);
 			if (url !== void 0) {
 				const result = await showDialogVersionMismatch(tpStatus, url);

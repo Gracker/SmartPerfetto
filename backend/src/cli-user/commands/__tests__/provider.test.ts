@@ -74,6 +74,27 @@ describe('provider CLI command', () => {
     }
   });
 
+  test('system check fails closed while providers.json is unreadable, even with env credentials', async () => {
+    process.env.CLAUDE_BINARY_PATH = process.execPath;
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    const providerDir = path.join(tmpDir, 'providers');
+    fs.mkdirSync(providerDir, {recursive: true});
+    fs.writeFileSync(path.join(providerDir, 'providers.json'), '[{"id":', 'utf-8');
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const exitCode = await runProviderTestCommand({
+        envFile, sessionDir: path.join(tmpDir, 'home'), format: 'json',
+      });
+      const lastCall = consoleLogSpy.mock.calls[consoleLogSpy.mock.calls.length - 1];
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(String(lastCall?.[0] ?? '{}'))).toMatchObject({
+        ok: false, target: 'system', code: 'provider_store_unreadable',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   test.each([undefined, '   ', 'your_anthropic_api_key_here', 'sk-test'])(
     'system check requires credentials as well as an executable SDK (%s)', async (apiKey) => {
       process.env.CLAUDE_BINARY_PATH = process.execPath;

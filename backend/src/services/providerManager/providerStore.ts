@@ -287,12 +287,26 @@ export const PROVIDER_STORE_UNREADABLE_CODE = 'provider_store_unreadable';
 
 export type ProviderStoreStatus = 'ok' | 'unreadable';
 
-/** A write refused because providers.json exists but cannot be read or validated. */
+/**
+ * What was refused because providers.json exists but cannot be read or
+ * validated: a write, or a read deciding which provider an analysis uses (the
+ * file may name a gateway, so env could reach a different endpoint or account).
+ */
+type ProviderStoreUnreadableOperation = 'write' | 'read';
+
+const PROVIDER_STORE_UNREADABLE_MESSAGES: Record<ProviderStoreUnreadableOperation, string> = {
+  write: 'providers.json could not be read; repair or move the file before changing providers',
+  read: 'providers.json could not be read, so the AI provider for this analysis is unknown; '
+    + 'repair or move the file, or choose the system default (env) explicitly',
+};
+
 export class ProviderStoreUnreadableError extends Error {
   readonly code = PROVIDER_STORE_UNREADABLE_CODE;
+  /** A conflict with the file's state, which the user can repair. */
+  readonly httpStatus = 409;
 
-  constructor() {
-    super('providers.json could not be read; repair or move the file before changing providers');
+  constructor(operation: ProviderStoreUnreadableOperation = 'write') {
+    super(PROVIDER_STORE_UNREADABLE_MESSAGES[operation]);
     this.name = 'ProviderStoreUnreadableError';
   }
 }
@@ -335,6 +349,13 @@ function parseLegacyProviders(raw: string): Map<string, ProviderConfig> {
     providers.set(entry.id, entry as unknown as ProviderConfig);
   }
   return providers;
+}
+
+function findActive(providers: Iterable<ProviderConfig>): ProviderConfig | undefined {
+  for (const provider of providers) {
+    if (provider.isActive) return provider;
+  }
+  return undefined;
 }
 
 export class ProviderStore {
@@ -418,10 +439,25 @@ export class ProviderStore {
   }
 
   getActive(scope?: ProviderScope): ProviderConfig | undefined {
-    for (const p of this.getAll(scope)) {
-      if (p.isActive) return p;
+    return findActive(this.getAll(scope));
+  }
+
+  /**
+   * The active provider (`id` undefined) or the provider `id`, read under one
+   * file version together with its status: checking the status and reading
+   * separately could find the file readable, then read an empty store broken
+   * in between, which would look like "no such provider".
+   */
+  readProvider(
+    id: string | undefined,
+    scope?: ProviderScope,
+  ): {status: 'unreadable'} | {status: 'ok'; provider?: ProviderConfig} {
+    if (enterpriseProviderStoreEnabled()) {
+      return {status: 'ok', provider: id === undefined ? this.getActive(scope) : this.getEnterprise(id, scope)};
     }
-    return undefined;
+    this.syncWithFile();
+    if (this.unreadable) return {status: 'unreadable'};
+    return {status: 'ok', provider: id === undefined ? findActive(this.providers.values()) : this.providers.get(id)};
   }
 
   getActivePeer(id: string, scope?: ProviderScope): ProviderConfig | undefined {

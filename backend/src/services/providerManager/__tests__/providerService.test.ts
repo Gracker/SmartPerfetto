@@ -768,5 +768,35 @@ describe('ProviderService', () => {
         warn.mockRestore();
       }
     });
+
+    it('refuses to resolve the provider an analysis uses instead of reporting none', async () => {
+      const file = path.join(dir, 'providers.json');
+      const created = svc.create(validInput);
+      svc.activate(created.id);
+      const content = await fsp.readFile(file, 'utf-8');
+      await fsp.writeFile(file, content.slice(0, content.length - 3));
+
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+      try {
+        // The active provider is unknown, not absent; a pin is unknown, not deleted.
+        for (const resolve of [
+          () => svc.getRawEffectiveProvider(),
+          () => svc.getEffectiveEnv(),
+          () => svc.getRawProvider(created.id),
+          () => svc.getEnvForProvider(created.id),
+        ]) {
+          expect(resolve).toThrow(ProviderStoreUnreadableError);
+          expect(resolve).toThrow('the AI provider for this analysis is unknown');
+        }
+        // Provider management reads still report what the store publishes.
+        expect(svc.getRaw(created.id)).toBeUndefined();
+
+        await fsp.writeFile(file, content);
+        expect(svc.getRawEffectiveProvider()?.id).toBe(created.id);
+        expect(svc.getEffectiveEnv()?.ANTHROPIC_API_KEY).toBe('sk-ant-test123456');
+      } finally {
+        warn.mockRestore();
+      }
+    });
   });
 });
