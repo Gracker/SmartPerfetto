@@ -4,18 +4,28 @@
 
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
-import type {AnalysisReceipt, DataEnvelope} from '../types/dataContract';
+import type {AnalysisReceipt, DataEnvelope, ExpandableRowData} from '../types/dataContract';
 import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
   STANDARD_COMPARISON_METRICS,
   type AnalysisResultSceneType,
   type AnalysisResultSnapshot,
   type EvidenceRef,
+  type NormalizedMetricDefinition,
   type NormalizedMetricSource,
   type NormalizedMetricValue,
   type StandardComparisonMetricKey,
 } from '../types/multiTraceComparison';
 import { openEnterpriseDb } from './enterpriseDb';
+import {
+  COMPARISON_METRIC_PRODUCER_CONTRACTS,
+  decideProducerCandidate,
+  isWithheldMetric,
+  producerContractFor,
+  withheldMetricReason,
+  type ComparisonMetricProducerContract,
+  type ContractedMetricKey,
+} from './comparisonMetricProducerContract';
 import { createAnalysisResultSnapshotRepository } from './analysisResultSnapshotStore';
 import {sanitizeStoredCapabilityManifestAttribution} from './capabilityManifest';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
@@ -310,7 +320,12 @@ function evidenceRefsFromInput(input: CompletedAnalysisSnapshotInput): EvidenceR
 }
 
 function payloadRows(env: DataEnvelope): Array<Record<string, unknown>> {
-  const data = env.data as any;
+  return dataRows(env.data);
+}
+
+/** Rows of a table payload: row objects, or positional rows under `columns`. */
+function dataRows(payload: unknown): Array<Record<string, unknown>> {
+  const data = payload as any;
   if (!data || typeof data !== 'object') return [];
 
   if (Array.isArray(data.rows)) {
@@ -387,7 +402,9 @@ function getRowMetric(
   return null;
 }
 
-const METRIC_FIELD_CANDIDATES: Record<StandardComparisonMetricKey, string[]> = {
+/** Column names per metric. A metric with a producer contract is read only through that contract. */
+type UncontractedMetricKey = Exclude<StandardComparisonMetricKey, ContractedMetricKey>;
+const METRIC_FIELD_CANDIDATES: Record<UncontractedMetricKey, string[]> = {
   'startup.total_ms': ['startup.total_ms', 'startup_total_ms', 'total_ms', 'total_duration_ms', 'duration_ms', 'dur_ms', 'startup_ms'],
   'startup.first_frame_ms': ['startup.first_frame_ms', 'first_frame_ms', 'time_to_first_frame_ms', 'first_frame_duration_ms'],
   'startup.bind_application_ms': ['startup.bind_application_ms', 'bind_application_ms', 'bind_app_ms', 'bindApplicationMs'],
@@ -402,7 +419,6 @@ const METRIC_FIELD_CANDIDATES: Record<StandardComparisonMetricKey, string[]> = {
   'scrolling.p99_frame_ms': ['scrolling.p99_frame_ms', 'p99_frame_ms', 'frame_p99_ms', 'p99_ms'],
   'cpu.main_thread_running_ms': ['cpu.main_thread_running_ms', 'main_thread_running_ms', 'running_ms'],
   'cpu.main_thread_runnable_ms': ['cpu.main_thread_runnable_ms', 'main_thread_runnable_ms', 'runnable_ms'],
-  'cpu.big_core_pct': ['cpu.big_core_pct', 'big_core_pct', 'big_core_percent'],
   'cpu.avg_freq_mhz': ['cpu.avg_freq_mhz', 'avg_freq_mhz', 'average_freq_mhz'],
   'trace.duration_ms': ['trace.duration_ms', 'trace_duration_ms', 'duration_ms'],
   'trace.device_model': ['trace.device_model', 'device_model'],
@@ -420,35 +436,114 @@ function metricSourceFromEnvelope(env: DataEnvelope): NormalizedMetricSource {
   };
 }
 
+/**
+ * Rows of one iterator item's section. The executor stores a section's rows as
+ * row objects, although the declared SectionData type is a table payload.
+ */
+function sectionRows(item: ExpandableRowData, sectionId: string): Array<Record<string, unknown>> {
+  const data: unknown = item?.result?.sections?.[sectionId]?.data;
+  return Array.isArray(data)
+    ? data.filter((row): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row))
+    : dataRows(data);
+}
+
+interface ProducerUnit {
+  rows: Array<Record<string, unknown>>;
+  section?: string;
+  itemIndex?: number;
+}
+
+/** The first admitted producer unit in one envelope that returned rows. */
+function firstProducerUnit(contract: ComparisonMetricProducerContract, env: DataEnvelope): ProducerUnit | undefined {
+  // Only Skill execution writes skill_result envelopes; a reference-trace side
+  // measures a different trace than the snapshot.
+  if (env.meta?.type !== 'skill_result' || envelopeTraceValue(env, 'traceSide') === 'reference') return undefined;
+  const {skillId, stepId} = env.meta;
+  for (const producer of contract.producers) {
+    if (producer.skillId !== skillId || producer.stepId !== stepId) continue;
+    if (!producer.section) {
+      const rows = payloadRows(env);
+      if (rows.length > 0) return {rows};
+      continue;
+    }
+    const items = env.data?.expandableData ?? [];
+    for (let itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      const rows = sectionRows(items[itemIndex], producer.section);
+      if (rows.length > 0) return {rows, section: producer.section, itemIndex};
+    }
+  }
+  return undefined;
+}
+
+function standardMetric(
+  definition: NormalizedMetricDefinition,
+  value: NormalizedMetricValue['value'],
+  source: NormalizedMetricSource,
+  missingReason?: string,
+): NormalizedMetricValue {
+  return {
+    key: definition.key,
+    label: definition.label,
+    group: definition.group,
+    value,
+    unit: definition.unit,
+    direction: definition.direction,
+    aggregation: definition.aggregation,
+    confidence: missingReason ? 0 : 0.75,
+    ...(missingReason ? {missingReason} : {}),
+    source,
+  };
+}
+
+/**
+ * A contracted metric comes from the first admitted producer unit that
+ * returned rows, and from nothing else: when its contract refuses that unit,
+ * the metric is stored withheld with the reason, not read from a later row,
+ * envelope or iterator item that may describe another thread or window.
+ */
+function extractContractedMetric(
+  contract: ComparisonMetricProducerContract,
+  envelopes: DataEnvelope[],
+): NormalizedMetricValue | undefined {
+  const definition = STANDARD_COMPARISON_METRICS.find(metric => metric.key === contract.metricKey)!;
+  for (const env of envelopes) {
+    const unit = firstProducerUnit(contract, env);
+    if (!unit) continue;
+    const decision = decideProducerCandidate(contract, unit.rows);
+    const source: NormalizedMetricSource = {
+      ...metricSourceFromEnvelope(env),
+      ...(unit.section ? {section: unit.section, itemIndex: unit.itemIndex} : {}),
+    };
+    return decision.admitted
+      ? standardMetric(definition, decision.value, {...source, metricDefinition: contract.definition})
+      : standardMetric(definition, null, source, withheldMetricReason(decision.reason));
+  }
+  return undefined;
+}
+
 function extractStandardMetrics(envelopes: DataEnvelope[] = []): NormalizedMetricValue[] {
   const byKey = new Map<string, NormalizedMetricValue>();
   for (const env of envelopes) {
     for (const row of payloadRows(env)) {
       const byNormalizedName = new Map(Object.entries(row).map(([key, value]) => [normalizeFieldName(key), value]));
       for (const definition of STANDARD_COMPARISON_METRICS) {
-        const metric = getRowMetric(byNormalizedName, METRIC_FIELD_CANDIDATES[definition.key]);
+        if (producerContractFor(definition.key) || byKey.has(definition.key)) continue;
+        const metric = getRowMetric(byNormalizedName, METRIC_FIELD_CANDIDATES[definition.key as UncontractedMetricKey]);
         if (metric === null) continue;
         const {value} = metric;
         const normalizedValue = definition.key === 'scrolling.jank_rate_pct' && value > 0 && value <= 1
           ? value * 100
           : value;
-        if (byKey.has(definition.key)) continue;
-        byKey.set(definition.key, {
-          key: definition.key,
-          label: definition.label,
-          group: definition.group,
-          value: normalizedValue,
-          unit: definition.unit,
-          direction: definition.direction,
-          aggregation: definition.aggregation,
-          confidence: 0.75,
-          source: {
-            ...metricSourceFromEnvelope(env),
-            ...(metric.definition ? {metricDefinition: metric.definition} : {}),
-          },
-        });
+        byKey.set(definition.key, standardMetric(definition, normalizedValue, {
+          ...metricSourceFromEnvelope(env),
+          ...(metric.definition ? {metricDefinition: metric.definition} : {}),
+        }));
       }
     }
+  }
+  for (const contract of COMPARISON_METRIC_PRODUCER_CONTRACTS) {
+    const metric = extractContractedMetric(contract, envelopes);
+    if (metric) byKey.set(contract.metricKey, metric);
   }
   return [...byKey.values()];
 }
@@ -483,11 +578,12 @@ export function buildCompletedAnalysisResultSnapshot(
     || input.terminationMessage
     || 'Analysis completed';
   const metrics = extractStandardMetrics(input.dataEnvelopes);
+  const hasComparableMetric = metrics.some(metric => !isWithheldMetric(metric));
   const partialReasons: string[] = [];
   if (input.partial) {
     partialReasons.push(input.terminationReason || input.terminationMessage || 'Analysis marked partial by runtime');
   }
-  if (metrics.length === 0) {
+  if (!hasComparableMetric) {
     partialReasons.push('No normalized comparison metrics extracted yet');
   }
   const storedAnalysisReceipt = input.analysisReceipt;
@@ -573,7 +669,7 @@ export function buildCompletedAnalysisResultSnapshot(
     ...(capabilityManifest ? {capabilityManifest} : {}),
     metrics,
     evidenceRefs: evidenceRefsFromInput(input),
-    status: input.success === false ? 'failed' : input.partial || metrics.length === 0 ? 'partial' : 'ready',
+    status: input.success === false ? 'failed' : input.partial || !hasComparableMetric ? 'partial' : 'ready',
     schemaVersion: ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
     createdAt,
   };

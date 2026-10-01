@@ -875,13 +875,43 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId/stream` | Subscribe to comparison stream |
 
 A Skill result row may declare the definition of a metric column with a
-`<column>_definition` string on the same row (for example `cpu_profiling`'s
-`big_core_pct_definition`); the snapshot stores it as the metric's
-`source.metricDefinition`. When two snapshots declare different definitions for
-the same metric (including one side undeclared), the comparison computes no delta
-(`deltaValue: null`, `assessment: "unknown"`) and names both definitions in
-`matrix.warnings` and the conclusion `uncertainty`. Undeclared historical metrics
-keep comparing as before.
+`<column>_definition` string on the same row; the snapshot stores it as the
+metric's `source.metricDefinition`. When two snapshots declare different
+definitions for the same metric (including one side undeclared), the comparison
+computes no delta (`deltaValue: null`, `assessment: "unknown"`) and names both
+definitions in `matrix.warnings` and the conclusion `uncertainty`. Undeclared
+historical metrics keep comparing as before.
+
+`cpu.big_core_pct` has a producer contract
+(`backend/src/services/comparisonMetricProducerContract.ts`) instead of taking the
+first `big_core_pct` column:
+
+- Definition `main_thread_running:core_tier_group:prime+big+medium@3`: the
+  big-group (prime/big/medium) share of **one** main thread's Running time in the
+  selected event window, with no time on unclassified cores. It describes the one
+  selected startup or slow input event, not an aggregate over the analysis.
+- Admitted sources, by envelope top-level `skillId` + display `stepId`:
+  `cpu_core_analysis` of `startup_detail` and `click_response_detail`, and the
+  `cpu_core_analysis` section of the iterator items of
+  `startup_analysis.analyze_startups` and
+  `click_response_analysis.analyze_slow_events` (`source.section` and
+  `source.itemIndex` record which item). Same-named columns of other Skills,
+  `type: skill` nested steps, raw SQL, frontend pre-queried data and
+  reference-trace envelopes are never candidates.
+- The first candidate unit that returned rows decides: exactly one row, its
+  `big_core_pct_definition` equal to the definition above, `main_thread_count = 1`,
+  and an unrounded numeric `unknown_core_ns = 0`. Otherwise the snapshot stores the
+  metric with `value: null` and `missingReason: "producer_contract:<reason>"`
+  (`ambiguous_population`, `definition_mismatch`, `unknown_core_time`,
+  `unknown_core_time_unverified`, `value_unavailable`) and never takes a later
+  thread, event or envelope instead; the comparison lists it as missing with that
+  reason.
+- A delta is computed only when both values were declared under the current
+  definition by admitted producers. History is classified by provenance and never
+  diffed; the warning names the class: `legacy_admitted_producer` (an admitted
+  producer's earlier value, unknown-core time never checked), `outside_contract`
+  (any other Skill step, including `cpu_profiling`'s earlier `@2` declaration), or
+  `non_skill_source`.
 
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 
