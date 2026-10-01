@@ -642,7 +642,8 @@ OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要
 回退到会忽略用户范围的 `legacy` 或 `dual-write` 模式。
 
 生产模式默认要求 Issuer、回调和前端 URL 全部使用 HTTPS，并使用 Secure Cookie。
-只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`；该开关会
+只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`（`true`、`1`、
+`yes`、`on`、`enabled` 任一值，与其他开关相同）；该开关会
 允许明文 HTTP 并默认关闭 Secure Cookie，不能用于不可信网络。`FRONTEND_URL` 必须是
 浏览器实际访问的前端 Origin，不能填写容器内部地址。前端 URL 与 OIDC 回调必须使用相同
 协议和主机，端口可以不同；前端默认直接从回调地址的 Origin 推导后端地址，不需要再填写
