@@ -10,12 +10,13 @@ import {
 import { createAnalysisResultSnapshotRepository } from '../analysisResultSnapshotStore';
 import { applyEnterpriseMinimalSchema } from '../enterpriseSchema';
 import type {CapabilityManifestAttributionV1} from '../../types/capabilityManifest';
-import {createDataEnvelope} from '../../types/dataContract';
+import {createDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import {buildEvidenceContract} from '../evidence/evidenceContractBuilder';
 import {runDeterministicClaimVerifier} from '../verifier/deterministicClaimVerifier';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {buildCompletedAnalysisResultSnapshot} from '../analysisResultSnapshotPipeline';
 import {buildDeterministicComparisonResult} from '../comparisonResultService';
+import {BIG_CORE_PCT_DEFINITION} from '../comparisonMetricProducerContract';
 
 const capabilityManifest: CapabilityManifestAttributionV1 = {
   schemaVersion: 'capability_manifest_attribution@1',
@@ -643,33 +644,36 @@ describe('scene report reference JSON round-trip', () => {
   });
 });
 
-// cpu_profiling's big_core_pct changed from prime+big to prime+big+medium and
-// now declares that on its rows. Snapshots compare a metric only under the
-// same declaration, read back through the store as comparisons do.
+// A producer may declare a metric's definition on its row
+// (`<column>_definition`). Snapshots compare such a metric only under the same
+// declaration, read back through the store as comparisons do.
 describe('declared metric definitions across persistence', () => {
-  const DECLARED = 'core_tier_group:prime+big+medium@2';
+  const DECLARED = 'present_interval:p50@2';
   const owners = {
     old: {userId: 'user-a', traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a'},
     new: {userId: 'user-b', traceId: 'trace-b', sessionId: 'session-b', runId: 'run-b'},
   };
 
-  function storedSnapshot(db: Database.Database, owner: keyof typeof owners, row: Record<string, unknown>) {
-    const envelope = createDataEnvelope({columns: Object.keys(row), rows: [Object.values(row)]}, {
-      type: 'skill_result', source: 'cpu_profiling:core_distribution', skillId: 'cpu_profiling',
-      stepId: 'core_distribution', title: '大小核调度分布',
-    });
+  function storedSnapshot(db: Database.Database, owner: keyof typeof owners, envelope: DataEnvelope) {
     const built = buildCompletedAnalysisResultSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a',
-      ...owners[owner], query: 'cpu profiling', conclusion: 'CPU profiled', dataEnvelopes: [envelope]});
+      ...owners[owner], query: 'analysis', conclusion: 'done', dataEnvelopes: [envelope]});
     const repository = createAnalysisResultSnapshotRepository(db);
     repository.createSnapshot(built!);
     return repository.getSnapshot({tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: owners[owner].userId}, built!.id)!;
   }
 
-  function compare(db: Database.Database, baseline: Record<string, unknown>, candidate: Record<string, unknown>) {
+  const fpsEnvelope = (row: Record<string, unknown>) =>
+    createDataEnvelope({columns: Object.keys(row), rows: [Object.values(row)]}, {
+      type: 'skill_result', source: 'scrolling_analysis:frame_summary', skillId: 'scrolling_analysis',
+      stepId: 'frame_summary', title: 'frames',
+    });
+
+  function compare(db: Database.Database, metricKey: 'scrolling.avg_fps' | 'cpu.big_core_pct',
+    baseline: DataEnvelope, candidate: DataEnvelope) {
     const before = storedSnapshot(db, 'old', baseline);
     const after = storedSnapshot(db, 'new', candidate);
     const result = buildDeterministicComparisonResult([before, after],
-      {baselineSnapshotId: before.id, metricKeys: ['cpu.big_core_pct']});
+      {baselineSnapshotId: before.id, metricKeys: [metricKey]});
     return {before, after, result, delta: result.matrix.rows[0].deltas[0]};
   }
 
@@ -682,35 +686,70 @@ describe('declared metric definitions across persistence', () => {
     } finally { db.close(); }
   }
 
-  test('keeps a pre-change value out of the delta and says why', () => withDb(db => {
-    const {before, after, result, delta} = compare(db,
-      {thread_name: 'main', big_core_pct: 10},
-      {thread_name: 'main', big_core_pct: 90, big_core_pct_definition: DECLARED});
-    expect(before.metrics.find(metric => metric.key === 'cpu.big_core_pct')?.source).not.toHaveProperty('metricDefinition');
-    expect(after.metrics.find(metric => metric.key === 'cpu.big_core_pct')?.source.metricDefinition).toBe(DECLARED);
+  test('keeps an undeclared value out of a declared delta and says why', () => withDb(db => {
+    const {before, after, result, delta} = compare(db, 'scrolling.avg_fps',
+      fpsEnvelope({avg_fps: 50}), fpsEnvelope({avg_fps: 58, avg_fps_definition: DECLARED}));
+    expect(before.metrics.find(metric => metric.key === 'scrolling.avg_fps')?.source).not.toHaveProperty('metricDefinition');
+    expect(after.metrics.find(metric => metric.key === 'scrolling.avg_fps')?.source.metricDefinition).toBe(DECLARED);
     expect(delta).toMatchObject({deltaValue: null, deltaPct: null, assessment: 'unknown'});
     expect(result.significantChanges).toEqual([]);
-    const warning = `Metric cpu.big_core_pct uses different definitions in ${before.id} (undeclared) and ${after.id} (${DECLARED}); delta not computed`;
+    const warning = `Metric scrolling.avg_fps uses different definitions in ${before.id} (undeclared) and ${after.id} (${DECLARED}); delta not computed`;
     expect(result.matrix.warnings).toContain(warning);
     expect(result.conclusion.uncertainty).toContain(warning);
   }));
 
   test('compares values under the same declaration', () => withDb(db => {
-    const {result, delta} = compare(db,
-      {big_core_pct: 90, big_core_pct_definition: DECLARED},
-      {big_core_pct: 60, big_core_pct_definition: DECLARED});
-    expect(delta).toMatchObject({deltaValue: -30});
+    const {result, delta} = compare(db, 'scrolling.avg_fps',
+      fpsEnvelope({avg_fps: 50, avg_fps_definition: DECLARED}), fpsEnvelope({avg_fps: 58, avg_fps_definition: DECLARED}));
+    expect(delta).toMatchObject({deltaValue: 8});
     expect(result.matrix.warnings.filter(warning => warning.includes('definitions'))).toEqual([]);
   }));
 
   test('leaves undeclared values comparing as before', () => withDb(db => {
-    expect(compare(db, {big_core_pct: 10}, {big_core_pct: 20}).delta).toMatchObject({deltaValue: 10});
+    expect(compare(db, 'scrolling.avg_fps', fpsEnvelope({avg_fps: 50}), fpsEnvelope({avg_fps: 60})).delta)
+      .toMatchObject({deltaValue: 10});
   }));
 
   test('takes a definition only from the row that declares it beside the value', () => withDb(db => {
-    const declarationOnly = storedSnapshot(db, 'old', {big_core_pct_definition: DECLARED, total_ms: 5});
-    expect(declarationOnly.metrics.find(metric => metric.key === 'cpu.big_core_pct')).toBeUndefined();
-    const blank = storedSnapshot(db, 'new', {big_core_pct: 40, big_core_pct_definition: '  '});
-    expect(blank.metrics.find(metric => metric.key === 'cpu.big_core_pct')?.source).not.toHaveProperty('metricDefinition');
+    const declarationOnly = storedSnapshot(db, 'old', fpsEnvelope({avg_fps_definition: DECLARED, frame_count: 5}));
+    expect(declarationOnly.metrics.find(metric => metric.key === 'scrolling.avg_fps')).toBeUndefined();
+    const blank = storedSnapshot(db, 'new', fpsEnvelope({avg_fps: 40, avg_fps_definition: '  '}));
+    expect(blank.metrics.find(metric => metric.key === 'scrolling.avg_fps')?.source).not.toHaveProperty('metricDefinition');
+  }));
+
+  // cpu.big_core_pct has a producer contract (comparisonMetricProducerContract.ts).
+  const startupRow = (overrides: Record<string, unknown> = {}) => ({big_core_pct: 70, unknown_core_ns: 0,
+    main_thread_count: 1, big_core_pct_definition: BIG_CORE_PCT_DEFINITION, ...overrides});
+  /** startup_analysis's iterator envelope; item 0 returned no cpu rows. */
+  function iterated(row: Record<string, unknown>) {
+    const envelope = createDataEnvelope({columns: ['startup_id'], rows: [[1], [2]]}, {
+      type: 'skill_result', source: 'startup_analysis:analyze_startups', skillId: 'startup_analysis',
+      stepId: 'analyze_startups', title: 'startups'});
+    (envelope.data as any).expandableData = [
+      {item: {startup_id: 1}, result: {success: true, sections: {cpu_core_analysis: {title: 'cpu', data: []}}}},
+      {item: {startup_id: 2}, result: {success: true, sections: {cpu_core_analysis: {title: 'cpu', data: [row]}}}},
+    ];
+    return envelope;
+  }
+
+  test('keeps the producer contract provenance of cpu.big_core_pct through the store', () => withDb(db => {
+    const {before, after, delta, result} = compare(db, 'cpu.big_core_pct',
+      iterated(startupRow()), iterated(startupRow({big_core_pct: 55})));
+    expect(before.metrics.find(metric => metric.key === 'cpu.big_core_pct')).toMatchObject({value: 70,
+      source: {skillId: 'startup_analysis', stepId: 'analyze_startups', section: 'cpu_core_analysis', itemIndex: 1,
+        metricDefinition: BIG_CORE_PCT_DEFINITION}});
+    expect(after.metrics.find(metric => metric.key === 'cpu.big_core_pct')?.value).toBe(55);
+    expect(delta).toMatchObject({deltaValue: -15});
+    expect(result.matrix.warnings).toEqual([]);
+  }));
+
+  test('keeps a withheld cpu.big_core_pct missing, with its reason, after the store', () => withDb(db => {
+    const {after, result, delta} = compare(db, 'cpu.big_core_pct',
+      iterated(startupRow()), iterated(startupRow({unknown_core_ns: 4000})));
+    expect(after.metrics.find(metric => metric.key === 'cpu.big_core_pct')).toMatchObject({value: null,
+      missingReason: 'producer_contract:unknown_core_time', source: {section: 'cpu_core_analysis', itemIndex: 1}});
+    expect(after.status).toBe('partial');
+    expect(delta.deltaValue).toBeNull();
+    expect(result.matrix.missingMatrix[after.id]).toEqual({'cpu.big_core_pct': 'producer_contract:unknown_core_time'});
   }));
 });
