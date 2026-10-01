@@ -39,7 +39,8 @@ Trace Processor 代理的 WebSocket 升级和服务端日志。请求体里的 `
 
 ## 路由级失败
 
-接口自己捕获的下游失败（存储、文件系统、trace processor、密钥库、导出等）统一返回：
+接口（含 `backend/src/controllers/` 实现的 SQL、Skill、Skill 包和批量 trace 接口）自己捕获的
+下游失败（存储、文件系统、trace processor、密钥库、导出、模型调用等）统一返回：
 
 ```json
 {"success": false, "code": "report_read_failed", "error": "Failed to get report", "requestId": "req-…"}
@@ -50,10 +51,46 @@ Trace Processor 代理的 WebSocket 升级和服务端日志。请求体里的 `
 不包含异常消息；`requestId` 与 `X-Request-Id` 的取值规则同上。异常消息和调用栈只写入该路由的
 服务端日志行，用 `requestId` 关联。
 
-SmartPerfetto 自己为调用方编写的校验错误保留可操作的文案，通常附带 `code`，例如 Provider
-Manager 输入（`provider_invalid_request` 400、`provider_not_found` 404）、trace 列表分页
-（`INVALID_TRACE_LIST_PAGE`）、Agent 日志级别（`invalid_log_level`）、Agent 分析参数、RAG 检索
-参数、目录选择器和企业工作区管理。
+SmartPerfetto 自己为调用方编写的错误保留可操作的文案，形状相同但 `error` 是该文案、HTTP 状态
+取错误自己的状态。它们在后端是 `PublicRequestError` 的领域子类，每个路由只回显自己列出的子类，
+其他异常一律固定文案。例如：
+
+- Provider Manager 输入（`provider_invalid_request` 400、`provider_not_found` 404）、trace 列表分页
+  （`INVALID_TRACE_LIST_PAGE`）、Agent 日志级别（`invalid_log_level`）、Agent 分析参数、RAG 检索参数、
+  目录选择器和企业工作区管理。
+- 对话：`CONVERSATION_NOT_FOUND` 404、`CONVERSATION_QUERY_REQUIRED` 400、会话上下文变化
+  （`CONVERSATION_TRACE_CHANGED`、`CONVERSATION_PROVIDER_CHANGED`、
+  `CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`、`ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED`；源码或知识源授权
+  在恢复时失效为小写的 `analysis_context_changed_restart_required`）409、
+  `RUN_ALREADY_ACTIVE` 409、`CANCELLATION_IN_PROGRESS` 409、停止已不在运行的 run 为
+  `CONVERSATION_RUN_NOT_ACTIVE` 409。状态由错误类型决定，不再按消息文本匹配。
+- URL 上传：`INVALID_TRACE_URL` 400、`TRACE_URL_TIMEOUT` 504、`TRACE_URL_REDIRECT_INVALID` 502。
+- 知识策展（baseline、case、memory 晋升）、企业 API Key 创建、OIDC 登录被拒
+  （`oidc_subject_tenant_conflict` 403）、trace 采集配置建议、模板分析（`unknown_template` 400、
+  trace 缺少所需数据为 `template_data_unavailable` 422）、反馈写入
+  （输入校验 400，supersede/幂等冲突 409）、代码库和外部知识源的字段校验、批量 trace 请求。
+
+RAG 管理、Skill 包和批量 trace 接口背后的服务把机器可读的原因码作为异常消息抛出
+（如 `root_outside_allowlist`、`source_chunk_limit_exceeded:5000`）。这些接口回显原因码本身作为
+`code` 和 `error`，去掉第一个 `:` 之后的细节（可能是 id、路径或大小），原始消息以 warn 级别写入
+日志；不是原因码的消息一律固定文案。自进化接口沿用 `{success: false, error: <code>}` 形状，返回
+完整的小写原因码（只含 `a-z 0-9 _ : -`，可带 `:` 之后的 id），其他异常为
+`self_evolution_request_failed`。
+
+后续通过其他接口读到的失败记录同样不含异常消息：对比 run 的 `error` 为 `Comparison failed`；
+租户清理任务（`GET /api/tenant/purge/:jobId`）的 `error` 只保留清理窗口未到和 tombstone 不存在
+两种文案，并附 `errorCode`（`tenant_purge_window_open`、`tenant_tombstone_not_found`、
+`tenant_purge_failed`）；报告生成失败时 `reportError` 为 `report generation failed`；上传后
+trace_processor_shell 加载失败时返回 `trace_processor_shell could not load the trace`。trace
+上传接口的 `details` 只用于 URL 被拒和文件过大这类我们写的说明，不再携带异常消息。通过 API 提交的
+批量 trace 中，单个 trace 失败时 `error` 和诊断只保留原因码（否则为 `batch_trace_failed`），CLI
+本地批量运行保留完整消息；代码库重建索引结果中每个被跳过文件的 `reason` 只保留原因码（否则为
+`source_file_unreadable`）。企业模式下 SSO 会话或 API Key 解析出错时 401 只返回固定说明。此前已经
+写入的记录保留原文。
+
+分析 run 本身的失败是例外：Agent 分析的 `error` SSE 事件、`/status` 的 `error`、对话的
+`run_failed` 事件携带运行时或模型服务给出的失败原因（如鉴权、额度），因为这是会话所有者唯一能
+据以处理的信息；使用私有知识（源码、外部知识源）的 run 在这些出口都只返回所有者投影后的文案。
 
 ## OIDC 鉴权
 

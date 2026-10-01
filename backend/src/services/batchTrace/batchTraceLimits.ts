@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { BatchTraceSurface } from './batchTraceTypes';
+import { BatchTraceRequestError, invalidBatchTraceRequest } from './batchTraceRequestError';
 
 export interface BatchTraceLimits {
   maxTraceCount: number;
@@ -133,10 +134,10 @@ export function resolveBatchTraceConcurrency(input: {
 
 export function assertBatchTraceCount(count: number, limit: number): void {
   if (!Number.isInteger(count) || count < 1) {
-    throw new Error('batch trace run requires at least one trace');
+    throw invalidBatchTraceRequest('batch trace run requires at least one trace');
   }
   if (count > limit) {
-    throw new Error(`invalid_batch_trace_limit:trace_count:${count}>${limit}`);
+    throw new BatchTraceRequestError('invalid_batch_trace_limit', `invalid_batch_trace_limit:trace_count:${count}>${limit}`);
   }
 }
 

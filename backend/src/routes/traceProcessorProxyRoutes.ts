@@ -25,6 +25,7 @@ import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionMo
 import {
   frontendHolderInput,
   getTraceProcessorLeaseStore,
+  TraceProcessorLeaseUnavailableError,
   type FrontendHolderVisibility,
   type TraceProcessorHolderInput,
   type TraceProcessorLeaseRecord,
@@ -331,12 +332,10 @@ async function heartbeatLease(req: Request, res: Response): Promise<void> {
   try {
     lease = store.acquireHolderForLease(scope, lease.id, holder);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('not acquirable')) {
-      throw new TraceProcessorProxyError(409, message);
-    }
-    if (message.includes('not found')) {
-      throw new TraceProcessorProxyError(404, 'Trace processor lease not found');
+    if (error instanceof TraceProcessorLeaseUnavailableError) {
+      throw error.reason === 'not_acquirable'
+        ? new TraceProcessorProxyError(409, error.message)
+        : new TraceProcessorProxyError(404, 'Trace processor lease not found');
     }
     throw error;
   }
@@ -644,8 +643,7 @@ export function handleTraceProcessorProxyUpgrade(
       writeUpgradeError(socket, error.statusCode, error.message);
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('[TraceProcessorProxy] WebSocket proxy error:', message);
+    console.error('[TraceProcessorProxy] WebSocket proxy error:', error);
     writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   return true;

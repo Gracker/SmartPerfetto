@@ -26,6 +26,7 @@ import {
 } from '../scopedIngestLease';
 import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
 import {buildSourceSelectionIR, sourceExtensionsForKind} from './sourceSelectionPolicy';
+import {invalidCodebaseMetadata, invalidCodebaseSelection} from './codebaseRequestError';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
 export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker';
@@ -469,7 +470,7 @@ export class CodebaseRegistry {
   register(input: RegisterCodebaseInput): CodebaseRef {
     this.load();
     if (!CODEBASE_KINDS.includes(input.kind)) {
-      throw new Error(`Unsupported codebase kind: ${input.kind}`);
+      throw invalidCodebaseMetadata(`Unsupported codebase kind: ${input.kind}`);
     }
     // rootRealpath is a security identity, not a caller-provided display path.
     // Canonicalize even trusted preview input so consent and later drift checks
@@ -690,7 +691,7 @@ export class CodebaseRegistry {
         ? selection.excludeGlobs
         : undefined;
       if (existing.kind === 'kernel_source' && !pathFilters?.length) {
-        throw new Error('kernel_source requires pathFilters');
+        throw invalidCodebaseSelection('kernel_source requires pathFilters');
       }
       if (
         listsEqual(existing.pathFilters, pathFilters) &&

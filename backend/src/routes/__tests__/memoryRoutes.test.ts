@@ -324,11 +324,12 @@ describe('POST /api/memory/promote', () => {
     expect(res.body.error).toMatch(/scope='world'/);
   });
 
-  it('surfaces missing entry as 400', async () => {
+  it('surfaces missing entry as 404', async () => {
     const res = await request(app)
       .post('/api/memory/promote')
       .send({entryId: 'missing', policy: REVIEWER_POLICY});
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('memory_entry_not_found');
     expect(res.body.error).toMatch(/not found/);
   });
 });

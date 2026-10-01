@@ -256,12 +256,12 @@ export type StopResponseClass = 'review_only' | 'full_cancel' | 'force_committed
  * Agent route: `review_stop_requested`, `completed` + `committed` |
  * `review_not_finished`, `cancelled`, or 409 RUN_NOT_CANCELLABLE /
  * RUN_NOT_ACTIVE. Conversation: `review_stop_requested`, the settled outcome
- * kind, or 409 when the run is no longer active (code set by the CLI).
+ * kind, or 409 CONVERSATION_RUN_NOT_ACTIVE when the run is no longer active.
  */
 export function classifyStopResponse(entry: StopEntry, attempt: StopAttempt): StopResponseClass {
   if (attempt.httpStatus === undefined) return 'error';
   if (attempt.httpStatus === 409) {
-    return ['RUN_NOT_CANCELLABLE', 'RUN_NOT_ACTIVE', 'ACTIVE_RUN_NOT_FOUND'].includes(attempt.code ?? '')
+    return ['RUN_NOT_CANCELLABLE', 'RUN_NOT_ACTIVE', 'CONVERSATION_RUN_NOT_ACTIVE'].includes(attempt.code ?? '')
       ? 'already_terminal' : 'error';
   }
   if (attempt.httpStatus !== 200) return 'error';
