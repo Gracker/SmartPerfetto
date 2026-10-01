@@ -9,7 +9,7 @@ import {
   type StreamingUpdate,
 } from '../../agent';
 import { createAgentOrchestrator } from '../../agentRuntime';
-import { getProviderService } from '../../services/providerManager';
+import { getProviderService, ProviderStoreUnreadableError } from '../../services/providerManager';
 import { resolveProviderRuntimeSnapshot } from '../../services/providerManager/providerSnapshot';
 import type { AgentRuntimeKind, ProviderScope } from '../../services/providerManager';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
@@ -304,6 +304,22 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
   }
 
   prepareSession(input: PrepareAnalyzeSessionInput): PrepareAnalyzeSessionResult<TSession> {
+    try {
+      return this.prepareSessionUnchecked(input);
+    } catch (error) {
+      // providers.json unreadable: the provider this session would use is
+      // unknown. Every provider read precedes the step it decides (a pin is
+      // read before its live session could be revoked), so nothing changed.
+      if (!(error instanceof ProviderStoreUnreadableError)) throw error;
+      throw new AnalyzeSessionPreparationError(error.message, {
+        code: error.code,
+        httpStatus: error.httpStatus,
+        hint: 'Repair or move providers.json, then retry; or select the system default (env) provider explicitly.',
+      });
+    }
+  }
+
+  private prepareSessionUnchecked(input: PrepareAnalyzeSessionInput): PrepareAnalyzeSessionResult<TSession> {
     const { traceId, query, requestedSessionId, options = {} } = input;
     const defaultOutputLanguage = parseOutputLanguage(
       process.env.SMARTPERFETTO_OUTPUT_LANGUAGE,
@@ -334,17 +350,24 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       });
     }
 
-    const activeProviderId = explicitProviderId !== undefined
-      ? undefined
-      : providerSvc.getRawEffectiveProvider(providerScope)?.id;
-    let sessionProviderId = explicitProviderId !== undefined
-      ? explicitProviderId
-      : activeProviderId ?? null;
     const resolveProviderSnapshotHash = (
       providerId: string | null,
       runtimeOverride?: AgentRuntimeKind,
     ) => resolveProviderRuntimeSnapshot(providerSvc, providerId, runtimeOverride, providerScope).snapshotHash;
-    let sessionProviderSnapshotHash = resolveProviderSnapshotHash(sessionProviderId);
+    // The pin a session takes when it does not keep one it already has: the
+    // explicit provider, else the active one. Resolved on first use, so a turn
+    // that keeps its live or persisted pin never reads the active provider,
+    // which is refused while providers.json is unreadable.
+    let sessionProviderPin: {providerId: string | null; snapshotHash: string} | undefined;
+    const resolveSessionProviderPin = () => {
+      if (!sessionProviderPin) {
+        const providerId = explicitProviderId !== undefined
+          ? explicitProviderId
+          : providerSvc.getRawEffectiveProvider(providerScope)?.id ?? null;
+        sessionProviderPin = {providerId, snapshotHash: resolveProviderSnapshotHash(providerId)};
+      }
+      return sessionProviderPin;
+    };
 
     if (requestedSessionId) {
       const locatedSession = this.assistantAppService.getSession(requestedSessionId);
@@ -378,54 +401,53 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       const existingSession = liveAnalysisContextMismatch || liveOutputLanguageMismatch
         ? undefined
         : locatedSession;
-      if (existingSession && existingSession.traceId === traceId) {
+      // The live session this request continues, if it is for the same trace.
+      const liveSession = existingSession && existingSession.traceId === traceId ? existingSession : undefined;
+      if (liveSession) {
         assertReferenceTraceCompatible({
           requestedSessionId,
-          existingReferenceTraceId: existingSession.referenceTraceId,
+          existingReferenceTraceId: liveSession.referenceTraceId,
           requestedReferenceTraceId,
         });
-        inheritedReferenceTraceId = normalizeReferenceTraceId(existingSession.referenceTraceId);
+        inheritedReferenceTraceId = normalizeReferenceTraceId(liveSession.referenceTraceId);
       }
-      const liveSessionProviderId = existingSession && existingSession.traceId === traceId
+      const liveSessionProviderId = liveSession
         ? explicitProviderId !== undefined
           ? explicitProviderId
-          : existingSession.providerId ?? null
-        : sessionProviderId;
+          : liveSession.providerId ?? null
+        : null;
       const liveSessionProviderMismatch = Boolean(
-        existingSession &&
-        existingSession.traceId === traceId &&
+        liveSession &&
         explicitProviderId !== undefined &&
-        (existingSession.providerId ?? null) !== explicitProviderId,
+        (liveSession.providerId ?? null) !== explicitProviderId,
       );
       const liveSessionProviderMissing = Boolean(
-        existingSession &&
-        existingSession.traceId === traceId &&
+        liveSession &&
         typeof liveSessionProviderId === 'string' &&
         !providerSvc.getRawProvider(liveSessionProviderId, providerScope),
       );
-      const liveSessionProviderSnapshotHash = existingSession?.providerSnapshotHash && !liveSessionProviderMissing
+      const liveSessionProviderSnapshotHash = liveSession?.providerSnapshotHash && !liveSessionProviderMissing
         ? resolveProviderSnapshotHash(liveSessionProviderId)
         : null;
       const liveSessionProviderSnapshotMismatch = Boolean(
-        existingSession &&
-        existingSession.traceId === traceId &&
+        liveSession &&
         !liveSessionProviderMismatch &&
-        existingSession.providerSnapshotHash &&
+        liveSession.providerSnapshotHash &&
         liveSessionProviderSnapshotHash &&
-        existingSession.providerSnapshotHash !== liveSessionProviderSnapshotHash,
+        liveSession.providerSnapshotHash !== liveSessionProviderSnapshotHash,
       );
       if (existingSession && existingSession.traceId === traceId) {
         if (liveSessionProviderMismatch) {
           existingSession.logger.info('AgentRoutes', 'Provider changed; starting a new SDK session', {
             previousProviderId: existingSession.providerId,
-            nextProviderId: sessionProviderId,
+            nextProviderId: explicitProviderId,
           });
           this.revokeLiveSession(existingSession, 'provider_override_mismatch');
           console.log(`[AgentRoutes] Provider changed for ${requestedSessionId}, creating a new agent session`);
         } else if (liveSessionProviderMissing) {
+          // The next pin is the active provider, resolved after the revocation.
           existingSession.logger.warn('AgentRoutes', 'Pinned provider was removed; starting a fresh SDK session', {
             previousProviderId: liveSessionProviderId,
-            nextProviderId: sessionProviderId,
           });
           this.revokeLiveSession(existingSession, 'pinned_provider_missing');
           console.log(`[AgentRoutes] Pinned provider was removed for ${requestedSessionId}, creating a new agent session`);
@@ -436,8 +458,10 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             previousProviderSnapshotHash,
             nextProviderSnapshotHash: liveSessionProviderSnapshotHash,
           });
-          sessionProviderId = liveSessionProviderId;
-          sessionProviderSnapshotHash = liveSessionProviderSnapshotHash as string;
+          sessionProviderPin = {
+            providerId: liveSessionProviderId,
+            snapshotHash: liveSessionProviderSnapshotHash as string,
+          };
           this.revokeLiveSession(existingSession, 'provider_snapshot_hash_mismatch');
           console.log(`[AgentRoutes] Provider snapshot changed for ${requestedSessionId}, creating a new agent session`);
         } else {
@@ -545,7 +569,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             ? explicitProviderId
             : stateSnapshot
               ? snapshotProviderId ?? null
-              : sessionProviderId;
+              : resolveSessionProviderPin().providerId;
           const snapshotProviderMismatch = Boolean(
             explicitProviderId !== undefined &&
             stateSnapshot &&
@@ -717,7 +741,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
                     providerScope,
                   ).snapshot.runtimeKind,
               outputLanguage: requestedOutputLanguage,
-              providerSnapshotHash: restoredProviderSnapshotHash ?? sessionProviderSnapshotHash,
+              providerSnapshotHash: restoredProviderSnapshotHash ?? resolveSessionProviderPin().snapshotHash,
               providerSnapshotChanged: snapshotProviderHashMismatch || undefined,
               providerSnapshotChangeReason: snapshotProviderHashMismatch
                 ? 'provider_snapshot_hash_mismatch'
@@ -789,6 +813,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
 
     const effectiveReferenceTraceId = requestedReferenceTraceId ?? inheritedReferenceTraceId;
     const sessionId = `agent-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const {providerId: sessionProviderId, snapshotHash: sessionProviderSnapshotHash} = resolveSessionProviderPin();
     const orchestrator: IOrchestrator = createAgentOrchestrator({
       traceProcessorService: getTraceProcessorService(),
       providerId: sessionProviderId,

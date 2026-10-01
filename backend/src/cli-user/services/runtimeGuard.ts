@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import { spawnSync } from 'child_process';
 import {
   resolveAgentRuntimeSelection,
+  resolveAgentRuntimeSelectionForDiagnostics,
   type BackendAgentRuntimeKind,
   type RuntimeSelection,
 } from '../../agentRuntime/runtimeSelection';
@@ -174,7 +175,7 @@ export interface DoctorReport {
 
 export function collectDoctorReport(cliHome: string): DoctorReport {
   const aiPolicy = getAiCapabilityPolicy();
-  const selection = resolveAgentRuntimeSelection();
+  const {selection, providerStoreError} = resolveAgentRuntimeSelectionForDiagnostics();
   const runtimeDiagnostics = getRuntimeDiagnostics(selection);
   const traceProcessorPath = getTraceProcessorPath();
   const traceProcessorExists = fs.existsSync(traceProcessorPath);
@@ -190,7 +191,8 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
 
   const qoderSdkInstalled = selection.kind !== QODER_AGENT_RUNTIME_KIND ||
     runtimeDiagnostics.sdkInstalled === true;
-  const runtimeConfigured = qoderSdkInstalled && (
+  // Analyses following the active provider are refused while providers.json is unreadable.
+  const runtimeConfigured = !providerStoreError && qoderSdkInstalled && (
     runtimeDiagnostics.configured ||
     selection.kind === QODER_AGENT_RUNTIME_KIND
   );
@@ -203,7 +205,9 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
     : 'warn';
   const runtimeOk = aiPolicy.aiEnabled ? runtimeConfigured : true;
   const runtimeMessage = aiPolicy.aiEnabled
-    ? runtimeDiagnostics.configured
+    ? providerStoreError
+      ? providerStoreError.message
+      : runtimeDiagnostics.configured
       ? `${selection.kind} credentials/configuration detected`
       : selection.kind === QODER_AGENT_RUNTIME_KIND && !qoderSdkInstalled
         ? 'Qoder Agent SDK is not installed; review its terms and install the optional SDK explicitly'
@@ -244,6 +248,7 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       ok: runtimeOk,
       status: runtimeStatus,
       message: aiPolicy.aiEnabled &&
+        !providerStoreError &&
         !runtimeDiagnostics.configured &&
         selection.kind !== QODER_AGENT_RUNTIME_KIND
         ? `${runtimeMessage} ${providerConfigurationHelp(parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE), 'cli')}`
@@ -252,6 +257,7 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
         source: selection.source,
         providerId: selection.providerId,
         providerName: selection.providerName,
+        ...(providerStoreError ? {code: providerStoreError.code} : {}),
       },
     },
     ...(aiPolicy.aiEnabled && selection.kind === 'claude-agent-sdk'
