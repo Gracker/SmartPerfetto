@@ -6778,11 +6778,12 @@
           },
           {
             "id": "main_thread_quadrant",
-            "sha256": "306b382152ccf61cc4eba246de101b33c1948d0146f31a09eaedd0fbfaf57905",
+            "sha256": "6bdfc926e69f39c3d5fd542fffd2a2e363c93d9b32f08943d8f923c23a41f92b",
             "required_columns": [
               "upid",
               "utid",
               "unknown_running_ms",
+              "unknown_running_ns",
               "uninterruptible_ms",
               "interruptible_sleep_ms",
               "state_coverage_pct",
