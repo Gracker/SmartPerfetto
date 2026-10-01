@@ -8,6 +8,7 @@
  */
 
 import { TraceProcessorService } from '../traceProcessorService';
+import { templateDataUnavailable } from './templateAnalysisError';
 
 export interface CpuCoreDistribution {
   summary: {
@@ -93,7 +94,7 @@ export class CpuCoreAnalyzer {
     const rows = this.resultToRows(result);
 
     if (rows.length === 0) {
-      throw new Error('No scheduling data found for the specified thread');
+      throw templateDataUnavailable('No scheduling data found for the specified thread');
     }
 
     // 计算总时间

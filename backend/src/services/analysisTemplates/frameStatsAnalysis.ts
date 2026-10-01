@@ -9,6 +9,7 @@
 
 import { TraceProcessorService } from '../traceProcessorService';
 import { inferVsyncPeriodNs } from '../../config/thresholds';
+import { templateDataUnavailable } from './templateAnalysisError';
 
 export interface FrameStatsResult {
   summary: {
@@ -121,7 +122,7 @@ export class FrameStatsAnalyzer {
     const rows = this.resultToRows(result);
 
     if (rows.length === 0) {
-      throw new Error('No frame data found. Make sure the trace contains frame timing information.');
+      throw templateDataUnavailable('No frame data found. Make sure the trace contains frame timing information.');
     }
 
     // 计算基本统计
@@ -209,7 +210,7 @@ export class FrameStatsAnalyzer {
     const rows = this.resultToRows(result);
 
     if (rows.length === 0) {
-      throw new Error('No frame data found in slice table');
+      throw templateDataUnavailable('No frame data found in slice table');
     }
 
     // 使用类似的统计方法

@@ -18,6 +18,7 @@ import {
 } from './enterpriseAuditService';
 import { openEnterpriseDb } from './enterpriseDb';
 import type { EnterpriseOidcUserInfo } from './enterpriseOidcClient';
+import { PublicRequestError } from '../utils/publicRequestError';
 
 const SESSION_COOKIE_NAME = 'sp_sso_session';
 const STATE_COOKIE_NAME = 'sp_oidc_state';
@@ -196,6 +197,9 @@ export function normalizeOidcReturnTo(value: unknown): string | undefined {
     return undefined;
   }
 }
+
+/** An OIDC login SmartPerfetto refuses for the signed-in identity; the user or an admin has to act. */
+export class OidcLoginRejectedError extends PublicRequestError {}
 
 export class EnterpriseSsoService {
   private static instance: EnterpriseSsoService | undefined;
@@ -878,7 +882,7 @@ export class EnterpriseSsoService {
       'SELECT id, tenant_id FROM users WHERE id = ?',
     ).get(userId);
     if (existing && existing.tenant_id !== tenantId) {
-      throw new Error('OIDC subject is already bound to a different tenant');
+      throw new OidcLoginRejectedError('oidc_subject_tenant_conflict', 'OIDC subject is already bound to a different tenant', 403);
     }
     const now = nowMs();
     this.db.prepare(`

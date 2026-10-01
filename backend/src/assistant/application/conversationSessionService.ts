@@ -24,6 +24,7 @@ import {
 import type {PrimaryConversationSourceUse} from '../runtime/conversationSourcePolicy';
 import {buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
+import {PublicRequestError} from '../../utils/publicRequestError';
 import {
   buildReviewNotFinishedResult,
   mayPersistUnverifiedBody,
@@ -214,10 +215,24 @@ interface ConversationSessionServiceDeps {
   reviewStopWatchdogMs?: number;
   onRunStarted?(session: ConversationSession, run: ConversationRun): void;
   onRunSettled?(session: ConversationSession, run: ConversationRun): void;
+  /**
+   * The owner-facing text of a failed run, used for its stored error and its
+   * `run_failed` event alike, e.g. projected for a private-knowledge run;
+   * undefined keeps the error's message.
+   */
+  projectRunError?(session: ConversationSession, run: ConversationRun, error: unknown): string | undefined;
 }
 
 function defaultCreateId(prefix: 'conversation' | 'run'): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/** A conversation request the caller has to change: its text and code are the route contract. */
+export class ConversationRequestError extends PublicRequestError {}
+
+function conversationNotFound(sessionId?: string): ConversationRequestError {
+  return new ConversationRequestError('CONVERSATION_NOT_FOUND',
+    sessionId ? `Conversation session not found: ${sessionId}` : 'Conversation session not found', 404);
 }
 
 const MAX_REPLAY_EVENTS_PER_RUN = 512;
@@ -227,7 +242,7 @@ function normalizeTraceContext(
 ): ConversationTraceContext {
   if (context?.kind !== 'attached') return {kind: 'none'};
   const traceId = context.traceId.trim();
-  if (!traceId) throw new Error('Attached conversation traceId must not be empty');
+  if (!traceId) throw new ConversationRequestError('INVALID_TRACE_CONTEXT', 'Attached conversation traceId must not be empty');
   return {kind: 'attached', traceId};
 }
 
@@ -270,6 +285,7 @@ export class ConversationSessionService {
   private readonly reviewStopWatchdogMs: number;
   private readonly onRunStarted?: ConversationSessionServiceDeps['onRunStarted'];
   private readonly onRunSettled?: ConversationSessionServiceDeps['onRunSettled'];
+  private readonly projectRunError?: ConversationSessionServiceDeps['projectRunError'];
   private readonly listeners = new Map<string, Set<(event: ConversationPublishedEvent) => void>>();
   private readonly sourceEnrichmentCoordinator: ConversationSourceEnrichmentCoordinator;
   private nextEventSeqId = 0;
@@ -286,6 +302,7 @@ export class ConversationSessionService {
     this.reviewStopWatchdogMs = deps.reviewStopWatchdogMs ?? resolveReviewStopWatchdogMs();
     this.onRunStarted = deps.onRunStarted;
     this.onRunSettled = deps.onRunSettled;
+    this.projectRunError = deps.projectRunError;
     this.sourceEnrichmentCoordinator = new ConversationSourceEnrichmentCoordinator({
       now: this.now,
       onEvent: (event) => {
@@ -319,7 +336,8 @@ export class ConversationSessionService {
       input.providerSnapshotHash !== descriptor.providerSnapshotHash || input.runtimeKind !== descriptor.runtimeKind ||
       input.analysisContextFingerprint !== descriptor.analysisContextFingerprint ||
       !traceContextsEqual(normalizeTraceContext(input.traceContext), descriptor.traceContext)) {
-      throw new Error('conversation_recovery_context_mismatch');
+      throw new ConversationRequestError('CONVERSATION_RECOVERY_UNAVAILABLE',
+        'The conversation no longer matches its owner, provider or attached Trace', 409);
     }
     assertCurrentAnalysisContextAuthorization(descriptor, resolveKnowledgeScope(descriptor),
       descriptor.analysisContextFingerprint);
@@ -379,14 +397,14 @@ export class ConversationSessionService {
 
   startTurn(input: StartConversationTurnInput): ConversationTurnReceipt {
     const query = input.query.trim();
-    if (!query) throw new Error('Conversation query is required');
+    if (!query) throw new ConversationRequestError('CONVERSATION_QUERY_REQUIRED', 'Conversation query is required');
 
     let session = input.sessionId
       ? this.sessions.getSession(input.sessionId)
       : undefined;
     const isNewSession = !session;
     if (input.sessionId && !session) {
-      throw new Error(`Conversation session not found: ${input.sessionId}`);
+      throw conversationNotFound(input.sessionId);
     }
     if (!session) {
       const sessionId = this.createId('conversation');
@@ -441,23 +459,26 @@ export class ConversationSessionService {
       this.sessions.setSession(sessionId, session);
     }
     if (input.owner && (session.userId !== input.owner.userId || session.tenantId !== input.owner.tenantId ||
-      session.workspaceId !== input.owner.workspaceId)) throw new Error('Conversation session not found');
+      session.workspaceId !== input.owner.workspaceId)) throw conversationNotFound();
     if (!isNewSession && input.analysisContextFingerprint && session.analysisContextFingerprint &&
       input.analysisContextFingerprint !== session.analysisContextFingerprint) {
-      throw new Error('Start a new conversation after changing authorized sources');
+      throw new ConversationRequestError('ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED',
+        'Start a new conversation after changing authorized sources', 409);
     }
     const requestedTraceContext = input.traceContext
       ? normalizeTraceContext(input.traceContext)
       : session.traceContext;
     if (!isNewSession && !traceContextsEqual(session.traceContext, requestedTraceContext)) {
-      throw new Error('Start a new conversation after changing the attached Trace');
+      throw new ConversationRequestError('CONVERSATION_TRACE_CHANGED',
+        'Start a new conversation after changing the attached Trace', 409);
     }
     if (
       !isNewSession &&
       input.providerId !== undefined &&
       session.providerId !== input.providerId
     ) {
-      throw new Error('Start a new conversation after changing the AI provider');
+      throw new ConversationRequestError('CONVERSATION_PROVIDER_CHANGED',
+        'Start a new conversation after changing the AI provider', 409);
     }
     if (
       !isNewSession &&
@@ -465,10 +486,12 @@ export class ConversationSessionService {
       session.providerSnapshotHash &&
       session.providerSnapshotHash !== input.providerSnapshotHash
     ) {
-      throw new Error('Start a new conversation after changing the AI provider configuration');
+      throw new ConversationRequestError('CONVERSATION_PROVIDER_SNAPSHOT_CHANGED',
+        'Start a new conversation after changing the AI provider configuration', 409);
     }
     if (session.activeRun) {
-      throw new Error(`Conversation already in progress for session ${session.sessionId}`);
+      throw new ConversationRequestError('RUN_ALREADY_ACTIVE',
+        `Conversation already in progress for session ${session.sessionId}`, 409);
     }
 
     session.traceContext = requestedTraceContext;
@@ -613,7 +636,8 @@ export class ConversationSessionService {
       .catch((error: unknown) => {
         if (!this.isCurrentRun(session!, run)) return {kind: 'cancelled' as const, message: ''};
         if (this.cancellationRequested.has(run)) return this.settleCancelledRun(session!, run);
-        const message = error instanceof Error ? error.message : String(error);
+        const message = this.projectRunError?.(session!, run, error) ??
+          (error instanceof Error ? error.message : String(error));
         run.status = 'failed';
         run.error = message;
         run.completedAt = this.now();
@@ -643,7 +667,7 @@ export class ConversationSessionService {
     traceContext?: ConversationTraceContext;
   }): Promise<ConversationTurnReceipt> {
     const session = this.sessions.getSession(input.sessionId);
-    if (!session) throw new Error(`Conversation session not found: ${input.sessionId}`);
+    if (!session) throw conversationNotFound(input.sessionId);
     if (session.activeRun) {
       await this.supersedeRun(session.sessionId, session.activeRun.runId);
     }
@@ -659,7 +683,7 @@ export class ConversationSessionService {
    */
   async cancelRun(sessionId: string, runId: string): Promise<ConversationCancelResult> {
     const session = this.sessions.getSession(sessionId);
-    if (!session) throw new Error(`Conversation session not found: ${sessionId}`);
+    if (!session) throw conversationNotFound(sessionId);
     const run = session.activeRun;
     if (!run || run.runId !== runId) {
       const completedRun = session.runs.find(candidate => candidate.runId === runId);
@@ -671,7 +695,7 @@ export class ConversationSessionService {
         await this.sourceEnrichmentCoordinator.cancel(runId);
         return {status: 'settled', outcome: completedRun.outcome ?? {kind: 'cancelled', message: ''}};
       }
-      throw new Error(`Active conversation run not found: ${runId}`);
+      throw new ConversationRequestError('CONVERSATION_RUN_NOT_ACTIVE', `Active conversation run not found: ${runId}`, 409);
     }
     const stop = this.runStops.get(run);
     const request = stop?.requestStop() ?? 'full';
@@ -703,7 +727,8 @@ export class ConversationSessionService {
       .then(() => run.completion);
     try {
       if (!await settlesWithin(cancellation, this.cancelSettleTimeoutMs)) {
-        throw new Error(`Conversation cancellation did not settle within ${this.cancelSettleTimeoutMs}ms`);
+        throw new ConversationRequestError('CANCELLATION_IN_PROGRESS',
+          `Conversation cancellation did not settle within ${this.cancelSettleTimeoutMs}ms`, 409);
       }
       return await cancellation;
     } finally {

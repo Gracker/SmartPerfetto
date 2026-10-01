@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { Request, Response } from 'express';
+import { PublicRequestError, thrownReasonCode } from '../utils/publicRequestError';
 import { createRequestId, REQUEST_ID_HEADER, requestIdOf } from './requestId';
 
 // body-parser attaches the raw request body to its errors; a malformed JSON
@@ -61,7 +62,7 @@ export function logRouteFailure(
   err: unknown,
 ): string {
   const req = res.req as Request | undefined;
-  const requestId = req ? requestIdOf(req) : createRequestId();
+  const requestId = responseRequestId(res);
   console.error(logLabel, {
     requestId,
     method: req?.method,
@@ -71,4 +72,70 @@ export function logRouteFailure(
     headersSent: res.headersSent,
   }, loggableError(err));
   return requestId;
+}
+
+function responseRequestId(res: Response): string {
+  const req = res.req as Request | undefined;
+  return req ? requestIdOf(req) : createRequestId();
+}
+
+/** The `PublicRequestError` subclasses a route echoes. */
+export type PublicErrorClass = abstract new (...args: never[]) => PublicRequestError;
+
+function isListedPublicError(err: unknown, publicErrors: readonly PublicErrorClass[]): err is PublicRequestError {
+  return publicErrors.some(errorClass => err instanceof errorClass);
+}
+
+/**
+ * Answer a public request error with its own status, code and text, plus the
+ * request id the fixed failures carry.
+ */
+export function sendPublicRequestError(res: Response, err: PublicRequestError): void {
+  const requestId = responseRequestId(res);
+  res.removeHeader('Content-Disposition');
+  res
+    .status(err.status)
+    .type('json')
+    .set(REQUEST_ID_HEADER, requestId)
+    .json({success: false, code: err.code, error: err.message, requestId});
+}
+
+/**
+ * Answer a route's caught error: an instance of one of the listed public error
+ * classes keeps its text, anything else gets the route's fixed failure.
+ */
+export function sendRouteError(
+  res: Response,
+  err: unknown,
+  failure: RouteFailure,
+  publicErrors: readonly PublicErrorClass[],
+): void {
+  if (!res.headersSent && isListedPublicError(err, publicErrors)) {
+    sendPublicRequestError(res, err);
+    return;
+  }
+  sendRouteFailure(res, failure, err);
+}
+
+/**
+ * Like `sendRouteError`, and a reason token a service threw as its message
+ * (`thrownReasonCode`) is answered at `reasonStatus` (or the status it maps the
+ * token to) with the token as code and text. The rejection is logged at warn
+ * level with the original message, which keeps the dropped detail.
+ */
+export function sendRouteReasonError(
+  res: Response,
+  err: unknown,
+  reasonStatus: number | ((reason: string) => number),
+  failure: RouteFailure,
+  publicErrors: readonly PublicErrorClass[] = [],
+): void {
+  const reason = isListedPublicError(err, publicErrors) ? undefined : thrownReasonCode(err);
+  if (reason && !res.headersSent) {
+    const status = typeof reasonStatus === 'number' ? reasonStatus : reasonStatus(reason);
+    console.warn(failure.logLabel, {requestId: responseRequestId(res), status, code: reason}, (err as Error).message);
+    sendPublicRequestError(res, new PublicRequestError(reason, reason, status));
+    return;
+  }
+  sendRouteError(res, err, failure, publicErrors);
 }

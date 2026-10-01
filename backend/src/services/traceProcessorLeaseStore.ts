@@ -252,6 +252,14 @@ export function resolveHolderTtlPolicy(holder: TraceProcessorHolderInput): Trace
   };
 }
 
+/** A lease a caller named that is missing or cannot take another holder. */
+export class TraceProcessorLeaseUnavailableError extends Error {
+  constructor(readonly reason: 'not_found' | 'not_acquirable', message: string) {
+    super(message);
+    this.name = 'TraceProcessorLeaseUnavailableError';
+  }
+}
+
 export class TraceProcessorLeaseStore {
   constructor(private readonly db: Database.Database = openEnterpriseDb()) {}
 
@@ -302,7 +310,8 @@ export class TraceProcessorLeaseStore {
       }
 
       if (!ACQUIRABLE_STATES.has(lease.state as TraceProcessorLeaseState)) {
-        throw new Error(`Trace processor lease ${lease.id} is not acquirable (${lease.state})`);
+        throw new TraceProcessorLeaseUnavailableError('not_acquirable',
+          `Trace processor lease ${lease.id} is not acquirable (${lease.state})`);
       }
 
       this.upsertHolder(lease.id, holder, now);
@@ -334,7 +343,8 @@ export class TraceProcessorLeaseStore {
       const lease = this.mustGetLease(scope, leaseId);
       const state = lease.state as TraceProcessorLeaseState;
       if (!ACQUIRABLE_STATES.has(state)) {
-        throw new Error(`Trace processor lease ${lease.id} is not acquirable (${state})`);
+        throw new TraceProcessorLeaseUnavailableError('not_acquirable',
+          `Trace processor lease ${lease.id} is not acquirable (${state})`);
       }
 
       this.upsertHolder(lease.id, holder, now);
@@ -648,7 +658,7 @@ export class TraceProcessorLeaseStore {
       LIMIT 1
     `).get(scope.tenantId, scope.workspaceId, leaseId) as LeaseRow | undefined;
     if (!row) {
-      throw new Error(`Trace processor lease not found: ${leaseId}`);
+      throw new TraceProcessorLeaseUnavailableError('not_found', `Trace processor lease not found: ${leaseId}`);
     }
     return row;
   }
