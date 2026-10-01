@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type Database from 'better-sqlite3';
 import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import {
@@ -888,12 +889,12 @@ router.get('/:reportId/export', async (req, res) => {
     res.setHeader('Expires', '0');
     recordReportAudit(context, 'report.exported', reportId, report);
     res.send(upgradeLegacyReportHtml(report.html));
-  } catch (error: any) {
-    console.error('[ReportRoutes] Export report error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to export report',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'report_export_failed',
+      error: 'Failed to export report',
+      logLabel: '[ReportRoutes] Export report error',
+    }, error);
   }
 });
 
@@ -941,12 +942,12 @@ router.get('/:reportId', (req, res) => {
     res.setHeader('Expires', '0');
     recordReportAudit(context, 'report.read', reportId, report);
     res.send(upgradeLegacyReportHtml(report.html));
-  } catch (error: any) {
-    console.error('[ReportRoutes] Get report error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to get report',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'report_read_failed',
+      error: 'Failed to get report',
+      logLabel: '[ReportRoutes] Get report error',
+    }, error);
   }
 });
 
@@ -984,12 +985,12 @@ router.delete('/:reportId', (req, res) => {
       success: deleted,
       error: deleted ? undefined : 'Report not found',
     });
-  } catch (error: any) {
-    console.error('[ReportRoutes] Delete report error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to delete report',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'report_delete_failed',
+      error: 'Failed to delete report',
+      logLabel: '[ReportRoutes] Delete report error',
+    }, error);
   }
 });
 

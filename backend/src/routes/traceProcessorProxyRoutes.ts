@@ -18,6 +18,7 @@ import {
 } from '../middleware/auth';
 import { getFirstHeaderValue, getHeaderValue, parseHeaderList, sanitizeContextId } from '../middleware/requestHeaders';
 import { requestIdOf } from '../middleware/requestId';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import {
@@ -519,13 +520,12 @@ function sendProxyError(res: Response, error: unknown): void {
     });
     return;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  console.error('[TraceProcessorProxy] Proxy error:', message);
-  res.status(502).json({
-    success: false,
+  sendRouteFailure(res, {
+    status: 502,
+    code: 'trace_processor_proxy_failed',
     error: 'Trace processor proxy failed',
-    details: message,
-  });
+    logLabel: '[TraceProcessorProxy] Proxy error',
+  }, error);
 }
 
 function writeUpgradeError(socket: Duplex, statusCode: number, message: string): void {
@@ -659,8 +659,9 @@ async function proxyWebSocket(
   });
 
   upstream.once('error', (error) => {
+    console.error('[TraceProcessorProxy] WebSocket upstream error:', error);
     if (!socket.destroyed) {
-      writeUpgradeError(socket, 502, `Trace processor WebSocket proxy failed: ${error.message}`);
+      writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
     }
   });
   socket.once('error', () => upstream.destroy());
