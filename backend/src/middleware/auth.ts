@@ -11,6 +11,8 @@ import {
   requestHasEnterpriseApiKeyCredential,
 } from '../services/enterpriseApiKeyService';
 import { EnterpriseSsoService } from '../services/enterpriseSsoService';
+import { getFirstHeaderValue, getHeaderValue, parseHeaderList, sanitizeContextId } from './requestHeaders';
+import { requestIdOf } from './requestId';
 
 type RequestContextAuthType = 'sso' | 'api_key' | 'dev';
 
@@ -156,38 +158,9 @@ const truthyEnv = (value: string | undefined): boolean => {
   return ['1', 'true', 'yes', 'on', 'enabled'].includes(value.trim().toLowerCase());
 };
 
-const sanitizeContextId = (value: unknown): string => {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-};
-
 const sanitizeHeaderText = (value: unknown): string => {
   if (typeof value !== 'string') return '';
   return value.trim().replace(/[\r\n]/g, '').slice(0, 320);
-};
-
-const getHeaderValue = (req: Request, name: string): string => {
-  const value = req.headers[name.toLowerCase()];
-  if (Array.isArray(value)) return value[0] || '';
-  return typeof value === 'string' ? value : '';
-};
-
-const getFirstHeaderValue = (req: Request, names: string[]): string => {
-  for (const name of names) {
-    const value = getHeaderValue(req, name);
-    if (value.trim().length > 0) return value;
-  }
-  return '';
-};
-
-const parseHeaderList = (req: Request, names: string[], fallback: string[]): string[] => {
-  const raw = getFirstHeaderValue(req, names);
-  if (!raw.trim()) return fallback;
-  const parsed = raw
-    .split(',')
-    .map(value => sanitizeContextId(value))
-    .filter(Boolean);
-  return parsed.length > 0 ? parsed : fallback;
 };
 
 const defaultRolesForAuthType = (authType: RequestContextAuthType): string[] =>
@@ -208,9 +181,7 @@ const buildRequestContext = (req: Request, identity: ResolvedIdentity): RequestC
       : sanitizeContextId(getFirstHeaderValue(req, ['x-workspace-id', 'x-sso-workspace-id']))
         || DEFAULT_WORKSPACE_ID
   );
-  const requestId =
-    sanitizeContextId(getHeaderValue(req, 'x-request-id')) ||
-    `req-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const requestId = requestIdOf(req);
   const windowId = sanitizeContextId(getHeaderValue(req, 'x-window-id')) || undefined;
 
   return {

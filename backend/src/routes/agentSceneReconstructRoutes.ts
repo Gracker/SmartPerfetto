@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express from 'express';
+import { requestIdOf } from '../middleware/requestId';
 import {
   type AgentRuntimeAnalysisResult,
   type Hypothesis,
@@ -145,7 +146,6 @@ function getAuthorizedSceneSession<TSession extends SceneReconstructSession>(
 interface RegisterSceneReconstructRoutesDeps<TSession extends SceneReconstructSession> {
   assistantAppService: AssistantApplicationService<TSession>;
   dispatchSceneAnalysis(input: AnalysisRunDispatchInput): Promise<AnalysisRunDispatchResponse>;
-  getRequestId(req: express.Request): string;
   streamSceneAnalysis(req: express.Request, res: express.Response, sessionId: string): Promise<void>;
   checkSceneHistory(req: express.Request, res: express.Response, sessionId: string): Promise<boolean>;
   projectSceneResult(session: TSession): AgentRuntimeAnalysisResult | undefined;
@@ -326,7 +326,7 @@ export function registerSceneReconstructRoutes<TSession extends SceneReconstruct
       // Legacy cache flags remain accepted, but never select a separate model pipeline.
       const {generateTracks: _tracks, forceRefresh: _refresh, ...analysisOptions} = options;
       const response = await deps.dispatchSceneAnalysis({entry: 'scene_reconstruction',
-        requestId: deps.getRequestId(req), context: requireRequestContext(req),
+        requestId: requestIdOf(req), context: requireRequestContext(req),
         body: {traceId, query, providerId: req.body?.providerId,
           options: {...analysisOptions, outputLanguage, analysisMode: 'full'}}});
       return res.status(response.status).json({...response.body,
