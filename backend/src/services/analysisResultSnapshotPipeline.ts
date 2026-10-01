@@ -5,9 +5,11 @@
 import crypto from 'crypto';
 import type Database from 'better-sqlite3';
 import type {AnalysisReceipt, DataEnvelope} from '../types/dataContract';
+import {outsideTargetScopeFields} from '../types/identityContract';
 import {
   ANALYSIS_RESULT_SNAPSHOT_SCHEMA_VERSION,
   STANDARD_COMPARISON_METRICS,
+  standardMetricDescribesApp,
   type AnalysisResultSceneType,
   type AnalysisResultSnapshot,
   type EvidenceRef,
@@ -415,9 +417,13 @@ function metricSourceFromEnvelope(env: DataEnvelope): NormalizedMetricSource {
 function extractStandardMetrics(envelopes: DataEnvelope[] = []): NormalizedMetricValue[] {
   const byKey = new Map<string, NormalizedMetricValue>();
   for (const env of envelopes) {
+    // App metrics never read a field the result declares trace-wide or peer.
+    const outsideTarget = outsideTargetScopeFields(env.meta?.scopeProvenance);
     for (const row of payloadRows(env)) {
+      const targetRow = Object.fromEntries(Object.entries(row).filter(([column]) => !outsideTarget(column)));
       for (const definition of STANDARD_COMPARISON_METRICS) {
-        const value = getRowNumber(row, METRIC_FIELD_CANDIDATES[definition.key]);
+        const value = getRowNumber(standardMetricDescribesApp(definition) ? targetRow : row,
+          METRIC_FIELD_CANDIDATES[definition.key]);
         if (value === null) continue;
         const normalizedValue = definition.key === 'scrolling.jank_rate_pct' && value > 0 && value <= 1
           ? value * 100

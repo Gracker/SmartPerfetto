@@ -337,13 +337,23 @@ export function bindCapturedAnchorFacts(anchor: object, witness: EvidenceTableWi
 }
 export function getCapturedAnchorFacts(anchor: object): CapturedAnchorFacts | undefined {return anchorFacts.get(anchor);}
 
-const unreadableAnchors = new WeakMap<object, string>();
+const uncheckedAnchors = new WeakMap<object, string>();
 /**
  * Issued by the claim builder from a typed read outcome that shows only that
  * the product could not read the cited evidence. A copied or serialized anchor
  * carries no mark, so a reason string alone never downgrades a missing reference.
  */
 export function markUnreadableEvidenceAnchor(anchor: object, reason: string): void {
-  if (!unreadableAnchors.has(anchor)) unreadableAnchors.set(anchor, reason);
+  if (!uncheckedAnchors.has(anchor)) uncheckedAnchors.set(anchor, reason);
 }
-export function unreadableEvidenceAnchorReason(anchor: object): string | undefined {return unreadableAnchors.get(anchor);}
+/**
+ * Issued by the claim builder when a citation spans fields of mixed process
+ * scope: its target-scoped part would bind the target identity, but the
+ * citation as a whole cannot. The evidence was read and shows no conflict;
+ * like an unreadable read, the reference stays unchecked rather than missing.
+ */
+export function markIdentityUnboundEvidenceAnchor(anchor: object): void {
+  if (!uncheckedAnchors.has(anchor)) uncheckedAnchors.set(anchor, 'cited_scope_identity_unbound');
+}
+/** Why an issued mark leaves a missing reference unchecked; never derived from a reason string. */
+export function uncheckedEvidenceAnchorReason(anchor: object): string | undefined {return uncheckedAnchors.get(anchor);}

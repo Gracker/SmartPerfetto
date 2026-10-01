@@ -10843,6 +10843,20 @@
             ]
           },
           {
+            "id": "frame_timeline_population",
+            "sha256": "d75d05c35dbd7f76ce6d7e800e66760cbe1844dec22aff39d517738dad8fc553",
+            "required_columns": [
+              "total_frames",
+              "jank_frames",
+              "process_count",
+              "unattributed_frames",
+              "evidence_scope",
+              "trace_start_ts",
+              "trace_end_ts",
+              "frame_population_evidence"
+            ]
+          },
+          {
             "id": "buffer_tx_coverage_probe",
             "sha256": "e2fa3fd9496db3959b05033ea3219a53a466c1cfbe2d394245d361f0ab721579",
             "required_columns": [

@@ -452,6 +452,100 @@ steps:
     save_as: environment
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
+  # ==========================================================================
+  # L1: 整个 Trace 的 FrameTimeline 帧总体（所有进程，不随 package / 时间窗收窄）
+  # ==========================================================================
+  # A frame is one (upid, FrameTimeline token) pair. Within a process the slice
+  # name is the token (surface token for app layers, display token for
+  # SurfaceFlinger), so an empty name falls back to the same token value; only
+  # the slice-id fallback is prefixed, because a slice id is not a token.
+  # jank_frames counts frames with any raw jank_type tag, Buffer Stuffing
+  # included: it is not perceived jank (see the overview for that).
+  - id: frame_timeline_population
+    type: atomic
+    name: "整个 Trace 的 FrameTimeline 帧总体"
+    display:
+      level: summary
+      layer: overview
+      title: "整个 Trace · 所有进程 · FrameTimeline 原始标签"
+      title_i18n:
+        en: "Whole trace · all processes · raw FrameTimeline tags (jank tags include Buffer Stuffing)"
+      columns:
+        - name: total_frames
+          label: "FrameTimeline 帧数（全部进程）"
+          type: number
+          format: compact
+        - name: jank_frames
+          label: "带 jank 标签的帧（含 Buffer Stuffing，非感知掉帧）"
+          type: number
+          format: compact
+        - name: process_count
+          label: "有帧的进程数"
+          type: number
+        - name: unattributed_frames
+          label: "无进程归属的帧"
+          type: number
+          format: compact
+        - name: evidence_scope
+          label: "证据范围"
+          type: string
+        - name: trace_start_ts
+          label: "Trace 起点"
+          type: timestamp
+          unit: ns
+          hidden: true
+        - name: trace_end_ts
+          label: "Trace 终点"
+          type: timestamp
+          unit: ns
+          hidden: true
+        - name: frame_population_evidence
+          label: "证据状态"
+          type: string
+          hidden: true
+    process_scope:
+      role: global_context
+    sql: |
+      WITH frames AS (
+        SELECT
+          upid,
+          COALESCE(NULLIF(name, ''), CAST(surface_frame_token AS TEXT),
+            CAST(display_frame_token AS TEXT), 'slice:' || id) AS frame_key,
+          MAX(jank_type IS NOT NULL AND jank_type != 'None') AS jank_tagged
+        FROM actual_frame_timeline_slice
+        WHERE ts IS NOT NULL AND dur IS NOT NULL AND dur >= 0
+        GROUP BY upid, frame_key
+      )
+      SELECT
+        COUNT(*) AS total_frames,
+        COALESCE(SUM(jank_tagged), 0) AS jank_frames,
+        COUNT(DISTINCT upid) AS process_count,
+        COALESCE(SUM(upid IS NULL), 0) AS unattributed_frames,
+        'trace_wide_all_processes' AS evidence_scope,
+        (SELECT start_ts FROM trace_bounds) AS trace_start_ts,
+        (SELECT end_ts FROM trace_bounds) AS trace_end_ts,
+        'observed' AS frame_population_evidence
+      FROM frames
+    save_as: frame_timeline_population
+    # Frame counts carry their unit through the producer declaration; a display
+    # column unit is only a time-format contract.
+    investigation_evidence:
+      window: {start: trace_start_ts, end: trace_end_ts}
+      metrics:
+        - domain: frame_production
+          metric_id: render.frame.timeline.trace_frames
+          value: total_frames
+          unit: frames
+          status: frame_population_evidence
+          aggregation: trace_wide_all_processes
+        - domain: frame_production
+          metric_id: render.frame.timeline.jank_tagged_frames
+          value: jank_frames
+          unit: frames
+          status: frame_population_evidence
+          aggregation: trace_wide_all_processes
+    condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
+
   # Compare package-scoped FrameTimeline coverage with one qualified primary
   # BufferTX producer track before selecting the mutually exclusive overview.
   - id: buffer_tx_coverage_probe
