@@ -304,10 +304,6 @@ steps:
           format: duration_ms
           unit: ms
           hidden: true
-        - name: big_core_pct_definition
-          label: "大核组口径"
-          type: string
-          hidden: true
     sql: |
       WITH
       cpu_info AS (
@@ -353,9 +349,7 @@ steps:
         ROUND(little_core_ms * 100.0 / total_runtime_ms, 1) as little_core_pct,
         ROUND(unknown_core_ms * 100.0 / total_runtime_ms, 1) as unknown_core_pct,
         -- Unrounded: the conclusion admits a thread only when none of its time is unclassified.
-        unknown_core_ms,
-        -- Declares the rollup to snapshot comparison (prime+big-only before @2).
-        'core_tier_group:prime+big+medium@2' as big_core_pct_definition
+        unknown_core_ms
       FROM thread_totals
       WHERE total_runtime_ms > 10  -- 至少 10ms 运行时间
       ORDER BY total_runtime_ms DESC

@@ -6,6 +6,7 @@ import express from 'express';
 import { sessionContextManager } from '../agent/context/enhancedSessionContext';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { isOwnedByContext } from '../services/resourceOwnership';
 import {parseOutputLanguage, type OutputLanguage} from '../agentv3/outputLanguage';
 import {
@@ -126,11 +127,12 @@ export function registerAgentSessionCatalogRoutes<TSession extends SessionLike>(
         recoverableSessions,
         totalRecoverable: recoverableSessions.length,
       });
-    } catch (error: any) {
-      return res.status(500).json({
-        success: false,
-        error: error.message,
-      });
+    } catch (error: unknown) {
+      sendRouteFailure(res, {
+        code: 'agent_sessions_list_failed',
+        error: 'Failed to list agent sessions',
+        logLabel: '[AgentRoutes] List sessions error',
+      }, error);
     }
   });
 }

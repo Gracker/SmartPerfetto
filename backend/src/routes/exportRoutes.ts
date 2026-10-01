@@ -9,6 +9,7 @@
 
 import { Router } from 'express';
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { recordEnterpriseAuditEvent } from '../services/enterpriseAuditService';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { buildTenantExportBundle } from '../services/enterpriseTenantExportService';
@@ -63,8 +64,12 @@ router.post('/result', async (req, res) => {
     res.setHeader('Content-Type', exportResult.mimeType);
     res.setHeader('Content-Disposition', `attachment; filename="${exportResult.filename}"`);
     res.send(exportResult.data);
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'An unknown error occurred' });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'result_export_failed',
+      error: 'Failed to export result',
+      logLabel: '[ExportRoutes] Export result error',
+    }, error);
   }
 });
 
@@ -107,8 +112,12 @@ router.post('/session', async (req, res) => {
     res.setHeader('Content-Type', exportResult.mimeType);
     res.setHeader('Content-Disposition', `attachment; filename="${exportResult.filename}"`);
     res.send(exportResult.data);
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'An unknown error occurred' });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'export_session_failed',
+      error: 'Failed to export session results',
+      logLabel: '[ExportRoutes] Export session error',
+    }, error);
   }
 });
 
@@ -134,8 +143,12 @@ router.post('/analysis', async (req, res) => {
     res.setHeader('Content-Type', exportResult.mimeType);
     res.setHeader('Content-Disposition', `attachment; filename="${exportResult.filename}"`);
     res.send(exportResult.data);
-  } catch (error: any) {
-    res.status(500).json({ success: false, error: error.message || 'An unknown error occurred' });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'analysis_export_failed',
+      error: 'Failed to export analysis',
+      logLabel: '[ExportRoutes] Export analysis error',
+    }, error);
   }
 });
 
@@ -175,11 +188,12 @@ router.get('/tenant', authenticate, async (req, res) => {
       bundleSha256: exportResult.bundleSha256,
       bundle: exportResult.bundle,
     });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to export tenant bundle',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'tenant_export_failed',
+      error: 'Failed to export tenant bundle',
+      logLabel: '[ExportRoutes] Export tenant bundle error',
+    }, error);
   } finally {
     db.close();
   }
