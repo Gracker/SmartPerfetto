@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { runProviderTestCommand } from '../provider';
+import { runProviderListCommand, runProviderTestCommand } from '../provider';
 import { resetProviderService } from '../../../services/providerManager';
 import { resetCliEnvironmentForTesting } from '../../bootstrap';
 
@@ -51,6 +51,48 @@ describe('provider CLI command', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
     consoleLogSpy.mockRestore();
     consoleErrorSpy.mockRestore();
+  });
+
+  test.each(['text', 'json'] as const)('list reports an unreadable providers.json (%s)', async (format) => {
+    const providerDir = path.join(tmpDir, 'providers');
+    fs.mkdirSync(providerDir, {recursive: true});
+    fs.writeFileSync(path.join(providerDir, 'providers.json'), '[{"id":', 'utf-8');
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const exitCode = await runProviderListCommand({envFile, sessionDir: path.join(tmpDir, 'home'), format});
+      expect(exitCode).toBe(0);
+      const output = consoleLogSpy.mock.calls.map(call => String(call[0])).join('\n');
+      if (format === 'json') {
+        const last = consoleLogSpy.mock.calls[consoleLogSpy.mock.calls.length - 1];
+        expect(JSON.parse(String(last?.[0]))).toMatchObject({ok: true, providers: [], store: {status: 'unreadable'}});
+      } else {
+        expect(output).toContain('providers.json could not be read');
+        expect(output).not.toContain('no providers configured');
+      }
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test('system check fails closed while providers.json is unreadable, even with env credentials', async () => {
+    process.env.CLAUDE_BINARY_PATH = process.execPath;
+    process.env.ANTHROPIC_API_KEY = 'sk-test';
+    const providerDir = path.join(tmpDir, 'providers');
+    fs.mkdirSync(providerDir, {recursive: true});
+    fs.writeFileSync(path.join(providerDir, 'providers.json'), '[{"id":', 'utf-8');
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const exitCode = await runProviderTestCommand({
+        envFile, sessionDir: path.join(tmpDir, 'home'), format: 'json',
+      });
+      const lastCall = consoleLogSpy.mock.calls[consoleLogSpy.mock.calls.length - 1];
+      expect(exitCode).toBe(1);
+      expect(JSON.parse(String(lastCall?.[0] ?? '{}'))).toMatchObject({
+        ok: false, target: 'system', code: 'provider_store_unreadable',
+      });
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   test.each([undefined, '   ', 'your_anthropic_api_key_here', 'sk-test'])(

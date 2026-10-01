@@ -283,17 +283,31 @@ steps:
           format: duration_ms
           unit: ms
         - name: big_core_pct
-          label: "大核占比"
+          label: "大核组占比（超大/大/中核）"
           type: percentage
           format: percentage
         - name: medium_core_pct
-          label: "中核占比"
+          label: "其中中核占比"
           type: percentage
           format: percentage
         - name: little_core_pct
           label: "小核占比"
           type: percentage
           format: percentage
+        - name: unknown_core_pct
+          label: "未知核类型占比"
+          type: percentage
+          format: percentage
+        - name: unknown_core_ms
+          label: "未知核类型运行时间"
+          type: duration
+          format: duration_ms
+          unit: ms
+          hidden: true
+        - name: big_core_pct_definition
+          label: "大核组口径"
+          type: string
+          hidden: true
     sql: |
       WITH
       cpu_info AS (
@@ -305,12 +319,12 @@ steps:
           t.name as thread_name,
           t.tid,
           p.name as process_name,
-          ci.core_type,
+          COALESCE(ci.core_type, 'unknown') as core_type,
           SUM(ss.dur) / 1e6 as runtime_ms
         FROM sched_slice ss
         JOIN thread t ON ss.utid = t.utid
         JOIN process p ON t.upid = p.upid
-        JOIN cpu_info ci ON ss.cpu = ci.cpu_id
+        LEFT JOIN cpu_info ci ON ss.cpu = ci.cpu_id
         WHERE
           ss.dur > ${min_runtime_ms} * 1e6
           AND ('${package}' = '' OR ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*'))
@@ -322,9 +336,10 @@ steps:
           tid,
           process_name,
           SUM(runtime_ms) as total_runtime_ms,
-          SUM(CASE WHEN core_type IN ('prime', 'big') THEN runtime_ms ELSE 0 END) as big_core_ms,
+          SUM(CASE WHEN core_type IN ('prime', 'big', 'medium') THEN runtime_ms ELSE 0 END) as big_core_ms,
           SUM(CASE WHEN core_type = 'medium' THEN runtime_ms ELSE 0 END) as medium_core_ms,
-          SUM(CASE WHEN core_type = 'little' THEN runtime_ms ELSE 0 END) as little_core_ms
+          SUM(CASE WHEN core_type = 'little' THEN runtime_ms ELSE 0 END) as little_core_ms,
+          SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN runtime_ms ELSE 0 END) as unknown_core_ms
         FROM thread_core_usage
         GROUP BY tid
       )
@@ -335,7 +350,12 @@ steps:
         ROUND(total_runtime_ms, 2) as total_ms,
         ROUND(big_core_ms * 100.0 / total_runtime_ms, 1) as big_core_pct,
         ROUND(medium_core_ms * 100.0 / total_runtime_ms, 1) as medium_core_pct,
-        ROUND(little_core_ms * 100.0 / total_runtime_ms, 1) as little_core_pct
+        ROUND(little_core_ms * 100.0 / total_runtime_ms, 1) as little_core_pct,
+        ROUND(unknown_core_ms * 100.0 / total_runtime_ms, 1) as unknown_core_pct,
+        -- Unrounded: the conclusion admits a thread only when none of its time is unclassified.
+        unknown_core_ms,
+        -- Declares the rollup to snapshot comparison (prime+big-only before @2).
+        'core_tier_group:prime+big+medium@2' as big_core_pct_definition
       FROM thread_totals
       WHERE total_runtime_ms > 10  -- 至少 10ms 运行时间
       ORDER BY total_runtime_ms DESC
@@ -571,9 +591,15 @@ steps:
           format: duration_ms
           unit: ms
         - name: avg_big_core_usage_pct
-          label: "大核使用率"
+          label: "样本线程平均大核组占比"
           type: percentage
           format: percentage
+        - name: big_core_sample_threads
+          label: "大小核样本线程数"
+          type: number
+        - name: classified_sample_threads
+          label: "拓扑已分类样本线程数"
+          type: number
         - name: latency_severity
           label: "延迟评级"
           type: string
@@ -591,8 +617,14 @@ steps:
           MAX(max_latency_ms) as worst_latency
         FROM (${scheduling_latency})
       ),
+      -- A big-core verdict covers the whole displayed sample, so every sample
+      -- thread must have run only on classified cores.
       big_core_usage AS (
-        SELECT AVG(big_core_pct) as avg_big_core_pct FROM (${core_distribution})
+        SELECT
+          COUNT(*) as sample_threads,
+          SUM(CASE WHEN unknown_core_ms = 0 THEN 1 ELSE 0 END) as classified_threads,
+          CASE WHEN MAX(unknown_core_ms) = 0 THEN AVG(big_core_pct) END as avg_big_core_pct
+        FROM (${core_distribution})
       )
       SELECT
         (SELECT thread_name FROM top_thread) as top_cpu_thread,
@@ -600,6 +632,8 @@ steps:
         (SELECT ROUND(overall_avg_latency, 2) FROM latency_stats) as avg_sched_latency_ms,
         (SELECT ROUND(worst_latency, 1) FROM latency_stats) as worst_sched_latency_ms,
         (SELECT ROUND(avg_big_core_pct, 1) FROM big_core_usage) as avg_big_core_usage_pct,
+        (SELECT sample_threads FROM big_core_usage) as big_core_sample_threads,
+        (SELECT classified_threads FROM big_core_usage) as classified_sample_threads,
         CASE
           WHEN (SELECT worst_latency FROM latency_stats) > 50 THEN 'high_latency'
           WHEN (SELECT worst_latency FROM latency_stats) > 20 THEN 'moderate_latency'
@@ -608,6 +642,8 @@ steps:
         CASE
           WHEN (SELECT overall_avg_latency FROM latency_stats) > 10
             THEN '调度延迟偏高，可能存在 CPU 竞争或优先级问题'
+          WHEN (SELECT avg_big_core_pct FROM big_core_usage) IS NULL
+            THEN '调度延迟未见明显异常；样本线程有运行时间落在未分类 CPU 上（拓扑缺少容量信息），无法评估大小核使用'
           WHEN (SELECT avg_big_core_pct FROM big_core_usage) < 30
             THEN '大核利用率低，关键线程可能未正确绑核'
           WHEN (SELECT avg_big_core_pct FROM big_core_usage) > 80

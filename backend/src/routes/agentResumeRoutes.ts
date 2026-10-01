@@ -10,6 +10,7 @@ import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import { getProviderService } from '../services/providerManager';
+import { sendProviderStoreUnreadableIfPresent } from './providerStoreHttp';
 import { resolveProviderRuntimeSnapshot } from '../services/providerManager/providerSnapshot';
 import { requireRequestContext } from '../middleware/auth';
 import {
@@ -360,6 +361,10 @@ export function registerAgentResumeRoutes(
       });
     } catch (error: any) {
       if (sendAiDisabledErrorIfPresent(res, error)) {
+        return;
+      }
+      // providers.json unreadable: the active or pinned provider is unknown.
+      if (sendProviderStoreUnreadableIfPresent(res, error)) {
         return;
       }
       console.error('[AgentRoutes] Session restore failed:', error);
