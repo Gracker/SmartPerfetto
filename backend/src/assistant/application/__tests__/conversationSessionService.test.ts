@@ -983,8 +983,8 @@ describe('ConversationSessionService', () => {
     const {descriptor, input, turn} = recoveryFixture();
     const factory = jest.fn((): ConversationRuntimeAdapter => ({run: async () => ({kind: 'answered', message: ''}), cancel: async () => undefined}));
     const service = new ConversationSessionService({createRuntime: factory});
-    expect(() => service.restoreSession(descriptor, [turn], {...input, owner: {...input.owner, userId: 'another-user'}})).toThrow('context_mismatch');
-    expect(() => service.restoreSession(descriptor, [turn], {...input, providerSnapshotHash: 'changed'})).toThrow('context_mismatch');
+    expect(() => service.restoreSession(descriptor, [turn], {...input, owner: {...input.owner, userId: 'another-user'}})).toThrow(expect.objectContaining({code: 'CONVERSATION_RECOVERY_UNAVAILABLE', status: 409}));
+    expect(() => service.restoreSession(descriptor, [turn], {...input, providerSnapshotHash: 'changed'})).toThrow(expect.objectContaining({code: 'CONVERSATION_RECOVERY_UNAVAILABLE', status: 409}));
     const check = jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
       throw new authorization.AnalysisContextAuthorizationChangedError();
     });

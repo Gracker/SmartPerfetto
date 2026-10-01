@@ -24,6 +24,7 @@ import {
   purgeTenantNow,
   TenantPurgeBlockedError,
   TenantPurgeWindowError,
+  TenantTombstoneNotFoundError,
   type TenantPurgeProof,
 } from '../services/enterpriseTenantLifecycleService';
 import { sendForbidden } from '../services/rbac';
@@ -36,7 +37,9 @@ interface TenantPurgeJob {
   completedAt?: number;
   proof?: TenantPurgeProof;
   blockers?: unknown[];
+  /** Fixed text served by GET /purge/:jobId; never an exception message. */
   error?: string;
+  errorCode?: 'tenant_purge_window_open' | 'tenant_tombstone_not_found' | 'tenant_purge_failed';
 }
 
 const router = Router();
@@ -316,18 +319,22 @@ router.post('/purge', (req, res) => {
       job.proof = await purgeTenantNow(jobDb, context);
       job.status = 'completed';
       job.completedAt = Date.now();
-    } catch (error: any) {
+    } catch (error) {
       job.completedAt = Date.now();
       if (error instanceof TenantPurgeBlockedError) {
         job.status = 'blocked';
         job.blockers = error.blockers;
-      } else if (error instanceof TenantPurgeWindowError) {
-        job.status = 'failed';
-        job.error = error.message;
-      } else {
-        job.status = 'failed';
-        job.error = error.message || 'Tenant purge failed';
+        return;
       }
+      job.status = 'failed';
+      if (error instanceof TenantPurgeWindowError || error instanceof TenantTombstoneNotFoundError) {
+        job.error = error.message;
+        job.errorCode = error.code;
+        return;
+      }
+      job.error = 'Tenant purge failed';
+      job.errorCode = 'tenant_purge_failed';
+      console.error('[EnterpriseTenantRoutes] Tenant purge job failed', {jobId}, error);
     } finally {
       jobDb.close();
     }

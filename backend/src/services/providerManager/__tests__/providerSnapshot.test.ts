@@ -6,7 +6,11 @@ import { promises as fsp } from 'fs';
 import os from 'os';
 import path from 'path';
 import { ProviderService } from '../providerService';
-import { resolveProviderRuntimeSnapshot } from '../providerSnapshot';
+import {
+  hashProviderRuntimeSnapshot,
+  resolveProviderRuntimeSnapshot,
+  type ProviderRuntimeSnapshot,
+} from '../providerSnapshot';
 import type { ProviderCreateInput } from '../types';
 
 function makeTmpDir(): string {
@@ -654,5 +658,37 @@ describe('provider runtime snapshot hash', () => {
         else process.env[key] = value;
       }
     }
+  });
+
+  describe('canonical hash input', () => {
+    const snapshot: ProviderRuntimeSnapshot = {
+      version: 1,
+      providerId: 'p',
+      providerType: 'openai',
+      runtimeKind: 'openai-agents-sdk',
+      resolvedModels: { primary: 'm', light: 'l', subAgent: undefined },
+      resolvedTimeouts: { fullPerTurnMs: 1 },
+      baseUrl: 'https://x.example/v1',
+      openaiProtocol: undefined,
+      environment: { OPENAI_MODEL: 'm' },
+      secretVersion: 'sha256:abc',
+    };
+
+    // Session snapshots persist this hash and compare it on restore, so an
+    // ordinary snapshot must keep hashing exactly as before.
+    it('keeps the persisted hash of an ordinary snapshot', () => {
+      expect(hashProviderRuntimeSnapshot(snapshot))
+        .toBe('a3560d81463fd14c3f78b77012048bc074767010f3dfa119e8178cd03daab537');
+    });
+
+    it('hashes content under an own __proto__ key', () => {
+      const withEnvironment = (json: string) => hashProviderRuntimeSnapshot({
+        ...snapshot,
+        environment: JSON.parse(json),
+      });
+      expect(withEnvironment('{"__proto__":{"X":"1"}}'))
+        .not.toBe(withEnvironment('{"__proto__":{"X":"2"}}'));
+      expect(withEnvironment('{"__proto__":"1"}')).not.toBe(withEnvironment('{"__proto__":"2"}'));
+    });
   });
 });

@@ -748,7 +748,8 @@ authority. No enterprise migration phase is required, and OIDC rejects the
 
 Production mode requires HTTPS for the issuer, callback, and frontend URL and
 uses Secure cookies by default. Only controlled test deployments may explicitly
-set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`; this permits plaintext HTTP
+set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` (any of `true`, `1`, `yes`,
+`on`, `enabled`, like the other switches); this permits plaintext HTTP
 and disables Secure cookies by default, so it must not be used on an untrusted
 network. `FRONTEND_URL` must be the browser-visible frontend origin, and
 must not be a container-internal address. The frontend URL and OIDC callback

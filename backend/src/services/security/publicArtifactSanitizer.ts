@@ -101,16 +101,11 @@ function sanitizeValue(
       sanitizeValue(child, `${path}[${index}]`, warnings, errors));
   }
   if (value && typeof value === 'object') {
-    const output: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      output[key] = sanitizeValue(
-        (value as Record<string, unknown>)[key],
-        `${path}.${key}`,
-        warnings,
-        errors,
-      );
-    }
-    return output;
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().map(key => [
+      key,
+      sanitizeValue(record[key], `${path}.${key}`, warnings, errors),
+    ]));
   }
   errors.push(`${path}: unsupported value`);
   return null;

@@ -9,7 +9,9 @@ import {
   type AuthenticatedRequest,
   type RequestContext,
 } from '../middleware/auth';
+import { sendRouteError } from '../middleware/routeFailure';
 import {
+  ApiKeyRequestError,
   EnterpriseApiKeyService,
   type CreateEnterpriseApiKeyInput,
 } from '../services/enterpriseApiKeyService';
@@ -91,10 +93,11 @@ export function createEnterpriseApiKeyRouter(deps: EnterpriseApiKeyRouteDeps = {
         token: created.token,
       });
     } catch (error) {
-      res.status(400).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to create API key',
-      });
+      sendRouteError(res, error, {
+        code: 'api_key_create_failed',
+        error: 'Failed to create API key',
+        logLabel: '[EnterpriseApiKeyRoutes] Create error',
+      }, [ApiKeyRequestError]);
     }
   });
 

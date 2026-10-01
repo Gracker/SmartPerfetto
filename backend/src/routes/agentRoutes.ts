@@ -30,6 +30,7 @@ import {
 import {
   buildAnalysisReceipt,
   buildLegacyAnalysisReceipt,
+  REPORT_GENERATION_FAILED,
   type BuildAnalysisReceiptInput,
 } from '../services/analysisReceiptBuilder';
 import { deriveUiActionProposals } from '../services/uiActionProposalDeriver';
@@ -59,7 +60,7 @@ import {
   type RequestContext,
 } from '../middleware/auth';
 import { createRequestId, requestIdOf } from '../middleware/requestId';
-import { sendRouteFailure } from '../middleware/routeFailure';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   ownersMatch,
@@ -239,6 +240,7 @@ import {createRunManifestLifecycle, disposeRunManifestLifecyclesForSession, getA
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import {
   FeedbackEventStore,
+  FeedbackRequestError,
   privateFeedbackStorePaths,
 } from '../services/selfEvolution/feedbackEventStore';
 import {
@@ -723,10 +725,9 @@ async function abortSessionBestEffort(session: AnalysisSession, component: strin
   try {
     await session.orchestrator.abortSession(session.sessionId, session.referenceTraceId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn(component, 'Runtime abortSession failed during cancellation cleanup', {
       sessionId: session.sessionId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -750,17 +751,15 @@ function cleanupSessionBestEffort(sessionId: string, session: AnalysisSession, c
   try {
     const cleanup = session.orchestrator.cleanupSession(sessionId);
     void Promise.resolve(cleanup).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
       session.logger.warn(component, 'Runtime cleanupSession failed', {
         sessionId,
-        error: message,
+        error: errorMessage(error),
       });
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn(component, 'Runtime cleanupSession failed', {
       sessionId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1520,12 +1519,11 @@ function persistSessionRunState(
       updateSessionStatus: shouldUpdateSessionStatusForRun(session, scope.runId),
     });
   } catch (persistError) {
-    const message = persistError instanceof Error ? persistError.message : String(persistError);
     session.logger.warn('AnalysisRun', 'Failed to persist run state', {
       sessionId: session.sessionId,
       runId: scope.runId,
       status,
-      error: message,
+      error: errorMessage(persistError),
     });
   }
 }
@@ -1536,11 +1534,10 @@ function heartbeatSessionRun(session: AnalysisSession, runId?: string): void {
   try {
     heartbeatAnalysisRun(scope);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AnalysisRun', 'Failed to persist run heartbeat', {
       sessionId: session.sessionId,
       runId: scope.runId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1557,11 +1554,10 @@ function isPersistedSessionRunFresh(session: AnalysisSession, now: number): bool
   try {
     return isAnalysisRunHeartbeatFresh(scope, scope.runId, now, AGENT_RUN_HEARTBEAT_MAX_STALE_MS);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AnalysisRun', 'Failed to inspect persisted run heartbeat', {
       sessionId: session.sessionId,
       runId: scope.runId,
-      error: message,
+      error: errorMessage(error),
     });
     return true;
   }
@@ -1583,13 +1579,12 @@ function persistBufferedAgentEvent(session: AnalysisSession, event: SerializedAg
       updateSessionStatus: shouldUpdateSessionStatusForRun(session, scope.runId),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AgentEvents', 'Failed to persist SSE event', {
       sessionId: session.sessionId,
       runId: scope.runId,
       eventType: event.eventType,
       cursor: event.cursor,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1812,12 +1807,11 @@ function replayPersistedAgentEvents(
   try {
     events = listSerializedAgentEventsAfter(scope, scope.runId, lastEventId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AgentEvents', 'Failed to load persisted SSE replay events', {
       sessionId: session.sessionId,
       runId: scope.runId,
       lastEventId,
-      error: message,
+      error: errorMessage(error),
     });
     return { replayed: 0, includesTerminal: false, lastCursor: lastEventId };
   }
@@ -3322,17 +3316,11 @@ router.post('/:sessionId/feedback', async (req, res) => {
         projected.caseCandidateProjection?.found ?? null,
     });
   } catch (err) {
-    console.error('[Feedback] Failed to save feedback:', (err as Error).message);
-    const code = (err as Error).message;
-    const conflict = code === 'legacy_feedback_not_retractable' ||
-      code.startsWith('feedback_supersedes_') ||
-      code === 'feedback_idempotency_conflict' ||
-      code === 'feedback_id_conflict';
-    return res.status(conflict ? 409 : 500).json({
-      success: false,
-      error: code,
-      idempotencyKey,
-    });
+    return sendRouteError(res, err, {
+      code: 'feedback_save_failed',
+      error: 'Failed to save feedback',
+      logLabel: '[Feedback] Failed to save feedback',
+    }, [FeedbackRequestError]);
   } finally {
     store?.close();
   }
@@ -7384,9 +7372,9 @@ function ensureCompletedAnalysisFinalArtifacts(
     } catch (error: any) {
       input.assertCurrent?.();
       reportId = undefined;
-      finalArtifacts.reportError = error.message || 'Unknown error';
+      finalArtifacts.reportError = REPORT_GENERATION_FAILED;
       console.error('[AgentRoutes] Failed to generate agent-driven HTML report:', {
-        error: finalArtifacts.reportError,
+        error: error?.message,
         stack: error.stack?.split('\n').slice(0, 5).join('\n'),
         resultConclusion: result?.conclusion ? `${result.conclusion.length} chars` : 'EMPTY/NULL',
         resultConfidence: result?.confidence,

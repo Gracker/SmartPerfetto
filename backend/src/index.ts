@@ -12,7 +12,7 @@ import type { Server } from 'http';
 import type { Duplex } from 'stream';
 
 // Import configuration
-import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
+import { isKeylessLocalMode, resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
@@ -49,7 +49,7 @@ import traceProcessorProxyRoutes, {
   writeUpgradeError,
 } from './routes/traceProcessorProxyRoutes';
 import applicationUpdateRoutes from './routes/applicationUpdateRoutes';
-import {allowsDevIdentity, authenticate, requireRequestContext} from './middleware/auth';
+import {authenticate, requireRequestContext} from './middleware/auth';
 import { collectEnvCredentialSources } from './agentRuntime/envCredentialSources';
 import { buildRuntimeHealthPayload } from './agentRuntime/runtimeHealth';
 import {
@@ -163,7 +163,7 @@ app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 // Express, so the upgrade dispatch below applies the same rule.
 const UNTRUSTED_KEYLESS_HOST = 'Untrusted Host in local keyless mode';
 function isUntrustedKeylessHost(hostname: string): boolean {
-  return allowsDevIdentity() && !isLoopbackRequestHostname(hostname);
+  return isKeylessLocalMode() && !isLoopbackRequestHostname(hostname);
 }
 app.use('/api', (req, res, next) => {
   if (isUntrustedKeylessHost(req.hostname)) {

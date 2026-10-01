@@ -209,6 +209,51 @@ describe('runBatchSkill', () => {
     expect(traceSummaryRunner).toHaveBeenCalledTimes(2);
   });
 
+  it('keeps only the reason token of a trace failure in an API run, the whole message in a CLI run', async () => {
+    const failure = 'canary-batch /srv/smartperfetto/uploads/t1.pftrace: no such file';
+    const failingProcessor = (message: string) => {
+      const tp = traceProcessor();
+      (tp.getOrLoadTrace as jest.Mock).mockImplementation(async () => {
+        throw new Error(message);
+      });
+      (tp.loadTraceFromFilePath as jest.Mock).mockImplementation(async () => {
+        throw new Error(message);
+      });
+      return tp;
+    };
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const api = await runBatchSkill({
+        scope: { tenantId: 'tenant-a', workspaceId: 'workspace-a' },
+        surface: 'api',
+        skillId: 'startup_analysis',
+        traceInputs: [
+          { ordinal: 0, source: 'workspace_trace', traceId: 't1' },
+        ],
+      }, {traceProcessor: failingProcessor(failure), registry: registry(), leaseStore: leaseStore()});
+      expect(api.perTrace[0]).toMatchObject({status: 'failed', error: 'batch_trace_failed'});
+      expect(JSON.stringify(api)).not.toContain('canary-batch');
+      expect(errorLog.mock.calls.flat().map(value => (value instanceof Error ? value.message : '')).join()).toContain('canary-batch');
+
+      const token = await runBatchSkill({
+        scope: { tenantId: 'tenant-a', workspaceId: 'workspace-a' },
+        surface: 'api',
+        skillId: 'startup_analysis',
+        traceInputs: [{ ordinal: 0, source: 'workspace_trace', traceId: 't1' }],
+      }, {traceProcessor: failingProcessor('trace_not_found:t1'), registry: registry(), leaseStore: leaseStore()});
+      expect(token.perTrace[0].error).toBe('trace_not_found');
+
+      const cli = await runBatchSkill({
+        surface: 'cli',
+        skillId: 'startup_analysis',
+        traceInputs: [{ ordinal: 0, source: 'local_path', tracePath: 'a.pftrace' }],
+      }, {traceProcessor: failingProcessor(failure), registry: registry(), leaseStore: leaseStore()});
+      expect(cli.perTrace[0].error).toBe(failure);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it('rejects comparison skills before loading traces', async () => {
     const tp = traceProcessor();
 

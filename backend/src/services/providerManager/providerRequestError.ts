@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import { PublicRequestError } from '../../utils/publicRequestError';
+
 type ProviderRequestErrorCode = 'provider_not_found' | 'provider_invalid_request';
 
 /**
@@ -10,10 +12,11 @@ type ProviderRequestErrorCode = 'provider_not_found' | 'provider_invalid_request
  * return; any other error from a provider operation (secret store, database,
  * mutation lease) is not, and routes answer it with fixed text.
  */
-export class ProviderRequestError extends Error {
-  constructor(readonly code: ProviderRequestErrorCode, message: string) {
-    super(message);
-    this.name = 'ProviderRequestError';
+export class ProviderRequestError extends PublicRequestError {
+  declare readonly code: ProviderRequestErrorCode;
+
+  constructor(code: ProviderRequestErrorCode, message: string) {
+    super(code, message, code === 'provider_not_found' ? 404 : 400);
   }
 }
 

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { Request, Response } from 'express';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import EnhancedAIService from '../services/enhancedAIService';
 import { GenerateSqlRequest, GenerateSqlResponse, ErrorResponse } from '../types';
 
@@ -49,12 +50,11 @@ class SqlController {
 
       res.json(result);
     } catch (error) {
-      console.error('Error generating SQL:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'sql_generation_failed',
         error: 'Internal server error',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SqlController] Error generating SQL',
+      }, error);
     }
   };
 
@@ -118,12 +118,11 @@ class SqlController {
 
       res.json({ tables });
     } catch (error) {
-      console.error('Error fetching tables schema:', error);
-      const errorResponse: ErrorResponse = {
+      sendRouteFailure(res, {
+        code: 'sql_schema_failed',
         error: 'Internal server error',
-        details: error instanceof Error ? error.message : 'Unknown error',
-      };
-      res.status(500).json(errorResponse);
+        logLabel: '[SqlController] Error fetching tables schema',
+      }, error);
     }
   };
 }

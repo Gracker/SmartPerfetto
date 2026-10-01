@@ -142,6 +142,7 @@ import {
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
 import { buildRuntimeCaseBackgroundContext } from '../../../services/caseEvolution/caseBackgroundContext';
+import {stableStringify} from '../../../utils/stableJson';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
 import {countCompletedQuickConversationTurns} from '../../quickBudget';
@@ -385,20 +386,9 @@ function resolvePiRuntimeTimeouts(env: EnvLike): {
   };
 }
 
-function stableFingerprintValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(stableFingerprintValue);
-  if (!value || typeof value !== 'object') return value;
-  const record = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(record).sort()) {
-    out[key] = stableFingerprintValue(record[key]);
-  }
-  return out;
-}
-
 function piRuntimeFingerprint(value: unknown): string {
   return createHash('sha256')
-    .update(JSON.stringify(stableFingerprintValue(value)))
+    .update(stableStringify(value))
     .digest('hex');
 }
 

@@ -35,6 +35,7 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
+import {codebaseNotFound, invalidCodebaseMetadata} from '../codebase/codebaseRequestError';
 
 const DEFAULT_MAX_CHUNK_CHARS = 2200;
 
@@ -67,15 +68,15 @@ export class AospSourceIngester {
 
   async ingest(codebaseId: string, opts: AospSourceIngestOptions = {}): Promise<AospSourceIngestResult> {
     const ref = this.registry.get(codebaseId, opts.scope);
-    if (!ref) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!ref) throw codebaseNotFound(codebaseId);
     if (ref.kind !== 'aosp' && ref.kind !== 'oem_sdk') {
-      throw new Error(`Codebase '${codebaseId}' is kind=${ref.kind}; licensed source ingestion requires aosp or oem_sdk`);
+      throw invalidCodebaseMetadata(`Codebase '${codebaseId}' is kind=${ref.kind}; licensed source ingestion requires aosp or oem_sdk`);
     }
     if (!ref.licenseTag) {
-      throw new Error(`AOSP codebase '${codebaseId}' requires licenseTag`);
+      throw invalidCodebaseMetadata(`AOSP codebase '${codebaseId}' requires licenseTag`);
     }
     if (ref.kind === 'oem_sdk' && !ref.vendor) {
-      throw new Error(`OEM SDK codebase '${codebaseId}' requires vendor`);
+      throw invalidCodebaseMetadata(`OEM SDK codebase '${codebaseId}' requires vendor`);
     }
     const effectiveScope = codebaseScopeFromRef(ref);
     return this.registry.withIngestLease(codebaseId, effectiveScope, lease =>

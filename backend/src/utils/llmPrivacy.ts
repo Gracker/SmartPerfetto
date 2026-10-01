@@ -120,17 +120,11 @@ export function redactObjectForLLM(value: unknown): { value: unknown; stats: Llm
     }
 
     if (typeof node === 'object') {
-      const obj = node as Record<string, unknown>;
-      const out: Record<string, unknown> = {};
-      for (const [k, v] of Object.entries(obj)) {
-        if (isSensitiveKey(k)) {
-          bump('sensitive_key');
-          out[k] = '<REDACTED>';
-          continue;
-        }
-        out[k] = walk(v, depth + 1);
-      }
-      return out;
+      return Object.fromEntries(Object.entries(node).map(([k, v]) => {
+        if (!isSensitiveKey(k)) return [k, walk(v, depth + 1)];
+        bump('sensitive_key');
+        return [k, '<REDACTED>'];
+      }));
     }
 
     return node;
