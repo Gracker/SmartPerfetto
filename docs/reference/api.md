@@ -197,7 +197,7 @@ GET /api/traces?limit=100&cursor=<nextCursor>
 | `/api/workspaces/:workspaceId/agent` | workspace 范围内的 agent 分析、SSE、多轮、反馈 |
 | `/api/workspaces/:workspaceId/providers` | workspace 范围内的 Provider Manager profile |
 | `/api/workspaces/:workspaceId/analysis-results` | 分析结果 snapshot 列表、读取、更新 |
-| `/api/workspaces/:workspaceId/windows` | 前端窗口 heartbeat 与 active window 状态 |
+| `/api/workspaces/:workspaceId/windows` | 前端窗口 heartbeat 与 active window 状态；窗口按 (用户, windowId) 标识，其他用户的窗口只以“指向你可读分析结果”的形式列出 |
 | `/api/workspaces/:workspaceId/comparisons` | 多分析结果 comparison 创建、读取、stream、导出 |
 | `/api/workspaces/:workspaceId/trace-config` | 无副作用 trace config proposal |
 | `/api/workspaces/:workspaceId/skill-packs` | 本地目录型 Skill Pack 预检、安装、启停和移除 |
