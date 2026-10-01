@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 import {
+  hostnameOfHostHeader,
   isCorsOriginAllowed,
+  isOriginAllowedForRequirement,
   isLoopbackRequestHostname,
   isSsoCookieMutationOriginAllowed,
   normalizeCorsOrigins,
@@ -70,5 +72,24 @@ describe('request origin policy', () => {
       method: 'POST',
       apiKeyHeader: 'enterprise-api-key',
     })).toBe(true);
+  });
+
+  it('admits an Origin for a requirement only by the exact allow list', () => {
+    expect(isOriginAllowedForRequirement('https://attacker.example', 'none', allowed)).toBe(true);
+    expect(isOriginAllowedForRequirement(undefined, 'if_present', allowed)).toBe(true);
+    expect(isOriginAllowedForRequirement(undefined, 'required', allowed)).toBe(false);
+    for (const requirement of ['if_present', 'required'] as const) {
+      expect(isOriginAllowedForRequirement('https://perf.example', requirement, allowed)).toBe(true);
+      expect(isOriginAllowedForRequirement('https://attacker.example', requirement, allowed)).toBe(false);
+      expect(isOriginAllowedForRequirement('null', requirement, allowed)).toBe(false);
+    }
+  });
+
+  it('reads a Host header hostname as Express does', () => {
+    expect(hostnameOfHostHeader('127.0.0.1:3000')).toBe('127.0.0.1');
+    expect(hostnameOfHostHeader('[::1]:3000')).toBe('[::1]');
+    expect(hostnameOfHostHeader('evil.example:3000')).toBe('evil.example');
+    expect(hostnameOfHostHeader(undefined)).toBe('');
+    expect(hostnameOfHostHeader('bad host/x')).toBe('');
   });
 });

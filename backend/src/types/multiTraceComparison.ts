@@ -284,7 +284,7 @@ export interface AnalysisResultWindowState {
   tenantId: string;
   workspaceId: string;
   windowId: string;
-  userId?: string;
+  userId: string;
   traceId?: string;
   backendTraceId?: string;
   activeSessionId?: string;

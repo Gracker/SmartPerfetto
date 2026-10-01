@@ -36,6 +36,8 @@ import type {
   CurationStatus,
 } from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
+import {sendRouteError} from '../middleware/routeFailure';
+import {KnowledgeCurationError} from '../services/knowledgeCurationError';
 
 let cachedLibrary: CaseLibrary | null = null;
 let cachedGraph: CaseGraph | null = null;
@@ -90,10 +92,11 @@ export function createCaseRoutes(
       g.addEdge(edge, scope);
       return res.status(201).json({success: true, edge});
     } catch (err) {
-      return res.status(400).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return sendRouteError(res, err, {
+        code: 'case_edge_save_failed',
+        error: 'Failed to save case edge',
+        logLabel: '[CaseRoutes] Edge save error',
+      }, [KnowledgeCurationError]);
     }
   });
 
@@ -154,10 +157,11 @@ export function createCaseRoutes(
       lib.saveCase(c, scope);
       return res.status(201).json({success: true, case: c});
     } catch (err) {
-      return res.status(400).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return sendRouteError(res, err, {
+        code: 'case_save_failed',
+        error: 'Failed to save case',
+        logLabel: '[CaseRoutes] Save error',
+      }, [KnowledgeCurationError]);
     }
   });
 
@@ -193,9 +197,11 @@ export function createCaseRoutes(
       const published = lib.publishCase(req.params.caseId, {reviewer}, scope);
       return res.json({success: true, case: published});
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = /not found/.test(msg) ? 404 : 400;
-      return res.status(status).json({success: false, error: msg});
+      return sendRouteError(res, err, {
+        code: 'case_publish_failed',
+        error: 'Failed to publish case',
+        logLabel: '[CaseRoutes] Publish error',
+      }, [KnowledgeCurationError]);
     }
   });
 
@@ -207,9 +213,11 @@ export function createCaseRoutes(
       const archived = lib.archiveCase(req.params.caseId, {reason}, scope);
       return res.json({success: true, case: archived});
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      const status = /not found/.test(msg) ? 404 : 400;
-      return res.status(status).json({success: false, error: msg});
+      return sendRouteError(res, err, {
+        code: 'case_archive_failed',
+        error: 'Failed to archive case',
+        logLabel: '[CaseRoutes] Archive error',
+      }, [KnowledgeCurationError]);
     }
   });
 

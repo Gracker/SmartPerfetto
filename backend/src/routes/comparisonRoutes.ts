@@ -341,9 +341,11 @@ router.post('/', async (req, res) => {
         scope,
       });
     } catch (error) {
+      // The stored error is served by GET and the comparison stream; the
+      // cause is logged by the catch below.
       repository.updateRun(scope, created.id, {
         status: 'failed',
-        error: error instanceof Error ? error.message : String(error),
+        error: 'Comparison failed',
       });
       throw error;
     }

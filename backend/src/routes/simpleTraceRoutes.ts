@@ -12,7 +12,7 @@ import { pipeline } from 'stream/promises';
 import { uuidv4 } from '../utils/uuid';
 import { resolveFeatureConfig } from '../config';
 import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
-import { sendRouteFailure } from '../middleware/routeFailure';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import { getPortPool } from '../services/portPool';
@@ -73,6 +73,7 @@ import {issueTraceProcessorProxyCapability} from '../services/traceProcessorProx
 import {TraceProcessorAdmissionError} from '../services/traceProcessorRamBudget';
 import {
   downloadPublicHttpUrl,
+  PublicHttpFetchError,
   PublicHttpUrlRejectedError,
   sanitizedPublicHttpUrl,
   type PublicHttpDownloadResponse,
@@ -699,24 +700,26 @@ async function finalizeTraceUpload(
   });
 
   if (tps) {
-    let processorError: string | undefined;
+    let processorFailed = false;
     try {
       await tps.completeUpload(traceId);
-    } catch (tpError: any) {
-      processorError = tpError.message;
-      console.error(`[TraceProcessor] Failed to load trace ${traceId}:`, tpError.message);
+    } catch (tpError) {
+      processorFailed = true;
+      console.error(`[TraceProcessor] Failed to load trace ${traceId}:`, tpError);
     }
 
     const traceWithPort = tps.getTraceWithPort(traceId);
     if (traceWithPort?.port) tps.exposeNativePort(traceWithPort.port);
-    if (processorError || traceWithPort?.status === 'error') {
+    if (processorFailed || traceWithPort?.status === 'error') {
+      // The processor's own error (stderr, paths) stays in the log above and
+      // in the service's; the client gets fixed text.
       return {
         id: traceId,
         filename,
         size,
         ...(traceWithPort ?? {}),
         status: 'error',
-        error: traceWithPort?.error ?? processorError ?? 'trace_processor_shell failed to start',
+        error: 'trace_processor_shell could not load the trace',
       };
     }
 
@@ -749,7 +752,7 @@ function traceUploadHasRpcTarget(traceInfo: FinalizedTraceUploadInfo | undefined
 
 function traceProcessorUnavailableMessage(traceInfo: FinalizedTraceUploadInfo | undefined): string {
   if (traceInfo?.error) {
-    return `Trace uploaded, but trace_processor_shell failed to start: ${traceInfo.error}`;
+    return `Trace uploaded, but ${traceInfo.error}`;
   }
 
   const status = traceInfo?.processor?.status ?? traceInfo?.status;
@@ -929,13 +932,13 @@ router.post(
         }
       });
 
-    } catch (error: any) {
+    } catch (error) {
       await cleanupFile(req.file?.path);
-      console.error('Upload error:', error);
-      res.status(500).json({
+      sendRouteFailure(res, {
+        code: 'trace_upload_failed',
         error: 'Upload failed',
-        details: error.message
-      });
+        logLabel: '[Traces] Upload error',
+      }, error);
     }
   },
 );
@@ -958,7 +961,15 @@ router.post('/upload-url', async (req, res) => {
       });
     }
 
-    const url = new URL(rawUrl);
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return res.status(400).json({
+        code: 'INVALID_TRACE_URL',
+        error: 'The trace URL is not a valid URL',
+      });
+    }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return res.status(400).json({
         error: 'Only http and https trace URLs are supported'
@@ -1056,11 +1067,11 @@ router.post('/upload-url', async (req, res) => {
         details: `Remote trace exceeds ${error.maxBytes} bytes`,
       });
     }
-    console.error('URL upload error:', error);
-    res.status(500).json({
+    sendRouteError(res, error, {
+      code: 'trace_url_upload_failed',
       error: 'URL upload failed',
-      details: error.message
-    });
+      logLabel: '[Traces] URL upload error',
+    }, [PublicHttpFetchError]);
   }
 });
 
@@ -1448,7 +1459,6 @@ router.post(
           acquisition.lease.mode,
         );
       }
-      console.error('[Traces] Open isolated viewer error:', error);
       if (error instanceof TraceProcessorAdmissionError) {
         return res.status(503).json({
           success: false,
@@ -1460,11 +1470,11 @@ router.post(
       if (error?.code === 'ENOENT') {
         return res.status(404).json({error: 'Trace file not found', id});
       }
-      return res.status(500).json({
-        success: false,
+      return sendRouteFailure(res, {
+        code: 'trace_viewer_open_failed',
         error: 'Failed to open isolated trace viewer',
-        details: error.message,
-      });
+        logLabel: '[Traces] Open isolated viewer error',
+      }, error);
     }
   },
 );
@@ -1583,12 +1593,12 @@ router.get('/:id', async (req, res) => {
         ...websocketCapabilityResponseFields(context, lease?.lease.id),
       }
     });
-  } catch (error: any) {
-    console.error('[Traces] Get trace error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteFailure(res, {
+      code: 'trace_read_failed',
       error: 'Failed to get trace',
-      details: error.message
-    });
+      logLabel: '[Traces] Get trace error',
+    }, error);
   }
 });
 
@@ -1662,12 +1672,12 @@ router.delete('/:id', async (req, res) => {
     console.log(`[Traces] Trace ${id} fully deleted`);
     res.json({ success: true, message: 'Trace deleted successfully' });
 
-  } catch (error: any) {
-    console.error('[Traces] Delete trace error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteFailure(res, {
+      code: 'trace_delete_failed',
       error: 'Failed to delete trace',
-      details: error.message
-    });
+      logLabel: '[Traces] Delete trace error',
+    }, error);
   }
 });
 
@@ -1703,12 +1713,12 @@ router.get('/:id/file', async (req, res) => {
         id
       });
     }
-  } catch (error: any) {
-    console.error('Download trace error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteFailure(res, {
+      code: 'trace_download_failed',
       error: 'Failed to download trace',
-      details: error.message
-    });
+      logLabel: '[Traces] Download trace error',
+    }, error);
   }
 });
 

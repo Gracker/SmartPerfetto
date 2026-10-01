@@ -99,7 +99,11 @@ credentialed fetch/header 策略携带 Cookie 与必要的 CSRF Token。本地�
 tenant/user/workspace 分区，OIDC 模式不读取旧的未分区数据。
 
 Cookie 写请求除了 CORS 之外还要经过精确 Origin 检查，因为 CORS 本身不会阻止浏览器
-发送跨站 mutation；同时必须携带 Session 派生的 CSRF Token。回调建立 Session 后直接
+发送跨站 mutation；同时必须携带 Session 派生的 CSRF Token。Trace Processor WebSocket
+握手是 GET，且不经过 Express 中间件，所以由浏览器自动附带的凭据（Session Cookie、
+可信 SSO Header、本地免密身份）认证时，握手的 Origin 必须在 CORS 允许列表中，并在
+分配任何 lease holder 之前检查；不从 Host 推导后端自身 Origin，因为 DNS rebinding
+页面能控制 Host。本地免密模式下握手同样拒绝非回环 Host。回调建立 Session 后直接
 跳回 `FRONTEND_URL`，不使用 popup 或前端工作区选择流程。
 
 ## 4. Runtime 与 Provider

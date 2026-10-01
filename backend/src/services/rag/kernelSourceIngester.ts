@@ -36,6 +36,7 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
+import {codebaseNotFound, invalidCodebaseMetadata, invalidCodebaseSelection} from '../codebase/codebaseRequestError';
 
 const DEFAULT_MAX_CHUNK_CHARS = 1800;
 const UNKNOWN_LICENSE = 'UNKNOWN';
@@ -81,17 +82,17 @@ export class KernelSourceIngester {
   async ingest(codebaseId: string, opts: KernelSourceIngestOptions = {}): Promise<KernelSourceIngestResult> {
     const ref = this.registry.get(codebaseId, opts.scope);
     if (!ref) {
-      throw new Error(`Codebase '${codebaseId}' not found`);
+      throw codebaseNotFound(codebaseId);
     }
     if (ref.kind !== 'kernel_source') {
-      throw new Error(`Codebase '${codebaseId}' is kind=${ref.kind}; kernel ingestion requires kernel_source`);
+      throw invalidCodebaseMetadata(`Codebase '${codebaseId}' is kind=${ref.kind}; kernel ingestion requires kernel_source`);
     }
     if (!ref.vendor) {
-      throw new Error(`Kernel codebase '${codebaseId}' requires vendor`);
+      throw invalidCodebaseMetadata(`Kernel codebase '${codebaseId}' requires vendor`);
     }
     const pathPrefix = resolveSourcePathPrefix(opts.pathPrefix);
     if ((ref.pathFilters ?? []).length === 0 && !pathPrefix) {
-      throw new Error(`Kernel codebase '${codebaseId}' requires pathFilters or pathPrefix`);
+      throw invalidCodebaseSelection(`Kernel codebase '${codebaseId}' requires pathFilters or pathPrefix`);
     }
     const effectiveScope = codebaseScopeFromRef(ref);
     return this.registry.withIngestLease(codebaseId, effectiveScope, lease =>

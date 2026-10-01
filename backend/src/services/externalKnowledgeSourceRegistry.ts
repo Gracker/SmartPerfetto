@@ -22,6 +22,15 @@ import {
   type ScopedIngestLeaseConfig,
   withScopedIngestLease,
 } from './scopedIngestLease';
+import {PublicRequestError} from '../utils/publicRequestError';
+
+/** An external knowledge source request the caller has to change: an unknown source or a missing acknowledgement. */
+export class KnowledgeSourceRequestError extends PublicRequestError {}
+
+function knowledgeSourceNotFound(sourceId: string): KnowledgeSourceRequestError {
+  return new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_NOT_FOUND',
+    `External knowledge source '${sourceId}' not found`, 404);
+}
 
 export interface ExternalKnowledgeScope {
   tenantId?: string;
@@ -160,7 +169,7 @@ export class ExternalKnowledgeSourceRegistry {
 
   register(input: RegisterExternalKnowledgeSourceInput): ExternalKnowledgeSource {
     if (!input.rightsAcknowledged) {
-      throw new Error('A separate right-to-use acknowledgement is required');
+      throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED', 'A separate right-to-use acknowledgement is required');
     }
     const sourceId = `eks_${createHash('sha256')
       .update(`${input.kind}\0${path.resolve(input.rootRealpath)}\0${scopeKey(input.scope)}`)
@@ -261,7 +270,7 @@ export class ExternalKnowledgeSourceRegistry {
     actor: string,
   ): ExternalKnowledgeSource {
     return this.mutateSource(sourceId, scope, source => {
-      if (!source) throw new Error(`External knowledge source '${sourceId}' not found`);
+      if (!source) throw knowledgeSourceNotFound(sourceId);
       return {
         ...source,
         sendToProvider,
@@ -329,7 +338,7 @@ export class ExternalKnowledgeSourceRegistry {
     source: ExternalKnowledgeSource | undefined,
     input: ActivateExternalKnowledgeGenerationInput,
   ): ExternalKnowledgeSource {
-    if (!source) throw new Error(`External knowledge source '${sourceId}' not found`);
+    if (!source) throw knowledgeSourceNotFound(sourceId);
     return {
       ...source,
       revision: input.revision,
@@ -346,7 +355,7 @@ export class ExternalKnowledgeSourceRegistry {
     sourceId: string,
     source: ExternalKnowledgeSource | undefined,
   ): ExternalKnowledgeSource {
-    if (!source) throw new Error(`External knowledge source '${sourceId}' not found`);
+    if (!source) throw knowledgeSourceNotFound(sourceId);
     const {
       activeGeneration: _activeGeneration,
       indexedArticleCount: _indexedArticleCount,
@@ -377,7 +386,7 @@ export class ExternalKnowledgeSourceRegistry {
         options: {rowScope: REGISTRY_ROW_SCOPE},
         mutate: current => {
           if (current && !sameScope(current.scope, scope)) {
-            throw new Error(`External knowledge source '${sourceId}' not found`);
+            throw knowledgeSourceNotFound(sourceId);
           }
           return mutate(current);
         },
@@ -449,7 +458,7 @@ export class ExternalKnowledgeSourceRegistry {
         scope,
         current => {
           if (current && !sameScope(current.scope, scope)) {
-            throw new Error(`External knowledge source '${sourceId}' not found`);
+            throw knowledgeSourceNotFound(sourceId);
           }
           return mutate(current);
         },
@@ -460,7 +469,7 @@ export class ExternalKnowledgeSourceRegistry {
     this.load(true);
     const current = this.sources.get(sourceId);
     if (current && !sameScope(current.scope, scope)) {
-      throw new Error(`External knowledge source '${sourceId}' not found`);
+      throw knowledgeSourceNotFound(sourceId);
     }
     const updated = mutate(current);
     if (enterpriseKnowledgeDbWritesEnabled()) {

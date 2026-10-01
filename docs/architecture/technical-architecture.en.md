@@ -108,7 +108,13 @@ mode never imports old unscoped data.
 
 Cookie-authenticated mutations use an exact Origin check in addition to CORS,
 because CORS alone does not prevent a browser from sending a cross-site
-mutation, and they also require the session-derived CSRF token. The callback
+mutation, and they also require the session-derived CSRF token. A Trace
+Processor WebSocket handshake is a GET that bypasses the Express middleware, so
+when a credential the browser attaches by itself authenticates it (a session
+cookie, trusted SSO headers, or the keyless local identity), its Origin must be
+in the CORS allow list, checked before any lease holder is acquired. The
+backend's own origin is never inferred from Host, which a DNS-rebinding page
+controls. In keyless local mode the handshake also rejects a non-loopback Host. The callback
 establishes the session and redirects directly to `FRONTEND_URL`; there is no
 popup or frontend workspace-selection flow.
 

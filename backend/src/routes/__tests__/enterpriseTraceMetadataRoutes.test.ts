@@ -1204,10 +1204,12 @@ describe('enterprise trace metadata routes', () => {
     );
 
     expect(uploadRes.status).toBe(200);
+    // The processor's own error (here a server path) stays in the log.
     expect(uploadRes.body).toEqual(expect.objectContaining({
       success: false,
-      error: expect.stringContaining(tpError),
+      error: 'Trace uploaded, but trace_processor_shell could not load the trace',
     }));
+    expect(uploadRes.text).not.toContain('/missing/trace_processor_shell');
     const traceId = uploadRes.body.trace.id as string;
     expect(readTraceAsset(traceId)).toEqual(expect.objectContaining({
       id: traceId,
@@ -1239,10 +1241,12 @@ describe('enterprise trace metadata routes', () => {
     );
 
     expect(uploadRes.status).toBe(200);
+    // The processor's own error (here a server path) stays in the log.
     expect(uploadRes.body).toEqual(expect.objectContaining({
       success: false,
-      error: expect.stringContaining(tpError),
+      error: 'Trace uploaded, but trace_processor_shell could not load the trace',
     }));
+    expect(uploadRes.text).not.toContain('/missing/trace_processor_shell');
     expect(logSpy.mock.calls.some(call => String(call[0]).includes('[TraceProcessor] Loaded trace'))).toBe(false);
     expect(readTraceProcessorLeases(uploadRes.body.trace.id)).toEqual([]);
   });
