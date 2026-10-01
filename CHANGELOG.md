@@ -13,6 +13,18 @@ Detailed commit-level history is available via `git log`.
 
 ## [Unreleased]
 
+### Security
+- The backend no longer serves `/uploads/*` as static files. Whenever
+  `NODE_ENV` was `development` (its default, so every `./start.sh` and
+  `./scripts/start-dev.sh` source deployment) it served `backend/uploads`,
+  including uploaded traces and their metadata, outside `/api`: without
+  authentication, trace ownership checks, or the keyless-mode Host check that
+  stops DNS-rebinding pages. Reading a file required knowing its trace id.
+  Docker and portable packages set `NODE_ENV=production` and were not
+  affected. Nothing in the product used the path; download traces through
+  `GET /api/traces/:id/file` (or its workspace-scoped form), which is
+  authenticated and ownership-checked.
+
 ### Removed
 - `/api/perfetto-sql/*` now answers 410 in every deployment mode. It had no
   product caller; its fallback analyses interpolated the request package name

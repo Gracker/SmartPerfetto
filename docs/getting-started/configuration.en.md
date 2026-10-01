@@ -780,6 +780,10 @@ trace by id after a backend restart all use that one directory. Set
 overrides all three together (the npm CLI uses it to keep trace copies under
 its own home).
 
+The backend never serves the upload directory as static files. Trace files are
+downloaded only through the authenticated, ownership-checked trace download API
+(`GET /api/traces/:id/file`, or its workspace-scoped form).
+
 `TRACE_PROCESSOR_PATH` usually does not need manual configuration.
 `./start.sh` and `./scripts/start-dev.sh` prefer SHA256-pinned prebuilts. An
 explicit `TRACE_PROCESSOR_PATH` is a user-owned override: launchers and backend

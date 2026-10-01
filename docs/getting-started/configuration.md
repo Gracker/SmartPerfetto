@@ -676,6 +676,9 @@ TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 `SMARTPERFETTO_TRACE_UPLOAD_DIR` 只在需要把 trace 目录单独放到别处时设置，它会同时覆盖上述三处
 （npm CLI 用它把 trace 副本放在自己的 home 下）。
 
+后端不会把上传目录作为静态文件对外提供。trace 文件只能通过经过鉴权和归属检查的 trace 下载接口获取
+（`GET /api/traces/:id/file` 或其 workspace 作用域形式）。
+
 默认不需要手动设置 `TRACE_PROCESSOR_PATH`。普通 `./start.sh` 和开发模式 `./scripts/start-dev.sh` 都优先使用经过固定 SHA256 校验的 prebuilt。显式的 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径：启动和 backend `predev` 只检查文件存在、可执行以及 `--version`，不会改权限、按固定 SHA 替换或向该路径下载。
 
 只有在修改 Perfetto C++ 或需要自编译时才使用：
