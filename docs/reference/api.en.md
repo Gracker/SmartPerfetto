@@ -13,6 +13,28 @@ Authorization: Bearer <token>
 `SMARTPERFETTO_API_KEY` is the deployment-operator credential. Enterprise
 users should use durable API keys with explicit roles and scopes.
 
+## Unhandled Errors
+
+Error contracts that an endpoint declares itself (for example
+`{success: false, code, error}`) are unchanged. An exception no route handled,
+which reaches the global fallback, returns only fixed content under every
+`NODE_ENV`:
+
+```json
+{"success": false, "code": "unhandled_error", "error": "Internal Server Error", "requestId": "req-…"}
+```
+
+The HTTP status is the exception's own 4xx/5xx status, otherwise 500. `error`
+is that status's standard name (such as `Bad Request` or `Payload Too Large`,
+or `Request failed` for a status Node has no name for); it never contains the
+exception message or a stack trace, and a malformed JSON body is not quoted
+back. The `X-Request-Id` response header equals `requestId`: an id the route
+already sent, else the authenticated request-context id, else the caller's
+sanitized `X-Request-Id` header, else a new id. The full message and stack go
+only to the server log's `[UnhandledError]` line, correlated by `requestId`;
+the raw request body a body-parse error carries is not logged. There is no
+switch that echoes exception messages.
+
 ## OIDC Authentication
 
 | Method | Path | Purpose |

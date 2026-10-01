@@ -12,6 +12,23 @@ Authorization: Bearer <token>
 `SMARTPERFETTO_API_KEY` 是部署运维凭证；企业用户应使用带明确角色和 scope 的持久化
 API key。
 
+## 未处理错误
+
+接口自己声明的错误契约（例如 `{success: false, code, error}`）保持不变。路由没有自行处理、
+落到全局兜底的异常，在任何 `NODE_ENV` 下都只返回固定内容：
+
+```json
+{"success": false, "code": "unhandled_error", "error": "Internal Server Error", "requestId": "req-…"}
+```
+
+HTTP 状态取异常自带的 4xx/5xx 状态，否则为 500。`error` 是该状态的标准名称（如
+`Bad Request`、`Payload Too Large`；Node 没有命名的状态码为 `Request failed`），不包含
+异常消息和调用栈，请求体 JSON 格式错误也不回显请求内容。响应头 `X-Request-Id` 与
+`requestId` 相同，依次取路由已发出的 ID、鉴权后请求上下文的 ID、调用方经清洗的
+`X-Request-Id` 请求头，都没有时新生成。完整的异常消息和调用栈只写入服务端日志的
+`[UnhandledError]` 行，用 `requestId` 关联；请求体解析错误附带的原始请求体不写入日志。
+没有回显异常消息的调试开关。
+
 ## OIDC 鉴权
 
 | 方法 | 路径 | 说明 |

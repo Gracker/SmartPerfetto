@@ -198,6 +198,13 @@ const defaultScopesForAuthType = (authType: RequestContextAuthType): string[] =>
     ? ['*']
     : ['trace:read', 'trace:write', 'agent:run', 'report:read'];
 
+export const createRequestId = (): string =>
+  `req-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+
+/** The caller's sanitized `X-Request-Id`, or a new id. */
+export const resolveRequestId = (req: Request): string =>
+  sanitizeContextId(getHeaderValue(req, 'x-request-id')) || createRequestId();
+
 const buildRequestContext = (req: Request, identity: ResolvedIdentity): RequestContext => {
   const tenantId = identity.tenantId
     || sanitizeContextId(getFirstHeaderValue(req, ['x-tenant-id', 'x-sso-tenant-id']))
@@ -208,9 +215,7 @@ const buildRequestContext = (req: Request, identity: ResolvedIdentity): RequestC
       : sanitizeContextId(getFirstHeaderValue(req, ['x-workspace-id', 'x-sso-workspace-id']))
         || DEFAULT_WORKSPACE_ID
   );
-  const requestId =
-    sanitizeContextId(getHeaderValue(req, 'x-request-id')) ||
-    `req-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`;
+  const requestId = resolveRequestId(req);
   const windowId = sanitizeContextId(getHeaderValue(req, 'x-window-id')) || undefined;
 
   return {
