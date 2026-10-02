@@ -110,7 +110,7 @@ import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 // =============================================================================
 
 import { DisplayLayer } from './types';
-import { isObservedStepResult, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
+import { isObservedStepResult, isOptionalStep, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
 
 /**
  * Synthesize Data - 标记为 synthesize 的步骤数据
@@ -2080,6 +2080,26 @@ export class SkillExecutor {
   }
 
   /**
+   * A step as layered output shows it. A Skill reference shows the child step
+   * it exposes, data and scope alike, as a read by id or a default save_as sees
+   * it. A failed reference shows its own failure with no child rows or scope;
+   * when the step is optional the failure is an optional error, as for an
+   * optional query, and does not fail the Skill. Only the display changes: the
+   * execution result, and the Skill-level scope built from it, are untouched.
+   */
+  private layerStepResult(step: SkillStep, stepResult: StepResult): StepResult {
+    if (stepResult.stepType !== 'skill') return stepResult;
+    const { stepId, executionTimeMs, error, code, skippedCondition } = stepResult;
+    const exposed = exposedStepResult(stepResult);
+    // The exposed child step carries its own stepType; the entry stays a reference.
+    if (exposed) return { ...exposed, stepId, stepType: 'skill', executionTimeMs };
+    const failure = { stepId, stepType: 'skill', data: [], error, executionTimeMs } as const;
+    return isOptionalStep(step)
+      ? { ...failure, success: true, code: 'optional_query_error' }
+      : { ...failure, success: false, code, skippedCondition };
+  }
+
+  /**
    * The scope of the binding an input name resolves to. A bound variable carries
    * only its own scope, even when it holds no data, never that of a same-named
    * step result; inputs and inherited values carry none.
@@ -2185,8 +2205,7 @@ export class SkillExecutor {
         }
         if (stepResult.code === 'condition_not_met') continue;
         if (isQueryOrSkillResult(stepResult)) {
-          const optional = 'optional' in step && Boolean(step.optional);
-          if (!optional) {
+          if (!isOptionalStep(step)) {
             return {
               aiSummary,
               error: stepResult.error || `Required step failed: ${step.id}`,
@@ -2204,8 +2223,20 @@ export class SkillExecutor {
   }
 
   /**
-   * Apply expandableBindSource declarations: for each step that declares an expandableBindSource,
-   * find the batch data in context.variables and bind it as expandableData on the target DisplayResult.
+   * The batch rows a step's expandableBindSource names, with the scope of that
+   * binding (the one result it holds); undefined when the binding has no rows.
+   */
+  private expandableBindRows(step: SkillStep, context: SkillExecutionContext):
+    { rows: Record<string, any>[]; scope?: EvidenceScopeProvenanceV1 } | undefined {
+    const bindSource = this.getDisplayConfig(step)?.expandableBindSource;
+    if (!bindSource) return undefined;
+    const rows = context.variables[bindSource];
+    return Array.isArray(rows) && rows.length > 0 ? { rows, scope: context.variableScopes?.[bindSource] } : undefined;
+  }
+
+  /**
+   * Apply expandableBindSource declarations: bind each declared batch as
+   * expandableData on the declaring step's DisplayResult.
    */
   private applyExpandableBindSources(
     steps: SkillStep[],
@@ -2213,21 +2244,15 @@ export class SkillExecutor {
     displayResults: DisplayResult[]
   ): void {
     for (const step of steps) {
-      const display = this.getDisplayConfig(step);
-      const bindSource = display?.expandableBindSource;
-      if (!bindSource) continue;
-
-      const sourceData = context.variables[bindSource];
+      const source = this.expandableBindRows(step, context);
+      if (!source) continue;
       const targetDisplayResult = displayResults.find(dr => dr.stepId === step.id);
-
-      if (!Array.isArray(sourceData) || sourceData.length === 0) continue;
       if (!targetDisplayResult?.data?.rows?.length || !targetDisplayResult.data.columns?.length) continue;
 
       targetDisplayResult.data.expandableData = this.buildExpandableFromBatch(
         targetDisplayResult.data.rows,
         targetDisplayResult.data.columns,
-        sourceData, undefined,
-        resultScopeProvenance(context.results[steps.find(candidate => 'save_as' in candidate && candidate.save_as === bindSource)?.id || ''])
+        source.rows, undefined, source.scope,
       );
     }
   }
@@ -2732,9 +2757,7 @@ export class SkillExecutor {
         throwIfTraceProcessorQueryCancelled(execContext.signal);
         const step = skill.steps[i];
         const stepResult = await this.executeStep(step, execContext, skill.name);
-        const layerStepResult = stepResult.stepType === 'skill'
-          ? { ...stepResult, ...selectedStepResult(stepResult), stepId: step.id, stepType: stepResult.stepType }
-          : stepResult;
+        const shown = this.layerStepResult(step, stepResult);
 
         this.recordStepResult(step, stepResult, execContext);
 
@@ -2742,7 +2765,7 @@ export class SkillExecutor {
         // This is needed for organizeByLayer to correctly place results in layers
         // Process display config with template variable substitution (e.g., ${frame_id})
         if ('display' in step && typeof step.display === 'object') {
-          layerStepResult.display = processDisplayConfig(step.display, execContext);
+          shown.display = processDisplayConfig(step.display, execContext);
         }
 
         // 收集标记为 synthesize 的步骤数据
@@ -2764,7 +2787,7 @@ export class SkillExecutor {
           synthesizeData.push(this.createSynthesizeData(step, stepResult, displayConfig, config));
         }
 
-        stepResults.push(layerStepResult);
+        stepResults.push(shown);
       }
     }
 
@@ -2784,7 +2807,9 @@ export class SkillExecutor {
           const iteratorResult = stepResults[i];
           // 在 executeCompositeSkill 路径中，iterator 的 data 是原始 [{itemIndex, item, result}, ...]
           // 需要将其转换为 expandableData 格式
-          if (sourceResult?.data && iteratorResult?.success && Array.isArray(iteratorResult.data)) {
+          // Only rows the source entry holds can expand; a failed reference holds none.
+          if (Array.isArray(sourceResult?.data) && sourceResult.data.length > 0
+            && iteratorResult?.success && Array.isArray(iteratorResult.data)) {
             const expandableData = iteratorResult.data.map((iterItem: any) => ({
               item: iterItem.item,
               result: {
@@ -2804,20 +2829,13 @@ export class SkillExecutor {
     // Batch-to-expandable binding for executeCompositeSkill path (object-array variant)
     if (skill.steps) {
       for (const step of skill.steps) {
-        const display = step.display && typeof step.display === 'object' ? step.display as DisplayConfig : undefined;
-        const bindSource = display?.expandableBindSource;
-        if (!bindSource) continue;
-
-        const sourceData = execContext.variables[bindSource];
+        const source = this.expandableBindRows(step, execContext);
+        if (!source) continue;
         const targetResult = stepResults.find(sr => sr.stepId === step.id);
-
-        if (!Array.isArray(sourceData) || sourceData.length === 0) continue;
         if (!targetResult?.data || !Array.isArray(targetResult.data) || targetResult.data.length === 0) continue;
         if (typeof targetResult.data[0] !== 'object' || targetResult.data[0] === null) continue;
 
-        const sourceStepId = skill.steps.find(candidate => 'save_as' in candidate && candidate.save_as === bindSource)?.id;
-        const expandableData = this.buildExpandableFromBatch(null, null, sourceData, targetResult.data,
-          sourceStepId ? resultScopeProvenance(execContext.results[sourceStepId]) : undefined);
+        const expandableData = this.buildExpandableFromBatch(null, null, source.rows, targetResult.data, source.scope);
         (targetResult.data as any).expandableData = expandableData;
       }
     }
@@ -2826,6 +2844,7 @@ export class SkillExecutor {
     try {
       const layers = organizeByLayer(stepResults);
 
+      const scopeLimitations = resultScopeLimitations({ rawResults: execContext.results });
       const result: LayeredResult = {
         layers,
         defaultExpanded: ['overview', 'list'],
@@ -2835,9 +2854,10 @@ export class SkillExecutor {
           executedAt: new Date().toISOString()
         },
         stepResults,
-        scopeProvenance: mergeScopeProvenance(stepResults.map(resultScopeProvenance)),
-        scopeLimitations: stepResults.flatMap(resultScopeLimitations),
-        partial: stepResults.some(step => resultScopeLimitations(step).length > 0),
+        // From what ran, as on the execute path; a display entry shows only part of a reference.
+        scopeProvenance: mergeScopeProvenance(Object.values(execContext.results).map(resultScopeProvenance)),
+        scopeLimitations,
+        partial: scopeLimitations.length > 0,
         // 添加收集的 synthesize 数据
         synthesizeData: synthesizeData.length > 0 ? synthesizeData : undefined,
       };

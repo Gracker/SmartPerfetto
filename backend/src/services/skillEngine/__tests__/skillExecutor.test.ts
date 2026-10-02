@@ -37,6 +37,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import {ArtifactStore} from '../../../agentv3/artifactStore';
+import {SkillAnalysisAdapter} from '../skillAnalysisAdapter';
 import Database from 'better-sqlite3';
 
 // =============================================================================
@@ -3083,6 +3084,160 @@ describe('Skill Reference 按步骤 id 读取', () => {
       expect(optional).toMatchObject({diagnoses: ['id=none'], sql: ['none'], iterated: []});
     }
   });
+});
+
+// =============================================================================
+// Test Suite: what a Skill reference shows on the layered and expandable surfaces
+// =============================================================================
+
+describe('Skill Reference 分层结果与批量展开', () => {
+  let executor: SkillExecutor;
+  let mockTraceProcessor: any;
+
+  // `ctx` returns a global_context row nothing displays; `rows` is the displayed
+  // peer_context step a default save_as binds. A reference's merged scope
+  // therefore carries both roles, the selected `rows` step's only peer_context.
+  const ctxStep = {id: 'ctx', type: 'atomic', sql: 'SELECT /*ctx*/ 1', process_scope: {role: 'global_context'}} as any;
+  const rowsStep = {id: 'rows', type: 'atomic', sql: 'SELECT /*rows*/ 1', display: {level: 'summary'},
+    process_scope: {role: 'peer_context'}} as any;
+  const {process_scope: _unscoped, ...unscopedRowsStep} = rowsStep;
+  const childSkill = (name: string, steps: SkillStep[]): SkillDefinition =>
+    ({name, type: 'composite', version: '1.0', meta: createMeta(name), steps});
+  const children = [
+    childSkill('ctx_then_rows_child', [ctxStep, rowsStep]),
+    // A required step fails after `rows` already returned data.
+    childSkill('ctx_rows_then_failing_child', [ctxStep, rowsStep, {id: 'boom', type: 'atomic', sql: 'SELECT /*boom*/ 1'}]),
+    // The selected `rows` step declares no scope of its own.
+    childSkill('ctx_then_unscoped_rows_child', [ctxStep, unscopedRowsStep]),
+  ];
+
+  const list = {layer: 'list', level: 'detail', format: 'table'};
+  const roles = (scope: any): string[] => (scope?.entries ?? []).map((entry: any) => entry.role).sort();
+  const parent = (name: string, steps: any[]) => childSkill(name, steps);
+  const refParent = (ref: Record<string, unknown>, extra: any[] = []) =>
+    parent('layered_ref_parent', [{id: 'ref', display: list, ...ref}, ...extra]);
+
+  async function layered(skill: SkillDefinition) {
+    executor.registerSkill(skill);
+    const result = await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1'});
+    const adapter = new SkillAnalysisAdapter(mockTraceProcessor) as any;
+    return {
+      result,
+      step: (id: string) => result.stepResults!.find(step => step.stepId === id) as any,
+      failures: (adapter.collectLayeredFailures(result) as any[]).map(step => step.stepId),
+      display: (adapter.convertLayeredResultToDisplayResults(result) as any[]).find(entry => entry.stepId === 'ref'),
+    };
+  }
+
+  beforeEach(() => {
+    mockTraceProcessor = createMockTraceProcessorService();
+    mockTraceProcessor.query.mockImplementation(async (_trace: string, sql: string) => {
+      if (sql.includes('/*ctx*/')) return {columns: ['source'], rows: [['ctx-row']]};
+      if (sql.includes('/*rows*/') || sql.includes('/*list*/')) return {columns: ['source'], rows: [['picked-row']]};
+      if (sql.includes('/*boom*/')) return {columns: [], rows: [], error: 'boom'};
+      return {columns: [], rows: []};
+    });
+    executor = createSkillExecutor(mockTraceProcessor);
+    for (const skill of children) executor.registerSkill(skill);
+    executor.registerSkill({name: 'echo_source', type: 'atomic', version: '1.0',
+      meta: createMeta('Echo Source'), sql: 'SELECT /*echo*/ 1'});
+  });
+
+  it('shows a successful reference as the child step its save_as binds', async () => {
+    const {result, step, failures, display} = await layered(refParent({skill: 'ctx_then_rows_child'}));
+    expect(step('ref')).toMatchObject({success: true, stepType: 'skill', data: [{source: 'picked-row'}]});
+    expect(roles(step('ref').scopeProvenance)).toEqual(['peer_context']);
+    expect(failures).toEqual([]);
+    expect(display.data).toEqual([{source: 'picked-row'}]);
+    // The Skill's own scope still covers every step that ran.
+    expect(roles(result.scopeProvenance)).toEqual(['global_context', 'peer_context']);
+  });
+
+  // As on every other read of the reference, the entry carries the selected
+  // step's own scope even when that step has none: the merged scope never fills in.
+  it('never gives a successful reference entry the merged scope of its child steps', async () => {
+    const {step, display} = await layered(refParent({skill: 'ctx_then_unscoped_rows_child'}));
+    expect(step('ref').data).toEqual([{source: 'picked-row'}]);
+    expect(step('ref').scopeProvenance).toBeUndefined();
+    expect(display.scopeProvenance).toBeUndefined();
+  });
+
+  it('shows a failed required reference as failed, with none of its child rows', async () => {
+    const {result, step, failures, display} = await layered(refParent({skill: 'ctx_rows_then_failing_child'}));
+    expect(step('ref')).toMatchObject({success: false, stepType: 'skill', data: [], error: expect.stringContaining('boom')});
+    expect(result.layers.list!.ref).toMatchObject({success: false, data: []});
+    expect(failures).toEqual(['ref']);
+    expect(display.data).toEqual([]);
+    expect(JSON.stringify(result.stepResults)).not.toContain('picked-row');
+  });
+
+  it('shows a failed optional reference as an optional error that does not fail the Skill', async () => {
+    const {result, step, failures, display} = await layered(
+      refParent({skill: 'ctx_rows_then_failing_child', optional: true}));
+    expect(step('ref')).toMatchObject({success: true, data: [], code: 'optional_query_error',
+      error: expect.stringContaining('boom')});
+    expect(failures).toEqual([]);
+    expect(display).toMatchObject({data: [], executionStatus: 'optional_error', executionError: expect.stringContaining('boom')});
+    expect(JSON.stringify(result.stepResults)).not.toContain('picked-row');
+  });
+
+  it('keeps the failed execution in synthesize data, where the reference result is read whole', async () => {
+    const {result} = await layered(refParent({skill: 'ctx_rows_then_failing_child', optional: true, synthesize: true}));
+    expect(result.synthesizeData).toEqual([expect.objectContaining({stepId: 'ref', success: false})]);
+  });
+
+  // `ref` and `alt` both declare save_as `x`; the iterator reads `alt`'s rows,
+  // while the back-binding takes the first declarer. It must not hang them on
+  // the failed reference, which holds no rows.
+  it('attaches iterator results only to a source entry that holds rows', async () => {
+    const {step} = await layered(refParent({skill: 'ctx_rows_then_failing_child', save_as: 'x'}, [
+      {id: 'alt', type: 'atomic', sql: 'SELECT /*rows*/ 1', save_as: 'x'},
+      {id: 'each', type: 'iterator', source: 'x', item_skill: 'echo_source'},
+    ]));
+    expect(step('each').success).toBe(true);
+    expect(step('ref').data.expandableData).toBeUndefined();
+
+    const shown = await layered(refParent({skill: 'ctx_then_rows_child'},
+      [{id: 'each', type: 'iterator', source: 'ref', item_skill: 'echo_source'}]));
+    expect(shown.step('ref').data.expandableData).toEqual([expect.objectContaining({item: {source: 'picked-row'}})]);
+  });
+
+  // `batch_rows` is bound before `list`, which shows rows and expands each one
+  // from that batch. Sections only render known JSON columns, so the scope is
+  // what tells which child step the expansion came from.
+  const batchParent = (bind: any[]) => parent('batch_bind_parent', [...bind,
+    {id: 'list', type: 'atomic', sql: 'SELECT /*list*/ 1', display: {...list, expandableBindSource: 'batch_rows'}}]);
+  const batchRef = (extra: Record<string, unknown> = {}) =>
+    ({id: 'batch', skill: 'ctx_then_rows_child', save_as: 'batch_rows', ...extra});
+
+  async function expandedRoles(skill: SkillDefinition, path: 'execute' | 'executeCompositeSkill') {
+    executor.registerSkill(skill);
+    let data: any;
+    if (path === 'execute') {
+      data = (await executor.execute(skill.name, 'trace-1', {})).displayResults.find(entry => entry.stepId === 'list')?.data;
+    } else {
+      const result = await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1'});
+      data = result.stepResults!.find(step => step.stepId === 'list')?.data;
+    }
+    expect(data?.expandableData).toHaveLength(1);
+    return roles(data.expandableData[0].result.scopeProvenance);
+  }
+
+  it.each(['execute', 'executeCompositeSkill'] as const)(
+    'expands a Skill reference binding with the scope of the child step it bound (%s)', async path => {
+      expect(await expandedRoles(batchParent([batchRef()]), path)).toEqual(['peer_context']);
+      expect(await expandedRoles(batchParent([batchRef({save_from: 'ctx'})]), path)).toEqual(['global_context']);
+      // A bound step without a scope of its own has none; the merged scope never fills in.
+      expect(await expandedRoles(batchParent([batchRef({skill: 'ctx_then_unscoped_rows_child'})]), path)).toEqual([]);
+    });
+
+  it.each(['execute', 'executeCompositeSkill'] as const)(
+    'takes the scope of the step that bound the name, not of its first declarer (%s)', async path => {
+      expect(await expandedRoles(batchParent([
+        {...ctxStep, id: 'first', save_as: 'batch_rows', condition: 'false', optional: true},
+        {...rowsStep, id: 'second', save_as: 'batch_rows'},
+      ]), path)).toEqual(['peer_context']);
+    });
 });
 
 // =============================================================================

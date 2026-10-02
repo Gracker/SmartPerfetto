@@ -246,6 +246,11 @@ outputs:
 时同样绑定 `null`，即使目标步骤已有数据；按步骤 id 也读不到它的任何子步骤数据，包括失败前已经返回的部分结果。
 `save_from` 只在父 Skill 的顶层步骤生效，`validate:skills` 会拒绝不存在的目标步骤。
 
+分层输出（Skill HTTP API 与 HTML 报告背后的 composite 路径）展示引用步骤的方式与此一致：展示默认选中子步骤的
+数据和该步骤自己的范围来源（该步骤没有声明范围时就没有，绝不用全部子步骤合并后的范围）。失败的引用显示为失败、
+不带任何子步骤行；步骤为 `optional` 时，这个失败显示为可选步骤出错（`executionStatus: optional_error`，与
+可选查询出错相同），不会使整个 Skill 失败。
+
 默认选中的子步骤本身又是 Skill 引用时，绑定的是孙 Skill 的结果对象：表达式经 `.data` 访问时按同一规则再
 选一层，诊断与 AI 的 `inputs` 拿到的是这个结果对象，iterator 不能遍历它。`save_from` 只能选直接子 Skill
 的顶层步骤、不能穿透到孙 Skill：需要具体字段时，用它绑定子 Skill 中真正的读取步骤，而不是那个引用步骤。
@@ -455,6 +460,8 @@ display:
   expandable: true
   expandableBindSource: frame_details  # 关联的详情数据源
 ```
+
+`expandableBindSource` 写 `save_as` 名：用该绑定的行展开本步骤的行，展开数据带的范围来源也是这个绑定自己的。
 
 ### 高亮规则
 
