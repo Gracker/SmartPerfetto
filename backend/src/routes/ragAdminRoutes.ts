@@ -37,6 +37,7 @@ import {
 import {authenticate, requireRequestContext} from '../middleware/auth';
 import {
   logRouteFailure,
+  sendPublicRequestError,
   sendRouteError,
   sendRouteReasonError,
 } from '../middleware/routeFailure';
@@ -181,18 +182,28 @@ function sendDirectoryPickerError(
   res: Response,
   error: unknown,
 ) {
-  if (error instanceof NativeDirectoryPickerError) {
-    return res.status(error.httpStatus).json({
-      success: false,
-      code: error.code,
-      error: error.message,
-    });
-  }
-  return res.status(500).json({
-    success: false,
+  sendRouteError(res, error, {
     code: 'DIRECTORY_PICKER_FAILED',
     error: 'Directory picker failed',
-  });
+    logLabel: '[RagAdmin] Directory picker error',
+  }, [NativeDirectoryPickerError]);
+}
+
+/**
+ * Reason tokens of the source, knowledge-root and index lifecycle a caller can
+ * act on, by family prefix: a new internal token must not use these prefixes.
+ * Anything else a service throws as a token (store corruption, staging
+ * invariants) is internal and gets the route's fixed failure.
+ */
+const CALLER_FACING_RAG_REASON =
+  /^(?:root|source|knowledge|codebase|external_knowledge|submodule|pending_generation|provider_send|right_to_use)_/;
+
+function callerFacing(reason: string | undefined): string | undefined {
+  return reason && CALLER_FACING_RAG_REASON.test(reason) ? reason : undefined;
+}
+
+function callerFacingRagReason(status: number): (reason: string) => number | undefined {
+  return reason => (callerFacing(reason) ? status : undefined);
 }
 
 function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
@@ -348,9 +359,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       });
       res.json({success: true, result: sanitizeRetrieval(result)});
     } catch (error) {
-      if (error instanceof RagSearchInputError) {
-        return res.status(400).json({success: false, code: error.code, error: error.message});
-      }
+      if (error instanceof RagSearchInputError) return sendPublicRequestError(res, error);
       throw error;
     }
   });
@@ -400,7 +409,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         },
       });
     } catch (error) {
-      return sendRouteReasonError(res, error, 400, {
+      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
         code: 'knowledge_source_preview_failed',
         error: 'Knowledge source preview failed',
         logLabel: '[RagAdmin] Knowledge source preview error',
@@ -457,7 +466,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       });
       return res.json({success: true, source: sanitizeExternalKnowledgeSource(source)});
     } catch (error) {
-      return sendRouteReasonError(res, error, 400, {
+      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
         code: 'knowledge_source_register_failed',
         error: 'Knowledge source registration failed',
         logLabel: '[RagAdmin] Knowledge source register error',
@@ -487,7 +496,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         const result = await androidInternalsWikiIngester.ingest(sourceId, scope);
         return res.json({success: true, result});
       } catch (error) {
-        return sendRouteReasonError(res, error, 400, {
+        return sendRouteReasonError(res, error, callerFacingRagReason(400), {
           code: 'knowledge_source_reindex_failed',
           error: 'Knowledge source reindex failed',
           logLabel: '[RagAdmin] Knowledge source reindex error',
@@ -555,7 +564,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           });
         });
       } catch (error) {
-        return sendRouteReasonError(res, error, 409, {
+        return sendRouteReasonError(res, error, callerFacingRagReason(409), {
           code: 'knowledge_source_index_delete_failed',
           error: 'Knowledge source index deletion failed',
           logLabel: '[RagAdmin] Knowledge source index delete error',
@@ -618,7 +627,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           },
         });
       } catch (error) {
-        return sendRouteReasonError(res, error, 400, {
+        return sendRouteReasonError(res, error, callerFacingRagReason(400), {
           code: 'knowledge_source_audit_failed',
           error: 'Knowledge source audit failed',
           logLabel: '[RagAdmin] Knowledge source audit error',
@@ -908,7 +917,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       }
       // Path gate and registry rejections are reason tokens; filesystem and
       // database failures get fixed text.
-      return sendRouteReasonError(res, error, 400, {
+      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
         code: 'CODEBASE_REGISTER_FAILED',
         error: 'Codebase registration failed',
         logLabel: '[RagAdmin] Codebase register error',
@@ -972,9 +981,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
             });
       res.json({success: true, result});
     } catch (error) {
-      if (error instanceof RagSearchInputError) {
-        return res.status(400).json({success: false, code: error.code, error: error.message});
-      }
+      if (error instanceof RagSearchInputError) return sendPublicRequestError(res, error);
       throw error;
     }
   });
@@ -1038,7 +1045,9 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       return res.status(400).json({
         success: false,
         code,
-        error: error instanceof CodebaseRequestError ? error.message : thrownReasonCode(error) ?? message,
+        error: error instanceof CodebaseRequestError
+          ? error.message
+          : callerFacing(thrownReasonCode(error)) ?? message,
         message,
         onDemandAvailable,
         requestId,
@@ -1059,7 +1068,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         ...result,
         errors: result.errors.map(fileError => ({
           ...fileError,
-          reason: messageReasonCode(fileError.reason) ?? 'source_file_unreadable',
+          reason: callerFacing(messageReasonCode(fileError.reason)) ?? 'source_file_unreadable',
         })),
       }});
     } catch (error) {
@@ -1214,12 +1223,11 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     try {
       return res.json({success: true, ...await codebaseManagementService.delete(codebaseId, scope)});
     } catch (error) {
-      const managementError = error instanceof CodebaseManagementError ? error : undefined;
-      return res.status(managementError?.status ?? 500).json({
-        success: false,
-        code: managementError?.code ?? 'CODEBASE_DELETE_FAILED',
-        error: managementError?.message ?? 'Codebase deletion failed',
-      });
+      return sendRouteError(res, error, {
+        code: 'CODEBASE_DELETE_FAILED',
+        error: 'Codebase deletion failed',
+        logLabel: '[RagAdmin] Codebase delete error',
+      }, [CodebaseManagementError]);
     }
   });
 

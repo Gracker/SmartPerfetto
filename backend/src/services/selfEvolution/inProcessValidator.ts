@@ -8,11 +8,13 @@ import {
 } from '../skillEngine/displayContractValidator';
 import {validateSkillBatchAnalysis} from '../skillEngine/skillBatchAnalysis';
 import {
+  declaredSkillNames,
+  isUncheckedConditionRoot,
   validateFragmentReferences,
   validateNormalizedStdlibReads,
   validateSkillConditions,
 } from '../skillEngine/skillValidator';
-import {blankStringLiterals, freeRootOccurrences, parseEvidenceField} from '../skillEngine/expressionUtils';
+import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
 import type {SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
@@ -28,7 +30,7 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '3';
+export const IN_PROCESS_VALIDATOR_VERSION = '4';
 
 export type InProcessValidationSeverity = 'error' | 'warning';
 
@@ -338,9 +340,16 @@ function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidati
  * reads without declaring it, and, outside placeholders (where `${rows[0].x}`
  * is a valid simple path), JS access to step data other than through `.data`,
  * which is always undefined. Arrow parameters bind inside their callback only.
+ *
+ * Any other root a rule reads must be a Skill input, a context dependency or
+ * a runtime parameter: no scope binds anything else, so it is always
+ * undefined (`inputs?.threshold_ms` once silently ignored every caller's
+ * threshold). Every check here judges root names, so it runs only on exact
+ * reads: where a local could share a step's name, a guess is no finding.
  */
 function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIssue[] {
   const issues: InProcessValidationIssue[] = [];
+  const skillNames = declaredSkillNames(skill);
   const stepData = new Set<string>();
   visitSteps(skill.steps ?? [], step => {
     if (typeof step.id === 'string') stepData.add(step.id);
@@ -356,27 +365,34 @@ function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIss
         'A diagnostic step must declare inputs as a list of step names (it may be empty).');
     }
     const inputs = new Set(Array.isArray(step.inputs) ? step.inputs : []);
-    const reportUndeclared = (names: Iterable<string>, fieldPath: string) => {
-      const undeclared = [...new Set(names)].filter(name => stepData.has(name) && !inputs.has(name));
+    const reportUndeclared = (names: string[], fieldPath: string) => {
+      const undeclared = names.filter(name => stepData.has(name) && !inputs.has(name));
       if (undeclared.length > 0) {
         report('diagnostic_input_undeclared', fieldPath,
           `Reads step data ${undeclared.map(name => `'${name}'`).join(', ')} not listed in this diagnostic step's inputs.`);
       }
     };
+    const checkReads = ({reads, exact}: RootReads, fieldPath: string, {accessChecked = false} = {}) => {
+      if (!exact) return;
+      const names = [...new Set(reads.map(read => read.name))];
+      reportUndeclared(names, fieldPath);
+      const unknown = names.filter(name => !stepData.has(name) && !skillNames.has(name) && !isUncheckedConditionRoot(name));
+      if (unknown.length > 0) {
+        report('diagnostic_root_unknown', fieldPath,
+          `Reads ${unknown.map(name => `'${name}'`).join(', ')}, which is no Skill input, step, context dependency or `
+          + 'runtime parameter, so it is always undefined.');
+      }
+      const misread = accessChecked && reads.find(read =>
+        stepData.has(read.name) && read.access !== undefined && read.access !== 'data');
+      if (misread) {
+        report('diagnostic_step_data_shape', fieldPath,
+          `Step data '${misread.name}' is read as '${misread.name}.data...'; any other access is always undefined.`);
+      }
+    };
     (step.rules ?? []).forEach((rule, index) => {
       const rulePath = `${path}.rules[${index}]`;
       if (typeof rule.condition === 'string') {
-        const fieldPath = `${rulePath}.condition`;
-        reportUndeclared(freeRootOccurrences(rule.condition).map(({name}) => name), fieldPath);
-        const js = rule.condition.replace(PLACEHOLDER_PATTERN, '0');
-        const blanked = blankStringLiterals(js);
-        const misread = freeRootOccurrences(js).find(({name, end}) =>
-          stepData.has(name) && /^\s*(?:\?\.|\.|\[)/.test(blanked.slice(end))
-          && !/^\s*\??\.\s*data\b/.test(blanked.slice(end)));
-        if (misread) {
-          report('diagnostic_step_data_shape', fieldPath,
-            `Step data '${misread.name}' is read as '${misread.name}.data...'; any other access is always undefined.`);
-        }
+        checkReads(rootReads(rule.condition), `${rulePath}.condition`, {accessChecked: true});
       }
       (rule.evidence_fields ?? []).forEach((field, fieldIndex) => {
         const fieldPath = `${rulePath}.evidence_fields[${fieldIndex}]`;
@@ -395,16 +411,13 @@ function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIss
       const templates = [rule.diagnosis, ...(rule.suggestions ?? [])];
       templates.forEach((template, templateIndex) => {
         if (typeof template !== 'string') return;
-        const bodies = [...template.matchAll(PLACEHOLDER_PATTERN)].map(match => match[1]).join('\n');
-        reportUndeclared(freeRootOccurrences(bodies).map(({name}) => name),
+        checkReads(templateRootReads(template),
           `${rulePath}.${templateIndex === 0 ? 'diagnosis' : `suggestions[${templateIndex - 1}]`}`);
       });
     });
   });
   return issues;
 }
-
-const PLACEHOLDER_PATTERN = /\$\{([^}]+)\}/g;
 
 /**
  * `save_from` is bound only by the top-level step loops of the executor, so a

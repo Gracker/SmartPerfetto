@@ -246,23 +246,27 @@ outputs:
 时同样绑定 `null`，即使目标步骤已有数据；按步骤 id 也读不到它的任何子步骤数据，包括失败前已经返回的部分结果。
 `save_from` 只在父 Skill 的顶层步骤生效，`validate:skills` 会拒绝不存在的目标步骤。
 
+分层输出（Skill HTTP API 与 HTML 报告背后的 composite 路径）展示引用步骤的方式与此一致：展示默认选中子步骤的
+数据和该步骤自己的范围来源（该步骤没有声明范围时就没有，绝不用全部子步骤合并后的范围）。失败的引用显示为失败、
+不带任何子步骤行；步骤为 `optional` 时，这个失败显示为可选步骤出错（`executionStatus: optional_error`，与
+可选查询出错相同），不会使整个 Skill 失败。
+
 默认选中的子步骤本身又是 Skill 引用时，绑定的是孙 Skill 的结果对象：表达式经 `.data` 访问时按同一规则再
 选一层，诊断与 AI 的 `inputs` 拿到的是这个结果对象，iterator 不能遍历它。`save_from` 只能选直接子 Skill
 的顶层步骤、不能穿透到孙 Skill：需要具体字段时，用它绑定子 Skill 中真正的读取步骤，而不是那个引用步骤。
 
 ### 4.3 iterator — 遍历数据行
 
-对上一步结果的每一行执行子 Skill。
+对上一步结果的每一行执行子 Skill。`item_params` 的值是当前行的列名：执行器读 `item[列名]`，该列不存在时把值原样作为常量传入，所以这里写 `${item.x}` 只会传出字面字符串。省略 `item_params` 时整行作为参数。
 
 ```yaml
 - id: per_frame_analysis
   type: iterator
   source: jank_frames           # 引用 save_as 的数据
   item_skill: jank_frame_detail # 对每一行调用的 Skill
-  item_params:
-    frame_id: "${item.frame_id}"
-    package: "${package}"
-  max_items: "${max_frames_per_session|8}"   # 最多处理 N 项
+  item_params:                  # 子 Skill 参数 ← 当前行的列名
+    frame_id: frame_id
+  max_items: 8                  # 最多处理 N 项（数字，不做 ${...} 替换；缺省 100）
   display:
     layer: deep
 ```
@@ -330,7 +334,7 @@ outputs:
 ```
 
 `inputs` 列出规则读到的每个步骤（step id 或 `save_as`），它们就是步骤上报的
-`data.inputs`，也是 `evidence_fields` 唯一能引用的名字；阈值等 Skill 参数照常可读。
+`data.inputs`，也是 `evidence_fields` 唯一能引用的名字。阈值等 Skill 参数按参数名直接读，例如 `(threshold_ms ?? 50)`：作用域里没有 `inputs` 对象，`inputs?.threshold_ms` 永远是 `undefined`，规则只会用默认值。
 evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}` 模板：以某个 input 的
 `name.data`（或 `name?.data`）开头，后接任意个 `.column`、`[n]`、`.length`、
 `.find(r => r.column OP literal)` / `.filter(...)`（OP 为比较运算，literal 为数字、带引号字符串、
@@ -338,8 +342,8 @@ evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}
 不写数据；谓词只比较标量，缺失或非标量的值一律不匹配。值上报前有界：行集变成 `{_rowCount, _firstRow}`，行只保留标量字段，长字符串截断。
 规则触发时还会附带它的 condition 读到的每个 input 的样本（同样有界），无论写成 `name.data`、`name?.data` 还是 `name?.["data"]`；只在字符串或注释里出现的名字不算读到。
 `validate:skills` 拒绝：不符合该语法或根不在 `inputs` 的 evidence field、读了不在 `inputs`
-里的步骤、condition 不经 `.data` 读步骤数据（`${...}` 占位符里 `name[0].x` 仍合法），以及没有
-`inputs` 的 diagnostic 步骤。
+里的步骤、condition 不经 `.data` 读步骤数据（按路径解析的占位符 `${name[0].x|默认值}` 或嵌在文本中的 `${name[0].x}` 里仍合法；占位符里的 JS 表达式和不带默认值的整串 `${...}` 按 condition 绑定，同样要经 `.data`），没有
+`inputs` 的 diagnostic 步骤，以及读了任何作用域都不绑定的名字（如 `inputs`）的规则。按根名的这几项检查只在能确定读到哪些根时生效：condition 里含函数体、方法、块语句等可能声明局部名的写法时不报。
 
 ### 4.7 pipeline — 渲染管线检测
 
@@ -455,6 +459,8 @@ display:
   expandable: true
   expandableBindSource: frame_details  # 关联的详情数据源
 ```
+
+`expandableBindSource` 写 `save_as` 名：用该绑定的行展开本步骤的行，展开数据带的范围来源也是这个绑定自己的。
 
 ### 高亮规则
 

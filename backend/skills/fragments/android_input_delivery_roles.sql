@@ -13,16 +13,11 @@
 --                  events, FOCUS, runtimes that resolve no action).
 -- unresolved_event_key is the physical_event_key of an unresolved row, so
 -- counting it DISTINCT gives extra channels of one event no extra weight.
--- window_owner is the stdlib's owner of the receiving channel,
--- str_split(str_split(event_channel, ' ', 1), '/', 0), spelled portably: the
--- package of a '<hash> <package>/<component>' window. Monitor, dispatcher,
--- navigation-bar and wallpaper channels never yield their receiver's name; nor
--- do app windows titled without '/' (PopupWindow:..), which keep plain counts.
 -- unresolved_window_event_key keeps an unresolved event only on a window its
--- receiver owns: the exact name, or the name before ':' for multi-process apps,
--- whose delivery the stdlib cannot resolve (substr, not GLOB: the owner is
--- channel text). Rankers read it right after the action count, because a
--- monitor sees touches aimed at every window and can out-count the app.
+-- receiver owns (receiver_owns_window, defined with window_owner in
+-- android_input_events_normalized.sql). Rankers read it right after the action
+-- count, because a monitor sees touches aimed at every window and can
+-- out-count the app.
 -- monitor_observation marks rows that observe an event rather than deliver it
 -- to the application: every monitor_copy, and an unresolved row on a receiving
 -- channel (upid + event_channel) that never carries an action but does carry
@@ -35,7 +30,7 @@
 -- Classified over the whole relation, never inside a caller's time window, so a
 -- window edge cannot separate a copy from its action-bearing sibling.
 -- scene_input_facts.sql applies the same "the action-bearing receiver is
--- primary" rule per stream for scene reconstruction, without window ownership.
+-- primary, then the window owner" rule per stream for scene reconstruction.
 -- Requires fragments/android_input_events_normalized.sql listed before it.
 android_input_action_event_ids AS (
   SELECT DISTINCT input_event_id
@@ -52,9 +47,7 @@ android_input_monitor_channels AS (
 ),
 android_input_event_deliveries AS NOT MATERIALIZED (
   SELECT d.*,
-    CASE WHEN d.window_owner != ''
-      AND substr(d.process_name || ':', 1, length(d.window_owner) + 1) = d.window_owner || ':'
-      THEN d.unresolved_event_key END AS unresolved_window_event_key
+    CASE WHEN d.receiver_owns_window = 1 THEN d.unresolved_event_key END AS unresolved_window_event_key
   FROM (
     SELECT e.*,
       CASE WHEN e.event_action IS NOT NULL THEN 'action'
@@ -63,12 +56,7 @@ android_input_event_deliveries AS NOT MATERIALIZED (
       CASE WHEN e.event_action IS NULL AND a.input_event_id IS NULL
         THEN e.physical_event_key END AS unresolved_event_key,
       (e.event_action IS NULL
-        AND (a.input_event_id IS NOT NULL OR m.upid IS NOT NULL)) AS monitor_observation,
-      -- Second word of the channel, cut at its first '/'.
-      CASE WHEN instr(e.event_channel, ' ') > 0 THEN substr(
-        replace(substr(e.event_channel, instr(e.event_channel, ' ') + 1), '/', ' '), 1,
-        instr(replace(substr(e.event_channel, instr(e.event_channel, ' ') + 1), '/', ' ') || ' ', ' ') - 1)
-      END AS window_owner
+        AND (a.input_event_id IS NOT NULL OR m.upid IS NOT NULL)) AS monitor_observation
     FROM android_input_events_normalized AS e
     LEFT JOIN android_input_action_event_ids AS a ON a.input_event_id = e.input_event_id
     LEFT JOIN android_input_monitor_channels AS m

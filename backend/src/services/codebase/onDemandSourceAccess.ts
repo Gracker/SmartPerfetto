@@ -461,6 +461,14 @@ export class OnDemandSourceAccessService {
       input.filePath,
       {enforceConfiguredExcludes: false},
     );
+    // Path governance is a refusal the caller can act on, like missing consent:
+    // return it as data. The requested path is not echoed back.
+    const pathRefusal = (unsupportedReason: string): OnDemandSourceReadResult => ({
+      success: false,
+      codebaseId: input.codebaseId,
+      truncated: false,
+      unsupportedReason,
+    });
     const selectionPolicy = sourceSelectionForRef(
       ref,
       this.gate.getSourceReadLimits().maxFileBytes,
@@ -472,13 +480,13 @@ export class OnDemandSourceAccessService {
       this.platform,
       selectionPolicy,
     )) {
-      throw new Error('source_path_outside_registered_filters');
+      return pathRefusal('source_path_outside_registered_filters');
     }
     const providerPathAllowed = input.mode === 'provider_send'
       ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
       : undefined;
     if (providerPathAllowed && !providerPathAllowed(filePath)) {
-      throw new Error('source_path_outside_provider_grant');
+      return pathRefusal('source_path_outside_provider_grant');
     }
     const startLine = boundedPositiveInteger(input.startLine, 1, Number.MAX_SAFE_INTEGER, 'start_line');
     const maxLines = boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines');

@@ -20,12 +20,28 @@ import logger from '../../utils/logger';
 import { validateSkillConditions, validateFragmentReferences } from './skillValidator';
 import { validateSkillBatchAnalysis } from './skillBatchAnalysis';
 import { builtInSkillsDir, readSkillFragmentFile, skillFragmentKey } from './skillFragments';
+import { PublicRequestError } from '../../utils/publicRequestError';
 import {
   DisplayContractIssue,
   formatDisplayContractIssue,
   validateSkillDisplayContract,
 } from './displayContractValidator';
 import type { SkillOriginMetadata, SkillPackTrustState } from '../skillPacks/skillPackTypes';
+
+/**
+ * An external pack Skill, SQL fragment or vendor override that the registry
+ * refuses: a collision with one already loaded (409) or a definition that fails
+ * validation (400). The pack author resolves it; the message names the Skill
+ * id, the fragment's pack-relative key or the invalid field.
+ */
+export class SkillRegistryRejectionError extends PublicRequestError {
+  constructor(
+    code: 'fragment_key_collision' | 'skill_id_collision' | 'skill_validation_failed' | 'vendor_override_schema_invalid',
+    subject: string,
+  ) {
+    super(code, `${code}:${subject}`, code.endsWith('_collision') ? 409 : 400);
+  }
+}
 
 // =============================================================================
 // Skill Normalization (Backward Compatibility)
@@ -416,7 +432,7 @@ export class SkillRegistry {
         const key = skillFragmentKey(file);
         const existing = this.fragmentCache.get(key);
         if (root?.origin === 'external_pack' && existing !== undefined && existing !== content) {
-          throw new Error(`fragment_key_collision:${key}`);
+          throw new SkillRegistryRejectionError('fragment_key_collision', key);
         }
         this.fragmentCache.set(key, content);
         logger.debug('SkillLoader', `Loaded SQL fragment: ${key}`);
@@ -501,7 +517,7 @@ export class SkillRegistry {
     root?: SkillRootDescriptor,
   ): void {
     if (root?.origin === 'external_pack' && this.skills.has(skill.name)) {
-      throw new Error(`skill_id_collision:${skill.name}`);
+      throw new SkillRegistryRejectionError('skill_id_collision', skill.name);
     }
     const validation = this.validateAndLogWarnings(skill, filePath);
     if (
@@ -513,7 +529,7 @@ export class SkillRegistry {
         || validation.batchAnalysisIssueCount > 0
       )
     ) {
-      throw new Error(`skill_validation_failed:${skill.name}`);
+      throw new SkillRegistryRejectionError('skill_validation_failed', skill.name);
     }
     this.skills.set(skill.name, skill);
     this.skillOrigins.set(skill.name, this.originForRoot(root));
@@ -984,10 +1000,10 @@ interface ParsedVendorOverrideSource {
 
 function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
   if (!isPlainRecord(value) || !isNonEmptyString(value.extends)) {
-    throw new Error('vendor_override_schema_invalid:extends');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'extends');
   }
   if (value.meta !== undefined && !isPlainRecord(value.meta)) {
-    throw new Error('vendor_override_schema_invalid:meta');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'meta');
   }
   if (isPlainRecord(value.meta)) {
     for (const field of ['vendor', 'display_name', 'description']) {
@@ -995,7 +1011,7 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
         value.meta[field] !== undefined
         && !isNonEmptyString(value.meta[field])
       ) {
-        throw new Error(`vendor_override_schema_invalid:meta.${field}`);
+        throw new SkillRegistryRejectionError('vendor_override_schema_invalid', `meta.${field}`);
       }
     }
   }
@@ -1003,32 +1019,28 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
     value.additional_steps !== undefined
     && !Array.isArray(value.additional_steps)
   ) {
-    throw new Error('vendor_override_schema_invalid:additional_steps');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'additional_steps');
   }
   if (
     value.override_params !== undefined
     && !isPlainRecord(value.override_params)
   ) {
-    throw new Error('vendor_override_schema_invalid:override_params');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'override_params');
   }
   if (value.output !== undefined && !isPlainRecord(value.output)) {
-    throw new Error('vendor_override_schema_invalid:output');
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'output');
   }
   let vendorDetection: ParsedVendorOverrideSource['vendor_detection'];
   if (value.vendor_detection !== undefined) {
     if (!isPlainRecord(value.vendor_detection)) {
-      throw new Error('vendor_override_schema_invalid:vendor_detection');
+      throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'vendor_detection');
     }
     const signatures = value.vendor_detection.signatures;
     if (signatures !== undefined && !Array.isArray(signatures)) {
-      throw new Error(
-        'vendor_override_schema_invalid:vendor_detection.signatures',
-      );
+      throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'vendor_detection.signatures');
     }
     if (Array.isArray(signatures) && signatures.length === 0) {
-      throw new Error(
-        'vendor_override_schema_invalid:vendor_detection.signatures',
-      );
+      throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'vendor_detection.signatures');
     }
     vendorDetection = {
       ...(signatures === undefined
@@ -1042,9 +1054,7 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
                   String(entry.confidence),
                 )
               ) {
-                throw new Error(
-                  `vendor_override_schema_invalid:signature[${index}]`,
-                );
+                throw new SkillRegistryRejectionError('vendor_override_schema_invalid', `signature[${index}]`);
               }
               return {
                 pattern: entry.pattern,

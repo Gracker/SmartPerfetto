@@ -128,8 +128,8 @@ sql: |
       CASE
         WHEN '${package|}' <> ''
           AND (
-            LOWER(COALESCE(msg, '')) LIKE '%' || LOWER('${package|}') || '%'
-            OR LOWER(COALESCE(tag, '')) LIKE '%' || LOWER('${package|}') || '%'
+            instr(LOWER(COALESCE(msg, '')), LOWER('${package|}')) > 0
+            OR instr(LOWER(COALESCE(tag, '')), LOWER('${package|}')) > 0
           )
           THEN 1 ELSE 0
       END AS package_match

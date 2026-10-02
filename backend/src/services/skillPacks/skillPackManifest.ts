@@ -10,6 +10,7 @@ import type {
   SkillPackManifestAssetV1,
   SkillPackManifestV1,
 } from './skillPackTypes';
+import { SkillPackRequestError } from './skillPackRequestError';
 
 export const SKILL_PACK_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const SKILL_PACK_MANIFEST_FILE = 'smartperfetto-skill-pack.json';
@@ -58,7 +59,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function requireString(value: unknown, errorCode: string): string {
   if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(errorCode);
+    throw new SkillPackRequestError(errorCode);
   }
   return value.trim();
 }
@@ -88,36 +89,36 @@ export function isAllowedPackAssetKind(kind: string): kind is SkillPackAssetKind
 
 export function assertSafePackAssetPath(assetPath: string): void {
   if (typeof assetPath !== 'string' || assetPath.trim().length === 0) {
-    throw new Error('invalid_asset_path');
+    throw new SkillPackRequestError('invalid_asset_path');
   }
   const raw = assetPath.trim();
   if (raw.includes('\\') || path.posix.isAbsolute(raw)) {
-    throw new Error('invalid_asset_path');
+    throw new SkillPackRequestError('invalid_asset_path');
   }
   const normalized = path.posix.normalize(raw);
   if (normalized !== raw || normalized === '.' || normalized.startsWith('../')) {
-    throw new Error('invalid_asset_path');
+    throw new SkillPackRequestError('invalid_asset_path');
   }
   const parts = normalized.split('/');
   if (parts.some(part => part === '' || part === '.' || part === '..' || part.startsWith('.'))) {
-    throw new Error('invalid_asset_path');
+    throw new SkillPackRequestError('invalid_asset_path');
   }
   const root = parts[0];
   if (!ALLOWED_ROOTS.has(root)) {
-    throw new Error('invalid_asset_path');
+    throw new SkillPackRequestError('invalid_asset_path');
   }
   if (EXECUTABLE_EXTENSIONS.has(path.posix.extname(normalized).toLowerCase())) {
-    throw new Error('invalid_asset_path');
+    throw new SkillPackRequestError('invalid_asset_path');
   }
 }
 
 function normalizeAsset(value: unknown): SkillPackManifestAssetV1 {
   if (!isRecord(value)) {
-    throw new Error('invalid_asset');
+    throw new SkillPackRequestError('invalid_asset');
   }
   const kindRaw = requireString(value.kind, 'unsupported_asset_kind');
   if (!isAllowedPackAssetKind(kindRaw)) {
-    throw new Error('unsupported_asset_kind');
+    throw new SkillPackRequestError('unsupported_asset_kind');
   }
   const assetPath = requireString(value.path, 'invalid_asset_path');
   assertSafePackAssetPath(assetPath);
@@ -125,19 +126,19 @@ function normalizeAsset(value: unknown): SkillPackManifestAssetV1 {
   const root = assetPath.split('/')[0];
   if (kindRaw === 'skill') {
     if (!ALLOWED_SKILL_ROOTS.has(root) || !/\.skill\.ya?ml$/i.test(assetPath)) {
-      throw new Error('invalid_asset_path');
+      throw new SkillPackRequestError('invalid_asset_path');
     }
   } else if (kindRaw === 'fragment') {
     if (root !== 'fragments' || assetPath.split('/').length !== 2 || !assetPath.endsWith('.sql')) {
-      throw new Error('invalid_asset_path');
+      throw new SkillPackRequestError('invalid_asset_path');
     }
   } else if (kindRaw === 'doc' && root !== 'docs') {
-    throw new Error('invalid_asset_path');
+    throw new SkillPackRequestError('invalid_asset_path');
   }
 
   const sha256 = requireString(value.sha256, 'invalid_sha256').toLowerCase();
   if (!SHA256_RE.test(sha256)) {
-    throw new Error('invalid_sha256');
+    throw new SkillPackRequestError('invalid_sha256');
   }
   const sizeBytes = value.sizeBytes;
   if (
@@ -146,7 +147,7 @@ function normalizeAsset(value: unknown): SkillPackManifestAssetV1 {
     || sizeBytes < 0
     || sizeBytes > MAX_SKILL_PACK_ASSET_BYTES
   ) {
-    throw new Error('asset_too_large');
+    throw new SkillPackRequestError('asset_too_large');
   }
   return {
     kind: kindRaw,
@@ -158,26 +159,26 @@ function normalizeAsset(value: unknown): SkillPackManifestAssetV1 {
 
 export function parseSkillPackManifest(value: unknown): ParsedSkillPackManifest {
   if (!isRecord(value) || value.schemaVersion !== SKILL_PACK_MANIFEST_SCHEMA_VERSION) {
-    throw new Error('invalid_schema_version');
+    throw new SkillPackRequestError('invalid_schema_version');
   }
   const packId = requireString(value.packId, 'invalid_pack_id');
   if (!PACK_ID_RE.test(packId)) {
-    throw new Error('invalid_pack_id');
+    throw new SkillPackRequestError('invalid_pack_id');
   }
   const version = requireString(value.version, 'invalid_version');
   if (!VERSION_RE.test(version)) {
-    throw new Error('invalid_version');
+    throw new SkillPackRequestError('invalid_version');
   }
   if (!Array.isArray(value.assets)) {
-    throw new Error('invalid_assets');
+    throw new SkillPackRequestError('invalid_assets');
   }
   if (value.assets.length === 0 || value.assets.length > MAX_SKILL_PACK_ASSET_COUNT) {
-    throw new Error('invalid_asset_count');
+    throw new SkillPackRequestError('invalid_asset_count');
   }
   const assets = value.assets.map(normalizeAsset);
   const totalAssetBytes = assets.reduce((sum, asset) => sum + asset.sizeBytes, 0);
   if (totalAssetBytes > MAX_SKILL_PACK_TOTAL_ASSET_BYTES) {
-    throw new Error('asset_total_too_large');
+    throw new SkillPackRequestError('asset_total_too_large');
   }
   const compatibility = isRecord(value.compatibility) ? value.compatibility : {};
   const smartPerfettoMinVersion = requireString(

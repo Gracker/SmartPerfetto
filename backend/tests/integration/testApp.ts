@@ -30,6 +30,7 @@ import {
   deleteTraceMetadata,
   writeTraceMetadata,
 } from '../../src/services/traceMetadataStore';
+import { sendResolvedFile } from '../../src/utils/sendResolvedFile';
 
 // =============================================================================
 // Test App Factory
@@ -56,7 +57,7 @@ export function createTestApp() {
 
   const assistantShellDir = path.resolve(process.cwd(), 'public/assistant-shell');
   app.get('/assistant-shell', (_req, res) => {
-    res.sendFile(path.join(assistantShellDir, 'index.html'));
+    sendResolvedFile(res, path.join(assistantShellDir, 'index.html'));
   });
   app.use('/assistant-shell', express.static(assistantShellDir));
 

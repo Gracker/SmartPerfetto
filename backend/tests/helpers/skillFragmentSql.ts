@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
-import {builtInSkillFragment, injectFragmentCtes, substituteSqlPlaceholders} from '../../src/services/skillEngine/skillFragments';
+import {builtInSkillFragment, injectFragmentCtes} from '../../src/services/skillEngine/skillFragments';
+import {substituteSqlPlaceholders} from '../../src/services/skillEngine/sqlTemplate';
 
 /** Prepend a step's declared built-in fragments exactly as the Skill executor does. */
 export function withStepFragments(sql: string, fragments: readonly string[] | undefined): string {
@@ -9,7 +10,8 @@ export function withStepFragments(sql: string, fragments: readonly string[] | un
 }
 
 /**
- * Step SQL with its fragments, every placeholder bound: `vars` by path, else
+ * Step SQL with its fragments, every bound placeholder (comments keep theirs)
+ * filled: `vars` by path, else
  * the placeholder's own default. A placeholder with neither throws, so a test
  * cannot silently run SQL that still contains `${...}`.
  */

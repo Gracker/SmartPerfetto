@@ -1073,8 +1073,8 @@ steps:
               FROM android_frames_layers
               WHERE layer_name IS NOT NULL
                 AND (
-                  ('${package}' <> '' AND layer_name GLOB '*' || '${package}' || '*')
-                  OR ('${package}' = '' AND layer_name GLOB '*' || (SELECT pkg FROM dominant_pkg) || '*')
+                  ('${package}' <> '' AND instr(layer_name, '${package}') > 0)
+                  OR ('${package}' = '' AND instr(layer_name, (SELECT pkg FROM dominant_pkg)) > 0)
                 )
             )
             SELECT

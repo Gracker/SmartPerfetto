@@ -15,6 +15,7 @@ import {
   resolveCodebaseScope,
   type CodebaseScope,
 } from './codebaseRegistry';
+import {PublicRequestError} from '../../utils/publicRequestError';
 
 const DIRECTORY_SELECTION_TTL_MS = 5 * 60 * 1000;
 const MAX_PENDING_SELECTIONS_PER_SCOPE = 8;
@@ -112,25 +113,31 @@ export interface NativeDirectoryPickerOptions {
   maxPendingSelectionsPerScope?: number;
 }
 
-export class NativeDirectoryPickerError extends Error {
+/** A directory picker outcome with fixed text; the route contract keeps its code and status. */
+export class NativeDirectoryPickerError extends PublicRequestError {
+  declare readonly code: NativeDirectoryPickerErrorCode;
+
   constructor(
-    readonly code:
-      | 'DIRECTORY_PICKER_UNAVAILABLE'
-      | 'DIRECTORY_PICKER_BUSY'
-      | 'DIRECTORY_PICKER_FAILED'
-      | 'DIRECTORY_PICKER_TIMEOUT'
-      | 'DIRECTORY_SELECTION_NOT_FOUND'
-      | 'DIRECTORY_SELECTION_EXPIRED'
-      | 'DIRECTORY_SELECTION_SCOPE_MISMATCH'
-      | 'DIRECTORY_SELECTION_PATH_MISMATCH'
-      | 'DIRECTORY_SELECTION_LIMIT_REACHED',
+    code: NativeDirectoryPickerErrorCode,
     message: string,
-    readonly httpStatus: number,
+    status: number,
+    /** The dialog command's own failure, kept for the server log only. */
+    readonly cause?: unknown,
   ) {
-    super(message);
-    this.name = 'NativeDirectoryPickerError';
+    super(code, message, status);
   }
 }
+
+type NativeDirectoryPickerErrorCode =
+  | 'DIRECTORY_PICKER_UNAVAILABLE'
+  | 'DIRECTORY_PICKER_BUSY'
+  | 'DIRECTORY_PICKER_FAILED'
+  | 'DIRECTORY_PICKER_TIMEOUT'
+  | 'DIRECTORY_SELECTION_NOT_FOUND'
+  | 'DIRECTORY_SELECTION_EXPIRED'
+  | 'DIRECTORY_SELECTION_SCOPE_MISMATCH'
+  | 'DIRECTORY_SELECTION_PATH_MISMATCH'
+  | 'DIRECTORY_SELECTION_LIMIT_REACHED';
 
 function executableOnPath(
   name: string,
@@ -558,6 +565,7 @@ export class NativeDirectoryPicker {
         'DIRECTORY_PICKER_FAILED',
         'Unable to open the system directory picker',
         500,
+        commandError,
       );
     }
   }

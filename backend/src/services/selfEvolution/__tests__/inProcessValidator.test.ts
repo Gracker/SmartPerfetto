@@ -224,12 +224,18 @@ describe('in-process effective Skill validator', () => {
       "rows.data.filter(t => t.state !== 'D').length", 'rows.data.find(r => r.dur_ms >= -1.5)',
     ]})).toEqual([]);
 
-    // In a condition, step data is read through `.data`; a placeholder resolves
-    // simple paths itself, where indexing a save_as is valid.
-    expect(diagnosticIssues(['rows'], {condition: 'rows[0]?.dur_ms > 1'}))
-      .toEqual([at('diagnostic_step_data_shape', 'condition')]);
-    expect(diagnosticIssues(['rows'], {condition: '${rows[0].dur_ms|0} > 1 && rows != null && (rows ?? 0)',
+    // In a condition, step data is read through `.data`; a placeholder the
+    // evaluator resolves as a path indexes a save_as validly, but JavaScript in
+    // a placeholder, or a whole `${…}` without a default, binds as code does.
+    const misread = [at('diagnostic_step_data_shape', 'condition')];
+    expect(diagnosticIssues(['rows'], {condition: 'rows[0]?.dur_ms > 1'})).toEqual(misread);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].dur_ms|0} > 1 && ${rows[0].dur_ms} > 0 && rows != null && (rows ?? 0)',
       diagnosis: '${rows[0].name}'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].dur_ms * 2} > 1'})).toEqual(misread);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].dur_ms > 1}'})).toEqual(misread);
+    // Each read in a placeholder is checked, whichever comes first.
+    expect(diagnosticIssues(['rows'], {condition: '${rows.data.length > 0 && rows[0].x > 0}'})).toEqual(misread);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].x > 0 && rows.data.length > 0}'})).toEqual(misread);
     // String literals, escaped quotes included, are text.
     expect(diagnosticIssues(['rows'], {condition: "rows.data[0].name === 'it\\'s other.data'"})).toEqual([]);
 
@@ -258,6 +264,58 @@ describe('in-process effective Skill validator', () => {
     expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(([a, {b: [c]}], i) => a + c + i > 0)'})).toEqual([]);
     expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(({dur_ms}) => dur_ms > 0) && rows.data.some(other => other ? other.x : 0)'}))
       .toEqual([]);
+
+    // Step names inside a regex or comment are not reads; a comment or an escape
+    // between a step name and its member is read as the engine reads it.
+    expect(diagnosticIssues(['rows'], {condition: "/other.data/.test(rows.data[0].name) /* other.data */"})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows /* c */ [0].x > 0'}))
+      .toEqual([at('diagnostic_step_data_shape', 'condition')]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows. /* c */ data.length > 0 && rows.\\u0064ata.length > 0'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows?.["data"]?.length > 0'}))
+      .toEqual([at('diagnostic_step_data_shape', 'condition')]);
+  });
+
+  it('rejects a diagnostic rule that reads a name no scope binds, only when the read is exact', () => {
+    const ruleIssues = (rule: Record<string, unknown>, context?: string[]) => {
+      const definition = skill('thresholds');
+      definition.inputs = [{name: 'slow_ms', type: 'number', default: 50}] as any;
+      if (context) definition.context = context;
+      definition.steps = [
+        {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
+        {id: 'check', type: 'diagnostic', inputs: ['rows'],
+          rules: [{condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}]} as any,
+      ];
+      return validateSkillDefinitionsInProcess({definitions: [definition]}).issues
+        .filter(entry => entry.code.startsWith('diagnostic_')).map(entry => `${entry.code} ${entry.path}`);
+    };
+    // A declared input, a runtime parameter, a context dependency and arrow parameters are bound.
+    expect(ruleIssues({condition: 'rows.data[0].dur_ms > (slow_ms ?? 50) && package && rows.data.some(r => r.x > 0)'}))
+      .toEqual([]);
+    expect(ruleIssues({condition: 'parent_value > 0'}, ['parent_value'])).toEqual([]);
+    // `inputs` is no binding, in a condition or a template placeholder.
+    expect(ruleIssues({condition: 'rows.data[0].dur_ms > (inputs?.slow_ms ?? 50)'}))
+      .toEqual(['diagnostic_root_unknown steps[1].rules[0].condition']);
+    expect(ruleIssues({diagnosis: 'over ${inputs.slow_ms}ms', suggestions: ['raise ${slow_ms|50}']}))
+      .toEqual(['diagnostic_root_unknown steps[1].rules[0].diagnosis']);
+    // A read that is not exact is a guess, so no check on root names reports it:
+    // locals, even ones named like a step, and an unparsed condition.
+    expect(ruleIssues({condition: 'rows.data.some(r => { const check = [r]; return check[0].x > 1; })'})).toEqual([]);
+    expect(ruleIssues({condition: 'rows.data.some(r => { const limit = 1; return r.x > limit; })'})).toEqual([]);
+    expect(ruleIssues({condition: 'rows.data.some(function(r) { return r.x > 1; })'})).toEqual([]);
+    expect(ruleIssues({condition: '({check(r) { return r.x > 1; }}).check(rows.data[0])'})).toEqual([]);
+    expect(ruleIssues({condition: '({get ok() { return true; }}).ok'})).toEqual([]);
+    expect(ruleIssues({condition: "rows.data[0].state === 'ok' OR missing"})).toEqual([]);
+  });
+
+  it('validates every definition when no affected Skill is named, as a new Skill proposal does', () => {
+    const existing = skill('existing');
+    existing.steps = [
+      {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
+      {id: 'check', type: 'diagnostic', inputs: ['rows'],
+        rules: [{condition: 'rows.data.length > (inputs?.limit ?? 1)', diagnosis: 'hit', confidence: 'high'}]} as any,
+    ];
+    const codes = validateSkillDefinitionsInProcess({definitions: [existing, skill('candidate')]}).issues.map(entry => entry.code);
+    expect(codes).toContain('diagnostic_root_unknown');
   });
 
   it('rejects invalid display contracts on effective definitions', () => {
@@ -392,7 +450,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('3');
+    expect(gate.validatorVersion).toBe('4');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({

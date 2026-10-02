@@ -1471,22 +1471,22 @@ steps:
           l.*,
           CASE
             WHEN '${process_name}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${process_name}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${process_name}')) > 0
               THEN 1 ELSE 0
           END AS process_match,
           CASE
             WHEN '${component}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${component}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${component}')) > 0
               THEN 1 ELSE 0
           END AS component_match,
           CASE
             WHEN '${intent}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${intent}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${intent}')) > 0
               THEN 1 ELSE 0
           END AS intent_match,
           CASE
             WHEN '${error_id}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${error_id}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${error_id}')) > 0
               THEN 1 ELSE 0
           END AS error_match,
           CASE

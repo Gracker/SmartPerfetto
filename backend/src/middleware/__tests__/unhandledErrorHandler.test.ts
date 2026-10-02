@@ -6,6 +6,7 @@ import express from 'express';
 import request from 'supertest';
 import { requestIdMiddleware, requestIdOf } from '../requestId';
 import { UNHANDLED_ERROR_CODE, unhandledErrorHandler } from '../unhandledErrorHandler';
+import { PublicRequestError } from '../../utils/publicRequestError';
 
 const CANARY = 'canary-7f3a /srv/secret/path.db SELECT * FROM provider_keys';
 
@@ -94,6 +95,14 @@ describe('unhandledErrorHandler', () => {
 
     expect(res.status).toBe(500);
     expect(res.body.code).toBe(UNHANDLED_ERROR_CODE);
+    expect(res.text).not.toContain('canary-7f3a');
+  });
+
+  test('a public request error that escapes a route keeps its status but not its text', async () => {
+    const res = await request(appThrowing(() => new PublicRequestError('thing_conflict', CANARY, 409))).get('/boom');
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({success: false, code: UNHANDLED_ERROR_CODE, error: 'Conflict'});
     expect(res.text).not.toContain('canary-7f3a');
   });
 

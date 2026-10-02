@@ -36,10 +36,14 @@ import {
 } from './types';
 import { validateSkillInputs } from './skillValidator';
 import {
-  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, WHOLE_SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
-  isSimplePath, ownDataValue, parseEvidenceField, parsePathWithDefault, readEvidenceField,
+  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
+  ownDataValue, parseEvidenceField, readEvidenceField, routePlaceholder, wholePlaceholderBody,
 } from './expressionUtils';
-import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments';
+import { injectFragmentCtes } from './skillFragments';
+import {
+  boundSqlPlaceholderPaths, readPlaceholderBody, sqlCodeText, sqlIdentifier, sqlLiteral, sqlStringLiteralText,
+  substituteSqlPlaceholders,
+} from './sqlTemplate';
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
 import { sqlScopeEvidence, resultScopeProvenance, resultScopeLimitations } from './scopeEvidence';
@@ -110,7 +114,7 @@ import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 // =============================================================================
 
 import { DisplayLayer } from './types';
-import { isObservedStepResult, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
+import { isObservedStepResult, isOptionalStep, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
 
 /**
  * Synthesize Data - 标记为 synthesize 的步骤数据
@@ -264,62 +268,37 @@ class ExpressionEvaluator {
    * 支持：${variable}、${step.field}、比较运算符等
    */
   static evaluate(expression: string, context: SkillExecutionContext): any {
-    // 检查是否是完整的 ${...} 表达式（整个字符串被包裹）
-    const fullExprMatch = expression.match(WHOLE_SKILL_PLACEHOLDER);
-    // 如果内部还包含 ${...}，说明这是一个模板串（如 "${a} + ${b}"），不要当成单个 JS 表达式执行
-    if (fullExprMatch && !fullExprMatch[1].includes('${')) {
-      const innerExpr = fullExprMatch[1].trim();
-      // Support ${varName|defaultValue} syntax for full expressions
-      const defaultSyntax = parsePathWithDefault(innerExpr);
-      if (defaultSyntax) {
-        const value = this.resolvePath(defaultSyntax.actualPath, context);
-        if (value !== undefined && value !== null) return value;
-        const defaultPart = defaultSyntax.defaultValue;
-        // Parse default: try number, boolean, then string
-        if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
-        if (defaultPart === 'true') return true;
-        if (defaultPart === 'false') return false;
-        return defaultPart;
-      }
-      // 这是一个 JavaScript 表达式，需要完整求值
-      return this.evaluateJsExpression(innerExpr, context);
+    // 整串是一个 ${...}（不是 "${a} + ${b}" 这样的模板）时求它的值；路径还是 JS 由 routePlaceholder 决定
+    const wholeBody = wholePlaceholderBody(expression);
+    if (wholeBody !== undefined) {
+      const route = routePlaceholder(wholeBody, true);
+      if (route.kind === 'js') return this.evaluateJsExpression(route.expression, context);
+      const value = this.resolvePath(route.path, context);
+      if (value !== undefined && value !== null) return value;
+      // A whole placeholder is a path only with a default: try number, boolean, then string
+      const defaultPart = route.defaultValue ?? '';
+      if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
+      if (defaultPart === 'true') return true;
+      if (defaultPart === 'false') return false;
+      return defaultPart;
     }
 
-    // 否则，做变量替换（支持嵌入的 JavaScript 表达式）
-    let result = expression;
-
-    // 替换 ${xxx} 格式的变量
-    // 简单路径走 resolvePath；复杂表达式走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
-    result = result.replace(SKILL_PLACEHOLDER, (_match, path) => {
-      const rawPath = String(path ?? '').trim();
-
-      // Support ${varName|defaultValue} syntax
-      const defaultSyntax = parsePathWithDefault(rawPath);
-      const actualPath = defaultSyntax?.actualPath ?? rawPath;
-      const defaultValue = defaultSyntax?.defaultValue;
-
-      // 复杂表达式：使用完整的 JS 表达式求值
-      if (!isSimplePath(actualPath)) {
-        try {
-          const value = this.evaluateJsExpression(actualPath, context);
-          if (value === undefined || value === null) {
-            return defaultValue !== undefined ? defaultValue : '';
-          }
-          if (typeof value === 'object') return JSON.stringify(value);
-          return String(value);
-        } catch (e) {
-          logger.debug('ExpressionEvaluator', `Failed to evaluate embedded JS: ${actualPath}`);
-          return defaultValue !== undefined ? defaultValue : '';
-        }
+    // 否则逐个替换 ${...}：路径走 resolvePath，其余走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
+    const asText = (value: unknown) => typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const result = expression.replace(SKILL_PLACEHOLDER, (_match, inner) => {
+      const route = routePlaceholder(String(inner ?? ''), false);
+      if (route.kind === 'path') {
+        const value = this.resolvePath(route.path, context);
+        return value === undefined || value === null ? route.defaultValue ?? '' : asText(value);
       }
-
-      // 简单路径：使用 resolvePath
-      const value = this.resolvePath(actualPath, context);
-      if (value === undefined || value === null) {
-        return defaultValue !== undefined ? defaultValue : '';
+      // 嵌入的 JS：求值和转成文本的任何异常都替换为空串
+      try {
+        const value = this.evaluateJsExpression(route.expression, context);
+        return value === undefined || value === null ? '' : asText(value);
+      } catch {
+        logger.debug('ExpressionEvaluator', `Failed to evaluate embedded JS: ${route.expression}`);
+        return '';
       }
-      if (typeof value === 'object') return JSON.stringify(value);
-      return String(value);
     });
 
     // 如果是简单的比较表达式，尝试求值
@@ -606,7 +585,8 @@ class ExpressionEvaluator {
 // =============================================================================
 
 function substituteVariables(sql: string, context: SkillExecutionContext): string {
-  return substituteSqlPlaceholders(sql, ({match, path: actualPath, defaultValue: explicitDefault, insideQuotes}) => {
+  return substituteSqlPlaceholders(sql, (placeholder) => {
+    const {match, path: actualPath, defaultValue: explicitDefault} = placeholder;
     if (actualPath === '__process_scope' || actualPath.startsWith('__process_scope.')) {
       if (match !== EXACT_UPID_TOKEN) throw new Error('Unsupported reserved process scope binding');
       const scope = context.processScope;
@@ -617,52 +597,58 @@ function substituteVariables(sql: string, context: SkillExecutionContext): strin
     const value = ExpressionEvaluator.resolvePath(actualPath, context);
 
     // 缺省值优先级：
-    // 1. 显式 |default 值
+    // 1. 显式 |default 值（作者写的 SQL 文本，原样插入）
     // 2. 字符串常量内部：用 ''
     // 3. 其它位置：用 NULL
     if (value === undefined || value === null) {
       if (explicitDefault !== undefined) return explicitDefault;
-      if (insideQuotes) return '';
-      return 'NULL';
+      return placeholder.context === 'string' ? '' : 'NULL';
     }
 
-    // 如果值被插入到单引号字符串中，必须转义单引号，避免 SQL 解析错误
-    if (insideQuotes && typeof value === 'string') {
-      return value.replace(/'/g, '\'\'');
+    // 字符串常量内部：转义单引号；GLOB/LIKE 模式字面量里值的通配符按字面匹配
+    if (placeholder.context === 'string') return sqlStringLiteralText(value, placeholder);
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '';
+      // save_as 存储的是行数组 [{col: val, ...}, ...]。
+      // 当下游 SQL 用 SELECT * FROM ${variable} 引用时，需要转为 inline CTE。
+      if (value[0] !== null && typeof value[0] === 'object') return arrayToInlineCte(value);
+      return value.map(sqlLiteral).join(', ');
     }
 
-    // save_as 存储的是行数组 [{col: val, ...}, ...]。
-    // 当下游 SQL 用 SELECT * FROM ${variable} 引用时，需要转为 inline CTE。
-    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
-      return arrayToInlineCte(value);
-    }
-
-    return String(value);
+    // 代码位置只接受数字或 SQL 字面量列表，其它文本会成为调用方写的 SQL
+    return sqlCodeText(value, placeholder);
   });
 }
 
 /**
  * Convert a save_as row array to an inline SQLite CTE.
- * [{a: 1, b: 'x'}, {a: 2, b: 'y'}]  →  (SELECT 1 as a, 'x' as b UNION ALL SELECT 2, 'y')
+ * [{a: 1, b: 'x'}, {a: 2, b: 'y'}]  →  (SELECT 1 as "a", 'x' as "b" UNION ALL SELECT 2, 'y')
  */
 function arrayToInlineCte(rows: Record<string, unknown>[]): string {
-  if (rows.length === 0) return '(SELECT NULL LIMIT 0)';
   const columns = Object.keys(rows[0]);
   const selects = rows.map((row, i) => {
-    const values = columns.map((col) => {
-      const v = row[col];
-      if (v === null || v === undefined) return 'NULL';
-      if (typeof v === 'number' || typeof v === 'bigint') return String(v);
-      // String values: escape single quotes for SQL
-      return `'${String(v).replace(/'/g, "''")}'`;
-    });
+    const values = columns.map((col) => sqlLiteral(row[col]));
     // First row includes column aliases; subsequent rows omit them
     if (i === 0) {
-      return `SELECT ${values.map((v, j) => `${v} as ${columns[j]}`).join(', ')}`;
+      return `SELECT ${values.map((v, j) => `${v} as ${sqlIdentifier(columns[j])}`).join(', ')}`;
     }
     return `SELECT ${values.join(', ')}`;
   });
   return `(${selects.join(' UNION ALL ')})`;
+}
+
+/**
+ * A display title's placeholders as plain text. An unset value takes its
+ * `|default`, or stays visible, as localized titles do.
+ */
+function substituteDisplayText(text: string, context: SkillExecutionContext): string {
+  return text.replace(SKILL_PLACEHOLDER, (match: string, body: string) => {
+    const {path: actualPath, defaultValue} = readPlaceholderBody(body);
+    const value = ExpressionEvaluator.resolvePath(actualPath, context);
+    if (value === undefined || value === null) return defaultValue ?? match;
+    return String(value);
+  });
 }
 
 // =============================================================================
@@ -681,13 +667,8 @@ function processDisplayConfig(
 
   // 处理 title 字段（字符串类型）
   if (processed.title && typeof processed.title === 'string') {
-    processed.title = substituteVariables(processed.title, context);
+    processed.title = substituteDisplayText(processed.title, context);
   }
-
-  // 如果未来需要处理其他字符串字段（如 description），可以在这里添加
-  // if (processed.description && typeof processed.description === 'string') {
-  //   processed.description = substituteVariables(processed.description, context);
-  // }
 
   return processed;
 }
@@ -1665,7 +1646,7 @@ export class SkillExecutor {
   /** Root atomic SQL and nested SQL use the same scope and fragment checks. */
   private prepareSql(source: ScopedSqlSource, context: SkillExecutionContext): string {
     const usesRuntimeScope = [source.sql || '', ...(source.sql_fragments || []).map(path => this.fragmentRegistry.get(path) || '')]
-      .some(sql => /\$\{\s*__process_scope\b/.test(sql));
+      .some(sql => boundSqlPlaceholderPaths(sql).some(path => /^__process_scope\b/.test(path)));
     if (usesRuntimeScope) {
       if (!context.processScope) throw new Error('Reserved process scope binding requires an issued process scope');
       assertEffectiveProcessScope(context.processScope, context.traceId, context.processScope.traceSide);
@@ -2080,6 +2061,26 @@ export class SkillExecutor {
   }
 
   /**
+   * A step as layered output shows it. A Skill reference shows the child step
+   * it exposes, data and scope alike, as a read by id or a default save_as sees
+   * it. A failed reference shows its own failure with no child rows or scope;
+   * when the step is optional the failure is an optional error, as for an
+   * optional query, and does not fail the Skill. Only the display changes: the
+   * execution result, and the Skill-level scope built from it, are untouched.
+   */
+  private layerStepResult(step: SkillStep, stepResult: StepResult): StepResult {
+    if (stepResult.stepType !== 'skill') return stepResult;
+    const { stepId, executionTimeMs, error, code, skippedCondition } = stepResult;
+    const exposed = exposedStepResult(stepResult);
+    // The exposed child step carries its own stepType; the entry stays a reference.
+    if (exposed) return { ...exposed, stepId, stepType: 'skill', executionTimeMs };
+    const failure = { stepId, stepType: 'skill', data: [], error, executionTimeMs } as const;
+    return isOptionalStep(step)
+      ? { ...failure, success: true, code: 'optional_query_error' }
+      : { ...failure, success: false, code, skippedCondition };
+  }
+
+  /**
    * The scope of the binding an input name resolves to. A bound variable carries
    * only its own scope, even when it holds no data, never that of a same-named
    * step result; inputs and inherited values carry none.
@@ -2185,8 +2186,7 @@ export class SkillExecutor {
         }
         if (stepResult.code === 'condition_not_met') continue;
         if (isQueryOrSkillResult(stepResult)) {
-          const optional = 'optional' in step && Boolean(step.optional);
-          if (!optional) {
+          if (!isOptionalStep(step)) {
             return {
               aiSummary,
               error: stepResult.error || `Required step failed: ${step.id}`,
@@ -2204,8 +2204,20 @@ export class SkillExecutor {
   }
 
   /**
-   * Apply expandableBindSource declarations: for each step that declares an expandableBindSource,
-   * find the batch data in context.variables and bind it as expandableData on the target DisplayResult.
+   * The batch rows a step's expandableBindSource names, with the scope of that
+   * binding (the one result it holds); undefined when the binding has no rows.
+   */
+  private expandableBindRows(step: SkillStep, context: SkillExecutionContext):
+    { rows: Record<string, any>[]; scope?: EvidenceScopeProvenanceV1 } | undefined {
+    const bindSource = this.getDisplayConfig(step)?.expandableBindSource;
+    if (!bindSource) return undefined;
+    const rows = context.variables[bindSource];
+    return Array.isArray(rows) && rows.length > 0 ? { rows, scope: context.variableScopes?.[bindSource] } : undefined;
+  }
+
+  /**
+   * Apply expandableBindSource declarations: bind each declared batch as
+   * expandableData on the declaring step's DisplayResult.
    */
   private applyExpandableBindSources(
     steps: SkillStep[],
@@ -2213,21 +2225,15 @@ export class SkillExecutor {
     displayResults: DisplayResult[]
   ): void {
     for (const step of steps) {
-      const display = this.getDisplayConfig(step);
-      const bindSource = display?.expandableBindSource;
-      if (!bindSource) continue;
-
-      const sourceData = context.variables[bindSource];
+      const source = this.expandableBindRows(step, context);
+      if (!source) continue;
       const targetDisplayResult = displayResults.find(dr => dr.stepId === step.id);
-
-      if (!Array.isArray(sourceData) || sourceData.length === 0) continue;
       if (!targetDisplayResult?.data?.rows?.length || !targetDisplayResult.data.columns?.length) continue;
 
       targetDisplayResult.data.expandableData = this.buildExpandableFromBatch(
         targetDisplayResult.data.rows,
         targetDisplayResult.data.columns,
-        sourceData, undefined,
-        resultScopeProvenance(context.results[steps.find(candidate => 'save_as' in candidate && candidate.save_as === bindSource)?.id || ''])
+        source.rows, undefined, source.scope,
       );
     }
   }
@@ -2732,9 +2738,7 @@ export class SkillExecutor {
         throwIfTraceProcessorQueryCancelled(execContext.signal);
         const step = skill.steps[i];
         const stepResult = await this.executeStep(step, execContext, skill.name);
-        const layerStepResult = stepResult.stepType === 'skill'
-          ? { ...stepResult, ...selectedStepResult(stepResult), stepId: step.id, stepType: stepResult.stepType }
-          : stepResult;
+        const shown = this.layerStepResult(step, stepResult);
 
         this.recordStepResult(step, stepResult, execContext);
 
@@ -2742,7 +2746,7 @@ export class SkillExecutor {
         // This is needed for organizeByLayer to correctly place results in layers
         // Process display config with template variable substitution (e.g., ${frame_id})
         if ('display' in step && typeof step.display === 'object') {
-          layerStepResult.display = processDisplayConfig(step.display, execContext);
+          shown.display = processDisplayConfig(step.display, execContext);
         }
 
         // 收集标记为 synthesize 的步骤数据
@@ -2764,7 +2768,7 @@ export class SkillExecutor {
           synthesizeData.push(this.createSynthesizeData(step, stepResult, displayConfig, config));
         }
 
-        stepResults.push(layerStepResult);
+        stepResults.push(shown);
       }
     }
 
@@ -2784,7 +2788,9 @@ export class SkillExecutor {
           const iteratorResult = stepResults[i];
           // 在 executeCompositeSkill 路径中，iterator 的 data 是原始 [{itemIndex, item, result}, ...]
           // 需要将其转换为 expandableData 格式
-          if (sourceResult?.data && iteratorResult?.success && Array.isArray(iteratorResult.data)) {
+          // Only rows the source entry holds can expand; a failed reference holds none.
+          if (Array.isArray(sourceResult?.data) && sourceResult.data.length > 0
+            && iteratorResult?.success && Array.isArray(iteratorResult.data)) {
             const expandableData = iteratorResult.data.map((iterItem: any) => ({
               item: iterItem.item,
               result: {
@@ -2804,20 +2810,13 @@ export class SkillExecutor {
     // Batch-to-expandable binding for executeCompositeSkill path (object-array variant)
     if (skill.steps) {
       for (const step of skill.steps) {
-        const display = step.display && typeof step.display === 'object' ? step.display as DisplayConfig : undefined;
-        const bindSource = display?.expandableBindSource;
-        if (!bindSource) continue;
-
-        const sourceData = execContext.variables[bindSource];
+        const source = this.expandableBindRows(step, execContext);
+        if (!source) continue;
         const targetResult = stepResults.find(sr => sr.stepId === step.id);
-
-        if (!Array.isArray(sourceData) || sourceData.length === 0) continue;
         if (!targetResult?.data || !Array.isArray(targetResult.data) || targetResult.data.length === 0) continue;
         if (typeof targetResult.data[0] !== 'object' || targetResult.data[0] === null) continue;
 
-        const sourceStepId = skill.steps.find(candidate => 'save_as' in candidate && candidate.save_as === bindSource)?.id;
-        const expandableData = this.buildExpandableFromBatch(null, null, sourceData, targetResult.data,
-          sourceStepId ? resultScopeProvenance(execContext.results[sourceStepId]) : undefined);
+        const expandableData = this.buildExpandableFromBatch(null, null, source.rows, targetResult.data, source.scope);
         (targetResult.data as any).expandableData = expandableData;
       }
     }
@@ -2826,6 +2825,7 @@ export class SkillExecutor {
     try {
       const layers = organizeByLayer(stepResults);
 
+      const scopeLimitations = resultScopeLimitations({ rawResults: execContext.results });
       const result: LayeredResult = {
         layers,
         defaultExpanded: ['overview', 'list'],
@@ -2835,9 +2835,10 @@ export class SkillExecutor {
           executedAt: new Date().toISOString()
         },
         stepResults,
-        scopeProvenance: mergeScopeProvenance(stepResults.map(resultScopeProvenance)),
-        scopeLimitations: stepResults.flatMap(resultScopeLimitations),
-        partial: stepResults.some(step => resultScopeLimitations(step).length > 0),
+        // From what ran, as on the execute path; a display entry shows only part of a reference.
+        scopeProvenance: mergeScopeProvenance(Object.values(execContext.results).map(resultScopeProvenance)),
+        scopeLimitations,
+        partial: scopeLimitations.length > 0,
         // 添加收集的 synthesize 数据
         synthesizeData: synthesizeData.length > 0 ? synthesizeData : undefined,
       };

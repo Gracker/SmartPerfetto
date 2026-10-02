@@ -17,7 +17,8 @@ import type {
   SkillPackPreviewIssue,
   SkillPackPreviewResult,
 } from './skillPackTypes';
-import { SkillRegistry, getSkillsDir } from '../skillEngine/skillLoader';
+import { SkillRegistry, SkillRegistryRejectionError, getSkillsDir } from '../skillEngine/skillLoader';
+import { SkillPackRequestError } from './skillPackRequestError';
 
 export interface PreviewSkillPackInput {
   sourcePath: string;
@@ -88,6 +89,17 @@ function skillIdFromAsset(root: string, asset: SkillPackManifestAssetV1): string
   return undefined;
 }
 
+/**
+ * A preview issue code. Pack validation throws reason tokens; a JSON parse,
+ * filesystem or Skill loader error can quote file content or server paths, so
+ * it is logged and reported as the fallback code.
+ */
+function previewIssueCode(error: unknown, fallback: string): string {
+  if (error instanceof SkillPackRequestError || error instanceof SkillRegistryRejectionError) return error.message;
+  console.warn('[SkillPackPreview] Validation error', error);
+  return fallback;
+}
+
 export async function previewSkillPack(input: PreviewSkillPackInput): Promise<SkillPackPreviewResult> {
   const sourcePath = path.resolve(input.sourcePath);
   const errors: SkillPackPreviewIssue[] = [];
@@ -125,7 +137,7 @@ export async function previewSkillPack(input: PreviewSkillPackInput): Promise<Sk
   try {
     parsed = parseSkillPackManifest(readJsonFile(manifestPath));
   } catch (error) {
-    errors.push(issue(error instanceof Error ? error.message : 'invalid_manifest', 'manifest validation failed'));
+    errors.push(issue(previewIssueCode(error, 'invalid_manifest'), 'manifest validation failed'));
     return baseResult;
   }
 
@@ -135,7 +147,7 @@ export async function previewSkillPack(input: PreviewSkillPackInput): Promise<Sk
     try {
       assertSafePackAssetPath(actualPath);
     } catch (error) {
-      errors.push(issue(error instanceof Error ? error.message : 'invalid_asset_path', 'asset path is not allowed', actualPath));
+      errors.push(issue(previewIssueCode(error, 'invalid_asset_path'), 'asset path is not allowed', actualPath));
       continue;
     }
     if (!declaredAssets.has(actualPath)) {
@@ -196,7 +208,7 @@ export async function previewSkillPack(input: PreviewSkillPackInput): Promise<Sk
       ]);
     } catch (error) {
       errors.push(issue(
-        error instanceof Error ? error.message : 'skill_pack_validation_failed',
+        previewIssueCode(error, 'skill_pack_validation_failed'),
         'isolated skill registry validation failed',
       ));
     }

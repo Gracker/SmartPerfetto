@@ -637,6 +637,17 @@ FRONTEND_URL=https://smartperfetto.example.com
 字节，不能复用 OIDC Client Secret。Session 固定为 8 小时、`SameSite=Lax`，Secure
 Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email profile`。
 
+无论哪种认证模式，服务端签名（浏览器 Session、Trace Processor WebSocket 凭证、外部问题
+复核证明，OIDC 下还有 Provider 密钥库的加密 key）都从同一个根按用途派生：依次检查
+`SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`（只用于 WebSocket 凭证）、
+`SMARTPERFETTO_SERVER_SECRET`、`SMARTPERFETTO_SSO_COOKIE_SECRET` 和
+`SMARTPERFETTO_API_KEY`，取第一个去掉首尾空白后足够长的值（按 UTF-8 字节计，WebSocket
+凭证和密钥库要求 32 字节，其余 16 字节），更短的值会被跳过。OIDC 模式例外：启动时第一个
+非空的 `SMARTPERFETTO_SERVER_SECRET` / `SMARTPERFETTO_SSO_COOKIE_SECRET` 不足 32 字节就
+拒绝启动，而不是跳过。企业模式下找不到可用值时拒绝签发；其他模式退回进程内随机根，重启后
+Session、WebSocket 凭证和复核证明都会失效。建议始终设置至少 32 字节的
+`SMARTPERFETTO_SERVER_SECRET`，这样所有用途共用同一个根。
+
 使用 `./start.sh` 或 `./scripts/start-dev.sh` 做本地分端口联调时，只设置
 `SMARTPERFETTO_FRONTEND_PORT` 即可，脚本会生成对应的 `FRONTEND_URL`。上面的
 `FRONTEND_URL` 是域名/反向代理部署示例，不需要和本地端口重复填写。
@@ -675,6 +686,9 @@ TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 `${UPLOAD_DIR}/traces`；上传接口、元数据和后端重启后按 traceId 重新加载 trace 都使用这同一个目录。
 `SMARTPERFETTO_TRACE_UPLOAD_DIR` 只在需要把 trace 目录单独放到别处时设置，它会同时覆盖上述三处
 （npm CLI 用它把 trace 副本放在自己的 home 下）。
+
+后端不会把上传目录作为静态文件对外提供。trace 文件只能通过经过鉴权和归属检查的 trace 下载接口获取
+（`GET /api/traces/:id/file` 或其 workspace 作用域形式）。
 
 默认不需要手动设置 `TRACE_PROCESSOR_PATH`。普通 `./start.sh` 和开发模式 `./scripts/start-dev.sh` 都优先使用经过固定 SHA256 校验的 prebuilt。显式的 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径：启动和 backend `predev` 只检查文件存在、可执行以及 `--version`，不会改权限、按固定 SHA 替换或向该路径下载。
 

@@ -4,6 +4,7 @@
 
 import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
 
+import {ENTERPRISE_FEATURE_FLAG_ENV, serverSecretCandidateKeys} from '../../config';
 import type {RequestContext} from '../../middleware/auth';
 import {
   TRACE_PROCESSOR_CAPABILITY_SECRET_ENV,
@@ -13,7 +14,11 @@ import {
   stripTraceProcessorCapabilityProtocols,
 } from '../traceProcessorProxyCapability';
 
-const originalSecret = process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV];
+const SECRET_ENV_KEYS = [
+  ...serverSecretCandidateKeys([TRACE_PROCESSOR_CAPABILITY_SECRET_ENV]),
+  ENTERPRISE_FEATURE_FLAG_ENV,
+];
+const originalEnv = new Map(SECRET_ENV_KEYS.map(key => [key, process.env[key]]));
 const context: RequestContext = {
   tenantId: 'tenant-a',
   workspaceId: 'workspace-a',
@@ -26,16 +31,16 @@ const context: RequestContext = {
 };
 
 beforeEach(() => {
+  for (const key of SECRET_ENV_KEYS) delete process.env[key];
   process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV] =
     'test-trace-processor-capability-secret-at-least-32-bytes';
   resetTraceProcessorProxyCapabilitiesForTests();
 });
 
 afterEach(() => {
-  if (originalSecret === undefined) {
-    delete process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV];
-  } else {
-    process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV] = originalSecret;
+  for (const [key, value] of originalEnv) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
   }
   resetTraceProcessorProxyCapabilitiesForTests();
 });
@@ -86,5 +91,29 @@ describe('trace processor WebSocket capability', () => {
       capability.protocol,
       'application.trace-processor',
     ])).toEqual(['application.trace-processor']);
+  });
+
+  // Outside OIDC the capability used to ignore SMARTPERFETTO_SERVER_SECRET and
+  // sign with a random per-process key, so enterprise mode refused to start
+  // a WebSocket and capabilities never survived a restart.
+  it('signs with the server secret root in every auth mode', () => {
+    delete process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV];
+    process.env.SMARTPERFETTO_ENTERPRISE = 'true';
+    process.env.SMARTPERFETTO_SERVER_SECRET = 'test-server-secret-at-least-32-bytes';
+    const capability = issueTraceProcessorProxyCapability({context, leaseId: 'lease-a', now: 1_000});
+    resetTraceProcessorProxyCapabilitiesForTests();
+
+    expect(resolveTraceProcessorProxyCapability(capability.protocol, 'lease-a', 2_000))
+      .toMatchObject({userId: 'user-a'});
+    process.env.SMARTPERFETTO_SERVER_SECRET = 'another-server-secret-at-least-32-bytes';
+    expect(resolveTraceProcessorProxyCapability(capability.protocol, 'lease-a', 2_000)).toBeNull();
+  });
+
+  it('reads a padded capability secret as its trimmed value', () => {
+    const capability = issueTraceProcessorProxyCapability({context, leaseId: 'lease-a', now: 1_000});
+    process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV] =
+      '  test-trace-processor-capability-secret-at-least-32-bytes\n';
+    expect(resolveTraceProcessorProxyCapability(capability.protocol, 'lease-a', 2_000))
+      .toMatchObject({userId: 'user-a'});
   });
 });

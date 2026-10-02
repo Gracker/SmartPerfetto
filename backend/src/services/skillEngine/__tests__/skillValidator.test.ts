@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { validateSkillInputs, validateSkillConditions, validateFragmentReferences, validateNormalizedStdlibReads, validateProcessScopeDeclarations } from '../skillValidator';
-import { extractRootVariables, EXPRESSION_GLOBALS, isBindableName, parseEvidenceField, readEvidenceField } from '../expressionUtils';
+import { extractRootVariables, EXPRESSION_GLOBALS, isBindableName, parseEvidenceField, readEvidenceField, rootReads, templateRootReads } from '../expressionUtils';
 import type { SkillDefinition, SkillInput } from '../types';
 
 // =============================================================================
@@ -167,6 +167,50 @@ describe('extractRootVariables', () => {
     const result = extractRootVariables('type === "running"');
     expect(result).toContain('type');
     expect(result).not.toContain('running');
+  });
+});
+
+describe('rootReads', () => {
+  const brief = (expr: string) => rootReads(expr).reads.map(({name, access}) =>
+    `${name}${access === undefined ? '' : `.${access}`}`);
+
+  it('reports each read with the member read right after it', () => {
+    expect(brief('rows.data[0] && rows?.data && rows[0] && rows?.[0] && rows && rows?.["data"]'))
+      .toEqual(['rows.data', 'rows.data', 'rows.[', 'rows.[', 'rows', 'rows.[']);
+    // Comments between a name and its member and escaped member names are read as code reads them.
+    expect(brief('rows /* c */ [0].x && rows. /* c */ data.length && rows.\\u0064ata.length'))
+      .toEqual(['rows.[', 'rows.data', 'rows.data']);
+  });
+
+  it('reads a placeholder as the evaluator does and keeps every occurrence in written order', () => {
+    // A path the evaluator resolves itself is no member read; JavaScript inside
+    // a placeholder, or a whole `${…}` without a default, reads as code does.
+    expect(brief('${rows[0].x|0} > limit && ${other[0].y} > 0 && ${rows[0].x * 2} > limit'))
+      .toEqual(['rows', 'limit', 'other', 'rows.[', 'limit']);
+    expect(brief('${rows[0].x}')).toEqual(['rows.[']);
+    expect(brief('${rows[0].x|0}')).toEqual(['rows']);
+    expect(rootReads('a > 0 && b > a').reads.map(read => read.at)).toEqual([0, 9, 13]);
+    expect(rootReads('x && ${ rows.data[0] > rows[0]}').reads.map(read => read.at)).toEqual([0, 8, 23]);
+  });
+
+  it('is exact only when the engine confirmed it and no local but an arrow parameter is declared', () => {
+    const exact = (expr: string) => rootReads(expr).exact;
+    expect(exact('rows.data.some(r => r.x > limit)')).toBe(true);
+    expect(exact("x in /'/.source")).toBe(true);
+    expect(exact('rows.data.some(r => { const limit = 1; return r.x > limit; })')).toBe(false);
+    expect(exact('rows.data.some(function(r) { return r.x > 1; })')).toBe(false);
+    expect(exact('({check(r) { return r.x > 1; }}).check(rows.data[0])')).toBe(false);
+    expect(exact('({get ok() { return true; }}).ok')).toBe(false);
+    expect(exact('rows.data.some(r => { return r.x > limit; })')).toBe(false);
+    expect(exact("status === 'ok' OR missing")).toBe(false);
+    expect(exact(Array.from({length: 1001}, (_, i) => `v${i}`).join(' + '))).toBe(false);
+    expect(exact('${rows.data.some(function(r) { return r.x; })}')).toBe(false);
+  });
+
+  it('reads only the placeholders of a template', () => {
+    expect(templateRootReads('Top ${rows.data[0].name} over ${limit|16}ms, see other').reads.map(read => read.name))
+      .toEqual(['rows', 'limit']);
+    expect(templateRootReads('plain text with words').reads).toEqual([]);
   });
 });
 
@@ -383,10 +427,13 @@ describe('validateSkillConditions', () => {
     // A whole-text placeholder is one expression, `}` included; a default never spans lines.
     expect(roots('${rows.some(r => { return r.x > lim })}')).toEqual(['lim', 'rows']);
     expect(roots('${a|x\ny}')).toEqual(['a', 'x', 'y']);
-    // A placeholder without a default is JS: literals and language globals read no root.
-    for (const constant of ['${true}', '${Infinity}', '${Math.PI} > 3', '${parseFloat}', '${undefined}']) {
+    // A whole placeholder without a default is JS: literals and language globals read no root.
+    for (const constant of ['${true}', '${Infinity}', '${Math.PI}', '${parseFloat}', '${undefined}']) {
       expect([constant, roots(constant)]).toEqual([constant, []]);
     }
+    // Embedded, a simple path is resolved through scopes, where no global is bound:
+    // `${Math.PI} > 3` evaluates as ' > 3', so its root is reported.
+    expect(roots('${Math.PI} > 3')).toEqual(['Math']);
     expect(roots('${step.data[0].v} > 1')).toEqual(['step']);
   });
 

@@ -566,6 +566,68 @@ describe('policy refusal vs tool malfunction', () => {
   });
 });
 
+/**
+ * Code-aware source refusals cross the external-surface projection as a closed
+ * action token. That keeps them refusals for the circuit breaker and lets the
+ * timeline say why nothing was read instead of "<tool> failed", without the
+ * requested path ever reaching the line.
+ */
+describe('code-aware source refusals across the projection boundary', () => {
+  const {projectToolResultForExternalSurface} =
+    require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+  const {issuePrivateToolResultNarrationReceipt, readPrivateToolResultNarrationReceipt} =
+    require('../toolNarration') as typeof import('../toolNarration');
+
+  it.each([
+    ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'use_path_within_registered_filters',
+      sourceReferences: []}, '该路径不在已注册的源码范围内'],
+    ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_path_outside_provider_grant', action_required: 'continue_without_this_file',
+      sourceReferences: []}, '该文件不在发送给模型的授权范围内'],
+    ['inspect_code_symbol', {success: false, codebaseId: 'cb', references: [], processes: [], truncated: false,
+      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'use_path_within_registered_filters'},
+    '该路径不在已注册的源码范围内'],
+    ['search_codebase', {success: false, codebaseId: 'cb', matches: [], truncated: false,
+      unsupportedReason: 'source_search_budget_exceeded', action_required: 'continue_with_existing_source_evidence'},
+    '源码访问已达本次上限'],
+  ] as const)('narrates a %s refusal as refused, not failed', (toolName, body, expected) => {
+    const projected = projectToolResultForExternalSurface(toolName, mcpResult(body));
+
+    expect(projected).toMatchObject({outcome: 'rejected', action_required: body.action_required});
+    expect(isPolicyRefusalResult(projected)).toBe(true);
+    const line = formatToolResultNarration({toolName, result: projected, isError: true});
+    expect(line).toContain(expected);
+    expect(line).not.toContain('失败');
+    const receipt = issuePrivateToolResultNarrationReceipt({toolName, result: projected, isError: true});
+    expect(readPrivateToolResultNarrationReceipt(receipt, toolName, 'zh-CN')?.message).toContain(expected);
+  });
+
+  it.each([
+    ['an action this product never issues', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'read /Users/demo/app/Secret.kt'}],
+    ['a capability gap', {success: false, codebaseId: 'cb', references: [], processes: [], truncated: false,
+      unsupportedReason: 'missing_gitnexus_index'}],
+  ])('does not project %s as a refusal', (_label, body) => {
+    const toolName = 'references' in body ? 'query_code_graph' : 'read_codebase_file';
+    const projected = projectToolResultForExternalSurface(toolName, mcpResult(body));
+
+    expect(projected).not.toHaveProperty('action_required');
+    expect(JSON.stringify(projected)).not.toContain('/Users/demo');
+    expect(isPolicyRefusalResult(projected)).toBe(false);
+    expect(formatToolResultNarration({toolName, result: projected, isError: true})).toBe(`${toolName} 失败`);
+  });
+
+  it('does not project an action on a successful source result', () => {
+    const projected = projectToolResultForExternalSurface('search_codebase', mcpResult({
+      success: true, codebaseId: 'cb', matches: [], truncated: false, action_required: 'continue_without_this_file',
+    }));
+
+    expect(projected).not.toHaveProperty('action_required');
+    expect(isPolicyRefusalResult(projected)).toBe(false);
+  });
+});
+
 describe('what a phase transition line spends its words on', () => {
   it('shows only the reason the phase closed, not the recap behind it', () => {
     // The stored summary carries the evidence recap and the phase goal for the

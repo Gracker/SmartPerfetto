@@ -105,8 +105,8 @@ sql: |
     WHERE s.dur > 0
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR s.ts < ${end_ts})
-      AND ('${track_name|}' = '' OR LOWER(COALESCE(t.name, '')) GLOB '*' || LOWER('${track_name|}') || '*')
-      AND ('${category|}' = '' OR LOWER(COALESCE(s.category, '')) GLOB '*' || LOWER('${category|}') || '*')
+      AND ('${track_name|}' = '' OR instr(LOWER(COALESCE(t.name, '')), LOWER('${track_name|}')) > 0)
+      AND ('${category|}' = '' OR instr(LOWER(COALESCE(s.category, '')), LOWER('${category|}')) > 0)
   ),
   totals AS (
     SELECT SUM(dur) AS total_dur

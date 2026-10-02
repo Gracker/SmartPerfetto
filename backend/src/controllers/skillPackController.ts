@@ -4,12 +4,13 @@
 
 import type { Request, Response } from 'express';
 import { requireRequestContext } from '../middleware/auth';
-import { sendRouteReasonError } from '../middleware/routeFailure';
+import { sendRouteError } from '../middleware/routeFailure';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { repositoryScopeFromRequestContext } from '../services/enterpriseRepository';
 import { SkillPackInstallService } from '../services/skillPacks/skillPackInstallService';
 import { previewSkillPack } from '../services/skillPacks/skillPackPreviewService';
 import { SkillPackRepository } from '../services/skillPacks/skillPackRepository';
+import { SkillPackRequestError } from '../services/skillPacks/skillPackRequestError';
 import { invalidateWorkspaceSkillRegistry } from '../services/skillPacks/workspaceSkillRegistryProvider';
 
 function sourcePathFromBody(req: Request): string | null {
@@ -24,13 +25,16 @@ function paramString(req: Request, name: string): string | null {
   return typeof value === 'string' && value.trim() ? value.trim() : null;
 }
 
-/** Skill pack services throw reason tokens; anything else gets fixed text. */
+/**
+ * Pack rejections (invalid or changed pack, unknown pack, workspace collision)
+ * keep their reason; storage and post-install integrity failures get fixed text.
+ */
 function sendSkillPackError(res: Response, error: unknown, operation: string): void {
-  sendRouteReasonError(res, error, reason => (reason === 'skill_pack_not_found' ? 404 : 400), {
+  sendRouteError(res, error, {
     code: 'skill_pack_operation_failed',
     error: 'Skill pack operation failed',
     logLabel: `[SkillPacks] ${operation} error`,
-  });
+  }, [SkillPackRequestError]);
 }
 
 function createInstallService(db: ReturnType<typeof openEnterpriseDb>): SkillPackInstallService {
