@@ -445,7 +445,7 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
             expect(cpuHealth.avg_util_pct).toBeLessThanOrEqual(100);
           }
 
-          expect(['overloaded', 'busy', 'normal']).toContain(cpuHealth.status);
+          expect(['insufficient_coverage', 'overloaded', 'busy', 'normal']).toContain(cpuHealth.status);
         }
       }, 30000);
     });
@@ -460,7 +460,7 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
           // Validate freeze check structure
           expect(typeof freezeCheck.total_apps).toBe('number');
           expect(typeof freezeCheck.frozen_apps).toBe('number');
-          expect(['system_freeze', 'app_specific']).toContain(freezeCheck.freeze_verdict);
+          expect(['system_server_freeze', 'system_freeze', 'app_specific', 'undetermined']).toContain(freezeCheck.freeze_verdict);
         }
       }, 30000);
     });

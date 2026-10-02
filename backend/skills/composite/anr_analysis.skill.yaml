@@ -135,6 +135,9 @@ steps:
   # ============================================================================
   # 第一阶段：系统健康检查（先定性）
   # ============================================================================
+  # "首个 ANR 窗口" steps run only when get_anr_context produced the window
+  # (anr_ctx.data?.length > 0). Without it they are skipped, never run over the
+  # whole trace or a NULL window that would read as "no pressure" or "app-specific".
 
   # Step 1.1: 检测 ANR 是否存在
   - id: anr_detection
@@ -366,8 +369,8 @@ steps:
           template: "{{core_type}} 核心负载正常 ({{avg_util_pct}}%)"
     sql: |
       WITH system_windows AS (
-        SELECT 0 AS window_id, COALESCE(${anr_ctx.data[0].anr_ts|NULL}-${anr_ctx.data[0].timeout_ns|NULL}, (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
-          COALESCE(${anr_ctx.data[0].anr_ts|NULL}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
+        SELECT 0 AS window_id, ${anr_ctx.data[0].anr_ts}-${anr_ctx.data[0].timeout_ns} AS window_start_ts,
+          ${anr_ctx.data[0].anr_ts} AS window_end_ts
       ),cpu_activity AS (
         SELECT s.ucpu,SUM(CASE WHEN t.is_idle=0 THEN s.dur_ns ELSE 0 END) AS active_ns,
           SUM(s.dur_ns) AS covered_ns,SUM(CASE WHEN t.is_idle IS NULL THEN s.dur_ns ELSE 0 END) AS idle_identity_unknown_ns
@@ -384,7 +387,7 @@ steps:
       FROM system_windows w CROSS JOIN system_cpu_topology ct LEFT JOIN cpu_activity a ON a.ucpu=ct.ucpu
       GROUP BY ct.core_type ORDER BY ct.core_type
     save_as: cpu_health
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # Step 1.3: 系统内存压力检测（LMK 事件）
@@ -412,12 +415,12 @@ steps:
         COUNT(*) as kill_count,
         GROUP_CONCAT(DISTINCT process_name) as killed_processes
       FROM android_lmk_events
-      WHERE ts >= ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL}
-        AND ts <= ${anr_ctx.data[0].anr_ts|NULL}
+      WHERE ts >= ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns}
+        AND ts <= ${anr_ctx.data[0].anr_ts}
       GROUP BY oom_score_adj
       ORDER BY kill_count DESC
     save_as: memory_pressure
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # Step 1.4: D-state 不可中断等待基线
@@ -444,8 +447,8 @@ steps:
     sql: |
       WITH anr_window AS (
         SELECT
-          ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL} AS start_ts,
-          ${anr_ctx.data[0].anr_ts|NULL} AS end_ts
+          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
+          ${anr_ctx.data[0].anr_ts} AS end_ts
       ),
       uninterruptible_states AS (
         SELECT
@@ -473,7 +476,7 @@ steps:
       ORDER BY uninterruptible_wait_ns DESC
       LIMIT 10
     save_as: io_load
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # Step 1.4b: 锁等待分布（性能专家探针）
@@ -513,7 +516,7 @@ steps:
           format: duration_ms
           unit: ms
     save_as: lock_waits
-    condition: "detection.data[0]?.total_anr_count > 0 && enable_lock_probe !== false"
+    condition: "detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0 && enable_lock_probe !== false"
     optional: true
 
   # Step 1.5: 系统冻结检测（所有应用都卡住）
@@ -548,8 +551,8 @@ steps:
     sql: |
       WITH anr_window AS (
         SELECT
-          ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL} AS start_ts,
-          ${anr_ctx.data[0].anr_ts|NULL} AS end_ts
+          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
+          ${anr_ctx.data[0].anr_ts} AS end_ts
       ),
       app_activity AS (
         SELECT
@@ -589,7 +592,9 @@ steps:
               NULLIF(COUNT(*), 0), 1) as frozen_pct,
         MAX(CASE WHEN process_name = 'system_server' THEN ROUND(running_pct, 1) END) as system_server_running_pct,
         MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) as system_server_frozen,
+        -- No evaluable main thread in the window decides nothing: not app-specific.
         CASE
+          WHEN COUNT(*) = 0 THEN 'undetermined'
           WHEN MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) = 1
             THEN 'system_server_freeze'
           WHEN 100.0 * SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) /
@@ -598,7 +603,7 @@ steps:
         END as freeze_verdict
       FROM freeze_eval
     save_as: freeze_check
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # ============================================================================
@@ -968,9 +973,9 @@ steps:
     sql: |
       WITH anr_window AS (
         SELECT
-          ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL} AS start_ts,
-          ${anr_ctx.data[0].anr_ts|NULL} AS end_ts,
-          ${anr_ctx.data[0].timeout_ns|NULL} AS window_ns
+          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
+          ${anr_ctx.data[0].anr_ts} AS end_ts,
+          ${anr_ctx.data[0].timeout_ns} AS window_ns
       ),
       clipped AS (
         SELECT
@@ -993,7 +998,7 @@ steps:
       ORDER BY cpu_ms DESC
       LIMIT 15
     save_as: top_processes
-    condition: detection.data[0]?.total_anr_count > 0
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
 
   # ============================================================================

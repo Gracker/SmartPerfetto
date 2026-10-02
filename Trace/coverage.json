@@ -6647,7 +6647,7 @@
           },
           {
             "id": "system_cpu_health",
-            "sha256": "aa82f5e67bcc89aa19f59a530e3a0fc94f025d237aa3e42d1d1c0e3421ca3746",
+            "sha256": "c2031d18f713c72c92c9c97bb9e3f2562d6f041c9c0a57914f9d59db71e0cb35",
             "required_columns": [
               "sched_covered_ns",
               "idle_identity_unknown_ns",
@@ -6660,7 +6660,7 @@
           },
           {
             "id": "memory_pressure",
-            "sha256": "719a327af7e54b0f0b0aebe14632394962870850cdd81985c092443393e12633",
+            "sha256": "063a9beb430ee2a2730975614df1f6478d3de44f9262d13f70ed940e5bdcb98e",
             "required_columns": [
               "oom_score_adj",
               "kill_count",
@@ -6669,7 +6669,7 @@
           },
           {
             "id": "io_load",
-            "sha256": "dc0e1b40f36c986ae601359a5221faec973938cf34659d6132c029521e07f6b9",
+            "sha256": "c31209eb8ec71b10da1a935cf426c5e62eac43ce301d9a3c1b0bb4be2f62e52c",
             "required_columns": [
               "process_name",
               "uninterruptible_wait_ms",
@@ -6678,7 +6678,7 @@
           },
           {
             "id": "system_freeze_check",
-            "sha256": "256aedad7056e147d46fce20ebfdb51db00b46d818ccaaa6c74c356f1f78a1bd",
+            "sha256": "647beedec814ebeddc1453c02a65230e85391fea5749088885d45bf604009995",
             "required_columns": [
               "total_apps",
               "frozen_apps",
@@ -6725,7 +6725,7 @@
           },
           {
             "id": "top_cpu_processes",
-            "sha256": "3e4e64fd80e03be040f417a71393a55409eed5303d8139e322a11dc9174eac31",
+            "sha256": "ec32f598217f6a942b01e1bf20bc0b9ebff9b71d60231121fe619c4422d796b1",
             "required_columns": [
               "process_name",
               "cpu_ms",
@@ -11409,7 +11409,7 @@
           },
           {
             "id": "startup_evidence_matrix",
-            "sha256": "09762956455d8bff8a4fb6a190503866b034cde130b11ea1467f619a628b98b6",
+            "sha256": "7e3078c5eac55979545b4e867750ee01f32685c68125ac39ba9048f8499d4862",
             "required_columns": [
               "item",
               "primary_metric",
