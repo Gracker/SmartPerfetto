@@ -146,7 +146,7 @@ An evidence field is a read-only path, not a JavaScript expression or a
 a predicate compares scalar values, and a missing or non-scalar value never
 matches. Its value is bounded before it
 is reported: a row set becomes `{_rowCount, _firstRow}`, a row keeps its
-scalar fields, and long strings are cut. `validate:skills` rejects an evidence
+scalar fields, and long strings are cut. A fired rule also reports a bounded sample of every input its condition reads, whether written `name.data`, `name?.data` or `name?.["data"]`; a name that appears only inside a string or comment is not read. `validate:skills` rejects an evidence
 field outside that grammar or rooted outside `inputs`, a rule that reads a step
 missing from `inputs`, a condition that reads step data other than through
 `.data` (inside a `${...}` placeholder `name[0].x` is still valid), and a

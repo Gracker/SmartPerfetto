@@ -336,6 +336,7 @@ evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}
 `.find(r => r.column OP literal)` / `.filter(...)`（OP 为比较运算，literal 为数字、带引号字符串、
 布尔或 `null`），每段都可写成 `?.`。它读的就是 condition 里 `name.data` 的同一个值，只读对象自有的数据属性，不调用函数、
 不写数据；谓词只比较标量，缺失或非标量的值一律不匹配。值上报前有界：行集变成 `{_rowCount, _firstRow}`，行只保留标量字段，长字符串截断。
+规则触发时还会附带它的 condition 读到的每个 input 的样本（同样有界），无论写成 `name.data`、`name?.data` 还是 `name?.["data"]`；只在字符串或注释里出现的名字不算读到。
 `validate:skills` 拒绝：不符合该语法或根不在 `inputs` 的 evidence field、读了不在 `inputs`
 里的步骤、condition 不经 `.data` 读步骤数据（`${...}` 占位符里 `name[0].x` 仍合法），以及没有
 `inputs` 的 diagnostic 步骤。

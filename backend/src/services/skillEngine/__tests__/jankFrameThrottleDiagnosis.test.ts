@@ -284,6 +284,19 @@ describe('jank_frame_detail frame_diagnosis values', () => {
     }
   });
 
+  // Every cluster-load rule reads its input as `cluster_load_data?.data`.
+  it('cites the cluster-load rows a fired cluster-load rule read', async () => {
+    const rows = [
+      {cluster: '大核簇', load_pct: 95, max_single_core_pct: 97},
+      {cluster: '小核簇', load_pct: 40, max_single_core_pct: 60},
+    ];
+    const fired = find(await diagnoseFrom({cluster_load_data: rows}), '大核簇负载');
+    expect(fired.map(d => d.diagnosis)).toEqual(['大核簇负载 95%，接近跑满']);
+    expect(fired[0].evidence).toEqual({
+      cluster_load_data: {_rowCount: 2, _firstRow: rows[0]},
+    });
+  });
+
   it('cites the frame-window GC total the gc step computed', async () => {
     const gc = (total: number) => [
       {gc_type: 'young', overlap_ms: 2.2, total_overlap_ms: total},

@@ -30,10 +30,26 @@ describe('extractRootVariables', () => {
     expect(result).toEqual(['foo']);
   });
 
-  it('does not report arrow parameters', () => {
+  it('does not report arrow parameters within their function', () => {
     expect(extractRootVariables('jank_stats.data.find(j => j.jank_type)')).toEqual(['jank_stats']);
     expect(extractRootVariables('rows.some((r, i) => r.v > limit + i)')).toEqual(['rows', 'limit']);
     expect(extractRootVariables('(window => window > 0)(1)')).toEqual([]);
+    // Outside its function, the same name is a root.
+    expect(extractRootVariables('a.data[0].v > 0 && b.data.some(a => a.v > 0)')).toEqual(['a', 'b']);
+    expect(extractRootVariables('xs.map(x => x.v).length > 0 && x')).toEqual(['xs', 'x']);
+    expect(extractRootVariables('c ? xs.some(x => x > 0) : x')).toEqual(['c', 'xs', 'x']);
+    expect(extractRootVariables('xs.some(x => { return x > 0; }) || x')).toEqual(['xs', 'x']);
+    expect(extractRootVariables('xs.some(x => x ?? y) && x')).toEqual(['xs', 'y', 'x']);
+    // An unparenthesized body ends at the `:` of a conditional it did not open; `??` opens none.
+    expect(extractRootVariables('c ? v => v ?? d : v')).toEqual(['c', 'd', 'v']);
+  });
+
+  it('lists roots in the order they are first written, placeholders included', () => {
+    expect(extractRootVariables('a.data.length > 0 && ${b.data.length} > 0')).toEqual(['a', 'b']);
+    expect(extractRootVariables('${b|0} > 0 && a > 0')).toEqual(['b', 'a']);
+    expect(extractRootVariables("x${a}y === 'q' && z")).toEqual(['x', 'a', 'y', 'z']);
+    expect(extractRootVariables('${a_long_placeholder_path.data[0].value} > 0 && ${b} > 0 && c > 0'))
+      .toEqual(['a_long_placeholder_path', 'b', 'c']);
   });
 
   // A quote, backtick or slash inside a literal or comment must not hide the code after it.

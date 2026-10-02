@@ -1252,6 +1252,53 @@ describe('Diagnostic Step 执行', () => {
     expect(result.diagnostics[0].diagnosis).toContain('严重卡顿');
   });
 
+  // A fired rule cites every step input its condition reads, whatever the
+  // member-access form — the names the condition evaluator itself binds.
+  it('cites each input a fired condition reads, through optional or bracket access', async () => {
+    const rowsBySql: Array<[string, {columns: string[]; rows: unknown[][]}]> = [
+      ['/*a*/', {columns: ['ts', 'v'], rows: [[111, 5]]}],
+      ['/*b*/', {columns: ['ts', 'v'], rows: [[222, 1], [223, 2]]}],
+      ['/*c*/', {columns: ['v'], rows: [[3]]}],
+      ['/*ghost*/', {columns: ['ts', 'v'], rows: [[999, 1]]}],
+      ['/*unused*/', {columns: ['ts', 'v'], rows: [[777, 1]]}],
+    ];
+    mockTraceProcessor.query.mockImplementation(async (_trace: string, sql: string) =>
+      rowsBySql.find(([marker]) => sql.includes(marker))?.[1] ?? {columns: [], rows: []});
+    executor.registerSkill({
+      name: 'evidence_sources', type: 'composite', version: '1.0', meta: createMeta('Evidence Sources'),
+      steps: [
+        ...['a', 'b', 'c', 'ghost', 'unused'].map(name =>
+          ({id: `get_${name}`, type: 'atomic', sql: `SELECT /*${name}*/ 1`, save_as: name})),
+        {id: 'diagnose', type: 'diagnostic', inputs: ['a', 'b', 'c', 'unused'], rules: [
+          {condition: 'a?.data?.[0]?.v > 1', confidence: 0.9, diagnosis: 'OPTIONAL'},
+          {condition: 'b?.["data"]?.length > 1', confidence: 0.9, diagnosis: 'BRACKET'},
+          {condition: 'c.data[0].v > 0 && a?.data?.length > 0', confidence: 0.9, diagnosis: 'MIXED'},
+          // Bound, but not a declared input of this step.
+          {condition: 'ghost?.data?.length > 0', confidence: 0.9, diagnosis: 'UNDECLARED'},
+          // An input named only inside a string literal is not read.
+          {condition: "a?.data?.length > 0 && 'unused.data' !== ''", confidence: 0.9, diagnosis: 'LITERAL'},
+          // A callback parameter hides `a` only inside its callback; the jump target is the first input read.
+          {condition: 'a.data[0].v > 0 && b.data.some(a => a.v > 0)', confidence: 0.9, diagnosis: 'SHADOWED'},
+          {condition: 'a.data.length > 0 && ${b.data.length} > 0', confidence: 0.9, diagnosis: 'PLACEHOLDER'},
+        ]},
+      ],
+    } as SkillDefinition);
+
+    const result = await executor.execute('evidence_sources', 'trace-1');
+    const evidence = Object.fromEntries(result.diagnostics.map(d => [d.diagnosis, d.evidence]));
+    const a = {_rowCount: 1, _firstRow: {ts: 111, v: 5}};
+    expect(evidence).toEqual({
+      OPTIONAL: {a, _perfettoTs: '111'},
+      BRACKET: {b: {_rowCount: 2, _firstRow: {ts: 222, v: 1}}, _perfettoTs: '222'},
+      // c has no timestamp column, so the jump target comes from a.
+      MIXED: {c: {_rowCount: 1, _firstRow: {v: 3}}, a, _perfettoTs: '111'},
+      UNDECLARED: undefined,
+      LITERAL: {a, _perfettoTs: '111'},
+      SHADOWED: {a, b: {_rowCount: 2, _firstRow: {ts: 222, v: 1}}, _perfettoTs: '111'},
+      PLACEHOLDER: {a, b: {_rowCount: 2, _firstRow: {ts: 222, v: 1}}, _perfettoTs: '111'},
+    });
+  });
+
   it('应该支持在 condition 中使用 ${...} 模板并在 diagnosis 中计算表达式', async () => {
     const tmplConditionSkill: SkillDefinition = {
       name: 'tmpl_condition',
@@ -2838,7 +2885,7 @@ describe('Skill Reference save_from 绑定', () => {
         {id: 'picked', skill: 'two_step_child', save_as: 'picked', save_from: 'detail', optional: true} as any,
         {id: 'sql_probe', type: 'atomic', sql: "SELECT /*sqlprobe*/ '${picked.data[0].source|none}'", optional: true},
         {id: 'probe', type: 'diagnostic', inputs: ['picked'], rules: [
-          // `picked.data` in a condition makes the rule attach that input as evidence.
+          // Reading `picked` in a condition (`picked.data`, `picked?.data`) attaches that input as evidence.
           {condition: 'picked.data == null', diagnosis: 'UNBOUND ${picked.data[0].source|none}', confidence: 'high'},
           {condition: 'Array.isArray(picked?.data)', confidence: 'high', evidence_fields: ['picked.data[0].source'],
             diagnosis: 'BOUND ${JSON.stringify(picked.data)} simple=${picked.data[0].source|none}'},
@@ -2854,15 +2901,19 @@ describe('Skill Reference save_from 绑定', () => {
 
     it('reads the named step in conditions, templates, SQL, evidence and provenance', async () => {
       answer({rows: [['detail']]});
+      const evidence = {
+        'picked.data[0].source': 'detail',
+        picked: {_rowCount: 1, _firstRow: {source: 'detail'}},
+      };
       const result = await probeViaExecute(sameName);
       expect(diagnoses(result)).toEqual(['BOUND [{"source":"detail"}] simple=detail']);
-      expect(result.diagnostics[0].evidence).toEqual({'picked.data[0].source': 'detail'});
+      expect(result.diagnostics[0].evidence).toEqual(evidence);
       expect(JSON.stringify(result.diagnostics[0].scopeProvenance)).toContain('global_context');
       expect(probeSql()).toEqual([expect.stringContaining("'detail'")]);
 
       const probe = await compositeProbe();
       expect(probe?.data?.diagnostics?.map((d: any) => d.diagnosis)).toEqual(['BOUND [{"source":"detail"}] simple=detail']);
-      expect(probe?.data?.diagnostics?.[0]?.evidence).toEqual({'picked.data[0].source': 'detail'});
+      expect(probe?.data?.diagnostics?.[0]?.evidence).toEqual(evidence);
       expect(JSON.stringify(probe?.scopeProvenance)).toContain('global_context');
       expect(probeSql()).toEqual([expect.stringContaining("'detail'"), expect.stringContaining("'detail'")]);
     });

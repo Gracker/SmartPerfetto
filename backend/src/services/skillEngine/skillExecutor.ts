@@ -36,7 +36,7 @@ import {
 } from './types';
 import { validateSkillInputs } from './skillValidator';
 import {
-  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, WHOLE_SKILL_PLACEHOLDER, decodeIdentifier, identifierMatches, isBindableName,
+  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, WHOLE_SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
   isSimplePath, ownDataValue, parseEvidenceField, parsePathWithDefault, readEvidenceField,
 } from './expressionUtils';
 import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments';
@@ -388,7 +388,7 @@ class ExpressionEvaluator {
    * 结果必须是表达式可能读到的根名的超集：漏掉一个就是 ReferenceError，规则静默不触发；
    * 多出来的名字（字面量里的词、对象键、关键字）只会被跳过或绑定为 undefined。所以这里
    * 不剥离字面量，只排除属性名（`.x`、`?.x`，但 `...x` 是展开的根名）；哪些名字不绑定
-   * 由求值时决定。校验用的 extractRootVariables 求精确，不能用来绑定作用域。
+   * 由求值时决定。extractRootVariables 求精确（校验与 evidence 引用用），不能用来绑定作用域。
    */
   private static scopeCandidates(expr: string): string[] {
     const varNames = new Set<string>();
@@ -3536,11 +3536,10 @@ export class SkillExecutor {
       }
     }
 
-    // 2. condition 读到的数据源样本（行数 + 首行），不是规则命中的那一行；
-    //    读的是 condition 里 `source.data` 的同一个值
-    const conditionSources = this.extractDataSources(rule.condition);
+    // 2. condition 读到的数据源样本（行数 + 首行），不是规则命中的那一行；读的是 condition 里
+    //    这个 input 的同一个值，无论写成 `x.data`、`x?.data` 还是 `x?.["data"]`
+    const conditionSources = SkillExecutor.conditionRoots(String(rule.condition ?? '')).filter(name => inputNames.has(name));
     for (const source of conditionSources) {
-      if (!inputNames.has(source) || source in evidence) continue;
       this.recordEvidence(evidence, source, () => {
         const sourceData = ExpressionEvaluator.readDataView(source, context);
         return sourceData && typeof sourceData === 'object' ? sourceData : undefined;
@@ -3553,21 +3552,16 @@ export class SkillExecutor {
     return Object.keys(evidence).length > 0 ? evidence : undefined as any;
   }
 
-  /**
-   * 从表达式中提取数据源名称
-   * 例如: "lock_data.data[0]?.wait_ms > 2" => ["lock_data"]
-   */
-  private extractDataSources(expression: string): string[] {
-    const sources: Set<string> = new Set();
-    // 匹配 xxx.data 或 xxx.xxx 形式的数据源引用
-    const matches = expression.match(/(\w+)\.data/g);
-    if (matches) {
-      for (const match of matches) {
-        const source = match.replace('.data', '');
-        sources.add(source);
-      }
+  /** Root names per authored condition string; the extraction compiles once per identifier. */
+  private static readonly conditionRootCache = new Map<string, readonly string[]>();
+
+  private static conditionRoots(condition: string): readonly string[] {
+    let roots = SkillExecutor.conditionRootCache.get(condition);
+    if (!roots) {
+      roots = extractRootVariables(condition);
+      SkillExecutor.conditionRootCache.set(condition, roots);
     }
-    return Array.from(sources);
+    return roots;
   }
 
   /**

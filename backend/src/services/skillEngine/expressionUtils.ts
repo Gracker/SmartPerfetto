@@ -287,19 +287,52 @@ function enclosingOpener(tokens: Token[], index: number): string | undefined {
 }
 
 /**
- * Names an arrow function in `tokens` declares as parameters: the binding
- * positions of its parameter list, including destructuring targets, but not
- * destructuring keys (`{key: name}`), nor what a default (`= value`) or a
- * computed key (`{[key]: name}`) reads.
+ * Index just past the body of an arrow function starting at `start`: the `,`,
+ * `;` or closer it does not enclose, or the `:` of a conditional it did not
+ * open. A block body ends the same way, since only those can follow its `}` in
+ * a condition that compiles.
  */
-function arrowParameterNames(tokens: Token[]): Set<string> {
-  const params = new Set<string>();
+function arrowBodyEndIndex(tokens: Token[], start: number): number {
+  let depth = 0;
+  let conditionals = 0;
+  for (let i = start; i < tokens.length; i++) {
+    const {kind, text} = tokens[i];
+    if (kind !== 'punct') continue;
+    if (text === '(' || text === '[' || text === '{') depth++;
+    else if (text === ')' || text === ']' || text === '}') {
+      if (depth === 0) return i;
+      depth--;
+    } else if (depth > 0) continue;
+    else if (text === ',' || text === ';') return i;
+    else if (text === '?') {
+      if (tokens[i + 1]?.text === '?') i++; // `??`
+      else conditionals++;
+    } else if (text === ':') {
+      if (conditionals === 0) return i;
+      conditionals--;
+    }
+  }
+  return tokens.length;
+}
+
+/** A name an arrow function binds, over the tokens where it hides an outer name of that name. */
+type ParameterScope = {name: string; from: number; to: number};
+
+/**
+ * The parameters each arrow function in `tokens` declares, scoped to its
+ * parameter list and body: binding positions including destructuring targets,
+ * but not destructuring keys (`{key: name}`), nor what a default (`= value`)
+ * or a computed key (`{[key]: name}`) reads.
+ */
+function arrowParameterScopes(tokens: Token[]): ParameterScope[] {
+  const scopes: ParameterScope[] = [];
   tokens.forEach((token, i) => {
     if (token.text !== '=>') return;
     const head = tokens[i - 1];
-    if (head?.kind === 'word') { params.add(head.text); return; }
+    if (head?.kind === 'word') { scopes.push({name: head.text, from: i - 1, to: arrowBodyEndIndex(tokens, i + 1)}); return; }
     const open = head?.text === ')' ? matchingOpener(tokens, i - 1) : -1;
     if (open < 0) return;
+    const to = arrowBodyEndIndex(tokens, i + 1);
     const openers: string[] = [];
     // While set, words are reads: a default until its `,` or the bracket around it
     // closes, a computed key until its own `]` closes.
@@ -317,23 +350,27 @@ function arrowParameterNames(tokens: Token[]): Set<string> {
         if (read && (read.computedKey ? openers.length === read.depth : openers.length < read.depth)) read = undefined;
       } else if (text === '=' && !read) read = {depth: openers.length, computedKey: false};
       else if (text === ',' && read && !read.computedKey && openers.length === read.depth) read = undefined;
-      else if (kind === 'word' && !read && tokens[j + 1]?.text !== ':') params.add(text);
+      else if (kind === 'word' && !read && tokens[j + 1]?.text !== ':') scopes.push({name: text, from: open, to});
     }
   });
-  return params;
+  return scopes;
 }
 
 /** A name a scope could bind: not a reserved word, not a language global. */
 const isScopeName = (name: string) => isBindableName(name) && !EXPRESSION_GLOBALS.has(name);
 
-/** Root names one lexing of a condition reads: no property, static key or arrow parameter. */
-function rootsOfLexing(tokens: Token[]): string[] {
-  const params = arrowParameterNames(tokens);
+/** A root name and the source offset it is written at. */
+type RootAt = {name: string; at: number};
+
+/** Root names one lexing of a condition reads: no property, static key, or arrow parameter in its scope. */
+function rootsOfLexing(tokens: Token[]): RootAt[] {
+  const scopes = arrowParameterScopes(tokens);
   return tokens.filter((token, i) => {
-    if (token.kind !== 'word' || token.property || params.has(token.text) || !isScopeName(token.text)) return false;
+    if (token.kind !== 'word' || token.property || !isScopeName(token.text)) return false;
+    if (scopes.some(scope => scope.name === token.text && i >= scope.from && i < scope.to)) return false;
     const prev = tokens[i - 1]?.text;
     return !(tokens[i + 1]?.text === ':' && (prev === '{' || prev === ',') && enclosingOpener(tokens, i) === '{');
-  }).map(token => token.text);
+  }).map(token => ({name: token.text, at: token.start!}));
 }
 
 /** The engine compiles once per identifier; a longer condition gets the coarse scan. */
@@ -386,12 +423,12 @@ function agreesWithEngine(tokens: Token[], identifiers: RegExpExecArray[], inCod
  * regexes, templates and comments read as roots, and a misread quote pair can
  * hide the names between its quotes.
  */
-function coarseRootScan(code: string): string[] {
-  const stripped = code.replace(/'[^']*'|"[^"]*"/g, '""');
+function coarseRootScan(code: string): RootAt[] {
+  // Same length, so offsets stay those of `code`.
+  const stripped = code.replace(/'[^']*'|"[^"]*"/g, literal => '""'.padEnd(literal.length));
   return [...stripped.matchAll(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g)]
-    .filter(match => !stripped.slice(0, match.index).trim().endsWith('.'))
-    .map(match => match[0])
-    .filter(isScopeName);
+    .filter(match => !stripped.slice(0, match.index).trim().endsWith('.') && isScopeName(match[0]))
+    .map(match => ({name: match[0], at: match.index}));
 }
 
 /** The roots a Skill placeholder's inner text reads: a `path|default` its path's root, anything else as JS. */
@@ -401,13 +438,14 @@ function placeholderRoots(inner: string): string[] {
 }
 
 /**
- * Root names a Skill condition reads from its scope, for load-time validation.
+ * Root names a Skill condition reads from its scope: for load-time validation,
+ * and for the inputs a fired diagnostic rule cites as evidence.
  * Skill placeholders are read and substituted first, as
  * ExpressionEvaluator.evaluate does (also inside quotes). In the JS, literals,
- * comments, property names, static object keys (`{k: v}`), arrow parameters,
- * reserved words and {@link EXPRESSION_GLOBALS} are not roots; a parameter
- * name is excluded across the whole expression, so a free use of it elsewhere
- * goes unreported. Contextual keywords are reported, since they may be names.
+ * comments, property names, static object keys (`{k: v}`), arrow parameters
+ * within their function, reserved words and {@link EXPRESSION_GLOBALS} are not
+ * roots. Contextual keywords are reported, since they may be names. Roots come
+ * in the order they are first written.
  *
  * Where only parsing could tell a regex from a division, every reading is
  * lexed, and only readings the engine confirms identifier by identifier count;
@@ -418,17 +456,23 @@ function placeholderRoots(inner: string): string[] {
  * names an expression may read, so it scans candidates without lexing.
  */
 export function extractRootVariables(expr: string): string[] {
-  const roots = new Set<string>();
-  const readPlaceholder = (inner: string) => placeholderRoots(inner).forEach(root => roots.add(root));
+  const roots: RootAt[] = [];
+  const readPlaceholder = (inner: string, at: number) => placeholderRoots(inner).forEach(name => roots.push({name, at}));
   const whole = expr.match(WHOLE_SKILL_PLACEHOLDER);
   let code = '0';
-  if (whole && !whole[1].includes('${')) readPlaceholder(whole[1]);
-  else code = expr.replace(SKILL_PLACEHOLDER, (_match, inner: string) => { readPlaceholder(inner); return ' 0 '; });
+  if (whole && !whole[1].includes('${')) readPlaceholder(whole[1], 0);
+  else {
+    // A value of the same length keeps every offset that of `expr`.
+    code = expr.replace(SKILL_PLACEHOLDER, (placeholder: string, inner: string, at: number) => {
+      readPlaceholder(inner, at);
+      return ' 0'.padEnd(placeholder.length);
+    });
+  }
   const identifiers = identifierMatches(code);
   const inCode = engineCodeIdentifiers(code, identifiers);
   const confirmed = inCode && lexings(code)?.filter(tokens => agreesWithEngine(tokens, identifiers, inCode));
-  for (const name of confirmed?.length ? confirmed.flatMap(rootsOfLexing) : coarseRootScan(code)) roots.add(name);
-  return Array.from(roots);
+  roots.push(...(confirmed?.length ? confirmed.flatMap(rootsOfLexing) : coarseRootScan(code)));
+  return [...new Set(roots.sort((a, b) => a.at - b.at).map(root => root.name))];
 }
 
 /**
