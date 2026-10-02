@@ -324,7 +324,7 @@ export class CodebaseManagementService {
       if (reason === 'root_not_found' || reason === 'root_outside_allowlist') {
         return blockedPreview(reason);
       }
-      throw this.toError(error, input.rootPath, 'preview');
+      throw this.toError(error, 'preview');
     }
 
     try {
@@ -364,7 +364,7 @@ export class CodebaseManagementService {
         return {...preview, manifestUnavailableReason: this.safeMetadataReason(reason)};
       }
     } catch (error) {
-      throw this.toError(error, input.rootPath, 'preview');
+      throw this.toError(error, 'preview');
     }
   }
 
@@ -468,7 +468,7 @@ export class CodebaseManagementService {
         await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
       );
     } catch (error) {
-      throw this.toError(error, id, 'selection');
+      throw this.toError(error, 'selection');
     }
   }
 
@@ -533,7 +533,7 @@ export class CodebaseManagementService {
           // Preserve the original CAS error even if best-effort expiry cleanup fails.
         }
       }
-      throw this.toError(error, id, 'pending');
+      throw this.toError(error, 'pending');
     }
   }
 
@@ -574,7 +574,7 @@ export class CodebaseManagementService {
         redactionHitCount: ref.redactionHitCount ?? 0,
       };
     } catch (error) {
-      throw this.toError(error, id, 'audit');
+      throw this.toError(error, 'audit');
     }
   }
 
@@ -628,7 +628,7 @@ export class CodebaseManagementService {
         await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
       );
     } catch (error) {
-      throw this.toError(error, id, 'mutation');
+      throw this.toError(error, 'mutation');
     }
   }
 
@@ -693,7 +693,6 @@ export class CodebaseManagementService {
 
   private toError(
     error: unknown,
-    id: string,
     operation: 'audit' | 'mutation' | 'pending' | 'preview' | 'selection',
   ): CodebaseManagementError {
     if (error instanceof CodebaseManagementError) return error;

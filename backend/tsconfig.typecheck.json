@@ -4,7 +4,9 @@
     "noEmit": true,
     "rootDir": ".",
     "declaration": false,
-    "declarationMap": false
+    "declarationMap": false,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
   "include": ["src/**/*", "tests/**/*"],
   "exclude": ["node_modules", "dist"]
