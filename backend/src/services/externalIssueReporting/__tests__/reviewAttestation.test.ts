@@ -2,8 +2,11 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it} from '@jest/globals';
+import crypto from 'crypto';
 
+import {afterEach, describe, expect, it} from '@jest/globals';
+
+import {serverSecretCandidateKeys} from '../../../config';
 import type {ExternalIssueReviewV1} from '../../../types/externalIssueReporting';
 import {
   issueExternalIssueReviewAttestation,
@@ -94,5 +97,34 @@ describe('external issue review attestation', () => {
       providerScope: scope,
       now: 61_001,
     })).toBe(false);
+  });
+
+  describe('signing root', () => {
+    const keys = serverSecretCandidateKeys();
+    const original = new Map(keys.map(key => [key, process.env[key]]));
+    afterEach(() => {
+      for (const [key, value] of original) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    });
+
+    // Attestations issued before the readers were unified must keep verifying:
+    // an SSO cookie secret root still yields the same signing key.
+    it('keeps the legacy key for an SSO cookie secret root', () => {
+      for (const key of keys) delete process.env[key];
+      const root = 'sixteen-byte-cookie-secret';
+      process.env.SMARTPERFETTO_SSO_COOKIE_SECRET = root;
+      const token = issueExternalIssueReviewAttestation({
+        review: review(), providerSnapshotHash: 'snapshot-1', providerScope: scope, now: 1_000,
+      });
+      const prefix = 'smartperfetto.external-issue-review.';
+      const [encoded, signature] = token.slice(prefix.length).split('.');
+      const legacyKey = crypto.createHmac('sha256', root)
+        .update('smartperfetto.external-issue-review.v1').digest();
+      expect(signature).toBe(
+        crypto.createHmac('sha256', legacyKey).update(`${prefix}${encoded}`).digest('base64url'),
+      );
+    });
   });
 });

@@ -2,9 +2,14 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import crypto from 'crypto';
+
 import {describe, expect, it} from '@jest/globals';
 
 import {deriveServerSecret} from '../serverSecret';
+
+const legacyDerivation = (root: string, purpose: string): Buffer =>
+  crypto.createHmac('sha256', root).update(`smartperfetto.${purpose}.v1`).digest();
 
 describe('server secret derivation', () => {
   it('derives stable, purpose-separated keys from the dedicated server secret', () => {
@@ -55,5 +60,54 @@ describe('server secret derivation', () => {
       env,
       minimumBytes: 32,
     })).toThrow(/at least 32 bytes/);
+  });
+
+  // The provider-secret-store key encrypts data at rest and the browser-session
+  // key signs live cookies: moving the selection rule must not rotate either.
+  it.each(['provider-secret-store', 'browser-session'])(
+    'keeps the %s key derived from the selected root exactly as before',
+    (purpose) => {
+      const root = 'test-server-secret-at-least-32-bytes';
+      const env = {SMARTPERFETTO_SERVER_SECRET: `  ${root}  `} as NodeJS.ProcessEnv;
+      expect(deriveServerSecret({purpose, env, minimumBytes: 32}))
+        .toEqual(legacyDerivation(root, purpose));
+    },
+  );
+
+  it('picks the first candidate long enough in UTF-8 bytes, in priority order', () => {
+    const long = (label: string) => `${label}-secret-padded-to-at-least-32-bytes`;
+    const purpose = 'trace-processor-capability';
+    const derive = (env: Record<string, string>) => deriveServerSecret({
+      purpose, env: env as NodeJS.ProcessEnv, preferredEnvKeys: ['PREFERRED'], minimumBytes: 32,
+    });
+
+    expect(derive({
+      PREFERRED: long('preferred'),
+      SMARTPERFETTO_SERVER_SECRET: long('server'),
+    })).toEqual(legacyDerivation(long('preferred'), purpose));
+    expect(derive({
+      PREFERRED: 'too-short',
+      SMARTPERFETTO_SERVER_SECRET: long('server'),
+      SMARTPERFETTO_SSO_COOKIE_SECRET: long('cookie'),
+    })).toEqual(legacyDerivation(long('server'), purpose));
+    expect(derive({
+      SMARTPERFETTO_SSO_COOKIE_SECRET: long('cookie'),
+      SMARTPERFETTO_API_KEY: long('api'),
+    })).toEqual(legacyDerivation(long('cookie'), purpose));
+    // 16 characters, 32 UTF-8 bytes.
+    const multibyte = 'é'.repeat(16);
+    expect(derive({SMARTPERFETTO_API_KEY: multibyte}))
+      .toEqual(legacyDerivation(multibyte, purpose));
+  });
+
+  it('names every candidate key when enterprise mode has no usable secret', () => {
+    expect(() => deriveServerSecret({
+      purpose: 'trace-processor-capability',
+      env: {SMARTPERFETTO_ENTERPRISE: 'true'} as NodeJS.ProcessEnv,
+      preferredEnvKeys: ['SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET'],
+    })).toThrow(
+      'set one of SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET, SMARTPERFETTO_SERVER_SECRET, '
+      + 'SMARTPERFETTO_SSO_COOKIE_SECRET, SMARTPERFETTO_API_KEY',
+    );
   });
 });

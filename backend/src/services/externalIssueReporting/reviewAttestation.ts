@@ -4,7 +4,6 @@
 
 import crypto from 'crypto';
 
-import {resolveAuthConfig, resolveFeatureConfig} from '../../config';
 import {deriveServerSecret} from '../../security/serverSecret';
 import {
   canonicalContentHash,
@@ -39,34 +38,11 @@ interface ExternalIssueReviewScope {
   userId: string;
 }
 
-let devProcessSecret: Buffer | undefined;
-
 function attestationSecret(): Buffer {
-  if (resolveAuthConfig(process.env).oidcEnabled) {
-    return deriveServerSecret({
-      purpose: 'external-issue-review',
-      minimumBytes: MIN_SECRET_BYTES,
-    });
-  }
-  const configured = [
-    process.env.SMARTPERFETTO_SSO_COOKIE_SECRET,
-    process.env.SMARTPERFETTO_API_KEY,
-  ].find(value =>
-    typeof value === 'string' &&
-    Buffer.byteLength(value, 'utf8') >= MIN_SECRET_BYTES);
-  if (configured) {
-    return crypto
-      .createHmac('sha256', configured)
-      .update('smartperfetto.external-issue-review.v1')
-      .digest();
-  }
-  if (resolveFeatureConfig().enterprise) {
-    throw new Error(
-      'A persistent server secret is required for external issue review attestation',
-    );
-  }
-  devProcessSecret ??= crypto.randomBytes(32);
-  return devProcessSecret;
+  return deriveServerSecret({
+    purpose: 'external-issue-review',
+    minimumBytes: MIN_SECRET_BYTES,
+  });
 }
 
 function unsignedReview(review: ExternalIssueReviewV1): Omit<
