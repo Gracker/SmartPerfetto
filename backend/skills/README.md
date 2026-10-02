@@ -420,15 +420,26 @@ steps:
 
 ### 继承机制
 
-厂商 Skill 可以继承并覆盖基础 Skill：
+厂商 override 声明它针对的基础 Skill，并列出该厂商特有的附加步骤。附加步骤不会自动
+执行：运行时只把 override 的厂商名、显示名和附加步骤 id 作为提示挂在基础 Skill 的结果上
+（见下文）。顶层字段只有 `extends`、`version`、`meta`、`vendor_detection`、
+`additional_steps`，`validate:skills` 拒绝其他字段，并要求至少一个附加步骤。
 
 ```yaml
 # skills/vendors/oppo/startup.override.yaml
 extends: composite/startup_analysis
 version: "1.0.0"
-description: "OPPO ColorOS 启动分析"
 
-# 添加 OPPO 特有的检测（只作为提示挂在结果上，不会自动执行，见下文）
+meta:
+  display_name: "OPPO ColorOS 启动分析"
+  vendor: oppo
+
+# 记录厂商 trace 特征的元数据；运行时按目录名 / meta.vendor 选 override
+vendor_detection:
+  signatures:
+    - pattern: "*ColorOS*"
+      confidence: high
+
 additional_steps:
   - id: check_coloros_boost
     name: "检查 ColorOS 加速引擎"
@@ -436,12 +447,6 @@ additional_steps:
       SELECT s.name AS slice_name, s.dur/1e6 AS dur_ms
       FROM slice s
       WHERE s.name GLOB '*ColorOS*' OR s.name GLOB '*HyperBoost*'
-
-# 覆盖阈值（OPPO 设备可能有更好的优化）
-thresholds_override:
-  cold_start_time:
-    levels:
-      excellent: { max: 400 }  # OPPO 优化后标准更高
 ```
 
 ### 厂商识别

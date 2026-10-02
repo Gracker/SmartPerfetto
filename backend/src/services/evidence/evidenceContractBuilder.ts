@@ -43,6 +43,7 @@ import {evidenceReferenceKey, preparedReferenceResolution, preparedEvidenceBindi
 import {bindReadResolutionToAnchor, evidenceReadFailureIsUnreadable, type EvidenceReadResolution} from './evidenceReadView';
 import {getCapturedAnchorFacts, markIdentityUnboundEvidenceAnchor, markUnreadableEvidenceAnchor} from './evidenceCapture';
 import {scopeRequiresTargetIdentity, targetRowUpidPredicate, toNumber, wholeResultRowPredicate} from './scopedRowIdentity';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 export interface BuildEvidenceContractInput {
   conclusionContract?: ConclusionContract | null;
@@ -244,21 +245,14 @@ function inferClaimKind(
   return references.length > 0 ? 'categorical' : 'inference';
 }
 
-function rowsAsObjects(envelope: DataEnvelope): Record<string, unknown>[] {
+/** Envelope rows keyed by column; rows that are already objects pass through. */
+export function rowsAsObjects(envelope: DataEnvelope): Record<string, unknown>[] {
   const data = envelope.data as DataPayload | undefined;
   if (!data || !Array.isArray(data.rows)) return [];
-  const columns = Array.isArray(data.columns)
-    ? data.columns.map(col => String(col))
-    : [];
+  const columns = Array.isArray(data.columns) ? data.columns.map(String) : [];
   return data.rows.map((row) => {
     if (row && typeof row === 'object' && !Array.isArray(row)) return row as Record<string, unknown>;
-    const record: Record<string, unknown> = {};
-    if (Array.isArray(row)) {
-      columns.forEach((col, index) => {
-        record[col] = row[index];
-      });
-    }
-    return record;
+    return Array.isArray(row) ? rowObject(columns, row) : {};
   });
 }
 

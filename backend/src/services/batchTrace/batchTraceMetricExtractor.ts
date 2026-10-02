@@ -13,6 +13,7 @@ import { STANDARD_COMPARISON_METRICS, standardMetricDescribesApp } from '../../t
 import { outsideTargetScopeFields } from '../../types/identityContract';
 import type { SkillExecutionResult } from '../skillEngine/types';
 import type { BatchTraceMetricV1 } from './batchTraceTypes';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 interface ExtractBatchTraceMetricsInput {
   skillId: string;
@@ -122,7 +123,7 @@ function synthesizeRows(data: unknown): Record<string, unknown>[] {
       const columns = data.columns.filter((column): column is string => typeof column === 'string');
       return data.rows
         .filter((row): row is unknown[] => Array.isArray(row))
-        .map(row => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+        .map(row => rowObject(columns, row));
     }
     return [data];
   }
@@ -166,7 +167,7 @@ function payloadRows(payload: DataPayload): Array<Record<string, unknown>> {
   if (columns.length === 0 || rows.length === 0) return [];
   return rows
     .filter((row): row is unknown[] => Array.isArray(row))
-    .map(row => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+    .map(row => rowObject(columns, row));
 }
 
 function columnLabel(envelope: DataEnvelope, column: string): string {

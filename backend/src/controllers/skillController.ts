@@ -149,7 +149,6 @@ class SkillController {
           description: s.description,
         })),
         inputs: localizedSkill.inputs,
-        thresholds: localizedSkill.thresholds,
         output: localizedSkill.output,
       });
     } catch (error) {

@@ -4,9 +4,9 @@
 
 import crypto from 'crypto';
 
-import {validateDataEnvelope, type DataEnvelope, type DataPayload} from '../../types/dataContract';
+import {validateDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import type {EvidenceRelationCandidateV1, EvidenceRelationEndpointV1} from '../../types/evidenceContract';
-import {deriveExactEvidenceTimeRangeNs} from './evidenceContractBuilder';
+import {deriveExactEvidenceTimeRangeNs, rowsAsObjects} from './evidenceContractBuilder';
 
 const STARTUP_SKILL_ID = 'startup_analysis';
 const STARTUP_STEP_ID = 'get_startups';
@@ -22,24 +22,6 @@ interface ExactEnvelopeRow {
   rowIndex: number;
   start: bigint;
   end: bigint;
-}
-
-function rowsAsObjects(envelope: DataEnvelope): Record<string, unknown>[] {
-  const data = envelope.data as DataPayload | undefined;
-  if (!data || !Array.isArray(data.rows)) return [];
-  const columns = Array.isArray(data.columns) ? data.columns.map(String) : [];
-  return data.rows.map(row => {
-    if (row && typeof row === 'object' && !Array.isArray(row)) {
-      return row as unknown as Record<string, unknown>;
-    }
-    const object: Record<string, unknown> = {};
-    if (Array.isArray(row)) {
-      columns.forEach((column, index) => {
-        object[column] = row[index];
-      });
-    }
-    return object;
-  });
 }
 
 function admittedEnvelope(envelope: DataEnvelope, stepId: string): boolean {

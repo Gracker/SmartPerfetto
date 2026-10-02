@@ -347,6 +347,57 @@ describe('custom skill loading', () => {
     });
   });
 
+  it('rejects an external pack Skill with a top-level key no loader reads', async () => {
+    const compositeDir = path.join(tmpDir, 'composite');
+    await fs.mkdir(compositeDir, {recursive: true});
+    const write = (name: string, extra: string[]) => fs.writeFile(
+      path.join(compositeDir, `${name}.skill.yaml`),
+      [
+        `name: ${name}`, 'version: "1"', 'type: composite', ...extra,
+        'steps:', '  - id: rows', '    type: atomic', '    sql: SELECT 1 AS value', '',
+      ].join('\n'),
+      'utf-8',
+    );
+    const load = () => new SkillRegistry().loadSkillRoots([{
+      rootPath: tmpDir, origin: 'external_pack', packId: 'keys-pack', packVersion: '1',
+    }]);
+
+    // The legacy spellings the loader folds into meta and output still load.
+    await write('legacy_keys', ['description: Legacy description', 'tags: [legacy]', 'display:', '  level: summary']);
+    await expect(load()).resolves.toBeUndefined();
+
+    await write('dead_key', ['meta:', '  display_name: Dead', '  description: Dead key', 'thresholds:', '  rate: {levels: {}}']);
+    await expect(load()).rejects.toThrow('skill_validation_failed:dead_key');
+
+    // A built-in root only logs it: validate:skills is the gate there.
+    await expect(new SkillRegistry().loadSkillRoots([{rootPath: tmpDir, origin: 'built_in'}])).resolves.toBeUndefined();
+  });
+
+  it('records a vendor override with a top-level key no loader reads as a parse failure', async () => {
+    await writeBaseSkill(tmpDir);
+    const vendorDir = path.join(tmpDir, 'vendors', 'pixel');
+    await fs.mkdir(vendorDir, {recursive: true});
+    await fs.writeFile(
+      path.join(vendorDir, 'startup.override.yaml'),
+      [
+        'extends: composite/startup_analysis', 'version: "1"', 'meta:', '  vendor: pixel',
+        'additional_steps:', '  - id: vendor_rows', '    type: atomic', '    sql: SELECT 1 AS value',
+        'thresholds_override:', '  cold_start_time: {levels: {}}', '',
+      ].join('\n'),
+      'utf-8',
+    );
+
+    const registry = new SkillRegistry();
+    await registry.loadSkills(tmpDir);
+
+    expect(registry.getVendorOverrideCount()).toBe(0);
+    expect(registry.getVendorOverrideLoadIssues()).toEqual([expect.objectContaining({
+      kind: 'parse_failure',
+      sourcePath: 'vendors/pixel/startup.override.yaml',
+      reasonCode: 'vendor_override_parse_failure',
+    })]);
+  });
+
   it('rejects an invalid batch analysis contract from an external pack', async () => {
     const compositeDir = path.join(tmpDir, 'composite');
     await fs.mkdir(compositeDir, { recursive: true });

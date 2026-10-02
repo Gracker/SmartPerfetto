@@ -151,8 +151,5 @@ sql: |
   ORDER BY ts ASC
   LIMIT 1
 
-save_as: first_anr
-optional: true
-
 output:
   format: structured

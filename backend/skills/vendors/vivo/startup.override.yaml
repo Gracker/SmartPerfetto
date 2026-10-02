@@ -97,36 +97,6 @@ additional_steps:
       ORDER BY s.ts ASC
 
 # -----------------------------------------------------------------------------
-# 覆盖判断标准
-# -----------------------------------------------------------------------------
-thresholds_override:
-  cold_start_time:
-    levels:
-      excellent: { max: 450 }
-      good: { min: 450, max: 900 }
-      warning: { min: 900, max: 1500 }
-      critical: { min: 1500 }
-
-# -----------------------------------------------------------------------------
-# 额外诊断规则
-# -----------------------------------------------------------------------------
-additional_diagnostics:
-  - id: jovi_not_active
-    condition: "vivo_smart_optimization.count == 0"
-    severity: info
-    message: "未检测到 Jovi 智能优化，启动可能未享受到系统加速"
-    suggestions:
-      - "检查应用是否在 Jovi 白名单中"
-      - "联系 vivo 系统工程师确认优化策略"
-
-  - id: vivo_service_slow
-    condition: "vivo_system_services.any.dur_ms > 50"
-    severity: warning
-    message: "vivo 系统服务 ${server_process} 调用耗时 ${dur_ms}ms"
-    suggestions:
-      - "联系 vivo 系统侧确认服务状态"
-
-# -----------------------------------------------------------------------------
 # vivo 特有的 Trace Tag 参考
 # -----------------------------------------------------------------------------
 # OriginOS 系统:
