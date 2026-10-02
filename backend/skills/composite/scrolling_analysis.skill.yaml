@@ -577,7 +577,7 @@ steps:
           JOIN effective_target_processes p ON a.upid = p.upid
           WHERE (${start_ts} IS NULL OR a.ts >= ${start_ts})
             AND (${end_ts} IS NULL OR a.ts < ${end_ts})
-        )
+        ), probe_coverage AS (
         SELECT target_process_count,
           CASE WHEN target_process_count > 0 THEN 'found' ELSE 'not_found' END AS target_process_status,
           frame_timeline_frames,
@@ -590,6 +590,20 @@ steps:
           0 AS should_fallback,
           'unavailable_exact_upid' AS buffer_tx_status
         FROM target_presence CROSS JOIN frame_coverage
+        )
+        -- Exact-UPID scope never compares against BufferTX.
+        SELECT target_process_count, target_process_status, frame_timeline_frames,
+          buffer_tx_frames, frame_timeline_to_buffer_tx_ratio, buffer_tx_track_id,
+          frame_source_track, buffer_tx_effective_span_ns, coverage_status,
+          should_fallback, buffer_tx_status,
+          CASE coverage_status
+            WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+            WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
+            WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
+            WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
+            ELSE 'coverage_unverified'
+          END AS root_cause_evidence_scope
+        FROM probe_coverage
     sql: |
       WITH
       target_process_presence AS (
@@ -619,7 +633,8 @@ steps:
           AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
-      )
+      ),
+      probe_coverage AS (
       SELECT
         tp.target_process_count,
         CASE
@@ -659,6 +674,22 @@ steps:
       FROM frame_timeline_coverage ft
       CROSS JOIN target_process_presence tp
       LEFT JOIN selected_buffer_tx_track bt ON 1 = 1
+      )
+      -- The scope the root-cause steps may claim (not a qualifier of this
+      -- probe row): only a measured, sufficient FrameTimeline/BufferTX
+      -- comparison is full coverage; any other status leaves it unverified.
+      SELECT target_process_count, target_process_status, frame_timeline_frames,
+        buffer_tx_frames, frame_timeline_to_buffer_tx_ratio, buffer_tx_track_id,
+        frame_source_track, buffer_tx_effective_span_ns, coverage_status,
+        should_fallback,
+        CASE coverage_status
+          WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+          WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
+          WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
+          WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
+          ELSE 'coverage_unverified'
+        END AS root_cause_evidence_scope
+      FROM probe_coverage
     save_as: buffer_tx_coverage
     condition: "frame_timeline.data[0]?.has_frame_timeline === 1"
 
@@ -1872,17 +1903,9 @@ steps:
         -- probe_unavailable is not a probe status: the optional probe produced no row.
         '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' as frame_timeline_coverage_status,
         ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio|NULL} as frame_timeline_to_buffer_tx_ratio,
-        -- Only a measured, sufficient FrameTimeline/BufferTX comparison is full
-        -- coverage. Exact-UPID scope never compares against BufferTX, and a
-        -- probe that produced no row (it is optional) or any other status
+        -- The scope the probe assigned; a probe that produced no row (it is optional)
         -- leaves coverage unverified.
-        CASE '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}'
-          WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
-          WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
-          WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
-          WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
-          ELSE 'coverage_unverified'
-        END as evidence_scope
+        '${buffer_tx_coverage.data[0].root_cause_evidence_scope|coverage_unverified}' as evidence_scope
       FROM jank_analysis
       GROUP BY jank_type
       ORDER BY real_jank_count DESC, count DESC
@@ -4523,17 +4546,9 @@ steps:
         -- probe_unavailable is not a probe status: the optional probe produced no row.
         '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' as frame_timeline_coverage_status,
         ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio|NULL} as frame_timeline_to_buffer_tx_ratio,
-        -- Only a measured, sufficient FrameTimeline/BufferTX comparison is full
-        -- coverage. Exact-UPID scope never compares against BufferTX, and a
-        -- probe that produced no row (it is optional) or any other status
+        -- The scope the probe assigned; a probe that produced no row (it is optional)
         -- leaves coverage unverified.
-        CASE '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}'
-          WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
-          WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
-          WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
-          WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
-          ELSE 'coverage_unverified'
-        END as evidence_scope,
+        '${buffer_tx_coverage.data[0].root_cause_evidence_scope|coverage_unverified}' as evidence_scope,
         scope.root_cause_eligible_frame_count,
         scope.root_cause_analyzed_frame_count,
         scope.root_cause_coverage_ratio,

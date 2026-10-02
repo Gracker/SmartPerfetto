@@ -1935,6 +1935,7 @@ describe('scrolling_analysis skill schema', () => {
           target_process_count: number;
           target_process_status: string;
           coverage_status: string;
+          root_cause_evidence_scope: string;
           should_fallback: number;
         };
       } finally {
@@ -1945,33 +1946,45 @@ describe('scrolling_analysis skill schema', () => {
     expect(runCoverage(0, 100)).toEqual(expect.objectContaining({
       frame_timeline_frames: 0,
       coverage_status: 'no_frame_timeline_coverage',
+
+      root_cause_evidence_scope: 'coverage_unverified',
       should_fallback: 1,
     }));
     expect(runCoverage(36, 100)).toEqual(expect.objectContaining({
       frame_timeline_to_buffer_tx_ratio: 0.36,
       coverage_status: 'partial_frame_timeline_coverage',
+
+      root_cause_evidence_scope: 'partial_sample',
       should_fallback: 1,
     }));
     expect(runCoverage(90, 100)).toEqual(expect.objectContaining({
       frame_timeline_to_buffer_tx_ratio: 0.9,
       coverage_status: 'sufficient_frame_timeline_coverage',
+
+      root_cause_evidence_scope: 'full_frame_timeline',
       should_fallback: 0,
     }));
     expect(runCoverage(2, null)).toEqual(expect.objectContaining({
       target_process_status: 'found',
       coverage_status: 'no_buffer_tx_candidate',
+
+      root_cause_evidence_scope: 'frame_timeline_only_unbenchmarked',
       should_fallback: 0,
     }));
     expect(runCoverage(1, null, 'com.example.application')).toEqual(expect.objectContaining({
       target_process_count: 0,
       target_process_status: 'not_found',
       coverage_status: 'target_process_not_found',
+
+      root_cause_evidence_scope: 'coverage_unverified',
       should_fallback: 0,
     }));
     expect(runCoverage(1, null, 'com.example.app:renderer')).toEqual(expect.objectContaining({
       target_process_count: 1,
       target_process_status: 'found',
       coverage_status: 'no_buffer_tx_candidate',
+
+      root_cause_evidence_scope: 'frame_timeline_only_unbenchmarked',
       should_fallback: 0,
     }));
   });
@@ -2019,27 +2032,36 @@ describe('scrolling_analysis skill schema', () => {
   });
 
   it('calls coverage full only after a sufficient FrameTimeline/BufferTX comparison', () => {
-    // `undefined` is a probe that produced no row (it is optional): the
-    // placeholder takes its default, as the executor binds an absent result.
-    const cases: Array<[string | undefined, string]> = [
+    const cases: Array<[string, string]> = [
       ['sufficient_frame_timeline_coverage', 'full_frame_timeline'],
       ['partial_frame_timeline_coverage', 'partial_sample'],
       ['no_buffer_tx_candidate', 'frame_timeline_only_unbenchmarked'],
       ['frame_timeline_only_exact_upid', 'frame_timeline_only_unbenchmarked'],
       ['no_frame_timeline_coverage', 'coverage_unverified'],
-      [undefined, 'coverage_unverified'],
+      ['target_process_not_found', 'coverage_unverified'],
     ];
+    const probe = getStep('buffer_tx_coverage_probe') as any;
     const db = new Database(':memory:');
     try {
-      for (const stepId of ['jank_type_stats', 'batch_frame_root_cause']) {
+      // The probe maps its own coverage status, in both branches.
+      for (const [branch, sql] of [['sql', probe.sql], ['exact_sql', probe.exact_sql.sql]]) {
+        const mapping = /(CASE coverage_status[\s\S]*?END) AS root_cause_evidence_scope/.exec(String(sql))?.[1];
+        expect([branch, mapping === undefined]).toEqual([branch, false]);
         for (const [status, expected] of cases) {
+          const scope = db.prepare(`SELECT ${mapping} AS v FROM (SELECT ? AS coverage_status)`).pluck().get(status);
+          expect([branch, status, scope]).toEqual([branch, status, expected]);
+        }
+      }
+      // A consumer reads that scope; a probe that produced no row (it is
+      // optional) leaves coverage unverified.
+      for (const stepId of ['jank_type_stats', 'batch_frame_root_cause']) {
+        for (const value of ['partial_sample', undefined]) {
           const sql = substituteSqlPlaceholders(String(getStep(stepId).sql), placeholder =>
-            placeholder.path === 'buffer_tx_coverage.data[0].coverage_status' && status !== undefined
-              ? status
+            placeholder.path === 'buffer_tx_coverage.data[0].root_cause_evidence_scope' && value !== undefined
+              ? value
               : absentPlaceholderSql(placeholder));
-          const end = sql.indexOf('END as evidence_scope');
-          const scope = db.prepare(`SELECT ${sql.slice(sql.lastIndexOf('CASE', end), end + 3)} AS v`).pluck().get();
-          expect([stepId, status, scope]).toEqual([stepId, status, expected]);
+          const scope = /'([^']*)' as evidence_scope/.exec(sql)?.[1];
+          expect([stepId, value, scope]).toEqual([stepId, value, value ?? 'coverage_unverified']);
         }
       }
     } finally {

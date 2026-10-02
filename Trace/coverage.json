@@ -10873,7 +10873,7 @@
           },
           {
             "id": "buffer_tx_coverage_probe",
-            "sha256": "e2fa3fd9496db3959b05033ea3219a53a466c1cfbe2d394245d361f0ab721579",
+            "sha256": "58e3f404a6b66427f1268df714a7a482c6448c0a9b5a0a684a0dcc4e527d5218",
             "required_columns": [
               "target_process_count",
               "target_process_status",
@@ -10884,7 +10884,8 @@
               "frame_source_track",
               "buffer_tx_effective_span_ns",
               "coverage_status",
-              "should_fallback"
+              "should_fallback",
+              "root_cause_evidence_scope"
             ]
           },
           {
@@ -10993,7 +10994,7 @@
           },
           {
             "id": "jank_type_stats",
-            "sha256": "99fbd1423b7e60fa35fd444e1fd3f3642ccb6e828722cd4ff645ec84b289c32f",
+            "sha256": "0b24e61087f6f11b7dfc83e0753c9c3403d2101e3bacb6350e12cd481f955ad3",
             "required_columns": [
               "jank_type",
               "count",
@@ -11088,7 +11089,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "f55685b077774396977346422174f31e9a8cbb2124db2088bea3ecc33a29075f",
+            "sha256": "247d25017bb2e6eec9a6693366c70f7cfdf23f594a613ded8d1156c9a91ceb31",
             "required_columns": [
               "system_evidence_json",
               "frame_id",
