@@ -4,12 +4,13 @@
 
 import {describe, expect, it} from '@jest/globals';
 import type {ConclusionContract} from '../../../agent/core/conclusionContract';
-import {createDataEnvelope} from '../../../types/dataContract';
+import {createDataEnvelope, type DataPayload} from '../../../types/dataContract';
 import {
   QUERY_REVIEW_SCHEMA_VERSION,
   type QueryReviewV1,
 } from '../../../types/queryReviewContract';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
+import {runDeterministicClaimVerifier} from '../../verifier/deterministicClaimVerifier';
 import {evidenceValuesMatch} from '../valueComparison';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../../types/identityContract';
 
@@ -159,6 +160,41 @@ describe('evidenceContractBuilder', () => {
       const bound = build(undefined, targetOnly).anchors[0];
       expect(bound).toMatchObject({identity: {status: 'verified'}});
       expect(bound.missing).not.toBe(true);
+    });
+    it('binds a whole multi-row envelope to the target only when every row belongs to it', () => {
+      const targetOnly = {version: mixed.version, entries: [mixed.entries[0]]};
+      // Rows may be arrays or objects: the builder reads both, though DataPayload types only arrays.
+      const cite = (data: {columns: string[]; rows: unknown[]}) => {
+        const built = buildEvidenceContract({dataEnvelopes: [createDataEnvelope(data as DataPayload, {
+          type: 'skill_result', source: 'scoped', title: 'Target rows', traceId: 'trace-a', traceSide: 'current',
+          evidenceRefId: 'data:rows', scopeProvenance: targetOnly,
+          identityRefId: target.identityRefId, identityStatus: 'verified', identityResolution: resolution,
+        })], conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [],
+          clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+          claims: [{id: 'claim:rows', kind: 'identity', text: 'Rows of the target', references: [{evidenceRefId: 'data:rows'}]}],
+        }});
+        const claim = runDeterministicClaimVerifier({claimSupport: built.claimSupport}).claimResults[0];
+        return {anchor: built.anchors[0], cells: claim.referenceCells.map(cell => cell.status), status: claim.status};
+      };
+      const wholeCitation = (upids: unknown[]) => cite({columns: ['upid', 'metric'], rows: upids.map((upid, index) => [upid, index])});
+      expect(wholeCitation([42, 42, 42]).anchor).toMatchObject({identity: {status: 'verified'}});
+      expect(wholeCitation([42, 42, 42]).anchor.missing).not.toBe(true);
+      // A conflict anywhere wins over an unreadable cell elsewhere.
+      for (const upids of [[42, 42, 43], [42, null], [undefined, 43]]) {
+        expect(wholeCitation(upids)).toMatchObject({cells: ['missing'], status: 'unsupported',
+          anchor: {missing: true, missingReason: 'whole_result_identity_conflict'}});
+      }
+      // A declared upid column with an unreadable cell, explicit or past a short row, proves nothing.
+      for (const unreadable of [wholeCitation([42, undefined]), cite({columns: ['metric', 'upid'], rows: [[1, 42], [2]]}),
+        cite({columns: ['upid', 'metric'], rows: [{upid: 42, metric: 1}, {metric: 2}]}),
+        cite({columns: ['upid', 'metric'], rows: [{metric: 1}, {metric: 2}]}),
+        cite({columns: ['metric'], rows: [{upid: 42, metric: 1}, {metric: 2}]})]) {
+        expect(unreadable).toMatchObject({cells: ['not_checked'], status: 'not_checked',
+          anchor: {missing: true, missingReason: 'whole_result_identity_cell_unreadable'}});
+      }
+      // Rows that carry no upid at all leave the scope declaration as the authority.
+      expect(cite({columns: ['metric'], rows: [{metric: 1}, {metric: 2}]}).anchor).toMatchObject({identity: {status: 'verified'}});
     });
     it('preserves pure global context without borrowing a verified target', () => {
       const global = {version: mixed.version, entries: [mixed.entries[1]]};

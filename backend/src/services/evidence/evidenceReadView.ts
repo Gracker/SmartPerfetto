@@ -3,6 +3,7 @@
 
 import type {ConclusionContractClaimReference} from '../../agent/core/conclusionContract';
 import type {DataEnvelope} from '../../types/dataContract';
+import {wholeResultRowPredicate} from './scopedRowIdentity';
 import {buildInvestigationEvidenceSnapshot, type InvestigationEvidenceSnapshot,
   type InvestigationToolObservation} from './investigationEvidenceLedger';
 import {bindCapturedAnchorFacts, capturedEvidenceTable, capturedNativeRow, capturedRawSqlContext, freezeEvidenceValue,
@@ -235,6 +236,21 @@ export function createEvidenceReadView(records: () => readonly EvidenceReadRecor
       if ([...requested].some(column => !table.columns.includes(column))) {
         fail('missing', 'required_column_missing', {availableColumns: table.columns.slice(0, MAX_LOCATOR_DETAIL_COLUMNS)});
         continue;
+      }
+      // A whole multi-row or empty result binds the target identity only once every row is
+      // shown to belong to it. An observed conflict wins; an unreadable upid cell or an
+      // unfinished scan proves nothing either way.
+      const upidColumn = table.columns.indexOf('upid');
+      const admits = rowIndex === undefined && upidColumn >= 0 ? wholeResultRowPredicate(record.meta) : undefined;
+      if (admits) {
+        let unproven: string | undefined;
+        for (const scannedRow of table.rows) {
+          if (++scanned > budget.maxScannedRows || expired()) {unproven = 'whole_result_identity_scan_incomplete'; break;}
+          if (scannedRow[upidColumn] === undefined) unproven ??= 'whole_result_identity_cell_unreadable';
+          else if (!admits(scannedRow[upidColumn])) {fail('missing', 'whole_result_identity_conflict'); failed = true; break;}
+        }
+        if (failed) continue;
+        if (unproven) {fail('incomplete', unproven); continue;}
       }
       const needed = new Set([...requested, ...Object.keys(table.fields),
         ...['upid', 'pid', 'utid', 'tid', 'process_name', 'thread_name'].filter(column => table.columns.includes(column))]);
