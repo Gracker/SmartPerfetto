@@ -44,6 +44,13 @@ Detailed commit-level history is available via `git log`.
   server path, outside the trace processor pool and trace ownership checks.
   Load traces through `/api/traces/upload` or the workspace trace API. The
   backend no longer creates the upload directory at import time.
+- `/api/template-analysis/*` (`/auto`, `/four-quadrant`, `/cpu-core`,
+  `/frame-stats`) now answers 410 in every deployment mode. Nothing called it;
+  it skipped the trace ownership check, interpolated the request's `threadId`,
+  `startTs` and `endTs` into SQL unvalidated, and matched `/frame-stats`
+  packages by substring. No Skill route takes the same request bodies, so the
+  response points to the workspace agent API. The template analyzers and the
+  VSync period helpers only they used are gone.
 - Agent endpoints no longer take a request id from a `requestId` field in the
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 
