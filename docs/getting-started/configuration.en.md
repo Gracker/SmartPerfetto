@@ -727,6 +727,21 @@ least 32 bytes and must not reuse the OIDC client secret. Sessions are fixed at
 eight hours with `SameSite=Lax`; HTTPS automatically enables Secure cookies,
 and scopes are fixed at `openid email profile`.
 
+In every auth mode, server-side signing (browser sessions, Trace Processor
+WebSocket capabilities, external-issue review attestations, and under OIDC the
+Provider secret-store encryption key) derives from one root per purpose: the
+first of `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET` (WebSocket capabilities
+only), `SMARTPERFETTO_SERVER_SECRET`, `SMARTPERFETTO_SSO_COOKIE_SECRET` and
+`SMARTPERFETTO_API_KEY` whose trimmed value is long enough in UTF-8 bytes (32
+for capabilities and the secret store, 16 otherwise); shorter values are
+skipped. OIDC is stricter at startup: if the first non-empty
+`SMARTPERFETTO_SERVER_SECRET` / `SMARTPERFETTO_SSO_COOKIE_SECRET` is shorter
+than 32 bytes, the backend refuses to start instead of skipping it. Enterprise
+mode refuses to sign when none qualifies; other modes fall back to a random
+per-process root, so sessions, WebSocket capabilities and review attestations
+stop verifying after a restart. Set a `SMARTPERFETTO_SERVER_SECRET` of at least
+32 bytes so every purpose shares the same root.
+
 For local split-port testing through `./start.sh` or `./scripts/start-dev.sh`,
 set only `SMARTPERFETTO_FRONTEND_PORT`; the launcher derives `FRONTEND_URL`.
 The explicit `FRONTEND_URL` above is for domain or reverse-proxy deployments,
@@ -779,6 +794,10 @@ trace by id after a backend restart all use that one directory. Set
 `SMARTPERFETTO_TRACE_UPLOAD_DIR` only to move the trace directory elsewhere; it
 overrides all three together (the npm CLI uses it to keep trace copies under
 its own home).
+
+The backend never serves the upload directory as static files. Trace files are
+downloaded only through the authenticated, ownership-checked trace download API
+(`GET /api/traces/:id/file`, or its workspace-scoped form).
 
 `TRACE_PROCESSOR_PATH` usually does not need manual configuration.
 `./start.sh` and `./scripts/start-dev.sh` prefer SHA256-pinned prebuilts. An

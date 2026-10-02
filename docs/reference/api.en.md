@@ -89,10 +89,9 @@ For example:
   `TRACE_URL_REDIRECT_INVALID` 502.
 - Knowledge curation (baselines, cases, memory promotion), enterprise API key
   creation, a refused OIDC login (`oidc_subject_tenant_conflict` 403), trace
-  config proposals, template analysis (`unknown_template` 400, and
-  `template_data_unavailable` 422 when the trace lacks the data), feedback
-  writes (input validation 400, supersede/idempotency conflicts 409), codebase
-  and external knowledge source field validation, and batch trace requests.
+  config proposals, feedback writes (input validation 400,
+  supersede/idempotency conflicts 409), codebase and external knowledge source
+  field validation, and batch trace requests.
 
 The services behind RAG administration, Skill packs and batch traces throw
 machine reason codes as their messages (`root_outside_allowlist`,
@@ -1033,7 +1032,6 @@ should prefer the `/api/workspaces/:workspaceId/*` paths above:
 - `/api/reports/*`; prefer `/api/workspaces/:workspaceId/reports/*`
 - `/api/agent/v1/*`; workspace products should prefer `/api/workspaces/:workspaceId/agent/*`
 - `/api/v1/providers/*`; prefer `/api/workspaces/:workspaceId/providers/*`
-- `/api/template-analysis/*`
 
 Maintained auxiliary APIs include `/api/flamegraph/*`, `/api/critical-path/*`,
 `/api/baselines/*`, `/api/memory/*`, `/api/cases/*`, `/api/ci/*`, `/api/tp/*`,
@@ -1041,7 +1039,7 @@ Maintained auxiliary APIs include `/api/flamegraph/*`, `/api/critical-path/*`,
 specific product or admin surfaces; confirm the relevant feature/auth state
 before integrating against them.
 
-The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API.
+The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API. `/api/template-analysis/*` likewise answers 410; `/auto`, `/four-quadrant`, `/cpu-core` and `/frame-stats` have no successor that takes the same body, so only `migration.fallback` is set.
 
 ### Critical-path wait chain
 

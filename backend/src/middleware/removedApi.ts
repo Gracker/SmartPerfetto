@@ -7,8 +7,8 @@ import { recordLegacyApiUsage } from '../services/legacyApiTelemetry';
 
 export interface RemovedApiOptions {
   error: string;
-  /** Successor for a path relative to the mount point, when one exists. */
-  successorFor: (path: string) => string | undefined;
+  /** Successor for a path relative to the mount point; omit when none exists. */
+  successorFor?: (path: string) => string | undefined;
   /** Where to go when the path has no direct successor. */
   fallback: string;
 }
@@ -21,7 +21,7 @@ export interface RemovedApiOptions {
 export function rejectRemovedApi({ error, successorFor, fallback }: RemovedApiOptions) {
   return (req: Request, res: Response): void => {
     recordLegacyApiUsage(req);
-    const successor = successorFor(req.path);
+    const successor = successorFor?.(req.path);
     res.setHeader('Deprecation', 'true');
     if (successor) {
       res.setHeader('Link', `<${successor}>; rel="successor-version"`);
@@ -36,6 +36,8 @@ export function rejectRemovedApi({ error, successorFor, fallback }: RemovedApiOp
     });
   };
 }
+
+export const AGENT_API_FALLBACK = '/api/workspaces/:workspaceId/agent';
 
 export const PERFETTO_SQL_SKILL_IDS: Readonly<Record<string, string>> = {
   '/startup': 'startup_analysis',
@@ -59,5 +61,11 @@ export const rejectRemovedPerfettoSqlApi = rejectRemovedApi({
     const skillId = PERFETTO_SQL_SKILL_IDS[path.replace(/\/+$/, '').toLowerCase()];
     return skillId ? `/api/skills/execute/${skillId}` : undefined;
   },
-  fallback: '/api/workspaces/:workspaceId/agent',
+  fallback: AGENT_API_FALLBACK,
+});
+
+/** `/api/template-analysis`: no route takes the same bodies, so every path falls back to the agent. */
+export const rejectRemovedTemplateAnalysisApi = rejectRemovedApi({
+  error: 'Template analysis API has been removed',
+  fallback: AGENT_API_FALLBACK,
 });

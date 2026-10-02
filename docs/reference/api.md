@@ -66,8 +66,7 @@ SmartPerfetto 自己为调用方编写的错误保留可操作的文案，形状
   `CONVERSATION_RUN_NOT_ACTIVE` 409。状态由错误类型决定，不再按消息文本匹配。
 - URL 上传：`INVALID_TRACE_URL` 400、`TRACE_URL_TIMEOUT` 504、`TRACE_URL_REDIRECT_INVALID` 502。
 - 知识策展（baseline、case、memory 晋升）、企业 API Key 创建、OIDC 登录被拒
-  （`oidc_subject_tenant_conflict` 403）、trace 采集配置建议、模板分析（`unknown_template` 400、
-  trace 缺少所需数据为 `template_data_unavailable` 422）、反馈写入
+  （`oidc_subject_tenant_conflict` 403）、trace 采集配置建议、反馈写入
   （输入校验 400，supersede/幂等冲突 409）、代码库和外部知识源的字段校验、批量 trace 请求。
 
 RAG 管理、Skill 包和批量 trace 接口背后的服务把机器可读的原因码作为异常消息抛出
@@ -875,11 +874,10 @@ trace 的诊断证据或 root-cause 证明。接口复用当前 workspace scope�
 - `/api/reports/*`，优先迁移到 `/api/workspaces/:workspaceId/reports/*`
 - `/api/agent/v1/*`，workspace 产品优先迁移到 `/api/workspaces/:workspaceId/agent/*`
 - `/api/v1/providers/*`，优先迁移到 `/api/workspaces/:workspaceId/providers/*`
-- `/api/template-analysis/*`
 
 仍在维护的辅助 API 包括 `/api/flamegraph/*`、`/api/critical-path/*`、`/api/baselines/*`、`/api/memory/*`、`/api/cases/*`、`/api/ci/*`、`/api/tp/*`、`/api/auth/*`、`/api/tenant/*` 和 `/api/admin/runtime/*`。这些接口面向特定产品面或管理面，调用前应先确认当前部署是否启用了对应 feature / auth。
 
-legacy agent API base 会被 `rejectLegacyAgentApi` 拒绝，避免外部继续接入废弃路径。`/api/advanced-ai/*`、`/api/auto-analysis/*` 和 `/api/agent/v1/llm/*` 这类旧 direct AI route 已移除；统一使用 `/api/agent/v1/analyze`。`/api/perfetto-sql/*` 已移除，所有部署模式下都返回 410：场景端点（如 `/startup`、`/scrolling`）改用请求体相同（`{traceId, packageName}`）的 `POST /api/skills/execute/<skillId>`（enterprise 部署下该接口同样要求 workspace 路由），响应的 `migration.successor` 给出对应路径；`/sql`、`/tables`、`/functions`、`/skills`、`/analyze`、`/input`、`/buffer-flow`、`/systemserver` 没有直接替代，`migration.fallback` 指向 workspace agent 接口。
+legacy agent API base 会被 `rejectLegacyAgentApi` 拒绝，避免外部继续接入废弃路径。`/api/advanced-ai/*`、`/api/auto-analysis/*` 和 `/api/agent/v1/llm/*` 这类旧 direct AI route 已移除；统一使用 `/api/agent/v1/analyze`。`/api/perfetto-sql/*` 已移除，所有部署模式下都返回 410：场景端点（如 `/startup`、`/scrolling`）改用请求体相同（`{traceId, packageName}`）的 `POST /api/skills/execute/<skillId>`（enterprise 部署下该接口同样要求 workspace 路由），响应的 `migration.successor` 给出对应路径；`/sql`、`/tables`、`/functions`、`/skills`、`/analyze`、`/input`、`/buffer-flow`、`/systemserver` 没有直接替代，`migration.fallback` 指向 workspace agent 接口。`/api/template-analysis/*` 同样返回 410；`/auto`、`/four-quadrant`、`/cpu-core`、`/frame-stats` 都没有请求体相同的替代，只给出 `migration.fallback`。
 
 ### Critical path 等待链
 

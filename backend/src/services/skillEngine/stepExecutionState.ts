@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { localize, parseOutputLanguage } from '../../agentv3/outputLanguage';
-import type { DisplayResult, StepResult } from './types';
+import type { DisplayResult, SkillStep, StepResult } from './types';
 
 export type StepExecutionState = Pick<DisplayResult, 'executionStatus' | 'executionMessage' | 'executionError'>;
 
@@ -39,6 +39,11 @@ export function isObservedStepResult(stepResult: StepResult): boolean {
  */
 export function isQueryOrSkillResult(stepResult: StepResult): boolean {
   return stepResult.stepType === 'skill' || stepResult.stepType === 'atomic';
+}
+
+/** Whether the Skill declares the step optional, so that its failure does not fail the Skill. */
+export function isOptionalStep(step: SkillStep): boolean {
+  return 'optional' in step && Boolean(step.optional);
 }
 
 function conditionSkippedMessage(condition: string | undefined): string {

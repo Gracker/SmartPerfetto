@@ -19,14 +19,11 @@ import { createMemoryRoutes } from '../memoryRoutes';
 import { createEnterpriseApiKeyRouter } from '../enterpriseApiKeyRoutes';
 import { createRagAdminRoutes } from '../ragAdminRoutes';
 import { createSelfEvolutionAdminRoutes } from '../selfEvolutionAdminRoutes';
-import templateAnalysisRoutes from '../templateAnalysisRoutes';
 import traceConfigProposalRoutes from '../traceConfigProposalRoutes';
 import { KnowledgeCurationError } from '../../services/knowledgeCurationError';
 import { ApiKeyRequestError } from '../../services/enterpriseApiKeyService';
 import { KnowledgeSourceRequestError } from '../../services/externalKnowledgeSourceRegistry';
 import { CodebaseManagementError } from '../../services/codebase/codebaseManagementService';
-import { AnalysisTemplateManager } from '../../services/analysisTemplates/templateManager';
-import { templateDataUnavailable } from '../../services/analysisTemplates/templateAnalysisError';
 import * as traceConfigProposal from '../../services/traceConfigProposal';
 import { ConversationRequestError, ConversationSessionService } from '../../assistant/application/conversationSessionService';
 
@@ -152,21 +149,6 @@ describe('route failure variants', () => {
     });
     expectPublicError(await request(app).post('/api/auth/api-keys').send({}), 400,
       'invalid_api_key_request', 'expiresAt must be in the future');
-  });
-
-  test('template analysis: missing trace data is a typed 422, an SQL failure is fixed', async () => {
-    const analyze = jest.spyOn(AnalysisTemplateManager.prototype, 'analyzeWithAutoTemplate')
-      .mockImplementation(async () => downstream());
-    const app = appWith(a => a.use('/api/template-analysis', templateAnalysisRoutes));
-    const body = {traceId: 't1', question: 'frames?'};
-
-    expectFixedFailure(await request(app).post('/api/template-analysis/auto').send(body), 500, 'template_analysis_failed');
-
-    analyze.mockImplementation(async () => {
-      throw templateDataUnavailable('No frame data found in slice table');
-    });
-    expectPublicError(await request(app).post('/api/template-analysis/auto').send(body), 422,
-      'template_data_unavailable', 'No frame data found in slice table');
   });
 
   test('trace config proposal: field validation keeps its text, an internal failure is fixed', async () => {

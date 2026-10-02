@@ -2,6 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {parseFlagValue} from '../utils/envFlag';
+
 export const AI_CAPABILITY_ENV_KEY = 'SMARTPERFETTO_AI_ENABLED' as const;
 
 export type AiCapabilityFeature =
@@ -71,9 +73,6 @@ export const AI_CAPABILITY_BLOCKED_FEATURES: readonly AiCapabilityFeature[] = [
   'flamegraph_ai_summary',
 ] as const;
 
-const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on', 'enabled']);
-const FALSE_VALUES = new Set(['0', 'false', 'no', 'off', 'disabled']);
-
 export class AiDisabledError extends Error {
   readonly code = 'AI_DISABLED';
   readonly retryable = false;
@@ -102,9 +101,9 @@ export function resolveAiCapabilityPolicy(
     };
   }
 
-  const normalized = rawValue.trim().toLowerCase();
+  const parsed = parseFlagValue(rawValue);
 
-  if (TRUE_VALUES.has(normalized)) {
+  if (parsed === true) {
     return {
       schemaVersion: 1,
       aiEnabled: true,
@@ -119,7 +118,7 @@ export function resolveAiCapabilityPolicy(
     };
   }
 
-  if (FALSE_VALUES.has(normalized)) {
+  if (parsed === false) {
     const policy = buildDisabledPolicy(rawValue, true, `AI is disabled by ${AI_CAPABILITY_ENV_KEY}=${rawValue}`);
     return policy;
   }

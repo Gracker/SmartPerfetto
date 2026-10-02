@@ -8,7 +8,7 @@ import type {
   DiscoveryRequestOptions,
 } from 'openid-client';
 
-import {isOidcInsecureHttpAllowed} from '../config';
+import {isOidcInsecureHttpAllowed, readOidcEnv} from '../config';
 
 export interface OidcRuntimeConfig {
   issuerUrl: string;
@@ -36,13 +36,6 @@ export interface OidcExchangeOptions {
 
 type OpenidClientModule = typeof import('openid-client');
 type OpenidClientLoader = () => Promise<OpenidClientModule>;
-
-export const OIDC_ENV = {
-  issuerUrl: 'SMARTPERFETTO_OIDC_ISSUER_URL',
-  clientId: 'SMARTPERFETTO_OIDC_CLIENT_ID',
-  clientSecret: 'SMARTPERFETTO_OIDC_CLIENT_SECRET',
-  redirectUri: 'SMARTPERFETTO_OIDC_REDIRECT_URI',
-} as const;
 
 const OIDC_SCOPES = ['openid', 'email', 'profile'];
 const OIDC_REQUEST_TIMEOUT_MS = 10_000;
@@ -109,10 +102,7 @@ export function createPkceChallenge(verifier: string): string {
 export function resolveOidcRuntimeConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): OidcRuntimeConfig | null {
-  const issuerUrl = env[OIDC_ENV.issuerUrl]?.trim();
-  const clientId = env[OIDC_ENV.clientId]?.trim();
-  const clientSecret = env[OIDC_ENV.clientSecret]?.trim();
-  const redirectUri = env[OIDC_ENV.redirectUri]?.trim();
+  const {issuerUrl, clientId, clientSecret, redirectUri} = readOidcEnv(env);
   if (!issuerUrl || !clientId || !clientSecret || !redirectUri) return null;
   const allowInsecureHttp = isOidcInsecureHttpAllowed(env);
   return {
