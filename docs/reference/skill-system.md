@@ -386,6 +386,8 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 4. **输入参数**: `${package}` → `params.package`（含声明的 `default`）
 5. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`，即调用方 Skill 的继承值和它的 `save_as`
 
+SQL 里按路径读取前面步骤的结果（`${step_id.data[0].字段}`）时，必须二选一写明意图：带 `|默认值`（结果没有行时照常执行，引号内常用 `|`、其它位置常用 `|NULL`），或者让本步骤的 `condition` 以顶层合取项 `step_id.data?.length > 0` 要求该结果有行（结果没有行时不执行；只是提到该结果、在无行时仍可能为真的条件不算）。本运行时缺值会按下面的智能默认值照常执行，公开的 Perfetto-Skills 运行时则把没有默认值的路径当成依赖、结果无行时跳过整步；`resultPlaceholderDefaults.test.ts` 检查每处读取都已写明。
+
 所以本 Skill 自己的绑定总会遮住调用方的同名值；`save_as` 先于同名步骤结果，读到的是它声明的绑定（包括 `save_from` 选中的子步骤）。一个步骤的 `save_as` 不能使用另一个步骤的 id（`validate:skills` 报 `save_as_step_id_collision`），以自身 id 命名则是常规写法。根名字一旦在某层找到就不再向更低的层回退（例如 `null` 变量不会让位给同名输入参数）；完整路径最终解析为 `null`/`undefined` 时（未绑定、绑定为 `null`、空数组取 `[0]`、字段不存在），再使用 `|默认值` 和下面的智能默认值。
 
 表达式（`condition`、iterator `filter`、`${...}` 里的 JS 表达式、诊断文案）里有一组名字始终是语言自带的标准全局，不从上面五层解析：`Infinity`、`NaN`、`undefined`、`isFinite`、`isNaN`、`parseFloat`、`parseInt`、`decodeURI`、`decodeURIComponent`、`encodeURI`、`encodeURIComponent`、`Array`、`BigInt`、`Boolean`、`Date`、`Error`、`Intl`、`JSON`、`Map`、`Math`、`Number`、`Object`、`RegExp`、`Set`、`String`、`Symbol`（清单在 `expressionUtils.ts` 的 `EXPRESSION_GLOBALS`）。所以输入、`save_as` 或数据列取了其中某个名字时，表达式读不到它。其余名字（包括 `window`、`process`、`console` 这类宿主全局名）都按五层解析，五层都没有就是 `undefined`；保留字（如 `enum`、`default`）不会被当成名字，写在字符串里也不影响求值。`validate:skills` 对步骤 `condition` 用同一套名字检查未声明的引用：占位符 `${path|默认值}` 读的是 `path` 的根名字（引号里也算），箭头函数参数和对象字面量的静态键不算引用。只检查 ASCII 名字；上下文关键字（`async`、`await`、`let`、`of`、`static`、`yield`）和 `window`、`console`、`globalThis` 不要求声明。字符串、模板、正则和注释的边界以 JS 引擎的编译结果为准；条件编译不过或无法确认时退回粗扫描（成对引号之外、不在 `.` 之后的标识符），正则、模板和注释里的词可能被当成引用。

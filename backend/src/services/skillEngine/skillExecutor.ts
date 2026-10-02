@@ -41,8 +41,8 @@ import {
 } from './expressionUtils';
 import { injectFragmentCtes } from './skillFragments';
 import {
-  boundSqlPlaceholderPaths, readPlaceholderBody, sqlCodeText, sqlIdentifier, sqlLiteral, sqlStringLiteralText,
-  substituteSqlPlaceholders,
+  absentPlaceholderSql, boundSqlPlaceholderPaths, readPlaceholderBody, sqlCodeText, sqlIdentifier, sqlLiteral,
+  sqlStringLiteralText, substituteSqlPlaceholders,
 } from './sqlTemplate';
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
@@ -586,7 +586,7 @@ class ExpressionEvaluator {
 
 function substituteVariables(sql: string, context: SkillExecutionContext): string {
   return substituteSqlPlaceholders(sql, (placeholder) => {
-    const {match, path: actualPath, defaultValue: explicitDefault} = placeholder;
+    const {match, path: actualPath} = placeholder;
     if (actualPath === '__process_scope' || actualPath.startsWith('__process_scope.')) {
       if (match !== EXACT_UPID_TOKEN) throw new Error('Unsupported reserved process scope binding');
       const scope = context.processScope;
@@ -596,14 +596,8 @@ function substituteVariables(sql: string, context: SkillExecutionContext): strin
     }
     const value = ExpressionEvaluator.resolvePath(actualPath, context);
 
-    // 缺省值优先级：
-    // 1. 显式 |default 值（作者写的 SQL 文本，原样插入）
-    // 2. 字符串常量内部：用 ''
-    // 3. 其它位置：用 NULL
-    if (value === undefined || value === null) {
-      if (explicitDefault !== undefined) return explicitDefault;
-      return placeholder.context === 'string' ? '' : 'NULL';
-    }
+    // 缺省值：显式 |default（作者写的 SQL 文本，原样插入），否则字符串内 ''、其它位置 NULL
+    if (value === undefined || value === null) return absentPlaceholderSql(placeholder);
 
     // 字符串常量内部：转义单引号；GLOB/LIKE 模式字面量里值的通配符按字面匹配
     if (placeholder.context === 'string') return sqlStringLiteralText(value, placeholder);

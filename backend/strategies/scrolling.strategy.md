@@ -451,6 +451,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
   - `no_frame_timeline_coverage`：只能交付目标包 BufferTX 正向 delta 支持的帧产出数和 FPS；不能从 BufferTX 推出 App/SF 责任、掉帧率、峰值长帧或帧根因；实际主线程任务/等待仍可独立分析。相应小节标记“当前 trace 证据不可用”，不得填 0 或根据 FPS 推断无卡顿。
   - `partial_frame_timeline_coverage`：overview 帧数/FPS 以 BufferTX 为准；`jank_type_stats` / `batch_frame_root_cause` 仅是 FrameTimeline 覆盖到的 sparse sample。只能表述“已观测样本中的根因”，必须引用 `evidence_scope=partial_sample` 和 coverage ratio，不得写成全量根因分布或用样本比例估算全量帧数。
   - `frame_timeline_to_buffer_tx_ratio` = FrameTimeline 帧数 / BufferTX 产出帧数，是两个独立来源的比值，**不是有界覆盖率**（字段与标签都已按"帧数比"命名，不要再当成百分比覆盖率读）：`> 1 说明 BufferTX 少计`（track 选择或 rising-edge 判定漏帧），不代表覆盖超过 100%。此时以 FrameTimeline 为准并写明 BufferTX 少计，不要表述成“覆盖率 100.x%”。
+- `jank_type_stats` / `batch_frame_root_cause` 的 `evidence_scope`：只有 `full_frame_timeline` 是经 BufferTX 比对的全量分布；`frame_timeline_only_unbenchmarked`（精确 UPID 或无 BufferTX 候选）写成 FrameTimeline 统计并注明未经 BufferTX 校核；`coverage_unverified`（覆盖探针无结果或状态未知）只能写成“已观测样本中的根因”。
 - GraphicBuffer/dma-buf 是图形物理内存证据面；BufferQueue/Fence slice 只能证明队列、同步和背压候选，不能单独证明图形内存泄漏或占用峰值。
 
 **Phase 1.8 — 帧内指标 / GPU / CPU 利用率补充（按需执行）：**

@@ -254,8 +254,8 @@ steps:
     sql: |
       WITH system_windows AS (
         SELECT 0 AS window_id,
-          ${episode_windows.data[0].who_start_ts} AS window_start_ts,
-          ${episode_windows.data[0].who_end_ts} AS window_end_ts
+          ${episode_windows.data[0].who_start_ts|NULL} AS window_start_ts,
+          ${episode_windows.data[0].who_end_ts|NULL} AS window_end_ts
       )
       SELECT s.raw_start_ts AS ts,
         s.raw_start_ts - ${episode_start_ts} AS rel_to_limit_ns,
@@ -305,8 +305,8 @@ steps:
     on_empty: "归因窗口内没有名字匹配温控/性能策略签名的线程在运行。"
     sql: |
       WITH win AS (
-        SELECT ${episode_windows.data[0].who_start_ts} AS who_start_ts,
-          ${episode_windows.data[0].who_end_ts} AS who_end_ts
+        SELECT ${episode_windows.data[0].who_start_ts|NULL} AS who_start_ts,
+          ${episode_windows.data[0].who_end_ts|NULL} AS who_end_ts
       ),
       trace_span AS (
         SELECT MIN(ts) AS span_start, MAX(ts + MAX(dur, 0)) AS span_end FROM sched_slice
@@ -380,8 +380,8 @@ steps:
     on_empty: "回溯窗口内没有温度采样。部分平台温度上报非常稀疏（每分钟数次），窗口内无样本不代表温度未变化。"
     sql: |
       WITH win AS (
-        SELECT ${episode_windows.data[0].before_start_ts} AS before_start_ts,
-          ${episode_windows.data[0].before_end_ts} AS before_end_ts
+        SELECT ${episode_windows.data[0].before_start_ts|NULL} AS before_start_ts,
+          ${episode_windows.data[0].before_end_ts|NULL} AS before_end_ts
       ),
       -- When the trace carries typed thermal_temperature tracks, a track that
       -- merely has a thermal-sounding NAME (an app called ThermalActivity, a
@@ -491,8 +491,8 @@ steps:
     on_empty: "回溯窗口内没有观测到非 CPU 热源相关的计数器或进程活动。"
     sql: |
       WITH win AS (
-        SELECT ${episode_windows.data[0].before_start_ts} AS before_start_ts,
-          ${episode_windows.data[0].before_end_ts} AS before_end_ts
+        SELECT ${episode_windows.data[0].before_start_ts|NULL} AS before_start_ts,
+          ${episode_windows.data[0].before_end_ts|NULL} AS before_end_ts
       ),
       counter_presence AS (
         SELECT 'counter_track_type' AS source_kind, ct.type AS source_key,

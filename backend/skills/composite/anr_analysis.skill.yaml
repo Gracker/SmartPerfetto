@@ -366,8 +366,8 @@ steps:
           template: "{{core_type}} 核心负载正常 ({{avg_util_pct}}%)"
     sql: |
       WITH system_windows AS (
-        SELECT 0 AS window_id, COALESCE(${anr_ctx.data[0].anr_ts}-${anr_ctx.data[0].timeout_ns}, (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
-          COALESCE(${anr_ctx.data[0].anr_ts}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
+        SELECT 0 AS window_id, COALESCE(${anr_ctx.data[0].anr_ts|NULL}-${anr_ctx.data[0].timeout_ns|NULL}, (SELECT start_ts FROM trace_bounds)) AS window_start_ts,
+          COALESCE(${anr_ctx.data[0].anr_ts|NULL}, (SELECT end_ts FROM trace_bounds)) AS window_end_ts
       ),cpu_activity AS (
         SELECT s.ucpu,SUM(CASE WHEN t.is_idle=0 THEN s.dur_ns ELSE 0 END) AS active_ns,
           SUM(s.dur_ns) AS covered_ns,SUM(CASE WHEN t.is_idle IS NULL THEN s.dur_ns ELSE 0 END) AS idle_identity_unknown_ns
@@ -412,8 +412,8 @@ steps:
         COUNT(*) as kill_count,
         GROUP_CONCAT(DISTINCT process_name) as killed_processes
       FROM android_lmk_events
-      WHERE ts >= ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns}
-        AND ts <= ${anr_ctx.data[0].anr_ts}
+      WHERE ts >= ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL}
+        AND ts <= ${anr_ctx.data[0].anr_ts|NULL}
       GROUP BY oom_score_adj
       ORDER BY kill_count DESC
     save_as: memory_pressure
@@ -444,8 +444,8 @@ steps:
     sql: |
       WITH anr_window AS (
         SELECT
-          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
-          ${anr_ctx.data[0].anr_ts} AS end_ts
+          ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL} AS start_ts,
+          ${anr_ctx.data[0].anr_ts|NULL} AS end_ts
       ),
       uninterruptible_states AS (
         SELECT
@@ -548,8 +548,8 @@ steps:
     sql: |
       WITH anr_window AS (
         SELECT
-          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
-          ${anr_ctx.data[0].anr_ts} AS end_ts
+          ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL} AS start_ts,
+          ${anr_ctx.data[0].anr_ts|NULL} AS end_ts
       ),
       app_activity AS (
         SELECT
@@ -968,9 +968,9 @@ steps:
     sql: |
       WITH anr_window AS (
         SELECT
-          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
-          ${anr_ctx.data[0].anr_ts} AS end_ts,
-          ${anr_ctx.data[0].timeout_ns} AS window_ns
+          ${anr_ctx.data[0].anr_ts|NULL} - ${anr_ctx.data[0].timeout_ns|NULL} AS start_ts,
+          ${anr_ctx.data[0].anr_ts|NULL} AS end_ts,
+          ${anr_ctx.data[0].timeout_ns|NULL} AS window_ns
       ),
       clipped AS (
         SELECT

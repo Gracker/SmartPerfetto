@@ -1869,14 +1869,19 @@ steps:
           WHEN jank_type = 'None' THEN '标签:None(可能漏检)'
           ELSE '标签:Other'
         END as responsibility,
-        '${buffer_tx_coverage.data[0].coverage_status}' as frame_timeline_coverage_status,
-        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio} as frame_timeline_to_buffer_tx_ratio,
-        CASE
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'partial_frame_timeline_coverage'
-            THEN 'partial_sample'
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'no_buffer_tx_candidate'
-            THEN 'frame_timeline_only_unbenchmarked'
-          ELSE 'full_frame_timeline'
+        -- probe_unavailable is not a probe status: the optional probe produced no row.
+        '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' as frame_timeline_coverage_status,
+        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio|NULL} as frame_timeline_to_buffer_tx_ratio,
+        -- Only a measured, sufficient FrameTimeline/BufferTX comparison is full
+        -- coverage. Exact-UPID scope never compares against BufferTX, and a
+        -- probe that produced no row (it is optional) or any other status
+        -- leaves coverage unverified.
+        CASE '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}'
+          WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+          WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
+          WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
+          WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
+          ELSE 'coverage_unverified'
         END as evidence_scope
       FROM jank_analysis
       GROUP BY jank_type
@@ -4515,14 +4520,19 @@ steps:
         pid,
         process_name,
         reason_code,
-        '${buffer_tx_coverage.data[0].coverage_status}' as frame_timeline_coverage_status,
-        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio} as frame_timeline_to_buffer_tx_ratio,
-        CASE
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'partial_frame_timeline_coverage'
-            THEN 'partial_sample'
-          WHEN '${buffer_tx_coverage.data[0].coverage_status}' = 'no_buffer_tx_candidate'
-            THEN 'frame_timeline_only_unbenchmarked'
-          ELSE 'full_frame_timeline'
+        -- probe_unavailable is not a probe status: the optional probe produced no row.
+        '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}' as frame_timeline_coverage_status,
+        ${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio|NULL} as frame_timeline_to_buffer_tx_ratio,
+        -- Only a measured, sufficient FrameTimeline/BufferTX comparison is full
+        -- coverage. Exact-UPID scope never compares against BufferTX, and a
+        -- probe that produced no row (it is optional) or any other status
+        -- leaves coverage unverified.
+        CASE '${buffer_tx_coverage.data[0].coverage_status|probe_unavailable}'
+          WHEN 'sufficient_frame_timeline_coverage' THEN 'full_frame_timeline'
+          WHEN 'partial_frame_timeline_coverage' THEN 'partial_sample'
+          WHEN 'no_buffer_tx_candidate' THEN 'frame_timeline_only_unbenchmarked'
+          WHEN 'frame_timeline_only_exact_upid' THEN 'frame_timeline_only_unbenchmarked'
+          ELSE 'coverage_unverified'
         END as evidence_scope,
         scope.root_cause_eligible_frame_count,
         scope.root_cause_analyzed_frame_count,
@@ -5351,7 +5361,7 @@ steps:
             SELECT 1 FROM sqlite_master
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
-            AND '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+            AND '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN '⚠️ 目标进程不可用'
           ELSE '⚠️ 无法执行帧分析'
         END as status,
@@ -5361,7 +5371,7 @@ steps:
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
             THEN 'actual_frame_timeline_slice'
-          WHEN '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+          WHEN '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN '目标包: ${package}'
           ELSE '目标包 FrameTimeline / BufferTX 帧产出证据'
         END as missing_table,
@@ -5371,7 +5381,7 @@ steps:
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
             THEN '请确保 trace 采集时启用了 Frame Timeline (需要 Android 12+ 且开启 Choreographer tracing)'
-          WHEN '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+          WHEN '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
             THEN 'trace 未包含目标包进程；请确认包名，或在目标应用处于前台时重新采集。不能输出该目标的帧指标或任务结论'
           ELSE '已找到 FrameTimeline 表，但目标包无可用帧行，且 BufferTX 帧产出证据不足；不能输出 FPS、掉帧率或帧根因；仍可读取实际主线程任务与状态证据'
         END as suggestion
@@ -5389,7 +5399,7 @@ steps:
             SELECT 1 FROM sqlite_master
             WHERE type = 'table' AND name = 'actual_frame_timeline_slice'
           )
-          AND '${buffer_tx_coverage.data[0].target_process_status}' = 'not_found'
+          AND '${buffer_tx_coverage.data[0].target_process_status|}' = 'not_found'
         )
     save_as: fallback_info
 

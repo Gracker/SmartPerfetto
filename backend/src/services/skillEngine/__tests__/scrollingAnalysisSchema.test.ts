@@ -11,6 +11,7 @@ import {androidInputEventsTableDdl, completeAndroidInputEventsFixture} from '../
 import {renderStepSql, withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
 import {diagnoseRuleStep} from '../../../../tests/helpers/skillRuleHarness';
 import {builtInSkillFragment} from '../skillFragments';
+import {absentPlaceholderSql, substituteSqlPlaceholders} from '../sqlTemplate';
 import {SCROLLING_V1_REASON_CODES} from '../../caseDomainPacks';
 
 // Execute maintained SQL fragments in the legacy named fixtures as well.
@@ -1978,7 +1979,7 @@ describe('scrolling_analysis skill schema', () => {
   it('does not recommend an unavailable frame fallback when the target process is absent', () => {
     const renderSql = (targetProcessStatus: string) => String(getStep('fallback_no_frame_timeline').sql)
       .split('${package}').join('com.example.app')
-      .split('${buffer_tx_coverage.data[0].target_process_status}').join(targetProcessStatus);
+      .split('${buffer_tx_coverage.data[0].target_process_status|}').join(targetProcessStatus);
     const db = createScopedSqlFixture();
     try {
       db.exec('CREATE TABLE actual_frame_timeline_slice(id INTEGER)');
@@ -2002,10 +2003,6 @@ describe('scrolling_analysis skill schema', () => {
       expect(getColumn(step, 'frame_timeline_coverage_status').hidden).toBe(true);
       expect(getColumn(step, 'frame_timeline_to_buffer_tx_ratio').hidden).toBe(true);
       expect(getColumn(step, 'evidence_scope').hidden).toBe(true);
-      const sql = String(step.sql);
-      expect(sql).toContain('${buffer_tx_coverage.data[0].coverage_status}');
-      expect(sql).toContain('${buffer_tx_coverage.data[0].frame_timeline_to_buffer_tx_ratio}');
-      expect(sql).toContain("THEN 'partial_sample'");
     }
 
     const fallback = getStep('buffer_tx_performance_fallback');
@@ -2018,6 +2015,35 @@ describe('scrolling_analysis skill schema', () => {
       'evidence_status',
     ]) {
       getColumn(fallback, column);
+    }
+  });
+
+  it('calls coverage full only after a sufficient FrameTimeline/BufferTX comparison', () => {
+    // `undefined` is a probe that produced no row (it is optional): the
+    // placeholder takes its default, as the executor binds an absent result.
+    const cases: Array<[string | undefined, string]> = [
+      ['sufficient_frame_timeline_coverage', 'full_frame_timeline'],
+      ['partial_frame_timeline_coverage', 'partial_sample'],
+      ['no_buffer_tx_candidate', 'frame_timeline_only_unbenchmarked'],
+      ['frame_timeline_only_exact_upid', 'frame_timeline_only_unbenchmarked'],
+      ['no_frame_timeline_coverage', 'coverage_unverified'],
+      [undefined, 'coverage_unverified'],
+    ];
+    const db = new Database(':memory:');
+    try {
+      for (const stepId of ['jank_type_stats', 'batch_frame_root_cause']) {
+        for (const [status, expected] of cases) {
+          const sql = substituteSqlPlaceholders(String(getStep(stepId).sql), placeholder =>
+            placeholder.path === 'buffer_tx_coverage.data[0].coverage_status' && status !== undefined
+              ? status
+              : absentPlaceholderSql(placeholder));
+          const end = sql.indexOf('END as evidence_scope');
+          const scope = db.prepare(`SELECT ${sql.slice(sql.lastIndexOf('CASE', end), end + 3)} AS v`).pluck().get();
+          expect([stepId, status, scope]).toEqual([stepId, status, expected]);
+        }
+      }
+    } finally {
+      db.close();
     }
   });
 

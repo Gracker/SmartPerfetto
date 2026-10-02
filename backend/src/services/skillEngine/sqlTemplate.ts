@@ -262,6 +262,15 @@ export function boundSqlPlaceholderPaths(sql: string): string[] {
 }
 
 /**
+ * SQL text for a placeholder whose value is absent: its `|default` (author text,
+ * inserted as written), else '' inside a string literal and NULL in code.
+ */
+export function absentPlaceholderSql(placeholder: SqlPlaceholder): string {
+  if (placeholder.defaultValue !== undefined) return placeholder.defaultValue;
+  return placeholder.context === 'string' ? '' : 'NULL';
+}
+
+/**
  * The one placeholder substitution for Skill SQL and fragments. Placeholders
  * in comments stay as written; one inside a quoted identifier, or inside a
  * pattern expression other than as its only string literal, is refused,
