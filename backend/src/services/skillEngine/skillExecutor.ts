@@ -1814,6 +1814,7 @@ export class SkillExecutor {
       results: {},
       variables: {},
       variableScopes: {},
+      variableSteps: {},
       moduleIncludes,
     }
 
@@ -2053,6 +2054,19 @@ export class SkillExecutor {
     const observed = stepResult.success && source !== undefined && (!saveFrom || isObservedStepResult(source));
     context.variables[step.save_as] = observed ? source.data ?? null : null;
     if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(source);
+    if (context.variableSteps) context.variableSteps[step.save_as] = step.id;
+  }
+
+  /**
+   * The step whose result a source name reads right now, resolved as the reader
+   * resolves it: the step that made the save_as binding, or the step of that id.
+   * Undefined for an input, an inherited value, or an unknown name. An iterator's
+   * results bind back to this step, resolved just before the iterator runs.
+   */
+  private boundSourceStepId(source: string, context: SkillExecutionContext): string | undefined {
+    const binding = ExpressionEvaluator.resolveRootBinding(source, context);
+    if (binding?.source === 'variable') return context.variableSteps?.[source];
+    return binding?.source === 'result' ? source : undefined;
   }
 
   /**
@@ -2113,6 +2127,7 @@ export class SkillExecutor {
 
     for (const step of skill.steps) {
       throwIfTraceProcessorQueryCancelled(context.signal);
+      const iteratorSourceStepId = step.type === 'iterator' ? this.boundSourceStepId(step.source, context) : undefined;
       const stepResult = await this.executeStep(step, context, skillId);
 
       // Collect synthesize-marked data for downstream summarization (execute path parity).
@@ -2149,14 +2164,8 @@ export class SkillExecutor {
         }
 
         // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 DisplayResult
-        if ((step as any).type === 'iterator' && 'source' in step && (step as any).source) {
-          const sourceName = (step as any).source;
-          // source 引用的是 save_as 名称，需要找到对应的 step.id
-          const sourceStep = skill.steps!.find((s: any) =>
-            s.save_as === sourceName || s.id === sourceName
-          );
-          const sourceStepId = sourceStep ? sourceStep.id : sourceName;
-          const sourceDisplayResult = displayResults.find(dr => dr.stepId === sourceStepId);
+        if (iteratorSourceStepId) {
+          const sourceDisplayResult = displayResults.find(dr => dr.stepId === iteratorSourceStepId);
           // expandableData 在 DisplayResult.data 中（由 flattenIteratorResults 创建）
           const iteratorDisplayResult = displayResults.find(dr => dr.stepId === step.id);
           if (sourceDisplayResult?.data && iteratorDisplayResult?.data?.expandableData) {
@@ -2710,6 +2719,7 @@ export class SkillExecutor {
       results: {},
       variables: {},
       variableScopes: {},
+      variableSteps: {},
       moduleIncludes: prerequisiteModules,
     };
 
@@ -2726,9 +2736,9 @@ export class SkillExecutor {
     const synthesizeData: SynthesizeData[] = [];
 
     if (skill.steps) {
-      for (let i = 0; i < skill.steps.length; i++) {
+      for (const step of skill.steps) {
         throwIfTraceProcessorQueryCancelled(execContext.signal);
-        const step = skill.steps[i];
+        const iteratorSourceStepId = step.type === 'iterator' ? this.boundSourceStepId(step.source, execContext) : undefined;
         const stepResult = await this.executeStep(step, execContext, skill.name);
         const shown = this.layerStepResult(step, stepResult);
 
@@ -2761,39 +2771,14 @@ export class SkillExecutor {
         }
 
         stepResults.push(shown);
-      }
-    }
 
-    // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 StepResult
-    // 这样 convertDisplayResultsToSections 可以在源步骤的 data 上找到 expandableData
-    if (skill.steps) {
-      for (let i = 0; i < skill.steps.length; i++) {
-        const step = skill.steps[i];
-        if (step.type === 'iterator' && 'source' in step && (step as any).source) {
-          const sourceName = (step as any).source;
-          // source 引用的是 save_as 名称，需要找到对应的 step.id
-          const sourceStep = skill.steps.find((s: any) =>
-            s.save_as === sourceName || s.id === sourceName
-          );
-          const sourceStepId = sourceStep ? sourceStep.id : sourceName;
-          const sourceResult = stepResults.find(sr => sr.stepId === sourceStepId);
-          const iteratorResult = stepResults[i];
-          // 在 executeCompositeSkill 路径中，iterator 的 data 是原始 [{itemIndex, item, result}, ...]
-          // 需要将其转换为 expandableData 格式
-          // Only rows the source entry holds can expand; a failed reference holds none.
-          if (Array.isArray(sourceResult?.data) && sourceResult.data.length > 0
-            && iteratorResult?.success && Array.isArray(iteratorResult.data)) {
-            const expandableData = iteratorResult.data.map((iterItem: any) => ({
-              item: iterItem.item,
-              result: {
-                success: iterItem.result?.success ?? false,
-                sections: this.convertDisplayResultsToSections(iterItem.result?.displayResults || []),
-                scopeProvenance: resultScopeProvenance(iterItem.result),
-                error: iterItem.result?.error,
-              },
-            }));
-            // 直接在 data 上挂载 expandableData（JS 数组/对象都支持额外属性）
-            (sourceResult.data as any).expandableData = expandableData;
+        // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 StepResult，
+        // 这样 convertDisplayResultsToSections 可以在源步骤的 data 上找到 expandableData。
+        // 此路径中 iterator 的 data 是原始 [{itemIndex, item, result}, ...]
+        if (iteratorSourceStepId) {
+          const sourceResult = stepResults.find(sr => sr.stepId === iteratorSourceStepId);
+          if (sourceResult?.data && shown.success && Array.isArray(shown.data)) {
+            (sourceResult.data as any).expandableData = this.iteratorExpandableData(shown.data);
           }
         }
       }
@@ -4777,6 +4762,19 @@ export class SkillExecutor {
   /**
    * 将迭代器结果展平为可显示的表格
    */
+  /** One expandable entry per iterated item: the item and its Skill result as sections. */
+  private iteratorExpandableData(data: any[]): NonNullable<DisplayResult['data']['expandableData']> {
+    return data.map((iterItem) => ({
+      item: iterItem.item,
+      result: {
+        success: iterItem.result?.success ?? false,
+        sections: this.convertDisplayResultsToSections(iterItem.result?.displayResults || []),
+        scopeProvenance: resultScopeProvenance(iterItem.result),
+        error: iterItem.result?.error,
+      },
+    }));
+  }
+
   private flattenIteratorResults(
     data: any[],
     _isIterator: boolean,
@@ -4841,15 +4839,7 @@ export class SkillExecutor {
         });
       });
 
-      const expandableData = data.map((iterItem) => ({
-        item: iterItem.item,
-        result: {
-          success: iterItem.result?.success ?? false,
-          sections: this.convertDisplayResultsToSections(iterItem.result?.displayResults || []),
-          scopeProvenance: resultScopeProvenance(iterItem.result),
-          error: iterItem.result?.error,
-        },
-      }));
+      const expandableData = this.iteratorExpandableData(data);
 
       const summary = this.generateIteratorSummary(data, expandableData);
 

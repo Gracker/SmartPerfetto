@@ -271,6 +271,9 @@ outputs:
     layer: deep
 ```
 
+每一项的结果会作为可展开数据挂回 iterator 读到行的那个步骤：iterator 运行前绑定 `source` 这个名字的步骤
+（按步骤 id 读取时就是该步骤）。多个步骤声明同一个 `save_as` 时也按这一规则确定。
+
 ### 4.4 parallel — 并行执行
 
 独立步骤并发运行，提高效率。

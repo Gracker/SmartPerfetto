@@ -3243,21 +3243,50 @@ describe('Skill Reference 分层结果与批量展开', () => {
     expect(result.synthesizeData).toEqual([expect.objectContaining({stepId: 'ref', success: false})]);
   });
 
-  // `ref` and `alt` both declare save_as `x`; the iterator reads `alt`'s rows,
-  // while the back-binding takes the first declarer. It must not hang them on
-  // the failed reference, which holds no rows.
-  it('attaches iterator results only to a source entry that holds rows', async () => {
-    const {step} = await layered(refParent({skill: 'ctx_rows_then_failing_child', save_as: 'x'}, [
-      {id: 'alt', type: 'atomic', sql: 'SELECT /*rows*/ 1', save_as: 'x'},
-      {id: 'each', type: 'iterator', source: 'x', item_skill: 'echo_source'},
-    ]));
-    expect(step('each').success).toBe(true);
-    expect(step('ref').data.expandableData).toBeUndefined();
+  type Path = 'execute' | 'executeCompositeSkill';
+  // The entries a path shows: execute's display results, the composite's step results.
+  async function entriesFor(skill: SkillDefinition, path: Path): Promise<any[]> {
+    executor.registerSkill(skill);
+    return path === 'execute'
+      ? (await executor.execute(skill.name, 'trace-1', {})).displayResults
+      : (await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1'})).stepResults!;
+  }
 
-    const shown = await layered(refParent({skill: 'ctx_then_rows_child'},
-      [{id: 'each', type: 'iterator', source: 'ref', item_skill: 'echo_source'}]));
-    expect(shown.step('ref').data.expandableData).toEqual([expect.objectContaining({item: {source: 'picked-row'}})]);
-  });
+  // Which entries carry iterator expansions, and of which rows: the iterator's
+  // own entry is left out.
+  async function expansions(skill: SkillDefinition, path: Path) {
+    return Object.fromEntries((await entriesFor(skill, path))
+      .filter(entry => entry.stepId !== 'each' && entry.data?.expandableData)
+      .map(entry => [entry.stepId, entry.data.expandableData.map((expansion: any) => expansion?.item?.source)]));
+  }
+  const each = {id: 'each', type: 'iterator', source: 'x', item_skill: 'echo_source', display: list};
+
+  // `ref` and `alt` both declare save_as `x`; the iterator reads `alt`'s rows,
+  // so `alt` carries the expansions, never the failed reference before it.
+  it.each(['execute', 'executeCompositeSkill'] as const)(
+    'attaches iterator results to the step whose rows it iterated (%s)', async path => {
+      expect(await expansions(refParent({skill: 'ctx_rows_then_failing_child', save_as: 'x', optional: true}, [
+        {id: 'alt', type: 'atomic', sql: 'SELECT /*rows*/ 1', save_as: 'x', display: list}, each,
+      ]), path)).toEqual({alt: ['picked-row']});
+      // A source read by step id is that step.
+      expect(await expansions(refParent({skill: 'ctx_then_rows_child'}, [{...each, source: 'ref'}]), path))
+        .toEqual({ref: ['picked-row']});
+    });
+
+  // `first` declares `x` (skipped), `second` binds it before the iterator runs and
+  // `third` rebinds it afterwards: the expansions belong to `second`, also when
+  // the iterator saves its own results as `x`.
+  it.each(['execute', 'executeCompositeSkill'] as const)(
+    'attaches iterator results to the binding the iterator read, not a later one (%s)', async path => {
+      for (const iterator of [each, {...each, save_as: 'x'}]) {
+        expect(await expansions(parent('rebound_source_parent', [
+          {...ctxStep, id: 'first', save_as: 'x', condition: 'false', optional: true, display: list},
+          {...rowsStep, id: 'second', save_as: 'x', display: list},
+          iterator,
+          {...ctxStep, id: 'third', save_as: 'x', display: list},
+        ]), path)).toEqual({second: ['picked-row']});
+      }
+    });
 
   // `batch_rows` is bound before `list`, which shows rows and expands each one
   // from that batch. Sections only render known JSON columns, so the scope is
@@ -3267,15 +3296,8 @@ describe('Skill Reference 分层结果与批量展开', () => {
   const batchRef = (extra: Record<string, unknown> = {}) =>
     ({id: 'batch', skill: 'ctx_then_rows_child', save_as: 'batch_rows', ...extra});
 
-  async function expandedRoles(skill: SkillDefinition, path: 'execute' | 'executeCompositeSkill') {
-    executor.registerSkill(skill);
-    let data: any;
-    if (path === 'execute') {
-      data = (await executor.execute(skill.name, 'trace-1', {})).displayResults.find(entry => entry.stepId === 'list')?.data;
-    } else {
-      const result = await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1'});
-      data = result.stepResults!.find(step => step.stepId === 'list')?.data;
-    }
+  async function expandedRoles(skill: SkillDefinition, path: Path) {
+    const data = (await entriesFor(skill, path)).find(entry => entry.stepId === 'list')?.data;
     expect(data?.expandableData).toHaveLength(1);
     return roles(data.expandableData[0].result.scopeProvenance);
   }
