@@ -109,6 +109,14 @@ child's data, including partial results returned before the failure.
 `save_from` is honoured only on a top-level step of the parent, and
 `validate:skills` rejects an unknown target step.
 
+Layered output (the composite path behind the Skill HTTP API and HTML report)
+shows a reference step the same way: as the default child step's data and that
+step's own scope provenance (none when the step declares none, never the merged
+scope of every child step). A failed reference shows its failure with no child
+rows; when the step is `optional`, the failure is shown as an optional error
+(`executionStatus: optional_error`, as for an optional query) and does not fail
+the Skill.
+
 When the default child step is itself a Skill reference, the binding holds the
 grandchild Skill's result: expressions reading `.data` select one more level by
 the same rule, diagnostic and AI `inputs` receive that result object, and an
@@ -197,6 +205,7 @@ Display metadata tells the frontend how to render results:
 | `columns` | Column definitions for table rendering |
 | `highlights` | Conditional highlighting rules |
 | `expandable` | Whether JSON/details can be expanded |
+| `expandableBindSource` | `save_as` name whose rows expand this step's rows; they carry the scope provenance of that binding |
 
 ## Layered Results
 
