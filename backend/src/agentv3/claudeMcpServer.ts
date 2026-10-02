@@ -1254,11 +1254,8 @@ function previewFromColumnarData(data: any): Record<string, any> | undefined {
     : [];
   const firstRow = Array.isArray(data?.rows) ? data.rows[0] : undefined;
   if (columns.length === 0 || !Array.isArray(firstRow)) return undefined;
-  const preview: Record<string, any> = {};
-  columns.forEach((column, index) => {
-    preview[column] = index < firstRow.length ? firstRow[index] : null;
-  });
-  return preview;
+  return Object.fromEntries(columns.map((column, index) =>
+    [column, index < firstRow.length ? firstRow[index] : null]));
 }
 
 export interface ClaudeMcpServerOptions {

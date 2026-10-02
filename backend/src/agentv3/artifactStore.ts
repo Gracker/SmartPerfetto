@@ -777,10 +777,8 @@ export class ArtifactStore {
 
     let preview: Record<string, any> | undefined;
     if (full.sampleRow && full.columns.length > 0) {
-      preview = {};
-      for (let i = 0; i < full.columns.length; i++) {
-        preview[full.columns[i]] = i < full.sampleRow.length ? full.sampleRow[i] : null;
-      }
+      const sampleRow = full.sampleRow;
+      preview = Object.fromEntries(full.columns.map((column, i) => [column, i < sampleRow.length ? sampleRow[i] : null]));
     }
 
     return {

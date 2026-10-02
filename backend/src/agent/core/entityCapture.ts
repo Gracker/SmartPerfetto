@@ -31,6 +31,7 @@ import type {
   EntityId,
 } from '../context/entityStore';
 import { EntityCaptureKind, resolveCaptureEntityKindByStepId } from './entityRegistry';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 // =============================================================================
 // Types
@@ -415,13 +416,7 @@ function normalizeToRows(payload: any): Array<Record<string, any>> {
   // Columnar format: { columns: [...], rows: [[...], ...] }
   if (payload.columns && Array.isArray(payload.rows)) {
     const columns: string[] = payload.columns;
-    return payload.rows.map((row: any[]) => {
-      const obj: Record<string, any> = {};
-      columns.forEach((col, i) => {
-        obj[col] = row[i];
-      });
-      return obj;
-    });
+    return payload.rows.map((row: any[]) => rowObject(columns, row));
   }
 
   // rows property is array of objects

@@ -115,6 +115,7 @@ import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 
 import { DisplayLayer } from './types';
 import { isObservedStepResult, isOptionalStep, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 /**
  * Synthesize Data - 标记为 synthesize 的步骤数据
@@ -727,13 +728,7 @@ function transformDeepFrameAnalysis(displayResults: any[]): { diagnosis_summary:
       dataArray = rawData;
     } else if (rawData?.rows && rawData?.columns) {
       // Convert table format to object array (generic transformation)
-      dataArray = rawData.rows.map((row: any[]) => {
-        const obj: any = {};
-        rawData.columns.forEach((col: string, idx: number) => {
-          obj[col] = row[idx];
-        });
-        return obj;
-      });
+      dataArray = rawData.rows.map((row: any[]) => rowObject(rawData.columns, row));
     }
 
     // Handle diagnostic step specially (extracts diagnosis text)
@@ -2341,10 +2336,7 @@ export class SkillExecutor {
       // Reconstruct item object only for matched rows
       let item: Record<string, any>;
       if (isColumnar) {
-        item = {};
-        for (let c = 0; c < targetColumns.length; c++) {
-          item[targetColumns[c]] = targetRows[i][c];
-        }
+        item = rowObject(targetColumns, targetRows[i]);
       } else {
         item = { ...targetObjects![i] };
       }
@@ -4474,13 +4466,8 @@ export class SkillExecutor {
         data.columns && Array.isArray(data.columns) &&
         Array.isArray(data.rows) && data.rows.length > 0
       ) {
-        const row: Record<string, any> = {};
-        const cols = data.columns as string[];
         const firstRow = data.rows[0] as any[];
-        for (let i = 0; i < cols.length && i < firstRow.length; i++) {
-          row[cols[i]] = firstRow[i];
-        }
-        return row;
+        return rowObject((data.columns as string[]).slice(0, firstRow.length), firstRow);
       }
 
       if (Array.isArray(data) && data.length > 0) {
@@ -5097,13 +5084,7 @@ export class SkillExecutor {
       const dataColumns = drData?.columns || [];
 
       // 将 rows 转换为对象数组（像 adapter 中的 rowsToObjects）
-      const objects = dataRows.map((row: any[]) => {
-        const obj: Record<string, any> = {};
-        dataColumns.forEach((col: string, idx: number) => {
-          obj[col] = row[idx];
-        });
-        return obj;
-      });
+      const objects = dataRows.map((row: any[]) => rowObject(dataColumns, row));
 
       sections[dr.stepId] = {
         ...scopeMetadata(dr.scopeProvenance),
@@ -5152,13 +5133,7 @@ export class SkillExecutor {
    * 将行数组转换为对象数组
    */
   private rowsToObjects(columns: string[], rows: any[][]): Record<string, any>[] {
-    return rows.map(row => {
-      const obj: Record<string, any> = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    return rows.map(row => rowObject(columns, row));
   }
 }
 

@@ -22,6 +22,7 @@ import {
   unavailableTraceSummaryV1,
   type TraceSummaryExecutionV1,
 } from './traceSummaryExecutor';
+import {rowObject, rowsToObjects} from '../utils/traceProcessorRowUtils';
 
 export interface ComparisonAppendixQueryService extends ManagedTraceSummarySource {
   queryTrace(traceId: string, sql: string): Promise<QueryResult>;
@@ -224,7 +225,7 @@ async function collectSideData(
       order by dur desc
       limit 1
     `);
-    const row = rowToObject(result.columns, result.rows[0] || []);
+    const row = rowObject(result.columns, result.rows[0] || []);
     side.startup = {
       startup_id: toNumber(row.startup_id),
       package: String(row.package ?? ''),
@@ -265,7 +266,7 @@ async function collectSideData(
         order by sum(s.dur) desc
         limit 10
       `);
-      side.topSlices = rowsToObjects(result.columns, result.rows);
+      side.topSlices = rowsToObjects(result);
     } catch (err) {
       side.errors.push(`top slices failed: ${(err as Error).message}`);
     }
@@ -298,7 +299,7 @@ async function collectSideData(
         group by state
         order by sum(dur) desc
       `);
-      side.threadStates = rowsToObjects(result.columns, result.rows);
+      side.threadStates = rowsToObjects(result);
     } catch (err) {
       side.errors.push(`thread states failed: ${(err as Error).message}`);
     }
@@ -462,18 +463,6 @@ function markdownTable(headers: string[], rows: string[][]): string {
     `| ${headers.map(() => '---').join(' | ')} |`,
     ...safeRows.map((row) => `| ${row.map((cell) => String(cell).replace(/\|/g, '\\|')).join(' | ')} |`),
   ].join('\n');
-}
-
-function rowsToObjects(columns: string[], rows: unknown[][]): Array<Record<string, unknown>> {
-  return rows.map((row) => rowToObject(columns, row));
-}
-
-function rowToObject(columns: string[], row: unknown[]): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  columns.forEach((column, index) => {
-    out[column] = row[index];
-  });
-  return out;
 }
 
 function toNumber(value: unknown): number | null {

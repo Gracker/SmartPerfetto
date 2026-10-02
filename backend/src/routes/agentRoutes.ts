@@ -78,6 +78,7 @@ import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
+import {rowObject} from '../utils/traceProcessorRowUtils';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
 import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import { buildSmartSceneSelectionReport } from '../agent/scene/buildSmartChatReport';
@@ -6642,16 +6643,8 @@ function payloadToObjectRowsLocal(payload: any): Array<Record<string, any>> {
   const rows = (payload as any).rows;
   if (!Array.isArray(cols) || !Array.isArray(rows)) return [];
 
-  const out: Array<Record<string, any>> = [];
-  for (const row of rows) {
-    if (!Array.isArray(row)) continue;
-    const obj: Record<string, any> = {};
-    for (let i = 0; i < cols.length; i++) {
-      obj[String(cols[i])] = row[i];
-    }
-    out.push(obj);
-  }
-  return out;
+  const columns = cols.map(String);
+  return rows.filter(Array.isArray).map(row => rowObject(columns, row));
 }
 
 function normalizeNs(value: any): string | null {

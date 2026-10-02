@@ -49,6 +49,7 @@ import type {
   SourceUseDecisionV1,
 } from './codebase/sourceUseDecision';
 import {sanitizeSourceReferences} from './codebase/sourceUseDecision';
+import {rowObject} from '../utils/traceProcessorRowUtils';
 
 interface ClaimSourceLookupEntry {
   label: string;
@@ -204,6 +205,15 @@ export interface AgentDrivenReportData {
   sourceContext?: AgentReportSourceContext;
 }
 
+
+/**
+ * Column/value pairs ordered and de-duplicated as an object keyed by column
+ * would be (integer-like names first, last value wins), but built with
+ * Object.fromEntries so a column named `__proto__` stays a key.
+ */
+function columnEntries(pairs: Array<[string, any]>): Array<[string, any]> {
+  return Object.entries(Object.fromEntries(pairs));
+}
 export class HTMLReportGenerator {
   // Monotonic counter to ensure DOM ids are unique within a generated report.
   // Using Date.now() is not reliable because multiple sections can be rendered within the same millisecond.
@@ -1297,7 +1307,7 @@ export class HTMLReportGenerator {
       });
 
       // Detect constant columns (like process_name, layer_name)
-      const constantColumns: Record<string, any> = {};
+      const constantColumns: Array<[string, any]> = [];
       const variableColumns: string[] = [];
 
       for (const col of filteredColumns) {
@@ -1305,7 +1315,7 @@ export class HTMLReportGenerator {
         const isConstant = data.data.every((row: any) => row[col] === firstValue);
 
         if (isConstant && firstValue !== undefined && firstValue !== null) {
-          constantColumns[col] = firstValue;
+          constantColumns.push([col, firstValue]);
         } else {
           variableColumns.push(col);
         }
@@ -1313,7 +1323,7 @@ export class HTMLReportGenerator {
 
       // Build the constant column info for the table header
       // 【P2 Fix】使用可配置的元数据列名代替硬编码
-      const constantColumnLabels = Object.entries(constantColumns)
+      const constantColumnLabels = columnEntries(constantColumns)
         .filter(([col]) => this.isMetadataColumn(col))
         .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`)
         .join('');
@@ -1652,7 +1662,7 @@ export class HTMLReportGenerator {
     // Detect columns with constant values (like process_name, layer_name)
     // These should be moved to the table header instead of repeating in every row
     // BUT: Only do this for tables with multiple rows - single row tables should show all columns
-    const constantColumns: Record<string, any> = {};
+    const constantColumns: Array<[string, any]> = [];
     const variableColumns: string[] = [];
 
     // For single-row tables, show all columns (no point in hiding "constant" columns)
@@ -1664,7 +1674,7 @@ export class HTMLReportGenerator {
         const isConstant = rows.every(row => row[col] === firstValue);
 
         if (isConstant && firstValue !== undefined && firstValue !== null) {
-          constantColumns[col] = firstValue;
+          constantColumns.push([col, firstValue]);
         } else {
           variableColumns.push(col);
         }
@@ -1676,7 +1686,7 @@ export class HTMLReportGenerator {
     const hiddenRows = hasMore ? rows.slice(defaultVisibleRows) : [];
 
     // Columns removed from each row must remain visible as values shared by all rows.
-    const constantColumnLabels = Object.entries(constantColumns)
+    const constantColumnLabels = columnEntries(constantColumns)
       .map(([col, value]) => `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(col)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`)
       .join('');
 
@@ -1750,7 +1760,7 @@ export class HTMLReportGenerator {
 
     // Identify metadata columns (to show in header, not in table)
     const metadataFields = new Set(display.metadataFields || []);
-    const metadataValues: Record<string, any> = {};
+    const metadataValues: Array<[string, any]> = [];
     const displayColumnDefs: ColumnDefinition[] = [];
 
     for (let i = 0; i < columnDefs.length; i++) {
@@ -1760,7 +1770,7 @@ export class HTMLReportGenerator {
       if (metadataFields.has(colName)) {
         // Extract metadata value from first row
         if (data.rows.length > 0) {
-          metadataValues[colName] = data.rows[0][i];
+          metadataValues.push([colName, data.rows[0][i]]);
         }
       } else if (!colDef.hidden) {
         displayColumnDefs.push(colDef);
@@ -1768,7 +1778,7 @@ export class HTMLReportGenerator {
     }
 
     // Build the constant column info for the table header
-    const metadataLabels = Object.entries(metadataValues)
+    const metadataLabels = columnEntries(metadataValues)
       .map(([col, value]) => {
         const label = columnDefs.find(d => d.name === col)?.label || col;
         return `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(label)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`;
@@ -1901,17 +1911,17 @@ export class HTMLReportGenerator {
     const metadataFields = new Set(display.metadataFields || []);
 
     // Extract metadata values from the first row for configured metadataFields
-    const metadataValues: Record<string, any> = {};
+    const metadataValues: Array<[string, any]> = [];
     if (rows.length > 0) {
       for (let i = 0; i < columnDefs.length; i++) {
         const colDef = columnDefs[i];
         if (metadataFields.has(colDef.name)) {
-          metadataValues[colDef.name] = rows[0][i];
+          metadataValues.push([colDef.name, rows[0][i]]);
         }
       }
     }
 
-    const metadataLabels = Object.entries(metadataValues)
+    const metadataLabels = columnEntries(metadataValues)
       .map(([col, value]) => {
         const label = columnDefs.find(d => d.name === col)?.label || col;
         return `<span style="color: #666; font-size: 12px; margin-left: 8px;">${this.escapeHtml(label)}: <strong>${this.escapeHtml(this.stringifyValueForDisplay(value, 160))}</strong></span>`;
@@ -2229,13 +2239,7 @@ export class HTMLReportGenerator {
    * Convert result rows to object array
    */
   private rowsToObjects(columns: string[], rows: any[][]): Record<string, any>[] {
-    return rows.map(row => {
-      const obj: Record<string, any> = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    return rows.map(row => rowObject(columns, row));
   }
 
   /**
@@ -3553,11 +3557,7 @@ export class HTMLReportGenerator {
           // DataPayload 格式 - 将 rows 转换为对象数组
           const columns: string[] = dataField.columns || [];
           const rows: any[][] = dataField.rows || [];
-          items = rows.map((row: any[]) => {
-            const obj: Record<string, any> = {};
-            columns.forEach((col, i) => { obj[col] = row[i]; });
-            return obj;
-          });
+          items = rows.map((row: any[]) => rowObject(columns, row));
         }
 
         if (items.length > 0) {
@@ -3660,11 +3660,7 @@ export class HTMLReportGenerator {
           // DataPayload 格式 - 将 rows (数组的数组) 转换为对象数组
           const columns: string[] = dataField.columns || [];
           const rows: any[][] = dataField.rows || [];
-          items = rows.map((row: any[]) => {
-            const obj: Record<string, any> = {};
-            columns.forEach((col, i) => { obj[col] = row[i]; });
-            return obj;
-          });
+          items = rows.map((row: any[]) => rowObject(columns, row));
           // 保留 expandableData 用于可展开行
           expandableData = dataField.expandableData;
         }
