@@ -76,6 +76,11 @@ const CONVERSATION_PUBLIC_ERRORS: readonly PublicErrorClass[] = [
   AnalysisContextAuthorizationChangedError,
   ProviderRequestError,
 ];
+/** Starting also validates the analyze options. */
+const CONVERSATION_START_PUBLIC_ERRORS: readonly PublicErrorClass[] = [
+  ...CONVERSATION_PUBLIC_ERRORS,
+  AnalyzeOptionsError,
+];
 
 export function shouldCloseConversationStream(input: {
   eventType?: string;
@@ -434,8 +439,6 @@ async function startConversation(req: express.Request, res: express.Response): P
         providerScope,
       );
     } catch (error) {
-      // A pin missing from an unreadable providers.json is unknown, not deleted.
-      if (sendProviderStoreUnreadableIfPresent(res, error)) return;
       if (error instanceof ProviderRequestError && error.code === 'provider_not_found') {
         sendPublicRequestError(res, new ConversationRequestError('PROVIDER_NOT_FOUND', error.message, 404));
         return;
@@ -444,7 +447,8 @@ async function startConversation(req: express.Request, res: express.Response): P
         code: 'CONVERSATION_PROVIDER_UNAVAILABLE',
         error: 'The conversation AI provider could not be resolved',
         logLabel: '[AgentConversation] Provider pin error',
-      }, [ProviderRequestError]);
+        // A pin missing from an unreadable providers.json is unknown, not deleted.
+      }, [ProviderRequestError, ProviderStoreUnreadableError]);
       return;
     }
     if (
@@ -487,22 +491,14 @@ async function startConversation(req: express.Request, res: express.Response): P
       status: 'running',
     });
   } catch (error: unknown) {
-    if (error instanceof AnalyzeOptionsError) {
-      res.status(error.httpStatus).json({
-        success: false,
-        code: error.code,
-        error: error.message,
-        ...(error.details ? {details: error.details} : {}),
-      });
-      return;
-    }
-    // Typed conversation and authorization errors carry text we wrote; any
-    // other failure (stores, Trace loading, runtime setup) gets fixed text.
+    // Typed option, conversation and authorization errors carry text we
+    // wrote; any other failure (stores, Trace loading, runtime setup) gets
+    // fixed text.
     sendRouteError(res, error, {
       code: 'CONVERSATION_START_FAILED',
       error: 'Failed to start the conversation',
       logLabel: '[AgentConversation] Start error',
-    }, CONVERSATION_PUBLIC_ERRORS);
+    }, CONVERSATION_START_PUBLIC_ERRORS);
   }
 }
 

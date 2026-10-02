@@ -52,12 +52,16 @@ Trace Processor 代理的 WebSocket 升级和服务端日志。请求体里的 `
 服务端日志行，用 `requestId` 关联。
 
 SmartPerfetto 自己为调用方编写的错误保留可操作的文案，形状相同但 `error` 是该文案、HTTP 状态
-取错误自己的状态。它们在后端是 `PublicRequestError` 的领域子类，每个路由只回显自己列出的子类，
-其他异常一律固定文案。例如：
+取错误自己的状态，个别错误另带结构化的 `details`（如 Agent 分析参数）。它们在后端是
+`PublicRequestError` 的领域子类，每个路由只回显自己列出的子类，其他异常一律固定文案；这类错误
+若是 5xx（如系统目录选择器打不开），原因同样写入服务端日志。逃逸到全局错误处理的这类错误沿用自身
+状态码，文案仍按全局规则固定。例如：
 
-- Provider Manager 输入（`provider_invalid_request` 400、`provider_not_found` 404）、trace 列表分页
-  （`INVALID_TRACE_LIST_PAGE`）、Agent 日志级别（`invalid_log_level`）、Agent 分析参数、RAG 检索参数、
-  目录选择器和企业工作区管理。
+- Provider Manager 输入（`provider_invalid_request` 400、`provider_not_found` 404）与 providers.json
+  不可读（`provider_store_unreadable` 409）、trace 列表分页（`INVALID_TRACE_LIST_PAGE`）、Agent 日志级别
+  （`invalid_log_level`）、Agent 分析参数、RAG 检索参数（`invalid_rag_search_input`）、目录选择器
+  （`DIRECTORY_*`）和企业工作区管理（`enterprise_admin_invalid_request` 400、`enterprise_admin_forbidden`
+  403、`enterprise_admin_not_found` 404、`enterprise_admin_conflict` 409）。
 - 对话：`CONVERSATION_NOT_FOUND` 404、`CONVERSATION_QUERY_REQUIRED` 400、会话上下文变化
   （`CONVERSATION_TRACE_CHANGED`、`CONVERSATION_PROVIDER_CHANGED`、
   `CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`、`ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED`；源码或知识源授权
@@ -67,12 +71,19 @@ SmartPerfetto 自己为调用方编写的错误保留可操作的文案，形状
 - URL 上传：`INVALID_TRACE_URL` 400、`TRACE_URL_TIMEOUT` 504、`TRACE_URL_REDIRECT_INVALID` 502。
 - 知识策展（baseline、case、memory 晋升）、企业 API Key 创建、OIDC 登录被拒
   （`oidc_subject_tenant_conflict` 403）、trace 采集配置建议、反馈写入
-  （输入校验 400，supersede/幂等冲突 409）、代码库和外部知识源的字段校验、批量 trace 请求。
+  （输入校验与目标缺失/矛盾 400，supersede/幂等冲突 409）、代码库和外部知识源的字段校验
+  （代码库管理接口统一为 `CODEBASE_*`，含 `CODEBASE_METADATA_INVALID`、`PENDING_GENERATION_ID_INVALID`）、
+  批量 trace 请求（`error` 可带 `:` 之后的字段名、数量或 Skill 类型，如
+  `invalid_batch_trace_limit:trace_count:2>1`；Skill 与工作区 Skill 包冲突为 409）。
+- Skill 包：清单、资产或包内 Skill 定义无效、不可安装 400，资产在预览后变化、同版本内容
+  已变化（`installed_pack_content_hash_mismatch`）、与工作区 Skill/片段冲突 409，包不存在 404；`error`
+  是原因码，可带 `:` 之后的包内相对路径、字段名或 Skill id。持久化失败等内部原因一律固定文案。
 
-RAG 管理、Skill 包和批量 trace 接口背后的服务把机器可读的原因码作为异常消息抛出
-（如 `root_outside_allowlist`、`source_chunk_limit_exceeded:5000`）。这些接口回显原因码本身作为
-`code` 和 `error`，去掉第一个 `:` 之后的细节（可能是 id、路径或大小），原始消息以 warn 级别写入
-日志；不是原因码的消息一律固定文案。自进化接口沿用 `{success: false, error: <code>}` 形状，返回
+RAG 管理接口背后的服务把机器可读的原因码作为异常消息抛出（如 `root_outside_allowlist`、
+`source_chunk_limit_exceeded:5000`）。只有调用方能处理的原因码族（源码路径、知识根、索引生命周期、
+授权与使用权确认）会被回显为 `code` 和 `error`，去掉第一个 `:` 之后的细节（可能是 id、路径或
+大小），原始消息以 warn 级别写入日志；存储损坏、暂存计数不一致等内部原因码和不是原因码的消息
+一律固定文案。自进化接口沿用 `{success: false, error: <code>}` 形状，返回
 完整的小写原因码（只含 `a-z 0-9 _ : -`，可带 `:` 之后的 id），其他异常为
 `self_evolution_request_failed`。
 

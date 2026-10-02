@@ -56,21 +56,11 @@ function managementContext(
   return {service, scope};
 }
 
+/** Exit code from the error's HTTP status: input 2, not found 3, conflict 4, anything else 5. */
 function managementExitCode(error: CodebaseManagementError): number {
-  if (
-    error.code === 'CODEBASE_SELECTION_EMPTY' ||
-    error.code === 'CODEBASE_SELECTION_INVALID' ||
-    error.code === 'CODEBASE_SELECTION_UNCHANGED' ||
-    error.code === 'CODEBASE_ROOT_DRIFT' ||
-    error.code === 'CODEBASE_PREVIEW_FAILED'
-  ) return 2;
-  if (error.code === 'CODEBASE_NOT_FOUND') return 3;
-  if (
-    error.code === 'CODEBASE_BUSY' ||
-    error.code === 'CODEBASE_CONSENT_REQUIRED' ||
-    error.code === 'CODEBASE_DELETING' ||
-    error.code.startsWith('PENDING_GENERATION_')
-  ) return 4;
+  if (error.status === 400) return 2;
+  if (error.status === 404) return 3;
+  if (error.status === 409) return 4;
   return 5;
 }
 

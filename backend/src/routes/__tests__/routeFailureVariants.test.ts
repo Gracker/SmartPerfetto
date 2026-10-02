@@ -24,6 +24,7 @@ import { KnowledgeCurationError } from '../../services/knowledgeCurationError';
 import { ApiKeyRequestError } from '../../services/enterpriseApiKeyService';
 import { KnowledgeSourceRequestError } from '../../services/externalKnowledgeSourceRegistry';
 import { CodebaseManagementError } from '../../services/codebase/codebaseManagementService';
+import { NativeDirectoryPickerError } from '../../services/codebase/nativeDirectoryPicker';
 import * as traceConfigProposal from '../../services/traceConfigProposal';
 import { ConversationRequestError, ConversationSessionService } from '../../assistant/application/conversationSessionService';
 
@@ -174,8 +175,11 @@ describe('route failure variants', () => {
       appSourceIngester: {},
       aospSourceIngester: {},
       kernelSourceIngester: {},
-      directoryPicker: {},
-      codebaseManagementService: {get: jest.fn(downstream)},
+      directoryPicker: {validateSelection: jest.fn(() => {
+        throw new NativeDirectoryPickerError('DIRECTORY_PICKER_FAILED', 'Unable to open the system directory picker', 500,
+          new Error(CANARY));
+      })},
+      codebaseManagementService: {get: jest.fn(downstream), delete: jest.fn(async (): Promise<never> => downstream())},
       externalKnowledgeRegistry: {get: jest.fn(() => ({id: 'k1'})), setProviderConsent: jest.fn(downstream)},
       androidInternalsWikiIngester: {ingest: jest.fn(async (): Promise<never> => downstream())},
     };
@@ -217,6 +221,37 @@ describe('route failure variants', () => {
       services.androidInternalsWikiIngester.ingest.mockImplementation(async () => downstream());
       expectFixedFailure(await request(app()).post('/api/rag/android-internals/sources/k1/reindex'), 500,
         'knowledge_source_reindex_failed');
+    });
+
+    test('an internal reason token gets fixed text; a caller-facing one keeps its code', async () => {
+      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
+        throw new Error('staged_chunk_count_mismatch:3:2');
+      });
+      const internal = await request(app()).post('/api/rag/android-internals/sources/k1/reindex');
+      expect(internal.status).toBe(500);
+      expect(internal.body.code).toBe('knowledge_source_reindex_failed');
+      expect(internal.text).not.toContain('staged_chunk_count_mismatch');
+
+      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
+        throw new Error('provider_send_not_consented');
+      });
+      const consent = await request(app()).post('/api/rag/android-internals/sources/k1/reindex');
+      expect(consent.status).toBe(400);
+      expect(consent.body.code).toBe('provider_send_not_consented');
+    });
+
+    test('a server-side directory picker failure keeps its fixed text and logs its cause', async () => {
+      const res = await request(app()).post('/api/rag/codebases/preview')
+        .set('Origin', 'http://127.0.0.1:10000')
+        .send({rootPath: '/src/app', directorySelectionId: 'selection-1'});
+      expectPublicError(res, 500, 'DIRECTORY_PICKER_FAILED', 'Unable to open the system directory picker');
+      expect(res.text).not.toContain('canary-7e3a');
+      const logged = errorLog.mock.calls.flat().find(value => value instanceof NativeDirectoryPickerError);
+      expect((logged as NativeDirectoryPickerError | undefined)?.cause).toEqual(new Error(CANARY));
+    });
+
+    test('codebase delete: a storage failure is fixed', async () => {
+      expectFixedFailure(await request(app()).delete('/api/rag/codebases/cb1'), 500, 'CODEBASE_DELETE_FAILED');
     });
 
     test('codebase read: a management error keeps its status, anything else is fixed', async () => {

@@ -52,6 +52,7 @@ import {
   searchScopedRagKnowledgeRecords,
   upsertScopedKnowledgeRecords,
 } from './scopedKnowledgeStore';
+import {PublicRequestError} from '../utils/publicRequestError';
 
 /** Source kinds that require a `license` field at ingestion time. */
 const LICENSE_REQUIRED_KINDS: ReadonlySet<RagSourceKind> = new Set([
@@ -1131,12 +1132,10 @@ class LocalRagStorageBudgetError extends Error {
   }
 }
 
-export class RagSearchInputError extends Error {
-  readonly code = 'invalid_rag_search_input';
-
+/** A RAG search request the caller has to change; its text names the field. */
+export class RagSearchInputError extends PublicRequestError {
   constructor(detail: string) {
-    super(detail);
-    this.name = 'RagSearchInputError';
+    super('invalid_rag_search_input', detail);
   }
 }
 

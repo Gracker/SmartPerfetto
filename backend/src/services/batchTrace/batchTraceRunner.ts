@@ -98,7 +98,7 @@ function markLeaseReadyIfNew(
 
 function unsupportedSkillError(skill: SkillDefinition): Error | null {
   if (skill.type === 'comparison' || skill.type === 'pipeline_definition') {
-    return new Error(`unsupported_batch_skill_type:${skill.type}`);
+    return new BatchTraceRequestError('unsupported_batch_skill_type', `unsupported_batch_skill_type:${skill.type}`);
   }
   return null;
 }

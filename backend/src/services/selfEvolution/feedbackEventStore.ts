@@ -159,36 +159,41 @@ function commandFingerprint(input: AppendFeedbackEventInput): string {
   return canonicalContentHash(normalizedCommand(input));
 }
 
+/**
+ * The event's target id. `invalid` builds the error for a missing or
+ * contradictory target: a request rejection when it checks caller input, a
+ * plain error (internal) when it reads a stored event.
+ */
 function eventTargetId(input: {
   targetKind: FeedbackTargetKind;
   targetId?: string;
   patternId?: string;
   caseCandidateId?: string;
   sessionId: string;
-}): string {
+}, invalid: (code: string) => Error = code => new Error(code)): string {
   if (input.targetKind === 'pattern') {
     const patternId = input.patternId ?? input.targetId;
-    if (!patternId) throw new Error('feedback_pattern_target_required');
+    if (!patternId) throw invalid('feedback_pattern_target_required');
     if (input.targetId && input.targetId !== patternId) {
-      throw new Error('feedback_pattern_target_mismatch');
+      throw invalid('feedback_pattern_target_mismatch');
     }
     return patternId;
   }
   if (input.targetKind === 'case_candidate') {
     const candidateId = input.caseCandidateId ?? input.targetId;
-    if (!candidateId) throw new Error('feedback_case_candidate_target_required');
+    if (!candidateId) throw invalid('feedback_case_candidate_target_required');
     if (input.targetId && input.targetId !== candidateId) {
-      throw new Error('feedback_case_candidate_target_mismatch');
+      throw invalid('feedback_case_candidate_target_mismatch');
     }
     return candidateId;
   }
   if (input.targetKind === 'session') {
     if (input.targetId && input.targetId !== input.sessionId) {
-      throw new Error('feedback_session_target_mismatch');
+      throw invalid('feedback_session_target_mismatch');
     }
     return input.sessionId;
   }
-  if (!input.targetId) throw new Error('feedback_target_id_required');
+  if (!input.targetId) throw invalid('feedback_target_id_required');
   return input.targetId;
 }
 
@@ -722,7 +727,7 @@ export class FeedbackEventStore {
     if (!Number.isFinite(Date.parse(timestamp))) {
       throw new FeedbackRequestError('feedback_timestamp_invalid', 400);
     }
-    eventTargetId(input);
+    eventTargetId(input, code => new FeedbackRequestError(code, 400));
     if (input.kind === 'created') {
       if (input.feedbackId) {
         throw new FeedbackRequestError('feedback_created_feedback_id_forbidden', 400);

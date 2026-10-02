@@ -12,6 +12,7 @@ import { generateRenderingPipelineDetectionSkill } from '../renderingPipelineDet
 import {
   getSkillsDir,
   SkillRegistry,
+  SkillRegistryRejectionError,
   type SkillRootDescriptor,
 } from '../skillEngine/skillLoader';
 import { SkillPackRepository } from './skillPackRepository';
@@ -20,6 +21,7 @@ import type {
   SkillOriginMetadata,
 } from './skillPackTypes';
 import {buildSkillRegistryAttribution} from '../selfEvolution/skillFingerprint';
+import { SkillPackRequestError } from './skillPackRequestError';
 
 export interface WorkspaceSkillRegistryHandle {
   registry: SkillRegistry;
@@ -102,14 +104,14 @@ function assertNoEnabledPackCollisions(records: InstalledSkillPackRecord[]): voi
     for (const skillId of record.metadata.skillIds) {
       const owner = skillOwners.get(skillId);
       if (owner && owner !== record.id) {
-        throw new Error(`workspace_skill_pack_skill_collision:${skillId}`);
+        throw new SkillPackRequestError('workspace_skill_pack_skill_collision', 409, skillId);
       }
       skillOwners.set(skillId, record.id);
     }
     for (const fragmentKey of record.metadata.fragmentKeys) {
       const owner = fragmentOwners.get(fragmentKey);
       if (owner && owner !== record.id) {
-        throw new Error(`workspace_skill_pack_fragment_collision:${fragmentKey}`);
+        throw new SkillPackRequestError('workspace_skill_pack_fragment_collision', 409, fragmentKey);
       }
       fragmentOwners.set(fragmentKey, record.id);
     }
@@ -164,7 +166,7 @@ async function buildHandle(
   const generatedSkill = await generateRenderingPipelineDetectionSkill();
   const generatedOrigin = registry.getSkillOrigin(generatedSkill.name);
   if (generatedOrigin?.origin === 'external_pack') {
-    throw new Error(`skill_id_collision:${generatedSkill.name}`);
+    throw new SkillRegistryRejectionError('skill_id_collision', generatedSkill.name);
   }
   registry.upsertSkill(generatedSkill);
   const attribution = buildSkillRegistryAttribution(registry);

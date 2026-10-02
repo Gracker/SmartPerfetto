@@ -67,15 +67,22 @@ and stack go only to the server log line of that route, correlated by
 `requestId`.
 
 Errors SmartPerfetto writes for the caller keep their actionable text: the
-same shape, with that text as `error` and the error's own HTTP status. In the
-backend they are domain subclasses of `PublicRequestError`, and each route
-echoes only the subclasses it lists; any other exception gets fixed text.
-For example:
+same shape, with that text as `error`, the error's own HTTP status, and for a
+few errors (Agent analyze options) structured `details`. In the backend they
+are domain subclasses of `PublicRequestError`, and each route echoes only the
+subclasses it lists; any other exception gets fixed text. A 5xx one (a system
+directory picker that cannot open) still logs its cause. One that escapes to
+the global error handler keeps its status there, with the handler's fixed
+text. For example:
 
 - Provider Manager input (`provider_invalid_request` 400, `provider_not_found`
-  404), trace list paging (`INVALID_TRACE_LIST_PAGE`), agent log level
-  (`invalid_log_level`), Agent analyze options, RAG search input, the
-  directory picker, and enterprise workspace administration.
+  404) and an unreadable providers.json (`provider_store_unreadable` 409),
+  trace list paging (`INVALID_TRACE_LIST_PAGE`), agent log level
+  (`invalid_log_level`), Agent analyze options, RAG search input
+  (`invalid_rag_search_input`), the directory picker (`DIRECTORY_*`), and
+  enterprise workspace administration (`enterprise_admin_invalid_request` 400,
+  `enterprise_admin_forbidden` 403, `enterprise_admin_not_found` 404,
+  `enterprise_admin_conflict` 409).
 - Conversations: `CONVERSATION_NOT_FOUND` 404, `CONVERSATION_QUERY_REQUIRED`
   400, a changed conversation context (`CONVERSATION_TRACE_CHANGED`,
   `CONVERSATION_PROVIDER_CHANGED`, `CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`,
@@ -89,16 +96,29 @@ For example:
   `TRACE_URL_REDIRECT_INVALID` 502.
 - Knowledge curation (baselines, cases, memory promotion), enterprise API key
   creation, a refused OIDC login (`oidc_subject_tenant_conflict` 403), trace
-  config proposals, feedback writes (input validation 400,
+  config proposals, feedback writes (input validation and a missing or contradictory target 400,
   supersede/idempotency conflicts 409), codebase and external knowledge source
-  field validation, and batch trace requests.
+  field validation (codebase management uses `CODEBASE_*` codes, including
+  `CODEBASE_METADATA_INVALID` and `PENDING_GENERATION_ID_INVALID`), and batch
+  trace requests (`error` may carry a field name, count or Skill type after
+  `:`, e.g. `invalid_batch_trace_limit:trace_count:2>1`; a Skill colliding with
+  a workspace Skill pack is 409).
+- Skill packs: an invalid manifest, asset or pack Skill definition, or a pack
+  that is not installable 400; an asset that changed
+  since preview, an installed version whose content changed
+  (`installed_pack_content_hash_mismatch`), or a collision with workspace Skills
+  or fragments 409; an unknown pack 404. `error` is the reason code, possibly
+  followed by the pack-relative path, field name or Skill id after `:`.
+  Internal failures such as persistence get fixed text.
 
-The services behind RAG administration, Skill packs and batch traces throw
-machine reason codes as their messages (`root_outside_allowlist`,
-`source_chunk_limit_exceeded:5000`). These endpoints return the reason code
-itself as `code` and `error`, without the detail after the first `:` (an id,
-path or size), and log the original message at warn level; a message that is
-not a reason code gets fixed text. Self-Evolution keeps its
+The services behind RAG administration throw machine reason codes as their
+messages (`root_outside_allowlist`, `source_chunk_limit_exceeded:5000`). Only
+the families a caller can act on (source paths, knowledge roots, the index
+lifecycle, consent and right-to-use acknowledgement) are returned as `code`
+and `error`, without the detail after the first `:` (an id, path or size), and
+the original message is logged at warn level; internal reason codes (store
+corruption, staged chunk count mismatches) and messages that are not reason
+codes get fixed text. Self-Evolution keeps its
 `{success: false, error: <code>}` shape and returns the whole lowercase reason
 code (only `a-z 0-9 _ : -`, possibly with an id after `:`); any other
 exception is `self_evolution_request_failed`.

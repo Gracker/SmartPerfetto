@@ -28,6 +28,7 @@ import {
 import {RagStore} from '../ragStore';
 import {assertCodebaseRootIdentity, resolveSourcePathPatterns} from '../rag/sourceFileSelection';
 import {PublicRequestError} from '../../utils/publicRequestError';
+import {CodebaseRequestError, type CodebaseRequestErrorCode} from './codebaseRequestError';
 
 export type CodebaseManagementErrorCode =
   | 'CODEBASE_AUDIT_FAILED'
@@ -36,16 +37,15 @@ export type CodebaseManagementErrorCode =
   | 'CODEBASE_DELETE_FAILED'
   | 'CODEBASE_DELETE_INCOMPLETE'
   | 'CODEBASE_DELETING'
-  | 'CODEBASE_NOT_FOUND'
   | 'CODEBASE_OPERATION_FAILED'
   | 'CODEBASE_PREVIEW_FAILED'
   | 'CODEBASE_ROOT_DRIFT'
   | 'CODEBASE_SELECTION_EMPTY'
-  | 'CODEBASE_SELECTION_INVALID'
   | 'CODEBASE_SELECTION_UNCHANGED'
   | 'PENDING_GENERATION_EXPIRED'
   | 'PENDING_GENERATION_NOT_FOUND'
-  | 'PENDING_GENERATION_STALE';
+  | 'PENDING_GENERATION_STALE'
+  | CodebaseRequestErrorCode;
 
 /** A codebase management failure with sanitized text: fixed for unknown causes (see toError). */
 export class CodebaseManagementError extends PublicRequestError {
@@ -55,9 +55,9 @@ export class CodebaseManagementError extends PublicRequestError {
     code: CodebaseManagementErrorCode,
     status: number,
     message: string,
-    public readonly details?: Readonly<Record<string, string | number | boolean>>,
+    details?: Readonly<Record<string, string | number | boolean>>,
   ) {
-    super(code, message, status);
+    super(code, message, status, details);
   }
 }
 
@@ -604,7 +604,7 @@ export class CodebaseManagementService {
           'Codebase indexing is in progress; retry deletion after it finishes',
         );
       }
-      if (message.includes('not found')) {
+      if (error instanceof CodebaseRequestError && error.code === 'CODEBASE_NOT_FOUND') {
         return {codebaseId: id, removedChunkCount: 0, alreadyDeleted: true};
       }
       throw new CodebaseManagementError(
@@ -697,10 +697,13 @@ export class CodebaseManagementService {
     operation: 'audit' | 'mutation' | 'pending' | 'preview' | 'selection',
   ): CodebaseManagementError {
     if (error instanceof CodebaseManagementError) return error;
-    const message = error instanceof Error ? error.message : String(error);
-    if (operation !== 'preview' && message.includes('not found')) {
-      return new CodebaseManagementError('CODEBASE_NOT_FOUND', 404, `Codebase '${id}' not found`);
+    // Typed selection, metadata and not-found rejections keep their text;
+    // preview has no stored codebase, so a not-found there is a preview failure.
+    if (error instanceof CodebaseRequestError &&
+      !(operation === 'preview' && error.code === 'CODEBASE_NOT_FOUND')) {
+      return new CodebaseManagementError(error.code, error.status, error.message);
     }
+    const message = error instanceof Error ? error.message : String(error);
     if (message === 'codebase_deleting') {
       return new CodebaseManagementError('CODEBASE_DELETING', 409, message);
     }
@@ -727,14 +730,6 @@ export class CodebaseManagementService {
     }
     if (message === 'codebase_root_realpath_drift') {
       return new CodebaseManagementError('CODEBASE_ROOT_DRIFT', 400, message);
-    }
-    if (
-      message.startsWith('`pathFilters`') ||
-      message.startsWith('`excludeGlobs`') ||
-      /^(?:pathFilters|excludeGlobs)(?:\[\d+\])? must /.test(message) ||
-      message === 'kernel_source requires pathFilters'
-    ) {
-      return new CodebaseManagementError('CODEBASE_SELECTION_INVALID', 400, message);
     }
     if (operation === 'preview') {
       return new CodebaseManagementError(

@@ -68,7 +68,7 @@ function exceptionTextLines(source: string): number[] {
 const ALLOWED: Record<string, {count: number; why: string}> = {
   'controllers/skillAdminController.ts': {count: 1, why: 'YAML parse error of the caller\'s own skill content'},
   'middleware/routeFailure.ts': {count: 2, why: 'loggableError (log payload); sendPublicRequestError (typed text)'},
-  'routes/agentConversationRoutes.ts': {count: 2, why: 'ProviderRequestError not-found text; AnalyzeOptionsError'},
+  'routes/agentConversationRoutes.ts': {count: 1, why: 'ProviderRequestError not-found text'},
   'routes/agentLogsRoutes.ts': {count: 1, why: 'setLogLevel validation'},
   'routes/agentRoutes.ts': {
     count: 5,
@@ -76,12 +76,8 @@ const ALLOWED: Record<string, {count: number; why: string}> = {
       + 'log-only errorMessage helper x2',
   },
   'routes/analysisResultRoutes.ts': {count: 2, why: 'route-local limit/boolean parsers'},
-  'routes/enterpriseTenantRoutes.ts': {count: 2, why: 'EnterpriseAdminControlPlaneError; typed purge window/tombstone job error'},
-  'routes/providerStoreHttp.ts': {count: 1, why: 'ProviderStoreUnreadableError (fixed messages)'},
-  'routes/ragAdminRoutes.ts': {
-    count: 5,
-    why: 'NativeDirectoryPickerError; RagSearchInputError x2; CodebaseRequestError index failure; CodebaseManagementError',
-  },
+  'routes/enterpriseTenantRoutes.ts': {count: 1, why: 'typed purge window/tombstone job error'},
+  'routes/ragAdminRoutes.ts': {count: 1, why: 'index failure legacy `error`: CodebaseRequestError text'},
   'routes/selfEvolutionAdminRoutes.ts': {count: 2, why: 'reason-code filter: only a lowercase code token is returned'},
   'routes/simpleTraceRoutes.ts': {
     count: 3,

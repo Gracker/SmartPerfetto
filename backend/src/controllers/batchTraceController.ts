@@ -4,8 +4,10 @@
 
 import type { Request, Response } from 'express';
 import { requireRequestContext } from '../middleware/auth';
-import { sendRouteReasonError } from '../middleware/routeFailure';
-import { BatchTraceRequestError } from '../services/batchTrace/batchTraceRequestError';
+import { sendRouteError } from '../middleware/routeFailure';
+import { BatchTraceRequestError, invalidBatchTraceRequest } from '../services/batchTrace/batchTraceRequestError';
+import { SkillPackRequestError } from '../services/skillPacks/skillPackRequestError';
+import { SkillRegistryRejectionError } from '../services/skillEngine/skillLoader';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { repositoryScopeFromRequestContext } from '../services/enterpriseRepository';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
@@ -31,7 +33,7 @@ function stringBody(value: unknown): string | null {
 function routeParam(req: Request, name: string): string {
   const value = req.params[name];
   if (typeof value === 'string' && value.trim()) return value.trim();
-  throw new Error(`${name} is required`);
+  throw invalidBatchTraceRequest(`${name} is required`);
 }
 
 function objectBody(value: unknown): Record<string, unknown> {
@@ -58,7 +60,7 @@ function optionalInteger(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error('maxConcurrency must be a positive integer');
+    throw invalidBatchTraceRequest('maxConcurrency must be a positive integer');
   }
   return parsed;
 }
@@ -93,15 +95,15 @@ function selectedSnapshotIds(run: BatchTraceRunV1, ordinals: number[]): string[]
 }
 
 /**
- * Typed request errors keep their text; the reason tokens batch services throw
- * keep their code (404 for a `*_not_found` one); anything else gets fixed text.
+ * Batch request errors and workspace skill pack collisions keep their text;
+ * anything else (stores, Skill definitions, trace processing) gets fixed text.
  */
 function errorResponse(res: Response, error: unknown): void {
-  sendRouteReasonError(res, error, reason => (reason.endsWith('not_found') ? 404 : 400), {
+  sendRouteError(res, error, {
     code: 'batch_trace_request_failed',
     error: 'Batch trace request failed',
     logLabel: '[BatchTrace] Request error',
-  }, [BatchTraceRequestError]);
+  }, [BatchTraceRequestError, SkillPackRequestError, SkillRegistryRejectionError]);
 }
 
 export function createBatchTraceController() {

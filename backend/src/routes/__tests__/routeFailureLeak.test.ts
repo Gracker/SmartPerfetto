@@ -16,6 +16,8 @@ import {
   invalidProviderRequest,
   providerNotFound,
 } from '../../services/providerManager/providerRequestError';
+import { ProviderStoreUnreadableError } from '../../services/providerManager/providerStore';
+import { EnterpriseAdminControlPlaneError } from '../../services/enterpriseAdminControlPlaneService';
 import { registerAgentLogsRoutes } from '../agentLogsRoutes';
 import enterpriseTenantRoutes from '../enterpriseTenantRoutes';
 import exportRoutes from '../exportRoutes';
@@ -272,6 +274,40 @@ describe('route catch blocks never return downstream exception messages', () => 
       error: 'Provider not found: p404',
       requestId: 'req-leak-test',
     });
+  });
+
+  test('an unreadable providers.json answers its fixed 409 with a request id', async () => {
+    mockProviderService.create.mockImplementation(() => {
+      throw new ProviderStoreUnreadableError('write');
+    });
+
+    const res = await request(app).post('/api/providers').set('X-Request-Id', 'req-leak-test').send({});
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      success: false,
+      code: 'provider_store_unreadable',
+      error: expect.stringContaining('providers.json could not be read'),
+      requestId: 'req-leak-test',
+    });
+  });
+
+  test('a workspace administration rejection keeps its text behind a status-derived code', async () => {
+    const original = mockState.downstream;
+    mockState.downstream = () => {
+      throw new EnterpriseAdminControlPlaneError(403, 'Tenant administration requires org_admin');
+    };
+    try {
+      const res = await request(app).get('/api/tenant/admin/summary').set('X-Request-Id', 'req-leak-test');
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({
+        success: false,
+        code: 'enterprise_admin_forbidden',
+        error: 'Tenant administration requires org_admin',
+        requestId: 'req-leak-test',
+      });
+    } finally {
+      mockState.downstream = original;
+    }
   });
 
   test('a trace list limit error keeps its text, an unrelated RangeError does not', async () => {

@@ -13,6 +13,7 @@ import type {
 } from '../../../types/selfEvolution';
 import {
   FeedbackEventStore,
+  FeedbackRequestError,
   feedbackEventStoreTesting,
   privateFeedbackStorePaths,
 } from '../feedbackEventStore';
@@ -83,6 +84,15 @@ describe('FeedbackEventStore', () => {
       rating: 'negative',
     }))).rejects.toThrow('feedback_idempotency_conflict');
     reopened.close();
+  });
+
+  it('rejects a missing or contradictory target as a request error', async () => {
+    const store = openStore();
+    await expect(store.append(input({targetKind: 'session', targetId: 'another-session'})))
+      .rejects.toMatchObject({code: 'feedback_session_target_mismatch', status: 400});
+    await expect(store.append(input({targetKind: 'pattern', targetId: undefined})))
+      .rejects.toBeInstanceOf(FeedbackRequestError);
+    store.close();
   });
 
   it('replaces and retracts one logical feedback without forking the chain', async () => {
