@@ -389,7 +389,7 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 4. **输入参数**: `${package}` → `params.package`（含声明的 `default`）
 5. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`，即调用方 Skill 的继承值和它的 `save_as`
 
-SQL 里按路径读取前面步骤的结果（`${step_id.data[0].字段}`）时，必须二选一写明意图：带 `|默认值`（结果没有行时照常执行，引号内常用 `|`、其它位置常用 `|NULL`），或者让本步骤的 `condition` 以顶层合取项 `step_id.data?.length > 0` 要求该结果有行（结果没有行时不执行；只是提到该结果、在无行时仍可能为真的条件不算）。本运行时缺值会按下面的智能默认值照常执行，公开的 Perfetto-Skills 运行时则把没有默认值的路径当成依赖、结果无行时跳过整步；`resultPlaceholderDefaults.test.ts` 检查每处读取都已写明。
+SQL 里按路径读取前面步骤的结果（`${step_id.data[0].字段}`）时，必须二选一写明意图：带 `|默认值`（结果没有行时照常执行，引号内常用 `|`、其它位置常用 `|NULL`），或者让本步骤的 `condition` 以顶层合取项 `step_id.data?.length > 0` 要求该结果有行（结果没有行时不执行；只是提到该结果、在无行时仍可能为真的条件不算）。本运行时缺值会按下面的智能默认值照常执行，公开的 Perfetto-Skills 运行时则把没有默认值的路径当成依赖、结果无行时跳过整步；`validate:skills` 对没写明的读取报错 `result_path_read_undecided`。
 
 所以本 Skill 自己的绑定总会遮住调用方的同名值；`save_as` 先于同名步骤结果，读到的是它声明的绑定（包括 `save_from` 选中的子步骤）。一个步骤的 `save_as` 不能使用另一个步骤的 id（`validate:skills` 报 `save_as_step_id_collision`），以自身 id 命名则是常规写法。根名字一旦在某层找到就不再向更低的层回退（例如 `null` 变量不会让位给同名输入参数）；完整路径最终解析为 `null`/`undefined` 时（未绑定、绑定为 `null`、空数组取 `[0]`、字段不存在），再使用 `|默认值` 和下面的智能默认值。
 
@@ -845,6 +845,7 @@ Skill 可以声明顶层 `tier: S | A | B`，用于表达目标复杂度和 revi
 | `skill-step-id-uniqueness` | 每个 Skill 内 step id 必须唯一 |
 | `skill-vendor-override-runtime-conformant` | Vendor override 必须有真实 `additional_steps`、vendor signatures，并指向已注册 base Skill |
 | `skill-top-level-key-unknown` | 顶层字段必须是加载器会读的字段，否则报错：Skill 是 `SkillDefinition` 的字段加上加载器归一化的旧写法（`display`、`description`、`tags`、`icon`、`display_name`、`displayName`）；pipeline 只能用 `PipelineDefinition` 的字段；vendor override 只能用 `extends`、`version`、`meta`、`vendor_detection`、`additional_steps`。外部 Skill Pack 带未知顶层字段时整包拒绝加载 |
+| `result-path-read-undecided` | 按路径读取前面顶层步骤结果的 SQL 占位符（`sql` 与 `exact_sql.sql`）必须带 `\|默认值`，或所在步骤的 `condition` 含顶层合取项 `<结果>.data?.length > 0`；否则报错 `result_path_read_undecided`。自进化提案门禁在提案定义或修改的 Skill 上报错（含该 Skill 上已有覆盖层的步骤），对其它已发布覆盖层只报警告 |
 
 没人读的顶层字段不是无害注释：它看起来像会生效的配置（顶层 `diagnostics`、`thresholds`、`synthesis`、厂商
 `thresholds_override` 都曾这样静默无效，公开投影还把它们当作活配置渲染）。诊断规则写在 `type: diagnostic`

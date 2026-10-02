@@ -307,6 +307,25 @@ describe('in-process effective Skill validator', () => {
     expect(ruleIssues({condition: "rows.data[0].state === 'ok' OR missing"})).toEqual([]);
   });
 
+  it('rejects a saved-result path read that states neither a default nor a guarding condition', () => {
+    const reader = skill('reader');
+    reader.steps = [
+      {id: 'probe', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
+      {id: 'bare', type: 'atomic', sql: "SELECT '${cov.data[0].status}' AS s"},
+      {id: 'defaulted', type: 'atomic', sql: "SELECT '${cov.data[0].status|}' AS s"},
+      {id: 'guarded', type: 'atomic', condition: 'cov.data?.length > 0', sql: "SELECT '${cov.data[0].status}' AS s"},
+    ];
+    const result = validateSkillDefinitionsInProcess({definitions: [reader]});
+    expect(result.issues.filter(issue => issue.code === 'result_path_read_undecided')
+      .map(issue => `${issue.severity} ${issue.path}`)).toEqual(['error steps[1].sql']);
+    expect(result.valid).toBe(false);
+    // Composing published overlays reports it without taking the scope offline.
+    const composed = validateSkillDefinitionsInProcess({definitions: [reader], resultPathReadSeverity: 'warning'});
+    expect(composed.issues.filter(issue => issue.code === 'result_path_read_undecided')
+      .map(issue => issue.severity)).toEqual(['warning']);
+    expect(composed.valid).toBe(true);
+  });
+
   it('rejects a top-level key no loader reads, by the set of the definition type', () => {
     const unknownKeys = (definition: Record<string, unknown>) =>
       validateSkillDefinitionsInProcess({definitions: [definition as unknown as SkillDefinition]}).issues
@@ -466,7 +485,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('5');
+    expect(gate.validatorVersion).toBe('6');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({

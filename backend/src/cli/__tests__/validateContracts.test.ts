@@ -72,6 +72,27 @@ describe('validate --contracts diagnostic confidence', () => {
   });
 });
 
+/** A saved-result path read must say whether its step runs without the row, as both runtimes read it. */
+describe('validate --contracts saved-result path reads', () => {
+  const reading = (sql: string, condition?: string): SkillDefinition => ({
+    name: 'result_read_contract_probe', version: '1', type: 'composite',
+    meta: {display_name: 'probe', description: 'probe'},
+    steps: [
+      {id: 'probe', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
+      {id: 'reader', type: 'atomic', sql, ...(condition ? {condition} : {})},
+    ] as any,
+  });
+  const readErrors = (skill: SkillDefinition) =>
+    validateContracts(skill).errors.filter(error => error.includes("earlier step's result"));
+
+  it('accepts a default or a guarding condition and rejects neither', () => {
+    expect(readErrors(reading("SELECT '${cov.data[0].status|}' AS s"))).toEqual([]);
+    expect(readErrors(reading("SELECT '${cov.data[0].status}' AS s", 'cov.data?.length > 0'))).toEqual([]);
+    expect(readErrors(reading("SELECT '${cov.data[0].status}' AS s")))
+      .toEqual([expect.stringContaining('steps[1].sql: ${cov.data[0].status} reads')]);
+  });
+});
+
 /** A top-level key no loader reads would read as configuration that takes effect. */
 describe('validate top-level keys of vendor overrides and pipelines', () => {
   const validateYaml = (fileName: string, lines: string[]) => {

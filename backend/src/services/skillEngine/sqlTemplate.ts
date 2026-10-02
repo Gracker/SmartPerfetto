@@ -79,8 +79,6 @@ export function readPlaceholderBody(body: string): {path: string; defaultValue?:
   return pipe >= 0 ? {path: raw.slice(0, pipe).trim(), defaultValue: raw.slice(pipe + 1).trim()} : {path: raw};
 }
 
-const placeholderPath = (match: string) => readPlaceholderBody(match.slice(2, -1)).path;
-
 // Skill SQL and fragments are a fixed set of texts, each substituted on every
 // run; the scan depends only on the text.
 const scanCache = new Map<string, ScannedPlaceholder[]>();
@@ -254,11 +252,19 @@ function closes(tokens: Token[], open: number, close: number): boolean {
   return false;
 }
 
-/** The paths of the placeholders SQL would bind, comments excluded. */
-export function boundSqlPlaceholderPaths(sql: string): string[] {
+/**
+ * The placeholders SQL would bind, comments excluded. A static read: unlike
+ * substitution, it does not refuse a placeholder no escaping can bind.
+ */
+export function boundSqlPlaceholders(sql: string): Array<{match: string; path: string; defaultValue?: string}> {
   return scanSqlPlaceholders(sql)
     .filter(p => p.context !== 'comment')
-    .map(p => placeholderPath(p.match));
+    .map(p => ({match: p.match, ...readPlaceholderBody(p.match.slice(2, -1))}));
+}
+
+/** The paths of the placeholders SQL would bind, comments excluded. */
+export function boundSqlPlaceholderPaths(sql: string): string[] {
+  return boundSqlPlaceholders(sql).map(p => p.path);
 }
 
 /**
