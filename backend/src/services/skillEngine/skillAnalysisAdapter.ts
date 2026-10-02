@@ -43,6 +43,7 @@ import {
   localize,
   type OutputLanguage,
 } from '../../agentv3/outputLanguage';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 // =============================================================================
 // Types
@@ -844,21 +845,10 @@ export class SkillAnalysisAdapter {
         if (configuredColumns.length > 0) {
           if (sourceColumns.length > 0) {
             const sourceRows = this.rowsToObjects(sourceColumns, data.rows);
-            sectionData = sourceRows.map((row: Record<string, any>) => {
-              const projected: Record<string, any> = {};
-              for (const col of configuredColumns) {
-                projected[col] = row[col];
-              }
-              return projected;
-            });
+            sectionData = sourceRows.map((row: Record<string, any>) =>
+              Object.fromEntries(configuredColumns.map(col => [col, row[col]])));
           } else {
-            sectionData = data.rows.map((row: any) => {
-              const projected: Record<string, any> = {};
-              configuredColumns.forEach((col, idx) => {
-                projected[col] = Array.isArray(row) ? row[idx] : undefined;
-              });
-              return projected;
-            });
+            sectionData = data.rows.map((row: any) => rowObject(configuredColumns, Array.isArray(row) ? row : []));
           }
           columns = configuredColumns;
         } else {
@@ -1004,13 +994,7 @@ export class SkillAnalysisAdapter {
    * 将行数组转换为对象数组
    */
   private rowsToObjects(columns: string[], rows: any[][]): Record<string, any>[] {
-    return rows.map(row => {
-      const obj: Record<string, any> = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    return rows.map(row => rowObject(columns, row));
   }
 
   /**

@@ -66,6 +66,21 @@ describe('evidenceContractBuilder', () => {
     }
   });
 
+  it('selects a row by a column aliased __proto__', () => {
+    // Model-written SQL can alias a column `__proto__`; JSON.parse keeps it as an own key.
+    const envelope = createDataEnvelope({columns: ['__proto__', 'value'], rows: [['main', 5], ['other', 6]]}, {
+      type: 'sql_result', source: 'execute_sql', title: 'Aliased evidence',
+      evidenceRefId: 'data:proto-column', traceId: 'trace-proto', traceSide: 'current',
+    });
+    const built = buildEvidenceContract({dataEnvelopes: [envelope], relationCandidates: [{
+      schemaVersion: 'evidence_relation_candidate@1', id: 'relation:proto-column',
+      kind: 'derived', direction: 'subject_to_object',
+      subject: {evidenceRefId: 'data:proto-column', rowSelector: JSON.parse('{"__proto__":"main"}'), column: 'value', value: 5},
+    }]});
+    expect(built.warnings).toEqual([]);
+    expect(built.anchors[0].cells![0]).toMatchObject({value: 5, actualValue: 5});
+  });
+
   it('still rejects null relation selectors and aggregate proposal values', () => {
     const base = {schemaVersion: 'evidence_relation_candidate@1', id: 'relation:null-schema',
       kind: 'derived', direction: 'subject_to_object',

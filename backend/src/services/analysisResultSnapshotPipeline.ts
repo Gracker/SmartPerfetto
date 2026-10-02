@@ -49,6 +49,7 @@ import {
 } from './security/analysisDeliveryProjection';
 import type {SourceUseDecisionV1} from './codebase/sourceUseDecision';
 import {envelopeTraceValue, measuresTrace} from './evidence/envelopeTraceIdentity';
+import {rowObject} from '../utils/traceProcessorRowUtils';
 
 export interface CompletedAnalysisSnapshotInput extends AnalysisDeliveryFields {
   tenantId?: string;
@@ -327,13 +328,7 @@ function dataRows(payload: unknown): Array<Record<string, unknown>> {
     if (columns.length > 0) {
       return data.rows
         .filter((row: unknown): row is unknown[] => Array.isArray(row))
-        .map((row: unknown[]) => {
-          const out: Record<string, unknown> = {};
-          columns.forEach((column, index) => {
-            out[column] = row[index];
-          });
-          return out;
-        });
+        .map((row: unknown[]) => rowObject(columns, row));
     }
   }
 

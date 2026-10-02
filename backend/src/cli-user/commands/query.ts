@@ -8,6 +8,7 @@ import { CliAnalyzeService } from '../services/cliAnalyzeService';
 import { getTraceProcessorService, type QueryResult } from '../../services/traceProcessorService';
 import { withConsoleLogToStderr } from '../io/stdio';
 import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 export interface QueryCommandArgs {
   trace: string;
@@ -59,7 +60,7 @@ function writeQueryOutput(
       durationMs: payload.result.durationMs,
     }));
     for (const row of payload.result.rows) {
-      console.log(JSON.stringify({ type: 'row', row: rowToObject(payload.result.columns, row) }));
+      console.log(JSON.stringify({ type: 'row', row: rowObject(payload.result.columns, row) }));
     }
     console.log(JSON.stringify({ type: 'complete', ok: !payload.result.error, rowCount: payload.result.rows.length }));
     return;
@@ -104,12 +105,4 @@ function formatCell(value: unknown): string {
   if (value === null || value === undefined) return '';
   if (typeof value === 'object') return JSON.stringify(value);
   return String(value);
-}
-
-function rowToObject(columns: string[], row: unknown[]): Record<string, unknown> {
-  const obj: Record<string, unknown> = {};
-  columns.forEach((col, index) => {
-    obj[col] = row[index];
-  });
-  return obj;
 }

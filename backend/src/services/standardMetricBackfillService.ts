@@ -13,6 +13,7 @@ import {
 } from '../types/multiTraceComparison';
 import type { AnalysisResultSnapshotRepository, SnapshotAccessScope } from './analysisResultSnapshotStore';
 import type { QueryResult, TraceProcessorServiceQueryOptions } from './traceProcessorService';
+import {rowObject} from '../utils/traceProcessorRowUtils';
 
 export const BACKFILL_SUPPORTED_STANDARD_METRIC_KEYS: readonly StandardComparisonMetricKey[] = [
   'startup.total_ms',
@@ -93,14 +94,9 @@ SELECT
 FROM summary;
 `;
 
-function rowObject(result: QueryResult): Record<string, unknown> | null {
+function firstRowObject(result: QueryResult): Record<string, unknown> | null {
   const first = result.rows[0];
-  if (!first) return null;
-  const row: Record<string, unknown> = {};
-  result.columns.forEach((column, index) => {
-    row[column] = first[index];
-  });
-  return row;
+  return first ? rowObject(result.columns, first) : null;
 }
 
 function toNumber(value: unknown): number | undefined {
@@ -199,7 +195,7 @@ export async function backfillStandardMetrics(
 
   if (supportedMissingKeys.some(key => key.startsWith('startup.'))) {
     try {
-      const row = rowObject(await input.traceProcessor.query(
+      const row = firstRowObject(await input.traceProcessor.query(
         input.snapshot.traceId,
         STARTUP_SQL,
         input.queryOptions,
@@ -214,7 +210,7 @@ export async function backfillStandardMetrics(
 
   if (supportedMissingKeys.some(key => key.startsWith('scrolling.'))) {
     try {
-      const row = rowObject(await input.traceProcessor.query(
+      const row = firstRowObject(await input.traceProcessor.query(
         input.snapshot.traceId,
         SCROLLING_SQL,
         input.queryOptions,

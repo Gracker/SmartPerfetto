@@ -1379,36 +1379,6 @@ export function validateLayeredSkillResult(result: any): ValidationError[] {
 // =============================================================================
 
 /**
- * Extract metadata from a data row based on configured fields
- */
-export function extractMetadata(
-  row: Record<string, any> | any[],
-  columns: string[],
-  metadataFields: string[] = [...DEFAULT_METADATA_FIELDS]
-): Record<string, any> {
-  const metadata: Record<string, any> = {};
-
-  if (Array.isArray(row)) {
-    // Row is an array, use columns to map
-    for (const field of metadataFields) {
-      const idx = columns.indexOf(field);
-      if (idx >= 0 && row[idx] !== undefined && row[idx] !== null) {
-        metadata[field] = row[idx];
-      }
-    }
-  } else if (typeof row === 'object') {
-    // Row is an object
-    for (const field of metadataFields) {
-      if (row[field] !== undefined && row[field] !== null) {
-        metadata[field] = row[field];
-      }
-    }
-  }
-
-  return metadata;
-}
-
-/**
  * Remove metadata columns from column list
  */
 export function filterMetadataColumns(

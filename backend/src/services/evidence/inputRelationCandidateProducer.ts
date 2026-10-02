@@ -4,9 +4,9 @@
 
 import crypto from 'crypto';
 
-import {validateDataEnvelope, type DataEnvelope, type DataPayload} from '../../types/dataContract';
+import {validateDataEnvelope, type DataEnvelope} from '../../types/dataContract';
 import type {EvidenceRelationCandidateV1, EvidenceRelationEndpointV1} from '../../types/evidenceContract';
-import {deriveExactEvidenceTimeRangeNs} from './evidenceContractBuilder';
+import {deriveExactEvidenceTimeRangeNs, rowsAsObjects} from './evidenceContractBuilder';
 
 const INPUT_SKILL_ID = 'click_response_analysis';
 const SLOW_INPUT_STEP_ID = 'slow_input_events';
@@ -24,24 +24,6 @@ interface SlowInputRow {
   eventTs: string;
   eventEndTs: string;
   mainBottleneck: string;
-}
-
-function rowsAsObjects(envelope: DataEnvelope): Record<string, unknown>[] {
-  const data = envelope.data as DataPayload | undefined;
-  if (!data || !Array.isArray(data.rows)) return [];
-  const columns = Array.isArray(data.columns) ? data.columns.map(String) : [];
-  return data.rows.map(row => {
-    if (row && typeof row === 'object' && !Array.isArray(row)) {
-      return row as unknown as Record<string, unknown>;
-    }
-    const object: Record<string, unknown> = {};
-    if (Array.isArray(row)) {
-      columns.forEach((column, index) => {
-        object[column] = row[index];
-      });
-    }
-    return object;
-  });
 }
 
 function canonicalInt64(value: unknown): string | undefined {
