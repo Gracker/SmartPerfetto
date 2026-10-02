@@ -207,7 +207,7 @@ npm run validate:skills
 - 必需字段完整性 (name, version, steps)
 - SQL 语法验证
 - 变量引用正确性 (`${xxx}`)
-- 步骤引用有效性 (save_as, for_each)
+- 步骤引用有效性 (save_as, iterator source, diagnostic inputs)
 
 ### 测试 Skill 执行
 
@@ -292,124 +292,86 @@ curl -X POST http://localhost:3000/api/skills/analyze \
 
 ### 2. Skill YAML 格式
 
+下面是一个最小的 composite Skill，覆盖最常用的字段。完整结构、全部 step 类型、
+参数替换和显示配置以 [`docs/reference/skill-system.md`](../../docs/reference/skill-system.md)
+为准；`npm run validate:skills` 会拒绝不符合当前 schema 的写法。
+
 ```yaml
-# skills/composite/startup_analysis.skill.yaml
-name: startup_analysis
+# skills/composite/startup_overview_example.skill.yaml
+name: startup_overview_example
 version: "1.0.0"
 type: composite
 category: app_lifecycle
-priority: high
+tier: B
 
-# 元信息
 meta:
-  display_name: "应用启动分析"
-  description: "分析应用冷启动、温启动、热启动的性能"
-  icon: "rocket"
-  tags:
-    - startup
-    - launch
-    - cold start
+  display_name: "应用启动概览"
+  description: "列出启动事件并对慢启动给出诊断"
+  tags: [startup, launch]
 
-# 触发条件
 triggers:
   keywords:
-    zh:
-      - 启动
-      - 冷启动
-      - 热启动
-    en:
-      - startup
-      - launch
-      - cold start
-  patterns:
-    - ".*启动速度.*"
-    - ".*launch.*time.*"
+    zh: [启动, 冷启动]
+    en: [startup, launch]
 
-# 前置检查
 prerequisites:
-  required_tables:
-    - android_startups
-    - slice
-    - thread
-  optional_tables:
-    - android_startup_events
   modules:
     - android.startup.startups
 
-# 分析步骤
+inputs:
+  - name: package
+    type: string
+    required: false
+  - name: slow_startup_ms
+    type: number
+    required: false
+    description: "慢启动阈值 (ms)"
+
 steps:
-  - id: get_startups
-    name: "获取启动事件"
+  - id: startups
+    type: atomic
     sql: |
-      SELECT startup_id, ts, ts + dur as ts_end, dur/1e6 as dur_ms,
-             package, startup_type
+      SELECT startup_id, ts AS start_ts, ts + dur AS end_ts,
+             dur / 1e6 AS dur_ms, package, startup_type
       FROM android_startups
       WHERE ('${package}' = '' OR package = '${package}' OR package GLOB '${package}:*')
-      ORDER BY ts ASC
-    required: true
-    save_as: startups
-    on_empty: "未检测到启动事件"
+      ORDER BY ts
+    display:
+      layer: list
+      title: "启动事件"
+      columns:
+        - { name: startup_id, type: number }
+        - { name: start_ts, type: timestamp, clickAction: navigate_timeline }
+        - { name: dur_ms, type: duration }
+        - { name: startup_type, type: string }
 
-  # NOTE: 使用子查询获取 ts，避免 JavaScript 大整数精度丢失问题
-  # NOTE: 使用 t.tid = p.pid 识别主线程，而非 t.name = 'main'
-  - id: analyze_phases
-    name: "分析关键阶段"
-    for_each: startups
-    sql: |
-      SELECT s.name AS slice_name, s.dur/1e6 AS dur_ms,
-             (s.ts - (SELECT ts FROM android_startups WHERE startup_id = ${item.startup_id}))/1e6 AS relative_ms
-      FROM slice s
-      JOIN thread_track tt ON s.track_id = tt.id
-      JOIN thread t ON tt.utid = t.utid
-      JOIN process p ON t.upid = p.upid
-      WHERE ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
-        AND t.tid = p.pid  -- Main thread: tid == pid
-        AND s.ts >= (SELECT ts FROM android_startups WHERE startup_id = ${item.startup_id})
-        AND s.ts <= (SELECT ts + dur FROM android_startups WHERE startup_id = ${item.startup_id})
-      ORDER BY s.ts ASC
+  # 对每一行调用子 Skill；item_params 的值是当前行的列名
+  - id: per_startup
+    type: iterator
+    source: startups
+    item_skill: startup_main_thread_slices_in_range
+    item_params:
+      startup_id: startup_id
+      start_ts: start_ts
+      end_ts: end_ts
+    max_items: 3
+    display:
+      layer: deep
 
-# 判断标准
-thresholds:
-  cold_start_time:
-    unit: ms
-    description: "冷启动时间"
-    levels:
-      excellent: { max: 500 }
-      good: { min: 500, max: 1000 }
-      warning: { min: 1000, max: 2000 }
-      critical: { min: 2000 }
-    suggestions:
-      warning: "启动时间偏长，建议优化"
-      critical: "启动时间过长，需要重点关注"
-
-# 输出格式
-output:
-  title: "启动分析报告"
-  sections:
-    - id: overview
-      title: "启动概览"
-      type: summary
-      from: startups
-      fields:
-        - { key: startup_type, label: "启动类型" }
-        - { key: dur_ms, label: "耗时", unit: "ms" }
-    - id: phases
-      title: "阶段详情"
-      type: table
-      from: analyze_phases
-      fields:
-        - { key: name, label: "阶段" }
-        - { key: dur_ms, label: "耗时", unit: "ms" }
-
-# 诊断规则
-diagnostics:
-  - id: slow_startup
-    condition: "startups.any.dur_ms > 2000"
-    severity: critical
-    message: "启动时间超过 2 秒"
-    suggestions:
-      - "检查 Application.onCreate 耗时"
-      - "优化 ContentProvider 初始化"
+  # 规则直接用参数名读阈值；作用域里没有 inputs 对象
+  - id: diagnose
+    type: diagnostic
+    inputs: [startups]
+    rules:
+      - condition: "startups.data[0]?.dur_ms > (slow_startup_ms ?? 2000)"
+        severity: critical
+        confidence: high
+        diagnosis: "首个启动耗时 ${startups.data[0].dur_ms}ms，超过阈值"
+        suggestions:
+          - "检查 Application.onCreate 耗时"
+          - "优化 ContentProvider 初始化"
+        evidence_fields:
+          - startups.data[0]?.dur_ms
 ```
 
 ### 3. SOP 文档格式
@@ -466,9 +428,8 @@ extends: composite/startup_analysis
 version: "1.0.0"
 description: "OPPO ColorOS 启动分析"
 
-# 添加 OPPO 特有的检测
-steps:
-  # 继承所有基础步骤，添加新步骤
+# 添加 OPPO 特有的检测（只作为提示挂在结果上，不会自动执行，见下文）
+additional_steps:
   - id: check_coloros_boost
     name: "检查 ColorOS 加速引擎"
     sql: |
@@ -477,7 +438,7 @@ steps:
       WHERE s.name GLOB '*ColorOS*' OR s.name GLOB '*HyperBoost*'
 
 # 覆盖阈值（OPPO 设备可能有更好的优化）
-thresholds:
+thresholds_override:
   cold_start_time:
     levels:
       excellent: { max: 400 }  # OPPO 优化后标准更高
@@ -515,14 +476,13 @@ override 的步骤不会自动执行，等待有上限，超时或失败时不�
 | 变量 | 说明 | 示例 |
 |------|------|------|
 | `${package}` | 目标应用包名 | `com.example.app` |
-| `${item.xxx}` | for_each 循环中的当前项 | `${item.startup_id}` |
-| `${prev.xxx}` | 上一步骤的结果 | `${prev.dur_ms}` |
+| `${item.xxx}` | iterator 调用子 Skill 时的当前行 | `${item.startup_id}` |
 | `${vendor}` | 解析出的厂商 id（仅 REST `/api/skills/execute`、`/api/skills/analyze` 传入；`invoke_skill` 不传，当前也没有 Skill 引用） | `oppo` |
 | `${result.xxx.yyy}` | 之前步骤的结果引用 | `${result.startups.0.startup_id}` |
 
 **重要提示**:
 - **时间戳精度问题**: Perfetto 的时间戳是纳秒级大整数，超过 JavaScript 安全整数范围 (2^53)。
-  在 for_each 循环中，**不要直接使用 `${item.ts}`**，应使用子查询获取时间戳：
+  在 iterator 子 Skill 中，**不要直接使用 `${item.ts}`**，应使用子查询获取时间戳：
   ```sql
   -- 错误: ${item.ts} 可能因精度丢失而截断
   AND s.ts >= ${item.ts}

@@ -257,17 +257,16 @@ outputs:
 
 ### 4.3 iterator — 遍历数据行
 
-对上一步结果的每一行执行子 Skill。
+对上一步结果的每一行执行子 Skill。`item_params` 的值是当前行的列名：执行器读 `item[列名]`，该列不存在时把值原样作为常量传入，所以这里写 `${item.x}` 只会传出字面字符串。省略 `item_params` 时整行作为参数。
 
 ```yaml
 - id: per_frame_analysis
   type: iterator
   source: jank_frames           # 引用 save_as 的数据
   item_skill: jank_frame_detail # 对每一行调用的 Skill
-  item_params:
-    frame_id: "${item.frame_id}"
-    package: "${package}"
-  max_items: "${max_frames_per_session|8}"   # 最多处理 N 项
+  item_params:                  # 子 Skill 参数 ← 当前行的列名
+    frame_id: frame_id
+  max_items: 8                  # 最多处理 N 项（数字，不做 ${...} 替换；缺省 100）
   display:
     layer: deep
 ```
