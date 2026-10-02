@@ -90,14 +90,28 @@ function isListedPublicError(err: unknown, publicErrors: readonly PublicErrorCla
  * Answer a public request error with its own status, code and text, plus the
  * request id the fixed failures carry.
  */
-export function sendPublicRequestError(res: Response, err: PublicRequestError): void {
-  const requestId = responseRequestId(res);
+export function sendPublicRequestError(
+  res: Response,
+  err: PublicRequestError,
+  logLabel = `[PublicRequestError] ${err.name}`,
+): void {
+  // A server-side public error (e.g. a dialog that could not open) still needs
+  // its cause in the log.
+  const requestId = err.status >= 500
+    ? logRouteFailure(res, logLabel, err.status, err.code, err)
+    : responseRequestId(res);
   res.removeHeader('Content-Disposition');
   res
     .status(err.status)
     .type('json')
     .set(REQUEST_ID_HEADER, requestId)
-    .json({success: false, code: err.code, error: err.message, requestId});
+    .json({
+      success: false,
+      code: err.code,
+      error: err.message,
+      ...(err.details ? {details: err.details} : {}),
+      requestId,
+    });
 }
 
 /**
@@ -111,7 +125,7 @@ export function sendRouteError(
   publicErrors: readonly PublicErrorClass[],
 ): void {
   if (!res.headersSent && isListedPublicError(err, publicErrors)) {
-    sendPublicRequestError(res, err);
+    sendPublicRequestError(res, err, failure.logLabel);
     return;
   }
   sendRouteFailure(res, failure, err);
@@ -119,20 +133,21 @@ export function sendRouteError(
 
 /**
  * Like `sendRouteError`, and a reason token a service threw as its message
- * (`thrownReasonCode`) is answered at `reasonStatus` (or the status it maps the
- * token to) with the token as code and text. The rejection is logged at warn
- * level with the original message, which keeps the dropped detail.
+ * (`thrownReasonCode`) is answered at the status `reasonStatus` maps it to, with
+ * the token as code and text. A token mapped to undefined is internal and gets
+ * the route's fixed failure. The rejection is logged at warn level with the
+ * original message, which keeps the dropped detail.
  */
 export function sendRouteReasonError(
   res: Response,
   err: unknown,
-  reasonStatus: number | ((reason: string) => number),
+  reasonStatus: (reason: string) => number | undefined,
   failure: RouteFailure,
   publicErrors: readonly PublicErrorClass[] = [],
 ): void {
   const reason = isListedPublicError(err, publicErrors) ? undefined : thrownReasonCode(err);
-  if (reason && !res.headersSent) {
-    const status = typeof reasonStatus === 'number' ? reasonStatus : reasonStatus(reason);
+  const status = reason === undefined ? undefined : reasonStatus(reason);
+  if (reason && status !== undefined && !res.headersSent) {
     console.warn(failure.logLabel, {requestId: responseRequestId(res), status, code: reason}, (err as Error).message);
     sendPublicRequestError(res, new PublicRequestError(reason, reason, status));
     return;

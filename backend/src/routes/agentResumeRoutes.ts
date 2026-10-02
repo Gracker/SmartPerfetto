@@ -9,11 +9,10 @@ import { getTraceProcessorService } from '../services/traceProcessorService';
 import { createAgentOrchestrator } from '../agentRuntime';
 import { createSessionLogger } from '../services/sessionLogger';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
-import { getProviderService } from '../services/providerManager';
-import { sendProviderStoreUnreadableIfPresent } from './providerStoreHttp';
+import { getProviderService, ProviderStoreUnreadableError } from '../services/providerManager';
 import { resolveProviderRuntimeSnapshot } from '../services/providerManager/providerSnapshot';
 import { requireRequestContext } from '../middleware/auth';
-import { sendRouteFailure } from '../middleware/routeFailure';
+import { sendRouteError } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   normalizeResourceOwner,
@@ -365,14 +364,11 @@ export function registerAgentResumeRoutes(
         return;
       }
       // providers.json unreadable: the active or pinned provider is unknown.
-      if (sendProviderStoreUnreadableIfPresent(res, error)) {
-        return;
-      }
-      sendRouteFailure(res, {
+      sendRouteError(res, error, {
         code: 'session_restore_failed',
         error: 'Failed to restore session',
         logLabel: '[AgentRoutes] Session restore failed',
-      }, error);
+      }, [ProviderStoreUnreadableError]);
     }
   });
 }

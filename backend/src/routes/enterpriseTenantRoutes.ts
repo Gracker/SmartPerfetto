@@ -5,7 +5,7 @@
 import { Router, type Response } from 'express';
 
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
-import { sendRouteFailure } from '../middleware/routeFailure';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import {
   createEnterpriseWorkspace,
@@ -99,15 +99,11 @@ function requireWorkspaceManagePermission(
 }
 
 function sendControlPlaneError(res: Response, error: unknown): void {
-  if (error instanceof EnterpriseAdminControlPlaneError) {
-    res.status(error.status).json({ success: false, error: error.message });
-    return;
-  }
-  sendRouteFailure(res, {
+  sendRouteError(res, error, {
     code: 'enterprise_admin_failed',
     error: 'Enterprise admin control plane failed',
     logLabel: '[EnterpriseTenantRoutes] Control plane error',
-  }, error);
+  }, [EnterpriseAdminControlPlaneError]);
 }
 
 function requireTenantConfirmation(body: unknown, tenantId: string): string | null {

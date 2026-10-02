@@ -10,10 +10,18 @@
  *
  * Each domain throws its own subclass, and a route echoes only the subclasses
  * it lists (`sendRouteError`), so a public error thrown deep inside an
- * unrelated service does not surface with its status through another route.
+ * unrelated service does not surface with its text through another route. One
+ * that escapes to the global error handler keeps its status there, with the
+ * handler's fixed text.
  */
 export class PublicRequestError extends Error {
-  constructor(readonly code: string, message: string, readonly status = 400) {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status = 400,
+    /** Structured, caller-facing facts the response carries next to the text. */
+    readonly details?: Readonly<Record<string, string | number | boolean>>,
+  ) {
     super(message);
     this.name = new.target.name;
   }

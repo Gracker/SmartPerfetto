@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express from 'express';
+import { readOidcEnv } from '../config';
 import {
   createPkceChallenge,
   EnterpriseOidcClient,
@@ -80,9 +81,7 @@ function tokenFromRequest(req: express.Request, service: EnterpriseSsoService): 
 
 function oidcCallbackCookiePath(): string {
   try {
-    return new URL(
-      process.env.SMARTPERFETTO_OIDC_REDIRECT_URI || '',
-    ).pathname || '/api/auth/oidc/callback';
+    return new URL(readOidcEnv().redirectUri || '').pathname || '/api/auth/oidc/callback';
   } catch {
     return '/api/auth/oidc/callback';
   }

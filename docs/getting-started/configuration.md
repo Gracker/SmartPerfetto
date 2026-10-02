@@ -637,6 +637,17 @@ FRONTEND_URL=https://smartperfetto.example.com
 字节，不能复用 OIDC Client Secret。Session 固定为 8 小时、`SameSite=Lax`，Secure
 Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email profile`。
 
+无论哪种认证模式，服务端签名（浏览器 Session、Trace Processor WebSocket 凭证、外部问题
+复核证明，OIDC 下还有 Provider 密钥库的加密 key）都从同一个根按用途派生：依次检查
+`SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`（只用于 WebSocket 凭证）、
+`SMARTPERFETTO_SERVER_SECRET`、`SMARTPERFETTO_SSO_COOKIE_SECRET` 和
+`SMARTPERFETTO_API_KEY`，取第一个去掉首尾空白后足够长的值（按 UTF-8 字节计，WebSocket
+凭证和密钥库要求 32 字节，其余 16 字节），更短的值会被跳过。OIDC 模式例外：启动时第一个
+非空的 `SMARTPERFETTO_SERVER_SECRET` / `SMARTPERFETTO_SSO_COOKIE_SECRET` 不足 32 字节就
+拒绝启动，而不是跳过。企业模式下找不到可用值时拒绝签发；其他模式退回进程内随机根，重启后
+Session、WebSocket 凭证和复核证明都会失效。建议始终设置至少 32 字节的
+`SMARTPERFETTO_SERVER_SECRET`，这样所有用途共用同一个根。
+
 使用 `./start.sh` 或 `./scripts/start-dev.sh` 做本地分端口联调时，只设置
 `SMARTPERFETTO_FRONTEND_PORT` 即可，脚本会生成对应的 `FRONTEND_URL`。上面的
 `FRONTEND_URL` 是域名/反向代理部署示例，不需要和本地端口重复填写。

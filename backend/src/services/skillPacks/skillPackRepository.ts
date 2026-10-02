@@ -12,6 +12,7 @@ import type {
   InstalledSkillPackRecord,
   SkillPackRecordMetadata,
 } from './skillPackTypes';
+import { SkillPackRequestError } from './skillPackRequestError';
 
 export interface SkillRegistryEntryRow extends Record<string, unknown> {
   id: string;
@@ -108,11 +109,11 @@ export class SkillPackRepository {
       metadata_json: JSON.stringify(record.metadata),
     });
     if (changes === 0) {
-      throw new Error('skill_pack_not_found');
+      throw new SkillPackRequestError('skill_pack_not_found', 404);
     }
     const saved = this.get(scope, record.id);
     if (!saved) {
-      throw new Error('skill_pack_not_found');
+      throw new SkillPackRequestError('skill_pack_not_found', 404);
     }
     return saved;
   }

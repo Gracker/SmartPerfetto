@@ -15,6 +15,7 @@ import {
 import { recordEnterpriseAuditEvent } from '../enterpriseAuditService';
 import type { ProviderConfig, ProviderConnection, ProviderScope } from './types';
 import { LocalEncryptedSecretStore } from './localSecretStore';
+import { PublicRequestError } from '../../utils/publicRequestError';
 import { atomicWriteFileSync } from '../../utils/atomicFileWriter';
 import { isPlainJsonObject } from '../../utils/isPlainJsonObject';
 import { providerNotFound } from './providerRequestError';
@@ -301,14 +302,12 @@ const PROVIDER_STORE_UNREADABLE_MESSAGES: Record<ProviderStoreUnreadableOperatio
     + 'repair or move the file, or choose the system default (env) explicitly',
 };
 
-export class ProviderStoreUnreadableError extends Error {
-  readonly code = PROVIDER_STORE_UNREADABLE_CODE;
-  /** A conflict with the file's state, which the user can repair. */
-  readonly httpStatus = 409;
+/** A conflict (409) with the file's state, which the user can repair; fixed messages only. */
+export class ProviderStoreUnreadableError extends PublicRequestError {
+  declare readonly code: typeof PROVIDER_STORE_UNREADABLE_CODE;
 
   constructor(operation: ProviderStoreUnreadableOperation = 'write') {
-    super(PROVIDER_STORE_UNREADABLE_MESSAGES[operation]);
-    this.name = 'ProviderStoreUnreadableError';
+    super(PROVIDER_STORE_UNREADABLE_CODE, PROVIDER_STORE_UNREADABLE_MESSAGES[operation], 409);
   }
 }
 

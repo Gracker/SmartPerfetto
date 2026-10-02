@@ -17,6 +17,8 @@ import { ENTERPRISE_DB_PATH_ENV, openEnterpriseDb } from '../../services/enterpr
 import type { SkillPackAssetKind, SkillPackManifestV1 } from '../../services/skillPacks/skillPackTypes';
 import { SKILL_PACK_MANIFEST_FILE } from '../../services/skillPacks/skillPackManifest';
 import skillPackRoutes from '../skillPackRoutes';
+import { SkillPackInstallService } from '../../services/skillPacks/skillPackInstallService';
+import { SkillPackRequestError } from '../../services/skillPacks/skillPackRequestError';
 
 interface AssetInput {
   kind: SkillPackAssetKind;
@@ -208,6 +210,47 @@ describe('skill pack workspace routes', () => {
     );
     expect(removed.status).toBe(200);
     await expect(fs.stat(sourcePath)).rejects.toThrow();
+  });
+
+  it('answers an unknown pack with its reason and a storage failure with fixed text', async () => {
+    const missing = await ssoHeaders(
+      request(makeApp()).patch('/api/workspaces/workspace-a/skill-packs/no-such-pack').send({ enabled: false }),
+    );
+    expect(missing.status).toBe(404);
+    expect(missing.body).toEqual({
+      success: false,
+      code: 'skill_pack_not_found',
+      error: 'skill_pack_not_found',
+      requestId: expect.any(String),
+    });
+
+    const conflict = jest.spyOn(SkillPackInstallService.prototype, 'installSkillPack')
+      .mockRejectedValue(new SkillPackRequestError('installed_pack_content_hash_mismatch', 409));
+    try {
+      const reinstall = await ssoHeaders(
+        request(makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({ sourcePath: packDir }),
+      );
+      expect(reinstall.status).toBe(409);
+      expect(reinstall.body.code).toBe('installed_pack_content_hash_mismatch');
+    } finally {
+      conflict.mockRestore();
+    }
+
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const install = jest.spyOn(SkillPackInstallService.prototype, 'installSkillPack')
+      .mockRejectedValue(new Error('skill_pack_persist_failed'));
+    try {
+      const failed = await ssoHeaders(
+        request(makeApp()).post('/api/workspaces/workspace-a/skill-packs/install').send({ sourcePath: packDir }),
+      );
+      expect(failed.status).toBe(500);
+      expect(failed.body).toMatchObject({ success: false, code: 'skill_pack_operation_failed' });
+      expect(failed.text).not.toContain('skill_pack_persist_failed');
+      expect(errorLog.mock.calls.flat()).toContainEqual(new Error('skill_pack_persist_failed'));
+    } finally {
+      install.mockRestore();
+      errorLog.mockRestore();
+    }
   });
 
   it('requires runtime manage permission', async () => {

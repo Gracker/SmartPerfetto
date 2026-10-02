@@ -44,10 +44,24 @@ Detailed commit-level history is available via `git log`.
   server path, outside the trace processor pool and trace ownership checks.
   Load traces through `/api/traces/upload` or the workspace trace API. The
   backend no longer creates the upload directory at import time.
+- `/api/template-analysis/*` (`/auto`, `/four-quadrant`, `/cpu-core`,
+  `/frame-stats`) now answers 410 in every deployment mode. Nothing called it;
+  it skipped the trace ownership check, interpolated the request's `threadId`,
+  `startTs` and `endTs` into SQL unvalidated, and matched `/frame-stats`
+  packages by substring. No Skill route takes the same request bodies, so the
+  response points to the workspace agent API. The template analyzers and the
+  VSync period helpers only they used are gone.
 - Agent endpoints no longer take a request id from a `requestId` field in the
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 
 ### Fixed
+- Trace download (`GET /api/traces/:id/file` and its workspace-scoped form)
+  answered 404 whenever the stored trace sat below a directory whose name
+  starts with a dot, such as the Linux portable data root
+  `~/.local/share/smartperfetto`: the file was sent with a dotfile rule applied
+  to every parent directory. Files the server resolved itself (trace files,
+  the report Mermaid asset, the assistant-shell and admin pages) are now sent
+  with that rule applied to the file name only.
 - Every request now has one request id. Without a caller `X-Request-Id`, an
   Agent request's `X-Request-Id` header, analysis run and logs carried one id
   and its authenticated request context another, so they could not be

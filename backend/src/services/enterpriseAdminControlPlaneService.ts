@@ -5,6 +5,7 @@
 import type Database from 'better-sqlite3';
 import type { RequestContext } from '../middleware/auth';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
+import { PublicRequestError } from '../utils/publicRequestError';
 
 const SAFE_ID_RE = /^[a-zA-Z0-9._:-]+$/;
 const MEMBER_ROLES = new Set(['viewer', 'analyst', 'workspace_admin', 'org_admin']);
@@ -27,10 +28,17 @@ export interface MemberUpsertInput {
   role?: string;
 }
 
-export class EnterpriseAdminControlPlaneError extends Error {
-  constructor(readonly status: number, message: string) {
-    super(message);
-    this.name = 'EnterpriseAdminControlPlaneError';
+const CONTROL_PLANE_ERROR_CODES = {
+  400: 'enterprise_admin_invalid_request',
+  403: 'enterprise_admin_forbidden',
+  404: 'enterprise_admin_not_found',
+  409: 'enterprise_admin_conflict',
+} as const;
+
+/** A workspace administration request the caller has to change; the code follows the status. */
+export class EnterpriseAdminControlPlaneError extends PublicRequestError {
+  constructor(status: keyof typeof CONTROL_PLANE_ERROR_CODES, message: string) {
+    super(CONTROL_PLANE_ERROR_CODES[status], message, status);
   }
 }
 

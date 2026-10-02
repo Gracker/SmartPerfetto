@@ -21,6 +21,7 @@ import type {
 } from '../../agent/scene/types';
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {resolveEffectiveAnalysisMode} from '../../services/effectiveAnalysisMode';
+import {PublicRequestError} from '../../utils/publicRequestError';
 
 export type AnalyzeEndpointKind = '/analyze' | '/sessions/:id/runs';
 export type AnalyzePreset = 'smart';
@@ -52,15 +53,15 @@ export interface NormalizedAnalyzeOptions {
   smartSelection?: SceneAnalysisSelection;
 }
 
-export class AnalyzeOptionsError extends Error {
+/** An analyze request option the caller has to change; its text and code are the route contract. */
+export class AnalyzeOptionsError extends PublicRequestError {
   constructor(
     message: string,
-    readonly code: string,
-    readonly httpStatus = 400,
-    readonly details?: Readonly<Record<string, string | number>>,
+    code: string,
+    status = 400,
+    details?: Readonly<Record<string, string | number>>,
   ) {
-    super(message);
-    this.name = 'AnalyzeOptionsError';
+    super(code, message, status, details);
   }
 }
 

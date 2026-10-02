@@ -127,7 +127,7 @@ export function resolveBatchTraceConcurrency(input: {
 }): number {
   const requested = input.requested ?? input.limits.defaultConcurrency;
   if (!Number.isInteger(requested) || requested < 1) {
-    throw new Error('invalid_batch_trace_concurrency:requested');
+    throw new BatchTraceRequestError('invalid_batch_trace_concurrency', 'invalid_batch_trace_concurrency:requested');
   }
   return Math.min(requested, maxConcurrencyForSurface(input.limits, input.surface));
 }

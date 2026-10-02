@@ -17,8 +17,7 @@ import { ProviderRequestError } from '../services/providerManager/providerReques
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
 import { requireAiEnabledForHttp } from './aiCapabilityPolicyHttp';
-import { sendProviderStoreUnreadableIfPresent } from './providerStoreHttp';
-import { PROVIDER_STORE_UNREADABLE_CODE } from '../services/providerManager/providerStore';
+import { PROVIDER_STORE_UNREADABLE_CODE, ProviderStoreUnreadableError } from '../services/providerManager/providerStore';
 
 const router = express.Router();
 
@@ -165,12 +164,11 @@ router.get('/:id', (req, res) => {
  * gets fixed text.
  */
 function sendProviderError(res: express.Response, error: unknown, operation: string): void {
-  if (sendProviderStoreUnreadableIfPresent(res, error)) return;
   sendRouteError(res, error, {
     code: 'provider_operation_failed',
     error: 'Provider operation failed',
     logLabel: `[ProviderRoutes] ${operation} error`,
-  }, [ProviderRequestError]);
+  }, [ProviderRequestError, ProviderStoreUnreadableError]);
 }
 
 router.post('/', (req, res) => {

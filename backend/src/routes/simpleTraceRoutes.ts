@@ -10,6 +10,7 @@ import fs from 'fs/promises';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { uuidv4 } from '../utils/uuid';
+import { sendResolvedFile } from '../utils/sendResolvedFile';
 import { resolveFeatureConfig } from '../config';
 import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
 import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
@@ -1706,7 +1707,7 @@ router.get('/:id/file', async (req, res) => {
 
     try {
       await fs.access(tracePath);
-      res.sendFile(path.resolve(tracePath));
+      sendResolvedFile(res, tracePath);
     } catch (error) {
       res.status(404).json({
         error: 'Trace file not found',
