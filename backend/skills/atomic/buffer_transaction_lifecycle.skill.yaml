@@ -239,7 +239,7 @@ steps:
         AND layer_name IS NOT NULL
         AND (
           ('${package}' = '')
-          OR (layer_name GLOB '*' || '${package}' || '*')
+          OR instr(layer_name, '${package}') > 0
         )
       GROUP BY layer_name
       ORDER BY frame_count DESC

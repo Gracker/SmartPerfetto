@@ -167,7 +167,7 @@ steps:
         LEFT JOIN expected_frames e ON e.upid = a.upid AND e.layer_name = a.layer_name
           AND e.surface_frame_token = a.surface_frame_token
         WHERE a.layer_name IS NOT NULL AND a.surface_frame_token IS NOT NULL
-          AND (a.layer_name LIKE 'TX - ${package}%' OR a.layer_name = '${layer_name}'
+          AND (a.layer_name LIKE 'TX - ${package}%' ESCAPE '\' OR a.layer_name = '${layer_name}'
             OR ('${package}' = '' AND '${layer_name}' = ''))
           AND (${start_ts} IS NULL OR a.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR a.ts < ${end_ts})
@@ -351,7 +351,7 @@ steps:
         WHERE a.layer_name IS NOT NULL
           AND COALESCE(a.display_frame_token, a.surface_frame_token) IS NOT NULL
           AND (
-            a.layer_name LIKE 'TX - ${package}%'
+            a.layer_name LIKE 'TX - ${package}%' ESCAPE '\'
             OR a.layer_name = '${layer_name}'
             OR ('${package}' = '' AND '${layer_name}' = '')
           )
@@ -570,7 +570,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE a.layer_name IS NOT NULL AND (
-            a.layer_name LIKE 'TX - ${package}%'
+            a.layer_name LIKE 'TX - ${package}%' ESCAPE '\'
             OR a.layer_name = '${layer_name}'
             OR ('${package}' = '' AND '${layer_name}' = '')
           )
@@ -768,7 +768,7 @@ steps:
         FROM actual_frame_timeline_slice a
         LEFT JOIN process p ON a.upid = p.upid
         WHERE a.layer_name IS NOT NULL AND (
-            a.layer_name LIKE 'TX - ${package}%'
+            a.layer_name LIKE 'TX - ${package}%' ESCAPE '\'
             OR a.layer_name = '${layer_name}'
             OR ('${package}' = '' AND '${layer_name}' = '')
           )

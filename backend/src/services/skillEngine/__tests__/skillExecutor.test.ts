@@ -811,6 +811,63 @@ describe('Atomic Step 执行', () => {
     );
   });
 
+  describe('值按占位符所在位置绑定', () => {
+    const run = async (sql: string, params: Record<string, unknown>) => {
+      executor.registerSkill({name: 'bind_place', type: 'atomic', version: '1.0', meta: createMeta('Bind Place'), sql});
+      return executor.execute('bind_place', 'trace-1', params);
+    };
+
+    it('进程作用域的 GLOB 模式里，值的通配符只匹配它自己', async () => {
+      await run("SELECT upid FROM process p WHERE p.name = '${package}' OR p.name GLOB '${package}:*'", {package: 'com.foo*'});
+      expect(mockTraceProcessor.query).toHaveBeenCalledWith(
+        'trace-1', "SELECT upid FROM process p WHERE p.name = 'com.foo*' OR p.name GLOB 'com.foo[*]:*'");
+    });
+
+    it('代码位置的文本值被拒绝，且不派发 SQL', async () => {
+      const result = await run('SELECT * FROM t WHERE id = ${id}', {id: '1 OR 1=1'});
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('outside a string literal');
+      expect(mockTraceProcessor.query).not.toHaveBeenCalled();
+    });
+
+    it('列表输入按 SQL 字面量列表写入', async () => {
+      await run("SELECT * FROM t WHERE cpu IN (${cpu_ids}) AND name IN (${slice_names}) AND id IN (${ids})", {
+        cpu_ids: '4,5,6,7', slice_names: "'Choreographer#doFrame','DrawFrame'", ids: [1, "o'k"],
+      });
+      expect(mockTraceProcessor.query).toHaveBeenCalledWith(
+        'trace-1', "SELECT * FROM t WHERE cpu IN (4,5,6,7) AND name IN ('Choreographer#doFrame','DrawFrame') AND id IN (1, 'o''k')");
+    });
+
+    it('注释里的占位符原样保留，值里的换行跳不出注释', async () => {
+      await run('-- scoped to ${package}\nSELECT 1', {package: 'x\nDROP TABLE t'});
+      expect(mockTraceProcessor.query).toHaveBeenCalledWith('trace-1', '-- scoped to ${package}\nSELECT 1');
+    });
+
+    it('行数组内联时列名加引号，非有限数值被拒绝', async () => {
+      await run('SELECT * FROM ${rows}', {rows: [{'a" FROM x; --': 1, b: "it's"}]});
+      expect(mockTraceProcessor.query).toHaveBeenCalledWith(
+        'trace-1', `SELECT * FROM (SELECT 1 as "a"" FROM x; --", 'it''s' as "b")`);
+      const result = await run('SELECT * FROM ${rows}', {rows: [{a: Number.NaN}]});
+      expect(result.success).toBe(false);
+      expect(result.error).toContain('NaN or infinite');
+    });
+  });
+
+  it('display 标题按纯文本替换，未设值时保持可见', async () => {
+    executor.registerSkill({
+      name: 'title_text',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Title Text'),
+      steps: [{
+        id: 'q', type: 'atomic', sql: 'SELECT 1 AS v',
+        display: {title: "${package}'s ${missing} -- ${n|0}", level: 'summary'},
+      } as any],
+    });
+    const result = await executor.execute('title_text', 'trace-1', {package: 'com.foo'});
+    expect(result.displayResults.find(d => d.stepId === 'q')?.title).toBe("com.foo's ${missing} -- 0");
+  });
+
   it('应该正确处理查询结果', async () => {
     mockTraceProcessor.query.mockResolvedValue({
       columns: ['name', 'value'],
@@ -3761,14 +3818,14 @@ describe('表达式评估', () => {
       type: 'atomic',
       version: '1.0',
       meta: createMeta('Inherited Test'),
-      sql: 'SELECT * FROM t WHERE session = ${session_id}',
+      sql: "SELECT * FROM t WHERE session = '${session_id}'",
     };
     executor.registerSkill(skill);
 
     await executor.execute('inherited_test', 'trace-1', {}, { session_id: 'sess-123' });
     expect(mockTraceProcessor.query).toHaveBeenCalledWith(
       'trace-1',
-      'SELECT * FROM t WHERE session = sess-123'
+      "SELECT * FROM t WHERE session = 'sess-123'"
     );
   });
 });
@@ -4750,7 +4807,7 @@ describe('上下文管理', () => {
       type: 'atomic',
       version: '1.0',
       meta: createMeta('Params Test'),
-      sql: 'SELECT * FROM t WHERE pkg = ${package} AND uid = ${uid}',
+      sql: "SELECT * FROM t WHERE pkg = '${package}' AND uid = ${uid}",
     };
     executor.registerSkill(skill);
 
@@ -4761,7 +4818,7 @@ describe('上下文管理', () => {
 
     expect(mockTraceProcessor.query).toHaveBeenCalledWith(
       'trace-1',
-      'SELECT * FROM t WHERE pkg = com.example.app AND uid = 10001'
+      "SELECT * FROM t WHERE pkg = 'com.example.app' AND uid = 10001"
     );
   });
 });

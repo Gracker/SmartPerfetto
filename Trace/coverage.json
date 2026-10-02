@@ -1901,7 +1901,7 @@
           },
           {
             "id": "per_layer_transactions",
-            "sha256": "8c20ab5274750d6203f337349b44d2eb90caca67b64cd6a11b619bc1058028da",
+            "sha256": "26b70db8e53204e1f67e2072f4bb54a5067c8e1eda1ae32fd8c7beafaef278de",
             "required_columns": [
               "layer_name",
               "frame_count",
@@ -2113,7 +2113,7 @@
           },
           {
             "id": "presentation_cadence_audit",
-            "sha256": "f475b04219e2b72a461bc19367474b8d6d9034c45b0d38e257d46da973709cc7",
+            "sha256": "cb50b6ccf30bea95bdd1947f67ac62170e2dbeef8b41b09e5133976464136550",
             "required_columns": [
               "layer_name",
               "burst_id",
@@ -2136,7 +2136,7 @@
           },
           {
             "id": "consumer_jank_frames",
-            "sha256": "2e419532f243a443cfd897682e248b60474790c1ed885599c6a988b22fd28c1b",
+            "sha256": "c8b174d3ef075528b507c1a43e2fee7265831a27abaa6e273d3ddcf0fedb9532",
             "required_columns": [
               "frame_id",
               "layer_name",
@@ -2156,7 +2156,7 @@
           },
           {
             "id": "consumer_jank_summary",
-            "sha256": "a68011979698ee9b596f2b614137448250458f40dd5e7b72cd2e92779f67379b",
+            "sha256": "b06bd8bfa5baa49433da698b454996591f3c00062e6685a32126c9638cf03b6a",
             "required_columns": [
               "total_frames",
               "consumer_jank_frames",
@@ -2173,7 +2173,7 @@
           },
           {
             "id": "jank_severity_distribution",
-            "sha256": "1e41532df370fc15fde3ebc2e18bc8ddd572c4c14f458a2eaee06dee797c81bd",
+            "sha256": "bc1c349c857c7beb56e1a1462ef80f12b3fb081acf96737ec639e212237e0628",
             "required_columns": [
               "severity",
               "count",
@@ -3731,7 +3731,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "54df0b30e5ec52be404874aaf54911b920b8d99020c38daba7e288208ad39b24",
+            "sha256": "7b0aa48efeb90dc0a23d0838acb3b22999e5db9e7268e573cf8bb60cad2e6cb7",
             "required_columns": [
               "ts_str",
               "prio_label",
@@ -3848,7 +3848,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "3250f6d3c5de3f0d297aa367d1106fe14963693381c8714eb8032a338083e497",
+            "sha256": "e1602920c7b4ae81dc7c083f0ad5e9234bc5f6a9050d261755c6216f4d8932c1",
             "required_columns": [
               "ts_str",
               "prio",
@@ -4682,7 +4682,7 @@
           },
           {
             "id": "layer_signals",
-            "sha256": "2f660789abf414b61579e8597697ff86f6c56c205161cf98303c41a8d5dfb1cd",
+            "sha256": "65e3636a52ee4c05abf47814728891057c75ebe063c42fd00d4816b71795c6ac",
             "required_columns": [
               "app_layer_count",
               "app_layer_names",
@@ -6068,7 +6068,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "5bfe8c3ebee212dc057ac0ab26e5c20a6205097f4fd422a652adf5ff42f18bbf",
+            "sha256": "c60009b5d1df98cf72a1b4e4fa698031d88bf29be9a2fa9de055f165b3eb9bea",
             "required_columns": [
               "track_name",
               "category",
@@ -6938,7 +6938,7 @@
           },
           {
             "id": "anr_logcat_context",
-            "sha256": "17fc3d3d33d4ed8c06332b58e71579658e98f0ed6fb7326bd8aeff20c485e653",
+            "sha256": "91395c48db9305b188ddc4a304e8e5e266a7a8c48f0044e3618c398a3baaa8b8",
             "required_columns": [
               "error_id",
               "relation_to_anr_ms",

@@ -22,6 +22,7 @@ import {
 import {CriticalPathInputError, openRowEndSql} from './criticalPathAnalyzer';
 import type {CriticalPathInputErrorCode} from '../types/criticalPathContract';
 import type {TraceProcessorService} from './traceProcessorService';
+import {globEscape} from './skillEngine/sqlTemplate';
 
 export interface CriticalPathThreadSelector {
   utid?: number | string;
@@ -86,17 +87,6 @@ function sqlStringLiteral(value: string, field: string): string {
     throw new CriticalPathInputError('invalid_name', `${field} must not contain control characters`);
   }
   return `'${value.replace(/'/g, "''")}'`;
-}
-
-/**
- * SQLite GLOB reads `*`, `?` and `[` as pattern syntax, and a comm or process
- * name can legitimately contain all three: `pool[1]-thread` would silently stop
- * matching itself, and a name ending in `*` would match everything. GLOB has no
- * backslash escape, so a one-character class is the escape — `*` becomes `[*]`.
- * The exact-match pass needs none of this; only the prefix pass builds a pattern.
- */
-function globEscape(value: string): string {
-  return value.replace(/[*?[]/g, (char) => `[${char}]`);
 }
 
 function trimmedName(value: string | undefined, field: string): string | undefined {

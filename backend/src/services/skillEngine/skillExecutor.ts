@@ -39,7 +39,11 @@ import {
   EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
   ownDataValue, parseEvidenceField, readEvidenceField, routePlaceholder, wholePlaceholderBody,
 } from './expressionUtils';
-import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments';
+import { injectFragmentCtes } from './skillFragments';
+import {
+  boundSqlPlaceholderPaths, readPlaceholderBody, sqlCodeText, sqlIdentifier, sqlLiteral, sqlStringLiteralText,
+  substituteSqlPlaceholders,
+} from './sqlTemplate';
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
 import { sqlScopeEvidence, resultScopeProvenance, resultScopeLimitations } from './scopeEvidence';
@@ -581,7 +585,8 @@ class ExpressionEvaluator {
 // =============================================================================
 
 function substituteVariables(sql: string, context: SkillExecutionContext): string {
-  return substituteSqlPlaceholders(sql, ({match, path: actualPath, defaultValue: explicitDefault, insideQuotes}) => {
+  return substituteSqlPlaceholders(sql, (placeholder) => {
+    const {match, path: actualPath, defaultValue: explicitDefault} = placeholder;
     if (actualPath === '__process_scope' || actualPath.startsWith('__process_scope.')) {
       if (match !== EXACT_UPID_TOKEN) throw new Error('Unsupported reserved process scope binding');
       const scope = context.processScope;
@@ -592,52 +597,58 @@ function substituteVariables(sql: string, context: SkillExecutionContext): strin
     const value = ExpressionEvaluator.resolvePath(actualPath, context);
 
     // 缺省值优先级：
-    // 1. 显式 |default 值
+    // 1. 显式 |default 值（作者写的 SQL 文本，原样插入）
     // 2. 字符串常量内部：用 ''
     // 3. 其它位置：用 NULL
     if (value === undefined || value === null) {
       if (explicitDefault !== undefined) return explicitDefault;
-      if (insideQuotes) return '';
-      return 'NULL';
+      return placeholder.context === 'string' ? '' : 'NULL';
     }
 
-    // 如果值被插入到单引号字符串中，必须转义单引号，避免 SQL 解析错误
-    if (insideQuotes && typeof value === 'string') {
-      return value.replace(/'/g, '\'\'');
+    // 字符串常量内部：转义单引号；GLOB/LIKE 模式字面量里值的通配符按字面匹配
+    if (placeholder.context === 'string') return sqlStringLiteralText(value, placeholder);
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '';
+      // save_as 存储的是行数组 [{col: val, ...}, ...]。
+      // 当下游 SQL 用 SELECT * FROM ${variable} 引用时，需要转为 inline CTE。
+      if (value[0] !== null && typeof value[0] === 'object') return arrayToInlineCte(value);
+      return value.map(sqlLiteral).join(', ');
     }
 
-    // save_as 存储的是行数组 [{col: val, ...}, ...]。
-    // 当下游 SQL 用 SELECT * FROM ${variable} 引用时，需要转为 inline CTE。
-    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
-      return arrayToInlineCte(value);
-    }
-
-    return String(value);
+    // 代码位置只接受数字或 SQL 字面量列表，其它文本会成为调用方写的 SQL
+    return sqlCodeText(value, placeholder);
   });
 }
 
 /**
  * Convert a save_as row array to an inline SQLite CTE.
- * [{a: 1, b: 'x'}, {a: 2, b: 'y'}]  →  (SELECT 1 as a, 'x' as b UNION ALL SELECT 2, 'y')
+ * [{a: 1, b: 'x'}, {a: 2, b: 'y'}]  →  (SELECT 1 as "a", 'x' as "b" UNION ALL SELECT 2, 'y')
  */
 function arrayToInlineCte(rows: Record<string, unknown>[]): string {
-  if (rows.length === 0) return '(SELECT NULL LIMIT 0)';
   const columns = Object.keys(rows[0]);
   const selects = rows.map((row, i) => {
-    const values = columns.map((col) => {
-      const v = row[col];
-      if (v === null || v === undefined) return 'NULL';
-      if (typeof v === 'number' || typeof v === 'bigint') return String(v);
-      // String values: escape single quotes for SQL
-      return `'${String(v).replace(/'/g, "''")}'`;
-    });
+    const values = columns.map((col) => sqlLiteral(row[col]));
     // First row includes column aliases; subsequent rows omit them
     if (i === 0) {
-      return `SELECT ${values.map((v, j) => `${v} as ${columns[j]}`).join(', ')}`;
+      return `SELECT ${values.map((v, j) => `${v} as ${sqlIdentifier(columns[j])}`).join(', ')}`;
     }
     return `SELECT ${values.join(', ')}`;
   });
   return `(${selects.join(' UNION ALL ')})`;
+}
+
+/**
+ * A display title's placeholders as plain text. An unset value takes its
+ * `|default`, or stays visible, as localized titles do.
+ */
+function substituteDisplayText(text: string, context: SkillExecutionContext): string {
+  return text.replace(SKILL_PLACEHOLDER, (match: string, body: string) => {
+    const {path: actualPath, defaultValue} = readPlaceholderBody(body);
+    const value = ExpressionEvaluator.resolvePath(actualPath, context);
+    if (value === undefined || value === null) return defaultValue ?? match;
+    return String(value);
+  });
 }
 
 // =============================================================================
@@ -656,13 +667,8 @@ function processDisplayConfig(
 
   // 处理 title 字段（字符串类型）
   if (processed.title && typeof processed.title === 'string') {
-    processed.title = substituteVariables(processed.title, context);
+    processed.title = substituteDisplayText(processed.title, context);
   }
-
-  // 如果未来需要处理其他字符串字段（如 description），可以在这里添加
-  // if (processed.description && typeof processed.description === 'string') {
-  //   processed.description = substituteVariables(processed.description, context);
-  // }
 
   return processed;
 }
@@ -1640,7 +1646,7 @@ export class SkillExecutor {
   /** Root atomic SQL and nested SQL use the same scope and fragment checks. */
   private prepareSql(source: ScopedSqlSource, context: SkillExecutionContext): string {
     const usesRuntimeScope = [source.sql || '', ...(source.sql_fragments || []).map(path => this.fragmentRegistry.get(path) || '')]
-      .some(sql => /\$\{\s*__process_scope\b/.test(sql));
+      .some(sql => boundSqlPlaceholderPaths(sql).some(path => /^__process_scope\b/.test(path)));
     if (usesRuntimeScope) {
       if (!context.processScope) throw new Error('Reserved process scope binding requires an issued process scope');
       assertEffectiveProcessScope(context.processScope, context.traceId, context.processScope.traceSide);
