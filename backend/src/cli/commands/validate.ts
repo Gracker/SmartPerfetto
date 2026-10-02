@@ -26,6 +26,9 @@ import {
 } from '../../services/skillEngine/displayContractValidator';
 import { validateSkillDefinitionInProcess } from '../../services/selfEvolution/inProcessValidator';
 import {
+  UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys, unknownVendorOverrideKeys,
+} from '../../services/skillEngine/skillTopLevelKeys';
+import {
   checkStrategySkillCalls,
   extractStrategySkillCalls,
   formatUndeclaredStrategySkillParams,
@@ -75,10 +78,6 @@ interface VendorOverrideDefinition {
     signatures?: Array<{ pattern?: string; confidence?: string }>;
   };
   additional_steps?: any[];
-  thresholds_override?: Record<string, any>;
-  override_params?: Record<string, any>;
-  additional_diagnostics?: any[];
-  additional_output_sections?: any[];
 }
 
 const SKILLS_DIR = path.join(__dirname, '../../../skills');
@@ -153,12 +152,12 @@ function validateTierAndStdlib(skill: SkillDefinition): { errors: string[]; warn
     return { errors, warnings };
   }
 
-  const declaredTier = (skill as any).tier as 'S' | 'A' | 'B' | undefined;
-  const prereqModules: string[] = Array.isArray((skill as any).prerequisites?.modules)
-    ? (skill as any).prerequisites.modules.filter((m: unknown) => typeof m === 'string')
+  const declaredTier = skill.tier;
+  const prereqModules: string[] = Array.isArray(skill.prerequisites?.modules)
+    ? skill.prerequisites.modules.filter((m: unknown) => typeof m === 'string')
     : [];
   const stepCount = Array.isArray(skill.steps) ? skill.steps.length : 0;
-  const skillType = String((skill as any).type ?? 'atomic');
+  const skillType = String(skill.type ?? 'atomic');
 
   // ---- Rule 1: tier-must-match-declared ----
   // The `tier:` field declares INTENT (target tier per audit doc §6), not current state.
@@ -524,15 +523,6 @@ function validateSkillDefinition(skill: SkillDefinition, filePath: string): Vali
     }
   }
 
-  // Validate thresholds
-  if (skill.thresholds) {
-    for (const [name, threshold] of Object.entries(skill.thresholds)) {
-      if (!threshold.levels) {
-        warnings.push(`thresholds.${name}: Missing levels definition`);
-      }
-    }
-  }
-
   // Validate diagnostic rules (in diagnostic steps, not skill-level)
   // V2 diagnostics are defined within DiagnosticStep, not at skill level
 
@@ -597,15 +587,11 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
     });
   }
 
-  const hasAdditionalSteps = Array.isArray(override.additional_steps) && override.additional_steps.length > 0;
-  const hasThresholdOverrides = !!override.thresholds_override && Object.keys(override.thresholds_override).length > 0;
-  const hasOverrideParams = !!override.override_params && Object.keys(override.override_params).length > 0;
-
-  if (!hasAdditionalSteps && !hasThresholdOverrides && !hasOverrideParams) {
-    errors.push(
-      'Vendor override has no runtime effect — declare at least one of: ' +
-      'additional_steps (>=1, with id/name/sql), thresholds_override, or override_params (lint rule 5)'
-    );
+  for (const key of unknownVendorOverrideKeys(override)) {
+    errors.push(`${key}: ${UNKNOWN_TOP_LEVEL_KEY_MESSAGE}`);
+  }
+  if (!Array.isArray(override.additional_steps) || override.additional_steps.length === 0) {
+    errors.push('Vendor override has no runtime effect — declare additional_steps (>=1, with id/name/sql) (lint rule 5)');
   }
 
   if (override.additional_steps !== undefined) {
@@ -670,14 +656,6 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
     steps: override.additional_steps || [],
   } as any, { filePath });
   errors.push(...displayIssues.map(formatDisplayContractIssue));
-
-  if (override.thresholds_override) {
-    for (const [name, threshold] of Object.entries(override.thresholds_override)) {
-      if (!threshold?.levels) {
-        warnings.push(`thresholds_override.${name}: Missing levels definition`);
-      }
-    }
-  }
 
   return {
     file: filePath,
@@ -814,9 +792,25 @@ function extractVariableReferences(sql: string): string[] {
 }
 
 /**
- * Validate a single skill file
+ * A pipeline definition is read by the pipeline loaders, not executed as a
+ * Skill, so only its top-level keys are checked here.
  */
-function validateFile(filePath: string): ValidationResult {
+function validatePipelineDefinitionKeys(definition: object, filePath: string): ValidationResult {
+  const errors = unknownSkillTopLevelKeys(definition).map(key => `${key}: ${UNKNOWN_TOP_LEVEL_KEY_MESSAGE}`);
+  return {file: filePath, valid: errors.length === 0, errors, warnings: []};
+}
+
+/** Which loader reads a Skill YAML file; Skill contracts apply only to `skill`. */
+function skillYamlKind(filePath: string, parsed: unknown): 'vendor_override' | 'pipeline' | 'skill' {
+  if (/\.override\.ya?ml$/.test(filePath)) return 'vendor_override';
+  return (parsed as {type?: unknown} | undefined)?.type === 'pipeline_definition' ? 'pipeline' : 'skill';
+}
+
+/**
+ * Validate a single skill file.
+ * @internal Exported for tests; the command is the production caller.
+ */
+export function validateFile(filePath: string): ValidationResult {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
     const parsed = yaml.load(content) as SkillDefinition | VendorOverrideDefinition;
@@ -830,11 +824,14 @@ function validateFile(filePath: string): ValidationResult {
       };
     }
 
-    if (/\.override\.ya?ml$/.test(filePath)) {
-      return validateVendorOverrideDefinition(parsed as VendorOverrideDefinition, filePath);
+    switch (skillYamlKind(filePath, parsed)) {
+      case 'vendor_override':
+        return validateVendorOverrideDefinition(parsed as VendorOverrideDefinition, filePath);
+      case 'pipeline':
+        return validatePipelineDefinitionKeys(parsed, filePath);
+      case 'skill':
+        return validateSkillDefinition(parsed as SkillDefinition, filePath);
     }
-
-    return validateSkillDefinition(parsed as SkillDefinition, filePath);
   } catch (error: any) {
     return {
       file: filePath,
@@ -1291,6 +1288,9 @@ export const validateCommand = new Command('validate')
       if (options.all) {
         files.push(...findSkillFiles(path.join(SKILLS_DIR, 'modules'), /\.skill\.ya?ml$/));
         files.push(...findSkillFiles(path.join(SKILLS_DIR, 'vendors'), /\.override\.ya?ml$/));
+        // The pipeline loaders skip `_`-prefixed templates.
+        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'pipelines'), /\.skill\.ya?ml$/)
+          .filter(file => !path.basename(file).startsWith('_')));
         files.push(...findSkillFiles(path.join(SKILLS_DIR, 'custom'), /\.skill\.ya?ml$/));
       }
     }
@@ -1316,7 +1316,7 @@ export const validateCommand = new Command('validate')
           skill = yaml.load(fs.readFileSync(file, 'utf-8')) as SkillDefinition;
         } catch { /* parse error already captured */ }
         // A validator that throws must fail the run, not pass as a parse error.
-        if (skill) {
+        if (skill && skillYamlKind(file, skill) === 'skill') {
           const contracts = validateContracts(skill);
           result.errors.push(...contracts.errors);
           result.warnings.push(...contracts.warnings);

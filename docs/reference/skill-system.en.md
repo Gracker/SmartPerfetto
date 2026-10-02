@@ -291,6 +291,15 @@ review expectations:
 | `skill-include-budget-soft-cap` | Warns when `prerequisites.modules` exceeds 8 modules |
 | `skill-step-id-uniqueness` | Requires unique step ids inside each Skill |
 | `skill-vendor-override-runtime-conformant` | Requires vendor overrides to contain real `additional_steps`, vendor signatures, and a registered base Skill |
+| `skill-top-level-key-unknown` | Rejects a top-level key no loader reads: a Skill may use the `SkillDefinition` fields plus the legacy spellings the loader normalizes (`display`, `description`, `tags`, `icon`, `display_name`, `displayName`); a pipeline only the `PipelineDefinition` fields; a vendor override only `extends`, `version`, `meta`, `vendor_detection` and `additional_steps`. An external Skill Pack with such a key is rejected as a whole |
+
+A top-level key nothing reads is not a harmless comment: it reads as
+configuration that takes effect. A top-level `diagnostics`, `thresholds`,
+`synthesis` and vendor `thresholds_override` all sat in the corpus doing
+nothing, and the public projection rendered them as live. Diagnostic rules
+belong in a `type: diagnostic` step and summaries in step-level `synthesize`;
+a vendor override contributes only its vendor, display name and the ids of its
+`additional_steps`, as a hint on the base Skill's result.
 
 `backend/skills/_template/` contains authoring templates and is not loaded into
 the runtime registry. After copying a template, remove placeholders, place the

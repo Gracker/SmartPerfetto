@@ -2,7 +2,6 @@ name: multi_trace_result_comparison
 version: "1.0.0"
 type: comparison
 category: comparison
-priority: high
 
 meta:
   display_name: Multi Trace Result Comparison

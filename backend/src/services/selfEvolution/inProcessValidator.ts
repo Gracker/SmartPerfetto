@@ -15,6 +15,7 @@ import {
   validateSkillConditions,
 } from '../skillEngine/skillValidator';
 import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
+import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillEngine/skillTopLevelKeys';
 import type {SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
@@ -30,7 +31,7 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '4';
+export const IN_PROCESS_VALIDATOR_VERSION = '5';
 
 export type InProcessValidationSeverity = 'error' | 'warning';
 
@@ -253,6 +254,9 @@ export function validateSkillDefinitionInProcess(
         skill,
         options.sqlGuardrailMode !== 'disabled',
       );
+  for (const key of unknownSkillTopLevelKeys(skill)) {
+    issues.push(issue('error', 'skill_top_level_key_unknown', skill.name, key, UNKNOWN_TOP_LEVEL_KEY_MESSAGE));
+  }
   for (const warning of validateSkillConditions(skill)) {
     issues.push(issue(
       'warning',

@@ -19,6 +19,9 @@ import { generateRenderingPipelineDetectionSkill } from '../renderingPipelineDet
 import logger from '../../utils/logger';
 import { validateSkillConditions, validateFragmentReferences } from './skillValidator';
 import { validateSkillBatchAnalysis } from './skillBatchAnalysis';
+import {
+  unknownSkillTopLevelKeys, unknownVendorOverrideKeys, type LegacySkillSpellings, type VendorOverrideSource,
+} from './skillTopLevelKeys';
 import { builtInSkillsDir, readSkillFragmentFile, skillFragmentKey } from './skillFragments';
 import { PublicRequestError } from '../../utils/publicRequestError';
 import {
@@ -118,30 +121,33 @@ export function normalizeSkillDefinition(raw: any, filePath: string): SkillDefin
     }
   }
 
+  // Legacy spellings are read only through this view; skillTopLevelKeys admits exactly these.
+  const legacy: LegacySkillSpellings = skill;
+
   // Normalize legacy root-level display to output.display (executor reads output.display)
-  if (skill.display && typeof skill.display === 'object') {
+  if (legacy.display && typeof legacy.display === 'object') {
     if (!skill.output || typeof skill.output !== 'object') {
       skill.output = {};
     }
     if (!skill.output.display) {
-      skill.output.display = skill.display;
+      skill.output.display = legacy.display;
     }
   }
 
   // Fill meta if missing (best-effort)
   if (!skill.meta || typeof skill.meta !== 'object') {
     const fallbackDisplayName =
-      (typeof skill.display_name === 'string' && skill.display_name.trim()) ||
-      (typeof skill.displayName === 'string' && skill.displayName.trim()) ||
+      (typeof legacy.display_name === 'string' && legacy.display_name.trim()) ||
+      (typeof legacy.displayName === 'string' && legacy.displayName.trim()) ||
       (typeof skill.name === 'string' && skill.name.trim()) ||
       path.basename(filePath).replace(/\.skill\.ya?ml$/i, '');
 
     const fallbackDescription =
-      (typeof skill.description === 'string' && firstNonEmptyLine(skill.description)) ||
+      (typeof legacy.description === 'string' && firstNonEmptyLine(legacy.description)) ||
       `Skill: ${fallbackDisplayName}`;
 
-    const tags = Array.isArray(skill.tags) ? skill.tags.map(String) : undefined;
-    const icon = typeof skill.icon === 'string' && skill.icon.trim() ? String(skill.icon) : undefined;
+    const tags = Array.isArray(legacy.tags) ? legacy.tags.map(String) : undefined;
+    const icon = typeof legacy.icon === 'string' && legacy.icon.trim() ? String(legacy.icon) : undefined;
 
     skill.meta = {
       display_name: fallbackDisplayName,
@@ -155,15 +161,15 @@ export function normalizeSkillDefinition(raw: any, filePath: string): SkillDefin
       skill.meta.display_name = skill.name;
     }
     if (!skill.meta.description) {
-      const fromTop = typeof skill.description === 'string' ? firstNonEmptyLine(skill.description) : '';
+      const fromTop = typeof legacy.description === 'string' ? firstNonEmptyLine(legacy.description) : '';
       skill.meta.description = fromTop || `Skill: ${skill.meta.display_name || skill.name || 'unknown'}`;
     }
     // Backfill tags/icon from legacy fields
-    if (!Array.isArray(skill.meta.tags) && Array.isArray(skill.tags)) {
-      skill.meta.tags = skill.tags.map(String);
+    if (!Array.isArray(skill.meta.tags) && Array.isArray(legacy.tags)) {
+      skill.meta.tags = legacy.tags.map(String);
     }
-    if (!skill.meta.icon && typeof skill.icon === 'string') {
-      skill.meta.icon = String(skill.icon);
+    if (!skill.meta.icon && typeof legacy.icon === 'string') {
+      skill.meta.icon = String(legacy.icon);
     }
   }
 
@@ -317,7 +323,6 @@ export interface VendorOverride {
   description?: string;
   detection: { signatures: VendorOverrideSignature[] };
   additionalSteps: any[];
-  overrideParams?: Record<string, any>;
 }
 
 export interface VendorOverrideLoadIssue {
@@ -469,6 +474,7 @@ export class SkillRegistry {
     conditionIssueCount: number;
     fragmentIssueCount: number;
     batchAnalysisIssueCount: number;
+    unknownTopLevelKeyCount: number;
   } {
     const displayWarnings = this.validateAndLogDisplayWarnings(skill, filePath);
 
@@ -490,11 +496,17 @@ export class SkillRegistry {
       logger.warn('SkillLoader', `[${skill.name}.${validationIssue.path}] ${validationIssue.message}`);
     }
 
+    const unknownKeys = unknownSkillTopLevelKeys(skill);
+    if (unknownKeys.length > 0) {
+      logger.warn('SkillLoader', `[${skill.name}] Top-level keys no loader reads: ${unknownKeys.join(', ')}`);
+    }
+
     return {
       displayIssues: displayWarnings,
       conditionIssueCount: condWarnings.length,
       fragmentIssueCount: fragWarnings.length,
       batchAnalysisIssueCount: batchAnalysisIssues.length,
+      unknownTopLevelKeyCount: unknownKeys.length,
     };
   }
 
@@ -527,6 +539,7 @@ export class SkillRegistry {
         || validation.conditionIssueCount > 0
         || validation.fragmentIssueCount > 0
         || validation.batchAnalysisIssueCount > 0
+        || validation.unknownTopLevelKeyCount > 0
       )
     ) {
       throw new SkillRegistryRejectionError('skill_validation_failed', skill.name);
@@ -719,10 +732,9 @@ export class SkillRegistry {
                 : [],
             },
             additionalSteps: Array.isArray(raw.additional_steps) ? raw.additional_steps : [],
-            overrideParams: raw.override_params,
           };
 
-          if (override.additionalSteps.length > 0 || raw.output?.display) {
+          if (override.additionalSteps.length > 0) {
             this.validateAndLogDisplayWarnings({
               name: `${baseSkillId}@${override.vendor}:${path.basename(file, path.extname(file))}`,
               version: String(raw.version || '1'),
@@ -730,7 +742,6 @@ export class SkillRegistry {
                 display_name: raw.meta?.display_name || `${baseSkillId} ${override.vendor} override`,
                 description: raw.meta?.description || `Vendor override for ${baseSkillId}`,
               },
-              output: raw.output,
               steps: override.additionalSteps,
             } as any, filePath);
           }
@@ -983,24 +994,13 @@ export class SkillRegistry {
   }
 }
 
-interface ParsedVendorOverrideSource {
-  extends: string;
-  version?: unknown;
-  meta?: Record<string, unknown>;
-  vendor_detection?: {
-    signatures?: Array<{
-      pattern: string;
-      confidence: 'high' | 'medium' | 'low';
-    }>;
-  };
-  additional_steps?: unknown[];
-  override_params?: Record<string, unknown>;
-  output?: Record<string, unknown>;
-}
-
-function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
+function parseVendorOverrideSource(value: unknown): VendorOverrideSource {
   if (!isPlainRecord(value) || !isNonEmptyString(value.extends)) {
     throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'extends');
+  }
+  const [unknownKey] = unknownVendorOverrideKeys(value);
+  if (unknownKey !== undefined) {
+    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', unknownKey);
   }
   if (value.meta !== undefined && !isPlainRecord(value.meta)) {
     throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'meta');
@@ -1021,16 +1021,7 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
   ) {
     throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'additional_steps');
   }
-  if (
-    value.override_params !== undefined
-    && !isPlainRecord(value.override_params)
-  ) {
-    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'override_params');
-  }
-  if (value.output !== undefined && !isPlainRecord(value.output)) {
-    throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'output');
-  }
-  let vendorDetection: ParsedVendorOverrideSource['vendor_detection'];
+  let vendorDetection: VendorOverrideSource['vendor_detection'];
   if (value.vendor_detection !== undefined) {
     if (!isPlainRecord(value.vendor_detection)) {
       throw new SkillRegistryRejectionError('vendor_override_schema_invalid', 'vendor_detection');
@@ -1075,12 +1066,6 @@ function parseVendorOverrideSource(value: unknown): ParsedVendorOverrideSource {
     ...(value.additional_steps === undefined
       ? {}
       : {additional_steps: value.additional_steps}),
-    ...(value.override_params === undefined
-      ? {}
-      : {override_params: value.override_params as Record<string, unknown>}),
-    ...(value.output === undefined
-      ? {}
-      : {output: value.output as Record<string, unknown>}),
   };
 }
 

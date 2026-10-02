@@ -439,7 +439,8 @@ export interface SkillDefinition {
   version: string;
   type: SkillType;
   category?: string;
-  priority?: string;
+  /** Intended complexity and review tier; `validate:skills` checks the structure it implies. */
+  tier?: 'S' | 'A' | 'B';
 
   meta: SkillMeta;
   triggers?: SkillTriggers;
@@ -472,17 +473,8 @@ export interface SkillDefinition {
   // remains responsible only for bounded evidence extraction.
   batch_analysis?: SkillBatchAnalysisConfig;
 
-  // 诊断规则（diagnostic 使用）
-  rules?: DiagnosticRule[];
-
   // 输出配置
   output?: SkillOutputConfig;
-
-  // 阈值定义（用于诊断）
-  thresholds?: Record<string, {
-    unit?: string;
-    levels: Record<string, { min?: number; max?: number; label?: string }>;
-  }>;
 
   // ==========================================================================
   // Module metadata

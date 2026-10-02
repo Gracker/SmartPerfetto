@@ -307,6 +307,22 @@ describe('in-process effective Skill validator', () => {
     expect(ruleIssues({condition: "rows.data[0].state === 'ok' OR missing"})).toEqual([]);
   });
 
+  it('rejects a top-level key no loader reads, by the set of the definition type', () => {
+    const unknownKeys = (definition: Record<string, unknown>) =>
+      validateSkillDefinitionsInProcess({definitions: [definition as unknown as SkillDefinition]}).issues
+        .filter(entry => entry.code === 'skill_top_level_key_unknown').map(entry => entry.path);
+    const base = skill('top_level_keys');
+    expect(unknownKeys({...base, synthesis: {template: 'x'}, thresholds: {}, priority: 'high'}))
+      .toEqual(['synthesis', 'thresholds', 'priority']);
+    // A Skill may use the legacy spellings the loader folds into meta and output.
+    expect(unknownKeys({...base, tier: 'B', display: {level: 'summary'}, description: 'd', tags: ['t']})).toEqual([]);
+    // A pipeline is not normalized: it has its own keys and no legacy spellings.
+    const pipeline = {name: 'pipeline_x', version: '1', type: 'pipeline_definition', category: 'rendering',
+      meta: {}, detection: {}, teaching: {}, auto_pin: {}, analysis: {}};
+    expect(unknownKeys(pipeline)).toEqual([]);
+    expect(unknownKeys({...pipeline, display: {}, steps: []})).toEqual(['display', 'steps']);
+  });
+
   it('validates every definition when no affected Skill is named, as a new Skill proposal does', () => {
     const existing = skill('existing');
     existing.steps = [
@@ -450,7 +466,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('4');
+    expect(gate.validatorVersion).toBe('5');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({
