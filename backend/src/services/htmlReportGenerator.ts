@@ -18,6 +18,7 @@ import {renderSceneTimelineHtml} from './sceneReport/sceneTimelineHtml';
 import {claimAuditRows, claimVerificationStatusLine, investigationStatusLines, summarizeClaimVerification} from './analysisInvestigationPresentation';
 import {analysisConfidenceIsGrounded} from '../agentv3/analysisTermination';
 import {projectAnalysisEvidenceForDisplay} from './evidence/analysisEvidencePresentation';
+import {envelopeTraceValue} from './evidence/envelopeTraceIdentity';
 import {
   AnalysisSession,
   CollectedResult,
@@ -6146,12 +6147,9 @@ export class HTMLReportGenerator {
       outputLanguage,
     );
     const source = envelope.meta?.source || '';
-    const envelopeRecord = this.asReportRecord(envelope) || {};
-    const metaRecord = this.asReportRecord(envelope.meta) || {};
-    const traceProvenance = this.asReportRecord(envelopeRecord.traceProvenance) || {};
     const traceLocation = this.formatReportTraceLocation(
-      metaRecord.traceSide || envelopeRecord.traceSide || traceProvenance.traceSide,
-      metaRecord.paneSide || envelopeRecord.paneSide || traceProvenance.paneSide,
+      envelopeTraceValue(envelope, 'traceSide'),
+      envelopeTraceValue(envelope, 'paneSide'),
       outputLanguage,
     );
     const planPhaseId = envelope.meta?.planPhaseId || '';

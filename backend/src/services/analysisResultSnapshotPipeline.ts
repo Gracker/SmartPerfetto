@@ -48,6 +48,7 @@ import {
   type AnalysisDeliveryFields,
 } from './security/analysisDeliveryProjection';
 import type {SourceUseDecisionV1} from './codebase/sourceUseDecision';
+import {envelopeTraceValue, measuresTrace} from './evidence/envelopeTraceIdentity';
 
 export interface CompletedAnalysisSnapshotInput extends AnalysisDeliveryFields {
   tenantId?: string;
@@ -129,32 +130,6 @@ function stableEnvelopeContentHash(env: DataEnvelope): string {
     }, (_key, value) => typeof value === 'bigint' ? value.toString() : value))
     .digest('hex')
     .slice(0, 12);
-}
-
-function envelopeTraceValue(
-  env: DataEnvelope,
-  key: 'traceSide' | 'traceId' | 'paneSide',
-): string | undefined {
-  const envelopeAny = env as any;
-  const metaValue = env.meta?.[key];
-  if (typeof metaValue === 'string' && metaValue.length > 0) return metaValue;
-  const topLevelValue = envelopeAny?.[key];
-  if (typeof topLevelValue === 'string' && topLevelValue.length > 0) return topLevelValue;
-  const provenanceValue = envelopeAny?.traceProvenance?.[key];
-  return typeof provenanceValue === 'string' && provenanceValue.length > 0
-    ? provenanceValue
-    : undefined;
-}
-
-/**
- * A raw-trace comparison session holds envelopes from both traces. One marked
- * as the reference side, or stamped with another trace id, measured a
- * different trace; an unmarked envelope is the session's own trace.
- */
-function measuresTrace(env: DataEnvelope, traceId: string): boolean {
-  if (envelopeTraceValue(env, 'traceSide') === 'reference') return false;
-  const envelopeTraceId = envelopeTraceValue(env, 'traceId');
-  return envelopeTraceId === undefined || envelopeTraceId === traceId;
 }
 
 function dataEnvelopeRefId(env: DataEnvelope, duplicateEvidenceRefIds: Set<string> = new Set()): string {

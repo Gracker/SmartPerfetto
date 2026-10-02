@@ -128,6 +128,36 @@ describe('deriveUiActionProposals', () => {
     expect(proposals.some(proposal => proposal.kind === 'open_evidence_table')).toBe(true);
   });
 
+  it.each<[string, (env: DataEnvelope) => void]>([
+    ['meta side', env => { env.meta.traceSide = 'reference'; }],
+    ['envelope side', env => { (env as any).traceSide = 'reference'; }],
+    ['provenance side', env => { (env as any).traceProvenance = {traceSide: 'reference'}; }],
+    ['envelope trace id', env => { (env as any).traceId = 'trace-reference'; }],
+    ['provenance trace id', env => { (env as any).traceProvenance = {traceId: 'trace-reference'}; }],
+  ])('skips navigation for another trace marked by %s', (_name, mark) => {
+    const env = tableEnvelope();
+    delete env.meta.traceId;
+    mark(env);
+
+    const kinds = deriveUiActionProposals({dataEnvelopes: [env], currentTraceId: 'trace-current'})
+      .map(proposal => proposal.kind);
+
+    expect(kinds).toEqual(['open_evidence_table', 'pin_evidence']);
+  });
+
+  it('navigates with a trace id stamped only in provenance', () => {
+    const env = tableEnvelope();
+    delete env.meta.traceId;
+    (env as any).traceProvenance = {traceId: 'trace-current', traceSide: 'current'};
+
+    const [navigation] = deriveUiActionProposals({dataEnvelopes: [env]});
+
+    expect(navigation).toEqual(expect.objectContaining({
+      kind: 'navigate_range',
+      payload: {startNs: '1000000000', endNs: '1016666667', traceId: 'trace-current'},
+    }));
+  });
+
   it('localizes derived runtime labels for English output', () => {
     const proposals = deriveUiActionProposals({
       dataEnvelopes: [tableEnvelope()],
