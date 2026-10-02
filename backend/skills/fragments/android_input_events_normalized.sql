@@ -23,28 +23,49 @@
 -- timestamp stands in, which identifies only that one delivery. (The
 -- physical_event_key of scene_input_facts.sql is a different, scene-local key
 -- that also spans native motion/key events.)
+-- window_owner is the stdlib's owner of the receiving channel,
+-- str_split(str_split(event_channel, ' ', 1), '/', 0), spelled portably so the
+-- SQLite fixtures run it: the package of a '<hash> <package>/<component>'
+-- window. The stdlib credits an event_action only to a receiver whose name
+-- equals that owner. Monitor, dispatcher, navigation-bar and wallpaper
+-- channels never yield their receiver's name; nor do app windows titled
+-- without '/' (PopupWindow:..). receiver_owns_window is 1 when the receiving
+-- process owns the window: the exact name, or the name before ':' for
+-- multi-process apps, whose delivery the stdlib cannot resolve (substr, not
+-- GLOB: the owner is channel text).
 android_input_events_normalized AS NOT MATERIALIZED (
-  SELECT
-    dispatch_latency_dur, handling_latency_dur, ack_latency_dur,
-    total_latency_dur, end_to_end_latency_dur,
-    tid, thread_name, upid, pid, process_name,
-    event_type,
-    CASE WHEN event_action GLOB 'ACTION_*' THEN SUBSTR(event_action, 8)
-      ELSE event_action END AS event_action,
-    event_seq, event_channel, normalized_event_channel, input_event_id,
-    read_time, dispatch_track_id, dispatch_ts, dispatch_dur,
-    receive_ts, receive_dur, receive_track_id,
-    frame_id, is_speculative_frame, event_time,
-    CASE WHEN frame_id IS NOT NULL AND is_speculative_frame = 0
-      THEN frame_id END AS exact_frame_id,
-    CASE WHEN frame_id IS NOT NULL AND is_speculative_frame = 0
-      THEN end_to_end_latency_dur END AS exact_end_to_end_latency_dur,
-    CASE
-      WHEN frame_id IS NULL THEN 'none'
-      WHEN is_speculative_frame = 0 THEN 'exact'
-      WHEN is_speculative_frame = 1 THEN 'speculative'
-      ELSE 'unknown'
-    END AS frame_association,
-    COALESCE(input_event_id, 'dispatch:' || dispatch_ts) AS physical_event_key
-  FROM android_input_events
+  SELECT e.*,
+    CASE WHEN e.window_owner != ''
+      AND substr(e.process_name || ':', 1, length(e.window_owner) + 1) = e.window_owner || ':'
+      THEN 1 ELSE 0 END AS receiver_owns_window
+  FROM (
+    SELECT
+      dispatch_latency_dur, handling_latency_dur, ack_latency_dur,
+      total_latency_dur, end_to_end_latency_dur,
+      tid, thread_name, upid, pid, process_name,
+      event_type,
+      CASE WHEN event_action GLOB 'ACTION_*' THEN SUBSTR(event_action, 8)
+        ELSE event_action END AS event_action,
+      event_seq, event_channel, normalized_event_channel, input_event_id,
+      read_time, dispatch_track_id, dispatch_ts, dispatch_dur,
+      receive_ts, receive_dur, receive_track_id,
+      frame_id, is_speculative_frame, event_time,
+      CASE WHEN frame_id IS NOT NULL AND is_speculative_frame = 0
+        THEN frame_id END AS exact_frame_id,
+      CASE WHEN frame_id IS NOT NULL AND is_speculative_frame = 0
+        THEN end_to_end_latency_dur END AS exact_end_to_end_latency_dur,
+      CASE
+        WHEN frame_id IS NULL THEN 'none'
+        WHEN is_speculative_frame = 0 THEN 'exact'
+        WHEN is_speculative_frame = 1 THEN 'speculative'
+        ELSE 'unknown'
+      END AS frame_association,
+      COALESCE(input_event_id, 'dispatch:' || dispatch_ts) AS physical_event_key,
+      -- Second word of the channel, cut at its first '/'.
+      CASE WHEN instr(event_channel, ' ') > 0 THEN substr(
+        replace(substr(event_channel, instr(event_channel, ' ') + 1), '/', ' '), 1,
+        instr(replace(substr(event_channel, instr(event_channel, ' ') + 1), '/', ' ') || ' ', ' ') - 1)
+      END AS window_owner
+    FROM android_input_events
+  ) AS e
 )
