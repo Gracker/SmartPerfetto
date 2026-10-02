@@ -645,6 +645,32 @@ export interface ToolResultNarrationInput {
   privateContext?: boolean;
 }
 
+/**
+ * A refused code-aware source call, in words. The projection keeps only the
+ * closed `action_required` token, never the requested path, so the line says
+ * why nothing was read without naming what was asked for. Any other refusal
+ * keeps its existing narration.
+ */
+function narrateSourceAccessRefusal(result: unknown, language: OutputLanguage): string | undefined {
+  if (!isPolicyRefusalResult(result)) return undefined;
+  switch (readString(readToolResultBody(result).action_required)) {
+    case 'use_path_within_registered_filters':
+      return localize(language, '该路径不在已注册的源码范围内，访问被拒绝，需要改用范围内的路径',
+        'That path is outside the registered source scope, so access was refused; a path inside the scope is needed');
+    case 'continue_without_this_file':
+      return localize(language, '该文件不在发送给模型的授权范围内，未读取正文',
+        'That file is outside the grant for sending source to the model; its content was not read');
+    case 'continue_with_existing_source_evidence':
+      return localize(language, '源码访问已达本次上限，继续使用已取得的源码证据',
+        'Source access reached its limit for this run; analysis continues with the source evidence already collected');
+    case 'continue_without_this_codebase':
+      return localize(language, '该代码库未授权把源码发送给模型，未读取',
+        'This codebase has no consent to send source to the model; nothing was read');
+    default:
+      return undefined;
+  }
+}
+
 function privateToolOutcome(
   input: ToolResultNarrationInput,
   toolName: string,
@@ -652,7 +678,8 @@ function privateToolOutcome(
   language: OutputLanguage,
 ): string {
   if (toolResultIsFailure(input)) {
-    return localize(language, '本次工具执行未完成，正在保留已获取的证据', 'This tool call did not complete; collected evidence is retained');
+    return narrateSourceAccessRefusal(input.result, language)
+      ?? localize(language, '本次工具执行未完成，正在保留已获取的证据', 'This tool call did not complete; collected evidence is retained');
   }
   const sourceRefs = Array.isArray(body.sourceRefs) ? body.sourceRefs : undefined;
   const chunkRefs = Array.isArray(body.chunkRefs) ? body.chunkRefs : undefined;
@@ -895,6 +922,7 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
 
   if (toolResultIsFailure(input)) {
     return (toolName === 'analyze_wait_chain' ? narrateWaitChainRefusal(body, language) : undefined)
+      ?? narrateSourceAccessRefusal(input.result, language)
       ?? narrateToolFailure(toolName, body, language);
   }
 
