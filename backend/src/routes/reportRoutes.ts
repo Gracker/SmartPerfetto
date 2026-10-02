@@ -49,6 +49,7 @@ import {
   sendForbidden,
   sharesWorkspaceWithContext,
 } from '../services/rbac';
+import {sendResolvedFile} from '../utils/sendResolvedFile';
 
 const router = express.Router();
 
@@ -574,11 +575,7 @@ router.get('/assets/mermaid.min.js', (_req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  // The repository's isolated worktrees live below a `.worktrees` segment.
-  // `sendFile` rejects such an already-validated absolute path unless dotfile
-  // traversal is explicitly allowed, even though the target itself is not a
-  // dotfile and `resolveReportMermaidAssetPath` has already fail-closed it.
-  return res.sendFile(assetPath, {dotfiles: 'allow'}, error => {
+  return sendResolvedFile(res, assetPath, error => {
     if (!error || res.headersSent) return;
     res.status(404).type('text/plain').send('Mermaid report asset is unavailable');
   });

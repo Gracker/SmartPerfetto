@@ -77,6 +77,7 @@ import {unhandledErrorHandler} from './middleware/unhandledErrorHandler';
 import {REQUEST_ID_HEADER, requestIdMiddleware} from './middleware/requestId';
 import {hasRbacPermission, sendForbidden} from './services/rbac';
 import {getSmartPerfettoVersion} from './version';
+import {sendResolvedFile} from './utils/sendResolvedFile';
 
 // Import cleanup utilities
 import { TraceProcessorFactory, killOrphanProcessors } from './services/workingTraceProcessor';
@@ -331,13 +332,13 @@ app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
 
 const assistantShellDir = path.resolve(__dirname, '../public/assistant-shell');
 app.get('/assistant-shell', (_req, res) => {
-  res.sendFile(path.join(assistantShellDir, 'index.html'));
+  sendResolvedFile(res, path.join(assistantShellDir, 'index.html'));
 });
 app.use('/assistant-shell', express.static(assistantShellDir));
 
 const adminControlPlaneDir = path.resolve(__dirname, '../public/admin-control-plane');
 app.get('/admin-control-plane', (_req, res) => {
-  res.sendFile(path.join(adminControlPlaneDir, 'index.html'));
+  sendResolvedFile(res, path.join(adminControlPlaneDir, 'index.html'));
 });
 app.use('/admin-control-plane', express.static(adminControlPlaneDir));
 

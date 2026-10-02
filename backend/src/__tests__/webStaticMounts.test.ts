@@ -134,16 +134,32 @@ function location(node: ts.Node, sourceFile: ts.SourceFile): string {
   return `${path.relative(BACKEND_ROOT, sourceFile.fileName)}:${line + 1}`;
 }
 
-/** `<static root or sendFile target>` per location, null when not provable. */
-function servedPaths(sourceFile: ts.SourceFile, methods: string[]): Array<[string, string | null]> {
+/** The path argument of a node that serves files; undefined when it serves none. */
+type ServedArgument = (node: ts.Node) => {argument: ts.Expression | undefined} | undefined;
+
+/** `express.static(<root>)`; a `serve-static` or named `static` import is unprovable. */
+const staticRootArgument: ServedArgument = node => {
+  if (isMethodCall(node, ['static'])) return {argument: node.arguments[0]};
+  return importsStaticHandler(node) ? {argument: undefined} : undefined;
+};
+
+/** `res.sendFile(<file>)` or the shared `sendResolvedFile(res, <file>)`. */
+const sentFileArgument: ServedArgument = node => {
+  if (isMethodCall(node, ['sendFile'])) return {argument: node.arguments[0]};
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+    && node.expression.text === 'sendResolvedFile') {
+    return {argument: node.arguments[1]};
+  }
+  return undefined;
+};
+
+/** Served path per location, null when not provable. */
+function servedPaths(sourceFile: ts.SourceFile, servedArgument: ServedArgument): Array<[string, string | null]> {
   const scope = evaluationScope(sourceFile);
   const served: Array<[string, string | null]> = [];
   forEachNode(sourceFile, node => {
-    if (isMethodCall(node, methods)) {
-      served.push([location(node, sourceFile), evaluatePath(node.arguments[0], scope)]);
-    } else if (importsStaticHandler(node)) {
-      served.push([location(node, sourceFile), null]);
-    }
+    const match = servedArgument(node);
+    if (match) served.push([location(node, sourceFile), evaluatePath(match.argument, scope)]);
   });
   return served;
 }
@@ -156,10 +172,10 @@ function outsidePublic(served: Array<[string, string | null]>): string[] {
 
 describe('Web routes outside /api', () => {
   const indexSource = parseSource(INDEX_FILE);
-  const staticRoots = productionSourceFiles(SRC_ROOT).flatMap(fileName => {
-    const text = fs.readFileSync(fileName, 'utf8');
-    return text.includes('static') ? servedPaths(parseSource(fileName, text), ['static']) : [];
-  });
+  const sources = productionSourceFiles(SRC_ROOT)
+    .map(fileName => ({fileName, text: fs.readFileSync(fileName, 'utf8')}));
+  const staticRoots = sources.flatMap(({fileName, text}) =>
+    text.includes('static') ? servedPaths(parseSource(fileName, text), staticRootArgument) : []);
 
   it('does not serve /uploads/<file> or any other unlisted path without authentication', () => {
     const paths = new Set<string>();
@@ -183,8 +199,26 @@ describe('Web routes outside /api', () => {
   it('sends app-level files only from backend/public', () => {
     // Router handlers sit behind their /api guards and choose files per
     // request; the app-level handlers in index.ts have neither.
-    const targets = servedPaths(indexSource, ['sendFile']);
+    const targets = servedPaths(indexSource, sentFileArgument);
     expect(targets.length).toBeGreaterThan(0);
     expect(outsidePublic(targets)).toEqual([]);
+  });
+
+  it('sends files only through sendResolvedFile', () => {
+    // A rootless res.sendFile (and res.download, built on it) applies its
+    // dotfile rule to every parent directory, so a file below ~/.local/share
+    // (Linux portable) answers 404.
+    const rawSends = sources.flatMap(({fileName, text}) => {
+      if (!text.includes('sendFile') && !text.includes('download(')) return [];
+      const sourceFile = parseSource(fileName, text);
+      const found: string[] = [];
+      forEachNode(sourceFile, node => {
+        if (isMethodCall(node, ['sendFile', 'download'])) found.push(location(node, sourceFile));
+      });
+      return found;
+    });
+    // The helper's own call guards the scan: an empty result would pass.
+    const helper = path.relative(BACKEND_ROOT, path.join(SRC_ROOT, 'utils', 'sendResolvedFile.ts'));
+    expect(rawSends.map(where => where.replace(/:\d+$/, ''))).toEqual([helper]);
   });
 });

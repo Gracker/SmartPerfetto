@@ -55,6 +55,13 @@ Detailed commit-level history is available via `git log`.
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 
 ### Fixed
+- Trace download (`GET /api/traces/:id/file` and its workspace-scoped form)
+  answered 404 whenever the stored trace sat below a directory whose name
+  starts with a dot, such as the Linux portable data root
+  `~/.local/share/smartperfetto`: the file was sent with a dotfile rule applied
+  to every parent directory. Files the server resolved itself (trace files,
+  the report Mermaid asset, the assistant-shell and admin pages) are now sent
+  with that rule applied to the file name only.
 - Every request now has one request id. Without a caller `X-Request-Id`, an
   Agent request's `X-Request-Id` header, analysis run and logs carried one id
   and its authenticated request context another, so they could not be

@@ -1072,6 +1072,33 @@ describe('enterprise trace metadata routes', () => {
     });
   });
 
+  it('downloads a stored trace whose data directory sits below a dot-directory', async () => {
+    // The Linux portable data root is ~/.local/share/smartperfetto; a rootless
+    // sendFile applied its dotfile rule to every parent segment and answered 404.
+    const dotDataDir = path.join(tmpDir, '.local', 'share', 'data');
+    process.env[ENTERPRISE_DATA_DIR_ENV] = dotDataDir;
+    const app = makeApp();
+    const sourceTracePath = path.join(tmpDir, 'fixture.trace');
+    await fs.writeFile(sourceTracePath, 'dot-dir-trace');
+
+    const uploadRes = await ssoHeaders(
+      request(app).post('/api/traces/upload').attach('file', sourceTracePath),
+    );
+    expect(uploadRes.status).toBe(200);
+    const traceId = uploadRes.body.trace.id as string;
+    await expect(fs.access(
+      path.join(dotDataDir, 'tenant-a', 'workspace-a', 'traces', `${traceId}.trace`),
+    )).resolves.toBeUndefined();
+
+    const downloadRes = await ssoHeaders(request(app).get(`/api/traces/${traceId}/file`));
+    expect(downloadRes.status).toBe(200);
+    expect(
+      Buffer.isBuffer(downloadRes.body)
+        ? downloadRes.body.toString('utf-8')
+        : downloadRes.text,
+    ).toBe('dot-dir-trace');
+  });
+
   it('preserves UTF-8 upload names and repairs legacy mojibake in trace catalog responses', async () => {
     const app = makeApp();
     const filename = '直播跳转卡顿 修改后.perfetto';
