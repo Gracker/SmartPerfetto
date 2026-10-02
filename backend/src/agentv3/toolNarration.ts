@@ -654,9 +654,15 @@ export interface ToolResultNarrationInput {
 function narrateSourceAccessRefusal(result: unknown, language: OutputLanguage): string | undefined {
   if (!isPolicyRefusalResult(result)) return undefined;
   switch (readString(readToolResultBody(result).action_required)) {
-    case 'use_path_within_registered_filters':
-      return localize(language, '该路径不在已注册的源码范围内，访问被拒绝，需要改用范围内的路径',
-        'That path is outside the registered source scope, so access was refused; a path inside the scope is needed');
+    case 'locate_path_with_search_codebase':
+      return localize(language, '该路径不在已注册的源码范围内，未读取',
+        'That path is outside the registered source scope; nothing was read');
+    case 'retry_search_without_path_prefix':
+      return localize(language, '该路径前缀不在已注册的源码范围内，未搜索，不能据此判断源码中没有',
+        'That path prefix is outside the registered source scope; nothing was searched, so this is not evidence of absence');
+    case 'continue_without_this_path_prefix':
+      return localize(language, '该路径前缀已注册但未授权发送给模型，未搜索，不能据此判断源码中没有',
+        'That path prefix is registered but not authorized for sending to the model; nothing was searched, so this is not evidence of absence');
     case 'continue_without_this_file':
       return localize(language, '该文件不在发送给模型的授权范围内，未读取正文',
         'That file is outside the grant for sending source to the model; its content was not read');
@@ -1043,6 +1049,11 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
       return '';
     default:
       if (RETRIEVAL_TOOLS.has(toolName)) {
+        // An incomplete search (a budget stop, a match withheld outside the
+        // provider grant) cannot say nothing matched.
+        if (body.coverageComplete === false) {
+          return localize(language, '检索未完整覆盖，结果可能不全', 'The search did not cover everything; results may be partial');
+        }
         return retrievalHitCount(body) === 0
           ? localize(language, '未查到相关资料', 'No matching reference material')
           : '';

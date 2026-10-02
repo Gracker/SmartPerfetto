@@ -68,6 +68,9 @@ export class DeterministicFixtureSourceAccessService extends OnDemandSourceAcces
 
   override async search(input: Parameters<OnDemandSourceAccessService['search']>[0]) {
     const result = await super.search(input);
+    // Only a clean degraded traversal is upgraded. Any other incomplete reason
+    // (a match withheld outside the provider grant, a traversal error, a
+    // budget) is real incompleteness the fixture must not hide.
     if (
       result.backend !== 'node' ||
       result.backendFidelity !== 'degraded' ||
