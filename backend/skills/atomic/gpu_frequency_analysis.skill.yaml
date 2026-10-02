@@ -5,7 +5,7 @@
 # =============================================================================
 # GPU 频率分析 (Atomic Skill)
 # =============================================================================
-# 分析 GPU 频率变化和 thermal throttling
+# 分析 GPU 频率变化；本 Skill 不采集 GPU 频率上限证据，不判定限频或温控
 # 检测 GPU 降频对渲染性能的影响
 
 name: gpu_frequency_analysis
@@ -16,7 +16,7 @@ tier: B
 
 meta:
   display_name: "GPU 频率分析"
-  description: "分析 GPU 频率变化和 thermal throttling"
+  description: "分析 GPU 频率变化（不采集 GPU 频率上限证据，不判定限频或温控）"
   icon: "memory"
   tags: [gpu, frequency, dvfs, thermal, atomic]
 
@@ -77,7 +77,7 @@ sql: |
   UNION ALL
   SELECT 'GPU 均频' as metric,
     ROUND(avg_freq / 1000.0, 0) || ' MHz' as value,
-    CASE WHEN avg_freq < max_freq * 0.6 THEN '⚠️ GPU 频率偏低，可能存在 thermal 限频'
+    CASE WHEN avg_freq < max_freq * 0.6 THEN '⚠️ GPU 均频低于峰值的 60%（仅为频率观测，不能据此判定限频或温控）'
          ELSE '✓ 正常' END as assessment
   FROM stats
   UNION ALL

@@ -9,6 +9,8 @@ import {describe, expect, it, jest} from '@jest/globals';
 import {createSkillExecutor} from '../skillExecutor';
 import {readSkillFragmentFile, skillFragmentKey} from '../skillFragments';
 import type {DiagnosticResult, SkillDefinition, SkillExecutionResult} from '../types';
+import {diagnoseRuleStep, fresh, rowsTable as table, stepOf, type Rows, type Table} from '../../../../tests/helpers/skillRuleHarness';
+import {namesThermalCause} from '../../../../tests/helpers/skillWording';
 
 /**
  * jank_frame_detail's frame_diagnosis may assert a CPU frequency limit only
@@ -28,19 +30,6 @@ function loadSkill(rel: string): any {
   return yaml.load(fs.readFileSync(path.join(skillsDir, rel), 'utf8'));
 }
 
-function stepOf(skill: any, id: string): any {
-  const step = skill.steps.find((candidate: any) => candidate.id === id);
-  if (!step) throw new Error(`step ${id} not found`);
-  return step;
-}
-
-type Rows = Record<string, unknown>[];
-type Table = {columns: string[]; rows: unknown[][]};
-
-function table(rows: Rows): Table {
-  const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-  return {columns, rows: rows.map(row => columns.map(column => row[column]))};
-}
 
 interface Scenario {
   /** The limit_evidence row; 'error' makes that query fail. */
@@ -73,8 +62,6 @@ const FRAGMENTS = new Map(fs.readdirSync(fragmentsDir).filter(file => file.endsW
   .map(file => [skillFragmentKey(file), readSkillFragmentFile(fragmentsDir, file)]));
 const CHILD = loadSkill(CHILD_FILE);
 const PARENT = loadSkill(PARENT_FILE);
-/** A fresh plain copy per run: the executor must never see state from a previous one. */
-const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 const bigRange = (min: number, max: number, coreType = 'big'): Rows => [
   {core_type: coreType, avg_freq_mhz: (min + max) / 2, max_freq_mhz: max, min_freq_mhz: min},
@@ -138,8 +125,6 @@ const LIMIT_DEFERRAL = '是否限频以本帧的 CPU 限频证据为准';
 const find = (diagnostics: DiagnosticResult[], ...markers: string[]) =>
   diagnostics.filter(d => markers.some(marker => d.diagnosis.includes(marker)));
 const texts = (diagnostics: DiagnosticResult[]) => diagnostics.flatMap(d => [d.diagnosis, ...(d.suggestions ?? [])]);
-/** Wording that names a thermal cause. */
-const THERMAL_CAUSE = /温控降频|温控策略|温度|过热|散热/;
 
 const RULES = JSON.stringify(stepOf(PARENT, 'frame_diagnosis').rules);
 /** Fields frame_diagnosis reads from a row of `name`, as `.data[0]` or `.data.find(c => c.cluster === '…')`. */
@@ -169,9 +154,7 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
     const diagnostics = await diagnose({limit: OBSERVED, freq: bigRange(1000, 2400)});
     expect(find(diagnostics, LIMIT_ASSERTION)).toHaveLength(1);
     expect(find(diagnostics, RANGE_OBSERVATION)).toHaveLength(0);
-    for (const text of texts(diagnostics)) {
-      expect(text).not.toMatch(THERMAL_CAUSE);
-    }
+    expect(texts(diagnostics).filter(namesThermalCause)).toEqual([]);
   });
 
   it('reports a wide big-tier range without limit evidence only as an observation', async () => {
@@ -226,21 +209,8 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
       .filter(d => d.diagnosis.startsWith('大核频率'))
       .flatMap(d => d.suggestions ?? []);
     expect(hints).toHaveLength(4);
-    for (const text of hints) {
-      expect(text).not.toMatch(THERMAL_CAUSE);
-    }
+    expect(hints.filter(namesThermalCause)).toEqual([]);
     expect(hints.filter(text => text.includes(LIMIT_DEFERRAL))).toHaveLength(2);
-  });
-
-  it('names thermal control only in rules that read the frame limit evidence or root cause', () => {
-    // Negations that defer a frequency cause to the limit evidence are not a cause.
-    const deferrals = ['不是限频或温控证据', '不能说明温控或限频'];
-    const offenders = stepOf(PARENT, 'frame_diagnosis').rules
-      .filter((rule: any) => !/freq_limit_evidence|root_cause/.test(rule.condition))
-      .flatMap((rule: any) => [rule.diagnosis, ...(rule.suggestions ?? [])])
-      .filter((text: string) => /温控|温度|过热|散热|thermal/i.test(
-        deferrals.reduce((rest, deferral) => rest.split(deferral).join(''), text)));
-    expect(offenders).toEqual([]);
   });
 
   it('reads only fields and values the child evidence step can produce', () => {
@@ -261,16 +231,8 @@ describe('jank_frame_detail frequency-limit diagnosis', () => {
 });
 
 /** frame_diagnosis alone, fed stub rows under the save_as names its rules read. */
-function diagnoseFrom(inputs: Record<string, Rows>): Promise<DiagnosticResult[]> {
-  const names = Object.keys(inputs);
-  return runSteps([
-    ...names.map(name => ({id: `stub_${name}`, type: 'atomic', sql: `SELECT 1 AS stub_${name}`, save_as: name})),
-    fresh(stepOf(PARENT, 'frame_diagnosis')),
-  ], sql => {
-    const name = names.find(candidate => sql.includes(`stub_${candidate}`));
-    return name ? table(inputs[name]) : undefined;
-  });
-}
+const diagnoseFrom = (inputs: Record<string, Rows>): Promise<DiagnosticResult[]> =>
+  diagnoseRuleStep(stepOf(PARENT, 'frame_diagnosis'), inputs, {start_ts: 1, end_ts: 2});
 
 describe('jank_frame_detail frame_diagnosis values', () => {
   it('carries the root-cause confidence level as the rule confidence', async () => {
@@ -355,8 +317,9 @@ const CLUSTER_FINDINGS = ['簇负载', '簇中有核心接近'];
 
 const clusterRow = (cluster: string, loadPct: number, maxSingleCorePct = 80) =>
   ({cluster, core_count: 2, load_pct: loadPct, max_single_core_pct: maxSingleCorePct});
-/** Wording that asserts a cause, a thread identity or a scope these rows do not establish. */
-const UNEVIDENCED_CAUSE = new RegExp(`${THERMAL_CAUSE.source}|UI 线程|资源严重不足|资源紧张|导致调度延迟|整体负载|整机`);
+/** Wording that asserts a thread identity or a scope these rows do not establish. */
+const UNEVIDENCED_SCOPE = /UI 线程|资源严重不足|资源紧张|导致调度延迟|整体负载|整机/;
+const unevidenced = (text: string) => namesThermalCause(text) || UNEVIDENCED_SCOPE.test(text);
 
 describe('jank_frame_detail topology-backed child bindings', () => {
   it('binds the read steps rows, and the rules cite them', async () => {
@@ -399,9 +362,7 @@ describe('jank_frame_detail topology-backed child bindings', () => {
       ['大核簇中有核心接近 100% (99%)', 'info'],
     ]);
 
-    for (const text of texts([...migrationFindings, ...clusterFindings])) {
-      expect(text).not.toMatch(UNEVIDENCED_CAUSE);
-    }
+    expect(texts([...migrationFindings, ...clusterFindings]).filter(unevidenced)).toEqual([]);
     // Placement and Running-time share carry no frequency: the migration and the
     // big-tier saturation hints defer to the limit evidence.
     const deferring = [...migrationFindings,
@@ -421,9 +382,7 @@ describe('jank_frame_detail topology-backed child bindings', () => {
       clusterRow('大核簇', 75), clusterRow('中核簇', 20), clusterRow('小核簇', 75)]})).diagnostics, ...CLUSTER_FINDINGS);
     expect(bigAndLittle.map(d => d.diagnosis)).toEqual(['大核簇与小核簇负载均高于 70%: 大核簇 75%, 小核簇 75%']);
 
-    for (const text of texts([...littleOnly, ...bigAndLittle])) {
-      expect(text).not.toMatch(UNEVIDENCED_CAUSE);
-    }
+    expect(texts([...littleOnly, ...bigAndLittle]).filter(unevidenced)).toEqual([]);
   });
 
   it('binds an empty read step as empty, never the topology reference before it', async () => {

@@ -569,27 +569,23 @@
 
 **机制**：设备温度超过阈值时，thermal governor 降低 CPU/GPU 的 `scaling_max_freq`。大核频率可能从 2.84GHz 降到 1.2GHz（~58%下降）。thermal governor 全局降频——不只降热源核心。即使 app 不是热源，仍被波及。连续多次启动、benchmarking 或高环境温度都可能触发。
 
-**现象特征**：
+**候选信号**（只提示 B2/B4，不证明限频或热节流）：
 - 大核 cpufreq 最大值远低于设备标称最高频率
 - 均频远低于峰值（差距 >10%）
-- 频率限制持续整个启动期间
+- 低频持续整个启动期间
 
-**Perfetto 检测**：
-- Counter: `cpufreq` — 对比实际 max freq vs 设备支持的 max freq
-- thermal_zone counters（OEM 特定温度传感器）
-- 检查 `scaling_max_freq` 是否被限制
+负载、调速器升频延迟、功耗/厂商策略同样会产生这些信号，频率比值本身不能区分它们。
 
-**阈值**：
-| 指标 | Good | Warning | Critical |
-|------|------|---------|----------|
-| 实际max/设备max | >90% | 70-90% | <70% |
-| 频率限制持续时间 | 无 | 部分启动期间 | 全启动期间 |
+**Perfetto 检测**（按证据强度）：
+1. 限频：cpufreq 频率上限轨道（`power/cpu_frequency_limits`）在启动窗口内出现限频区段 — `invoke_skill("cpu_throttling_in_range")` 的 `limit_evidence`；无该轨道时限频未判定，不能用频率比值代替
+2. 触发方：限频前后的散热设备档位（`thermal/cdev_update`）与温度轨道（`thermal/thermal_temperature`、thermal_zone） — `invoke_skill("cpu_frequency_limit_attribution")`；没有这些证据时只能写"限频已发生，触发方未判定"
+3. 影响：限频是否约束了启动关键线程所在的 policy 与运行时长
 
 **典型影响**: 50-500ms（CPU密集型启动在 50% 降频下耗时翻倍）
 
 **关联**: 直接限制 B2(频率)。放大所有 CPU 密集型操作(A4,A5,A6,A12,A16)。是 B2 的上层控制。见 C3。
 
-**建议 [系统层]**: 检查 thermal governor 参数；如果是测试场景，设备冷却后重测；对比正常/节流状态下的启动差异。
+**建议 [系统层]**: 先确认限频与触发方（上面 1、2）；确认由温控触发后，测试场景可在设备冷却后重测，对比正常/限频状态下的启动差异，再评估 thermal governor 参数。
 
 ---
 
@@ -821,9 +817,12 @@
 
 **机制**：前一个操作（camera/游戏）使设备温度升高 → thermal governor 降频 → 所有 CPU 密集操作（class verification、JIT、layout inflate、JSON parse）受限制 → 执行时间约为正常的 频率比倒数（如 58%降频 → 2.4x 耗时）→ 更长执行 → 更多热量 → 可能进一步降频。
 
-**识别方法**: `cpufreq` 最大值 < 设备标称最高频率 × 80%。
+**识别方法**: 启动窗口内有限频区段（`cpu_throttling_in_range` 的 `limit_evidence`），且触发方证据指向温控（`cpu_frequency_limit_attribution`：散热设备升档与该上限值的写入配对，并有温度上下文）。只有 `cpufreq` 最大值低于标称值是 B2/B4 候选，不是 C3。
 
-**结论表述**: "设备处于热节流状态（大核最高频率仅达标称值的 XX%），CPU 密集型操作耗时约为正常的 Yx。建议设备冷却后重测对比。"
+**结论表述**:
+- 限频与温控触发均有证据："启动窗口内观测到限频（最大深度 XX%，由散热设备升档写入）。" 限频约束了启动关键线程所在 policy 时，才可补充"CPU 密集型操作耗时约为正常的 Yx（按频率比估算）"；建议设备冷却后重测对比。
+- 有限频、触发方未判定："启动窗口内观测到限频（最大深度 XX%），触发方（温控或功耗/厂商策略）未判定。"
+- 只有频率比值："大核最高频率为本 trace 峰值的 XX%，仅为频率观测；是否限频未判定。"
 
 ---
 

@@ -11,6 +11,7 @@ import {createSkillExecutor} from '../skillExecutor';
 import {normalizeSkillDefinition} from '../skillLoader';
 import type {DiagnosticResult, SkillDefinition} from '../types';
 import {renderStepSql} from '../../../../tests/helpers/skillFragmentSql';
+import {allStepsOf, diagnoseRuleStep, fresh, skillDocuments, stepOf} from '../../../../tests/helpers/skillRuleHarness';
 import {displayResultToEnvelope} from '../../../types/dataContract';
 import {localizeSkillDisplayResults} from '../../skillLocalization';
 import {buildCompletedAnalysisResultSnapshot} from '../../analysisResultSnapshotPipeline';
@@ -33,13 +34,6 @@ const loadYaml = (rel: string): any => {
   if (!yamlCache.has(rel)) yamlCache.set(rel, yaml.load(fs.readFileSync(path.join(skillsDir, rel), 'utf8')));
   return yamlCache.get(rel);
 };
-const stepOf = (skill: any, id: string): any => {
-  const step = skill.steps.find((candidate: any) => candidate.id === id);
-  if (!step) throw new Error(`step ${id} not found`);
-  return step;
-};
-/** A fresh plain copy per run: the executor must never see state from a previous one. */
-const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 let sources: Array<{file: string; text: string}> | undefined;
 function skillSources(): Array<{file: string; text: string}> {
@@ -119,6 +113,42 @@ function siblingViolations(skill: any): string[] {
   return violations;
 }
 
+// Big-group share fields a condition may read; unknown time is not in them.
+// Keep this list in step with the share columns the producers emit.
+const BIG_GROUP_FIELD = 'big_core_pct|big_core_ms|big_group_percent|q1_big_running_ms|q1_big_pct';
+/** A row path such as `cpu.data[0]` or `rows.find(r => r.x === 'a')`. */
+const ROW_PATH = String.raw`[\w$]+(?:\.[\w$]+|\[\d+\]|\.find\([^()]*\))*`;
+/** A big-group field compared as low (`<`, `<=`), with the row path that holds it (none for a bare row field). */
+const LOW_BIG_GROUP = new RegExp(String.raw`(?:(${ROW_PATH})\.)?\b(${BIG_GROUP_FIELD})\s*<`, 'g');
+/** An exact zero on unrounded unknown time, with its row path. */
+const EXACT_UNKNOWN_ZERO = new RegExp(String.raw`(?:(${ROW_PATH})\.)?\bunknown_\w+_ns\s*===\s*0`, 'g');
+
+/**
+ * Conditions that call a big-group share low without an exact zero for unknown
+ * time on the same row. A share over all Running time is a lower bound when
+ * some of it has no tier, so "high" is safe and "low" is not; a rounded unknown
+ * column reads 0 for microseconds of unclassified time, so the zero must be on
+ * an unrounded `unknown_*_ns` column.
+ */
+function lowBigGroupGuardViolations(skill: any): string[] {
+  const violations: string[] = [];
+  const check = (site: string, condition: unknown) => {
+    if (typeof condition !== 'string') return;
+    const plain = condition.replace(/\?\.\[/g, '[').replace(/\?\./g, '.');
+    const guarded = new Set([...plain.matchAll(EXACT_UNKNOWN_ZERO)].map(([, rowPath = '']) => rowPath));
+    for (const [, rowPath = '', field] of plain.matchAll(LOW_BIG_GROUP)) {
+      if (guarded.has(rowPath)) continue;
+      const row = rowPath ? `${rowPath}.` : '';
+      violations.push(`${site}: ${row}${field} compared as low without ${row}unknown_*_ns === 0`);
+    }
+  };
+  for (const step of allStepsOf(skill)) {
+    for (const rule of step.rules ?? []) check(`${step.id} rule`, rule?.condition);
+    for (const insight of step.synthesize?.insights ?? []) check(`${step.id} insight`, insight?.condition);
+  }
+  return violations;
+}
+
 describe('core tier rollup contract (static)', () => {
   it('keeps every tier list in the Skills on the rollup contract', () => {
     const violations = skillSources().flatMap(({file, text}) =>
@@ -155,6 +185,26 @@ describe('core tier rollup contract (static)', () => {
     expect(siblingViolations({steps: [{id: 'a', sql: 'SELECT 1 AS big_core_pct, 0 AS unknown_core_ms'}]})).toEqual([]);
     expect(siblingViolations({steps: [{id: 'a', sql: "SELECT 'x' AS big_core_pct_definition, 0 AS unknown_x"}]}))
       .toEqual(['a: big_core_pct_definition without big_core_pct']);
+  });
+
+  it('gates every low big-group comparison on exact unknown time for the same row', () => {
+    const violations = skillDocuments()
+      .flatMap(({file, skill}) => lowBigGroupGuardViolations(skill).map(violation => `${file}: ${violation}`));
+    expect(violations).toEqual([]);
+  });
+
+  it.each([
+    ['cpu.data[0]?.big_core_pct < 20', 1],
+    ['cpu.data[0]?.unknown_core_ms === 0 && cpu.data[0]?.big_core_pct < 20', 1],
+    ['cpu.data[1]?.unknown_core_ns === 0 && cpu.data[0]?.big_core_pct < 20', 1],
+    ['cpu.data[0]?.unknown_core_ns === 0 && cpu.data[0]?.big_core_pct < 20', 0],
+    ['q.data[0]?.unknown_running_ns === 0 && q.data[0]?.q1_big_running_ms < q.data[0]?.q2_little_running_ms * 0.3', 0],
+    ["rows.find(r => r.x === 'a')?.unknown_core_ns === 0 && rows.find(r => r.x === 'a')?.big_core_pct <= 10", 0],
+    ['unknown_time_ns === 0 && big_group_percent < 30', 0],
+    ['big_group_percent < 30', 1],
+    ['cpu.data[0]?.big_core_pct > 60', 0],
+  ])('classifies %s', (condition, count) => {
+    expect(lowBigGroupGuardViolations({steps: [{id: 's', type: 'diagnostic', rules: [{condition}]}]})).toHaveLength(count);
   });
 });
 
@@ -360,22 +410,6 @@ function stepRows(db: Database.Database, skillFile: string, stepId: string, vars
   return db.prepare(renderStepSql(step.sql, step.sql_fragments, vars)).all() as Array<Record<string, unknown>>;
 }
 
-/** Runs `ruleStep` with each input bound to the given rows through stub steps. */
-async function diagnose(ruleStep: any, inputs: Record<string, Array<Record<string, unknown>>>,
-  params: Record<string, unknown> = {}): Promise<DiagnosticResult[]> {
-  const stubs = Object.keys(inputs).map(name => ({id: `stub_${name}`, type: 'atomic', sql: `SELECT '${name}' AS stub`, save_as: name}));
-  const query = jest.fn(async (_traceId: string, sql: string) => {
-    const name = /SELECT '(\w+)' AS stub/.exec(sql)?.[1];
-    const rows = name ? inputs[name] : [];
-    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-    return {columns, rows: rows.map(row => columns.map(column => row[column]))};
-  });
-  const executor = createSkillExecutor({query, touchTrace: jest.fn(), getTraceWithPort: jest.fn(async () => ({port: 1}))} as any);
-  executor.registerSkill({name: 'rule_under_test', type: 'composite', version: '1',
-    meta: {display_name: 'under test', description: 'under test'}, steps: [...stubs, fresh(ruleStep)]} as SkillDefinition);
-  return (await executor.execute('rule_under_test', 'trace-1', params)).diagnostics;
-}
-
 describe('cpu_analysis big-group rule', () => {
   const coreStats = (capacities: Array<number | null>, slices: Slice[]) => withTrace(capacities, slices, db =>
     stepRows(db, 'composite/cpu_analysis.skill.yaml', 'core_type_stats', {
@@ -394,19 +428,19 @@ describe('cpu_analysis big-group rule', () => {
 
   it('does not call a medium-heavy process low on big cores', async () => {
     const rows = await coreStats([100, 400, 1024], [[1, 1, 60], [1, 2, 10], [1, 0, 30]]);
-    expect(lowBigGroup(await diagnose(RULE, {core_stats: rows}))).toEqual([]);
+    expect(lowBigGroup(await diagnoseRuleStep(RULE, {core_stats: rows}))).toEqual([]);
   });
 
   it('flags a little-heavy process from the big group share', async () => {
     const rows = await coreStats([100, 400, 1024], [[1, 1, 10], [1, 2, 10], [1, 0, 80]]);
-    expect(lowBigGroup(await diagnose(RULE, {core_stats: rows})).map(d => d.diagnosis))
+    expect(lowBigGroup(await diagnoseRuleStep(RULE, {core_stats: rows})).map(d => d.diagnosis))
       .toEqual(['大核组（超大/大/中核）使用率 20% 偏低 (<30%)']);
   });
 
   it('draws no big-group verdict when the topology is unknown', async () => {
     const rows = await coreStats([null, null, null], [[1, 0, 80], [1, 1, 20]]);
     expect(rows.map(row => [row.tier, row.unknown_time_ns])).toEqual([['unknown', 100 * MS]]);
-    expect(lowBigGroup(await diagnose(RULE, {core_stats: rows}))).toEqual([]);
+    expect(lowBigGroup(await diagnoseRuleStep(RULE, {core_stats: rows}))).toEqual([]);
   });
 });
 
@@ -428,10 +462,10 @@ describe('jank_frame_detail migration big-group rule', () => {
 
   it('flags a little-heavy thread but never an unclassified one', async () => {
     const little = firstThread(await migration([100, 400, 1024], [[1, 2, 10], [1, 0, 90]]));
-    expect(lowBig(await diagnose(RULE, {migration_data: little}, {start_ts: 1, end_ts: 2})).map(d => d.diagnosis))
+    expect(lowBig(await diagnoseRuleStep(RULE, {migration_data: little}, {start_ts: 1, end_ts: 2})).map(d => d.diagnosis))
       .toEqual(['main 大核组（超大/大/中核）运行占比仅 10%']);
     const unknown = firstThread(await migration([null, null, null], [[1, 2, 10], [1, 0, 90]]));
-    expect(lowBig(await diagnose(RULE, {migration_data: unknown}, {start_ts: 1, end_ts: 2}))).toEqual([]);
+    expect(lowBig(await diagnoseRuleStep(RULE, {migration_data: unknown}, {start_ts: 1, end_ts: 2}))).toEqual([]);
   });
 });
 
@@ -481,7 +515,7 @@ describe('cpu.big_core_pct producer rows', () => {
     });
     expect(rows[0]).toMatchObject({unknown_core_pct: 0, unknown_core_ns: 40000, big_core_pct: 0});
     const rule = stepOf(loadYaml('composite/startup_detail.skill.yaml'), 'startup_diagnosis');
-    const diagnoses = (await diagnose(rule, {cpu_core: rows, quadrant: [{q3_runnable_ms: 80}]})).map(d => d.diagnosis);
+    const diagnoses = (await diagnoseRuleStep(rule, {cpu_core: rows, quadrant: [{q3_runnable_ms: 80}]})).map(d => d.diagnosis);
     expect(diagnoses.filter(d => d.includes('大核占比偏低'))).toEqual([]);
     expect(diagnoses.filter(d => d.includes('核类型未知'))).toHaveLength(1);
   });
@@ -494,10 +528,38 @@ describe('cpu.big_core_pct producer rows', () => {
     expect(rows[0]).toMatchObject({unknown_running_ms: 0, unknown_core_ns: 4000, big_core_pct: 0});
     const rule = stepOf(loadYaml('composite/click_response_detail.skill.yaml'), 'click_diagnosis');
     const inputs = {cpu_core: rows, quadrant: [{q3_runnable_ms: 80}], sched_delay: [{severe_count: 1}]};
-    expect((await diagnose(rule, inputs)).filter(d => d.diagnosis.includes('大核占比偏低'))).toEqual([]);
+    expect((await diagnoseRuleStep(rule, inputs)).filter(d => d.diagnosis.includes('大核占比偏低'))).toEqual([]);
     const classified = {...rows[0], unknown_core_ns: 0};
-    expect((await diagnose(rule, {...inputs, cpu_core: [classified]})).filter(d => d.diagnosis.includes('大核占比偏低')))
+    expect((await diagnoseRuleStep(rule, {...inputs, cpu_core: [classified]})).filter(d => d.diagnosis.includes('大核占比偏低')))
       .toHaveLength(1);
+  });
+
+  it('startup_detail does not read an early little-core bucket as placement on rounded-away unknown time', async () => {
+    // system_cpu_topology: cpu0 little, cpu2 big. main: 50 ms on little in the
+    // first 100 ms bucket, 60 ms on big in the third, and in one case 4 us on a
+    // CPU with no identity in the first bucket.
+    const buckets = (unknownNs: number) => withTrace([100, 400, 1024], [], db => {
+      const addSlice = db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, ?, ?, ?, ?, 'S', 120)");
+      addSlice.run(0, 50 * MS, 0, 0);
+      addSlice.run(210 * MS, 60 * MS, 2, 2);
+      if (unknownNs > 0) addSlice.run(60 * MS, unknownNs, 9, 99);
+      db.prepare('UPDATE trace_bounds SET end_ts = ?').run(300 * MS);
+      const skill = loadYaml('atomic/startup_cpu_placement_timeline.skill.yaml');
+      return db.prepare(renderStepSql(skill.sql, skill.sql_fragments, {package: 'com.example.app', start_ts: 0,
+        end_ts: 300 * MS, bucket_ms: 100, '__process_scope.upid': 1})).all() as Array<Record<string, unknown>>;
+    });
+    const rule = stepOf(loadYaml('composite/startup_detail.skill.yaml'), 'startup_diagnosis');
+    const shift = async (rows: Array<Record<string, unknown>>) => (await diagnoseRuleStep(rule, {cpu_placement: rows}))
+      .filter(d => d.diagnosis.startsWith('主线程大核组占比从初期'));
+
+    const unknown = await buckets(4000);
+    expect(unknown[0]).toMatchObject({big_core_pct: 0, unknown_core_ns: 4000});
+    expect(unknown[0].unknown_core_ms).toBeCloseTo(0.004, 6);
+    expect(unknown[2]).toMatchObject({big_core_pct: 100, unknown_core_ns: 0});
+    expect(await shift(unknown)).toEqual([]);
+    const classified = await buckets(0);
+    expect(classified[0]).toMatchObject({big_core_pct: 0, unknown_core_ns: 0});
+    expect((await shift(classified)).map(d => d.diagnosis)).toEqual(['主线程大核组占比从初期 0% 变为后段 100%；不能据此认定被困小核或亲和性配置错误']);
   });
 
   it('anr_detail does not report little-core placement on rounded-away unknown time', async () => {
@@ -515,7 +577,7 @@ describe('cpu.big_core_pct producer rows', () => {
         '__process_scope.upid': 1});
     });
     const rule = stepOf(loadYaml('composite/anr_detail.skill.yaml'), 'anr_event_diagnosis');
-    const placement = async (rows: Array<Record<string, unknown>>) => (await diagnose(rule, {
+    const placement = async (rows: Array<Record<string, unknown>>) => (await diagnoseRuleStep(rule, {
       quadrant: rows, direct_blocker_candidates: [{direct_blocker_type: 'scheduler_pressure', confidence: 'medium'}],
     })).filter(d => d.diagnosis.startsWith('主线程运行时间主要在小核'));
 

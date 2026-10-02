@@ -49,13 +49,13 @@ Android uses `uclamp.min` to hint the scheduler that certain threads need minimu
 - < 2ms: Normal
 - 2-5ms: Elevated (acceptable under load)
 - 5-15ms: Concerning -- CPU contention or priority issue
-- \> 15ms: Critical -- severe CPU starvation, likely thermal throttle or runaway process
+- \> 15ms: Critical -- severe CPU starvation: check runnable contention and runaway processes first; a frequency cap is only a candidate that cpufreq max-limit evidence (`cpu_throttling_in_range`) must confirm
 
 ## Typical Solutions
 
 - Set appropriate thread priority: `SCHED_FIFO` or high nice value for critical rendering threads
 - Reduce background thread count to avoid CPU contention
-- Check thermal state: throttling forces tasks onto slower cores at lower frequencies
+- Check CPU frequency-limit evidence (`cpu_throttling_in_range`) before attributing slow execution to a frequency cap; a cap lowers available capacity but does not by itself prove a thermal mechanism
 - Use `Process.setThreadPriority()` for worker threads to yield to UI threads
 - Audit background services and jobs running during performance-critical operations
 - Verify uclamp settings for RenderThread and main thread via `thread_state` table

@@ -5,9 +5,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
-import {describe, expect, it, jest} from '@jest/globals';
-import {createSkillExecutor} from '../skillExecutor';
-import type {DiagnosticResult, SkillDefinition} from '../types';
+import {describe, expect, it} from '@jest/globals';
+import type {DiagnosticResult} from '../types';
+import {diagnoseRuleStep, stepOf, type Rows} from '../../../../tests/helpers/skillRuleHarness';
+import {namesThermalCause} from '../../../../tests/helpers/skillWording';
 
 /**
  * anr_detail's main-thread placement rule reports where the main thread ran,
@@ -15,46 +16,15 @@ import type {DiagnosticResult, SkillDefinition} from '../types';
  * thermal cause nor a frequency limit; it says the limit is undetermined.
  *
  * The anr_event_diagnosis step runs verbatim from YAML, fed stub rows under
- * the save_as names its rules read.
+ * the save_as names its rules read. The repo-wide thermal-wording scan lives
+ * in skillEvidenceBoundaryContract.test.ts.
  */
 
 const SKILL: any = yaml.load(fs.readFileSync(
   path.join(process.cwd(), 'skills/composite/anr_detail.skill.yaml'), 'utf8'));
 
-function stepOf(id: string): any {
-  const step = SKILL.steps.find((candidate: any) => candidate.id === id);
-  if (!step) throw new Error(`step ${id} not found`);
-  return step;
-}
-
-type Rows = Record<string, unknown>[];
-
-function table(rows: Rows) {
-  const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-  return {columns, rows: rows.map(row => columns.map(column => row[column]))};
-}
-
-async function diagnose(inputs: Record<string, Rows>): Promise<DiagnosticResult[]> {
-  const names = Object.keys(inputs);
-  const tp = {
-    query: jest.fn(async (_traceId: string, sql: string) => {
-      const name = names.find(candidate => sql.includes(`stub_${candidate}`));
-      return name ? table(inputs[name]) : {columns: [], rows: []};
-    }),
-    touchTrace: jest.fn(),
-    getTraceWithPort: jest.fn(async () => ({port: 9100})),
-  };
-  const executor = createSkillExecutor(tp as any);
-  executor.registerSkill({
-    name: 'anr_detail_under_test', type: 'composite', version: '1',
-    meta: {display_name: 'under test', description: 'under test'},
-    steps: [
-      ...names.map(name => ({id: `stub_${name}`, type: 'atomic', sql: `SELECT 1 AS stub_${name}`, save_as: name})),
-      JSON.parse(JSON.stringify(stepOf('anr_event_diagnosis'))),
-    ],
-  } as SkillDefinition);
-  return (await executor.execute('anr_detail_under_test', 'trace-1', {})).diagnostics;
-}
+const diagnose = (inputs: Record<string, Rows>): Promise<DiagnosticResult[]> =>
+  diagnoseRuleStep(stepOf(SKILL, 'anr_event_diagnosis'), inputs);
 
 /**
  * A 5 s window that production SQL can emit: Running 55% (120 ms big tier,
@@ -75,10 +45,6 @@ const schedulerPressure = (pctOfTimeout = 35): Rows => [{
 const PLACEMENT = '主线程运行时间主要在小核';
 const placement = (diagnostics: DiagnosticResult[]) =>
   diagnostics.filter(d => d.diagnosis.startsWith(PLACEMENT));
-/** Wording that names a thermal cause; the one negation that defers to limit evidence is not one. */
-const namesThermalCause = (text: string) =>
-  /温控|温度|过热|散热|thermal/i.test(text.split('不是限频或温控证据').join(''));
-
 describe('anr_detail main-thread placement diagnosis', () => {
   it('reports placement and runnable wait as an observation, deferring any limit to evidence it lacks', async () => {
     const [finding, ...rest] = placement(await diagnose({
@@ -93,6 +59,7 @@ describe('anr_detail main-thread placement diagnosis', () => {
     expect(suggestions[1]).toContain('目标任务调度交接');
     expect(suggestions[2]).toContain('是否限频以 ANR 窗口的 CPU 限频证据为准');
     expect(suggestions[2]).toContain('限频与否未判定');
+    expect([finding.diagnosis, ...suggestions].filter(namesThermalCause)).toEqual([]);
   });
 
   it('stays silent without classified, contended, little-core-dominant Running time', async () => {
@@ -113,18 +80,11 @@ describe('anr_detail main-thread placement diagnosis', () => {
     }
   });
 
-  it('names a thermal cause in no rule: anr_detail collects no frequency-limit evidence', () => {
-    const offenders = stepOf('anr_event_diagnosis').rules
-      .flatMap((rule: any) => [rule.diagnosis, ...(rule.suggestions ?? [])])
-      .filter(namesThermalCause);
-    expect(offenders).toEqual([]);
-  });
-
   it('reads only quadrant fields the quadrant step declares', () => {
-    const rules = JSON.stringify(stepOf('anr_event_diagnosis').rules);
+    const rules = JSON.stringify(stepOf(SKILL, 'anr_event_diagnosis').rules);
     const fields = [...rules.matchAll(/quadrant\.data\[0\]\??\.(\w+)/g)].map(m => m[1]);
     expect(fields).toContain('unknown_running_ns');
-    const columns = new Set(stepOf('main_thread_quadrant').display.columns.map((c: any) => c.name));
+    const columns = new Set(stepOf(SKILL, 'main_thread_quadrant').display.columns.map((c: any) => c.name));
     expect(fields.filter(field => !columns.has(field))).toEqual([]);
   });
 });

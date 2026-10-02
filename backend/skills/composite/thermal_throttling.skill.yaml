@@ -829,8 +829,8 @@ steps:
       -- class note. No class is mapped or restated here.
       limit_facts AS (
         SELECT ${direct_limit_evidence.data[0].is_confirmed|0} AS is_confirmed,
-          '${direct_limit_evidence.data[0].freq_limit_classification}' AS freq_limit_classification,
-          '${direct_limit_evidence.data[0].class_note}' AS class_note,
+          '${direct_limit_evidence.data[0].freq_limit_classification|}' AS freq_limit_classification,
+          '${direct_limit_evidence.data[0].class_note|}' AS class_note,
           ${direct_limit_evidence.data[0].episode_count|0} AS episode_count
       ),
       thermal_peak AS (

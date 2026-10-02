@@ -2688,7 +2688,7 @@
           },
           {
             "id": "throttle_detection",
-            "sha256": "291cab9f82f8d802d4157e7b367a1d66c72d56c01486e857f75d1f6511daa55f",
+            "sha256": "3d55d125a6d3b68d22ad020e935e02c4c23c1702f055fe09a5d25d40064c590c",
             "required_columns": [
               "core_type",
               "start_freq_mhz",
@@ -3375,7 +3375,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "158672a7330e164c764ead2ec860dd4fcc1fe522715d0b5d7da95b7ac29db4eb",
+            "sha256": "c60dd8978eefc6b1014a938bb574c4f305dbdefd5633fe4ddaa2a435a6248d2e",
             "required_columns": [
               "metric",
               "value",
@@ -5163,13 +5163,14 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "f5ebc168ef65b918be7268153f3f5af1afc756f1df78324173509c1b18bfc412",
+            "sha256": "b5da088294195b345f6a90729ee89fbe7551a24b54ba6ae6ed9c7d0c098fd58a",
             "required_columns": [
               "upid",
               "utid",
               "window_start_ts",
               "window_end_ts",
               "unknown_core_ms",
+              "unknown_core_ns",
               "used_ucpus",
               "sched_covered_ns",
               "sched_evidence",
@@ -5587,7 +5588,7 @@
           },
           {
             "id": "slow_reason_checks",
-            "sha256": "c729d4f3b91406147ccad9fd2f88a7dbcddd26bc3f67b79033a161a824e5e58e",
+            "sha256": "6c96b41a1b4aabc4431712599afb0320c3089a6546da67a6a285eae182fafa72",
             "required_columns": [
               "reason_id",
               "reason",
@@ -8696,7 +8697,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "6b7741aae8e437113c4f4be412371a36551ca764eeb24540c6c71470bad0d2f5",
+            "sha256": "52bb4b8c7b874df58f588e37ab1b72074d91d0338e844a41f6877f3a36581252",
             "required_columns": [
               "gpu_category",
               "confidence",
@@ -12127,7 +12128,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "2aed2f14bb7c17e5bf4ed598b7f1b2e6901487eb12b4cb9b31bdd5993d1b6133",
+            "sha256": "38228eff286a7a1606a51a40778529799428c9837c063784f8e4b5a1e21c4a82",
             "required_columns": [
               "classification",
               "peak_temp_c",

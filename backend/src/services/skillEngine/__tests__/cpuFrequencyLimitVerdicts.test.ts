@@ -9,6 +9,7 @@ import yaml from 'js-yaml';
 import {describe, it, expect} from '@jest/globals';
 import {composeFragmentSql} from '../skillFragments';
 import {renderStepSql} from '../../../../tests/helpers/skillFragmentSql';
+import {allStepsOf} from '../../../../tests/helpers/skillRuleHarness';
 
 /**
  * Executable contract for the shared frequency-limit verdict layer.
@@ -46,15 +47,6 @@ function verdictQuery(db: Database.Database, select: string, windows: Window[] =
 
 function loadSkill(rel: string): any {
   return yaml.load(fs.readFileSync(path.join(skillsDir, rel), 'utf8'));
-}
-
-/** Every step of a Skill, including nested steps and inline conditional branches. */
-function allStepsOf(node: any): any[] {
-  if (!node || typeof node !== 'object') return [];
-  const branches = [...(node.conditions ?? []).map((c: any) => c?.then), node.else]
-    .filter(b => b && typeof b === 'object');
-  return [...(node.id && node.type ? [node] : []),
-    ...[...(node.steps ?? []), ...branches].flatMap(allStepsOf)];
 }
 
 function findStep(skill: any, id: string): any {

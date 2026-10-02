@@ -6,12 +6,11 @@ import path from 'path';
 import fs from 'fs';
 import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
-import {describe, it, expect, jest} from '@jest/globals';
+import {describe, it, expect} from '@jest/globals';
 import {androidInputEventsTableDdl, completeAndroidInputEventsFixture} from '../../../../tests/helpers/androidInputEventsFixture';
 import {renderStepSql, withStepFragments} from '../../../../tests/helpers/skillFragmentSql';
+import {diagnoseRuleStep} from '../../../../tests/helpers/skillRuleHarness';
 import {builtInSkillFragment} from '../skillFragments';
-import {createSkillExecutor} from '../skillExecutor';
-import type {SkillDefinition} from '../types';
 import {SCROLLING_V1_REASON_CODES} from '../../caseDomainPacks';
 
 // Execute maintained SQL fragments in the legacy named fixtures as well.
@@ -775,33 +774,10 @@ describe('scrolling_analysis skill schema', () => {
       evidence_status: 'freq_limit_observed', limit_evidence_missing_reason: null};
     const LIMIT_RULES = () => (getSkillStep(jankSkill, 'frame_diagnosis').rules as any[])
       .filter(rule => String(rule.condition).includes("evidence_status === 'freq_limit_observed'"));
-    const table = (rows: Record<string, unknown>[]) => {
-      const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-      return {columns, rows: rows.map(row => columns.map(column => row[column]))};
-    };
-    const diagnose = async (rootCause: Record<string, unknown> | null, limit = OBSERVED) => {
-      const tp = {
-        query: jest.fn(async (_traceId: string, sql: string) => {
-          if (sql.includes('stub_root_cause')) return table(rootCause ? [rootCause] : []);
-          if (sql.includes('stub_limit_evidence')) return table([limit]);
-          return {columns: [], rows: []};
-        }),
-        touchTrace: jest.fn(),
-        getTraceWithPort: jest.fn(async () => ({port: 9100})),
-      };
-      const executor = createSkillExecutor(tp as any);
-      executor.registerSkill({
-        name: 'jank_frame_detail_diagnosis_under_test', type: 'composite', version: '1',
-        meta: {display_name: 'under test', description: 'under test'},
-        steps: [
-          {id: 'root_cause_summary', type: 'atomic', sql: 'SELECT 1 AS stub_root_cause', save_as: 'root_cause'},
-          {id: 'cpu_throttling', type: 'atomic', sql: 'SELECT 1 AS stub_limit_evidence', save_as: 'freq_limit_evidence'},
-          JSON.parse(JSON.stringify(getSkillStep(jankSkill, 'frame_diagnosis'))),
-        ],
-      } as SkillDefinition);
-      const result = await executor.execute('jank_frame_detail_diagnosis_under_test', 'trace-1', {start_ts: 1, end_ts: 2});
-      return result.diagnostics.filter(d => d.diagnosis.includes('帧窗口内观测到 CPU 限频'));
-    };
+    const diagnose = async (rootCause: Record<string, unknown> | null, limit = OBSERVED) =>
+      (await diagnoseRuleStep(getSkillStep(jankSkill, 'frame_diagnosis'),
+        {root_cause: rootCause ? [rootCause] : [], freq_limit_evidence: [limit]}, {start_ts: 1, end_ts: 2}))
+        .filter(d => d.diagnosis.includes('帧窗口内观测到 CPU 限频'));
     const rootCause = (reasonCode: string) => ({primary_cause: 'cause', confidence: '高', secondary_info: 'info',
       reason_code: reasonCode});
 

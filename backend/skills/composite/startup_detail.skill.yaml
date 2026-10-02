@@ -778,6 +778,7 @@ steps:
         - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
         - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
         - {name: unknown_core_ms, label: "unknown_core_ms", type: duration, unit: ms, hidden: true}
+        - {name: unknown_core_ns, label: "unknown_core_ns", type: duration, unit: ns, hidden: true}
         - {name: used_ucpus, label: "used_ucpus", type: string, hidden: true}
         - {name: sched_covered_ns, label: "sched_covered_ns", type: duration, unit: ns, hidden: true}
         - {name: sched_evidence, label: "sched_evidence", type: string, hidden: true}
@@ -1749,10 +1750,11 @@ steps:
         suggestions:
           - "对齐该 CPU 上关键任务、DVFS 请求/限制及频率响应，再评估是否影响关键路径"
 
-      # 核驻留变化不等于曾被困小核。
-      - condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
+      # 核驻留变化不等于曾被困小核。A low share needs unknown_core_ns === 0 (see
+      # lowBigGroupGuardViolations); a high one is a lower bound.
+      - condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].unknown_core_ns === 0 && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
         severity: info
-        diagnosis: "主线程已分类大核占比从初期 ${cpu_placement.data[0].big_core_pct}% 变为后段 ${cpu_placement.data[2].big_core_pct}%；需保留未知核占比，不能据此认定被困小核或亲和性配置错误"
+        diagnosis: "主线程大核组占比从初期 ${cpu_placement.data[0].big_core_pct}% 变为后段 ${cpu_placement.data[2].big_core_pct}%；不能据此认定被困小核或亲和性配置错误"
         confidence: medium
         suggestions:
           - "结合实际 CPU 容量、核驻留时间及任务需求说明变化；未知拓扑保持未知"

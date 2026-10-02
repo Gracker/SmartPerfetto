@@ -15573,6 +15573,7 @@
               "window_start_ts",
               "window_end_ts",
               "unknown_core_ms",
+              "unknown_core_ns",
               "used_ucpus",
               "sched_covered_ns",
               "sched_evidence",

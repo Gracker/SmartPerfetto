@@ -8,6 +8,8 @@ import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from '@jest/globals';
 import { renderStepSql } from '../../../../tests/helpers/skillFragmentSql';
+import { allStepsOf, skillDocuments } from '../../../../tests/helpers/skillRuleHarness';
+import { namesThermalCause } from '../../../../tests/helpers/skillWording';
 
 const repoRoot = path.resolve(__dirname, '../../../..');
 
@@ -38,6 +40,100 @@ describe('Skill evidence boundary contracts', () => {
     expect(content).toContain('partial_trace_window');
     expect(content).toContain('partial_window_not_vitals_judgment');
     expect(content).not.toContain('excessive_if_24h_window');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Thermal wording. A frequency drop, a frequency ratio, a low share on big
+// cores or CPU starvation is not thermal evidence: only cpufreq max-limit
+// evidence shows a cap, and only temperature / cooling-device evidence speaks
+// to a thermal mechanism. A Skill that reads neither may defer to that
+// evidence, never name heat as the cause.
+// ---------------------------------------------------------------------------
+
+/**
+ * Thermal-domain Skills: their rules and SQL read temperature, cooling-device
+ * or limit evidence, except thermal_predictor, which reads frequency only and
+ * hedges every thermal word on that missing evidence.
+ */
+const THERMAL_EVIDENCE_SKILLS = new Set([
+  'cpu_frequency_limit_attribution', 'cpu_frequency_limit_episode', 'thermal_cooling_device_timeline',
+  'thermal_module', 'thermal_predictor', 'thermal_throttling', 'thermal_throttling_chain',
+]);
+/** Root-cause steps whose thermal_throttling reason requires limit plus cooling-device evidence. */
+const THERMAL_EVIDENCE_STEPS = new Set([
+  'jank_frame_detail/root_cause_summary', 'scrolling_analysis/batch_frame_root_cause',
+]);
+/** Diagnostic rules whose condition requires observed limit evidence or the evidence-gated root cause. */
+const THERMAL_EVIDENCE_RULES: Record<string, RegExp> = {
+  'jank_frame_detail/frame_diagnosis': /evidence_status === 'freq_limit_observed'|reason_code === 'thermal_throttling'/,
+};
+
+interface ThermalWording { site: string; allowedBy?: string; text: string }
+
+const CJK = /[\u4e00-\u9fff]/;
+/** A `--` comment (skipped, so an apostrophe in it cannot misalign quotes) or a single-quoted literal. */
+const SQL_COMMENT_OR_LITERAL = /--[^\n\r]*|'((?:''|[^'])*)'/g;
+
+/** Every user-facing text of `skill` that names a thermal cause. */
+function thermalWording(skill: any): ThermalWording[] {
+  const found: ThermalWording[] = [];
+  const name = String(skill?.name);
+  const skillAllowance = THERMAL_EVIDENCE_SKILLS.has(name) ? name : undefined;
+  const add = (site: string, text: unknown, allowedBy?: string) => {
+    if (typeof text === 'string' && namesThermalCause(text)) {
+      found.push({site, text, allowedBy: allowedBy ?? skillAllowance});
+    }
+  };
+  // What the Skill says it does, and the labels its results carry.
+  const labels = (site: string, owner: any, allowedBy?: string) => {
+    add(site, owner?.name, allowedBy);
+    add(site, owner?.display?.title, allowedBy);
+    for (const column of owner?.display?.columns ?? []) add(site, column?.label, allowedBy);
+    for (const insight of owner?.synthesize?.insights ?? []) add(site, insight?.template, allowedBy);
+  };
+  add(name, skill?.meta?.display_name);
+  add(name, skill?.meta?.description);
+  labels(name, {display: skill?.display, synthesize: skill?.synthesize});
+  const steps = [...(typeof skill?.sql === 'string' ? [{id: 'root', sql: skill.sql}] : []), ...allStepsOf(skill)];
+  for (const step of steps) {
+    const site = `${name}/${step.id}`;
+    const stepAllowance = THERMAL_EVIDENCE_STEPS.has(site) ? site : undefined;
+    labels(site, step, stepAllowance);
+    // Only literals with CJK text are user-facing; codes such as 'thermal_zone' are not.
+    for (const [, literal] of String(step.sql ?? '').matchAll(SQL_COMMENT_OR_LITERAL)) {
+      if (literal && CJK.test(literal)) add(site, literal, stepAllowance);
+    }
+    const ruleEvidence = THERMAL_EVIDENCE_RULES[site];
+    for (const rule of step.rules ?? []) {
+      const allowedBy = ruleEvidence?.test(String(rule.condition)) ? site : undefined;
+      for (const text of [rule.diagnosis, ...(rule.suggestions ?? [])]) add(site, text, allowedBy);
+    }
+  }
+  return found;
+}
+
+describe('thermal wording follows thermal evidence', () => {
+  const wording = skillDocuments().flatMap(({skill}) => thermalWording(skill));
+
+  it('names a thermal cause only where the Skill reads thermal or limit evidence', () => {
+    expect(wording.filter(entry => !entry.allowedBy).map(entry => `${entry.site}: ${entry.text}`)).toEqual([]);
+  });
+
+  it('keeps every allowance in use', () => {
+    const used = new Set(wording.map(entry => entry.allowedBy));
+    const allowances = [...THERMAL_EVIDENCE_SKILLS, ...THERMAL_EVIDENCE_STEPS, ...Object.keys(THERMAL_EVIDENCE_RULES)];
+    expect(allowances.filter(allowance => !used.has(allowance))).toEqual([]);
+  });
+
+  it('flags a cause in rule text or a user-facing literal, not a deferral or a code', () => {
+    const skill = {name: 'probe', steps: [
+      {id: 'rules', type: 'diagnostic', rules: [
+        {condition: 'true', diagnosis: '大核占比偏低', suggestions: ['可能触发温控策略', '占比本身不是限频或温控证据']},
+      ]},
+      {id: 'sql', type: 'atomic', sql: "SELECT 'thermal_zone' AS kind, '频率突降，可能受温控限制' AS note, '温度: ' AS label"},
+    ]};
+    expect(thermalWording(skill).map(entry => entry.text)).toEqual(['可能触发温控策略', '频率突降，可能受温控限制']);
   });
 });
 

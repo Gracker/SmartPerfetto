@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1368,
-    "explicitColumnCount": 5101
+    "explicitColumnCount": 5103
   },
   "skills": {
     "ams_module": {
@@ -14114,7 +14114,7 @@
         "en": "CPU Module"
       },
       "description": {
-        "zh-CN": "分析 CPU 频率、热节流和电源状态",
+        "zh-CN": "分析 CPU 频率、频率变化和电源状态",
         "en": "Analyzes CPU Module using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -15023,7 +15023,7 @@
         "en": "CPU Throttling In Range"
       },
       "description": {
-        "zh-CN": "观测 CPU 频率变化；频率跨度不能独立证明热控限频",
+        "zh-CN": "观测 CPU 频率变化与 cpufreq 频率上限；频率跨度不能独立证明限频，限频本身也不说明是否由温控触发",
         "en": "Analyzes CPU Throttling In Range using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -15135,7 +15135,7 @@
         },
         "throttle_detection": {
           "title": {
-            "zh-CN": "热控限频",
+            "zh-CN": "CPU 限频",
             "en": "Throttle Detection"
           },
           "columns": {
@@ -15195,7 +15195,7 @@
             },
             "throttle_detected": {
               "label": {
-                "zh-CN": "已核验热控限频",
+                "zh-CN": "已观测 CPU 限频",
                 "en": "Throttle Detected"
               }
             }
@@ -19781,7 +19781,7 @@
         "en": "GPU Frequency Analysis"
       },
       "description": {
-        "zh-CN": "分析 GPU 频率变化和 thermal throttling",
+        "zh-CN": "分析 GPU 频率变化（不采集 GPU 频率上限证据，不判定限频或温控）",
         "en": "Analyzes GPU Frequency Analysis using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -38075,6 +38075,12 @@
                 "en": "unknown_core_ms"
               }
             },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "UnknownCorens",
+                "en": "unknown_core_ns"
+              }
+            },
             "used_ucpus": {
               "label": {
                 "zh-CN": "UsedUcpus",
@@ -38694,6 +38700,12 @@
               "label": {
                 "zh-CN": "UnknownCorems",
                 "en": "unknown_core_ms"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "UnknownCorens",
+                "en": "unknown_core_ns"
               }
             },
             "used_ucpus": {

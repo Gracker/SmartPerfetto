@@ -3,10 +3,10 @@
 # This file is part of SmartPerfetto. See LICENSE for details.
 
 # =============================================================================
-# CPU 热控限频分析 (Composite Skill)
+# CPU 限频分析 (Composite Skill)
 # =============================================================================
-# 分析指定时间范围内是否发生 CPU 热控限频
-# 检测因温度过高导致的 CPU 降频
+# 分析指定时间范围内是否观测到 cpufreq 频率上限（限频）。限频证据不说明触发方：
+# 温控还是功耗/厂商策略要用 cpu_frequency_limit_attribution 判定。
 #
 # v2.0: 复用 cpu_topology_view 提供的 _cpu_topology 视图
 #   - 移除内联拓扑 CTE，改用 JOIN _cpu_topology
@@ -27,7 +27,7 @@ tier: B
 
 meta:
   display_name: "CPU 限频检测"
-  description: "观测 CPU 频率变化；频率跨度不能独立证明热控限频"
+  description: "观测 CPU 频率变化与 cpufreq 频率上限；频率跨度不能独立证明限频，限频本身也不说明是否由温控触发"
   icon: "thermostat"
   tags: [cpu, thermal, throttling, composite]
 
@@ -118,11 +118,11 @@ steps:
     type: atomic
     process_scope:
       role: global_context
-    name: "热控限频检测"
+    name: "CPU 限频检测"
     display:
       level: detail
       layer: deep
-      title: "热控限频"
+      title: "CPU 限频"
       columns:
         - name: core_type
           label: "核心类别"
@@ -153,13 +153,13 @@ steps:
           label: "解释"
           type: string
         - name: throttle_detected
-          label: "已核验热控限频"
+          label: "已观测 CPU 限频"
           type: boolean
     sql: |
       WITH
       -- 上一步的限频证据读一次，供下面的判定复用
       limit_status AS (
-        SELECT '${limit_evidence.data[0].evidence_status}' AS status,
+        SELECT '${limit_evidence.data[0].evidence_status|}' AS status,
           ${limit_evidence.data[0].deepest_depth_pct|0} AS depth_pct
       ),
       -- 频率采样（带拓扑分类）；NULL 或 <= 0 不是频率，保留为 NULL。拓扑未收录的
@@ -243,7 +243,7 @@ steps:
           ELSE '' END ||
         CASE WHEN status = 'freq_limit_observed'
           THEN '区间内观测到 cpufreq policy 上限被下调（最大深度 ' || depth_pct || '%）：限频确实发生；这是整窗证据，不说明本行核心受限，触发方仍需用 cpu_frequency_limit_attribution 判定'
-          ELSE '频率变化可能来自负载下降或空闲 DVFS；需直接限频证据与同窗口负载才能确定热控原因' END ||
+          ELSE '频率变化可能来自负载下降或空闲 DVFS；需直接限频证据与同窗口负载才能确定是否限频' END ||
         '（首末为各 cpufreq 轨道窗口内首末采样均值，非窗口边界值；最低/最高为本类别包络，可能来自不同核心）' AS interpretation
       FROM per_tier_stats
       CROSS JOIN limit_status

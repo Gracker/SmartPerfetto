@@ -167,10 +167,10 @@ steps:
           - runnable_data.data[0].runnable_ms
 
       - condition: "freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz < 1500"
-        diagnosis: "观测大核窗口均频 ${freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz}MHz；需结合覆盖、容量和直接温控/策略证据解释"
+        diagnosis: "观测大核窗口均频 ${freq_data.data.find(f => f.core_type === 'big')?.avg_freq_mhz}MHz；需结合覆盖、容量和直接限频/策略证据解释"
         confidence: medium
         suggestions:
-          - "检查设备温度"
+          - "是否限频以同窗口的 CPU 限频证据（cpu_throttling_in_range）为准"
           - "检查电池状态和功耗策略"
         evidence_fields:
           - freq_data.data[0].avg_freq_mhz
