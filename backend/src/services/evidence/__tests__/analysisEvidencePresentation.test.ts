@@ -99,6 +99,10 @@ describe('analysis evidence presentation', () => {
       value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: {outer: {key: undefined}}}]; },
       value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: {outer: [{key: undefined}]}}]; },
       value => { value.claims[0].self = value.claims[0]; },
+      // JSON.parse keeps __proto__ as an own key, which zod (strictObject included) drops silently.
+      value => { value.claims[0] = {...value.claims[0], ...JSON.parse('{"__proto__":"unknown"}')}; },
+      value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: JSON.parse('{"__proto__":{"k":1}}')}]; },
+      value => { value.claims[0].artifactRefs = [{artifactId: 'artifact', rowSelector: {outer: [JSON.parse('{"__proto__":1}')]}}]; },
     ];
     for (const change of cases) {
       const value = jsonClone(valid) as Record<string, any>;
@@ -127,6 +131,18 @@ describe('analysis evidence presentation', () => {
       artifactId: 'artifact', rowSelector: {outer: [{bad: undefined}]},
     }];
     expect(projectAnalysisEvidenceForDisplay(nestedArray)).toBeUndefined();
+
+    // zod drops an own __proto__ key, so the projection would no longer match the claim it shows.
+    const protoSelector = fixture();
+    protoSelector.result.conclusionContract!.claims![0].references[0].rowSelector =
+      JSON.parse('{"__proto__":"main","pid":1}');
+    expect(projectAnalysisEvidenceForDisplay(protoSelector)).toBeUndefined();
+
+    const nestedProto = fixture();
+    nestedProto.result.conclusionContract!.claims![0].artifactRefs = [{
+      artifactId: 'artifact', rowSelector: {outer: [JSON.parse('{"__proto__":{"k":1}}')]},
+    }];
+    expect(projectAnalysisEvidenceForDisplay(nestedProto)).toBeUndefined();
   });
 
   test('accepts a full owner-projected result with scope provenance and retained investigation rows', () => {
