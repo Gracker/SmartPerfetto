@@ -224,6 +224,19 @@ const UNCHECKED_CONDITION_NAMES: ReadonlySet<string> = new Set([...CONTEXTUAL_KE
 const CHECKED_CONDITION_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
+ * Whether a root a Skill expression reads needs no declaration: a runtime
+ * parameter, an exempt name, or a name validation does not check.
+ */
+export function isUncheckedConditionRoot(name: string): boolean {
+  return !CHECKED_CONDITION_NAME.test(name) || UNCHECKED_CONDITION_NAMES.has(name) || IMPLICIT_PARAMS.has(name);
+}
+
+/** The names a Skill declares for its expressions to read: its inputs and context dependencies. */
+export function declaredSkillNames(skill: SkillDefinition): Set<string> {
+  return new Set([...(skill.inputs ?? []).map(input => input.name), ...(skill.context ?? [])]);
+}
+
+/**
  * Validate all condition expressions in a skill definition.
  *
  * For each step's `condition` field, extracts root variables and checks that
@@ -244,10 +257,8 @@ export function validateSkillConditions(skill: SkillDefinition): SkillValidation
   if (!skill.steps || skill.steps.length === 0) return warnings;
 
   // Build the set of known variable sources
-  const declaredInputs = new Set(
-    (skill.inputs || []).map(i => i.name)
-  );
-  const contextDeps = new Set(skill.context || []);
+  const declared = declaredSkillNames(skill);
+  const declaredInputs = new Set((skill.inputs || []).map(i => i.name));
   const availableStepIds = new Set<string>();
   const availableSaveAs = new Set<string>();
 
@@ -259,11 +270,8 @@ export function validateSkillConditions(skill: SkillDefinition): SkillValidation
       const vars = extractRootVariables(stepAny.condition);
       for (const v of vars) {
         if (
-          !CHECKED_CONDITION_NAME.test(v) ||
-          UNCHECKED_CONDITION_NAMES.has(v) ||
-          declaredInputs.has(v) ||
-          IMPLICIT_PARAMS.has(v) ||
-          contextDeps.has(v) ||
+          isUncheckedConditionRoot(v) ||
+          declared.has(v) ||
           availableStepIds.has(v) ||
           availableSaveAs.has(v)
         ) {

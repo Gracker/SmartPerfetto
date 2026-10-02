@@ -36,8 +36,8 @@ import {
 } from './types';
 import { validateSkillInputs } from './skillValidator';
 import {
-  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, WHOLE_SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
-  isSimplePath, ownDataValue, parseEvidenceField, parsePathWithDefault, readEvidenceField,
+  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
+  ownDataValue, parseEvidenceField, readEvidenceField, routePlaceholder, wholePlaceholderBody,
 } from './expressionUtils';
 import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments';
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
@@ -264,62 +264,37 @@ class ExpressionEvaluator {
    * 支持：${variable}、${step.field}、比较运算符等
    */
   static evaluate(expression: string, context: SkillExecutionContext): any {
-    // 检查是否是完整的 ${...} 表达式（整个字符串被包裹）
-    const fullExprMatch = expression.match(WHOLE_SKILL_PLACEHOLDER);
-    // 如果内部还包含 ${...}，说明这是一个模板串（如 "${a} + ${b}"），不要当成单个 JS 表达式执行
-    if (fullExprMatch && !fullExprMatch[1].includes('${')) {
-      const innerExpr = fullExprMatch[1].trim();
-      // Support ${varName|defaultValue} syntax for full expressions
-      const defaultSyntax = parsePathWithDefault(innerExpr);
-      if (defaultSyntax) {
-        const value = this.resolvePath(defaultSyntax.actualPath, context);
-        if (value !== undefined && value !== null) return value;
-        const defaultPart = defaultSyntax.defaultValue;
-        // Parse default: try number, boolean, then string
-        if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
-        if (defaultPart === 'true') return true;
-        if (defaultPart === 'false') return false;
-        return defaultPart;
-      }
-      // 这是一个 JavaScript 表达式，需要完整求值
-      return this.evaluateJsExpression(innerExpr, context);
+    // 整串是一个 ${...}（不是 "${a} + ${b}" 这样的模板）时求它的值；路径还是 JS 由 routePlaceholder 决定
+    const wholeBody = wholePlaceholderBody(expression);
+    if (wholeBody !== undefined) {
+      const route = routePlaceholder(wholeBody, true);
+      if (route.kind === 'js') return this.evaluateJsExpression(route.expression, context);
+      const value = this.resolvePath(route.path, context);
+      if (value !== undefined && value !== null) return value;
+      // A whole placeholder is a path only with a default: try number, boolean, then string
+      const defaultPart = route.defaultValue ?? '';
+      if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
+      if (defaultPart === 'true') return true;
+      if (defaultPart === 'false') return false;
+      return defaultPart;
     }
 
-    // 否则，做变量替换（支持嵌入的 JavaScript 表达式）
-    let result = expression;
-
-    // 替换 ${xxx} 格式的变量
-    // 简单路径走 resolvePath；复杂表达式走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
-    result = result.replace(SKILL_PLACEHOLDER, (_match, path) => {
-      const rawPath = String(path ?? '').trim();
-
-      // Support ${varName|defaultValue} syntax
-      const defaultSyntax = parsePathWithDefault(rawPath);
-      const actualPath = defaultSyntax?.actualPath ?? rawPath;
-      const defaultValue = defaultSyntax?.defaultValue;
-
-      // 复杂表达式：使用完整的 JS 表达式求值
-      if (!isSimplePath(actualPath)) {
-        try {
-          const value = this.evaluateJsExpression(actualPath, context);
-          if (value === undefined || value === null) {
-            return defaultValue !== undefined ? defaultValue : '';
-          }
-          if (typeof value === 'object') return JSON.stringify(value);
-          return String(value);
-        } catch (e) {
-          logger.debug('ExpressionEvaluator', `Failed to evaluate embedded JS: ${actualPath}`);
-          return defaultValue !== undefined ? defaultValue : '';
-        }
+    // 否则逐个替换 ${...}：路径走 resolvePath，其余走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
+    const asText = (value: unknown) => typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const result = expression.replace(SKILL_PLACEHOLDER, (_match, inner) => {
+      const route = routePlaceholder(String(inner ?? ''), false);
+      if (route.kind === 'path') {
+        const value = this.resolvePath(route.path, context);
+        return value === undefined || value === null ? route.defaultValue ?? '' : asText(value);
       }
-
-      // 简单路径：使用 resolvePath
-      const value = this.resolvePath(actualPath, context);
-      if (value === undefined || value === null) {
-        return defaultValue !== undefined ? defaultValue : '';
+      // 嵌入的 JS：求值和转成文本的任何异常都替换为空串
+      try {
+        const value = this.evaluateJsExpression(route.expression, context);
+        return value === undefined || value === null ? '' : asText(value);
+      } catch {
+        logger.debug('ExpressionEvaluator', `Failed to evaluate embedded JS: ${route.expression}`);
+        return '';
       }
-      if (typeof value === 'object') return JSON.stringify(value);
-      return String(value);
     });
 
     // 如果是简单的比较表达式，尝试求值

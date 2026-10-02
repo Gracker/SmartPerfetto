@@ -47,7 +47,7 @@ export const CONTEXTUAL_KEYWORDS: ReadonlySet<string> = new Set(['async', 'await
  * is one whole `${…}` (with no `${` inside) holds a single expression;
  * otherwise each `${…}` runs to its first `}`.
  */
-export const WHOLE_SKILL_PLACEHOLDER = /^\$\{(.+)\}$/s;
+const WHOLE_SKILL_PLACEHOLDER = /^\$\{(.+)\}$/s;
 export const SKILL_PLACEHOLDER = /\$\{([^}]+)\}/g;
 
 const PATH_SOURCE = String.raw`[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*`;
@@ -55,14 +55,38 @@ const SIMPLE_PATH = new RegExp(`^${PATH_SOURCE}$`);
 const PATH_WITH_DEFAULT = new RegExp(String.raw`^(${PATH_SOURCE})\|([^|].*)$`);
 
 /** A placeholder path read through scopes (`step.data[0].field`), not a JS expression. */
-export function isSimplePath(path: string): boolean {
+function isSimplePath(path: string): boolean {
   return SIMPLE_PATH.test(path.trim());
 }
 
 /** The `path|default` form of a placeholder, or null when it is not one. */
-export function parsePathWithDefault(raw: string): {actualPath: string; defaultValue: string} | null {
+function parsePathWithDefault(raw: string): {actualPath: string; defaultValue: string} | null {
   const match = raw.trim().match(PATH_WITH_DEFAULT);
   return match ? {actualPath: match[1].trim(), defaultValue: match[2].trim()} : null;
+}
+
+/** How the evaluator reads a placeholder body: a path through scopes, or JavaScript. */
+type PlaceholderRoute =
+  | {kind: 'path'; path: string; defaultValue?: string}
+  | {kind: 'js'; expression: string};
+
+/** The body of `text` when it is one whole `${…}` placeholder, not a template of several. */
+export function wholePlaceholderBody(text: string): string | undefined {
+  const match = text.match(WHOLE_SKILL_PLACEHOLDER);
+  return match && !match[1].includes('${') ? match[1] : undefined;
+}
+
+/**
+ * Routes a placeholder body as ExpressionEvaluator.evaluate does, and as
+ * validation must read it: `path|default`, and a simple path embedded in
+ * text, resolve through scopes; a whole placeholder without a default, and
+ * anything that is not a path, are JavaScript.
+ */
+export function routePlaceholder(inner: string, whole: boolean): PlaceholderRoute {
+  const withDefault = parsePathWithDefault(inner);
+  if (withDefault) return {kind: 'path', path: withDefault.actualPath, defaultValue: withDefault.defaultValue};
+  const body = inner.trim();
+  return !whole && isSimplePath(body) ? {kind: 'path', path: body} : {kind: 'js', expression: body};
 }
 
 const ID_ESCAPE = String.raw`\\u(?:[0-9a-fA-F]{4}|\{[0-9a-fA-F]+\})`;
@@ -359,18 +383,58 @@ function arrowParameterScopes(tokens: Token[]): ParameterScope[] {
 /** A name a scope could bind: not a reserved word, not a language global. */
 const isScopeName = (name: string) => isBindableName(name) && !EXPRESSION_GLOBALS.has(name);
 
-/** A root name and the source offset it is written at. */
-type RootAt = {name: string; at: number};
+/** A root name a Skill expression reads. */
+interface RootRead {
+  name: string;
+  /** Where it is written: its offset in the expression, inside a `${…}` placeholder too. */
+  at: number;
+  /**
+   * The member read right after the name in a lexed reading: a property name,
+   * `[` for an index, or none. A placeholder routed as a path records none,
+   * since that path is no member read; the coarse fallback records none.
+   */
+  access?: string;
+}
+
+/**
+ * The reads of an expression, and whether they are exact: every lexing the
+ * engine confirmed, and no scope but an arrow function with an expression
+ * body. Otherwise the reads are a guess that may name a local or a word in a
+ * literal.
+ */
+export interface RootReads {
+  reads: RootRead[];
+  exact: boolean;
+}
+
+/** Words that declare a local other than an arrow parameter. */
+const LOCAL_DECLARATIONS: ReadonlySet<string> = new Set(['catch', 'class', 'const', 'function', 'let', 'var']);
+
+/**
+ * Whether a lexing opens a scope root reads do not model: a declaration, or a
+ * block after `)` or `=>` (a function, method or accessor body, a control
+ * block, an arrow's block body), where statements and labels may name locals.
+ */
+const hasUnmodeledScope = (tokens: Token[]) => tokens.some((token, i) =>
+  (token.kind === 'word' && !token.property && LOCAL_DECLARATIONS.has(token.text))
+  || (token.kind === 'punct' && token.text === '{' && (tokens[i - 1]?.text === ')' || tokens[i - 1]?.text === '=>')));
 
 /** Root names one lexing of a condition reads: no property, static key, or arrow parameter in its scope. */
-function rootsOfLexing(tokens: Token[]): RootAt[] {
+function rootsOfLexing(tokens: Token[]): RootRead[] {
   const scopes = arrowParameterScopes(tokens);
-  return tokens.filter((token, i) => {
-    if (token.kind !== 'word' || token.property || !isScopeName(token.text)) return false;
-    if (scopes.some(scope => scope.name === token.text && i >= scope.from && i < scope.to)) return false;
+  const reads: RootRead[] = [];
+  tokens.forEach((token, i) => {
+    if (token.kind !== 'word' || token.property || !isScopeName(token.text)) return;
+    if (scopes.some(scope => scope.name === token.text && i >= scope.from && i < scope.to)) return;
     const prev = tokens[i - 1]?.text;
-    return !(tokens[i + 1]?.text === ':' && (prev === '{' || prev === ',') && enclosingOpener(tokens, i) === '{');
-  }).map(token => ({name: token.text, at: token.start!}));
+    if (tokens[i + 1]?.text === ':' && (prev === '{' || prev === ',') && enclosingOpener(tokens, i) === '{') return;
+    const next = tokens[i + 1]?.text;
+    const after = tokens[i + 2];
+    const access = (next === '.' || next === '?.') && after?.kind === 'word' ? after.text
+      : next === '[' || (next === '?.' && after?.text === '[') ? '[' : undefined;
+    reads.push({name: token.text, at: token.start!, access});
+  });
+  return reads;
 }
 
 /** The engine compiles once per identifier; a longer condition gets the coarse scan. */
@@ -423,7 +487,7 @@ function agreesWithEngine(tokens: Token[], identifiers: RegExpExecArray[], inCod
  * regexes, templates and comments read as roots, and a misread quote pair can
  * hide the names between its quotes.
  */
-function coarseRootScan(code: string): RootAt[] {
+function coarseRootScan(code: string): RootRead[] {
   // Same length, so offsets stay those of `code`.
   const stripped = code.replace(/'[^']*'|"[^"]*"/g, literal => '""'.padEnd(literal.length));
   return [...stripped.matchAll(/\b[a-zA-Z_][a-zA-Z0-9_]*\b/g)]
@@ -431,222 +495,91 @@ function coarseRootScan(code: string): RootAt[] {
     .map(match => ({name: match[0], at: match.index}));
 }
 
-/** The roots a Skill placeholder's inner text reads: a `path|default` its path's root, anything else as JS. */
-function placeholderRoots(inner: string): string[] {
-  const path = parsePathWithDefault(inner)?.actualPath;
-  return path ? [path.split(/[.[]/)[0]] : extractRootVariables(inner);
+/**
+ * The root reads of `text`. Skill placeholders are read and substituted first,
+ * as ExpressionEvaluator.evaluate does (also inside quotes), routed by
+ * {@link routePlaceholder}: a path reads its root, anything else is JS. Outside placeholders, `text` is
+ * JS for an expression and prose for a template.
+ */
+function readsOf(text: string, prose: boolean): RootReads {
+  const reads: RootRead[] = [];
+  let exact = true;
+  // `at` is where the placeholder's `${` starts; each read keeps its own offset
+  // in `text`, so two reads of one name in one placeholder stay apart.
+  const readPlaceholder = (inner: string, at: number, whole: boolean) => {
+    const bodyAt = at + 2 + inner.length - inner.trimStart().length;
+    const route = routePlaceholder(inner, whole);
+    if (route.kind === 'path') {
+      reads.push({name: route.path.split(/[.[]/)[0], at: bodyAt});
+      return;
+    }
+    const innerReads = readsOf(route.expression, false);
+    exact &&= innerReads.exact;
+    for (const read of innerReads.reads) reads.push({...read, at: bodyAt + read.at});
+  };
+  const wholeBody = wholePlaceholderBody(text);
+  if (wholeBody !== undefined) {
+    readPlaceholder(wholeBody, 0, true);
+  } else {
+    // A value of the same length keeps every offset that of `text`.
+    const code = text.replace(SKILL_PLACEHOLDER, (placeholder: string, inner: string, at: number) => {
+      readPlaceholder(inner, at, false);
+      return ' 0'.padEnd(placeholder.length);
+    });
+    if (!prose) {
+      const identifiers = identifierMatches(code);
+      const inCode = engineCodeIdentifiers(code, identifiers);
+      const confirmed = inCode && lexings(code)?.filter(tokens => agreesWithEngine(tokens, identifiers, inCode));
+      if (confirmed?.length) {
+        reads.push(...confirmed.flatMap(rootsOfLexing));
+        exact &&= !confirmed.some(hasUnmodeledScope);
+      } else {
+        reads.push(...coarseRootScan(code));
+        exact = false;
+      }
+    }
+  }
+  // Readings the engine confirmed may share an occurrence; keep the first.
+  const unique = new Map<string, RootRead>();
+  for (const read of reads) {
+    const key = `${read.at}:${read.name}`;
+    if (!unique.has(key)) unique.set(key, read);
+  }
+  return {reads: [...unique.values()].sort((a, b) => a.at - b.at), exact};
 }
 
 /**
- * Root names a Skill condition reads from its scope: for load-time validation,
- * and for the inputs a fired diagnostic rule cites as evidence.
- * Skill placeholders are read and substituted first, as
- * ExpressionEvaluator.evaluate does (also inside quotes). In the JS, literals,
- * comments, property names, static object keys (`{k: v}`), arrow parameters
- * within their function, reserved words and {@link EXPRESSION_GLOBALS} are not
- * roots. Contextual keywords are reported, since they may be names. Roots come
- * in the order they are first written.
+ * Every root read of a Skill condition, in the order written. In the JS,
+ * literals, comments, property names, static object keys (`{k: v}`), arrow
+ * parameters within their function, reserved words and
+ * {@link EXPRESSION_GLOBALS} are not roots; contextual keywords are, since
+ * they may be names.
  *
  * Where only parsing could tell a regex from a division, every reading is
  * lexed, and only readings the engine confirms identifier by identifier count;
- * their roots are combined. When the condition does not compile, or no
- * reading is confirmed, {@link coarseRootScan} answers instead.
+ * their reads are combined. When the condition does not compile, or no reading
+ * is confirmed, {@link coarseRootScan} answers instead and the reads are not
+ * exact.
  *
  * The evaluator does not use this: its scope must bind a superset of the
  * names an expression may read, so it scans candidates without lexing.
  */
+export function rootReads(expr: string): RootReads {
+  return readsOf(expr, false);
+}
+
+/** The root reads of a diagnosis or suggestion template: its placeholders; the text around them is prose. */
+export function templateRootReads(template: string): RootReads {
+  return readsOf(template, true);
+}
+
+/**
+ * Root names a Skill condition reads ({@link rootReads}), each once, in the
+ * order first written: for load-time validation, and for the inputs a fired
+ * diagnostic rule cites as evidence.
+ */
 export function extractRootVariables(expr: string): string[] {
-  const roots: RootAt[] = [];
-  const readPlaceholder = (inner: string, at: number) => placeholderRoots(inner).forEach(name => roots.push({name, at}));
-  const whole = expr.match(WHOLE_SKILL_PLACEHOLDER);
-  let code = '0';
-  if (whole && !whole[1].includes('${')) readPlaceholder(whole[1], 0);
-  else {
-    // A value of the same length keeps every offset that of `expr`.
-    code = expr.replace(SKILL_PLACEHOLDER, (placeholder: string, inner: string, at: number) => {
-      readPlaceholder(inner, at);
-      return ' 0'.padEnd(placeholder.length);
-    });
-  }
-  const identifiers = identifierMatches(code);
-  const inCode = engineCodeIdentifiers(code, identifiers);
-  const confirmed = inCode && lexings(code)?.filter(tokens => agreesWithEngine(tokens, identifiers, inCode));
-  roots.push(...(confirmed?.length ? confirmed.flatMap(rootsOfLexing) : coarseRootScan(code)));
-  return [...new Set(roots.sort((a, b) => a.at - b.at).map(root => root.name))];
-}
-
-/**
- * Names {@link rootIdentifierOccurrences} skips: keywords and the built-in
- * globals it treats as never declared.
- */
-export const JS_BUILTINS = new Set([
-  // Literals & keywords
-  'true', 'false', 'null', 'undefined',
-  'if', 'else', 'return', 'function', 'var', 'let', 'const',
-  'new', 'this', 'typeof', 'instanceof', 'in', 'of',
-  'for', 'while', 'do', 'break', 'continue',
-  'switch', 'case', 'default',
-  'try', 'catch', 'finally', 'throw',
-  'async', 'await', 'class', 'extends', 'super',
-  'import', 'export', 'void', 'delete', 'yield',
-  // Built-in globals
-  'NaN', 'Infinity', 'Math', 'JSON', 'Array', 'Object', 'String',
-  'Number', 'Boolean', 'Date', 'RegExp', 'Error', 'Map', 'Set',
-  'parseInt', 'parseFloat', 'isNaN', 'isFinite',
-  'console', 'window', 'globalThis',
-]);
-
-
-export interface RootIdentifierOccurrence {
-  name: string;
-  /** Offset just past the identifier in {@link blankStringLiterals}(expr). */
-  end: number;
-}
-
-/**
- * Every root identifier occurrence in an expression, in order: names that are
- * not property accesses, keywords or {@link JS_BUILTINS}. String literals are
- * blanked first so identifiers inside quotes are not reported.
- */
-export function rootIdentifierOccurrences(expr: string): RootIdentifierOccurrence[] {
-  const stripped = blankStringLiterals(expr);
-  const occurrences: RootIdentifierOccurrence[] = [];
-  const identifierRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
-
-  let match;
-  while ((match = identifierRegex.exec(stripped)) !== null) {
-    const name = match[1];
-    if (JS_BUILTINS.has(name)) continue;
-    // Preceded by `.`: a property access, not a root variable
-    if (/\.\s*$/.test(stripped.substring(0, match.index))) continue;
-    occurrences.push({name, end: match.index + name.length});
-  }
-
-  return occurrences;
-}
-
-/**
- * Replaces each quoted string literal (escapes included) with `""`,
- * e.g. status === 'it\'s' → status === "".
- */
-export function blankStringLiterals(expr: string): string {
-  return expr.replace(/'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"/g, '""');
-}
-
-/**
- * The root identifier occurrences an expression reads from its scope: those of
- * {@link rootIdentifierOccurrences} that are neither parameters of an
- * enclosing arrow function nor destructuring keys. A parameter binds from its
- * parameter list to the end of the arrow body; a destructuring default
- * (`({v = other.data[0]}) => ...`) is a read, not a binding.
- * `rows.data.find(({dur_ms}) => dur_ms > 0) && other.data` reads `rows` and
- * `other`, never `dur_ms`.
- */
-export function freeRootOccurrences(expr: string): RootIdentifierOccurrence[] {
-  const blanked = blankStringLiterals(expr);
-  const scopes: Array<{params: Set<string>; start: number; end: number}> = [];
-  const keyEnds = new Set<number>();
-  for (const arrow of blanked.matchAll(/=>/g)) {
-    const params = arrowParameters(blanked, arrow.index);
-    if (!params) continue;
-    scopes.push({params: params.bindings, start: params.start, end: arrowBodyEnd(blanked, arrow.index + 2)});
-    params.keyEnds.forEach(end => keyEnds.add(end));
-  }
-  return rootIdentifierOccurrences(expr).filter(({name, end}) => !keyEnds.has(end) && !scopes.some(scope =>
-    scope.params.has(name) && scope.start <= end - name.length && end <= scope.end));
-}
-
-/** The parameters of the arrow whose `=>` is at `arrow`: a balanced `(...)` list or one identifier. */
-function arrowParameters(
-  text: string,
-  arrow: number,
-): {bindings: Set<string>; keyEnds: Set<number>; start: number} | undefined {
-  let close = arrow - 1;
-  while (close >= 0 && /\s/.test(text[close])) close--;
-  if (text[close] === ')') {
-    let depth = 0;
-    for (let open = close; open >= 0; open--) {
-      if (text[open] === ')') depth++;
-      else if (text[open] === '(' && --depth === 0) {
-        return {...parameterBindings(text.slice(open + 1, close), open + 1), start: open};
-      }
-    }
-    return undefined;
-  }
-  const name = text.slice(0, close + 1).match(/[a-zA-Z_][a-zA-Z0-9_]*$/)?.[0];
-  return name ? {bindings: new Set([name]), keyEnds: new Set(), start: close + 1 - name.length} : undefined;
-}
-
-/**
- * The names a parenthesized parameter list binds, and the end offsets (from
- * `offset`) of its destructuring keys. A key (`column:`) binds nothing; a
- * computed key (`[expr]:`) and a default value expression are skipped, so
- * their reads stay free; `...rest` binds `rest`.
- */
-function parameterBindings(list: string, offset: number): {bindings: Set<string>; keyEnds: Set<number>} {
-  const bindings = new Set<string>();
-  const keyEnds = new Set<number>();
-  const identifier = /[a-zA-Z_][a-zA-Z0-9_]*/y;
-  const brackets: string[] = [];
-  // While >= 0, a default value or computed key is being skipped; it ends when
-  // the bracket depth falls below this or, for a default, at a comma on it.
-  let skipDepth = -1;
-  let skippingDefault = false;
-  for (let i = 0; i < list.length; i++) {
-    const char = list[i];
-    if ('([{'.includes(char)) {
-      const before = list.slice(0, i).trimEnd().slice(-1);
-      if (skipDepth < 0 && char === '[' && brackets[brackets.length - 1] === '{' && (before === '{' || before === ',')) {
-        skipDepth = brackets.length + 1;
-        skippingDefault = false;
-      }
-      brackets.push(char);
-    } else if (')]}'.includes(char)) {
-      brackets.pop();
-      if (skipDepth >= 0 && brackets.length < skipDepth) skipDepth = -1;
-    } else if (skipDepth >= 0) {
-      if (skippingDefault && char === ',' && brackets.length === skipDepth) skipDepth = -1;
-    } else if (char === '=') {
-      skipDepth = brackets.length;
-      skippingDefault = true;
-    } else {
-      identifier.lastIndex = i;
-      const name = identifier.exec(list)?.[0];
-      const before = list.slice(0, i);
-      if (!name || /[\w$]$/.test(before) || (/\.$/.test(before) && !/\.\.\.$/.test(before))) continue;
-      const end = i + name.length;
-      if (/^\s*:/.test(list.slice(end))) keyEnds.add(offset + end);
-      else bindings.add(name);
-      i = end - 1;
-    }
-  }
-  return {bindings, keyEnds};
-}
-
-/**
- * Offset where an arrow body starting at `from` ends: an unmatched closing
- * bracket, a top-level comma, or the `:` of a ternary the body did not open.
- */
-function arrowBodyEnd(text: string, from: number): number {
-  let depth = 0;
-  let openTernaries = 0;
-  for (let i = from; i < text.length; i++) {
-    const char = text[i];
-    if ('([{'.includes(char)) depth++;
-    else if (')]}'.includes(char)) {
-      if (depth === 0) return i;
-      depth--;
-    } else if (depth === 0 && char === ',') {
-      return i;
-    } else if (depth === 0 && char === '?') {
-      if (text[i + 1] === '?') i++; // `??`
-      else if (text[i + 1] !== '.') openTernaries++; // not `?.`
-    } else if (depth === 0 && char === ':') {
-      if (openTernaries === 0) return i;
-      openTernaries--;
-    }
-  }
-  return text.length;
+  return [...new Set(rootReads(expr).reads.map(read => read.name))];
 }
 
 // =============================================================================

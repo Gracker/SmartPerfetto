@@ -157,8 +157,17 @@ is reported: a row set becomes `{_rowCount, _firstRow}`, a row keeps its
 scalar fields, and long strings are cut. A fired rule also reports a bounded sample of every input its condition reads, whether written `name.data`, `name?.data` or `name?.["data"]`; a name that appears only inside a string or comment is not read. `validate:skills` rejects an evidence
 field outside that grammar or rooted outside `inputs`, a rule that reads a step
 missing from `inputs`, a condition that reads step data other than through
-`.data` (inside a `${...}` placeholder `name[0].x` is still valid), and a
-diagnostic step without `inputs`.
+`.data` (a placeholder resolved as a path, `${name[0].x|default}` or an
+embedded `${name[0].x}`, may still index it; JavaScript inside a placeholder,
+and a whole `${...}` without a default, bind as the condition does), a
+diagnostic step without `inputs`, and a rule that reads a name no scope binds.
+The checks on root names apply only when the roots read are certain; a
+condition with a function body, method or block, where a local may be
+declared, is not reported.
+Read a Skill parameter such as a threshold by its own name, for example
+`(threshold_ms ?? 50)`: there is no `inputs` object in scope, so
+`inputs?.threshold_ms` is always `undefined` and the rule silently uses its
+default.
 
 ## Rendering Pipeline Catalog
 

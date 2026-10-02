@@ -3569,6 +3569,65 @@ describe('表达式作用域绑定', () => {
   });
 });
 
+// A threshold a diagnostic rule compares against is a declared Skill input, so
+// a caller's value must change which rules fire. The real rules are read from
+// their YAML, each over one mocked data row.
+describe('嵌入占位符的 JS 求值', () => {
+  it('renders an embedded JS value it cannot serialize as empty text, and the rule still fires', async () => {
+    const executor = createSkillExecutor(createMockTraceProcessorService());
+    executor.registerSkill({
+      name: 'unserializable_probe', type: 'composite', version: '1.0', meta: createMeta('Unserializable Probe'),
+      steps: [{id: 'diagnose', type: 'diagnostic', inputs: [], rules: [
+        {condition: 'true', diagnosis: 'value: ${[BigInt(1)]}.', confidence: 'high'},
+      ]}],
+    } as SkillDefinition);
+    const result = await executor.execute('unserializable_probe', 'trace-1', {});
+    expect(result.diagnostics.map(diagnostic => diagnostic.diagnosis)).toEqual(['value: .']);
+  });
+});
+
+describe('诊断规则读声明的阈值输入', () => {
+  const skillsDir = path.resolve(__dirname, '../../../../skills');
+  const thresholdCondition = /^(\w+)\.data\[0\]\?\.(\w+) > \((?:inputs\?\.)?(\w+) \?\? (\d+)\)$/;
+  const thresholdRules = ['composite/binder_analysis.skill.yaml', 'composite/memory_analysis.skill.yaml']
+    .flatMap(file => {
+      const skill = yaml.load(fs.readFileSync(path.join(skillsDir, file), 'utf8')) as any;
+      return (skill.steps as any[]).filter(step => step.type === 'diagnostic')
+        .flatMap(step => (step.rules as any[]).map(rule => ({skill, rule, match: String(rule.condition).match(thresholdCondition)})))
+        .filter(entry => entry.match)
+        .map(entry => [`${file} ${entry.match![3]}`, entry] as const);
+    });
+
+  it('covers every threshold rule of both Skills', () => {
+    expect(thresholdRules).toHaveLength(9);
+  });
+
+  it.each(thresholdRules)('%s follows the caller threshold', async (_name, {skill, rule, match}) => {
+    const [, source, column, param, fallback] = match!;
+    const value = Number(fallback) + 1;
+    const mockTraceProcessor = createMockTraceProcessorService();
+    mockTraceProcessor.query.mockResolvedValue({columns: [column], rows: [[value]]});
+    const executor = createSkillExecutor(mockTraceProcessor);
+    executor.registerSkill({
+      name: 'threshold_probe', type: 'composite', version: '1.0', meta: createMeta('Threshold Probe'),
+      inputs: (skill.inputs as any[]).map(input => ({...input, required: false})),
+      steps: [
+        {id: 'load', type: 'atomic', sql: 'SELECT 1', save_as: source},
+        {id: 'diagnose', type: 'diagnostic', inputs: [source], rules: [rule]},
+      ],
+    } as SkillDefinition);
+    const fired = async (params: Record<string, unknown>) =>
+      (await executor.execute('threshold_probe', 'trace-1', params)).diagnostics.length;
+    expect({
+      byDefault: await fired({}),
+      nullParam: await fired({[param]: null}),
+      raised: await fired({[param]: value + 10}),
+      lowered: await fired({[param]: value - 1}),
+      equal: await fired({[param]: value}),
+    }).toEqual({byDefault: 1, nullParam: 1, raised: 0, lowered: 1, equal: 0});
+  });
+});
+
 // =============================================================================
 // Test Suite: 表达式评估（通过 SQL 变量替换测试）
 // =============================================================================

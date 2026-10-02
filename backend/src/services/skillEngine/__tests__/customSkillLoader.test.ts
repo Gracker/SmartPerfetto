@@ -410,11 +410,19 @@ describe('custom skill loading', () => {
       rootPath: tmpDir, origin: 'external_pack', packId: 'condition-pack', packVersion: '1',
     }]);
 
-    await write('local_names', "(window => window > 0)(1) && ({console: 1}).console === 1 && parseFloat('2') > 1 && ${true} && ${Math.PI} > 3");
+    await write('local_names', "(window => window > 0)(1) && ({console: 1}).console === 1 && parseFloat('2') > 1");
+    // A whole `${…}` without a default is JavaScript, where globals and literals are bound.
+    await write('whole_placeholder', '${Math.PI > 3}');
     await write('declared_window', 'window > 0', ['window']);
     await expect(load()).resolves.toBeUndefined();
 
     await write('free_name', "(() => { if (true) /'/; return undeclared_value > 0; })()");
     await expect(load()).rejects.toThrow('skill_validation_failed:free_name');
+    await fs.rm(path.join(atomicDir, 'free_name.skill.yaml'));
+
+    // Embedded in text, `${Math.PI}` is a path resolved through Skill scopes,
+    // which bind no global: the condition evaluates as ' > 3'.
+    await write('embedded_global', '${Math.PI} > 3');
+    await expect(load()).rejects.toThrow('skill_validation_failed:embedded_global');
   });
 });

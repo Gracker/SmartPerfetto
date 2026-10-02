@@ -335,7 +335,7 @@ outputs:
 ```
 
 `inputs` 列出规则读到的每个步骤（step id 或 `save_as`），它们就是步骤上报的
-`data.inputs`，也是 `evidence_fields` 唯一能引用的名字；阈值等 Skill 参数照常可读。
+`data.inputs`，也是 `evidence_fields` 唯一能引用的名字。阈值等 Skill 参数按参数名直接读，例如 `(threshold_ms ?? 50)`：作用域里没有 `inputs` 对象，`inputs?.threshold_ms` 永远是 `undefined`，规则只会用默认值。
 evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}` 模板：以某个 input 的
 `name.data`（或 `name?.data`）开头，后接任意个 `.column`、`[n]`、`.length`、
 `.find(r => r.column OP literal)` / `.filter(...)`（OP 为比较运算，literal 为数字、带引号字符串、
@@ -343,8 +343,8 @@ evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}
 不写数据；谓词只比较标量，缺失或非标量的值一律不匹配。值上报前有界：行集变成 `{_rowCount, _firstRow}`，行只保留标量字段，长字符串截断。
 规则触发时还会附带它的 condition 读到的每个 input 的样本（同样有界），无论写成 `name.data`、`name?.data` 还是 `name?.["data"]`；只在字符串或注释里出现的名字不算读到。
 `validate:skills` 拒绝：不符合该语法或根不在 `inputs` 的 evidence field、读了不在 `inputs`
-里的步骤、condition 不经 `.data` 读步骤数据（`${...}` 占位符里 `name[0].x` 仍合法），以及没有
-`inputs` 的 diagnostic 步骤。
+里的步骤、condition 不经 `.data` 读步骤数据（按路径解析的占位符 `${name[0].x|默认值}` 或嵌在文本中的 `${name[0].x}` 里仍合法；占位符里的 JS 表达式和不带默认值的整串 `${...}` 按 condition 绑定，同样要经 `.data`），没有
+`inputs` 的 diagnostic 步骤，以及读了任何作用域都不绑定的名字（如 `inputs`）的规则。按根名的这几项检查只在能确定读到哪些根时生效：condition 里含函数体、方法、块语句等可能声明局部名的写法时不报。
 
 ### 4.7 pipeline — 渲染管线检测
 
