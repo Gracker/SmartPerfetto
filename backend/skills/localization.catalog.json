@@ -15183,7 +15183,7 @@
             },
             "evidence_status": {
               "label": {
-                "zh-CN": "热原因证据",
+                "zh-CN": "限频证据状态",
                 "en": "Evidence Status"
               }
             },
@@ -44018,7 +44018,7 @@
     },
     "thermal_predictor": {
       "displayName": {
-        "zh-CN": "热控风险预测",
+        "zh-CN": "CPU 频率趋势观察",
         "en": "Thermal Predictor"
       },
       "description": {
@@ -44037,7 +44037,7 @@
         },
         "root": {
           "title": {
-            "zh-CN": "热控风险预测",
+            "zh-CN": "CPU 频率趋势观察",
             "en": "Thermal Predictor"
           },
           "columns": {
@@ -44694,8 +44694,8 @@
         },
         "thermal_predictor_probe": {
           "title": {
-            "zh-CN": "热风险预测（专家探针）",
-            "en": "Thermal Predictor Probe"
+            "zh-CN": "CPU 频率趋势（专家探针）",
+            "en": "CPU frequency trend (expert probe)"
           },
           "columns": {
             "avg_start_freq_mhz": {

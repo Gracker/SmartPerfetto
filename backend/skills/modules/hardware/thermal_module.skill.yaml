@@ -349,7 +349,7 @@ steps:
         diagnosis: "检测到 ${throttling_events.data.length} 次频率骤降；尚不能据此确定热节流或性能影响"
         confidence: high
         suggestions:
-          - "结合直接 thermal throttling/cooling 事件和同窗口工作负载判断降频原因"
+          - "降频原因需结合直接 thermal throttling/cooling 事件和同窗口工作负载判断"
           - "考虑分散计算任务"
           - "优化算法减少 CPU 使用"
         evidence_fields:

@@ -2688,7 +2688,7 @@
           },
           {
             "id": "throttle_detection",
-            "sha256": "3d55d125a6d3b68d22ad020e935e02c4c23c1702f055fe09a5d25d40064c590c",
+            "sha256": "cc62360b6044ab984a1841459c13aff46818a36dfb75ab192c015efd93072e2c",
             "required_columns": [
               "core_type",
               "start_freq_mhz",

@@ -14,7 +14,7 @@ category: thermal
 tier: B
 
 meta:
-  display_name: "热控风险预测"
+  display_name: "CPU 频率趋势观察"
   description: "CPU 频率趋势观察；未提供温度或限频证据时不预测热机制"
   icon: "thermostat"
   tags: [thermal, throttling, prediction, cpu]
@@ -70,7 +70,7 @@ inputs:
 display:
   level: summary
   layer: overview
-  title: "热控预测"
+  title: "CPU 频率趋势"
   columns:
     - name: avg_start_freq_mhz
       label: "区间初段频率"

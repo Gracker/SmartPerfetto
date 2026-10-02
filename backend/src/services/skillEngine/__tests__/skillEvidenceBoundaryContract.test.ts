@@ -9,6 +9,8 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from '@jest/globals';
 import { renderStepSql } from '../../../../tests/helpers/skillFragmentSql';
 import { allStepsOf, skillDocuments } from '../../../../tests/helpers/skillRuleHarness';
+import { extractRootVariables } from '../expressionUtils';
+import { boundSqlPlaceholderPaths } from '../sqlTemplate';
 import { namesThermalCause } from '../../../../tests/helpers/skillWording';
 
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -52,38 +54,77 @@ describe('Skill evidence boundary contracts', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Thermal-domain Skills: their rules and SQL read temperature, cooling-device
- * or limit evidence, except thermal_predictor, which reads frequency only and
- * hedges every thermal word on that missing evidence.
+ * What a step must read to speak of heat or a limit: temperature tracks,
+ * cooling devices, or the cpufreq max-limit tracks, directly or through the
+ * shared thermal / freq-limit fragments.
  */
-const THERMAL_EVIDENCE_SKILLS = new Set([
-  'cpu_frequency_limit_attribution', 'cpu_frequency_limit_episode', 'thermal_cooling_device_timeline',
-  'thermal_module', 'thermal_predictor', 'thermal_throttling', 'thermal_throttling_chain',
-]);
-/** Root-cause steps whose thermal_throttling reason requires limit plus cooling-device evidence. */
-const THERMAL_EVIDENCE_STEPS = new Set([
-  'jank_frame_detail/root_cause_summary', 'scrolling_analysis/batch_frame_root_cause',
-]);
-/** Diagnostic rules whose condition requires observed limit evidence or the evidence-gated root cause. */
-const THERMAL_EVIDENCE_RULES: Record<string, RegExp> = {
-  'jank_frame_detail/frame_diagnosis': /evidence_status === 'freq_limit_observed'|reason_code === 'thermal_throttling'/,
-};
-
-interface ThermalWording { site: string; allowedBy?: string; text: string }
+const THERMAL_EVIDENCE_SQL = /thermal_zone|Temperature|cdev|cooling|cpu_frequency_limits|max_limit|freq_limit/i;
+const THERMAL_EVIDENCE_FRAGMENT = /fragments\/(thermal_|system_cpu_freq_limit_)/;
 
 const CJK = /[\u4e00-\u9fff]/;
 /** A `--` comment (skipped, so an apostrophe in it cannot misalign quotes) or a single-quoted literal. */
 const SQL_COMMENT_OR_LITERAL = /--[^\n\r]*|'((?:''|[^'])*)'/g;
 
-/** Every user-facing text of `skill` that names a thermal cause. */
-function thermalWording(skill: any): ThermalWording[] {
+/** The SQL a step executes: comments and its own user-facing (CJK) literals cannot read evidence. */
+const executedSql = (sql: unknown) => String(sql ?? '')
+  .replace(SQL_COMMENT_OR_LITERAL, (match, literal) => match.startsWith('--') ? '' : CJK.test(literal) ? "''" : match);
+
+const stepsOf = (skill: any) => [...(typeof skill?.sql === 'string'
+  ? [{id: 'root', sql: skill.sql, sql_fragments: skill.sql_fragments}] : []), ...allStepsOf(skill)];
+
+/** Roots of the saved results a step's SQL reads through placeholders. */
+function sqlResultRoots(sql: unknown): string[] {
+  return typeof sql === 'string' ? boundSqlPlaceholderPaths(sql).map(path => path.split(/[.[]/)[0]) : [];
+}
+
+const conditionRoots = (owner: any) => owner?.condition ? extractRootVariables(String(owner.condition)) : [];
+
+/**
+ * The steps of `skill` that read thermal or limit evidence, in order: by their
+ * own SQL or fragments, by referencing a Skill that does, by reading an earlier
+ * such step's result in their SQL or their condition, or, for a diagnostic
+ * step, through its inputs. Returns them with the names their results are read under.
+ */
+function thermalEvidenceSteps(skill: any, evidenceSkills: ReadonlySet<string>) {
+  const steps = new Set<any>();
+  const names = new Set<string>();
+  for (const step of stepsOf(skill)) {
+    const reads = evidenceSkills.has(step.skill)
+      || THERMAL_EVIDENCE_SQL.test(executedSql(step.sql))
+      || (step.sql_fragments ?? []).some((fragment: string) => THERMAL_EVIDENCE_FRAGMENT.test(fragment))
+      || [...sqlResultRoots(step.sql), ...(step.inputs ?? []), ...conditionRoots(step)].some(root => names.has(root));
+    if (!reads) continue;
+    steps.add(step);
+    for (const name of [step.id, step.save_as]) if (name) names.add(name);
+  }
+  return {steps, names};
+}
+
+/** Skills with a step that reads thermal or limit evidence; a reference to one reads it too. */
+function thermalEvidenceSkills(skills: any[]): Set<string> {
+  const found = new Set<string>();
+  for (let grew = true; grew;) {
+    grew = false;
+    for (const skill of skills) {
+      if (!found.has(skill.name) && thermalEvidenceSteps(skill, found).steps.size > 0) { found.add(skill.name); grew = true; }
+    }
+  }
+  return found;
+}
+
+interface ThermalWording { site: string; allowedBy?: string; text: string }
+
+/**
+ * Every user-facing text of `skill` that names a thermal cause, with the
+ * evidence that allows it: the step that reads thermal or limit evidence (for
+ * its SQL text and labels), the Skill for its own description, or a rule whose
+ * condition reads the result of such a step.
+ */
+function thermalWording(skill: any, evidenceSkills: ReadonlySet<string>): ThermalWording[] {
   const found: ThermalWording[] = [];
   const name = String(skill?.name);
-  const skillAllowance = THERMAL_EVIDENCE_SKILLS.has(name) ? name : undefined;
   const add = (site: string, text: unknown, allowedBy?: string) => {
-    if (typeof text === 'string' && namesThermalCause(text)) {
-      found.push({site, text, allowedBy: allowedBy ?? skillAllowance});
-    }
+    if (typeof text === 'string' && namesThermalCause(text)) found.push({site, text, allowedBy});
   };
   // What the Skill says it does, and the labels its results carry.
   const labels = (site: string, owner: any, allowedBy?: string) => {
@@ -92,38 +133,34 @@ function thermalWording(skill: any): ThermalWording[] {
     for (const column of owner?.display?.columns ?? []) add(site, column?.label, allowedBy);
     for (const insight of owner?.synthesize?.insights ?? []) add(site, insight?.template, allowedBy);
   };
-  add(name, skill?.meta?.display_name);
-  add(name, skill?.meta?.description);
-  labels(name, {display: skill?.display, synthesize: skill?.synthesize});
-  const steps = [...(typeof skill?.sql === 'string' ? [{id: 'root', sql: skill.sql}] : []), ...allStepsOf(skill)];
-  for (const step of steps) {
+  const skillAllowance = evidenceSkills.has(name) ? `skill ${name}` : undefined;
+  add(name, skill?.meta?.display_name, skillAllowance);
+  add(name, skill?.meta?.description, skillAllowance);
+  labels(name, {display: skill?.display, synthesize: skill?.synthesize}, skillAllowance);
+  const evidence = thermalEvidenceSteps(skill, evidenceSkills);
+  for (const step of stepsOf(skill)) {
     const site = `${name}/${step.id}`;
-    const stepAllowance = THERMAL_EVIDENCE_STEPS.has(site) ? site : undefined;
+    const stepAllowance = evidence.steps.has(step) ? `step ${site}` : undefined;
     labels(site, step, stepAllowance);
     // Only literals with CJK text are user-facing; codes such as 'thermal_zone' are not.
     for (const [, literal] of String(step.sql ?? '').matchAll(SQL_COMMENT_OR_LITERAL)) {
       if (literal && CJK.test(literal)) add(site, literal, stepAllowance);
     }
-    const ruleEvidence = THERMAL_EVIDENCE_RULES[site];
     for (const rule of step.rules ?? []) {
-      const allowedBy = ruleEvidence?.test(String(rule.condition)) ? site : undefined;
-      for (const text of [rule.diagnosis, ...(rule.suggestions ?? [])]) add(site, text, allowedBy);
+      const readsEvidence = conditionRoots(rule).some(root => evidence.names.has(root));
+      for (const text of [rule.diagnosis, ...(rule.suggestions ?? [])]) add(site, text, readsEvidence ? `rule ${site}` : undefined);
     }
   }
   return found;
 }
 
 describe('thermal wording follows thermal evidence', () => {
-  const wording = skillDocuments().flatMap(({skill}) => thermalWording(skill));
+  const skills = skillDocuments().map(({skill}) => skill);
+  const evidenceSkills = thermalEvidenceSkills(skills);
+  const wording = skills.flatMap(skill => thermalWording(skill, evidenceSkills));
 
   it('names a thermal cause only where the Skill reads thermal or limit evidence', () => {
     expect(wording.filter(entry => !entry.allowedBy).map(entry => `${entry.site}: ${entry.text}`)).toEqual([]);
-  });
-
-  it('keeps every allowance in use', () => {
-    const used = new Set(wording.map(entry => entry.allowedBy));
-    const allowances = [...THERMAL_EVIDENCE_SKILLS, ...THERMAL_EVIDENCE_STEPS, ...Object.keys(THERMAL_EVIDENCE_RULES)];
-    expect(allowances.filter(allowance => !used.has(allowance))).toEqual([]);
   });
 
   it('flags a cause in rule text or a user-facing literal, not a deferral or a code', () => {
@@ -133,7 +170,63 @@ describe('thermal wording follows thermal evidence', () => {
       ]},
       {id: 'sql', type: 'atomic', sql: "SELECT 'thermal_zone' AS kind, '频率突降，可能受温控限制' AS note, '温度: ' AS label"},
     ]};
-    expect(thermalWording(skill).map(entry => entry.text)).toEqual(['可能触发温控策略', '频率突降，可能受温控限制']);
+    expect(thermalWording(skill, new Set()).map(entry => entry.text)).toEqual(['可能触发温控策略', '频率突降，可能受温控限制']);
+  });
+
+  it('judges each clause: a deferral in one clause does not excuse a cause in another', () => {
+    expect(namesThermalCause('是温控导致，不是负载')).toBe(true);
+    expect(namesThermalCause('频率下降不是温控证据；是否限频以限频证据为准')).toBe(false);
+    expect(namesThermalCause('缺少 cpufreq 上限证据（及温度事件）后才能判断')).toBe(false);
+    expect(namesThermalCause('确认由温控触发后，可在设备冷却后重测')).toBe(false);
+    expect(namesThermalCause('若干核心因温控降频')).toBe(true);
+    // Accepted residual: refusing to rule heat out reads as a deferral.
+    expect(namesThermalCause('不能排除温控')).toBe(false);
+    expect(namesThermalCause('确认后台负载正常，卡顿由温控导致')).toBe(true);
+    expect(namesThermalCause('不是负载而是温控导致卡顿')).toBe(true);
+    expect(namesThermalCause('仍需注意温控导致的卡顿')).toBe(true);
+    // A condition on anything but evidence does not defer the cause after it,
+    // and a deferral after the cause does not take it back.
+    expect(namesThermalCause('若大核频率持续下降，说明温控降频')).toBe(true);
+    expect(namesThermalCause('如果频率突降，可能是温控限频')).toBe(true);
+    expect(namesThermalCause('温控导致卡顿还需优化代码')).toBe(true);
+    expect(namesThermalCause('热控风险仍需温度和直接限频证据')).toBe(false);
+    expect(namesThermalCause('如果是温控导致，应先降低负载')).toBe(false);
+    expect(namesThermalCause('降频原因需结合直接 thermal throttling 事件判断')).toBe(false);
+  });
+
+  // Strategy prose teaches thermal mechanisms legitimately; only the lines that
+  // tell the model what to conclude or recommend are held to the clause rule.
+  it('keeps strategy conclusion and advice lines free of an unhedged thermal cause', () => {
+    const strategies = path.join(repoRoot, 'strategies');
+    const offenders = fs.readdirSync(strategies).filter(file => file.endsWith('.md')).flatMap(file =>
+      fs.readFileSync(path.join(strategies, file), 'utf8').split('\n')
+        .map((line, index) => ({line, at: `${file}:${index + 1}`}))
+        .filter(({line}) => /结论表述|结论模板|典型结论|\*\*建议/.test(line) && namesThermalCause(line))
+        .map(({at, line}) => `${at}: ${line}`));
+    expect(offenders).toEqual([]);
+  });
+
+  it('allows thermal wording only in steps and rules that read thermal or limit evidence', () => {
+    const skill = {name: 'probe', steps: [
+      {id: 'freq', type: 'atomic', sql: "SELECT '频率下降，可能温控' AS note", save_as: 'freq'},
+      // Its own user-facing text naming a cooling device is not evidence it read.
+      {id: 'self_named', type: 'atomic', sql: "SELECT '可能是温控（cooling device）' AS note"},
+      {id: 'limit', type: 'atomic', sql_fragments: ['fragments/system_cpu_freq_limit_spans.sql'],
+        sql: "SELECT '限频由温控触发' AS note", save_as: 'limit_data'},
+      {id: 'diagnosis', type: 'diagnostic', inputs: ['freq', 'limit_data'], rules: [
+        {condition: 'freq.data[0]?.x > 1', diagnosis: '可能是温控'},
+        {condition: "limit_data.data[0]?.status === 'observed'", diagnosis: '观测到温控限频'},
+      ]},
+      {id: 'gap', type: 'atomic', condition: 'limit_data.data.length === 0', sql: "SELECT '缺少 thermal 限频轨道' AS note"},
+    ]};
+    expect(thermalWording(skill, new Set()).map(entry => [entry.text, entry.allowedBy])).toEqual([
+      ['频率下降，可能温控', undefined],
+      ['可能是温控（cooling device）', undefined],
+      ['限频由温控触发', 'step probe/limit'],
+      ['可能是温控', undefined],
+      ['观测到温控限频', 'rule probe/diagnosis'],
+      ['缺少 thermal 限频轨道', 'step probe/gap'],
+    ]);
   });
 });
 
@@ -237,7 +330,7 @@ describe('temperature evidence quality and DVFS causal boundary', () => {
         const fallback = key.split('|')[1]; if(fallback!==undefined) return fallback;
         if(/^[a-z_]+\.data\[/.test(key)) return ''; throw new Error(key);
       })).all() as any[];
-      expect(run(range.steps.find((step:any)=>step.id==='throttle_detection').sql)[0]).toMatchObject({frequency_variation_detected:1,throttle_detected:null,evidence_status:'thermal_evidence_missing'});
+      expect(run(range.steps.find((step:any)=>step.id==='throttle_detection').sql)[0]).toMatchObject({frequency_variation_detected:1,throttle_detected:null,evidence_status:'limit_evidence_unavailable'});
       expect(run(predictor.sql)[0]).toMatchObject({frequency_trend_risk:'high',thermal_risk:'unknown'});
     } finally {db.close();}
   });
@@ -274,10 +367,11 @@ function throttleRows(
     }
     const definition = yaml.load(readBackendFile('skills/atomic/cpu_throttling_in_range.skill.yaml')) as any;
     const step = definition.steps.find((item: any) => item.id === 'throttle_detection');
+    // An absent status is a limit step that produced no row: its placeholder takes the default.
     return db.prepare(renderStepSql(step.sql, step.sql_fragments, {
       start_ts: limit.start ?? 0,
       end_ts: limit.end ?? 1000000,
-      'limit_evidence.data[0].evidence_status': limit.status ?? '',
+      ...(limit.status === undefined ? {} : {'limit_evidence.data[0].evidence_status': limit.status}),
       'limit_evidence.data[0].deepest_depth_pct': limit.depth ?? 0,
     })).all() as any[];
   } finally {db.close();}
@@ -354,6 +448,19 @@ describe('cpu_throttling_in_range tier contract', () => {
       expect(row).toMatchObject({throttle_detected: 1, evidence_status: 'freq_limit_observed'});
       expect(row.interpretation).toContain('最大深度 25%');
       expect(row.interpretation).toContain('整窗证据，不说明本行核心受限');
+    }
+  });
+
+  it('reports the limit evidence it has, never a thermal mechanism', () => {
+    const cases: Array<[string | undefined, string, number | null, string]> = [
+      ['no_limit_episode_in_range', 'no_limit_episode_in_range', 0, '未观测到超过阈值的上限下调区段'],
+      ['limit_track_unavailable', 'limit_track_unavailable', null, '缺少 cpufreq 上限证据，是否限频未判定'],
+      [undefined, 'limit_evidence_unavailable', null, '缺少 cpufreq 上限证据，是否限频未判定'],
+    ];
+    for (const [status, evidenceStatus, detected, interpretation] of cases) {
+      const [row] = throttleRows([[0, 'big']], [[1, 0, [2000000, 1000000]]], {status});
+      expect(row).toMatchObject({evidence_status: evidenceStatus, throttle_detected: detected});
+      expect(row.interpretation).toContain(interpretation);
     }
   });
 });

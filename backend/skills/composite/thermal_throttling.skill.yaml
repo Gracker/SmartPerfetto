@@ -194,10 +194,10 @@ steps:
     condition: "enable_expert_probes !== false && (data_check.data[0]?.has_thermal_data === 1 || data_check.data[0]?.has_freq_data === 1 || data_check.data[0]?.has_gpu_freq_data === 1)"
     optional: true
 
-  # ========== L0: 热风险预测（性能专家探针） ==========
+  # ========== L0: CPU 频率趋势（性能专家探针，不判定热机制） ==========
   - id: thermal_predictor_probe
     type: skill
-    name: "热风险预测"
+    name: "CPU 频率趋势"
     skill: thermal_predictor
     params:
       start_ts: "${analysis_window.data?.[0]?.window_start_ts ?? start_ts ?? null}"
@@ -210,7 +210,9 @@ steps:
     display:
       level: summary
       layer: overview
-      title: "热风险预测（专家探针）"
+      title: "CPU 频率趋势（专家探针）"
+      title_i18n:
+        en: "CPU frequency trend (expert probe)"
       columns:
         - name: avg_start_freq_mhz
           label: "区间初段频率"
