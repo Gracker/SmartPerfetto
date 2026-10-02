@@ -117,6 +117,11 @@ rows; when the step is `optional`, the failure is shown as an optional error
 (`executionStatus: optional_error`, as for an optional query) and does not fail
 the Skill.
 
+An iterator's per-item results attach as expandable data to the step whose
+rows it read: the step that bound its `source` name just before the iterator
+ran (or the step of that id), including when several steps declare the same
+`save_as`.
+
 When the default child step is itself a Skill reference, the binding holds the
 grandchild Skill's result: expressions reading `.data` select one more level by
 the same rule, diagnostic and AI `inputs` receive that result object, and an

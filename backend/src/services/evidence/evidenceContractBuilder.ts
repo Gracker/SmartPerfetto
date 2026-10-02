@@ -42,6 +42,7 @@ import {evidenceReferenceKey, preparedReferenceResolution, preparedEvidenceBindi
   type PreparedClaimEvidence} from './claimEvidencePreparation';
 import {bindReadResolutionToAnchor, evidenceReadFailureIsUnreadable, type EvidenceReadResolution} from './evidenceReadView';
 import {getCapturedAnchorFacts, markIdentityUnboundEvidenceAnchor, markUnreadableEvidenceAnchor} from './evidenceCapture';
+import {scopeRequiresTargetIdentity, targetRowUpidPredicate, toNumber, wholeResultRowPredicate} from './scopedRowIdentity';
 
 export interface BuildEvidenceContractInput {
   conclusionContract?: ConclusionContract | null;
@@ -429,11 +430,22 @@ function resolveRowAndCell(envelope: DataEnvelope, ref: ConclusionContractClaimR
   if (row && ref.column && !(ref.column in row)) {
     missingReason = `column "${ref.column}" was not found in the referenced evidence row`;
   }
+  // A whole multi-row result binds the target identity only if every row belongs to it. A
+  // declared upid column with an unreadable cell proves nothing; a result with no upid
+  // anywhere leaves the scope declaration as the authority, as a single row does.
+  const admits = !row && !missingReason ? wholeResultRowPredicate(envelope.meta ?? {}) : undefined;
+  let unreadableReason: string | undefined;
+  if (admits && rows.some(candidate => !admits(candidate.upid))) missingReason = 'whole_result_identity_conflict';
+  else if (admits && rows.some(candidate => candidate.upid === undefined) &&
+      (envelope.data?.columns?.includes('upid') || rows.some(candidate => Object.prototype.hasOwnProperty.call(candidate, 'upid')))) {
+    missingReason = unreadableReason = 'whole_result_identity_cell_unreadable';
+  }
 
   return {
     ...(row ? { row } : {}),
     ...(rowIndex !== undefined ? { rowIndex } : {}),
     ...(missingReason ? { missingReason } : {}),
+    ...(unreadableReason ? {unreadableReason} : {}),
   };
 }
 
@@ -499,12 +511,6 @@ function normalizePaneSide(value: unknown): EvidencePaneSide | undefined {
   return value === 'left' || value === 'right' || value === 'top' || value === 'bottom'
     ? value
     : undefined;
-}
-
-function toNumber(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : undefined;
 }
 
 function toTimestamp(value: unknown): TraceTimestampNs | undefined {
@@ -679,13 +685,10 @@ function deriveIdentity(envelope: DataEnvelope, row: Record<string, unknown> | u
       (resolution.target.traceSide ?? 'unknown') !== normalizeTraceSide(meta.traceSide)) return undefined;
     const exactUpids = new Set(entries.filter(entry => entry.scope.mode === 'exact_upid')
       .map(entry => entry.scope.upid));
-    if (exactUpids.size > 1 || (exactUpids.size === 1 && source.upid !== undefined &&
-      !exactUpids.has(toNumber(source.upid)))) return undefined;
+    if (exactUpids.size > 1 || !targetRowUpidPredicate(provenance, resolution)(source.upid)) return undefined;
     if (exactUpids.size === 1 && (resolution.processes.length === 0 ||
       resolution.processes.some(process => !exactUpids.has(process.upid)) ||
       (resolution.target.upid !== undefined && !exactUpids.has(resolution.target.upid)))) return undefined;
-    if (source.upid !== undefined && !resolution.processes.some(process =>
-      process.upid === toNumber(source.upid))) return undefined;
   }
   const status = ['verified', 'ambiguous', 'weak', 'missing', 'not_required', 'error'].includes(meta.identityStatus)
     ? meta.identityStatus as EvidenceIdentityV1['status']
@@ -884,7 +887,7 @@ function buildAnchor(
     ...declaredQualifiers,
     confidence: 1,
   };
-  const requiresTargetIdentity = scopeProvenance?.entries.some(entry => entry.role === 'target' && entry.scope.mode !== 'unscoped');
+  const requiresTargetIdentity = scopeRequiresTargetIdentity(scopeProvenance);
   if (identity?.status === 'error' || (requiresTargetIdentity && identity?.status !== 'verified')) {
     anchor.missing = true;
     anchor.confidence = 0;
