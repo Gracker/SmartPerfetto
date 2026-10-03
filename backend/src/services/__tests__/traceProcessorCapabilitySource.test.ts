@@ -14,6 +14,7 @@ import {
   TraceProcessorFactory,
   WorkingTraceProcessor,
   ExternalRpcProcessor,
+  buildTraceProcessorHttpServerLaunch,
   getTraceProcessorPath,
   normalizeTraceProcessorRpcPort,
 } from '../workingTraceProcessor';
@@ -454,11 +455,93 @@ describe('trace processor capability source', () => {
 
     await (processor as any).startHttpServer(selection);
 
+    expect(spawnSyncMock).toHaveBeenCalledWith(binaryA, ['help', 'server'], expect.any(Object));
     expect(spawnSyncMock).toHaveBeenCalledWith(binaryA, ['--help'], expect.any(Object));
+    // No owner-bound `server http` in this help: the classic form is kept.
     expect(spawnMock).toHaveBeenCalledWith(binaryA, expect.arrayContaining([
+      '--httpd',
       '--http-additional-cors-origins',
     ]), expect.any(Object));
     processor.destroy();
+  });
+
+  it('starts an owner-bound server http when the binary supports it', async () => {
+    const tracePath = writeFile(path.join(tempDir, 'trace.pftrace'));
+    const binary = writeFile(path.join(tempDir, 'trace-processor-owner-bound'));
+    const child = fakeChildProcess();
+    const spawnMock = childProcess.spawn as unknown as jest.Mock;
+    const spawnSyncMock = childProcess.spawnSync as unknown as jest.Mock;
+    spawnSyncMock.mockImplementation((...call: unknown[]) => ({
+      stdout: (call[1] as string[])[0] === 'help'
+        ? '--port\n--additional-cors-origins\n--idle-timeout\n--idle-start\n'
+        : '',
+      stderr: '',
+      status: 0,
+    }));
+    spawnMock.mockImplementation(() => {
+      queueMicrotask(() => child.stderr?.emit('data', Buffer.from('Starting HTTP server')));
+      return child;
+    });
+    const processor = new WorkingTraceProcessor('trace-owner-bound', tracePath);
+
+    await (processor as any).startHttpServer({
+      source: 'local_binary' as const,
+      selectedPath: binary,
+      selectionOrigin: 'env_override' as const,
+    });
+
+    const args = spawnMock.mock.calls[0][1] as string[];
+    expect(args.slice(0, 4)).toEqual(['server', 'http', '--port', String(processor.httpPort)]);
+    expect(args).toEqual(expect.arrayContaining(['--idle-start', 'orphaned', '--additional-cors-origins']));
+    expect(args[args.indexOf('--idle-timeout') + 1]).toMatch(/^\d+s$/);
+    expect(args).not.toContain('--httpd');
+    expect(args[args.length - 1]).toBe(tracePath);
+    processor.destroy();
+  });
+
+  it('binds the server to its owner only on POSIX with an owner other than PID 1', () => {
+    const binary = writeFile(path.join(tempDir, 'trace-processor-owner-selection'));
+    (childProcess.spawnSync as unknown as jest.Mock).mockReturnValue({
+      stdout: '--port\n--additional-cors-origins\n--idle-timeout\n--idle-start\n',
+      stderr: '',
+      status: 0,
+    });
+    const launch = {binaryPath: binary, port: 9100, tracePath: '/trace', corsOrigins: 'http://localhost:10000'};
+    // Not owner-bound: the same `server http` without idle flags, which never
+    // reaps itself, as the classic launch.
+    const unbound = {
+      ownerBound: false,
+      args: ['server', 'http', '--port', '9100', '--additional-cors-origins', 'http://localhost:10000', '/trace'],
+    };
+
+    expect(buildTraceProcessorHttpServerLaunch({...launch, ownerPid: 4242, platform: 'darwin'}).ownerBound).toBe(true);
+    expect(buildTraceProcessorHttpServerLaunch({...launch, ownerPid: 4242, platform: 'linux'}).ownerBound).toBe(true);
+    // No Windows run evidence yet: a failed parent-handle open would make a
+    // live backend's processor look ownerless and reap it after idling.
+    expect(buildTraceProcessorHttpServerLaunch({...launch, ownerPid: 4242, platform: 'win32'})).toEqual(unbound);
+    // The server reads a parent of PID 1 as "no owner" and would reap a live
+    // container-init backend's processor whenever it idles.
+    expect(buildTraceProcessorHttpServerLaunch({...launch, ownerPid: 1, platform: 'linux'})).toEqual(unbound);
+  });
+
+  it('keeps the classic --httpd launch only for a binary without server http', () => {
+    const binary = writeFile(path.join(tempDir, 'trace-processor-classic'));
+    (childProcess.spawnSync as unknown as jest.Mock).mockImplementation((...call: unknown[]) => ({
+      // A pre-subcommand binary: `help` is not a command, `--help` lists the
+      // classic flags.
+      stdout: (call[1] as string[])[0] === '--help'
+        ? '-D, --httpd\n--http-port PORT\n--http-additional-cors-origins origin1,origin2\n'
+        : 'Could not open help\n',
+      stderr: '',
+      status: (call[1] as string[])[0] === '--help' ? 0 : 1,
+    }));
+
+    expect(buildTraceProcessorHttpServerLaunch({
+      binaryPath: binary, port: 9100, tracePath: '/trace', corsOrigins: 'http://localhost:10001', ownerPid: 4242, platform: 'linux',
+    })).toEqual({
+      ownerBound: false,
+      args: ['--httpd', '--http-port', '9100', '--http-additional-cors-origins', 'http://localhost:10001', '/trace'],
+    });
   });
 
   it('records the default binary selection when no env override is active', async () => {

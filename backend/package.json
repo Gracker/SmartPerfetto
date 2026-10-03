@@ -97,7 +97,7 @@
     "test:state-timeline-regression": "TP_PORT_MIN=9800 TP_PORT_MAX=9899 tsx tests/skill-eval/state_timeline_regression.ts",
     "test:integration": "jest --testPathPatterns=tests/integration --runInBand --forceExit",
     "test:agent-eval": "tsx tests/agent-eval/evaluationRunner.ts",
-    "test:raw-sql-provenance": "npm run trace-processor:ensure && npm run trace:materialize && jest --runInBand --forceExit src/services/evidence/__tests__/rawSqlCapture.real.test.ts src/scripts/__tests__/agentSseNativeOracle.real.test.ts src/services/__tests__/traceLoadSharedProcessor.real.test.ts",
+    "test:raw-sql-provenance": "npm run trace-processor:ensure && npm run trace:materialize && jest --runInBand --forceExit src/services/evidence/__tests__/rawSqlCapture.real.test.ts src/scripts/__tests__/agentSseNativeOracle.real.test.ts src/services/__tests__/traceLoadSharedProcessor.real.test.ts src/services/__tests__/traceProcessorOwnerExit.real.test.ts",
     "test:critical-path": "npm run trace-processor:ensure && npm run trace:materialize && jest --runInBand --forceExit src/services/__tests__/criticalPathAnalyzer.real.test.ts",
     "test:source-claim-contract": "jest --runInBand --forceExit src/services/codebase/__tests__/sourceClaimVerifier.test.ts src/services/codebase/__tests__/sourceLocationProof.test.ts src/agentRuntime/__tests__/sourceUseResultAttachment.test.ts",
     "prepare:code-aware-semantic-delta": "npm run trace-processor:ensure && npm run trace:materialize",

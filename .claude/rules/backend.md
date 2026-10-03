@@ -503,6 +503,15 @@ Tool visibility is request-shaped:
 - `TraceProcessorSqlWorker` remains a single worker per processor key. Do not
   introduce same-trace SQL parallelism. Different processor keys may progress
   independently.
+- A trace processor must not outlive the process that started it. On POSIX,
+  `buildTraceProcessorHttpServerLaunch` starts it as `server http --idle-start
+  orphaned`, so it reaps itself after any owner exit, including SIGKILL and
+  `jest --forceExit`, which run no cleanup. Windows (no run evidence for the
+  server's parent-handle owner check) and a PID 1 backend start `server http`
+  without owner binding, binaries without `server http` keep `--httpd`, and
+  both rely on the startup orphan sweep. Keep `server http` whenever the
+  binary has it: its `--httpd` form keeps only the last CORS origin. Do not
+  spawn a long-lived `trace_processor_shell` anywhere else.
 - Runtime tools are exclusive by default. Only registry-declared commutative
   reads may use `runtimeToolConcurrency.ts`, and only after `task5` admission.
   Keep the fair reader/writer ordering, request scope, cancellation, bounded
