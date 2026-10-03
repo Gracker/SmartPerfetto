@@ -395,6 +395,10 @@ steps:
         - name: category
           label: "类别"
           type: string
+        - name: category_percent
+          label: "类别占比"
+          type: percentage
+          format: percentage
     params:
       package: "${package}"
       startup_id: "${startup_id}"
@@ -1088,9 +1092,9 @@ steps:
           - "检查系统级负载和高优先级抢占线程"
 
       # 类加载耗时（需 breakdown 与类加载明细双证据）
-      - condition: "(breakdown?.data?.length || 0) > 0 && ((breakdown.data.find(b => b.category === 'ClassLoading')?.percent) || 0) > 15 && (class_loading?.data?.length || 0) > 0 && ((class_loading.data[0]?.percent_of_startup) || 0) > 5"
+      - condition: "(breakdown?.data?.length || 0) > 0 && ((breakdown.data.find(b => b.category === 'ClassLoading')?.category_percent) || 0) > 15 && (class_loading?.data?.length || 0) > 0 && ((class_loading.data[0]?.percent_of_startup) || 0) > 5"
         severity: info
-        diagnosis: "类加载占比较高（breakdown ${breakdown?.data?.find(b => b.category === 'ClassLoading')?.percent}%）"
+        diagnosis: "类加载占比较高（breakdown ${breakdown?.data?.find(b => b.category === 'ClassLoading')?.category_percent}%）"
         confidence: medium
         suggestions:
           - "使用 baseline profile 预编译热点类"

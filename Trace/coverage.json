@@ -2922,7 +2922,7 @@
         "steps": [
           {
             "id": "cpu_freq_transitions",
-            "sha256": "3d7c159ee7ad1f76014c11fefc93e285cae8848c0381f1d47f06e7e2850bd946",
+            "sha256": "ee653d5140e439f0289997cb82e56035719d1f60a86595f9c7a3a9af396fccf9",
             "required_columns": [
               "ts",
               "cpu",
@@ -2956,7 +2956,7 @@
           },
           {
             "id": "gpu_freq_transitions",
-            "sha256": "4126f295f20f1552914b1199c7ff6bcd8693092901275cc4d56ce893be4baa63",
+            "sha256": "18aa80dc1fe05146a660844b3cdfcc687f6e19f8dd3dbb02e04d6c6988b9f54e",
             "required_columns": [
               "ts",
               "counter_name",
@@ -3347,23 +3347,20 @@
       {
         "target": "gpu_freq_in_range",
         "source_file": "backend/skills/atomic/gpu_freq_in_range.skill.yaml",
-        "modules": [
-          {
-            "name": "android.gpu.frequency",
-            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/gpu/frequency.sql"
-          }
-        ],
+        "modules": [],
         "steps": [
           {
             "id": "root",
-            "sha256": "1c1ec1cf68d80d4b748a40859debd3d9d687abc8771bfca7b95f45ea2e3cb450",
+            "sha256": "f65e42365716a38180c699c86f0bfbc406b8a5316eb3bc9f76d8eaa05b62cd98",
             "required_columns": [
               "gpu_id",
               "avg_freq_mhz",
               "max_freq_mhz",
               "min_freq_mhz",
               "freq_changes",
-              "low_freq_pct"
+              "low_freq_pct",
+              "off_pct",
+              "out_of_domain_pct"
             ]
           }
         ]
@@ -3375,7 +3372,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "c60dd8978eefc6b1014a938bb574c4f305dbdefd5633fe4ddaa2a435a6248d2e",
+            "sha256": "0d27fa3fcf54adb3658d089fe7c50a18f028ab36f4ba2efd6e4e97d51ef37792",
             "required_columns": [
               "metric",
               "value",
@@ -3396,14 +3393,15 @@
         "steps": [
           {
             "id": "gpu_frequency",
-            "sha256": "1a1ba8af7cc6e0d7110b57dbe16ea69605fec0dca231399064f25735312f8b30",
+            "sha256": "e62ebdc6d348d646d4e12b5799bc6d5b94aab82f49a282a474b8bb53c9756d81",
             "required_columns": [
               "avg_freq_mhz",
               "max_freq_mhz",
               "min_freq_mhz",
               "median_freq_mhz",
               "sample_count",
-              "freq_counters"
+              "freq_counters",
+              "undeclared_unit_counters"
             ]
           },
           {
@@ -3458,16 +3456,11 @@
       {
         "target": "gpu_power_state_analysis",
         "source_file": "backend/skills/atomic/gpu_power_state_analysis.skill.yaml",
-        "modules": [
-          {
-            "name": "android.gpu.frequency",
-            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/gpu/frequency.sql"
-          }
-        ],
+        "modules": [],
         "steps": [
           {
             "id": "root",
-            "sha256": "a9043265f1bed9d732bf1136b67e0e39381aa2b90909ef58f4f90080dc7575c4",
+            "sha256": "ac246ccd09d022e923dcc318d262088d6d6fea184bed7586ca4d0cc291b42041",
             "required_columns": [
               "gpu_id",
               "samples",
@@ -3476,7 +3469,8 @@
               "max_freq_mhz",
               "downshift_count",
               "upshift_count",
-              "downshift_ratio_pct"
+              "downshift_ratio_pct",
+              "off_pct"
             ]
           }
         ]
@@ -3848,7 +3842,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "e1602920c7b4ae81dc7c083f0ad5e9234bc5f6a9050d261755c6216f4d8932c1",
+            "sha256": "d997422376c28d43faabbba74d68f110b2fed581b96a4f31faefa9c97225703c",
             "required_columns": [
               "ts_str",
               "prio",
@@ -5120,7 +5114,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "0ddb7c1216a238be54a56805f12d36f5109109f05b0570da160a845d0f260127",
+            "sha256": "7a3da13f0cfacc624efd960f70904c065ccf3a6a753d360ef64b1163c5ed02f8",
             "required_columns": [
               "reason",
               "count",
@@ -5128,7 +5122,8 @@
               "avg_dur_ms",
               "max_dur_ms",
               "percent",
-              "category"
+              "category",
+              "category_percent"
             ]
           }
         ]
@@ -5323,7 +5318,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "7e0b16951e4a263cfee1ddbe3ec4dd721cde2c554678c63a6c23c21e42c86320",
+            "sha256": "822c63cd73ad618f55ce2907346b0f8ec4f9a89f42fb455ee5a7a9f80af80bf2",
             "required_columns": [
               "gc_type",
               "thread_name",
@@ -5594,7 +5589,7 @@
           },
           {
             "id": "slow_reason_checks",
-            "sha256": "6c96b41a1b4aabc4431712599afb0320c3089a6546da67a6a285eae182fafa72",
+            "sha256": "3ec13c6a3d9d0b87f1a9c1db6996617b4589d19b291f382adfe18958acaa5e3e",
             "required_columns": [
               "reason_id",
               "reason",
@@ -6640,7 +6635,7 @@
           },
           {
             "id": "trigger_classification",
-            "sha256": "e220b141ff7d293b2b3f1a69f48e814ff4e78d70276fe739c26df81d626dbd1b",
+            "sha256": "0e9f75cbd64939b2c966130cd2222bb16b66016e0aa23a5f1415d43f7d6c5399",
             "required_columns": [
               "source_anr_type",
               "trigger_type",
@@ -6675,11 +6670,25 @@
           },
           {
             "id": "io_load",
-            "sha256": "c31209eb8ec71b10da1a935cf426c5e62eac43ce301d9a3c1b0bb4be2f62e52c",
+            "sha256": "492318604b2be6bd357806b8523f486ccc3610a536fc1d1e223a062c6e80d32c",
             "required_columns": [
               "process_name",
               "uninterruptible_wait_ms",
               "uninterruptible_wait_count"
+            ]
+          },
+          {
+            "id": "anr_process_io_wait",
+            "sha256": "a589763a437d1cc115492740d4c988b8199f6081d5ddef35d807df68f5f6068e",
+            "required_columns": [
+              "process_name",
+              "main_thread_uninterruptible_ms",
+              "process_uninterruptible_ms",
+              "top_thread_name",
+              "top_thread_ms",
+              "main_thread_io_wchan_ms",
+              "frozen_ms",
+              "blocked_function_coverage_pct"
             ]
           },
           {
@@ -6698,7 +6707,7 @@
           },
           {
             "id": "anr_overview",
-            "sha256": "3dcb21ffff3b1842f70452b9178cc56f90a83357ab48235ab3136f40428b9cd9",
+            "sha256": "500a7f4c0c8bf9a7ca8f6e0ae5922860ced62e16e03100e936c210cdd9c07051",
             "required_columns": [
               "anr_type",
               "trigger_type",
@@ -6714,7 +6723,7 @@
           },
           {
             "id": "get_anr_events",
-            "sha256": "fb870adac627109c9cdcbcb9a0c52620cf8c61dc124211426846ead3f3bd07c2",
+            "sha256": "19c33a6ea816475dfd9ebb1203d5239958989b5327a2d2897e2b9b1b3b462b7f",
             "required_columns": [
               "error_id",
               "process_name",
@@ -6916,7 +6925,7 @@
           },
           {
             "id": "direct_blocker_slice_classification",
-            "sha256": "6d755aed546790ca67147179a8caf24f9c6c1b84c58feb15a9bf8c51915d1671",
+            "sha256": "dd3818a4d92493164f057af135477c1c361b71920bab5ba0060605c287fffbd7",
             "required_columns": [
               "direct_blocker_type",
               "evidence_ms",
@@ -6947,7 +6956,7 @@
           },
           {
             "id": "anr_logcat_context",
-            "sha256": "91395c48db9305b188ddc4a304e8e5e266a7a8c48f0044e3618c398a3baaa8b8",
+            "sha256": "44f39f5a5dc8956894587966447f39a992da76ffba693fd7d20a8a185dc0f554",
             "required_columns": [
               "error_id",
               "relation_to_anr_ms",
@@ -8624,10 +8633,6 @@
         "source_file": "backend/skills/composite/gpu_analysis.skill.yaml",
         "modules": [
           {
-            "name": "android.gpu.frequency",
-            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/gpu/frequency.sql"
-          },
-          {
             "name": "android.gpu.memory",
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/gpu/memory.sql"
           }
@@ -8635,7 +8640,7 @@
         "steps": [
           {
             "id": "data_check",
-            "sha256": "d04db2a431068dcfd5ff78eeb2607d437e01211486ccac22653a8f6a55d99e45",
+            "sha256": "94fc4e75ccb3691c995ce1d5a66e2a536c6580d3c64c64fc5025c5745a39130e",
             "required_columns": [
               "has_gpu_freq",
               "has_gpu_memory",
@@ -8645,7 +8650,7 @@
           },
           {
             "id": "gpu_freq_overview",
-            "sha256": "356f995cc34d7d64f9c1ce141e57d20ef9745f9f19ee8435e3c5ae871956290c",
+            "sha256": "469c78de152d1266619ab938003883f2f81d5bbec8b5bf860f08f52053962e7b",
             "required_columns": [
               "gpu_id",
               "weighted_avg_freq_mhz",
@@ -8654,6 +8659,7 @@
               "max_freq_time_pct",
               "freq_levels",
               "freq_change_count",
+              "off_pct",
               "total_time_sec",
               "rating"
             ]
@@ -8671,9 +8677,10 @@
           },
           {
             "id": "gpu_freq_distribution",
-            "sha256": "eaed277ef683b5119aa8b50918bbe6c6c0f7a4db8a50df72653733d447665363",
+            "sha256": "fc437a23fdde9e867c3f4ae9c44a03d16ea7cad24572d0a83f025ef0ffb7bcfb",
             "required_columns": [
               "gpu_id",
+              "state",
               "gpu_freq_mhz",
               "total_time_sec",
               "time_pct",
@@ -8682,19 +8689,21 @@
           },
           {
             "id": "gpu_frame_correlation",
-            "sha256": "36b0b58148e30f887c61b3419a84c676e65bdc044c71edea536aa84707ab8bcc",
+            "sha256": "20822b855df74a9665cb7f65798965b59171be30cb9cbf1ab52327515d57cea2",
             "required_columns": [
               "jank_type",
               "frame_count",
+              "frames_with_running_freq",
               "avg_gpu_freq_mhz",
               "avg_frame_dur_ms",
               "max_frame_dur_ms",
-              "gpu_freq_range"
+              "gpu_freq_range",
+              "gpu_id"
             ]
           },
           {
             "id": "gpu_high_load_periods",
-            "sha256": "f1217bd6913f05b46975a73840b4217c4331e02fc1c3223d0dff753c12a671f9",
+            "sha256": "59993775b13ab8c004151af1b48b0a4770066334054ce9a2e4f7b241a24df15b",
             "required_columns": [
               "gpu_id",
               "start_ts",
@@ -8705,7 +8714,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "52bb4b8c7b874df58f588e37ab1b72074d91d0338e844a41f6877f3a36581252",
+            "sha256": "9012acfa12307ecab9e2d49c48279363ab8a8ccc1bbc604b308299e9246d83fd",
             "required_columns": [
               "gpu_category",
               "confidence",
@@ -8716,7 +8725,7 @@
           },
           {
             "id": "fallback_no_gpu_data",
-            "sha256": "fcfad036ceb71755d7607464841e93a3af960a01e86eede9ff46df18ef6e5d33",
+            "sha256": "e3a2cb7e6bd73c5e5b8d49ab4ecc0fd1de29dbf381488cd2f9b6674d568fa496",
             "required_columns": [
               "status",
               "missing_data",
@@ -8799,10 +8808,6 @@
         "source_file": "backend/skills/composite/gpu_v57_ai_diagnostics.skill.yaml",
         "modules": [
           {
-            "name": "counters.intervals",
-            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/counters/intervals.sql"
-          },
-          {
             "name": "intervals.intersect",
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/intervals/intersect.sql"
           },
@@ -8814,7 +8819,7 @@
         "steps": [
           {
             "id": "data_check",
-            "sha256": "c4aede768e31d7ce1d20d5427db8e950f0d4b2aba530b4a99603b7fe18c5081e",
+            "sha256": "74b11d616e259d949dc31106e61cedd5dc4c226c48af0c86bda809f793da973c",
             "required_columns": [
               "gpu_rows",
               "gpu_activity_rows",
@@ -8867,7 +8872,7 @@
           },
           {
             "id": "frequency_residency",
-            "sha256": "3cb7ca4934768e3034593cff9ee248fdb80f30fea27fb704eff52f3a6779c951",
+            "sha256": "9e8aca02f3d887863d0d5725216309a82768244b17b742cc59bb2cc3f64dfa57",
             "required_columns": [
               "gpu",
               "gpu_name",
@@ -8882,7 +8887,7 @@
           },
           {
             "id": "dvfs_ramp_events",
-            "sha256": "ff12e5ae4af64991020fc28a9bab3522861f48e6af60ccb61a059b7e9b1f3795",
+            "sha256": "1fddb56573f8b9f0c5a4f7ea41b8b9d5b99bf2a7dd3c27b08aef48b69756614e",
             "required_columns": [
               "gpu",
               "gpu_name",
@@ -8896,7 +8901,7 @@
           },
           {
             "id": "sustained_throttle_events",
-            "sha256": "68e0f246234da801f4d74abea5358eb76bf50c6f9076c6654e87ffd1f686d622",
+            "sha256": "3b9766c2e6e6439f5f3271e395666d849b7befc80a0c805c00eaf04bca40d123",
             "required_columns": [
               "gpu",
               "gpu_name",
@@ -9135,10 +9140,6 @@
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/garbage_collection.sql"
           },
           {
-            "name": "android.gpu.frequency",
-            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/gpu/frequency.sql"
-          },
-          {
             "name": "android.monitor_contention",
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/monitor_contention.sql"
           },
@@ -9168,7 +9169,7 @@
           },
           {
             "id": "gpu_table_check",
-            "sha256": "ae727cd60bcb8b3ca5cf1f09a355e1807b7f8b3f8309e72a7dc056dd33ab603b",
+            "sha256": "475f05a6ec79dcb4b4d124fbeaab41c1d5cbea6ddbd03c87b6b75e7865417b91",
             "required_columns": [
               "has_gpu_slices",
               "has_gpu_freq"
@@ -9842,25 +9843,8 @@
             ]
           },
           {
-            "id": "init_gc_view",
-            "sha256": "a0e1cf4e7d4c76ef0f5742d2101466aaf20d2e0668e5d35c89e2e7d71ae09980",
-            "required_columns": [
-              "gc_id",
-              "ts",
-              "dur",
-              "gc_name",
-              "thread_name",
-              "tid",
-              "pid",
-              "process_name",
-              "upid",
-              "is_main_thread",
-              "gc_type"
-            ]
-          },
-          {
             "id": "gc_overview",
-            "sha256": "fd21f71869e738dd63baec101730ee3b90edae1c96ecb7de8476d6d98c3a8a22",
+            "sha256": "815c8b72cb68a399481e8d7654fbbe8024f844fb68b97e664ef4c71b0f9c1886",
             "required_columns": [
               "total_gc_count",
               "total_gc_time_ms",
@@ -9869,6 +9853,9 @@
               "min_gc_time_ms",
               "main_thread_gc_count",
               "main_thread_gc_time_ms",
+              "main_thread_gc_wait_count",
+              "main_thread_gc_wait_ms",
+              "gc_wait_ms",
               "gc_per_second",
               "gc_frequency_rating",
               "gc_time_rating"
@@ -9876,7 +9863,7 @@
           },
           {
             "id": "gc_stats",
-            "sha256": "d6a9a452c6da5d423dac5890a2ff577c93e4babb750a32313e6d0548beb14423",
+            "sha256": "605b52007dede736a1fa1115acaf05045eb148d7d0fa42e827ac271b2f932ff0",
             "required_columns": [
               "gc_type",
               "count",
@@ -9888,7 +9875,7 @@
           },
           {
             "id": "gc_frame_impact",
-            "sha256": "25e589026d64e632d22755912d3b4fc73b8a7f06d459f0a22f2fae40f9c6dc18",
+            "sha256": "75a743b9fb5a5665a9243d37e4c591cb7cc468d8ec693456054637488c3a7607",
             "required_columns": [
               "gc_name",
               "gc_dur_ms",
@@ -9901,7 +9888,7 @@
           },
           {
             "id": "main_thread_gc",
-            "sha256": "730ec83209e78ee836893710468ef91cbcbfbc13c55a28230e0e90e7c7b40b08",
+            "sha256": "d94bc31a64dd18fb56c51051e0b368dcc3bf038b6b8a4d1b3d3003d4562cf01d",
             "required_columns": [
               "gc_type",
               "dur_ms",
@@ -9913,7 +9900,7 @@
           },
           {
             "id": "gc_thread_state",
-            "sha256": "6a7bb6cddf066a8392dee63f8d25952bf7e8457e6cec061aa09425ad56214c98",
+            "sha256": "ab992c9809b856fc570e8e4869adf383ad758d685b133abb8418205607f0fb3e",
             "required_columns": [
               "gc_type",
               "gc_dur_ms",
@@ -9924,7 +9911,7 @@
           },
           {
             "id": "gc_interval_analysis",
-            "sha256": "a8704578d08b9fe70fd673f406b0c2a480e40b555c61ebd05159bb955727a542",
+            "sha256": "fc49bbd285fdcb3346e143b139ae046287df0f79c2d2680a2476b1f566ca1ea6",
             "required_columns": [
               "interval_bucket",
               "count",
@@ -9934,7 +9921,7 @@
           },
           {
             "id": "long_gc_events",
-            "sha256": "325d46ef09d108cc0f8c8cce7c96c1acf6787c7d1c9f581fa322d4fd236a092a",
+            "sha256": "fbb86ae542bd22b270e74a1faf78ef5f305633eb45fb978062acb64c5cf88552",
             "required_columns": [
               "gc_type",
               "dur_ms",
@@ -10010,7 +9997,7 @@
           },
           {
             "id": "navigation_blocking_ops",
-            "sha256": "021c3b46d16b726962e3d9d0f70660ef372457be5a4ef8846998dc522fc4b3aa",
+            "sha256": "e266eb2a334e96e23f7b66422504df211469c35e04197d14aa3643e3acdcfb27",
             "required_columns": [
               "block_ts",
               "dur_ns",
@@ -12026,7 +12013,7 @@
         "steps": [
           {
             "id": "data_check",
-            "sha256": "181b382445170a95e9f2338d1c6faa0b31e69216c48218fb08bba7e8d5c3f01a",
+            "sha256": "95cdb37ddc15b4a35700aa1eb397d290d84fe651401c6d5a47dcff2340ba4f6a",
             "required_columns": [
               "has_thermal_data",
               "has_freq_data",
@@ -12729,9 +12716,10 @@
         "steps": [
           {
             "id": "gc_overview",
-            "sha256": "0e4df5bdfdb4a3fffddb2efae1eba2448e1491611eede625c6619eb689a3dc22",
+            "sha256": "7cc5a423441c06d37cdde1e919e90e795a9cc5ddad51302bb4ce92c2672e5eed",
             "required_columns": [
               "gc_type",
+              "gc_kind",
               "gc_count",
               "total_gc_ms",
               "avg_gc_ms",
@@ -12739,21 +12727,36 @@
             ]
           },
           {
+            "id": "gc_totals",
+            "sha256": "6f1b47416e364bc04cffb025ec3d34815e4e5b832ec51d29c2d577ab50ec7c71",
+            "required_columns": [
+              "collection_count",
+              "collection_ms",
+              "wait_count",
+              "wait_ms",
+              "main_thread_collection_count",
+              "main_thread_wait_count",
+              "main_thread_gc_ms"
+            ]
+          },
+          {
             "id": "gc_events",
-            "sha256": "f6f5772ea3c45b50eb28f012e62298edf76041b4cfa48055844ede51302f620b",
+            "sha256": "d009536f45d0a695422c134d9a2ff138fd08ec305fbfe6fa658f025e602e495e",
             "required_columns": [
               "ts",
               "gc_type",
+              "gc_kind",
               "dur_ms",
               "thread_name"
             ]
           },
           {
             "id": "gc_during_main_thread",
-            "sha256": "b1de46afed8522584f6f3c0682839fae4ae854e48e626215e861871165e50966",
+            "sha256": "ba911baaa203ba386f07bf14e417eb41c0ef189f0816f6af7dee31ae129a1d91",
             "required_columns": [
               "ts",
               "gc_type",
+              "gc_kind",
               "dur_ms"
             ]
           },
@@ -13067,12 +13070,13 @@
         "steps": [
           {
             "id": "gpu_frequency_overview",
-            "sha256": "41060226d57eca680b6ef1265e48fab3256373c985b4faec92f97bd571dcfd34",
+            "sha256": "ba593bf6a427a7ff95efc5d5983db67585ddc16f5a151987c254a4307cc126a5",
             "required_columns": [
               "counter_name",
-              "avg_value",
-              "max_value",
-              "min_value"
+              "gpu_id",
+              "avg_freq_mhz",
+              "max_freq_mhz",
+              "min_freq_mhz"
             ]
           },
           {

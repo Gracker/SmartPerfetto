@@ -39,7 +39,6 @@ prerequisites:
     - android.slices
     - android.monitor_contention
     - android.garbage_collection
-    - android.gpu.frequency
 
 inputs:
   # Primary timing inputs (at least one pair required)
@@ -183,6 +182,8 @@ steps:
       role: identity_metadata
     name: "GPU 数据源检测"
     display: false
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
     sql: |
       SELECT
         CASE
@@ -196,13 +197,7 @@ steps:
           ) THEN 1
           ELSE 0
         END as has_gpu_slices,
-        CASE
-          WHEN EXISTS (
-            SELECT 1 FROM sqlite_master
-            WHERE type IN ('table', 'view') AND name = 'android_gpu_frequency'
-          ) THEN 1
-          ELSE 0
-        END as has_gpu_freq
+        CASE WHEN EXISTS (SELECT 1 FROM gpu_frequency_samples) THEN 1 ELSE 0 END as has_gpu_freq
     save_as: gpu_availability
     optional: true
 
@@ -2587,7 +2582,7 @@ steps:
       # ===== 中优先级：GPU 频率 =====
       - condition: "gpu_freq_data?.data?.length > 0 && gpu_freq_data.data[0]?.low_freq_pct > 50"
         severity: warning
-        diagnosis: "GPU 低频运行占比 ${gpu_freq_data.data[0].low_freq_pct}%"
+        diagnosis: "GPU 运行时间中低频占比 ${gpu_freq_data.data[0].low_freq_pct}%"
         confidence: medium
         suggestions:
           - "GPU 未能提升频率"

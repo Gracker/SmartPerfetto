@@ -161,7 +161,8 @@ invoke_skill("anr_analysis")
   - `trigger_classification`：Perfetto ANR 类型到 SmartPerfetto `trigger_type` 的规范化映射，并输出候选根因提示（非最终结论）
   - `cpu_health`：系统 CPU 负载（大核/小核利用率、是否过载）
   - `memory_pressure`：ANR 窗口内的 LMK 事件
-  - `io_load`：各进程的 D-state 不可中断等待基线；不能单独作为 IO 根因
+  - `io_load`：各进程的 D-state 不可中断等待基线，只是系统背景；不能单独作为 IO 根因
+  - `anr_io_wait`：ANR 进程自己的 D/DK 等待（主线程、进程合计、最长线程、IO 等待点、冻结等待、blocked_function 覆盖率）；缺少 ANR 进程 upid 时不运行，不能读成「没有 D 态」
   - `lock_waits`：futex/mutex 锁等待分布（P95/max）
   - **`freeze_check`**（from `system_freeze_check`）：**系统冻结判定（最关键）**
   - `overview` / `anr_events`：ANR 分类统计、逐事件窗口、`timeout_source` 与跳转范围
@@ -239,7 +240,7 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 | BROADCAST_OF_INTENT | `onReceive()` 内是否有网络/IO/数据库操作在主线程执行 | `direct_blocker_candidates`、`main_slices`（查找 onReceive 相关 slice）、事件级 ActivityManager/Broadcast 日志 |
 | START_FOREGROUND_SERVICE / EXECUTING_SERVICE / FOREGROUND_SERVICE_TIMEOUT | Service 生命周期、前台服务启动和冷启动链路 | `direct_blocker_candidates`、`main_slices`、Service/ActivityManager 日志 |
 | JOB_SERVICE_START / STOP / BIND | JobService 回调或绑定链路，不要简化成普通 Service | `direct_blocker_candidates`、`logcat_event_context`、事件级 JobScheduler 日志 |
-| CONTENT_PROVIDER_NOT_RESPONDING | provider publish、query/CRUD 或跨进程 Provider 访问阻塞 | `direct_blocker_candidates`、`main_slices`、`io_load` |
+| CONTENT_PROVIDER_NOT_RESPONDING | provider publish、query/CRUD 或跨进程 Provider 访问阻塞 | `direct_blocker_candidates`、`main_slices`、`anr_io_wait` |
 | SYSTEM_SERVER_WATCHDOG_TIMEOUT | system_server Handler/锁/Binder 线程，默认不是 App Bug | `freeze_check`、system_server 线程状态、monitor contention |
 | GPU_HANG | GPU/fence/buffer 或 RenderThread/SF 链路 | `render_thread`、SurfaceFlinger 日志、frame/fence slice |
 
@@ -259,6 +260,7 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 - **CPU 负载** (`cpu_health`)：大核 avg_util_pct > 90% → CPU 饥饿参与因素
 - **内存压力** (`memory_pressure`)：ANR 窗口内有 LMK → 可能是 GC 压力或进程被回收重启
 - **不可中断等待基线** (`io_load`)：多进程 D-state 高只能说明系统/内核等待压力；只有结合 block IO、blocked_function 或文件/SQLite slice 证据，才能升级为系统级 IO 瓶颈
+- **ANR 进程不可中断等待** (`anr_io_wait`)：这个 ANR 的 D 态证据只看 ANR 进程本身，主线程优先；`blocked_function_coverage_pct` 为空或低时等待点未记录，不能据此说「不是 IO」；`frozen_ms` 是 cgroup 冻结，不是 IO
 - **锁等待** (`lock_waits`)：futex/mutex P95 偏高只作为包名级候选信号；最终定因必须结合逐 ANR `direct_blocker_candidates`、当前进程主线程 `lock_contention` 或锁链证据
 - **blocked_function 机制解释**：报告 D-state、`io_wait` 或 kernel blocked_function 时，调用 `lookup_knowledge("thread-state-blocked-reason")`；说明它是 kernel wchan 单帧，不是完整调用栈。
 

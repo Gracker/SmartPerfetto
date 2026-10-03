@@ -61,6 +61,8 @@ display:
       label: "消息"
       type: string
 
+sql_fragments:
+  - fragments/art_gc_names.sql
 sql: |
   WITH tagged AS (
     SELECT
@@ -104,8 +106,10 @@ sql: |
           OR LOWER(COALESCE(msg, '')) GLOB '*low memory*'
           OR LOWER(COALESCE(msg, '')) GLOB '*pressure*'
           THEN 'memory_pressure'
-        WHEN LOWER(COALESCE(tag, '')) GLOB '*art*'
-          OR LOWER(COALESCE(msg, '')) GLOB '*gc*'
+        -- The ART runtime logs under tag "art"; its GC lines are named in
+        -- fragments/art_gc_names.sql ("start" and "logcat" are neither).
+        WHEN LOWER(COALESCE(tag, '')) = 'art'
+          OR EXISTS (SELECT 1 FROM art_gc_text_patterns g WHERE LOWER(COALESCE(msg, '')) GLOB g.pattern)
           THEN 'gc_or_art'
         WHEN LOWER(COALESCE(tag, '')) GLOB '*choreographer*'
           OR LOWER(COALESCE(tag, '')) GLOB '*surfaceflinger*'

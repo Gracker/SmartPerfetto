@@ -121,6 +121,9 @@ describe('IdentityGate', () => {
       'android_heap_graph_summary',
       'android_memory_v57_ai_diagnostics',
       'android_process_state_residency',
+      // Its package filter moved from step SQL into fragments/memory_gc_events.sql;
+      // the policy stays verify_if_present.
+      'art_module',
       'flutter_scrolling_analysis',
     ]);
     expect(lost).toEqual([]);

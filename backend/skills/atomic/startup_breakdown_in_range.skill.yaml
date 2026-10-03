@@ -77,41 +77,72 @@ display:
     - name: category
       label: "类别"
       type: string
+    - name: category_percent
+      label: "类别占比"
+      type: percentage
+      format: percentage
 
 sql: |
+  -- reason is a closed set: the stdlib names a startup slice
+  -- (_normalize_android_string), blames io_wait as io and irq as irq, and
+  -- otherwise uses the main thread state. Each maps to one category by its
+  -- exact value; a reason not listed here is Other, never a substring guess
+  -- (bind_application and every *_contention used to read as IO).
+  -- category_percent is the whole category, before top_k drops rows.
+  WITH scoped_startups AS (
+    SELECT startup_id FROM android_startups
+    WHERE ('${package}' = '' OR package = '${package}' OR package GLOB '${package}:*')
+      AND (${startup_id} IS NULL OR startup_id = ${startup_id})
+      AND (${start_ts} IS NULL OR ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR ts + dur <= ${end_ts})
+  ),
+  reason_category(reason, category) AS (
+    VALUES
+      ('binder', 'IPC'),
+      ('io', 'IO'), ('dlopen', 'IO'),
+      ('userspace_memory_reclaim', 'Memory'), ('kernel_memory_reclaim', 'Memory'),
+      ('monitor_contention', 'Lock'), ('art_lock_contention', 'Lock'), ('mutex_contention', 'Lock'),
+      ('inflate', 'Layout'),
+      ('verify_class', 'ClassLoading'), ('open_dex_files_from_oat', 'ClassLoading'),
+      ('bind_application', 'AppPhase'), ('activity_start', 'AppPhase'),
+      ('activity_resume', 'AppPhase'), ('activity_restart', 'AppPhase'),
+      ('client_transaction_executed', 'AppPhase'), ('choreographer_do_frame', 'AppPhase'),
+      ('resources_manager_get_resources', 'AppPhase'),
+      ('Running', 'Running'),
+      ('R', 'Runnable'), ('R+', 'Runnable'),
+      ('S', 'Sleep'),
+      ('D', 'Uninterruptible'), ('DK', 'Uninterruptible'),
+      ('irq', 'IRQ'),
+      ('launch_delay', 'LaunchDelay')
+  ),
+  by_reason AS (
+    SELECT
+      b.reason,
+      COUNT(*) AS count,
+      SUM(b.dur) AS total_ns,
+      AVG(b.dur) AS avg_ns,
+      MAX(b.dur) AS max_ns
+    FROM android_startup_opinionated_breakdown b
+    JOIN scoped_startups USING (startup_id)
+    GROUP BY b.reason
+  ),
+  categorized AS (
+    SELECT r.*, COALESCE(c.category, 'Other') AS category
+    FROM by_reason r
+    LEFT JOIN reason_category c USING (reason)
+  ),
+  total AS (SELECT SUM(total_ns) AS ns FROM by_reason)
   SELECT
-    b.reason,
-    COUNT(*) as count,
-    SUM(b.dur) / 1e6 as total_dur_ms,
-    ROUND(AVG(b.dur) / 1e6, 2) as avg_dur_ms,
-    ROUND(MAX(b.dur) / 1e6, 2) as max_dur_ms,
-    ROUND(100.0 * SUM(b.dur) / (
-      SELECT SUM(dur) FROM android_startup_opinionated_breakdown
-      WHERE startup_id IN (
-        SELECT startup_id FROM android_startups
-        WHERE (('${package}' = '' OR package = '${package}' OR package GLOB '${package}:*') OR '${package}' = '')
-          AND (${startup_id} IS NULL OR startup_id = ${startup_id})
-          AND (${start_ts} IS NULL OR ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR ts + dur <= ${end_ts})
-      )
-    ), 1) as percent,
-    CASE
-      WHEN b.reason GLOB '*binder*' THEN 'IPC'
-      WHEN b.reason GLOB '*io*' OR b.reason GLOB '*dlopen*' THEN 'IO'
-      WHEN b.reason GLOB '*gc*' OR b.reason GLOB '*memory*' THEN 'Memory'
-      WHEN b.reason GLOB '*lock*' OR b.reason GLOB '*contention*' THEN 'Lock'
-      WHEN b.reason GLOB '*inflate*' THEN 'Layout'
-      WHEN b.reason GLOB '*verify*' OR b.reason GLOB '*dex*' THEN 'ClassLoading'
-      ELSE 'Other'
-    END as category
-  FROM android_startup_opinionated_breakdown b
-  JOIN android_startups s ON b.startup_id = s.startup_id
-  WHERE (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
-    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
-    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
-  GROUP BY b.reason
-  ORDER BY total_dur_ms DESC
+    reason,
+    count,
+    total_ns / 1e6 AS total_dur_ms,
+    ROUND(avg_ns / 1e6, 2) AS avg_dur_ms,
+    ROUND(max_ns / 1e6, 2) AS max_dur_ms,
+    ROUND(100.0 * total_ns / total.ns, 1) AS percent,
+    category,
+    ROUND(100.0 * SUM(total_ns) OVER (PARTITION BY category) / total.ns, 1) AS category_percent
+  FROM categorized, total
+  ORDER BY total_ns DESC, reason
   LIMIT ${top_k|15}
 
 output:

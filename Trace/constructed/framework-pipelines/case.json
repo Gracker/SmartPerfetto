@@ -129,16 +129,18 @@
         "mode": "semantic",
         "source_file": "backend/skills/modules/framework/art_module.skill.yaml",
         "parameters": {
-          "package": "com.smartperfetto.fixture"
+          "package": "com.example.launch.aosp.heavy"
         },
         "required_steps": [
           "gc_overview",
+          "gc_totals",
           "gc_events",
           "gc_during_main_thread",
           "jit_events"
         ],
         "required_sql_steps": [
           "gc_overview",
+          "gc_totals",
           "gc_events",
           "gc_during_main_thread",
           "jit_events"
@@ -149,6 +151,7 @@
         "semantic_step": "gc_overview",
         "required_columns": [
           "gc_type",
+          "gc_kind",
           "gc_count",
           "total_gc_ms",
           "avg_gc_ms",

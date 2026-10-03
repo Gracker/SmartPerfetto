@@ -350,23 +350,60 @@ export function validateFragmentReferences(
   return warnings;
 }
 
-/**
- * Stdlib relations whose raw values differ across trace-processor runtimes and
- * must be read through one normalizing fragment. Key: the stdlib relation;
- * value: the fragment that owns the only raw read.
- */
-const NORMALIZED_STDLIB_READS: ReadonlyMap<string, string> = new Map([
-  ['android_input_events', 'fragments/android_input_events_normalized.sql'],
-]);
-
-/** SQL with comments and string literals blanked, so only executable text is matched. */
-function executableSqlText(sql: string): string {
-  return sql.replace(/--[^\n\r]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'/g, ' ');
+/** The fragment that owns the only raw read of a source, and the relation it defines. */
+interface NormalizedReadOwner {
+  fragment: string;
+  relation: string;
 }
 
 /**
- * Reject a raw FROM/JOIN of a normalized stdlib relation in Skill SQL or in a
- * referenced fragment other than the relation's own normalizing fragment.
+ * Stdlib relations whose raw values differ across trace-processor runtimes or
+ * writers and must be read through one normalizing fragment.
+ * android_gpu_frequency returns the gpufreq counter as written: kHz, Hz or MHz.
+ */
+const NORMALIZED_STDLIB_READS: ReadonlyMap<string, NormalizedReadOwner> = new Map([
+  ['android_input_events', {
+    fragment: 'fragments/android_input_events_normalized.sql', relation: 'android_input_events_normalized',
+  }],
+  ['android_gpu_frequency', {
+    fragment: 'fragments/gpu_frequency_intervals.sql', relation: 'gpu_frequency_intervals',
+  }],
+]);
+
+/**
+ * Counter tracks with the same rule, selected by name. The name is a string
+ * literal, so these are matched on comment-free SQL with literals kept.
+ */
+const NORMALIZED_COUNTER_TRACKS: ReadonlyMap<string, NormalizedReadOwner> = new Map([
+  ['gpufreq', NORMALIZED_STDLIB_READS.get('android_gpu_frequency')!],
+]);
+
+const SQL_COMMENT = /--[^\n\r]*|\/\*[\s\S]*?\*\//g;
+const SQL_STRING_LITERAL = /'(?:''|[^'])*'/g;
+
+/** SQL with comments and string literals blanked, so only executable text is matched. */
+function executableSqlText(sql: string): string {
+  return sql.replace(SQL_COMMENT, ' ').replace(SQL_STRING_LITERAL, ' ');
+}
+
+/**
+ * A selection of a counter track by its name: `name = 'x'`, `'x' = name`,
+ * `name IN (..., 'x')`, or a GLOB/LIKE pattern that contains x. A name
+ * wrapped in a function (`LOWER(t.name)`) is not recognized.
+ */
+function selectsTrackByName(track: string): RegExp {
+  return new RegExp(
+    `\\bname\\s*(?:=\\s*|IN\\s*\\([^)]*?)'${track}'`
+    + `|'${track}'\\s*=\\s*(?:\\w+\\.)?name\\b`
+    + `|\\bname\\s+(?:NOT\\s+)?(?:GLOB|LIKE)\\s*'[^']*${track}[^']*'`,
+    'i',
+  );
+}
+
+/**
+ * Reject a raw FROM/JOIN of a normalized stdlib relation, or a selection of a
+ * normalized counter track by name, in Skill SQL or in a referenced fragment
+ * other than the owning fragment.
  */
 export function validateNormalizedStdlibReads(
   skill: SkillDefinition,
@@ -375,10 +412,17 @@ export function validateNormalizedStdlibReads(
   const warnings: SkillValidationWarning[] = [];
   const check = (sql: string, path: string, where: string, exemptFragment?: string): void => {
     const executable = executableSqlText(sql);
-    for (const [relation, owner] of NORMALIZED_STDLIB_READS) {
-      if (owner === exemptFragment) continue;
-      if (new RegExp(`\\b(?:FROM|JOIN)\\s+${relation}(?![\\w.])`, 'i').test(executable)) {
-        warnings.push({ stepId: path, message: `${where} reads ${relation} directly; read ${relation}_normalized via sql_fragments: [${owner}]` });
+    for (const [source, owner] of NORMALIZED_STDLIB_READS) {
+      if (owner.fragment === exemptFragment) continue;
+      if (new RegExp(`\\b(?:FROM|JOIN)\\s+${source}(?![\\w.])`, 'i').test(executable)) {
+        warnings.push({ stepId: path, message: `${where} reads ${source} directly; read ${owner.relation} via sql_fragments: [${owner.fragment}]` });
+      }
+    }
+    const commentFree = sql.replace(SQL_COMMENT, ' ');
+    for (const [track, owner] of NORMALIZED_COUNTER_TRACKS) {
+      if (owner.fragment === exemptFragment) continue;
+      if (selectsTrackByName(track).test(commentFree)) {
+        warnings.push({ stepId: path, message: `${where} selects the ${track} counter track directly; read ${owner.relation} via sql_fragments: [${owner.fragment}]` });
       }
     }
   };

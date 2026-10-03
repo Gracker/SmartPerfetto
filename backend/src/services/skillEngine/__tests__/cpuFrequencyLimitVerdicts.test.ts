@@ -78,6 +78,7 @@ class Fixture {
       CREATE TABLE cpu_counter_track(id INTEGER PRIMARY KEY, cpu INTEGER, type TEXT, name TEXT);
       CREATE TABLE counter_track(id INTEGER PRIMARY KEY, type TEXT, name TEXT, dimension_arg_set_id INTEGER);
       CREATE TABLE counter(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, value REAL);
+      CREATE TABLE gpu_counter_track(id INTEGER PRIMARY KEY, name TEXT, gpu_id INTEGER, ugpu INTEGER);
       CREATE TABLE args(arg_set_id INTEGER, key TEXT, string_value TEXT);
       CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT, uid INTEGER);
       CREATE TABLE android_process_metadata(upid INTEGER, is_kernel_task INTEGER);

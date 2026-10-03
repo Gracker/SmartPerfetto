@@ -115,6 +115,7 @@ steps:
     display: false
     sql_fragments:
       - fragments/system_cpu_freq_limit_spans.sql
+      - fragments/gpu_frequency_intervals.sql
     sql: |
       SELECT
         CASE WHEN EXISTS (
@@ -127,10 +128,7 @@ steps:
         CASE WHEN EXISTS (
           SELECT 1 FROM cpu_counter_track WHERE name = 'cpufreq'
         ) THEN 1 ELSE 0 END as has_freq_data,
-        CASE WHEN EXISTS (
-          SELECT 1 FROM sqlite_master
-          WHERE type IN ('table', 'view') AND name = 'android_gpu_frequency'
-        ) THEN 1 ELSE 0 END as has_gpu_freq_data,
+        CASE WHEN EXISTS (SELECT 1 FROM gpu_frequency_samples) THEN 1 ELSE 0 END as has_gpu_freq_data,
         -- Direct throttling evidence. A temperature counter correlating with a
         -- low frequency proves nothing; the limit track does the actual work.
         -- Limit evidence needs a VALID max-limit sample: a min-only capture or
@@ -501,6 +499,10 @@ steps:
           type: number
         - name: downshift_ratio_pct
           label: "降频占比"
+          type: percentage
+          format: percentage
+        - name: off_pct
+          label: "GPU 关闭占比"
           type: percentage
           format: percentage
     save_as: gpu_power_probe

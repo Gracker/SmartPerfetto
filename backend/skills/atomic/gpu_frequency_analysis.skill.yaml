@@ -45,50 +45,46 @@ display:
       label: "评估"
       type: string
 
+sql_fragments:
+  - fragments/gpu_frequency_intervals.sql
+  - fragments/gpu_frequency_window.sql
+  - fragments/gpu_frequency_summary.sql
+
 sql: |
-  WITH gpu_freq AS (
-    SELECT
-      c.ts,
-      CAST(c.value AS INTEGER) as freq_khz,
-      ct.name as track_name
-    FROM counter c
-    JOIN counter_track ct ON c.track_id = ct.id
-    WHERE (ct.name GLOB '*gpu*freq*' OR ct.name GLOB '*mali*freq*'
-           OR ct.name GLOB '*adreno*freq*' OR ct.name GLOB '*img*freq*')
-      AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-      AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-  ),
-  stats AS (
-    SELECT
-      COUNT(*) as sample_count,
-      MIN(freq_khz) as min_freq,
-      MAX(freq_khz) as max_freq,
-      ROUND(AVG(freq_khz), 0) as avg_freq,
-      track_name
-    FROM gpu_freq
-    GROUP BY track_name
+  -- MHz from fragments/gpu_frequency_intervals.sql, per GPU. Frequencies are
+  -- of running time, weighted by time; time powered off is its own row,
+  -- never a low frequency.
+  WITH rows AS (
+    SELECT gpu_id, 1 AS ord, '均频（运行时）' AS metric,
+      COALESCE(ROUND(avg_running_mhz, 0) || ' MHz', '无运行时间') AS value,
+      CASE WHEN avg_running_mhz IS NULL THEN ''
+           WHEN avg_running_mhz < max_running_mhz * 0.6 THEN '⚠️ GPU 均频低于峰值的 60%（仅为频率观测，不能据此判定限频或温控）'
+           ELSE '✓ 正常' END AS assessment
+    FROM gpu_frequency_summary
+    UNION ALL
+    SELECT gpu_id, 2, '峰值频率', COALESCE(ROUND(max_running_mhz, 0) || ' MHz', '无运行时间'), ''
+    FROM gpu_frequency_summary
+    UNION ALL
+    SELECT gpu_id, 3, '最低运行频率', COALESCE(ROUND(min_running_mhz, 0) || ' MHz', '无运行时间'),
+      CASE WHEN min_running_mhz IS NULL THEN ''
+           WHEN min_running_mhz < max_running_mhz * 0.3 THEN '⚠️ GPU 曾深度降频'
+           ELSE '✓ 频率波动正常' END
+    FROM gpu_frequency_summary
+    UNION ALL
+    SELECT gpu_id, 4, '关闭占比', ROUND(100.0 * off_ns / NULLIF(observed_ns, 0), 1) || '%', ''
+    FROM gpu_frequency_summary
+    UNION ALL
+    SELECT gpu_id, 5, '频率变化次数', CAST(running_change_count AS TEXT), ''
+    FROM gpu_frequency_summary
   )
-  SELECT 'GPU 频率源' as metric, COALESCE(track_name, '未检测到 GPU 频率 counter') as value,
-    CASE WHEN track_name IS NULL THEN '⚠️ 无 GPU 频率数据（trace 中无 gpu freq counter）' ELSE '' END as assessment
-  FROM stats
-  UNION ALL
-  SELECT 'GPU 频率源' as metric, '未检测到 GPU 频率 counter' as value, '⚠️ 无 GPU 频率数据' as assessment
-  WHERE NOT EXISTS (SELECT 1 FROM stats)
-  UNION ALL
-  SELECT 'GPU 均频' as metric,
-    ROUND(avg_freq / 1000.0, 0) || ' MHz' as value,
-    CASE WHEN avg_freq < max_freq * 0.6 THEN '⚠️ GPU 均频低于峰值的 60%（仅为频率观测，不能据此判定限频或温控）'
-         ELSE '✓ 正常' END as assessment
-  FROM stats
-  UNION ALL
-  SELECT 'GPU 峰值频率' as metric, ROUND(max_freq / 1000.0, 0) || ' MHz' as value, '' as assessment FROM stats
-  UNION ALL
-  SELECT 'GPU 最低频率' as metric, ROUND(min_freq / 1000.0, 0) || ' MHz' as value,
-    CASE WHEN min_freq < max_freq * 0.3 THEN '⚠️ GPU 曾深度降频'
-         ELSE '✓ 频率波动正常' END as assessment
-  FROM stats
-  UNION ALL
-  SELECT 'GPU 频率变化次数' as metric, CAST(sample_count AS TEXT) as value, '' as assessment FROM stats
+  SELECT metric, value, assessment
+  FROM (
+    SELECT 'GPU ' || gpu_id || ' ' || metric AS metric, value, assessment, gpu_id, ord FROM rows
+    UNION ALL
+    SELECT 'GPU 频率源', '无 gpufreq 计数器', '⚠️ 无 trace_processor gpufreq 数据；其他 GPU 频率计数器见 gpu_metrics', NULL, 0
+    WHERE NOT EXISTS (SELECT 1 FROM gpu_frequency_summary)
+  )
+  ORDER BY gpu_id, ord
 
 output:
   format: structured

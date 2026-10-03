@@ -5,8 +5,8 @@
  * level held to trace end, the fixture app's GPU memory growing from 128MB to
  * 192MB, and the base scroll trace's FrameTimeline.
  *
- * Absolute MHz values are not asserted: the Skill reads `gpufreq` as Hz while
- * trace_processor labels that counter kHz, which is an open unit question.
+ * The frequency event is power/gpu_frequency with state 700000, which
+ * trace_processor stores as kHz: the Skill must report 700 MHz.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
@@ -67,8 +67,10 @@ describeWithTrace('gpu_analysis skill', TRACE_FILE, () => {
       expect(result.data).toHaveLength(1);
       const gpu = result.data[0];
       expect(gpu.gpu_id).toBe(0);
-      expect(gpu.min_freq_mhz).toBeLessThanOrEqual(gpu.weighted_avg_freq_mhz);
-      expect(gpu.weighted_avg_freq_mhz).toBeLessThanOrEqual(gpu.max_freq_mhz);
+      expect(gpu.weighted_avg_freq_mhz).toBe(700);
+      expect(gpu.max_freq_mhz).toBe(700);
+      expect(gpu.min_freq_mhz).toBe(700);
+      expect(gpu.off_pct).toBe(0);
       expect(gpu.freq_levels).toBe(1);
       expect(gpu.freq_change_count).toBe(0);
       expect(gpu.max_freq_time_pct).toBe(100);
@@ -95,7 +97,9 @@ describeWithTrace('gpu_analysis skill', TRACE_FILE, () => {
       const result = await evaluator.executeStep('gpu_freq_distribution');
 
       expect(result.success).toBe(true);
-      expect(result.data).toEqual([expect.objectContaining({gpu_id: 0, time_pct: 100, is_max_freq: '是'})]);
+      expect(result.data).toEqual([expect.objectContaining({
+        gpu_id: 0, state: '运行', gpu_freq_mhz: 700, time_pct: 100, is_max_freq: '是',
+      })]);
     }, 30000);
 
     it('should report the whole frequency interval as one high-load period', async () => {
@@ -108,16 +112,18 @@ describeWithTrace('gpu_analysis skill', TRACE_FILE, () => {
   });
 
   describe('GPU-Frame Correlation', () => {
-    it('should group the frames inside the frequency interval by jank type', async () => {
+    it('should group every frame by jank type and average the running frequency inside each', async () => {
       const result = await evaluator.executeStep('gpu_frame_correlation');
 
-      // The frames come from the base scroll trace: count them independently.
+      // The frames come from the base scroll trace: count them independently,
+      // and those whose interval overlaps the one 700 MHz level.
       const frames = await evaluator.executeSQL(`
         INCLUDE PERFETTO MODULE android.gpu.frequency;
-        SELECT COALESCE(f.jank_type, 'None') AS jank_type, COUNT(*) AS frame_count
+        SELECT COALESCE(f.jank_type, 'None') AS jank_type, COUNT(*) AS frame_count,
+          SUM(EXISTS (SELECT 1 FROM android_gpu_frequency g
+            WHERE g.gpu_freq > 0 AND g.ts < f.ts + f.dur AND g.ts + g.dur > f.ts)) AS with_freq
         FROM actual_frame_timeline_slice f
         JOIN process p USING (upid)
-        JOIN android_gpu_frequency g ON g.ts <= f.ts AND g.ts + g.dur > f.ts
         WHERE f.dur > 0 AND p.name NOT LIKE '/system/%'
           AND COALESCE(f.display_frame_token, f.surface_frame_token) IS NOT NULL
         GROUP BY 1
@@ -126,10 +132,12 @@ describeWithTrace('gpu_analysis skill', TRACE_FILE, () => {
       expect(frames.rows.length).toBeGreaterThan(1);
 
       expect(result.success).toBe(true);
-      const byType = Object.fromEntries(result.data.map(row => [row.jank_type, row.frame_count]));
-      expect(byType).toEqual(Object.fromEntries(frames.rows));
+      const byType = Object.fromEntries(result.data.map(row => [row.jank_type, [row.frame_count, row.frames_with_running_freq]]));
+      expect(byType).toEqual(Object.fromEntries(frames.rows.map(([type, count, withFreq]) => [type, [count, withFreq]])));
       for (const row of result.data) {
+        expect(row.gpu_id).toBe(0);
         expect(row.avg_frame_dur_ms).toBeLessThanOrEqual(row.max_frame_dur_ms);
+        if (row.frames_with_running_freq > 0) expect(row.avg_gpu_freq_mhz).toBe(700);
       }
     }, 30000);
   });
@@ -257,11 +265,18 @@ describeWithTrace('gpu_analysis skill definition', TRACE_FILE, () => {
     expect(inputNames).toContain('high_freq_threshold_pct');
   });
 
-  it('should have valid prerequisites', () => {
+  it('should read GPU frequency only through the normalizing fragment', () => {
     const skill = evaluator.getSkillDefinition();
 
-    expect(skill!.prerequisites).toBeDefined();
-    expect(skill!.prerequisites!.modules).toContain('android.gpu.frequency');
-    expect(skill!.prerequisites!.modules).toContain('android.gpu.memory');
+    // android_gpu_frequency returns the raw counter, whose unit depends on the writer.
+    expect(skill!.prerequisites!.modules).toEqual(['android.gpu.memory']);
+    const frequencySteps = (skill!.steps ?? []).filter((step: any) => /gpu_frequency_/.test(step.sql ?? ''));
+    expect(frequencySteps.map((step: any) => step.id)).toEqual([
+      'data_check', 'gpu_freq_overview', 'gpu_freq_distribution', 'gpu_frame_correlation',
+      'gpu_high_load_periods', 'root_cause_classification',
+    ]);
+    for (const step of frequencySteps as any[]) {
+      expect(step.sql_fragments).toContain('fragments/gpu_frequency_intervals.sql');
+    }
   });
 });

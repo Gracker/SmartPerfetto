@@ -83,7 +83,7 @@
       "duration_ns": "19000000",
       "process": "app",
       "thread": "render",
-      "name": "GC Young Concurrent"
+      "name": "Alloc young concurrent copying GC"
     },
     {
       "type": "atrace-slice",

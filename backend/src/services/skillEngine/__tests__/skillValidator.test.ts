@@ -562,6 +562,32 @@ describe('validateNormalizedStdlibReads', () => {
     } as SkillDefinition, fragments);
     expect(warnings).toEqual([expect.objectContaining({ stepId: 'root', message: expect.stringContaining("Fragment 'fragments/raw_reader.sql'") })]);
   });
+
+  it('reads GPU frequency only through its normalizing fragment', () => {
+    const gpuOwner = 'fragments/gpu_frequency_intervals.sql';
+    const gpuFragments = new Map([
+      [gpuOwner, "gpu_frequency_samples AS (SELECT c.value FROM counter c JOIN gpu_counter_track t ON t.id = c.track_id WHERE t.name = 'gpufreq')"],
+    ]);
+    const warnings = validateNormalizedStdlibReads({
+      name: 'gpu', sql: 'SELECT gpu_freq / 1e6 FROM android_gpu_frequency',
+      steps: [
+        { id: 'by_name', type: 'atomic', sql: "SELECT c.value FROM counter c JOIN gpu_counter_track gct ON gct.id = c.track_id WHERE gct.name = 'gpufreq'" },
+        { id: 'by_list', type: 'atomic', sql: "SELECT 1 FROM gpu_counter_track WHERE name IN ('gpu_mem', 'gpufreq')" },
+        { id: 'reversed', type: 'atomic', sql: "SELECT 1 FROM gpu_counter_track t WHERE 'gpufreq' = t.name" },
+        { id: 'by_pattern', type: 'atomic', sql: "SELECT 1 FROM counter_track ct WHERE ct.name GLOB '*gpufreq*'" },
+      ],
+    } as unknown as SkillDefinition, gpuFragments);
+    expect(warnings.map(warning => warning.stepId)).toEqual(['root', 'by_name', 'by_list', 'reversed', 'by_pattern']);
+    expect(warnings[1].message).toContain(gpuOwner);
+
+    expect(validateNormalizedStdlibReads({
+      name: 'ok', sql_fragments: [gpuOwner],
+      sql: `-- WHERE name = 'gpufreq'
+        SELECT freq_mhz FROM gpu_frequency_intervals
+        UNION ALL SELECT value FROM gpu_counter_track WHERE name != 'gpufreq'
+        UNION ALL SELECT 1 FROM counter_track ct WHERE LOWER(ct.name) GLOB '*gpufreq*'`,
+    } as unknown as SkillDefinition, gpuFragments)).toEqual([]);
+  });
 });
 
 // =============================================================================

@@ -242,6 +242,8 @@ steps:
           label: 候选提示
       insights:
         - template: "ANR 触发类型 {{trigger_type}}（{{event_count}} 次）；候选根因提示只作为排查入口，不是最终结论"
+    sql_fragments:
+      - fragments/art_gc_names.sql
     sql: |
       WITH classified AS (
         SELECT
@@ -275,7 +277,7 @@ steps:
               WHEN LOWER(COALESCE(subject, '')) GLOB '*oom*'
                 OR LOWER(COALESCE(subject, '')) GLOB '*lmk*'
                 OR LOWER(COALESCE(subject, '')) GLOB '*memory*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*gc*'
+                OR EXISTS (SELECT 1 FROM art_gc_text_patterns g WHERE LOWER(COALESCE(subject, '')) GLOB g.pattern)
                 THEN 'memory_leak_oom_pressure,' ELSE '' END) ||
             (CASE
               WHEN LOWER(COALESCE(subject, '')) GLOB '*cpu*'
@@ -462,7 +464,7 @@ steps:
         CROSS JOIN anr_window aw
         JOIN thread t ON ts.utid = t.utid
         JOIN process p ON t.upid = p.upid
-        WHERE ts.state = 'D'
+        WHERE ts.state IN ('D', 'DK')
           AND ts.ts < aw.end_ts
           AND (CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END) > aw.start_ts
         GROUP BY p.name
@@ -477,6 +479,108 @@ steps:
       LIMIT 10
     save_as: io_load
     condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
+    optional: true
+
+  # Step 1.4a: the ANR process's own uninterruptible waits
+  - id: anr_process_io_wait
+    type: atomic
+    name: "ANR 进程不可中断等待"
+    sql_fragments:
+      - fragments/io_blocked_function_families.sql
+      - fragments/system_thread_state_spans.sql
+    display:
+      level: detail
+      layer: list
+      title: "ANR 进程 D 态等待"
+      columns:
+        - name: process_name
+          label: "ANR 进程"
+          type: string
+        - name: main_thread_uninterruptible_ms
+          label: "主线程 D 态"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: process_uninterruptible_ms
+          label: "进程 D 态合计"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: top_thread_name
+          label: "D 态最长线程"
+          type: string
+        - name: top_thread_ms
+          label: "该线程 D 态"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: main_thread_io_wchan_ms
+          label: "主线程 IO 等待点"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: frozen_ms
+          label: "冻结等待"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: blocked_function_coverage_pct
+          label: "等待点覆盖"
+          type: percentage
+          format: percentage
+    # An ANR is explained by its own process: io_load ranks D waits across the
+    # whole system, which is context, not this ANR's evidence. D and DK count;
+    # blocked_function is a single-frame wchan recorded only for D waits with
+    # sched_blocked_reason, so its coverage tells "no I/O wait point" from "no
+    # wait points recorded". The cgroup v1 freezer parks a task in D
+    # (__refrigerator) without any I/O; the cgroup v2 freezer (do_freezer_trap)
+    # waits in S and never appears here. Without an ANR upid the step does not
+    # run: an unknown process is not one without D waits.
+    sql: |
+      WITH system_windows AS (
+        SELECT
+          0 AS window_id,
+          ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS window_start_ts,
+          ${anr_ctx.data[0].anr_ts} AS window_end_ts
+      ),
+      system_target_threads AS (
+        SELECT 0 AS window_id, t.upid, t.utid,
+          CASE WHEN t.tid = p.pid THEN 'MainThread' ELSE 'Other' END AS role
+        FROM thread t
+        JOIN process p ON p.upid = t.upid
+        WHERE t.upid = ${anr_ctx.data[0].upid}
+      ),
+      d_waits AS (
+        SELECT
+          utid,
+          role,
+          LOWER(COALESCE(blocked_function, '')) AS wchan,
+          blocked_function IS NOT NULL AS has_wchan,
+          dur_ns AS ns
+        FROM system_thread_state_spans
+        WHERE state IN ('D', 'DK')
+      ),
+      top_thread AS (
+        SELECT utid, SUM(ns) AS ns
+        FROM d_waits
+        GROUP BY utid
+        ORDER BY ns DESC
+        LIMIT 1
+      )
+      SELECT
+        (SELECT name FROM process WHERE upid = ${anr_ctx.data[0].upid}) AS process_name,
+        ROUND(COALESCE(SUM(CASE WHEN role = 'MainThread' THEN ns END), 0) / 1e6, 2) AS main_thread_uninterruptible_ms,
+        ROUND(COALESCE(SUM(ns), 0) / 1e6, 2) AS process_uninterruptible_ms,
+        (SELECT t.name FROM top_thread tt JOIN thread t USING (utid)) AS top_thread_name,
+        ROUND(COALESCE((SELECT ns FROM top_thread), 0) / 1e6, 2) AS top_thread_ms,
+        ROUND(COALESCE(SUM(CASE WHEN role = 'MainThread'
+          AND EXISTS (SELECT 1 FROM io_blocked_function_families f WHERE wchan GLOB f.pattern) THEN ns END), 0) / 1e6, 2)
+          AS main_thread_io_wchan_ms,
+        ROUND(COALESCE(SUM(CASE WHEN wchan GLOB '*refrigerator*' THEN ns END), 0) / 1e6, 2) AS frozen_ms,
+        ROUND(100.0 * SUM(CASE WHEN has_wchan THEN ns ELSE 0 END) / NULLIF(SUM(ns), 0), 1) AS blocked_function_coverage_pct
+      FROM d_waits
+    save_as: anr_io_wait
+    condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0 && anr_ctx.data[0]?.upid != null
     optional: true
 
   # Step 1.4b: 锁等待分布（性能专家探针）
@@ -719,6 +823,8 @@ steps:
           template: "广播超时 {{anr_count}} 次：BroadcastReceiver 处理超时"
         - condition: "anr_type === 'EXECUTING_SERVICE'"
           template: "服务超时 {{anr_count}} 次：Service 生命周期方法超时"
+    sql_fragments:
+      - fragments/art_gc_names.sql
     sql: |
       WITH classified AS (
         SELECT
@@ -747,7 +853,7 @@ steps:
               WHEN LOWER(COALESCE(subject, '')) GLOB '*oom*'
                 OR LOWER(COALESCE(subject, '')) GLOB '*lmk*'
                 OR LOWER(COALESCE(subject, '')) GLOB '*memory*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*gc*'
+                OR EXISTS (SELECT 1 FROM art_gc_text_patterns g WHERE LOWER(COALESCE(subject, '')) GLOB g.pattern)
                 THEN 'memory_leak_oom_pressure,' ELSE '' END) ||
             (CASE
               WHEN LOWER(COALESCE(subject, '')) GLOB '*cpu*'
@@ -879,6 +985,8 @@ steps:
         - key: anr_dur_ms
           label: 超时时长
           format: "{{value}} ms"
+    sql_fragments:
+      - fragments/art_gc_names.sql
     sql: |
       WITH normalized AS (
         SELECT
@@ -927,7 +1035,7 @@ steps:
               WHEN LOWER(COALESCE(subject, '')) GLOB '*oom*'
                 OR LOWER(COALESCE(subject, '')) GLOB '*lmk*'
                 OR LOWER(COALESCE(subject, '')) GLOB '*memory*'
-                OR LOWER(COALESCE(subject, '')) GLOB '*gc*'
+                OR EXISTS (SELECT 1 FROM art_gc_text_patterns g WHERE LOWER(COALESCE(subject, '')) GLOB g.pattern)
                 THEN 'memory_leak_oom_pressure,' ELSE '' END) ||
             (CASE
               WHEN LOWER(COALESCE(subject, '')) GLOB '*cpu*'
@@ -1115,7 +1223,7 @@ steps:
         - condition: "severity === 'warning'"
           template: "🟡 警告：{{diagnosis}}"
         - template: "ANR 诊断：{{diagnosis}}"
-    inputs: [detection, trigger_classification, cpu_health, memory_pressure, io_load, lock_waits, freeze_check, overview, anr_events, top_processes]
+    inputs: [detection, trigger_classification, cpu_health, memory_pressure, io_load, anr_io_wait, lock_waits, freeze_check, overview, anr_events, top_processes]
     rules:
       # === 系统级问题判定 ===
 
@@ -1188,9 +1296,10 @@ steps:
           - "top_processes 显示的进程可能是罪魁祸首"
 
       # D-state 不可中断等待：只能作为低置信系统/内核等待候选，不能直接等同磁盘 IO
-      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && io_load.data[0]?.uninterruptible_wait_ms > (uninterruptible_wait_threshold_ms || io_wait_threshold_ms || 500)"
+      # The main thread of the ANR process, never the longest D wait system-wide.
+      - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && (anr_io_wait.data?.[0]?.main_thread_uninterruptible_ms || 0) > (uninterruptible_wait_threshold_ms || io_wait_threshold_ms || 500)"
         severity: warning
-        diagnosis: "进程 ${io_load.data[0].process_name} D-state 不可中断等待 ${io_load.data[0].uninterruptible_wait_ms}ms"
+        diagnosis: "ANR 进程 ${anr_io_wait.data[0].process_name} 主线程在 ANR 窗口内 D-state 不可中断等待 ${anr_io_wait.data[0].main_thread_uninterruptible_ms}ms"
         confidence: low
         suggestions:
           - "D-state 只能说明不可中断等待，不能单独证明磁盘 IO"

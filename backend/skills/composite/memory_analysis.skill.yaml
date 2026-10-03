@@ -77,6 +77,11 @@ inputs:
     required: false
     default: 10
     description: "主线程 GC 次数严重阈值"
+  - name: main_thread_gc_wait_warning_ms
+    type: number
+    required: false
+    default: 50
+    description: "主线程等待 GC 完成的总时长警告阈值 (ms)"
   - name: single_gc_warning_ms
     type: number
     required: false
@@ -115,50 +120,6 @@ steps:
       LIMIT 1
     save_as: target_process
     on_empty: "未找到目标进程"
-
-  # ========== 初始化 GC 事件视图（供后续步骤 JOIN）==========
-  # Uses DROP+CREATE to ensure VIEW reflects current package filter.
-  # VIEW is used instead of CTE to avoid duplicating the 20-line definition
-  # across 7 consuming steps. Safe for sequential skill execution.
-  - id: init_gc_view
-    type: atomic
-    name: "初始化 GC 事件视图"
-    display:
-      level: hidden
-    optional: true
-    sql: |
-      DROP VIEW IF EXISTS _gc_events;
-      CREATE VIEW _gc_events AS
-      SELECT
-        s.id AS gc_id,
-        s.ts,
-        s.dur,
-        s.name as gc_name,
-        t.name as thread_name,
-        t.tid,
-        p.pid,
-        p.name as process_name,
-        p.upid,
-        CASE WHEN t.tid = p.pid THEN 1 ELSE 0 END as is_main_thread,
-        CASE
-          WHEN s.name GLOB '*ConcurrentCopying*' THEN 'ConcurrentCopying'
-          WHEN s.name GLOB '*MarkSweep*' THEN 'MarkSweep'
-          WHEN s.name GLOB '*Explicit*' THEN 'Explicit'
-          WHEN s.name GLOB '*Alloc*' THEN 'Alloc'
-          WHEN s.name GLOB '*Background*' THEN 'Background'
-          WHEN s.name GLOB '*young*' OR s.name GLOB '*Young*' THEN 'Young'
-          WHEN s.name GLOB '*full*' OR s.name GLOB '*Full*' THEN 'Full'
-          ELSE 'Other'
-        END as gc_type
-      FROM slice s
-      JOIN thread_track tt ON s.track_id = tt.id
-      JOIN thread t ON tt.utid = t.utid
-      JOIN process p ON t.upid = p.upid
-      WHERE (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
-        AND (s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*')
-        AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
-        AND (${end_ts} IS NULL OR s.ts < ${end_ts})
-    condition: target_process.data.length > 0
 
   # ========== 获取 VSync 周期（供帧关联分析使用）==========
   - id: get_vsync_period
@@ -335,6 +296,20 @@ steps:
           type: duration
           format: duration_ms
           unit: ms
+        - name: main_thread_gc_wait_count
+          label: "主线程等待 GC"
+          type: number
+          format: compact
+        - name: main_thread_gc_wait_ms
+          label: "主线程等待 GC 耗时"
+          type: duration
+          format: duration_ms
+          unit: ms
+        - name: gc_wait_ms
+          label: "各线程等待 GC 合计"
+          type: duration
+          format: duration_ms
+          unit: ms
         - name: gc_per_second
           label: "GC 频率"
           type: number
@@ -344,32 +319,54 @@ steps:
         - name: gc_time_rating
           label: "耗时评级"
           type: string
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
+      -- Counts, totals and rates take collector runs; a wait overlaps the run
+      -- it waits on and is reported apart, as time a thread was blocked.
+      WITH waits AS (
+        SELECT
+          COALESCE(SUM(is_main_thread = 1), 0) as main_thread_gc_wait_count,
+          COALESCE(SUM(CASE WHEN is_main_thread = 1 THEN dur END), 0) / 1e6 as main_thread_gc_wait_ms,
+          COALESCE(SUM(dur), 0) / 1e6 as gc_wait_ms
+        FROM memory_gc_events
+        WHERE gc_kind = 'wait'
+      ),
+      runs AS (
+        SELECT
+          COUNT(*) as total_gc_count,
+          SUM(dur) / 1e6 as total_gc_time_ms,
+          ROUND(AVG(dur) / 1e6, 2) as avg_gc_time_ms,
+          ROUND(MAX(dur) / 1e6, 2) as max_gc_time_ms,
+          ROUND(MIN(dur) / 1e6, 2) as min_gc_time_ms,
+          -- 主线程 GC 统计：主线程上执行的回收
+          SUM(CASE WHEN is_main_thread = 1 THEN 1 ELSE 0 END) as main_thread_gc_count,
+          SUM(CASE WHEN is_main_thread = 1 THEN dur ELSE 0 END) / 1e6 as main_thread_gc_time_ms,
+          -- GC 频率（每秒）
+          ROUND(COUNT(*) * 1e9 / (MAX(ts + dur) - MIN(ts)), 2) as gc_per_second,
+          -- 评级
+          CASE
+            WHEN COUNT(*) > ${gc_count_critical|100} THEN '频繁'
+            WHEN COUNT(*) > ${gc_count_warning|50} THEN '较多'
+            WHEN COUNT(*) > 10 THEN '正常'
+            ELSE '良好'
+          END as gc_frequency_rating,
+          CASE
+            WHEN SUM(dur) / 1e6 > ${gc_total_time_critical_ms|2000} THEN '严重'
+            WHEN SUM(dur) / 1e6 > 500 THEN '需优化'
+            WHEN SUM(dur) / 1e6 > 100 THEN '良好'
+            ELSE '优秀'
+          END as gc_time_rating
+        FROM memory_gc_events
+        WHERE gc_kind = 'collection'
+      )
       SELECT
-        COUNT(*) as total_gc_count,
-        SUM(dur) / 1e6 as total_gc_time_ms,
-        ROUND(AVG(dur) / 1e6, 2) as avg_gc_time_ms,
-        ROUND(MAX(dur) / 1e6, 2) as max_gc_time_ms,
-        ROUND(MIN(dur) / 1e6, 2) as min_gc_time_ms,
-        -- 主线程 GC 统计
-        SUM(CASE WHEN is_main_thread = 1 THEN 1 ELSE 0 END) as main_thread_gc_count,
-        SUM(CASE WHEN is_main_thread = 1 THEN dur ELSE 0 END) / 1e6 as main_thread_gc_time_ms,
-        -- GC 频率（每秒）
-        ROUND(COUNT(*) * 1e9 / (MAX(ts + dur) - MIN(ts)), 2) as gc_per_second,
-        -- 评级
-        CASE
-          WHEN COUNT(*) > ${gc_count_critical|100} THEN '频繁'
-          WHEN COUNT(*) > ${gc_count_warning|50} THEN '较多'
-          WHEN COUNT(*) > 10 THEN '正常'
-          ELSE '良好'
-        END as gc_frequency_rating,
-        CASE
-          WHEN SUM(dur) / 1e6 > ${gc_total_time_critical_ms|2000} THEN '严重'
-          WHEN SUM(dur) / 1e6 > 500 THEN '需优化'
-          WHEN SUM(dur) / 1e6 > 100 THEN '良好'
-          ELSE '优秀'
-        END as gc_time_rating
-      FROM _gc_events
+        r.total_gc_count, r.total_gc_time_ms, r.avg_gc_time_ms, r.max_gc_time_ms, r.min_gc_time_ms,
+        r.main_thread_gc_count, r.main_thread_gc_time_ms,
+        w.main_thread_gc_wait_count, w.main_thread_gc_wait_ms, w.gc_wait_ms,
+        r.gc_per_second, r.gc_frequency_rating, r.gc_time_rating
+      FROM runs r, waits w
     save_as: gc_overview
     condition: target_process.data.length > 0
 
@@ -421,16 +418,17 @@ steps:
           label: "主线程 GC"
           type: number
           format: compact
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       SELECT
         CASE gc_type
-          WHEN 'ConcurrentCopying' THEN 'ConcurrentCopying (并发GC)'
-          WHEN 'MarkSweep' THEN 'MarkSweep (标记清除)'
           WHEN 'Explicit' THEN 'Explicit (显式GC)'
           WHEN 'Alloc' THEN 'Alloc (分配触发)'
-          WHEN 'Background' THEN 'Background (后台GC)'
           WHEN 'Young' THEN 'Young Gen (新生代)'
-          WHEN 'Full' THEN 'Full GC (全局)'
+          WHEN 'Background' THEN 'Background (后台GC)'
+          WHEN 'Wait' THEN 'Wait (等待 GC 完成)'
           ELSE 'Other'
         END as gc_type,
         COUNT(*) as count,
@@ -438,7 +436,7 @@ steps:
         ROUND(AVG(dur) / 1e6, 2) as avg_dur_ms,
         ROUND(MAX(dur) / 1e6, 2) as max_dur_ms,
         SUM(CASE WHEN is_main_thread = 1 THEN 1 ELSE 0 END) as main_thread_count
-      FROM _gc_events
+      FROM memory_gc_events
       GROUP BY gc_type
       ORDER BY total_dur_ms DESC
     save_as: gc_stats
@@ -492,6 +490,9 @@ steps:
         - name: impact
           label: "影响"
           type: string
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       -- One row per main-thread GC, over the frames of the process that ran
       -- it; a frame of another process at the same time says nothing about it.
@@ -500,7 +501,7 @@ steps:
         SELECT
           gc.gc_id, gc.ts, gc.upid, gc.gc_name, gc.dur,
           af.id AS frame_id, af.dur AS frame_dur, af.jank_type
-        FROM _gc_events gc
+        FROM memory_gc_events gc
         LEFT JOIN actual_frame_timeline_slice af ON (
           af.upid = gc.upid AND af.ts < gc.ts + gc.dur AND af.ts + af.dur > gc.ts
         )
@@ -561,6 +562,9 @@ steps:
         - name: dropped_frames
           label: "掉帧数"
           type: number
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       SELECT
         gc_name as gc_type,
@@ -576,7 +580,7 @@ steps:
         END as severity,
         -- 掉帧数估算（使用动态 VSync 周期）
         CAST(dur / ${vsync_info.data[0].vsync_period_ns|16666667} AS INTEGER) as dropped_frames
-      FROM _gc_events
+      FROM memory_gc_events
       WHERE is_main_thread = 1
         AND dur > 1000000  -- > 1ms
       ORDER BY dur DESC
@@ -613,6 +617,9 @@ steps:
         - name: blocked_function
           label: "阻塞函数"
           type: string
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       WITH main_thread AS (
         SELECT t.utid
@@ -623,7 +630,7 @@ steps:
       ),
       top_gc AS (
         SELECT ts, dur, gc_name
-        FROM _gc_events
+        FROM memory_gc_events
         WHERE is_main_thread = 1
           AND dur > 5000000  -- > 5ms
         ORDER BY dur DESC
@@ -677,13 +684,17 @@ steps:
           type: duration
           format: duration_ms
           unit: ms
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       WITH gc_with_lag AS (
         SELECT
           ts,
           dur,
           LAG(ts + dur) OVER (ORDER BY ts) as prev_end
-        FROM _gc_events
+        FROM memory_gc_events
+        WHERE gc_kind = 'collection'
       )
       SELECT
         CASE
@@ -744,6 +755,9 @@ steps:
         - name: is_main_thread
           label: "主线程"
           type: string
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       SELECT
         gc_name as gc_type,
@@ -753,7 +767,8 @@ steps:
         printf('%d', ts) as ts_str,
         printf('%d', dur) as dur_str,
         CASE WHEN is_main_thread = 1 THEN '是' ELSE '否' END as is_main_thread
-      FROM _gc_events
+      FROM memory_gc_events
+      WHERE gc_kind = 'collection'
       ORDER BY dur DESC
       LIMIT 15
     save_as: long_gc
@@ -817,10 +832,19 @@ steps:
           - "将内存密集型操作移到后台线程"
           - "避免在 UI 线程分配大量内存"
 
-      # 单次 GC 暂停过长
+      # 主线程被 GC 阻塞：等待一次回收或 GC 临界区结束（GC: Wait For Completion）
+      - condition: "gc_overview.data[0]?.main_thread_gc_wait_ms > (main_thread_gc_wait_warning_ms ?? 50)"
+        severity: warning
+        diagnosis: "主线程等待 GC 完成 ${gc_overview.data[0].main_thread_gc_wait_count} 次，共 ${gc_overview.data[0].main_thread_gc_wait_ms}ms"
+        confidence: high
+        suggestions:
+          - "减少主线程分配，避免触发 Alloc GC 后同步等待"
+          - "检查 ProfileSaver 等 GC 临界区与主线程的重叠"
+
+      # 单次 GC 回收过长（并发回收的时长不是应用线程的暂停）
       - condition: "long_gc.data[0]?.dur_ms > (single_gc_warning_ms ?? 50)"
         severity: warning
-        diagnosis: "单次 GC 暂停过长 (${long_gc.data[0].dur_ms}ms)"
+        diagnosis: "单次 GC 回收过长 (${long_gc.data[0].dur_ms}ms)"
         confidence: medium
         suggestions:
           - "检查大对象分配"

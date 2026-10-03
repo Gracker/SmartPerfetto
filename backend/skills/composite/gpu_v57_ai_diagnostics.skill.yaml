@@ -24,7 +24,6 @@ triggers:
 
 prerequisites:
   modules:
-    - counters.intervals
     - intervals.overlap
     - intervals.intersect
 
@@ -63,11 +62,13 @@ steps:
     name: "GPU v57 data availability"
     display:
       level: hidden
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
     sql: |
       SELECT
         (SELECT COUNT(*) FROM gpu) AS gpu_rows,
         (SELECT COUNT(*) FROM gpu_slice WHERE dur > 0) AS gpu_activity_rows,
-        (SELECT COUNT(*) FROM gpu_counter_track WHERE name = 'gpufreq') AS gpufreq_tracks,
+        (SELECT COUNT(DISTINCT track_id) FROM gpu_frequency_samples) AS gpufreq_tracks,
         CASE WHEN EXISTS (SELECT 1 FROM pragma_table_info('gpu') WHERE name = 'machine_id') THEN 1 ELSE 0 END AS has_gpu_machine_id,
         CASE WHEN EXISTS (SELECT 1 FROM pragma_table_info('gpu') WHERE name = 'architecture') THEN 1 ELSE 0 END AS has_gpu_architecture,
         CASE WHEN EXISTS (SELECT 1 FROM pragma_table_info('gpu_counter_track') WHERE name = 'ugpu') THEN 1 ELSE 0 END AS has_gpu_counter_ugpu,
@@ -309,71 +310,61 @@ steps:
           label: "Freq Coverage"
           type: percentage
           format: percentage
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_frequency_window.sql
+      - fragments/gpu_frequency_by_ugpu.sql
     sql: |
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_gpu_freq AS
-      SELECT
-        f.id,
-        f.ts,
-        f.dur,
-        f.value AS freq_khz,
-        gct.ugpu
-      FROM counter_leading_intervals!((
-          SELECT c.id, c.ts, c.track_id, c.value
-          FROM counter AS c
-          JOIN gpu_counter_track AS gct
-            ON gct.id = c.track_id
-          WHERE gct.name = 'gpufreq'
-            AND (${start_ts} IS NULL OR c.ts >= ${start_ts})
-            AND (${end_ts} IS NULL OR c.ts < ${end_ts})
-            AND (${ugpu} IS NULL OR gct.ugpu = ${ugpu})
-        )) AS f
-      JOIN gpu_counter_track AS gct
-        ON gct.id = f.track_id;
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_busy_at_freq AS
-      SELECT b.ugpu, f.freq_khz, ii.dur
-      FROM _interval_intersect!((__sp_v57_gpu_busy, __sp_v57_gpu_freq), (ugpu)) AS ii
-      JOIN __sp_v57_gpu_busy AS b
-        ON b.id = ii.id_0
-      JOIN __sp_v57_gpu_freq AS f
-        ON f.id = ii.id_1;
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_gpu_span AS
-      SELECT
-        ugpu,
-        MIN(ts) AS span_start,
-        MAX(ts + dur) AS span_end,
-        SUM(dur) AS busy_ns
-      FROM __sp_v57_gpu_busy
-      GROUP BY ugpu;
-
+      WITH
+      -- Busy time at each running frequency; busy time while the GPU reads
+      -- as off has no clock and lowers freq_coverage_pct instead.
+      running_freq AS (
+        SELECT * FROM gpu_ugpu_frequency WHERE freq_mhz > 0
+      ),
+      busy_at_freq AS (
+        SELECT b.ugpu, f.freq_mhz, ii.dur
+        FROM _interval_intersect!((__sp_v57_gpu_busy, running_freq), (ugpu)) AS ii
+        JOIN __sp_v57_gpu_busy AS b
+          ON b.id = ii.id_0
+        JOIN running_freq AS f
+          ON f.id = ii.id_1
+      ),
+      gpu_span AS (
+        SELECT
+          ugpu,
+          MIN(ts) AS span_start,
+          MAX(ts + dur) AS span_end,
+          SUM(dur) AS busy_ns
+        FROM __sp_v57_gpu_busy
+        GROUP BY ugpu
+      )
       SELECT
         s.ugpu AS gpu,
         IFNULL(g.name, 'GPU ' || s.ugpu) AS gpu_name,
         s.span_end - s.span_start AS active_span_ns,
         s.busy_ns AS gpu_busy_ns,
         ROUND(100.0 * s.busy_ns / NULLIF(s.span_end - s.span_start, 0), 1) AS busy_pct_of_active,
-        (SELECT MAX(freq_khz) FROM __sp_v57_gpu_freq WHERE ugpu = s.ugpu) / 1000 AS fmax_mhz,
+        ROUND(m.fmax_mhz, 0) AS fmax_mhz,
         ROUND(
-          (SELECT SUM(dur * freq_khz) FROM __sp_v57_busy_at_freq WHERE ugpu = s.ugpu) * 1.0
-          / NULLIF((SELECT SUM(dur) FROM __sp_v57_busy_at_freq WHERE ugpu = s.ugpu), 0)
-          / 1000,
+          (SELECT SUM(dur * freq_mhz) FROM busy_at_freq WHERE ugpu = s.ugpu)
+          / NULLIF((SELECT SUM(dur) FROM busy_at_freq WHERE ugpu = s.ugpu), 0),
           0
         ) AS mean_busy_mhz,
         ROUND(
-          100.0 * (SELECT SUM(dur * freq_khz) FROM __sp_v57_busy_at_freq WHERE ugpu = s.ugpu)
-          / NULLIF((s.span_end - s.span_start) * (SELECT MAX(freq_khz) FROM __sp_v57_gpu_freq WHERE ugpu = s.ugpu), 0),
+          100.0 * (SELECT SUM(dur * freq_mhz) FROM busy_at_freq WHERE ugpu = s.ugpu)
+          / NULLIF((s.span_end - s.span_start) * m.fmax_mhz, 0),
           1
         ) AS eff_occupancy_pct,
         ROUND(
-          100.0 * (SELECT SUM(dur) FROM __sp_v57_busy_at_freq WHERE ugpu = s.ugpu)
+          100.0 * (SELECT SUM(dur) FROM busy_at_freq WHERE ugpu = s.ugpu)
           / NULLIF(s.busy_ns, 0),
           1
         ) AS freq_coverage_pct
-      FROM __sp_v57_gpu_span AS s
+      FROM gpu_span AS s
+      JOIN gpu_ugpu_fmax AS m
+        ON m.ugpu = s.ugpu
       LEFT JOIN gpu AS g
         ON g.ugpu = s.ugpu
-      WHERE EXISTS (SELECT 1 FROM __sp_v57_gpu_freq WHERE ugpu = s.ugpu)
       ORDER BY s.ugpu
     save_as: frequency_residency
 
@@ -414,68 +405,64 @@ steps:
         - name: completed
           label: "Completed"
           type: boolean
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_frequency_window.sql
+      - fragments/gpu_frequency_by_ugpu.sql
     sql: |
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_gpu_params AS
-      SELECT
-        COALESCE(${target_freq_ratio|0.9}, 0.9) AS target_ratio,
-        MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 200) AS max_rows;
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_gpu_fmax AS
-      SELECT ugpu, MAX(freq_khz) AS fmax_khz
-      FROM __sp_v57_gpu_freq
-      GROUP BY ugpu;
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_gpu_edges AS
-      SELECT
-        b.ugpu,
-        b.ts AS edge_ts,
-        b.te AS busy_end,
-        b.ts - LAG(b.te) OVER (PARTITION BY b.ugpu ORDER BY b.ts) AS idle_gap_ns,
-        (
-          SELECT f.freq_khz
-          FROM __sp_v57_gpu_freq AS f
-          WHERE f.ugpu = b.ugpu
-            AND f.ts <= b.ts
-            AND f.ts + f.dur > b.ts
-        ) AS freq_at_edge_khz,
-        (SELECT fmax_khz FROM __sp_v57_gpu_fmax WHERE ugpu = b.ugpu) AS fmax_khz
-      FROM __sp_v57_gpu_busy AS b;
-
-      SELECT
-        e.ugpu AS gpu,
-        IFNULL(g.name, 'GPU ' || e.ugpu) AS gpu_name,
-        e.edge_ts - trace_start() AS edge_rel_ns,
-        e.idle_gap_ns,
-        e.freq_at_edge_khz / 1000 AS freq_at_edge_mhz,
-        CAST((SELECT target_ratio FROM __sp_v57_gpu_params) * e.fmax_khz AS INT) / 1000 AS target_mhz,
-        IFNULL(
+      WITH
+      params AS (
+        SELECT
+          COALESCE(${target_freq_ratio|0.9}, 0.9) AS target_ratio,
+          MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 200) AS max_rows
+      ),
+      -- The clock at each busy edge, 0 when the GPU was off: a cold start
+      -- from off is the commonest ramp and stays in.
+      edges AS (
+        SELECT
+          b.ugpu,
+          b.ts AS edge_ts,
+          b.te AS busy_end,
+          b.ts - LAG(b.te) OVER (PARTITION BY b.ugpu ORDER BY b.ts) AS idle_gap_ns,
+          (
+            SELECT f.freq_mhz
+            FROM gpu_ugpu_frequency AS f
+            WHERE f.ugpu = b.ugpu
+              AND f.ts <= b.ts
+              AND f.ts + f.dur > b.ts
+          ) AS freq_at_edge_mhz,
+          (SELECT fmax_mhz FROM gpu_ugpu_fmax WHERE ugpu = b.ugpu) AS fmax_mhz
+        FROM __sp_v57_gpu_busy AS b
+      ),
+      ramps AS (
+        SELECT
+          e.*,
+          (SELECT target_ratio FROM params) * e.fmax_mhz AS target_mhz,
           (
             SELECT MIN(f.ts)
-            FROM __sp_v57_gpu_freq AS f
+            FROM gpu_ugpu_frequency AS f
             WHERE f.ugpu = e.ugpu
-              AND f.freq_khz >= (SELECT target_ratio FROM __sp_v57_gpu_params) * e.fmax_khz
+              AND f.freq_mhz >= (SELECT target_ratio FROM params) * e.fmax_mhz
               AND f.ts >= e.edge_ts
               AND f.ts < e.busy_end
-          ),
-          e.busy_end
-        ) - e.edge_ts AS ramp_ns,
-        CASE
-          WHEN (
-            SELECT MIN(f.ts)
-            FROM __sp_v57_gpu_freq AS f
-            WHERE f.ugpu = e.ugpu
-              AND f.freq_khz >= (SELECT target_ratio FROM __sp_v57_gpu_params) * e.fmax_khz
-              AND f.ts >= e.edge_ts
-              AND f.ts < e.busy_end
-          ) IS NOT NULL THEN 1
-          ELSE 0
-        END AS completed
-      FROM __sp_v57_gpu_edges AS e
+          ) AS reach_ts
+        FROM edges AS e
+      )
+      SELECT
+        r.ugpu AS gpu,
+        IFNULL(g.name, 'GPU ' || r.ugpu) AS gpu_name,
+        r.edge_ts - trace_start() AS edge_rel_ns,
+        r.idle_gap_ns,
+        ROUND(r.freq_at_edge_mhz, 0) AS freq_at_edge_mhz,
+        ROUND(r.target_mhz, 0) AS target_mhz,
+        IFNULL(r.reach_ts, r.busy_end) - r.edge_ts AS ramp_ns,
+        CASE WHEN r.reach_ts IS NOT NULL THEN 1 ELSE 0 END AS completed
+      FROM ramps AS r
       LEFT JOIN gpu AS g
-        ON g.ugpu = e.ugpu
-      WHERE e.freq_at_edge_khz < (SELECT target_ratio FROM __sp_v57_gpu_params) * e.fmax_khz
+        ON g.ugpu = r.ugpu
+      WHERE r.freq_at_edge_mhz < r.target_mhz
       ORDER BY ramp_ns DESC
-      LIMIT (SELECT max_rows FROM __sp_v57_gpu_params)
+      LIMIT (SELECT max_rows FROM params)
     save_as: dvfs_ramp_events
 
   - id: sustained_throttle_events
@@ -514,29 +501,52 @@ steps:
         - name: power_w
           label: "Power(W)"
           type: number
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_frequency_window.sql
+      - fragments/gpu_frequency_by_ugpu.sql
     sql: |
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_gpu_params AS
-      SELECT
-        COALESCE(${target_freq_ratio|0.9}, 0.9) AS target_ratio,
-        MIN(MAX(COALESCE(${min_throttle_ns|1000}, 1000), 1), 10000000000) AS min_throttle_ns,
-        MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 200) AS max_rows;
-
-      CREATE OR REPLACE PERFETTO TABLE __sp_v57_gpu_low_busy AS
-      SELECT ii.ts, ii.dur, f.freq_khz, b.ugpu
-      FROM _interval_intersect!((__sp_v57_gpu_busy, __sp_v57_gpu_freq), (ugpu)) AS ii
-      JOIN __sp_v57_gpu_busy AS b
-        ON b.id = ii.id_0
-      JOIN __sp_v57_gpu_freq AS f
-        ON f.id = ii.id_1
-      WHERE f.freq_khz < (SELECT target_ratio FROM __sp_v57_gpu_params) * (SELECT fmax_khz FROM __sp_v57_gpu_fmax WHERE ugpu = b.ugpu);
-
+      WITH
+      params AS (
+        SELECT
+          COALESCE(${target_freq_ratio|0.9}, 0.9) AS target_ratio,
+          MIN(MAX(COALESCE(${min_throttle_ns|1000}, 1000), 1), 10000000000) AS min_throttle_ns,
+          MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 200) AS max_rows
+      ),
+      low_busy AS (
+        SELECT ii.ts, ii.dur, f.freq_mhz, b.ugpu
+        FROM _interval_intersect!((__sp_v57_gpu_busy, gpu_ugpu_frequency), (ugpu)) AS ii
+        JOIN __sp_v57_gpu_busy AS b
+          ON b.id = ii.id_0
+        JOIN gpu_ugpu_frequency AS f
+          ON f.id = ii.id_1
+        JOIN gpu_ugpu_fmax AS m
+          ON m.ugpu = b.ugpu
+        WHERE f.freq_mhz > 0
+          AND f.freq_mhz < (SELECT target_ratio FROM params) * m.fmax_mhz
+      ),
+      -- Read once per low interval below; materialized, it is built once.
+      ramp_reach AS MATERIALIZED (
+        SELECT
+          b.ugpu,
+          b.ts AS edge_ts,
+          (
+            SELECT MIN(f.ts)
+            FROM gpu_ugpu_frequency AS f
+            WHERE f.ugpu = b.ugpu
+              AND f.freq_mhz >= (SELECT target_ratio FROM params) * (SELECT fmax_mhz FROM gpu_ugpu_fmax WHERE ugpu = b.ugpu)
+              AND f.ts >= b.ts
+              AND f.ts < b.te
+          ) AS ramp_reach_ts
+        FROM __sp_v57_gpu_busy AS b
+      )
       SELECT
         l.ugpu AS gpu,
         IFNULL(g.name, 'GPU ' || l.ugpu) AS gpu_name,
         l.ts - trace_start() AS start_rel_ns,
         l.dur AS dur_ns,
-        l.freq_khz / 1000 AS freq_mhz,
-        CAST((SELECT target_ratio FROM __sp_v57_gpu_params) * (SELECT fmax_khz FROM __sp_v57_gpu_fmax WHERE ugpu = l.ugpu) AS INT) / 1000 AS target_mhz,
+        ROUND(l.freq_mhz, 0) AS freq_mhz,
+        ROUND((SELECT target_ratio FROM params) * (SELECT fmax_mhz FROM gpu_ugpu_fmax WHERE ugpu = l.ugpu), 0) AS target_mhz,
         (
           SELECT ROUND(AVG(c.value), 1)
           FROM counter AS c
@@ -557,32 +567,19 @@ steps:
             AND c.ts >= l.ts
             AND c.ts < l.ts + l.dur
         ) AS power_w
-      FROM __sp_v57_gpu_low_busy AS l
+      FROM low_busy AS l
       LEFT JOIN gpu AS g
         ON g.ugpu = l.ugpu
-      WHERE l.dur >= (SELECT min_throttle_ns FROM __sp_v57_gpu_params)
+      WHERE l.dur >= (SELECT min_throttle_ns FROM params)
         AND l.ts >= (
           SELECT MAX(e.ramp_reach_ts)
-          FROM (
-            SELECT
-              b.ugpu,
-              b.ts AS edge_ts,
-              (
-                SELECT MIN(f.ts)
-                FROM __sp_v57_gpu_freq AS f
-                WHERE f.ugpu = b.ugpu
-                  AND f.freq_khz >= (SELECT target_ratio FROM __sp_v57_gpu_params) * (SELECT fmax_khz FROM __sp_v57_gpu_fmax WHERE ugpu = b.ugpu)
-                  AND f.ts >= b.ts
-                  AND f.ts < b.te
-              ) AS ramp_reach_ts
-            FROM __sp_v57_gpu_busy AS b
-          ) AS e
+          FROM ramp_reach AS e
           WHERE e.ugpu = l.ugpu
             AND e.edge_ts <= l.ts
             AND e.ramp_reach_ts IS NOT NULL
         )
       ORDER BY l.dur DESC
-      LIMIT (SELECT max_rows FROM __sp_v57_gpu_params)
+      LIMIT (SELECT max_rows FROM params)
     save_as: sustained_throttle_events
 
   - id: no_data_contract

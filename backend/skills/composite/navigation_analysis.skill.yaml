@@ -498,6 +498,7 @@ steps:
           type: enum
     sql_fragments:
       - fragments/file_io_slice_names.sql
+      - fragments/art_gc_names.sql
     sql: |
       SELECT
         printf('%d', s.ts) as block_ts,
@@ -509,7 +510,8 @@ steps:
           WHEN s.name GLOB '*database*' OR s.name GLOB '*SQL*' OR s.name GLOB '*sqlite*' THEN 'database'
           WHEN s.name GLOB '*Binder*' OR s.name GLOB '*binder*' THEN 'binder'
           WHEN s.name GLOB '*SharedPreferences*' THEN 'shared_prefs'
-          WHEN s.name GLOB '*GC*' OR s.name GLOB '*collector*' THEN 'gc'
+          -- An ART GC run or a wait on one (fragments/art_gc_names.sql).
+          WHEN s.name GLOB '*GC*' AND EXISTS (SELECT 1 FROM art_gc_slice_name_patterns n WHERE s.name GLOB n.pattern) THEN 'gc'
           -- File IO by whole slice-name word (fragments/file_io_slice_names.sql).
           WHEN EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(s.name), w.stem) > 0)
             AND EXISTS (SELECT 1 FROM file_io_slice_name_patterns n WHERE s.name GLOB n.pattern)

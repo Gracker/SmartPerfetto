@@ -23,9 +23,14 @@
 -- after the code it handles (JIT compiling of a java.io.File method, code
 -- cache writes, class definition and dex registration, GC waits, lock
 -- contention at a method) and Binder calls named after their interface
--- method (AIDL::...::openSession); a ParcelFileDescriptor is still a file. "flush" is not here: in real traces it
--- is GPU and SurfaceFlinger work (GrOpFlushState, flush commands), not file
--- I/O. GLOB is case-sensitive.
+-- method (AIDL::...::openSession); a ParcelFileDescriptor is still a file.
+-- "flush" is not here: in real traces it is GPU and SurfaceFlinger work
+-- (GrOpFlushState, flush commands), not file I/O. GLOB is case-sensitive.
+--
+-- An all-caps word (READ, OPEN, FILE) is deliberately not a form of a word: in
+-- the six canonical traces, the constructed corpus and a dozen local device
+-- traces the only all-caps I/O word is the WindowManager transition type OPEN
+-- (playTransition: OPEN, Transition-OPEN#409), which is not file I/O.
 file_io_slice_name_words(io_type, stem, word, camel) AS (
   VALUES
     ('open', 'open', '[Oo]pen', 'Open'),

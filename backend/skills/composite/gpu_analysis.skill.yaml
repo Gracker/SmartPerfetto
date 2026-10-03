@@ -24,7 +24,6 @@ triggers:
 
 prerequisites:
   modules:
-    - android.gpu.frequency
     - android.gpu.memory
 
 inputs:
@@ -79,15 +78,11 @@ steps:
     type: atomic
     name: "GPU 数据源检测"
     display: false
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
     sql: |
       SELECT
-        CASE
-          WHEN EXISTS (
-            SELECT 1 FROM sqlite_master
-            WHERE type IN ('table', 'view') AND name = 'android_gpu_frequency'
-          ) THEN 1
-          ELSE 0
-        END as has_gpu_freq,
+        CASE WHEN EXISTS (SELECT 1 FROM gpu_frequency_samples) THEN 1 ELSE 0 END as has_gpu_freq,
         CASE
           WHEN EXISTS (
             SELECT 1 FROM sqlite_master
@@ -102,12 +97,7 @@ steps:
           ) THEN 1
           ELSE 0
         END as has_frame_timeline,
-        CASE
-          WHEN EXISTS (
-            SELECT 1 FROM android_gpu_frequency LIMIT 1
-          ) THEN 1
-          ELSE 0
-        END as has_gpu_data
+        CASE WHEN EXISTS (SELECT 1 FROM gpu_frequency_samples WHERE unit_basis != 'out_of_domain') THEN 1 ELSE 0 END as has_gpu_data
     save_as: data_check
 
   # ==========================================================================
@@ -121,7 +111,7 @@ steps:
       role: overview
       fields:
         - key: weighted_avg_freq_mhz
-          label: 加权平均频率
+          label: 运行时加权平均频率
           format: "{{value}} MHz"
         - key: max_freq_time_pct
           label: 最高频占比
@@ -132,8 +122,10 @@ steps:
       insights:
         - condition: "max_freq_time_pct > 70"
           template: "GPU 在最高频率运行 {{max_freq_time_pct}}%，可能存在 GPU 瓶颈"
-        - condition: "max_freq_time_pct < 10"
-          template: "GPU 大部分时间低频运行，负载较轻"
+        - condition: "off_pct >= 50"
+          template: "GPU 在 {{off_pct}}% 的观测时间里处于关闭状态，负载较轻"
+        - condition: "max_freq_time_pct < 10 && off_pct < 50"
+          template: "GPU 运行时大部分低于最高频，负载较轻"
         - condition: "freq_change_count > 500"
           template: "GPU 频率变化 {{freq_change_count}} 次，调频活跃"
     display:
@@ -145,7 +137,7 @@ steps:
           label: "GPU ID"
           type: number
         - name: weighted_avg_freq_mhz
-          label: "加权平均频率"
+          label: "运行时加权平均频率"
           type: number
           format: compact
         - name: max_freq_mhz
@@ -167,69 +159,50 @@ steps:
           label: "变频次数"
           type: number
           format: compact
+        - name: off_pct
+          label: "GPU 关闭占比"
+          type: percentage
+          format: percentage
         - name: total_time_sec
           label: "采样时间"
           type: number
         - name: rating
           label: "评级"
           type: string
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_frequency_window.sql
+      - fragments/gpu_frequency_summary.sql
     sql: |
-      WITH
-      gpu_freq_filtered AS (
+      -- MHz from fragments/gpu_frequency_intervals.sql. Average and range are of
+      -- the time the GPU ran; max_freq_time_pct and off_pct are of all observed
+      -- time, so time powered off counts as not at the top frequency.
+      WITH overview AS (
         SELECT
-          gpu_id,
-          gpu_freq,
-          dur,
-          ts
-        FROM android_gpu_frequency
-        WHERE dur > 0
-          AND (${start_ts} IS NULL OR ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR ts < ${end_ts})
-      ),
-      max_freq_per_gpu AS (
-        SELECT gpu_id, MAX(gpu_freq) as max_gpu_freq
-        FROM gpu_freq_filtered
-        GROUP BY gpu_id
-      ),
-      gpu_stats AS (
-        SELECT
-          g.gpu_id,
-          -- 加权平均频率 (按持续时间加权)
-          ROUND(SUM(g.gpu_freq * 1.0 * g.dur) / NULLIF(SUM(g.dur), 0) / 1e6, 0) as weighted_avg_freq_mhz,
-          ROUND(MAX(g.gpu_freq) / 1e6, 0) as max_freq_mhz,
-          ROUND(MIN(g.gpu_freq) / 1e6, 0) as min_freq_mhz,
-          -- 最高频占比
-          ROUND(100.0 * SUM(CASE WHEN g.gpu_freq = mf.max_gpu_freq THEN g.dur ELSE 0 END) / NULLIF(SUM(g.dur), 0), 1) as max_freq_time_pct,
-          COUNT(DISTINCT g.gpu_freq) as freq_levels,
-          -- 变频次数 (频率不同于上一条记录的次数)
-          (SELECT COUNT(*) FROM android_gpu_frequency f2
-           WHERE f2.gpu_id = g.gpu_id
-             AND f2.prev_gpu_freq IS NOT NULL
-             AND f2.gpu_freq != f2.prev_gpu_freq
-             AND (${start_ts} IS NULL OR f2.ts >= ${start_ts})
-             AND (${end_ts} IS NULL OR f2.ts < ${end_ts})
-          ) as freq_change_count,
-          ROUND(SUM(g.dur) / 1e9, 2) as total_time_sec
-        FROM gpu_freq_filtered g
-        JOIN max_freq_per_gpu mf ON g.gpu_id = mf.gpu_id
-        GROUP BY g.gpu_id
+          s.*,
+          100.0 * COALESCE((
+            SELECT SUM(w.dur) FROM gpu_frequency_window w
+            WHERE w.gpu_id = s.gpu_id AND w.running_mhz = s.max_running_mhz
+          ), 0) / NULLIF(s.observed_ns, 0) AS top_pct
+        FROM gpu_frequency_summary s
       )
       SELECT
         gpu_id,
-        weighted_avg_freq_mhz,
-        max_freq_mhz,
-        min_freq_mhz,
-        max_freq_time_pct,
-        freq_levels,
-        freq_change_count,
-        total_time_sec,
+        ROUND(avg_running_mhz, 0) as weighted_avg_freq_mhz,
+        ROUND(max_running_mhz, 0) as max_freq_mhz,
+        ROUND(min_running_mhz, 0) as min_freq_mhz,
+        ROUND(top_pct, 1) as max_freq_time_pct,
+        running_levels as freq_levels,
+        running_change_count as freq_change_count,
+        ROUND(100.0 * off_ns / NULLIF(observed_ns, 0), 1) as off_pct,
+        ROUND(observed_ns / 1e9, 2) as total_time_sec,
         CASE
-          WHEN max_freq_time_pct > ${high_freq_threshold_pct|70} THEN '高负载'
-          WHEN max_freq_time_pct > ${mid_freq_threshold_pct|40} THEN '中负载'
-          WHEN max_freq_time_pct > ${low_freq_threshold_pct|10} THEN '低负载'
+          WHEN top_pct > ${high_freq_threshold_pct|70} THEN '高负载'
+          WHEN top_pct > ${mid_freq_threshold_pct|40} THEN '中负载'
+          WHEN top_pct > ${low_freq_threshold_pct|10} THEN '低负载'
           ELSE '空闲'
         END as rating
-      FROM gpu_stats
+      FROM overview
       ORDER BY gpu_id
     save_as: gpu_freq_overview
     condition: "data_check.data[0]?.has_gpu_data === 1"
@@ -305,6 +278,9 @@ steps:
         - name: gpu_id
           label: "GPU"
           type: number
+        - name: state
+          label: "状态"
+          type: string
         - name: gpu_freq_mhz
           label: "频率 (MHz)"
           type: number
@@ -319,34 +295,33 @@ steps:
         - name: is_max_freq
           label: "是否最高频"
           type: string
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_frequency_window.sql
+      - fragments/gpu_frequency_summary.sql
     sql: |
-      WITH
-      max_freq_per_gpu AS (
-        SELECT gpu_id, MAX(gpu_freq) as max_gpu_freq
-        FROM android_gpu_frequency
-        WHERE dur > 0
-          AND (${start_ts} IS NULL OR ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR ts < ${end_ts})
-        GROUP BY gpu_id
+      -- One row per running frequency of each GPU, plus one for time powered off
+      -- and one for samples whose value is no GPU clock; time_pct is of all
+      -- observed time of that GPU.
+      WITH levels AS (
+        SELECT
+          gpu_id,
+          CASE WHEN is_off THEN 'off' WHEN freq_mhz IS NULL THEN 'out_of_domain' ELSE 'running' END as state,
+          freq_mhz,
+          SUM(dur) as dur
+        FROM gpu_frequency_window
+        GROUP BY gpu_id, state, freq_mhz
       )
       SELECT
-        g.gpu_id,
-        ROUND(g.gpu_freq / 1e6, 0) as gpu_freq_mhz,
-        ROUND(SUM(g.dur) / 1e9, 3) as total_time_sec,
-        ROUND(100.0 * SUM(g.dur) / NULLIF(
-          (SELECT SUM(dur) FROM android_gpu_frequency
-           WHERE gpu_id = g.gpu_id AND dur > 0
-             AND (${start_ts} IS NULL OR ts >= ${start_ts})
-             AND (${end_ts} IS NULL OR ts < ${end_ts})),
-          0), 2) as time_pct,
-        CASE WHEN g.gpu_freq = mf.max_gpu_freq THEN '是' ELSE '' END as is_max_freq
-      FROM android_gpu_frequency g
-      JOIN max_freq_per_gpu mf ON g.gpu_id = mf.gpu_id
-      WHERE g.dur > 0
-        AND (${start_ts} IS NULL OR g.ts >= ${start_ts})
-        AND (${end_ts} IS NULL OR g.ts < ${end_ts})
-      GROUP BY g.gpu_id, g.gpu_freq
-      ORDER BY g.gpu_id, g.gpu_freq DESC
+        l.gpu_id,
+        CASE l.state WHEN 'running' THEN '运行' WHEN 'off' THEN 'GPU 关闭' ELSE '频率不可读' END as state,
+        ROUND(l.freq_mhz, 0) as gpu_freq_mhz,
+        ROUND(l.dur / 1e9, 3) as total_time_sec,
+        ROUND(100.0 * l.dur / NULLIF(s.observed_ns, 0), 2) as time_pct,
+        CASE WHEN l.freq_mhz = s.max_running_mhz THEN '是' ELSE '' END as is_max_freq
+      FROM levels l
+      JOIN gpu_frequency_summary s USING (gpu_id)
+      ORDER BY l.gpu_id, l.state DESC, l.freq_mhz DESC
     save_as: gpu_freq_distribution
     condition: "data_check.data[0]?.has_gpu_data === 1"
 
@@ -369,8 +344,12 @@ steps:
           label: "帧数"
           type: number
           format: compact
+        - name: frames_with_running_freq
+          label: "有运行频率的帧"
+          type: number
+          format: compact
         - name: avg_gpu_freq_mhz
-          label: "平均 GPU 频率"
+          label: "帧内平均运行频率"
           type: number
           format: compact
         - name: avg_frame_dur_ms
@@ -386,38 +365,55 @@ steps:
         - name: gpu_freq_range
           label: "频率范围"
           type: string
+        - name: gpu_id
+          label: "GPU"
+          type: number
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
     sql: |
+      -- Each frame against the lowest-numbered GPU: the running frequency
+      -- weighted by time inside the frame, leaving out time the GPU was off.
+      -- A GPU often powers up after a frame starts, so a frame whose interval
+      -- holds no running time is counted, not dropped, and has no frequency.
       WITH
-      frame_gpu AS (
-        SELECT
-          f.ts,
-          f.dur,
-          COALESCE(f.jank_type, 'None') as jank_type,
-          (
-            SELECT ROUND(g.gpu_freq / 1e6, 0)
-            FROM android_gpu_frequency g
-            WHERE g.ts <= f.ts
-              AND g.ts + g.dur > f.ts
-            LIMIT 1
-          ) as gpu_freq_mhz
+      gpu AS MATERIALIZED (
+        SELECT ts, dur, freq_mhz, gpu_id
+        FROM gpu_frequency_intervals
+        WHERE freq_mhz > 0
+          AND gpu_id = (SELECT MIN(gpu_id) FROM gpu_frequency_intervals)
+      ),
+      frames AS (
+        SELECT f.id, f.ts, f.dur, COALESCE(f.jank_type, 'None') as jank_type
         FROM actual_frame_timeline_slice f
         LEFT JOIN process p ON f.upid = p.upid
         WHERE f.dur > 0
-          AND (('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*') OR '${package}' = '')
+          AND ('${package}' = '' OR p.name = '${package}' OR p.name GLOB '${package}:*')
           AND p.name NOT LIKE '/system/%'
           AND (${start_ts} IS NULL OR f.ts >= ${start_ts})
           AND (${end_ts} IS NULL OR f.ts < ${end_ts})
           AND COALESCE(f.display_frame_token, f.surface_frame_token) IS NOT NULL
+      ),
+      frame_gpu AS (
+        SELECT
+          f.id,
+          f.dur,
+          f.jank_type,
+          SUM(g.freq_mhz * (MIN(g.ts + g.dur, f.ts + f.dur) - MAX(g.ts, f.ts)))
+            / NULLIF(SUM(MIN(g.ts + g.dur, f.ts + f.dur) - MAX(g.ts, f.ts)), 0) as gpu_freq_mhz
+        FROM frames f
+        LEFT JOIN gpu g ON g.ts < f.ts + f.dur AND g.ts + g.dur > f.ts
+        GROUP BY f.id
       )
       SELECT
         jank_type,
         COUNT(*) as frame_count,
+        COUNT(gpu_freq_mhz) as frames_with_running_freq,
         ROUND(AVG(gpu_freq_mhz), 0) as avg_gpu_freq_mhz,
         ROUND(AVG(dur) / 1e6, 2) as avg_frame_dur_ms,
         ROUND(MAX(dur) / 1e6, 2) as max_frame_dur_ms,
-        ROUND(MIN(gpu_freq_mhz), 0) || ' - ' || ROUND(MAX(gpu_freq_mhz), 0) || ' MHz' as gpu_freq_range
+        ROUND(MIN(gpu_freq_mhz), 0) || ' - ' || ROUND(MAX(gpu_freq_mhz), 0) || ' MHz' as gpu_freq_range,
+        (SELECT MIN(gpu_id) FROM gpu) as gpu_id
       FROM frame_gpu
-      WHERE gpu_freq_mhz IS NOT NULL
       GROUP BY jank_type
       ORDER BY frame_count DESC
       LIMIT 10
@@ -458,30 +454,21 @@ steps:
           format: duration_ms
           unit: ns
           hidden: true
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_frequency_window.sql
+      - fragments/gpu_frequency_summary.sql
     sql: |
-      WITH
-      max_freq AS (
-        SELECT gpu_id, MAX(gpu_freq) as max_gpu_freq
-        FROM android_gpu_frequency
-        WHERE dur > 0
-          AND (${start_ts} IS NULL OR ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR ts < ${end_ts})
-        GROUP BY gpu_id
-      ),
-      high_freq_periods AS (
+      -- Running at 90% of the top running frequency or above, per second.
+      WITH high_freq_periods AS (
         SELECT
-          g.gpu_id,
-          g.ts,
-          g.dur,
-          g.gpu_freq,
-          -- 按秒聚合
-          CAST(g.ts / 1000000000 AS INTEGER) as time_bucket
-        FROM android_gpu_frequency g
-        JOIN max_freq mf ON g.gpu_id = mf.gpu_id
-        WHERE g.gpu_freq >= mf.max_gpu_freq * 0.9
-          AND g.dur > 0
-          AND (${start_ts} IS NULL OR g.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR g.ts < ${end_ts})
+          w.gpu_id,
+          w.ts,
+          w.dur,
+          CAST(w.ts / 1000000000 AS INTEGER) as time_bucket
+        FROM gpu_frequency_window w
+        JOIN gpu_frequency_summary s USING (gpu_id)
+        WHERE w.running_mhz >= s.max_running_mhz * 0.9
       )
       SELECT
         gpu_id,
@@ -535,50 +522,33 @@ steps:
         - name: suggestion
           label: "优化建议"
           type: string
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_frequency_window.sql
+      - fragments/gpu_frequency_summary.sql
     sql: |
       WITH
-      -- GPU 频率统计
-      gpu_freq_stats AS (
+      -- Per GPU, as shares of all observed time: at the top running
+      -- frequency, at 90% of it or above, running at 30% of it or below, and
+      -- powered off. An off GPU is idle, not slow, so GPU_IDLE reads low
+      -- running time and off time together and the evidence names each.
+      per_gpu AS (
         SELECT
-          gpu_id,
-          MAX(gpu_freq) as max_gpu_freq,
-          SUM(gpu_freq * dur) * 1.0 / NULLIF(SUM(dur), 0) as weighted_avg_freq,
-          SUM(dur) as total_dur
-        FROM android_gpu_frequency
-        WHERE dur > 0
-          AND (${start_ts} IS NULL OR ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR ts < ${end_ts})
-        GROUP BY gpu_id
+          w.gpu_id,
+          ROUND(100.0 * SUM(CASE WHEN w.running_mhz = s.max_running_mhz THEN w.dur ELSE 0 END) / NULLIF(s.observed_ns, 0), 1) as max_freq_pct,
+          ROUND(100.0 * SUM(CASE WHEN w.running_mhz >= s.max_running_mhz * 0.9 THEN w.dur ELSE 0 END) / NULLIF(s.observed_ns, 0), 1) as high_freq_pct,
+          ROUND(100.0 * SUM(CASE WHEN w.running_mhz <= s.max_running_mhz * 0.3 THEN w.dur ELSE 0 END) / NULLIF(s.observed_ns, 0), 1) as low_running_pct,
+          ROUND(100.0 * s.off_ns / NULLIF(s.observed_ns, 0), 1) as off_pct,
+          -- A drop of more than 30% between two running frequencies.
+          SUM(w.is_running_change AND w.running_mhz < w.prev_freq_mhz * ${freq_drop_ratio|0.7}) as drop_count
+        FROM gpu_frequency_window w
+        JOIN gpu_frequency_summary s USING (gpu_id)
+        GROUP BY w.gpu_id
       ),
-      -- 最高频运行时间占比
-      max_freq_ratio AS (
-        SELECT
-          g.gpu_id,
-          ROUND(100.0 * SUM(CASE WHEN g.gpu_freq = s.max_gpu_freq THEN g.dur ELSE 0 END) / NULLIF(SUM(g.dur), 0), 1) as max_freq_pct,
-          -- 高频区间 (>=90% max) 占比
-          ROUND(100.0 * SUM(CASE WHEN g.gpu_freq >= s.max_gpu_freq * 0.9 THEN g.dur ELSE 0 END) / NULLIF(SUM(g.dur), 0), 1) as high_freq_pct,
-          -- 低频区间 (<=30% max) 占比
-          ROUND(100.0 * SUM(CASE WHEN g.gpu_freq <= s.max_gpu_freq * 0.3 THEN g.dur ELSE 0 END) / NULLIF(SUM(g.dur), 0), 1) as low_freq_pct
-        FROM android_gpu_frequency g
-        JOIN gpu_freq_stats s ON g.gpu_id = s.gpu_id
-        WHERE g.dur > 0
-          AND (${start_ts} IS NULL OR g.ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR g.ts < ${end_ts})
-        GROUP BY g.gpu_id
+      -- The most loaded GPU decides.
+      busiest_gpu AS (
+        SELECT * FROM per_gpu ORDER BY high_freq_pct DESC, gpu_id LIMIT 1
       ),
-      -- 频率下降检测 (可能的降频/限频)
-      freq_drops AS (
-        SELECT
-          gpu_id,
-          COUNT(*) as drop_count
-        FROM android_gpu_frequency
-        WHERE prev_gpu_freq IS NOT NULL
-          AND gpu_freq < prev_gpu_freq * ${freq_drop_ratio|0.7}  -- 频率突降 >30%
-          AND (${start_ts} IS NULL OR ts >= ${start_ts})
-          AND (${end_ts} IS NULL OR ts < ${end_ts})
-        GROUP BY gpu_id
-      ),
-      -- GPU-帧关联 (如果有帧数据)
       frame_stats AS (
         SELECT
           COUNT(*) as total_frames,
@@ -590,10 +560,11 @@ steps:
       ),
       analysis AS (
         SELECT
-          COALESCE((SELECT max_freq_pct FROM max_freq_ratio LIMIT 1), 0) as max_freq_pct,
-          COALESCE((SELECT high_freq_pct FROM max_freq_ratio LIMIT 1), 0) as high_freq_pct,
-          COALESCE((SELECT low_freq_pct FROM max_freq_ratio LIMIT 1), 0) as low_freq_pct,
-          COALESCE((SELECT drop_count FROM freq_drops LIMIT 1), 0) as freq_drop_count,
+          COALESCE((SELECT max_freq_pct FROM busiest_gpu), 0) as max_freq_pct,
+          COALESCE((SELECT high_freq_pct FROM busiest_gpu), 0) as high_freq_pct,
+          COALESCE((SELECT low_running_pct FROM busiest_gpu), 0) as low_running_pct,
+          COALESCE((SELECT off_pct FROM busiest_gpu), 0) as off_pct,
+          COALESCE((SELECT drop_count FROM busiest_gpu), 0) as freq_drop_count,
           COALESCE((SELECT gpu_jank_frames FROM frame_stats), 0) as gpu_jank_frames,
           COALESCE((SELECT total_frames FROM frame_stats), 0) as total_frames
       ),
@@ -603,7 +574,7 @@ steps:
           CASE
             WHEN high_freq_pct > ${high_freq_threshold_pct|70} THEN 'GPU_BOUND'
             WHEN freq_drop_count > ${freq_drop_count_threshold|20} AND high_freq_pct > 30 THEN 'GPU_FREQ_DROPS'
-            WHEN low_freq_pct > ${high_freq_threshold_pct|70} THEN 'GPU_IDLE'
+            WHEN low_running_pct + off_pct > ${high_freq_threshold_pct|70} THEN 'GPU_IDLE'
             WHEN gpu_jank_frames > 0 THEN 'GPU_JANK_RELATED'
             ELSE 'NORMAL'
           END AS gpu_category
@@ -624,7 +595,7 @@ steps:
           WHEN 'GPU_FREQ_DROPS' THEN
             'GPU 频率突降: 检测到 ' || freq_drop_count || ' 次（仅为频率观测：可能来自负载变化、DVFS 调速或频率上限，本 Skill 未采集 GPU 频率上限证据，是否限频未判定）'
           WHEN 'GPU_IDLE' THEN
-            'GPU 空闲: 低频区间运行时间占 ' || low_freq_pct || '%，GPU 负载极低'
+            'GPU 空闲: 低频运行占观测时间 ' || low_running_pct || '%、关闭占 ' || off_pct || '%，GPU 负载极低'
           WHEN 'GPU_JANK_RELATED' THEN
             'GPU 相关掉帧: 检测到 ' || gpu_jank_frames || ' 帧 GPU 相关 Jank'
           ELSE
@@ -633,7 +604,8 @@ steps:
         '[' ||
           '"最高频占比: ' || max_freq_pct || '%",' ||
           '"高频区间占比: ' || high_freq_pct || '%",' ||
-          '"低频区间占比: ' || low_freq_pct || '%",' ||
+          '"低频运行占观测时间: ' || low_running_pct || '%",' ||
+          '"GPU 关闭占比: ' || off_pct || '%",' ||
           '"频率突降次数: ' || freq_drop_count || '",' ||
           '"GPU 相关掉帧: ' || gpu_jank_frames || '"' ||
         ']' as evidence,
@@ -672,7 +644,7 @@ steps:
     sql: |
       SELECT
         '无法执行 GPU 分析' as status,
-        'android_gpu_frequency (GPU 频率数据)' as missing_data,
+        'gpufreq 计数器（GPU 频率数据）' as missing_data,
         '请确保 trace 采集时启用了 GPU 频率采集 (需要内核支持 gpu_frequency tracepoint)' as suggestion
       UNION ALL
       SELECT

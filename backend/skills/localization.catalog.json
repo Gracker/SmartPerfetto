@@ -10,8 +10,8 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1368,
-    "explicitColumnCount": 5119
+    "stepCount": 1369,
+    "explicitColumnCount": 5141
   },
   "skills": {
     "ams_module": {
@@ -2724,6 +2724,63 @@
             }
           }
         },
+        "anr_process_io_wait": {
+          "title": {
+            "zh-CN": "ANR 进程 D 态等待",
+            "en": "ANR Process I/O Wait"
+          },
+          "columns": {
+            "process_name": {
+              "label": {
+                "zh-CN": "ANR 进程",
+                "en": "Process Name"
+              }
+            },
+            "main_thread_uninterruptible_ms": {
+              "label": {
+                "zh-CN": "主线程 D 态",
+                "en": "Main Thread Uninterruptible ms"
+              }
+            },
+            "process_uninterruptible_ms": {
+              "label": {
+                "zh-CN": "进程 D 态合计",
+                "en": "Process Uninterruptible ms"
+              }
+            },
+            "top_thread_name": {
+              "label": {
+                "zh-CN": "D 态最长线程",
+                "en": "Top Thread Name"
+              }
+            },
+            "top_thread_ms": {
+              "label": {
+                "zh-CN": "该线程 D 态",
+                "en": "Top Thread ms"
+              }
+            },
+            "main_thread_io_wchan_ms": {
+              "label": {
+                "zh-CN": "主线程 IO 等待点",
+                "en": "Main Thread I/O Wchan ms"
+              }
+            },
+            "frozen_ms": {
+              "label": {
+                "zh-CN": "冻结等待",
+                "en": "Frozen ms"
+              }
+            },
+            "blocked_function_coverage_pct": {
+              "label": {
+                "zh-CN": "等待点覆盖",
+                "en": "Blocked Function Coverage Pct"
+              }
+            }
+          },
+          "synthesizeLabels": {}
+        },
         "futex_wait_probe": {
           "title": {
             "zh-CN": "首个 ANR 窗口锁等待分布（专家探针）",
@@ -4784,6 +4841,14 @@
               "en": "Total GC ms"
             }
           }
+        },
+        "gc_totals": {
+          "title": {
+            "zh-CN": "GC 合计",
+            "en": "GC Totals"
+          },
+          "columns": {},
+          "synthesizeLabels": {}
         },
         "jit_events": {
           "title": {
@@ -19192,9 +19257,15 @@
                 "en": "Frame Count"
               }
             },
+            "frames_with_running_freq": {
+              "label": {
+                "zh-CN": "有运行频率的帧",
+                "en": "Frames With Running Freq"
+              }
+            },
             "avg_gpu_freq_mhz": {
               "label": {
-                "zh-CN": "平均 GPU 频率",
+                "zh-CN": "帧内平均运行频率",
                 "en": "Avg GPU Freq MHz"
               }
             },
@@ -19215,6 +19286,12 @@
                 "zh-CN": "频率范围",
                 "en": "GPU Freq Range"
               }
+            },
+            "gpu_id": {
+              "label": {
+                "zh-CN": "GPUId",
+                "en": "GPU"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -19229,6 +19306,12 @@
               "label": {
                 "zh-CN": "GPUId",
                 "en": "GPU"
+              }
+            },
+            "state": {
+              "label": {
+                "zh-CN": "状态",
+                "en": "State"
               }
             },
             "gpu_freq_mhz": {
@@ -19272,7 +19355,7 @@
             },
             "weighted_avg_freq_mhz": {
               "label": {
-                "zh-CN": "加权平均频率",
+                "zh-CN": "运行时加权平均频率",
                 "en": "Weighted Avg Freq MHz"
               }
             },
@@ -19306,6 +19389,12 @@
                 "en": "Freq Change Count"
               }
             },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
+              }
+            },
             "total_time_sec": {
               "label": {
                 "zh-CN": "采样时间",
@@ -19321,7 +19410,7 @@
           },
           "synthesizeLabels": {
             "field:weighted_avg_freq_mhz": {
-              "zh-CN": "加权平均频率",
+              "zh-CN": "运行时加权平均频率",
               "en": "Weighted Avg Freq MHz"
             },
             "field:max_freq_time_pct": {
@@ -19754,19 +19843,19 @@
             },
             "avg_freq_mhz": {
               "label": {
-                "zh-CN": "平均频率",
+                "zh-CN": "运行时平均频率",
                 "en": "Avg Freq MHz"
               }
             },
             "max_freq_mhz": {
               "label": {
-                "zh-CN": "最大频率",
+                "zh-CN": "最高运行频率",
                 "en": "Max Freq MHz"
               }
             },
             "min_freq_mhz": {
               "label": {
-                "zh-CN": "最小频率",
+                "zh-CN": "最低运行频率",
                 "en": "Min Freq MHz"
               }
             },
@@ -19778,8 +19867,20 @@
             },
             "low_freq_pct": {
               "label": {
-                "zh-CN": "低频占比",
+                "zh-CN": "运行时间中低频占比",
                 "en": "Low Freq Pct"
+              }
+            },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
+              }
+            },
+            "out_of_domain_pct": {
+              "label": {
+                "zh-CN": "频率不可读占比",
+                "en": "Out Of Domain Pct"
               }
             }
           },
@@ -19951,6 +20052,12 @@
               "label": {
                 "zh-CN": "计数器",
                 "en": "Freq Counters"
+              }
+            },
+            "undeclared_unit_counters": {
+              "label": {
+                "zh-CN": "单位未声明的计数器",
+                "en": "Undeclared Unit Counters"
               }
             }
           },
@@ -20231,7 +20338,7 @@
             },
             "avg_freq_mhz": {
               "label": {
-                "zh-CN": "平均频率(MHz)",
+                "zh-CN": "运行时平均频率(MHz)",
                 "en": "Avg Freq MHz"
               }
             },
@@ -20263,6 +20370,12 @@
               "label": {
                 "zh-CN": "降频占比",
                 "en": "Downshift Ratio Pct"
+              }
+            },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
               }
             }
           },
@@ -26901,6 +27014,24 @@
                 "en": "Main Thread GC Time ms"
               }
             },
+            "main_thread_gc_wait_count": {
+              "label": {
+                "zh-CN": "主线程等待 GC",
+                "en": "Main Thread GC Wait Count"
+              }
+            },
+            "main_thread_gc_wait_ms": {
+              "label": {
+                "zh-CN": "主线程等待 GC 耗时",
+                "en": "Main Thread GC Wait ms"
+              }
+            },
+            "gc_wait_ms": {
+              "label": {
+                "zh-CN": "各线程等待 GC 合计",
+                "en": "GC Wait ms"
+              }
+            },
             "gc_per_second": {
               "label": {
                 "zh-CN": "GC 频率",
@@ -27087,14 +27218,6 @@
           "title": {
             "zh-CN": "Heap Graph 总览",
             "en": "Heap Graph Summary"
-          },
-          "columns": {},
-          "synthesizeLabels": {}
-        },
-        "init_gc_view": {
-          "title": {
-            "zh-CN": "初始化 GC 事件视图",
-            "en": "Init GC View"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -37674,6 +37797,12 @@
                 "zh-CN": "类别",
                 "en": "Category"
               }
+            },
+            "category_percent": {
+              "label": {
+                "zh-CN": "类别占比",
+                "en": "Category Percent"
+              }
             }
           },
           "synthesizeLabels": {
@@ -38013,6 +38142,12 @@
               "label": {
                 "zh-CN": "类别",
                 "en": "Category"
+              }
+            },
+            "category_percent": {
+              "label": {
+                "zh-CN": "类别占比",
+                "en": "Category Percent"
               }
             }
           },
@@ -44488,6 +44623,12 @@
               "label": {
                 "zh-CN": "降频占比",
                 "en": "Downshift Ratio Pct"
+              }
+            },
+            "off_pct": {
+              "label": {
+                "zh-CN": "GPU 关闭占比",
+                "en": "Off Pct"
               }
             }
           },

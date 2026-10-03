@@ -5,15 +5,12 @@
 # =============================================================================
 # GC Events in Range (Atomic Skill)
 # =============================================================================
-# Queries GC events for a given process and optional time range.
-# Centralizes the 3-clause GLOB filter and GC type classification logic
-# that was previously duplicated across 7+ steps in memory_analysis.
-#
-# GC Detection Pattern (unified):
-#   s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*'
-#
-# GC Type Classification:
-#   ConcurrentCopying, MarkSweep, Explicit, Alloc, Background, Young, Full, Other
+# Queries GC events for a given process and optional time range from the
+# Perfetto stdlib android_garbage_collection_events: depth-0 "*concurrent*GC"
+# collector runs that overlap a "Heap size (KB)" counter, with the stdlib
+# gc_type classification. A run nested under an app thread slice, or one in a
+# trace without that counter, is not listed; name-based GC selection lives in
+# fragments/art_gc_names.sql.
 #
 # Usage: Call via `type: skill` step, then reference ${gc_base.data} or
 # use the saved data for subsequent aggregation steps.

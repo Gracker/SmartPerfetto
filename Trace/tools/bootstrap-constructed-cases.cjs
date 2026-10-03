@@ -267,7 +267,7 @@ const FAMILIES = [
     android: {release: '16', api_level: 36, device: 'Google raven base'},
     skillPattern: /(memory|heap|rss|lmk|oom|gc|native_heap|bitmap|dmabuf)/,
     strategies: ['memory'],
-    signatures: ['GC Young Concurrent', 'HeapTrim', 'memory pressure'],
+    signatures: ['Alloc young concurrent copying GC', 'HeapTrim', 'memory pressure'],
   },
   {
     id: 'power-thermal',

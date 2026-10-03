@@ -73,7 +73,19 @@ steps:
           label: "计数器"
           type: string
           format: truncate
+        - name: undeclared_unit_counters
+          label: "单位未声明的计数器"
+          type: string
+          format: truncate
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_descriptor_frequency_tracks.sql
     sql: |
+      -- MHz. The gpufreq track is normalized by
+      -- fragments/gpu_frequency_intervals.sql; other GPU frequency counters
+      -- are converted by the unit they declare
+      -- (fragments/gpu_descriptor_frequency_tracks.sql), and one without a
+      -- known unit is named, not guessed at.
       WITH
       time_bounds AS (
         SELECT
@@ -82,22 +94,15 @@ steps:
         FROM counter c
       ),
       gpu_freq AS (
-        SELECT
-          c.ts,
-          CASE
-            -- 优先使用 counter_track 的 unit 字段判断单位
-            WHEN t.unit = 'MHz' THEN c.value
-            WHEN t.unit = 'kHz' THEN c.value / 1000.0
-            WHEN t.unit = 'Hz' THEN c.value / 1000000.0
-            -- unit 为空时使用 heuristic 推断
-            WHEN c.value > 1000000 THEN c.value / 1000000.0
-            WHEN c.value > 1000 THEN c.value / 1000.0
-            ELSE c.value
-          END as freq_mhz,
-          t.name as counter_name
+        SELECT freq_mhz, 'gpufreq' as counter_name
+        FROM gpu_frequency_intervals
+        WHERE ts >= (SELECT start_ts FROM time_bounds)
+          AND ts <= (SELECT end_ts FROM time_bounds)
+        UNION ALL
+        SELECT c.value * t.to_mhz as freq_mhz, t.name as counter_name
         FROM counter c
-        JOIN gpu_counter_track t ON c.track_id = t.id
-        WHERE (t.name GLOB '*freq*' OR t.name GLOB '*Freq*' OR t.name GLOB '*clock*')
+        JOIN gpu_descriptor_frequency_tracks t ON c.track_id = t.id
+        WHERE t.to_mhz IS NOT NULL
           AND c.ts >= (SELECT start_ts FROM time_bounds)
           AND c.ts <= (SELECT end_ts FROM time_bounds)
       )
@@ -107,7 +112,8 @@ steps:
         ROUND(MIN(freq_mhz), 0) as min_freq_mhz,
         ROUND(PERCENTILE(freq_mhz, 50), 0) as median_freq_mhz,
         COUNT(*) as sample_count,
-        (SELECT GROUP_CONCAT(DISTINCT counter_name) FROM gpu_freq) as freq_counters
+        GROUP_CONCAT(DISTINCT counter_name) as freq_counters,
+        (SELECT GROUP_CONCAT(name) FROM gpu_descriptor_frequency_tracks WHERE to_mhz IS NULL) as undeclared_unit_counters
       FROM gpu_freq
       WHERE freq_mhz > 0
     save_as: gpu_freq

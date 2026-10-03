@@ -149,6 +149,7 @@ plan_template:
 9. **Profiler 只能回答各自能看见的问题**：Memory counters/LMK 给系统和进程趋势，ART heap dump 给 Java/Kotlin 引用保留图但不给分配调用栈，heapprofd 按 (进程, heap) 给分配调用栈，不能把其中一个证据源升级成全量内存真相。heapprofd `libc.malloc` 同时记录分配和释放，才能区分未释放保留与分配 churn；Java 分配剖析（heap `com.android.art`）只记录分配、不记录 GC 释放，“未释放”恒等于分配，只能写分配 churn/GC 压力，Java 保留和泄漏只能用 heap dump 证明。
 10. **Heap dump 对比按 class 做，不按总量做**：两次 Java heap dump（同一 trace 的 continuous dump，或前后两份 trace）用 `android_heap_graph_class_growth` 比较。实例数看 reachable（heap graph 含未回收垃圾），retained 大小只取 class 聚合的 dominated 值，不要逐实例相加 dominated_size（自嵌套 class 会重复计数）。App/框架 class 与 libcore/数组分开看：`byte[]`、`Object[]`、`ArrayList` 的增长通常是载荷，泄漏原因在持有它们的 class。总堆平稳也不能排除泄漏（缓存、SoftReference 回收会掩盖增长）。
 11. **采集窗口是结论边界**：heapprofd 不是 retroactive，只能看到 profiler 启动后的分配；Java heap dump 是 sample 点引用图；process stats 轮询可能漏掉很短的 RSS 峰值，`rss_stat`/`mm_event`/LMK 事件更适合捕获短时压力。缺失这些证据时必须转成具体采集建议。
+12. **GC 次数有两种口径**：`memory_analysis` 按 ART 回收器名统计所有回收（含应用线程上嵌套的 Alloc GC），"GC: Wait For Completion" 等待单列为线程被阻塞时长、不计入次数；`gc_analysis` 读 stdlib `android_garbage_collection_events`，只收顶层且与 "Heap size (KB)" 计数器重叠的 `*concurrent*GC`，次数可能更少。两者不一致是口径差异，不是矛盾，引用时写明来源。
 
 **Perfetto 官方内存证据映射：**
 
