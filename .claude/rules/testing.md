@@ -77,9 +77,20 @@ rotted outright: a member added to `RagSourceKind` left a fixture in
 unregistered and excluded from typecheck.
 
 `npm run check:test-registration` now answers the question mechanically, and
-`test:governance` runs it first in `verify:pr`. All 573 suites are registered
-and `scripts/test-registration-baseline.json` is empty, so the check is
-currently zero-tolerance: any new suite that no script can reach fails the gate.
+`test:governance` runs it first in `verify:pr`. It lists every suite Jest runs
+(`.test.ts`, `.spec.ts`, `.eval.ts`, `_unittest.ts`) under both `backend/src/`
+and `backend/tests/`, and counts a suite as reachable only when a Jest command
+of a script that root `npm run verify:pr` runs (following `npm run`,
+`npm --prefix backend run`, `cd backend && …` and `npm test`) names it or a
+directory above it. A `test:*` script outside that chain (`test:unit`,
+`test:integration`, `test:skill-eval`) does not count. All suites are
+reachable and `scripts/test-registration-baseline.json` is empty, so the
+check is zero-tolerance: any new suite the gate cannot reach fails it.
+
+Evals that load a constructed or real trace live in `test:analysis-accuracy`,
+which materializes the corpus first; a suite whose fixture is absent skips
+through `describeWithTrace`, so a skip-only eval guards nothing until its
+fixture exists.
 
 Keep it that way. The baseline exists so the check could be introduced without
 a 237-file bang; it is not a parking space. `--update-baseline` records

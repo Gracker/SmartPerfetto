@@ -139,14 +139,13 @@ describe('anr_detail evidence boundary contract', () => {
     expect(lockContention?.sql).toContain('ts < aw.end_ts');
     expect(lockContention?.sql).toContain('> aw.start_ts');
 
-    expect(parsed.steps.find(step => step.id === 'blocking_reasons')?.params).toMatchObject({
-      upid: '${upid}',
-      pid: '${pid}',
-    });
-    expect(parsed.steps.find(step => step.id === 'main_thread_slices')?.params).toMatchObject({
-      upid: '${upid}',
-      pid: '${pid}',
-    });
+    // The main-thread helpers take the exact process from the issued process
+    // scope anr_detail resolves (identity scope: process), not from a package
+    // or a pid parameter: a child Skill inherits that scope.
+    for (const stepId of ['blocking_reasons', 'main_thread_slices']) {
+      const params = parsed.steps.find(step => step.id === stepId)?.params ?? {};
+      expect([stepId, 'upid' in params, 'pid' in params]).toEqual([stepId, false, false]);
+    }
 
     const criticalLockRule = diagnosis?.rules?.find(rule =>
       rule.condition?.includes("r.severity === 'critical'"),
@@ -239,12 +238,20 @@ describe('anr_detail evidence boundary contract', () => {
   it('should prefer upid-safe main-thread helper filters from anr_detail', () => {
     const statesPath = path.resolve(process.cwd(), 'skills/atomic/main_thread_states_in_range.skill.yaml');
     const slicesPath = path.resolve(process.cwd(), 'skills/atomic/main_thread_slices_in_range.skill.yaml');
-    const states = yaml.parse(fs.readFileSync(statesPath, 'utf-8')) as { inputs?: Array<{ name: string }>; sql?: string };
-    const slices = yaml.parse(fs.readFileSync(slicesPath, 'utf-8')) as { inputs?: Array<{ name: string }>; sql?: string };
+    type Helper = { inputs?: Array<{ name: string }>; sql?: string; process_scope?: Record<string, string> };
+    const states = yaml.parse(fs.readFileSync(statesPath, 'utf-8')) as Helper;
+    const slices = yaml.parse(fs.readFileSync(slicesPath, 'utf-8')) as Helper;
 
+    // Each ANR event reaches anr_detail with its own upid, which its identity
+    // scope turns into the process scope the helpers bind.
+    const analysis = yaml.parse(fs.readFileSync(path.resolve(process.cwd(), 'skills/composite/anr_analysis.skill.yaml'), 'utf-8')) as {
+      steps: Array<{ id: string; item_params?: Record<string, string> }>;
+    };
+    expect(analysis.steps.find(step => step.id === 'analyze_anr_events')?.item_params).toMatchObject({upid: 'upid', pid: 'pid'});
     for (const helper of [states, slices]) {
+      expect(helper.process_scope).toMatchObject({role: 'target', binding: 'native_upid'});
       expect(helper.inputs?.map(input => input.name)).toEqual(expect.arrayContaining(['upid', 'pid']));
-      expect(helper.sql).toContain('p.upid = ${upid|0}');
+      expect(helper.sql).toContain('p.upid = COALESCE(${__process_scope.upid}, ${upid|0})');
       expect(helper.sql).toContain('p.pid = ${pid|0}');
       expect(helper.sql).toContain("p.name = '${package|}' OR p.name GLOB '${package|}:*'");
       expect(helper.sql).not.toContain("p.name GLOB '${package}*'");
@@ -459,7 +466,7 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
 
           // Validate freeze check structure
           expect(typeof freezeCheck.total_apps).toBe('number');
-          expect(typeof freezeCheck.frozen_apps).toBe('number');
+          expect(typeof freezeCheck.stalled_apps).toBe('number');
           expect(['system_server_freeze', 'system_freeze', 'app_specific', 'undetermined']).toContain(freezeCheck.freeze_verdict);
         }
       }, 30000);
