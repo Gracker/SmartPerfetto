@@ -145,7 +145,7 @@ Web UI 的 `Codebases` 页不只用于注册：它会展示 root 是否可用、
 
 - `metadata_only`：模型可按需搜索，但只看到相对路径、行号和 `referenceId`，不能读取源码正文。
 - `provider_send`：只有本次显式选中、注册时同意 `sendToProvider`，且目标相对路径同时被当前 selection 与 consent grant 允许时，才能搜索和读取有界、脱敏后的片段。selection/grant revision 不一致时，新增范围保持 metadata-only，已授权交集不被扩大。
-- 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和 secret 脱敏约束；绝对 root 始终留在后端信任边界内，不进入工具结果、模型上下文、报告或导出。
+- 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和凭据脱敏约束；绝对 root 始终留在后端信任边界内，不进入工具结果、模型上下文、报告或导出。凭据脱敏按整份文件的语法识别，只替换凭据的值（凭据命名的键与赋值、凭据 getter 的返回值、`Bearer`/`Basic`、已知前缀令牌、JWT、PEM 私钥、凭据命名的标记元素与属性，以及启发式识别的无键随机串），保留键名、标识符和每个换行，行号不变；只以 `token` 结尾的名字（窗口、帧、词法或模型流的 token）只在值看起来像凭据时才替换。按需读取立即使用这些规则；此前建立的索引仍是旧规则（会连同键名整段替换），重建索引后才使用新规则。
 - 代码图结果始终是 metadata-only。报告、snapshot 和 CLI artifact 可以保留相对 `CodeRef` 及分析引用的源码，但不能把图关系写成 Trace 证据。
 - 系统文件夹选择器的变更请求必须同时具有 loopback Host、socket 与 Origin；只读能力探测可省略 Origin。选择器在 Docker、enterprise 或非 loopback 监听模式下关闭；目录绝对路径和 `rootAuthorization` 不会出现在 codebase list/detail/audit 响应中。
 - 原始 query、工具参数和完整检索载荷不额外写入日志；provider transcript、跨会话学习等后台边界保持独立。用户可见的分析结果和源码引用可以保存在本地历史、报告和快照中。私有知识库正文仍受其独立过滤规则约束。

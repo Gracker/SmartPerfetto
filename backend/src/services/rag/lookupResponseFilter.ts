@@ -11,7 +11,7 @@ import {activeCodebaseGeneration, type CodebaseRegistry} from '../codebase/codeb
 import {sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
 import {sourceSelectionAdmits, sourceSelectionForRef} from '../codebase/sourceSelectionPolicy';
 import type {CodeLookupLedger} from '../codebase/codeLookupLedger';
-import {redactSecrets} from '../security/secretPatterns';
+import {credentialContextForPath, redactSecrets} from '../security/secretPatterns';
 import {registerCodeAwareLookupForEcho} from '../security/codeAwareOutputRegistry';
 import type {ExternalKnowledgeScope} from '../externalKnowledgeSourceRegistry';
 import type {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
@@ -485,7 +485,7 @@ export async function filterRagLookup(
       continue;
     }
 
-    const redacted = redactSecrets(chunk.snippet);
+    const redacted = redactSecrets(chunk.snippet, credentialContextForPath(chunk.filePath));
     const tokens = estimateTokens(chunk, redacted.text);
     if (ctx.ledger && tokens > ctx.ledger.remainingTokens()) {
       hits.push({

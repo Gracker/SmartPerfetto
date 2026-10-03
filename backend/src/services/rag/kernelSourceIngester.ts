@@ -15,7 +15,7 @@ import {
 } from '../codebase/codebaseRegistry';
 import {PathSecurityGate, readAcceptedTextFileSync} from '../codebase/pathSecurityGate';
 import {SourceEnumerator} from '../codebase/sourceEnumerator';
-import {redactSecrets} from '../security/secretPatterns';
+import {redactSourceFile} from '../security/secretPatterns';
 import {
   chunkSourceBySymbols,
   estimateTokenCount,
@@ -209,7 +209,10 @@ export class KernelSourceIngester {
         );
         assertSourceFileUnchanged(provenance, file.relativePath, content);
         const license = ref.licenseTag ?? spdxLicense(content);
-        const chunks = chunkSourceBySymbols(content, maxChars);
+        // The whole file is the context: a chunk can start inside a literal or comment.
+        const redaction = redactSourceFile(content, file.relativePath);
+        result.redactionHitCount += redaction.redactedCount;
+        const chunks = chunkSourceBySymbols(redaction.text, maxChars);
         if (chunks.length === 0) {
           result.chunksSkipped++;
           continue;
@@ -219,8 +222,6 @@ export class KernelSourceIngester {
         }
         for (const chunk of chunks) {
           lease.assertHeld();
-          const redaction = redactSecrets(chunk.text);
-          result.redactionHitCount += redaction.redactedCount;
           const chunkId = stableChunkId([
             codebaseId,
             nextIndexGeneration,
@@ -233,8 +234,8 @@ export class KernelSourceIngester {
             kind: 'kernel_source',
             uri: `codebase://${codebaseId}/${file.relativePath}`,
             title: file.relativePath.split('/').pop(),
-            snippet: redaction.text,
-            tokenCount: estimateTokenCount(redaction.text),
+            snippet: chunk.text,
+            tokenCount: estimateTokenCount(chunk.text),
             license: license ?? UNKNOWN_LICENSE,
             indexedAt: Date.now(),
             filePath: file.relativePath,

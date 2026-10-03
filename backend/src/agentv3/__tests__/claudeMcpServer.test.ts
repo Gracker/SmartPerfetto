@@ -7971,7 +7971,7 @@ describe('createClaudeMcpServer', () => {
           expect(read.reference.text).toBe([
             'object 启动入口 {',
             '',
-            '  val [REDACTED_SECRET]',
+            '  val api_key = "[REDACTED_SECRET]"',
             '  fun onCreate() = Unit',
             '}',
           ].join('\n'));
@@ -7981,7 +7981,7 @@ describe('createClaudeMcpServer', () => {
             numberedText: [
               '10: object 启动入口 {',
               '11: ',
-              '12:   val [REDACTED_SECRET]',
+              '12:   val api_key = "[REDACTED_SECRET]"',
               '13:   fun onCreate() = Unit',
               '14: }',
             ].join('\n'),

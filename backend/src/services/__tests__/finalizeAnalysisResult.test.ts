@@ -1334,14 +1334,15 @@ describe('case recommendations come only from the server retrieval', () => {
   it.each([
     ['a withheld match strength', 'password=background',
       [retrieved, {...retrieved, caseId: 'scroll-bg-002', matchStrength: 'background' as const}], [retrieved]],
-    ['a withheld field name', 'password=matchStrength', [retrieved], []],
-    ['a withheld nested field name', 'password=applies_when', [retrieved], [{...retrieved, recommendations: {app: [], oem: []}}]],
+    ['a withheld field name', 'password="matchStrength"', [retrieved], []],
+    ['a withheld nested field name', 'password="applies_when"', [retrieved], [{...retrieved, recommendations: {app: [], oem: []}}]],
   ] as const)('drops what %s breaks, so owner surfaces keep every binding', async (_label, guard, hits, expected) => {
     for (const [options, valid] of [
       [{report: true}, {claims: 'passed'}],
       [{report: true, currentRead: true, source: {marker: 'native-case-marker'}}, {source: 'passed'}],
     ] as const) {
-      // The query's credential value (8+ characters) is also a value or field name a hit needs.
+      // The query's credential value (8+ characters, quoted so its shape does not matter) is also a
+      // value or field name a hit needs.
       const baselineRun = fixture(options);
       registerPrivateAnalysisQueryForEcho(baselineRun.result.sessionId, guard);
       const baseline = await baselineRun.run();

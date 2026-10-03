@@ -32,7 +32,7 @@ import {
   sourceSelectionForRef,
   sourceSelectionRipgrepArguments,
 } from './sourceSelectionPolicy';
-import {redactSecrets} from '../security/secretPatterns';
+import {REDACTED_SECRET, redactSourceFile} from '../security/secretPatterns';
 import {
   assertCodebaseRootIdentity,
   codebaseSourcePathMatches,
@@ -142,13 +142,36 @@ function boundedPositiveInteger(
   return resolved;
 }
 
-function sourceTextForMode(text: string, mode: CodeAwareMode): {
-  text?: string;
-  redactedCount?: number;
-} {
-  if (mode !== 'provider_send') return {};
-  const redacted = redactSecrets(text);
-  return {text: redacted.text, redactedCount: redacted.redactedCount};
+function placeholderCount(text: string): number {
+  return text.split(REDACTED_SECRET).length - 1;
+}
+
+/**
+ * One file as a search or read sees it, read once through the gate. Its
+ * provider text is the whole file redacted in its own syntax, so a window or a
+ * hit line never starts inside a literal or comment whose start it cannot see;
+ * redaction keeps every line break, so its lines stay aligned with the file's.
+ */
+class SourceFileView {
+  readonly lines: string[];
+  private redactedLines?: string[];
+
+  constructor(private readonly content: string, readonly filePath: string) {
+    this.lines = content.split(/\r?\n/);
+  }
+
+  /**
+   * What a provider sees of lines [start, end): under `provider_send` their
+   * redacted text and how many values in them were withheld (placeholders the
+   * file did not already hold; the whole-file count would cover other lines),
+   * otherwise nothing.
+   */
+  providerProjection(start: number, end: number, mode: CodeAwareMode): {text?: string; redactedCount?: number} {
+    if (mode !== 'provider_send') return {};
+    this.redactedLines ??= redactSourceFile(this.content, this.filePath).text.split(/\r?\n/);
+    const text = this.redactedLines.slice(start, end).join('\n');
+    return {text, redactedCount: placeholderCount(text) - placeholderCount(this.lines.slice(start, end).join('\n'))};
+  }
 }
 
 function escapeLiteralGlob(value: string): string {
@@ -492,7 +515,8 @@ export class OnDemandSourceAccessService {
       const code = error instanceof Error ? error.message : '';
       return failed(/^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : 'source_read_failed');
     }
-    const lines = content.split(/\r?\n/);
+    const file = new SourceFileView(content, filePath);
+    const lines = file.lines;
     if (startLine > lines.length) {
       return failed('source_line_out_of_range', {
         totalLines: lines.length,
@@ -504,7 +528,7 @@ export class OnDemandSourceAccessService {
     }
     const selected = lines.slice(startLine - 1, startLine - 1 + maxLines);
     const endLine = startLine + selected.length - 1;
-    const projected = sourceTextForMode(selected.join('\n'), input.mode);
+    const projected = file.providerProjection(startLine - 1, endLine, input.mode);
     return {
       success: true,
       codebaseId: input.codebaseId,
@@ -565,6 +589,8 @@ export class OnDemandSourceAccessService {
         },
       );
       const matches: OnDemandSourceReference[] = [];
+      // Ripgrep reports a file's matches together, so each file is read once.
+      let lastFile: SourceFileView | undefined;
       const decoder = new StringDecoder('utf8');
       let stdoutBuffer = '';
       let stdoutBytes = 0;
@@ -614,19 +640,21 @@ export class OnDemandSourceAccessService {
             selectionPolicy,
           )) return;
           if (providerPathAllowed && !providerPathAllowed(filePath)) return;
-          const content = readAcceptedTextFileSync(
-            root,
-            filePath,
-            this.gate.getSourceReadLimits().maxFileBytes,
-          );
-          const text = content.split(/\r?\n/)[lineNumber! - 1];
+          if (!lastFile || lastFile.filePath !== filePath) {
+            lastFile = new SourceFileView(readAcceptedTextFileSync(
+              root,
+              filePath,
+              this.gate.getSourceReadLimits().maxFileBytes,
+            ), filePath);
+          }
+          const text = lastFile.lines[lineNumber! - 1];
           if (text === undefined || !text.includes(query)) return;
           matches.push({
             referenceId: referenceId(ref.codebaseId, filePath, lineNumber!),
             codebaseId: ref.codebaseId,
             filePath,
             lineRange: {start: lineNumber!, end: lineNumber!},
-            ...sourceTextForMode(text, mode),
+            ...lastFile.providerProjection(lineNumber! - 1, lineNumber!, mode),
           });
           if (matches.length > maxResults) terminate('enumeration_budget');
         } catch {
@@ -796,12 +824,12 @@ export class OnDemandSourceAccessService {
             };
           }
           try {
-            const content = readAcceptedTextFileSync(
+            const file = new SourceFileView(readAcceptedTextFileSync(
               root,
               acceptedPath,
               this.gate.getSourceReadLimits().maxFileBytes,
-            );
-            const lines = content.split(/\r?\n/);
+            ), acceptedPath);
+            const lines = file.lines;
             for (let index = 0; index < lines.length; index += 1) {
               if (!lines[index]!.includes(query)) continue;
               const lineNumber = index + 1;
@@ -810,7 +838,7 @@ export class OnDemandSourceAccessService {
                 codebaseId: ref.codebaseId,
                 filePath: acceptedPath,
                 lineRange: {start: lineNumber, end: lineNumber},
-                ...sourceTextForMode(lines[index]!, mode),
+                ...file.providerProjection(index, index + 1, mode),
               });
               if (matches.length > maxResults) {
                 return {

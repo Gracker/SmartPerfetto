@@ -6,7 +6,7 @@ import {createHash} from 'crypto';
 
 import type {RagStore} from '../ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
-import {redactSecrets} from '../security/secretPatterns';
+import {redactSourceFile} from '../security/secretPatterns';
 import {
   codebaseScopeFromRef,
   codebaseHasActiveIndex,
@@ -211,7 +211,10 @@ export class AppSourceIngester {
           sourceReadLimits.maxFileBytes,
         );
         assertSourceFileUnchanged(provenance, file.relativePath, content);
-        const chunks = chunkSource(content, maxChars);
+        // The whole file is the context: a chunk can start inside a literal or comment.
+        const redaction = redactSourceFile(content, file.relativePath);
+        result.redactionHitCount += redaction.redactedCount;
+        const chunks = chunkSource(redaction.text, maxChars);
         if (chunks.length === 0) {
           result.chunksSkipped++;
           continue;
@@ -221,8 +224,6 @@ export class AppSourceIngester {
         }
         for (const chunk of chunks) {
           lease.assertHeld();
-          const redaction = redactSecrets(chunk.text);
-          result.redactionHitCount += redaction.redactedCount;
           const chunkId = makeChunkId(
             codebaseId,
             nextIndexGeneration,
@@ -235,8 +236,8 @@ export class AppSourceIngester {
             kind: 'app_source',
             uri: `codebase://${codebaseId}/${file.relativePath}`,
             title: file.relativePath.split('/').pop(),
-            snippet: redaction.text,
-            tokenCount: estimateTokenCount(redaction.text),
+            snippet: chunk.text,
+            tokenCount: estimateTokenCount(chunk.text),
             indexedAt: Date.now(),
             filePath: file.relativePath,
             lineRange: {start: chunk.startLine, end: chunk.endLine},

@@ -4,7 +4,7 @@
 
 import type {RagStore} from '../ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
-import {redactSecrets} from '../security/secretPatterns';
+import {redactSourceFile} from '../security/secretPatterns';
 import {
   codebaseScopeFromRef,
   codebaseHasActiveIndex,
@@ -190,7 +190,10 @@ export class AospSourceIngester {
           sourceReadLimits.maxFileBytes,
         );
         assertSourceFileUnchanged(provenance, file.relativePath, content);
-        const chunks = chunkSourceBySymbols(content, maxChars);
+        // The whole file is the context: a chunk can start inside a literal or comment.
+        const redaction = redactSourceFile(content, file.relativePath);
+        result.redactionHitCount += redaction.redactedCount;
+        const chunks = chunkSourceBySymbols(redaction.text, maxChars);
         if (chunks.length === 0) {
           result.chunksSkipped++;
           continue;
@@ -200,8 +203,6 @@ export class AospSourceIngester {
         }
         for (const chunk of chunks) {
           lease.assertHeld();
-          const redaction = redactSecrets(chunk.text);
-          result.redactionHitCount += redaction.redactedCount;
           const chunkId = stableChunkId([
             codebaseId,
             nextIndexGeneration,
@@ -214,8 +215,8 @@ export class AospSourceIngester {
             kind: ref.kind,
             uri: `codebase://${codebaseId}/${file.relativePath}`,
             title: file.relativePath.split('/').pop(),
-            snippet: redaction.text,
-            tokenCount: estimateTokenCount(redaction.text),
+            snippet: chunk.text,
+            tokenCount: estimateTokenCount(chunk.text),
             license: ref.licenseTag,
             indexedAt: Date.now(),
             filePath: file.relativePath,

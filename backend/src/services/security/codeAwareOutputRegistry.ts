@@ -8,6 +8,14 @@ import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 
 import type {SanitizedRagResult} from '../rag/lookupResponseFilter';
 import {LLMEchoOutputStream, type CodeRef} from './llmEchoOutputFilter';
+import {
+  credentialContextForPath,
+  credentialValues,
+  endsInDanglingCredentialPrefix,
+  redactCredentialsInText,
+  REDACTED_SECRET,
+  TEXT_CREDENTIAL_CONTEXT,
+} from './secretPatterns';
 
 type GuardRegistration =
   | {kind: 'snippet'; snippet: string; ref: CodeRef}
@@ -253,41 +261,6 @@ export function withOwnerCodeAwareProjection<T>(project: () => T): T {
 
 export function isOwnerCodeAwareProjection(): boolean { return projectionAudience === 'owner'; }
 
-const CREDENTIAL_KEY = String.raw`["']?\b(?:api[_-]?key|secret|password|token|access[_-]?token|auth[_-]?token)["']?`;
-
-/** Credentials have explicit syntax; hashes and company URLs are ordinary source context. */
-const CREDENTIAL_PATTERNS = [
-  new RegExp(String.raw`(?:${CREDENTIAL_KEY})\s*[:=]\s*['"]([^'"\r\n]{8,})['"]`, 'gi'),
-  new RegExp(String.raw`(?:${CREDENTIAL_KEY})\s*[:=]\s*(?!['"])([^\s'";,]{8,})`, 'gi'),
-  /\bBearer\s+([A-Za-z0-9._~+/-]{8,})/gi,
-  /\b((?:sk-[A-Za-z0-9_-]{16,}|gh[pousr]_[A-Za-z0-9]{20,}))\b/g,
-];
-
-const CREDENTIAL_KEY_AT_END = new RegExp(String.raw`${CREDENTIAL_KEY}$`, 'i');
-
-/**
- * A credential value never spans a line, but its key, separator and Bearer
- * prefix may be followed by line breaks, so text ending in one of them can
- * still become a match when later lines arrive. Reads only the tail: a key
- * with its quotes is under 16 characters, and 32 keep a boundary character.
- */
-function endsInDanglingCredentialPrefix(text: string): boolean {
-  const trimmed = text.trimEnd();
-  if (/\bBearer$/i.test(trimmed.slice(-32))) return true;
-  const last = trimmed.slice(-1);
-  const key = last === ':' || last === '=' ? trimmed.slice(0, -1).trimEnd() : trimmed;
-  return CREDENTIAL_KEY_AT_END.test(key.slice(-32));
-}
-
-function credentialValues(text: string): string[] {
-  return CREDENTIAL_PATTERNS.flatMap(pattern => [...text.matchAll(pattern)].map(match => match[1]));
-}
-
-function redactOwnerCredentials(text: string): string {
-  for (const credential of credentialValues(text)) text = text.split(credential).join('[REDACTED_SECRET]');
-  return text;
-}
-
 class SessionOutputGuards {
   readonly strict = new SessionCodeAwareOutputGuard();
   readonly owner = new SessionCodeAwareOutputGuard();
@@ -295,8 +268,12 @@ class SessionOutputGuards {
   register(registration: GuardRegistration): boolean {
     if (this.strict.register(registration) === 'repeat') return false;
     if (OWNER_VIEW[registration.kind] === 'credentials_withheld' && 'snippet' in registration) {
-      for (const credential of credentialValues(registration.snippet)) {
-        this.owner.register({kind: 'private', snippet: credential, replacement: '[REDACTED_SECRET]'});
+      // Source is read in its file's syntax; query and knowledge text as prose.
+      const context = registration.kind === 'snippet'
+        ? credentialContextForPath(registration.ref.filePath)
+        : TEXT_CREDENTIAL_CONTEXT;
+      for (const credential of credentialValues(registration.snippet, context)) {
+        this.owner.register({kind: 'private', snippet: credential, replacement: REDACTED_SECRET});
       }
     } else { this.owner.register(registration); }
     return true;
@@ -469,24 +446,29 @@ export function registerPrivateAnalysisQueryForEcho(
   });
 }
 
+/** Owner projection withholds the credentials it finds in any text; other audiences leave text alone here. */
+function ownerCredentialPass(text: string): string {
+  return isOwnerCodeAwareProjection() ? redactCredentialsInText(text) : text;
+}
+
 export function sanitizeCodeAwareText(sessionId: string | undefined, text: string): string {
   if (!text) return text;
-  if (!sessionId) return isOwnerCodeAwareProjection() ? redactOwnerCredentials(text) : text;
+  if (!sessionId) return ownerCredentialPass(text);
   const guard = touchGuard(sessionId)?.[projectionAudience];
   if (!guard && sessionWasRevoked(sessionId)) return PRIVATE_OUTPUT_SUPPRESSED;
   const projected = guard ? guard.projectComplete(text) : text;
-  return isOwnerCodeAwareProjection() ? redactOwnerCredentials(projected) : projected;
+  return ownerCredentialPass(projected);
 }
 
 export function sanitizeCodeAwareTextWithReceipt(
   sessionId: string | undefined,
   text: string,
 ): CodeAwareTextProjectionReceipt {
-  if (!sessionId || !text) return textProjectionReceipt(text, isOwnerCodeAwareProjection() ? redactOwnerCredentials(text) : text);
+  if (!sessionId || !text) return textProjectionReceipt(text, ownerCredentialPass(text));
   const guard = touchGuard(sessionId)?.[projectionAudience];
   if (!guard && sessionWasRevoked(sessionId)) return textProjectionReceipt(text, PRIVATE_OUTPUT_SUPPRESSED, true);
   const receipt = guard ? guard.projectCompleteWithReceipt(text) : textProjectionReceipt(text, text);
-  return isOwnerCodeAwareProjection() ? composeCodeAwareTextProjectionReceipts(receipt, textProjectionReceipt(receipt.text, redactOwnerCredentials(receipt.text))) : receipt;
+  return isOwnerCodeAwareProjection() ? composeCodeAwareTextProjectionReceipts(receipt, textProjectionReceipt(receipt.text, redactCredentialsInText(receipt.text))) : receipt;
 }
 
 /** Same per-string limit and empty-string behavior as structured projection. */
@@ -588,10 +570,10 @@ function sanitizeStructuredTextValue(
       }
       const credential = isOwnerCodeAwareProjection() && isCredentialField(key) &&
         typeof descriptor.value === 'string' && descriptor.value.length >= 8;
-      if (credential && descriptor.value !== '[REDACTED_SECRET]') state.changed = true;
+      if (credential && descriptor.value !== REDACTED_SECRET) state.changed = true;
       const projected = sanitizeStructuredTextValue(
         sessionId,
-        credential ? '[REDACTED_SECRET]' : descriptor.value,
+        credential ? REDACTED_SECRET : descriptor.value,
         state,
         depth + 1,
       );
@@ -702,7 +684,7 @@ export function createCodeAwareStreamingTextProjection(
     if (unavailable()) return textProjectionReceipt(text, PRIVATE_OUTPUT_SUPPRESSED, true);
     const receipt = guard ? guard.projectCompleteWithReceipt(text) : textProjectionReceipt(text, text);
     return audience === 'owner' ? composeCodeAwareTextProjectionReceipts(receipt,
-      textProjectionReceipt(receipt.text, redactOwnerCredentials(receipt.text))) : receipt;
+      textProjectionReceipt(receipt.text, redactCredentialsInText(receipt.text))) : receipt;
   };
   return {
     write: text => {
@@ -760,7 +742,7 @@ class OwnerCredentialStream {
   flush(): string { const output = this.release(); this.clear(); return output; }
   clear(): void { this.pending = ''; this.discardingLine = false; }
   private release(): string {
-    const output = redactOwnerCredentials(this.pending);
+    const output = redactCredentialsInText(this.pending);
     if (output !== this.pending) this.altered = true;
     this.pending = '';
     return output;

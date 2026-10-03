@@ -6,7 +6,7 @@ import {
   formatThreats,
   scanContent,
 } from '../../agentv3/selfImprove/contentScanner';
-import {redactSecrets} from './secretPatterns';
+import {redactSecretsForPublicArtifact} from './secretPatterns';
 
 const EMAIL_RE = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 const URL_RE = /\bhttps?:\/\/[^\s"'<>]+/gi;
@@ -74,7 +74,7 @@ function sanitizeValue(
       errors.push(`${path}: ${formatThreats(threats)}`);
       return value;
     }
-    const secretRedaction = redactSecrets(value);
+    const secretRedaction = redactSecretsForPublicArtifact(value);
     let text = secretRedaction.text
       .replace(EMAIL_RE, '[REDACTED_EMAIL]')
       .replace(URL_RE, '[REDACTED_URL]')
