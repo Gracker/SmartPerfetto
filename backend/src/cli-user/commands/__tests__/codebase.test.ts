@@ -25,6 +25,7 @@ import {
 } from '../codebase';
 import { resetCliEnvironmentForTesting } from '../../bootstrap';
 import {CodebaseManagementService} from '../../../services/codebase/codebaseManagementService';
+import {CodebaseStateError} from '../../../services/codebase/codebaseRequestError';
 import {CodebaseRegistry, type IndexCoverage} from '../../../services/codebase/codebaseRegistry';
 import {PathSecurityGate} from '../../../services/codebase/pathSecurityGate';
 import {SourceEnumerator} from '../../../services/codebase/sourceEnumerator';
@@ -280,13 +281,13 @@ describe('smp codebase command handlers', () => {
   });
 
   it('sanitizes CLI manifest degradation reasons while preserving known codes and root drift', async () => {
-    const previewServiceFor = (reason: string) => new CodebaseManagementService({
+    const previewServiceFor = (reason: string | Error) => new CodebaseManagementService({
       registry,
       store,
       gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
       sourceEnumerator: new SourceEnumerator(),
       readAospManifestProjects: async () => {
-        throw new Error(reason);
+        throw typeof reason === 'string' ? new Error(reason) : reason;
       },
     });
 
@@ -317,7 +318,7 @@ describe('smp codebase command handlers', () => {
       rootPath: root,
       kind: 'aosp',
       sessionDir,
-      managementService: previewServiceFor('codebase_root_realpath_drift'),
+      managementService: previewServiceFor(new CodebaseStateError('codebase_root_realpath_drift')),
     })).toBe(2);
     expect(JSON.parse(String(logSpy.mock.calls[0]?.[0] ?? ''))).toMatchObject({
       success: false,

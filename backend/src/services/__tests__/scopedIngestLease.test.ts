@@ -24,15 +24,26 @@ import {
 const TTL_MS = 60_000;
 const HEARTBEAT_MS = 20_000;
 const BASE_TIME = 2_000_000_000_000;
+/** The configured errors are thrown as built, so a caller can classify them by type. */
+class TestLeaseBusyError extends Error {}
+class TestLeaseLostError extends Error {}
+const IN_PROGRESS = 'test_reindex_in_progress';
+const LEASE_LOST = 'test_reindex_lease_lost';
 const CONFIG: ScopedIngestLeaseConfig = {
   kind: 'test_ingest_lease',
   rowScope: 'test-ingest-lease',
   ttlMs: TTL_MS,
   heartbeatMs: HEARTBEAT_MS,
-  inProgressError: 'test_reindex_in_progress',
-  lostError: 'test_reindex_lease_lost',
+  inProgressError: () => new TestLeaseBusyError(IN_PROGRESS),
+  lostError: () => new TestLeaseLostError(LEASE_LOST),
   logPrefix: 'TestRegistry',
 };
+
+async function expectLeaseBusy(operation: Promise<unknown>): Promise<void> {
+  const error = await operation.then(() => undefined, (thrown: unknown) => thrown);
+  expect(error).toBeInstanceOf(TestLeaseBusyError);
+  expect((error as Error).message).toBe(IN_PROGRESS);
+}
 const SCOPE = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
 const RECORD_ID = 'record-1';
 
@@ -96,7 +107,7 @@ describe('withScopedIngestLease (enterprise DB lease row)', () => {
   it('rejects a second holder while the lease is unexpired and admits one after release', async () => {
     await withLease(async lease => {
       expect(lease.distributed).toBe(true);
-      await expect(withLease(() => 'second')).rejects.toThrow(CONFIG.inProgressError);
+      await expectLeaseBusy(withLease(() => 'second'));
     });
 
     expect(leaseRow()?.expiresAt).toBe(0);
@@ -139,7 +150,7 @@ describe('withScopedIngestLease (enterprise DB lease row)', () => {
       );
       // A non-forced check inside the heartbeat window is the accepted gap.
       expect(() => lease.assertHeld()).not.toThrow();
-      expect(() => lease.assertHeld(true)).toThrow(CONFIG.lostError);
+      expect(() => lease.assertHeld(true)).toThrow(TestLeaseLostError);
       if (!lease.distributed) throw new Error('expected a distributed lease');
       lease.mutateFenced<{value: string}>({
         kind: 'test_protected_record',
@@ -147,7 +158,7 @@ describe('withScopedIngestLease (enterprise DB lease row)', () => {
         options: {rowScope: 'test-protected-record'},
         mutate: () => ({value: 'stale-write'}),
       });
-    })).rejects.toThrow(CONFIG.lostError);
+    })).rejects.toThrow(TestLeaseLostError);
 
     expect(getScopedKnowledgeRecord('test_protected_record', RECORD_ID, SCOPE)).toBeUndefined();
     expect(leaseRow()?.ownerToken).toBe('intruder');
@@ -178,7 +189,7 @@ describe('withScopedIngestLease (enterprise DB lease row)', () => {
       });
       // Takeover needs an expired lease, which is always past the heartbeat
       // window, so even a non-forced check reaches the lease row.
-      expect(() => lease.assertHeld()).toThrow(CONFIG.lostError);
+      expect(() => lease.assertHeld()).toThrow(TestLeaseLostError);
     });
 
     expect(leaseRow()).toEqual({
@@ -200,7 +211,7 @@ describe('withScopedIngestLease (filesystem lock)', () => {
   it('maps a lost filesystem lock to the configured lost error', async () => {
     await withLease(async lease => {
       expect(lease.distributed).toBe(false);
-      await expect(withLease(() => 'second')).rejects.toThrow(CONFIG.inProgressError);
+      await expectLeaseBusy(withLease(() => 'second'));
       const lockName = fs.readdirSync(tmpDir).find(name =>
         name.startsWith('registry.json.ingest.') && name.endsWith('.lock'));
       expect(lockName).toBeDefined();
@@ -208,7 +219,7 @@ describe('withScopedIngestLease (filesystem lock)', () => {
         path.join(tmpDir, lockName!, 'owner.json'),
         JSON.stringify({token: 'intruder'}),
       );
-      expect(() => lease.assertHeld(true)).toThrow(CONFIG.lostError);
+      expect(() => lease.assertHeld(true)).toThrow(TestLeaseLostError);
     });
   });
 });

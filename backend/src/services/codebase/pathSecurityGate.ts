@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import {CodebaseStateError} from './codebaseRequestError';
 
 const DEFAULT_EXCLUDES = [
   '.git',
@@ -240,7 +241,7 @@ export function readAcceptedTextFileSync(
     ? value.toLocaleLowerCase('en-US')
     : value;
   if (normalizeIdentity(canonicalRoot) !== normalizeIdentity(normalizedRegisteredRoot)) {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
   const portablePath = relativePath.replace(/\\/g, '/');
   const segments = portablePath.split('/').filter(Boolean);
@@ -274,7 +275,7 @@ export function readAcceptedTextFileSync(
     const content = readOpenedTextFileBoundedSync(descriptor, stat, maxFileBytes);
     const afterRootRealPath = fs.realpathSync(rootRealpath);
     if (normalizeIdentity(afterRootRealPath) !== normalizeIdentity(canonicalRoot)) {
-      throw new Error('codebase_root_realpath_drift');
+      throw new CodebaseStateError('codebase_root_realpath_drift');
     }
     const afterRealPath = fs.realpathSync(candidate);
     if (afterRealPath !== realPath) throw new Error('source_path_changed_during_read');
