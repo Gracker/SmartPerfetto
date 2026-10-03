@@ -16,6 +16,14 @@ describe('authored display title translations', () => {
     expect(validateSkillDisplayContract(baseSkill({steps: [{id: 'step', type: 'atomic',
       display: {title_i18n: value}} as any]})).some(issue => issue.field.endsWith('title_i18n'))).toBe(true);
   });
+  it.each(['display_name_i18n', 'description_i18n'])('checks meta.%s as the Skill name and description translations', field => {
+    const issues = (value: unknown) => validateSkillDisplayContract(baseSkill({
+      meta: {display_name: 'Name', description: 'Description', [field]: value},
+    } as any)).filter(issue => issue.field === `meta.${field}`);
+    expect(issues({en: 'English'})).toEqual([]);
+    expect(issues({en: ''})).toHaveLength(1);
+    expect(issues({fr: 'Nom'})).toHaveLength(1);
+  });
   it('accepts partial locale overrides and removes authoring metadata from runtime display', () => {
     expect(isDisplayTitleTranslations({en: 'Observed interval'})).toBe(true);
     expect(sanitizeDisplayConfigForRuntime({title: 'Observed interval', title_i18n: {en: 'Observed interval'}}).config.title_i18n)

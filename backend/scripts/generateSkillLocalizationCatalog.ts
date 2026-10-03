@@ -9,13 +9,14 @@ import {
   skillRegistry,
 } from '../src/services/skillEngine/skillLoader';
 import type {
+  AuthoredTranslations,
   DisplayConfig,
   SkillDefinition,
   SkillStep,
   SynthesizeConfig,
 } from '../src/services/skillEngine/types';
 import {humanizeSkillIdentifier} from '../src/services/skillLocalizationLabels';
-import {isDisplayTitleTranslations, validateSkillDisplayContract} from '../src/services/skillEngine/displayContractValidator';
+import {validateSkillDisplayContract} from '../src/services/skillEngine/displayContractValidator';
 
 type OutputLanguage = 'zh-CN' | 'en';
 
@@ -78,31 +79,32 @@ function humanizeIdentifierZh(value: string): string {
   return humanizeSkillIdentifier(value, 'zh-CN') || value.trim() || '未命名';
 }
 
-function localizedTitle(authored: unknown, stableId: string, titles?: DisplayConfig['title_i18n']): LocalizedText {
-  if (titles !== undefined && !isDisplayTitleTranslations(titles)) {
-    throw new Error(`Invalid title_i18n for ${stableId}`);
-  }
+/**
+ * Authored text in each language: an explicit translation first, else the
+ * authored source when it is in that language, else a fallback. The display
+ * contract has already rejected malformed translations.
+ */
+function localizedText(
+  authored: unknown,
+  translations: AuthoredTranslations | undefined,
+  fallback: LocalizedText,
+): LocalizedText {
   const source = sentence(authored);
-  const identifierEn = humanizeIdentifier(stableId);
-  const identifierZh = humanizeIdentifierZh(stableId);
   return {
-    'zh-CN': titles?.['zh-CN']?.trim() ?? (source && HAN_RE.test(source) ? source : identifierZh),
-    en: titles?.en?.trim() ?? (source && !HAN_RE.test(source) ? source : identifierEn),
+    'zh-CN': translations?.['zh-CN']?.trim() ?? (source && HAN_RE.test(source) ? source : fallback['zh-CN']),
+    en: translations?.en?.trim() ?? (source && !HAN_RE.test(source) ? source : fallback.en),
   };
 }
 
-function localizedDescription(authored: unknown, stableId: string): LocalizedText {
-  const source = sentence(authored);
-  const identifierEn = humanizeIdentifier(stableId);
-  const identifierZh = humanizeIdentifierZh(stableId);
-  return {
-    'zh-CN': source && HAN_RE.test(source)
-      ? source
-      : `基于 Trace 指标与证据分析${identifierZh}。`,
-    en: source && !HAN_RE.test(source)
-      ? source
-      : `Analyzes ${identifierEn} using trace metrics and supporting evidence.`,
-  };
+function localizedTitle(authored: unknown, stableId: string, titles?: AuthoredTranslations): LocalizedText {
+  return localizedText(authored, titles, {'zh-CN': humanizeIdentifierZh(stableId), en: humanizeIdentifier(stableId)});
+}
+
+function localizedDescription(authored: unknown, stableId: string, translations?: AuthoredTranslations): LocalizedText {
+  return localizedText(authored, translations, {
+    'zh-CN': `基于 Trace 指标与证据分析${humanizeIdentifierZh(stableId)}。`,
+    en: `Analyzes ${humanizeIdentifier(stableId)} using trace metrics and supporting evidence.`,
+  });
 }
 
 function localizedLabel(authored: unknown, stableId: string): LocalizedText {
@@ -121,6 +123,10 @@ function localizedTooltip(authored: unknown, label: LocalizedText): LocalizedTex
     en:
       source && !HAN_RE.test(source) ? source : `Column: ${label.en}`,
   };
+}
+
+function skillDisplayName(skill: SkillDefinition): LocalizedText {
+  return localizedTitle(skill.meta.display_name, skill.name, skill.meta.display_name_i18n);
 }
 
 function emptyStep(title: LocalizedText): CatalogStep {
@@ -180,7 +186,7 @@ function nestedSteps(step: SkillStep): SkillStep[] {
 
 function collectSteps(skill: SkillDefinition): Record<string, CatalogStep> {
   const result: Record<string, CatalogStep> = {
-    root: emptyStep(localizedTitle(skill.meta.display_name, skill.name)),
+    root: emptyStep(skillDisplayName(skill)),
     __synthesize_summary__: emptyStep({
       'zh-CN': '洞见摘要',
       en: 'Insight Summary',
@@ -229,7 +235,7 @@ function collectSteps(skill: SkillDefinition): Record<string, CatalogStep> {
 
 function buildCatalog(skills: SkillDefinition[]): SkillLocalizationCatalog {
   for (const skill of skills) {
-    const invalidTitles = validateSkillDisplayContract(skill).filter(issue => issue.field.endsWith('.title_i18n'));
+    const invalidTitles = validateSkillDisplayContract(skill).filter(issue => issue.field.endsWith('_i18n'));
     if (invalidTitles.length) throw new Error(invalidTitles.map(issue => `${skill.name}: ${issue.path}: ${issue.message}`).join('\n'));
   }
   const orderedSkills = [...skills].sort((left, right) =>
@@ -239,14 +245,14 @@ function buildCatalog(skills: SkillDefinition[]): SkillLocalizationCatalog {
   let explicitColumnCount = 0;
 
   for (const skill of orderedSkills) {
-    const displayName = localizedTitle(skill.meta.display_name, skill.name);
+    const displayName = skillDisplayName(skill);
     const steps = collectSteps(skill);
     stepCount += Object.keys(steps).length;
     explicitColumnCount += Object.values(steps)
       .reduce((total, step) => total + Object.keys(step.columns).length, 0);
     catalogSkills[skill.name] = {
       displayName,
-      description: localizedDescription(skill.meta.description, skill.name),
+      description: localizedDescription(skill.meta.description, skill.name, skill.meta.description_i18n),
       type: skill.type,
       steps,
     };

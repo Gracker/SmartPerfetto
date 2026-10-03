@@ -146,7 +146,7 @@ export interface DisplayConfig {
   layer?: DisplayLayer;         // 分层展示层级
   title?: string;
   /** Catalog titles for named steps[] (including nested steps[]); other display locations are rejected. */
-  title_i18n?: Partial<Record<'zh-CN' | 'en', string>>;
+  title_i18n?: AuthoredTranslations;
   format?: DisplayFormat;
   columns?: Array<string | Partial<ColumnDefinition>>; // 指定展示哪些列（支持简写或完整列定义）
   aggregate?: boolean;          // 是否汇总迭代结果
@@ -369,9 +369,19 @@ export type SkillStep =
 // Skill 定义
 // =============================================================================
 
+/** Authored text per output language, for a language the authored text is not in. */
+export type AuthoredTranslations = Partial<Record<'zh-CN' | 'en', string>>;
+
 export interface SkillMeta {
   display_name: string;
   description: string;
+  /**
+   * Catalog translations of display_name and description, for a language the
+   * authored text is not in. Authoring metadata: the localization catalog
+   * carries them and runtime meta does not.
+   */
+  display_name_i18n?: AuthoredTranslations;
+  description_i18n?: AuthoredTranslations;
   icon?: string;
   tags?: string[];
   author?: string;

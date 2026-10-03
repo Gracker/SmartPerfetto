@@ -97,7 +97,11 @@ category: rendering                  # 分类 (可选)
 
 meta:
   display_name: "Consumer Jank 检测"  # 显示名称 (必填)
+  display_name_i18n:                   # 另一种语言的显示名称 (可选)，未写时由标识符生成
+    en: "Consumer jank detection"
   description: "基于 present_ts 间隔的真实卡顿检测"  # 描述 (必填)
+  description_i18n:                    # 另一种语言的描述 (可选)
+    en: "Detects real jank from present_ts intervals"
   tags: [jank, consumer, surfaceflinger]  # 标签 (可选)
 
 # === 触发规则 (可选) ===

@@ -5,7 +5,8 @@
 # =============================================================================
 # Thermal Predictor (Atomic Skill)
 # =============================================================================
-# Predict thermal throttling risk from CPU frequency trend.
+# Observes the CPU frequency trend. Without temperature or frequency-limit
+# evidence it reports the trend only and predicts no thermal mechanism.
 
 name: thermal_predictor
 version: "1.0"
@@ -15,7 +16,11 @@ tier: B
 
 meta:
   display_name: "CPU 频率趋势观察"
+  display_name_i18n:
+    en: "CPU Frequency Trend"
   description: "CPU 频率趋势观察；未提供温度或限频证据时不预测热机制"
+  description_i18n:
+    en: "Observes the CPU frequency trend; without temperature or frequency-limit evidence it predicts no thermal mechanism"
   icon: "thermostat"
   tags: [thermal, throttling, prediction, cpu]
 

@@ -36,7 +36,11 @@ category: rendering
 
 meta:
   display_name: "Consumer jank detection"
+  display_name_i18n:         # optional: the name in the other language; otherwise generated from the identifier
+    zh-CN: "Consumer Jank 检测"
   description: "Detects real jank from present_ts intervals"
+  description_i18n:          # optional: the description in the other language
+    zh-CN: "基于 present_ts 间隔的真实卡顿检测"
   tags: [jank, consumer, surfaceflinger]
 
 inputs:
