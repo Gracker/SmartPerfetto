@@ -6,6 +6,7 @@ import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
 import {getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
 import {loadSourceUsePrompt} from '../services/codebase/sourceUseDecision';
 import {sourceAuthorizationPayload} from '../services/codebase/selectedCodebaseCapabilities';
+import {knowledgeUsePrompt} from '../services/knowledge/knowledgePrompt';
 import {DEFAULT_OUTPUT_LANGUAGE} from './outputLanguage';
 import {resolveRuntimeTurnPolicy, type RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
@@ -201,6 +202,9 @@ function buildTypedTurnSystemPromptParts(
     preflight,
   });
   data(3, 'source_authorization', sourceAuthorizationPayload({...context, evidenceAccess: intent.evidenceAccess}));
+  // Selected knowledge bases are background the owner chose, independent of
+  // source access; an `existing_only` turn may still consult them.
+  const knowledge = knowledgeUsePrompt(context.sourceAuthorization, language);
 
   // Scene meaning is a trace fact, not a scene-wide budget: a bounded question
   // still has to be read against the scene it is about. Only a run that read no
@@ -317,6 +321,14 @@ function buildTypedTurnSystemPromptParts(
   data(4, 'pattern_context', context.patternContext, true);
   data(4, 'negative_pattern_context', context.negativePatternContext, true);
   data(4, 'case_background_context', context.caseBackgroundContext, true);
+  // Knowledge is optional background, so it goes first under budget pressure,
+  // guidance before the list of bases: the tools still describe their use and
+  // search every selected base without an id, while comparison and evidence
+  // context say what the trace holds.
+  if (knowledge) {
+    data(4, 'knowledge_authorization', knowledge.authorization, true);
+    push(4, 'knowledge_use', knowledge.guidance, true);
+  }
 
   const droppedLabels: string[] = [];
   const truncatedLabels: string[] = [];

@@ -108,8 +108,8 @@ function isToolAllowedForScope(
   if (!scope) return true;
   if (tool.exposure === 'deprecated') return false;
   if (tool.exposure === 'requires_codebase_permission' && !scope.hasCodebaseAccess) return false;
-  return scope.allowNewEvidence !== false ||
-    tool.evidenceEffect === 'none' || tool.evidenceEffect === 'read_existing';
+  return scope.allowNewEvidence !== false || tool.evidenceEffect === 'none' ||
+    tool.evidenceEffect === 'read_existing' || tool.evidenceEffect === 'background';
 }
 
 /**

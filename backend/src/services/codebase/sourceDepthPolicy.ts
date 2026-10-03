@@ -29,13 +29,26 @@ interface SourceDepthLimits {
   readonly tokens: number;
 }
 
+/**
+ * Retrieved knowledge's own budget: the token pool every knowledge surface
+ * (Pack, Wiki, document collections) draws on, and the document-collection
+ * tools' call counts and section part size.
+ */
+interface KnowledgeLimits {
+  readonly tokens: number;
+  readonly searches: number;
+  readonly reads: number;
+  readonly partChars: number;
+}
+
 export interface SourceDepthPolicy {
   readonly schemaVersion: typeof POLICY_SCHEMA_VERSION;
   readonly depths: Readonly<Record<SourceDepth, SourceDepthLimits>>;
-  readonly knowledge: {readonly tokens: number};
+  readonly knowledge: KnowledgeLimits;
 }
 
 const LIMIT_KEYS = ['searches', 'reads', 'locates', 'max_read_lines', 'tokens'] as const;
+const KNOWLEDGE_KEYS = ['tokens', 'searches', 'reads', 'part_chars'] as const;
 
 function parseLimits(value: unknown): SourceDepthLimits {
   if (!isRecord(value) || !exactKeys(value, LIMIT_KEYS)) throw new Error('source_depth_policy_invalid_depth');
@@ -56,7 +69,7 @@ export function parseSourceDepthPolicy(value: unknown): SourceDepthPolicy {
     !isRecord(value.depths) ||
     !exactKeys(value.depths, ['locate', 'mechanism']) ||
     !isRecord(value.knowledge) ||
-    !exactKeys(value.knowledge, ['tokens'])
+    !exactKeys(value.knowledge, KNOWLEDGE_KEYS)
   ) {
     throw new Error('source_depth_policy_invalid_root');
   }
@@ -69,7 +82,12 @@ export function parseSourceDepthPolicy(value: unknown): SourceDepthPolicy {
   return Object.freeze({
     schemaVersion: POLICY_SCHEMA_VERSION,
     depths: Object.freeze({locate, mechanism}),
-    knowledge: Object.freeze({tokens: positiveInteger(value.knowledge.tokens, 'source_depth_policy_invalid_knowledge')}),
+    knowledge: Object.freeze({
+      tokens: positiveInteger(value.knowledge.tokens, 'source_depth_policy_invalid_knowledge'),
+      searches: positiveInteger(value.knowledge.searches, 'source_depth_policy_invalid_knowledge'),
+      reads: positiveInteger(value.knowledge.reads, 'source_depth_policy_invalid_knowledge'),
+      partChars: positiveInteger(value.knowledge.part_chars, 'source_depth_policy_invalid_knowledge'),
+    }),
   });
 }
 

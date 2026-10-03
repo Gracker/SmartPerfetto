@@ -792,3 +792,112 @@ describe('owner narration of source tools', () => {
     expect(text).not.toContain('SECRET_PATH_CANARY');
   });
 });
+
+describe('knowledge tool narration', () => {
+  const owner = (toolName: string, body: Record<string, unknown>, language?: 'en') =>
+    formatToolResultNarration({toolName, result: {}, ownerResult: mcpResult(body), language});
+  const hit = {id: 'kref-1', knowledgeBaseId: 'eks_' + 'a'.repeat(24), title: 'Render framework',
+    headingPath: ['Render framework', 'XRenderCompositorWorker'], relativePath: 'render/compositor.md',
+    lineRange: {start: 3, end: 6}, excerpt: 'composes every frame'};
+
+  it('tells the owner how many items came back and from which document', () => {
+    expect(owner('search_knowledge', {success: true, hits: [hit, hit]}))
+      .toBe('找到 2 条内部资料（《Render framework › XRenderCompositorWorker》 等）');
+    expect(owner('search_knowledge', {success: true, hits: []}, 'en')).toBe('No match in the internal knowledge');
+    expect(owner('read_knowledge_section', {success: true, reference: hit, part: 2, partCount: 3, text: 'x'}))
+      .toBe('读取 《Render framework › XRenderCompositorWorker》第 2/3 段');
+    expect(owner('read_knowledge_section', {success: true, alreadyDelivered: true,
+      reference: {id: 'kref-1', knowledgeBaseId: hit.knowledgeBaseId}, part: 1, partCount: 1}))
+      .toBe('该段本轮已读过，未重复发送');
+    expect(owner('search_knowledge', {success: false, unsupportedReason: 'knowledge_search_budget_exceeded',
+      action_required: 'continue_with_existing_knowledge'}))
+      .toBe('本轮内部资料检索次数已用完，继续使用已取得的资料');
+  });
+
+  it('says only counts and part position on a private run, from the projection', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const search = projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits: [hit]}));
+    const text = formatToolResultNarration({toolName: 'search_knowledge', privateContext: true, result: search});
+    expect(text).toBe('找到 1 条内部资料，仅作背景依据');
+    const read = projectToolResultForExternalSurface('read_knowledge_section',
+      mcpResult({success: true, reference: hit, part: 1, partCount: 1, text: 'composes every frame', truncated: true}));
+    expect(formatToolResultNarration({toolName: 'read_knowledge_section', privateContext: true, result: read}))
+      .toBe('已读取内部资料章节，仅作背景依据（额度不足，内容已截断）');
+    const refused = projectToolResultForExternalSurface('read_knowledge_section', mcpResult({success: false,
+      action_required: 'use_reference_id_from_search_knowledge', unsupportedReason: 'knowledge_reference_not_issued'}));
+    expect(formatToolResultNarration({toolName: 'read_knowledge_section', privateContext: true, result: refused,
+      isError: true})).toBe('该引用不是本轮检索返回的，未读取');
+    for (const projected of [search, read, refused]) {
+      expect(JSON.stringify(projected)).not.toMatch(/render\/compositor|Render framework|composes every frame|kref-1/);
+    }
+  });
+
+  it('never narrates a malformed result as a success to the owner either', () => {
+    const {excerpt: _excerpt, ...withoutExcerpt} = hit;
+    const {lineRange: _lineRange, ...withoutRange} = hit;
+    for (const [toolName, body] of [
+      ['read_knowledge_section', {part: 1, partCount: 1, text: 'composes every frame'}],
+      ['read_knowledge_section', {success: true, part: 1, partCount: 1, text: 'composes every frame'}],
+      ['read_knowledge_section', {success: true, reference: withoutRange, part: 1, partCount: 1, text: 'x'}],
+      ['search_knowledge', {success: true, hits: [{}]}],
+      ['search_knowledge', {success: true, hits: [withoutExcerpt]}],
+      ['search_knowledge', {success: true, hits: [hit, {...hit, headingPath: 'Render framework'}]}],
+    ] as const) {
+      expect(owner(toolName, body as Record<string, unknown>) ?? '').not.toMatch(/读取|找到/);
+    }
+  });
+
+  it('lets an error result or failed receipt override a success-shaped body on both surfaces', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    for (const [toolName, body] of [
+      ['search_knowledge', {success: true, hits: [hit]}],
+      ['read_knowledge_section', {success: true, reference: hit, part: 1, partCount: 1, text: 'x'}],
+      ['read_knowledge_section', {success: true, alreadyDelivered: true,
+        reference: {id: 'kref-1', knowledgeBaseId: hit.knowledgeBaseId}, part: 1, partCount: 1}],
+    ] as const) {
+      const failed = {content: mcpResult(body as Record<string, unknown>), isError: true};
+      expect(formatToolResultNarration({toolName, result: {}, ownerResult: failed}) ?? '').not.toMatch(/读取|找到|已读过/);
+      expect(formatToolResultNarration({toolName, result: {}, ownerResult: mcpResult(body as Record<string, unknown>),
+        isError: true}) ?? '').not.toMatch(/读取|找到|已读过/);
+      expect(projectToolResultForExternalSurface(toolName, failed)).toMatchObject({outcome: 'rejected'});
+    }
+    // A wrongly typed flag is not the success it claims.
+    expect(projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits: [hit], truncated: 'yes'})))
+      .toMatchObject({outcome: 'rejected'});
+  });
+
+  it('projects a hit missing a delivered field as a rejection, not a success', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const {excerpt: _excerpt, ...withoutExcerpt} = hit;
+    for (const hits of [[withoutExcerpt], [{...hit, title: 7}], [{...hit, lineRange: {start: 6, end: 3}}]]) {
+      const projected = projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits}));
+      expect(projected).toMatchObject({outcome: 'rejected'});
+      expect(formatToolResultNarration({toolName: 'search_knowledge', privateContext: true, result: projected}))
+        .not.toMatch(/找到/);
+    }
+  });
+
+  it('never narrates success for an unknown shape on a private run', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const read = projectToolResultForExternalSurface('read_knowledge_section',
+      mcpResult({part: 1, partCount: 1, text: 'composes every frame'}));
+    expect(formatToolResultNarration({toolName: 'read_knowledge_section', privateContext: true, result: read}))
+      .not.toMatch(/已读取|找到/);
+    const search = projectToolResultForExternalSurface('search_knowledge', mcpResult({success: true, hits: [{}]}));
+    expect(formatToolResultNarration({toolName: 'search_knowledge', privateContext: true, result: search}))
+      .not.toMatch(/已读取|找到/);
+  });
+
+  it('fails closed on a shape it does not know', () => {
+    const {projectToolResultForExternalSurface} =
+      require('../../services/rag/toolResultProjectionFilter') as typeof import('../../services/rag/toolResultProjectionFilter');
+    const projected = projectToolResultForExternalSurface('search_knowledge',
+      mcpResult({success: true, hits: 'render/compositor.md Render framework'}));
+    expect(projected).toMatchObject({outcome: 'rejected', chunkRefs: []});
+    expect(JSON.stringify(projected)).not.toContain('render/compositor');
+  });
+});

@@ -8,6 +8,7 @@ import type { FocusAppTarget } from '../agentRuntime/focusAppTarget';
 import type { SceneType } from './sceneClassifier';
 import type { OutputLanguage } from './outputLanguage';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
+import {KNOWLEDGE_TOOL_NAMES} from '../services/knowledge/knowledgeTools';
 import type {SourceAuthorizationPromptData} from '../services/codebase/selectedCodebaseCapabilities';
 import type {CapabilityManifestResolutionV1, CapabilityUnprobedReasonCode} from '../types/capabilityManifest';
 import type {AnalysisRecoveryKind, AnalysisMissingReportSection} from '../types/analysisDelivery';
@@ -452,6 +453,9 @@ const INFORMATIONAL_TOOL_NAMES = new Set([
   // Persists reasoning across turns; it does not collect trace evidence and
   // cannot stand in for producing the final report.
   'write_analysis_note',
+  // Owner-selected document knowledge is background, never trace evidence:
+  // reading it cannot satisfy an evidence phase.
+  ...KNOWLEDGE_TOOL_NAMES,
 ]);
 
 export type PlanToolCapability = 'evidence' | 'informational';

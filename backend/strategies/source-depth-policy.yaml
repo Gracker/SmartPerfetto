@@ -6,7 +6,10 @@
 # when a call reaches the source; tokens are what is actually delivered.
 # `locates` are locate_trace_anchor calls; each runs a few bounded internal
 # searches that do not spend `searches`.
-# Knowledge-base text has its own token pool.
+# Knowledge-base text has its own token pool, shared by every knowledge
+# surface. `searches`/`reads` count search_knowledge/read_knowledge_section
+# calls on selected document collections; `part_chars` is the most section
+# text one read delivers.
 
 schema_version: source_depth_policy@1
 
@@ -26,3 +29,6 @@ depths:
 
 knowledge:
   tokens: 12000
+  searches: 8
+  reads: 8
+  part_chars: 4000

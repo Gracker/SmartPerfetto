@@ -204,6 +204,15 @@ export interface ExternalKnowledgeIngestLeaseGuard {
   clearActiveGeneration(): ExternalKnowledgeSource;
 }
 
+const SOURCE_ID_PREFIX = 'eks_';
+const SOURCE_ID_HEX_CHARS = 24;
+const SOURCE_ID_PATTERN = new RegExp(`^${SOURCE_ID_PREFIX}[0-9a-f]{${SOURCE_ID_HEX_CHARS}}$`);
+
+/** True only for an id this registry mints: safe as a path segment and in projected output. */
+export function isExternalKnowledgeSourceId(value: unknown): value is string {
+  return typeof value === 'string' && SOURCE_ID_PATTERN.test(value);
+}
+
 /** The scope identity every store of external knowledge partitions by. */
 export function scopeKey(scope: ExternalKnowledgeScope): string {
   return [scope.tenantId ?? '', scope.workspaceId ?? '', scope.userId ?? ''].join('\0');
@@ -294,10 +303,10 @@ export class ExternalKnowledgeSourceRegistry {
       const value = (input as ExternalKnowledgeDescriptiveText)[field];
       if (value !== undefined) descriptive[field] = boundedText(value, field);
     }
-    const sourceId = `eks_${createHash('sha256')
+    const sourceId = `${SOURCE_ID_PREFIX}${createHash('sha256')
       .update(`${input.kind}\0${path.resolve(input.rootRealpath)}\0${scopeKey(input.scope)}`)
       .digest('hex')
-      .slice(0, 24)}`;
+      .slice(0, SOURCE_ID_HEX_CHARS)}`;
     return this.mutateSource(sourceId, input.scope, previous => {
       if (previous && isDeleting(previous)) throw knowledgeSourceDeleting(sourceId);
       // A record kept from before the limit may keep its own name; a new or changed name is bounded.

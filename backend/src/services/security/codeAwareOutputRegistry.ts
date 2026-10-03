@@ -21,7 +21,8 @@ type GuardRegistration =
   | {kind: 'snippet'; snippet: string; ref: CodeRef}
   | {kind: 'private'; snippet: string; replacement: string}
   | {kind: 'query'; snippet: string; replacement: string}
-  | {kind: 'knowledge'; snippet: string; replacement: string}
+  /** `values`: whole document names (title, headings, path) matched exactly, however short. */
+  | {kind: 'knowledge'; snippet: string; replacement: string; values?: readonly string[]}
   | {kind: 'canary'; canary: string};
 
 /**
@@ -132,7 +133,8 @@ class SessionCodeAwareOutputGuard {
     const pattern = registration.kind === 'snippet'
       ? registration.snippet
       : 'replacement' in registration
-        ? `${registration.snippet}\0${registration.replacement}`
+        ? [registration.snippet, ...('values' in registration ? registration.values ?? [] : []),
+          registration.replacement].join('\0')
         : registration.canary;
     const patternBytes = Buffer.byteLength(pattern, 'utf8');
     if (
@@ -236,7 +238,10 @@ class SessionCodeAwareOutputGuard {
     if (registration.kind === 'snippet') {
       stream.registerSnippet(registration.snippet, registration.ref);
     } else if ('replacement' in registration) {
-      stream.registerPrivateSnippet(registration.snippet, registration.replacement);
+      if (registration.snippet.trim()) stream.registerPrivateSnippet(registration.snippet, registration.replacement);
+      if ('values' in registration && registration.values?.length) {
+        stream.registerPrivateValues(registration.values, registration.replacement);
+      }
     } else {
       stream.registerCanary(registration.canary);
     }
@@ -272,7 +277,8 @@ class SessionOutputGuards {
       const context = registration.kind === 'snippet'
         ? credentialContextForPath(registration.ref.filePath)
         : TEXT_CREDENTIAL_CONTEXT;
-      for (const credential of credentialValues(registration.snippet, context)) {
+      const texts = [registration.snippet, ...('values' in registration ? registration.values ?? [] : [])];
+      for (const credential of texts.flatMap(text => credentialValues(text, context))) {
         this.owner.register({kind: 'private', snippet: credential, replacement: REDACTED_SECRET});
       }
     } else { this.owner.register(registration); }
@@ -421,6 +427,56 @@ export function registerOnDemandSourceLookupForEcho(
         filePath: reference.filePath,
         ...(reference.lineRange ? {lineRange: reference.lineRange} : {}),
       },
+    });
+  }
+}
+
+/** One delivered document-collection item: the text and the document's own names for it. */
+export interface KnowledgeEchoItem {
+  knowledgeBaseId: string;
+  /** The issued `kref-` reference the model cites; the replacement names it. */
+  referenceId: string;
+  title: string;
+  headingPath: readonly string[];
+  relativePath: string;
+  text: string;
+}
+
+/**
+ * The shortest document name registered as a whole value, in code points. One
+ * character names nothing of the document yet matches nearly any output; two
+ * is a whole CJK word (a title such as 渲染), so nothing shorter is protected.
+ */
+const MIN_KNOWLEDGE_NAME_CODE_POINTS = 2;
+
+/** A document's own names as the model may repeat them: title, each heading, the heading path, the path and its file name. */
+function knowledgeNames(item: KnowledgeEchoItem): string[] {
+  const headings = item.headingPath.map(heading => heading.trim()).filter(Boolean);
+  const fileName = item.relativePath.split('/').pop() ?? '';
+  return [...new Set([item.title, ...headings, headings.join(' › '), headings.join(' > '), item.relativePath, fileName]
+    .map(name => name.trim())
+    .filter(name => [...name].length >= MIN_KNOWLEDGE_NAME_CODE_POINTS))];
+}
+
+/**
+ * Registers what a document-collection tool delivered, one registration per
+ * item so a run stays inside the session's registration cap. The text gets
+ * the derived windows every snippet gets; the document's names (title,
+ * headings, relative path) are matched as whole values, since the derived
+ * windows index nothing shorter than eight characters. A `kb:path#Lx`
+ * citation is one text unit with the path inside it, so it is replaced whole.
+ * Strict output replaces all of it; the owner view withholds only credentials.
+ */
+export function registerKnowledgeTextForEcho(sessionId: string | undefined, items: readonly KnowledgeEchoItem[]): void {
+  if (!sessionId) return;
+  for (const item of items) {
+    const values = knowledgeNames(item);
+    if (!item.text.trim() && values.length === 0) continue;
+    registerForSession(sessionId, {
+      kind: 'knowledge',
+      snippet: item.text,
+      replacement: `[Knowledge: ${item.knowledgeBaseId}/${item.referenceId}]`,
+      values,
     });
   }
 }

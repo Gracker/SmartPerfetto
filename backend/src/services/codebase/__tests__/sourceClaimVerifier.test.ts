@@ -156,6 +156,20 @@ describe('verifySourceClaimBindings', () => {
     expect(JSON.stringify(result)).not.toMatch(/proven|因果成立|已证明/);
   });
 
+  test('a knowledge reference is neither a source reference nor Trace evidence', () => {
+    const knowledgeReference = 'kref-00000000-0000-0000-0000-000000000000';
+    const asSource = verify({binding: {claimId: 'claim-1', sourceReferenceIds: [knowledgeReference],
+      traceEvidenceRefIds: ['data:trace-1']}});
+    expect(statusOf(asSource)).toBe('invalid');
+    expect(asSource.status).toBe('failed');
+    expect(asSource.issues).toContainEqual(expect.objectContaining({severity: 'error', code: 'source_reference_not_returned'}));
+    const asTrace = verify({binding: {claimId: 'claim-1', sourceReferenceIds: [reference().id],
+      traceEvidenceRefIds: [knowledgeReference]}});
+    expect(statusOf(asTrace)).toBe('invalid');
+    expect(asTrace.status).toBe('failed');
+    expect(asTrace.issues).toContainEqual(expect.objectContaining({code: 'source_binding_trace_support_missing'}));
+  });
+
   test('Trace evidence of another claim is invalid', () => {
     const result = verify({binding: {claimId: 'claim-1', sourceReferenceIds: [reference().id],
       traceEvidenceRefIds: ['data:trace-2']}});

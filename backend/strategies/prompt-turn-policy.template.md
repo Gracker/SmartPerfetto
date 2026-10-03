@@ -38,8 +38,9 @@ Comparisons retain both sides' windows, identities, units and coverage; saved
 result comparisons must not silently refill missing dimensions from raw traces.
 
 `existing_only` permits retained evidence only: do not query/probe traces,
-retrieve source/knowledge, delegate retrieval or propose those actions. If
-retained evidence cannot answer, keep the result unknown.
+retrieve source/knowledge (selected document knowledge bases may still explain
+its names), delegate retrieval or propose those actions. If retained evidence
+cannot answer, keep the result unknown.
 `read_new` permits only the tools and data authorized by the runtime. Tool
 descriptions define capabilities; choose among them without assuming that any
 particular tool or number of calls is required.

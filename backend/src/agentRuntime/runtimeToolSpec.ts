@@ -53,8 +53,14 @@ export type RuntimeToolHandler = (
   extra: RuntimeToolExtra,
 ) => Promise<RuntimeToolResult>;
 
-/** Evidence access is declared by the canonical registration, not inferred from a tool name. */
-export type RuntimeToolEvidenceEffect = 'none' | 'read_existing' | 'acquire';
+/**
+ * Evidence access is declared by the canonical registration, not inferred from
+ * a tool name. `background` reads owner-selected background material (a
+ * document knowledge base): it collects no trace evidence and produces no
+ * capture, so an `existing_only` turn may call it, and it is never paced as an
+ * acquisition.
+ */
+export type RuntimeToolEvidenceEffect = 'none' | 'read_existing' | 'background' | 'acquire';
 
 export interface SharedToolSpec {
   name: string;

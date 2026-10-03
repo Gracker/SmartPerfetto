@@ -61,7 +61,9 @@ Agent wants a tool call
 | Tool | Purpose |
 |---|---|
 | `lookup_knowledge` | Load local performance knowledge, templates, or pipeline docs |
-| `lookup_blog_knowledge` | Query blog or Android Internals background knowledge; `source=android_internals_pack` uses the signed built-in Pack, while `source=android_internals_wiki` uses a request-whitelisted private source id |
+| `lookup_blog_knowledge` | Query Android Internals background knowledge; `source` is required: `android_internals_pack` uses the signed built-in Pack, `android_internals_wiki` a request-whitelisted private source id (the former blog default is removed) |
+| `search_knowledge` | Search the selected document knowledge bases (`document_collection`); registered only when a selected source has rights, provider consent and an active index |
+| `read_knowledge_section` | Read the section behind a `search_knowledge` hit by its issued `kref-` reference, in `part`s for a long section |
 | `lookup_aosp_source` | Query AOSP-related source knowledge |
 | `lookup_oem_sdk` | Query OEM SDK or vendor knowledge |
 | `lookup_baseline` | Fetch historical baselines |
@@ -78,6 +80,27 @@ provider consent, and the active generation. The model can read budgeted,
 redacted hits, while Claude, OpenAI, Pi, OpenCode, and Qoder SSE/log events retain only
 versioned citations, hashes, lengths, licenses, attribution, and trust
 sidecars. See [Android Internals Knowledge Pack And Private Knowledge](../getting-started/android-internals-knowledge.en.md).
+
+The document knowledge tools are background, never trace evidence:
+`evidenceEffect: background`, plan capability informational (they satisfy no
+evidence phase), no DataEnvelope or evidence capture, and callable in an
+`existing_only` turn. `search_knowledge(query, knowledge_base_id?, max_results≤10)`
+returns `hits[]` with an issued `id` (`kref-` plus a random id, issued only for
+hits actually delivered), `knowledgeBaseId`, `title`, `headingPath`,
+`relativePath`, `lineRange` and `excerpt`; omitting `knowledge_base_id` searches
+every selected collection. `read_knowledge_section(reference_id, part?)` returns
+the whole section's `lineRange`, `part` / `partCount` and that part's text; a
+part already delivered in the run returns `alreadyDelivered` with no text and no
+charge. A reference resolves only in the run that issued it; an unissued id is a
+policy refusal (`action_required: use_reference_id_from_search_knowledge`), and
+a `kref-` reference is neither trace evidence nor a source reference in a
+declaration. Each call rechecks the authorization context and the pinned index
+generation before and after the read (`analysis_context_changed_restart_required`).
+Text draws on the knowledge token pool (cut with `truncated` and `budgetExhausted` past it; a cut part is not completed later in the run); the
+search and read counts and the part size are `knowledge` in
+`source-depth-policy.yaml`. Delivered text is registered for echo protection, and titles, heading
+paths and relative paths as whole values (so `kb:` citations too); SSE/log projections keep only success,
+counts, `knowledgeBaseId`, the part position and a closed refusal action.
 
 ## Planning, Hypothesis, And Artifact Tools
 
@@ -125,7 +148,7 @@ A well-formed path or `path_prefix` that the selection policy does not admit (ou
 
 A search collects every match its traversal reaches, ranks them deterministically (declarations of the name, trace-section call sites, whole-word and exact-case matches first; test/generated/build paths last; then path and line), and returns only top-ranked candidates re-read and verified through the path gate. Each result's `lineRange` includes `context_lines` of context, `matchLines` marks the matching lines, and adjacent matches in one file share a window. `moreResults` only means more matches exist than are shown (paging), not incomplete coverage; `traversal` (`complete`, `stopped_at_cap`, `timed_out`, `error`) says whether the traversal stopped early, and `coverageComplete` is true only for a complete traversal with no match withheld by the grant. On-demand search scans files up to 16 MiB (`scope.maxFileBytes`) and reads up to 4 MiB; a match in a file between the two returns its location with `bodyUnavailable: "file_too_large"`, and reading such a file returns `source_file_too_large`. Indexing keeps its 200 KiB limit.
 
-Source budgets are per run and chosen by `sourceDepth` (`source-depth-policy.yaml`). Search-type calls (`search_codebase`, `find_codebase_files`, graph tools, `resolve_symbol`, and indexed lookups that reach a registered codebase) and `read_codebase_file` each have a count, spent when a call reaches the source (failures are not refunded). Tokens are charged for what is actually delivered: past the budget a search keeps its top-ranked results and a read its first lines (the rest is paging), and only when nothing fits is a `budget_exceeded` refusal returned; graph tools and `resolve_symbol` return metadata only and refuse a result past the budget whole, before issuing any reference. `locate_trace_anchor` spends one `locates` and runs at most a few bounded internal searches (`source-anchor-normalization.yaml`) that do not spend `searches`. Every source tool result carries `budget: {searchesLeft, readsLeft, locatesLeft, tokensLeft}`, and one read window is capped by the depth's line limit. Retrieved knowledge (the Knowledge Pack, private knowledge, and blog retrieval) has its own token pool; the built-in methodology templates `lookup_knowledge` returns are product prompt content and are not budgeted. `CodeLookupLedger` is the audit trail and patch authority only; it no longer takes part in budgets.
+Source budgets are per run and chosen by `sourceDepth` (`source-depth-policy.yaml`). Search-type calls (`search_codebase`, `find_codebase_files`, graph tools, `resolve_symbol`, and indexed lookups that reach a registered codebase) and `read_codebase_file` each have a count, spent when a call reaches the source (failures are not refunded). Tokens are charged for what is actually delivered: past the budget a search keeps its top-ranked results and a read its first lines (the rest is paging), and only when nothing fits is a `budget_exceeded` refusal returned; graph tools and `resolve_symbol` return metadata only and refuse a result past the budget whole, before issuing any reference. `locate_trace_anchor` spends one `locates` and runs at most a few bounded internal searches (`source-anchor-normalization.yaml`) that do not spend `searches`. Every source tool result carries `budget: {searchesLeft, readsLeft, locatesLeft, tokensLeft}`, and one read window is capped by the depth's line limit. Retrieved knowledge (the Knowledge Pack, the private Wiki, and document knowledge bases) has its own token pool; the built-in methodology templates `lookup_knowledge` returns are product prompt content and are not budgeted. `CodeLookupLedger` is the audit trail and patch authority only; it no longer takes part in budgets.
 
 Every returned item carries its issued reference `id`, the same as `sourceReferences[].id` and the only id the model should cite (the internal `referenceId` is no longer delivered). A search hit is `lookupKind: search_hit` and only locates code; a read window (`body`) or an indexed chunk is body evidence, and a hit whose whole range a read window covers counts as read too. The source-use status follows the strongest finding and is no longer pinned by one incomplete search; run-level `coverageComplete` is monotone and decides negative source claims.
 

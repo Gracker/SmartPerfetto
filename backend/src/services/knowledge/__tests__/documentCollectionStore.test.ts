@@ -7,7 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import Database from 'better-sqlite3';
-import {afterEach, beforeEach, describe, expect, it} from '@jest/globals';
+import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
 import {convertDocumentCollectionFile, type DocumentCollectionDocument} from '../documentCollectionCorpus';
 import {DocumentCollectionStore, KnowledgeIndexUnavailableError} from '../documentCollectionStore';
@@ -127,6 +127,37 @@ describe('DocumentCollectionStore', () => {
     writeGeneration(id);
     const hits = store.search(SCOPE, SOURCE, id, 'binder', 5);
     expect(hits.map(hit => hit.relativePath)).toEqual(['titles/binder.md', 'misc/notes.txt']);
+  });
+
+  it('reads the whole section a hit belongs to from the same generation', () => {
+    const id = generation('5');
+    writeGeneration(id);
+    const hit = store.search(SCOPE, SOURCE, id, 'fence pacing', 5)[0]!;
+    const section = store.readSection(SCOPE, SOURCE, id, hit.sectionId);
+    expect(section).toMatchObject({sectionId: hit.sectionId, relativePath: 'render/compositor.md',
+      heading: hit.heading, headingPath: hit.headingPath});
+    expect(section!.body).toContain('Frame pacing stalls when the worker waits on a fence.');
+    expect(section!.startLine).toBeLessThanOrEqual(hit.startLine);
+    expect(section!.endLine).toBeGreaterThanOrEqual(hit.endLine);
+    expect(store.readSection(SCOPE, SOURCE, id, 'd0000000000000000:9')).toBeUndefined();
+    expect(() => store.readSection(OTHER_SCOPE, SOURCE, id, hit.sectionId)).toThrow(KnowledgeIndexUnavailableError);
+  });
+
+  it('treats a heading path it cannot read as an unavailable index, never quoting the stored text', () => {
+    const id = generation('6');
+    writeGeneration(id);
+    const hit = store.search(SCOPE, SOURCE, id, 'fence pacing', 5)[0]!;
+    const db = new Database(path.join(sourceDirectory(), `${id}.sqlite`));
+    db.prepare('UPDATE sections SET heading_path_json = ?').run('{HEADING_CANARY');
+    db.close();
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      expect(() => store.readSection(SCOPE, SOURCE, id, hit.sectionId)).toThrow(KnowledgeIndexUnavailableError);
+      expect(() => store.search(SCOPE, SOURCE, id, 'fence pacing', 5)).toThrow(KnowledgeIndexUnavailableError);
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('HEADING_CANARY');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('answers knowledge_index_unavailable for a missing file or one that is not the named generation', () => {

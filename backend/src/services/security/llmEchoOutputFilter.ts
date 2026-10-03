@@ -165,6 +165,21 @@ export class LLMEchoOutputStream {
     this.sortPatterns();
   }
 
+  /**
+   * Whole values matched exactly wherever they recur, with no derived windows
+   * and no length floor of their own: short names (a title, a heading, a
+   * relative path) that the derived windows never index. Callers bound how
+   * short a value may be.
+   */
+  registerPrivateValues(values: readonly string[], replacement: string): void {
+    this.assertActive();
+    for (const value of values) {
+      if (this.overflowed) break;
+      this.addPattern(value, 'exact', undefined, replacement);
+    }
+    this.sortPatterns();
+  }
+
   private registerDerivedPatterns(
     snippet: string,
     codeRef?: CodeRef,

@@ -63,7 +63,9 @@ Full mode 中，`execute_sql` 和 `invoke_skill` 仍要求先提交分析计划�
 | Tool | 作用 |
 |---|---|
 | `lookup_knowledge` | 加载本地性能分析知识、模板或管线说明 |
-| `lookup_blog_knowledge` | 查询博客或 Android Internals 背景知识；`source=android_internals_pack` 使用内置签名 Pack，`source=android_internals_wiki` 使用请求白名单中的私有 source id |
+| `lookup_blog_knowledge` | 查询 Android Internals 背景知识；`source` 必填：`android_internals_pack` 使用内置签名 Pack，`android_internals_wiki` 使用请求白名单中的私有 source id（原博客默认检索已移除） |
+| `search_knowledge` | 检索本轮所选的文档知识库（`document_collection`）；仅当所选源有权利确认、provider 同意和 active index 时注册 |
+| `read_knowledge_section` | 按 `search_knowledge` 签发的 `kref-` 引用读取命中所在章节，长章节按 `part` 分段 |
 | `lookup_aosp_source` | 查询 AOSP 相关源码知识 |
 | `lookup_oem_sdk` | 查询 OEM SDK / 厂商相关知识 |
 | `lookup_baseline` | 查询历史 baseline |
@@ -79,6 +81,21 @@ Full mode 中，`execute_sql` 和 `invoke_skill` 仍要求先提交分析计划�
 active generation。模型可读取预算内脱敏片段；Claude、OpenAI、Pi、OpenCode、Qoder 的
 SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和可信度侧车。完整流程见
 [Android Internals 知识包与私有知识库](../getting-started/android-internals-knowledge.md)。
+
+文档知识库工具是背景依据，不是 Trace 证据：`evidenceEffect: background`，计划能力为
+informational（不满足证据阶段），结果不产生 DataEnvelope 或证据 capture，`existing_only`
+回合也可调用。`search_knowledge(query, knowledge_base_id?, max_results≤10)` 返回
+`hits[]`：签发的 `id`（`kref-` + 随机 id，只对实际下发的命中签发）、`knowledgeBaseId`、
+`title`、`headingPath`、`relativePath`、`lineRange` 与 `excerpt`；省略 `knowledge_base_id`
+时检索全部所选文档库。`read_knowledge_section(reference_id, part?)` 返回整节的
+`lineRange`、`part` / `partCount` 和该段正文；本轮已下发的段再次请求返回
+`alreadyDelivered`，不重发、不扣额度。引用只在签发它的 run 内有效，未签发的 id 是策略拒绝
+（`action_required: use_reference_id_from_search_knowledge`）；`kref-` 引用不能作为结论声明的
+Trace 证据或源码引用。每次调用前后都复核授权上下文与固定的索引代次，变化即
+`analysis_context_changed_restart_required`。正文计入知识 token 池（超额截断并标 `truncated` 与 `budgetExhausted`，截断的段本轮不再补发），
+检索与读取次数和单段字符上限见 `source-depth-policy.yaml` 的 `knowledge`。下发正文登记回显保护，标题、
+小节路径和相对路径按完整值另行登记（含 `kb:` 引用）；SSE/日志投影只保留成功与否、计数、`knowledgeBaseId`、
+分段位置和封闭的拒绝动作。
 
 ## Planning / Hypothesis / Artifact 工具
 
@@ -126,7 +143,7 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 
 搜索先收集遍历到的全部命中，再确定性排序（该名字的声明行、trace section 调用点、整词与大小写精确匹配优先；test/generated/build 路径最后；再按路径与行号），只把排名靠前的候选经路径网关重新读取核对后返回。每条结果的 `lineRange` 含 `context_lines` 上下文，`matchLines` 标出命中行，同一文件相邻命中合并为一个窗口。`moreResults` 只表示还有未展示的命中（分页），不代表覆盖不完整；`traversal`（`complete`、`stopped_at_cap`、`timed_out`、`error`）说明遍历是否提前停止，只有 `complete` 且没有被授权范围隐去的命中时 `coverageComplete` 才为 true。按需搜索扫描不超过 16 MiB 的文件（`scope.maxFileBytes`），读取上限 4 MiB；命中落在两者之间的文件时只返回位置并标 `bodyUnavailable: "file_too_large"`，读取这类文件返回 `source_file_too_large`。索引入库仍沿用 200 KiB 上限。
 
-源码额度按 run 计、由 `sourceDepth` 选档（`source-depth-policy.yaml`）：搜索类调用（`search_codebase`、`find_codebase_files`、图谱工具、`resolve_symbol`、命中已注册库的索引 lookup）与 `read_codebase_file` 各有次数，调用到达源码时扣次数（失败不退）；token 按实际下发计，超出时搜索保留排名靠前的结果、读取保留前面的行（其余为分页），一点都放不下才返回 `budget_exceeded` 拒绝；图谱工具与 `resolve_symbol` 只返回元数据，超额时整块保守拒绝（在签发任何引用之前）。`locate_trace_anchor` 扣 1 次 `locates`，内部至多几次有界检索（`source-anchor-normalization.yaml`），不扣 `searches`。每个源码工具结果都带 `budget: {searchesLeft, readsLeft, locatesLeft, tokensLeft}`；单次读取行数受档位上限约束。检索到的知识正文（Knowledge Pack、私有知识、博客检索）用单独的 token 池；`lookup_knowledge` 返回的内置方法论模板属于产品提示内容，不计入。`CodeLookupLedger` 只做审计与 patch 授权，不再参与额度。
+源码额度按 run 计、由 `sourceDepth` 选档（`source-depth-policy.yaml`）：搜索类调用（`search_codebase`、`find_codebase_files`、图谱工具、`resolve_symbol`、命中已注册库的索引 lookup）与 `read_codebase_file` 各有次数，调用到达源码时扣次数（失败不退）；token 按实际下发计，超出时搜索保留排名靠前的结果、读取保留前面的行（其余为分页），一点都放不下才返回 `budget_exceeded` 拒绝；图谱工具与 `resolve_symbol` 只返回元数据，超额时整块保守拒绝（在签发任何引用之前）。`locate_trace_anchor` 扣 1 次 `locates`，内部至多几次有界检索（`source-anchor-normalization.yaml`），不扣 `searches`。每个源码工具结果都带 `budget: {searchesLeft, readsLeft, locatesLeft, tokensLeft}`；单次读取行数受档位上限约束。检索到的知识正文（Knowledge Pack、私有 Wiki、文档知识库）用单独的 token 池；`lookup_knowledge` 返回的内置方法论模板属于产品提示内容，不计入。`CodeLookupLedger` 只做审计与 patch 授权，不再参与额度。
 
 每条结果带签发的引用 `id`，与 `sourceReferences[].id` 相同，是模型唯一应引用的 id（内部 `referenceId` 不再下发）。搜索命中为 `lookupKind: search_hit`，只定位代码；读取窗口（`body`）或索引片段才是正文证据，读取窗口完整覆盖某个命中的范围时，该命中也算已读正文。来源使用状态按最强发现推导，不再被一次不完整搜索钉死；run 级 `coverageComplete` 单调，否定性源码结论以它为准。
 

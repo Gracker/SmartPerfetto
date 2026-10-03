@@ -1,15 +1,12 @@
 {
   "note": "Backend modules no live module imports: imported only by tests, by nothing, or only by other orphans. Each entry is behaviour the product does not run, and any suite over it vouches for nothing. Shrink this list; do not grow it.",
-  "generated": "2026-09-29",
+  "generated": "2026-10-03",
   "orphaned": [
     "src/agentRuntime/adaptiveRoutingAdmission.ts",
     "src/agentv3/selfImprove/reviewAgentSdk.ts",
     "src/agentv3/selfImprove/reviewWorker.ts",
     "src/routes/agent/stateTimelineRunProjection.ts",
-    "src/services/aospKnowledgeIngester.ts",
-    "src/services/blogKnowledgeIngester.ts",
     "src/services/domainSkillEvalHarness.ts",
-    "src/services/oemSdkKnowledgeIngester.ts",
     "src/services/rag/sessionToolResultRegistry.ts",
     "src/services/selfEvolution/evaluator/codeGrader.ts",
     "src/services/selfEvolution/evaluator/processGrader.ts",

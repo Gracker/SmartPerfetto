@@ -20,7 +20,8 @@ import {
 } from './documentCollectionCorpus';
 import {
   type DocumentCollectionSearchHit,
-  DocumentCollectionStore,
+  type DocumentCollectionStore,
+  getDefaultDocumentCollectionStore,
   KnowledgeIndexUnavailableError,
 } from './documentCollectionStore';
 
@@ -63,7 +64,7 @@ function documentCollectionEmptyError(
 export class DocumentCollectionIngester {
   constructor(
     private readonly registry: ExternalKnowledgeSourceRegistry,
-    private readonly store: DocumentCollectionStore = new DocumentCollectionStore(),
+    private readonly store: DocumentCollectionStore = getDefaultDocumentCollectionStore(),
     private readonly gate: PathSecurityGate = createDocumentCollectionGate(),
   ) {}
 

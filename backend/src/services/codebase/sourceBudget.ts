@@ -18,9 +18,21 @@ const CALL_STOPS = {
 } as const satisfies Record<SourceCallKind, string>;
 type SourceCallStop = typeof CALL_STOPS[SourceCallKind];
 
+type KnowledgeCallKind = 'search' | 'read';
+const KNOWLEDGE_CALL_STOPS = {
+  search: 'knowledge_search_budget_exceeded',
+  read: 'knowledge_read_budget_exceeded',
+} as const satisfies Record<KnowledgeCallKind, string>;
+type KnowledgeCallStop = typeof KNOWLEDGE_CALL_STOPS[KnowledgeCallKind];
+
 /** The token estimate every source and knowledge pool charges: four characters a token. */
 export function estimateTextTokens(text: string): number {
   return text ? Math.max(1, Math.ceil(text.length / 4)) : 0;
+}
+
+/** The most characters that fit in `tokensLeft` beside `fixedChars` of framing, by the same estimate; never negative. */
+export function charsWithin(tokensLeft: number, fixedChars = 0): number {
+  return Math.max(0, tokensLeft * 4 - fixedChars);
 }
 
 /**
@@ -48,6 +60,32 @@ export interface SourceBudgetSnapshot {
   readonly tokensLeft: number;
 }
 
+/** What the document-collection tools have left; every knowledge tool result reports it. */
+export interface KnowledgeBudgetSnapshot {
+  readonly searchesLeft: number;
+  readonly readsLeft: number;
+  readonly tokensLeft: number;
+}
+
+/** Call counts by kind: each begin spends one, or names the stop of the exhausted kind. */
+class CallCounter<Kind extends string, Stop extends string> {
+  private readonly left: Record<Kind, number>;
+
+  constructor(limits: Readonly<Record<Kind, number>>, private readonly stops: Readonly<Record<Kind, Stop>>) {
+    this.left = {...limits};
+  }
+
+  begin(kind: Kind): Stop | undefined {
+    if (this.left[kind] <= 0) return this.stops[kind];
+    this.left[kind] -= 1;
+    return undefined;
+  }
+
+  remaining(kind: Kind): number {
+    return this.left[kind];
+  }
+}
+
 class CountedTokenPool implements TokenPool {
   constructor(private remaining: number) {}
 
@@ -71,25 +109,39 @@ export class SourceBudget {
   readonly maxReadLines: number;
   readonly sourceTokens: TokenPool;
   readonly knowledgeTokens: TokenPool;
-  private readonly callsLeft: Record<SourceCallKind, number>;
+  /** The most section text one knowledge read delivers. */
+  readonly knowledgePartChars: number;
+  private readonly sourceCalls: CallCounter<SourceCallKind, SourceCallStop>;
+  private readonly knowledgeCalls: CallCounter<KnowledgeCallKind, KnowledgeCallStop>;
 
   constructor(depth: SourceDepth, policy: SourceDepthPolicy = loadSourceDepthPolicy()) {
     const limits = policy.depths[depth];
-    this.callsLeft = {search: limits.searches, read: limits.reads, locate: limits.locates};
+    this.sourceCalls = new CallCounter({search: limits.searches, read: limits.reads, locate: limits.locates}, CALL_STOPS);
     this.maxReadLines = limits.maxReadLines;
     this.sourceTokens = new CountedTokenPool(limits.tokens);
     this.knowledgeTokens = new CountedTokenPool(policy.knowledge.tokens);
+    this.knowledgeCalls = new CallCounter({search: policy.knowledge.searches, read: policy.knowledge.reads},
+      KNOWLEDGE_CALL_STOPS);
+    this.knowledgePartChars = policy.knowledge.partChars;
   }
 
   /** Spends one call of this kind, or names the exhausted budget. */
   beginCall(kind: SourceCallKind): SourceCallStop | undefined {
-    if (this.callsLeft[kind] <= 0) return CALL_STOPS[kind];
-    this.callsLeft[kind] -= 1;
-    return undefined;
+    return this.sourceCalls.begin(kind);
+  }
+
+  /** The same for a document-collection search or section read; depth does not change these. */
+  beginKnowledgeCall(kind: KnowledgeCallKind): KnowledgeCallStop | undefined {
+    return this.knowledgeCalls.begin(kind);
+  }
+
+  knowledgeSnapshot(): KnowledgeBudgetSnapshot {
+    return {searchesLeft: this.knowledgeCalls.remaining('search'), readsLeft: this.knowledgeCalls.remaining('read'),
+      tokensLeft: this.knowledgeTokens.left()};
   }
 
   snapshot(): SourceBudgetSnapshot {
-    return {searchesLeft: this.callsLeft.search, readsLeft: this.callsLeft.read, locatesLeft: this.callsLeft.locate,
-      tokensLeft: this.sourceTokens.left()};
+    return {searchesLeft: this.sourceCalls.remaining('search'), readsLeft: this.sourceCalls.remaining('read'),
+      locatesLeft: this.sourceCalls.remaining('locate'), tokensLeft: this.sourceTokens.left()};
   }
 }

@@ -5,6 +5,7 @@
 import {createHash} from 'crypto';
 import {decodeRuntimeToolResult, readRuntimeToolResultFacts, runtimeToolReceiptMetadata} from '../../agentRuntime/runtimeToolResult';
 import {isSourceAccessRefusalAction} from '../codebase/sourceAccessRefusal';
+import {isKnowledgeRefusalAction, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape} from '../knowledge/knowledgeTools';
 
 import type {
   BackgroundKnowledgeReference,
@@ -60,9 +61,24 @@ export interface ProjectedPayload {
   coverageComplete?: false;
   /** Files a `find_codebase_files` call returned, by path hash only. */
   fileRefs?: Array<{filePathHash: string}>;
+  /**
+   * A document-collection tool's outcome without any document content: which
+   * selected knowledge bases answered, how many references came back, and for
+   * a read the part position. Titles, heading paths, relative paths and text
+   * never cross this boundary.
+   */
+  knowledge?: {
+    knowledgeBaseIds: string[];
+    referenceCount: number;
+    part?: number;
+    partCount?: number;
+    alreadyDelivered?: true;
+    truncated?: true;
+  };
 }
 
 const SENSITIVE_RAG_TOOL_NAMES = new Set([
+  ...KNOWLEDGE_TOOL_NAMES,
   'lookup_blog_knowledge',
   'lookup_app_source',
   'lookup_kernel_source',
@@ -182,6 +198,51 @@ function projectOnDemandSourceResult(
     }];
   });
   return {toolName, chunkRefs: [], sourceRefs, legacyPath: false, ...onDemandEnvelope(candidate)};
+}
+
+/**
+ * The content-free facts of a well-formed document-collection result, or
+ * undefined for any other shape (`knowledgeResultShape`, shared with the
+ * owner's narration, decides what is well formed).
+ */
+function knowledgeFacts(toolName: string, candidate: Record<string, unknown>): ProjectedPayload['knowledge'] | undefined {
+  const shape = knowledgeResultShape(toolName, candidate);
+  if (!shape) return undefined;
+  const truncated = candidate.truncated === true ? {truncated: true as const} : {};
+  if (shape.variant === 'search') {
+    return {knowledgeBaseIds: shape.knowledgeBaseIds, referenceCount: (candidate.hits as unknown[]).length, ...truncated};
+  }
+  return {
+    knowledgeBaseIds: [shape.knowledgeBaseId],
+    referenceCount: 1,
+    part: shape.part,
+    partCount: shape.partCount,
+    ...(shape.variant === 'already_delivered' ? {alreadyDelivered: true as const} : {}),
+    ...truncated,
+  };
+}
+
+/**
+ * Document-collection results, failing closed: only counts, the server-minted
+ * knowledge base ids, the part position and a closed refusal action survive.
+ * A failure keeps its closed action; any shape this does not recognize is a
+ * rejection, never a success and never read as the legacy RAG shape.
+ */
+function projectKnowledgeToolResult(toolName: string, raw: unknown): ProjectedPayload | undefined {
+  if (!KNOWLEDGE_TOOL_NAMES.has(toolName)) return undefined;
+  const candidate = onDemandCandidate(raw);
+  if (candidate?.success === false) {
+    return {
+      ...rejectedProjection(toolName),
+      ...(isKnowledgeRefusalAction(candidate.action_required) ? {action_required: candidate.action_required} : {}),
+    };
+  }
+  // An error result or failed receipt is a failure whatever its body claims.
+  const knowledge = candidate && readRuntimeToolResultFacts(raw).success !== false
+    ? knowledgeFacts(toolName, candidate) : undefined;
+  return knowledge
+    ? {toolName, chunkRefs: [], legacyPath: false, outcome: 'success', knowledge}
+    : rejectedProjection(toolName);
 }
 
 export function projectRagResultForSseAndLog(toolName: string, result: SanitizedRagResult): ProjectedPayload {
@@ -338,7 +399,8 @@ export function projectToolResultForExternalSurface(toolName: string, raw: unkno
   const publish = (payload: ProjectedPayload) => ({
     ...payload, _meta: runtimeToolReceiptMetadata(readRuntimeToolResultFacts(raw)),
   });
-  const onDemandProjection = projectOnDemandSourceResult(toolName, raw) ?? projectFileFindResult(toolName, raw);
+  const onDemandProjection = projectOnDemandSourceResult(toolName, raw) ?? projectFileFindResult(toolName, raw) ??
+    projectKnowledgeToolResult(toolName, raw);
   if (onDemandProjection) return publish(onDemandProjection);
   const projected = projectSensitiveRagToolResult(toolName, raw);
   if (projected) return publish(projected);

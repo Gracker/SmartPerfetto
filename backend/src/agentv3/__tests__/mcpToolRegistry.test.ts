@@ -173,7 +173,7 @@ describe('McpToolRegistry — allowedTools shape', () => {
     });
     const result = createRuntimeToolResult({success: true, value: 'stored'});
     const body = jest.fn(async () => result);
-    for (const evidenceEffect of ['none', 'read_existing'] as const) {
+    for (const evidenceEffect of ['none', 'read_existing', 'background'] as const) {
       registry.registerShared({
         name: evidenceEffect, description: 'Existing capability', exposure: 'public',
         inputSchema: {}, handler: body, evidenceEffect,
@@ -183,7 +183,22 @@ describe('McpToolRegistry — allowedTools shape', () => {
       expect(definition.shared.evidenceEffect).toBe(definition.evidenceEffect);
       await expect(definition.shared.handler({}, {})).resolves.toBe(result);
     }
-    expect(body).toHaveBeenCalledTimes(2);
+    expect(body).toHaveBeenCalledTimes(3);
+  });
+
+  it('never paces or observes a background read as an acquisition', async () => {
+    const events: RuntimeToolInvocationEvent[] = [];
+    const admit = jest.fn(() => createRuntimeToolResult({success: false, action_required: 'wait'}));
+    const registry = new McpToolRegistry({
+      acquisitionObserver: event => {events.push(event);},
+      acquisitionPolicy: {admit},
+    });
+    const result = createRuntimeToolResult({success: true});
+    registry.registerShared({name: 'search_knowledge', description: 'Background knowledge', exposure: 'public',
+      inputSchema: {}, handler: async () => result, evidenceEffect: 'background'});
+    await expect(registry.list()[0].shared.handler({}, {})).resolves.toBe(result);
+    expect(admit).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
   });
 
   it.each(['acquire', undefined] as const)('rejects held shared/SDK descriptors for effect=%s before executing the body', async evidenceEffect => {

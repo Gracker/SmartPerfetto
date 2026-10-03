@@ -262,6 +262,7 @@ import {
   TRACE_ANCHOR_SEARCH_OPTIONS,
 } from '../services/codebase/traceAnchorLocator';
 import {
+  charsWithin,
   estimateTextTokens,
   longestPrefixWithin,
   SourceBudget,
@@ -270,7 +271,10 @@ import {
 import type {SourceDepthDecisionV1, SourceDepthPolicy} from '../services/codebase/sourceDepthPolicy';
 import {REDACTED_SECRET} from '../services/security/secretPatterns';
 import {sourceAccessRefusalAction} from '../services/codebase/sourceAccessRefusal';
-import {registerOnDemandSourceLookupForEcho} from '../services/security/codeAwareOutputRegistry';
+import {
+  registerKnowledgeTextForEcho,
+  registerOnDemandSourceLookupForEcho,
+} from '../services/security/codeAwareOutputRegistry';
 import {
   GitNexusCodeGraphNavigator,
   type CodeGraphNavigator,
@@ -289,9 +293,24 @@ import type {
   AndroidInternalsPackStoreLike,
 } from '../services/androidInternalsPack/types';
 import {
+  externalKnowledgeSourceHasActiveIndex,
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
+  scopeKey,
 } from '../services/externalKnowledgeSourceRegistry';
+import {
+  type DocumentCollectionSearchHit,
+  type DocumentCollectionStore,
+  getDefaultDocumentCollectionStore,
+  KnowledgeIndexUnavailableError,
+} from '../services/knowledge/documentCollectionStore';
+import {describeSelectedKnowledgeBases} from '../services/knowledge/knowledgePrompt';
+import {
+  KNOWLEDGE_REFUSAL_ACTIONS,
+  KnowledgeReferenceLedger,
+  safeSliceEnd,
+  splitKnowledgeSection,
+} from '../services/knowledge/knowledgeTools';
 import {SymbolResolver} from '../services/symbol/symbolResolver';
 import {buildAnalysisContextAuthorizationFingerprint} from '../services/resolvedAnalysisContext';
 import type { RuntimeToolExtra } from '../agentRuntime/runtimeToolSpec';
@@ -1401,6 +1420,8 @@ export interface ClaudeMcpServerOptions {
   analysisContextFingerprint?: string;
   /** Test hook / alternate private external-knowledge registry. */
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
+  /** Test hook / alternate document-collection index store. */
+  documentCollectionStore?: Pick<DocumentCollectionStore, 'search' | 'readSection'>;
   /** Test hook / alternate registry. */
   codebaseRegistry?: CodebaseRegistry;
   /** Test hook / deterministic on-demand source backend. */
@@ -1648,9 +1669,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
     return {...value, hits};
   };
-  const knowledgeSourceCapabilityHint = knowledgeSourceIds.length > 0
-    ? ` Request-authorized knowledge source ids: ${knowledgeSourceIds.join(', ')}.`
-    : ' No private knowledge source is authorized for this request.';
   const externalKnowledgeRegistry = options.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
   const codebaseRegistry = options.codebaseRegistry ?? getDefaultCodebaseRegistry();
@@ -1680,10 +1698,36 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const codebaseCapabilities = new Map(selectedCodebases.map(view => [view.id, view.capabilities]));
   const anySelectedCodebaseHas = (capability: keyof SelectedCodebaseCapabilities): boolean =>
     selectedCodebases.some(view => view.capabilities[capability]);
-  const pinnedKnowledgeSourceGenerations = Object.fromEntries(knowledgeSourceIds.flatMap(sourceId => {
+  // The selected knowledge sources as this run resolved them, once: the
+  // generation pins, the document collections the knowledge tools serve, the
+  // Wiki lookup's ids and the prompt's knowledge authorization all read this.
+  const selectedKnowledgeSources = new Map(knowledgeSourceIds.flatMap(sourceId => {
     const source = externalKnowledgeRegistry.get(sourceId, knowledgeScope ?? {});
-    return source?.activeGeneration ? [[sourceId, source.activeGeneration]] : [];
+    return source ? [[sourceId, source] as const] : [];
   }));
+  const pinnedKnowledgeSourceGenerations = Object.fromEntries([...selectedKnowledgeSources].flatMap(
+    ([sourceId, source]) => source.activeGeneration ? [[sourceId, source.activeGeneration]] : []));
+  // Run authorization already refused a selection without rights,
+  // provider-send consent or an active index (409), so every collection here
+  // may send its text; there is no metadata-only tier, since titles and paths
+  // are document content too.
+  const documentCollectionStore = options.documentCollectionStore ?? getDefaultDocumentCollectionStore();
+  const documentCollectionIds = knowledgeScope ? knowledgeSourceIds.filter(sourceId => {
+    const source = selectedKnowledgeSources.get(sourceId);
+    return source?.kind === 'document_collection' &&
+      externalKnowledgeRegistry.evaluateAccess(sourceId, knowledgeScope, knowledgeSourceIds).allowed &&
+      externalKnowledgeSourceHasActiveIndex(source);
+  }) : [];
+  const knowledgeReferences = new KnowledgeReferenceLedger();
+  // The Wiki lookup serves every selected source but document collections,
+  // which have their own tools; its hint and its default id say so.
+  const wikiKnowledgeSourceIds = knowledgeSourceIds.filter(sourceId =>
+    selectedKnowledgeSources.get(sourceId)?.kind !== 'document_collection');
+  // Scoped to the Wiki: selected document collections are reached through
+  // search_knowledge, so the Wiki tool must not say no private knowledge exists.
+  const knowledgeSourceCapabilityHint = wikiKnowledgeSourceIds.length > 0
+    ? ` Request-authorized Android Internals Wiki source ids: ${wikiKnowledgeSourceIds.join(', ')}.`
+    : ' No private Android Internals Wiki source is authorized for this request.';
   const assertPrivateAnalysisContextCurrent = (): void => {
     const currentFingerprint = buildAnalysisContextAuthorizationFingerprint(
       analysisContextSelection,
@@ -4582,27 +4626,22 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     { annotations: { readOnlyHint: true } },
   );
 
-  // lookup_blog_knowledge (Plan 55): retrieve indexed public blog chunks or,
-  // only with an explicit request-scoped source capability, private Android
-  // Internals Wiki chunks.
-  // Read-only — calls ragStore.search() which never writes. The index
-  // is populated by the M2 admin route + ingester; until then the
-  // search returns `unsupportedReason='index empty'` so the agent
-  // never invents content.
+  // lookup_blog_knowledge (Plan 55): retrieve the signed built-in Android
+  // Internals Pack or, only with an explicit request-scoped source capability,
+  // private Android Internals Wiki chunks. Read-only. The public blog index it
+  // once defaulted to had no production writer and is no longer reachable.
   const lookupBlogKnowledge = tool(
     'lookup_blog_knowledge',
-    `Retrieve public blog, signed built-in Android Internals Pack, or authorized private Wiki background; knowledge hits are not trace evidence.${knowledgeSourceCapabilityHint} ` +
+    `Retrieve the signed built-in Android Internals Pack or an authorized private Android Internals Wiki; knowledge hits are not trace evidence.${knowledgeSourceCapabilityHint} ` +
     'On unsupportedReason, report unavailable without invention. ' +
     retrievedContextToolBoundary,
     {
       query: z.string().describe('Search query — natural language is fine; tokens are lowercased and matched against snippet + title.'),
       top_k: z.number().int().min(1).max(20).optional().describe('Maximum hits returned (1-20, default 5).'),
       source: z.enum([
-        'androidperformance.com',
         'android_internals_pack',
         'android_internals_wiki',
-      ]).optional()
-        .describe('Knowledge source. Use android_internals_pack for bundled, signed Android system background; omission preserves the androidperformance.com default.'),
+      ]).describe('Knowledge source: android_internals_pack for bundled, signed Android system background; android_internals_wiki for an authorized private Wiki.'),
       knowledge_source_id: z.string().optional()
         .describe(`Request-whitelisted source id for Android Internals Wiki.${knowledgeSourceCapabilityHint}`),
     },
@@ -4636,74 +4675,269 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const evaluated = filterAndRecordKnowledgeDocuments(filtered);
         return ragToolResult(evaluated, 'nested');
       }
-      if (source === 'android_internals_wiki') {
-        assertPrivateAnalysisContextCurrent();
-        const sourceId = normalizeOptionalToolString(knowledge_source_id) ??
-          (knowledgeSourceIds.length === 1 ? knowledgeSourceIds[0] : undefined);
-        if (!sourceId || !knowledgeSourceIds.includes(sourceId) || !knowledgeScope) {
-          return policyRefusal(
-            knowledgeSourceIds.length > 0 && knowledgeScope
-              ? 'use_authorized_knowledge_source_id'
-              : 'continue_without_private_knowledge',
-            {
-              unsupportedReason: 'private_knowledge_source_not_whitelisted',
-              authorizedKnowledgeSourceIds: knowledgeSourceIds,
-            },
-          );
-        }
-        const access = externalKnowledgeRegistry.evaluateAccess(
-          sourceId,
-          knowledgeScope,
-          knowledgeSourceIds,
+      assertPrivateAnalysisContextCurrent();
+      const sourceId = normalizeOptionalToolString(knowledge_source_id) ??
+        (wikiKnowledgeSourceIds.length === 1 ? wikiKnowledgeSourceIds[0] : undefined);
+      if (!sourceId || !wikiKnowledgeSourceIds.includes(sourceId) || !knowledgeScope) {
+        return policyRefusal(
+          wikiKnowledgeSourceIds.length > 0 && knowledgeScope
+            ? 'use_authorized_knowledge_source_id'
+            : 'continue_without_private_knowledge',
+          {
+            unsupportedReason: 'private_knowledge_source_not_whitelisted',
+            authorizedKnowledgeSourceIds: wikiKnowledgeSourceIds,
+          },
         );
-        if (!access.allowed) {
-          return KNOWLEDGE_ACCESS_REFUSAL_REASONS.has(access.reason)
-            ? policyRefusal('continue_without_private_knowledge', {unsupportedReason: access.reason})
-            : createRuntimeToolResult({success: false, unsupportedReason: access.reason});
-        }
-        if (!access.source.activeGeneration) {
-          return createRuntimeToolResult({success: false, unsupportedReason: 'private_knowledge_index_not_active'});
-        }
-        const pinnedGeneration = pinnedKnowledgeSourceGenerations[sourceId];
-        if (!pinnedGeneration) {
-          throw new Error('analysis_context_changed_restart_required');
-        }
-        const raw = ragStore.search(query, {
-          topK: top_k ?? 5,
-          kinds: ['android_internals_wiki'],
-          knowledgeSourceIds: [sourceId],
-          activeSourceGenerations: {[sourceId]: pinnedGeneration},
-          scope: knowledgeScope,
-        });
-        const filtered = await filterRagLookup(raw, {
-          toolName: 'lookup_blog_knowledge',
-          turn: 0,
-          ledger: codeLookupLedger, budget: sourceBudget,
-          sessionId: options.sessionId,
-          externalKnowledgeRegistry,
-          knowledgeSourceIds,
-          knowledgeScope,
-        });
-        await codeLookupLedger?.flush();
-        assertPrivateAnalysisContextCurrent();
-        const evaluated = filterAndRecordKnowledgeDocuments(filtered);
-        return ragToolResult(evaluated, 'nested');
+      }
+      const access = externalKnowledgeRegistry.evaluateAccess(
+        sourceId,
+        knowledgeScope,
+        knowledgeSourceIds,
+      );
+      if (!access.allowed) {
+        return KNOWLEDGE_ACCESS_REFUSAL_REASONS.has(access.reason)
+          ? policyRefusal('continue_without_private_knowledge', {unsupportedReason: access.reason})
+          : createRuntimeToolResult({success: false, unsupportedReason: access.reason});
+      }
+      if (!access.source.activeGeneration) {
+        return createRuntimeToolResult({success: false, unsupportedReason: 'private_knowledge_index_not_active'});
+      }
+      const pinnedGeneration = pinnedKnowledgeSourceGenerations[sourceId];
+      if (!pinnedGeneration) {
+        throw new Error('analysis_context_changed_restart_required');
       }
       const raw = ragStore.search(query, {
         topK: top_k ?? 5,
-        kinds: ['androidperformance.com'],
+        kinds: ['android_internals_wiki'],
+        knowledgeSourceIds: [sourceId],
+        activeSourceGenerations: {[sourceId]: pinnedGeneration},
         scope: knowledgeScope,
-        activeCodebaseGenerations: activeCodebaseGenerations(codebaseIds),
       });
       const filtered = await filterRagLookup(raw, {
         toolName: 'lookup_blog_knowledge',
         turn: 0,
         ledger: codeLookupLedger, budget: sourceBudget,
         sessionId: options.sessionId,
+        externalKnowledgeRegistry,
+        knowledgeSourceIds,
+        knowledgeScope,
       });
       await codeLookupLedger?.flush();
+      assertPrivateAnalysisContextCurrent();
       const evaluated = filterAndRecordKnowledgeDocuments(filtered);
-      return ragToolResult(evaluated, 'inline');
+      return ragToolResult(evaluated, 'nested');
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  // Document-collection knowledge (search_knowledge, read_knowledge_section):
+  // background the owner selected, never trace evidence. Every result is
+  // charged to the knowledge token pool, admitted and recorded as an
+  // injection, and registered for echo before it is returned; references are
+  // issued only for hits actually delivered.
+  const knowledgeBudgetRefusal = (unsupportedReason: string) =>
+    policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.budgetExhausted,
+      retrievedData({unsupportedReason, budget: sourceBudget.knowledgeSnapshot()}));
+  const knowledgeIndexUnavailable = () =>
+    createRuntimeToolResult({success: false, unsupportedReason: 'knowledge_index_unavailable'}, {isError: true});
+  /**
+   * The generation this run pinned for a selected collection. The
+   * authorization fingerprint is the authority: it covers every selected
+   * source's rights, consent, active generation, index and deletion, so once
+   * `assertPrivateAnalysisContextCurrent()` passes the pin is current. Each
+   * call asserts it twice, before reading and before delivering.
+   */
+  const pinnedDocumentCollectionGeneration = (sourceId: string): string => {
+    const pinned = pinnedKnowledgeSourceGenerations[sourceId];
+    if (!pinned || !documentCollectionIds.includes(sourceId)) {
+      throw new Error('analysis_context_changed_restart_required');
+    }
+    return pinned;
+  };
+  // An issued id's length, so the budget check counts the id each hit will carry.
+  const KNOWLEDGE_REFERENCE_ID_PLACEHOLDER = 'kref-00000000-0000-0000-0000-000000000000';
+
+  const searchKnowledge = tool(
+    'search_knowledge',
+    `${requireToolDescription('prompt-search-knowledge-tool-description')} ${retrievedContextToolBoundary}`,
+    {
+      query: z.string().min(1).max(512).describe('Names, terms or a natural-language question; identifiers match exactly.'),
+      knowledge_base_id: z.string().optional().describe('One selected knowledge base id; omit to search every selected one.'),
+      max_results: z.number().int().min(1).max(10).optional().describe('Maximum hits (1-10, default 5).'),
+    },
+    async ({query, knowledge_base_id, max_results}) => {
+      assertPrivateAnalysisContextCurrent();
+      const requested = normalizeOptionalToolString(knowledge_base_id);
+      if (requested && !documentCollectionIds.includes(requested)) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.unauthorizedKnowledgeBase, {
+          unsupportedReason: 'knowledge_base_not_selected',
+          authorizedKnowledgeBaseIds: documentCollectionIds,
+        }, {isError: true});
+      }
+      const targets = (requested ? [requested] : documentCollectionIds)
+        .map(sourceId => ({sourceId, generation: pinnedDocumentCollectionGeneration(sourceId)}));
+      const stop = sourceBudget.beginKnowledgeCall('search');
+      if (stop) return knowledgeBudgetRefusal(stop);
+      const limit = max_results ?? 5;
+      let perSource: Array<Array<{sourceId: string; generation: string; hit: DocumentCollectionSearchHit}>>;
+      try {
+        perSource = targets.map(({sourceId, generation}) => documentCollectionStore
+          .search(knowledgeScope!, sourceId, generation, query, limit)
+          .map(hit => ({sourceId, generation, hit})));
+      } catch (error) {
+        if (error instanceof KnowledgeIndexUnavailableError) return knowledgeIndexUnavailable();
+        throw error;
+      }
+      // Each collection ranks its own hits; their scores are not comparable,
+      // so collections take turns.
+      const ranked: typeof perSource[number] = [];
+      for (let rank = 0; ranked.length < limit && perSource.some(hits => rank < hits.length); rank += 1) {
+        for (const hits of perSource) if (rank < hits.length && ranked.length < limit) ranked.push(hits[rank]!);
+      }
+      const items = ranked.map(({sourceId, hit}) => ({
+        knowledgeBaseId: sourceId,
+        title: hit.title,
+        headingPath: [...hit.headingPath],
+        relativePath: hit.relativePath,
+        lineRange: {start: hit.startLine, end: hit.endLine},
+        excerpt: hit.snippet,
+      }));
+      const fit = longestPrefixWithin(
+        items.map(item => JSON.stringify({id: KNOWLEDGE_REFERENCE_ID_PLACEHOLDER, ...item}).length),
+        sourceBudget.knowledgeTokens.left(), {fixedChars: 2});
+      if (items.length > 0 && fit === 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
+      // Nothing is admitted, issued or registered unless the run is still current.
+      assertPrivateAnalysisContextCurrent();
+      const delivered: Array<{id: string} & typeof items[number]> = [];
+      for (let index = 0; index < fit; index += 1) {
+        const item = items[index]!;
+        const {sourceId, generation, hit} = ranked[index]!;
+        const injectionId = `${sourceId}/${hit.chunkId}`;
+        const contentHash = canonicalContentHash(item);
+        const decision = registerEvaluationInjection({
+          category: 'knowledgeDocs', id: injectionId, contentHash, placement: 'mcp:search_knowledge',
+        });
+        if (!decision.allowed) continue;
+        runManifestAttributionSink?.recordInjection('knowledgeDocs', injectionId, contentHash);
+        const id = knowledgeReferences.issue({
+          scopeKey: scopeKey(knowledgeScope!), sourceId, generation,
+          sectionId: hit.sectionId, chunkId: hit.chunkId, lineRange: item.lineRange,
+        });
+        delivered.push({id, ...item});
+      }
+      registerKnowledgeTextForEcho(options.sessionId, delivered.map(item => ({
+        knowledgeBaseId: item.knowledgeBaseId, referenceId: item.id, title: item.title,
+        headingPath: item.headingPath, relativePath: item.relativePath, text: item.excerpt,
+      })));
+      sourceBudget.knowledgeTokens.spend(estimateTextTokens(JSON.stringify(delivered)));
+      return createRuntimeToolResult(retrievedData({
+        success: true,
+        hits: delivered,
+        // The knowledge budget, not the index, cut the list.
+        ...(fit < items.length ? {truncated: true, budgetExhausted: true} : {}),
+        budget: sourceBudget.knowledgeSnapshot(),
+      }));
+    },
+    { annotations: { readOnlyHint: true } },
+  );
+
+  const readKnowledgeSection = tool(
+    'read_knowledge_section',
+    `${requireToolDescription('prompt-read-knowledge-section-tool-description')} ${retrievedContextToolBoundary}`,
+    {
+      reference_id: z.string().min(1).max(64).describe('A `kref-` id returned by search_knowledge in this run.'),
+      part: z.number().int().min(1).max(1000).optional().describe('1-based part of a long section (default 1).'),
+    },
+    async ({reference_id, part}) => {
+      assertPrivateAnalysisContextCurrent();
+      const referenceId = reference_id.trim();
+      const binding = knowledgeReferences.resolve(referenceId);
+      if (!binding) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.unknownReference,
+          {unsupportedReason: 'knowledge_reference_not_issued'}, {isError: true});
+      }
+      const generation = pinnedDocumentCollectionGeneration(binding.sourceId);
+      if (binding.scopeKey !== scopeKey(knowledgeScope!) || binding.generation !== generation) {
+        throw new Error('analysis_context_changed_restart_required');
+      }
+      const partNumber = part ?? 1;
+      const earlier = knowledgeReferences.deliveredPart(binding, partNumber);
+      if (earlier) {
+        return createRuntimeToolResult(retrievedData({
+          success: true,
+          alreadyDelivered: true,
+          reference: {id: referenceId, knowledgeBaseId: binding.sourceId},
+          part: partNumber,
+          partCount: earlier.partCount,
+          ...(earlier.truncated ? {truncated: true, budgetExhausted: true} : {}),
+          budget: sourceBudget.knowledgeSnapshot(),
+        }));
+      }
+      if (sourceBudget.knowledgeTokens.left() <= 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
+      const stop = sourceBudget.beginKnowledgeCall('read');
+      if (stop) return knowledgeBudgetRefusal(stop);
+      let section;
+      try {
+        section = documentCollectionStore.readSection(knowledgeScope!, binding.sourceId, generation, binding.sectionId);
+      } catch (error) {
+        if (error instanceof KnowledgeIndexUnavailableError) return knowledgeIndexUnavailable();
+        throw error;
+      }
+      if (!section) {
+        return createRuntimeToolResult({success: false, unsupportedReason: 'knowledge_section_unavailable'},
+          {isError: true});
+      }
+      const parts = splitKnowledgeSection(section.body, sourceBudget.knowledgePartChars);
+      if (partNumber > parts.length) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.partOutOfRange,
+          {unsupportedReason: 'knowledge_part_out_of_range', partCount: parts.length}, {isError: true});
+      }
+      const reference = {
+        id: referenceId,
+        knowledgeBaseId: binding.sourceId,
+        title: section.title,
+        headingPath: [...section.headingPath],
+        relativePath: section.relativePath,
+        // The whole section's source lines; lines inside a part are not
+        // derived, since converted text (HTML) has no line of its own.
+        lineRange: {start: section.startLine, end: section.endLine},
+      };
+      const fullText = parts[partNumber - 1]!;
+      // Truncate rather than refuse: deliver what the knowledge pool still holds.
+      const overheadChars = JSON.stringify({reference, part: partNumber, partCount: parts.length}).length;
+      const textChars = safeSliceEnd(fullText,
+        Math.min(fullText.length, charsWithin(sourceBudget.knowledgeTokens.left(), overheadChars)));
+      if (textChars <= 0) return knowledgeBudgetRefusal('knowledge_budget_exceeded');
+      const text = fullText.slice(0, textChars);
+      const truncated = text.length < fullText.length;
+      assertPrivateAnalysisContextCurrent();
+      const injectionId = `${binding.sourceId}/${binding.sectionId}#${partNumber}`;
+      const contentHash = canonicalContentHash({knowledgeBaseId: binding.sourceId, sectionId: binding.sectionId,
+        part: partNumber, text});
+      const decision = registerEvaluationInjection({
+        category: 'knowledgeDocs', id: injectionId, contentHash, placement: 'mcp:read_knowledge_section',
+      });
+      if (!decision.allowed) {
+        return policyRefusal(KNOWLEDGE_REFUSAL_ACTIONS.evaluationFiltered,
+          {unsupportedReason: 'evaluation_injection_filtered'});
+      }
+      runManifestAttributionSink?.recordInjection('knowledgeDocs', injectionId, contentHash);
+      registerKnowledgeTextForEcho(options.sessionId, [{
+        knowledgeBaseId: reference.knowledgeBaseId, referenceId, title: reference.title,
+        headingPath: reference.headingPath, relativePath: reference.relativePath, text,
+      }]);
+      knowledgeReferences.recordDelivered(binding, partNumber, {partCount: parts.length, truncated});
+      sourceBudget.knowledgeTokens.spend(estimateTextTokens(text) + estimateTextTokens(JSON.stringify(reference)));
+      return createRuntimeToolResult(retrievedData({
+        success: true,
+        reference,
+        part: partNumber,
+        partCount: parts.length,
+        text,
+        // A budget-cut part is final for this run: its rest is never sent.
+        ...(truncated ? {truncated: true, budgetExhausted: true} : {}),
+        budget: sourceBudget.knowledgeSnapshot(),
+      }));
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -8034,6 +8268,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
     registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
     registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public', {evidenceEffect: 'acquire'});
+    // Background, not acquisition: an existing_only turn may consult them.
+    if (documentCollectionIds.length > 0) {
+      registry.registerSdk(searchKnowledge, 'search_knowledge', 'public', {evidenceEffect: 'background'});
+      registry.registerSdk(readKnowledgeSection, 'read_knowledge_section', 'public', {evidenceEffect: 'background'});
+    }
     registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
     registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
@@ -8089,10 +8328,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
-  const sourceAuthorization: SourceAuthorizationPromptData = selectedCodebases.length > 0
-    ? {codebases: selectedCodebases, depth: sourceDepth,
-        budget: {...sourceBudget.snapshot(), maxReadLines: sourceBudget.maxReadLines}}
-    : {codebases: []};
+  const knowledgeAuthorization = describeSelectedKnowledgeBases(knowledgeSourceIds, selectedKnowledgeSources);
+  const sourceAuthorization: SourceAuthorizationPromptData = {
+    ...(selectedCodebases.length > 0
+      ? {codebases: selectedCodebases, depth: sourceDepth,
+          budget: {...sourceBudget.snapshot(), maxReadLines: sourceBudget.maxReadLines}}
+      : {codebases: []}),
+    ...(knowledgeAuthorization ? {knowledgeAuthorization} : {}),
+  };
   // One line per run that says how deep source access may go (owner view only:
   // strict surfaces drop progress for a private run).
   if (emitUpdate && sourceAuthorization.budget && options.allowNewEvidence !== false && !sourceOnlyPhase) {

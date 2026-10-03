@@ -40,6 +40,7 @@ import {
   sanitizeOwnerCodeAwareText,
   withOwnerCodeAwareProjection,
   registerCodeAwareLookupForEcho,
+  registerKnowledgeTextForEcho,
 } from '../security/codeAwareOutputRegistry';
 import {projectCodeAwareStreamingUpdate, projectOwnerCodeAwareStreamingUpdate} from '../security/codeAwareStreamingUpdateProjection';
 import {projectOwnerDataEnvelopes} from '../security/privateAnalysisProjection';
@@ -1199,6 +1200,54 @@ describe('tool result projection and session registry', () => {
     },
   );
 
+  it('projects document knowledge results as counts and ids only, failing closed', () => {
+    const knowledgeBaseId = `eks_${'a'.repeat(24)}`;
+    const hit = {id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId,
+      title: 'PRIVATE_KNOWLEDGE_TITLE', headingPath: ['PRIVATE_KNOWLEDGE_TITLE', 'PRIVATE_HEADING'],
+      relativePath: 'private/notes.md', lineRange: {start: 3, end: 9}, excerpt: 'PRIVATE_KNOWLEDGE_TEXT'};
+    const search = projectToolResultForExternalSurface('search_knowledge',
+      {success: true, hits: [hit, {...hit, id: 'kref-other'}], truncated: true});
+    expect(search).toMatchObject({toolName: 'search_knowledge', outcome: 'success', chunkRefs: [],
+      knowledge: {knowledgeBaseIds: [knowledgeBaseId], referenceCount: 2, truncated: true}});
+    const read = projectToolResultForExternalSurface('read_knowledge_section',
+      {success: true, reference: hit, part: 2, partCount: 3, text: 'PRIVATE_KNOWLEDGE_TEXT'});
+    expect(read).toMatchObject({knowledge: {knowledgeBaseIds: [knowledgeBaseId], referenceCount: 1, part: 2, partCount: 3}});
+    const refused = projectToolResultForExternalSurface('read_knowledge_section',
+      {success: false, action_required: 'use_reference_id_from_search_knowledge', error: 'PRIVATE_KNOWLEDGE_TEXT'});
+    expect(refused).toMatchObject({outcome: 'rejected', action_required: 'use_reference_id_from_search_knowledge'});
+    const budgetStop = projectToolResultForExternalSurface('search_knowledge',
+      {success: false, action_required: 'continue_with_existing_knowledge', unsupportedReason: 'knowledge_search_budget_exceeded'});
+    expect(budgetStop).toMatchObject({outcome: 'rejected', action_required: 'continue_with_existing_knowledge'});
+    expect(budgetStop).not.toHaveProperty('knowledge');
+    const openAction = projectToolResultForExternalSurface('search_knowledge',
+      {success: false, action_required: 'read private/notes.md', hits: []});
+    expect(openAction).not.toHaveProperty('action_required');
+    const unknownShape = projectToolResultForExternalSurface('search_knowledge', {success: true, hits: 'PRIVATE_KNOWLEDGE_TEXT'});
+    expect(unknownShape).toMatchObject({outcome: 'rejected', chunkRefs: []});
+    // Unknown shapes are rejections that keep the authoritative receipt, never a success.
+    const receipt = {_meta: {'smartperfetto/tool-result': {schemaVersion: 'tool_result_v1', success: true}}};
+    const probes = [
+      projectToolResultForExternalSurface('read_knowledge_section',
+        {...receipt, content: [{type: 'text', text: JSON.stringify({part: 1, partCount: 1, text: 'PRIVATE_KNOWLEDGE_TEXT'})}]}),
+      projectToolResultForExternalSurface('read_knowledge_section', {success: true, part: 1, partCount: 1, text: 'x'}),
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [{}]}),
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [null, hit]}),
+      projectToolResultForExternalSurface('search_knowledge', {hits: [hit]}),
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [{...hit, knowledgeBaseId: 'private/notes.md'}]}),
+      // The legacy RAG shape never answers for a knowledge tool.
+      projectToolResultForExternalSurface('search_knowledge', {success: true, hits: [{chunkId: 'c', score: 1,
+        metadata: {kind: 'android_internals_wiki', title: 'PRIVATE_KNOWLEDGE_TITLE'}}]}),
+    ];
+    for (const probe of probes) {
+      expect(probe).toMatchObject({outcome: 'rejected', chunkRefs: []});
+      expect(probe).not.toHaveProperty('knowledge');
+    }
+    expect((probes[0] as {_meta: unknown})._meta).toEqual(receipt._meta);
+    for (const projected of [search, read, refused, openAction, unknownShape, ...probes]) {
+      expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_|private\/notes|kref-/);
+    }
+  });
+
   it.each(['query_code_graph', 'inspect_code_symbol'])(
     'projects %s graph references without persisting file paths',
     toolName => {
@@ -2164,5 +2213,46 @@ describe('semantic input structure budget', () => {
     const input = {api_key: 'secret-value-for-test'};
     const projected = withOwnerCodeAwareProjection(() => projectCodeAwareSemanticInputStructure(undefined, input));
     expect(projected).toEqual({value: {api_key: '[REDACTED_SECRET]'}, changed: true, limited: false});
+  });
+});
+
+describe('document knowledge echo protection', () => {
+  const session = 'knowledge-names-session';
+  const item = {
+    knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+    referenceId: 'kref-11111111-2222-3333-4444-555555555555',
+    title: '渲染框架',
+    headingPath: ['渲染框架', '合成器'],
+    relativePath: 'rf/x.md',
+    text: 'XRenderCompositorWorker composes every frame for the team render framework.',
+  };
+  const answer = '根据《渲染框架 › 合成器》（kb:rf/x.md#L3-L9），合成器 在每帧后运行；见 x.md。';
+
+  afterEach(() => clearCodeAwareOutputGuards(session));
+
+  it('replaces short titles, headings, paths and kb: citations in strict output and keeps them for the owner', () => {
+    registerKnowledgeTextForEcho(session, [item]);
+    const strict = sanitizeCodeAwareText(session, answer);
+    for (const leaked of ['渲染框架', '合成器', 'rf/x.md', 'kb:rf/x.md#L3-L9', 'x.md']) {
+      expect(strict).not.toContain(leaked);
+    }
+    expect(strict).toContain('[Knowledge: ');
+    expect(withOwnerCodeAwareProjection(() => sanitizeCodeAwareText(session, answer))).toBe(answer);
+  });
+
+  it('replaces them in a strict stream split at every boundary, and leaves the owner stream readable', () => {
+    registerKnowledgeTextForEcho(session, [item]);
+    for (let split = 1; split < answer.length; split += 1) {
+      const strict = createCodeAwareStreamingTextProjection(session, `strict-${split}`, 'strict');
+      const streamed = strict.write(answer.slice(0, split)) + strict.write(answer.slice(split)) + strict.flush();
+      for (const leaked of ['渲染框架', '合成器', 'rf/x.md']) expect(streamed).not.toContain(leaked);
+      const owner = createCodeAwareStreamingTextProjection(session, `owner-${split}`, 'owner');
+      expect(owner.write(answer.slice(0, split)) + owner.write(answer.slice(split)) + owner.flush()).toBe(answer);
+    }
+  });
+
+  it('never registers a one-character name, so it cannot blank unrelated output', () => {
+    registerKnowledgeTextForEcho(session, [{...item, title: 'A', headingPath: ['B'], relativePath: 'c'}]);
+    expect(sanitizeCodeAwareText(session, 'A B c stay readable')).toBe('A B c stay readable');
   });
 });

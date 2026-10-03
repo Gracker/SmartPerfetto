@@ -131,6 +131,61 @@ describe('typed source contract golden rules', () => {
     }
   });
 
+  describe('selected knowledge bases', () => {
+    const collection = {id: 'eks_' + 'a'.repeat(24), displayName: 'Team render docs',
+      description: 'Internal render framework notes', kind: 'document_collection' as const, activeIndex: true};
+    const wiki = {id: 'eks_' + 'b'.repeat(24), displayName: 'Android Internals Wiki',
+      kind: 'android_internals_wiki' as const, activeIndex: true};
+    const knowledgeOnly = {codebases: [], knowledgeAuthorization: {knowledgeBases: [collection, wiki]}};
+    const segment = (prompt: string, label: string) => {
+      const start = prompt.indexOf(`{"context":"${label}"`);
+      return start < 0 ? undefined : JSON.parse(prompt.slice(start, prompt.indexOf('\n', start) < 0
+        ? undefined : prompt.indexOf('\n', start))).data;
+    };
+
+    it.each(['zh', 'en'] as const)('loads the %s knowledge-use guidance with its boundary', language => {
+      const guidance = loadPromptTemplate(`prompt-knowledge-use-${language}`) ?? '';
+      for (const term of ['knowledge_authorization', 'search_knowledge', 'read_knowledge_section', 'kref-',
+        'traceEvidenceRefIds', 'existing_only', 'lookup_blog_knowledge']) expect(guidance).toContain(term);
+    });
+
+    it('adds a separate knowledge segment with source off and under existing_only, and none without a selection', () => {
+      const context = typedContext({codeAwareMode: 'off', outputLanguage: 'en', sourceAuthorization: knowledgeOnly});
+      context.turnIntent = {...context.turnIntent!, evidenceAccess: 'existing_only'};
+      const prompt = buildSystemPrompt(context);
+      expect(prompt).toContain('## Internal Knowledge Use');
+      expect(segment(prompt, 'knowledge_authorization')).toEqual({knowledgeBases: [collection, wiki]});
+      expect(segment(prompt, 'source_authorization')).toEqual({mode: 'off', evidenceAccess: 'existing_only', codebases: []});
+      expect(prompt).not.toContain('## Source Use');
+      const none = buildSystemPrompt(typedContext({codeAwareMode: 'off', outputLanguage: 'en'}));
+      expect(none).not.toContain('## Internal Knowledge Use');
+      expect(none).not.toContain('"context":"knowledge_authorization"');
+    });
+
+    it('gives Claude sub-agents the knowledge guidance and selection even with source off', () => {
+      const agents = buildAgentDefinitions('general', {
+        allowedTools: ['mcp__smartperfetto__execute_sql', 'mcp__smartperfetto__search_knowledge',
+          'mcp__smartperfetto__read_knowledge_section'],
+        toolDefinitions: [{name: 'execute_sql', exposure: 'public'}, {name: 'search_knowledge', exposure: 'public'},
+          {name: 'read_knowledge_section', exposure: 'public'}],
+        codeAwareMode: 'off',
+        sourceAuthorization: knowledgeOnly,
+        outputLanguage: 'en',
+      } as any);
+      for (const agent of Object.values(agents)) {
+        expect(agent.tools).toContain('mcp__smartperfetto__search_knowledge');
+        expect(agent.prompt).toContain('## Internal Knowledge Use');
+        expect(agent.prompt).toContain('"context":"knowledge_authorization"');
+        expect(agent.prompt).toContain(collection.id);
+        expect(agent.prompt).toContain(wiki.id);
+        expect(agent.prompt).not.toContain('## Source Use');
+      }
+      for (const agent of Object.values(buildAgentDefinitions('general', {allowedTools: [], toolDefinitions: []} as any))) {
+        expect(agent.prompt).not.toContain('## Internal Knowledge Use');
+      }
+    });
+  });
+
   it('requires successful source lookups to remain locatable in the final report', () => {
     const contract = loadPromptTemplate('prompt-code-reference-contract-zh') ?? '';
     expect(contract).toContain('成功返回源码 CodeRef');

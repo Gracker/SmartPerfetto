@@ -15,7 +15,7 @@ const validPolicy = {
     locate: {searches: 2, reads: 1, locates: 1, max_read_lines: 40, tokens: 100},
     mechanism: {searches: 4, reads: 3, locates: 2, max_read_lines: 80, tokens: 400},
   },
-  knowledge: {tokens: 50},
+  knowledge: {tokens: 50, searches: 1, reads: 2, part_chars: 100},
 };
 
 describe('source depth policy', () => {
@@ -24,6 +24,7 @@ describe('source depth policy', () => {
     expect(policy.depths.locate).toEqual({searches: 4, reads: 3, locates: 2, maxReadLines: 80, tokens: 12_000});
     expect(policy.depths.mechanism.tokens).toBeGreaterThan(policy.depths.locate.tokens);
     expect(policy.knowledge.tokens).toBeGreaterThan(0);
+    expect(policy.knowledge.partChars).toBeGreaterThan(0);
   });
 
   it.each([
@@ -39,6 +40,8 @@ describe('source depth policy', () => {
       'source_depth_policy_invalid_depth'],
     [{...validPolicy, depths: {...validPolicy.depths, mechanism: {...validPolicy.depths.mechanism, searches: 1}}},
       'source_depth_policy_mechanism_below_locate'],
+    [{...validPolicy, knowledge: {tokens: 50}}, 'source_depth_policy_invalid_root'],
+    [{...validPolicy, knowledge: {...validPolicy.knowledge, part_chars: 0}}, 'source_depth_policy_invalid_knowledge'],
   ])('rejects a malformed policy (%#)', (policy, code) => {
     expect(() => parseSourceDepthPolicy(policy)).toThrow(code);
   });
@@ -97,5 +100,17 @@ describe('SourceBudget', () => {
     expect(budget.sourceTokens.left()).toBe(250);
     expect(budget.knowledgeTokens.left()).toBe(0);
     expect(budget.snapshot()).toEqual({searchesLeft: 4, readsLeft: 3, locatesLeft: 2, tokensLeft: 250});
+  });
+
+  it('counts knowledge calls apart from source calls, whatever the depth', () => {
+    const budget = new SourceBudget('locate', policy);
+    expect(budget.beginKnowledgeCall('search')).toBeUndefined();
+    expect(budget.beginKnowledgeCall('search')).toBe('knowledge_search_budget_exceeded');
+    expect(budget.beginKnowledgeCall('read')).toBeUndefined();
+    expect(budget.beginKnowledgeCall('read')).toBeUndefined();
+    expect(budget.beginKnowledgeCall('read')).toBe('knowledge_read_budget_exceeded');
+    expect(budget.knowledgeSnapshot()).toEqual({searchesLeft: 0, readsLeft: 0, tokensLeft: 50});
+    expect(budget.snapshot()).toEqual({searchesLeft: 2, readsLeft: 1, locatesLeft: 1, tokensLeft: 100});
+    expect(budget.knowledgePartChars).toBe(100);
   });
 });

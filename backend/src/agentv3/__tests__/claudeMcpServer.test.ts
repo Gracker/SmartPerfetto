@@ -307,6 +307,8 @@ import type { TraceSimilaritySnapshotRepository } from '../../services/similarit
 import {RagStore} from '../../services/ragStore';
 import * as ragLookupFilter from '../../services/rag/lookupResponseFilter';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
+import {DocumentCollectionIngester} from '../../services/knowledge/documentCollectionIngester';
+import {DocumentCollectionStore} from '../../services/knowledge/documentCollectionStore';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {projectToolResultForExternalSurface} from '../../services/rag/toolResultProjectionFilter';
 import {parseSourceDepthPolicy, type SourceDepth, type SourceDepthDecisionV1, type SourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
@@ -401,6 +403,7 @@ function createTestServer(options: {
   ragStore?: any;
   androidInternalsPackStore?: any;
   externalKnowledgeRegistry?: any;
+  documentCollectionStore?: DocumentCollectionStore;
   knowledgeSourceIds?: string[];
   analysisResultSnapshotRepository?: TraceSimilaritySnapshotRepository;
   knowledgeScope?: { tenantId: string; workspaceId: string; userId?: string };
@@ -491,6 +494,7 @@ function createTestServer(options: {
     ragStore: options.ragStore,
     androidInternalsPackStore: options.androidInternalsPackStore ?? null,
     externalKnowledgeRegistry: options.externalKnowledgeRegistry,
+    documentCollectionStore: options.documentCollectionStore,
     knowledgeSourceIds: options.knowledgeSourceIds,
     analysisResultSnapshotRepository: options.analysisResultSnapshotRepository,
     knowledgeScope: options.knowledgeScope,
@@ -633,7 +637,7 @@ function locatePolicy({tokens = 12_000, searches = 4, locates = 2}: {tokens?: nu
       locate: {searches, reads: 3, locates, max_read_lines: 80, tokens},
       mechanism: {searches: 16, reads: 12, locates: Math.max(locates, 6), max_read_lines: 200, tokens: Math.max(tokens, 60_000)},
     },
-    knowledge: {tokens: 12_000},
+    knowledge: {tokens: 12_000, searches: 8, reads: 8, part_chars: 4_000},
   });
 }
 
@@ -7624,7 +7628,7 @@ describe('createClaudeMcpServer', () => {
   describe('RAG retrieval receipts', () => {
     const retrievalCases = [undefined, 'arbitrary retrieval failure', 'success: true'] as const;
 
-    it.each(['lookup_blog_knowledge', 'lookup_aosp_source', 'lookup_oem_sdk'].flatMap(toolName =>
+    it.each(['lookup_aosp_source', 'lookup_oem_sdk'].flatMap(toolName =>
       retrievalCases.map(unsupportedReason => ({toolName, unsupportedReason})),
     ))('uses the typed retrieval outcome for $toolName ($unsupportedReason)', async ({toolName, unsupportedReason}) => {
       const search = jest.fn<RagStore['search']>((query, options) => ({
@@ -7849,11 +7853,22 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('evaluation knowledge isolation', () => {
+    // The signed built-in pack is the public knowledge path since the blog default was removed.
     function publicKnowledgeStore(lineRange: Record<string, unknown> = {
       start: 1,
       end: 2,
     }) {
+      const fingerprint = 'b'.repeat(64);
       return {
+        handle: {
+          contentVersion: '2026.07.18.1',
+          contentFingerprint: fingerprint,
+          sourceRevision: 'a'.repeat(40),
+          origin: 'bundled',
+          directory: '/immutable/aiw-pack',
+          databasePath: '/immutable/aiw-pack/content.sqlite',
+          manifest: {licenses: {expression: 'CC-BY-NC-SA-4.0', attribution: 'Android Internals Wiki by Gracker'}},
+        },
         search: jest.fn((query: string) => ({
           ...makeSparkProvenance({source: 'knowledge-test'}),
           query,
@@ -7862,23 +7877,36 @@ describe('createClaudeMcpServer', () => {
             score: 1,
             chunk: {
               chunkId: 'knowledge-chunk-a',
-              kind: 'androidperformance.com',
-              uri: 'https://androidperformance.com/knowledge-a',
+              kind: 'android_internals_pack',
+              registryOrigin: 'built_in_knowledge_pack',
+              uri: 'aiw-pack://2026.07.18.1/src/knowledge-a.md',
               title: 'Knowledge A',
               snippet: 'Public background knowledge.',
               indexedAt: Date.now(),
+              license: 'CC-BY-NC-SA-4.0',
+              attribution: 'Android Internals Wiki by Gracker',
+              commitHash: 'a'.repeat(40),
+              commitProvenance: 'clean_git_revision',
+              contentFingerprint: fingerprint,
+              articleId: 'article-a',
+              sectionId: 'section-a',
+              sectionHeading: 'Knowledge A',
+              chunkHash: 'c'.repeat(64),
+              knowledgePackVersion: '2026.07.18.1',
+              knowledgePackFingerprint: fingerprint,
               lineRange,
             },
           }],
-          probed: ['androidperformance.com'],
+          probed: ['android_internals_pack'],
           retrievedAt: Date.now(),
         })),
+        close: jest.fn(),
       };
     }
 
     it('fails closed on a deep unknown field in a sanitized knowledge hit', async () => {
       const {tools} = createTestServer({
-        ragStore: publicKnowledgeStore({
+        androidInternalsPackStore: publicKnowledgeStore({
           start: 1,
           end: 2,
           undeclared: 'must-not-cross-evaluation-boundary',
@@ -7886,7 +7914,7 @@ describe('createClaudeMcpServer', () => {
       });
 
       await expect(callTool(tools, 'lookup_blog_knowledge', {
-        query: 'knowledge',
+        query: 'knowledge', source: 'android_internals_pack',
       })).rejects.toThrow('evaluation_knowledge_payload_invalid');
     });
 
@@ -7907,14 +7935,14 @@ describe('createClaudeMcpServer', () => {
         forbiddenObservedRefs: [],
       });
       const {tools} = createTestServer({
-        ragStore: publicKnowledgeStore(),
+        androidInternalsPackStore: publicKnowledgeStore(),
       });
 
       const {result, receipt} = await withEvaluationInjectionContext({
         contract,
       }, async () => {
         const result = await callTool(tools, 'lookup_blog_knowledge', {
-          query: 'knowledge',
+          query: 'knowledge', source: 'android_internals_pack',
         });
         return {
           result,
@@ -7922,27 +7950,20 @@ describe('createClaudeMcpServer', () => {
         };
       });
 
-      expect(result).toEqual(expect.objectContaining({
+      expect(result.result).toEqual(expect.objectContaining({
         hits: [],
       }));
       expect(receipt.observed).toEqual([]);
     });
 
     it('commits an allowed knowledge hit at the real MCP SDK handoff boundary', async () => {
+      // The admitted content is the sanitized hit the model receives.
+      const delivered = await callTool(createTestServer({androidInternalsPackStore: publicKnowledgeStore()}).tools,
+        'lookup_blog_knowledge', {query: 'knowledge', source: 'android_internals_pack'});
       const ref = {
         category: 'knowledgeDocs' as const,
         id: 'knowledge-chunk-a',
-        contentHash: canonicalContentHash({
-          chunkId: 'knowledge-chunk-a',
-          score: 1,
-          metadata: {
-            kind: 'androidperformance.com',
-            lineRange: {start: 1, end: 2},
-            title: 'Knowledge A',
-            uri: 'https://androidperformance.com/knowledge-a',
-          },
-          snippet: 'Public background knowledge.',
-        }),
+        contentHash: canonicalContentHash(delivered.result.hits[0]),
       };
       const contract = createEvaluationRoleInjectionContract({
         role: 'candidate',
@@ -7963,16 +7984,16 @@ describe('createClaudeMcpServer', () => {
         forbiddenObservedRefs: [],
       });
       const {tools} = createTestServer({
-        ragStore: publicKnowledgeStore(),
+        androidInternalsPackStore: publicKnowledgeStore(),
       });
 
       const receipt = await withEvaluationInjectionContext({
         contract,
       }, async () => {
         const result = await callTool(tools, 'lookup_blog_knowledge', {
-          query: 'knowledge',
+          query: 'knowledge', source: 'android_internals_pack',
         });
-        expect(result.hits).toHaveLength(1);
+        expect(result.result.hits).toHaveLength(1);
         return sealEvaluationExposureReceipt();
       });
 
@@ -9312,6 +9333,269 @@ describe('createClaudeMcpServer', () => {
       } finally {
         fs.rmSync(tmpDir, {recursive: true, force: true});
       }
+    });
+  });
+
+  describe('document collection knowledge', () => {
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const knowledgePolicy = (knowledge: {tokens?: number; part_chars?: number; searches?: number} = {}) =>
+      parseSourceDepthPolicy({
+        schema_version: 'source_depth_policy@1',
+        depths: {
+          locate: {searches: 4, reads: 3, locates: 2, max_read_lines: 80, tokens: 12_000},
+          mechanism: {searches: 16, reads: 12, locates: 6, max_read_lines: 200, tokens: 60_000},
+        },
+        knowledge: {tokens: knowledge.tokens ?? 12_000, searches: knowledge.searches ?? 8, reads: 8,
+          part_chars: knowledge.part_chars ?? 4_000},
+      });
+
+    async function withCollection<T>(
+      options: {sendToProvider?: boolean; files?: Record<string, string>},
+      run: (fixture: {
+        registry: ExternalKnowledgeSourceRegistry;
+        store: DocumentCollectionStore;
+        sourceId: string;
+        ingest: () => Promise<unknown>;
+      }) => Promise<T>,
+    ): Promise<T> {
+      const tmpDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-document-collection-')));
+      const previousRoots = process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS;
+      try {
+        const docsRoot = path.join(tmpDir, 'docs');
+        fs.mkdirSync(docsRoot);
+        process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = docsRoot;
+        for (const [relativePath, content] of Object.entries(options.files ?? {
+          'render/compositor.md': [
+            '# Render framework',
+            '',
+            '## XRenderCompositorWorker',
+            '',
+            'XRenderCompositorWorker composes every frame for the team render framework.',
+            'It waits on the frame fence before composing.',
+          ].join('\n'),
+        })) {
+          fs.mkdirSync(path.dirname(path.join(docsRoot, relativePath)), {recursive: true});
+          fs.writeFileSync(path.join(docsRoot, relativePath), content);
+        }
+        const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+        const store = new DocumentCollectionStore(path.join(tmpDir, 'index'));
+        const source = registry.register({
+          kind: 'document_collection',
+          displayName: 'Team render docs',
+          description: 'Internal render framework and trace tag notes',
+          rootRealpath: docsRoot,
+          revision: 'content-initial',
+          contentFingerprint: 'initial',
+          dirty: false,
+          rightsAcknowledged: true,
+          sendToProvider: options.sendToProvider ?? true,
+          consentedBy: 'user-a',
+          scope,
+        });
+        const ingester = new DocumentCollectionIngester(registry, store);
+        const ingest = () => ingester.ingest(source.sourceId, scope);
+        await ingest();
+        return await run({registry, store, sourceId: source.sourceId, ingest});
+      } finally {
+        if (previousRoots === undefined) delete process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS;
+        else process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = previousRoots;
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    }
+
+    function knowledgeServer(
+      fixture: {registry: ExternalKnowledgeSourceRegistry; store: DocumentCollectionStore; sourceId: string},
+      extra: Partial<Parameters<typeof createTestServer>[0]> = {},
+    ) {
+      return createTestServer({
+        externalKnowledgeRegistry: fixture.registry,
+        documentCollectionStore: fixture.store,
+        knowledgeSourceIds: [fixture.sourceId],
+        knowledgeScope: scope,
+        sessionId: 'knowledge-session',
+        ...extra,
+      });
+    }
+
+    it('registers background tools only for a selected, consented, indexed collection', async () => {
+      await withCollection({}, async fixture => {
+        const {tools, toolDefinitions, sourceAuthorization} = knowledgeServer(fixture);
+        expect(tools.has('search_knowledge')).toBe(true);
+        expect(tools.has('read_knowledge_section')).toBe(true);
+        expect(toolDefinitions.filter(definition => definition.name.endsWith('_knowledge') ||
+          definition.name === 'read_knowledge_section').map(definition => [definition.name, definition.evidenceEffect]))
+          .toEqual(expect.arrayContaining([['search_knowledge', 'background'], ['read_knowledge_section', 'background']]));
+        expect(sourceAuthorization.knowledgeAuthorization).toEqual({knowledgeBases: [{
+          id: fixture.sourceId, displayName: 'Team render docs',
+          description: 'Internal render framework and trace tag notes',
+          kind: 'document_collection', activeIndex: true,
+        }]});
+        // The source view itself carries no knowledge field.
+        expect(sourceAuthorization.codebases).toEqual([]);
+        // A document collection is not a Wiki: the Wiki lookup neither lists nor defaults to it.
+        expect(String((tools.get('lookup_blog_knowledge') as any).description)).not.toContain(fixture.sourceId);
+        const wiki = await tools.get('lookup_blog_knowledge')!.handler({query: 'frame', source: 'android_internals_wiki'});
+        expect(isPolicyRefusalResult(wiki)).toBe(true);
+        expect(JSON.parse(wiki.content[0].text)).toMatchObject({authorizedKnowledgeSourceIds: []});
+        expect(createTestServer().tools.has('search_knowledge')).toBe(false);
+      });
+      await withCollection({sendToProvider: false}, async fixture => {
+        expect(knowledgeServer(fixture).tools.has('search_knowledge')).toBe(false);
+      });
+    });
+
+    it('stays callable under existing_only, where trace acquisition and the Wiki lookup are not', async () => {
+      await withCollection({}, async fixture => {
+        const {tools} = knowledgeServer(fixture, {allowNewEvidence: false});
+        expect(tools.has('lookup_blog_knowledge')).toBe(false);
+        const result = await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'});
+        expect(result.success).toBe(true);
+        expect(result.hits.length).toBeGreaterThan(0);
+      });
+    });
+
+    it('issues an opaque kref for each delivered hit, reads its section and never resends a part', async () => {
+      await withCollection({}, async fixture => {
+        const sink = createNoopAttributionSink();
+        const {tools} = withEffectiveRuntimeRegistrySnapshot(createRuntimeRegistrySnapshotForTest() as never,
+          () => knowledgeServer(fixture, {runManifestAttributionSink: sink}));
+        const search = await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'});
+        expect(search).toMatchObject({success: true, dataTrust: 'untrusted_retrieved_data'});
+        const hit = search.hits[0];
+        expect(hit).toMatchObject({
+          knowledgeBaseId: fixture.sourceId,
+          title: 'Render framework',
+          relativePath: 'render/compositor.md',
+          lineRange: {start: expect.any(Number), end: expect.any(Number)},
+        });
+        expect(hit.id).toMatch(/^kref-[0-9a-f-]{36}$/);
+        expect(hit.excerpt).toContain('XRenderCompositorWorker composes every frame');
+        expect(sink.recordInjection).toHaveBeenCalledWith('knowledgeDocs', expect.stringContaining(fixture.sourceId),
+          expect.any(String));
+        // The same hit keeps its id.
+        expect((await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'})).hits[0].id).toBe(hit.id);
+
+        const read = await callTool(tools, 'read_knowledge_section', {reference_id: hit.id});
+        expect(read).toMatchObject({success: true, part: 1, partCount: 1,
+          reference: {id: hit.id, knowledgeBaseId: fixture.sourceId, relativePath: 'render/compositor.md'}});
+        expect(read.text).toContain('It waits on the frame fence');
+        const tokensAfterRead = read.budget.tokensLeft;
+        const again = await callTool(tools, 'read_knowledge_section', {reference_id: hit.id});
+        expect(again).toMatchObject({success: true, alreadyDelivered: true, part: 1, partCount: 1});
+        expect(again.text).toBeUndefined();
+        expect(JSON.stringify(again)).not.toContain('Render framework');
+        expect(again.budget.tokensLeft).toBe(tokensAfterRead);
+
+        const forged = await tools.get('read_knowledge_section')!.handler({reference_id: 'kref-00000000-0000-0000-0000-000000000000'});
+        expect(isPolicyRefusalResult(forged)).toBe(true);
+        expect(JSON.parse(forged.content[0].text)).toMatchObject({
+          action_required: 'use_reference_id_from_search_knowledge'});
+        const outOfRange = await tools.get('read_knowledge_section')!.handler({reference_id: hit.id, part: 5});
+        expect(isPolicyRefusalResult(outOfRange)).toBe(true);
+        expect(JSON.parse(outOfRange.content[0].text)).toMatchObject({partCount: 1});
+
+        // A kref never resolves in another run.
+        const other = knowledgeServer(fixture);
+        expect(isPolicyRefusalResult(await other.tools.get('read_knowledge_section')!.handler({reference_id: hit.id})))
+          .toBe(true);
+        const unselected = await tools.get('search_knowledge')!.handler({query: 'frame', knowledge_base_id: 'eks_' + '0'.repeat(24)});
+        expect(isPolicyRefusalResult(unselected)).toBe(true);
+      });
+    });
+
+    it('reads a long section in deterministic parts', async () => {
+      const body = Array.from({length: 40}, (_, index) => `Line ${index} of the XRenderCompositorWorker notes.`).join('\n');
+      await withCollection({files: {'long.md': `# Long\n\n${body}\n`}}, async fixture => {
+        const {tools} = knowledgeServer(fixture, {sourceDepthPolicy: knowledgePolicy({part_chars: 400})});
+        const [hit] = (await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'})).hits;
+        const first = await callTool(tools, 'read_knowledge_section', {reference_id: hit.id});
+        expect(first.partCount).toBeGreaterThan(1);
+        expect(first.text.length).toBeLessThanOrEqual(400);
+        const second = await callTool(tools, 'read_knowledge_section', {reference_id: hit.id, part: 2});
+        expect(second.part).toBe(2);
+        expect(second.text).not.toBe(first.text);
+        expect(second.reference.lineRange).toEqual(first.reference.lineRange);
+      });
+    });
+
+    it('truncates to the knowledge budget rather than refusing whole', async () => {
+      const body = Array.from({length: 60}, (_, index) => `XRenderCompositorWorker step ${index} waits on its fence.`).join('\n');
+      await withCollection({files: {'long.md': `# Long\n\n${body}\n`}}, async fixture => {
+        const {tools} = knowledgeServer(fixture, {sourceDepthPolicy: knowledgePolicy({tokens: 260, part_chars: 1000})});
+        const search = await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker', max_results: 3});
+        expect(search.success).toBe(true);
+        expect(search.hits.length).toBeGreaterThan(0);
+        const read = await callTool(tools, 'read_knowledge_section', {reference_id: search.hits[0].id});
+        expect(read).toMatchObject({success: true, truncated: true, budgetExhausted: true});
+        expect(read.budget.tokensLeft).toBeLessThan(20);
+        // The cut part is final for the run: neither re-sent nor charged again.
+        const again = await callTool(tools, 'read_knowledge_section', {reference_id: search.hits[0].id});
+        expect(again).toMatchObject({success: true, alreadyDelivered: true, truncated: true, budgetExhausted: true,
+          part: 1, budget: read.budget});
+        expect(again.text).toBeUndefined();
+        const exhausted = await tools.get('read_knowledge_section')!.handler({reference_id: search.hits[0].id, part: 2});
+        expect(isPolicyRefusalResult(exhausted)).toBe(true);
+        expect(JSON.parse(exhausted.content[0].text)).toMatchObject({action_required: 'continue_with_existing_knowledge'});
+      });
+    });
+
+    it('registers delivered titles, paths and text for strict echo and projects none of them', async () => {
+      await withCollection({}, async fixture => {
+        clearCodeAwareOutputGuards('knowledge-session');
+        try {
+          const {tools} = knowledgeServer(fixture);
+          const raw = await tools.get('search_knowledge')!.handler({query: 'XRenderCompositorWorker'});
+          const strict = sanitizeCodeAwareText('knowledge-session',
+            'See render/compositor.md: XRenderCompositorWorker composes every frame for the team render framework.');
+          expect(strict).not.toContain('render/compositor.md');
+          expect(strict).not.toContain('composes every frame');
+          const projected = JSON.stringify(projectToolResultForExternalSurface('search_knowledge', raw));
+          expect(projected).toContain(fixture.sourceId);
+          expect(projected).toMatch(/"referenceCount":[1-9]/);
+          for (const leaked of ['render/compositor.md', 'Render framework', 'composes every frame', 'kref-']) {
+            expect(projected).not.toContain(leaked);
+          }
+          const hit = JSON.parse(raw.content[0].text).hits[0];
+          const read = await tools.get('read_knowledge_section')!.handler({reference_id: hit.id});
+          const projectedRead = JSON.stringify(projectToolResultForExternalSurface('read_knowledge_section', read));
+          expect(projectedRead).toContain('"part":1');
+          for (const leaked of ['render/compositor.md', 'Render framework', 'frame fence', 'kref-']) {
+            expect(projectedRead).not.toContain(leaked);
+          }
+        } finally {
+          clearCodeAwareOutputGuards('knowledge-session');
+        }
+      });
+    });
+
+    it('restarts the run when consent is revoked or the collection is reindexed', async () => {
+      await withCollection({}, async fixture => {
+        const {tools} = knowledgeServer(fixture);
+        const [hit] = (await callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'})).hits;
+        await fixture.ingest();
+        await expect(callTool(tools, 'read_knowledge_section', {reference_id: hit.id}))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+      });
+      await withCollection({}, async fixture => {
+        const {tools} = knowledgeServer(fixture);
+        fixture.registry.setProviderConsent(fixture.sourceId, scope, false, 'user-a');
+        await expect(callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'}))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+      });
+    });
+
+    it('delivers nothing an evaluation run excludes and issues no reference for it', async () => {
+      await withCollection({}, async fixture => {
+        const contract = createEvaluationRoleInjectionContract({
+          role: 'baseline', mode: 'off',
+          selected: {patterns: [], skillNotes: [], cases: [], phaseHints: [], knowledgeDocs: []},
+          reservedTreatmentNamespace: [], expectedMaterializedRefs: [], expectedObservedRefs: [], forbiddenObservedRefs: [],
+        });
+        const {tools} = knowledgeServer(fixture);
+        const result = await withEvaluationInjectionContext({contract}, () =>
+          callTool(tools, 'search_knowledge', {query: 'XRenderCompositorWorker'}));
+        expect(result).toMatchObject({success: true, hits: []});
+      });
     });
   });
 

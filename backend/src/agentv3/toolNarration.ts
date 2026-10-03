@@ -5,6 +5,7 @@
 import {decodeRuntimeToolResult, readRuntimeToolResultFacts} from '../agentRuntime/runtimeToolResult';
 import { normalizeWaitChainSelectors } from '../services/criticalPathSelectors';
 import { waitClassText } from '../services/criticalPathText';
+import { KNOWLEDGE_REFUSAL_ACTIONS, KNOWLEDGE_TOOL_NAMES, knowledgeResultShape } from '../services/knowledge/knowledgeTools';
 import { DEFAULT_OUTPUT_LANGUAGE, localize, type OutputLanguage } from './outputLanguage';
 import type { TracePaneSide, TracePairContext, TraceSource } from './types';
 
@@ -616,6 +617,18 @@ export function formatToolCallNarration(
         ? localize(language, `检索外部知识：${query}`, `Search external knowledge: ${query}`)
         : localize(language, '检索外部知识：补充官方文档之外的解释', 'Search external knowledge: add context beyond the official docs'));
     }
+    case 'search_knowledge': {
+      const query = readString(args.query);
+      return shorten(query
+        ? localize(language, `检索内部资料：${query}，作为背景依据`, `Search internal knowledge: ${query}, as background`)
+        : localize(language, '检索内部资料：作为背景依据', 'Search internal knowledge as background'));
+    }
+    case 'read_knowledge_section': {
+      const part = readPositiveInteger(args.part);
+      return part && part !== '1'
+        ? localize(language, `继续读取内部资料章节（第 ${part} 段）`, `Continue reading the internal knowledge section (part ${part})`)
+        : localize(language, '读取内部资料章节', 'Read the internal knowledge section');
+    }
     default:
       if (options.privateContext) return '';
       return shorten(localize(language, `调用工具 ${toolName}`, `Call tool ${toolName}`));
@@ -662,9 +675,10 @@ export interface ToolResultNarrationInput {
   ownerResult?: unknown;
 }
 
-/** What a source budget stop leads to, shared by the projected refusal and the owner narration. */
+/** What a budget stop leads to, shared by the projected refusal and the owner narration. */
 const CONTINUE_WITH_SOURCE_EVIDENCE = ['继续使用已取得的源码证据',
   'analysis continues with the source evidence already collected'] as const;
+const CONTINUE_WITH_KNOWLEDGE = ['继续使用已取得的资料', 'analysis continues with what was already read'] as const;
 
 /**
  * A refused code-aware source call, in words. The projection keeps only the
@@ -693,6 +707,21 @@ function narrateSourceAccessRefusal(result: unknown, language: OutputLanguage): 
     case 'continue_without_this_codebase':
       return localize(language, '该代码库未授权把源码发送给模型，未读取',
         'This codebase has no consent to send source to the model; nothing was read');
+    case KNOWLEDGE_REFUSAL_ACTIONS.unauthorizedKnowledgeBase:
+      return localize(language, '该知识库不在本轮所选范围内，未检索',
+        'That knowledge base is not selected for this run; nothing was searched');
+    case KNOWLEDGE_REFUSAL_ACTIONS.unknownReference:
+      return localize(language, '该引用不是本轮检索返回的，未读取',
+        'That reference was not returned by a search in this run; nothing was read');
+    case KNOWLEDGE_REFUSAL_ACTIONS.partOutOfRange:
+      return localize(language, '请求的分段超出该章节范围，未读取',
+        'The requested part is beyond the section; nothing was read');
+    case KNOWLEDGE_REFUSAL_ACTIONS.budgetExhausted:
+      return localize(language, `内部资料额度已用完，${CONTINUE_WITH_KNOWLEDGE[0]}`,
+        `Internal knowledge reached its limit for this run; ${CONTINUE_WITH_KNOWLEDGE[1]}`);
+    case KNOWLEDGE_REFUSAL_ACTIONS.evaluationFiltered:
+      return localize(language, '该资料在本次评估中被排除，未读取',
+        'This material is excluded in this evaluation run; nothing was read');
     default:
       return undefined;
   }
@@ -708,6 +737,8 @@ function privateToolOutcome(
     return narrateSourceAccessRefusal(input.result, language)
       ?? localize(language, '本次工具执行未完成，正在保留已获取的证据', 'This tool call did not complete; collected evidence is retained');
   }
+  const knowledge = narrateKnowledgeProjection(toolName, asRecord(body.knowledge), language);
+  if (knowledge !== undefined) return knowledge;
   const sourceRefs = Array.isArray(body.sourceRefs) ? body.sourceRefs : undefined;
   const chunkRefs = Array.isArray(body.chunkRefs) ? body.chunkRefs : undefined;
   const references = sourceRefs ?? chunkRefs;
@@ -731,6 +762,30 @@ function privateToolOutcome(
     return localize(language, '全部计划阶段已完成', 'All plan phases complete');
   }
   return '';
+}
+
+/**
+ * A knowledge tool's outcome from its projection: counts and part position
+ * only, which is all a strict surface may say. Undefined for any other tool.
+ */
+function narrateKnowledgeProjection(
+  toolName: string,
+  knowledge: Record<string, unknown>,
+  language: OutputLanguage,
+): string | undefined {
+  if (!KNOWLEDGE_TOOL_NAMES.has(toolName) || Object.keys(knowledge).length === 0) return undefined;
+  if (toolName === 'search_knowledge') {
+    const count = readCount(knowledge.referenceCount) ?? 0;
+    return count === 0
+      ? localize(language, '内部资料中没有找到匹配', 'No match in the internal knowledge')
+      : localize(language, `找到 ${count} 条内部资料，仅作背景依据`,
+        `Found ${count} internal knowledge item${count === 1 ? '' : 's'}, background only`);
+  }
+  if (knowledge.alreadyDelivered === true) {
+    return localize(language, '该资料片段本轮已读过，未重复发送', 'That part was already read in this run; not sent again');
+  }
+  return localize(language, '已读取内部资料章节，仅作背景依据', 'Read an internal knowledge section, background only') +
+    (knowledge.truncated === true ? localize(language, '（额度不足，内容已截断）', ' (cut short by the knowledge budget)') : '');
 }
 
 const privateToolResultReceipts = new WeakMap<object, Readonly<{
@@ -768,20 +823,74 @@ export function readPrivateToolResultNarrationReceipt(
   return {message: language === 'en' ? receipt.en : receipt.zh, isError: receipt.isError};
 }
 
-const OWNER_SOURCE_TOOLS = new Set(['search_codebase', 'locate_trace_anchor', 'read_codebase_file', 'find_codebase_files']);
-
-const BUDGET_STOP_SUBJECTS: Readonly<Record<string, readonly [string, string]>> = {
-  source_search_budget_exceeded: ['本轮源码检索次数已用完', 'This run\'s source searches are used up'],
-  source_read_budget_exceeded: ['本轮源码读取次数已用完', 'This run\'s source reads are used up'],
-  source_locate_budget_exceeded: ['本轮源码定位次数已用完', 'This run\'s source locates are used up'],
-  budget_exceeded: ['本轮源码额度已用完', 'This run\'s source budget is used up'],
-};
+/** Each run budget stop: which budget ran out, and what the analysis continues with. */
+const BUDGET_STOPS: ReadonlyMap<string, {subject: readonly [string, string]; next: readonly [string, string]}> = new Map([
+  ['source_search_budget_exceeded', {subject: ['本轮源码检索次数已用完', 'This run\'s source searches are used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['source_read_budget_exceeded', {subject: ['本轮源码读取次数已用完', 'This run\'s source reads are used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['source_locate_budget_exceeded', {subject: ['本轮源码定位次数已用完', 'This run\'s source locates are used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['budget_exceeded', {subject: ['本轮源码额度已用完', 'This run\'s source budget is used up'],
+    next: CONTINUE_WITH_SOURCE_EVIDENCE}],
+  ['knowledge_search_budget_exceeded', {subject: ['本轮内部资料检索次数已用完', 'This run\'s knowledge searches are used up'],
+    next: CONTINUE_WITH_KNOWLEDGE}],
+  ['knowledge_read_budget_exceeded', {subject: ['本轮内部资料读取次数已用完', 'This run\'s knowledge reads are used up'],
+    next: CONTINUE_WITH_KNOWLEDGE}],
+  ['knowledge_budget_exceeded', {subject: ['本轮内部资料额度已用完', 'This run\'s knowledge budget is used up'],
+    next: CONTINUE_WITH_KNOWLEDGE}],
+]);
 
 /** A run budget stop, said as which budget ran out and what happens next, not as an error. */
-function narrateSourceBudgetStop(reason: string, language: OutputLanguage): string | undefined {
-  const subject = BUDGET_STOP_SUBJECTS[reason];
-  return subject ? localize(language, `${subject[0]}，${CONTINUE_WITH_SOURCE_EVIDENCE[0]}`,
-    `${subject[1]}; ${CONTINUE_WITH_SOURCE_EVIDENCE[1]}`) : undefined;
+function narrateBudgetStop(reason: string, language: OutputLanguage): string | undefined {
+  const stop = BUDGET_STOPS.get(reason);
+  return stop ? localize(language, `${stop.subject[0]}，${stop.next[0]}`, `${stop.subject[1]}; ${stop.next[1]}`)
+    : undefined;
+}
+
+/** `《Title › Heading》`, from a knowledge reference the owner may see. */
+function knowledgeLocation(reference: Record<string, unknown>): string {
+  const headings = Array.isArray(reference.headingPath)
+    ? reference.headingPath.map(readString).filter(Boolean)
+    : [];
+  const title = readString(reference.title);
+  const path = [title, ...headings.filter(heading => heading !== title)].filter(Boolean).join(' › ');
+  return path ? `《${path}》` : '';
+}
+
+/**
+ * Owner-only narration of a document-collection tool from its own result: how
+ * many items came back and from which document, or which section part was
+ * read. Undefined falls back to the projection-based narration.
+ */
+function narrateOwnerKnowledgeResult(
+  toolName: string,
+  body: Record<string, unknown>,
+  language: OutputLanguage,
+): string | undefined {
+  if (body.success === false) return narrateBudgetStop(readString(body.unsupportedReason), language);
+  // Only a result the shared shape check accepts is narrated as a success.
+  if (!knowledgeResultShape(toolName, body)) return undefined;
+  if (toolName === 'search_knowledge') {
+    const hits = Array.isArray(body.hits) ? body.hits : [];
+    if (hits.length === 0) return localize(language, '内部资料中没有找到匹配', 'No match in the internal knowledge');
+    const first = knowledgeLocation(asRecord(hits[0]));
+    return localize(language, `找到 ${hits.length} 条内部资料${first ? `（${first}${hits.length > 1 ? ' 等' : ''}）` : ''}`,
+      `Found ${hits.length} internal knowledge item${hits.length === 1 ? '' : 's'}${first ? ` (${first}${hits.length > 1 ? ' and others' : ''})` : ''}`) +
+      (body.truncated === true ? localize(language, '，额度不足未全部返回', '; the knowledge budget cut the rest') : '');
+  }
+  const location = knowledgeLocation(asRecord(body.reference));
+  const part = readPositiveInteger(body.part);
+  const partCount = readPositiveInteger(body.partCount);
+  const position = part && partCount && partCount !== '1'
+    ? localize(language, `第 ${part}/${partCount} 段`, `part ${part}/${partCount}`)
+    : '';
+  if (body.alreadyDelivered === true) {
+    return localize(language, `${location || '该段'}${position}本轮已读过，未重复发送`,
+      `${location || 'That part'} ${position} was already read in this run; not sent again`.replace(/\s+/g, ' '));
+  }
+  return localize(language, `读取 ${location}${position}`, `Read ${location} ${position}`.trim()) +
+    (body.truncated === true ? localize(language, '（额度不足，已截断）', ' (cut short by the knowledge budget)') : '');
 }
 
 const ANCHOR_MATCH_LABELS: Readonly<Record<string, readonly [string, string]>> = {
@@ -821,7 +930,7 @@ function narrateOwnerSourceResult(
   body: Record<string, unknown>,
   language: OutputLanguage,
 ): string | undefined {
-  if (body.success === false) return narrateSourceBudgetStop(readString(body.unsupportedReason), language);
+  if (body.success === false) return narrateBudgetStop(readString(body.unsupportedReason), language);
   const incomplete = body.coverageComplete === false;
   const incompleteNote = localize(language, '；检索未完整覆盖', '; the search did not cover every file');
   switch (toolName) {
@@ -888,6 +997,19 @@ function narrateOwnerSourceResult(
       return undefined;
   }
 }
+
+type OwnerNarrator = (toolName: string, body: Record<string, unknown>, language: OutputLanguage) => string | undefined;
+
+/**
+ * Tools whose owner view is narrated from their own result (relative names,
+ * counts, read ranges). Only private runs have them, and strict surfaces never
+ * use this text: they narrate from the projection or the private receipt.
+ */
+const OWNER_NARRATORS: ReadonlyMap<string, OwnerNarrator> = new Map<string, OwnerNarrator>([
+  ...['search_codebase', 'locate_trace_anchor', 'read_codebase_file', 'find_codebase_files']
+    .map(name => [name, narrateOwnerSourceResult] as const),
+  ...[...KNOWLEDGE_TOOL_NAMES].map(name => [name, narrateOwnerKnowledgeResult] as const),
+]);
 
 function readToolResultBody(result: unknown): Record<string, unknown> {
   return decodeRuntimeToolResult(result).body ?? {};
@@ -1034,6 +1156,7 @@ const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   'recall_project_memory',
   'list_stdlib_modules',
   'list_codebases',
+  'search_knowledge',
 ]);
 
 /**
@@ -1053,8 +1176,14 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
   const language = input.language ?? DEFAULT_OUTPUT_LANGUAGE;
   const toolName = shortToolName(readString(input.toolName) || 'unknown');
   const args = asRecord(input.args);
-  if (!input.privateContext && input.ownerResult !== undefined && OWNER_SOURCE_TOOLS.has(toolName)) {
-    const owner = narrateOwnerSourceResult(toolName, readToolResultBody(input.ownerResult), language);
+  const ownerNarrator = OWNER_NARRATORS.get(toolName);
+  if (!input.privateContext && input.ownerResult !== undefined && ownerNarrator) {
+    const ownerBody = readToolResultBody(input.ownerResult);
+    // The authoritative failure (an error result or a failed receipt) wins over
+    // whatever the body says; a refusal body still narrates its own stop.
+    const failed = input.isError === true || readRuntimeToolResultFacts(input.ownerResult).success === false ||
+      readRuntimeToolResultFacts(input.result).success === false;
+    const owner = failed && ownerBody.success !== false ? undefined : ownerNarrator(toolName, ownerBody, language);
     if (owner !== undefined) return shorten(owner);
   }
   const body = readToolResultBody(input.result);

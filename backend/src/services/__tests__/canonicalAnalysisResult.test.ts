@@ -1043,6 +1043,22 @@ describe('legacy narrative derivation at the canonical boundary', () => {
       .claimVerificationResult.passed).toBe(false);
   });
 
+  it('never verifies a claim that cites a knowledge reference as trace evidence', () => {
+    const envelopes = [skillTable('data:skill:scrolling_analysis:jank_type_stats:current:abc', '掉帧类型分布',
+      ['jank_type', 'count'], [['App Deadline Missed', 6]], {artifactId: 'art-6'})];
+    const knowledgeReference = 'kref-00000000-0000-0000-0000-000000000000';
+    const contract = {
+      schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
+      claims: [{id: 'Q1', text: 'App Deadline Missed 有 6 帧', kind: 'numeric', references: [{
+        evidenceRefId: knowledgeReference, sourceRef: '掉帧类型分布', rowIndex: 0, column: 'count', value: 6}]}],
+      uncertainties: [], nextSteps: [],
+    } as ConclusionContract;
+    const verification = runClaimVerification({conclusionContract: contract, dataEnvelopes: envelopes,
+      policy: 'record_only'}).claimVerificationResult;
+    expect(verification.passed).toBe(false);
+    expect(verification.status).not.toBe('passed');
+  });
+
   it('preserves conflicting artifact references for the verifier to reject', () => {
     const envelopes = [
       skillTable('data:skill:scrolling_analysis:performance_summary:current:abc', '滑动性能概览',

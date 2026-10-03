@@ -28,6 +28,7 @@ import {
   sourceAuthorizationPayload,
   type SourceAuthorizationPromptData,
 } from '../../../services/codebase/selectedCodebaseCapabilities';
+import {knowledgeUsePrompt} from '../../../services/knowledge/knowledgePrompt';
 
 /** Tools that are orchestrator-only — sub-agents collect evidence, not plan/hypothesize.
  * These are excluded when deriving sub-agent tools from the full allowedTools list. */
@@ -288,13 +289,16 @@ export function buildAgentDefinitions(
       break;
   }
 
-  if (sourceGuidance) {
-    // Sub-agents do not see the system prompt's data segments; they get the same selection facts.
-    const sourceAuthorization = JSON.stringify({context: 'source_authorization', data: sourceAuthorizationPayload(ctx ?? {})});
-    for (const agent of Object.values(agents)) {
-      agent.prompt = `${agent.prompt}\n\n${sourceGuidance}\n\n${sourceAuthorization}`;
-    }
-  }
+  // Sub-agents do not see the system prompt's data segments; each guidance comes
+  // with the same selection facts.
+  const appendDataSegment = (guidance: string, context: string, data: unknown): void => {
+    const segment = JSON.stringify({context, data});
+    for (const agent of Object.values(agents)) agent.prompt = `${agent.prompt}\n\n${guidance}\n\n${segment}`;
+  };
+  if (sourceGuidance) appendDataSegment(sourceGuidance, 'source_authorization', sourceAuthorizationPayload(ctx ?? {}));
+  // Knowledge tools reach sub-agents with the run's tool view, source off included.
+  const knowledge = knowledgeUsePrompt(ctx?.sourceAuthorization, ctx?.outputLanguage);
+  if (knowledge) appendDataSegment(knowledge.guidance, 'knowledge_authorization', knowledge.authorization);
 
   return agents;
 }

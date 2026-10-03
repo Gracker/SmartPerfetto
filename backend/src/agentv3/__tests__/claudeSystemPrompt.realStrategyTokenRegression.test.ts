@@ -45,6 +45,46 @@ describe('typed prompt with real strategy assets', () => {
       truncatedLabels: parts.truncatedLabels}));
   });
 
+  it.each(['startup', 'scrolling'] as const)('fits real typed %s comparison reports with a knowledge base selected', sceneType => {
+    const context = makeWorstCaseContext(sceneType);
+    // One selected collection with the longest name and description the registry and prompt allow.
+    context.sourceAuthorization = {...(context.sourceAuthorization ?? {codebases: []}), knowledgeAuthorization: {
+      knowledgeBases: [{id: `eks_${'a'.repeat(24)}`, displayName: '团队渲染框架'.repeat(11).slice(0, 64),
+        description: '内部渲染框架、trace tag 与已知问题说明。'.repeat(12).slice(0, 120),
+        kind: 'document_collection', activeIndex: true}],
+    }};
+    const parts = buildSystemPromptParts(context);
+    const plain = buildSystemPromptParts(makeWorstCaseContext(sceneType));
+    console.info('[TypedPromptTokenGate:knowledge]', JSON.stringify({sceneType, budget: MAX_PROMPT_TOKENS,
+      tokens: estimatePromptTokens(parts.fullPrompt), plainTokens: estimatePromptTokens(plain.fullPrompt),
+      knowledgeTokens: parts.segments.filter(segment => ['knowledge_authorization', 'knowledge_use'].includes(segment.label))
+        .map(segment => [segment.label, segment.estimatedTokens]),
+      droppedLabels: parts.droppedLabels, truncatedLabels: parts.truncatedLabels,
+      droppedTokens: plain.segments.filter(segment => parts.droppedLabels.includes(segment.label))
+        .map(segment => [segment.label, segment.tier, segment.estimatedTokens])}));
+    expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
+    expect(parts.truncatedLabels).toEqual([]);
+    for (const label of ['turn_protocol', 'comparison_identity', 'selection_context', 'investigation_requirements',
+      'investigation_findings', 'report_requirements', 'conclusion_declaration', 'sql_discovery_guidance']) {
+      expect(parts.segments.some(segment => segment.label === label)).toBe(true);
+    }
+    // This worst case leaves the plain prompt about 15 tokens of slack, less
+    // than any knowledge segment. Knowledge goes first, guidance then the list
+    // of bases, so comparison and evidence context survive; the tools still
+    // search every selected base without an id. A change that evicts anything
+    // more fails here.
+    expect(parts.droppedLabels).toEqual(['knowledge_use', 'knowledge_authorization']);
+  });
+
+  it('keeps both knowledge segments when the budget allows', () => {
+    const context = makeWorstCaseContext('startup');
+    context.sourceAuthorization = {...(context.sourceAuthorization ?? {codebases: []}), knowledgeAuthorization: {
+      knowledgeBases: [{id: `eks_${'a'.repeat(24)}`, displayName: 'Render notes', kind: 'document_collection', activeIndex: true}],
+    }};
+    const labels = buildSystemPromptParts({...context, comparison: undefined}).segments.map(segment => segment.label);
+    expect(labels).toEqual(expect.arrayContaining(['knowledge_authorization', 'knowledge_use']));
+  });
+
   it.each(['startup', 'scrolling'] as const)('spends no %s prompt budget on the shadow capability manifest', sceneType => {
     const plain = buildSystemPromptParts(makeWorstCaseContext(sceneType));
     const context = makeWorstCaseContext(sceneType);

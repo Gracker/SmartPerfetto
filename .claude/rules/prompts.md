@@ -73,6 +73,9 @@ widens authorization; `sourceNeed` (asked only when source is selected, in
 `prompt-analysis-turn-intent-source-need`) sizes source depth and never grants
 source access. Plans and source lookup are on demand. A larger budget does not
 require a report, extra source pass, fixed Skill sequence or plan template.
+Selected document knowledge bases are background (`prompt-knowledge-use-*`,
+`knowledge_authorization`): an `existing_only` turn may consult them to explain
+names in retained evidence, and they never count as trace evidence.
 
 Preserve the original claim semantics and references. Do not use wording,
 headings or error-like prose to infer native completion, rewrite causal claims

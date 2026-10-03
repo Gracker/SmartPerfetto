@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import type {KnowledgeAuthorizationPromptData} from '../knowledge/knowledgePrompt';
 import {findCredentialSpans} from '../security/secretPatterns';
 import type {CodeAwareMode} from './codeAwareFeature';
 import {codebaseHasActiveIndex, type CodebaseRef, type CodebaseScope} from './codebaseRegistry';
@@ -97,12 +98,15 @@ export function describeSelectedCodebases(
 /**
  * The run's source facts for the system prompt: what each selected codebase
  * supports, and the source depth and budget the run starts with (the same
- * `budget` fields every source tool result reports as it is spent).
+ * `budget` fields every source tool result reports as it is spent). The
+ * selected knowledge bases ride along as their own nested field, which the
+ * prompt renders as a separate `knowledge_authorization` segment.
  */
 export interface SourceAuthorizationPromptData {
   codebases: SelectedCodebaseView[];
   depth?: string;
   budget?: {searchesLeft: number; readsLeft: number; locatesLeft: number; tokensLeft: number; maxReadLines: number};
+  knowledgeAuthorization?: KnowledgeAuthorizationPromptData;
 }
 
 /**
@@ -117,10 +121,13 @@ export function sourceAuthorizationPayload(input: {
   evidenceAccess?: string;
 }) {
   const mode = input.codeAwareMode ?? 'off';
+  // Knowledge bases are their own segment, not a source capability.
+  const {knowledgeAuthorization: _knowledge, ...sourceView} = input.sourceAuthorization ?? {
+    codebases: mode === 'off' ? [] : (input.codebaseIds ?? []).map(id => ({id, capabilities: {...NO_CAPABILITIES}})),
+  };
   return {
     mode,
     ...(input.evidenceAccess ? {evidenceAccess: input.evidenceAccess} : {}),
-    ...(input.sourceAuthorization ?? {codebases: mode === 'off' ? [] : (input.codebaseIds ?? [])
-      .map(id => ({id, capabilities: {...NO_CAPABILITIES}}))}),
+    ...sourceView,
   };
 }

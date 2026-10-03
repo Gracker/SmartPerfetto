@@ -1757,6 +1757,18 @@ strategies:
   backend/strategies/prompt-source-activation-reset.template.md:
     disposition: product-only
     reason: SmartPerfetto provider session reset after private source activation changes
+  backend/strategies/prompt-knowledge-use-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto selected document knowledge bases, their tools and citation contract
+  backend/strategies/prompt-knowledge-use-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto selected document knowledge bases, their tools and citation contract
+  backend/strategies/prompt-search-knowledge-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto document knowledge base search MCP tool contract
+  backend/strategies/prompt-read-knowledge-section-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto document knowledge base section read MCP tool contract
   backend/strategies/prompt-final-report-correction-system-en.template.md:
     disposition: product-only
     reason: SmartPerfetto final-report runtime orchestration

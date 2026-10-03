@@ -26,8 +26,10 @@ import Database from 'better-sqlite3';
 
 import {userDataPath} from '../../runtimePaths';
 import {PublicRequestError} from '../../utils/publicRequestError';
+import {logStoredReadFailure, tryParseStoredJson} from '../../utils/storedData';
 import {
   type ExternalKnowledgeScope,
+  isExternalKnowledgeSourceId,
   type KnowledgeCleanupFence,
   scopeKey,
 } from '../externalKnowledgeSourceRegistry';
@@ -40,7 +42,6 @@ import {
 } from './knowledgeTokens';
 
 const SCHEMA_VERSION = 1;
-const SOURCE_ID = /^eks_[0-9a-f]{24}$/;
 const GENERATION = /^dc_[0-9a-f]{32}$/;
 const GENERATION_FILE = /^(dc_[0-9a-f]{32})\.sqlite(\.staging)?(?:-journal|-wal|-shm)?$/;
 const REQUIRED_TABLES = ['chunks', 'chunks_fts', 'documents', 'manifest', 'sections'] as const;
@@ -79,8 +80,20 @@ export interface DocumentCollectionSearchHit {
   snippet: string;
 }
 
-interface SearchRow {
-  chunk_id: string;
+/** One whole section of a generation, as indexed (already redacted). */
+export interface DocumentCollectionSection {
+  sectionId: string;
+  relativePath: string;
+  title: string;
+  heading: string;
+  headingPath: string[];
+  startLine: number;
+  endLine: number;
+  body: string;
+}
+
+/** The columns a search hit and a section read share. */
+interface LocatedRow {
   section_id: string;
   relative_path: string;
   title: string;
@@ -91,14 +104,40 @@ interface SearchRow {
   body: string;
 }
 
+interface SearchRow extends LocatedRow {
+  chunk_id: string;
+}
+
+/** The fields both readers return; a heading path the index cannot read makes the index unavailable. */
+function locatedFields(row: LocatedRow): Omit<DocumentCollectionSection, 'body'> {
+  const headingPath = tryParseStoredJson<unknown>(row.heading_path_json, 'knowledge index heading path');
+  if (!headingPath.ok || !Array.isArray(headingPath.value) ||
+    !headingPath.value.every(heading => typeof heading === 'string')) {
+    if (!headingPath.ok) logStoredReadFailure('[DocumentCollectionStore] unreadable heading path', headingPath.error,
+      {sectionId: row.section_id});
+    throw new KnowledgeIndexUnavailableError();
+  }
+  return {
+    sectionId: row.section_id,
+    relativePath: row.relative_path,
+    title: row.title,
+    heading: row.heading,
+    headingPath: headingPath.value as string[],
+    startLine: row.start_line,
+    endLine: row.end_line,
+  };
+}
+
 function scopeHash(scope: ExternalKnowledgeScope): string {
   return createHash('sha256').update(`document_collection\0${scopeKey(scope)}`).digest('hex').slice(0, 32);
 }
 
-function checkedId(value: string, pattern: RegExp): string {
-  if (!pattern.test(value)) throw new Error('knowledge_index_id_invalid');
+function checkedId(value: string, valid: (value: string) => boolean): string {
+  if (!valid(value)) throw new Error('knowledge_index_id_invalid');
   return value;
 }
+
+const isGenerationId = (value: string): boolean => GENERATION.test(value);
 
 /** Staging files a writer in this process is still filling; GC never touches them. */
 const stagingInProgress = new Set<string>();
@@ -248,11 +287,9 @@ class DocumentCollectionGenerationWriter {
 function readManifest(db: Database.Database): Map<string, unknown> {
   const manifest = new Map<string, unknown>();
   for (const row of db.prepare('SELECT key, value FROM manifest').all() as Array<{key: string; value: string}>) {
-    try {
-      manifest.set(row.key, JSON.parse(row.value));
-    } catch {
-      // An unreadable value fails the identity check below.
-    }
+    // An unreadable value fails the identity check below.
+    const value = tryParseStoredJson<unknown>(row.value, 'knowledge index manifest');
+    if (value.ok) manifest.set(row.key, value.value);
   }
   return manifest;
 }
@@ -260,8 +297,7 @@ function readManifest(db: Database.Database): Map<string, unknown> {
 const yieldEventLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve));
 
 export class DocumentCollectionStore {
-  /** Validated read-only handles by generation path; closed before that file is deleted. */
-  /** Validated read-only handles, with the file identity they were opened on. */
+  /** Validated read-only handles by generation path, with the file identity they were opened on; closed before that file is deleted. */
   private readonly readers = new Map<string, {db: Database.Database; identity: string}>();
 
   constructor(private readonly root: string = userDataPath('knowledge')) {}
@@ -364,17 +400,23 @@ export class DocumentCollectionStore {
       ORDER BY rank ASC, c.chunk_id ASC
       LIMIT ?
     `).all(expression, limit) as SearchRow[];
-    return rows.map(row => ({
-      chunkId: row.chunk_id,
-      sectionId: row.section_id,
-      relativePath: row.relative_path,
-      title: row.title,
-      heading: row.heading,
-      headingPath: JSON.parse(row.heading_path_json) as string[],
-      startLine: row.start_line,
-      endLine: row.end_line,
-      snippet: row.body.slice(0, SNIPPET_CHARS),
-    }));
+    return rows.map(row => ({chunkId: row.chunk_id, ...locatedFields(row), snippet: row.body.slice(0, SNIPPET_CHARS)}));
+  }
+
+  /** The section a search hit belongs to, from the same pinned generation; undefined when it has none. */
+  readSection(
+    scope: ExternalKnowledgeScope,
+    sourceId: string,
+    generation: string,
+    sectionId: string,
+  ): DocumentCollectionSection | undefined {
+    const row = this.reader(scope, sourceId, generation).prepare(`
+      SELECT s.section_id, d.relative_path, d.title, s.heading, s.heading_path_json, s.start_line, s.end_line, s.body
+      FROM sections s
+      JOIN documents d ON d.doc_id = s.doc_id
+      WHERE s.section_id = ?
+    `).get(sectionId) as LocatedRow | undefined;
+    return row ? {...locatedFields(row), body: row.body} : undefined;
   }
 
   private async deleteInBatches(
@@ -468,10 +510,21 @@ export class DocumentCollectionStore {
   }
 
   private sourceDirectory(scope: ExternalKnowledgeScope, sourceId: string): string {
-    return path.join(this.root, scopeHash(scope), checkedId(sourceId, SOURCE_ID));
+    return path.join(this.root, scopeHash(scope), checkedId(sourceId, isExternalKnowledgeSourceId));
   }
 
   private generationPath(scope: ExternalKnowledgeScope, sourceId: string, generation: string): string {
-    return path.join(this.sourceDirectory(scope, sourceId), `${checkedId(generation, GENERATION)}.sqlite`);
+    return path.join(this.sourceDirectory(scope, sourceId), `${checkedId(generation, isGenerationId)}.sqlite`);
   }
+}
+
+let defaultStore: DocumentCollectionStore | undefined;
+
+/**
+ * The process's store over the default data directory. Indexing, deletion and
+ * analysis runs share it, so a deletion closes the read handles a run holds.
+ */
+export function getDefaultDocumentCollectionStore(): DocumentCollectionStore {
+  defaultStore ??= new DocumentCollectionStore();
+  return defaultStore;
 }
