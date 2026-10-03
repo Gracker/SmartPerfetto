@@ -10,6 +10,7 @@ import { normalizeSkillDefinition } from '../../skillEngine/skillLoader';
 import type { SkillDefinition } from '../../skillEngine/types';
 import type { ProcessIdentityResolution } from '../types';
 import {assertEffectiveProcessScope, verifiedIdentityForScope} from '../effectiveProcessScope';
+import * as perfettoSqlDocs from '../../perfettoSqlDocs';
 
 function skill(overrides: Partial<SkillDefinition> & Record<string, any>): SkillDefinition {
   return {
@@ -418,6 +419,16 @@ describe('sqlUsesProcessNameFilter operator boundaries', () => {
     ["SELECT * FROM slice s WHERE s.name = (SELECT MIN(name) FROM process)", 'an aggregate that returns a name'],
     ["SELECT * FROM process p WHERE LOWER(p.name) = 'com.a' AND LENGTH(p.name) > 0", 'a length beside a real comparison'],
     ["SELECT SUM(p.name = 'com.a') FROM process p", 'a comparison inside a count-like aggregate'],
+    ["SELECT * FROM (process) p WHERE p.name = 'com.a'", 'an alias after a parenthesized relation'],
+    ["SELECT * FROM (process AS q) p WHERE p.name = 'com.a'", 'an alias after a parenthesized relation replacing its own'],
+    ["WITH q AS (SELECT (name) FROM process) SELECT * FROM q WHERE name = 'com.a'", 'a parenthesized column keeps its name'],
+    ["WITH q AS (SELECT ((name)) FROM process) SELECT * FROM q WHERE name = 'com.a'", 'a doubly parenthesized column keeps its name'],
+    ["SELECT * FROM slice s WHERE s.name IN (VALUES ('fixed') UNION ALL SELECT name FROM process)",
+      'a compound subquery that starts with VALUES'],
+    ["SELECT * FROM thread t, (process p NATURAL JOIN (SELECT 'com.a' AS name) targets)", 'a NATURAL join inside a group'],
+    ["SELECT * FROM process p, thread t NATURAL JOIN (SELECT 'com.a' AS name) targets",
+      'a NATURAL join after a comma, which joins everything before it'],
+    ["SELECT * FROM undocumented_table u NATURAL JOIN (SELECT 'com.a' AS process_name) t", 'a NATURAL join on an undocumented table'],
   ])('reads a process filter through wrappers, aliases and CTE columns (%s)', sql => {
     expect(sqlUsesProcessNameFilter(sql)).toBe(true);
   });
@@ -468,8 +479,34 @@ describe('sqlUsesProcessNameFilter operator boundaries', () => {
       + 'SELECT * FROM txns NATURAL JOIN breakdown', 'a NATURAL join of two documented tables expanded by *'],
     ['WITH txns AS (SELECT t.* FROM android_binder_txns t), breakdown AS (SELECT b.* FROM android_binder_client_breakdown b) '
       + 'SELECT * FROM txns NATURAL JOIN breakdown', 'a NATURAL join of two documented tables expanded by alias.*'],
+    ["SELECT * FROM (thread) p WHERE p.name = 'main'", 'an alias after a parenthesized thread table'],
+    ["SELECT * FROM (process AS q) p WHERE q.name = 'com.a'", 'an inner alias the group alias replaced'],
+    ["WITH q AS (SELECT (name) FROM thread) SELECT * FROM q WHERE name = 'main'", 'a parenthesized thread name'],
+    ["SELECT * FROM slice s WHERE s.name IN (VALUES ('fixed') UNION ALL SELECT name FROM thread)",
+      'a compound subquery that starts with VALUES and reads a thread name'],
+    ["WITH t(n) AS (VALUES ('a'), ('b')) SELECT * FROM t WHERE n = 'a'", 'a VALUES table of literals'],
+    ["SELECT * FROM process p, (thread t NATURAL JOIN (SELECT 'main' AS name) targets)",
+      'a NATURAL join inside a group that leaves the process table outside'],
+    ['SELECT * FROM undocumented_table u NATURAL JOIN (SELECT 1 AS id) t', 'a NATURAL join on an undocumented table without a name column'],
   ])('does not treat unrelated comparisons as process scoping (%s)', sql => {
     expect(sqlUsesProcessNameFilter(sql)).toBe(false);
+  });
+
+  // Without the SQL docs no table's columns are known: a join that may compare a
+  // process-name column counts, rather than passing as unscoped.
+  it('fails closed on a NATURAL join when the SQL docs are missing', () => {
+    const docs = jest.spyOn(perfettoSqlDocs, 'perfettoRelationColumns').mockReturnValue(undefined);
+    try {
+      // Verdicts are kept by text; these statements are not used elsewhere.
+      expect(sqlUsesProcessNameFilter(
+        "WITH x AS (SELECT * FROM android_binder_txns) SELECT x.* FROM x NATURAL JOIN (SELECT 'com.a' AS client_process) docs_missing",
+      )).toBe(true);
+      expect(sqlUsesProcessNameFilter(
+        "SELECT * FROM android_binder_txns b NATURAL JOIN (SELECT 'com.a' AS server_process) docs_missing",
+      )).toBe(true);
+    } finally {
+      docs.mockRestore();
+    }
   });
 });
 

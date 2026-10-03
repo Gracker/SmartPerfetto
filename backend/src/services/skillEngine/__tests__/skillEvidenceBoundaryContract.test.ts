@@ -56,7 +56,8 @@ interface CauseWording { site: string; allowedBy?: string; text: string }
 
 /** Every text of `skill` that names `rule`'s cause, as `<skill>[/<step>]` with what allows it. */
 function causeWording(skill: any, readers: ReadonlySet<string>, rule: CauseWordingRule = HEAT_WORDING): CauseWording[] {
-  return causeWordingSites(skill, {heat: readers, cap: readers}, rule).map(site => ({
+  const both = {heat: readers, cap: readers};
+  return causeWordingSites(skill, {named: both, exact: both, variantsDiffer: false}, rule).map(site => ({
     site: site.stepId ? `${skill.name}/${site.stepId}` : String(skill.name),
     text: site.text,
     allowedBy: site.allowedBy,
@@ -68,7 +69,7 @@ describe('thermal wording follows thermal evidence', () => {
   const readers = causeWordingReaders(skills);
   /** Every wording `rule` flags across the Skills, with what allows it. */
   const wordingOf = (rule: CauseWordingRule) =>
-    skills.flatMap(skill => causeWording(skill, readers[rule.wording], rule));
+    skills.flatMap(skill => causeWording(skill, readers.named[rule.wording], rule));
   const wording = wordingOf(HEAT_WORDING);
   const capWording = wordingOf(CAP_WORDING);
 
@@ -134,6 +135,32 @@ describe('thermal wording follows thermal evidence', () => {
     expect(namesFrequencyCap('min_throttle_ns')).toBe(false);
     expect(namesFrequencyCap('频率变化 ${throttle_events.data.length} 次')).toBe(false);
     expect(namesThermalCause('Sustained GPU throttle events')).toBe(false);
+    // English names a component or record the word belongs to, and negates it right before it,
+    // the way 热控守护进程 and 不是温控 do; it still blames one the clause attributes something to.
+    for (const [text, heat] of [
+      ['Android thermal HAL service process', false], ['OEM thermal manager daemon', false],
+      ['Kernel thermal zone worker thread', false], ['Any thermal-named track or slice', false],
+      ['Mitigation naming used by several vendor thermal stacks', false],
+      ['may change frequency limits for non-thermal reasons', false], ['hints and boosts are not thermal mitigation', false],
+      ['Thermal throttling detected', true], ['Device thermal state degraded performance', true],
+      ['thermal zone trips caused the frame drops', true], ['thermal events', true],
+      // Something said of the component makes it a cause; a pattern written as data is a name.
+      ['Thermal zone overheated', true], ['Thermal HAL is responsible for latency', true],
+      ['*thermal-engine*', false], ['*mtk*thermal*', false],
+      ['thermal daemon slowed the frame', true], ['thermal track caused jank', true],
+      // In a Chinese sentence an English component name is judged like any English word;
+      // the Chinese reference (用户态温控守护进程) is what names the component.
+      ['thermal HAL 是卡顿的根因', true], ['thermal HAL 让帧变慢', true], ['thermal HAL 降低帧率', true],
+      ['thermal daemon 导致卡顿', true], ['由用户态温控守护进程直接写 cpufreq 上限', false], ['**Thermal HAL is responsible for latency**', true],
+    ] as const) {
+      expect([text, namesThermalCause(text)]).toEqual([text, heat]);
+    }
+    for (const [text, cap] of [
+      ['Explicit throttling naming; semantics are vendor defined', false], ['no throttling observed', false], ['*throttl*', false], ['**CPU throttled**', true],
+      ['CPU throttled', true], ['Throttling caused jank', true],
+    ] as const) {
+      expect([text, namesFrequencyCap(text)]).toEqual([text, cap]);
+    }
     // Chinese cap wording, judged by what each word modifies.
     for (const [text, cap] of [
       ['限频导致卡顿', true], ['GPU 曾深度降频', true], ['大核降频次数', true], ['持续高温会加速热节流', true],

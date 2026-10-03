@@ -14,9 +14,60 @@ export interface ScopedSqlSource {
   exact_sql?: ExactSqlSource;
 }
 
+const SCOPE_ROLES: readonly string[] = ['target', 'global_context', 'peer_context', 'identity_metadata'];
+const CONTEXT_ROLES: readonly string[] = ['global_context', 'peer_context', 'identity_metadata'];
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every(entry => typeof entry === 'string');
+const hasOnlyKeys = (value: Record<string, unknown>, keys: readonly string[]) =>
+  Object.keys(value).every(key => keys.includes(key));
+
+/**
+ * Why `value` is not a process_scope declaration, judged on the declaration
+ * alone: its closed keys and types, its role, its context fields, an authored
+ * exact_unavailable reason, and no target binding on context evidence.
+ * Whether the SQL beside it binds what it claims is sqlScopeDeclarationError's
+ * further question.
+ */
+export function processScopeDeclarationError(value: unknown): string | undefined {
+  if (!isRecord(value)) return 'SQL has no process_scope declaration';
+  if (typeof value.role !== 'string' || !SCOPE_ROLES.includes(value.role)) return 'Unknown process_scope role';
+  if (!hasOnlyKeys(value, ['role', 'binding', 'context_fields', 'exact_unavailable', 'limitations'])
+    || (value.binding !== undefined && value.binding !== 'native_upid' && value.binding !== 'effective_target_processes')
+    || (value.limitations !== undefined && !isStringArray(value.limitations))) {
+    return 'Invalid process_scope declaration';
+  }
+  if (value.exact_unavailable !== undefined
+    && (typeof value.exact_unavailable !== 'string' || !value.exact_unavailable.trim())) {
+    return 'exact_unavailable requires an authored reason';
+  }
+  if (value.context_fields !== undefined && (!isRecord(value.context_fields)
+    || Object.entries(value.context_fields).some(([role, fields]) => !CONTEXT_ROLES.includes(role)
+      || !Array.isArray(fields) || fields.some(field => typeof field !== 'string' || !field.trim())))) {
+    return 'Invalid process_scope context_fields declaration';
+  }
+  if (CONTEXT_ROLES.includes(value.role) && value.binding) return 'Context evidence cannot claim a target UPID binding';
+  return undefined;
+}
+
+function isProcessScopeDeclaration(value: unknown): value is SqlProcessScopeDeclaration {
+  return processScopeDeclarationError(value) === undefined;
+}
+
+/** Whether `value` has the shape of an exact_sql override: SQL, its fragments and its own process_scope. */
+export function isExactSqlSource(value: unknown): value is ExactSqlSource {
+  return isRecord(value)
+    && hasOnlyKeys(value, ['sql', 'sql_fragments', 'process_scope'])
+    && typeof value.sql === 'string' && value.sql.trim().length > 0
+    && (value.sql_fragments === undefined || isStringArray(value.sql_fragments))
+    && isProcessScopeDeclaration(value.process_scope);
+}
+
 export function selectProcessScopeSql(source: ScopedSqlSource, exact: boolean): ScopedSqlSource {
   if (!exact || source.exact_sql === undefined) return source;
-  if (!source.exact_sql || typeof source.exact_sql.sql !== 'string' || !source.exact_sql.process_scope) {
+  if (!isExactSqlSource(source.exact_sql)) {
     throw new Error('Invalid exact_sql override; refusing the named SQL fallback');
   }
   return source.exact_sql;
@@ -27,27 +78,13 @@ export function sqlScopeDeclarationError(
   fragments: ReadonlyMap<string, string>,
 ): string | undefined {
   const declaration = source.process_scope;
-  if (!declaration) return 'SQL has no process_scope declaration';
-  if (!['target', 'global_context', 'peer_context', 'identity_metadata'].includes(declaration.role)) return 'Unknown process_scope role';
-  if (declaration.exact_unavailable !== undefined) {
-    return typeof declaration.exact_unavailable === 'string' && declaration.exact_unavailable.trim()
-      ? undefined : 'exact_unavailable requires an authored reason';
-  }
-  for (const [role, fields] of Object.entries(declaration.context_fields || {})) {
-    if (!['global_context', 'peer_context', 'identity_metadata'].includes(role) ||
-        !Array.isArray(fields) || fields.some(field => typeof field !== 'string' || !field.trim())) {
-      return 'Invalid process_scope context_fields declaration';
-    }
-  }
+  if (!isProcessScopeDeclaration(declaration)) return processScopeDeclarationError(declaration);
+  if (declaration.exact_unavailable !== undefined) return undefined;
   const paths = source.sql_fragments || [];
   for (const path of paths) {
     if (!fragments.has(path)) return `Required SQL fragment is missing: ${path}`;
   }
-  if (['global_context', 'peer_context', 'identity_metadata'].includes(declaration.role)) {
-    if (declaration.binding) return 'Context evidence cannot claim a target UPID binding';
-    return undefined;
-  }
-  if (declaration.role !== 'target') return 'Unknown process_scope role';
+  if (CONTEXT_ROLES.includes(declaration.role)) return undefined;
   const executableSql = [source.sql || '', ...paths.map(path => fragments.get(path) || '')]
     .join('\n').replace(/--[^\n\r]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'/g, ' ');
   if (declaration.binding === 'native_upid') {

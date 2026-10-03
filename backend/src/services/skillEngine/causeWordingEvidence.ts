@@ -22,9 +22,12 @@ import type {SkillDefinition} from './types';
 import {namesFrequencyCap, namesThermalCause} from './causeWording';
 import {extractRootVariables, parseEvidenceField, parseEvidenceLiteral, readEvidenceField} from './expressionUtils';
 import {sqlReads} from './normalizedSourceReads';
+import {builtInFragmentText} from './skillFragments';
+import {isExactSqlSource} from './processScopeSql';
 import {scanOutsideStrings, topLevelOperands} from './resultPathReads';
 import {allStepsOf} from './skillSteps';
-import {boundSqlPlaceholderPaths, skillSqlTokens} from './sqlTemplate';
+import {boundSqlPlaceholderPaths} from './sqlTemplate';
+import {closingParen, operandEndingAt, operandStartingAt, structuralSqlTokens, tokenMatchers} from './sqlStructure';
 import {
   CATALOG_ROOT_STEP,
   CATALOG_SYNTHESIZE_SUMMARY_STEP,
@@ -77,11 +80,32 @@ export const CAP_WORDING: CauseWordingRule = {
 };
 const RULES = [HEAT_WORDING, CAP_WORDING] as const;
 
-/** A Skill's root SQL as a step, then every step at any depth. */
-function stepsOf(skill: any): any[] {
-  return [...(typeof skill?.sql === 'string'
-    ? [{id: CATALOG_ROOT_STEP, sql: skill.sql, sql_fragments: skill.sql_fragments}] : []), ...allStepsOf(skill)];
+/**
+ * How a Skill runs: on its named SQL, or under an exact process scope, where
+ * each `exact_sql` replaces the SQL and fragments beside it (and a referenced
+ * Skill runs exact too). Evidence and wording are judged per variant: text an
+ * exact run shows needs evidence that run reads.
+ */
+type Variant = 'named' | 'exact';
+
+/**
+ * A step as `variant` runs it: an exact run executes a valid exact_sql
+ * (selectProcessScopeSql; an invalid one fails as exact_sql_invalid).
+ * `sqlField` says where the SQL it runs is written.
+ */
+function asRun(step: any, variant: Variant): any {
+  return variant === 'exact' && isExactSqlSource(step?.exact_sql)
+    ? {...step, sql: step.exact_sql.sql, sql_fragments: step.exact_sql.sql_fragments, sqlField: 'exact_sql.'}
+    : step;
 }
+
+/** A Skill's root SQL as a step, then every step at any depth, as `variant` runs them. */
+function stepsOf(skill: any, variant: Variant): any[] {
+  const root = typeof skill?.sql === 'string'
+    ? [{id: CATALOG_ROOT_STEP, sql: skill.sql, sql_fragments: skill.sql_fragments, exact_sql: skill.exact_sql}] : [];
+  return [...root, ...allStepsOf(skill)].map(step => asRun(step, variant));
+}
+
 
 /** Roots of the saved results a step's SQL reads through placeholders. */
 function sqlResultRoots(sql: unknown): string[] {
@@ -94,6 +118,68 @@ function readsEvidenceSql(sql: unknown, kind: EvidenceKind): boolean {
   const reads = sqlReads(sql);
   return reads.identifiers.some(name => kind.sql.test(name))
     || reads.selectionLiterals.some(literal => !HAN_RE.test(literal) && kind.selected.test(literal));
+}
+
+const COMPARISON_PUNCT = new Set(['=', '==', '!=', '<>', '<', '>', '<=', '>=']);
+/** Words that compare the operands on either side of them (`NOT LIKE`, `IS NOT` included). */
+const COMPARISON_WORDS = new Set(['IS', 'LIKE', 'GLOB', 'REGEXP', 'MATCH']);
+const shownBySql = new Map<string, string[]>();
+const SHOWN_CACHE_LIMIT = 2048;
+
+/**
+ * The string literals `sql` can show, in either language, decided by where
+ * each one stands (sqlStructure.ts operand spans): every literal but one in an
+ * operand of a comparison, an `IN (…)` list or BETWEEN bound, a simple CASE's
+ * WHEN value, a GLOB/LIKE/REGEXP operand or its ESCAPE. CASE results, labels a
+ * VALUES table carries and text concatenated into a column remain; a pattern
+ * written as data reads as a name to the classifier. Kept by text: Skill SQL
+ * and fragments are a fixed set.
+ */
+function shownSqlLiterals(sql: string): string[] {
+  const cached = shownBySql.get(sql);
+  if (cached) return cached;
+  const tokens = structuralSqlTokens(sql);
+  const {word, punct} = tokenMatchers(tokens);
+  const compared = new Set<number>();
+  const mark = (span: [number, number] | undefined) => {
+    for (let at = span?.[0] ?? 0; span && at <= span[1]; at++) compared.add(at);
+  };
+  const leftOf = (index: number) => operandEndingAt(tokens, word(index - 1, 'NOT') ? index - 2 : index - 1);
+  tokens.forEach((token, index) => {
+    if ((token.kind === 'punct' && COMPARISON_PUNCT.has(token.text)) || (token.kind === 'word' && COMPARISON_WORDS.has(token.text))) {
+      let right = index + 1;
+      if (word(right, 'NOT')) right++;
+      if (word(right, 'DISTINCT') && word(right + 1, 'FROM')) right += 2;
+      mark(leftOf(index));
+      mark(operandStartingAt(tokens, right));
+    } else if (word(index, 'IN') && punct(index + 1, '(')) {
+      mark(leftOf(index));
+      mark([index + 1, closingParen(tokens, index + 1)]);
+    } else if (word(index, 'BETWEEN')) {
+      mark(leftOf(index));
+      const low = operandStartingAt(tokens, index + 1);
+      mark(low);
+      if (low && word(low[1] + 1, 'AND')) mark(operandStartingAt(tokens, low[1] + 2));
+    } else if (word(index, 'WHEN') || word(index, 'ESCAPE')) {
+      mark(operandStartingAt(tokens, index + 1));
+    }
+  });
+  const shown = tokens.flatMap((token, index) =>
+    token.kind === 'string' && !token.pattern && !token.inPatternExpression && !compared.has(index) ? [token.text] : []);
+  if (shownBySql.size >= SHOWN_CACHE_LIMIT) shownBySql.clear();
+  shownBySql.set(sql, shown);
+  return shown;
+}
+
+/** Each SQL text a step runs (as its variant runs it) and can show, by field: its SQL and the fragments it declares. */
+function stepSqlTexts(step: any): Array<[string, string]> {
+  const prefix: string = step?.sqlField ?? '';
+  const texts: Array<[string, string]> = typeof step?.sql === 'string' ? [[`${prefix}sql`, step.sql]] : [];
+  for (const path of Array.isArray(step?.sql_fragments) ? step.sql_fragments : []) {
+    const text = typeof path === 'string' ? builtInFragmentText(path) : undefined;
+    if (text !== undefined) texts.push([`${prefix}sql_fragments.${path}`, text]);
+  }
+  return texts;
 }
 
 // ---------------------------------------------------------------------------
@@ -218,11 +304,23 @@ function evidenceSteps(steps: readonly any[], readers: ReadonlySet<string>, kind
   return {steps: found, names};
 }
 
-/** Names of the Skills that read each kind of evidence; a Skill referencing one reads it too. */
-export type CauseWordingReaders = Readonly<Record<Wording, ReadonlySet<string>>>;
+/**
+ * Names of the Skills that read each kind of evidence in each variant (a Skill
+ * referencing one reads it too), and whether the variants differ anywhere.
+ */
+export type CauseWordingReaders = Readonly<Record<Variant, Readonly<Record<Wording, ReadonlySet<string>>>>>
+  & {readonly variantsDiffer: boolean};
 
 export function causeWordingReaders(skills: readonly SkillDefinition[]): CauseWordingReaders {
-  const stepLists = skills.map(skill => ({name: skill.name, steps: stepsOf(skill)}));
+  const variant = (run: Variant) => readersIn(skills.map(skill => ({name: skill.name, steps: stepsOf(skill, run)})));
+  const named = variant('named');
+  const exact = variant('exact');
+  const same = (left: ReadonlySet<string>, right: ReadonlySet<string>) =>
+    left.size === right.size && [...left].every(name => right.has(name));
+  return {named, exact, variantsDiffer: !same(named.heat, exact.heat) || !same(named.cap, exact.cap)};
+}
+
+function readersIn(stepLists: ReadonlyArray<{name: string; steps: any[]}>): Record<Wording, ReadonlySet<string>> {
   const readersOf = (kind: EvidenceKind) => {
     const found = new Set<string>();
     for (let grew = true; grew;) {
@@ -305,11 +403,9 @@ function sitesOf(skill: SkillDefinition, texts: SkillTexts, readers: ReadonlySet
     add(stepId, 'name', step.name, allowedBy);
     add(stepId, 'display.title', step.display?.title, allowedBy);
     for (const insight of step.synthesize?.insights ?? []) add(stepId, 'synthesize.insights', insight?.template, allowedBy);
-    // Only literals with Chinese text are user-facing; codes such as 'thermal_zone' are not.
-    if (typeof step.sql === 'string') {
-      for (const token of skillSqlTokens(step.sql)) {
-        if (token.kind === 'string' && HAN_RE.test(token.text)) add(stepId, 'sql', token.text, allowedBy);
-      }
+    // Text the step's SQL can show; a code such as 'thermal_zone' reads as a name to the classifier.
+    for (const [field, sql] of stepSqlTexts(step)) {
+      for (const literal of shownSqlLiterals(sql)) add(stepId, field, literal, allowedBy);
     }
     (Array.isArray(step.rules) ? step.rules : []).forEach((ruleDefinition: any, index: number) => {
       const ruleAllowance = requiresEvidence(ruleDefinition?.condition, evidence.names) ? `rule ${name}/${step.id}` : undefined;
@@ -321,7 +417,7 @@ function sitesOf(skill: SkillDefinition, texts: SkillTexts, readers: ReadonlySet
   return found;
 }
 
-const textsOf = (skill: SkillDefinition): SkillTexts => ({steps: stepsOf(skill), catalog: skillCatalogEntry(skill)});
+
 
 /**
  * Every user-facing text of `skill` that names a cause of `rule`'s kind, with
@@ -332,11 +428,25 @@ const textsOf = (skill: SkillDefinition): SkillTexts => ({steps: stepsOf(skill),
  * @internal The contract test reads each text's allowance through it.
  */
 export function causeWordingSites(skill: SkillDefinition, readers: CauseWordingReaders, rule: CauseWordingRule): CauseWordingSite[] {
-  return sitesOf(skill, textsOf(skill), readers[rule.wording], rule);
+  return sitesOf(skill, {steps: stepsOf(skill, 'named'), catalog: skillCatalogEntry(skill)}, readers.named[rule.wording], rule);
 }
 
 /** Texts of `skill` that name heat or a frequency cap with no evidence to allow them. */
 export function unsupportedCauseWording(skill: SkillDefinition, readers: CauseWordingReaders): CauseWordingSite[] {
-  const texts = textsOf(skill);
-  return RULES.flatMap(rule => sitesOf(skill, texts, readers[rule.wording], rule).filter(site => !site.allowedBy));
+  const found = new Map<string, CauseWordingSite>();
+  const catalog = skillCatalogEntry(skill);
+  // The exact run differs where the Skill has an exact_sql of its own, or where
+  // some Skill reads evidence in one run and not the other (a child it references).
+  const exactDiffers = readers.variantsDiffer || stepsOf(skill, 'named').some(step => isExactSqlSource(step?.exact_sql));
+  for (const variant of exactDiffers ? (['named', 'exact'] as const) : (['named'] as const)) {
+    const texts = {steps: stepsOf(skill, variant), catalog};
+    for (const rule of RULES) {
+      for (const site of sitesOf(skill, texts, readers[variant][rule.wording], rule)) {
+        // A text both runs show is one finding.
+        const key = `${rule.wording}\u0000${site.stepId ?? ''}\u0000${site.field}\u0000${site.text}`;
+        if (!site.allowedBy && !found.has(key)) found.set(key, site);
+      }
+    }
+  }
+  return [...found.values()];
 }

@@ -655,6 +655,7 @@ steps:
     rules:
       - condition: "(io_overview?.data?.[0]?.severity) === 'critical'"
         severity: critical
+        confidence: low
         diagnosis: "IO 压力严重: 总等待 ${io_overview.data[0].total_io_wait_ms}ms, 影响 ${io_overview.data[0].affected_threads} 个线程"
         suggestions:
           - "检查是否存在大文件读写或频繁的小文件操作"
@@ -663,6 +664,7 @@ steps:
 
       - condition: "(io_overview?.data?.[0]?.severity) === 'warning'"
         severity: warning
+        confidence: low
         diagnosis: "IO 压力偏高: 总等待 ${io_overview.data[0].total_io_wait_ms}ms"
         suggestions:
           - "分析阻塞函数，定位 IO 热点"
@@ -670,6 +672,7 @@ steps:
 
       - condition: "(root_cause?.data?.[0]?.root_cause_type) === 'IO_FS_BOUND'"
         severity: warning
+        confidence: low
         diagnosis: "文件系统操作是主要 IO 瓶颈 (${root_cause.data[0].primary_pct}%)"
         suggestions:
           - "优化文件读写模式，减少小文件操作"
@@ -677,6 +680,7 @@ steps:
 
       - condition: "(root_cause?.data?.[0]?.root_cause_type) === 'IO_SYNC_BOUND'"
         severity: warning
+        confidence: low
         diagnosis: "同步操作频繁导致 IO 等待 (${root_cause.data[0].primary_pct}%)"
         suggestions:
           - "减少 fsync 调用频率"
@@ -684,4 +688,5 @@ steps:
 
       - condition: "(io_overview?.data?.[0]?.severity) === 'normal' || (io_overview?.data?.[0]?.severity) === 'info'"
         severity: info
+        confidence: low
         diagnosis: "IO 压力在正常范围内 (${io_overview.data[0].total_io_wait_ms}ms)"

@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { SkillDefinition, SkillStep } from '../skillEngine/types';
-import { builtInSkillFragment, injectFragmentCtes } from '../skillEngine/skillFragments';
+import { builtInFragmentText, injectFragmentCtes } from '../skillEngine/skillFragments';
 import type { SqlToken } from '../skillEngine/sqlTemplate';
 import {
   closingParen,
@@ -166,18 +166,21 @@ function processNameFilter(tokens: readonly SqlToken[]): boolean {
   // The relations each block reads, with their aliases: the process table
   // (unless a visible CTE replaces it), CTEs, and derived tables.
   const relationsOf = new Map<number, RelationEntry[]>();
-  const addRelation = (block: number, name: string | undefined, relation: Relation, at: number, aliasAt: number): void => {
-    if (word(aliasAt, 'AS')) aliasAt++;
-    const aliasToken = tokens[aliasAt];
-    const alias = isNameToken(aliasToken) && !(aliasToken.kind === 'word' && NOT_AN_ALIAS.has(aliasToken.text))
+  /** The alias written at `at` (after an optional AS), if the word there is one. */
+  const aliasAt = (at: number): string | undefined => {
+    if (word(at, 'AS')) at++;
+    const aliasToken = tokens[at];
+    return isNameToken(aliasToken) && !(aliasToken.kind === 'word' && NOT_AN_ALIAS.has(aliasToken.text))
       ? unqualifiedName(aliasToken) : undefined;
+  };
+  const addRelation = (block: number, name: string | undefined, relation: Relation, at: number, aliasFrom: number): void => {
     const entries = relationsOf.get(block) ?? [];
-    entries.push({name, alias, relation, at});
+    entries.push({name, alias: aliasAt(aliasFrom), relation, at});
     relationsOf.set(block, entries);
   };
   const inFrom: boolean[] = [false];
-  /** A `(` in a FROM list that groups relations rather than opening a query: `FROM (process p)`. */
-  const relationGroups = new Set<number>();
+  /** A `(` in a FROM list that groups relations rather than opening a query, by its `)`: `FROM (process p)`. */
+  const relationGroups = new Map<number, number>();
   /** Blocks whose FROM list merges join columns (USING, NATURAL): an unqualified `*` there lists them once. */
   const mergesJoinColumns = new Set<number>();
   tokens.forEach((token, index) => {
@@ -190,11 +193,17 @@ function processNameFilter(tokens: readonly SqlToken[]): boolean {
         if (relationPosition && opensQuery) {
           addRelation(blockOf[index - 1] ?? 0, undefined, {kind: 'source', key: `block:${blockOf[index]}`}, index, closingParen(tokens, index) + 1);
         } else if (relationPosition) {
-          relationGroups.add(index);
+          relationGroups.set(index, closingParen(tokens, index));
         }
         inFrom.push(relationGroups.has(index));
       } else if (token.text === ')' && inFrom.length > 1) {
         inFrom.pop();
+        // `FROM (process) p`: the alias after a group of one relation names that relation,
+        // replacing one inside it (SQLite reads `(process AS q) p` as p only).
+        const open = [...relationGroups].find(([, close]) => close === index)?.[0];
+        const inside = open === undefined ? [] : (relationsOf.get(blockOf[index]) ?? []).filter(entry => entry.at > open && entry.at < index);
+        const alias = inside.length === 1 ? aliasAt(index + 1) : undefined;
+        if (alias !== undefined) inside[0].alias = alias;
       }
       return;
     }
@@ -254,10 +263,18 @@ function processNameFilter(tokens: readonly SqlToken[]): boolean {
     if (!schema) return {columns: process ? [{name: 'name', holds: true}] : [], documented: false};
     return {columns: [...schema].map(name => ({name, holds: PROCESS_NAME_COLUMNS.has(name) || (process && name === 'name')})), documented: true};
   };
-  /** The columns of `relation` that carry a process name. */
+  /**
+   * The columns of `relation` that carry or may carry a process name. An
+   * undocumented table, or any table when the SQL docs are missing, may have
+   * every fixed process-name column, so a join on it fails closed.
+   */
   const carriedColumns = (relation: Relation): string[] => {
-    const columns = relation.kind === 'source' ? outputsOf.get(relation.key)?.columns ?? [] : tableColumns(relation).columns;
-    return columns.flatMap(output => output.holds && output.name ? [output.name] : []);
+    const outputs = relation.kind === 'source' ? outputsOf.get(relation.key) : undefined;
+    const table = relation.kind === 'source' ? undefined : tableColumns(relation);
+    const columns = outputs?.columns ?? table?.columns ?? [];
+    const carried = columns.flatMap(output => output.holds && output.name ? [output.name] : []);
+    // A column set not known in full (an undocumented table, or a `*` over one) may hold any of them.
+    return (table ? table.documented : outputs?.complete) ? carried : [...new Set([...carried, ...PROCESS_NAME_COLUMNS])];
   };
   /**
    * A bare column binds as SQLite binds it: to a relation of its own block
@@ -315,8 +332,10 @@ function processNameFilter(tokens: readonly SqlToken[]): boolean {
    * counts when one side carries a process name the other side has or may have.
    */
   const joinHolds = (index: number): boolean => {
-    const block = blockOf[index];
-    const entries = relationsOf.get(block) ?? [];
+    // A join inside `( ... )` joins only the relations of that group.
+    let groupOpen = -1;
+    for (const [open, close] of relationGroups) if (open < index && close > index && open > groupOpen) groupOpen = open;
+    const entries = (relationsOf.get(blockOf[index]) ?? []).filter(entry => entry.at > groupOpen);
     if (word(index, 'USING')) {
       const before = entries.filter(entry => entry.at < index).map(entry => entry.relation);
       const open = index + 1;
@@ -333,11 +352,31 @@ function processNameFilter(tokens: readonly SqlToken[]): boolean {
     return left.some(relation => shared(relation, right) || shared(right, relation));
   };
 
-  // The first SELECT of each block, found once: select lists do not change across rounds.
+  // The first SELECT or VALUES of each block, found once: select lists do not change across rounds.
   const firstSelect = new Map<number, number>();
+  const firstValues = new Map<number, number>();
   tokens.forEach((token, index) => {
-    if (token.kind === 'word' && token.text === 'SELECT' && !firstSelect.has(blockOf[index])) firstSelect.set(blockOf[index], index);
+    if (token.kind !== 'word' || firstSelect.has(blockOf[index]) || firstValues.has(blockOf[index])) return;
+    if (token.text === 'SELECT') firstSelect.set(blockOf[index], index);
+    else if (token.text === 'VALUES') firstValues.set(blockOf[index], index);
   });
+  /** The rows of a VALUES branch, each as the token spans of its expressions. */
+  const valuesRows = (block: number): Array<Array<[number, number]>> => {
+    const rows: Array<Array<[number, number]>> = [];
+    for (let open = firstValues.get(block)! + 1; punct(open, '('); open = closingParen(tokens, open) + 2) {
+      const close = closingParen(tokens, open);
+      const row: Array<[number, number]> = [];
+      let start = open + 1;
+      for (let at = start, depth = 0; at <= close; at++) {
+        if (punct(at, '(')) depth++;
+        else if (punct(at, ')') && at < close) depth--;
+        if ((depth === 0 && punct(at, ',')) || at === close) { row.push([start, at - 1]); start = at + 1; }
+      }
+      rows.push(row);
+      if (!punct(close + 1, ',')) break;
+    }
+    return rows;
+  };
   const itemsByBlock = new Map<number, Array<[number, number]>>();
   /** The items of `block`'s select list, as token spans. */
   const selectItems = (block: number): Array<[number, number]> => {
@@ -365,6 +404,18 @@ function processNameFilter(tokens: readonly SqlToken[]): boolean {
   };
   /** A branch's output columns: each item's output name, and whether its expression (not its alias) carries a process name. */
   const branchOutputs = (block: number): Outputs => {
+    if (!firstSelect.has(block) && firstValues.has(block)) {
+      // VALUES names its columns column1, column2, ...; each carries what any row puts there.
+      const rows = valuesRows(block);
+      return {
+        columns: (rows[0] ?? []).map((_, position) => ({
+          name: `column${position + 1}`,
+          holds: rows.some(row => spanHolds(row[position])),
+        })),
+        exact: true,
+        complete: true,
+      };
+    }
     const columns: OutputColumn[] = [];
     let exact = true;
     let complete = true;
@@ -411,8 +462,12 @@ function processNameFilter(tokens: readonly SqlToken[]): boolean {
         && (isNameToken(tokens[valueEnd - 1]) || tokens[valueEnd - 1].kind === 'string' || punct(valueEnd - 1, ')'))) {
         name = unqualifiedName(last); // `expression alias`
         expression = [start, valueEnd - 1];
-      } else if (valueEnd === start && isNameToken(last)) {
-        name = unqualifiedName(last);
+      } else {
+        // A bare column keeps its name, and parentheses (`(name)`, `((name))`) leave it as it was.
+        let inner = start;
+        let innerEnd = valueEnd;
+        while (punct(inner, '(') && closingParen(tokens, inner) === innerEnd) { inner++; innerEnd--; }
+        if (inner === innerEnd && isNameToken(tokens[inner])) name = unqualifiedName(tokens[inner]);
       }
       columns.push({name, holds: spanHolds(expression)});
     }
@@ -523,14 +578,6 @@ type SkillFragmentResolver = (fragmentPath: string) => string | undefined;
  * process name under another name.
  */
 const LABEL_ONLY_FRAGMENT = /^\s*--\s*process-identity:\s*label-only\b/m;
-
-function builtInFragmentText(fragmentPath: string): string | undefined {
-  try {
-    return builtInSkillFragment(fragmentPath.replace(/^fragments\//, ''));
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * One executable statement: a SQL text with its fragments injected into its

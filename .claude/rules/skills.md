@@ -125,9 +125,17 @@ Click actions should be explicit, for example:
 - Heat and frequency-cap wording follows the evidence a Skill reads
   (`skillEngine/causeWording.ts`, `causeWordingEvidence.ts`). Every text the
   Skill shows counts, in both languages: labels, rule diagnoses and
-  suggestions, user-facing SQL literals, input descriptions, and the catalog
-  labels `skillLocalizationCatalog.ts` derives, including English humanized
-  from an identifier. Heat words (温控, 过热, thermal) need temperature, cooling
+  suggestions, input descriptions, the catalog labels
+  `skillLocalizationCatalog.ts` derives (including English humanized from an
+  identifier), and every string literal its SQL and declared fragments can
+  show (CASE results, labels a VALUES table carries), judged by where the
+  literal stands: an operand of a comparison, an `IN (…)` member, a
+  GLOB/LIKE operand and a simple CASE's WHEN value show nothing. An exact run
+  shows its `exact_sql` text and needs the evidence that run reads. A word
+  inside an identifier, a path or a pattern written as data (`*thermal-engine*`)
+  is a name, and so is an English one whose clause only names its component
+  (thermal HAL service process, thermal-named track); Thermal zone overheated
+  still names heat. Heat words (温控, 过热, thermal) need temperature, cooling
   or cpufreq-limit evidence; cap words (throttle, 限频, 降频, 热节流, and 频率上限
   when blamed for something) need cooling or cpufreq-limit evidence, since a
   temperature shows heat, not a cap. Write an observed step-down as 频率下调.
@@ -137,6 +145,17 @@ Click actions should be explicit, for example:
   `cause_wording_without_evidence`, with the same proposal-gate and
   published-overlay severities as `result_path_read_undecided`
   (`PREDATING_RULE_CODES`).
+- `validate:skills` and the Self-Evolution gates run the same validator
+  (`selfEvolution/inProcessValidator.ts`), closed step schema included: an
+  atomic step or a Skill root may declare `process_scope`, `exact_sql` and
+  `investigation_evidence`, checked by the predicates the executor admits them
+  with, and every diagnostic rule states a literal `confidence`. An invalid
+  `exact_sql` or `investigation_evidence` fails execution and is an error
+  everywhere; an invalid `process_scope` only leaves exact scope unsupported
+  and is a `PREDATING_RULE_CODES` rule (`process_scope_invalid`). The built-in
+  registry has no error under it (`inProcessValidator.test.ts`), so a base
+  Skill never blocks an overlay; a rule the base cannot meet yet belongs in
+  `PREDATING_RULE_CODES` with its reason, not in a switch that skips the check.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set

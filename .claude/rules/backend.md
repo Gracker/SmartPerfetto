@@ -481,9 +481,14 @@ Keep these boundaries intact:
   join that may match one. Names resolve by query block: a qualifier through
   its block's FROM list then the enclosing ones, a bare column through the
   first block whose relations have it (table columns from the pinned runtime's
-  `data/perfettoSqlDocs.json`; an undocumented table may have any), a CTE only
-  where it is visible, so a CTE named `process` replaces the table only in its
-  scope. A comparison with NULL selects no process. Diff the verdicts of
+  `data/perfettoSqlDocs.json`; an undocumented table may have any column,
+  including every fixed process-name column a join could compare, so missing
+  docs fail closed and `generate:skill-identity-policies` refuses to run), a
+  CTE only where it is visible, so a CTE named `process` replaces the table
+  only in its scope. A parenthesized relation takes the alias after it, a
+  parenthesized column keeps its name, a VALUES branch has columns
+  `column1…`, and a join inside `( … )` joins only that group. A comparison
+  with NULL selects no process. Diff the verdicts of
   every Skill SQL unit and the strategy SQL examples before and after a change,
   and explain each difference. `skills/identity-policy.catalog.json` records
   every built-in Skill's effective identity policy for the Perfetto-Skills

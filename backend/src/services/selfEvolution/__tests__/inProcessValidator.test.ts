@@ -8,6 +8,8 @@ import {
   validateSkillDefinitionsInProcess,
 } from '../inProcessValidator';
 import {loadStrategies} from '../../../agentv3/strategyLoader';
+import {ensureSkillRegistryInitialized, skillRegistry} from '../../skillEngine/skillLoader';
+import * as skillFragments from '../../skillEngine/skillFragments';
 
 function skill(
   name: string,
@@ -529,7 +531,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('7');
+    expect(gate.validatorVersion).toBe('8');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({
@@ -547,5 +549,138 @@ describe('in-process effective Skill validator', () => {
     ]);
     expect(reconcile.valid).toBe(true);
     expect(reconcile.issues.map(issue => issue.severity)).toEqual(['warning', 'warning']);
+  });
+
+  // validate:skills and the Self-Evolution gates run this same validator, so a
+  // base Skill error would reject every overlay of the scope it sits in.
+  it('finds no error in the built-in registry', async () => {
+    await ensureSkillRegistryInitialized();
+    const definitions = skillRegistry.getAllSkills()
+      .filter(definition => skillRegistry.getSkillOrigin(definition.name)?.origin !== 'external_pack');
+    const result = validateSkillDefinitionsInProcess({definitions, fragmentCache: skillRegistry.getFragmentCache()});
+    expect(result.issues.filter(entry => entry.severity === 'error')).toEqual([]);
+  });
+
+  it('checks the process_scope, exact_sql and investigation_evidence an atomic step or root declares', () => {
+    const scope = {role: 'target', binding: 'native_upid'};
+    const evidence = {window: {start: 'ts', end: 'end_ts'}, metrics: []};
+    const declaring = (fields: Record<string, unknown>, root = false): SkillDefinition => {
+      const definition = skill('scoped');
+      if (root) return {...definition, type: 'atomic', steps: undefined, sql: 'SELECT 1', ...fields} as SkillDefinition;
+      definition.steps = [{id: 'rows', type: 'atomic', sql: 'SELECT 1', ...fields} as any];
+      return definition;
+    };
+    // The precise issue, beside the closed schema's generic one for its step.
+    const codes = (definition: SkillDefinition) =>
+      validateSkillDefinitionsInProcess({definitions: [definition]}).issues
+        .filter(entry => entry.severity === 'error' && entry.code !== 'atomic_step_invalid')
+        .map(entry => `${entry.code}@${entry.path}`);
+
+    for (const root of [false, true]) {
+      expect(codes(declaring({process_scope: scope, investigation_evidence: evidence,
+        exact_sql: {sql: 'SELECT 2', sql_fragments: [], process_scope: scope}}, root))).toEqual([]);
+    }
+    expect(codes(declaring({process_scope: {role: 'target', bindings: 'native_upid'}})))
+      .toEqual(['process_scope_invalid@steps[0].process_scope']);
+    expect(codes(declaring({process_scope: {role: 'owner'}}, true))).toEqual(['process_scope_invalid@process_scope']);
+    // A malformed process_scope only leaves exact scope unsupported: a published overlay predating the check warns.
+    expect(validateSkillDefinitionsInProcess({definitions: [declaring({process_scope: {role: 'owner'}}, true)], predatingRuleSeverity: 'warning'})
+      .issues.map(entry => `${entry.severity}:${entry.code}`)).toEqual(['warning:process_scope_invalid']);
+    expect(validateSkillDefinitionsInProcess({definitions: [declaring({process_scope: {role: 'owner'}})], predatingRuleSeverity: 'warning'})
+      .valid).toBe(true);
+    // It does not stop the step checks that follow.
+    const twice = declaring({process_scope: {role: 'owner'}});
+    twice.steps!.push({id: 'rows', type: 'atomic', sql: 'SELECT 2'} as any);
+    expect(codes(twice)).toEqual(expect.arrayContaining(['process_scope_invalid@steps[0].process_scope', 'step_id_duplicate@steps[1].id']));
+    // The declaration's own semantics, as the exact-scope admission reads them.
+    expect(codes(declaring({process_scope: {role: 'target', context_fields: {peer_context: ['']}}})))
+      .toEqual(['process_scope_invalid@steps[0].process_scope']);
+    expect(codes(declaring({process_scope: {role: 'peer_context', binding: 'native_upid'}})))
+      .toEqual(['process_scope_invalid@steps[0].process_scope']);
+    expect(codes(declaring({exact_sql: {sql: 'SELECT 2'}}))).toEqual(['exact_sql_invalid@steps[0].exact_sql']);
+    expect(codes(declaring({exact_sql: {sql: 'SELECT 2', process_scope: scope, condition: 'x'}})))
+      .toEqual(['exact_sql_invalid@steps[0].exact_sql']);
+    expect(codes(declaring({investigation_evidence: {window: {start: 'ts'}, metrics: []}})))
+      .toEqual(['investigation_evidence_invalid@steps[0].investigation_evidence']);
+    expect(codes(declaring({investigation_evidence: {window: {start: 'ts', end: 'ts'}, metrics: []}})))
+      .toEqual(['investigation_evidence_invalid@steps[0].investigation_evidence']);
+  });
+
+  it('requires a literal confidence on every diagnostic rule', () => {
+    const definition = skill('diagnosing');
+    definition.steps = [
+      {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
+      {id: 'verdict', type: 'diagnostic', inputs: ['rows'], rules: [{condition: 'true', diagnosis: 'seen'}]} as any,
+    ];
+    expect(validateSkillDefinitionsInProcess({definitions: [definition]}).issues.map(entry => `${entry.code}@${entry.path}`))
+      .toEqual(['diagnostic_confidence_invalid@steps[1].rules[0].confidence', 'diagnostic_step_invalid@steps[1]']);
+  });
+
+  it('reads the heat and cap wording the SQL of a step shows, in either language, including its fragments', () => {
+    const showing = (sql: string, fields: Record<string, unknown> = {}): string[] => {
+      const definition = skill('shows');
+      definition.steps = [{id: 'rows', type: 'atomic', sql, ...fields} as any];
+      return validateSkillDefinitionsInProcess({definitions: [definition], fragmentCache: new Map([['fragments/zz_probe.sql', 'x']])})
+        .issues.filter(entry => entry.code === 'cause_wording_without_evidence').map(entry => entry.path);
+    };
+    // A CASE result and a labelled column are text the step shows.
+    expect(showing("SELECT CASE WHEN dur > 0 THEN 'Thermal throttling detected' ELSE 'ok' END AS verdict FROM slice"))
+      .toEqual(expect.arrayContaining(['steps.rows.sql']));
+    expect(showing("SELECT 'CPU throttled' AS note FROM slice")).toEqual(['steps.rows.sql']);
+    // Where a literal stands decides, not its value or its punctuation.
+    expect(showing("SELECT '温控导致卡顿' AS note FROM slice WHERE name = '温控导致卡顿'")).toEqual(['steps.rows.sql']);
+    expect(showing("SELECT '温控导致卡顿?' AS note FROM slice")).toEqual(['steps.rows.sql']);
+    expect(showing("SELECT 1 FROM slice WHERE name IN (1, '温控导致卡顿')")).toEqual([]);
+    expect(showing("SELECT 1 FROM slice WHERE ('温控导致卡顿') = name OR name = LOWER('过热导致卡顿')")).toEqual([]);
+    expect(showing("SELECT LOWER('温控导致卡顿') AS note FROM slice")).toEqual(['steps.rows.sql']);
+    expect(showing("SELECT 1 FROM slice WHERE '温控导致卡顿' || name = 'x' OR dur BETWEEN '过热' AND '温控'")).toEqual([]);
+    // A WHEN after a CASE result starts the next branch; a simple CASE's WHEN value is compared.
+    for (const result of ["'温控导致卡顿'", "('温控导致卡顿')", "LOWER('温控导致卡顿')"]) {
+      expect(showing(`SELECT CASE WHEN dur > 0 THEN ${result} WHEN dur = 0 THEN 'ok' ELSE 'unknown' END AS note FROM slice`))
+        .toEqual(['steps.rows.sql']);
+    }
+    expect(showing("SELECT CASE name WHEN '温控导致卡顿' THEN 1 ELSE 0 END AS hit FROM slice")).toEqual([]);
+    expect(showing("SELECT '**CPU throttled**' AS note FROM slice")).toEqual(['steps.rows.sql']);
+    // A literal it selects by, a pattern a later GLOB reads, a code and a component name show nothing.
+    expect(showing("SELECT dur FROM slice WHERE name = 'Thermal throttling detected'")).toEqual([]);
+    expect(showing("SELECT * FROM slice WHERE name GLOB '*thermal*' OR name LIKE '%throttl%'")).toEqual([]);
+    expect(showing("SELECT '*thermal-engine*' AS pattern, 'cpu_throttled' AS code, 'OEM thermal manager daemon' AS note")).toEqual([]);
+    // An exact run shows its exact_sql's text and reads its exact_sql's evidence, at a step and at the root.
+    const exactSql = (sql: string) => ({sql, process_scope: {role: 'target', binding: 'native_upid'}});
+    expect(showing('SELECT value FROM cpu_frequency_limits',
+      {exact_sql: exactSql("SELECT '温控导致卡顿' AS note FROM slice WHERE upid = ${__process_scope.upid}")}))
+      .toEqual(['steps.rows.exact_sql.sql']);
+    expect(showing('SELECT 1', {exact_sql: exactSql(
+      "SELECT '温控导致卡顿' AS note FROM cpu_frequency_limits WHERE upid = ${__process_scope.upid}")})).toEqual([]);
+    // A parent with no exact_sql of its own runs exact through a child that has one.
+    const child = {...skill('limit_child'), type: 'atomic', steps: undefined, sql: 'SELECT value FROM cpu_frequency_limits',
+      exact_sql: exactSql('SELECT upid FROM process WHERE upid = ${__process_scope.upid}')} as unknown as SkillDefinition;
+    const parent = skill('limit_parent');
+    parent.steps = [
+      {id: 'read', type: 'skill', skill: 'limit_child', save_as: 'read'} as any,
+      {id: 'note', type: 'atomic', sql: "SELECT '温控导致卡顿' AS note", condition: 'read.data?.length > 0'} as any,
+    ];
+    expect(validateSkillDefinitionsInProcess({definitions: [child, parent], affectedSkillIds: ['limit_parent']}).issues
+      .filter(entry => entry.code === 'cause_wording_without_evidence').map(entry => entry.path))
+      .toEqual(['steps.note.sql']);
+    const root = {...skill('root_exact'), type: 'atomic', steps: undefined, sql: 'SELECT 1',
+      exact_sql: exactSql("SELECT '温控导致卡顿' AS note FROM slice WHERE upid = ${__process_scope.upid}")} as unknown as SkillDefinition;
+    expect(validateSkillDefinitionsInProcess({definitions: [root]}).issues
+      .filter(entry => entry.code === 'cause_wording_without_evidence').map(entry => entry.path))
+      .toEqual(['skill.exact_sql.sql']);
+    // An English component name in a Chinese sentence that blames it still names heat.
+    for (const title of ['thermal HAL 是卡顿的根因', 'thermal HAL 让帧变慢', 'thermal HAL 降低帧率']) {
+      // Reported once, at the catalog copy of the title the step shows.
+      expect(showing('SELECT 1 AS value', {display: {title}})).toEqual(['steps.rows.catalog.title.zh-CN']);
+    }
+    // Text a declared fragment shows is the step's text too.
+    const fragment = jest.spyOn(skillFragments, 'builtInFragmentText')
+      .mockImplementation(path => path === 'fragments/zz_probe.sql' ? "zz AS (SELECT 'Throttled by heat' AS note)" : undefined);
+    try {
+      expect(showing('SELECT * FROM zz', {sql_fragments: ['fragments/zz_probe.sql']}))
+        .toEqual(expect.arrayContaining(['steps.rows.sql_fragments.fragments/zz_probe.sql']));
+    } finally {
+      fragment.mockRestore();
+    }
   });
 });

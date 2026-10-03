@@ -12,10 +12,18 @@ import fs from 'fs';
 import path from 'path';
 import {ensureSkillRegistryInitialized, skillRegistry} from '../src/services/skillEngine/skillLoader';
 import {getEffectiveIdentityConfig} from '../src/services/processIdentity/identityGate';
+import {getPerfettoSqlDocsAssetPath, loadPerfettoSqlDocsAsset} from '../src/services/perfettoSqlDocs';
 
 const OUTPUT_PATH = path.resolve(__dirname, '../skills/identity-policy.catalog.json');
 
 async function main(): Promise<void> {
+  // Table columns come from these docs; without them every table may have any
+  // column, and the policies would be decided on guesses rather than schema.
+  if (!loadPerfettoSqlDocsAsset()) {
+    console.error(`Perfetto SQL docs are missing or invalid: ${getPerfettoSqlDocsAssetPath()}. Run: npm run stdlib:generate-runtime-assets`);
+    process.exitCode = 1;
+    return;
+  }
   await ensureSkillRegistryInitialized();
   const skills = skillRegistry.getAllSkills()
     .filter(skill => skillRegistry.getSkillOrigin(skill.name)?.origin !== 'external_pack')

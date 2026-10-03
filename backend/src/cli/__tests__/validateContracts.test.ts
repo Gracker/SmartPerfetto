@@ -57,14 +57,15 @@ describe('validate --contracts diagnostic confidence', () => {
   const confidenceErrors = (confidence: unknown) =>
     validateContracts(withConfidence(confidence)).errors.filter(error => error.includes('confidence'));
 
-  it('accepts a literal level, a number, or no confidence', () => {
-    for (const confidence of ['high', 'medium', 'low', 0.8, undefined]) {
+  it('accepts a literal level or a number', () => {
+    for (const confidence of ['high', 'medium', 'low', 0.8]) {
       expect(confidenceErrors(confidence)).toEqual([]);
     }
   });
 
-  it('rejects a template, a severity word and a non-finite number', () => {
-    for (const confidence of ["${level === '高' ? 'high' : 'low'}", 'critical', Number.NaN]) {
+  // The executor would read a missing one as 0.5 without anyone having said so.
+  it('rejects a template, a severity word, a non-finite number and no confidence', () => {
+    for (const confidence of ["${level === '高' ? 'high' : 'low'}", 'critical', Number.NaN, undefined]) {
       expect(confidenceErrors(confidence)).toEqual([
         expect.stringContaining('steps[0].rules[0].confidence: Diagnostic rule confidence must be high, medium, low or a number'),
       ]);

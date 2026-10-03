@@ -4,6 +4,8 @@
 
 import type {SkillStep} from '../skillEngine/types';
 import {isDisplayTitleTranslations} from '../skillEngine/displayContractValidator';
+import {isExactSqlSource, processScopeDeclarationError} from '../skillEngine/processScopeSql';
+import {investigationEvidenceDeclarationError} from '../evidence/investigationEvidenceLedger';
 
 export interface SkillStepRuntimeIssue {
   path: string;
@@ -50,7 +52,7 @@ const DIAGNOSTIC_CONFIDENCE_LEVELS = new Set([
 ]);
 
 /** A rule confidence is a literal: no runtime interpolates it, so a template or severity word is wrong. */
-export function isDiagnosticConfidence(value: unknown): boolean {
+function isDiagnosticConfidence(value: unknown): boolean {
   return (typeof value === 'number' && Number.isFinite(value))
     || (typeof value === 'string' && DIAGNOSTIC_CONFIDENCE_LEVELS.has(value));
 }
@@ -535,6 +537,16 @@ function validateDiagnosticRules(
   for (let index = 0; index < value.length; index++) {
     const rule = value[index];
     const rulePath = `${path}[${index}]`;
+    // No runtime interpolates a confidence and the executor reads anything else as 0.5,
+    // so a template, a severity word or a missing one would misreport.
+    if (isRecord(rule) && !isDiagnosticConfidence(rule.confidence)) {
+      return pushIssue(
+        issues,
+        `${rulePath}.confidence`,
+        'diagnostic_confidence_invalid',
+        `Diagnostic rule confidence must be high, medium, low or a number, got ${JSON.stringify(rule.confidence ?? null)}.`,
+      );
+    }
     if (
       !isRecord(rule)
       || !hasOnlyKeys(rule, [
@@ -547,7 +559,6 @@ function validateDiagnosticRules(
       ])
       || !isNonEmptyString(rule.condition)
       || !isNonEmptyString(rule.diagnosis)
-      || !isDiagnosticConfidence(rule.confidence)
       || (
         rule.severity !== undefined
         && rule.severity !== 'info'
@@ -576,6 +587,31 @@ function validateDiagnosticRules(
     }
   }
   return true;
+}
+
+/**
+ * The SQL-source declarations the executor reads beside `sql` (a Skill's root
+ * or an atomic step): process_scope, exact_sql and investigation_evidence,
+ * checked by the predicates the executor admits them with. An invalid
+ * exact_sql or investigation_evidence fails execution, so it fails the step;
+ * an invalid process_scope only leaves exact scope unsupported, so it is
+ * reported without failing the step (and is a PREDATING_RULE_CODES rule).
+ */
+export function validateScopedSqlDeclarations(
+  record: RecordValue,
+  path: string,
+  issues: SkillStepRuntimeIssue[],
+): boolean {
+  const prefix = path ? `${path}.` : '';
+  const scopeError = record.process_scope === undefined ? undefined : processScopeDeclarationError(record.process_scope);
+  if (scopeError) pushIssue(issues, `${prefix}process_scope`, 'process_scope_invalid', `${scopeError}.`);
+  const evidenceError = record.investigation_evidence === undefined
+    ? undefined : investigationEvidenceDeclarationError(record.investigation_evidence);
+  return (record.exact_sql === undefined || isExactSqlSource(record.exact_sql)
+      || pushIssue(issues, `${prefix}exact_sql`, 'exact_sql_invalid',
+        'exact_sql must have only sql, sql_fragments and a valid process_scope.'))
+    && (evidenceError === undefined
+      || pushIssue(issues, `${prefix}investigation_evidence`, 'investigation_evidence_invalid', evidenceError));
 }
 
 function validateStep(
@@ -618,8 +654,12 @@ function validateStep(
         'optional',
         'on_empty',
         'condition',
+        'process_scope',
+        'exact_sql',
+        'investigation_evidence',
       ])
         && validateRequiredString(value, 'sql', path, issues)
+        && validateScopedSqlDeclarations(value, path, issues)
         && validateOptionalString(value, 'description', path, issues)
         && validateStringArrayField(value, 'sql_fragments', path, issues)
         && (

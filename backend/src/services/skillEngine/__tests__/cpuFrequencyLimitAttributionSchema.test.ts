@@ -175,7 +175,7 @@ describe('cpu frequency limit attribution skill family', () => {
     expect(step(cooling, 'cooling_unavailable').sql).toContain('thermal/cdev_update');
     expect(step(attribution, 'no_limit_capture_advice').sql).toContain('power/cpu_frequency_limits');
     // Absence of cooling-device tracks must never read as absence of throttling.
-    expect(step(cooling, 'cooling_unavailable').sql).toContain('thermal daemon');
+    expect(step(cooling, 'cooling_unavailable').sql).toContain('用户态温控守护进程');
   });
 
   it('keeps the per-episode drill-down out of keyword triggering', () => {

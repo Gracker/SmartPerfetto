@@ -31,9 +31,9 @@ import {
   strategySkillCallTexts,
   type StrategySkillInputs,
 } from '../../agentv3/strategySkillCalls';
-import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
+import {validateScopedSqlDeclarations, validateSkillStepListRuntime, type SkillStepRuntimeIssue} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '7';
+export const IN_PROCESS_VALIDATOR_VERSION = '8';
 
 /**
  * Rules that already-published overlays and packs may predate. Each is an
@@ -44,10 +44,14 @@ export const IN_PROCESS_VALIDATOR_VERSION = '7';
  *   runtime's own behaviour for the read is defined (resultPathReads.ts).
  * - cause_wording_without_evidence: heat or frequency-cap wording in a text
  *   the Skill shows with no evidence read behind it (causeWordingEvidence.ts).
+ * - process_scope_invalid: a malformed process_scope declaration; the runtime
+ *   only reports exact scope unsupported for it (processScopeSql.ts), and a
+ *   Skill root's declaration was not checked before validator version 8.
  */
 export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
   'result_path_read_undecided',
   'cause_wording_without_evidence',
+  'process_scope_invalid',
 ]);
 
 export type InProcessValidationSeverity = 'error' | 'warning';
@@ -204,9 +208,12 @@ function validateDefinitionShape(
   }
 
   const stepIds = new Set<string>();
-  const stepContractIssues = hasSteps
-    ? validateSkillStepListRuntime(skill.steps, 'steps')
-    : [];
+  const rootIssues: SkillStepRuntimeIssue[] = [];
+  validateScopedSqlDeclarations(skill as unknown as Record<string, unknown>, '', rootIssues);
+  const stepContractIssues = [
+    ...rootIssues,
+    ...(hasSteps ? validateSkillStepListRuntime(skill.steps, 'steps') : []),
+  ];
   issues.push(...stepContractIssues.map(stepIssue => issue(
     'error',
     stepIssue.code,
@@ -214,7 +221,8 @@ function validateDefinitionShape(
     stepIssue.path,
     stepIssue.message,
   )));
-  if (stepContractIssues.length === 0) {
+  // A malformed process_scope only leaves exact scope unsupported; the step itself is checked on.
+  if (stepContractIssues.every(entry => entry.code === 'process_scope_invalid')) {
     visitSteps(skill.steps ?? [], (step, path) => {
     if (!step.id?.trim()) {
       issues.push(issue(
@@ -286,7 +294,6 @@ export function validateSkillDefinitionInProcess(
   skill: SkillDefinition,
   options: {
     fragmentCache?: ReadonlyMap<string, string>;
-    includeStructuralChecks?: boolean;
     sqlGuardrailMode?: 'default' | 'disabled';
     /** The complete registry by name; when present, `save_from` targets are checked against it. */
     definitions?: ReadonlyMap<string, SkillDefinition>;
@@ -295,12 +302,7 @@ export function validateSkillDefinitionInProcess(
     causeWordingReaders?: CauseWordingReaders;
   } = {},
 ): InProcessValidationIssue[] {
-  const issues = options.includeStructuralChecks === false
-    ? []
-    : validateDefinitionShape(
-        skill,
-        options.sqlGuardrailMode !== 'disabled',
-      );
+  const issues = validateDefinitionShape(skill, options.sqlGuardrailMode !== 'disabled');
   for (const key of unknownSkillTopLevelKeys(skill)) {
     issues.push(issue('error', 'skill_top_level_key_unknown', skill.name, key, UNKNOWN_TOP_LEVEL_KEY_MESSAGE));
   }
@@ -340,13 +342,11 @@ export function validateSkillDefinitionInProcess(
       readIssue.message,
     ));
   }
-  issues.push(...validateDiagnosticConfidence(skill));
   issues.push(...validateDiagnosticReads(skill));
   // A saved-result path read without a default runs on '' / NULL here but is
   // skipped by the public runtime when the result has no row (resultPathReads.ts).
-  const predatingSeverity = options.predatingRuleSeverity ?? 'error';
   for (const read of undecidedResultPathReads(skill)) {
-    issues.push(issue(predatingSeverity, 'result_path_read_undecided', skill.name, read.path,
+    issues.push(issue('error', 'result_path_read_undecided', skill.name, read.path,
       `${read.placeholder} reads an earlier step's result without a default: write \`|default\` (the step runs `
       + 'without its row) or give the step a condition with the conjunct `<result>.data?.length > 0` (it does not).'));
   }
@@ -355,7 +355,7 @@ export function validateSkillDefinitionInProcess(
   const readers = options.causeWordingReaders ?? registryCauseWordingReaders(skill, options.definitions);
   for (const site of unsupportedCauseWording(skill, readers)) {
     const quoted = site.text.length > 80 ? `${site.text.slice(0, 80)}…` : site.text;
-    issues.push(issue(predatingSeverity, 'cause_wording_without_evidence', skill.name,
+    issues.push(issue('error', 'cause_wording_without_evidence', skill.name,
       `${site.stepId ? `steps.${site.stepId}` : 'skill'}.${site.field}`,
       `"${quoted}" names ${site.rule.cause} as a cause, but the ${site.stepId ? 'step' : 'Skill'} reads no `
       + `${site.rule.evidence}: state the observation, leave the cause undetermined (是否…以…证据为准, 未判定), `
@@ -377,26 +377,9 @@ export function validateSkillDefinitionInProcess(
       ));
     }
   }
-  return issues;
-}
-
-/**
- * A diagnostic rule's confidence must be a literal level or number even when
- * structural checks are off: the executor maps anything else to 0.5 and the
- * public runtime would publish the text, so a template there silently misreports.
- */
-function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidationIssue[] {
-  const issues: InProcessValidationIssue[] = [];
-  visitSteps(skill.steps ?? [], (step, path) => {
-    if (step.type !== 'diagnostic') return;
-    (step.rules ?? []).forEach((rule, index) => {
-      if (rule.confidence !== undefined && !isDiagnosticConfidence(rule.confidence)) {
-        issues.push(issue('error', 'diagnostic_confidence_invalid', skill.name, `${path}.rules[${index}].confidence`,
-          `Diagnostic rule confidence must be high, medium, low or a number, got ${JSON.stringify(rule.confidence)}.`));
-      }
-    });
-  });
-  return issues;
+  // A rule published overlays may predate is graded once, here, wherever it was found.
+  const predatingSeverity = options.predatingRuleSeverity ?? 'error';
+  return issues.map(entry => PREDATING_RULE_CODES.has(entry.code) ? {...entry, severity: predatingSeverity} : entry);
 }
 
 /**

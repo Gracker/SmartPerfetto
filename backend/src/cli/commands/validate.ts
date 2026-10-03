@@ -762,7 +762,6 @@ export function validateContracts(skill: SkillDefinition): { errors: string[]; w
   // intentionally use the same pure validator; no npm/child-process boundary.
   for (const validationIssue of validateSkillDefinitionInProcess(skill, {
     fragmentCache: loadSkillFragmentCache(),
-    includeStructuralChecks: false,
     definitions: loadSkillDefinitionsById(),
   })) {
     const formatted = `${validationIssue.path}: ${validationIssue.message}`;

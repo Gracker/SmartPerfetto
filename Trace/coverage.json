@@ -5804,7 +5804,7 @@
           },
           {
             "id": "cooling_unavailable",
-            "sha256": "575169eb05c4fd6326005bea89f704c059c68dfa9e9715dc3079bdf2f1b47e7d",
+            "sha256": "cdaf4a2c7fbeedde53fa1a4b2cccffb759810cbe5c09a9a0db683eebaa983b78",
             "required_columns": [
               "cooling_evidence",
               "required_ftrace_event",

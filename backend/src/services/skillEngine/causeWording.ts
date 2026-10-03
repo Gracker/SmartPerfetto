@@ -91,8 +91,20 @@ const EVIDENCE_CONDITION = /确认[^，,]*(?:证据|温控|限频|触发|温度)
  * since elsewhere it is what heat acts on (温控让设备降频). It stays a cause
  * when the clause goes on to attribute something to it (温控事件导致卡顿).
  */
-const EVIDENCE_REFERENCE = /^\s*(?:限频|档位|状态)?\s*(?:证据|数据|轨道|事件|传感器|守护进程|daemon|counter|track|sensor)/i;
+const EVIDENCE_REFERENCE = /^\s*(?:限频|档位|状态)?\s*(?:证据|数据|轨道|事件|传感器|守护进程)/;
+/**
+ * The English counterpart: a thermal or throttle word that only names the
+ * component or record it belongs to. The rest of its clause, parentheticals
+ * aside, must be a bare noun phrase of such nouns (thermal HAL service process,
+ * thermal zone worker thread, thermal-named track or slice, throttling naming);
+ * anything said of it (Thermal zone overheated, Thermal HAL is responsible for
+ * latency) makes it a cause again.
+ */
+const ENGLISH_COMPONENT = '(?:hal|zones?|services?|daemons?|managers?|engines?|stacks?|drivers?|components?|extensions?|frameworks?|sensors?|tracks?|counters?|slices?|named|naming|process(?:es)?|threads?|workers?)';
+const ENGLISH_COMPONENT_PHRASE = new RegExp(`^[\\s-]*${ENGLISH_COMPONENT}(?:\\s+(?:or|and)?\\s*${ENGLISH_COMPONENT})*\\s*$`, 'i');
 const ATTRIBUTION = /导致|引起|造成|所致|使得|拖慢|降低了|限制了/;
+/** English negation right before the word: not thermal mitigation, non-thermal reasons, no throttling. */
+const ENGLISH_NEGATION = /\b(?:not|no|non|without)[\s-]+(?:an?\s+|the\s+)?$/i;
 
 /** Sentence and clause boundaries; brackets are neither, so a parenthetical stays with its clause. */
 const SENTENCE_BOUNDARY = /[。；;]/;
@@ -135,12 +147,18 @@ function clauseNamesCause(clause: string, words: RegExp, attributedOnly = false)
     const after = clause.slice(match.index! + match[0].length);
     if (UNDETERMINED.test(segmentAround(clause, match.index!))) return false;
     if (attributedOnly && !ATTRIBUTION.test(after)) return false;
-    // An ASCII word inside an identifier or path (thermal/cdev_update, thermal_zone,
-    // ${throttle_events.data.length}) is a name.
-    const inName = /^[a-z]/i.test(match[0]) && (/[\w/]$/.test(clause.slice(0, match.index)) || /^[\w/]/.test(after));
+    // An ASCII word inside an identifier or a path (thermal/cdev_update, thermal_zone,
+    // ${throttle_events.data.length}) is a name, and so is one touching a wildcard in a
+    // pattern written as data (*thermal-engine*): a clause of one whitespace-free run,
+    // which **CPU throttled** is not.
+    const before = clause.slice(0, match.index);
+    const ascii = /^[a-z]/i.test(match[0]);
+    const pattern = (/[*%]$/.test(before) || /^[*%]/.test(after)) && !/\s/.test(clause.trim());
+    const inName = ascii && (/[\w/]$/.test(before) || /^[\w/]/.test(after) || pattern);
     const coolingDevice = match[0] === '散热' && after.startsWith('设备');
+    if (ascii && (ENGLISH_COMPONENT_PHRASE.test(after.replace(/\([^)]*\)/g, ' ')) || ENGLISH_NEGATION.test(before))) return false;
     if ((inName || coolingDevice || EVIDENCE_REFERENCE.test(after)) && !ATTRIBUTION.test(after)) return false;
-    return !defersCause(clause.slice(0, match.index));
+    return !defersCause(before);
   });
 }
 
