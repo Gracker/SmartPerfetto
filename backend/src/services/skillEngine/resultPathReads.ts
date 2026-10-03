@@ -40,31 +40,49 @@ export interface UndecidedResultPathRead {
  */
 export function topLevelOperands(expr: string, operator: '&&' | '||'): string[] | undefined {
   const parts: string[] = [];
+  let from = 0;
+  let operatorTail = false;
+  let looser = false;
+  scanOutsideStrings(expr, (i, depth) => {
+    const c = expr[i];
+    if (depth > 0 || '([{)]}'.includes(c)) return;
+    if (operatorTail) {
+      operatorTail = false;
+    } else if (expr.startsWith(operator, i)) {
+      parts.push(expr.slice(from, i));
+      from = i + 2;
+      operatorTail = true;
+    } else if ((operator === '&&' && expr.startsWith('||', i)) || (c === '?' && expr[i + 1] !== '.')) {
+      looser = true;
+      return true;
+    }
+  });
+  return looser ? undefined : [...parts, expr.slice(from)].map(part => part.trim());
+}
+
+/**
+ * Calls `visit` for each character of a JS expression outside its string
+ * literals, with the bracket depth before that character; stops when `visit`
+ * returns true.
+ */
+export function scanOutsideStrings(expr: string, visit: (index: number, depth: number) => boolean | void): void {
   let depth = 0;
   let quote = '';
-  let from = 0;
   for (let i = 0; i < expr.length; i++) {
     const c = expr[i];
     if (quote) {
       if (c === '\\') i++;
       else if (c === quote) quote = '';
-    } else if (c === '"' || c === "'" || c === '`') {
-      quote = c;
-    } else if ('([{'.includes(c)) {
-      depth++;
-    } else if (')]}'.includes(c)) {
-      depth--;
-    } else if (depth > 0) {
       continue;
-    } else if (expr.startsWith(operator, i)) {
-      parts.push(expr.slice(from, i));
-      from = i + 2;
-      i++;
-    } else if ((operator === '&&' && expr.startsWith('||', i)) || (c === '?' && expr[i + 1] !== '.')) {
-      return undefined;
     }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      continue;
+    }
+    if (visit(i, depth)) return;
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
   }
-  return [...parts, expr.slice(from)].map(part => part.trim());
 }
 
 /** Whether `condition` is false whenever the result saved under one of `names` has no row. */

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type {SkillStep} from '../skillEngine/types';
+import {isDisplayTitleTranslations} from '../skillEngine/displayContractValidator';
 
 export interface SkillStepRuntimeIssue {
   path: string;
@@ -151,6 +152,7 @@ function validateColumn(
     || !hasOnlyKeys(value, [
       'name',
       'label',
+      'label_i18n',
       'type',
       'format',
       'clickAction',
@@ -172,6 +174,10 @@ function validateColumn(
       'step_display_column_invalid',
       'Display columns must be strings or closed ColumnDefinition objects.',
     );
+  }
+  if (value.label_i18n !== undefined && !isDisplayTitleTranslations(value.label_i18n)) {
+    return pushIssue(issues, `${path}.label_i18n`, 'step_display_column_invalid',
+      'label_i18n must map en or zh-CN to non-empty strings.');
   }
   for (const key of [
     'name',
@@ -219,6 +225,7 @@ function validateDisplay(
       'level',
       'layer',
       'title',
+      'title_i18n',
       'format',
       'columns',
       'aggregate',
@@ -249,6 +256,10 @@ function validateDisplay(
   }
   for (const key of ['title', 'expandableBindSource']) {
     if (!validateOptionalString(value, key, path, issues)) return false;
+  }
+  if (value.title_i18n !== undefined && !isDisplayTitleTranslations(value.title_i18n)) {
+    return pushIssue(issues, `${path}.title_i18n`, 'step_display_invalid',
+      'display.title_i18n must map en or zh-CN to non-empty strings.');
   }
   if (
     value.level !== undefined
@@ -367,9 +378,10 @@ function validateSynthesize(
       !Array.isArray(value.fields)
       || value.fields.some(field =>
         !isRecord(field)
-        || !hasOnlyKeys(field, ['key', 'label', 'format'])
+        || !hasOnlyKeys(field, ['key', 'label', 'label_i18n', 'format'])
         || !isNonEmptyString(field.key)
         || !isNonEmptyString(field.label)
+        || (field.label_i18n !== undefined && !isDisplayTitleTranslations(field.label_i18n))
         || (
           field.format !== undefined
           && typeof field.format !== 'string'

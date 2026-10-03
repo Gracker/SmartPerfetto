@@ -99,6 +99,7 @@ export interface PerfettoSqlDocSearchResult {
 
 let cachedAsset: PerfettoSqlDocsAsset | null | undefined;
 let cachedModuleMap: Map<string, PerfettoSqlModuleDoc> | null = null;
+let cachedRelationColumns: Map<string, ReadonlySet<string> | null> | null = null;
 
 export function getPerfettoSqlDocsAssetPath(): string {
   return path.resolve(__dirname, '../../data/perfettoSqlDocs.json');
@@ -138,6 +139,27 @@ export function loadPerfettoSqlDocsAsset(): PerfettoSqlDocsAsset | null {
 export function clearPerfettoSqlDocsCache(): void {
   cachedAsset = undefined;
   cachedModuleMap = null;
+  cachedRelationColumns = null;
+}
+
+/**
+ * The column names of a trace-processor table or view, as the docs generated
+ * from the pinned runtime revision list them. Undefined when the name is not
+ * documented, or documents relations with different columns.
+ */
+export function perfettoRelationColumns(name: string): ReadonlySet<string> | undefined {
+  if (!cachedRelationColumns) {
+    cachedRelationColumns = new Map();
+    for (const entry of loadPerfettoSqlDocsAsset()?.entries ?? []) {
+      if ((entry.type !== 'table' && entry.type !== 'view') || !entry.name || !entry.columns?.length) continue;
+      const key = entry.name.toLowerCase();
+      const columns = new Set(entry.columns.map(column => column.name.toLowerCase()));
+      const known = cachedRelationColumns.get(key);
+      const same = known && known.size === columns.size && [...columns].every(column => known.has(column));
+      cachedRelationColumns.set(key, known === undefined || same ? columns : null);
+    }
+  }
+  return cachedRelationColumns.get(name.toLowerCase()) ?? undefined;
 }
 
 function getModuleMap(): Map<string, PerfettoSqlModuleDoc> {

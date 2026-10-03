@@ -4318,6 +4318,29 @@ describe('executeCompositeSkill', () => {
     expect(result.synthesizeData?.[0].config).toBeUndefined();
   });
 
+  it('keeps a synthesize field label translation out of the runtime result', async () => {
+    mockTraceProcessor.query.mockResolvedValue({columns: ['jank_frames'], rows: [[50]]});
+    const skill: SkillDefinition = {
+      name: 'synthesize_translation_skill',
+      type: 'composite',
+      version: '1.0',
+      meta: createMeta('Synthesize Translation Skill'),
+      steps: [{
+        id: 'summary_data',
+        type: 'atomic',
+        sql: 'SELECT jank_frames FROM stats',
+        display: {title: 'Summary', level: 'summary', layer: 'overview'},
+        synthesize: {role: 'overview', fields: [{key: 'jank_frames', label: '卡顿帧', label_i18n: {en: 'Jank frames'}}]},
+      }],
+    };
+
+    const result = await executor.executeCompositeSkill(skill, {}, {traceId: 'trace-1'});
+
+    expect(result.synthesizeData?.[0].config?.fields).toEqual([{key: 'jank_frames', label: '卡顿帧'}]);
+    // The authored definition keeps it for the localization catalog.
+    expect((skill.steps![0] as any).synthesize.fields[0].label_i18n).toEqual({en: 'Jank frames'});
+  });
+
   it('应该处理空 steps', async () => {
     const emptySkill: SkillDefinition = {
       name: 'empty_skill',

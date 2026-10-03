@@ -8,11 +8,9 @@ import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from '@jest/globals';
 import { renderStepSql } from '../../../../tests/helpers/skillFragmentSql';
-import { allStepsOf, skillDocuments } from '../../../../tests/helpers/skillRuleHarness';
-import { extractRootVariables } from '../expressionUtils';
-import { boundSqlPlaceholderPaths } from '../sqlTemplate';
-import { topLevelOperands } from '../resultPathReads';
-import { namesFrequencyCap, namesThermalCause } from '../../../../tests/helpers/skillWording';
+import { skillDocuments } from '../../../../tests/helpers/skillRuleHarness';
+import { namesFrequencyCap, namesThermalCause } from '../causeWording';
+import { CAP_WORDING, HEAT_WORDING, causeWordingReaders, causeWordingSites, type CauseWordingRule } from '../causeWordingEvidence';
 
 const repoRoot = path.resolve(__dirname, '../../../..');
 
@@ -54,227 +52,23 @@ describe('Skill evidence boundary contracts', () => {
 // evidence, never name heat as the cause.
 // ---------------------------------------------------------------------------
 
-/**
- * Evidence a step can read: by the tables and columns of its SQL, by a literal
- * it compares against (a track name; an identifier must match the stricter
- * `sql`), or through a shared fragment.
- */
-interface EvidenceKind { sql: RegExp; compared: RegExp; fragment: RegExp }
-/** Heat or a limit: temperature tracks, cooling devices, the cpufreq max-limit tracks. */
-const THERMAL_EVIDENCE: EvidenceKind = {
-  sql: /thermal_zone|Temperature|cdev|cooling|cpu_frequency_limits|max_limit|freq_limit/i,
-  compared: /thermal|\btemp|cdev|cooling|freq_limit|max_limit/i,
-  fragment: /fragments\/(thermal_|system_cpu_freq_limit_)/,
-};
-/** A frequency cap: the cpufreq max-limit tracks or a cooling device. A temperature shows heat, not a cap. */
-const LIMIT_EVIDENCE: EvidenceKind = {
-  sql: /cdev|cooling|cpu_frequency_limits|max_limit|freq_limit/i,
-  compared: /cdev|cooling|freq_limit|max_limit/i,
-  fragment: /fragments\/(thermal_cooling_|system_cpu_freq_limit_)/,
-};
+interface CauseWording { site: string; allowedBy?: string; text: string }
 
-const CJK = /[\u4e00-\u9fff]/;
-/** A `--` comment (skipped, so an apostrophe in it cannot misalign quotes) or a single-quoted literal. */
-const SQL_COMMENT_OR_LITERAL = /--[^\n\r]*|'((?:''|[^'])*)'/g;
-/** What precedes a literal the SQL compares something against: a track name, a type, a status. */
-const IN_LIST_OPEN = /\bIN\s*\(\s*$/i;
-const COMPARED_BEFORE = new RegExp(String.raw`(?:=|<>|\bGLOB|\bLIKE|\bWHEN)\s*$|${IN_LIST_OPEN.source}`, 'i');
-/** An SQL identifier, bare or quoted ("x", `x`, [x]); its name is matched case-insensitively. */
-const IDENTIFIER = '(?:"([^"]+)"|`([^`]+)`|\\[([^\\]]+)\\]|\\b([A-Za-z_]\\w*))';
-/** Names a step gives its own columns (AS name) and CTEs (name AS ( ... )). */
-const OWN_NAME = new RegExp(`\\bAS\\s+${IDENTIFIER}|${IDENTIFIER}\\s+AS\\s*\\(`, 'gi');
-const IDENTIFIER_EACH = new RegExp(IDENTIFIER, 'g');
-const identifierName = (match: RegExpMatchArray, from = 1) =>
-  (match.slice(from, from + 4).find(part => part !== undefined) ?? '').toLowerCase();
-
-/**
- * What a step's SQL can read evidence through: the tables and columns it reads
- * (`identifiers`, the SQL without comments and literals) and the literals it
- * compares something against (a track name, a type, a status). A literal it
- * only outputs (a code, a user-facing CJK label) and a name it gives its own
- * columns or CTEs say nothing about its input, so `SELECT 'thermal_zone' AS
- * kind` or `... AS cooling_hint` cannot authorise the step's own wording.
- */
-function executedSql(sql: unknown): {identifiers: string; comparedLiterals: string[]} {
-  const text = String(sql ?? '');
-  const comparedLiterals: string[] = [];
-  let code = '';
-  let last = 0;
-  let inList = false;
-  for (const match of text.matchAll(SQL_COMMENT_OR_LITERAL)) {
-    const between = text.slice(last, match.index);
-    code += between;
-    last = match.index! + match[0].length;
-    if (between.includes(')')) inList = false;
-    if (match[0].startsWith('--')) continue;
-    const literal = match[1];
-    const compared: boolean = !CJK.test(literal) && (COMPARED_BEFORE.test(code) || (inList && /,\s*$/.test(code)));
-    inList = compared && (inList || IN_LIST_OPEN.test(code));
-    if (compared) comparedLiterals.push(literal);
-    code += "''";
-  }
-  code += text.slice(last);
-  const own = new Set([...code.matchAll(OWN_NAME)].map(match =>
-    identifierName(match, 1) || identifierName(match, 5)));
-  const identifiers = code.replace(IDENTIFIER_EACH, (...match) =>
-    own.has(identifierName(match as unknown as RegExpMatchArray)) ? '_' : match[0]);
-  return {identifiers, comparedLiterals};
-}
-
-const stepsOf = (skill: any) => [...(typeof skill?.sql === 'string'
-  ? [{id: 'root', sql: skill.sql, sql_fragments: skill.sql_fragments}] : []), ...allStepsOf(skill)];
-
-/** Roots of the saved results a step's SQL reads through placeholders. */
-function sqlResultRoots(sql: unknown): string[] {
-  return typeof sql === 'string' ? boundSqlPlaceholderPaths(sql).map(path => path.split(/[.[]/)[0]) : [];
-}
-
-/** Whether a step's own SQL reads `kind` evidence: by the tables and columns it reads, or the tracks it compares against. */
-function readsEvidenceSql(sql: unknown, kind: EvidenceKind): boolean {
-  const {identifiers, comparedLiterals} = executedSql(sql);
-  return kind.sql.test(identifiers) || comparedLiterals.some(literal => kind.compared.test(literal));
-}
-
-/**
- * Whether a conjunct that reads only evidence results can hold while they are
- * all empty: `limit.data.length === 0` and `limit.data[0]?.status !==
- * 'observed'` do, so they read the absence of evidence. A conjunct that cannot
- * be evaluated is not credited with reading evidence.
- */
-function holdsWithoutEvidence(conjunct: string, roots: string[]): boolean {
-  try {
-    return Boolean(new Function(...roots, `return (${conjunct});`)(...roots.map(() => ({data: []}))));
-  } catch {
-    return true;
-  }
-}
-
-/** The inside of `expression` when one pair of parentheses wraps all of it: the first `(` closes at the end. */
-function unwrapParentheses(expression: string): string | undefined {
-  if (!expression.startsWith('(')) return undefined;
-  let depth = 0;
-  let quote = '';
-  for (let i = 0; i < expression.length; i++) {
-    const char = expression[i];
-    if (quote) {
-      if (char === '\\') i++;
-      else if (char === quote) quote = '';
-    } else if (char === "'" || char === '"' || char === '`') quote = char;
-    else if (char === '(') depth++;
-    else if (char === ')' && --depth === 0) return i === expression.length - 1 ? expression.slice(1, -1).trim() : undefined;
-  }
-  return undefined;
-}
-
-/**
- * Whether a condition can only hold with thermal or limit evidence present:
- * each top-level alternative has a conjunct that needs a non-empty evidence
- * result, judged recursively through parentheses. Mentioning an evidence step
- * is not reading it: a condition on its absence speaks to no cause, and a
- * ternary or nullish fallback at the top level is not judged.
- */
-function requiresEvidence(condition: unknown, evidenceNames: ReadonlySet<string>): boolean {
-  if (typeof condition !== 'string' || !condition.trim()) return false;
-  const alternatives = topLevelOperands(condition.trim(), '||');
-  if (!alternatives) return false;
-  return alternatives.every(alternative => (topLevelOperands(alternative, '&&') ?? []).some(conjunct => {
-    const inner = unwrapParentheses(conjunct);
-    if (inner !== undefined && /&&|\|\|/.test(inner)) return requiresEvidence(inner, evidenceNames);
-    // An atomic conjunct is credited only when it reads nothing but evidence:
-    // another name's value could make it hold without any.
-    const roots = extractRootVariables(conjunct);
-    return roots.length > 0 && roots.every(root => evidenceNames.has(root)) && !holdsWithoutEvidence(conjunct, roots);
+/** Every text of `skill` that names `rule`'s cause, as `<skill>[/<step>]` with what allows it. */
+function causeWording(skill: any, readers: ReadonlySet<string>, rule: CauseWordingRule = HEAT_WORDING): CauseWording[] {
+  return causeWordingSites(skill, {heat: readers, cap: readers}, rule).map(site => ({
+    site: site.stepId ? `${skill.name}/${site.stepId}` : String(skill.name),
+    text: site.text,
+    allowedBy: site.allowedBy,
   }));
-}
-
-/**
- * The steps of `skill` that read thermal or limit evidence, in order: by their
- * own SQL or fragments, by referencing a Skill that does, by reading an earlier
- * such step's result in their SQL or their condition, or, for a diagnostic
- * step, through its inputs. Returns them with the names their results are read under.
- */
-function evidenceSteps(skill: any, readers: ReadonlySet<string>, kind: EvidenceKind) {
-  const steps = new Set<any>();
-  const names = new Set<string>();
-  for (const step of stepsOf(skill)) {
-    const reads = readers.has(step.skill)
-      || readsEvidenceSql(step.sql, kind)
-      || (step.sql_fragments ?? []).some((fragment: string) => kind.fragment.test(fragment))
-      || [...sqlResultRoots(step.sql), ...(step.inputs ?? [])].some(root => names.has(root))
-      || requiresEvidence(step.condition, names);
-    if (!reads) continue;
-    steps.add(step);
-    for (const name of [step.id, step.save_as]) if (name) names.add(name);
-  }
-  return {steps, names};
-}
-
-/** Skills with a step that reads `kind` evidence; a reference to one reads it too. */
-function evidenceSkills(skills: any[], kind: EvidenceKind): Set<string> {
-  const found = new Set<string>();
-  for (let grew = true; grew;) {
-    grew = false;
-    for (const skill of skills) {
-      if (!found.has(skill.name) && evidenceSteps(skill, found, kind).steps.size > 0) { found.add(skill.name); grew = true; }
-    }
-  }
-  return found;
-}
-
-interface ThermalWording { site: string; allowedBy?: string; text: string }
-
-/** What a wording check looks for and the evidence that allows it. */
-interface WordingRule { names: (text: string) => boolean; kind: EvidenceKind }
-const HEAT_WORDING: WordingRule = {names: namesThermalCause, kind: THERMAL_EVIDENCE};
-const CAP_WORDING: WordingRule = {names: namesFrequencyCap, kind: LIMIT_EVIDENCE};
-
-/**
- * Every user-facing text of `skill` that names a thermal cause, with the
- * evidence that allows it: the step that reads thermal or limit evidence (for
- * its SQL text and labels), the Skill for its own description, or a rule whose
- * condition reads the result of such a step.
- */
-function thermalWording(skill: any, readers: ReadonlySet<string>, rule: WordingRule = HEAT_WORDING): ThermalWording[] {
-  const found: ThermalWording[] = [];
-  const name = String(skill?.name);
-  const add = (site: string, text: unknown, allowedBy?: string) => {
-    if (typeof text === 'string' && rule.names(text)) found.push({site, text, allowedBy});
-  };
-  // What the Skill says it does, and the labels its results carry.
-  const labels = (site: string, owner: any, allowedBy?: string) => {
-    add(site, owner?.name, allowedBy);
-    add(site, owner?.display?.title, allowedBy);
-    for (const column of owner?.display?.columns ?? []) add(site, column?.label, allowedBy);
-    for (const insight of owner?.synthesize?.insights ?? []) add(site, insight?.template, allowedBy);
-  };
-  const skillAllowance = readers.has(name) ? `skill ${name}` : undefined;
-  add(name, skill?.meta?.display_name, skillAllowance);
-  add(name, skill?.meta?.description, skillAllowance);
-  labels(name, {display: skill?.display, synthesize: skill?.synthesize}, skillAllowance);
-  const evidence = evidenceSteps(skill, readers, rule.kind);
-  for (const step of stepsOf(skill)) {
-    const site = `${name}/${step.id}`;
-    const stepAllowance = evidence.steps.has(step) ? `step ${site}` : undefined;
-    labels(site, step, stepAllowance);
-    // Only literals with CJK text are user-facing; codes such as 'thermal_zone' are not.
-    for (const [, literal] of String(step.sql ?? '').matchAll(SQL_COMMENT_OR_LITERAL)) {
-      if (literal && CJK.test(literal)) add(site, literal, stepAllowance);
-    }
-    for (const rule of step.rules ?? []) {
-      const readsEvidence = requiresEvidence(rule.condition, evidence.names);
-      for (const text of [rule.diagnosis, ...(rule.suggestions ?? [])]) add(site, text, readsEvidence ? `rule ${site}` : undefined);
-    }
-  }
-  return found;
 }
 
 describe('thermal wording follows thermal evidence', () => {
   const skills = skillDocuments().map(({skill}) => skill);
+  const readers = causeWordingReaders(skills);
   /** Every wording `rule` flags across the Skills, with what allows it. */
-  const wordingOf = (rule: WordingRule) => {
-    const readers = evidenceSkills(skills, rule.kind);
-    return skills.flatMap(skill => thermalWording(skill, readers, rule));
-  };
+  const wordingOf = (rule: CauseWordingRule) =>
+    skills.flatMap(skill => causeWording(skill, readers[rule.wording], rule));
   const wording = wordingOf(HEAT_WORDING);
   const capWording = wordingOf(CAP_WORDING);
 
@@ -287,10 +81,10 @@ describe('thermal wording follows thermal evidence', () => {
     // A GPU temperature counter shows heat, not a cap.
     const probe = {name: 'probe', steps: [{id: 'low_clock', type: 'atomic', name: 'Sustained GPU throttle events',
       sql: "SELECT AVG(c.value) FROM counter c JOIN gpu_counter_track t ON t.id = c.track_id WHERE t.name = 'Temperature'"}]};
-    expect(thermalWording(probe, new Set(), CAP_WORDING)).toEqual([
+    expect(causeWording(probe, new Set(), CAP_WORDING)).toEqual([
       {site: 'probe/low_clock', text: 'Sustained GPU throttle events', allowedBy: undefined},
     ]);
-    expect(thermalWording(probe, new Set())).toEqual([]);
+    expect(causeWording(probe, new Set())).toEqual([]);
   });
 
   it('flags a cause in rule text or a user-facing literal, not a deferral or a code', () => {
@@ -300,7 +94,7 @@ describe('thermal wording follows thermal evidence', () => {
       ]},
       {id: 'sql', type: 'atomic', sql: "SELECT 'thermal_zone' AS kind, '频率突降，可能受温控限制' AS note, '温度: ' AS label"},
     ]};
-    expect(thermalWording(skill, new Set()).map(entry => entry.text)).toEqual(['可能触发温控策略', '频率突降，可能受温控限制']);
+    expect(causeWording(skill, new Set()).map(entry => entry.text)).toEqual(['可能触发温控策略', '频率突降，可能受温控限制']);
   });
 
   it('judges each clause: a deferral in one clause does not excuse a cause in another', () => {
@@ -340,6 +134,18 @@ describe('thermal wording follows thermal evidence', () => {
     expect(namesFrequencyCap('min_throttle_ns')).toBe(false);
     expect(namesFrequencyCap('频率变化 ${throttle_events.data.length} 次')).toBe(false);
     expect(namesThermalCause('Sustained GPU throttle events')).toBe(false);
+    // Chinese cap wording, judged by what each word modifies.
+    for (const [text, cap] of [
+      ['限频导致卡顿', true], ['GPU 曾深度降频', true], ['大核降频次数', true], ['持续高温会加速热节流', true],
+      ['频率上限导致卡顿', true], ['受频率上限影响，频率上限限制了大核', true],
+      // An observed step-down, a request or event rate, a hedged source list and a reference to evidence assert no cap.
+      ['频率下调次数', false], ['请求节流间隔', false], ['输入事件节流', false],
+      ['仅为频率观测：可能来自负载、调速器或频率上限', false], ['频率上限可能降低大核可用容量', false],
+      ['是否限频以限频证据为准', false], ['缺少限频轨道', false], ['尚不能据此确定热节流或性能影响', false],
+      ['未经核实不得当作限频原因', false], ['先确认限频与触发方', false], ['已确认限频导致卡顿', true], ['限频与否未判定', false], ['超过该值标记为频繁突降；不判定限频', false],
+    ] as const) {
+      expect([text, namesFrequencyCap(text)]).toEqual([text, cap]);
+    }
     // 设备 is a source of evidence only in 散热设备; elsewhere it is what heat acts on.
     for (const asserted of ['温控让设备降频', '过热使设备降频', '高温下设备降频', '温控限制了设备性能',
       '发热严重设备卡顿', '设备过热后设备降频', '温控降频事件频发', '不是负载就是温控', '无法判断负载实为温控',
@@ -383,19 +189,35 @@ describe('thermal wording follows thermal evidence', () => {
     expect(namesThermalCause('加入 thermal/cdev_update 与 thermal/thermal_temperature')).toBe(false);
     expect(namesThermalCause('请检查温控证据与热控守护进程')).toBe(false);
     expect(namesThermalCause('温控事件导致卡顿')).toBe(true);
+    // An undetermined marker covers its own proposition, not one a contrast set apart.
+    expect(namesThermalCause('温控导致卡顿但触发方未确认')).toBe(true);
+    expect(namesThermalCause('卡顿明显，但是否由温控导致未确认')).toBe(false);
+    expect(namesFrequencyCap('限频导致掉帧，不过触发方未判定')).toBe(true);
+    expect(namesFrequencyCap('是否限频与否未判定')).toBe(false);
     expect(namesThermalCause('缺少温控证据，可能是温控导致')).toBe(true);
   });
 
   // Strategy prose teaches thermal mechanisms legitimately; only the lines that
   // tell the model what to conclude or recommend are held to the clause rule.
-  it('keeps strategy conclusion and advice lines free of an unhedged thermal cause', () => {
+  it('keeps strategy conclusion and advice lines free of an unhedged heat or cap cause', () => {
     const strategies = path.join(repoRoot, 'strategies');
     const offenders = fs.readdirSync(strategies).filter(file => file.endsWith('.md')).flatMap(file =>
       fs.readFileSync(path.join(strategies, file), 'utf8').split('\n')
         .map((line, index) => ({line, at: `${file}:${index + 1}`}))
-        .filter(({line}) => /结论表述|结论模板|典型结论|\*\*建议/.test(line) && namesThermalCause(line))
+        .filter(({line}) => /结论表述|结论模板|典型结论|\*\*建议/.test(line) && (namesThermalCause(line) || namesFrequencyCap(line)))
         .map(({at, line}) => `${at}: ${line}`));
     expect(offenders).toEqual([]);
+  });
+
+  it('judges each rule on its own condition, even when its text repeats an allowed one', () => {
+    const skill = {name: 'probe', steps: [
+      {id: 'limit', type: 'atomic', sql_fragments: ['fragments/system_cpu_freq_limit_spans.sql'], sql: 'SELECT 1', save_as: 'limit_data'},
+      {id: 'diagnosis', type: 'diagnostic', inputs: ['limit_data'], rules: [
+        {condition: 'limit_data.data.length > 0', diagnosis: '温控导致降频'},
+        {condition: 'limit_data.data.length === 0', diagnosis: '温控导致降频'},
+      ]},
+    ]};
+    expect(causeWording(skill, new Set()).map(entry => entry.allowedBy)).toEqual(['rule probe/diagnosis', undefined]);
   });
 
   it('allows thermal wording only in steps and rules that read thermal or limit evidence', () => {
@@ -434,7 +256,7 @@ describe('thermal wording follows thermal evidence', () => {
       // A track it compares against is: a temperature track filter reads temperature.
       {id: 'track', type: 'atomic', sql: "SELECT '高温导致降频' AS note FROM counter_track WHERE name GLOB '*temp*'"},
     ]};
-    expect(thermalWording(skill, new Set()).map(entry => [entry.text, entry.allowedBy])).toEqual([
+    expect(causeWording(skill, new Set()).map(entry => [entry.text, entry.allowedBy])).toEqual([
       ['频率下降，可能温控', undefined],
       ['可能是温控（cooling device）', undefined],
       ['限频由温控触发', 'step probe/limit'],

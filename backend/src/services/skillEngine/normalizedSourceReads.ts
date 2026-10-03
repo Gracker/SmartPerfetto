@@ -4,8 +4,9 @@
 
 // Structural reads of a source the Skills may only read through its
 // normalizing fragment: a relation the SQL names, and a track it selects by a
-// literal. It reads the tokens placeholder binding reads (sqlTemplate.ts), so
-// quotes, comments and placeholders are cut the same way, and matches by
+// literal. It reads the tokens placeholder binding reads (sqlTemplate.ts, with
+// qualified names joined by sqlStructure.ts), so quotes, comments and
+// placeholders are cut the same way, and matches by
 // operator rather than by the text around a column: `LOWER(t.name) =
 // 'gpufreq'`, `alias_col IN ('gpufreq')`, `'gpufreq' = name`, a conditional
 // aggregate (`CASE WHEN t.name = 'gpufreq'`, `CASE t.name WHEN 'gpufreq'`,
@@ -26,8 +27,8 @@
 // itself in SQL that also reads a track table: without resolving columns, a
 // label compared to 'gpufreq' there reads as a selection, which fails closed.
 
-import {skillSqlTokens, type SqlToken} from './sqlTemplate';
 import {sqliteGlobRegExp, sqliteLikeRegExp} from './sqlPatterns';
+import {cteDefinitionAt, isNameToken, QUERY_START, structuralSqlTokens, tokenMatchers, unqualifiedName} from './sqlStructure';
 
 /** What a Skill SQL text reads. */
 export interface SqlReads {
@@ -40,11 +41,19 @@ export interface SqlReads {
    * elsewhere by a pattern that admits only that name.
    */
   selectsTrack(value: string): boolean;
+  /**
+   * The names the SQL reads, lower-cased (tables, columns, called functions; a
+   * qualified name by its last part), without the names it gives its own
+   * columns, tables and CTEs (`AS name`, `name AS (`): `... AS cooling_hint`
+   * reads no cooling device.
+   */
+  readonly identifiers: readonly string[];
+  /** The literals the SQL selects rows or values by: exact comparisons and non-negated whole GLOB/LIKE patterns, as written. */
+  readonly selectionLiterals: readonly string[];
 }
 
 const TRACK_TABLES = ['track', 'counter_track', 'gpu_counter_track', 'counters'];
 const CREATED_BY = ['VIEW', 'TABLE', 'FUNCTION', 'MACRO', 'INDEX'];
-const QUERY_START = new Set(['SELECT', 'WITH', 'VALUES']);
 const FILTER_START = new Set(['WHERE', 'HAVING', 'ON']);
 const FILTER_END = new Set(['GROUP', 'ORDER', 'LIMIT', 'WINDOW', 'UNION', 'EXCEPT', 'INTERSECT', 'SELECT', 'VALUES', 'JOIN']);
 /** Track names a selecting pattern must not admit: it names one track, not a family. */
@@ -55,42 +64,30 @@ const containing = (value: string) => [`thermal-${value}-0`, `${value}-0`, `x${v
 interface Scope { filter: boolean; inList: boolean }
 
 function analyze(sql: string): SqlReads {
-  const tokens = skillSqlTokens(sql);
-  const is = (index: number, kind: SqlToken['kind'], text: string) => tokens[index]?.kind === kind && tokens[index].text === text;
-  const word = (index: number, text: string) => is(index, 'word', text);
-  const punct = (index: number, text: string) => is(index, 'punct', text);
+  const tokens = structuralSqlTokens(sql);
+  const {word, punct} = tokenMatchers(tokens);
 
-  /** `AS [NOT] [MATERIALIZED] (` at `at`: the body of a CTE. */
-  const definesBody = (at: number) => {
-    if (!word(at, 'AS')) return false;
-    let body = at + 1;
-    if (word(body, 'NOT')) body++;
-    if (word(body, 'MATERIALIZED')) body++;
-    return punct(body, '(');
-  };
-
-  // Names read as tables: every name except a qualifier, a definition and a
-  // call. A name the SQL defines itself (a CTE or a created view) shadows the
-  // stdlib relation of that name, so reading it reads the definition.
+  // Names read as tables: every name except a definition and a call (a
+  // qualified name is one token, read by its last part). A name the SQL
+  // defines itself (a CTE or a created view) shadows the stdlib relation of
+  // that name, so reading it reads the definition.
   const read = new Set<string>();
   const defines = new Set<string>();
+  /** Names the SQL gives its own columns, tables and CTEs. */
+  const ownNames = new Set<string>();
+  /** Functions, macros and table functions the SQL calls. */
+  const called = new Set<string>();
   tokens.forEach((token, index) => {
-    if ((token.kind !== 'word' && token.kind !== 'identifier') || token.text === '' || punct(index + 1, '.')) return;
-    let next = index + 1;
-    if (punct(next, '(')) {
-      for (let depth = 0; next < tokens.length; next++) {
-        if (punct(next, '(')) depth++;
-        else if (punct(next, ')') && --depth === 0) break;
-      }
-      if (!definesBody(next + 1)) return; // a call
-      next++;
-    }
+    if (!isNameToken(token)) return;
+    const cte = cteDefinitionAt(tokens, index) !== undefined;
+    if (!cte && punct(index + 1, '(')) { called.add(unqualifiedName(token)); return; } // a call
     // `CREATE ... IF NOT EXISTS <name>` may leave the stdlib relation in place:
     // it neither reads nor shadows it.
     if (word(index - 1, 'EXISTS')) return;
-    const name = token.text.toLowerCase().split('.').pop()!;
-    const defined = definesBody(next) || CREATED_BY.some(text => word(index - 1, text));
+    const name = unqualifiedName(token);
+    const defined = cte || CREATED_BY.some(text => word(index - 1, text));
     (defined ? defines : read).add(name);
+    if (defined || word(index - 1, 'AS')) ownNames.add(name);
   });
   for (const name of defines) read.delete(name);
 
@@ -98,6 +95,7 @@ function analyze(sql: string): SqlReads {
   // pattern (in a row filter, or anywhere when it names one string).
   const exact: string[] = [];
   const patterns: Array<{regExp: RegExp; filter: boolean}> = [];
+  const selectionLiterals: string[] = [];
   /** Per open parenthesis (and the statement): whether it is in a row filter, and whether it is an `IN (...)` list. */
   const scopes: Scope[] = [{filter: false, inList: false}];
   /** The token before `index`, skipping opening parentheses. */
@@ -127,6 +125,7 @@ function analyze(sql: string): SqlReads {
         const {operator, escape} = token.pattern;
         const regExp = operator === 'like' ? sqliteLikeRegExp(token.text, escape) : sqliteGlobRegExp(token.text);
         patterns.push({regExp, filter: scope.filter});
+        selectionLiterals.push(token.text);
       }
       return;
     }
@@ -140,11 +139,16 @@ function analyze(sql: string): SqlReads {
       || (word(right, 'IS') && !word(right + 1, 'NOT') && !word(right + 1, 'DISTINCT'))
       || (word(right, 'IS') && word(right + 1, 'NOT') && word(right + 2, 'DISTINCT') && word(right + 3, 'FROM'));
     const listed = scope.inList && (punct(index - 1, '(') || punct(index - 1, ','));
-    if (equalsLeft || equalsRight || listed) exact.push(token.text.toLowerCase());
+    if (equalsLeft || equalsRight || listed) {
+      exact.push(token.text.toLowerCase());
+      selectionLiterals.push(token.text);
+    }
   });
 
   const readsTrackTable = TRACK_TABLES.some(table => read.has(table));
   return {
+    identifiers: [...read, ...called].filter(name => !ownNames.has(name)),
+    selectionLiterals,
     readsRelation: relation => read.has(relation.toLowerCase()),
     selectsTrack: value => readsTrackTable && (
       exact.includes(value.toLowerCase())

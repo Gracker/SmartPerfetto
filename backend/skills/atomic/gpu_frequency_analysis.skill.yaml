@@ -67,7 +67,7 @@ sql: |
     UNION ALL
     SELECT gpu_id, 3, '最低运行频率', COALESCE(ROUND(min_running_mhz, 0) || ' MHz', '无运行时间'),
       CASE WHEN min_running_mhz IS NULL THEN ''
-           WHEN min_running_mhz < max_running_mhz * 0.3 THEN '⚠️ GPU 曾深度降频'
+           WHEN min_running_mhz < max_running_mhz * 0.3 THEN '⚠️ GPU 频率曾大幅下调'
            ELSE '✓ 频率波动正常' END
     FROM gpu_frequency_summary
     UNION ALL

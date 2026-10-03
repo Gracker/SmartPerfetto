@@ -224,6 +224,7 @@ steps:
           format: percentage
         - name: throttled_core_ratio_pct
           label: "频率变化核心占比"
+          label_i18n: {en: "Frequency-drop core ratio (%)"}
           type: percentage
           format: percentage
         - name: frequency_trend_risk
@@ -231,6 +232,7 @@ steps:
           type: string
         - name: thermal_risk
           label: "热原因证据"
+          label_i18n: {en: "Heat-cause evidence"}
           type: string
         - name: prediction
           label: "预测"
@@ -403,6 +405,7 @@ steps:
           format: "{{value}} MHz"
         - key: throttle_ratio
           label: 观测频率跨度
+          label_i18n: {en: "Observed frequency span"}
       insights:
         - condition: "throttle_ratio > 50"
           template: "CPU{{cpu_id}} 频率下降超过最大频率 50%，仅说明 DVFS 频率变化，不能确定热节流"
@@ -434,10 +437,12 @@ steps:
           format: compact
         - name: throttle_ratio
           label: "观测频率跨度(%)"
+          label_i18n: {en: "Observed frequency span (%)"}
           type: percentage
           format: percentage
         - name: throttling_status
           label: "状态"
+          label_i18n: {en: "Status"}
           type: string
     sql: |
       SELECT

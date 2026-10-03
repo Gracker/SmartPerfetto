@@ -689,6 +689,8 @@ steps:
       end_ts: "${analysis_window.data?.[0]?.window_end_ts ?? null}"
     display:
       level: summary
+      title_i18n:
+        en: "Frequency observation without limit data"
     save_as: no_limit_throttle_observation
 
   - id: no_limit_capture_advice

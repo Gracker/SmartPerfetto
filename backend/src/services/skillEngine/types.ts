@@ -81,6 +81,8 @@ export interface SynthesizeConfig {
     key: string;
     /** 显示标签 */
     label: string;
+    /** Catalog label in a language `label` is not written in, as `label_i18n` on a display column. */
+    label_i18n?: AuthoredTranslations;
     /** 格式化模板，支持 {{field}} 插值 */
     format?: string;
   }>;
@@ -140,6 +142,14 @@ export interface ValidatedParams {
 // 展示控制
 // =============================================================================
 
+/**
+ * A display column as a Skill authors it. `label_i18n` is a catalog label for
+ * a language the authored label is not written in, so a column keeps its
+ * stable name while each language reads an accurate label; like title_i18n it
+ * never reaches a runtime result.
+ */
+export type SkillDisplayColumn = Partial<ColumnDefinition> & {label_i18n?: AuthoredTranslations};
+
 export interface DisplayConfig {
   show?: boolean;
   level?: DisplayLevel;
@@ -148,7 +158,7 @@ export interface DisplayConfig {
   /** Catalog titles for named steps[] (including nested steps[]); other display locations are rejected. */
   title_i18n?: AuthoredTranslations;
   format?: DisplayFormat;
-  columns?: Array<string | Partial<ColumnDefinition>>; // 指定展示哪些列（支持简写或完整列定义）
+  columns?: Array<string | SkillDisplayColumn>; // 指定展示哪些列（支持简写或完整列定义）
   aggregate?: boolean;          // 是否汇总迭代结果
   highlight?: HighlightRule[];  // 高亮规则
   expandable?: boolean;         // 是否支持展开查看详细分析（用于 L2 列表关联 L4 deep 数据）

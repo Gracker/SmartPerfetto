@@ -1,0 +1,2260 @@
+{
+  "schemaVersion": 1,
+  "source": "processIdentity getEffectiveIdentityConfig",
+  "skills": {
+    "ams_module": {
+      "policy": "none"
+    },
+    "android_app_background_power_state": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_bitmap_memory_per_process": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_dvfs_counter_stats": {
+      "policy": "none"
+    },
+    "android_gpu_work_period_track": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_heap_dominator_path_extract": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_heap_graph_class_growth": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_heap_graph_leak_candidates": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_heap_graph_summary": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_job_scheduler_events": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_kernel_wakelock_summary": {
+      "policy": "none"
+    },
+    "android_memory_v57_ai_diagnostics": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "android_process_state_residency": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "anr_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "anr_context_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "anr_detail": {
+      "scope": "process",
+      "aliases": [
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "anr_main_thread_blocking": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "app_frame_production": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "app_lifecycle_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "app_process_starts_summary": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "art_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "battery_charge_timeline": {
+      "policy": "none"
+    },
+    "battery_doze_state_timeline": {
+      "policy": "none"
+    },
+    "battery_drain_attribution": {
+      "policy": "none"
+    },
+    "battery_drain_rate_summary": {
+      "policy": "none"
+    },
+    "binder_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "binder_blocking_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "binder_detail": {
+      "scope": "process",
+      "aliases": [
+        "process_name",
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "required"
+    },
+    "binder_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "binder_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "binder_root_cause": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "binder_storm_detection": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "block_io_analysis": {
+      "policy": "none"
+    },
+    "blocking_chain_analysis": {
+      "scope": "process",
+      "aliases": [
+        "process_name",
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "required"
+    },
+    "buffer_transaction_lifecycle": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cache_miss_impact": {
+      "policy": "none"
+    },
+    "callstack_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "camera_trace_evidence": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "choreographer_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "chrome_scroll_jank_frame_timeline": {
+      "policy": "none"
+    },
+    "click_response_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "click_response_detail": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "code_pinpoint": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "compose_recomposition_hotspot": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "consumer_jank_detection": {
+      "policy": "none"
+    },
+    "cpu_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cpu_anomalous_threads_in_range": {
+      "policy": "none"
+    },
+    "cpu_cluster_load_in_range": {
+      "policy": "none"
+    },
+    "cpu_cluster_mapping_view": {
+      "policy": "none"
+    },
+    "cpu_freq_limit_timeline": {
+      "policy": "none"
+    },
+    "cpu_freq_residency_summary": {
+      "policy": "none"
+    },
+    "cpu_freq_timeline": {
+      "policy": "none"
+    },
+    "cpu_frequency_limit_attribution": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cpu_frequency_limit_episode": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cpu_idle_analysis": {
+      "policy": "none"
+    },
+    "cpu_idle_state_residency": {
+      "policy": "none"
+    },
+    "cpu_load_in_range": {
+      "policy": "none"
+    },
+    "cpu_module": {
+      "policy": "none"
+    },
+    "cpu_process_utilization_period": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cpu_profiling": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cpu_slice_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cpu_system_context_in_range": {
+      "policy": "none"
+    },
+    "cpu_thread_utilization_period": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "cpu_throttling_in_range": {
+      "policy": "none"
+    },
+    "cpu_time_per_frame": {
+      "policy": "none"
+    },
+    "cpu_topology_detection": {
+      "policy": "none"
+    },
+    "cpu_topology_view": {
+      "policy": "none"
+    },
+    "cpu_utilization_per_period": {
+      "policy": "none"
+    },
+    "cpu_workload_attribution_in_range": {
+      "policy": "none"
+    },
+    "device_state_snapshot": {
+      "policy": "none"
+    },
+    "device_state_timeline": {
+      "policy": "none"
+    },
+    "dmabuf_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "fence_wait_decomposition": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "filesystem_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "flutter_scrolling_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "fpsgo_analysis": {
+      "policy": "none"
+    },
+    "frame_blocking_calls": {
+      "scope": "process",
+      "aliases": [
+        "process_name",
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "required"
+    },
+    "frame_overrun_summary": {
+      "policy": "none"
+    },
+    "frame_pipeline_variance": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "frame_production_gap": {
+      "scope": "process",
+      "aliases": [
+        "process_name",
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "frame_ui_time_breakdown": {
+      "policy": "none"
+    },
+    "futex_wait_distribution": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "game_fps_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "game_main_loop_jank": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "gc_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "gc_events_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "gl_standalone_swap_jank": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "global_trace_sanity_check": {
+      "policy": "none"
+    },
+    "gpu_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "gpu_compute_kernel_analysis": {
+      "policy": "none"
+    },
+    "gpu_freq_in_range": {
+      "policy": "none"
+    },
+    "gpu_frequency_analysis": {
+      "policy": "none"
+    },
+    "gpu_metrics": {
+      "policy": "none"
+    },
+    "gpu_module": {
+      "policy": "none"
+    },
+    "gpu_power_state_analysis": {
+      "policy": "none"
+    },
+    "gpu_render_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "gpu_v57_ai_diagnostics": {
+      "policy": "none"
+    },
+    "input_events_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "input_module": {
+      "policy": "none"
+    },
+    "input_to_frame_latency": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "io_pressure": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "irq_analysis": {
+      "policy": "none"
+    },
+    "jank_frame_detail": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "launcher_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "linux_irq_summary": {
+      "policy": "none"
+    },
+    "linux_perf_counter_hotspots": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "linux_process_rss_swap_timeline": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "linux_runqueue_depth_timeline": {
+      "policy": "none"
+    },
+    "linux_sched_latency_distribution": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "linux_systemd_journald_analysis": {
+      "policy": "none"
+    },
+    "lmk_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "lmk_kill_attribution": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "lock_binder_wait": {
+      "scope": "process",
+      "aliases": [
+        "process_name",
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "required"
+    },
+    "lock_contention_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "lock_contention_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "lock_contention_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "logcat_analysis": {
+      "policy": "none"
+    },
+    "longest_process_slices": {
+      "policy": "none"
+    },
+    "main_thread_file_io_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "main_thread_frame_work": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "main_thread_handler_callback_slices": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "main_thread_sched_latency_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "main_thread_slices_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "main_thread_states_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "mali_gpu_power_state": {
+      "policy": "none"
+    },
+    "media_codec_activity": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "memory_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "memory_growth_detector": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "memory_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "memory_pressure_in_range": {
+      "policy": "none"
+    },
+    "memory_rss_high_watermark": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "modem_network_correlation_summary": {
+      "policy": "none"
+    },
+    "multi_trace_result_comparison": {
+      "policy": "none"
+    },
+    "native_heap_breakdown": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "navigation_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "network_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "oom_adjuster_score_timeline": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "page_fault_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "pipeline_4feature_scoring": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "pipeline_android_pip_freeform": {
+      "policy": "none"
+    },
+    "pipeline_android_view_mixed": {
+      "policy": "none"
+    },
+    "pipeline_android_view_multi_window": {
+      "policy": "none"
+    },
+    "pipeline_android_view_software": {
+      "policy": "none"
+    },
+    "pipeline_android_view_standard_blast": {
+      "policy": "none"
+    },
+    "pipeline_android_view_standard_legacy": {
+      "policy": "none"
+    },
+    "pipeline_angle_gles_vulkan": {
+      "policy": "none"
+    },
+    "pipeline_camera_pipeline": {
+      "policy": "none"
+    },
+    "pipeline_chrome_browser_viz": {
+      "policy": "none"
+    },
+    "pipeline_compose_standard": {
+      "policy": "none"
+    },
+    "pipeline_flutter_surfaceview_impeller": {
+      "policy": "none"
+    },
+    "pipeline_flutter_surfaceview_skia": {
+      "policy": "none"
+    },
+    "pipeline_flutter_textureview": {
+      "policy": "none"
+    },
+    "pipeline_game_engine": {
+      "policy": "none"
+    },
+    "pipeline_hardware_buffer_renderer": {
+      "policy": "none"
+    },
+    "pipeline_imagereader_pipeline": {
+      "policy": "none"
+    },
+    "pipeline_key_slices_overlay": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "pipeline_opengl_es": {
+      "policy": "none"
+    },
+    "pipeline_rn_new_arch": {
+      "policy": "none"
+    },
+    "pipeline_rn_old_arch": {
+      "policy": "none"
+    },
+    "pipeline_rn_skia": {
+      "policy": "none"
+    },
+    "pipeline_software_compositing": {
+      "policy": "none"
+    },
+    "pipeline_surface_control_api": {
+      "policy": "none"
+    },
+    "pipeline_surfaceview_blast": {
+      "policy": "none"
+    },
+    "pipeline_textureview_standard": {
+      "policy": "none"
+    },
+    "pipeline_variable_refresh_rate": {
+      "policy": "none"
+    },
+    "pipeline_video_overlay_hwc": {
+      "policy": "none"
+    },
+    "pipeline_vulkan_native": {
+      "policy": "none"
+    },
+    "pipeline_webview_gl_functor": {
+      "policy": "none"
+    },
+    "pipeline_webview_surface_control": {
+      "policy": "none"
+    },
+    "pipeline_webview_surfaceview_wrapper": {
+      "policy": "none"
+    },
+    "pipeline_webview_textureview_custom": {
+      "policy": "none"
+    },
+    "power_consumption_overview": {
+      "policy": "none"
+    },
+    "power_module": {
+      "policy": "none"
+    },
+    "power_rails_energy_breakdown": {
+      "policy": "none"
+    },
+    "present_fence_timing": {
+      "policy": "none"
+    },
+    "process_identity_resolver": {
+      "policy": "exempt",
+      "scope": "process"
+    },
+    "process_slice_cpu_hotspots": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "process_thread_wait_sources_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "render_pipeline_latency": {
+      "policy": "none"
+    },
+    "render_thread_slices": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "rendering_pipeline_detection": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "rn_bridge_to_frame_jank": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "rn_fabric_render_jank": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "scene_device_state_changes": {
+      "policy": "none"
+    },
+    "scene_reconstruction": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "scene_response_markers": {
+      "policy": "none"
+    },
+    "sched_latency_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "scheduler_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "scheduling_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "screen_off_background_cpu_attribution": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "scroll_response_latency": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "scroll_session_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "scrolling_analysis": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "selection_range_cpu_sched_summary": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "sf_composition_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "sf_frame_consumption": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "sf_layer_count_in_range": {
+      "policy": "none"
+    },
+    "startup_analysis": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "startup_binder_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_binder_pool_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_breakdown_in_range": {
+      "policy": "none"
+    },
+    "startup_class_loading_in_range": {
+      "policy": "none"
+    },
+    "startup_cpu_placement_timeline": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_critical_tasks": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "startup_detail": {
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "required"
+    },
+    "startup_events_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_freq_rampup": {
+      "policy": "none"
+    },
+    "startup_gc_in_range": {
+      "policy": "none"
+    },
+    "startup_hot_slice_states": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_jit_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_main_thread_binder_blocking_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_main_thread_file_io_in_range": {
+      "policy": "none"
+    },
+    "startup_main_thread_slices_in_range": {
+      "policy": "none"
+    },
+    "startup_main_thread_states_in_range": {
+      "policy": "none"
+    },
+    "startup_main_thread_sync_binder_in_range": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_sched_latency_in_range": {
+      "policy": "none"
+    },
+    "startup_slow_reasons": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "startup_thread_blocking_graph": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "state_timeline": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "surfaceflinger_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "surfaceflinger_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "suspend_wakeup_analysis": {
+      "policy": "none"
+    },
+    "system_load_in_range": {
+      "policy": "none"
+    },
+    "systemui_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "task_migration_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "textureview_producer_frame_timing": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "thermal_cooling_device_timeline": {
+      "policy": "none"
+    },
+    "thermal_module": {
+      "policy": "none"
+    },
+    "thermal_predictor": {
+      "policy": "none"
+    },
+    "thermal_throttling": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "thermal_throttling_chain": {
+      "policy": "none"
+    },
+    "third_party_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "thread_affinity_violation": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "thread_cpu_placement_timeline": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "thread_preemption_handoffs_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "thread_system_summary_in_range": {
+      "scope": "process",
+      "aliases": [
+        "package"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50,
+      "policy": "verify_if_present"
+    },
+    "touch_to_display_latency": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "trace_state_track_summary": {
+      "policy": "none"
+    },
+    "util_tracking_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "vrr_detection": {
+      "policy": "none"
+    },
+    "vsync_alignment_in_range": {
+      "policy": "none"
+    },
+    "vsync_config": {
+      "policy": "none"
+    },
+    "vsync_period_detection": {
+      "policy": "none"
+    },
+    "vsync_phase_alignment": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "wakelock_tracking": {
+      "policy": "none"
+    },
+    "wakeup_frequency_summary": {
+      "policy": "none"
+    },
+    "wattson_app_startup_power": {
+      "policy": "none"
+    },
+    "wattson_rails_power_breakdown": {
+      "policy": "none"
+    },
+    "wattson_thread_power_attribution": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "webview_drawfunctor_jank_chain": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "webview_v8_analysis": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    },
+    "wms_module": {
+      "policy": "verify_if_present",
+      "scope": "process",
+      "aliases": [
+        "package",
+        "process_name",
+        "package_name",
+        "target_package",
+        "app_package",
+        "packageName",
+        "processName"
+      ],
+      "rewriteTo": "recommended_process_name_param",
+      "minConfidence": 50
+    }
+  }
+}

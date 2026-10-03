@@ -7,6 +7,7 @@ import {
   listPerfettoSqlModuleDocs,
   loadPerfettoSqlDocsAsset,
   moduleCoveredByPerfettoSqlLineage,
+  perfettoRelationColumns,
   searchPerfettoSqlDocs,
 } from '../perfettoSqlDocs';
 import * as fs from 'fs';
@@ -71,5 +72,15 @@ describe('perfettoSqlDocs', () => {
       expect.arrayContaining(['slices.with_context']),
     );
     expect(moduleCoveredByPerfettoSqlLineage('slices.with_context', 'android.frames.timeline')).toBe(true);
+  });
+
+  // processIdentity reads table columns from here to bind a bare column as SQLite does.
+  it('lists the columns of prelude and stdlib tables by name', () => {
+    expect(perfettoRelationColumns('process')).toEqual(expect.any(Set));
+    expect([...perfettoRelationColumns('process')!]).toEqual(expect.arrayContaining(['upid', 'pid', 'name', 'cmdline']));
+    expect(perfettoRelationColumns('THREAD')?.has('name')).toBe(true);
+    expect(perfettoRelationColumns('thread')?.has('app')).toBe(false);
+    expect(perfettoRelationColumns('android_frames')?.has('frame_id')).toBe(true);
+    expect(perfettoRelationColumns('no_such_table')).toBeUndefined();
   });
 });

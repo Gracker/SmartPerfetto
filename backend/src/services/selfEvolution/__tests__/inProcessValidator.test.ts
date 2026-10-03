@@ -320,10 +320,54 @@ describe('in-process effective Skill validator', () => {
       .map(issue => `${issue.severity} ${issue.path}`)).toEqual(['error steps[1].sql']);
     expect(result.valid).toBe(false);
     // Composing published overlays reports it without taking the scope offline.
-    const composed = validateSkillDefinitionsInProcess({definitions: [reader], resultPathReadSeverity: 'warning'});
+    const composed = validateSkillDefinitionsInProcess({definitions: [reader], predatingRuleSeverity: 'warning'});
     expect(composed.issues.filter(issue => issue.code === 'result_path_read_undecided')
       .map(issue => issue.severity)).toEqual(['warning']);
     expect(composed.valid).toBe(true);
+  });
+
+  it('rejects heat or cap wording a Skill shows without the evidence behind it, in either language', () => {
+    const wordingIssues = (definitions: SkillDefinition[]) =>
+      validateSkillDefinitionsInProcess({definitions}).issues
+        .filter(issue => issue.code === 'cause_wording_without_evidence')
+        .map(issue => `${issue.severity} ${issue.skillId} ${issue.path}`);
+    const frequencyOnly = skill('frequency_only');
+    frequencyOnly.steps = [{id: 'drops', type: 'atomic', name: '频率突降事件',
+      sql: "SELECT ts, '限频导致卡顿' AS note FROM counter c JOIN cpu_counter_track t ON t.id = c.track_id WHERE t.name = 'cpufreq'",
+      display: {columns: [{name: 'throttled_core_pct', label: '频率下降核心占比'}]}} as any];
+    // A Chinese literal, and an English label humanized from the column name.
+    expect(wordingIssues([frequencyOnly])).toEqual([
+      'error frequency_only steps.drops.catalog.columns.throttled_core_pct.label.en',
+      'error frequency_only steps.drops.sql',
+    ]);
+    // An authored English label replaces the humanized one, and the authored
+    // translations are valid structure too (columns, synthesize fields, step titles).
+    const labelled = skill('labelled');
+    labelled.steps = [{id: 'drops', type: 'atomic', name: '频率突降事件', sql: 'SELECT 1 AS throttled_core_pct',
+      display: {title: '频率突降', title_i18n: {en: 'Frequency drops'},
+        columns: [{name: 'throttled_core_pct', label: '频率下降核心占比', label_i18n: {en: 'Frequency-drop cores (%)'}}]},
+      synthesize: {role: 'overview', fields: [{key: 'throttled_core_pct', label: '频率下降核心占比',
+        label_i18n: {en: 'Frequency-drop cores (%)'}}]}} as any];
+    expect(wordingIssues([labelled])).toEqual([]);
+    const labelledResult = validateSkillDefinitionsInProcess({definitions: [labelled]});
+    expect(labelledResult.issues.filter(issue => issue.severity === 'error')).toEqual([]);
+    expect(labelledResult.valid).toBe(true);
+    // Reading a cpufreq limit, or calling a Skill that does, allows it.
+    const limit = skill('limit_reader');
+    limit.steps = [{id: 'limits', type: 'atomic', sql: 'SELECT * FROM cpu_frequency_limits', name: '限频区段'} as any];
+    const caller = skill('caller');
+    caller.steps = [{id: 'call', type: 'skill', skill: 'limit_reader', name: '限频检测'} as any];
+    expect(wordingIssues([limit, caller])).toEqual([]);
+    // Composing published overlays reports it without taking the scope offline.
+    const composed = validateSkillDefinitionsInProcess({definitions: [frequencyOnly], predatingRuleSeverity: 'warning'});
+    expect(composed.valid).toBe(true);
+    expect(composed.issues.filter(issue => issue.code === 'cause_wording_without_evidence').map(issue => issue.severity))
+      .toEqual(['warning', 'warning']);
+    // A malformed translation is the display contract's to report, never a crash here.
+    const malformed = skill('malformed');
+    malformed.steps = [{id: 'x', type: 'atomic', sql: 'SELECT 1', display: {columns: [{name: 'a', label_i18n: {en: 42}}]}} as any];
+    expect(validateSkillDefinitionsInProcess({definitions: [malformed]}).issues.map(issue => issue.code))
+      .toContain('display_contract');
   });
 
   it('rejects a top-level key no loader reads, by the set of the definition type', () => {
@@ -485,7 +529,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('6');
+    expect(gate.validatorVersion).toBe('7');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({

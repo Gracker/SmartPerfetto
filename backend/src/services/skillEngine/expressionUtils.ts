@@ -641,7 +641,7 @@ export function parseEvidenceField(field: string): EvidenceFieldPath | undefined
   return {root: root[1], accesses};
 }
 
-function parseEvidenceLiteral(text: string): EvidenceLiteral {
+export function parseEvidenceLiteral(text: string): EvidenceLiteral {
   if (text === 'true' || text === 'false') return text === 'true';
   if (text === 'null') return null;
   if (text.startsWith("'") || text.startsWith('"')) return text.slice(1, -1);

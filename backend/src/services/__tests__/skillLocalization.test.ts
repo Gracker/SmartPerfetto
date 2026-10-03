@@ -40,7 +40,7 @@ describe('Skill localization catalog', () => {
     const english = localizeSkillDefinition(skill, 'en');
     expect(english.meta).toMatchObject({
       display_name: 'CPU Frequency Trend',
-      description: expect.stringContaining('predicts no thermal mechanism'),
+      description: expect.stringContaining('names no cause'),
     });
     expect(localizeSkillDefinition(skill, 'zh-CN').meta.display_name).toBe('CPU 频率趋势观察');
     for (const localized of [english, localizeSkillDefinition({...skill, name: 'not_in_catalog'}, 'en', {externalAuthored: true})]) {
@@ -139,6 +139,14 @@ describe('Skill localization catalog', () => {
         }),
       ]),
     );
+  });
+
+  it('labels a column by its authored translation and keeps the translation out of results', () => {
+    const [english] = localizeSkillDisplayResults('thermal_predictor', [{
+      stepId: 'root',
+      columnDefinitions: [{name: 'throttled_core_ratio_pct', label: '频率变化核心占比', label_i18n: {en: 'authoring only'}}],
+    }], 'en')!;
+    expect(english.columnDefinitions).toEqual([{name: 'throttled_core_ratio_pct', label: 'Frequency-drop core ratio (%)'}]);
   });
 
   it('uses a locale-aware label policy for inferred schema columns', () => {

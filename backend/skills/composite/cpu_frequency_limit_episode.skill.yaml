@@ -285,7 +285,7 @@ steps:
     display:
       level: summary
       layer: list
-      title: "限频前后的温控/性能策略守护进程活动（名字匹配，仅候选）"
+      title: "区段起点前后的温控/性能策略守护进程活动（名字匹配，仅候选）"
       columns:
         - {name: process_name, label: "进程", type: string}
         - {name: thread_name, label: "线程", type: string}
@@ -297,9 +297,9 @@ steps:
         - {name: who_rate_ns_per_s, label: "归因窗口速率(ns/s)", type: number}
         - {name: baseline_rate_ns_per_s, label: "全 trace 基线速率(ns/s)", type: number}
         - {name: rate_ratio, label: "速率倍数", type: number}
-        - {name: ran_before_limit_ns, label: "限频前运行", type: duration, unit: ns}
-        - {name: last_run_end_before_ts, label: "限频前最后一次运行结束", type: timestamp, unit: ns, clickAction: navigate_timeline}
-        - {name: lead_ns, label: "距离限频时刻", type: duration, unit: ns}
+        - {name: ran_before_limit_ns, label: "区段起点前运行", type: duration, unit: ns}
+        - {name: last_run_end_before_ts, label: "区段起点前最后一次运行结束", type: timestamp, unit: ns, clickAction: navigate_timeline}
+        - {name: lead_ns, label: "距区段起点", type: duration, unit: ns}
         - {name: match_basis, label: "匹配依据", type: string}
         - {name: evidence_scope, label: "证据范围", type: string}
     on_empty: "归因窗口内没有名字匹配温控/性能策略签名的线程在运行。"
@@ -353,7 +353,7 @@ steps:
   # ---------------------------------------------------------------------------
   - id: temperature_context
     type: atomic
-    name: "限频前温度上下文"
+    name: "区段起点前温度上下文"
     optional: true
     process_scope:
       role: global_context
@@ -362,7 +362,7 @@ steps:
     display:
       level: summary
       layer: list
-      title: "限频前回溯窗口内的温度"
+      title: "区段起点前回溯窗口内的温度"
       columns:
         - {name: sensor_name, label: "传感器/热区", type: string}
         - {name: sample_count_in_window, label: "窗口采样数", type: number}
@@ -430,7 +430,7 @@ steps:
   # ---------------------------------------------------------------------------
   - id: before_workload
     type: skill
-    name: "限频前负载归因"
+    name: "区段起点前负载归因"
     skill: cpu_workload_attribution_in_range
     optional: true
     params:
@@ -445,7 +445,7 @@ steps:
 
   - id: before_anomalies
     type: skill
-    name: "限频前异常线程"
+    name: "区段起点前异常线程"
     skill: cpu_anomalous_threads_in_range
     optional: true
     params:
@@ -468,7 +468,7 @@ steps:
   # ---------------------------------------------------------------------------
   - id: non_cpu_heat_context
     type: atomic
-    name: "限频前非 CPU 热源上下文"
+    name: "区段起点前非 CPU 热源上下文"
     optional: true
     process_scope:
       role: global_context
@@ -478,7 +478,7 @@ steps:
     display:
       level: detail
       layer: list
-      title: "限频前回溯窗口内的非 CPU 热源迹象（仅存在性观测）"
+      title: "区段起点前回溯窗口内的非 CPU 热源迹象（仅存在性观测）"
       columns:
         - {name: source_kind, label: "来源类别", type: string}
         - {name: source_key, label: "来源", type: string}
@@ -501,7 +501,7 @@ steps:
           printf('%d tracks', COUNT(DISTINCT track_id)) AS detail,
           COUNT(*) AS observed_count, NULL AS running_ns,
           MIN(ts) AS first_ts, MAX(ts) AS last_ts,
-          '存在该类计数器样本，不代表该子系统是本次限频的热源' AS interpretation
+          '存在该类计数器样本，不代表该子系统是本区段的热源' AS interpretation
         FROM (
           SELECT ct.type AS source_key, c.track_id, c.ts
           FROM counter_track ct JOIN counter c ON c.track_id = ct.id
@@ -529,7 +529,7 @@ steps:
           SUM(MIN(s.ts + s.dur, (SELECT before_end_ts FROM win))
             - MAX(s.ts, (SELECT before_start_ts FROM win))) AS running_ns,
           MIN(s.ts) AS first_ts, MAX(s.ts + s.dur) AS last_ts,
-          '进程在窗口内运行，不代表其产生的热量导致了本次限频' AS interpretation
+          '进程在窗口内运行，不代表其产生的热量触发了本区段' AS interpretation
         FROM heat_processes h
         JOIN thread t ON t.upid = h.upid
         JOIN sched_slice s ON s.utid = t.utid AND s.dur > 0

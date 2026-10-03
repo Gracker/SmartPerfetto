@@ -17,6 +17,7 @@ import {
 import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
 import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillEngine/skillTopLevelKeys';
 import {undecidedResultPathReads} from '../skillEngine/resultPathReads';
+import {causeWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
 import type {SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
@@ -32,7 +33,22 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '6';
+export const IN_PROCESS_VALIDATOR_VERSION = '7';
+
+/**
+ * Rules that already-published overlays and packs may predate. Each is an
+ * error for the Skills a proposal defines or changes and in validate:skills,
+ * and a warning everywhere else (`predatingRuleSeverity`): one predating
+ * overlay must not take every overlay of its scope offline.
+ * - result_path_read_undecided: a public-runtime portability check; this
+ *   runtime's own behaviour for the read is defined (resultPathReads.ts).
+ * - cause_wording_without_evidence: heat or frequency-cap wording in a text
+ *   the Skill shows with no evidence read behind it (causeWordingEvidence.ts).
+ */
+export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
+  'result_path_read_undecided',
+  'cause_wording_without_evidence',
+]);
 
 export type InProcessValidationSeverity = 'error' | 'warning';
 
@@ -59,13 +75,12 @@ export interface ValidateSkillDefinitionsInProcessInput {
   validateReferences?: boolean;
   sqlGuardrailMode?: 'default' | 'disabled';
   /**
-   * Severity of `result_path_read_undecided` (default error). Runtime
-   * composition and a proposal's view of Skills it does not change pass
-   * 'warning': the rule is a public-runtime portability check, this runtime's
-   * own behaviour for the read is defined, and one published overlay that
-   * predates it would otherwise take every overlay of the scope offline.
+   * Severity of the PREDATING_RULE_CODES (default error). Runtime composition
+   * and a proposal's view of Skills it does not change pass 'warning'.
    */
-  resultPathReadSeverity?: InProcessValidationSeverity;
+  predatingRuleSeverity?: InProcessValidationSeverity;
+  /** Evidence readers across `definitions`, when the caller validates the same registry more than once. */
+  causeWordingReaders?: CauseWordingReaders;
 }
 
 export interface InProcessStrategyValidationResult {
@@ -89,6 +104,25 @@ function issue(
   message: string,
 ): InProcessValidationIssue {
   return {severity, code, skillId, path, message};
+}
+
+const readersByRegistry = new WeakMap<ReadonlyMap<string, SkillDefinition>, CauseWordingReaders>();
+
+/**
+ * Evidence readers across the registry `skill` is validated in, computed once
+ * per registry; without one, only `skill` itself is known.
+ */
+function registryCauseWordingReaders(
+  skill: SkillDefinition,
+  definitions: ReadonlyMap<string, SkillDefinition> | undefined,
+): CauseWordingReaders {
+  if (!definitions) return causeWordingReaders([skill]);
+  let readers = readersByRegistry.get(definitions);
+  if (!readers) {
+    readers = causeWordingReaders([...definitions.values()]);
+    readersByRegistry.set(definitions, readers);
+  }
+  return readers;
 }
 
 /** Every step of a step list, nested parallel and conditional branches included, with its path. */
@@ -256,7 +290,9 @@ export function validateSkillDefinitionInProcess(
     sqlGuardrailMode?: 'default' | 'disabled';
     /** The complete registry by name; when present, `save_from` targets are checked against it. */
     definitions?: ReadonlyMap<string, SkillDefinition>;
-    resultPathReadSeverity?: InProcessValidationSeverity;
+    predatingRuleSeverity?: InProcessValidationSeverity;
+    /** Skills that read heat or cap evidence across the registry; derived from `definitions` when absent. */
+    causeWordingReaders?: CauseWordingReaders;
   } = {},
 ): InProcessValidationIssue[] {
   const issues = options.includeStructuralChecks === false
@@ -308,10 +344,22 @@ export function validateSkillDefinitionInProcess(
   issues.push(...validateDiagnosticReads(skill));
   // A saved-result path read without a default runs on '' / NULL here but is
   // skipped by the public runtime when the result has no row (resultPathReads.ts).
+  const predatingSeverity = options.predatingRuleSeverity ?? 'error';
   for (const read of undecidedResultPathReads(skill)) {
-    issues.push(issue(options.resultPathReadSeverity ?? 'error', 'result_path_read_undecided', skill.name, read.path,
+    issues.push(issue(predatingSeverity, 'result_path_read_undecided', skill.name, read.path,
       `${read.placeholder} reads an earlier step's result without a default: write \`|default\` (the step runs `
       + 'without its row) or give the step a condition with the conjunct `<result>.data?.length > 0` (it does not).'));
+  }
+  // Heat or frequency-cap wording reads as a conclusion in either language;
+  // only evidence the Skill reads may support it (causeWordingEvidence.ts).
+  const readers = options.causeWordingReaders ?? registryCauseWordingReaders(skill, options.definitions);
+  for (const site of unsupportedCauseWording(skill, readers)) {
+    const quoted = site.text.length > 80 ? `${site.text.slice(0, 80)}…` : site.text;
+    issues.push(issue(predatingSeverity, 'cause_wording_without_evidence', skill.name,
+      `${site.stepId ? `steps.${site.stepId}` : 'skill'}.${site.field}`,
+      `"${quoted}" names ${site.rule.cause} as a cause, but the ${site.stepId ? 'step' : 'Skill'} reads no `
+      + `${site.rule.evidence}: state the observation, leave the cause undetermined (是否…以…证据为准, 未判定), `
+      + 'or read the evidence.'));
   }
   issues.push(...validateSaveFromPlacement(skill));
   if (options.definitions) issues.push(...validateSaveFromTargets(skill, options.definitions));
@@ -554,6 +602,7 @@ export function validateSkillDefinitionsInProcess(
     ? [...new Set(input.affectedSkillIds)].sort()
     : [...byId.keys()].sort();
   const knownSkillIds = input.knownSkillIds ?? new Set(byId.keys());
+  const readers = input.causeWordingReaders ?? causeWordingReaders([...byId.values()]);
   for (const skillId of selectedIds) {
     const definition = byId.get(skillId);
     if (!definition) {
@@ -570,7 +619,8 @@ export function validateSkillDefinitionsInProcess(
       fragmentCache: input.fragmentCache,
       sqlGuardrailMode: input.sqlGuardrailMode,
       definitions: input.validateReferences !== false ? byId : undefined,
-      resultPathReadSeverity: input.resultPathReadSeverity,
+      predatingRuleSeverity: input.predatingRuleSeverity,
+      causeWordingReaders: readers,
     }));
     if (input.validateReferences !== false) {
       issues.push(...validateSkillReferences(definition, knownSkillIds));

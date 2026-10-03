@@ -20,7 +20,7 @@ meta:
     en: "CPU Frequency Trend"
   description: "CPU 频率趋势观察；未提供温度或限频证据时不预测热机制"
   description_i18n:
-    en: "Observes the CPU frequency trend; without temperature or frequency-limit evidence it predicts no thermal mechanism"
+    en: "Observes the CPU frequency trend; it reads no temperature or frequency-limit evidence and names no cause"
   icon: "thermostat"
   tags: [thermal, throttling, prediction, cpu]
 
@@ -50,27 +50,27 @@ inputs:
     type: number
     required: false
     default: 30
-    description: "平均降频高风险阈值（%）"
+    description: "平均频率降幅高风险阈值（%）"
   - name: medium_drop_threshold_pct
     type: number
     required: false
     default: 15
-    description: "平均降频中风险阈值（%）"
+    description: "平均频率降幅中风险阈值（%）"
   - name: high_core_ratio_threshold_pct
     type: number
     required: false
     default: 50
-    description: "限频核心占比高风险阈值（%）"
+    description: "频率大幅下降核心占比高风险阈值（%）"
   - name: medium_core_ratio_threshold_pct
     type: number
     required: false
     default: 25
-    description: "限频核心占比中风险阈值（%）"
+    description: "频率大幅下降核心占比中风险阈值（%）"
   - name: core_drop_threshold_pct
     type: number
     required: false
     default: 30
-    description: "单核心疑似限频判定阈值（%）"
+    description: "单核心频率大幅下降判定阈值（%）"
 
 display:
   level: summary
@@ -89,6 +89,7 @@ display:
       format: percentage
     - name: throttled_core_ratio_pct
       label: "频率变化核心占比"
+      label_i18n: {en: "Frequency-drop core ratio (%)"}
       type: percentage
       format: percentage
     - name: frequency_trend_risk
@@ -96,6 +97,7 @@ display:
       type: string
     - name: thermal_risk
       label: "热原因证据"
+      label_i18n: {en: "Heat-cause evidence"}
       type: string
     - name: prediction
       label: "预测"

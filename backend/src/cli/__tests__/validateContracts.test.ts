@@ -93,6 +93,21 @@ describe('validate --contracts saved-result path reads', () => {
   });
 });
 
+/** Heat or cap wording must have the evidence behind it, as validate:skills and Self-Evolution read it. */
+describe('validate --contracts cause wording', () => {
+  it('rejects a cap the Skill reads no limit evidence for, in the text the catalog shows', () => {
+    const probe = (label: string): SkillDefinition => ({
+      name: 'cause_wording_contract_probe', version: '1', type: 'atomic',
+      meta: {display_name: 'probe', description: 'probe'},
+      steps: [{id: 'drops', type: 'atomic', sql: 'SELECT 1 AS n', display: {columns: [{name: 'n', label}]}}] as any,
+    });
+    const wordingErrors = (skill: SkillDefinition) =>
+      validateContracts(skill).errors.filter(error => error.includes('as a cause'));
+    expect(wordingErrors(probe('频率下调次数'))).toEqual([]);
+    expect(wordingErrors(probe('降频次数'))).toEqual([expect.stringContaining('steps.drops.catalog.columns.n.label.zh-CN')]);
+  });
+});
+
 /** A top-level key no loader reads would read as configuration that takes effect. */
 describe('validate top-level keys of vendor overrides and pipelines', () => {
   const validateYaml = (fileName: string, lines: string[]) => {

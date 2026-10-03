@@ -28,6 +28,8 @@ describe('authored display title translations', () => {
     expect(isDisplayTitleTranslations({en: 'Observed interval'})).toBe(true);
     expect(sanitizeDisplayConfigForRuntime({title: 'Observed interval', title_i18n: {en: 'Observed interval'}}).config.title_i18n)
       .toBeUndefined();
+    expect(sanitizeDisplayConfigForRuntime({columns: [{name: 'n', label: '次数', label_i18n: {en: 'Count'}}]}).config.columns)
+      .toEqual([{name: 'n', label: '次数'}]);
   });
   it.each(['root', 'output', 'then', 'else', 'conditions', 'unnamed'])('rejects title overrides at unsupported %s locations', location => {
     const display = {title_i18n: {en: 'Explicit title'}};

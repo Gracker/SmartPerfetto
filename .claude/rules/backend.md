@@ -472,7 +472,23 @@ Keep these boundaries intact:
   query shapes — it previously required whitespace before the operator, which
   let `p.name='com.foo'` scope a query to one process while reading as
   unscoped. Quick mode answers through model-written raw SQL, where that style
-  is ordinary.
+  is ordinary. It reads the statement's structure (`skillEngine/sqlStructure.ts`):
+  any comparison of a process-name column through wrappers (`LOWER`, `TRIM`,
+  `COALESCE`, `CAST`, `COLLATE`), either operand order, a simple `CASE`, the
+  `glob()`/`like()` forms, columns a CTE or derived table carries out of one
+  (`AS` aliases, CTE column lists, implicit columns, `*`), a subquery operand
+  by what it outputs, and a join `USING` a process-name column or a `NATURAL`
+  join that may match one. Names resolve by query block: a qualifier through
+  its block's FROM list then the enclosing ones, a bare column through the
+  first block whose relations have it (table columns from the pinned runtime's
+  `data/perfettoSqlDocs.json`; an undocumented table may have any), a CTE only
+  where it is visible, so a CTE named `process` replaces the table only in its
+  scope. A comparison with NULL selects no process. Diff the verdicts of
+  every Skill SQL unit and the strategy SQL examples before and after a change,
+  and explain each difference. `skills/identity-policy.catalog.json` records
+  every built-in Skill's effective identity policy for the Perfetto-Skills
+  exporter, which reads it rather than re-deriving the decision; regenerate it
+  with `npm run generate:skill-identity-policies` (`validate:skills` checks it).
 
 ## MCP Tool Registration
 

@@ -204,6 +204,23 @@ describe('effective runtime registry provider', () => {
     );
   });
 
+  it('keeps a scope online when a published overlay predates the wording rule, and reports it', async () => {
+    const base = baseSkill();
+    mockWorkspace(base);
+    const predating = overlay(base, 'overlay_wording');
+    (predating.operations[0] as any).steps[0].sql = "SELECT '限频导致卡顿' AS note";
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const snapshot = await buildEffectiveRuntimeRegistrySnapshot({scope: scopeA, skillOverlays: [predating]});
+      expect(snapshot.skillRegistry.getSkill(base.name)?.steps?.map(step => step.id))
+        .toEqual(['base_step', 'ovl_overlay_wording_extra']);
+      expect(warn.mock.calls.map(call => String(call[0])).join('\n'))
+        .toContain('effective_skill_validation_warning:base_analysis:cause_wording_without_evidence');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('returns the same immutable snapshot on retries within one run context', async () => {
     const base = baseSkill();
     mockWorkspace(base);

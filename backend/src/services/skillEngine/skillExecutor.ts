@@ -1048,6 +1048,15 @@ function extractFrameId(step: StepResult): string {
 // Skill Executor
 // =============================================================================
 
+/**
+ * A synthesize config as results carry it: field `label_i18n` is authoring
+ * metadata for the localization catalog, like a display column's.
+ */
+function runtimeSynthesizeConfig(config: SynthesizeConfig | undefined): SynthesizeConfig | undefined {
+  if (!config?.fields?.some(field => field.label_i18n !== undefined)) return config;
+  return {...config, fields: config.fields.map(({label_i18n: _translations, ...field}) => field)};
+}
+
 export class SkillExecutor {
   private traceProcessor: any;
   private aiService: any;  // AI 服务（用于 ai_decision, ai_summary）
@@ -4221,7 +4230,7 @@ export class SkillExecutor {
       success: stepResult.success,
       // A failed step has no execution state beyond success=false and its error.
       ...(stepResult.success ? this.stepExecutionState(stepResult, stepResult.data) : nonObservedStepState(stepResult)),
-      config,
+      config: runtimeSynthesizeConfig(config),
     };
     // Only this atomic execution object can identify its original table. Nested
     // skill wrappers, iterator flattening and summaries have no such mapping.

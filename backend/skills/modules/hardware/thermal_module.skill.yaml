@@ -235,6 +235,7 @@ steps:
       level: detail
       layer: list
       title: "频率骤降事件（原因待查）"
+      title_i18n: {en: "Frequency Drop Events (cause not determined)"}
     save_as: throttling_events
 
   # Step 5: Cooling device activity
@@ -360,7 +361,7 @@ steps:
         diagnosis: "高温样本首尾跨度 ${high_temp_periods.data[0]?.duration_sec} 秒；不代表连续高温或散热不足"
         confidence: high
         suggestions:
-          - "持续高温会加速热节流"
+          - "持续高温时是否已触发频率上限，以 cpufreq 限频证据为准"
           - "检查设备是否被遮挡"
           - "考虑降低持续性能需求"
         evidence_fields:
