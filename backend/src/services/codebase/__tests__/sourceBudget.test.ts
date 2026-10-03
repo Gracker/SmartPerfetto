@@ -12,8 +12,8 @@ import {
 const validPolicy = {
   schema_version: 'source_depth_policy@1',
   depths: {
-    locate: {searches: 2, reads: 1, max_read_lines: 40, tokens: 100},
-    mechanism: {searches: 4, reads: 3, max_read_lines: 80, tokens: 400},
+    locate: {searches: 2, reads: 1, locates: 1, max_read_lines: 40, tokens: 100},
+    mechanism: {searches: 4, reads: 3, locates: 2, max_read_lines: 80, tokens: 400},
   },
   knowledge: {tokens: 50},
 };
@@ -21,7 +21,7 @@ const validPolicy = {
 describe('source depth policy', () => {
   it('loads the shipped policy with mechanism at least as large as locate', () => {
     const policy = loadSourceDepthPolicy();
-    expect(policy.depths.locate).toEqual({searches: 4, reads: 3, maxReadLines: 80, tokens: 12_000});
+    expect(policy.depths.locate).toEqual({searches: 4, reads: 3, locates: 2, maxReadLines: 80, tokens: 12_000});
     expect(policy.depths.mechanism.tokens).toBeGreaterThan(policy.depths.locate.tokens);
     expect(policy.knowledge.tokens).toBeGreaterThan(0);
   });
@@ -31,7 +31,9 @@ describe('source depth policy', () => {
     [{...validPolicy, extra: true}, 'source_depth_policy_invalid_root'],
     [{...validPolicy, depths: {...validPolicy.depths, locate: {...validPolicy.depths.locate, reads: 0}}},
       'source_depth_policy_invalid_depth'],
-    [{...validPolicy, depths: {...validPolicy.depths, locate: {...validPolicy.depths.locate, locates: 1}}},
+    [{...validPolicy, depths: {...validPolicy.depths, locate: {...validPolicy.depths.locate, finds: 1}}},
+      'source_depth_policy_invalid_depth'],
+    [{...validPolicy, depths: {...validPolicy.depths, locate: (({locates: _omit, ...rest}) => rest)(validPolicy.depths.locate)}},
       'source_depth_policy_invalid_depth'],
     [{...validPolicy, depths: {...validPolicy.depths, mechanism: {...validPolicy.depths.mechanism, reads: 0.5}}},
       'source_depth_policy_invalid_depth'],
@@ -63,7 +65,9 @@ describe('SourceBudget', () => {
     expect(budget.beginCall('search')).toBe('source_search_budget_exceeded');
     expect(budget.beginCall('read')).toBeUndefined();
     expect(budget.beginCall('read')).toBe('source_read_budget_exceeded');
-    expect(budget.snapshot()).toEqual({searchesLeft: 0, readsLeft: 0, tokensLeft: 100});
+    expect(budget.beginCall('locate')).toBeUndefined();
+    expect(budget.beginCall('locate')).toBe('source_locate_budget_exceeded');
+    expect(budget.snapshot()).toEqual({searchesLeft: 0, readsLeft: 0, locatesLeft: 0, tokensLeft: 100});
     expect(budget.maxReadLines).toBe(40);
   });
 
@@ -74,6 +78,6 @@ describe('SourceBudget', () => {
     budget.sourceTokens.spend(-10);
     expect(budget.sourceTokens.left()).toBe(250);
     expect(budget.knowledgeTokens.left()).toBe(0);
-    expect(budget.snapshot()).toEqual({searchesLeft: 4, readsLeft: 3, tokensLeft: 250});
+    expect(budget.snapshot()).toEqual({searchesLeft: 4, readsLeft: 3, locatesLeft: 2, tokensLeft: 250});
   });
 });

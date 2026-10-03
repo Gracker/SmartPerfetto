@@ -45,7 +45,7 @@ export interface CodeLookupLedgerEntry {
   toolName: 'resolve_symbol' | 'lookup_app_source' | 'lookup_aosp_source' |
     'lookup_kernel_source' | 'lookup_oem_sdk' | 'lookup_blog_knowledge' |
     'search_codebase' | 'read_codebase_file' | 'query_code_graph' |
-    'inspect_code_symbol' | 'find_codebase_files' | 'propose_patch';
+    'inspect_code_symbol' | 'find_codebase_files' | 'locate_trace_anchor' | 'propose_patch';
   codebaseId?: string;
   knowledgeSourceId?: string;
   sourceGeneration?: string;

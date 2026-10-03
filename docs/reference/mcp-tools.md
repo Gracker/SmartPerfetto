@@ -104,6 +104,7 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 | `search_codebase` | 在已注册 live root 中做有界文本/symbol 搜索 | 不要求 SmartPerfetto 索引；只接受已选 codebase 和相对 path prefix |
 | `read_codebase_file` | 读取已注册 root 内的有界行范围 | `metadata_only` 不返回正文；`provider_send` 仍要求双重 consent 和脱敏 |
 | `find_codebase_files` | 按文件名、路径子串或 glob 查找已注册文件 | 只返回相对路径，不读文件、不签发源码引用；`metadata_only` 下可用 |
+| `locate_trace_anchor` | 找到 trace 里看到的名字（slice、marker、线程、native frame）对应的源码 | 只定位的 `search_hit` 引用，按 trace 调用点 > 定义 > 其他排序并带 `matchedBy`；不能证明不存在 |
 | `query_code_graph` | 用可选本地代码图导航相关流程与 symbol | metadata-only；仅当所选库有 GitNexus 索引时提供 |
 | `inspect_code_symbol` | 查看候选 symbol 的有界关系与位置 | metadata-only；关系必须再由有界源码读取验证；仅当有 GitNexus 索引时提供 |
 | `lookup_app_source` | 查询应用源码 | 输出需要 CodeRef 过滤；仅当所选库有 active index 时提供 |
@@ -125,9 +126,11 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 
 搜索先收集遍历到的全部命中，再确定性排序（该名字的声明行、trace section 调用点、整词与大小写精确匹配优先；test/generated/build 路径最后；再按路径与行号），只把排名靠前的候选经路径网关重新读取核对后返回。每条结果的 `lineRange` 含 `context_lines` 上下文，`matchLines` 标出命中行，同一文件相邻命中合并为一个窗口。`moreResults` 只表示还有未展示的命中（分页），不代表覆盖不完整；`traversal`（`complete`、`stopped_at_cap`、`timed_out`、`error`）说明遍历是否提前停止，只有 `complete` 且没有被授权范围隐去的命中时 `coverageComplete` 才为 true。按需搜索扫描不超过 16 MiB 的文件（`scope.maxFileBytes`），读取上限 4 MiB；命中落在两者之间的文件时只返回位置并标 `bodyUnavailable: "file_too_large"`，读取这类文件返回 `source_file_too_large`。索引入库仍沿用 200 KiB 上限。
 
-源码额度按 run 计、由 `sourceDepth` 选档（`source-depth-policy.yaml`）：搜索类调用（`search_codebase`、`find_codebase_files`、图谱工具、`resolve_symbol`、命中已注册库的索引 lookup）与 `read_codebase_file` 各有次数，调用到达源码时扣次数（失败不退）；token 按实际下发计，超出时搜索保留排名靠前的结果、读取保留前面的行（其余为分页），一点都放不下才返回 `budget_exceeded` 拒绝；图谱工具与 `resolve_symbol` 只返回元数据，超额时整块保守拒绝（在签发任何引用之前）。每个源码工具结果都带 `budget: {searchesLeft, readsLeft, tokensLeft}`；单次读取行数受档位上限约束。检索到的知识正文（Knowledge Pack、私有知识、博客检索）用单独的 token 池；`lookup_knowledge` 返回的内置方法论模板属于产品提示内容，不计入。`CodeLookupLedger` 只做审计与 patch 授权，不再参与额度。
+源码额度按 run 计、由 `sourceDepth` 选档（`source-depth-policy.yaml`）：搜索类调用（`search_codebase`、`find_codebase_files`、图谱工具、`resolve_symbol`、命中已注册库的索引 lookup）与 `read_codebase_file` 各有次数，调用到达源码时扣次数（失败不退）；token 按实际下发计，超出时搜索保留排名靠前的结果、读取保留前面的行（其余为分页），一点都放不下才返回 `budget_exceeded` 拒绝；图谱工具与 `resolve_symbol` 只返回元数据，超额时整块保守拒绝（在签发任何引用之前）。`locate_trace_anchor` 扣 1 次 `locates`，内部至多几次有界检索（`source-anchor-normalization.yaml`），不扣 `searches`。每个源码工具结果都带 `budget: {searchesLeft, readsLeft, locatesLeft, tokensLeft}`；单次读取行数受档位上限约束。检索到的知识正文（Knowledge Pack、私有知识、博客检索）用单独的 token 池；`lookup_knowledge` 返回的内置方法论模板属于产品提示内容，不计入。`CodeLookupLedger` 只做审计与 patch 授权，不再参与额度。
 
 每条结果带签发的引用 `id`，与 `sourceReferences[].id` 相同，是模型唯一应引用的 id（内部 `referenceId` 不再下发）。搜索命中为 `lookupKind: search_hit`，只定位代码；读取窗口（`body`）或索引片段才是正文证据，读取窗口完整覆盖某个命中的范围时，该命中也算已读正文。来源使用状态按最强发现推导，不再被一次不完整搜索钉死；run 级 `coverageComplete` 单调，否定性源码结论以它为准。
+
+`locate_trace_anchor` 参数：`anchor`、`anchor_kind`（`slice`、`marker`、`thread`、`native_frame`），可选 `process_name`、`codebase_id`、`max_results`（1–10，默认 5）。归一化由 YAML 驱动：先按完整名称检索；含数字的名称按最长字面片段检索，并只保留字面量在数字处换成占位符后仍一致的行（Kotlin `${x}`、`%d`、字符串拼接）；`#` 分段作为兜底；15 字符的线程名按前缀匹配更长的名字；native frame 取方法名，声明行和所属类文件优先；命中常量定义时再跳一次搜它的使用处。框架 slice（`RV OnBindView`、`Choreographer#doFrame` 等）返回 `framework: {implementation: "aosp", overrides}`，只搜覆写其钩子的 App 方法；没有可覆写方法时不检索、不扣额度。候选带 `matchedBy`（`trace_call`、`constant_definition`、`thread_creation`、`method_declaration`、`framework_override`、`template`、`literal`），`matchLines` 指向起决定作用的行；traced 包名所在模块优先，`ambiguous: true` 表示最优候选分属不同模块、并列。`metadata_only` 下排序在内部使用脱敏后的行文本，不下发任何文本。
 
 模型只收到一份正文：带真实行号的 `numberedText`；原始文本留在内部，用于回显登记、计费与来源追踪。读取结果的 `window.enclosingSymbol` 是窗口起点向上最近的声明行（启发式）；文件不存在时，`candidates` 列出范围内同名文件的相对路径（至多 5 个，`provider_send` 下不越出授权范围）。工具抛出的失败只把形如 `source_*` 的无路径错误码交给各 runtime，其余一律为 `source_tool_failed`。
 

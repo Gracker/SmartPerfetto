@@ -23,6 +23,7 @@ export function isRequestedSourceDepth(value: unknown): value is RequestedSource
 interface SourceDepthLimits {
   readonly searches: number;
   readonly reads: number;
+  readonly locates: number;
   readonly maxReadLines: number;
   readonly tokens: number;
 }
@@ -33,13 +34,14 @@ export interface SourceDepthPolicy {
   readonly knowledge: {readonly tokens: number};
 }
 
-const LIMIT_KEYS = ['searches', 'reads', 'max_read_lines', 'tokens'] as const;
+const LIMIT_KEYS = ['searches', 'reads', 'locates', 'max_read_lines', 'tokens'] as const;
 
 function parseLimits(value: unknown): SourceDepthLimits {
   if (!isRecord(value) || !exactKeys(value, LIMIT_KEYS)) throw new Error('source_depth_policy_invalid_depth');
   return Object.freeze({
     searches: positiveInteger(value.searches, 'source_depth_policy_invalid_depth'),
     reads: positiveInteger(value.reads, 'source_depth_policy_invalid_depth'),
+    locates: positiveInteger(value.locates, 'source_depth_policy_invalid_depth'),
     maxReadLines: positiveInteger(value.max_read_lines, 'source_depth_policy_invalid_depth'),
     tokens: positiveInteger(value.tokens, 'source_depth_policy_invalid_depth'),
   });

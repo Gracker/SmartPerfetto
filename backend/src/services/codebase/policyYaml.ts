@@ -13,6 +13,16 @@ export function exactKeys(value: Record<string, unknown>, expected: readonly str
   return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
+/** A regular expression from policy text; an invalid one fails with the policy's own code. */
+export function compilePattern(source: unknown, errorCode: string): RegExp {
+  if (typeof source !== 'string' || !source) throw new Error(errorCode);
+  try {
+    return new RegExp(source);
+  } catch {
+    throw new Error(errorCode);
+  }
+}
+
 export function positiveInteger(value: unknown, errorCode: string): number {
   if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new Error(errorCode);
   return Number(value);

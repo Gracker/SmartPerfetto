@@ -252,8 +252,15 @@ import {
 import {
   OnDemandSourceAccessService,
   type OnDemandSourceReadResult,
-  type OnDemandSourceSearchResult,
+  type OnDemandSourceSearchMatch,
 } from '../services/codebase/onDemandSourceAccess';
+import {
+  loadSourceAnchorNormalization,
+  locateTraceAnchor,
+  planTraceAnchorSearch,
+  TRACE_ANCHOR_KINDS,
+  TRACE_ANCHOR_SEARCH_OPTIONS,
+} from '../services/codebase/traceAnchorLocator';
 import {
   estimateTextTokens,
   longestPrefixWithin,
@@ -1874,7 +1881,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   };
 
   const observeOnDemandSourceLookup = (
-    toolName: 'search_codebase' | 'read_codebase_file',
+    toolName: 'search_codebase' | 'locate_trace_anchor' | 'read_codebase_file',
     result: {
       success: boolean;
       codebaseId: string;
@@ -1900,18 +1907,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
   ) => {
     const rawReferences = [...(result.matches ?? []), ...(result.reference ? [result.reference] : [])];
-    // A search hit locates code, with or without its context; only a read
-    // window delivers a body the run can cite as evidence.
+    // A search or locate hit locates code, with or without its context; only a
+    // read window delivers a body the run can cite as evidence.
+    const searchLike = toolName === 'search_codebase' || toolName === 'locate_trace_anchor';
     const admitted = admitSourceItems(rawReferences, reference => ({
       ...reference,
       referenceId: undefined,
-      lookupKind: toolName === 'search_codebase' ? 'search_hit'
+      lookupKind: searchLike ? 'search_hit'
         : codeAwareMode === 'provider_send' && reference.text ? 'body' : 'metadata',
     }));
     const items = admitted.items.map((item, index) => ({...item, id: admitted.ids[index]!}));
     // A search keeps what it admitted; a read without its one reference fails.
-    const searchIncomplete = admitted.incompleteReason && toolName === 'search_codebase';
-    const readIncomplete = admitted.incompleteReason && toolName !== 'search_codebase';
+    const searchIncomplete = admitted.incompleteReason && searchLike;
+    const readIncomplete = admitted.incompleteReason && !searchLike;
     const success = readIncomplete ? false : result.success;
     const unsupportedReason = readIncomplete ? admitted.incompleteReason : result.unsupportedReason;
     const refusalAction = success ? undefined : sourceAccessRefusalAction(unsupportedReason);
@@ -1928,7 +1936,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       ...(refusalAction ? {action_required: refusalAction} : {}),
     };
     // A read window states nothing about search coverage, failed or not.
-    const incompleteReasons = toolName !== 'search_codebase' ? [] : [
+    const incompleteReasons = !searchLike ? [] : [
       delivered.searchIncompleteReason,
       admitted.incompleteReason,
       ...(result.unsupportedReason === 'budget_exceeded' ? ['budget_exceeded'] : []),
@@ -1938,7 +1946,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       toolName,
       codebaseIds: [result.codebaseId],
       references: admitted.references,
-      bodyAvailable: toolName !== 'search_codebase' && admitted.items.some(reference => Boolean(reference.text)),
+      bodyAvailable: !searchLike && admitted.items.some(reference => Boolean(reference.text)),
       success: delivered.success,
       // A refused call searched nothing, so it states no coverage either way; a
       // complete search of one path_prefix is not codebase-wide coverage.
@@ -5053,7 +5061,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     return estimateTextTokens(deliveredText);
   };
   const recordOnDemandSourceLookup = async (input: {
-    toolName: 'search_codebase' | 'read_codebase_file' | 'find_codebase_files';
+    toolName: 'search_codebase' | 'locate_trace_anchor' | 'read_codebase_file' | 'find_codebase_files';
     codebaseId: string;
     tokensSpent: number;
     returnedReferenceCount: number;
@@ -5082,7 +5090,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
    */
   const deliveredLength = (reference: {text?: string; lineRange?: {start: number; end: number}}): number =>
     (numberedSourceText(reference) ?? reference.text ?? '').length;
-  const fitSearchToBudget = (result: OnDemandSourceSearchResult): OnDemandSourceSearchResult | undefined => {
+  const fitSearchToBudget = <T extends {matches: OnDemandSourceSearchMatch[]}>(result: T): T | undefined => {
     const keep = longestPrefixWithin(result.matches.map(deliveredLength), sourceBudget.sourceTokens.left());
     if (keep === result.matches.length) return result;
     if (keep === 0) return undefined;
@@ -5253,6 +5261,88 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         outcome: delivered.success ? 'success' : sourceLookupOutcome(result),
         durationMs: Date.now() - sourceLookupStartedAt,
       });
+      assertPrivateAnalysisContextCurrent();
+      return {
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+          ...delivered,
+          matches: (delivered.matches ?? []).map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences,
+          budget: sourceBudget.snapshot(),
+        }))}],
+      };
+    },
+    {annotations: {readOnlyHint: true}},
+  );
+
+  // A locate stops starting internal searches after this; each search keeps its own time bound.
+  const LOCATE_DEADLINE_MS = 15_000;
+  const locateTraceAnchorTool = tool(
+    'locate_trace_anchor',
+    requireToolDescription('prompt-locate-trace-anchor-tool-description'),
+    {
+      anchor: z.string().min(1).max(512).describe('The name exactly as the trace shows it.'),
+      anchor_kind: z.enum(TRACE_ANCHOR_KINDS).describe('What the anchor is in the trace: slice, marker, thread or native_frame.'),
+      process_name: z.string().max(256).optional().describe('The traced process (package) the anchor came from; ranks its own modules first.'),
+      codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
+      max_results: z.number().int().min(1).max(10).optional().describe('Maximum candidates (1-10, default 5).'),
+    },
+    async ({anchor, anchor_kind, process_name, codebase_id, max_results}) => {
+      assertPrivateAnalysisContextCurrent();
+      const codebaseId = resolveOnDemandCodebaseId(codebase_id);
+      if (!codebaseId) {
+        return codebaseIdRequiredRefusal();
+      }
+      const policy = loadSourceAnchorNormalization();
+      const plan = planTraceAnchorSearch({anchor, kind: anchor_kind}, policy);
+      if (plan.queries.length === 0) {
+        // A framework slice with no app override to look for: nothing is searched or spent.
+        return {content: [{type: 'text' as const, text: JSON.stringify(retrievedData({success: true, codebaseId,
+          matches: [], searchesRun: 0, normalizations: plan.normalizations, framework: plan.framework,
+          truncated: false, sourceReferences: [], budget: sourceBudget.snapshot()}))}]};
+      }
+      const locateBudgetStop = sourceBudget.beginCall('locate');
+      if (locateBudgetStop) {
+        observeSourceLookup({toolName: 'locate_trace_anchor', codebaseIds: [codebaseId], success: false,
+          coverageComplete: false, incompleteReasons: [locateBudgetStop], queried: false});
+        await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: 0});
+        return sourceBudgetRefusal({codebaseId, matches: [], truncated: false, unsupportedReason: locateBudgetStop});
+      }
+      const startedAt = Date.now();
+      const result = await locateTraceAnchor({
+        anchor,
+        kind: anchor_kind,
+        codebaseId,
+        processName: normalizeOptionalToolString(process_name),
+        maxResults: max_results ?? 5,
+        policy,
+        plan,
+        deadlineMs: startedAt + LOCATE_DEADLINE_MS,
+        search: query => onDemandSourceAccess.search({codebaseId, scope: knowledgeScope ?? {}, query,
+          mode: codeAwareMode, ...TRACE_ANCHOR_SEARCH_OPTIONS}),
+      }).catch(async error => {
+        observeSourceLookup({toolName: 'locate_trace_anchor', codebaseIds: [codebaseId], success: false});
+        await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - startedAt});
+        throw sourceToolError(error);
+      });
+      const fitted = fitSearchToBudget(result);
+      if (!fitted) {
+        observeOnDemandSourceLookup('locate_trace_anchor', {...result, success: false, matches: [],
+          unsupportedReason: 'budget_exceeded'});
+        await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: Date.now() - startedAt});
+        return sourceBudgetRefusal({codebaseId, matches: [], truncated: false, unsupportedReason: 'budget_exceeded'});
+      }
+      const delivered = observeOnDemandSourceLookup('locate_trace_anchor', fitted);
+      if (delivered.success && codeAwareMode === 'provider_send') {
+        registerOnDemandSourceLookupForEcho(options.sessionId, delivered.matches ?? []);
+      }
+      const tokensSpent = onDemandSourceTokens(delivered);
+      sourceBudget.sourceTokens.spend(tokensSpent);
+      await recordOnDemandSourceLookup({toolName: 'locate_trace_anchor', codebaseId, tokensSpent,
+        returnedReferenceCount: delivered.success ? delivered.matches?.length ?? 0 : 0,
+        outcome: delivered.success ? 'success' : sourceLookupOutcome(result), durationMs: Date.now() - startedAt});
       assertPrivateAnalysisContextCurrent();
       return {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
@@ -7945,6 +8035,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(locateTraceAnchorTool, 'locate_trace_anchor', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     if (!sourceUsePolicy) {
       registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
       registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});

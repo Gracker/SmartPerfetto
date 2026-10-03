@@ -37,6 +37,7 @@ import {
 } from './sourceSelectionPolicy';
 import {REDACTED_SECRET, redactSourceFile} from '../security/secretPatterns';
 import {isClosedCode} from '../../utils/closedCode';
+import {escapeRegExp} from '../../utils/escapeRegExp';
 import {detectSourceSymbol} from '../rag/baseIngester';
 import {
   assertCodebaseRootIdentity,
@@ -140,6 +141,13 @@ export interface OnDemandSourceSearchMatch extends OnDemandSourceReference {
   matchLines: number[];
   /** The file is above the read limit: its location is returned, not its body. */
   bodyUnavailable?: 'file_too_large';
+  /**
+   * The redacted text of each `matchLines` line, in order, for files within
+   * the read limit. Internal ranking input requested only by
+   * locate_trace_anchor, in every mode; never delivered (the locator copies
+   * only the delivered fields).
+   */
+  matchLineTexts?: string[];
 }
 
 interface SourceCoverageFields {
@@ -305,9 +313,14 @@ class SourceFileView {
    */
   providerProjection(start: number, end: number, mode: CodeAwareMode): {text?: string; redactedCount?: number} {
     if (mode !== 'provider_send') return {};
-    this.redactedLines ??= redactSourceFile(this.content, this.filePath).text.split(/\r?\n/);
-    const text = this.redactedLines.slice(start, end).join('\n');
+    const text = this.redacted().slice(start, end).join('\n');
     return {text, redactedCount: placeholderCount(text) - placeholderCount(this.lines.slice(start, end).join('\n'))};
+  }
+
+  /** Redacted lines, judged on the whole file, for internal ranking only. */
+  redacted(): readonly string[] {
+    this.redactedLines ??= redactSourceFile(this.content, this.filePath).text.split(/\r?\n/);
+    return this.redactedLines;
   }
 }
 
@@ -353,10 +366,6 @@ function lowSignalPath(filePath: string): boolean {
   const segments = filePath.split('/');
   return segments.slice(0, -1).some(segment => LOW_SIGNAL_PATH_SEGMENT.test(segment)) ||
     TEST_FILE_NAME.test(segments[segments.length - 1]!);
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**
@@ -664,6 +673,8 @@ export class OnDemandSourceAccessService {
     caseSensitive?: boolean;
     contextLines?: number;
     maxResults?: number;
+    /** Attach `matchLineTexts` for internal ranking (locate_trace_anchor only). */
+    includeMatchLineText?: boolean;
   }): Promise<OnDemandSourceSearchResult> {
     // Matching is per line in every backend (ripgrep rejects a multi-line
     // literal), so a line break is as malformed as a NUL.
@@ -705,6 +716,7 @@ export class OnDemandSourceAccessService {
         matches,
         maxResults,
         contextLines: input.mode === 'provider_send' ? contextLines : 0,
+        includeMatchLineText: input.includeMatchLineText === true,
       });
       return {
         success: true,
@@ -768,6 +780,7 @@ export class OnDemandSourceAccessService {
     matches: (line: string) => boolean;
     maxResults: number;
     contextLines: number;
+    includeMatchLineText: boolean;
   }): {matches: OnDemandSourceSearchMatch[]; moreResults: boolean; readError: boolean} {
     const ranked = input.candidates.sort(compareSearchCandidates);
     const examinable = ranked.slice(0, input.maxResults * VERIFY_CANDIDATE_FACTOR);
@@ -831,6 +844,10 @@ export class OnDemandSourceAccessService {
           filePath,
           lineRange: {start: window.start, end: window.end},
           matchLines: window.matchLines,
+          // Redacting a file above the read limit only to rank it is not worth it.
+          ...(input.includeMatchLineText && bodyAvailable
+            ? {matchLineTexts: window.matchLines.map(line => view.redacted()[line - 1] ?? '')}
+            : {}),
           // A location-only hit has no version: no read can ever cover it.
           ...(bodyAvailable
             ? {sourceGeneration: view.contentVersion,

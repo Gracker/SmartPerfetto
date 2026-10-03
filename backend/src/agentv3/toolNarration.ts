@@ -492,6 +492,12 @@ export function formatToolCallNarration(
         ? localize(language, `搜索源码：${query}，确认 trace 现象对应的实现`, `Search source: ${query} to find the implementation behind the trace behaviour`)
         : localize(language, '搜索源码：确认 trace 现象对应的实现', 'Search source: find the implementation behind the trace behaviour'));
     }
+    case 'locate_trace_anchor': {
+      const anchor = readString(args.anchor);
+      return shorten(anchor
+        ? localize(language, `在源码中定位 trace 名称：${anchor}`, `Locate the trace name in source: ${anchor}`)
+        : localize(language, '在源码中定位 trace 名称', 'Locate the trace name in source'));
+    }
     case 'find_codebase_files': {
       const pattern = readString(args.pattern);
       return shorten(pattern
@@ -888,6 +894,7 @@ const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   'query_perfetto_source',
   'query_code_graph',
   'search_codebase',
+  'locate_trace_anchor',
   'find_codebase_files',
   'inspect_code_symbol',
   'resolve_symbol',

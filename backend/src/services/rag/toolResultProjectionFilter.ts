@@ -69,6 +69,7 @@ const SENSITIVE_RAG_TOOL_NAMES = new Set([
   'lookup_aosp_source',
   'lookup_oem_sdk',
   'search_codebase',
+  'locate_trace_anchor',
   'read_codebase_file',
   'find_codebase_files',
   'query_code_graph',
@@ -77,6 +78,7 @@ const SENSITIVE_RAG_TOOL_NAMES = new Set([
 
 const ON_DEMAND_SOURCE_TOOL_NAMES = new Set([
   'search_codebase',
+  'locate_trace_anchor',
   'read_codebase_file',
 ]);
 
@@ -138,7 +140,7 @@ function projectOnDemandSourceResult(
   if (!candidate) return undefined;
   const rawReferences = isGraphTool
     ? candidate.references
-    : toolName === 'search_codebase'
+    : toolName === 'search_codebase' || toolName === 'locate_trace_anchor'
     ? candidate.matches
     : candidate.reference === undefined ? [] : [candidate.reference];
   if (!Array.isArray(rawReferences)) return undefined;

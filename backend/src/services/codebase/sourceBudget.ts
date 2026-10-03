@@ -10,8 +10,13 @@ export interface TokenPool {
   spend(tokens: number): void;
 }
 
-type SourceCallKind = 'search' | 'read';
-type SourceCallStop = 'source_search_budget_exceeded' | 'source_read_budget_exceeded';
+type SourceCallKind = 'search' | 'read' | 'locate';
+const CALL_STOPS = {
+  search: 'source_search_budget_exceeded',
+  read: 'source_read_budget_exceeded',
+  locate: 'source_locate_budget_exceeded',
+} as const satisfies Record<SourceCallKind, string>;
+type SourceCallStop = typeof CALL_STOPS[SourceCallKind];
 
 /** The token estimate every source and knowledge pool charges: four characters a token. */
 export function estimateTextTokens(text: string): number {
@@ -39,6 +44,7 @@ export function longestPrefixWithin(
 export interface SourceBudgetSnapshot {
   readonly searchesLeft: number;
   readonly readsLeft: number;
+  readonly locatesLeft: number;
   readonly tokensLeft: number;
 }
 
@@ -65,13 +71,11 @@ export class SourceBudget {
   readonly maxReadLines: number;
   readonly sourceTokens: TokenPool;
   readonly knowledgeTokens: TokenPool;
-  private searchesLeft: number;
-  private readsLeft: number;
+  private readonly callsLeft: Record<SourceCallKind, number>;
 
   constructor(depth: SourceDepth, policy: SourceDepthPolicy = loadSourceDepthPolicy()) {
     const limits = policy.depths[depth];
-    this.searchesLeft = limits.searches;
-    this.readsLeft = limits.reads;
+    this.callsLeft = {search: limits.searches, read: limits.reads, locate: limits.locates};
     this.maxReadLines = limits.maxReadLines;
     this.sourceTokens = new CountedTokenPool(limits.tokens);
     this.knowledgeTokens = new CountedTokenPool(policy.knowledge.tokens);
@@ -79,17 +83,13 @@ export class SourceBudget {
 
   /** Spends one call of this kind, or names the exhausted budget. */
   beginCall(kind: SourceCallKind): SourceCallStop | undefined {
-    if (kind === 'search') {
-      if (this.searchesLeft <= 0) return 'source_search_budget_exceeded';
-      this.searchesLeft -= 1;
-      return undefined;
-    }
-    if (this.readsLeft <= 0) return 'source_read_budget_exceeded';
-    this.readsLeft -= 1;
+    if (this.callsLeft[kind] <= 0) return CALL_STOPS[kind];
+    this.callsLeft[kind] -= 1;
     return undefined;
   }
 
   snapshot(): SourceBudgetSnapshot {
-    return {searchesLeft: this.searchesLeft, readsLeft: this.readsLeft, tokensLeft: this.sourceTokens.left()};
+    return {searchesLeft: this.callsLeft.search, readsLeft: this.callsLeft.read, locatesLeft: this.callsLeft.locate,
+      tokensLeft: this.sourceTokens.left()};
   }
 }

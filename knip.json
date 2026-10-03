@@ -49,6 +49,7 @@
         "src/scripts/verifyAgentSseScrolling.ts!",
         "src/scripts/verifyAgentSseStopSemantics.ts!",
         "src/scripts/verifyCodeAwareSemanticDelta.ts!",
+        "src/scripts/verifyTraceAnchorLocatorHpfc.ts!",
         "src/scripts/verifyEnterpriseMultiTenantWindows.ts!",
         "src/services/canonicalAnalysisResult.ts!",
         "src/services/selfEvolution/feedbackMigrationCli.ts!",

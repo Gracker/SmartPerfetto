@@ -10,6 +10,7 @@ const SOURCE_LOOKUP_TOOLS = new Set([
   'lookup_kernel_source',
   'lookup_oem_sdk',
   'search_codebase',
+  'locate_trace_anchor',
   'read_codebase_file',
 ]);
 

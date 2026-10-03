@@ -623,12 +623,12 @@ function horizontalTracePairContext(): TracePairContext {
 }
 
 /** A depth policy whose locate depth has these limits and otherwise the shipped ones. */
-function locatePolicy({tokens = 12_000, searches = 4}: {tokens?: number; searches?: number} = {}): SourceDepthPolicy {
+function locatePolicy({tokens = 12_000, searches = 4, locates = 2}: {tokens?: number; searches?: number; locates?: number} = {}): SourceDepthPolicy {
   return parseSourceDepthPolicy({
     schema_version: 'source_depth_policy@1',
     depths: {
-      locate: {searches, reads: 3, max_read_lines: 80, tokens},
-      mechanism: {searches: 16, reads: 12, max_read_lines: 200, tokens: Math.max(tokens, 60_000)},
+      locate: {searches, reads: 3, locates, max_read_lines: 80, tokens},
+      mechanism: {searches: 16, reads: 12, locates: Math.max(locates, 6), max_read_lines: 200, tokens: Math.max(tokens, 60_000)},
     },
     knowledge: {tokens: 12_000},
   });
@@ -1571,10 +1571,10 @@ describe('createClaudeMcpServer', () => {
       expect(runtimeDescriptions.length).toBeGreaterThanOrEqual(25);
       expect(sdkDescriptions).toEqual(runtimeDescriptions);
       // Every description is model context on every turn. The ceiling rose from
-      // 13_000 when `analyze_wait_chain` joined the set and by 200 for
-      // `find_codebase_files`; raise it only for a new tool, never to make an
-      // existing description's growth pass.
-      expect(totalChars).toBeLessThanOrEqual(14_200);
+      // 13_000 when `analyze_wait_chain` joined the set, by 200 for
+      // `find_codebase_files` and by 400 for `locate_trace_anchor`; raise it
+      // only for a new tool, never to make an existing description's growth pass.
+      expect(totalChars).toBeLessThanOrEqual(14_600);
       for (const description of runtimeDescriptions) {
         expect(description.length).toBeLessThanOrEqual(1000);
         expect(description).not.toMatch(/\n\nExamples:/);
@@ -8598,6 +8598,48 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('on-demand codebase access', () => {
+    it('locates a trace anchor as located-only references within the run locate budget', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-locate-anchor-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'StartupHooks.kt'),
+          'object StartupHooks {\n  fun init() {\n    Trace.beginSection("App#initSdk")\n  }\n}\n');
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({kind: 'app_source', displayName: 'App', rootPath: root,
+          rootAuthorization: 'native_picker', sendToProvider: true, ...scope});
+        const ledger = new CodeLookupLedger('locate-anchor', 1, path.join(tmpDir, 'ledger.jsonl'));
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [ref.codebaseId],
+          codebaseRegistry, knowledgeScope: scope, codeLookupLedger: ledger, sourceDepthPolicy: locatePolicy({locates: 1})});
+
+        const located = await callTool(tools, 'locate_trace_anchor', {anchor: 'App#initSdk', anchor_kind: 'slice'});
+        expect(located).toMatchObject({success: true, budget: expect.objectContaining({locatesLeft: 0, searchesLeft: 4})});
+        expect(located.matches[0]).toMatchObject({filePath: 'src/StartupHooks.kt', matchedBy: 'trace_call', matchLines: [3]});
+        expect(located.matches[0]).not.toHaveProperty('referenceId');
+        expect(located.sourceReferences).toEqual([expect.objectContaining({lookupKind: 'search_hit', filePath: 'src/StartupHooks.kt'})]);
+        // A locate finds code; it never decides absence or delivers a body as evidence.
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'located', attemptedTools: ['locate_trace_anchor']});
+        expect(ledger.getEntries()).toEqual([expect.objectContaining({toolName: 'locate_trace_anchor', outcome: 'success'})]);
+        // External surfaces get the same path-free projection as a search.
+        const projected = projectToolResultForExternalSurface('locate_trace_anchor', located) as any;
+        expect(projected.sourceRefs).toEqual([expect.objectContaining({filePathHash: expect.any(String)})]);
+        expect(JSON.stringify(projected)).not.toContain('StartupHooks');
+
+        // A framework slice with no app override searches and spends nothing.
+        const framework = await callTool(tools, 'locate_trace_anchor', {anchor: 'Choreographer#doFrame', anchor_kind: 'slice'});
+        expect(framework).toMatchObject({success: true, matches: [], searchesRun: 0,
+          framework: {implementation: 'aosp', overrides: []}});
+
+        const raw = await tools.get('locate_trace_anchor')!.handler({anchor: 'App#initSdk', anchor_kind: 'slice'});
+        expect(JSON.parse(raw.content[0].text)).toMatchObject({success: false,
+          unsupportedReason: 'source_locate_budget_exceeded', action_required: 'continue_with_existing_source_evidence'});
+        expect(isPolicyRefusalResult(raw)).toBe(true);
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
     it('finds files by name as relative paths without issuing source references', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-find-files-'));
       try {

@@ -102,7 +102,7 @@ export function describeSelectedCodebases(
 export interface SourceAuthorizationPromptData {
   codebases: SelectedCodebaseView[];
   depth?: string;
-  budget?: {searchesLeft: number; readsLeft: number; tokensLeft: number; maxReadLines: number};
+  budget?: {searchesLeft: number; readsLeft: number; locatesLeft: number; tokensLeft: number; maxReadLines: number};
 }
 
 /**

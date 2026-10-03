@@ -500,7 +500,7 @@ describe('typed turn prompt assembly', () => {
     const registry = {get: (id: string) => ({codebaseId: id, kind: 'app_source', displayName: '源码库'.repeat(400),
       rootRealpath: '/nonexistent-root', consent: {sendToProvider: true}} as any)};
     const sourceAuthorization = {codebases: describeSelectedCodebases(registry, ids, undefined, 'provider_send'),
-      depth: 'mechanism', budget: {searchesLeft: 16, readsLeft: 12, tokensLeft: 60000, maxReadLines: 200}};
+      depth: 'mechanism', budget: {searchesLeft: 16, readsLeft: 12, locatesLeft: 6, tokensLeft: 60000, maxReadLines: 200}};
     expect(() => buildSystemPromptParts({...fixture(), codeAwareMode: 'provider_send', codebaseIds: ids,
       sourceAuthorization})).not.toThrow();
   });
@@ -510,7 +510,7 @@ describe('typed turn prompt assembly', () => {
       codebases: [{id: 'cb-one', displayName: 'App', kind: 'app_source' as const, pathScope: 'whole_root' as const,
         capabilities: {search: true, read_body: true, index: false, graph: true}}],
       depth: 'mechanism',
-      budget: {searchesLeft: 16, readsLeft: 12, tokensLeft: 60000, maxReadLines: 200},
+      budget: {searchesLeft: 16, readsLeft: 12, locatesLeft: 6, tokensLeft: 60000, maxReadLines: 200},
     };
     const parts = buildSystemPromptParts({...fixture(), codeAwareMode: 'provider_send', codebaseIds: ['cb-one'],
       sourceAuthorization});

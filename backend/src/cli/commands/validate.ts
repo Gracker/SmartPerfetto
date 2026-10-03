@@ -47,6 +47,7 @@ import {
 } from '../../services/sqlStdlibDependencyAnalyzer';
 import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
 import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
+import {parseSourceAnchorNormalization} from '../../services/codebase/traceAnchorLocator';
 import {parseAnalysisSourceActivationPolicy} from '../../services/codebase/analysisSourceActivationPolicy';
 import {parseInvestigationContract, parseInvestigationProfiles, type InvestigationProfiles} from '../../agentv3/strategyLoader';
 
@@ -1231,6 +1232,7 @@ function validateStrategySkillReferences(): number {
 /** Policy YAMLs under backend/strategies with the parser each run uses. */
 const STRATEGY_POLICY_PARSERS: ReadonlyArray<readonly [string, (value: unknown) => unknown]> = [
   ['source-depth-policy', parseSourceDepthPolicy],
+  ['source-anchor-normalization', parseSourceAnchorNormalization],
   ['analysis-source-activation-policy', parseAnalysisSourceActivationPolicy],
 ];
 
