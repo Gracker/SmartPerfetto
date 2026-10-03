@@ -243,10 +243,12 @@ function buildTypedTurnSystemPromptParts(
     push(3, 'code_reference_contract', requiredAsset(language === 'en'
       ? 'prompt-code-reference-contract-en' : 'prompt-code-reference-contract-zh'));
     // The recipe follows the run's source depth: locating code, or explaining how
-    // it behaves (a body under provider_send, for an investigation or comparison).
-    const mechanism = context.sourceAuthorization?.depth === 'mechanism' && context.codeAwareMode === 'provider_send' &&
-      (intent.taskKind === 'investigation' || intent.taskKind === 'comparison');
-    push(3, 'source_recipe', requiredAsset(mechanism ? 'prompt-source-recipe-mechanism' : 'prompt-source-recipe-locate'));
+    // it behaves (a body under provider_send). An answer the intent says needs
+    // no source gets none; the tools stay authorized.
+    if (policy.sourceNeed !== 'none') {
+      const mechanism = context.sourceAuthorization?.depth === 'mechanism' && context.codeAwareMode === 'provider_send';
+      push(3, 'source_recipe', requiredAsset(mechanism ? 'prompt-source-recipe-mechanism' : 'prompt-source-recipe-locate'));
+    }
   }
 
   // No architecture guidance, focus-app default target, or probe suggestion is

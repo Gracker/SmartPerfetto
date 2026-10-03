@@ -632,7 +632,12 @@ Important whitelisted examples:
   trace `metadata` (never slice names) only when an `invoke_skill` target has a
   vendor override, after that Skill's own queries. `allowAutomaticPrefetch`
   now means the memory tier only. Planning is on demand; an explicitly submitted
-  plan remains binding.
+  plan remains binding. When the request selects source, the intent also
+  judges `sourceNeed` (`none` | `locate` | `mechanism`, `types/sourceNeed.ts`);
+  without a selection the field is not in its schema. An omitted value keeps
+  the rest of the decision valid and leaves source depth to the budget; it is
+  copied explicitly by `copyAnalysisDeliveryFields`, so the intent fingerprint
+  the report and investigation assessments bind to survives projection.
 - Cross-session learning (pattern memory, SQL fix pairs) is read by every run
   of a workspace, so it holds only what a proven-public run learned. The
   product grants durable learning at dispatch from the run's own marker, bound

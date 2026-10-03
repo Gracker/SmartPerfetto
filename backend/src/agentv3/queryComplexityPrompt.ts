@@ -77,6 +77,8 @@ export function buildAnalysisTurnIntentPrompt(input: {
   strategyRegistry: ReadonlyStrategyRegistrySnapshot;
   template: string;
   decisionSchema: Readonly<Record<string, unknown>>;
+  /** The source-need dimension's guidance, or empty when the run selects no source. */
+  sourceNeedGuidance?: string;
 }): string {
   const context = input.context;
   const sceneCatalog = input.strategyRegistry.getAllStrategies()
@@ -103,6 +105,7 @@ export function buildAnalysisTurnIntentPrompt(input: {
   };
   return renderTemplate(input.template, {
     decisionSchema: JSON.stringify(input.decisionSchema),
+    sourceNeedGuidance: input.sourceNeedGuidance ?? '',
     sceneCatalog: JSON.stringify(sceneCatalog),
     requestContext: JSON.stringify(requestContext),
   });

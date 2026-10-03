@@ -7,6 +7,7 @@ import type {InvestigationEvidenceRecord} from '../evidence/investigationEvidenc
 import type {InvestigationLedgerAcquisitionRow} from '../../types/analysisInvestigationAssessment';
 import {INVESTIGATION_CONDITION_OPERATORS} from '../../types/analysisInvestigation';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
+import {SOURCE_NEEDS} from '../../types/sourceNeed';
 import {
   analysisDeliveryFingerprint,
   type AnalysisCandidateIdentity,
@@ -179,6 +180,7 @@ export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): Analy
       taskKind: intent.taskKind, sceneId: opaqueId(intent.sceneId), scope: intent.scope,
       recommendedComplexity: intent.recommendedComplexity, deliverable: intent.deliverable,
       evidenceAccess: intent.evidenceAccess, registryFingerprint: opaqueId(intent.registryFingerprint),
+      ...(member(intent.sourceNeed, SOURCE_NEEDS) ? {sourceNeed: intent.sourceNeed} : {}),
       ...(typeof intent.reason === 'string' ? {reason: intent.reason} : {}),
       ...(typeof intent.actualModel === 'string' ? {actualModel: intent.actualModel} : {}),
       ...(typeof intent.finishReason === 'string' ? {finishReason: intent.finishReason} : {}),

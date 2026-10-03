@@ -44,14 +44,32 @@ describe('source depth policy', () => {
   });
 
   it.each([
-    [{requested: 'mechanism', budgetMode: 'quick', codeAwareMode: 'provider_send'}, 'mechanism'],
-    [{requested: 'locate', budgetMode: 'full', codeAwareMode: 'provider_send'}, 'locate'],
-    [{requested: 'auto', budgetMode: 'full', codeAwareMode: 'provider_send'}, 'mechanism'],
-    [{budgetMode: 'quick', codeAwareMode: 'provider_send'}, 'locate'],
-    // Without a body there is no mechanism to read.
-    [{requested: 'mechanism', budgetMode: 'full', codeAwareMode: 'metadata_only'}, 'locate'],
-  ] as const)('resolves %j to %s', (input, depth) => {
-    expect(resolveEffectiveSourceDepth(input)).toBe(depth);
+    // An explicit choice wins over the intent and the budget.
+    [{requested: 'mechanism', sourceNeed: 'none', budgetMode: 'quick', codeAwareMode: 'provider_send'},
+      {requested: 'mechanism', effective: 'mechanism', origin: 'requested'}],
+    [{requested: 'locate', sourceNeed: 'mechanism', budgetMode: 'full', codeAwareMode: 'provider_send'},
+      {requested: 'locate', effective: 'locate', origin: 'requested'}],
+    // Auto follows the intent's source need, whatever the budget.
+    [{requested: 'auto', sourceNeed: 'mechanism', budgetMode: 'quick', codeAwareMode: 'provider_send'},
+      {requested: 'auto', effective: 'mechanism', origin: 'intent'}],
+    [{requested: 'auto', sourceNeed: 'locate', budgetMode: 'full', codeAwareMode: 'provider_send'},
+      {requested: 'auto', effective: 'locate', origin: 'intent'}],
+    [{sourceNeed: 'none', budgetMode: 'full', codeAwareMode: 'provider_send'},
+      {requested: 'auto', effective: 'locate', origin: 'intent'}],
+    // Without a source need, the budget decides and says why.
+    [{requested: 'auto', budgetMode: 'full', codeAwareMode: 'provider_send'},
+      {requested: 'auto', effective: 'mechanism', origin: 'budget', fallbackReason: 'source_need_missing'}],
+    [{budgetMode: 'quick', codeAwareMode: 'provider_send'},
+      {requested: 'auto', effective: 'locate', origin: 'budget', fallbackReason: 'source_need_missing'}],
+    [{sourceNeedMissing: 'intent_unavailable', budgetMode: 'full', codeAwareMode: 'provider_send'},
+      {requested: 'auto', effective: 'mechanism', origin: 'budget', fallbackReason: 'intent_unavailable'}],
+    // Without a body there is no mechanism to read; the cap is recorded.
+    [{requested: 'mechanism', budgetMode: 'full', codeAwareMode: 'metadata_only'},
+      {requested: 'mechanism', effective: 'locate', origin: 'requested', cap: 'metadata_only'}],
+    [{sourceNeed: 'locate', budgetMode: 'full', codeAwareMode: 'metadata_only'},
+      {requested: 'auto', effective: 'locate', origin: 'intent'}],
+  ] as const)('resolves %j', (input, decision) => {
+    expect(resolveEffectiveSourceDepth(input)).toEqual(decision);
   });
 });
 

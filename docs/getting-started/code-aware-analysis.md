@@ -95,6 +95,8 @@ npm run cli:dev -- run --format json \
 
 结论使用双证据语义：Trace/Skill/SQL 证明现象在本次 trace 中发生，`CodeRef` 解释可能的实现机制。`CodeRef` 单独不能提高现象或根因的置信度。模型只声明 claim 绑定了哪些源码引用和同一 claim 的 Trace 证据；每个依赖源码的结论的状态由服务端根据本轮实际返回计算：`源码解释 + Trace 证据`（读过正文且有同一 claim 的已核验 Trace 证据）、`源码解释（未与 Trace 关联）`、`未读取实现`（只有搜索命中或元数据）、`未绑定引用`，以及使答案失败的 `引用无效`。回答中写出的 `path:L10-L20` 位置也逐个与本轮返回比对。`metadata_only` 只能定位。
 
+源码深度决定一轮能检索和读取多少源码：`locate`（快速定位）只找到相关代码的位置，`mechanism`（机制分析）读够实现来解释现象。默认 `auto` 按问题判断（只需定位或不需源码时定位，要解释实现时机制分析），判断不出时按分析预算；也可用 CLI 的 `--source-depth` 或 API 的 `options.sourceDepth` 指定。仅元数据模式最多定位。每轮在分析过程中显示一行「本轮源码深度」及其来源；只有机制分析会提供补丁建议工具。两档都会对答案做语义复核。
+
 `code_pinpoint` Skill 可以先从 trace 中产生更稳定的源码候选锚点：`hot_slices` 只把符合保守规则的 App 主线程 Trace label 升级为 source query hint，其他 slice 只作 generic anchor；可选的 `native_symbols` 从 CPU profiling 样本提取 function/module/build-id。两者都只缩小查询范围，不代替当前 trace 证据或后续有界源码核对。
 
 索引、代码图和按需读取是不同能力。没有索引时仍可搜索和读取；代码图不可用时仍可根据 Trace 锚点定位源码。只有实际返回并通过核验的引用可用于机制绑定。

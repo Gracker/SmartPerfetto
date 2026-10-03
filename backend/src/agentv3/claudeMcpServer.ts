@@ -267,7 +267,7 @@ import {
   SourceBudget,
   type SourceBudgetSnapshot,
 } from '../services/codebase/sourceBudget';
-import type {SourceDepth, SourceDepthPolicy} from '../services/codebase/sourceDepthPolicy';
+import type {SourceDepthDecisionV1, SourceDepthPolicy} from '../services/codebase/sourceDepthPolicy';
 import {REDACTED_SECRET} from '../services/security/secretPatterns';
 import {sourceAccessRefusalAction} from '../services/codebase/sourceAccessRefusal';
 import {registerOnDemandSourceLookupForEcho} from '../services/security/codeAwareOutputRegistry';
@@ -1390,10 +1390,11 @@ export interface ClaudeMcpServerOptions {
     phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
   };
   /**
-   * The run's effective source depth (`resolveEffectiveSourceDepth`), which
-   * sizes its source budget; `locate` when absent.
+   * How the run's source depth was decided (`resolveEffectiveSourceDepth`); its
+   * effective depth sizes the source budget, `locate` when absent, and it is
+   * stored with the run's source use.
    */
-  sourceDepth?: SourceDepth;
+  sourceDepthDecision?: SourceDepthDecisionV1;
   /** Overrides the shipped depth policy (tests); each run still builds its own budget. */
   sourceDepthPolicy?: SourceDepthPolicy;
   /** Non-secret authorization partition for active lookup/patch capability state. */
@@ -1705,7 +1706,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   );
   // One run's source budget, in memory with this server; the ledger above is
   // the audit trail and patch authority, not the budget.
-  const sourceDepth = options.sourceDepth ?? 'locate';
+  const sourceDepth = options.sourceDepthDecision?.effective ?? 'locate';
   const sourceBudget = new SourceBudget(sourceDepth, options.sourceDepthPolicy);
   const activeCodebaseGenerations = (ids: readonly string[]): Record<string, string> => {
     assertPrivateAnalysisContextCurrent();
@@ -1730,6 +1731,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         queriedCodebaseIds: [],
         usedCodebaseIds: [],
         references: [],
+        ...(options.sourceDepthDecision ? {depth: options.sourceDepthDecision} : {}),
       }, codebaseIds)
     : undefined;
   let sourceUseDecision = initialSourceUseDecision?.selectedCodebaseIds.length
@@ -1740,6 +1742,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     selectedCodebaseIds: [...codebaseIds],
     hasCodebaseAccess: toolRequestScope.hasCodebaseAccess === true,
     analysisContextFingerprint: pinnedAnalysisContextFingerprint,
+    ...(toolRequestScope.hasCodebaseAccess ? {sourceDepth} : {}),
   };
   const sourceUse: SourceUseDecisionAccessor = {
     getSourceUseDecision: () => sourceUseDecision
@@ -8050,7 +8053,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
         registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
         registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-        registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+        // A patch changes how code behaves, which only a mechanism-depth run reads for.
+        if (sourceDepth === 'mechanism') {
+          registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+        }
       }
     }
     registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
@@ -8091,13 +8097,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // strict surfaces drop progress for a private run).
   if (emitUpdate && sourceAuthorization.budget && options.allowNewEvidence !== false && !sourceOnlyPhase) {
     const {searchesLeft, readsLeft} = sourceAuthorization.budget;
+    const origin = options.sourceDepthDecision?.origin;
+    const [originZh, originEn] = options.sourceDepthDecision?.cap === 'metadata_only' ? ['仅元数据，上限为定位', 'metadata only, capped at locate']
+      : origin === 'requested' ? ['按你的选择', 'as you chose']
+        : origin === 'intent' ? ['智能判断', 'judged from the question']
+          : ['按分析预算', 'from the analysis budget'];
     emitUpdate({
       type: 'progress',
       content: {
         phase: 'starting',
         message: localize(outputLanguage,
-          `本轮源码深度：${sourceDepth === 'mechanism' ? '机制分析' : '快速定位'}（检索 ${searchesLeft} 次、读取 ${readsLeft} 次）`,
-          `Source depth this run: ${sourceDepth === 'mechanism' ? 'mechanism' : 'locate'} (${searchesLeft} searches, ${readsLeft} reads)`),
+          `本轮源码深度：${sourceDepth === 'mechanism' ? '机制分析' : '快速定位'}（${originZh}；检索 ${searchesLeft} 次、读取 ${readsLeft} 次）`,
+          `Source depth this run: ${sourceDepth === 'mechanism' ? 'mechanism' : 'locate'} (${originEn}; ${searchesLeft} searches, ${readsLeft} reads)`),
       },
       timestamp: Date.now(),
     });

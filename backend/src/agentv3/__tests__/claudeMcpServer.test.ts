@@ -309,7 +309,7 @@ import * as ragLookupFilter from '../../services/rag/lookupResponseFilter';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {projectToolResultForExternalSurface} from '../../services/rag/toolResultProjectionFilter';
-import {parseSourceDepthPolicy, type SourceDepth, type SourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
+import {parseSourceDepthPolicy, type SourceDepth, type SourceDepthDecisionV1, type SourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
 import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../../services/codebase/patchProposer';
 import type {OnDemandSourceAccessService} from '../../services/codebase/onDemandSourceAccess';
@@ -418,6 +418,7 @@ function createTestServer(options: {
     phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
   };
   sourceDepth?: SourceDepth;
+  sourceDepthDecision?: SourceDepthDecisionV1;
   sourceDepthPolicy?: SourceDepthPolicy;
   durableLearning?: DurableLearningPermission;
 } = {}) {
@@ -500,7 +501,9 @@ function createTestServer(options: {
     analysisHistoryReader: options.analysisHistoryReader,
     conversationTraceAttached: options.conversationTraceAttached,
     sourceUsePolicy: options.sourceUsePolicy,
-    sourceDepth: options.sourceDepth,
+    ...(options.sourceDepthDecision ? {sourceDepthDecision: options.sourceDepthDecision}
+      : options.sourceDepth ? {sourceDepthDecision: {requested: options.sourceDepth, effective: options.sourceDepth,
+        origin: 'requested' as const}} : {}),
     sourceDepthPolicy: options.sourceDepthPolicy,
     allowNewEvidence: options.allowNewEvidence,
     strategyRegistry: options.strategyRegistry,
@@ -1556,11 +1559,13 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('compacts registered tool descriptions before exposing runtime definitions', () => {
+      // A mechanism-depth run is offered every tool, the patch included.
       const { tools, toolDefinitions } = createTestServer({
         referenceTraceId: 'reference-trace-456',
         codeAwareMode: 'metadata_only',
         codebaseIds: ['app-codebase'],
         codebaseRegistry: capableCodebaseRegistry(['app-codebase']),
+        sourceDepth: 'mechanism',
       });
 
       const runtimeDescriptions = toolDefinitions.map(def => def.shared.description);
@@ -1638,11 +1643,13 @@ describe('createClaudeMcpServer', () => {
     });
 
     it('keeps critical tool families available under the broadest scoped request', () => {
+      // A mechanism-depth run is offered every tool, the patch included.
       const { tools, allowedTools, toolDefinitions } = createTestServer({
         referenceTraceId: 'reference-trace-456',
         codeAwareMode: 'metadata_only',
         codebaseIds: ['app-codebase'],
         codebaseRegistry: capableCodebaseRegistry(['app-codebase']),
+        sourceDepth: 'mechanism',
       });
 
       const runtimeNames = new Set(toolDefinitions.map(def => def.name));
@@ -1690,8 +1697,16 @@ describe('createClaudeMcpServer', () => {
         label: 'full with code-aware metadata',
         options: { codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'],
           codebaseRegistry: capableCodebaseRegistry(['app-codebase']) },
-        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol', 'propose_patch'],
-        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context'],
+        present: ['fetch_artifact', 'submit_plan', 'list_codebases', 'search_codebase', 'read_codebase_file', 'query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'lookup_kernel_source', 'resolve_symbol'],
+        // A patch is offered only to a mechanism-depth run.
+        absent: ['compare_skill', 'execute_sql_on', 'get_comparison_context', 'propose_patch'],
+      },
+      {
+        label: 'code-aware provider send at mechanism depth',
+        options: { codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'], sourceDepth: 'mechanism',
+          codebaseRegistry: capableCodebaseRegistry(['app-codebase']) },
+        present: ['query_code_graph', 'inspect_code_symbol', 'lookup_app_source', 'resolve_symbol', 'propose_patch'],
+        absent: [],
       },
       {
         label: 'code-aware metadata without an index or graph',
@@ -8236,11 +8251,14 @@ describe('createClaudeMcpServer', () => {
       })), read: jest.fn<OnDemandSourceAccessService['read']>(async () => ({success: true, codebaseId: 'app-a',
         reference: {referenceId: 'source-positive', codebaseId: 'app-a', filePath: 'src/Foo.kt',
           lineRange: {start: 10, end: 20}, text: 'class Foo'}, truncated: true}))};
+      const depth = {requested: 'auto', effective: 'mechanism', origin: 'intent'} as const;
       const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a'],
-        onDemandSourceAccess: sourceAccess});
+        onDemandSourceAccess: sourceAccess, sourceDepthDecision: depth});
       await callTool(tools, 'search_codebase', {query: 'Foo'});
       const read = await callTool(tools, 'read_codebase_file', {file_path: 'src/Foo.kt'});
       const actual = sourceUse.getSourceUseDecision()!;
+      // The depth decision survives every update the run's lookups make.
+      expect(actual.depth).toEqual(depth);
       // The read found the source; the incomplete search still keeps any
       // negative source claim unsupported through run coverage.
       expect(actual).toMatchObject({status: 'corroborated', coverageComplete: false,
@@ -8375,7 +8393,7 @@ describe('createClaudeMcpServer', () => {
       const {sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: ['app-a', 'app-a']});
       const scope = sourceUse.getSourceExecutionScope?.()!;
       expect(scope).toEqual({codeAwareMode: 'metadata_only', selectedCodebaseIds: ['app-a'],
-        hasCodebaseAccess: true, analysisContextFingerprint: expect.any(String)});
+        hasCodebaseAccess: true, analysisContextFingerprint: expect.any(String), sourceDepth: 'locate'});
       scope.selectedCodebaseIds.push('other-source');
       scope.codeAwareMode = 'off';
       expect(sourceUse.getSourceExecutionScope?.()).toMatchObject({codeAwareMode: 'metadata_only', selectedCodebaseIds: ['app-a']});
@@ -8462,6 +8480,7 @@ describe('createClaudeMcpServer', () => {
           ragStore,
           knowledgeScope: scope,
           codeLookupLedger: indexedLedger,
+          sourceDepth: 'mechanism',
         });
         const indexedResult = await callTool(indexed.tools, 'lookup_app_source', {
           query: 'StartupHooks',
@@ -8611,7 +8630,14 @@ describe('createClaudeMcpServer', () => {
       const run = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
         codebaseRegistry: capable, sourceDepth: 'mechanism'});
       expect(depthLines(run.emittedUpdates).map(update => update.content.message))
-        .toEqual(['本轮源码深度：机制分析（检索 16 次、读取 12 次）']);
+        .toEqual(['本轮源码深度：机制分析（按你的选择；检索 16 次、读取 12 次）']);
+      // How auto decided is stated, and stored with the run's source use.
+      const auto = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'], codebaseRegistry: capable,
+        sourceDepthDecision: {requested: 'auto', effective: 'locate', origin: 'intent'}});
+      expect(depthLines(auto.emittedUpdates).map(update => update.content.message))
+        .toEqual([expect.stringMatching(/^本轮源码深度：快速定位（智能判断；/)]);
+      expect(auto.sourceUse.getSourceUseDecision()?.depth).toEqual({requested: 'auto', effective: 'locate', origin: 'intent'});
+      expect(auto.sourceUse.getSourceExecutionScope?.()?.sourceDepth).toBe('locate');
       expect(depthLines(createTestServer().emittedUpdates)).toEqual([]);
       expect(depthLines(createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
         codebaseRegistry: capable, allowNewEvidence: false}).emittedUpdates)).toEqual([]);
@@ -10588,6 +10614,7 @@ describe('source and knowledge governance refusals', () => {
       codeAwareMode: 'provider_send',
       codebaseIds: ['app-codebase'],
       codebaseRegistry: capableCodebaseRegistry(['app-codebase']),
+      sourceDepth: 'mechanism',
     });
 
     expectRefusal(await callRaw(tools, 'propose_patch', {
@@ -10605,7 +10632,7 @@ describe('source and knowledge governance refusals', () => {
     } as ReturnType<PatchProposer['propose']>);
     try {
       const {tools} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
-        codebaseRegistry: capableCodebaseRegistry(['app-codebase'])});
+        codebaseRegistry: capableCodebaseRegistry(['app-codebase']), sourceDepth: 'mechanism'});
 
       const raw = await callRaw(tools, 'propose_patch', {
         context_chunk_ids: ['chunk-a'], problem: 'Startup hook blocks the main thread.',

@@ -95,6 +95,8 @@ The default investigation order is:
 
 Conclusions use dual-evidence semantics. Trace/Skill/SQL proves that an occurrence happened in this trace; a `CodeRef` explains a possible implementation mechanism. A `CodeRef` alone cannot increase occurrence or root-cause confidence. The model only declares which source references and same-claim Trace evidence a claim is bound to; the server computes each source-dependent conclusion's standing from what this run actually returned: source explanation plus Trace evidence (a read body with verified same-claim Trace evidence), source explanation not linked to Trace, implementation not read (search hits or metadata only), unbound, and an invalid reference, which fails the answer. Every `path:L10-L20` location written in the answer is also matched against this run's returns. `metadata_only` is locate-only.
 
+Source depth decides how much source a run may search and read: `locate` finds where the relevant code is, and `mechanism` reads enough implementation to explain the behavior. The default `auto` judges from the question (locating, or no source needed → `locate`; explaining an implementation → `mechanism`) and falls back to the analysis budget when it cannot tell; set it with the CLI's `--source-depth` or the API's `options.sourceDepth`. Metadata-only mode is capped at `locate`. Each run states its source depth and how it was decided in the analysis process; only `mechanism` offers the patch tool. Answers are semantically reviewed at either depth.
+
 The `code_pinpoint` Skill can establish safer source candidates before lookup.
 Its `hot_slices` step promotes only conservatively recognized app main-thread
 trace labels to source-query hints; other slices remain generic anchors. Its

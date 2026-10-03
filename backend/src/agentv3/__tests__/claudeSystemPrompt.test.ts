@@ -251,6 +251,17 @@ describe('typed turn prompt assembly', () => {
     expect(recipe?.content ?? 'none').toBe(source.codeAwareMode === 'metadata_only' ? 'Source locate recipe fixture.' : 'none');
   });
 
+  it('picks the recipe by the run\'s depth, and none when the answer needs no source', () => {
+    const source = {codeAwareMode: 'provider_send' as const, codebaseIds: ['selected-source']};
+    const recipe = (intent: Partial<AnalysisTurnIntent>, depth: 'locate' | 'mechanism') =>
+      buildSystemPromptParts({...fixture({taskKind: 'fact', ...intent}), ...source,
+        sourceAuthorization: {codebases: [], depth}}).segments.find(segment => segment.label === 'source_recipe')?.content;
+    // The depth already carries the question's semantics; the task kind no longer gates it.
+    expect(recipe({}, 'mechanism')).toBe('Source mechanism recipe fixture.');
+    expect(recipe({sourceNeed: 'locate'}, 'locate')).toBe('Source locate recipe fixture.');
+    expect(recipe({sourceNeed: 'none'}, 'locate')).toBeUndefined();
+  });
+
   it('keeps investigation evidence, selection and authorization intact under prompt pressure', () => {
     const context: ClaudeAnalysisContext = {
       ...investigationFixture({scope: 'bounded_question', evidenceAccess: 'existing_only'}),

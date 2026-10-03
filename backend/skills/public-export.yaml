@@ -1531,6 +1531,9 @@ strategies:
   backend/strategies/prompt-analysis-turn-intent.template.md:
     disposition: product-only
     reason: SmartPerfetto native runtime intent classification protocol
+  backend/strategies/prompt-analysis-turn-intent-source-need.template.md:
+    disposition: product-only
+    reason: SmartPerfetto intent classification of the source depth a codebase-aware run needs
   backend/strategies/prompt-conclusion-contract-schema.template.md:
     disposition: product-only
     reason: SmartPerfetto conclusion declarations and captured evidence identifiers

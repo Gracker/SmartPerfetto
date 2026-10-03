@@ -163,7 +163,8 @@ describe('dataContract column inference', () => {
     expect(names).toEqual(expect.arrayContaining(['AnalysisTurnIntent', 'AnalysisCompletion', 'AgentRuntimeKind',
       'AnalysisCandidateIdentity', 'AnalysisReportBinding', 'AnalysisReportRequirementAssessment',
       'AnalysisDeliveryAssurance', 'SourceUseDecisionV1', 'SourceClaimVerificationResult', 'SourceClaimBindingV1',
-      'StoredSourceClaimVerificationResult', 'LegacySourceClaimVerificationResultV1', 'SourceCitationV1']));
+      'StoredSourceClaimVerificationResult', 'LegacySourceClaimVerificationResultV1', 'SourceCitationV1',
+      'SourceDepthDecisionV1', 'SourceNeed']));
     expect(names).not.toEqual(expect.arrayContaining(['CurrentAnalysisDeliveryContext']));
     expect(fragment).not.toContain('typeof ');
     expect(fragment).not.toContain('WeakMap');

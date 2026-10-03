@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {resolveTurnIntentComplexity, type AnalysisTurnIntent} from './analysisTurnIntent';
+import type {SourceNeed} from '../types/sourceNeed';
+import type {SourceNeedMissingReason} from '../services/codebase/sourceDepthPolicy';
 
 export interface RuntimeTurnPolicy {
   readonly budgetMode: 'quick' | 'full';
@@ -31,6 +33,10 @@ export interface RuntimeTurnPolicy {
   /** Memory-type prefetch only: knowledge base, patterns, cases, SQL fix pairs. */
   readonly allowAutomaticPrefetch: boolean;
   readonly requiresReport: boolean;
+  /** What the resolved intent says the answer needs from selected source; absent when it did not say. */
+  readonly sourceNeed?: SourceNeed;
+  /** Why there is no source need. */
+  readonly sourceNeedMissing?: SourceNeedMissingReason;
 }
 
 /**
@@ -63,5 +69,8 @@ export function resolveRuntimeTurnPolicy(
     preflight,
     allowAutomaticPrefetch: preflight === 'full',
     requiresReport: intent.deliverable === 'report',
+    ...(intent.status === 'resolved' && intent.sourceNeed ? {sourceNeed: intent.sourceNeed}
+      : {sourceNeedMissing: intent.status !== 'resolved' ? 'intent_unavailable' as const
+        : intent.source === 'product' ? 'product_run' as const : 'source_need_missing' as const}),
   });
 }

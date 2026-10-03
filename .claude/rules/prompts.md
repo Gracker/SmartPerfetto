@@ -67,9 +67,11 @@ runtime budget setting nor an artifact preview imposes a conclusion length,
 table-row or claim-count limit. Actual provider/review limits remain explicit
 incomplete states; do not truncate a conclusion or waive verification to pass.
 
-Keep budget, question scope, deliverable and evidence access separate. An
-`existing_only` turn cannot acquire new evidence; `read_new` never widens
-authorization. Plans and source lookup are on demand. A larger budget does not
+Keep budget, question scope, deliverable, evidence access and source need
+separate. An `existing_only` turn cannot acquire new evidence; `read_new` never
+widens authorization; `sourceNeed` (asked only when source is selected, in
+`prompt-analysis-turn-intent-source-need`) sizes source depth and never grants
+source access. Plans and source lookup are on demand. A larger budget does not
 require a report, extra source pass, fixed Skill sequence or plan template.
 
 Preserve the original claim semantics and references. Do not use wording,

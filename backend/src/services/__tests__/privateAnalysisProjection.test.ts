@@ -37,6 +37,8 @@ function deliveredResult(): AnalysisResult {
     schemaVersion: 1, status: 'resolved', source: 'semantic', taskKind: 'fact',
     sceneId: 'general', scope: 'bounded_question', recommendedComplexity: 'quick',
     deliverable: 'answer', evidenceAccess: 'existing_only', registryFingerprint: 'registry-1',
+    // Carried so its round trip keeps the intent fingerprint the assessments bind to.
+    sourceNeed: 'locate',
   };
   return {
     sessionId: 'session-delivery', success: true, findings: [], hypotheses: [], conclusion,
@@ -271,6 +273,27 @@ describe('final delivery private projection', () => {
       if (mixedFailure) expect(projected.claimVerificationResult?.claimResults[1]).toMatchObject({status: 'unsupported', deterministicProof: {status: 'rejected'}});
       expect(projectPrivateAnalysisResult(result.sessionId, projected, 'en')).toEqual(projected);
     } finally { clearCodeAwareOutputGuards(result.sessionId); }
+  });
+
+  it('keeps how the run\'s source depth was decided on every surface, and drops a forged one', () => {
+    const current = deliveredResult();
+    const depth = {requested: 'auto', effective: 'locate', origin: 'budget', fallbackReason: 'intent_unavailable'} as const;
+    current.sourceUseDecision = sanitizeSourceUseDecision({schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
+      codeAwareMode: 'provider_send', selectedCodebaseIds: ['app'], status: 'pending', attemptedTools: [],
+      queriedCodebaseIds: [], usedCodebaseIds: [], references: [], depth})!;
+    expect(current.sourceUseDecision.depth).toEqual(depth);
+    for (const projected of [projectPrivateAnalysisResult(current.sessionId, current, 'en'),
+      projectOwnerAnalysisResult(current.sessionId, current, 'en')]) {
+      expect(projected.sourceUseDecision?.depth).toEqual(depth);
+      const snapshot = JSON.parse(JSON.stringify(copyAnalysisResultForSnapshot(projected)));
+      expect(projectPrivateAnalysisResult(current.sessionId, snapshot, 'en').sourceUseDecision?.depth).toEqual(depth);
+    }
+    for (const forged of [{...depth, effective: 'everything'}, {...depth, origin: 'model'},
+      {...depth, requested: 'deep'}]) {
+      expect(sanitizeSourceUseDecision({...current.sourceUseDecision, depth: forged})).not.toHaveProperty('depth');
+    }
+    expect(sanitizeSourceUseDecision({...current.sourceUseDecision, depth: {...depth, fallbackReason: 'because'}})?.depth)
+      .toEqual({requested: 'auto', effective: 'locate', origin: 'budget'});
   });
 
   it('keeps the answer\'s written source locations for the owner only', () => {

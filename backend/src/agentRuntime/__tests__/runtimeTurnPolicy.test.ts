@@ -17,7 +17,17 @@ describe('runtime turn policy', () => {
     expect(resolveRuntimeTurnPolicy(intent, 'full')).toEqual({
       budgetMode: 'full', onDemandContext: true, allowNewEvidence: true,
       preflight: 'trace_facts', allowAutomaticPrefetch: false, requiresReport: false,
+      sourceNeedMissing: 'source_need_missing',
     });
+  });
+
+  it('carries a resolved source need, or says why there is none', () => {
+    expect(resolveRuntimeTurnPolicy({...intent, sourceNeed: 'mechanism'})).toMatchObject({sourceNeed: 'mechanism'});
+    expect(resolveRuntimeTurnPolicy({...intent, sourceNeed: 'mechanism'})).not.toHaveProperty('sourceNeedMissing');
+    // An unavailable intent's fallback fields decide nothing about source.
+    expect(resolveRuntimeTurnPolicy({...intent, status: 'unavailable', source: 'fallback', sourceNeed: 'mechanism'}))
+      .toMatchObject({sourceNeedMissing: 'intent_unavailable'});
+    expect(resolveRuntimeTurnPolicy({...intent, source: 'product'})).toMatchObject({sourceNeedMissing: 'product_run'});
   });
 
   it('preserves evidence and report requirements when the user selects Fast', () => {

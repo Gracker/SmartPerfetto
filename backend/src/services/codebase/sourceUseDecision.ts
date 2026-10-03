@@ -9,6 +9,8 @@ import {DEFAULT_OUTPUT_LANGUAGE, type OutputLanguage} from '../../agentv3/output
 import {loadPromptSegment} from '../../agentv3/strategyLoader';
 import type {CodeAwareMode} from './codeAwareFeature';
 import {allSourceExtensions} from './sourceSelectionPolicy';
+import {isRequestedSourceDepth, SOURCE_DEPTH_ORIGINS, SOURCE_NEED_MISSING_REASONS, type SourceDepth,
+  type SourceDepthDecisionV1} from './sourceDepthPolicy';
 
 export const SOURCE_USE_DECISION_SCHEMA_VERSION = 'source_use_decision@1' as const;
 
@@ -76,6 +78,8 @@ export interface SourceUseDecisionV1 {
   coverageComplete?: boolean;
   incompleteReasons?: string[];
   references: SourceReferenceV1[];
+  /** How deep this run's source access went, and how that was decided. */
+  depth?: SourceDepthDecisionV1;
 }
 
 /** Actual MCP access scope, captured privately for this analysis run. */
@@ -84,6 +88,8 @@ export interface SourceExecutionScopeV1 {
   selectedCodebaseIds: string[];
   hasCodebaseAccess: boolean;
   analysisContextFingerprint: string;
+  /** The run's effective source depth. */
+  sourceDepth?: SourceDepth;
 }
 
 /**
@@ -485,6 +491,7 @@ export function sanitizeSourceUseDecision(
       .filter((reason): reason is string => Boolean(reason)))]
       .slice(0, MAX_SOURCE_INCOMPLETE_REASON_COUNT)
     : [];
+  const depth = sanitizeSourceDepthDecision(value.depth);
   return {
     schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION,
     codeAwareMode,
@@ -503,7 +510,18 @@ export function sanitizeSourceUseDecision(
       : {}),
     ...(incompleteReasons.length > 0 ? {incompleteReasons} : {}),
     references,
+    ...(depth ? {depth} : {}),
   };
+}
+
+function sanitizeSourceDepthDecision(value: unknown): SourceDepthDecisionV1 | undefined {
+  if (!isRecord(value) || !isRequestedSourceDepth(value.requested) ||
+    (value.effective !== 'locate' && value.effective !== 'mechanism') ||
+    !(SOURCE_DEPTH_ORIGINS as readonly unknown[]).includes(value.origin)) return undefined;
+  return {requested: value.requested, effective: value.effective, origin: value.origin as SourceDepthDecisionV1['origin'],
+    ...((SOURCE_NEED_MISSING_REASONS as readonly unknown[]).includes(value.fallbackReason)
+      ? {fallbackReason: value.fallbackReason as NonNullable<SourceDepthDecisionV1['fallbackReason']>} : {}),
+    ...(value.cap === 'metadata_only' ? {cap: 'metadata_only' as const} : {})};
 }
 
 function sourceMechanismStatus(value: unknown): SourceMechanismStatus | undefined {

@@ -1398,7 +1398,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds, knowledgeSourceIds: options.knowledgeSourceIds,
       sourceUsePolicy: options.sourceUsePolicy, analysisContextFingerprint: options.analysisContextFingerprint,
-      sourceDepth: runtimeSourceDepth(policy, options),
+      sourceDepthDecision: runtimeSourceDepth(policy, options),
       androidInternalsPackPin: options.androidInternalsPackPin,
     });
     const traceInfo = this.traceProcessorService.getTrace(traceId);

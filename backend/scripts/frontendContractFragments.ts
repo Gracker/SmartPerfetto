@@ -267,6 +267,8 @@ export const ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS = [
   'services/codebase/sourceUseDecision.ts',
   'services/codebase/sourceClaimVerifier.ts',
   'services/codebase/sourceCitations.ts',
+  'services/codebase/sourceDepthPolicy.ts',
+  'types/sourceNeed.ts',
 ] as const;
 
 /** Only reachable type declarations cross the boundary, never runtime code. */

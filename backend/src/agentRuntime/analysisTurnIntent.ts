@@ -18,6 +18,7 @@ import {dispatchWithModelCallRecord, type IntentTransportInput, type IntentTrans
 import {currentRunManifestAttributionSink} from '../services/selfEvolution/runManifestLifecycle';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {resolveSceneProductScope} from '../agent/scene/sceneRuntimeBinding';
+import {SOURCE_NEEDS, type SourceNeed} from '../types/sourceNeed';
 
 const TASK_KINDS = ['acknowledgement', 'fact', 'investigation', 'comparison'] as const;
 const SCOPES = ['bounded_question', 'scene_wide'] as const;
@@ -34,6 +35,8 @@ export interface AnalysisTurnIntentDecision {
   recommendedComplexity: QueryComplexity;
   deliverable: typeof DELIVERABLES[number];
   evidenceAccess: typeof EVIDENCE_ACCESS[number];
+  /** Asked only when the run has source selected; absent otherwise or when the model omitted it. */
+  sourceNeed?: SourceNeed;
   reason?: string;
 }
 
@@ -57,6 +60,7 @@ function member<T extends string>(value: unknown, values: readonly T[]): value i
 export function parseAnalysisTurnIntentDecision(
   text: string,
   registry: ReadonlyStrategyRegistrySnapshot,
+  options: {sourceSelected?: boolean} = {},
 ): AnalysisTurnIntentDecision | undefined {
   if (Buffer.byteLength(text, 'utf8') > OUTPUT_BYTE_LIMIT) return undefined;
   const trimmed = text.trim();
@@ -67,8 +71,11 @@ export function parseAnalysisTurnIntentDecision(
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
     value = parsed as Record<string, unknown>;
   } catch { return undefined; }
-  const keys = ['schemaVersion', 'taskKind', 'sceneId', 'scope', 'recommendedComplexity', 'deliverable', 'evidenceAccess', 'reason'];
+  const keys = ['schemaVersion', 'taskKind', 'sceneId', 'scope', 'recommendedComplexity', 'deliverable', 'evidenceAccess',
+    'reason', ...(options.sourceSelected ? ['sourceNeed'] : [])];
   if (Object.keys(value).some(key => !keys.includes(key))) return undefined;
+  // A missing source need leaves the rest of the decision valid; the depth then follows the budget.
+  if (value.sourceNeed !== undefined && !member(value.sourceNeed, SOURCE_NEEDS)) return undefined;
   const scene = typeof value.sceneId === 'string' ? registry.getStrategy(value.sceneId) : undefined;
   if (value.schemaVersion !== 1 || !scene || scene.strategyKind === 'contract_only'
     || !member(value.taskKind, TASK_KINDS) || !member(value.scope, SCOPES)
@@ -77,7 +84,9 @@ export function parseAnalysisTurnIntentDecision(
     || (value.reason !== undefined && (typeof value.reason !== 'string' || value.reason.length > 800))) return undefined;
   if (value.taskKind === 'acknowledgement' && (value.scope !== 'bounded_question'
     || value.recommendedComplexity !== 'quick' || value.deliverable !== 'answer'
-    || value.evidenceAccess !== 'existing_only')) return undefined;
+    || value.evidenceAccess !== 'existing_only' || (value.sourceNeed !== undefined && value.sourceNeed !== 'none'))) {
+    return undefined;
+  }
   return {
     schemaVersion: 1,
     taskKind: value.taskKind,
@@ -86,8 +95,14 @@ export function parseAnalysisTurnIntentDecision(
     recommendedComplexity: value.recommendedComplexity,
     deliverable: value.deliverable,
     evidenceAccess: value.evidenceAccess,
+    ...(value.sourceNeed === undefined ? {} : {sourceNeed: value.sourceNeed}),
     ...(value.reason === undefined ? {} : {reason: value.reason as string}),
   };
+}
+
+/** Whether a run's request selects source, which is when its intent judges the source need. */
+function analysisOptionsSelectSource(options: Pick<AnalysisOptions, 'codeAwareMode' | 'codebaseIds'> | undefined): boolean {
+  return Boolean(options?.codeAwareMode && options.codeAwareMode !== 'off' && options.codebaseIds?.length);
 }
 
 export function resolveTurnIntentComplexity(
@@ -123,6 +138,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
   const context = structuredClone(input.context);
   const sceneIds = strategyRegistry.getAllStrategies()
     .filter(scene => scene.strategyKind !== 'contract_only').map(scene => scene.scene);
+  const sourceSelected = analysisOptionsSelectSource(input.productRun?.options);
   const requiredProperties = {
     schemaVersion: {type: 'integer', const: 1},
     taskKind: {type: 'string', enum: TASK_KINDS},
@@ -131,6 +147,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     recommendedComplexity: {type: 'string', enum: COMPLEXITIES},
     deliverable: {type: 'string', enum: DELIVERABLES},
     evidenceAccess: {type: 'string', enum: EVIDENCE_ACCESS},
+    ...(sourceSelected ? {sourceNeed: {type: 'string', enum: SOURCE_NEEDS}} : {}),
   };
   const schema = {
     $schema: 'http://json-schema.org/draft-07/schema#',
@@ -141,7 +158,8 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     allOf: [{
       if: {properties: {taskKind: {const: 'acknowledgement'}}},
       then: {properties: {scope: {const: 'bounded_question'}, recommendedComplexity: {const: 'quick'},
-        deliverable: {const: 'answer'}, evidenceAccess: {const: 'existing_only'}}},
+        deliverable: {const: 'answer'}, evidenceAccess: {const: 'existing_only'},
+        ...(sourceSelected ? {sourceNeed: {const: 'none'}} : {})}},
     }],
   };
   const unavailable = (reason: NonNullable<AnalysisTurnIntent['unavailableReason']>): AnalysisTurnIntent => Object.freeze({
@@ -173,7 +191,10 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
         registryFingerprint: strategyRegistry.registryFingerprint} satisfies AnalysisTurnIntent);
     }
     if (!template) return unavailable('prompt_unavailable');
-    const prompt = buildAnalysisTurnIntentPrompt({context, strategyRegistry, template, decisionSchema: schema});
+    const sourceNeedGuidance = sourceSelected ? loadPromptTemplate('prompt-analysis-turn-intent-source-need') : '';
+    if (sourceSelected && !sourceNeedGuidance) return unavailable('prompt_unavailable');
+    const prompt = buildAnalysisTurnIntentPrompt({context, strategyRegistry, template, decisionSchema: schema,
+      sourceNeedGuidance: sourceNeedGuidance ?? ''});
     if (Buffer.byteLength(prompt, 'utf8') > PROMPT_BYTE_LIMIT) return unavailable('context_limit');
     let result: IntentTransportResult;
     try {
@@ -188,7 +209,7 @@ export function createAnalysisTurnIntentResolver(input: AnalysisTurnIntentResolv
     throwIfCancelled();
     if (Date.now() >= deadlineMs) return unavailable('timeout');
     if (result.status === 'unavailable') return unavailable(result.reason);
-    const decision = parseAnalysisTurnIntentDecision(result.text, strategyRegistry);
+    const decision = parseAnalysisTurnIntentDecision(result.text, strategyRegistry, {sourceSelected});
     if (!decision) return unavailable('invalid_response');
     return Object.freeze({
       ...decision,
