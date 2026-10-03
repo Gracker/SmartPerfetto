@@ -26,11 +26,13 @@ import {
 } from './subprocessHardening';
 import {
   createSourceProviderPathPredicate,
+  sourceProviderGrantCanDescend,
 } from './sourceDisclosure';
 import {
   sourceSelectionCanDescend,
   sourceSelectionForRef,
   sourceSelectionRipgrepArguments,
+  type SourceSelectionIR,
 } from './sourceSelectionPolicy';
 import {REDACTED_SECRET, redactSourceFile} from '../security/secretPatterns';
 import {
@@ -51,7 +53,9 @@ export type SourceSearchIncompleteReason =
   | 'enumeration_budget'
   | 'time_budget'
   | 'output_budget'
-  | 'traversal_error';
+  | 'traversal_error'
+  // A match lay in a registered file outside the provider-send grant and was withheld.
+  | 'provider_grant_scope';
 
 interface SourceSearchBackendResult {
   matches: OnDemandSourceReference[];
@@ -69,16 +73,26 @@ export interface OnDemandSourceReference {
   redactedCount?: number;
 }
 
+/**
+ * A refusal (`success: false` with `unsupportedReason`) searched nothing, so it
+ * carries no backend or coverage fields.
+ */
 export interface OnDemandSourceSearchResult {
   success: boolean;
   codebaseId: string;
   matches: OnDemandSourceReference[];
   truncated: boolean;
-  backend: 'ripgrep' | 'node';
-  coverageComplete: boolean;
+  backend?: 'ripgrep' | 'node';
+  coverageComplete?: boolean;
+  /**
+   * What `coverageComplete` covers: the whole registered selection, or only the
+   * requested `path_prefix` inside it. A prefix-scoped empty search is not
+   * evidence of codebase-wide absence.
+   */
+  coverageScope?: 'codebase' | 'path_prefix';
   searchIncompleteReason?: SourceSearchIncompleteReason;
-  enumerationBackend: 'ripgrep' | 'git' | 'node-walk';
-  backendFidelity: 'exact' | 'degraded';
+  enumerationBackend?: 'ripgrep' | 'git' | 'node-walk';
+  backendFidelity?: 'exact' | 'degraded';
   unsupportedReason?: string;
 }
 
@@ -178,16 +192,21 @@ function escapeLiteralGlob(value: string): string {
   return value.replace(/[\\*?\[\]{}!]/g, character => `\\${character}`);
 }
 
+function comparablePath(value: string, platform: NodeJS.Platform): string {
+  return platform === 'win32' ? value.toLocaleLowerCase('en-US') : value;
+}
+
+function samePath(left: string, right: string, platform: NodeJS.Platform): boolean {
+  return comparablePath(left, platform) === comparablePath(right, platform);
+}
+
 function pathHasPrefix(
   parent: string,
   child: string,
   platform: NodeJS.Platform,
 ): boolean {
-  const comparable = (value: string): string => platform === 'win32'
-    ? value.toLocaleLowerCase('en-US')
-    : value;
-  const comparableParent = comparable(parent);
-  const comparableChild = comparable(child);
+  const comparableParent = comparablePath(parent, platform);
+  const comparableChild = comparablePath(child, platform);
   return comparableChild === comparableParent || comparableChild.startsWith(`${comparableParent}/`);
 }
 
@@ -285,28 +304,40 @@ export class OnDemandSourceAccessService {
     return ref.consent.sendToProvider ? undefined : 'no_send_to_provider_consent';
   }
 
+  /**
+   * The prefixes a search actually covers. `disjoint` means no admitted file
+   * can lie under the requested prefix: it is outside the registered filters
+   * or inside a directory the source policy never descends into. `narrowed`
+   * means the prefix covers less than the whole registered selection.
+   */
   private sourceSearchPrefixes(
     ref: RegisteredCodebase,
     requestedPrefix: string | undefined,
-  ): {requestedPrefix?: string; effectivePrefixes: string[]; disjoint: boolean} {
+    policy: SourceSelectionIR,
+  ): {requestedPrefix?: string; effectivePrefixes: string[]; disjoint: boolean; narrowed: boolean} {
     const registered = [...new Set((ref.pathFilters ?? []).map(prefix =>
       this.gate.validateRelativeSourcePrefix(prefix, {enforceConfiguredExcludes: false})))];
     const requested = requestedPrefix
       ? this.gate.validateRelativeSourcePrefix(requestedPrefix, {enforceConfiguredExcludes: false})
       : undefined;
-    if (!requested) return {effectivePrefixes: registered, disjoint: false};
-    if (registered.length === 0) {
-      return {requestedPrefix: requested, effectivePrefixes: [requested], disjoint: false};
-    }
-    const effectivePrefixes = [...new Set(registered.flatMap(prefix => {
-      if (pathHasPrefix(prefix, requested, this.platform)) return [requested];
-      if (pathHasPrefix(requested, prefix, this.platform)) return [prefix];
-      return [];
-    }))];
+    if (!requested) return {effectivePrefixes: registered, disjoint: false, narrowed: false};
+    const effectivePrefixes = registered.length === 0
+      ? [requested]
+      : [...new Set(registered.flatMap(prefix => {
+          if (pathHasPrefix(prefix, requested, this.platform)) return [requested];
+          if (pathHasPrefix(requested, prefix, this.platform)) return [prefix];
+          return [];
+        }))];
     return {
       requestedPrefix: requested,
       effectivePrefixes,
-      disjoint: effectivePrefixes.length === 0,
+      disjoint: effectivePrefixes.length === 0 ||
+        !sourceSelectionCanDescend(policy, requested, this.platform),
+      // Same comparison as pathHasPrefix: case-insensitive only on win32, the
+      // gate's one case-insensitive platform.
+      narrowed: effectivePrefixes.length !== registered.length ||
+        effectivePrefixes.some(prefix => !registered.some(registeredPrefix =>
+          samePath(prefix, registeredPrefix, this.platform))),
     };
   }
 
@@ -346,7 +377,9 @@ export class OnDemandSourceAccessService {
     pathPrefix?: string;
     maxResults?: number;
   }): Promise<OnDemandSourceSearchResult> {
-    if (!input.query || input.query.length > 512 || input.query.includes('\0')) {
+    // Matching is per line in every backend (ripgrep rejects a multi-line
+    // literal), so a line break is as malformed as a NUL.
+    if (!input.query || input.query.length > 512 || /[\0\r\n]/.test(input.query)) {
       throw new Error('source_query_invalid');
     }
     const maxResults = boundedPositiveInteger(
@@ -356,34 +389,28 @@ export class OnDemandSourceAccessService {
       'max_results',
     );
     const ref = this.resolveRef(input.codebaseId, input.scope);
+    // A refusal searched nothing: no backend, no coverage, and never the prefix.
+    const refusal = (unsupportedReason: string): OnDemandSourceSearchResult => ({
+      success: false,
+      codebaseId: input.codebaseId,
+      matches: [],
+      truncated: false,
+      unsupportedReason,
+    });
     const consentFailure = this.consentFailure(ref, input.mode);
-    if (consentFailure) {
-      return {
-        success: false,
-        codebaseId: input.codebaseId,
-        matches: [],
-        truncated: false,
-        backend: 'ripgrep',
-        coverageComplete: true,
-        enumerationBackend: 'ripgrep',
-        backendFidelity: 'exact',
-        unsupportedReason: consentFailure,
-      };
-    }
+    if (consentFailure) return refusal(consentFailure);
     const root = await this.validateRoot(ref);
-    const prefixes = this.sourceSearchPrefixes(ref, input.pathPrefix);
-    if (prefixes.disjoint) {
-      return {
-        success: true,
-        codebaseId: input.codebaseId,
-        matches: [],
-        truncated: false,
-        backend: 'ripgrep',
-        coverageComplete: true,
-        enumerationBackend: 'ripgrep',
-        backendFidelity: 'exact',
-      };
+    const selectionPolicy = sourceSelectionForRef(ref, this.gate.getSourceReadLimits().maxFileBytes);
+    const prefixes = this.sourceSearchPrefixes(ref, input.pathPrefix, selectionPolicy);
+    // An empty complete result under such a prefix would read as source absence.
+    if (prefixes.disjoint) return refusal('source_path_prefix_outside_registered_filters');
+    if (
+      input.mode === 'provider_send' && prefixes.requestedPrefix &&
+      !sourceProviderGrantCanDescend(ref, prefixes.requestedPrefix, this.platform)
+    ) {
+      return refusal('source_path_prefix_outside_provider_grant');
     }
+    const coverageScope = prefixes.narrowed ? 'path_prefix' : 'codebase';
     if (!await this.acquireSearchSlot()) {
       return {
         success: true,
@@ -392,6 +419,7 @@ export class OnDemandSourceAccessService {
         truncated: true,
         backend: 'ripgrep',
         coverageComplete: false,
+        coverageScope,
         searchIncompleteReason: 'time_budget',
         enumerationBackend: 'ripgrep',
         backendFidelity: 'exact',
@@ -407,6 +435,7 @@ export class OnDemandSourceAccessService {
           prefixes.requestedPrefix,
           prefixes.effectivePrefixes,
           maxResults,
+          selectionPolicy,
         );
         return {
           success: true,
@@ -415,6 +444,7 @@ export class OnDemandSourceAccessService {
           truncated: result.truncated,
           backend: 'ripgrep',
           coverageComplete: result.coverageComplete,
+          coverageScope,
           ...(result.searchIncompleteReason
             ? {searchIncompleteReason: result.searchIncompleteReason}
             : {}),
@@ -431,6 +461,7 @@ export class OnDemandSourceAccessService {
           prefixes.requestedPrefix,
           prefixes.effectivePrefixes,
           maxResults,
+          selectionPolicy,
         );
         return {
           success: true,
@@ -439,6 +470,7 @@ export class OnDemandSourceAccessService {
           truncated: result.truncated,
           backend: 'node',
           coverageComplete: result.coverageComplete,
+          coverageScope,
           ...(result.searchIncompleteReason
             ? {searchIncompleteReason: result.searchIncompleteReason}
             : {}),
@@ -459,6 +491,8 @@ export class OnDemandSourceAccessService {
     maxLines?: number;
     mode: CodeAwareMode;
   }): Promise<OnDemandSourceReadResult> {
+    // A refusal or file-level failure is data the caller can act on, like
+    // missing consent; every code is path-free and the path is not echoed.
     const failed = (
       unsupportedReason: string,
       window?: OnDemandSourceReadResult['window'],
@@ -474,34 +508,35 @@ export class OnDemandSourceAccessService {
     const consentFailure = this.consentFailure(ref, input.mode);
     if (consentFailure) return failed(consentFailure);
     const root = await this.validateRoot(ref);
-    let filePath: string;
+    const admission = this.gate.admitRelativeSourcePath(
+      input.filePath,
+      {enforceConfiguredExcludes: false},
+    );
+    if (!admission.admitted) return failed(admission.reason);
+    const filePath = admission.path;
+    const selectionPolicy = sourceSelectionForRef(
+      ref,
+      this.gate.getSourceReadLimits().maxFileBytes,
+    );
+    if (!codebaseSourcePathMatches(
+      ref,
+      filePath,
+      undefined,
+      this.platform,
+      selectionPolicy,
+    )) {
+      return failed('source_path_outside_registered_filters');
+    }
+    const providerPathAllowed = input.mode === 'provider_send'
+      ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
+      : undefined;
+    if (providerPathAllowed && !providerPathAllowed(filePath)) {
+      return failed('source_path_outside_provider_grant');
+    }
     let startLine: number;
     let maxLines: number;
     let content: string;
     try {
-      filePath = this.gate.validateRelativeSourcePath(
-        input.filePath,
-        {enforceConfiguredExcludes: false},
-      );
-      const selectionPolicy = sourceSelectionForRef(
-        ref,
-        this.gate.getSourceReadLimits().maxFileBytes,
-      );
-      if (!codebaseSourcePathMatches(
-        ref,
-        filePath,
-        undefined,
-        this.platform,
-        selectionPolicy,
-      )) {
-        throw new Error('source_path_outside_registered_filters');
-      }
-      const providerPathAllowed = input.mode === 'provider_send'
-        ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
-        : undefined;
-      if (providerPathAllowed && !providerPathAllowed(filePath)) {
-        throw new Error('source_path_outside_provider_grant');
-      }
       startLine = boundedPositiveInteger(input.startLine, 1, Number.MAX_SAFE_INTEGER, 'start_line');
       maxLines = boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines');
       content = readAcceptedTextFileSync(
@@ -510,8 +545,6 @@ export class OnDemandSourceAccessService {
         this.gate.getSourceReadLimits().maxFileBytes,
       );
     } catch (error) {
-      // A file-level failure is a result the model can act on. Every check
-      // above throws a path-free code; anything else stays generic.
       const code = error instanceof Error ? error.message : '';
       return failed(/^[a-z][a-z0-9_]{0,63}$/.test(code) ? code : 'source_read_failed');
     }
@@ -558,11 +591,8 @@ export class OnDemandSourceAccessService {
     pathPrefix: string | undefined,
     effectivePrefixes: readonly string[],
     maxResults: number,
+    selectionPolicy: SourceSelectionIR,
   ): Promise<SourceSearchBackendResult> {
-    const selectionPolicy = sourceSelectionForRef(
-      ref,
-      this.gate.getSourceReadLimits().maxFileBytes,
-    );
     const providerPathAllowed = mode === 'provider_send'
       ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
       : undefined;
@@ -596,6 +626,7 @@ export class OnDemandSourceAccessService {
       let stdoutBytes = 0;
       let stderrObserved = false;
       let locatorReadError = false;
+      let grantWithheldMatch = false;
       let settled = false;
       let intentionalCancel = false;
       let incompleteReason: SourceSearchIncompleteReason | undefined;
@@ -639,7 +670,12 @@ export class OnDemandSourceAccessService {
             this.platform,
             selectionPolicy,
           )) return;
-          if (providerPathAllowed && !providerPathAllowed(filePath)) return;
+          if (providerPathAllowed && !providerPathAllowed(filePath)) {
+            // Withheld without its path, but the search no longer covers every
+            // registered file, so it cannot report complete coverage.
+            grantWithheldMatch = true;
+            return;
+          }
           if (!lastFile || lastFile.filePath !== filePath) {
             lastFile = new SourceFileView(readAcceptedTextFileSync(
               root,
@@ -704,11 +740,12 @@ export class OnDemandSourceAccessService {
         const reason = incompleteReason ?? (code === 2 ? 'traversal_error' : undefined) ?? (
           stderrObserved || locatorReadError ? 'traversal_error' : undefined
         );
+        const coverageReason = reason ?? (grantWithheldMatch ? 'provider_grant_scope' : undefined);
         resolve({
           matches,
           truncated: reason !== undefined,
-          coverageComplete: reason === undefined,
-          ...(reason ? {searchIncompleteReason: reason} : {}),
+          coverageComplete: coverageReason === undefined,
+          ...(coverageReason ? {searchIncompleteReason: coverageReason} : {}),
         });
       });
       const timeout = setTimeout(() => terminate('time_budget'), this.searchTimeoutMs);
@@ -729,12 +766,9 @@ export class OnDemandSourceAccessService {
     pathPrefix: string | undefined,
     effectivePrefixes: readonly string[],
     maxResults: number,
+    selectionPolicy: SourceSelectionIR,
   ): Promise<SourceSearchBackendResult> {
     assertCodebaseRootIdentity(ref.rootRealpath, root, this.platform);
-    const selectionPolicy = sourceSelectionForRef(
-      ref,
-      this.gate.getSourceReadLimits().maxFileBytes,
-    );
     const providerPathAllowed = mode === 'provider_send'
       ? createSourceProviderPathPredicate(ref, this.platform, selectionPolicy)
       : undefined;
@@ -744,6 +778,7 @@ export class OnDemandSourceAccessService {
     let visitedEntries = 0;
     let visitedDirectories = 0;
     let traversalError = false;
+    let grantWithheldMatch = false;
     while (stack.length > 0) {
       if (Date.now() >= deadline) {
         return {
@@ -814,7 +849,23 @@ export class OnDemandSourceAccessService {
             this.platform,
             selectionPolicy,
           )) continue;
-          if (providerPathAllowed && !providerPathAllowed(acceptedPath)) continue;
+          if (providerPathAllowed && !providerPathAllowed(acceptedPath)) {
+            // Withheld like a ripgrep hit outside the grant: never returned, but
+            // a match there keeps the search from reading as complete.
+            if (!grantWithheldMatch) {
+              try {
+                grantWithheldMatch = readAcceptedTextFileSync(
+                  root,
+                  acceptedPath,
+                  this.gate.getSourceReadLimits().maxFileBytes,
+                ).split(/\r?\n/).some(line => line.includes(query));
+              } catch {
+                traversalError = true;
+              }
+              await new Promise<void>(resolve => setImmediate(resolve));
+            }
+            continue;
+          }
           if (Date.now() >= deadline) {
             return {
               matches,
@@ -859,13 +910,16 @@ export class OnDemandSourceAccessService {
       }
     }
     // A finished walk visits every selected file (it applies no ignore files),
-    // so only a traversal error leaves coverage incomplete; speed and ignore
-    // semantics are reported separately as backendFidelity.
+    // so only a traversal error or a match withheld outside the provider grant
+    // leaves coverage incomplete; speed and ignore semantics are reported
+    // separately as backendFidelity.
     return {
       matches,
       truncated: false,
-      coverageComplete: !traversalError,
-      ...(traversalError ? {searchIncompleteReason: 'traversal_error' as const} : {}),
+      coverageComplete: !traversalError && !grantWithheldMatch,
+      ...(traversalError
+        ? {searchIncompleteReason: 'traversal_error' as const}
+        : grantWithheldMatch ? {searchIncompleteReason: 'provider_grant_scope' as const} : {}),
     };
   }
 }

@@ -93,6 +93,7 @@
       "required_steps": [
         "trace_window",
         "trace_diagnostics",
+        "data_loss_stats",
         "top_long_slices",
         "top_d_state_threads",
         "top_runnable_waits",
@@ -102,6 +103,7 @@
       "required_sql_steps": [
         "trace_window",
         "trace_diagnostics",
+        "data_loss_stats",
         "top_d_state_threads",
         "top_runnable_waits",
         "runqueue_pressure",

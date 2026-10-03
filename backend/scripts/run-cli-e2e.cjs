@@ -151,7 +151,9 @@ async function main() {
     { noSessionDir: true, cwd: invokeDir, timeoutMs: 180000 },
   );
   assert.equal(parseJson(relativeQuery.stdout).ok, true);
-  assert.match(relativeQuery.stderr, new RegExp(`--http-port ${pinnedPort}\\b`));
+  // The env file's port range reached the pool: the processor started on the
+  // pinned port, in either launch form (`server http --port` or `--httpd --http-port`).
+  assert.match(relativeQuery.stderr, new RegExp(`--(?:http-)?port ${pinnedPort}\\b`));
   assertCliTraceCopies(relativeHome, 1);
 
   const providers = parseJson(runCli('provider list', ['provider', 'list', '--format', 'json']).stdout);

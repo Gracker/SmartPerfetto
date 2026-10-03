@@ -113,12 +113,14 @@ text. For example:
 
 The services behind RAG administration throw machine reason codes as their
 messages (`root_outside_allowlist`, `source_chunk_limit_exceeded:5000`). Only
-the families a caller can act on (source paths, knowledge roots, the index
-lifecycle, consent and right-to-use acknowledgement) are returned as `code`
-and `error`, without the detail after the first `:` (an id, path or size), and
-the original message is logged at warn level; internal reason codes (store
-corruption, staged chunk count mismatches) and messages that are not reason
-codes get fixed text. Self-Evolution keeps its
+the codes listed one by one as caller-actionable (source paths, knowledge
+roots, the index lifecycle, consent and right-to-use acknowledgement;
+`CALLER_FACING_RAG_REASONS` in `ragAdminRoutes.ts`) are returned as `code` and
+`error`, without the detail after the first `:` (an id, path, size or excluded
+item count), and the original message is logged at warn level; any unlisted
+code, whatever its prefix (store corruption, staged chunk count mismatches,
+subprocess failures), and messages that are not reason codes get fixed
+text. Self-Evolution keeps its
 `{success: false, error: <code>}` shape and returns the whole lowercase reason
 code (only `a-z 0-9 _ : -`, possibly with an id after `:`); any other
 exception is `self_evolution_request_failed`.
@@ -134,7 +136,8 @@ after upload answers `trace_processor_shell could not load the trace`. A trace
 upload `details` field is kept only for explanations we write (a rejected URL,
 a file that is too large) and never carries exception text. In a batch trace
 submitted through the API, a failed trace keeps only its reason code (else
-`batch_trace_failed`) in `error` and its diagnostic, while a local CLI batch
+`batch_trace_failed`, or `batch_skill_failed` when the Skill execution reports
+the failure) in `error` and its diagnostic, while a local CLI batch
 keeps the whole message; each skipped file's `reason` in a codebase reindex
 result keeps only its reason code (else `source_file_unreadable`). In
 enterprise mode an SSO session or API key lookup failure answers 401 with

@@ -37,7 +37,14 @@ export function resolveTraceCase(selector: string, repoRoot = defaultRepoRoot())
       ? `Unknown trace case: ${selector}`
       : `Ambiguous trace case selector: ${selector}`);
   }
-  const entry = matches[0];
+  return analysisTracePath(matches[0], repoRoot);
+}
+
+/**
+ * The trace a case is analyzed on. A constructed case commits only its overlay;
+ * analysis reads the materialized base plus overlay.
+ */
+export function analysisTracePath(entry: TraceCatalogCase, repoRoot = defaultRepoRoot()): string {
   if (entry.trace.materialization === 'base-plus-overlay') {
     if (!entry.construction?.output) throw new Error(`Constructed case has no output: ${entry.id}`);
     return path.resolve(repoRoot, entry.construction.output);

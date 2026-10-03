@@ -535,7 +535,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "04c1c61bd0d797384e53b2271b61b77010eff4fa4482d4a6bd3441a462f945c4",
+        "sha256": "b5b6373ce8e5e05076d03a48a6f6e95b6b7a86017d85a77fc2b9db8c7df3d07c",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -810,7 +810,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "f006bba790f92c90747d2a127abcea89d163eaf3ffa85574def1525add5d4689",
+        "sha256": "b9ac80b9cb0c25953aefef5f0d82ccb3939c3144eda5ab114d9a76940b81e3a4",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -1978,7 +1978,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "2472d73dd70e3a358077bfcfa7bfbbfeb281b5e0b421a1251cbfd337369c3c57",
+        "sha256": "40a9f1246bd8826f44d22b7e4fbcb21049b4116deb23ed3634fcbc4f592dca1b",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -2598,7 +2598,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "fe8dec58d44538d30e2652dffd3eb8275a5304cda150f7e3e2a86ea3058937c5",
+        "sha256": "a2238f46757b1e038af323e1fc9debe739cc91d310f3bef3096d25d2a96b52d9",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -3154,7 +3154,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "198f173dfcfddadd24828aa8a5f4fd08e64502d7a89843d47fe6dfdb7b7533fc",
+        "sha256": "bbc01c6a7dc6f007b48b6a0b2fb5a281cf024e91e2f795f17311e26f86270508",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -3581,7 +3581,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "c207b919c7f903c818663ce7bbe26b021e7378b15e023d13be6618eb75e38f87",
+        "sha256": "afd2d4ea1aa3b15a4aad9c701a9ca406e63d288eb53abde1f9d9900116eefbf8",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -3923,7 +3923,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "0cc319a1b4190ed157b1e8a6f940152f1daf11c862e27ca923c233e22b3b0086",
+        "sha256": "5e74fed5a771569d53ac036b9c2541eaefc7bdc6e14911ec6baff0cb63552cca",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -4583,7 +4583,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "c78cf7e452e06d046c44882361c65014c4a2af4f1cf256a156f751a2d5ff0e4c",
+        "sha256": "dcaa498ae8861bf3906fd5b1daeff073b7b1d544013d60cf91d03fe5727a7d9a",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -4775,7 +4775,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "3c4482c506af2fc5bed025e3c8861156db94c9c3fe14df9cd5920ae7fb609e44",
+        "sha256": "95559484cecb14c5ed5431efe2ce5291e8601cd671f97450e849ce3abbb8b9f9",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -5139,7 +5139,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "0cb2fa2d6f901bf8616ac75e0fbffc4dd03b251023ff17f09c590d04740a1188",
+        "sha256": "352dff3dacdd3f39af29ab10b0ff23f23706fb61e384fddc9c8ea9b970b9398a",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -5679,7 +5679,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "6113b2be7e13f611e8f83ca780928bc90a8711e02b27c0d7e897437bb7622d8d",
+        "sha256": "223f5c0221de76bfeb98ef4b9b87d4be6f6729d21335b9c70ddf9e9f3c35dc52",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -5987,7 +5987,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "73c4a26343a6018bc36261acd05046e89b0d003a95e959ae05c92175d5b48779",
+        "sha256": "af3221d7c427b583735cff26ec0ed310e35cdc322cc09a8d63b59eb0f90480b5",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -6815,7 +6815,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "b72b379e1c25c01e75bb82600d6618f484f8effdc2ce8d7474cf470f1d14baa5",
+        "sha256": "936c5dfeb71b5592cca6f07253622b524a0117a5254c0aaeca10cd1abc42308d",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -7519,7 +7519,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "ea6375c51d57264fe402d7354399283e9c7c7bd305701bdbe400fd357452f8cf",
+        "sha256": "298699d4ab7a5368a3f4fac4b110a0f7cb7a39cf2d30c52810854dc39794650e",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -7831,7 +7831,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "60de316c980f2dbe2a02a770878a453bfbc083ab6956d15d6698cbf648b08791",
+        "sha256": "c28dbdbe97cf778924dd710e2f92cd910850745875a27678badce4ec36c56c96",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -9645,7 +9645,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "4e56dc4bf62953d04dad86b7a344128ccf60053689af674699bd1e6fb6dfd212",
+        "sha256": "fa9234716e5a536bcf67a7a4066f415b6606c75bc11ea8f21850b5ad6933c8f7",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -11086,7 +11086,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "80e8c763c38675a7a7f205f9834374009486e939192416ce05e6e2580a22f278",
+        "sha256": "d659fd516ff1bc10c215394f12af064da6f51e81ec923f4a53b00fc748d274e0",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -12553,7 +12553,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "ce317c0d1b75dec2e269b96a64cf1ec0fdc11e5214e9d45766d2064b403397de",
+        "sha256": "e3a6a0f1500abefa7da534c341f92b634d4376920211f3801fba6af9bfcd1bc9",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -15202,7 +15202,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "e17e9b161f34cc70d27bd5f6bcd6bd96140d0b1c557102c2864549f82ffa585f",
+        "sha256": "b823bf83a939619b9feb4797fd5772d54dd780b7f0bb0f644a67487b921e451d",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -15264,7 +15264,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "e2f754dc5a2eb2fcda7132f41cb10651827d3bb9be49e05b501386936bb4eeee",
+        "sha256": "ba2743b71dccbbdc3229bf4e495923a78f99619eda680660867be4600e6e6860",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -15466,7 +15466,8 @@
               "avg_dur_ms",
               "max_dur_ms",
               "main_thread_calls",
-              "percent_of_startup"
+              "percent_of_startup",
+              "all_percent_of_startup"
             ],
             "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
           },
@@ -15933,7 +15934,9 @@
               "avg_dur_ms",
               "max_dur_ms",
               "percent_of_startup",
-              "startup_type"
+              "startup_type",
+              "all_percent_of_startup",
+              "all_total_dur_ms"
             ],
             "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
           },
@@ -16021,7 +16024,8 @@
               "total_dur_ms",
               "avg_dur_ms",
               "max_dur_ms",
-              "percent_of_startup"
+              "percent_of_startup",
+              "all_percent_of_startup"
             ],
             "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
           },
@@ -16048,7 +16052,9 @@
               "total_wait_ms",
               "avg_wait_ms",
               "max_wait_ms",
-              "severe_delays"
+              "severe_delays",
+              "all_severe_delays",
+              "all_max_wait_ms"
             ],
             "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
           },
@@ -16142,7 +16148,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "d118e0652ab63f59120aed4f630608333597a054777fee7a25fc954ac645a7e0",
+        "sha256": "764b58f1d27dfeb3ab880cafd84171e2f4848dc7193794531da298925c50afd2",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -17278,7 +17284,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "da163a5d17a1650074b357f5e4ad5e3583f4b91b308935020c316c15cf1938a0",
+        "sha256": "ee3365c705b69aae83aa196955a7ff462ed2520596a5777e930e6afdbd0164a4",
         "materialization": "base-plus-overlay"
       },
       "android": {

@@ -298,11 +298,15 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
     if (!resolved.success) return resolved.result;
     const args = ['context', '--repo', resolved.root];
     if (input.filePath) {
-      const filePath = this.gate.validateRelativeSourcePath(input.filePath);
-      if (!codebaseSourcePathMatches(resolved.ref, filePath)) {
+      // A path the source policy does not admit is answered as data, never echoed.
+      // Excludes come from the selection policy, as for read_codebase_file, so a
+      // path search_codebase returns is never refused here.
+      const admission = this.gate.admitRelativeSourcePath(input.filePath, {enforceConfiguredExcludes: false});
+      if (!admission.admitted) return this.unsupported(input.codebaseId, admission.reason);
+      if (!codebaseSourcePathMatches(resolved.ref, admission.path)) {
         return this.unsupported(input.codebaseId, 'source_path_outside_registered_filters');
       }
-      args.push(`--file=${filePath}`);
+      args.push(`--file=${admission.path}`);
     }
     args.push('--limit', String(limit), '--', symbol);
     return this.runGitNexus(resolved.ref, resolved.root, args, limit);
@@ -475,7 +479,7 @@ export class GitNexusCodeGraphNavigator implements CodeGraphNavigator {
       candidate = relative;
     }
     try {
-      const filePath = this.gate.validateRelativeSourcePath(candidate);
+      const filePath = this.gate.validateRelativeSourcePath(candidate, {enforceConfiguredExcludes: false});
       return codebaseSourcePathMatches(ref, filePath) ? filePath : undefined;
     } catch {
       return undefined;

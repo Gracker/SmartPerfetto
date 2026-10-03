@@ -528,6 +528,8 @@ steps:
         - name: startup_type
           label: "启动类型"
           type: string
+        - {name: all_percent_of_startup, label: "全部文件 IO 启动占比", type: number, hidden: true}
+        - {name: all_total_dur_ms, label: "全部文件 IO 总耗时", type: number, hidden: true}
     params:
       package: "${package}"
       startup_id: "${startup_id}"
@@ -597,6 +599,7 @@ steps:
           label: "启动占比"
           type: percentage
           format: percentage
+        - {name: all_percent_of_startup, label: "全部 Binder 启动占比", type: number, hidden: true}
     params:
       package: "${package}"
       startup_id: "${startup_id}"
@@ -646,6 +649,7 @@ steps:
           label: "启动占比"
           type: percentage
           format: percentage
+        - {name: all_percent_of_startup, label: "全部主线程同步 Binder 启动占比", type: number, hidden: true}
     params:
       package: "${package}"
       startup_id: "${startup_id}"
@@ -871,6 +875,8 @@ steps:
         - name: severe_delays
           label: "严重延迟次数"
           type: number
+        - {name: all_severe_delays, label: "全部状态严重延迟次数", type: number, hidden: true}
+        - {name: all_max_wait_ms, label: "全部状态最大等待", type: number, hidden: true}
     params:
       package: "${package}"
       startup_id: "${startup_id}"
@@ -1027,9 +1033,9 @@ steps:
           - "减少热启动路径上的同步调用"
 
       # Binder 调用占比过高（需有主线程证据佐证）
-      - condition: "(startup_binder?.data?.length || 0) > 0 && ((startup_binder.data[0]?.percent_of_startup) || 0) > 20 && ((startup_binder.data[0]?.main_thread_calls || 0) > 0) && ((((main_sync_binder?.data?.[0]?.percent_of_startup) || 0) > 5) || (((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 8) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+      - condition: "(startup_binder?.data?.length || 0) > 0 && ((startup_binder.data[0]?.all_percent_of_startup) || 0) > 20 && startup_binder.data.find(r => r.main_thread_calls > 0) && ((((main_sync_binder?.data?.[0]?.all_percent_of_startup) || 0) > 5) || (((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 8) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
         severity: warning
-        diagnosis: "Binder 调用占启动时间 ${startup_binder?.data?.[0]?.percent_of_startup}%（含主线程调用）"
+        diagnosis: "Binder 调用合计占启动时间 ${startup_binder?.data?.[0]?.all_percent_of_startup}%（含主线程调用）"
         confidence: high
         suggestions:
           - "减少启动期间的 IPC 调用"
@@ -1037,18 +1043,18 @@ steps:
           - "使用异步 Binder 调用"
 
       # 主线程同步 Binder 占比过高（需与主线程阻塞状态一致）
-      - condition: "(main_sync_binder?.data?.length || 0) > 0 && ((main_sync_binder.data[0]?.percent_of_startup) || 0) > 8 && ((((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 16) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+      - condition: "(main_sync_binder?.data?.length || 0) > 0 && ((main_sync_binder.data[0]?.all_percent_of_startup) || 0) > 8 && ((((main_binder_blocking?.data?.[0]?.dur_ms) || 0) > 16) || (((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
         severity: warning
-        diagnosis: "主线程同步 Binder 占启动时间 ${main_sync_binder?.data?.[0]?.percent_of_startup}% 且主线程存在阻塞态证据"
+        diagnosis: "主线程同步 Binder 合计占启动时间 ${main_sync_binder?.data?.[0]?.all_percent_of_startup}% 且主线程存在阻塞态证据"
         confidence: high
         suggestions:
           - "优先将同步 Binder 调用迁移到后台线程"
           - "首屏前只保留必要 IPC，其余延后到首帧后"
 
       # 主线程文件 IO 占比过高（需有 D/S 阻塞态佐证）
-      - condition: "(main_thread_file_io?.data?.length || 0) > 0 && (((main_thread_file_io.data[0]?.percent_of_startup) || 0) > 5 || ((main_thread_file_io.data[0]?.total_dur_ms) || 0) > 50) && ((((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
+      - condition: "(main_thread_file_io?.data?.length || 0) > 0 && (((main_thread_file_io.data[0]?.all_percent_of_startup) || 0) > 5 || ((main_thread_file_io.data[0]?.all_total_dur_ms) || 0) > 50) && ((((main_thread_states?.data?.find(s => s.state === 'D')?.percent) || 0) > 5) || (((main_thread_states?.data?.find(s => s.state === 'S')?.percent) || 0) > 20))"
         severity: warning
-        diagnosis: "主线程文件 IO 占比较高（${main_thread_file_io?.data?.[0]?.percent_of_startup}%）且主线程阻塞态占比偏高"
+        diagnosis: "主线程文件 IO 合计占比较高（${main_thread_file_io?.data?.[0]?.all_percent_of_startup}%）且主线程阻塞态占比偏高"
         confidence: high
         suggestions:
           - "将文件读取与数据库初始化前移到预热阶段或改为异步"
@@ -1123,7 +1129,10 @@ steps:
         - name: status
           label: "判定"
           type: string
-    # A producer is a top-K list; its first row is read. No row (nothing passed
+    # A producer is a top-K list. Totals come from its all_* columns, which
+    # window aggregates compute over every group before LIMIT. The hot slice
+    # item reads the top slice itself, by design: slices nest, so their
+    # durations do not add up across names. No row (nothing passed
     # the producer's filter) is 'not_observed' with a NULL value, never a
     # measured 0. SmartPerfetto stops the Skill when a required producer fails;
     # the public runtime continues and reads NULL here too. The producer step's
@@ -1131,10 +1140,10 @@ steps:
     sql: |
       SELECT
         'MainThread Hot Slice' as item,
-        'main_thread_slices.percent_of_startup' as primary_metric,
+        'main_thread_slices.top.percent_of_startup' as primary_metric,
         ROUND(${main_thread_slices.data[0].percent_of_startup|NULL}, 2) as primary_value,
         '>20% OR max_dur_ms>100' as primary_threshold,
-        'main_thread_slices.max_dur_ms' as corroborating_metric,
+        'main_thread_slices.top.max_dur_ms' as corroborating_metric,
         ROUND(${main_thread_slices.data[0].max_dur_ms|NULL}, 2) as corroborating_value,
         '>100ms' as corroborating_threshold,
         CASE
@@ -1147,65 +1156,65 @@ steps:
       UNION ALL
       SELECT
         'MainThread File IO' as item,
-        'main_thread_file_io.percent_of_startup' as primary_metric,
-        ROUND(${main_thread_file_io.data[0].percent_of_startup|NULL}, 2) as primary_value,
+        'main_thread_file_io.all_percent_of_startup' as primary_metric,
+        ROUND(${main_thread_file_io.data[0].all_percent_of_startup|NULL}, 2) as primary_value,
         '>5%' as primary_threshold,
-        'main_thread_file_io.total_dur_ms' as corroborating_metric,
-        ROUND(${main_thread_file_io.data[0].total_dur_ms|NULL}, 2) as corroborating_value,
+        'main_thread_file_io.all_total_dur_ms' as corroborating_metric,
+        ROUND(${main_thread_file_io.data[0].all_total_dur_ms|NULL}, 2) as corroborating_value,
         '>50ms' as corroborating_threshold,
         CASE
-          WHEN ${main_thread_file_io.data[0].percent_of_startup|NULL} IS NULL THEN 'not_observed'
-          WHEN COALESCE(${main_thread_file_io.data[0].percent_of_startup|NULL}, 0) > 5
-               AND COALESCE(${main_thread_file_io.data[0].total_dur_ms|NULL}, 0) > 50 THEN 'confirmed'
-          WHEN COALESCE(${main_thread_file_io.data[0].percent_of_startup|NULL}, 0) > 5 THEN 'needs_corroboration'
+          WHEN ${main_thread_file_io.data[0].all_percent_of_startup|NULL} IS NULL THEN 'not_observed'
+          WHEN COALESCE(${main_thread_file_io.data[0].all_percent_of_startup|NULL}, 0) > 5
+               AND COALESCE(${main_thread_file_io.data[0].all_total_dur_ms|NULL}, 0) > 50 THEN 'confirmed'
+          WHEN COALESCE(${main_thread_file_io.data[0].all_percent_of_startup|NULL}, 0) > 5 THEN 'needs_corroboration'
           ELSE 'normal'
         END as status
       UNION ALL
       SELECT
         'Binder Total' as item,
-        'startup_binder.percent_of_startup' as primary_metric,
-        ROUND(${startup_binder.data[0].percent_of_startup|NULL}, 2) as primary_value,
+        'startup_binder.all_percent_of_startup' as primary_metric,
+        ROUND(${startup_binder.data[0].all_percent_of_startup|NULL}, 2) as primary_value,
         '>20%' as primary_threshold,
-        'main_sync_binder.percent_of_startup' as corroborating_metric,
-        ROUND(${main_sync_binder.data[0].percent_of_startup|NULL}, 2) as corroborating_value,
+        'main_sync_binder.all_percent_of_startup' as corroborating_metric,
+        ROUND(${main_sync_binder.data[0].all_percent_of_startup|NULL}, 2) as corroborating_value,
         '>5%' as corroborating_threshold,
         CASE
-          WHEN ${startup_binder.data[0].percent_of_startup|NULL} IS NULL THEN 'not_observed'
-          WHEN COALESCE(${startup_binder.data[0].percent_of_startup|NULL}, 0) > 20
-               AND COALESCE(${main_sync_binder.data[0].percent_of_startup|NULL}, 0) > 5 THEN 'confirmed'
-          WHEN COALESCE(${startup_binder.data[0].percent_of_startup|NULL}, 0) > 20 THEN 'needs_corroboration'
+          WHEN ${startup_binder.data[0].all_percent_of_startup|NULL} IS NULL THEN 'not_observed'
+          WHEN COALESCE(${startup_binder.data[0].all_percent_of_startup|NULL}, 0) > 20
+               AND COALESCE(${main_sync_binder.data[0].all_percent_of_startup|NULL}, 0) > 5 THEN 'confirmed'
+          WHEN COALESCE(${startup_binder.data[0].all_percent_of_startup|NULL}, 0) > 20 THEN 'needs_corroboration'
           ELSE 'normal'
         END as status
       UNION ALL
       SELECT
         'Main Sync Binder' as item,
-        'main_sync_binder.percent_of_startup' as primary_metric,
-        ROUND(${main_sync_binder.data[0].percent_of_startup|NULL}, 2) as primary_value,
+        'main_sync_binder.all_percent_of_startup' as primary_metric,
+        ROUND(${main_sync_binder.data[0].all_percent_of_startup|NULL}, 2) as primary_value,
         '>8%' as primary_threshold,
-        'main_binder_blocking.dur_ms' as corroborating_metric,
+        'main_binder_blocking.top.dur_ms' as corroborating_metric,
         ROUND(${main_binder_blocking.data[0].dur_ms|NULL}, 2) as corroborating_value,
         '>16ms' as corroborating_threshold,
         CASE
-          WHEN ${main_sync_binder.data[0].percent_of_startup|NULL} IS NULL THEN 'not_observed'
-          WHEN COALESCE(${main_sync_binder.data[0].percent_of_startup|NULL}, 0) > 8
+          WHEN ${main_sync_binder.data[0].all_percent_of_startup|NULL} IS NULL THEN 'not_observed'
+          WHEN COALESCE(${main_sync_binder.data[0].all_percent_of_startup|NULL}, 0) > 8
                AND COALESCE(${main_binder_blocking.data[0].dur_ms|NULL}, 0) > 16 THEN 'confirmed'
-          WHEN COALESCE(${main_sync_binder.data[0].percent_of_startup|NULL}, 0) > 8 THEN 'needs_corroboration'
+          WHEN COALESCE(${main_sync_binder.data[0].all_percent_of_startup|NULL}, 0) > 8 THEN 'needs_corroboration'
           ELSE 'normal'
         END as status
       UNION ALL
       SELECT
         'Sched Latency' as item,
-        'sched_latency.severe_delays' as primary_metric,
-        ROUND(${sched_latency.data[0].severe_delays|NULL}, 2) as primary_value,
+        'sched_latency.all_severe_delays' as primary_metric,
+        ROUND(${sched_latency.data[0].all_severe_delays|NULL}, 2) as primary_value,
         '>3' as primary_threshold,
-        'sched_latency.max_wait_ms' as corroborating_metric,
-        ROUND(${sched_latency.data[0].max_wait_ms|NULL}, 2) as corroborating_value,
+        'sched_latency.all_max_wait_ms' as corroborating_metric,
+        ROUND(${sched_latency.data[0].all_max_wait_ms|NULL}, 2) as corroborating_value,
         '>8ms' as corroborating_threshold,
         CASE
-          WHEN ${sched_latency.data[0].severe_delays|NULL} IS NULL THEN 'not_observed'
-          WHEN COALESCE(${sched_latency.data[0].severe_delays|NULL}, 0) > 3
-               AND COALESCE(${sched_latency.data[0].max_wait_ms|NULL}, 0) > 8 THEN 'confirmed'
-          WHEN COALESCE(${sched_latency.data[0].severe_delays|NULL}, 0) > 3 THEN 'needs_corroboration'
+          WHEN ${sched_latency.data[0].all_severe_delays|NULL} IS NULL THEN 'not_observed'
+          WHEN COALESCE(${sched_latency.data[0].all_severe_delays|NULL}, 0) > 3
+               AND COALESCE(${sched_latency.data[0].all_max_wait_ms|NULL}, 0) > 8 THEN 'confirmed'
+          WHEN COALESCE(${sched_latency.data[0].all_severe_delays|NULL}, 0) > 3 THEN 'needs_corroboration'
           ELSE 'normal'
         END as status
     save_as: evidence_matrix

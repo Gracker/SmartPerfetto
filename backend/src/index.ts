@@ -6,13 +6,12 @@ configureRuntimeEnvironment();
 import { installEpipeGuard } from './utils/epipeGuard';
 
 import express from 'express';
-import cors from 'cors';
 import path from 'path';
 import type { Server } from 'http';
 import type { Duplex } from 'stream';
 
 // Import configuration
-import { isKeylessLocalMode, resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
+import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
@@ -42,10 +41,7 @@ import comparisonRoutes from './routes/comparisonRoutes';
 import traceConfigProposalRoutes from './routes/traceConfigProposalRoutes';
 import skillPackRoutes from './routes/skillPackRoutes';
 import batchTraceRoutes from './routes/batchTraceRoutes';
-import traceProcessorProxyRoutes, {
-  handleTraceProcessorProxyUpgrade,
-  writeUpgradeError,
-} from './routes/traceProcessorProxyRoutes';
+import traceProcessorProxyRoutes from './routes/traceProcessorProxyRoutes';
 import applicationUpdateRoutes from './routes/applicationUpdateRoutes';
 import {authenticate, requireRequestContext} from './middleware/auth';
 import { collectEnvCredentialSources } from './agentRuntime/envCredentialSources';
@@ -65,15 +61,17 @@ import {
   requireWorkspaceRouteContext,
 } from './middleware/workspaceRouteContext';
 import {
-  hostnameOfHostHeader,
-  isCorsOriginAllowed,
-  isLoopbackRequestHostname,
   isSsoCookieMutationOriginAllowed,
   normalizeCorsOrigins,
 } from './security/requestOriginPolicy';
+import {
+  createCorsMiddleware,
+  dispatchUpgrade,
+  rejectUntrustedKeylessHost,
+} from './middleware/httpEdge';
 import {rejectEnterpriseUnscopedApi} from './middleware/enterpriseRouteBoundary';
 import {unhandledErrorHandler} from './middleware/unhandledErrorHandler';
-import {REQUEST_ID_HEADER, requestIdMiddleware} from './middleware/requestId';
+import {requestIdMiddleware} from './middleware/requestId';
 import {hasRbacPermission, sendForbidden} from './services/rbac';
 import {getSmartPerfettoVersion} from './version';
 import {sendResolvedFile} from './utils/sendResolvedFile';
@@ -116,17 +114,7 @@ const workspaceRouteContextMiddleware: express.RequestHandler[] = [
   requireWorkspaceRouteContext,
 ];
 
-// Middleware — exact-origin CORS. Port-only matching permits DNS rebinding.
-app.use(cors({
-  origin: (requestOrigin: string | undefined, callback: (err: Error | null, allow?: boolean | string) => void) => {
-    // No Origin header (server-to-server, curl, etc.) → allow
-    if (!requestOrigin) return callback(null, true);
-    if (isCorsOriginAllowed(requestOrigin, corsAllowedOrigins)) return callback(null, true);
-    callback(new Error(`CORS blocked: ${requestOrigin}`));
-  },
-  credentials: true,
-  exposedHeaders: [REQUEST_ID_HEADER],
-}));
+app.use(createCorsMiddleware(corsAllowedOrigins));
 
 // A browser session cookie may authenticate every API surface. CORS controls
 // response visibility, but it does not stop a cross-site form from sending a
@@ -157,20 +145,9 @@ app.use('/api', (req, res, next) => {
 app.use(express.json({ limit: serverConfig.bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 
-// In keyless local mode, reject Host-header DNS rebinding even though the
-// process itself listens only on loopback by default. WebSocket upgrades skip
-// Express, so the upgrade dispatch below applies the same rule.
-const UNTRUSTED_KEYLESS_HOST = 'Untrusted Host in local keyless mode';
-function isUntrustedKeylessHost(hostname: string): boolean {
-  return isKeylessLocalMode() && !isLoopbackRequestHostname(hostname);
-}
-app.use('/api', (req, res, next) => {
-  if (isUntrustedKeylessHost(req.hostname)) {
-    res.status(403).json({success: false, error: UNTRUSTED_KEYLESS_HOST});
-    return;
-  }
-  next();
-});
+// In keyless local mode, reject Host-header DNS rebinding. WebSocket upgrades
+// skip Express; `dispatchUpgrade` applies the same rule to them.
+app.use('/api', rejectUntrustedKeylessHost);
 
 // Authentication is the default for the complete API surface. OIDC/session
 // bootstrap endpoints own their public-vs-authenticated decisions internally.
@@ -533,12 +510,7 @@ async function startBackend(): Promise<void> {
   server.on('upgrade', (req, socket, head) => {
     upgradedSockets.add(socket);
     socket.once('close', () => upgradedSockets.delete(socket));
-    if (isUntrustedKeylessHost(hostnameOfHostHeader(req.headers.host))) {
-      writeUpgradeError(socket, 403, UNTRUSTED_KEYLESS_HOST);
-      return;
-    }
-    if (handleTraceProcessorProxyUpgrade(req, socket, head, corsAllowedOrigins)) return;
-    socket.destroy();
+    dispatchUpgrade(req, socket, head, corsAllowedOrigins);
   });
 
   server.on('close', () => {

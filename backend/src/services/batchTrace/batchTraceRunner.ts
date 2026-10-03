@@ -42,7 +42,7 @@ import {
   type RunBatchSkillInput,
 } from './batchTraceTypes';
 import { BatchTraceRequestError, invalidBatchTraceRequest } from './batchTraceRequestError';
-import { thrownReasonCode } from '../../utils/publicRequestError';
+import { messageReasonCode } from '../../utils/publicRequestError';
 
 export interface BatchTraceRunnerDeps {
   traceProcessor?: TraceProcessorService;
@@ -104,13 +104,20 @@ function unsupportedSkillError(skill: SkillDefinition): Error | null {
 }
 
 /**
- * A per-trace failure as the run records it. An API run is served back to
- * workspace clients, so it keeps only the reason token (a trace load error can
- * carry a server path); the local CLI owner gets the whole message.
+ * A per-trace failure as the run records it: a thrown error, or the `error` of
+ * a Skill execution that returned unsuccessfully. Neither is analysis output:
+ * both are engine text that can carry a server path or the failing SQL. An
+ * API run is served back to workspace clients, so it keeps only the reason
+ * token, else `fallbackCode`; the local CLI owner gets the whole message.
  */
-function traceFailureMessage(surface: BatchTraceSurface, error: unknown): string {
-  if (surface === 'cli') return error instanceof Error ? error.message : String(error);
-  return thrownReasonCode(error) ?? 'batch_trace_failed';
+function traceFailureMessage(
+  surface: BatchTraceSurface,
+  error: unknown,
+  fallbackCode: 'batch_trace_failed' | 'batch_skill_failed',
+): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (surface === 'cli') return message;
+  return messageReasonCode(message) ?? fallbackCode;
 }
 
 function statusForResults(results: BatchTraceResultV1[]): BatchTraceRunV1['status'] {
@@ -280,6 +287,9 @@ export async function runBatchSkill(
         dataEnvelopes: envelopes,
       });
       if (traceSummary) metrics.push(...traceSummaryMetrics(traceSummary));
+      if (skillResult.error && input.surface === 'api') {
+        console.error('[BatchTrace] Skill failed', {runId, ordinal: traceInput.ordinal}, skillResult.error);
+      }
       recordResult({
         ordinal: traceInput.ordinal,
         input: { ...traceInput, label: inputLabel(traceInput) },
@@ -292,10 +302,12 @@ export async function runBatchSkill(
         diagnostics: skillResult.diagnostics.map(diagnosticMessage),
         executionTimeMs: skillResult.executionTimeMs || Date.now() - start,
         ...(traceSummary ? {traceSummary} : {}),
-        ...(skillResult.error ? { error: skillResult.error } : {}),
+        ...(skillResult.error
+          ? { error: traceFailureMessage(input.surface, skillResult.error, 'batch_skill_failed') }
+          : {}),
       });
     } catch (error) {
-      const message = traceFailureMessage(input.surface, error);
+      const message = traceFailureMessage(input.surface, error, 'batch_trace_failed');
       if (input.surface === 'api') {
         console.error('[BatchTrace] Trace failed', {runId, ordinal: traceInput.ordinal}, error);
       }

@@ -61,7 +61,7 @@
               "atrace-track-instant", "android-input-motion", "android-input-dispatch",
               "atrace-slice", "atrace-counter", "atrace-async-slice", "atrace-async-track-slice",
               "sched-running", "sched-switch", "sched-waking", "process-stats", "battery-counters", "power-rail",
-              "gpu-work-period", "gpu-frequency", "gpu-power-state", "cpu-frequency", "cpu-idle",
+              "gpu-work-period", "gpu-frequency", "gpu-memory-total", "gpu-power-state", "cpu-frequency", "cpu-idle",
               "cpu-frequency-limits", "thermal-temperature", "cdev-update",
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
               "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
@@ -138,6 +138,7 @@
           "cdev_type": {"type": "string", "minLength": 1, "description": "Cooling device type string; trace_processor names the counter track after it."},
           "target": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
           "gpu_id": {"type": "integer", "minimum": 0},
+          "size_bytes": {"type": "string", "pattern": "^[0-9]+$", "description": "gpu-memory-total: GPU memory in bytes; with process, that process's share, else the device total."},
           "uid": {"type": "integer", "minimum": 0},
           "irq": {"type": "integer", "minimum": 0},
           "cookie": {"type": "integer", "minimum": 0},
@@ -249,6 +250,10 @@
           {
             "if": {"properties": {"type": {"const": "android-input-dispatch"}}},
             "then": {"required": ["event_id", "window_id", "vsync_id"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "gpu-memory-total"}}},
+            "then": {"required": ["gpu_id", "size_bytes"]}
           },
           {
             "if": {"properties": {"type": {"const": "sched-switch"}}},

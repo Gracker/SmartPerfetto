@@ -7,6 +7,7 @@ import crypto from 'crypto';
 
 import {loadStrategies} from '../../src/agentv3/strategyLoader';
 import {createSkillEvaluator, type EvalStepResult, type SkillEvaluator} from '../skill-eval/runner';
+import {analysisTracePath} from '../helpers/traceCorpus';
 
 type FixtureTokenContext = {
   trace_start: string;
@@ -59,7 +60,7 @@ type CorpusCase = {
   kind: 'real' | 'constructed';
   case_dir: string;
   manifest_path: string;
-  trace: {file: string};
+  trace: {file: string; materialization: 'committed' | 'base-plus-overlay'};
   source: {evidence_tier: 'R1' | 'R2' | 'R3'};
   construction?: {output: string};
   coverage: {expectations: CorpusExpectation[]};
@@ -516,14 +517,6 @@ async function runStrategyExpectation(
   validateStrategyExpectationDeclaration(expectation);
 }
 
-function corpusTracePath(repoRoot: string, entry: CorpusCase): string {
-  if (entry.kind === 'constructed') {
-    if (!entry.construction?.output) throw new Error(`constructed case ${entry.id} has no output path`);
-    return path.resolve(repoRoot, entry.construction.output);
-  }
-  return path.resolve(repoRoot, entry.case_dir, entry.trace.file);
-}
-
 async function runSqlExpectation(
   repoRoot: string,
   evaluator: SkillEvaluator,
@@ -600,7 +593,7 @@ export async function runCorpusRegression(
       !targetFilter || targetFilter.has(expectation.target),
     );
     if (expectations.length === 0) continue;
-    const tracePath = corpusTracePath(repoRoot, entry);
+    const tracePath = analysisTracePath(entry, repoRoot);
     if (!fs.existsSync(tracePath)) {
       for (const expectation of expectations) {
         result.failures.push({case_id: entry.id, target: expectation.target, reason: `materialized trace missing: ${tracePath}`});

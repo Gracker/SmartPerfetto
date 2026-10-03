@@ -198,6 +198,14 @@ trace loading, and SQL RPC. Source, npm, Docker, and portable products must
 follow the same pin and integrity rules. An explicit `TRACE_PROCESSOR_PATH` is
 user-owned; launchers do not change its permissions or overwrite it.
 
+A processor's lifetime is bound to the process that started it. On macOS and
+Linux it starts as `server http --idle-start orphaned`, so it reaps itself
+shortly after its owner exits, including exits that run no cleanup (SIGKILL,
+a crash, `jest --forceExit`). On Windows and for a backend running as PID 1 it
+starts as `server http` without owner binding, and binaries without `server
+http` use the classic `--httpd` launch; there a processor left by a dead owner
+is removed by the next backend start's orphan sweep.
+
 DataEnvelope output feeds:
 
 - the evidence contract;

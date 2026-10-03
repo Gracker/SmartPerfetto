@@ -23,6 +23,7 @@ import {
   projectPrivateSessionStateSnapshot,
 } from '../security/privateAnalysisProjection';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
+import type {FinalInvestigationAssessment} from '../../types/analysisInvestigationAssessment';
 import type {DeterministicNativeRowIdentity} from '../../types/claimVerification';
 import {projectPrivateAnalysisDelivery} from '../security/analysisDeliveryProjection';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
@@ -906,6 +907,14 @@ describe('owner source analysis delivery', () => {
 
 
 describe('investigation assessment result surfaces', () => {
+  /**
+   * Every FinalInvestigationAssessment field. A field added to the type fails
+   * to compile here, then the fixture check below until `withInvestigation`
+   * carries it, then the round trip until the delivery copier copies it.
+   */
+  const INVESTIGATION_ASSESSMENT_FIELDS = {schemaVersion: true, binding: true, status: true, requirements: true,
+    evidenceRecords: true, ledgerAcquisition: true} as const satisfies Record<keyof FinalInvestigationAssessment, true>;
+
   function withInvestigation(): AnalysisResult {
     const result = deliveredResult();
     result.investigationAssessment = {schemaVersion: 1, status: 'checked',
@@ -931,6 +940,11 @@ describe('investigation assessment result surfaces', () => {
     result.deliveryAssurance = {...result.deliveryAssurance!, investigation: 'passed', investigationEvidence: 'passed'};
     return result;
   }
+
+  it('round-trips a fixture that carries every assessment field', () => {
+    expect(Object.keys(withInvestigation().investigationAssessment!).sort())
+      .toEqual(Object.keys(INVESTIGATION_ASSESSMENT_FIELDS).sort());
+  });
 
   it('keeps exact assessment through safe owner projection and snapshot serialization', () => {
     const result = withInvestigation();

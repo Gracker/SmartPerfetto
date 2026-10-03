@@ -203,7 +203,7 @@ import {
   projectOwnerQuestion,
   projectOwnerReportError,
   projectPrivateAnalysisReceipt,
-  copyAnalysisResultForSnapshot,
+  projectStoredAnalysisResultForOwner,
   projectOwnerFindings,
   projectOwnerConclusion,
   projectOwnerProvisionalConclusion,
@@ -7284,9 +7284,8 @@ function projectStoredHttpError(session: AnalysisSession): string | undefined {
 }
 
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {
-  return sessionRunHasPrivateContext(session)
-    ? projectOwnerAnalysisResult(session.sessionId, result, sessionOutputLanguage(session))
-    : copyAnalysisResultForSnapshot(result);
+  return projectStoredAnalysisResultForOwner(sessionRunHasPrivateContext(session),
+    session.sessionId, result, sessionOutputLanguage(session));
 }
 
 function ensureCompletedAnalysisResultPayload(

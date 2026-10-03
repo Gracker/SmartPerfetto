@@ -40,7 +40,7 @@ const ACTOR_ID_TOKEN = /\{(pid|tid):([^}]*)\}/g;
 const SUPPORTED_SIGNAL_TYPES = new Set([
   'atrace-slice', 'atrace-counter', 'atrace-async-slice', 'atrace-async-track-slice',
   'sched-running', 'sched-switch', 'sched-waking', 'process-stats', 'battery-counters', 'power-rail',
-  'gpu-work-period', 'gpu-compute-kernel', 'gpu-frequency', 'gpu-power-state',
+  'gpu-work-period', 'gpu-compute-kernel', 'gpu-frequency', 'gpu-memory-total', 'gpu-power-state',
   'cpu-frequency', 'cpu-frequency-limits', 'cpu-idle', 'thermal-temperature', 'cdev-update',
   'irq-span', 'frame-timeline', 'lmk-kill',
   'managed-heap-graph', 'anr-event', 'perf-sample', 'android-log',
@@ -613,6 +613,13 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     options?.realtimeAnchorNs ?? anchorNs,
     'options.realtimeAnchorNs',
   );
+  // CLOCK_MONOTONIC_RAW at the anchor. It stops while the device sleeps, so
+  // on a real base trace it trails BOOTTIME by the time slept so far.
+  const monotonicRawAnchorNs = signedDecimalString(
+    options?.monotonicRawAnchorNs ?? anchorNs,
+    'options.monotonicRawAnchorNs',
+  );
+  const monotonicRawOffsetNs = BigInt(monotonicRawAnchorNs) - BigInt(anchorNs);
   if (!Number.isInteger(options?.sequenceId) || options.sequenceId <= 0) {
     throw new Error('options.sequenceId must be a positive integer');
   }
@@ -931,14 +938,16 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       });
     } else if (signal.type === 'gpu-work-period') {
       const end = absoluteTimestamp(timestamp, signal.duration_ns, `scenario.signals[${index}].duration_ns`);
+      // trace_processor reads the period bounds as CLOCK_MONOTONIC_RAW and
+      // converts them to trace time with the trace's clock snapshots.
       eventsForCpu(signal.cpu ?? 0).push({
         timestamp,
         pid: 0,
         gpuWorkPeriod: {
           gpuId: nonNegativeInteger(signal.gpu_id, 'gpu-work-period gpu_id'),
           uid: nonNegativeInteger(signal.uid, 'gpu-work-period uid'),
-          startTimeNs: timestamp,
-          endTimeNs: end,
+          startTimeNs: (BigInt(timestamp) + monotonicRawOffsetNs).toString(),
+          endTimeNs: (BigInt(end) + monotonicRawOffsetNs).toString(),
           totalActiveDurationNs: decimalString(signal.active_duration_ns, 'gpu-work-period active_duration_ns'),
         },
       });
@@ -975,6 +984,21 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
         gpuFrequency: {
           gpuId: nonNegativeInteger(signal.gpu_id, 'gpu-frequency gpu_id'),
           state: nonNegativeInteger(signal.value, 'gpu-frequency value'),
+        },
+      });
+    } else if (signal.type === 'gpu-memory-total') {
+      // The kernel's gpu_mem_total event: pid 0 is the device total, any other
+      // pid one process's share, which trace_processor files under the
+      // process counter track "GPU Memory".
+      const process = signal.process === undefined ? undefined : identities.processDefinitions.get(signal.process);
+      if (signal.process !== undefined && !process) throw new Error(`signal references unknown process ${signal.process}`);
+      eventsForCpu(signal.cpu ?? 0).push({
+        timestamp,
+        pid: 0,
+        gpuMemTotal: {
+          gpuId: nonNegativeInteger(signal.gpu_id, 'gpu-memory-total gpu_id'),
+          pid: process?.pid ?? 0,
+          size: decimalString(signal.size_bytes, 'gpu-memory-total size_bytes'),
         },
       });
     } else if (signal.type === 'cpu-frequency') {
@@ -1106,7 +1130,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
       clockSnapshot: {
         clocks: [
           {clockId: 1, timestamp: realtimeAnchorNs},
-          {clockId: 5, timestamp: anchorNs},
+          {clockId: 5, timestamp: monotonicRawAnchorNs},
           {clockId: 6, timestamp: anchorNs},
           {clockId: 11, timestamp: anchorNs},
         ],
@@ -1138,6 +1162,7 @@ function encodeScenarioOverlay(repoRoot, scenario, options) {
     provenance: {
       anchor_ns: anchorNs,
       realtime_anchor_ns: realtimeAnchorNs,
+      monotonic_raw_anchor_ns: monotonicRawAnchorNs,
       sequence_id: options.sequenceId,
       ...(Object.keys(inputEventIds).length > 0 ? {input_event_ids: inputEventIds} : {}),
       overlay_sha256: sha256Buffer(buffer),
@@ -1208,6 +1233,14 @@ function probeTrace(repoRoot, tracePath) {
       ORDER BY snapshot_id
       LIMIT 1
     ), 0)), ''
+    UNION ALL
+    SELECT 'monotonic_raw_offset', printf('%d', COALESCE((
+      SELECT clock_value - ts
+      FROM clock_snapshot
+      WHERE clock_id = 5
+      ORDER BY snapshot_id
+      LIMIT 1
+    ), 0)), ''
     ORDER BY kind, value_1
   `;
   const result = spawnSync(resolveTraceProcessor(repoRoot), ['-Q', sql, tracePath], {
@@ -1228,6 +1261,7 @@ function probeTrace(repoRoot, tracePath) {
     start_ns: bounds[1],
     end_ns: bounds[2],
     realtime_offset_ns: rows.find(([kind]) => kind === 'realtime_offset')?.[1] ?? '0',
+    monotonic_raw_offset_ns: rows.find(([kind]) => kind === 'monotonic_raw_offset')?.[1] ?? '0',
     used_pids: new Set(
       rows
         .filter(([kind]) => kind === 'pid')
@@ -1325,6 +1359,7 @@ function buildConstructedTrace(repoRoot, options) {
   const overlay = encodeScenarioOverlay(repoRoot, isolated.scenario, {
     anchorNs,
     realtimeAnchorNs: (BigInt(anchorNs) + BigInt(probe.realtime_offset_ns)).toString(),
+    monotonicRawAnchorNs: (BigInt(anchorNs) + BigInt(probe.monotonic_raw_offset_ns)).toString(),
     usedPids: probe.used_pids,
     usedInputEventIds: scenario.signals.some(signal => signal.type.startsWith('android-input-'))
       ? probeInputEventIds(repoRoot, options.basePath) : [],

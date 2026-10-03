@@ -37,6 +37,8 @@ import {proposalSqlRegressionTesting} from '../proposalSqlRegression';
 import {ProposalStore} from '../proposalStore';
 import {serializeProposalCandidateContent} from '../proposalSemanticGate';
 import {validateProposalStatic} from '../proposalStaticGate';
+import {composeEffectiveSkills} from '../effectiveSkillComposer';
+import {buildSkillRegistryAttribution, fingerprintSkillDefinition} from '../skillFingerprint';
 import type {SkillDefinition} from '../../skillEngine/types';
 import {
   buildStrategyRegistrySnapshot,
@@ -883,6 +885,117 @@ describe('M7 static gate saved-result path reads', () => {
     const offending = await gate(undecided);
     expect(offending.validatorCodes).toEqual(['result_path_read_undecided']);
     expect(offending.verdict).toBe('failed');
+  });
+});
+
+describe('M7 static gate saved-result path reads in changed Skills', () => {
+  const undecided = "SELECT '${cov.data[0].status}' AS s";
+  const decided = "SELECT '${cov.data[0].status|}' AS s";
+  const target = (sql = 'SELECT 1 AS s', condition?: string): SkillDefinition => ({
+    name: 'target_reader', version: '1', type: 'composite', meta: {display_name: 'Target', description: 'Target'},
+    steps: [
+      {id: 'probe', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
+      {id: 'reader', type: 'atomic', sql, ...(condition ? {condition} : {})},
+    ],
+  } as SkillDefinition);
+  // A Skill already in the effective registry that predates the rule.
+  const legacy: SkillDefinition = {...target(undecided), name: 'legacy_reader'};
+
+  function fingerprintOf(definitions: SkillDefinition[]): string {
+    const composition = composeEffectiveSkills({
+      scope: draftProposal().scope, baseSkills: definitions, overlays: [],
+    });
+    if (composition.validationState !== 'passed') throw new Error('test registry does not compose');
+    return buildSkillRegistryAttribution({
+      getAllSkills: () => [...composition.skills],
+      getSkillOrigin: () => undefined,
+      getFragmentCache: () => new Map(),
+      getAppliedOverlayIds: () => [],
+    }).registryFingerprint;
+  }
+
+  async function gate(proposal: CurationProposalV1, serializedContent: string, definitions: SkillDefinition[]) {
+    const fingerprint = fingerprintOf(definitions);
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-target-reader',
+        targetKind: 'skill_overlay',
+        serializedContent,
+      }),
+      base: {
+        targetId: 'target_reader', contentHash: baseContentHash, registryFingerprint: fingerprint,
+        skillRegistryFingerprint: fingerprint, strategyRegistryFingerprint: fingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration, anchorContent: 'SELECT 1 AS s',
+      },
+      gateAttempt: {attemptId: 'attempt-1', ordinal: 1, gatePolicyFingerprint: canonicalContentHash('gate-policy')},
+      options: {...staticValidation(), skillSnapshot: {definitions}},
+    });
+  }
+
+  async function overlayGate(stepSql: string) {
+    const base = target();
+    const proposal = draftProposal({
+      kind: 'skill_overlay_delta', tier: 'T3',
+      deltas: [{
+        op: 'add', targetKind: 'skill_overlay', targetId: base.name, operationId: 'append-reader',
+        anchor: `skills[id="${base.name}"].overlays[operationId="append-reader"]`, baseContentHash, after: '{}',
+      }],
+    });
+    const overlay = canonicalJsonString({
+      schemaVersion: 1, overlayId: 'overlay_reader', baseSkillId: base.name,
+      baseFingerprint: fingerprintSkillDefinition(base), proposalId: proposal.proposalId,
+      createdAt: '2026-10-03T00:00:00.000Z', scope: proposal.scope,
+      operations: [{op: 'append_steps', operationId: 'append-reader',
+        steps: [{id: 'ovl_overlay_reader_read', type: 'atomic', sql: stepSql}]}],
+    });
+    return gate(proposal, overlay, [legacy, base]);
+  }
+
+  function skillSqlProposal(stepId = 'reader') {
+    return draftProposal({
+      kind: 'skill_sql', tier: 'T4',
+      deltas: [{
+        op: 'modify', targetKind: 'skill_overlay', targetId: 'target_reader', operationId: stepId,
+        anchor: `skills[id="target_reader"].sql[stepId="${stepId}"]`, baseContentHash,
+        before: 'SELECT 1 AS s', after: 'SELECT 1 AS s',
+      }],
+    });
+  }
+
+  it('charges an overlay with the read it appends to its base Skill, not the reads it did not write', async () => {
+    const clean = await overlayGate(decided);
+    expect(clean.validatorCodes).toEqual([]);
+    expect(clean.warningCodes).toContain('result_path_read_undecided');
+    const offending = await overlayGate(undecided);
+    expect(offending.validatorCodes).toEqual(['result_path_read_undecided']);
+    expect(offending.verdict).toBe('failed');
+  });
+
+  it('checks skill_sql candidate SQL in the step it replaces, under that step condition', async () => {
+    const codes = async (sql: string, base = target()) =>
+      (await gate(skillSqlProposal(), sql, [legacy, base])).validatorCodes;
+    // No SQL regression runs in this test; only the Skill validation is under test.
+    expect(await codes(decided)).not.toContain('result_path_read_undecided');
+    expect(await codes(undecided)).toContain('result_path_read_undecided');
+    // The step's own condition still decides the read when it requires rows.
+    expect(await codes(undecided, target('SELECT 1 AS s', 'cov.data?.length > 0')))
+      .not.toContain('result_path_read_undecided');
+    expect((await gate(skillSqlProposal('no_such_step'), decided, [legacy, target()])).validatorCodes)
+      .toContain('static_skill_sql_target_step_missing');
+    // The step must still run the SQL the proposal replaces.
+    expect((await gate(skillSqlProposal(), decided, [legacy, target('SELECT 2 AS s')])).validatorCodes)
+      .toContain('static_skill_sql_anchor_stale');
+    // Step `root` is an atomic Skill's top-level SQL, as the Trace corpus names it.
+    const atomic = {name: 'target_reader', version: '1', type: 'atomic',
+      meta: {display_name: 'Target', description: 'Target'}, sql: 'SELECT 1 AS s'} as SkillDefinition;
+    const rootGate = async (sql: string) => (await gate(skillSqlProposal('root'), sql, [legacy, atomic])).validatorCodes;
+    expect(await rootGate('SELECT 2 AS s')).not.toContain('static_skill_sql_target_step_missing');
+    expect(await rootGate('SELECT 2 AS s')).not.toContain('static_skill_sql_anchor_stale');
   });
 });
 

@@ -173,7 +173,6 @@ import {
 } from '../services/baselineDiffer';
 import {ProjectMemory} from './projectMemory';
 import {CaseLibrary} from '../services/caseLibrary';
-import { caseAppliesToArchitecture } from '../services/caseArchitecture';
 import { createCaseRetriever } from '../services/caseEvolution/caseRecommendationRetriever';
 import { recallCasesByTags } from '../services/caseEvolution/caseTagRecall';
 import { CURATED_CASE_STATUSES } from '../types/caseKnowledge';
@@ -519,15 +518,16 @@ const FETCH_ARTIFACT_ROW_LIMIT = { min: 1, max: 200 } as const;
  * failed `git apply --check`) is a failure and still counts toward the circuit
  * breaker's failure rate.
  */
-const PATCH_REFUSAL_ACTIONS: Readonly<Record<string, string>> = {
-  missing_context_chunk: 'lookup_source_before_patch',
-  prior_lookup_required: 'lookup_source_before_patch',
-  inactive_codebase_generation: 'lookup_source_before_patch',
-  multi_codebase_not_supported_phase1: 'propose_one_codebase_per_patch',
-  no_send_to_provider_consent: 'continue_without_patch',
-  source_path_outside_provider_grant: 'continue_without_patch',
-  budget_exceeded: 'continue_without_patch',
-};
+// A Map, so a reason such as `constructor` cannot match an Object.prototype key.
+const PATCH_REFUSAL_ACTIONS: ReadonlyMap<string, string> = new Map([
+  ['missing_context_chunk', 'lookup_source_before_patch'],
+  ['prior_lookup_required', 'lookup_source_before_patch'],
+  ['inactive_codebase_generation', 'lookup_source_before_patch'],
+  ['multi_codebase_not_supported_phase1', 'propose_one_codebase_per_patch'],
+  ['no_send_to_provider_consent', 'continue_without_patch'],
+  ['source_path_outside_provider_grant', 'continue_without_patch'],
+  ['budget_exceeded', 'continue_without_patch'],
+]);
 // `source_not_found_or_out_of_scope` also covers a source deleted mid-run, so it stays a failure.
 const KNOWLEDGE_ACCESS_REFUSAL_REASONS: ReadonlySet<string> = new Set([
   'source_not_whitelisted',
@@ -1757,6 +1757,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     success: boolean;
     coverageComplete?: boolean;
     incompleteReasons?: readonly string[];
+    /** False when the call was refused before reaching the source: it queried nothing. */
+    queried?: boolean;
   };
   const observeSourceLookup = (observation: SourceLookupObservation): void => {
     let current = sourceUseDecision;
@@ -1812,7 +1814,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       status,
       reasonCode,
       attemptedTools: [...new Set([...current.attemptedTools, observation.toolName])],
-      queriedCodebaseIds: [...new Set([...current.queriedCodebaseIds, ...queriedCodebaseIds])],
+      queriedCodebaseIds: observation.queried === false
+        ? current.queriedCodebaseIds
+        : [...new Set([...current.queriedCodebaseIds, ...queriedCodebaseIds])],
       usedCodebaseIds: [...new Set([
         ...current.usedCodebaseIds,
         ...references.map(reference => reference.codebaseId),
@@ -1833,16 +1837,20 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
   };
 
+  // `queriedOnDispatch: false` defers the queried mark to the result observer, for
+  // operations that can answer with a refusal before reaching the source.
   const observeSourceOperation = async <T>(
     toolName: CodeLookupLedgerEntry['toolName'],
     queriedCodebaseIds: readonly string[],
     operation: () => T | Promise<T>,
+    {queriedOnDispatch = true}: {queriedOnDispatch?: boolean} = {},
   ): Promise<T> => {
-    observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false});
+    observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false, queried: queriedOnDispatch});
     const startedAt = Date.now();
     try {
       return await operation();
     } catch (error) {
+      if (!queriedOnDispatch) observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false});
       for (const codebaseId of new Set(queriedCodebaseIds.filter(id => codebaseIds.includes(id)))) {
         codeLookupLedger?.record({turn: 0, ts: Date.now(), toolName, codebaseId,
           chunkIds: [], returnedReferenceCount: 0, tokensSpent: 0,
@@ -1874,6 +1882,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         text?: string;
       };
       coverageComplete?: boolean;
+      coverageScope?: 'codebase' | 'path_prefix';
       searchIncompleteReason?: string;
       unsupportedReason?: string;
       truncated: boolean;
@@ -1890,6 +1899,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const success = readIncomplete ? false : result.success;
     const unsupportedReason = readIncomplete ? admitted.incompleteReason : result.unsupportedReason;
     const refusalAction = success ? undefined : sourceAccessRefusalAction(unsupportedReason);
+    const refusedAtSource = !result.success && sourceAccessRefusalAction(result.unsupportedReason) !== undefined;
     const delivered = {
       ...result,
       ...(result.matches ? {matches: admitted.items} : {}),
@@ -1913,10 +1923,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       references: admitted.references,
       bodyAvailable: admitted.items.some(reference => Boolean(reference.text)),
       success: delivered.success,
-      ...(typeof delivered.coverageComplete === 'boolean'
+      // A refused call searched nothing, so it states no coverage either way; a
+      // complete search of one path_prefix is not codebase-wide coverage.
+      ...(typeof delivered.coverageComplete === 'boolean' && !refusalAction &&
+        !(delivered.coverageComplete && delivered.coverageScope === 'path_prefix')
         ? {coverageComplete: delivered.coverageComplete}
         : {}),
       incompleteReasons,
+      queried: !refusedAtSource,
     });
     return delivered;
   };
@@ -1947,6 +1961,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       codebaseIds: [result.codebaseId],
       references: admitted.references,
       success: result.success,
+      queried: !refusalAction,
       ...(delivered.truncated ? {coverageComplete: false} : {}),
       incompleteReasons: [
         ...(admitted.incompleteReason ? [admitted.incompleteReason] : []),
@@ -5093,15 +5108,20 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     sourceReadCalls += 1;
     return undefined;
   };
+  // A refused graph lookup delivers nothing and is charged like a refused read: zero.
   const graphMetadataTokens = (result: {
+    success: boolean;
+    unsupportedReason?: string;
     references?: unknown[];
     processes?: unknown[];
     graph?: unknown;
-  }): number => Math.max(1, Math.ceil(JSON.stringify({
-    references: result.references ?? [],
-    processes: result.processes ?? [],
-    graph: result.graph,
-  }).length / 4));
+  }): number => !result.success && sourceAccessRefusalAction(result.unsupportedReason)
+    ? 0
+    : Math.max(1, Math.ceil(JSON.stringify({
+      references: result.references ?? [],
+      processes: result.processes ?? [],
+      graph: result.graph,
+    }).length / 4));
   const recordCodeGraphLookup = async (input: {
     toolName: 'query_code_graph' | 'inspect_code_symbol';
     codebaseId: string;
@@ -5142,7 +5162,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const sourceBudgetStop = consumeSourceBudget('search');
       if (sourceBudgetStop) {
         observeSourceLookup({toolName: 'search_codebase', codebaseIds: [codebaseId], success: false,
-          coverageComplete: false, incompleteReasons: [sourceBudgetStop]});
+          coverageComplete: false, incompleteReasons: [sourceBudgetStop], queried: false});
         await recordOnDemandSourceLookup({
           toolName: 'search_codebase',
           codebaseId,
@@ -5243,7 +5263,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const sourceBudgetStop = consumeSourceBudget('read');
       if (sourceBudgetStop) {
         observeSourceLookup({toolName: 'read_codebase_file', codebaseIds: [codebaseId], success: false,
-          incompleteReasons: [sourceBudgetStop]});
+          incompleteReasons: [sourceBudgetStop], queried: false});
         await recordOnDemandSourceLookup({
           toolName: 'read_codebase_file',
           codebaseId,
@@ -5342,7 +5362,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope ?? {},
         query,
         limit: max_results,
-      }));
+      }), {queriedOnDispatch: false});
       const tokensSpent = graphMetadataTokens(result);
       if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
         observeGraphSourceLookup('query_code_graph', {
@@ -5405,7 +5425,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         symbol,
         filePath: normalizeOptionalToolString(file_path),
         limit: max_relations,
-      }));
+      }), {queriedOnDispatch: false});
       const tokensSpent = graphMetadataTokens(result);
       if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
         observeGraphSourceLookup('inspect_code_symbol', {
@@ -5646,7 +5666,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (result.patchStatus !== 'unverified') {
         return createRuntimeToolResult({success: true, result});
       }
-      const refusalAction = PATCH_REFUSAL_ACTIONS[result.unsupportedReason ?? ''];
+      const refusalAction = PATCH_REFUSAL_ACTIONS.get(result.unsupportedReason ?? '');
       return refusalAction
         ? policyRefusal(refusalAction, {result}, {isError: true})
         : createRuntimeToolResult({success: false, result}, {isError: true});

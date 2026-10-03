@@ -4,7 +4,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 /**
- * Reports backend test files that no `test:*` / `verify:*` script can reach.
+ * Reports backend test files that `npm run verify:pr` cannot reach.
  *
  * Two repository facts make an unregistered suite invisible rather than merely
  * unrun: `tsconfig.json` excludes `**\/*.test.ts`, so `npm run typecheck` cannot
@@ -32,24 +32,122 @@ const BASELINE_PATH = join(REPO_ROOT, 'scripts', 'test-registration-baseline.jso
 const GATE_SCRIPT_PREFIXES = ['test:', 'verify:'];
 
 /**
- * Every backend suite Jest could be pointed at.
- *
- * `_unittest.ts` is included because the frontend-style naming appears in
- * `src/tests/`; both suffixes are real suites the gate should be able to run.
+ * The file names Jest treats as suites: `jest.config.js` matches
+ * `(spec|test|eval).ts`, and `_unittest.ts` is the frontend-style naming in
+ * `src/tests/`. An `.eval.ts` suite is as real as a `.test.ts` one.
+ */
+const SUITE_NAME = /(\.test|\.spec|\.eval|_unittest)\.ts$/;
+
+/**
+ * Every backend suite Jest could be pointed at, under `src/` and `tests/`;
+ * both roots must exist. Non-suite `.ts` files under `__tests__/` (fixtures a
+ * suite imports) match Jest's testMatch but are not suites: pointing Jest at
+ * one fails with "must contain at least one test", so they are not listed.
  */
 export function listTestFiles(backendDir = BACKEND) {
   const files = [];
   function visit(relative) {
     for (const entry of readdirSync(join(backendDir, relative), { withFileTypes: true })) {
       const path = `${relative}/${entry.name}`;
-      if (entry.isDirectory()) visit(path);
-      else if (entry.isFile() && (entry.name.endsWith('.test.ts') || entry.name.endsWith('_unittest.ts'))) {
+      if (entry.isDirectory()) {
+        if (entry.name !== 'node_modules') visit(path);
+      } else if (entry.isFile() && SUITE_NAME.test(entry.name)) {
         files.push(path);
       }
     }
   }
   visit('src');
+  visit('tests');
   return files.sort();
+}
+
+/**
+ * The backend scripts `npm run verify:pr` at the repository root runs, followed
+ * through `npm run <name>` and `npm --prefix backend run <name>` references.
+ * A `test:*` script nothing in that chain runs (`test:unit`, `test:integration`,
+ * `test:skill-eval`) is not a gate: its suites can rot while the gate stays green.
+ */
+export function gateScriptNames(backendScripts, rootScripts, entry = 'verify:pr') {
+  const packages = { root: rootScripts, backend: backendScripts };
+  const reached = new Set();
+  const missing = [];
+  const pending = [['root', entry]];
+  while (pending.length > 0) {
+    const [where, name] = pending.pop();
+    const key = `${where}:${name}`;
+    if (reached.has(key)) continue;
+    if (!Object.hasOwn(packages[where], name)) {
+      missing.push(key);
+      continue;
+    }
+    reached.add(key);
+    // `cd backend && npm run x` runs the backend script for the rest of the
+    // chain, until a `cd ..` returns to the root.
+    // A directory outside both packages runs another package's scripts.
+    let here = where;
+    for (const command of commandsOf(packages[where][name])) {
+      const cd = /^cd\s+(\S+)/.exec(command);
+      if (cd) {
+        here = packageAt(here, cd[1]);
+        continue;
+      }
+      const run = parseNpmRun(command);
+      const target = run && (run.prefix === undefined ? here : packageAt(here, run.prefix));
+      if (target) pending.push([target, run.script]);
+    }
+  }
+  if (missing.length > 0) throw new Error(`verify:pr runs scripts that do not exist: ${missing.join(', ')}`);
+  return new Set([...reached].filter(key => key.startsWith('backend:')).map(key => key.slice('backend:'.length)));
+}
+
+/**
+ * The package (`root` or `backend`) a directory names from the package `here`,
+ * or undefined for any other directory or an unknown `here`.
+ */
+function packageAt(here, dir) {
+  if (here === undefined) return undefined;
+  const at = here === 'backend' ? ['backend'] : [];
+  for (const part of dir.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part !== '..') at.push(part);
+    else if (at.pop() === undefined) return undefined;
+  }
+  const path = at.join('/');
+  return path === '' ? 'root' : path === 'backend' ? 'backend' : undefined;
+}
+
+/**
+ * The script an `npm run` / `npm test` command runs and its `--prefix`
+ * directory, after leading environment assignments (`X=1 npm run a`), with
+ * `--prefix` in either spelling and run flags such as `-s`, `--silent` or
+ * `--if-present`; undefined for any other command.
+ */
+export function parseNpmRun(command) {
+  const words = command.split(/\s+/);
+  let at = 0;
+  while (at < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[at])) at++;
+  if (words[at] !== 'npm') return undefined;
+  let prefix;
+  for (at++; at < words.length; at++) {
+    const word = words[at];
+    const option = /^--prefix(?:=(.*))?$/.exec(word);
+    if (option) {
+      prefix = option[1] ?? words[++at] ?? '';
+      continue;
+    }
+    if (word.startsWith('-')) continue;
+    const found = (script) => (prefix === undefined ? { script } : { prefix, script });
+    if (word === 'test' || word === 't') return found('test');
+    if (word !== 'run' && word !== 'run-script') return undefined;
+    for (at++; at < words.length && words[at].startsWith('-'); at++);
+    return words[at] ? found(words[at]) : undefined;
+  }
+  return undefined;
+}
+
+/** The commands of a script body, split on `&&`, `||` and `;`. */
+function commandsOf(body) {
+  return String(body).split(/&&|\|\||;/).map(command => command.trim()).filter(Boolean);
 }
 
 /**
@@ -60,12 +158,16 @@ export function listTestFiles(backendDir = BACKEND) {
  * on the full path rather than the basename keeps two same-named suites in
  * different directories from vouching for each other.
  */
-export function collectGateTargets(scripts) {
+export function collectGateTargets(scripts, gateNames) {
   const files = new Set();
   const dirs = new Set();
   for (const [name, body] of Object.entries(scripts)) {
-    if (!GATE_SCRIPT_PREFIXES.some(prefix => name.startsWith(prefix))) continue;
-    for (const match of String(body).matchAll(/src\/[A-Za-z0-9_.\/-]+/g)) {
+    const isGate = gateNames ? gateNames.has(name) : GATE_SCRIPT_PREFIXES.some(prefix => name.startsWith(prefix));
+    if (!isGate) continue;
+    // Only a Jest command puts a suite in front of Jest; `tsc src/x.test.ts`
+    // or `tsx tests/runner.ts` in the same chain does not.
+    const jestCommands = commandsOf(body).filter(command => /(^|\s)(npx\s+)?jest(\s|$)/.test(command));
+    for (const match of jestCommands.join(' ').matchAll(/(?<![\w/])(?:src|tests)\/[A-Za-z0-9_.\/-]+/g)) {
       const target = match[0];
       if (target.endsWith('.ts')) files.add(target);
       else dirs.add(target.replace(/\/+$/, ''));
@@ -97,14 +199,15 @@ function main(argv) {
   });
 
   const scripts = JSON.parse(readFileSync(join(BACKEND, 'package.json'), 'utf8')).scripts ?? {};
+  const rootScripts = JSON.parse(readFileSync(join(REPO_ROOT, 'package.json'), 'utf8')).scripts ?? {};
   const testFiles = listTestFiles();
-  const unreachable = findUnreachable(testFiles, collectGateTargets(scripts));
+  const unreachable = findUnreachable(testFiles, collectGateTargets(scripts, gateScriptNames(scripts, rootScripts)));
 
   if (values['update-baseline']) {
     writeFileSync(
       BASELINE_PATH,
       `${JSON.stringify({
-        note: 'Backend suites no test:*/verify:* script can reach. Shrink this list; do not grow it. Regenerate only when deliberately accepting new debt.',
+        note: 'Backend suites npm run verify:pr cannot reach. Shrink this list; do not grow it. Regenerate only when deliberately accepting new debt.',
         generated: new Date().toISOString().slice(0, 10),
         unregistered: unreachable,
       }, null, 2)}\n`,
@@ -126,7 +229,7 @@ function main(argv) {
       baselineEntriesNowRegistered: fixed,
     }, null, 2));
   } else {
-    console.log(`Backend suites: ${testFiles.length} total, ${testFiles.length - unreachable.length} reachable from a gate script, ${unreachable.length} not.`);
+    console.log(`Backend suites: ${testFiles.length} total, ${testFiles.length - unreachable.length} reachable from verify:pr, ${unreachable.length} not.`);
     if (fixed.length > 0) {
       console.log(`\n${fixed.length} baseline entries are now registered. Run with --update-baseline to record the progress.`);
     }

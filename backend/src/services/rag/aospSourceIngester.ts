@@ -35,7 +35,7 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
-import {codebaseNotFound, invalidCodebaseMetadata} from '../codebase/codebaseRequestError';
+import {codebaseNotFound, invalidCodebaseMetadata, isCodebaseStateError} from '../codebase/codebaseRequestError';
 
 const DEFAULT_MAX_CHUNK_CHARS = 2200;
 
@@ -112,7 +112,7 @@ export class AospSourceIngester {
         blockedFileCount: 0,
         redactionHitCount: 0,
       });
-      if (reason === 'codebase_root_realpath_drift') throw error;
+      if (isCodebaseStateError(error, 'codebase_root_realpath_drift')) throw error;
       return {
         codebaseId,
         filesProcessed: 0,

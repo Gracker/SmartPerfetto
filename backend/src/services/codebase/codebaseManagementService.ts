@@ -29,7 +29,13 @@ import {
 import {RagStore} from '../ragStore';
 import {assertCodebaseRootIdentity, resolveSourcePathPatterns} from '../rag/sourceFileSelection';
 import {PublicRequestError} from '../../utils/publicRequestError';
-import {CodebaseRequestError, type CodebaseRequestErrorCode} from './codebaseRequestError';
+import {
+  CodebaseRequestError,
+  type CodebaseRequestErrorCode,
+  CodebaseStateError,
+  type CodebaseStateReason,
+  isCodebaseStateError,
+} from './codebaseRequestError';
 
 export type CodebaseManagementErrorCode =
   | 'CODEBASE_AUDIT_FAILED'
@@ -166,6 +172,21 @@ export interface CodebaseManagementDependencies {
 }
 
 export type CodebaseSourceEnumerator = Pick<SourceEnumerator, 'enumerate'>;
+
+/** The management answer to each codebase state; the message stays the reason token. */
+const CODEBASE_STATE_ERRORS: Readonly<Record<CodebaseStateReason, {
+  code: CodebaseManagementErrorCode;
+  status: number;
+}>> = {
+  codebase_deleting: {code: 'CODEBASE_DELETING', status: 409},
+  codebase_reindex_in_progress: {code: 'CODEBASE_BUSY', status: 409},
+  codebase_reindex_lease_lost: {code: 'CODEBASE_BUSY', status: 409},
+  codebase_root_realpath_drift: {code: 'CODEBASE_ROOT_DRIFT', status: 400},
+  pending_generation_expired: {code: 'PENDING_GENERATION_EXPIRED', status: 409},
+  pending_generation_not_found: {code: 'PENDING_GENERATION_NOT_FOUND', status: 409},
+  pending_generation_stale: {code: 'PENDING_GENERATION_STALE', status: 409},
+  provider_send_consent_required: {code: 'CODEBASE_CONSENT_REQUIRED', status: 409},
+};
 
 const SAFE_OPERATIONAL_DIAGNOSTICS = new Set([
   'codebase_deleting',
@@ -325,7 +346,7 @@ export class CodebaseManagementService {
       if (reason === 'root_not_found' || reason === 'root_outside_allowlist') {
         return blockedPreview(reason);
       }
-      throw this.toError(error, input.rootPath, 'preview');
+      throw this.toError(error, 'preview');
     }
 
     try {
@@ -354,18 +375,12 @@ export class CodebaseManagementService {
           manifestGroups: [...new Set(manifestProjects.flatMap(project => project.groups))].sort(),
         };
       } catch (error) {
+        if (isCodebaseStateError(error, 'codebase_root_realpath_drift')) throw error;
         const reason = error instanceof Error ? error.message : String(error);
-        if (reason === 'codebase_root_realpath_drift') {
-          throw new CodebaseManagementError(
-            'CODEBASE_ROOT_DRIFT',
-            400,
-            'codebase_root_realpath_drift',
-          );
-        }
         return {...preview, manifestUnavailableReason: this.safeMetadataReason(reason)};
       }
     } catch (error) {
-      throw this.toError(error, input.rootPath, 'preview');
+      throw this.toError(error, 'preview');
     }
   }
 
@@ -468,7 +483,7 @@ export class CodebaseManagementService {
         await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
       );
     } catch (error) {
-      throw this.toError(error, id, 'selection');
+      throw this.toError(error, 'selection');
     }
   }
 
@@ -524,8 +539,7 @@ export class CodebaseManagementService {
         await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
       );
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message === 'pending_generation_expired') {
+      if (isCodebaseStateError(error, 'pending_generation_expired')) {
         try {
           this.registry.expirePendingGeneration(id, scope, candidateId, this.now());
           await this.cleanupInactiveCodebaseChunks(id, scope);
@@ -533,7 +547,7 @@ export class CodebaseManagementService {
           // Preserve the original CAS error even if best-effort expiry cleanup fails.
         }
       }
-      throw this.toError(error, id, 'pending');
+      throw this.toError(error, 'pending');
     }
   }
 
@@ -574,7 +588,7 @@ export class CodebaseManagementService {
         redactionHitCount: ref.redactionHitCount ?? 0,
       };
     } catch (error) {
-      throw this.toError(error, id, 'audit');
+      throw this.toError(error, 'audit');
     }
   }
 
@@ -593,11 +607,7 @@ export class CodebaseManagementService {
         return {codebaseId: id, removedChunkCount};
       }, 'delete');
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (
-        message === 'codebase_reindex_in_progress' ||
-        message === 'codebase_reindex_lease_lost'
-      ) {
+      if (isCodebaseStateError(error, 'codebase_reindex_in_progress', 'codebase_reindex_lease_lost')) {
         throw new CodebaseManagementError(
           'CODEBASE_BUSY',
           409,
@@ -628,7 +638,7 @@ export class CodebaseManagementService {
         await this.cleanupInactiveCodebaseChunks(id, scope) ?? codebase,
       );
     } catch (error) {
-      throw this.toError(error, id, 'mutation');
+      throw this.toError(error, 'mutation');
     }
   }
 
@@ -693,7 +703,6 @@ export class CodebaseManagementService {
 
   private toError(
     error: unknown,
-    id: string,
     operation: 'audit' | 'mutation' | 'pending' | 'preview' | 'selection',
   ): CodebaseManagementError {
     if (error instanceof CodebaseManagementError) return error;
@@ -703,33 +712,9 @@ export class CodebaseManagementService {
       !(operation === 'preview' && error.code === 'CODEBASE_NOT_FOUND')) {
       return new CodebaseManagementError(error.code, error.status, error.message);
     }
-    const message = error instanceof Error ? error.message : String(error);
-    if (message === 'codebase_deleting') {
-      return new CodebaseManagementError('CODEBASE_DELETING', 409, message);
-    }
-    if (message === 'provider_send_consent_required') {
-      return new CodebaseManagementError('CODEBASE_CONSENT_REQUIRED', 409, message);
-    }
-    if (message === 'selection_policy_unchanged') {
-      return new CodebaseManagementError('CODEBASE_SELECTION_UNCHANGED', 400, message);
-    }
-    if (message === 'pending_generation_not_found') {
-      return new CodebaseManagementError('PENDING_GENERATION_NOT_FOUND', 409, message);
-    }
-    if (message === 'pending_generation_stale') {
-      return new CodebaseManagementError('PENDING_GENERATION_STALE', 409, message);
-    }
-    if (message === 'pending_generation_expired') {
-      return new CodebaseManagementError('PENDING_GENERATION_EXPIRED', 409, message);
-    }
-    if (
-      message === 'codebase_reindex_in_progress' ||
-      message === 'codebase_reindex_lease_lost'
-    ) {
-      return new CodebaseManagementError('CODEBASE_BUSY', 409, message);
-    }
-    if (message === 'codebase_root_realpath_drift') {
-      return new CodebaseManagementError('CODEBASE_ROOT_DRIFT', 400, message);
+    if (error instanceof CodebaseStateError) {
+      const {code, status} = CODEBASE_STATE_ERRORS[error.reason];
+      return new CodebaseManagementError(code, status, error.reason);
     }
     if (operation === 'preview') {
       return new CodebaseManagementError(

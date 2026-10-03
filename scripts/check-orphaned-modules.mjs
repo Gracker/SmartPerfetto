@@ -82,9 +82,10 @@ function listFiles(backendDir, root, accept) {
 }
 
 /**
- * Only `src`, matching `listTestFiles`. Vendored trees and agent-runtime
- * working directories carry their own test files and would otherwise dominate
- * the report with dependencies this repository does not own.
+ * Only `src`: a module under `tests/` is test support, not product code.
+ * Vendored trees and agent-runtime working directories carry their own test
+ * files and would otherwise dominate the report with dependencies this
+ * repository does not own.
  */
 export function listModules(backendDir = BACKEND) {
   return listFiles(backendDir, 'src', name => name.endsWith('.ts'));

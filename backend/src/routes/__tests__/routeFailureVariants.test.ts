@@ -232,6 +232,15 @@ describe('route failure variants', () => {
       expect(internal.body.code).toBe('knowledge_source_reindex_failed');
       expect(internal.text).not.toContain('staged_chunk_count_mismatch');
 
+      // A caller-facing family prefix does not make an unlisted token public.
+      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
+        throw new Error('codebase_delete_not_started');
+      });
+      const prefixed = await request(app()).post('/api/rag/android-internals/sources/k1/reindex');
+      expect(prefixed.status).toBe(500);
+      expect(prefixed.body.code).toBe('knowledge_source_reindex_failed');
+      expect(prefixed.text).not.toContain('codebase_delete_not_started');
+
       services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
         throw new Error('provider_send_not_consented');
       });

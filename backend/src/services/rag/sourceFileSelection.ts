@@ -24,7 +24,11 @@ import {
   type PathPreviewFile,
   type PathPreviewResult,
 } from '../codebase/pathSecurityGate';
-import {invalidCodebaseSelection} from '../codebase/codebaseRequestError';
+import {
+  CodebaseStateError,
+  invalidCodebaseSelection,
+  isCodebaseStateError,
+} from '../codebase/codebaseRequestError';
 
 export const MAX_SOURCE_CHUNKS_PER_GENERATION = 20_000;
 export const SOURCE_INGEST_WRITE_BATCH_SIZE = 500;
@@ -58,7 +62,7 @@ export function assertCodebaseRootIdentity(
     return platform === 'win32' ? resolved.toLocaleLowerCase('en-US') : resolved;
   };
   if (normalize(registeredRootRealpath) !== normalize(previewRootRealpath)) {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
 }
 
@@ -153,7 +157,7 @@ export function resolveMaxSourceChunks(value: unknown): number {
 }
 
 export function isCodebaseIngestLeaseLost(error: unknown): error is Error {
-  return error instanceof Error && error.message === 'codebase_reindex_lease_lost';
+  return isCodebaseStateError(error, 'codebase_reindex_lease_lost');
 }
 
 export function isSourceChunkLimitExceeded(error: unknown): error is Error {

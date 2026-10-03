@@ -119,6 +119,9 @@ sql_fragments:
   backend/skills/fragments/sleep_wake_source_labels.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/sleep_wake_source_labels.sql
+  backend/skills/fragments/file_io_slice_names.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/file_io_slice_names.sql
   backend/skills/fragments/io_blocked_function_families.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/io_blocked_function_families.sql

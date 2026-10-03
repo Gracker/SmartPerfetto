@@ -119,8 +119,9 @@ Click actions should be explicit, for example:
   runtime skips a step whose default-less path reads an empty result.
   `validate:skills` rejects an undecided read as `result_path_read_undecided`;
   Self-Evolution rejects it in the Skill a proposal defines or changes
-  (including that Skill's earlier overlay steps) and only warns about one in
-  other already-published overlays.
+  (including that Skill's earlier overlay steps, and a `skill_sql` candidate
+  checked in the step it replaces) and only warns about one in other
+  already-published overlays.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set

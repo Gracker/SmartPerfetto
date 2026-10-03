@@ -34,3 +34,34 @@ export function invalidCodebaseMetadata(message: string): CodebaseRequestError {
 export function codebaseNotFound(codebaseId: string): CodebaseRequestError {
   return new CodebaseRequestError('CODEBASE_NOT_FOUND', `Codebase '${codebaseId}' not found`, 404);
 }
+
+/**
+ * A codebase state the caller has to wait for or act on: a deletion or reindex
+ * in progress, a lost index lease, a pending generation that is missing, stale
+ * or expired, provider-send consent not granted, or a root whose real path
+ * changed. The message is the reason token, which stored ingest diagnostics
+ * and route reason answers already carry; classify by `reason`, never by text.
+ */
+export type CodebaseStateReason =
+  | 'codebase_deleting'
+  | 'codebase_reindex_in_progress'
+  | 'codebase_reindex_lease_lost'
+  | 'codebase_root_realpath_drift'
+  | 'pending_generation_expired'
+  | 'pending_generation_not_found'
+  | 'pending_generation_stale'
+  | 'provider_send_consent_required';
+
+export class CodebaseStateError extends Error {
+  constructor(readonly reason: CodebaseStateReason) {
+    super(reason);
+    this.name = 'CodebaseStateError';
+  }
+}
+
+export function isCodebaseStateError(
+  error: unknown,
+  ...reasons: CodebaseStateReason[]
+): error is CodebaseStateError {
+  return error instanceof CodebaseStateError && (reasons.length === 0 || reasons.includes(error.reason));
+}

@@ -8,7 +8,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
-const {materializeCatalogCases, updateBuildManifest, updateCaseExpectations} = require('../lib/builder.cjs');
+const {
+  bindGroundTruthTrace,
+  materializeCatalogCases,
+  staleCaseExpectations,
+  updateBuildManifest,
+  updateCaseExpectations,
+} = require('../lib/builder.cjs');
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -189,6 +195,41 @@ test('expectations check is read-only for missing and stale output', t => {
   fs.writeFileSync(f.manifestPath, JSON.stringify(f.manifest));
   assert.throws(() => updateCaseExpectations(f.repoRoot, {caseId: 'derived', check: true}), /stale expectations/);
   assert.deepEqual(fs.readFileSync(f.output), previous);
+});
+
+test('rebinds a generated ground truth to the trace a build produced, keeping its facts', t => {
+  const f = expectationsFixture(t);
+  fs.mkdirSync(path.dirname(f.output));
+  const facts = {marker: 'M', atNs: 120};
+  fs.writeFileSync(f.output, JSON.stringify({expectations: [], source_trace_ground_truth: {traceFacts: facts,
+    trace: {baseCaseId: 'base', baseSha256: 'old', overlaySha256: 'old', outputSha256: 'old', runtimeRevision: 'old'}}}));
+  const entry = {case_dir: f.caseDir};
+  const provenance = {base_sha256: 'b', overlay_sha256: 'o', output_sha256: 'u'};
+  const before = fs.readFileSync(f.output);
+  assert.equal(bindGroundTruthTrace(entry, provenance, 'rev', true), true);
+  assert.deepEqual(fs.readFileSync(f.output), before);
+  assert.equal(bindGroundTruthTrace(entry, provenance, 'rev', false), true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.output, 'utf8')).source_trace_ground_truth, {traceFacts: facts,
+    trace: {baseCaseId: 'base', baseSha256: 'b', overlaySha256: 'o', outputSha256: 'u', runtimeRevision: 'rev'}});
+  assert.equal(bindGroundTruthTrace(entry, provenance, 'rev', true), false);
+  // A case without generated ground truth is left alone.
+  fs.writeFileSync(f.output, '{"expectations": []}');
+  assert.equal(bindGroundTruthTrace(entry, provenance, 'rev', false), false);
+  assert.equal(fs.readFileSync(f.output, 'utf8'), '{"expectations": []}');
+});
+
+test('lists the constructed cases whose projection fell behind their manifest', t => {
+  const f = expectationsFixture(t);
+  assert.deepEqual(staleCaseExpectations(f.repoRoot, ['derived']), ['derived']);
+  updateCaseExpectations(f.repoRoot, {caseId: 'derived'});
+  assert.deepEqual(staleCaseExpectations(f.repoRoot, ['derived']), []);
+  f.manifest.coverage.expectations.push({id: 'new'});
+  fs.writeFileSync(f.manifestPath, JSON.stringify(f.manifest));
+  const previous = fs.readFileSync(f.output);
+  assert.deepEqual(staleCaseExpectations(f.repoRoot, ['derived']), ['derived']);
+  assert.deepEqual(fs.readFileSync(f.output), previous);
+  // A case that cannot be read is an error, not a stale projection.
+  assert.throws(() => staleCaseExpectations(f.repoRoot, ['missing']), /ENOENT/);
 });
 
 test('expectations requires a safe explicit constructed case id and valid source', t => {

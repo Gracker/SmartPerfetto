@@ -176,7 +176,7 @@ describe('startup_slow_reasons skill', () => {
 
     beforeAll(async () => {
       scrollEvaluator = createSkillEvaluator('startup_slow_reasons');
-      // scroll trace has no startup events — skill should handle gracefully
+      // The scroll trace has no startup, so the startup checks do not run.
       await scrollEvaluator.loadTrace(
         getTestTracePath('scroll_Standard-AOSP-App-Without-PreAnimation.pftrace')
       );
@@ -187,12 +187,11 @@ describe('startup_slow_reasons skill', () => {
       await new Promise(resolve => setTimeout(resolve, 2500));
     });
 
-    it('should return empty or handle gracefully when no startup exists', async () => {
+    it('should not run the startup checks on a trace without a startup', async () => {
       const result = await scrollEvaluator.executeStep('slow_reason_checks', {});
-      // May fail (no android_startups data) or return 0 rows — both are acceptable
-      if (result.success) {
-        expect(result.data.length).toBe(0);
-      }
+
+      expect(result.code).toBe('condition_not_met');
+      expect(result.data).toEqual([]);
     }, 60000);
   });
 });

@@ -11,8 +11,7 @@
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
-const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+const TRACE_FILE = 'scheduler-cpu-contention';
 
 describeWithTrace('cpu_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
@@ -42,11 +41,9 @@ describeWithTrace('cpu_analysis skill', TRACE_FILE, () => {
         expect(p.process_name).toBeDefined();
       }, 30000);
 
-      it('should handle non-matching package gracefully', async () => {
-        const result = await evaluator.executeStep('get_process', { package: 'com.nonexistent.package' });
-
-        expect(result.success).toBe(true);
-        expect(result.data).toHaveLength(0);
+      it('should refuse a package that names no process', async () => {
+        await expect(evaluator.executeStep('get_process', {package: 'com.nonexistent.package'}))
+          .rejects.toThrow(/Process identity could not be verified.*status=not_found/);
       }, 30000);
     });
 
@@ -55,7 +52,7 @@ describeWithTrace('cpu_analysis skill', TRACE_FILE, () => {
         const result = await evaluator.executeStep('core_type_stats', { package: '' });
 
         expect(result.success).toBe(true);
-        // app_aosp_scrolling_heavy_jank.pftrace has known CPU samples; empty means extraction regressed.
+        // The fixture has CPU samples; empty means extraction regressed.
         expect(result.data.length).toBeGreaterThan(0);
         const row = result.data[0];
         expect(row.core_type).toBeDefined();

@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
+import {CodebaseStateError} from './codebaseRequestError';
 
 const DEFAULT_EXCLUDES = [
   '.git',
@@ -77,6 +78,17 @@ export interface PathSecurityGateOptions {
   /** Test/portable override; defaults to the current runtime platform. */
   platform?: NodeJS.Platform;
 }
+
+/**
+ * A well-formed relative source path the configured policy does not admit.
+ * The caller can choose another path, so source tools answer it as a policy
+ * refusal; a malformed path stays a thrown `source_path_invalid`.
+ */
+export type SourcePathPolicyRefusal = 'source_path_excluded' | 'source_extension_not_allowed';
+
+export type SourcePathAdmission =
+  | {admitted: true; path: string}
+  | {admitted: false; reason: SourcePathPolicyRefusal};
 
 export interface PathPreviewFile {
   relativePath: string;
@@ -269,7 +281,7 @@ function readRevalidatedTextFileSync(
     ? value.toLocaleLowerCase('en-US')
     : value;
   if (normalizeIdentity(canonicalRoot) !== normalizeIdentity(normalizedRegisteredRoot)) {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
   const portablePath = relativePath.replace(/\\/g, '/');
   const segments = portablePath.split('/').filter(Boolean);
@@ -303,7 +315,7 @@ function readRevalidatedTextFileSync(
     const content = readOpenedTextFileBoundedSync(descriptor, stat, maxFileBytes);
     const afterRootRealPath = realpathOfRegisteredRootSync(rootRealpath);
     if (normalizeIdentity(afterRootRealPath) !== normalizeIdentity(canonicalRoot)) {
-      throw new Error('codebase_root_realpath_drift');
+      throw new CodebaseStateError('codebase_root_realpath_drift');
     }
     const afterRealPath = fs.realpathSync(candidate);
     if (afterRealPath !== realPath) throw new Error('source_path_changed_during_read');
@@ -391,6 +403,16 @@ export class PathSecurityGate {
     relativePath: string,
     options: {enforceConfiguredExcludes?: boolean} = {},
   ): string {
+    const admission = this.admitRelativeSourcePath(relativePath, options);
+    if (!admission.admitted) throw new Error(admission.reason);
+    return admission.path;
+  }
+
+  /** Like `validateRelativeSourcePath`, but returns a policy refusal instead of throwing it. */
+  admitRelativeSourcePath(
+    relativePath: string,
+    options: {enforceConfiguredExcludes?: boolean} = {},
+  ): SourcePathAdmission {
     if (
       typeof relativePath !== 'string' ||
       !relativePath ||
@@ -413,16 +435,16 @@ export class PathSecurityGate {
       (options.enforceConfiguredExcludes ?? true) &&
       shouldExclude(normalized, basename, this.excludeNames, this.platform === 'win32')
     ) {
-      throw new Error('source_path_excluded');
+      return {admitted: false, reason: 'source_path_excluded'};
     }
     const rawExtension = path.posix.extname(basename);
     const extension = this.platform === 'win32'
       ? rawExtension.toLocaleLowerCase('en-US')
       : rawExtension;
     if (!this.allowedExtensions.has(extension)) {
-      throw new Error('source_extension_not_allowed');
+      return {admitted: false, reason: 'source_extension_not_allowed'};
     }
-    return normalized;
+    return {admitted: true, path: normalized};
   }
 
   validateRelativeSourcePrefix(

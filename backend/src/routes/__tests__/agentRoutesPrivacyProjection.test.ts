@@ -32,6 +32,7 @@ import * as finalizer from '../../services/finalizeAnalysisResult';
 import * as reportRoutes from '../reportRoutes';
 import * as snapshots from '../../services/analysisResultSnapshotPipeline';
 import * as eventStore from '../../services/agentEventStore';
+import * as traceMetadataStore from '../../services/traceMetadataStore';
 import {SessionPersistenceService} from '../../services/sessionPersistenceService';
 import {registerAgentReportRoutes} from '../agentReportRoutes';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
@@ -866,6 +867,31 @@ describe('agent route private projections', () => {
         expect(JSON.stringify(scene.body)).not.toContain(credential);
       } else {
         expect(scene.body.result.narrative).toBe(conclusion);
+      }
+    });
+
+    it.each([true, false])('serves the owner-projected scene timeline from /tracks (private=%s)', async privateKnowledge => {
+      const id = `scene-tracks-timeline-${privateKnowledge}`;
+      const unresolved = `segment window unresolved near ${canary}; token ${credential}`;
+      const sceneTimeline = {schemaVersion: 'scene_timeline@1', runId: 'run-scene', sessionId: id,
+        traceId: `trace-${id}`, revision: 1, status: 'partial', coverage: {status: 'complete'},
+        segments: [], unresolved: [unresolved], diagnostics: []};
+      addSession(id, privateKnowledge, {status: 'completed', result: {sessionId: id, success: true,
+        conclusion: 'Scene timeline', findings: [], hypotheses: [], confidence: 0.7, rounds: 1, totalDurationMs: 5,
+        sceneTimeline}});
+      // A scene-timeline session must still own a readable trace.
+      jest.spyOn(traceMetadataStore, 'readTraceMetadataForContext')
+        .mockResolvedValue({id: `trace-${id}`} as Awaited<ReturnType<typeof traceMetadataStore.readTraceMetadataForContext>>);
+      const tracks = await get(`/scene-reconstruct/${id}/tracks`);
+      const status = await get(`/scene-reconstruct/${id}/status`);
+      expect(tracks.status).toBe(200);
+      expect(tracks.body.sceneTimeline).toEqual(status.body.result.sceneTimeline);
+      if (privateKnowledge) {
+        expect(JSON.stringify(tracks.body)).not.toContain(canary);
+        expect(JSON.stringify(tracks.body)).not.toContain(credential);
+        expect(tracks.body.sceneTimeline.diagnostics).toContainEqual({code: 'scene_output_projection_restricted'});
+      } else {
+        expect(tracks.body.sceneTimeline.unresolved).toEqual([unresolved]);
       }
     });
 

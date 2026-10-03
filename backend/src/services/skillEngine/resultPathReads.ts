@@ -31,12 +31,14 @@ export interface UndecidedResultPathRead {
 }
 
 /**
- * The top-level `&&` operands of `expr`, or none when it is not a plain
- * conjunction: a disjunction, nullish fallback or ternary can be true without
- * the row. (A step condition is a JS expression on both runtimes; the
- * condition words AND/OR are a syntax error there, so they guard nothing.)
+ * The top-level operands of `operator` in a JS expression, outside brackets
+ * and strings, or undefined when an operator binding looser than it sits at
+ * the top level (`||` for `&&`, and `??` or a ternary for either): the
+ * operands then do not combine through `operator` alone. (A step condition is
+ * a JS expression on both runtimes; the words AND/OR are a syntax error there,
+ * so they combine nothing.)
  */
-function topLevelConjuncts(expr: string): string[] {
+export function topLevelOperands(expr: string, operator: '&&' | '||'): string[] | undefined {
   const parts: string[] = [];
   let depth = 0;
   let quote = '';
@@ -54,12 +56,12 @@ function topLevelConjuncts(expr: string): string[] {
       depth--;
     } else if (depth > 0) {
       continue;
-    } else if (expr.startsWith('&&', i)) {
+    } else if (expr.startsWith(operator, i)) {
       parts.push(expr.slice(from, i));
       from = i + 2;
       i++;
-    } else if (expr.startsWith('||', i) || (c === '?' && expr[i + 1] !== '.')) {
-      return [];
+    } else if ((operator === '&&' && expr.startsWith('||', i)) || (c === '?' && expr[i + 1] !== '.')) {
+      return undefined;
     }
   }
   return [...parts, expr.slice(from)].map(part => part.trim());
@@ -70,7 +72,8 @@ function requiresRows(condition: unknown, names: readonly string[]): boolean {
   if (typeof condition !== 'string') return false;
   const guards = new Set(names.flatMap(name =>
     ['.data.length>0', '.data?.length>0', '?.data.length>0', '?.data?.length>0'].map(tail => name + tail)));
-  return topLevelConjuncts(condition).some(conjunct => guards.has(conjunct.replace(/\s+/g, '')));
+  // A disjunction, nullish fallback or ternary can be true without the row.
+  return (topLevelOperands(condition, '&&') ?? []).some(conjunct => guards.has(conjunct.replace(/\s+/g, '')));
 }
 
 /** Path reads of earlier top-level results that declare neither a default nor a guarding condition. */

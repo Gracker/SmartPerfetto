@@ -637,6 +637,8 @@ execute_sql("SELECT name AS slice_name, dur / 1e6 AS dur_ms, thread_name FROM th
 3. **优化收益须有依赖关系、可消除工作或对照实验支持**。不能直接把 self_ms 或互不重叠 self 总量称为“可回收时间”“收益上限”；未知时只报告观测成本和待验证方向，也不能把父子 wall time 相加。
 4. **检查切片嵌套及埋点覆盖**：self_ms ≈ total_ms 只能说明记录到的子切片占时很少，不代表内部没有其他工作；逐事件状态和实现证据决定如何归因。`bindApplication`、`activityStart`、`performCreate:*`、`activityResume`（及 trace 中存在的 `clientTransactionExecuted` 等事务包裹）是框架容器：其名称只说明所处阶段，不能作为最终根因或"直接原因"。沿子 slice 下钻到 App 可归属的具体工作（某个 ContentProvider、SDK 初始化、inflate、数据加载）；子 slice 缺失时，归因写成"该容器内 App 初始化（埋点未细分）"，给出该区间的运行/等待分解并说明埋点缺口，不根据名称虚构内部工作。
 
+5. **证据矩阵（`startup_evidence_matrix`）读合计，不读 Top 组**：File IO、Binder、主线程同步 Binder、调度延迟项取各生产者的 `all_*` 列（LIMIT 截断前的全部分组合计；File IO 只计最外层 IO slice）。Binder Total 是启动窗口内所有线程 Binder 时长之和，并发时可超过 100%，不是墙钟占比；只有热点 slice 项读最热的单个 slice。`not_observed` 表示生产者没有满足过滤条件的行，不是测量值 0。
+
 ### 启动阶段划分（必须覆盖）
 
 Android 启动有两个串行大阶段，**分析结论必须覆盖两个阶段**，不能遗漏：

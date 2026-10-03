@@ -77,6 +77,8 @@ display:
       type: percentage
       format: percentage
 
+sql_fragments:
+  - fragments/file_io_slice_names.sql
 sql: |
   WITH main_thread AS (
     SELECT t.utid
@@ -94,17 +96,15 @@ sql: |
     JOIN main_thread mt ON tt.utid = mt.utid
     WHERE s.ts < ${end_ts}
       AND s.ts + s.dur > ${start_ts}
-      AND (
-        lower(s.name) GLOB '*open*'
-        OR lower(s.name) GLOB '*read*'
-        OR lower(s.name) GLOB '*write*'
-        OR lower(s.name) GLOB '*fsync*'
-        OR lower(s.name) GLOB '*fdatasync*'
-        OR lower(s.name) GLOB '*sqlite*'
-        OR lower(s.name) GLOB '*database*'
-        OR lower(s.name) GLOB '*file*'
-        OR lower(s.name) GLOB '*disk*'
+      -- File IO by whole slice-name word (fragments/file_io_slice_names.sql);
+      -- a SharedPreferences call is not file IO by its name alone.
+      AND EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(s.name), w.stem) > 0)
+      AND EXISTS (
+        SELECT 1 FROM file_io_slice_name_patterns n
+        WHERE n.io_type != 'shared_prefs'
+          AND s.name GLOB n.pattern
       )
+      AND NOT EXISTS (SELECT 1 FROM file_io_slice_name_exclusions x WHERE s.name GLOB x.pattern)
   )
   SELECT
     io_slice,

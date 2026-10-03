@@ -353,6 +353,57 @@ describe('GitNexusCodeGraphNavigator', () => {
     }));
   });
 
+  it.each([
+    ['an excluded directory', 'app/src/build/Generated.kt', 'source_path_outside_registered_filters'],
+    ['a non-source extension', 'app/src/notes.txt', 'source_extension_not_allowed'],
+    ['a path outside the registered filters', 'tools/Tool.kt', 'source_path_outside_registered_filters'],
+  ])('answers a symbol lookup scoped to %s as unsupported without running GitNexus', async (
+    _label, filePath, unsupportedReason,
+  ) => {
+    const ref = register();
+    const capturePath = path.join(tmpDir, 'refused-capture.json');
+
+    const result = await service(fakeGitNexus({references: []}, capturePath)).inspectSymbol({
+      codebaseId: ref.codebaseId,
+      scope,
+      symbol: 'StartupHooks',
+      filePath,
+    });
+
+    expect(result).toEqual(expect.objectContaining({success: false, references: [], processes: [], unsupportedReason}));
+    expect(JSON.stringify(result)).not.toContain(filePath);
+    expect(fs.existsSync(capturePath)).toBe(false);
+  });
+
+  it('admits a file under an explicitly registered noise directory, as search and read do', async () => {
+    const ref = register(['app/build'], []);
+    const capturePath = path.join(tmpDir, 'included-capture.json');
+
+    const result = await service(fakeGitNexus({
+      references: [{file: 'app/build/Generated.kt', startLine: 1, name: 'Generated'}],
+    }, capturePath)).inspectSymbol({
+      codebaseId: ref.codebaseId,
+      scope,
+      symbol: 'Generated',
+      filePath: 'app/build/Generated.kt',
+    });
+
+    expect(JSON.parse(fs.readFileSync(capturePath, 'utf8')).argv).toContain('--file=app/build/Generated.kt');
+    expect(result).toEqual(expect.objectContaining({success: true,
+      references: [expect.objectContaining({filePath: 'app/build/Generated.kt'})]}));
+  });
+
+  it('keeps a malformed symbol file path a thrown failure', async () => {
+    const ref = register();
+
+    await expect(service(fakeGitNexus({references: []})).inspectSymbol({
+      codebaseId: ref.codebaseId,
+      scope,
+      symbol: 'StartupHooks',
+      filePath: 'app/../tools/Tool.kt',
+    })).rejects.toThrow('source_path_invalid');
+  });
+
   it('recognizes real GitNexus process schemas without treating file IDs as processes', async () => {
     const ref = register([], []);
     const rootCanary = fs.realpathSync(root);

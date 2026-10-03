@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express, { Router, type Request, type Response } from 'express';
-import type { IncomingMessage } from 'http';
+import { STATUS_CODES, type IncomingMessage } from 'http';
 import net, { type Socket } from 'net';
 import type { Duplex } from 'stream';
 import { isKeylessLocalMode, serverConfig } from '../config';
@@ -109,10 +109,10 @@ function requireUpgradeOrigin(
 
 function resolveUpgradeRequestContext(
   req: IncomingMessage,
+  query: URLSearchParams,
   leaseId: string,
   allowedOrigins: ReadonlySet<string>,
 ): RequestContext | null {
-  const query = new URL(req.url || '/', 'http://127.0.0.1').searchParams;
   const credential = resolveCredentialIdentity(req);
   if (credential.kind === 'identity') {
     requireUpgradeOrigin(req, credential.originRequirement, allowedOrigins);
@@ -465,17 +465,36 @@ function sendProxyError(res: Response, error: unknown): void {
   }, error);
 }
 
-export function writeUpgradeError(socket: Duplex, statusCode: number, message: string): void {
-  if (!socket.writable) return;
-  socket.write(
-    `HTTP/1.1 ${statusCode} ${message}\r\n`
+/** How long a rejected upgrade waits for its peer to close before the socket is destroyed. */
+export const REJECTED_UPGRADE_LINGER_MS = 1_000;
+
+/**
+ * Answers an upgrade the server will not take with a complete HTTP response,
+ * then releases the socket. `end()` alone only half-closes it: the HTTP server
+ * allows half-open sockets, so a peer that never closes would keep it open.
+ * The peer's remaining bytes are drained so its close is seen, and the socket
+ * is destroyed after a bounded linger either way. The reason phrase is the
+ * standard one; `message` is only the body. The socket's error listener
+ * belongs to the upgrade dispatcher (`dispatchUpgrade`).
+ */
+export function rejectUpgrade(socket: Duplex, statusCode: number, message: string): void {
+  if (socket.destroyed) return;
+  if (!socket.writable) {
+    socket.destroy();
+    return;
+  }
+  const linger = setTimeout(() => socket.destroy(), REJECTED_UPGRADE_LINGER_MS);
+  linger.unref();
+  socket.once('close', () => clearTimeout(linger));
+  socket.resume();
+  socket.end(
+    `HTTP/1.1 ${statusCode} ${STATUS_CODES[statusCode] ?? 'Error'}\r\n`
     + 'Connection: close\r\n'
     + 'Content-Type: text/plain; charset=utf-8\r\n'
     + `Content-Length: ${Buffer.byteLength(message)}\r\n`
     + '\r\n'
     + message,
   );
-  socket.end();
 }
 
 function websocketRequestHeaders(req: IncomingMessage, targetPort: number): string[] {
@@ -559,12 +578,13 @@ function forwardWebSocketHandshake(
 
 async function proxyWebSocket(
   req: IncomingMessage,
+  query: URLSearchParams,
   socket: Duplex,
   head: Buffer,
   leaseId: string,
   allowedOrigins: ReadonlySet<string>,
 ): Promise<void> {
-  const context = resolveUpgradeRequestContext(req, leaseId, allowedOrigins);
+  const context = resolveUpgradeRequestContext(req, query, leaseId, allowedOrigins);
   if (!context) {
     throw new TraceProcessorProxyError(401, 'Trace processor WebSocket requires authentication');
   }
@@ -573,19 +593,24 @@ async function proxyWebSocket(
     websocketConnectedAt: Date.now(),
   });
   getTraceProcessorService().exposeNativePort(target.port);
+  // Built from request input before connecting, so a failure rejects this
+  // promise instead of throwing from a socket event handler.
+  const capabilityProtocol = requestedTraceProcessorCapabilityProtocol(req, leaseId);
+  const request = [
+    'GET /websocket HTTP/1.1',
+    ...websocketRequestHeaders(req, target.port),
+    '',
+    '',
+  ].join('\r\n');
   const upstream = net.connect({
     host: '127.0.0.1',
     port: target.port,
   });
 
+  // Once connected, upstream bytes may already reach the client; an HTTP error can no longer follow.
+  let tunnelled = false;
   upstream.once('connect', () => {
-    const capabilityProtocol = requestedTraceProcessorCapabilityProtocol(req, leaseId);
-    const request = [
-      'GET /websocket HTTP/1.1',
-      ...websocketRequestHeaders(req, target.port),
-      '',
-      '',
-    ].join('\r\n');
+    tunnelled = true;
     upstream.write(request);
     if (head.length > 0) upstream.write(head);
     socket.pipe(upstream);
@@ -598,13 +623,14 @@ async function proxyWebSocket(
 
   upstream.once('error', (error) => {
     console.error('[TraceProcessorProxy] WebSocket upstream error:', error);
-    if (!socket.destroyed) {
-      writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
-    }
+    if (tunnelled) socket.destroy();
+    else rejectUpgrade(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   socket.once('error', () => upstream.destroy());
   socket.once('close', () => upstream.destroy());
-  upstream.once('close', () => socket.destroy());
+  upstream.once('close', () => {
+    if (tunnelled) socket.destroy();
+  });
 }
 
 router.use(authenticate);
@@ -659,12 +685,19 @@ export function handleTraceProcessorProxyUpgrade(
   head: Buffer,
   allowedOrigins: ReadonlySet<string>,
 ): boolean {
-  const url = new URL(req.url || '/', 'http://127.0.0.1');
+  // This listener is synchronous: a malformed request target or escape any
+  // client can send must not escape it as an uncaught error, which shuts the
+  // backend down. `//[` is a valid request line but not a parseable URL.
+  let url: URL;
+  try {
+    url = new URL(req.url || '/', 'http://127.0.0.1');
+  } catch {
+    rejectUpgrade(socket, 400, 'Malformed request target');
+    return true;
+  }
   const match = url.pathname.match(/^\/api\/tp\/([^/]+)\/websocket$/);
   if (!match) return false;
 
-  // This listener is synchronous: a malformed escape any page can send must
-  // not escape it as an uncaught URIError, which shuts the backend down.
   let leaseId: string;
   try {
     leaseId = sanitizeContextId(decodeURIComponent(match[1]));
@@ -672,17 +705,17 @@ export function handleTraceProcessorProxyUpgrade(
     leaseId = '';
   }
   if (!leaseId) {
-    writeUpgradeError(socket, 400, 'leaseId is required');
+    rejectUpgrade(socket, 400, 'leaseId is required');
     return true;
   }
 
-  void proxyWebSocket(req, socket, head, leaseId, allowedOrigins).catch((error) => {
+  void proxyWebSocket(req, url.searchParams, socket, head, leaseId, allowedOrigins).catch((error) => {
     if (error instanceof TraceProcessorProxyError) {
-      writeUpgradeError(socket, error.statusCode, error.message);
+      rejectUpgrade(socket, error.statusCode, error.message);
       return;
     }
     console.error('[TraceProcessorProxy] WebSocket proxy error:', error);
-    writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
+    rejectUpgrade(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   return true;
 }

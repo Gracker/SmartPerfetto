@@ -52,6 +52,13 @@ shared with every other suite. `isolatedModules` also makes `tsc` reject code
 that per-file transpilation cannot compile, such as re-exporting a type
 without `export type`.
 
+`tsconfig.typecheck.json` also sets `noUnusedLocals` and `noUnusedParameters`,
+so an unused import, local, private member or parameter fails `npm run
+typecheck`; the build config does not, and its emit is unchanged. Name a
+parameter a framework signature requires but the body ignores with a leading
+`_`. A compile-time-only check belongs in a type position or a test that uses
+it, not in an unused production constant.
+
 When adding a test file, register it in the matching `test:*` script in the same
 change, and make sure that script is reachable from `test:gate`. For a new
 subsystem, add a directory-scoped `test:<subsystem>` script and wire it into
@@ -77,9 +84,25 @@ rotted outright: a member added to `RagSourceKind` left a fixture in
 unregistered and excluded from typecheck.
 
 `npm run check:test-registration` now answers the question mechanically, and
-`test:governance` runs it first in `verify:pr`. All 573 suites are registered
-and `scripts/test-registration-baseline.json` is empty, so the check is
-currently zero-tolerance: any new suite that no script can reach fails the gate.
+`test:governance` runs it first in `verify:pr`. It lists every suite Jest runs
+(`.test.ts`, `.spec.ts`, `.eval.ts`, `_unittest.ts`) under both `backend/src/`
+and `backend/tests/`, and counts a suite as reachable only when a Jest command
+of a script that root `npm run verify:pr` runs (following `npm run`,
+`npm --prefix backend run`, `cd backend && …` and `npm test`) names it or a
+directory above it. A `test:*` script outside that chain (`test:unit`,
+`test:integration`, `test:skill-eval`) does not count. All suites are
+reachable and `scripts/test-registration-baseline.json` is empty, so the
+check is zero-tolerance: any new suite the gate cannot reach fails it.
+
+Evals that load a constructed or real trace live in `test:analysis-accuracy`,
+which materializes the corpus first. `getTestTracePath` resolves a case id or
+alias to the trace it is analyzed on: a real case's committed trace, or a
+constructed case's materialized base plus overlay (its committed file is only
+the overlay). `describeWithTrace` fails a suite whose case does not resolve or
+whose trace is not on disk: seven evals once named a retired fixture and
+skipped forever while the gate stayed green. Assert what the fixture carries
+instead of returning early when data is missing, and do not accept both a
+step's success and its failure; either form passes without checking anything.
 
 Keep it that way. The baseline exists so the check could be introduced without
 a 237-file bang; it is not a parking space. `--update-baseline` records
@@ -743,9 +766,10 @@ Report Claude, OpenAI, Pi, OpenCode, and Qoder independently. Missing auth must
 remain `REAL PROVIDER NOT AVAILABLE`; never replace it with a unit, fixture, or
 deterministic five-runtime execution result.
 
-## Fixture Skip Behavior
+## Eval Fixtures
 
-Some historical skill-eval fixtures are intentionally not included in the
-repository. Suites that load optional traces should use `describeWithTrace(...)`
-so missing fixture files skip cleanly. The PR gate does not depend on those
-historical fixtures; it depends on `test:core` and `test:scene-trace-regression`.
+Every skill-eval trace is a Trace corpus case: committed under `Trace/real/`, or
+materialized from a committed overlay by `npm run trace:materialize`. There is
+no optional fixture. `describeWithTrace(...)` fails, rather than skips, a suite
+whose case is unknown or whose trace is missing; add a constructed case through
+`Trace/tools` when an eval needs data no case carries.

@@ -10,6 +10,7 @@ import {execFileSync} from 'child_process';
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 
 import {activeCodebaseGeneration, CodebaseRegistry} from '../codebase/codebaseRegistry';
+import {CodebaseStateError} from '../codebase/codebaseRequestError';
 import {
   PathSecurityGate,
   readAcceptedTextFileSync,
@@ -448,7 +449,7 @@ describe('AppSourceIngester', () => {
       operation({
         operationId: 'stale-operation',
         assertHeld: () => {
-          if (!leaseValid) throw new Error('codebase_reindex_lease_lost');
+          if (!leaseValid) throw new CodebaseStateError('codebase_reindex_lease_lost');
         },
         updateIngestStatus: () => {
           throw new Error('stale status update must not run');

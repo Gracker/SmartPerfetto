@@ -2739,7 +2739,7 @@ function dataKeyedSpans(text: string, start: number, end: number, prose: boolean
   const {keys, boundaries} = credentialDataKeys(text, start, end);
   const covered = new KeyCoverage(text, keys, boundaries, sink.values);
   for (let index = 0; index < keys.length; index++) {
-    const {keyAt, valueAt, strength, assigned} = keys[index];
+    const {valueAt, strength, assigned} = keys[index];
     if (covered.holds(index)) continue;
     const value = readDataValue(text, valueAt, end, prose, assigned);
     if (!value) continue;

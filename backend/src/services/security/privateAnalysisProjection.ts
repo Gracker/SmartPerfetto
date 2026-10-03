@@ -901,6 +901,18 @@ export function projectPrivateSessionStateSnapshot(
 export function projectOwnerAnalysisResult(...args: Parameters<typeof projectPrivateAnalysisResult>): AnalysisResult {
   return withOwnerCodeAwareProjection(() => projectPrivateAnalysisResult(...args));
 }
+/**
+ * A stored result as every owner surface serves it: the owner projection for a
+ * run whose private-context marker restricts its audience, the public-field
+ * snapshot copy otherwise. The caller decides from the run's own marker.
+ */
+export function projectStoredAnalysisResultForOwner(
+  restricted: boolean, sessionId: string, result: AnalysisResult, language: OutputLanguage,
+): AnalysisResult {
+  return restricted
+    ? projectOwnerAnalysisResult(sessionId, result, language)
+    : copyAnalysisResultForSnapshot(result);
+}
 export function projectOwnerConclusion(...args: Parameters<typeof projectPrivateConclusion>): string {
   return withOwnerCodeAwareProjection(() => projectPrivateConclusion(...args));
 }

@@ -34,6 +34,22 @@ describe('Skill localization catalog', () => {
     expect((skill.steps!.find(value => value.id === 'idle_periods') as any).display.title_i18n.en)
       .toBe('Intervals with no observed input (capture completeness unconfirmed)');
   });
+  it('uses authored meta translations for the Skill name and description, then drops them from runtime meta', async () => {
+    await ensureSkillRegistryInitialized();
+    const skill = skillRegistry.getSkill('thermal_predictor')!;
+    const english = localizeSkillDefinition(skill, 'en');
+    expect(english.meta).toMatchObject({
+      display_name: 'CPU Frequency Trend',
+      description: expect.stringContaining('predicts no thermal mechanism'),
+    });
+    expect(localizeSkillDefinition(skill, 'zh-CN').meta.display_name).toBe('CPU 频率趋势观察');
+    for (const localized of [english, localizeSkillDefinition({...skill, name: 'not_in_catalog'}, 'en', {externalAuthored: true})]) {
+      expect(localized.meta.display_name_i18n).toBeUndefined();
+      expect(localized.meta.description_i18n).toBeUndefined();
+    }
+    expect(skill.meta.display_name_i18n?.en).toBe('CPU Frequency Trend');
+  });
+
   it('strictly covers every built-in Skill and rendering pipeline', async () => {
     await ensureSkillRegistryInitialized();
     const skills = skillRegistry.getAllSkills();

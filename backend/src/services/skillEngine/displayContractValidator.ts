@@ -319,6 +319,14 @@ export function validateSkillDisplayContract(
 
   validateOnce((skill as any).display, 'display');
   validateOnce((skill as any).output?.display, 'output.display');
+  // The catalog translations of the Skill's own name and description.
+  for (const field of ['display_name_i18n', 'description_i18n'] as const) {
+    const translations = (skill as any).meta?.[field];
+    if (translations !== undefined && !isDisplayTitleTranslations(translations)) {
+      pushIssue(issues, skillName, `meta.${field}`, `meta.${field}`,
+        `${field} must map en or zh-CN to non-empty strings`, translations, options);
+    }
+  }
 
   if (Array.isArray((skill as any).steps)) {
     (skill as any).steps.forEach((step: SkillStep, index: number) => {

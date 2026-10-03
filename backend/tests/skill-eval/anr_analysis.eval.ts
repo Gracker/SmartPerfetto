@@ -4,8 +4,8 @@
  * Tests anr_analysis skill behavior on known trace files.
  * Validates SQL queries produce correct structure and data.
  *
- * Note: Most test traces do not contain ANR data, so tests gracefully
- * handle the case where no ANR events are detected.
+ * The main suites run on a constructed input-dispatch ANR; one suite runs on a
+ * real scroll trace without an ANR.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
@@ -14,19 +14,10 @@ import path from 'path';
 import * as yaml from 'yaml';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-// Use a trace file that may or may not contain ANR data.
-// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
-const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
-const REAL_ANR_TRACE_FILE = 'perfetto/test/data/android_anr.pftrace.gz';
-
-function describeWithRepoTrace(suiteName: string, tracePath: string, fn: () => void): void {
-  const absolute = path.resolve(process.cwd(), '..', tracePath);
-  if (fs.existsSync(absolute)) {
-    describe(suiteName, fn);
-  } else {
-    describe.skip(`${suiteName} [skipped: missing trace fixture ${tracePath}]`, fn);
-  }
-}
+// The constructed binder-io-blocking case carries an input-dispatch ANR of
+// com.smartperfetto.fixture, with thread states and slices around it; the
+// trace corpus materializes it, so every suite here runs in the gate.
+const TRACE_FILE = 'binder-io-blocking';
 
 describe('anr_detail evidence boundary contract', () => {
   it('should not use package-scoped legacy artifacts as final diagnosis inputs', () => {
@@ -139,14 +130,13 @@ describe('anr_detail evidence boundary contract', () => {
     expect(lockContention?.sql).toContain('ts < aw.end_ts');
     expect(lockContention?.sql).toContain('> aw.start_ts');
 
-    expect(parsed.steps.find(step => step.id === 'blocking_reasons')?.params).toMatchObject({
-      upid: '${upid}',
-      pid: '${pid}',
-    });
-    expect(parsed.steps.find(step => step.id === 'main_thread_slices')?.params).toMatchObject({
-      upid: '${upid}',
-      pid: '${pid}',
-    });
+    // The main-thread helpers take the exact process from the issued process
+    // scope anr_detail resolves (identity scope: process), not from a package
+    // or a pid parameter: a child Skill inherits that scope.
+    for (const stepId of ['blocking_reasons', 'main_thread_slices']) {
+      const params = parsed.steps.find(step => step.id === stepId)?.params ?? {};
+      expect([stepId, 'upid' in params, 'pid' in params]).toEqual([stepId, false, false]);
+    }
 
     const criticalLockRule = diagnosis?.rules?.find(rule =>
       rule.condition?.includes("r.severity === 'critical'"),
@@ -239,12 +229,20 @@ describe('anr_detail evidence boundary contract', () => {
   it('should prefer upid-safe main-thread helper filters from anr_detail', () => {
     const statesPath = path.resolve(process.cwd(), 'skills/atomic/main_thread_states_in_range.skill.yaml');
     const slicesPath = path.resolve(process.cwd(), 'skills/atomic/main_thread_slices_in_range.skill.yaml');
-    const states = yaml.parse(fs.readFileSync(statesPath, 'utf-8')) as { inputs?: Array<{ name: string }>; sql?: string };
-    const slices = yaml.parse(fs.readFileSync(slicesPath, 'utf-8')) as { inputs?: Array<{ name: string }>; sql?: string };
+    type Helper = { inputs?: Array<{ name: string }>; sql?: string; process_scope?: Record<string, string> };
+    const states = yaml.parse(fs.readFileSync(statesPath, 'utf-8')) as Helper;
+    const slices = yaml.parse(fs.readFileSync(slicesPath, 'utf-8')) as Helper;
 
+    // Each ANR event reaches anr_detail with its own upid, which its identity
+    // scope turns into the process scope the helpers bind.
+    const analysis = yaml.parse(fs.readFileSync(path.resolve(process.cwd(), 'skills/composite/anr_analysis.skill.yaml'), 'utf-8')) as {
+      steps: Array<{ id: string; item_params?: Record<string, string> }>;
+    };
+    expect(analysis.steps.find(step => step.id === 'analyze_anr_events')?.item_params).toMatchObject({upid: 'upid', pid: 'pid'});
     for (const helper of [states, slices]) {
+      expect(helper.process_scope).toMatchObject({role: 'target', binding: 'native_upid'});
       expect(helper.inputs?.map(input => input.name)).toEqual(expect.arrayContaining(['upid', 'pid']));
-      expect(helper.sql).toContain('p.upid = ${upid|0}');
+      expect(helper.sql).toContain('p.upid = COALESCE(${__process_scope.upid}, ${upid|0})');
       expect(helper.sql).toContain('p.pid = ${pid|0}');
       expect(helper.sql).toContain("p.name = '${package|}' OR p.name GLOB '${package|}:*'");
       expect(helper.sql).not.toContain("p.name GLOB '${package}*'");
@@ -273,28 +271,15 @@ describe('anr_detail evidence boundary contract', () => {
 
 describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
-  let hasAnrData = false;
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('anr_analysis');
     await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
 
-    // Check if trace has ANR data
-    try {
-      const result = await evaluator.executeSQL(`
-        SELECT COUNT(*) as count
-        FROM android_anrs
-      `);
-      hasAnrData = !result.error && result.rows.length > 0 && result.rows[0][0] > 0;
-    } catch (e) {
-      hasAnrData = false;
-    }
-
-    if (!hasAnrData) {
-      console.warn(
-        `[Test Info] Trace ${TRACE_FILE} does not have ANR data. Tests will verify graceful handling of empty results.`
-      );
-    }
+    // Every assertion below reads the fixture ANR.
+    const result = await evaluator.executeSQL('SELECT COUNT(*) FROM android_anrs');
+    expect(result.error).toBeUndefined();
+    expect(result.rows[0][0]).toBeGreaterThan(0);
   }, 60000); // 60 second timeout for loading trace
 
   afterAll(async () => {
@@ -329,139 +314,123 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
         expect(detection.affected_process_count).toBeGreaterThanOrEqual(0);
 
         // If ANRs exist, verify additional fields
-        if (detection.total_anr_count > 0) {
-          expect(detection.first_anr_ts).toBeDefined();
-          expect(detection.last_anr_ts).toBeDefined();
-          expect(typeof detection.anr_span_seconds).toBe('number');
-        }
+        expect(detection.total_anr_count).toBeGreaterThan(0);
+        expect(detection.first_anr_ts).toBeDefined();
+        expect(detection.last_anr_ts).toBeDefined();
+        expect(typeof detection.anr_span_seconds).toBe('number');
       }, 30000);
     });
 
-    describe('anr_overview step (conditional)', () => {
-      it('should execute when ANR data exists or be skipped gracefully', async () => {
+    describe('anr_overview step', () => {
+      it('should summarize the fixture ANR', async () => {
         const result = await evaluator.executeStep('anr_overview');
 
-        if (hasAnrData) {
-          expect(result.success).toBe(true);
-          expect(result.data.length).toBeGreaterThan(0);
-        } else {
-          // Step may be skipped due to condition: detection.data[0]?.total_anr_count > 0
-          // Or may return empty results
-          expect(Array.isArray(result.data)).toBe(true);
-        }
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
       }, 30000);
 
-      it('should have valid ANR type structure when data exists', async () => {
+      it('should have valid ANR type structure', async () => {
         const result = await evaluator.executeStep('anr_overview');
-        if (hasAnrData) {
-          expect(result.success).toBe(true);
-          expect(result.data.length).toBeGreaterThan(0);
-        }
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
 
-        if (result.data.length > 0) {
-          const overview = result.data[0];
+        expect(result.data.length).toBeGreaterThan(0);
+        const overview = result.data[0];
 
-          // Required fields for ANR overview
-          expect(overview.anr_type).toBeDefined();
-          expect(typeof overview.anr_type).toBe('string');
-          expect(typeof overview.anr_count).toBe('number');
-          expect(overview.anr_count).toBeGreaterThan(0);
+        // Required fields for ANR overview
+        expect(overview.anr_type).toBeDefined();
+        expect(typeof overview.anr_type).toBe('string');
+        expect(typeof overview.anr_count).toBe('number');
+        expect(overview.anr_count).toBeGreaterThan(0);
 
-          // Type display should be a human-readable string
-          expect(overview.type_display).toBeDefined();
-          expect(typeof overview.type_display).toBe('string');
+        // Type display should be a human-readable string
+        expect(overview.type_display).toBeDefined();
+        expect(typeof overview.type_display).toBe('string');
 
-          // Validate known ANR types
-          const validAnrTypes = [
-            'INPUT_DISPATCHING_TIMEOUT',
-            'INPUT_DISPATCHING_TIMEOUT_NO_FOCUSED_WINDOW',
-            'BROADCAST_OF_INTENT',
-            'START_FOREGROUND_SERVICE',
-            'EXECUTING_SERVICE',
-            'FOREGROUND_SERVICE_TIMEOUT',
-            'FOREGROUND_SHORT_SERVICE_TIMEOUT',
-            'CONTENT_PROVIDER_NOT_RESPONDING',
-            'JOB_SERVICE_START',
-            'JOB_SERVICE_STOP',
-            'JOB_SERVICE_BIND',
-            'JOB_SERVICE_NOTIFICATION_NOT_PROVIDED',
-            'BIND_APPLICATION',
-            'SYSTEM_SERVER_WATCHDOG_TIMEOUT',
-            'GPU_HANG',
-            'APP_TRIGGERED',
-            'UNKNOWN_ANR_TYPE',
-          ];
-          expect(validAnrTypes).toContain(overview.anr_type);
+        // Validate known ANR types
+        const validAnrTypes = [
+          'INPUT_DISPATCHING_TIMEOUT',
+          'INPUT_DISPATCHING_TIMEOUT_NO_FOCUSED_WINDOW',
+          'BROADCAST_OF_INTENT',
+          'START_FOREGROUND_SERVICE',
+          'EXECUTING_SERVICE',
+          'FOREGROUND_SERVICE_TIMEOUT',
+          'FOREGROUND_SHORT_SERVICE_TIMEOUT',
+          'CONTENT_PROVIDER_NOT_RESPONDING',
+          'JOB_SERVICE_START',
+          'JOB_SERVICE_STOP',
+          'JOB_SERVICE_BIND',
+          'JOB_SERVICE_NOTIFICATION_NOT_PROVIDED',
+          'BIND_APPLICATION',
+          'SYSTEM_SERVER_WATCHDOG_TIMEOUT',
+          'GPU_HANG',
+          'APP_TRIGGERED',
+          'UNKNOWN_ANR_TYPE',
+        ];
+        expect(validAnrTypes).toContain(overview.anr_type);
 
-          expect(overview.trigger_type).toBeDefined();
-          expect(typeof overview.trigger_type).toBe('string');
-          expect(overview.not_final).toBe(1);
-        }
+        expect(overview.trigger_type).toBeDefined();
+        expect(typeof overview.trigger_type).toBe('string');
+        expect(overview.not_final).toBe(1);
       }, 30000);
     });
 
-    describe('trigger_classification step (conditional)', () => {
-      it('should classify trigger type when ANR data exists or be skipped gracefully', async () => {
+    describe('trigger_classification step', () => {
+      it('should classify the trigger type', async () => {
         const result = await evaluator.executeStep('trigger_classification');
 
-        if (hasAnrData) {
-          expect(result.success).toBe(true);
-          expect(result.data.length).toBeGreaterThan(0);
-        } else {
-          expect(Array.isArray(result.data)).toBe(true);
-        }
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
       }, 30000);
 
       it('should keep trigger and root-cause hints separate', async () => {
         const result = await evaluator.executeStep('trigger_classification');
 
-        if (result.data.length > 0) {
-          const row = result.data[0];
+        expect(result.data.length).toBeGreaterThan(0);
+        const row = result.data[0];
 
-          expect(row.source_anr_type).toBeDefined();
-          expect(row.trigger_type).toBeDefined();
-          expect(row.root_cause_pattern_hints).toBeDefined();
-          expect(row.not_final).toBe(1);
-          expect(typeof row.analysis_focus).toBe('string');
-        }
+        expect(row.source_anr_type).toBeDefined();
+        expect(row.trigger_type).toBeDefined();
+        expect(row.root_cause_pattern_hints).toBeDefined();
+        expect(row.not_final).toBe(1);
+        expect(typeof row.analysis_focus).toBe('string');
       }, 30000);
     });
 
-    describe('system_cpu_health step (conditional)', () => {
-      it('should handle execution gracefully', async () => {
+    describe('system_cpu_health step', () => {
+      it('should return its rows for the ANR window', async () => {
         // This step is conditional on ANR detection
         const result = await evaluator.executeStep('system_cpu_health');
 
-        // Step may succeed with data, succeed with empty data, or be skipped
-        if (result.success && result.data.length > 0) {
-          const cpuHealth = result.data[0];
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
+        const cpuHealth = result.data[0];
 
-          // Validate CPU health structure
-          expect(cpuHealth.core_type).toBeDefined();
-          expect(['big', 'little', 'mid']).toContain(cpuHealth.core_type);
+        // Validate CPU health structure
+        expect(cpuHealth.core_type).toBeDefined();
+        expect(['prime', 'big', 'medium', 'little', 'unknown']).toContain(cpuHealth.core_type);
 
-          if (cpuHealth.avg_util_pct !== null) {
-            expect(cpuHealth.avg_util_pct).toBeGreaterThanOrEqual(0);
-            expect(cpuHealth.avg_util_pct).toBeLessThanOrEqual(100);
-          }
-
-          expect(['insufficient_coverage', 'overloaded', 'busy', 'normal']).toContain(cpuHealth.status);
+        if (cpuHealth.avg_util_pct !== null) {
+          expect(cpuHealth.avg_util_pct).toBeGreaterThanOrEqual(0);
+          expect(cpuHealth.avg_util_pct).toBeLessThanOrEqual(100);
         }
+
+        expect(['insufficient_coverage', 'overloaded', 'busy', 'normal']).toContain(cpuHealth.status);
       }, 30000);
     });
 
-    describe('system_freeze_check step (conditional)', () => {
-      it('should handle execution gracefully', async () => {
+    describe('system_freeze_check step', () => {
+      it('should return its rows for the ANR window', async () => {
         const result = await evaluator.executeStep('system_freeze_check');
 
-        if (result.success && result.data.length > 0) {
-          const freezeCheck = result.data[0];
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
+        const freezeCheck = result.data[0];
 
-          // Validate freeze check structure
-          expect(typeof freezeCheck.total_apps).toBe('number');
-          expect(typeof freezeCheck.frozen_apps).toBe('number');
-          expect(['system_server_freeze', 'system_freeze', 'app_specific', 'undetermined']).toContain(freezeCheck.freeze_verdict);
-        }
+        // Validate freeze check structure
+        expect(typeof freezeCheck.total_apps).toBe('number');
+        expect(typeof freezeCheck.stalled_apps).toBe('number');
+        expect(['system_server_freeze', 'system_freeze', 'app_specific', 'undetermined']).toContain(freezeCheck.freeze_verdict);
       }, 30000);
     });
   });
@@ -472,136 +441,116 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
 
   describe('L2: List Layer', () => {
     describe('get_anr_events step', () => {
-      it('should list ANR events when data exists or return empty array', async () => {
+      it('should list the fixture ANR event', async () => {
         const result = await evaluator.executeStep('get_anr_events');
 
-        // Should always succeed (may be empty due to condition)
-        if (hasAnrData) {
-          expect(result.success).toBe(true);
-          expect(result.data.length).toBeGreaterThan(0);
-        } else {
-          expect(Array.isArray(result.data)).toBe(true);
-        }
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
       }, 30000);
 
-      it('should have valid ANR event structure when data exists', async () => {
+      it('should have valid ANR event structure', async () => {
         const result = await evaluator.executeStep('get_anr_events');
-        if (hasAnrData) {
-          expect(result.success).toBe(true);
-          expect(result.data.length).toBeGreaterThan(0);
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
+
+        expect(result.data.length).toBeGreaterThan(0);
+        const event = result.data[0];
+
+        // Required fields
+        expect(event.error_id).toBeDefined();
+        expect(event.process_name).toBeDefined();
+        expect(typeof event.process_name).toBe('string');
+        expect(event.pid).toBeDefined();
+        expect(event.anr_type).toBeDefined();
+        expect(event.trigger_type).toBeDefined();
+        expect(typeof event.trigger_type).toBe('string');
+
+        // Timestamp fields for navigation
+        expect(event.anr_ts).toBeDefined();
+        expect(event.perfetto_start).toBeDefined();
+        expect(event.perfetto_end).toBeDefined();
+
+        // Duration should be positive
+        if (event.anr_dur_ms !== null) {
+          expect(event.anr_dur_ms).toBeGreaterThan(0);
         }
 
-        if (result.data.length > 0) {
-          const event = result.data[0];
-
-          // Required fields
-          expect(event.error_id).toBeDefined();
-          expect(event.process_name).toBeDefined();
-          expect(typeof event.process_name).toBe('string');
-          expect(event.pid).toBeDefined();
-          expect(event.anr_type).toBeDefined();
-          expect(event.trigger_type).toBeDefined();
-          expect(typeof event.trigger_type).toBe('string');
-
-          // Timestamp fields for navigation
-          expect(event.anr_ts).toBeDefined();
-          expect(event.perfetto_start).toBeDefined();
-          expect(event.perfetto_end).toBeDefined();
-
-          // Duration should be positive
-          if (event.anr_dur_ms !== null) {
-            expect(event.anr_dur_ms).toBeGreaterThan(0);
-          }
-
-          // Type display for UI
-          expect(event.type_display).toBeDefined();
-          expect(['actual_anr_duration', 'perfetto_default', 'heuristic_fallback']).toContain(event.timeout_source);
-          expect(event.root_cause_pattern_hints).toBeDefined();
-        }
+        // Type display for UI
+        expect(event.type_display).toBeDefined();
+        expect(['actual_anr_duration', 'perfetto_default', 'heuristic_fallback']).toContain(event.timeout_source);
+        expect(event.root_cause_pattern_hints).toBeDefined();
       }, 30000);
 
       it('should include process/thread info', async () => {
         const result = await evaluator.executeStep('get_anr_events');
-        if (hasAnrData) {
-          expect(result.success).toBe(true);
-          expect(result.data.length).toBeGreaterThan(0);
-        }
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
 
-        if (result.data.length > 0) {
-          const event = result.data[0];
+        expect(result.data.length).toBeGreaterThan(0);
+        const event = result.data[0];
 
-          // Process identification
-          expect(event.process_name).toBeDefined();
-          expect(event.pid).toBeGreaterThan(0);
+        // Process identification
+        expect(event.process_name).toBeDefined();
+        expect(event.pid).toBeGreaterThan(0);
 
-          // ANR context
-          expect(event.timeout_ns).toBeDefined();
-          expect(BigInt(event.timeout_ns)).toBeGreaterThan(0n);
-        }
+        // ANR context
+        expect(event.timeout_ns).toBeDefined();
+        expect(BigInt(event.timeout_ns)).toBeGreaterThan(0n);
       }, 30000);
 
       it('should have timestamp navigation fields', async () => {
         const result = await evaluator.executeStep('get_anr_events');
-        if (hasAnrData) {
-          expect(result.success).toBe(true);
-          expect(result.data.length).toBeGreaterThan(0);
-        }
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
 
-        if (result.data.length > 0) {
-          const event = result.data[0];
+        expect(result.data.length).toBeGreaterThan(0);
+        const event = result.data[0];
 
-          // Perfetto jump parameters should be valid timestamp strings
-          const perfettoStart = BigInt(event.perfetto_start);
-          const perfettoEnd = BigInt(event.perfetto_end);
+        // Perfetto jump parameters should be valid timestamp strings
+        const perfettoStart = BigInt(event.perfetto_start);
+        const perfettoEnd = BigInt(event.perfetto_end);
 
-          expect(perfettoStart).toBeGreaterThan(0n);
-          expect(perfettoEnd).toBeGreaterThan(perfettoStart);
-        }
+        expect(perfettoStart).toBeGreaterThan(0n);
+        expect(perfettoEnd).toBeGreaterThan(perfettoStart);
       }, 30000);
     });
 
-    describe('memory_pressure step (conditional)', () => {
-      it('should handle execution gracefully', async () => {
+    describe('memory_pressure step', () => {
+      it('should find no LMK kill in the fixture ANR window', async () => {
         const result = await evaluator.executeStep('memory_pressure');
 
-        // This step is optional and conditional
-        if (result.success && result.data.length > 0) {
-          const pressure = result.data[0];
-
-          // Validate memory pressure structure
-          expect(pressure.oom_score_adj).toBeDefined();
-          expect(typeof pressure.kill_count).toBe('number');
-        }
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual([]);
       }, 30000);
     });
 
-    describe('io_load step (conditional)', () => {
-      it('should handle execution gracefully', async () => {
+    describe('io_load step', () => {
+      it('should return its rows for the ANR window', async () => {
         const result = await evaluator.executeStep('io_load');
 
-        if (result.success && result.data.length > 0) {
-          const ioLoad = result.data[0];
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
+        const ioLoad = result.data[0];
 
-          // Validate D-state baseline structure; this is not sufficient to prove IO root cause.
-          expect(ioLoad.process_name).toBeDefined();
-          expect(typeof ioLoad.uninterruptible_wait_ms).toBe('number');
-          expect(ioLoad.uninterruptible_wait_ms).toBeGreaterThan(10); // > 10ms filter in SQL
-        }
+        // Validate D-state baseline structure; this is not sufficient to prove IO root cause.
+        expect(ioLoad.process_name).toBeDefined();
+        expect(typeof ioLoad.uninterruptible_wait_ms).toBe('number');
+        expect(ioLoad.uninterruptible_wait_ms).toBeGreaterThan(10); // > 10ms filter in SQL
       }, 30000);
     });
 
-    describe('top_cpu_processes step (conditional)', () => {
-      it('should handle execution gracefully', async () => {
+    describe('top_cpu_processes step', () => {
+      it('should return its rows for the ANR window', async () => {
         const result = await evaluator.executeStep('top_cpu_processes');
 
-        if (result.success && result.data.length > 0) {
-          const topProcess = result.data[0];
+        expect(result.success).toBe(true);
+        expect(result.data.length).toBeGreaterThan(0);
+        const topProcess = result.data[0];
 
-          // Validate structure
-          expect(topProcess.process_name).toBeDefined();
-          expect(typeof topProcess.cpu_ms).toBe('number');
-          expect(typeof topProcess.cpu_pct).toBe('number');
-        }
+        // Validate structure
+        expect(topProcess.process_name).toBeDefined();
+        expect(typeof topProcess.cpu_ms).toBe('number');
+        expect(typeof topProcess.cpu_pct).toBe('number');
       }, 30000);
     });
   });
@@ -618,26 +567,6 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
       expect(result.skillId).toBe('anr_analysis');
     }, 120000);
 
-    it('should handle traces without ANRs gracefully', async () => {
-      const result = await evaluator.executeSkill();
-
-      expect(result.success).toBe(true);
-
-      // Overview layer should always have detection result
-      expect(result.layers.overview).toBeDefined();
-
-      // Detection step should be in overview
-      const detection = result.layers.overview?.['anr_detection'];
-      expect(detection).toBeDefined();
-      expect(detection?.success).toBe(true);
-
-      // If no ANRs, conditional steps may be skipped
-      if (detection?.data?.[0]?.total_anr_count === 0) {
-        // Verify skill completes without error even with no ANR data
-        expect(result.error).toBeUndefined();
-      }
-    }, 120000);
-
     it('should verify result structure', async () => {
       const result = await evaluator.executeSkill();
 
@@ -646,10 +575,8 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
       expect(result.layers.overview).toBeDefined();
 
       // When ANR data exists, verify list layer has events
-      if (hasAnrData) {
-        expect(result.layers.list).toBeDefined();
-        expect(Object.keys(result.layers.list!).length).toBeGreaterThan(0);
-      }
+      expect(result.layers.list).toBeDefined();
+      expect(Object.keys(result.layers.list!).length).toBeGreaterThan(0);
     }, 120000);
 
     it('should produce consistent normalized output', async () => {
@@ -664,17 +591,12 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
       expect(normalized.layers.overview['anr_detection'].hasData).toBe(true);
     }, 120000);
 
-    it('should support process_name filter parameter', async () => {
-      const result = await evaluator.executeSkill({
-        process_name: 'com.example.nonexistent',
-      });
-
-      // Should succeed even with non-matching filter
+    it('should scope the analysis to a process_name and refuse one that names no process', async () => {
+      const result = await evaluator.executeSkill({process_name: 'com.smartperfetto.fixture'});
       expect(result.success).toBe(true);
-
-      // Detection should return 0 ANRs for non-existent process
-      const detection = result.layers.overview?.['anr_detection'];
-      expect(detection?.success).toBe(true);
+      expect(result.layers.overview?.['anr_detection']?.data?.[0]?.total_anr_count).toBeGreaterThan(0);
+      expect((await evaluator.executeSkill({process_name: 'com.example.nonexistent'})).error)
+        .toMatch(/Process identity could not be verified.*status=not_found/);
     }, 120000);
 
     it('should support anr_type filter parameter', async () => {
@@ -697,10 +619,9 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
         FROM android_anrs
       `);
 
-      // Query should succeed (may return 0)
       expect(result.error).toBeUndefined();
       expect(result.rows.length).toBe(1);
-      expect(result.rows[0][0]).toBeGreaterThanOrEqual(0);
+      expect(result.rows[0][0]).toBeGreaterThan(0);
     }, 30000);
 
     it('should execute ANR type grouping query', async () => {
@@ -712,7 +633,7 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
       `);
 
       expect(result.error).toBeUndefined();
-      // Results may be empty if no ANRs
+      expect(result.rows).toEqual([['INPUT_DISPATCHING_TIMEOUT', 1]]);
     }, 30000);
 
     it('should check android_anrs table schema', async () => {
@@ -720,29 +641,24 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
         SELECT name FROM pragma_table_info('android_anrs')
       `);
 
-      // If table exists, verify expected columns
-      if (!result.error && result.rows.length > 0) {
-        const columns = result.rows.map(row => row[0]);
-
-        // Expected columns from skill SQL usage
-        expect(columns).toContain('ts');
-        expect(columns).toContain('process_name');
-        expect(columns).toContain('anr_type');
-      }
+      expect(result.error).toBeUndefined();
+      const columns = result.rows.map(row => row[0]);
+      // Expected columns from skill SQL usage
+      expect(columns).toEqual(expect.arrayContaining(['ts', 'process_name', 'anr_type']));
     }, 30000);
   });
 });
 
 // ===========================================================================
-// Real ANR Trace Smoke Tests
+// Fixture ANR Smoke Tests
 // ===========================================================================
 
-describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, () => {
+describeWithTrace('anr_analysis ANR trace smoke', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('anr_analysis');
-    await evaluator.loadTrace(REAL_ANR_TRACE_FILE);
+    await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
   }, 120000);
 
   afterAll(async () => {
@@ -750,7 +666,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     await new Promise(resolve => setTimeout(resolve, 2500));
   });
 
-  it('should detect ANRs in the Perfetto android_anr fixture', async () => {
+  it('should detect ANRs in the ANR fixture', async () => {
     const result = await evaluator.executeSQL(`
       SELECT COUNT(*) AS total_anr_count
       FROM android_anrs
@@ -761,7 +677,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     expect(result.rows[0][0]).toBeGreaterThan(0);
   }, 60000);
 
-  it('should execute trigger_classification against real ANR types', async () => {
+  it('should classify the fixture ANR type', async () => {
     const rawTypes = await evaluator.executeSQL(`
       SELECT anr_type, COUNT(*) AS event_count
       FROM android_anrs
@@ -786,7 +702,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     }
   }, 180000);
 
-  it('should filter shared ANR context by real anr_type', async () => {
+  it('should filter shared ANR context by the fixture anr_type', async () => {
     const rawTypes = await evaluator.executeSQL(`
       SELECT anr_type
       FROM android_anrs
@@ -809,7 +725,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     expect(result.data[0].anr_type).toBe(selectedType);
   }, 180000);
 
-  it('should execute get_anr_events with valid real per-event windows', async () => {
+  it('should execute get_anr_events with valid per-event windows', async () => {
     const result = await evaluator.executeStep('get_anr_events', { enable_detail_analysis: false });
 
     expect(result.success).toBe(true);
@@ -831,7 +747,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     }
   }, 180000);
 
-  it('should execute clipped overview evidence probes against the real ANR trace', async () => {
+  it('should execute clipped overview evidence probes against the ANR trace', async () => {
     const results = await evaluator.executeStepSequence(
       ['get_anr_context', 'anr_detection', 'system_cpu_health', 'io_load', 'futex_wait_probe', 'system_freeze_check'],
       { enable_detail_analysis: false },
@@ -851,7 +767,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     const detailEvaluator = createSkillEvaluator('anr_detail');
 
     try {
-      await detailEvaluator.loadTrace(REAL_ANR_TRACE_FILE);
+      await detailEvaluator.loadTrace(getTestTracePath(TRACE_FILE));
       const [availability, directBlocker] = await detailEvaluator.executeStepSequence(
         ['thread_evidence_availability', 'direct_blocker_classification'],
         {
@@ -898,7 +814,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     const detailEvaluator = createSkillEvaluator('anr_detail');
 
     try {
-      await detailEvaluator.loadTrace(REAL_ANR_TRACE_FILE);
+      await detailEvaluator.loadTrace(getTestTracePath(TRACE_FILE));
       const [blocking, mainSlices] = await detailEvaluator.executeStepSequence(
         ['blocking_reasons', 'main_thread_slices'],
         {
@@ -933,7 +849,7 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
     const detailEvaluator = createSkillEvaluator('anr_detail');
 
     try {
-      await detailEvaluator.loadTrace(REAL_ANR_TRACE_FILE);
+      await detailEvaluator.loadTrace(getTestTracePath(TRACE_FILE));
       const [availability, sliceBlocker] = await detailEvaluator.executeStepSequence(
         ['thread_evidence_availability', 'direct_blocker_slice_classification'],
         {
@@ -966,13 +882,35 @@ describeWithRepoTrace('anr_analysis real ANR trace smoke', REAL_ANR_TRACE_FILE, 
 // Edge Cases Tests
 // ===========================================================================
 
+describeWithTrace('anr_analysis on a trace without an ANR', 'android-scroll-standard', () => {
+  let evaluator: SkillEvaluator;
+
+  beforeAll(async () => {
+    evaluator = createSkillEvaluator('anr_analysis');
+    await evaluator.loadTrace(getTestTracePath('android-scroll-standard'));
+  }, 60000);
+
+  afterAll(async () => {
+    await evaluator.cleanup();
+  });
+
+  it('should report no ANR and run none of the per-ANR steps', async () => {
+    const result = await evaluator.executeSkill();
+
+    expect(result.success).toBe(true);
+    expect(result.error).toBeUndefined();
+    expect(result.layers.overview?.['anr_detection']?.data?.[0]?.total_anr_count).toBe(0);
+    expect(result.layers.overview?.['anr_overview']?.code).toBe('condition_not_met');
+  }, 120000);
+});
+
 describeWithTrace('anr_analysis edge cases', TRACE_FILE, () => {
   describe('with different filter combinations', () => {
     let evaluator: SkillEvaluator;
 
     beforeAll(async () => {
       evaluator = createSkillEvaluator('anr_analysis');
-      await evaluator.loadTrace(getTestTracePath('app_aosp_scrolling_heavy_jank.pftrace'));
+      await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
     }, 60000);
 
     afterAll(async () => {
@@ -993,26 +931,23 @@ describeWithTrace('anr_analysis edge cases', TRACE_FILE, () => {
       expect(result.data.length).toBeGreaterThan(0);
     }, 30000);
 
-    it('should handle process-name filtering without prefix bleed', async () => {
-      const result = await evaluator.executeStep('anr_detection', {
-        process_name: 'com.android',
-      });
-
-      expect(result.success).toBe(true);
+    it('should not let a process-name prefix bleed into other processes', async () => {
+      await expect(evaluator.executeStep('anr_detection', {process_name: 'com.smartperfetto'}))
+        .rejects.toThrow(/Process identity could not be verified/);
     }, 30000);
 
-    it('should handle specific ANR type filter', async () => {
+    it('should count no ANR of a type the fixture does not have', async () => {
       const result = await evaluator.executeStep('anr_detection', {
         anr_type: 'BROADCAST_OF_INTENT',
       });
 
       expect(result.success).toBe(true);
-      // Result may be 0 if no broadcast ANRs in trace
+      expect(result.data[0].total_anr_count).toBe(0);
     }, 30000);
 
     it('should handle combined filters', async () => {
       const result = await evaluator.executeSkill({
-        process_name: 'com.android.systemui',
+        process_name: 'com.smartperfetto.fixture',
         anr_type: 'INPUT_DISPATCHING_TIMEOUT',
       });
 
@@ -1027,21 +962,19 @@ describeWithTrace('anr_analysis edge cases', TRACE_FILE, () => {
 
     beforeAll(async () => {
       evaluator = createSkillEvaluator('anr_analysis');
-      await evaluator.loadTrace(getTestTracePath('app_aosp_scrolling_heavy_jank.pftrace'));
+      await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
     }, 60000);
 
     afterAll(async () => {
       await evaluator.cleanup();
     });
 
-    it('should execute anr_diagnosis step', async () => {
+    it('should triage the fixture ANR as an input dispatching timeout', async () => {
       const result = await evaluator.executeStep('anr_diagnosis');
 
-      // Diagnostic step may be skipped if no ANR data
-      // or may produce diagnosis based on available data
-      if (result.success) {
-        expect(Array.isArray(result.data)).toBe(true);
-      }
+      expect(result.success).toBe(true);
+      expect(result.data.map(diagnosis => diagnosis.diagnosis))
+        .toEqual(expect.arrayContaining([expect.stringContaining('输入事件超时')]));
     }, 30000);
   });
 });
@@ -1055,7 +988,7 @@ describeWithTrace('anr_analysis skill definition', TRACE_FILE, () => {
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('anr_analysis');
-    await evaluator.loadTrace(getTestTracePath('app_aosp_scrolling_heavy_jank.pftrace'));
+    await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
   }, 60000);
 
   afterAll(async () => {

@@ -18,10 +18,7 @@ import { normalizeSkillDefinition } from '../../src/services/skillEngine/skillLo
 import { assertEffectiveProcessScope } from '../../src/services/processIdentity/effectiveProcessScope';
 import yaml from 'js-yaml';
 import fs from 'fs';
-
-const traceCaseCatalog = require('../../../Trace/tools/lib/catalog.cjs') as {
-  resolveCaseTrace(repoRoot: string, selector: string): string;
-};
+import { resolveTraceCase } from '../helpers/traceCorpus';
 
 // =============================================================================
 // Types
@@ -445,8 +442,10 @@ export class SkillEvaluator {
 
   private extractStepData(stepResult: StepResult): any[] {
     // A `skill` reference step exposes the child step its save_as would bind.
-    const data = selectedStepResult(stepResult).data;
-    return Array.isArray(data) ? data : [];
+    const data: any = selectedStepResult(stepResult).data;
+    if (Array.isArray(data)) return data;
+    // A diagnostic step's result is the list of rules it fired.
+    return Array.isArray(data?.diagnostics) ? data.diagnostics : [];
   }
 
   /**
@@ -521,8 +520,10 @@ export class SkillEvaluator {
         { traceId: this.traceId }
       );
       const allowedFailures = new Set(options.allowFailedSteps || []);
+      // A step whose condition was not met did not run; the executor carries
+      // on past it (`code: 'condition_not_met'`), so it is no failure here.
       const failedSteps = this.collectResultSteps(result)
-        .filter(step => !step.success && !allowedFailures.has(step.stepId));
+        .filter(step => !step.success && step.code !== 'condition_not_met' && !allowedFailures.has(step.stepId));
 
       return {
         success: failedSteps.length === 0,
@@ -723,42 +724,30 @@ export function createSkillEvaluator(skillId: string): SkillEvaluator {
 }
 
 /**
- * 获取测试 trace 文件路径
+ * The trace a case is analyzed on, by case id or alias: a real case's committed
+ * trace, or a constructed case's materialized base plus overlay.
  */
 export function getTestTracePath(traceName: string): string {
-  return traceCaseCatalog.resolveCaseTrace(path.resolve(process.cwd(), '..'), traceName);
+  return resolveTraceCase(traceName, path.resolve(process.cwd(), '..'));
 }
 
 /**
- * Run `describe(name, fn)` only when the trace fixture is present on disk.
- * Otherwise marks the suite as skipped with the missing-fixture reason in the
- * suite name. Used by skill-eval suites whose binary fixtures are not always
- * checked in — keeps `npm test` clean on workstations without the fixtures
- * while still exercising the suite when fixtures are available.
- *
- * Mirrors `loadTrace`'s path semantics: jest runs from backend/, traces live in
- * Trace catalog paths are absolute; path.resolve keeps them unchanged.
+ * `describe(name, fn)` over a Trace corpus case. Every case trace is committed
+ * or materialized from committed overlays, so a case that does not resolve or a
+ * trace that is not on disk fails the suite instead of skipping it: a skipped
+ * suite asserts nothing while the gate stays green.
  */
 export function describeWithTrace(
   suiteName: string,
   traceName: string,
   fn: () => void,
 ): void {
-  let absolute: string;
-  try {
-    absolute = path.resolve(process.cwd(), '..', getTestTracePath(traceName));
-  } catch (error) {
-    if (error instanceof Error && error.message.startsWith('Unknown trace case:')) {
-      describe.skip(`${suiteName} [skipped: missing trace fixture ${traceName}]`, fn);
-      return;
-    }
-    throw error;
+  const absolute = getTestTracePath(traceName);
+  if (!fs.existsSync(absolute)) {
+    throw new Error(`${suiteName}: trace ${traceName} is not on disk at ${absolute}; ` +
+      'run `npm run trace:materialize` for a constructed case');
   }
-  if (fs.existsSync(absolute)) {
-    describe(suiteName, fn);
-  } else {
-    describe.skip(`${suiteName} [skipped: missing trace fixture ${traceName}]`, fn);
-  }
+  describe(suiteName, fn);
 }
 
 /** Find a step result across all 4 layer types (overview → list → session → deep). */

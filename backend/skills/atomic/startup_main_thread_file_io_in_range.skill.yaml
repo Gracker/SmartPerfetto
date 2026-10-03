@@ -79,37 +79,67 @@ display:
     - name: startup_type
       label: "启动类型"
       type: string
+    - {name: all_percent_of_startup, label: "全部文件 IO 启动占比", type: number, hidden: true}
+    - {name: all_total_dur_ms, label: "全部文件 IO 总耗时", type: number, hidden: true}
 
+sql_fragments:
+  - fragments/file_io_slice_names.sql
 sql: |
+  WITH
+  io AS (
+    SELECT
+      ts.slice_id,
+      ts.slice_name,
+      ts.thread_name,
+      ts.slice_dur,
+      s.startup_id,
+      s.dur AS startup_dur
+    FROM android_thread_slices_for_all_startups ts
+    JOIN android_startups s ON ts.startup_id = s.startup_id
+    WHERE ts.is_main_thread = 1
+      AND (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
+      AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
+      AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
+      AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
+      AND ts.slice_dur > ${min_dur_ns|500000}
+      -- File IO by whole slice-name word (fragments/file_io_slice_names.sql);
+      -- a SharedPreferences call is not startup file IO by its name alone.
+      AND EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(ts.slice_name), w.stem) > 0)
+      AND EXISTS (
+        SELECT 1 FROM file_io_slice_name_patterns n
+        WHERE n.io_type != 'shared_prefs'
+          AND ts.slice_name GLOB n.pattern
+      )
+      AND NOT EXISTS (SELECT 1 FROM file_io_slice_name_exclusions x WHERE ts.slice_name GLOB x.pattern)
+  ),
+  -- An IO slice inside another IO slice (database > sqlite > read) is part of
+  -- the outer one; only outermost IO slices add up to the startup total.
+  io_nesting AS (
+    SELECT
+      io.*,
+      NOT EXISTS (
+        SELECT 1
+        FROM ancestor_slice(io.slice_id) a
+        JOIN io outer_io ON outer_io.slice_id = a.id AND outer_io.startup_id = io.startup_id
+      ) AS is_outermost
+    FROM io
+  )
   SELECT
-    ts.slice_name as io_slice,
-    ts.thread_name,
+    slice_name as io_slice,
+    thread_name,
     COUNT(*) as count,
-    SUM(ts.slice_dur) / 1e6 as total_dur_ms,
-    ROUND(AVG(ts.slice_dur) / 1e6, 2) as avg_dur_ms,
-    ROUND(MAX(ts.slice_dur) / 1e6, 2) as max_dur_ms,
+    SUM(slice_dur) / 1e6 as total_dur_ms,
+    ROUND(AVG(slice_dur) / 1e6, 2) as avg_dur_ms,
+    ROUND(MAX(slice_dur) / 1e6, 2) as max_dur_ms,
     '${startup_type}' as startup_type,
-    ROUND(100.0 * SUM(ts.slice_dur) / s.dur, 1) as percent_of_startup
-  FROM android_thread_slices_for_all_startups ts
-  JOIN android_startups s ON ts.startup_id = s.startup_id
-  WHERE ts.is_main_thread = 1
-    AND (('${package}' = '' OR s.package = '${package}' OR s.package GLOB '${package}:*') OR '${package}' = '')
-    AND (${startup_id} IS NULL OR s.startup_id = ${startup_id})
-    AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
-    AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
-    AND ts.slice_dur > ${min_dur_ns|500000}
-    AND (
-      lower(ts.slice_name) GLOB '*open*'
-      OR lower(ts.slice_name) GLOB '*read*'
-      OR lower(ts.slice_name) GLOB '*write*'
-      OR lower(ts.slice_name) GLOB '*fsync*'
-      OR lower(ts.slice_name) GLOB '*fdatasync*'
-      OR lower(ts.slice_name) GLOB '*sqlite*'
-      OR lower(ts.slice_name) GLOB '*database*'
-      OR lower(ts.slice_name) GLOB '*file*'
-      OR lower(ts.slice_name) GLOB '*disk*'
-    )
-  GROUP BY ts.slice_name, s.startup_id
+    ROUND(100.0 * SUM(slice_dur) / startup_dur, 1) as percent_of_startup,
+    -- Window aggregates see every group before LIMIT: totals over the whole startup.
+    ROUND(100.0 * SUM(SUM(CASE WHEN is_outermost THEN slice_dur ELSE 0 END)) OVER (PARTITION BY startup_id)
+      / startup_dur, 1) as all_percent_of_startup,
+    ROUND(SUM(SUM(CASE WHEN is_outermost THEN slice_dur ELSE 0 END)) OVER (PARTITION BY startup_id) / 1e6, 2)
+      as all_total_dur_ms
+  FROM io_nesting
+  GROUP BY slice_name, startup_id
   ORDER BY total_dur_ms DESC
   LIMIT ${top_k|15}
 

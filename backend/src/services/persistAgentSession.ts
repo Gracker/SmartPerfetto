@@ -40,8 +40,7 @@ import {
   privateAnalysisQueryMessage,
   projectOwnerSessionStateSnapshot,
   projectOwnerTerminationMessage,
-  copyAnalysisResultForSnapshot,
-  projectOwnerAnalysisResult,
+  projectStoredAnalysisResultForOwner,
 } from './security/privateAnalysisProjection';
 import type {AnalysisResult} from '../agent/core/orchestratorTypes';
 import {
@@ -266,9 +265,7 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
   const finalResult = result.sessionId === sessionId && typeof result.success === 'boolean' &&
     Array.isArray(result.findings) && Array.isArray(result.hypotheses) &&
     typeof result.confidence === 'number' && typeof result.rounds === 'number'
-    ? privateKnowledge
-      ? projectOwnerAnalysisResult(sessionId, result as AnalysisResult, outputLanguage)
-      : copyAnalysisResultForSnapshot(result as AnalysisResult)
+    ? projectStoredAnalysisResultForOwner(privateKnowledge, sessionId, result as AnalysisResult, outputLanguage)
     : undefined;
 
   // History is a finalized product record. Failed durable writes must be visible

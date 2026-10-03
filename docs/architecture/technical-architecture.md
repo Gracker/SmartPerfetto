@@ -179,6 +179,12 @@ Skill 合约见 [Skill 系统指南](../reference/skill-system.md)。
 RPC。源码启动、npm、Docker 和 portable 必须使用同一 pin/校验规则；显式
 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径，启动器不会替用户改权限或覆盖文件。
 
+processor 的生命周期绑定到启动它的进程。macOS 和 Linux 上以
+`server http --idle-start orphaned` 启动，owner 退出后很快自行退出，包括不执行任何清理的退出
+（SIGKILL、崩溃、`jest --forceExit`）。Windows 和以 PID 1 运行的后端以不绑定 owner 的
+`server http` 启动，没有 `server http` 的二进制用经典 `--httpd` 启动；这些情况下 owner 死后
+遗留的 processor 由下一次后端启动的孤儿清扫回收。
+
 Skill/SQL 输出经过 DataEnvelope 后会继续形成：
 
 - evidence contract；
