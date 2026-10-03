@@ -38,7 +38,6 @@ export interface ClaimVerificationRunnerResult {
   claimVerificationResult: ClaimVerificationResult;
   identityResolutions: IdentityResolutionV1[];
   matchedTraceEvidenceRefIdsByClaimId: Record<string, string[]>;
-  verifiedTraceOccurrenceRefIdsByClaimId: Record<string, string[]>;
 }
 
 function collectMatchedTraceEvidenceRefIds(
@@ -64,20 +63,6 @@ export function collectMatchedTraceEvidenceRefIdsByClaimId(
     // A candidate can own matched references without proving its proposed mechanism.
     new Set<ClaimVerificationClaimStatus>(['verified', 'partial', 'inference']),
   );
-}
-
-export function collectVerifiedTraceOccurrenceRefIdsByClaimId(
-  verification: ClaimVerificationResult,
-): Record<string, string[]> {
-  if (verification.schemaVersion !== 'claim_verifier@2') return {};
-  const result: Record<string, string[]> = {};
-  for (const claim of verification.claimResults) {
-    const proof = claim.deterministicProof;
-    if (claim.status !== 'verified' || proof?.status !== 'proved' || proof.kind !== 'interval_overlap'
-      || claim.propositionCoverage?.status !== 'complete') continue;
-    if (proof.evidenceRefIds.length) result[claim.claimId] = [...new Set(proof.evidenceRefIds)].sort();
-  }
-  return result;
 }
 
 function isIdentityResolution(value: unknown): value is IdentityResolutionV1 {
@@ -176,9 +161,6 @@ export function runClaimVerification(input: ClaimVerificationRunnerInput): Claim
       (input.dataEnvelopes || []).filter(envelope => validateDataEnvelope(envelope).length === 0),
     ),
     matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(
-      claimVerificationResult,
-    ),
-    verifiedTraceOccurrenceRefIdsByClaimId: collectVerifiedTraceOccurrenceRefIdsByClaimId(
       claimVerificationResult,
     ),
   };

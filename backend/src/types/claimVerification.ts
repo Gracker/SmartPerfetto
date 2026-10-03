@@ -36,6 +36,7 @@ export interface ClaimReferenceVerificationResult {
 export type DeterministicClaimProofKind =
   | 'numeric_cell'
   | 'captured_cell'
+  /** Historical results only: no current rule produces a source-location proof. */
   | 'source_location'
   | 'interval_overlap'
   | 'comparison_delta'

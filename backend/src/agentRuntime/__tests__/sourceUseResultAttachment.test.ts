@@ -61,7 +61,7 @@ function plainResult(sessionId: string): AnalysisResult {
   };
 }
 
-describe('optional source location binding at shared finalization', () => {
+describe('written source locations at shared finalization', () => {
   afterEach(() => clearAllCodeAwareOutputGuards());
 
   async function locationFixture(mode: 'absent' | 'empty' | 'tuple_mismatch' | 'semantic_unavailable' | 'privacy' | 'changed_ledger') {
@@ -77,7 +77,7 @@ describe('optional source location binding at shared finalization', () => {
         conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
         claims: [{id: 'location', kind: 'identity', text: body, references: [], semantics: {
           schemaVersion: 'claim_semantics@1', predicate: 'source.location', polarity: 'affirmed', discourse: 'asserted',
-          quantifier: 'one', modality: 'certain', scope: {population: 'codebase'}, source,
+          quantifier: 'one', modality: 'certain', scope: {population: 'codebase'},
         }}], ...(mode === 'empty' ? {sourceClaimBindings: []} : {})};
       const result = plainResult(fixture.sessionId);
       result.conclusion = `${body}\n${renderConclusionContractSidecar(declaration)}`;
@@ -126,16 +126,18 @@ describe('optional source location binding at shared finalization', () => {
     }
   }
 
-  test.each(['absent', 'empty'] as const)('joins current tool-issued locations with %s bindings without claiming mechanism verification', async mode => {
+  test.each(['absent', 'empty'] as const)('matches a written location against the run with %s bindings, proving nothing about the code', async mode => {
     const fixture = await locationFixture(mode);
     try {
       const finalized = await fixture.run();
       expect(finalized.semanticAssessment?.reason).toBeUndefined();
       expect(finalized.semanticAssessment).toMatchObject({status: 'checked', consistency: 'consistent'});
-      expect(finalized.result.claimVerificationResult).toMatchObject({passed: true, claimResults: [{claimId: 'location',
-        status: 'verified', deterministicProof: {kind: 'source_location', status: 'proved', anchorIds: [], evidenceRefIds: []}}]});
-      expect(finalized.result.sourceClaimVerificationResult).toEqual({schemaVersion: 'source_claim_verifier@1',
-        status: 'not_checked', bindings: [], issues: []});
+      // No finite rule proves a source location any longer.
+      expect(finalized.result.claimVerificationResult?.claimResults.some(claim => claim.status === 'verified')).toBe(false);
+      // The location was returned by this run's read; the unbound claim stays unverified.
+      expect(finalized.result.sourceClaimVerificationResult).toMatchObject({schemaVersion: 'source_claim_verifier@2',
+        status: 'partial', claims: [{claimId: 'location', status: 'unbound'}],
+        citations: [{status: 'verified_body', sourceReferenceId: fixture.reference.id}]});
       expect(finalized.result.sourceUseDecision).toEqual(fixture.decision);
       expect(finalized.result.conclusionContract?.sourceClaimBindings ?? []).toEqual([]);
       expect(Object.prototype.hasOwnProperty.call(fixture.declaration, 'sourceClaimBindings')).toBe(mode === 'empty');
@@ -144,7 +146,7 @@ describe('optional source location binding at shared finalization', () => {
     } finally {fixture.cleanup();}
   });
 
-  test.each(['tuple_mismatch', 'semantic_unavailable', 'privacy'] as const)('does not verify an optional binding through %s', async mode => {
+  test.each(['tuple_mismatch', 'semantic_unavailable', 'privacy'] as const)('verifies no location claim through %s', async mode => {
     const fixture = await locationFixture(mode);
     try {
       const finalized = await fixture.run();
@@ -194,7 +196,7 @@ describe('runtime source finalization behavior', () => {
       schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
       evidenceChain: [], uncertainties: [], nextSteps: [], claims: [{id: 'measured', kind: 'numeric',
         text: input.text, references: [{evidenceRefId: 'data:probe', column: 'value', rowIndex: 0, value: 49}]}],
-      sourceClaimBindings: [{claimId: 'measured', mechanismStatus: 'compatible',
+      sourceClaimBindings: [{claimId: 'measured',
         sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['data:probe']}],
     })}`;
     const projected = finalizeSourceAwareAnalysisResultWithProjection(result, {getSourceUseDecision: () => ({
@@ -260,7 +262,7 @@ describe('runtime source finalization behavior', () => {
         sourceReferenceIds: [sourceReference.id],
         traceEvidenceRefIds: ['trace-evidence-fabricated'],
         reason: 'SECRET_BINDING_REASON_CANARY',
-      }],
+      } as any],
       uncertainties: [],
       nextSteps: [],
     };

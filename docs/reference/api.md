@@ -520,13 +520,15 @@ owner 投影；被拆在多个 token 或多行里的凭据，会一直扣住到�
 
 终态 `analysis_completed` 事件可能携带 `analysisReceipt`、
 `uiActionProposals` 和经安全投影的 `conclusionContract.sourceUseDecision` /
-`sourceClaimBindings`。`sourceUseDecision` 区分 selected / queried / used codebase、
-status / reason code 和搜索 coverage；`sourceClaimBindings` 用
-`corroborated|compatible|ambiguous|unverified` 把实现机制与同一 claim 的
-Trace 证据绑定。`CodeRef` 只能解释机制，不能单独提高现象或根因
-置信度；`metadata_only` 为 locate-only，不会因为只定位到文件就升级为
-`corroborated`。投影不包含绝对 root、snippet、检索 query 或模型自由文本
-binding reason。
+`sourceClaimBindings` 与 `sourceClaimVerificationResult`。`sourceUseDecision` 区分
+selected / queried / used codebase、status / reason code 和搜索 coverage；
+`sourceClaimBindings` 把 claim 关联到本轮源码引用和同一 claim 的 Trace 证据。
+`sourceClaimVerificationResult`（`source_claim_verifier@2`）的 `claims[].status` 为
+`invalid|unbound|location_only|source_only|trace_linked`，`citations[]` 记录正文
+写出的源码位置与本轮引用的比对（`verified_body|located|unmatched|ambiguous`）；
+历史结果可能仍是带 `mechanismStatus` 的 `@1`。`CodeRef` 只能解释机制，不能单独
+提高现象或根因置信度；`metadata_only` 为 locate-only。投影不包含绝对 root、
+snippet、检索 query 或模型自由文本 binding reason。
 
 `uiActionProposals` 只包含从
 DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转到时间范围、打开证据表

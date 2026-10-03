@@ -8,8 +8,7 @@ import * as path from 'path';
 import {DEFAULT_OUTPUT_LANGUAGE, type OutputLanguage} from '../../agentv3/outputLanguage';
 import {loadPromptSegment} from '../../agentv3/strategyLoader';
 import type {CodeAwareMode} from './codeAwareFeature';
-import type {CodebaseKind} from './codebaseRegistry';
-import {sourceExtensionsForKind} from './sourceSelectionPolicy';
+import {allSourceExtensions} from './sourceSelectionPolicy';
 
 export const SOURCE_USE_DECISION_SCHEMA_VERSION = 'source_use_decision@1' as const;
 
@@ -87,12 +86,17 @@ export interface SourceExecutionScopeV1 {
   analysisContextFingerprint: string;
 }
 
+/**
+ * A claim bound to the source references (and same-claim Trace evidence) it
+ * relies on. The product computes the claim's source status; the model no
+ * longer declares one. `mechanismStatus` is read only from stored results.
+ */
 export interface SourceClaimBindingV1 {
   claimId: string;
-  mechanismStatus: SourceMechanismStatus;
   sourceReferenceIds: string[];
   traceEvidenceRefIds: string[];
-  reason?: string;
+  /** Retired model-declared status; present only in stored historical results. */
+  mechanismStatus?: SourceMechanismStatus;
 }
 
 /** A decision to skip source cannot erase actual access or incomplete coverage. */
@@ -135,14 +139,8 @@ const MAX_SOURCE_TOOL_COUNT = 64;
 const MAX_SOURCE_INCOMPLETE_REASON_COUNT = 20;
 const MAX_SOURCE_CLAIM_BINDING_COUNT = 100;
 const MAX_SOURCE_BINDING_REFERENCE_COUNT = 100;
-const MAX_SOURCE_LINE = 2_147_483_647;
+export const MAX_SOURCE_LINE = 2_147_483_647;
 const LEGACY_REFERENCE_ONLY_EXTENSIONS = ['.sql', '.md'] as const;
-const CODEBASE_KINDS = [
-  'app_source',
-  'aosp',
-  'kernel_source',
-  'oem_sdk',
-] as const satisfies readonly CodebaseKind[];
 const SOURCE_LOOKUP_KINDS: ReadonlySet<SourceLookupKind> = new Set(SOURCE_LOOKUP_KIND_VALUES);
 const SOURCE_USE_STATUSES: ReadonlySet<SourceUseStatus> = new Set([
   'pending',
@@ -167,7 +165,7 @@ const SOURCE_USE_REASON_CODES = new Set<NonNullable<SourceUseDecisionV1['reasonC
   'unverified',
 ]);
 const SUPPORTED_SOURCE_EXTENSIONS = new Set(
-  [...CODEBASE_KINDS.flatMap(kind => sourceExtensionsForKind(kind)), ...LEGACY_REFERENCE_ONLY_EXTENSIONS]
+  [...allSourceExtensions(), ...LEGACY_REFERENCE_ONLY_EXTENSIONS]
     .map(extension => extension.toLocaleLowerCase('en-US')),
 );
 
@@ -273,7 +271,7 @@ export function isBodyLookupKind(kind: SourceLookupKind): boolean {
  * Whether the run delivered this reference's whole range as a body: it is a
  * body reference itself, or an issued body reference of the same file and
  * the same known source generation (an index generation, or the live content
- * version on-demand reads carry) contains its range. An unknown generation
+ * version on-demand reads carry) together contain its range. An unknown generation
  * never matches, so a changed file cannot stand in for the one searched. It
  * never widens a reference beyond its own range.
  */
@@ -284,20 +282,43 @@ export function referenceHasReadBody(
   if (isBodyLookupKind(reference.lookupKind)) return true;
   const range = reference.lineRange;
   if (!range || reference.sourceGeneration === undefined) return false;
+  const identity = sourceReferenceIdentity(reference);
+  // Bodies of the one known version together, as a written citation is judged.
+  const bodies: Array<{start: number; end: number}> = [];
   for (const other of issued) {
-    if (!isBodyLookupKind(other.lookupKind) || !other.lineRange) continue;
-    if (other.codebaseId === reference.codebaseId && other.filePath === reference.filePath &&
-      other.sourceGeneration === reference.sourceGeneration &&
-      other.lineRange.start <= range.start && other.lineRange.end >= range.end) return true;
+    if (isBodyLookupKind(other.lookupKind) && other.lineRange && sourceReferenceIdentity(other) === identity) {
+      bodies.push(other.lineRange);
+    }
+  }
+  return lineRangesCover(bodies, range);
+}
+
+type LineRange = {start: number; end: number};
+
+/** Inclusive line ranges that share a line. */
+export const lineRangesIntersect = (a: LineRange, b: LineRange): boolean => a.start <= b.end && b.start <= a.end;
+/** The union of `ranges` holds every line of `target`. */
+export function lineRangesCover(ranges: readonly LineRange[], target: LineRange): boolean {
+  let next = target.start;
+  for (const range of [...ranges].sort((a, b) => a.start - b.start)) {
+    if (range.start > next) break;
+    if (range.end >= next) next = range.end + 1;
+    if (next > target.end) return true;
   }
   return false;
 }
 
-const ISSUED_SOURCE_REFERENCE_ID = /^source-ref-v1-[0-9a-f]{24}$/;
-
-/** The shape of an id `sanitizeSourceReference` issues. */
-export function isIssuedSourceReferenceId(value: unknown): value is string {
-  return typeof value === 'string' && ISSUED_SOURCE_REFERENCE_ID.test(value);
+/**
+ * One file version: codebase, path and source generation. References of two
+ * identities never prove anything about each other's lines. A reference with
+ * no known generation is its own version: an absent version is not an equal one.
+ */
+export function sourceReferenceIdentity(
+  reference: Pick<SourceReferenceV1, 'id' | 'codebaseId' | 'filePath' | 'sourceGeneration'>,
+): string {
+  return reference.sourceGeneration === undefined
+    ? `${reference.codebaseId}\0${reference.filePath}\0\0${reference.id}`
+    : `${reference.codebaseId}\0${reference.filePath}\0${reference.sourceGeneration}`;
 }
 
 const DERIVABLE_SOURCE_USE_STATUSES: ReadonlySet<SourceUseStatus> = new Set([
@@ -490,15 +511,21 @@ function sourceMechanismStatus(value: unknown): SourceMechanismStatus | undefine
     ? value : undefined;
 }
 
+/** Retired binding keys a model may still write: accepted and dropped, never judged. */
+const LEGACY_SOURCE_BINDING_KEYS = ['mechanismStatus', 'reason'];
+const SOURCE_BINDING_KEYS = ['claimId', 'sourceReferenceIds', 'traceEvidenceRefIds', ...LEGACY_SOURCE_BINDING_KEYS];
+
 /** Validate original declaration shape without trimming, dropping, or deduplicating values. */
 export function isSourceClaimBindingDeclaration(value: unknown): value is SourceClaimBindingV1 {
-  const required = ['claimId', 'mechanismStatus', 'sourceReferenceIds', 'traceEvidenceRefIds'];
-  if (!isRecord(value) || required.some(key => !Object.prototype.hasOwnProperty.call(value, key)) ||
-    Object.keys(value).some(key => !required.includes(key) && key !== 'reason') ||
-    typeof value.claimId !== 'string' || strictIdentifier(value.claimId, MAX_SOURCE_REFERENCE_ID_LENGTH) !== value.claimId ||
-    !sourceMechanismStatus(value.mechanismStatus) ||
-    (Object.prototype.hasOwnProperty.call(value, 'reason') && typeof value.reason !== 'string')) return false;
-  for (const references of [value.sourceReferenceIds, value.traceEvidenceRefIds]) {
+  if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, 'claimId') ||
+    !Object.prototype.hasOwnProperty.call(value, 'sourceReferenceIds') ||
+    Object.keys(value).some(key => !SOURCE_BINDING_KEYS.includes(key)) ||
+    typeof value.claimId !== 'string' || strictIdentifier(value.claimId, MAX_SOURCE_REFERENCE_ID_LENGTH) !== value.claimId) {
+    return false;
+  }
+  // An omitted Trace list is empty; a present one must be an array.
+  const traceIds = Object.prototype.hasOwnProperty.call(value, 'traceEvidenceRefIds') ? value.traceEvidenceRefIds : [];
+  for (const references of [value.sourceReferenceIds, traceIds]) {
     if (!Array.isArray(references) || references.length > MAX_SOURCE_BINDING_REFERENCE_COUNT) return false;
     for (const reference of references) {
       if (typeof reference !== 'string' || strictIdentifier(reference, MAX_SOURCE_REFERENCE_ID_LENGTH) !== reference) return false;
@@ -514,6 +541,17 @@ export function isSourceClaimBindingsDeclaration(value: unknown): value is Sourc
   return true;
 }
 
+/** A valid declared array in its current form: retired keys dropped, a missing Trace list empty. */
+export function canonicalSourceClaimBindingDeclarations(value: readonly SourceClaimBindingV1[]): SourceClaimBindingV1[] {
+  return value.map(binding => ({claimId: binding.claimId, sourceReferenceIds: [...binding.sourceReferenceIds],
+    traceEvidenceRefIds: [...(binding.traceEvidenceRefIds ?? [])]}));
+}
+
+/** Whether a value is a status a stored historical binding may carry. */
+export function isSourceMechanismStatus(value: unknown): value is SourceMechanismStatus {
+  return sourceMechanismStatus(value) !== undefined;
+}
+
 export function sanitizeSourceClaimBindings(
   value: unknown,
   options: {
@@ -526,8 +564,9 @@ export function sanitizeSourceClaimBindings(
   for (const candidate of value) {
     if (!isRecord(candidate)) continue;
     const claimId = strictIdentifier(candidate.claimId, MAX_SOURCE_REFERENCE_ID_LENGTH);
+    // Kept only to render stored historical results; never produced or judged now.
     const mechanismStatus = sourceMechanismStatus(candidate.mechanismStatus);
-    if (!claimId || !mechanismStatus) continue;
+    if (!claimId) continue;
     const sourceReferenceIds = uniqueBoundedIdentifiers(
       candidate.sourceReferenceIds,
       MAX_SOURCE_BINDING_REFERENCE_COUNT,
@@ -543,9 +582,9 @@ export function sanitizeSourceClaimBindings(
     seen.add(key);
     bindings.push({
       claimId,
-      mechanismStatus,
       sourceReferenceIds,
       traceEvidenceRefIds,
+      ...(mechanismStatus ? {mechanismStatus} : {}),
     });
     if (bindings.length >= MAX_SOURCE_CLAIM_BINDING_COUNT) break;
   }

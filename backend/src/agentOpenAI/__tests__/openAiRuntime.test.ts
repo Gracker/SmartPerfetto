@@ -32,7 +32,6 @@ import type {AnalysisTurnIntentDecision} from '../../agentRuntime/analysisTurnIn
 import * as systemPrompt from '../../agentv3/claudeSystemPrompt';
 import * as focusDetector from '../../agentv3/focusAppDetector';
 import * as mcpModule from '../../agentv3/claudeMcpServer';
-import {getSourceLookupCodeReferences} from '../../services/codebase/sourceLookupTools';
 import {projectCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import * as localizedStrategyTemplate from '../../agentv3/localizedStrategyTemplate';
@@ -1464,14 +1463,7 @@ describe('OpenAI shared tool receipt and private projection', () => {
         toolName: 'lookup_app_source',
         matchedPhaseId: 'p-source',
         success: true,
-        returnedCodeReferences: true,
       }));
-    expect(getSourceLookupCodeReferences(currentPlan)).toEqual([{
-      chunkId: 'source-1',
-      codebaseId: 'codebase-a',
-      filePath: 'app/src/main/java/com/example/StartupHooks.kt',
-      lineRange: {start: 10, end: 20},
-    }]);
     expect(JSON.stringify(currentPlan)).not.toContain('StartupHooks.kt');
     const serialized = JSON.stringify(updates.filter(update => update.type === 'agent_response'));
     expect(serialized).not.toContain('OPENAI_PRIVATE_SOURCE_CANARY');

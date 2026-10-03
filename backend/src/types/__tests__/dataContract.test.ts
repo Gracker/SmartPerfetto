@@ -162,7 +162,8 @@ describe('dataContract column inference', () => {
     const names = parsed.statements.map(statement => (statement as ts.InterfaceDeclaration).name.text);
     expect(names).toEqual(expect.arrayContaining(['AnalysisTurnIntent', 'AnalysisCompletion', 'AgentRuntimeKind',
       'AnalysisCandidateIdentity', 'AnalysisReportBinding', 'AnalysisReportRequirementAssessment',
-      'AnalysisDeliveryAssurance', 'SourceUseDecisionV1', 'SourceClaimVerificationResult', 'SourceClaimBindingV1']));
+      'AnalysisDeliveryAssurance', 'SourceUseDecisionV1', 'SourceClaimVerificationResult', 'SourceClaimBindingV1',
+      'StoredSourceClaimVerificationResult', 'LegacySourceClaimVerificationResultV1', 'SourceCitationV1']));
     expect(names).not.toEqual(expect.arrayContaining(['CurrentAnalysisDeliveryContext']));
     expect(fragment).not.toContain('typeof ');
     expect(fragment).not.toContain('WeakMap');
@@ -170,7 +171,8 @@ describe('dataContract column inference', () => {
     const event = analysisCompletedContractFragment(source);
     expect(event).not.toContain('import(');
     expect(event).toContain('completion?: AnalysisCompletion;');
-    expect(event).toContain('sourceClaimVerificationResult?: SourceClaimVerificationResult;');
+    // A replayed historical event may carry a result stored before claims were judged per claim.
+    expect(event).toContain('sourceClaimVerificationResult?: StoredSourceClaimVerificationResult;');
   });
 
   it('spells out const-backed unions and drops private helpers in the contract fragments', () => {

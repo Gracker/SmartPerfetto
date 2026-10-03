@@ -72,7 +72,6 @@ function normalizedDecision(value: any) {
 function normalizedBindings(value: any) {
   return (value || []).map((binding: any) => ({
     claimId: binding.claimId,
-    mechanismStatus: binding.mechanismStatus,
     sourceReferenceIds: binding.sourceReferenceIds,
     traceEvidenceRefIds: binding.traceEvidenceRefIds,
   }));
@@ -160,7 +159,8 @@ describe('source provenance output surface matrix', () => {
         query: 'SECRET_QUERY_CANARY',
       } as any],
     };
-    const body = 'The trace reports 120 ms blocked.';
+    // The answer cites the bound location; the quoted form keeps a spaced path whole.
+    const body = `The trace reports 120 ms blocked in \`${filePath}:L10-L12\`.`;
     const traceReference = {evidenceRefId: 'trace-evidence-1', rowIndex: 0, column: 'blocked_ms', value: 120};
     const declaration = parseConclusionContractDeclaration({
       schemaVersion: 'conclusion_contract_v1',
@@ -181,11 +181,10 @@ describe('source provenance output surface matrix', () => {
       sourceReferences: sourceUseDecision.references,
       sourceClaimBindings: [{
         claimId: 'claim-1',
-        mechanismStatus: 'compatible',
         sourceReferenceIds: [reference.id],
         traceEvidenceRefIds: ['trace-evidence-1'],
         reason: 'SECRET_BINDING_REASON_CANARY',
-      }],
+      } as any],
       uncertainties: [],
       nextSteps: [],
     });
@@ -221,9 +220,10 @@ describe('source provenance output surface matrix', () => {
         conclusionFingerprint: analysisDeliveryFingerprint(body)});
       expect(result.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@2', status: 'passed', passed: true,
         claimResults: [{claimId: 'claim-1', status: 'verified', deterministicProof: {status: 'proved'}}]});
-      expect(result.sourceClaimVerificationResult?.bindings).toEqual([expect.objectContaining({
-        claimId: 'claim-1', mechanismStatus: 'compatible', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['trace-evidence-1'],
-      })]);
+      expect(result.sourceClaimVerificationResult).toMatchObject({schemaVersion: 'source_claim_verifier@2', status: 'passed',
+        claims: [{claimId: 'claim-1', status: 'trace_linked', sourceReferenceIds: [reference.id],
+          traceEvidenceRefIds: ['trace-evidence-1']}],
+        citations: [{filePath, status: 'verified_body', sourceReferenceId: reference.id}]});
       expect(result.conclusion).toBe(body);
       expect(JSON.stringify(result)).not.toContain('SECRET_');
       expect(JSON.stringify(result)).not.toContain('/Users/chris/private-source');
@@ -380,7 +380,7 @@ describe('source provenance output surface matrix', () => {
         expect(rendered).toContain(reference.id);
         expect(rendered).toContain(filePath);
         expect(rendered).toContain('claim-1');
-        expect(rendered).toContain('compatible');
+        expect(rendered).toContain('trace_linked');
         expect(rendered).not.toContain('/Users/chris/private-source');
         expect(rendered).not.toContain('SECRET_');
       }
@@ -426,7 +426,7 @@ describe('source provenance output surface matrix', () => {
 
       const expectedDecision = normalizedDecision(wireResult.sourceUseDecision);
       const expectedBindings = normalizedBindings(wireResult.conclusionContract?.sourceClaimBindings);
-      expect(expectedBindings).toEqual([{claimId: 'claim-1', mechanismStatus: 'compatible',
+      expect(expectedBindings).toEqual([{claimId: 'claim-1',
         sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['trace-evidence-1']}]);
       const surfaces = [
         {name: 'sse', decision: sseContract.sourceUseDecision, bindings: sseContract.sourceClaimBindings},

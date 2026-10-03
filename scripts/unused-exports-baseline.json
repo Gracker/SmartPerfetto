@@ -1,6 +1,6 @@
 {
   "note": "Backend exports no production module uses, in or outside its own file: used only by tests, or by nothing, including barrel re-exports nothing imports through the barrel. Each entry is accepted debt, and a suite over it vouches for nothing the product does. Shrink this list; do not grow it.",
-  "generated": "2026-09-30",
+  "generated": "2026-10-03",
   "unusedExports": [
     "src/agent/core/modelRouter.ts#default",
     "src/agent/detectors/index.ts#ArchitectureDetector",
@@ -226,8 +226,6 @@
     "src/services/auth/codebaseScopes.ts#hasCodebaseScope",
     "src/services/batchTrace/batchTraceTypes.ts#BatchTraceComparisonBridgeResult",
     "src/services/capabilityManifestRuntimeIdentity.ts#clearCapabilityRuntimeIdentityCaches",
-    "src/services/codebase/codeReferenceContract.ts#completeFinalReportCodeReferences",
-    "src/services/codebase/codeReferenceContract.ts#loadCodeReferenceContractPrompt",
     "src/services/codebase/defaultCodebaseServices.ts#resetDefaultCodebaseRegistryForTests",
     "src/services/conversationSessionStore.ts#resetConversationSessionStoreForTests",
     "src/services/criticalPathQuantify.ts#__INTERNAL__",

@@ -1,7 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2024-2026 Gracker (Chris) | SmartPerfetto -->
 
-## Source evidence in findings
+<!-- Source recipe for mechanism depth: explaining how the implementation behaves. -->
+
+## Source evidence in findings (mechanism depth)
 
 When an implementation explanation or remedy depends on concrete app-owned
 Trace anchors and source is selected and authorized, resolve those anchors in
@@ -29,10 +31,13 @@ claimed connection and remedy conditional. Even a connection alone does not make
 the full wait recoverable time; quantify benefit only with evidence for the
 proposed change's effect on the critical path.
 
-Place the complete relative path and actual line range beside each source finding,
-for example `relative/path/File.kt:L10-L20`. A filename at the section top with
-disconnected line numbers later is insufficient. Unread functions cannot establish
-behavior. Keep version/build correspondence explicit.
+For a name seen in the trace (slice, marker, thread, native frame), start with
+`locate_trace_anchor`; it finds the emitting line even when the number in the name
+was built at run time or a thread name was truncated. Place the complete relative
+path and actual line range beside each source finding, for example
+`relative/path/File.kt:L10-L20`. A filename at the section top with disconnected
+line numbers later is insufficient. Unread functions cannot establish behavior.
+Keep version/build correspondence explicit.
 
 `sourceClaimBindings` is a top-level declaration array, alongside `claims`, not
 inside a claim. Each source-based behavior, call-chain or recommendation proposition
@@ -46,14 +51,15 @@ fields. Hypothetical wording applies only to unestablished candidate mechanisms:
 ```json
 {
   "claims": [{"id":"source-mechanism-1","text":"This implementation might explain the observed wait.","kind":"inference","references":[],"semantics":{"schemaVersion":"claim_semantics@1","predicate":"source.mechanism","polarity":"affirmed","discourse":"hypothetical","quantifier":"one","modality":"possible","scope":{"population":"codebase"}}}],
-  "sourceClaimBindings": [{"claimId":"source-mechanism-1","mechanismStatus":"compatible","sourceReferenceIds":["<current sourceReferences[].id>"],"traceEvidenceRefIds":[]}]
+  "sourceClaimBindings": [{"claimId":"source-mechanism-1","sourceReferenceIds":["<current sourceReferences[].id>"],"traceEvidenceRefIds":[]}]
 }
 ```
 Copy each tool-issued source ID verbatim; never reconstruct, shorten or splice
 its hash. Before delivering, check every binding ID against the returned list.
 A source-only implementation finding keeps both Trace `references` and
-`traceEvidenceRefIds` empty. Do not borrow an artifact cited by a separate
-measurement claim to make a source-only claim look corroborated.
+`traceEvidenceRefIds` empty; it stays a source explanation, not linked to Trace.
+Do not borrow an artifact cited by a separate measurement claim to make a
+source-only claim look linked.
 Trace references in a mixed claim must belong to that same claim. Missing bindings
 or a source read alone never establish a verified connection. Preserve unknowns;
 this declaration example does not grant new evidence access or source permission.

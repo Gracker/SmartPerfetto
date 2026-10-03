@@ -221,6 +221,14 @@ export function sourceExtensionsForKind(kind: CodebaseKind): readonly string[] {
   return EXTENSIONS_BY_KIND[kind];
 }
 
+/** Every codebase kind; the extension table's type keeps it exhaustive. */
+export const CODEBASE_KINDS = Object.freeze(Object.keys(EXTENSIONS_BY_KIND) as CodebaseKind[]);
+
+/** Every extension some codebase kind admits. */
+export function allSourceExtensions(): string[] {
+  return [...new Set(CODEBASE_KINDS.flatMap(kind => EXTENSIONS_BY_KIND[kind]))];
+}
+
 export function buildSourceSelectionIR(input: BuildSourceSelectionInput): SourceSelectionIR {
   const includePrefixes = [...new Set((input.includePrefixes ?? []).map(prefix =>
     normalizeRelative(prefix, 'source_include_prefix_invalid')))].sort();

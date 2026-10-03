@@ -26,6 +26,8 @@ import {
   preserveProjectedFieldOrder,
 } from './analysisDeliveryProjection';
 import {sanitizeSourceClaimBindings, sanitizeSourceReferences} from '../codebase/sourceUseDecision';
+import {SOURCE_CLAIM_STATUS_VALUES} from '../codebase/sourceClaimVerifier';
+import {SOURCE_CITATION_STATUS_VALUES} from '../codebase/sourceCitations';
 import {isPlainJsonObject} from '../../utils/isPlainJsonObject';
 import {projectConclusionContractForDisplay, projectConclusionProtocol} from './conclusionProtocolProjection';
 
@@ -541,24 +543,46 @@ function projectPrivateSourceVerification(
   verification: AnalysisResult['sourceClaimVerificationResult'],
   invalidate: boolean,
 ): AnalysisResult['sourceClaimVerificationResult'] {
-  if (!verification || verification.schemaVersion !== 'source_claim_verifier@1') return undefined;
+  if (!verification || (verification.schemaVersion !== 'source_claim_verifier@1' &&
+    verification.schemaVersion !== 'source_claim_verifier@2')) return undefined;
   const text = (value: string) => sanitizeCodeAwareText(sessionId, value);
+  const status = invalidate && verification.status === 'passed' ? 'not_checked' :
+    privateControl(verification.status, ['passed', 'failed', 'partial', 'not_checked'], 'not_checked');
+  const bindings = sanitizeSourceClaimBindings(verification.bindings).map(binding => ({...binding,
+    claimId: text(binding.claimId), sourceReferenceIds: binding.sourceReferenceIds.map(text),
+    traceEvidenceRefIds: binding.traceEvidenceRefIds.map(text),
+    ...(binding.mechanismStatus ? {mechanismStatus: invalidate &&
+      (binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible')
+      ? 'unverified' as const : binding.mechanismStatus} : {}),
+  }));
+  // A citation is a fragment of the answer text: only the owner sees it.
+  const owner = isOwnerCodeAwareProjection();
+  const issues = <Code extends string>(stored: ReadonlyArray<{claimId?: string; severity: string; code: Code; message: string;
+    sourceReferenceId?: string; traceEvidenceRefId?: string; citation?: string}>) => stored.map(issue => ({
+    ...(issue.claimId !== undefined ? {claimId: text(issue.claimId)} : {}),
+    severity: privateControl(issue.severity, ['error', 'warning'] as const, 'warning'), code: issue.code, message: text(issue.message),
+    ...(issue.sourceReferenceId !== undefined ? {sourceReferenceId: text(issue.sourceReferenceId)} : {}),
+    ...(issue.traceEvidenceRefId !== undefined ? {traceEvidenceRefId: text(issue.traceEvidenceRefId)} : {}),
+    ...(owner && issue.citation !== undefined ? {citation: text(issue.citation)} : {}),
+  }));
+  if (verification.schemaVersion === 'source_claim_verifier@1') {
+    return preserveProjectedFieldOrder(verification, {schemaVersion: verification.schemaVersion, status, bindings,
+      issues: issues(verification.issues)});
+  }
+  // A projection that changed the text withdraws the strongest standing it supported.
   const projected: NonNullable<AnalysisResult['sourceClaimVerificationResult']> = {
-    schemaVersion: verification.schemaVersion,
-    status: invalidate && verification.status === 'passed' ? 'not_checked' :
-      privateControl(verification.status, ['passed', 'failed', 'partial', 'not_checked'], 'not_checked'),
-    bindings: sanitizeSourceClaimBindings(verification.bindings).map(binding => ({...binding,
-      claimId: text(binding.claimId), sourceReferenceIds: binding.sourceReferenceIds.map(text),
-      traceEvidenceRefIds: binding.traceEvidenceRefIds.map(text),
-      mechanismStatus: invalidate && (binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible')
-        ? 'unverified' : binding.mechanismStatus,
-    })),
-    issues: verification.issues.map(issue => ({
-      ...(issue.claimId !== undefined ? {claimId: text(issue.claimId)} : {}),
-      severity: privateControl(issue.severity, ['error', 'warning'], 'warning'), code: issue.code, message: text(issue.message),
-      ...(issue.sourceReferenceId !== undefined ? {sourceReferenceId: text(issue.sourceReferenceId)} : {}),
-      ...(issue.traceEvidenceRefId !== undefined ? {traceEvidenceRefId: text(issue.traceEvidenceRefId)} : {}),
-    })),
+    schemaVersion: verification.schemaVersion, status, bindings,
+    claims: verification.claims.map(claim => ({claimId: text(claim.claimId),
+      status: invalidate && claim.status === 'trace_linked' ? 'source_only' as const
+        : privateControl(claim.status, SOURCE_CLAIM_STATUS_VALUES, 'unbound'),
+      sourceReferenceIds: claim.sourceReferenceIds.map(text), traceEvidenceRefIds: claim.traceEvidenceRefIds.map(text)})),
+    citations: !owner ? [] : verification.citations.map(citation => ({citation: text(citation.citation), filePath: text(citation.filePath),
+      lineRange: citation.lineRange,
+      status: privateControl(citation.status, SOURCE_CITATION_STATUS_VALUES, 'unmatched'),
+      ...(citation.sourceReferenceId !== undefined ? {sourceReferenceId: text(citation.sourceReferenceId)} : {}),
+      ...(citation.candidateReferenceIds !== undefined
+        ? {candidateReferenceIds: citation.candidateReferenceIds.map(text)} : {})})),
+    issues: issues(verification.issues),
   };
   return preserveProjectedFieldOrder(verification, projected);
 }
@@ -652,9 +676,10 @@ export function projectPrivateAnalysisResult(
       sourceReferences: projectPrivateSourceReferences(sessionId, storedContract.sourceReferences)};
   }
   if (conclusionContract?.sourceClaimBindings && storedContract?.sourceClaimBindings) {
-    conclusionContract = {...conclusionContract, sourceClaimBindings: conclusionContract.sourceClaimBindings.map((binding, index) => ({
-      ...binding, mechanismStatus: storedContract.sourceClaimBindings![index].mechanismStatus,
-    }))};
+    conclusionContract = {...conclusionContract, sourceClaimBindings: conclusionContract.sourceClaimBindings.map((binding, index) => {
+      const stored = storedContract.sourceClaimBindings![index]?.mechanismStatus;
+      return stored ? {...binding, mechanismStatus: stored} : binding;
+    })};
   }
   let claimSupport = projectPrivateClaimSupport(sessionId, result.claimSupport)?.map((support, index) => {
     const status = result.claimSupport?.[index].supportLevel;
@@ -679,9 +704,9 @@ export function projectPrivateAnalysisResult(
     analysisProjectionChanged(result.sourceClaimVerificationResult, sourceProjection);
   if ((claimsChanged || sourceChanged) && conclusionContract?.sourceClaimBindings) {
     conclusionContract = {...conclusionContract,
-      sourceClaimBindings: sanitizeSourceClaimBindings(conclusionContract.sourceClaimBindings).map(binding => ({...binding,
-        mechanismStatus: binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible'
-          ? 'unverified' : binding.mechanismStatus}))};
+      sourceClaimBindings: sanitizeSourceClaimBindings(conclusionContract.sourceClaimBindings).map(binding =>
+        binding.mechanismStatus === 'corroborated' || binding.mechanismStatus === 'compatible'
+          ? {...binding, mechanismStatus: 'unverified' as const} : binding)};
   }
   const sourceClaimVerificationResult = claimsChanged || sourceChanged
     ? projectPrivateSourceVerification(sessionId, result.sourceClaimVerificationResult, true) : sourceProjection;

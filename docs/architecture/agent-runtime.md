@@ -166,12 +166,14 @@ source-use prompt 和同一 MCP registry/handler 产生的实际 `SourceUseDecis
 `existing_only` 不能用源码或 RAG 工具补采集。Trace capture 支撑所引用的观测，源码证据
 提供机制分析背景，`CodeRef` 元数据本身只负责定位。`SourceUseDecision.status` 的
 `corroborated` 只记录本轮获准取得正文及引用的 lookup 审计，不证明 Trace 发生、机制或
-因果关系。它与 claim binding 的 `mechanismStatus` 是两个不同字段。
+因果关系。
 
-共享 finalizer 使用 `semanticsPolicy: declared`：即使有匹配的 Trace 引用和源码正文，
-模型声明的 `mechanismStatus: corroborated` 也会降为 `compatible`，并记录
-`source_binding_mechanism_unverified`。当前路径没有可把一般机制提升为已证明的 native
-proof；未知机制保留未验证/partial，不能拿检索审计状态替代。
+模型的 claim binding 只声明 `claimId`、`sourceReferenceIds` 和可选的同 claim
+`traceEvidenceRefIds`，不再声明机制状态（旧字段被接受后丢弃）。共享 finalizer 的
+`source_claim_verifier@2` 由实际账本计算每个依赖源码的 claim 状态：`invalid` 使答案
+失败，`unbound`、`location_only`、`source_only` 保持 partial，`trace_linked` 表示
+读过正文且与同 claim 的已核验 Trace 证据关联。没有可把一般机制提升为已证明的 native
+proof，检索审计状态不能替代。
 
 路由层使用一个 canonical safe projector 把同一份决策/绑定送到初始与重放 SSE、
 HTML report、CLI JSON/Markdown/HTML、analysis-result snapshot 和报告/snapshot API。Web chat 再缩减

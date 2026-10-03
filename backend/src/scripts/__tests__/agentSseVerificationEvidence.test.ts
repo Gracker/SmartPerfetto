@@ -457,8 +457,27 @@ describe('owned SSE verifier lifecycle', () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(`event: analysis_completed\ndata: ${JSON.stringify(payload)}\n\n`));
     const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
       {requiredText: [], forbiddenText: []}, {runId: 'run'});
-    expect(summary.analysisCompletedVerifiedSourceBindings).toEqual([binding]);
+    // A historical result reports its stored mechanism status as the row status.
+    const {mechanismStatus, ...identity} = binding;
+    expect(summary.analysisCompletedVerifiedSourceBindings).toEqual([{...identity, status: mechanismStatus}]);
     expect(JSON.stringify(summary)).not.toContain('private source content');
+  });
+
+  it('reports the current verifier\'s per-claim standing as the row status', async () => {
+    const claim = {claimId: 'duration', status: 'trace_linked',
+      sourceReferenceIds: ['source-ref-v1-issued'], traceEvidenceRefIds: ['data-marker']};
+    const payload = {success: true, conclusion: 'Safe conclusion.',
+      sourceUseDecision: {references: [{id: 'source-ref-v1-issued'}]},
+      sourceClaimVerificationResult: {schemaVersion: 'source_claim_verifier@2', status: 'partial', bindings: [],
+        claims: [claim, {claimId: 'other', status: 'unbound', sourceReferenceIds: [], traceEvidenceRefIds: []}],
+        citations: [], issues: []}};
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(`event: analysis_completed\ndata: ${JSON.stringify(payload)}\n\n`));
+    const summary = await collectSseSummary('http://verifier.invalid', 'session', 1000,
+      {requiredText: [], forbiddenText: []}, {runId: 'run'});
+    expect(summary.analysisCompletedSourceClaimStatuses).toEqual(['trace_linked', 'unbound']);
+    // An unbound claim cites nothing, which does not void the membership of the others.
+    expect(summary.analysisCompletedSourceReferenceMembershipPassed).toBe(true);
+    expect(summary.analysisCompletedVerifiedSourceBindings?.[0]).toEqual(claim);
   });
 
   it('retains private tool telemetry and safe actual source use when a failed terminal has no conclusion contract', async () => {

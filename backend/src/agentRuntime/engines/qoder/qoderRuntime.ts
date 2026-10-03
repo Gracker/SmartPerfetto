@@ -64,7 +64,6 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
 } from '../../../services/resolvedAnalysisContext';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
-import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt} from '../../../agentv3/toolNarration';
 import {planPhaseUpdatedContent} from '../../../agentv3/planPhaseEvents';
@@ -890,7 +889,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         error: event.error instanceof Error ? event.error.message : String(event.error),
       };
       const resultFacts = readRuntimeToolResultFacts(rawResult);
-      const codeReferences = extractSourceLookupCodeReferences(toolName, rawResult);
       const projectedResult = projectToolResultForExternalSurface(toolName, rawResult);
       const privateToolResultReceipt = issuePrivateToolResultNarrationReceipt({
         toolName, result: projectedResult, isError: resultFacts.success === false,
@@ -902,8 +900,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         input: params,
         resultText,
         resultFacts,
-        returnedCodeReferences: codeReferences.length > 0,
-        returnedCodeReferenceHints: codeReferences,
         onPhaseAutoCompleted: phase => {
           if (!isDeliverable()) return;
           this.emitUpdate({

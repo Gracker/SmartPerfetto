@@ -8027,7 +8027,10 @@ describe('createClaudeMcpServer', () => {
             claims: [{id: 'source', kind: 'inference', text: 'A candidate source location', references: []}],
             sourceClaimBindings: [{claimId: 'source', mechanismStatus: 'compatible',
               sourceReferenceIds: [read.sourceReferences[0].id], traceEvidenceRefIds: []}]}});
-        expect(verification.status).toBe('passed');
+        // The published reference binds: no error, only the claim's standing short of Trace linkage.
+        expect(verification.issues.filter(issue => issue.severity === 'error')).toEqual([]);
+        expect(verification.claims).toEqual([expect.objectContaining({claimId: 'source',
+          sourceReferenceIds: [read.sourceReferences[0].id]})]);
       } finally { fs.rmSync(tmpDir, {recursive: true, force: true}); }
     });
 
@@ -8249,7 +8252,10 @@ describe('createClaudeMcpServer', () => {
           claims: [{id: 'source', kind: 'inference', text: 'A candidate source implementation', references: []}],
           sourceClaimBindings: [{claimId: 'source', mechanismStatus: 'compatible',
             sourceReferenceIds: [read.sourceReferences[0].id], traceEvidenceRefIds: []}]}});
-      expect(verified.status).toBe('passed');
+      // The read reference binds despite incomplete search coverage: a body was
+      // read, and only the missing Trace link keeps the claim short of linked.
+      expect(verified.issues.filter(issue => issue.severity === 'error')).toEqual([]);
+      expect(verified.claims).toEqual([expect.objectContaining({claimId: 'source', status: 'source_only'})]);
     });
 
     it.each([

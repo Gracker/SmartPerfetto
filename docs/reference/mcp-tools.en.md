@@ -145,12 +145,11 @@ silently from an older consent.
 Graph tools return only `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. Registrations with `pathFilters` or `excludeGlobs` omit whole-repository process summaries whose path scope cannot be proven, while retaining authorized relative `CodeRef` values. Code-graph metadata is neither current-trace evidence nor verified source truth. Any relationship that affects a conclusion must be checked with bounded `read_codebase_file`; if the current permission mode blocks source reading, it must remain unverified. Absolute roots stay inside the backend trust boundary. When code-aware output reaches reports, exports, or snapshots, only safe names/IDs and relative `CodeRef` values may remain, never raw source. Do not validate only the live chat view.
 
 Source conclusions use dual evidence: Trace/Skill/SQL proves occurrence in the
-current trace, while a `CodeRef` proves implementation mechanism. A `CodeRef`
-alone cannot raise occurrence or root-cause confidence. Binding status is one
-of `corroborated`, `compatible`, `ambiguous`, or `unverified`.
-`corroborated` requires verified same-claim trace occurrence plus
-`provider_send` body/indexed evidence; `metadata_only` produces locate-only
-references.
+current trace, while a `CodeRef` explains a candidate implementation mechanism.
+A `CodeRef` alone cannot raise occurrence or root-cause confidence. The model
+declares only the bound reference IDs; the server computes the claim standing.
+The strongest, `trace_linked`, requires a read body (body/indexed) plus verified
+same-claim trace occurrence; `metadata_only` produces locate-only references.
 
 GitNexus is an independent optional third-party tool. Its [official project](https://github.com/abhigyanpatwari/GitNexus) and [npm package](https://www.npmjs.com/package/gitnexus) currently declare the [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE) license. Users must review the upstream terms before use. This is not legal advice.
 

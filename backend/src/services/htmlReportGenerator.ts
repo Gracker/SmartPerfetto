@@ -49,6 +49,8 @@ import type {
   SourceUseDecisionV1,
 } from './codebase/sourceUseDecision';
 import {sanitizeSourceReferences} from './codebase/sourceUseDecision';
+import type {SourceClaimStatus} from './codebase/sourceClaimVerifier';
+import type {SourceCitationStatus} from './codebase/sourceCitations';
 import {rowObject} from '../utils/traceProcessorRowUtils';
 
 interface ClaimSourceLookupEntry {
@@ -69,6 +71,8 @@ export interface AgentReportSourceContext {
   usedCodebaseIds?: string[];
   sourceUseDecision?: SourceUseDecisionV1;
   sourceClaimBindings?: SourceClaimBindingV1[];
+  sourceClaimStatuses?: import('./codebase/sourceClaimVerifier').SourceClaimStatusV1[];
+  sourceCitations?: import('./codebase/sourceCitations').SourceCitationV1[];
 }
 
 type ReportTraceSide = 'current' | 'reference';
@@ -146,7 +150,7 @@ export interface AgentDrivenReportData {
     investigationAssessment?: import('../types/analysisInvestigationAssessment').FinalInvestigationAssessment;
     deliveryAssurance?: import('../types/analysisDelivery').AnalysisDeliveryAssurance;
     sourceUseDecision?: import('./codebase/sourceUseDecision').SourceUseDecisionV1;
-    sourceClaimVerificationResult?: import('./codebase/sourceClaimVerifier').SourceClaimVerificationResult;
+    sourceClaimVerificationResult?: import('./codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
     conclusionContract?: unknown;
     claimSupport?: ClaimSupportV1[];
     claimVerificationResult?: ClaimVerificationResult;
@@ -5293,16 +5297,48 @@ export class HTMLReportGenerator {
           }).join('')}</ul>
         </div>`
       : '';
-    const bindingsHtml = bindings.length > 0
+    // Current results show the product's standing per source-dependent claim;
+    // historical ones keep the binding status they were stored with. No label
+    // says a mechanism or cause is proven.
+    const claimStatusLabel: Record<SourceClaimStatus, string> = {
+      trace_linked: localize(outputLanguage, '源码解释 + Trace 证据', 'Source explanation + Trace evidence'),
+      source_only: localize(outputLanguage, '源码解释（未与 Trace 关联）', 'Source explanation (not linked to Trace)'),
+      location_only: localize(outputLanguage, '未读取实现', 'Implementation not read'),
+      unbound: localize(outputLanguage, '源码解释（未绑定引用，未核验）', 'Source explanation (no bound reference, unverified)'),
+      invalid: localize(outputLanguage, '引用无效', 'Invalid reference'),
+    };
+    const claimRows = sourceContext.sourceClaimStatuses
+      ? sourceContext.sourceClaimStatuses.map(claim => ({claimId: claim.claimId, label: claimStatusLabel[claim.status],
+        sourceReferenceIds: claim.sourceReferenceIds, traceEvidenceRefIds: claim.traceEvidenceRefIds}))
+      : bindings.map(binding => ({claimId: binding.claimId, label: binding.mechanismStatus ?? '',
+        sourceReferenceIds: binding.sourceReferenceIds, traceEvidenceRefIds: binding.traceEvidenceRefIds}));
+    const bindingsHtml = claimRows.length > 0
       ? `<div class="source-context-column">
-          <div class="source-context-title">${localize(outputLanguage, '机制绑定', 'Mechanism bindings')}</div>
+          <div class="source-context-title">${localize(outputLanguage, '依赖源码的结论', 'Source-dependent conclusions')}</div>
           <ul class="source-context-list">
-            ${bindings.map(binding => `
+            ${claimRows.map(row => `
               <li class="source-context-item">
-                <div class="source-context-name"><code>${this.escapeHtml(binding.claimId)}</code> · <code>${this.escapeHtml(binding.mechanismStatus)}</code></div>
-                <div class="source-context-meta">source=${binding.sourceReferenceIds.map(id => this.escapeHtml(id)).join(', ')} · trace=${binding.traceEvidenceRefIds.map(id => this.escapeHtml(id)).join(', ') || '-'}</div>
+                <div class="source-context-name"><code>${this.escapeHtml(row.claimId)}</code>${row.label ? ` · ${this.escapeHtml(row.label)}` : ''}</div>
+                <div class="source-context-meta">source=${row.sourceReferenceIds.map(id => this.escapeHtml(id)).join(', ') || '-'} · trace=${row.traceEvidenceRefIds.map(id => this.escapeHtml(id)).join(', ') || '-'}</div>
               </li>`).join('')}
           </ul>
+        </div>`
+      : '';
+    const citationLabel: Record<SourceCitationStatus, string> = {
+      verified_body: localize(outputLanguage, '本轮读过该段实现', 'Read in this run'),
+      located: localize(outputLanguage, '本轮仅定位到', 'Located only in this run'),
+      unmatched: localize(outputLanguage, '本轮未检索到该位置', 'Not returned in this run'),
+      ambiguous: localize(outputLanguage, '多个文件都匹配，未能确定', 'Several files match; not pinned'),
+    };
+    const citations = sourceContext.sourceCitations ?? [];
+    const citationsHtml = citations.length > 0
+      ? `<div class="source-context-column">
+          <div class="source-context-title">${localize(outputLanguage, '答案中的源码引用', 'Source locations cited in the answer')}</div>
+          <ul class="source-context-list">${citations.map(citation => `
+              <li class="source-context-item">
+                <div class="source-context-name"><code>${this.escapeHtml(citation.citation)}</code></div>
+                <div class="source-context-meta">${this.escapeHtml(citationLabel[citation.status] ?? citation.status)}</div>
+              </li>`).join('')}</ul>
         </div>`
       : '';
     return `
@@ -5329,6 +5365,7 @@ export class HTMLReportGenerator {
             : `<div class="empty-state">${this.escapeHtml(lookupStatus)}</div>`}
         </div>
         ${bindingsHtml}
+        ${citationsHtml}
         ${referencesHtml}
       </div>
     </div>`;

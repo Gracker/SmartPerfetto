@@ -14,7 +14,7 @@ import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedEvidenceMat
   preparedIdentityResolutions, type PreparedClaimEvidence} from '../claimEvidencePreparation';
 import {bindReadResolutionToAnchor, evidenceReadFailureIsUnreadable, isIssuedEvidenceReadResolution, type EvidenceReadView, type EvidenceReadViewOptions} from '../evidenceReadView';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
-import {runClaimVerification, collectVerifiedTraceOccurrenceRefIdsByClaimId} from '../../verifier/claimVerificationRunner';
+import {runClaimVerification} from '../../verifier/claimVerificationRunner';
 import type {ConclusionContract, ConclusionContractClaimReference} from '../../../agent/core/conclusionContract';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../../types/identityContract';
 import {createDataEnvelope, type DataEnvelope} from '../../../types/dataContract';
@@ -279,7 +279,6 @@ describe('runtime execution evidence read view', () => {
     expect(getCapturedAnchorFacts(anchor)?.row.metric).toBe(2);
     expect(output.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@2', status: 'partial', passed: false});
     expect(output.claimVerificationResult.claimResults[0].deterministicProof).toMatchObject({status: 'proved', kind: 'numeric_cell'});
-    expect(collectVerifiedTraceOccurrenceRefIdsByClaimId(output.claimVerificationResult)).toEqual({});
     const snapshot = preparedClaimEvidenceSnapshot(preparedEvidence);
     expect(JSON.parse(JSON.stringify(snapshot)).reads).toHaveLength(1);
     expect(buildEvidenceContract({conclusionContract, preparedEvidence: JSON.parse(JSON.stringify(preparedEvidence)) as PreparedClaimEvidence})

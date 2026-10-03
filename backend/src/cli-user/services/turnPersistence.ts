@@ -286,6 +286,7 @@ function sourceProvenanceForResult(
   );
   return projectSafeSourceProvenance({
     conclusionContract: resultValue.conclusionContract,
+    sourceClaimVerificationResult: resultValue.sourceClaimVerificationResult,
     ...(hasActualDecision
       ? {actualSourceUseDecision: resultValue.sourceUseDecision}
       : {}),

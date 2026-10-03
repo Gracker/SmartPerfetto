@@ -4,7 +4,6 @@
 
 import {
   collectMatchedTraceEvidenceRefIdsByClaimId,
-  collectVerifiedTraceOccurrenceRefIdsByClaimId,
   runClaimVerification,
 } from '../claimVerificationRunner';
 import { runDeterministicClaimVerifier } from '../deterministicClaimVerifier';
@@ -1011,7 +1010,6 @@ describe('runClaimVerification', () => {
     expect(result.claimSupport[0].anchors[0].cells?.[0]).toEqual(expect.objectContaining({value: 120, actualValue: 120}));
     expect(result.claimVerificationResult.status).toBe('not_checked');
     expect(result.matchedTraceEvidenceRefIdsByClaimId).toEqual({});
-    expect(result.verifiedTraceOccurrenceRefIdsByClaimId).toEqual({});
   });
 
   it.each(['verified', 'partial', 'inference', 'unsupported', 'not_checked'] as const)(
@@ -1028,10 +1026,9 @@ describe('runClaimVerification', () => {
       expect(collectMatchedTraceEvidenceRefIdsByClaimId(verification)).toEqual(
         ['verified', 'partial', 'inference'].includes(status) ? {candidate: ['data:owned']} : {},
       );
-      expect(collectVerifiedTraceOccurrenceRefIdsByClaimId(verification)).toEqual({});
     });
 
-  it('separates partial matched membership from verified Trace occurrences', () => {
+  it('collects matched membership of a partial claim', () => {
     const verification: ClaimVerificationResult = {
       schemaVersion: 'claim_verifier@1',
       status: 'partial',
@@ -1050,37 +1047,5 @@ describe('runClaimVerification', () => {
     expect(collectMatchedTraceEvidenceRefIdsByClaimId(verification)).toEqual({
       'claim-main-thread-blocked': ['data:skill:test'],
     });
-    expect(collectVerifiedTraceOccurrenceRefIdsByClaimId(verification)).toEqual({});
-    for (const schemaVersion of ['claim_verifier@1', 'claim_verifier@2'] as const) {
-      const numericOnly: ClaimVerificationResult = {
-        ...verification, schemaVersion,
-        claimResults: [{
-          ...verification.claimResults[0], status: 'verified',
-          deterministicProof: {kind: 'numeric_cell', status: 'proved', reason: 'numeric_operator_proved',
-            anchorIds: ['anchor:numeric'], evidenceRefIds: ['data:skill:test']},
-          propositionCoverage: {status: 'complete', covered: ['numeric'], uncovered: [], reason: 'stored_numeric_proof'},
-        }],
-      };
-      expect(collectVerifiedTraceOccurrenceRefIdsByClaimId(numericOnly)).toEqual({});
-    }
   });
-
-  it.each(['partial', 'unsupported', 'inference', 'not_checked', 'verified'] as const)(
-    'requires the joined claim verdict before publishing an interval occurrence: %s', status => {
-      const verification: ClaimVerificationResult = {
-        schemaVersion: 'claim_verifier@2', status: 'partial', policy: 'record_only', passed: false,
-        checkedClaimCount: 1, unsupportedClaimCount: status === 'unsupported' ? 1 : 0, issues: [],
-        claimResults: [{
-          claimId: 'interval', status,
-          referenceCells: [{evidenceRefId: 'trace:overlap', status: 'matched'}],
-          deterministicProof: {kind: 'interval_overlap', status: 'proved', reason: 'captured_interval_overlap',
-            anchorIds: ['anchor:left', 'anchor:right'], evidenceRefIds: ['trace:right', 'trace:left', 'trace:left']},
-          propositionCoverage: {status: 'complete', covered: ['interval'], uncovered: [], reason: 'typed_interval_covered'},
-        }],
-      };
-      expect(collectVerifiedTraceOccurrenceRefIdsByClaimId(verification)).toEqual(
-        status === 'verified' ? {interval: ['trace:left', 'trace:right']} : {},
-      );
-    },
-  );
 });

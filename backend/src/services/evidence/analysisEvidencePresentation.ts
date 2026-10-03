@@ -9,7 +9,8 @@ import type {
   ConclusionBindingEligibility,
   ConclusionContractClaimItem,
 } from '../../agent/core/conclusionContract';
-import type {SafeSourceProvenanceProjection} from '../codebase/sourceClaimVerifier';
+import {SOURCE_CLAIM_STATUS_VALUES, type SafeSourceProvenanceProjection, type SourceClaimStatusV1} from '../codebase/sourceClaimVerifier';
+import {SOURCE_CITATION_STATUS_VALUES, type SourceCitationV1} from '../codebase/sourceCitations';
 import type {ClaimSupportV1} from '../../types/evidenceContract';
 import type {ClaimVerificationResult} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
@@ -34,6 +35,10 @@ export interface AnalysisEvidencePresentation {
   sourceUseDecision: SourceUseDecisionV1 | null;
   sourceReferences: SourceReferenceV1[];
   sourceClaimBindings: SourceClaimBindingV1[];
+  /** The current verifier's standing per source-dependent claim; absent in historical bundles. */
+  sourceClaimStatuses?: SourceClaimStatusV1[];
+  /** Source locations the answer cites; absent in historical bundles. */
+  sourceCitations?: SourceCitationV1[];
 }
 
 export type AnalysisEvidencePresentationInput = Pick<AnalysisResult,
@@ -281,9 +286,20 @@ function schemas(strict: boolean) {
     attemptedTools: z.array(z.string()), queriedCodebaseIds: z.array(z.string()), usedCodebaseIds: z.array(z.string()),
     coverageComplete: z.boolean().optional(), incompleteReasons: z.array(z.string()).optional(), references: z.array(sourceReference),
   });
+  // `mechanismStatus` appears only in historical bundles.
   const sourceBinding = object({
-    claimId: z.string(), mechanismStatus: z.enum(['corroborated', 'compatible', 'ambiguous', 'unverified']),
+    claimId: z.string(), mechanismStatus: z.enum(['corroborated', 'compatible', 'ambiguous', 'unverified']).optional(),
     sourceReferenceIds: z.array(z.string()), traceEvidenceRefIds: z.array(z.string()),
+  });
+  const sourceClaimStatus = object({
+    claimId: z.string(), status: z.enum(SOURCE_CLAIM_STATUS_VALUES),
+    sourceReferenceIds: z.array(z.string()), traceEvidenceRefIds: z.array(z.string()),
+  });
+  const sourceCitation = object({
+    citation: z.string(), filePath: z.string(),
+    lineRange: object({start: z.number().int().positive(), end: z.number().int().positive()}),
+    status: z.enum(SOURCE_CITATION_STATUS_VALUES), sourceReferenceId: z.string().optional(),
+    candidateReferenceIds: z.array(z.string()).optional(),
   });
 
   return object({
@@ -292,6 +308,7 @@ function schemas(strict: boolean) {
     identityResolutions: z.array(identityResolution), investigationAssessment: investigationAssessment.nullable(),
     deliveryAssurance: deliveryAssurance.nullable(), sourceUseDecision: sourceUseDecision.nullable(),
     sourceReferences: z.array(sourceReference), sourceClaimBindings: z.array(sourceBinding),
+    sourceClaimStatuses: z.array(sourceClaimStatus).optional(), sourceCitations: z.array(sourceCitation).optional(),
   });
 }
 
@@ -322,6 +339,11 @@ export function projectAnalysisEvidenceForDisplay(input: {
       sourceUseDecision,
       sourceReferences: isObject(rawDecision) ? ownDataValue(rawDecision, 'references') ?? [] : [],
       sourceClaimBindings: rawProvenance ? ownDataValue(rawProvenance, 'sourceClaimBindings') ?? [] : [],
+      // Present only on current results.
+      ...Object.fromEntries((['sourceClaimStatuses', 'sourceCitations'] as const).flatMap(key => {
+        const value = rawProvenance ? ownDataValue(rawProvenance, key) : undefined;
+        return value === undefined ? [] : [[key, value]];
+      })),
     };
     const prepared = prepareWriterTree(candidate);
     return deepFreeze(writeSchema.parse(prepared)) as AnalysisEvidencePresentation;

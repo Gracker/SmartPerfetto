@@ -42,6 +42,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   identity?: IdentityResolutionV1; scope?: EvidenceScopeProvenanceV1;
   deadlineMs?: number; capabilityRows?: number; capabilityCell?: string;
   source?: {marker: string; declaredMarker?: string; invalid?: boolean; hypothetical?: boolean;
+    /** A retired model-declared status, sent to check that it is ignored. */
     mechanismStatus?: 'compatible' | 'corroborated'; declareBindings?: boolean};
   selection?: AnalysisRunSelection;
   /** Emit the declaration as an invalid sidecar that still carries its claims. */
@@ -61,6 +62,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   runtimeCaseRecommendations?: ConclusionContract['caseRecommendations'];
   /** Issue the runtime's protocol projection (a native declaration) even without source use. */
   nativeProjection?: boolean;
+  /** The run had source access but made no source call. */
+  sourceAccessOnly?: boolean;
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>} = {}) {
   const runId = options.runId ?? 'run';
   const body = options.body ?? (options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
@@ -94,12 +97,15 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
       selectedCodebaseIds: ['source-app'], status: 'corroborated', attemptedTools: ['read_codebase_file'],
       queriedCodebaseIds: ['source-app'], usedCodebaseIds: ['source-app'], coverageComplete: true, references: [reference]};
     if (options.source.declareBindings !== false) {
-      declared.sourceClaimBindings = [{claimId: 'count', mechanismStatus: options.source.mechanismStatus ?? 'compatible',
+      declared.sourceClaimBindings = [{claimId: 'count', ...(options.source.mechanismStatus
+        ? {mechanismStatus: options.source.mechanismStatus} : {}),
         sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['data:count']}];
     }
     registerOnDemandSourceLookupForEcho(result.sessionId, [{...reference, id: 'source-read',
       text: `Trace.beginSection("${options.source.marker}");\nTrace.endSection("${options.source.declaredMarker ?? options.source.marker}");`}]);
-    result.conclusion = `${body}\n${options.source.invalid
+    // A bound source finding cites its location in the answer, where it can be checked.
+    const narrative = options.source.declareBindings !== false ? `${body} (src/Probe.kt:L1)` : body;
+    result.conclusion = `${narrative}\n${options.source.invalid
       ? '<!-- smartperfetto:conclusion-contract@1\n```json\n' + JSON.stringify({...declared, verified: true}) + '\n```\n-->'
       : renderConclusionContractSidecar(declared)}`;
     delete result.conclusionContract;
@@ -170,6 +176,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
       rows: Array.from({length: options.capabilityRows}, () => [options.capabilityCell ?? 0])},
       {type: 'sql_result', source: 'capability_fixture', title: 'Capabilities'})] : undefined,
     sourceUse, protocolProjection: projection?.protocolProjection,
+    ...(options.sourceAccessOnly ? {sourceScope: {codeAwareMode: 'provider_send' as const, selectedCodebaseIds: ['source-app'],
+      hasCodebaseAccess: true, analysisContextFingerprint: 'source-auth'}} : {}),
     turnIntent: intentFor(pinnedRegistry.registryFingerprint),
     deliveryContext: projection?.deliveryContext ?? nativeDelivery,
     evidenceReadView: store.createEvidenceReadView({allowedTraces: [{traceId: 'trace', traceSide: 'current'}], ownerKey: 'run',
@@ -328,6 +336,15 @@ describe('semantic review necessity', () => {
     await withRunManifestLifecycle(second, () => finalize({claim: false}));
     expect(skipped.seal()).toMatchObject({finalReview: {necessity: 'not_required', triggers: [], declaredClaimCount: 0}});
     expect(skipped.seal().modelCalls).toBeUndefined();
+  });
+
+  it('reviews a run with source access that made no source call: authorized history can carry source', async () => {
+    const lifecycle = createRunManifestLifecycle({runId: 'run', sessionId: 'final-result-test',
+      scope: {tenantId: 'tenant', workspaceId: 'workspace'}, runtime: 'openai-agents-sdk', outputLanguage: 'en',
+      analysisMode: 'fast', skillRegistry: {registryFingerprint: 'registry', evolutionOverlayGeneration: 'builtin', skills: []} as never});
+    const recorder = lifecycle.builder.runtimePerformanceRecorder;
+    await withRunManifestLifecycle(lifecycle, () => finalize({claim: false, sourceAccessOnly: true}));
+    expect(recorder.seal()).toMatchObject({finalReview: {necessity: 'required', triggers: ['source']}});
   });
 });
 
@@ -829,7 +846,7 @@ describe('shared final analysis boundary', () => {
     expect(final.result.conclusionContract).not.toHaveProperty('sourceReferences');
     expect(final.result.conclusionContract).not.toHaveProperty('sourceClaimBindings');
     expect(final.result.sourceClaimVerificationResult).toEqual({
-      schemaVersion: 'source_claim_verifier@1', status: 'not_checked', bindings: [], issues: [],
+      schemaVersion: 'source_claim_verifier@2', status: 'not_checked', bindings: [], claims: [], citations: [], issues: [],
     });
     const ownerAgain = projectOwnerAnalysisResult(final.result.sessionId, final.result, 'en');
     expect(ownerAgain.conclusionContract).toEqual(final.result.conclusionContract);
@@ -847,20 +864,17 @@ describe('shared final analysis boundary', () => {
   });
 
   it.each(['compatible', 'corroborated'] as const)(
-    'retains matched Trace membership for a candidate source connection without granting %s authority', async mechanismStatus => {
+    'links a candidate source connection to its matched Trace evidence and ignores a declared %s status', async mechanismStatus => {
       const target = fixture({source: {marker: 'synthetic_source_marker_long_name', hypothetical: true, mechanismStatus},
         body: 'The captured marker might correspond to this source instrumentation.'});
       const final = await target.run();
       expect(final.result.claimVerificationResult).toMatchObject({status: 'passed', passed: true,
         claimResults: [{status: 'inference', referenceResults: [{status: 'matched'}]}]});
-      expect(final.result.sourceClaimVerificationResult).toMatchObject({
-        status: mechanismStatus === 'corroborated' ? 'partial' : 'passed', bindings: [{
-        claimId: 'count', mechanismStatus: 'compatible', traceEvidenceRefIds: ['data:count'],
-      }]});
-      expect(final.result.sourceClaimVerificationResult?.issues.some(issue => issue.severity === 'error')).toBe(false);
-      if (mechanismStatus === 'corroborated') expect(final.result.sourceClaimVerificationResult?.issues).toEqual(
-        expect.arrayContaining([expect.objectContaining({code: 'source_binding_mechanism_unverified', severity: 'warning'})]),
-      );
+      // Source plus same-claim Trace evidence, never a proven mechanism; the declared status counts for nothing.
+      expect(final.result.sourceClaimVerificationResult).toMatchObject({status: 'passed',
+        claims: [{claimId: 'count', status: 'trace_linked', traceEvidenceRefIds: ['data:count']}]});
+      expect(JSON.stringify(final.result.sourceClaimVerificationResult)).not.toContain('mechanismStatus');
+      expect(final.result.sourceClaimVerificationResult?.issues).toEqual([]);
     });
 
   it('rejects mismatched Trace evidence even for a hypothetical source connection', async () => {
@@ -870,9 +884,10 @@ describe('shared final analysis boundary', () => {
     const final = await target.run();
     expect(final.result.claimVerificationResult?.claimResults[0]).toMatchObject({status: 'unsupported',
       referenceResults: [{status: 'value_mismatch'}]});
-    expect(final.result.sourceClaimVerificationResult?.bindings).toEqual([]);
+    expect(final.result.sourceClaimVerificationResult).toMatchObject({status: 'failed',
+      claims: [{claimId: 'count', status: 'invalid'}]});
     expect(final.result.sourceClaimVerificationResult?.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_binding_trace_support_missing'}),
+      expect.objectContaining({code: 'source_binding_trace_support_missing', severity: 'error'}),
     ]));
   });
 
@@ -1099,14 +1114,15 @@ describe('shared final analysis boundary', () => {
 
   it('retains source declarations for checking when no actual source ledger exists', async () => {
     const target = fixture();
-    target.result.conclusionContract!.sourceClaimBindings = [{claimId: 'count', mechanismStatus: 'compatible',
+    target.result.conclusionContract!.sourceClaimBindings = [{claimId: 'count',
       sourceReferenceIds: ['invented-source'], traceEvidenceRefIds: ['data:count']}];
     const {result} = await target.run();
     expect(result.sourceUseDecision).toBeUndefined();
     expect(result.sourceClaimVerificationResult).toMatchObject({status: 'partial', issues: [
       expect.objectContaining({code: 'source_claim_semantics_unchecked'}),
     ]});
-    expect(result.partial).toBe(true);
+    // Unchecked is delivered unverified (`~`), not failed.
+    expect(result.deliveryAssurance?.source).toBe('coverage_incomplete');
   });
 
   it('uses a detached result when a caller changes the original during the semantic request', async () => {

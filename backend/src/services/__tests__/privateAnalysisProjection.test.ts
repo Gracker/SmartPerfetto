@@ -273,6 +273,22 @@ describe('final delivery private projection', () => {
     } finally { clearCodeAwareOutputGuards(result.sessionId); }
   });
 
+  it('keeps the answer\'s written source locations for the owner only', () => {
+    const current = deliveredResult();
+    const citation = 'src/private/Secret.kt:L12';
+    current.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@2', status: 'partial', bindings: [],
+      claims: [{claimId: 'claim-1', status: 'unbound', sourceReferenceIds: [], traceEvidenceRefIds: []}],
+      citations: [{citation, filePath: 'src/private/Secret.kt', lineRange: {start: 12, end: 12}, status: 'unmatched'}],
+      issues: [{severity: 'warning', code: 'source_citation_unmatched', citation,
+        message: 'the answer cites a source location this run never returned'}]};
+    const strict = projectPrivateAnalysisResult(current.sessionId, current, 'en').sourceClaimVerificationResult;
+    expect(strict).toMatchObject({schemaVersion: 'source_claim_verifier@2', citations: [],
+      claims: [{claimId: 'claim-1', status: 'unbound'}]});
+    expect(JSON.stringify(strict)).not.toContain('Secret.kt');
+    const owner = projectOwnerAnalysisResult(current.sessionId, current, 'en').sourceClaimVerificationResult;
+    expect(owner).toMatchObject({citations: [{citation, status: 'unmatched'}], issues: [{citation}]});
+  });
+
   it('does not issue missing historical metadata, and invalidates report intent binding when dropping diagnostics', () => {
     const current = deliveredResult();
     current.turnIntent = {...current.turnIntent!, reason: 'PRIVATE_REASON', actualModel: 'PRIVATE_MODEL'};
@@ -356,7 +372,7 @@ describe('final delivery private projection', () => {
     result.reportAssessment!.binding.conclusionContractFingerprint = analysisDeliveryFingerprint(result.conclusionContract);
     result.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@1', status: 'passed', issues: [],
       bindings: [{claimId: 'claim-1', mechanismStatus: 'corroborated', sourceReferenceIds: [reference.id],
-        traceEvidenceRefIds: ['evidence-1'], reason: 'PRIVATE_BINDING_DIAGNOSTIC'}]};
+        traceEvidenceRefIds: ['evidence-1'], reason: 'PRIVATE_BINDING_DIAGNOSTIC'} as any]};
     const projected = projectPrivateAnalysisResult(result.sessionId, result, 'en');
     expect(projected.conclusion).toBe(result.conclusion);
     expect(projected.claimVerificationResult).toEqual(result.claimVerificationResult);
@@ -378,8 +394,8 @@ describe('final delivery private projection', () => {
     result.conclusionContract = {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [], evidenceChain: [],
       claims: [{id: 'claim-1', text: result.conclusion, references: []}], uncertainties: [], nextSteps: [],
       sourceUseDecision: result.sourceUseDecision, sourceReferences: decision.references,
-      sourceClaimBindings: [{claimId: 'claim-1', mechanismStatus: 'corroborated', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['evidence-1'], reason: 'RAW_REASON_CANARY'}]};
-    result.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@1', status: 'passed', issues: [], bindings: result.conclusionContract.sourceClaimBindings!};
+      sourceClaimBindings: [{claimId: 'claim-1', mechanismStatus: 'corroborated', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['evidence-1'], reason: 'RAW_REASON_CANARY'} as any]};
+    result.sourceClaimVerificationResult = {schemaVersion: 'source_claim_verifier@1', status: 'passed', issues: [], bindings: result.conclusionContract!.sourceClaimBindings!};
     result.reportAssessment!.binding.conclusionContractFingerprint = analysisDeliveryFingerprint(result.conclusionContract);
     const stored = copyAnalysisResultForSnapshot(result);
     expect(stored.conclusion).toBe(result.conclusion);

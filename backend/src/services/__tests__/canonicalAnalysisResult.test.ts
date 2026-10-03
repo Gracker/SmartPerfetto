@@ -657,12 +657,13 @@ describe('source binding declaration ownership', () => {
     return {...declaration(), claims: [{id: 'source-body', text: 'Implementation may explain the wait', kind: 'inference', references: [],
       semantics: {schemaVersion: 'claim_semantics@1', predicate: 'source.mechanism', polarity: 'affirmed',
         discourse: 'hypothetical', quantifier: 'one', modality: 'possible', scope: {population: 'codebase'}}}],
-      sourceClaimBindings: [{claimId: 'source-body', mechanismStatus: 'compatible', sourceReferenceIds: ['source-returned'], traceEvidenceRefIds: []}]};
+      sourceClaimBindings: [{claimId: 'source-body', sourceReferenceIds: ['source-returned'], traceEvidenceRefIds: [] as string[]}]};
   }
   it('admits source-only empty Trace links without declaring source proof', () => {
     const parsed = parseConclusionContractDeclaration(sourceDeclaration());
     expect(parsed.issues).toEqual([]);
-    expect(parsed.contract?.sourceClaimBindings?.[0].mechanismStatus).toBe('compatible');
+    expect(parsed.contract?.sourceClaimBindings).toEqual([{claimId: 'source-body',
+      sourceReferenceIds: ['source-returned'], traceEvidenceRefIds: []}]);
   });
   it.each(['missing', 'duplicate', 'foreign_trace'] as const)('rejects %s links while retaining the original declaration', kind => {
     const raw = sourceDeclaration();

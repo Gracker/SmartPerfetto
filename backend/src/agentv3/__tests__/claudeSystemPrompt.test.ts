@@ -31,7 +31,8 @@ jest.mock('../strategyLoader', () => ({
     registry?.getStrategy(scene)?.finalReportContract ?? null),
   loadPromptTemplate: jest.fn((name: string) => {
     if (name === 'prompt-investigation-findings') return 'Investigation finding coverage fixture.';
-    if (name === 'prompt-source-finding-binding') return 'Source finding binding fixture.';
+    if (name === 'prompt-source-recipe-mechanism') return 'Source mechanism recipe fixture.';
+    if (name === 'prompt-source-recipe-locate') return 'Source locate recipe fixture.';
     if (name === 'knowledge-perfetto-sql') return 'SQL discovery and units fixture.';
     if (name === 'knowledge-focus-app-context') return 'Focus-app context fixture: inferred focus is a hypothesis.';
     if (name === 'prompt-turn-policy') return 'Typed turn protocol; scope, deliverable, and evidence access are server data.';
@@ -220,14 +221,15 @@ describe('typed turn prompt assembly', () => {
     'keeps generic %s authoring quality on unavailable intent without inventing scene contracts', taskKind => {
       const context = {...investigationFixture({taskKind, status: 'unavailable', source: 'fallback',
         sceneId: 'general', scope: 'bounded_question', deliverable: 'answer', evidenceAccess: 'read_new'}),
-      codeAwareMode: 'provider_send' as const, codebaseIds: ['selected-source']};
+      codeAwareMode: 'provider_send' as const, codebaseIds: ['selected-source'],
+      sourceAuthorization: {codebases: [], depth: 'mechanism'}};
       const parts = buildSystemPromptParts(context);
       expect(segmentData(parts, 'turn_policy')).toMatchObject({status: 'unavailable', taskKind,
         scope: 'bounded_question', deliverable: 'answer', evidenceAccess: 'read_new', onDemandContext: true});
       expect(parts.segments.find(segment => segment.label === 'investigation_findings'))
         .toMatchObject({droppable: false, truncatable: false});
-      expect(parts.segments.find(segment => segment.label === 'source_finding_binding'))
-        .toMatchObject({droppable: false, truncatable: false});
+      expect(parts.segments.find(segment => segment.label === 'source_recipe'))
+        .toMatchObject({droppable: false, truncatable: false, content: 'Source mechanism recipe fixture.'});
       expect(segmentData(parts, 'investigation_requirements'))
         .toMatchObject({status: 'not_checked', reason: 'intent_unavailable', requirements: []});
       expect(parts.segments.some(segment => ['scene_context', 'scene_strategy_details', 'report_requirements']
@@ -239,11 +241,14 @@ describe('typed turn prompt assembly', () => {
     {codeAwareMode: 'metadata_only' as const, codebaseIds: ['selected-source']},
     {codeAwareMode: 'off' as const, codebaseIds: ['selected-source']},
     {codeAwareMode: 'provider_send' as const, codebaseIds: []},
-  ])('does not add source finding bindings outside selected provider-send source', source => {
-    const context = {...investigationFixture({status: 'unavailable', source: 'fallback', sceneId: 'general'}), ...source};
+  ])('uses no mechanism recipe outside selected provider-send source', source => {
+    const context = {...investigationFixture({status: 'unavailable', source: 'fallback', sceneId: 'general'}), ...source,
+      sourceAuthorization: {codebases: [], depth: 'mechanism'}};
     const parts = buildSystemPromptParts(context);
     expect(parts.segments.some(segment => segment.label === 'investigation_findings')).toBe(true);
-    expect(parts.segments.some(segment => segment.label === 'source_finding_binding')).toBe(false);
+    const recipe = parts.segments.find(segment => segment.label === 'source_recipe');
+    // Selected metadata-only source locates; no selection carries no recipe at all.
+    expect(recipe?.content ?? 'none').toBe(source.codeAwareMode === 'metadata_only' ? 'Source locate recipe fixture.' : 'none');
   });
 
   it('keeps investigation evidence, selection and authorization intact under prompt pressure', () => {

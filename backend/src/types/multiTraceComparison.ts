@@ -137,7 +137,7 @@ export interface AnalysisSummary {
   investigationAssessment?: import('./analysisInvestigationAssessment').FinalInvestigationAssessment;
   deliveryAssurance?: import('./analysisDelivery').AnalysisDeliveryAssurance;
   sourceUseDecision?: import('../services/codebase/sourceUseDecision').SourceUseDecisionV1;
-  sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').SourceClaimVerificationResult;
+  sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
   details?: string[];
   risks?: string[];
   recommendations?: string[];

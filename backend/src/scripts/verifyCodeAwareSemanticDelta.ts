@@ -652,7 +652,6 @@ async function verifyTraceSourceBinding(input: {
     sourceReferences: [boundReference],
     sourceClaimBindings: [{
       claimId,
-      mechanismStatus: 'compatible',
       sourceReferenceIds: [boundReference.id],
       traceEvidenceRefIds: [evidenceRefId],
     }],
@@ -701,21 +700,23 @@ async function verifyTraceSourceBinding(input: {
     preparedEvidence,
     policy: 'block',
   });
+  // The answer cites the bound location, so the claim's visible text can be checked.
+  const range = boundReference.lineRange;
+  const body = `The startup marker is emitted at ${boundReference.filePath}:L${range?.start ?? 1}-L${range?.end ?? 1} ` +
+    `and lasted ${input.traceFacts.durationNs} ns.`;
   const sourceClaimVerification = verifySourceClaimBindings({
     conclusionContract: contract,
     actualSourceUseDecision: input.sourceUse,
-    semanticsPolicy: 'declared',
     matchedTraceEvidenceRefIdsByClaimId: claimVerification.matchedTraceEvidenceRefIdsByClaimId,
-    verifiedTraceOccurrenceRefIdsByClaimId:
-      claimVerification.verifiedTraceOccurrenceRefIdsByClaimId,
+    body,
   });
+  // A CodeRef with no same-claim Trace evidence is a source explanation only.
   const codeRefOnlyOccurrence = verifySourceClaimBindings({
     conclusionContract: {...contract, sourceClaimBindings: contract.sourceClaimBindings?.map(binding =>
-      ({...binding, mechanismStatus: 'corroborated'}))},
+      ({...binding, traceEvidenceRefIds: []}))},
     actualSourceUseDecision: input.sourceUse,
-    semanticsPolicy: 'declared',
     matchedTraceEvidenceRefIdsByClaimId: claimVerification.matchedTraceEvidenceRefIdsByClaimId,
-    verifiedTraceOccurrenceRefIdsByClaimId: {},
+    body,
   });
   const wrongDeclaration = structuredClone(declaration);
   wrongDeclaration.claims![0].semantics!.numeric!.value = input.traceFacts.durationNs + 1;

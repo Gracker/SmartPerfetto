@@ -1733,9 +1733,12 @@ strategies:
   backend/strategies/prompt-strategy-detail-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP strategy catalog and detail tool description
-  backend/strategies/prompt-source-finding-binding.template.md:
+  backend/strategies/prompt-source-recipe-locate.template.md:
     disposition: product-only
-    reason: SmartPerfetto current-run source reference binding and visible finding contract
+    reason: SmartPerfetto locate-depth source recipe for its codebase-aware tools
+  backend/strategies/prompt-source-recipe-mechanism.template.md:
+    disposition: product-only
+    reason: SmartPerfetto mechanism-depth source recipe for its codebase-aware tools
   backend/strategies/prompt-code-reference-contract-en.template.md:
     disposition: product-only
     reason: SmartPerfetto source lookup tools and codebase-aware report orchestration

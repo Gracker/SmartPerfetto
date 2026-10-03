@@ -4,7 +4,7 @@
 
 import type {CaseKnowledgeRecommendation, CaseKnowledgeReportRecommendation} from '../../types/caseKnowledge';
 import {sanitizeSourceUseDecision, sanitizeSourceReferences, sanitizeSourceClaimBindings, isSourceClaimBindingsDeclaration,
-  MAX_SOURCE_REFERENCE_ID_LENGTH, MAX_SOURCE_REFERENCE_PATH_LENGTH} from '../../services/codebase/sourceUseDecision';
+  canonicalSourceClaimBindingDeclarations} from '../../services/codebase/sourceUseDecision';
 import type {EvidenceRelationCandidateV1} from '../../types/evidenceContract';
 import type {
   SourceClaimBindingV1,
@@ -105,8 +105,6 @@ export interface ClaimSemanticsV1 {
   };
   /** The proposition value is distinct from a cited cell's value. */
   numeric?: {operator: 'eq' | 'ne' | 'lt' | 'lte' | 'gt' | 'gte'; value: number | string; unit: string};
-  /** Original claimed location, not metadata filled from a later lookup. */
-  source?: {sourceReferenceId: string; filePath: string; lineRange: {start: number; end: number}};
 }
 
 export interface ConclusionContractParseIssue {
@@ -129,7 +127,7 @@ const CLAIM_DIAGNOSTIC_FIELDS_BY_CODE = {
   invalid_semantics: ['semantics', 'semantics.unknown_field', 'semantics.schemaVersion', 'semantics.predicate',
     'semantics.polarity', 'semantics.discourse', 'semantics.quantifier', 'semantics.modality', 'semantics.conditions',
     'semantics.scope', 'semantics.scope.unknown_field', 'semantics.scope.population', 'semantics.scope.subjectRefs',
-    'semantics.scope.objectRefs', 'semantics.scope.timeRangeNs', 'semantics.numeric', 'semantics.source'],
+    'semantics.scope.objectRefs', 'semantics.scope.timeRangeNs', 'semantics.numeric'],
   duplicate_claim_id: ['id'],
   untrusted_parser_metadata: ['parser_metadata'],
 } as const;
@@ -513,16 +511,8 @@ function claimSemanticsFailure(raw: unknown): ClaimSemanticsFailure | undefined 
   }
   const numeric = raw.numeric === undefined ? undefined : numericFailure(raw.numeric);
   if (numeric) return {field: 'semantics.numeric', subreason: numeric};
-  if (raw.source !== undefined) {
-    const source = raw.source;
-    if (!record(source) || !keysWithin(source, ['sourceReferenceId', 'filePath', 'lineRange']) ||
-      typeof source.sourceReferenceId !== 'string' || !source.sourceReferenceId.trim() ||
-      source.sourceReferenceId.length > MAX_SOURCE_REFERENCE_ID_LENGTH || typeof source.filePath !== 'string' ||
-      !source.filePath.trim() || source.filePath.length > MAX_SOURCE_REFERENCE_PATH_LENGTH || !record(source.lineRange) ||
-      !keysWithin(source.lineRange, ['start', 'end']) || !Number.isSafeInteger(source.lineRange.start) ||
-      !Number.isSafeInteger(source.lineRange.end) || Number(source.lineRange.start) < 1 ||
-      Number(source.lineRange.end) < Number(source.lineRange.start)) return {field: 'semantics.source'};
-  }
+  // `source` (a retired model-declared location) is accepted and dropped: source
+  // claims are judged from the run's issued references, never from a declaration.
   return undefined;
 }
 
@@ -538,6 +528,7 @@ type ClaimSemanticsResult = {semantics?: ClaimSemanticsV1; rawSemantics?: unknow
 function claimSemanticsResult(raw: unknown, path: string, failure: ClaimSemanticsFailure | undefined): ClaimSemanticsResult {
   if (failure) return {rawSemantics: raw, semanticsParseIssues: [{code: 'invalid_semantics', path}]};
   const clone = structuredClone(raw) as Record<string, unknown>;
+  delete clone.source;
   const semantics = (hasOwn(clone, 'schemaVersion') ? clone
     : {schemaVersion: CONCLUSION_PROTOCOL_VALUES.semanticsSchemaVersion, ...clone}) as unknown as ClaimSemanticsV1;
   const range = semantics.scope.timeRangeNs;
@@ -774,7 +765,7 @@ export function parseConclusionContractDeclaration(raw: unknown): {contract?: Co
       const owner = owners.length === 1 ? owners[0] : undefined;
       const hasTraceReference = owner && [owner.references, owner.artifactRefs, owner.relationRefs,
         owner.semantics?.scope.subjectRefs, owner.semantics?.scope.objectRefs].some(refs => refs && refs.length > 0);
-      if (!owner || (binding.traceEvidenceRefIds.length > 0 && !hasTraceReference)) {
+      if (!owner || ((binding.traceEvidenceRefIds ?? []).length > 0 && !hasTraceReference)) {
         sourceBindingLinksValid = false;
         issues.push({code: 'invalid_reference', path: `sourceClaimBindings[${index}].${owner ? 'traceEvidenceRefIds' : 'claimId'}`});
       }
@@ -794,7 +785,7 @@ export function parseConclusionContractDeclaration(raw: unknown): {contract?: Co
     ...(record(raw.sourceUseDecision) ? {sourceUseDecision: structuredClone(raw.sourceUseDecision) as unknown as SourceUseDecisionV1} : {}),
     ...(Array.isArray(raw.sourceReferences) ? {sourceReferences: structuredClone(raw.sourceReferences) as SourceReferenceV1[]} : {}),
     ...(sourceBindingsValid && hasOwn(raw, 'sourceClaimBindings')
-      ? {sourceClaimBindings: structuredClone(raw.sourceClaimBindings) as SourceClaimBindingV1[]} : {}),
+      ? {sourceClaimBindings: canonicalSourceClaimBindingDeclarations(raw.sourceClaimBindings as SourceClaimBindingV1[])} : {}),
     ...(rejectedRootMetadata || !sourceBindingsValid || !sourceBindingLinksValid ? {rawDeclaration: structuredClone(raw)} : {}),
     parseIssues: issues,
     bindingEligibility: issues.length ? 'ineligible' : 'eligible',

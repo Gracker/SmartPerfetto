@@ -80,12 +80,10 @@ references; presentation equivalence cannot supply unit authority or proof.
 For `captured.cell`, the proposition is strict equality to the explicit string,
 boolean or null `value` in its unique semantic subject reference. It describes
 one captured cell; a broader identity, execution or causal assertion is a
-predicate/scope mismatch. For `source.location`, compare the body with the
-original declared `source` reference ID, file path and line range. It only says
-that this run returned that location snapshot. Function contents, call chains,
-current disk existence, source/Trace equality, execution and causal claims are
-broader propositions. Never complete a missing original declaration from the
-source ledger, and never reinterpret those broader claims as location facts.
+predicate/scope mismatch. A source location in the body only says where code
+is; it never establishes function contents, call chains, source/Trace equality,
+execution or causality, and those broader claims are never reinterpreted as
+location facts.
 
 `declarationBindingEligibility` is the server's parser state, not a field the
 answer can grant itself. `legacy_unchecked` declarations remain unknown even if

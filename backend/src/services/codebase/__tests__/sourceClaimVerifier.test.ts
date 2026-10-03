@@ -9,6 +9,7 @@ import {clearCodeAwareOutputGuards, registerCodeAwareCanary} from '../../securit
 import {
   SOURCE_USE_DECISION_SCHEMA_VERSION,
   sanitizeSourceReference,
+  type SourceClaimBindingV1,
   type SourceReferenceV1,
   type SourceUseDecisionV1,
 } from '../sourceUseDecision';
@@ -18,6 +19,7 @@ import {
   projectSafeSourceProvenance,
   verifySourceClaimBindings,
 } from '../sourceClaimVerifier';
+import {extractSourceCitations, matchSourceCitation} from '../sourceCitations';
 
 function reference(
   lookupKind: SourceReferenceV1['lookupKind'] = 'body',
@@ -81,377 +83,273 @@ function contract(claimText = 'Foo.run overlaps the verified trace occurrence'):
 function verify(input: {
   sourceReference?: SourceReferenceV1;
   sourceUseDecision?: SourceUseDecisionV1;
-  claimText?: string;
-  binding?: Record<string, unknown>;
+  claim?: Partial<NonNullable<ConclusionContract['claims']>[number]>;
+  binding?: Record<string, unknown> | null;
   matchedTraceIds?: Record<string, string[]>;
-  verifiedOccurrenceTraceIds?: Record<string, string[]>;
+  body?: string;
 }) {
   const sourceReference = input.sourceReference ?? reference();
   const sourceUseDecision = input.sourceUseDecision ?? decision(sourceReference);
-  const conclusionContract = contract(input.claimText);
+  const conclusionContract = contract();
+  conclusionContract.claims![0] = {...conclusionContract.claims![0]!, ...input.claim};
   conclusionContract.sourceUseDecision = sourceUseDecision;
   conclusionContract.sourceReferences = [sourceReference];
-  conclusionContract.sourceClaimBindings = [input.binding as any ?? {
+  conclusionContract.sourceClaimBindings = input.binding === null ? [] : [input.binding as any ?? {
     claimId: 'claim-1',
-    mechanismStatus: 'corroborated',
     sourceReferenceIds: [sourceReference.id],
     traceEvidenceRefIds: ['data:trace-1'],
   }];
-  const matchedTraceIds = input.matchedTraceIds ?? {
-    'claim-1': ['data:trace-1'],
-    'claim-2': ['data:trace-2'],
-  };
   return verifySourceClaimBindings({
     conclusionContract,
     actualSourceUseDecision: sourceUseDecision,
-    matchedTraceEvidenceRefIdsByClaimId: matchedTraceIds,
-    verifiedTraceOccurrenceRefIdsByClaimId:
-      input.verifiedOccurrenceTraceIds ?? matchedTraceIds,
+    matchedTraceEvidenceRefIdsByClaimId: input.matchedTraceIds ?? {'claim-1': ['data:trace-1'], 'claim-2': ['data:trace-2']},
+    body: input.body ?? 'Foo.run blocks the main thread at src/main/Foo.kt:L12-L18.',
   });
 }
 
+const statusOf = (result: ReturnType<typeof verify>, claimId = 'claim-1') =>
+  result.claims.find(claim => claim.claimId === claimId)?.status;
+
 describe('verifySourceClaimBindings', () => {
-  test.each(['compatible', 'corroborated', 'ambiguous', 'unverified'] as const)(
-    'does not accept an empty %s binding when selected source was never read', mechanismStatus => {
-      const declaration = contract('The selected source has not been investigated.');
-      declaration.sourceClaimBindings = [{claimId: 'claim-1', mechanismStatus,
-        sourceReferenceIds: [], traceEvidenceRefIds: []}];
-      const unusedSource = decision(reference(), {status: 'not_needed', reasonCode: 'not_needed',
-        attemptedTools: [], queriedCodebaseIds: [], usedCodebaseIds: [], references: []});
-      for (const semanticsPolicy of ['declared', 'legacy'] as const) {
-        const result = verifySourceClaimBindings({conclusionContract: declaration,
-          actualSourceUseDecision: unusedSource, semanticsPolicy});
-        expect(result.status).toBe('failed');
-        expect(result.bindings).toEqual([]);
-        expect(result.issues).toContainEqual(expect.objectContaining({claimId: 'claim-1',
-          severity: 'error', code: 'source_reference_not_returned'}));
-      }
-    });
+  // R2'' acceptance: source-dependent claims are identified by structure and judged per claim.
+  test('a codebase-population causal claim without a binding is unbound and never passes', () => {
+    const result = verify({binding: null, claim: {semantics: {schemaVersion: 'claim_semantics@1', predicate: 'anything.at.all',
+      polarity: 'affirmed', discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'codebase'}}}});
+    expect(statusOf(result)).toBe('unbound');
+    expect(result.status).toBe('partial');
+    expect(result.issues).toContainEqual(expect.objectContaining({claimId: 'claim-1', severity: 'warning',
+      code: 'source_claim_unbound'}));
+  });
 
-  test('rejects a binding whose malformed source IDs sanitize to an empty list', () => {
-    const result = verify({binding: {claimId: 'claim-1', mechanismStatus: 'compatible',
-      sourceReferenceIds: ['', 'invalid source id'], traceEvidenceRefIds: []}});
+  test('a trace-population claim whose text writes a source location is source-dependent', () => {
+    const result = verify({binding: null, claim: {text: 'The wait starts in StartupHooks.kt:28.'}});
+    expect(statusOf(result)).toBe('unbound');
+    expect(result.status).not.toBe('passed');
+  });
+
+  test('a bound reference this run never issued is invalid and fails', () => {
+    const result = verify({binding: {claimId: 'claim-1', sourceReferenceIds: ['source-ref-v1-fabricated'],
+      traceEvidenceRefIds: []}});
+    expect(statusOf(result)).toBe('invalid');
     expect(result.status).toBe('failed');
-    expect(result.bindings).toEqual([]);
-    expect(result.issues).toContainEqual(expect.objectContaining({code: 'source_reference_not_returned'}));
+    expect(result.issues).toContainEqual(expect.objectContaining({severity: 'error', code: 'source_reference_not_returned'}));
   });
 
-  test.each(['metadata', 'body'] as const)('still accepts a compatible binding to actual %s evidence', lookupKind => {
-    const source = reference(lookupKind);
-    const result = verify({sourceReference: source,
-      sourceUseDecision: decision(source, {codeAwareMode: lookupKind === 'metadata' ? 'metadata_only' : 'provider_send'}),
-      binding: {claimId: 'claim-1', mechanismStatus: 'compatible',
-        sourceReferenceIds: [source.id], traceEvidenceRefIds: []}});
-    expect(result.status).toBe('passed');
-    expect(result.bindings).toEqual([{claimId: 'claim-1', mechanismStatus: 'compatible',
-      sourceReferenceIds: [source.id], traceEvidenceRefIds: []}]);
+  test('a claim bound only to search hits is location_only', () => {
+    const result = verify({sourceReference: reference('search_hit')});
+    expect(statusOf(result)).toBe('location_only');
+    expect(result.status).toBe('partial');
   });
 
-  test.each(['referenceId', 'chunkId'] as const)('binds an unambiguous tool-visible %s from the current ledger', key => {
-    const source = sanitizeSourceReference({[key]: 'returned-lookup', codebaseId: 'app-source',
-      filePath: '源码/Startup Hooks.kt', lineRange: {start: 10, end: 20}, lookupKind: 'body'})!;
-    const result = verify({sourceReference: source, binding: {claimId: 'claim-1', mechanismStatus: 'compatible',
-      sourceReferenceIds: ['returned-lookup'], traceEvidenceRefIds: []}});
-    expect(result.status).toBe('passed');
-    expect(result.bindings[0]?.sourceReferenceIds).toEqual([source.id]);
+  test('a body reference without verified same-claim Trace evidence is source_only', () => {
+    const result = verify({binding: {claimId: 'claim-1', sourceReferenceIds: [reference().id], traceEvidenceRefIds: []}});
+    expect(statusOf(result)).toBe('source_only');
+    expect(result.issues).toContainEqual(expect.objectContaining({code: 'source_claim_trace_unlinked'}));
   });
 
-  test('rejects ambiguous legacy aliases while keeping each issued canonical ID usable', () => {
-    const first = reference();
-    const second = sanitizeSourceReference({...first, lineRange: {start: 10, end: 30}})!;
-    const actual = decision(first, {references: [first, second]});
-    const binding = {claimId: 'claim-1', mechanismStatus: 'compatible', traceEvidenceRefIds: []};
-    expect(verify({sourceUseDecision: actual, binding: {...binding, sourceReferenceIds: [first.referenceId]}})
-      .issues).toContainEqual(expect.objectContaining({code: 'source_reference_not_returned'}));
-    expect(verify({sourceUseDecision: actual, binding: {...binding, sourceReferenceIds: [second.id]}}).status).toBe('passed');
-  });
-
-  test('does not accept model-created aliases or a reference from a previous run', () => {
-    const source = reference();
-    const declaration = contract();
-    declaration.sourceReferences = [{...source, id: 'model-alias'}];
-    declaration.sourceClaimBindings = [{claimId: 'claim-1', mechanismStatus: 'compatible',
-      sourceReferenceIds: ['model-alias'], traceEvidenceRefIds: []}];
-    expect(verifySourceClaimBindings({conclusionContract: declaration, actualSourceUseDecision: decision(source)})
-      .issues).toContainEqual(expect.objectContaining({code: 'source_reference_not_returned'}));
-    declaration.sourceClaimBindings[0].sourceReferenceIds = [source.id];
-    expect(verifySourceClaimBindings({conclusionContract: declaration,
-      actualSourceUseDecision: decision(source, {status: 'pending', references: []})})
-      .issues).toContainEqual(expect.objectContaining({code: 'source_reference_not_returned'}));
-  });
-
-  test('does not promote source text and a verified interval into a native mechanism proof', () => {
-    const source = reference();
-    const declaration = contract();
-    declaration.bindingEligibility = 'eligible';
-    declaration.claims![0].semantics = {schemaVersion: 'claim_semantics@1', predicate: 'interval.overlap',
-      polarity: 'affirmed', discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows'}};
-    declaration.sourceClaimBindings = [{claimId: 'claim-1', mechanismStatus: 'corroborated',
-      sourceReferenceIds: [source.id], traceEvidenceRefIds: ['data:trace-1']}];
-    const verified = verifySourceClaimBindings({conclusionContract: declaration, actualSourceUseDecision: decision(source),
-      semanticsPolicy: 'declared', matchedTraceEvidenceRefIdsByClaimId: {'claim-1': ['data:trace-1']},
-      verifiedTraceOccurrenceRefIdsByClaimId: {'claim-1': ['data:trace-1']}});
-    expect(verified).toMatchObject({status: 'partial', bindings: [{mechanismStatus: 'compatible'}],
-      issues: [{code: 'source_binding_mechanism_unverified'}]});
-    expect(declaration.sourceClaimBindings[0].mechanismStatus).toBe('corroborated');
-  });
-
-  test.each(['missing', 'duplicate'] as const)('does not manufacture source claim identity for %s IDs', kind => {
-    const source = reference();
-    const declaration = contract();
-    if (kind === 'missing') delete declaration.claims![0].id;
-    else declaration.claims![1].id = declaration.claims![0].id;
-    declaration.sourceClaimBindings = [{claimId: kind === 'missing' ? 'Q1' : 'claim-1', mechanismStatus: 'compatible',
-      sourceReferenceIds: [source.id], traceEvidenceRefIds: []}];
-    const verified = verifySourceClaimBindings({conclusionContract: declaration, actualSourceUseDecision: decision(source),
-      semanticsPolicy: 'declared'});
-    expect(verified.status).toBe('partial');
-    expect(verified.bindings).toEqual([]);
-  });
-  test.each(['源码不存在', 'The implementation is absent', '这只是任意展示文字'])(
-    'uses declared source semantics independently from wording: %s', text => {
-      const source = reference();
-      const declaration = contract(text);
-      declaration.bindingEligibility = 'eligible';
-      declaration.claims![0].semantics = {schemaVersion: 'claim_semantics@1', predicate: 'source.existence',
-        polarity: 'negated', discourse: 'asserted', quantifier: 'all', modality: 'certain', scope: {population: 'codebase'}};
-      declaration.sourceClaimBindings = [{claimId: 'claim-1', mechanismStatus: 'compatible',
-        sourceReferenceIds: [source.id], traceEvidenceRefIds: []}];
-      for (const status of ['corroborated', 'search_incomplete'] as const) {
-        const verified = verifySourceClaimBindings({conclusionContract: declaration,
-          actualSourceUseDecision: decision(source, {status, coverageComplete: true}), semanticsPolicy: 'declared'});
-        expect(verified.status).toBe('partial');
-        expect(verified.issues).toEqual([expect.objectContaining({severity: 'warning', code: 'source_absence_requires_complete_search'})]);
-      }
-    });
-
-  test('still reports actual unauthorized references when declared semantics are unchecked', () => {
-    const source = reference();
-    const declaration = contract();
-    declaration.sourceClaimBindings = [{claimId: 'claim-1', mechanismStatus: 'compatible',
-      sourceReferenceIds: ['never-returned'], traceEvidenceRefIds: []}];
-    const verified = verifySourceClaimBindings({conclusionContract: declaration,
-      actualSourceUseDecision: decision(source), semanticsPolicy: 'declared'});
-    expect(verified.status).toBe('failed');
-    expect(verified.issues.map(issue => issue.code)).toEqual(expect.arrayContaining([
-      'source_claim_semantics_unchecked', 'source_reference_not_returned',
-    ]));
-  });
-
-  test('accepts corroborated provider body evidence bound to a verified trace occurrence', () => {
+  test('a body reference with matched same-claim Trace evidence and a visible citation is trace_linked', () => {
     const result = verify({});
-
+    expect(statusOf(result)).toBe('trace_linked');
     expect(result.status).toBe('passed');
-    expect(result.issues).toEqual([]);
-    expect(result.bindings).toEqual([
-      expect.objectContaining({
-        claimId: 'claim-1',
-        mechanismStatus: 'corroborated',
-        traceEvidenceRefIds: ['data:trace-1'],
-      }),
-    ]);
+    expect(result.citations).toEqual([expect.objectContaining({filePath: 'src/main/Foo.kt', status: 'verified_body',
+      sourceReferenceId: reference().id})]);
+    expect(JSON.stringify(result)).not.toMatch(/proven|因果成立|已证明/);
   });
 
-  test('downgrades metadata-only corroboration to compatible with an explicit issue', () => {
-    const sourceReference = reference('metadata');
-    const result = verify({
-      sourceReference,
-      sourceUseDecision: decision(sourceReference, {
-        codeAwareMode: 'metadata_only',
-        status: 'located',
-      }),
+  test('Trace evidence of another claim is invalid', () => {
+    const result = verify({binding: {claimId: 'claim-1', sourceReferenceIds: [reference().id],
+      traceEvidenceRefIds: ['data:trace-2']}});
+    expect(statusOf(result)).toBe('invalid');
+    expect(result.issues).toContainEqual(expect.objectContaining({code: 'source_binding_trace_cross_claim'}));
+  });
+
+  test('a claim whose source the answer never cites cannot reach trace_linked', () => {
+    const result = verify({body: 'Foo.run blocks the main thread.'});
+    expect(statusOf(result)).toBe('source_only');
+    expect(result.issues).toContainEqual(expect.objectContaining({code: 'source_claim_not_visible'}));
+  });
+
+  test('an unmatched location in the claim\'s visible answer block demotes it to unbound', () => {
+    const result = verify({body: 'Foo.run blocks at src/main/Foo.kt:L12-L18, called from src/main/Missing.kt:L80.'});
+    expect(statusOf(result)).toBe('unbound');
+    expect(result.citations.map(citation => citation.status)).toEqual(['verified_body', 'unmatched']);
+  });
+
+  test('retired declaration fields are ignored, never judged', () => {
+    const result = verify({binding: {claimId: 'claim-1', mechanismStatus: 'corroborated', reason: 'ignored',
+      sourceReferenceIds: [reference().id], traceEvidenceRefIds: ['data:trace-1']}});
+    expect(statusOf(result)).toBe('trace_linked');
+    expect(result.bindings).toEqual([{claimId: 'claim-1', sourceReferenceIds: [reference().id],
+      traceEvidenceRefIds: ['data:trace-1']}]);
+  });
+
+  test('declared source with no current execution ledger stays unchecked', () => {
+    const declaration = contract();
+    declaration.sourceClaimBindings = [{claimId: 'claim-1', sourceReferenceIds: ['source-ref-v1-x'], traceEvidenceRefIds: []}];
+    expect(verifySourceClaimBindings({conclusionContract: declaration})).toMatchObject({status: 'partial',
+      issues: [expect.objectContaining({code: 'source_claim_semantics_unchecked'})]});
+  });
+
+  describe('citations tie to a claim only through its own file version and lines', () => {
+    const live = (overrides: Partial<SourceReferenceV1>) => sanitizeSourceReference({id: 'x', referenceId: 'lookup-x',
+      codebaseId: 'app-source', filePath: 'src/main/Foo.kt', lineRange: {start: 10, end: 20}, lookupKind: 'body',
+      sourceGeneration: 'live-1', ...overrides})!;
+    const run = (references: SourceReferenceV1[], boundIds: string[], body: string) => {
+      const declaration = contract();
+      const sourceUseDecision = {...decision(references[0]!), references};
+      declaration.sourceUseDecision = sourceUseDecision;
+      declaration.sourceReferences = references;
+      declaration.sourceClaimBindings = [{claimId: 'claim-1', sourceReferenceIds: boundIds, traceEvidenceRefIds: ['data:trace-1']}];
+      return verifySourceClaimBindings({conclusionContract: declaration, actualSourceUseDecision: sourceUseDecision,
+        matchedTraceEvidenceRefIdsByClaimId: {'claim-1': ['data:trace-1']}, body});
+    };
+
+    test('a wide read window does not make a citation of other lines visible for the claim', () => {
+      const hit = live({referenceId: 'lookup-h', lookupKind: 'search_hit', lineRange: {start: 10, end: 20}});
+      const window = live({referenceId: 'lookup-w', lineRange: {start: 1, end: 100}});
+      const result = run([hit, window], [hit.id], 'Foo.run blocks the main thread, see src/main/Foo.kt:L80.');
+      expect(statusOf(result)).toBe('source_only');
+      expect(result.issues).toContainEqual(expect.objectContaining({code: 'source_claim_not_visible'}));
+      expect(statusOf(run([hit, window], [hit.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L12.')))
+        .toBe('trace_linked');
     });
 
-    expect(result.status).toBe('partial');
-    expect(result.bindings[0]?.mechanismStatus).toBe('compatible');
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_binding_strength_downgraded'}),
-    ]));
-  });
-
-  test('rejects fabricated references not returned by this run', () => {
-    const result = verify({
-      binding: {
-        claimId: 'claim-1',
-        mechanismStatus: 'compatible',
-        sourceReferenceIds: ['source-ref-v1-fabricated000000000000'],
-        traceEvidenceRefIds: [],
-      },
+    test('a binding pins an ambiguous citation for its claim only, and the answer keeps the ambiguity', () => {
+      const a = live({referenceId: 'lookup-a'});
+      const b = live({referenceId: 'lookup-b', sourceGeneration: 'live-2'});
+      const result = run([a, b], [a.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L12.');
+      expect(result.citations[0]).toMatchObject({status: 'ambiguous'});
+      expect(statusOf(result)).toBe('trace_linked');
+      expect(result.status).toBe('partial');
+      expect(result.issues).toContainEqual(expect.objectContaining({code: 'source_citation_ambiguous'}));
     });
 
-    expect(result.status).toBe('failed');
-    expect(result.bindings).toEqual([]);
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_reference_not_returned'}),
-    ]));
-  });
-
-  test('rejects references outside the selected codebase partition', () => {
-    const wrongPartitionReference = reference('body', 'other-source');
-    const selectedReference = reference();
-    const sourceUseDecision = decision(selectedReference) as SourceUseDecisionV1 & {references: SourceReferenceV1[]};
-    sourceUseDecision.references = [selectedReference, wrongPartitionReference];
-    const result = verify({
-      sourceReference: wrongPartitionReference,
-      sourceUseDecision,
-      binding: {
-        claimId: 'claim-1',
-        mechanismStatus: 'compatible',
-        sourceReferenceIds: [wrongPartitionReference.id],
-        traceEvidenceRefIds: [],
-      },
+    test('a claim bound to two candidate versions does not pick one', () => {
+      const a = live({referenceId: 'lookup-a'});
+      const b = live({referenceId: 'lookup-b', sourceGeneration: 'live-2'});
+      expect(statusOf(run([a, b], [a.id, b.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L12.'))).toBe('unbound');
+      expect(statusOf(run([a, b], [b.id, a.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L12.'))).toBe('unbound');
     });
 
-    expect(result.status).toBe('failed');
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_reference_outside_selection'}),
-    ]));
-  });
-
-  test('downgrades corroboration without a claimed verified trace occurrence', () => {
-    const sourceReference = reference();
-    const result = verify({
-      sourceReference,
-      matchedTraceIds: {'claim-1': [], 'claim-2': ['data:trace-2']},
-      verifiedOccurrenceTraceIds: {'claim-1': [], 'claim-2': ['data:trace-2']},
-      binding: {
-        claimId: 'claim-1',
-        mechanismStatus: 'corroborated',
-        sourceReferenceIds: [sourceReference.id],
-        traceEvidenceRefIds: [],
-      },
+    test('a binding past the stored candidate list still counts against a unique pin', () => {
+      const versions = Array.from({length: 18}, (_, index) =>
+        live({referenceId: `lookup-${index}`, sourceGeneration: `live-${index}`}));
+      const body = 'Foo.run blocks the main thread at src/main/Foo.kt:L12.';
+      for (const bound of [[versions[0]!.id, versions[17]!.id], [versions[17]!.id, versions[0]!.id]]) {
+        expect(statusOf(run(versions, bound, body))).toBe('unbound');
+      }
+      const result = run(versions, [versions[17]!.id], body);
+      expect(statusOf(result)).toBe('trace_linked');
+      expect(result.citations[0]!.candidateReferenceIds).toHaveLength(16);
     });
 
-    expect(result.status).toBe('partial');
-    expect(result.bindings[0]?.mechanismStatus).toBe('compatible');
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_binding_trace_support_missing'}),
-    ]));
-  });
-
-  test('rejects trace evidence that belongs to another claim', () => {
-    const sourceReference = reference();
-    const result = verify({
-      sourceReference,
-      binding: {
-        claimId: 'claim-1',
-        mechanismStatus: 'corroborated',
-        sourceReferenceIds: [sourceReference.id],
-        traceEvidenceRefIds: ['data:trace-2'],
-      },
+    test('a claim text past the extraction limit is reported and keeps the answer partial', () => {
+      const a = live({});
+      const declaration = contract();
+      const sourceUseDecision = {...decision(a), references: [a]};
+      declaration.claims![0] = {...declaration.claims![0]!,
+        text: Array.from({length: 201}, (_, index) => `src/main/Foo.kt:L${(index % 11) + 10}`).join(' ')};
+      declaration.sourceUseDecision = sourceUseDecision;
+      declaration.sourceClaimBindings = [{claimId: 'claim-1', sourceReferenceIds: [a.id], traceEvidenceRefIds: ['data:trace-1']}];
+      const result = verifySourceClaimBindings({conclusionContract: declaration, actualSourceUseDecision: sourceUseDecision,
+        matchedTraceEvidenceRefIdsByClaimId: {'claim-1': ['data:trace-1']}, body: 'Foo.run blocks at src/main/Foo.kt:L12.'});
+      expect(statusOf(result)).toBe('source_only');
+      expect(result.status).toBe('partial');
+      expect(result.issues).toContainEqual(expect.objectContaining({claimId: 'claim-1',
+        code: 'source_citation_extraction_truncated'}));
     });
 
-    expect(result.status).toBe('failed');
-    expect(result.bindings).toEqual([]);
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_binding_trace_cross_claim'}),
-    ]));
-  });
-
-  test('accepts partial same-claim membership but downgrades corroboration without a verified occurrence', () => {
-    const result = verify({
-      matchedTraceIds: {'claim-1': ['data:trace-1']},
-      verifiedOccurrenceTraceIds: {'claim-1': []},
+    test('locations past the extraction limit keep every claim short of trace_linked', () => {
+      const a = live({});
+      const extra = Array.from({length: 200}, (_, index) => `Other.kt:${index + 1}`).join(' ');
+      const result = run([a], [a.id], `Foo.run blocks at src/main/Foo.kt:L12.\n\n${extra}`);
+      expect(statusOf(result)).toBe('source_only');
+      expect(result.issues).toContainEqual(expect.objectContaining({code: 'source_citation_extraction_truncated'}));
     });
-
-    expect(result.status).toBe('partial');
-    expect(result.bindings[0]).toEqual(expect.objectContaining({
-      claimId: 'claim-1',
-      mechanismStatus: 'compatible',
-      traceEvidenceRefIds: ['data:trace-1'],
-    }));
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_binding_trace_occurrence_not_verified'}),
-    ]));
   });
 
-  test('never verifies contract-declared source context without an actual accessor decision', () => {
-    const sourceReference = reference();
-    const fabricatedDecision = decision(sourceReference);
-    const conclusionContract = contract();
-    conclusionContract.sourceUseDecision = fabricatedDecision;
-    conclusionContract.sourceReferences = [sourceReference];
-    conclusionContract.sourceClaimBindings = [{
-      claimId: 'claim-1',
-      mechanismStatus: 'corroborated',
-      sourceReferenceIds: [sourceReference.id],
-      traceEvidenceRefIds: ['data:trace-1'],
-    }];
+  test('a run with no source-dependent claim and no cited location has nothing to check', () => {
+    const declaration = contract();
+    declaration.sourceClaimBindings = [];
+    expect(verifySourceClaimBindings({conclusionContract: declaration, actualSourceUseDecision: decision(reference()),
+      body: 'Plain trace answer.'}).status).toBe('not_checked');
+  });
+});
 
-    const result = verifySourceClaimBindings({
-      conclusionContract,
-      matchedTraceEvidenceRefIdsByClaimId: {'claim-1': ['data:trace-1']},
-      verifiedTraceOccurrenceRefIdsByClaimId: {'claim-1': ['data:trace-1']},
-    });
+describe('matchSourceCitation', () => {
+  const ref = (overrides: Partial<SourceReferenceV1>) => sanitizeSourceReference({id: 'source-ref-v1-a', codebaseId: 'app-a',
+    filePath: 'app/src/Foo.kt', lineRange: {start: 10, end: 30}, lookupKind: 'body', sourceGeneration: 'live-1', ...overrides})!;
+  const cite = (text: string) => extractSourceCitations(text).citations[0]!;
 
-    expect(result.status).toBe('not_checked');
-    expect(result.bindings).toEqual([]);
+  test('a full path inside a read window is verified_body; a search hit only locates', () => {
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L12-L14'), [ref({})]).status).toBe('verified_body');
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L12'), [ref({lookupKind: 'search_hit'})]).status).toBe('located');
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L90'), [ref({})]).status).toBe('unmatched');
   });
 
-  test('rejects negative source-absence claims when search coverage is incomplete', () => {
-    const sourceReference = reference('metadata');
-    const result = verify({
-      sourceReference,
-      sourceUseDecision: decision(sourceReference, {
-        status: 'search_incomplete',
-        reasonCode: 'search_incomplete',
-        coverageComplete: false,
-        incompleteReasons: ['result_limit'],
-      }),
-      claimText: '源码中不存在 Foo.run 的实现',
-      binding: {
-        claimId: 'claim-1',
-        mechanismStatus: 'compatible',
-        sourceReferenceIds: [sourceReference.id],
-        traceEvidenceRefIds: [],
-      },
-    });
-
-    expect(result.status).toBe('failed');
-    expect(result.bindings).toEqual([]);
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_absence_requires_complete_search'}),
-    ]));
+  test('a short path that fits files in two codebases or two content versions is ambiguous', () => {
+    expect(matchSourceCitation(cite('Foo.kt:L12'), [ref({}), ref({id: 'source-ref-v1-b', codebaseId: 'app-b'})]).status)
+      .toBe('ambiguous');
+    expect(matchSourceCitation(cite('Foo.kt:L12'), [ref({}), ref({id: 'source-ref-v1-c', sourceGeneration: 'live-2'})]).status)
+      .toBe('ambiguous');
+    // The issued id is the canonical reference identity.
+    expect(matchSourceCitation(cite('src/Foo.kt:L12'), [ref({})])).toMatchObject({status: 'verified_body',
+      sourceReferenceId: ref({}).id});
   });
 
-  test('rejects a negative source claim on incomplete run coverage even after source was located', () => {
-    const sourceReference = reference('body');
-    const result = verify({
-      sourceReference,
-      // A later read located source; one earlier search still did not finish.
-      sourceUseDecision: decision(sourceReference, {status: 'corroborated', coverageComplete: false,
-        incompleteReasons: ['time_budget']}),
-      claimText: '源码中不存在 Foo.run 的实现',
-      binding: {claimId: 'claim-1', mechanismStatus: 'compatible', sourceReferenceIds: [sourceReference.id],
-        traceEvidenceRefIds: []},
-    });
-
-    expect(result.status).toBe('failed');
-    expect(result.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_absence_requires_complete_search'}),
-    ]));
+  test('extraction reads Unicode paths, and spaced paths when quoted', () => {
+    expect(extractSourceCitations('see `src/功能目录/My Feature/Foo.kt:L10-L12` and src/功能/Bar.kt:5').citations.map(item =>
+      [item.citation, item.filePath])).toEqual([
+      ['src/功能目录/My Feature/Foo.kt:L10-L12', 'src/功能目录/My Feature/Foo.kt'], ['src/功能/Bar.kt:5', 'src/功能/Bar.kt']]);
   });
 
-  test.each([
-    [{start: 10, end: 20}, 'corroborated'],
-    [{start: 13, end: 20}, 'compatible'],
-  ] as const)('upgrades a bound search hit only when a read window covers its whole range (%j)', (window, expected) => {
-    const hit = sanitizeSourceReference({referenceId: 'hit-1', codebaseId: 'app-source', filePath: 'src/main/Foo.kt',
-      lineRange: {start: 12, end: 14}, sourceGeneration: 'live-1', lookupKind: 'search_hit'})!;
-    const read = sanitizeSourceReference({referenceId: 'read-1', codebaseId: 'app-source', filePath: 'src/main/Foo.kt',
-      lineRange: window, sourceGeneration: 'live-1', lookupKind: 'body'})!;
-    const result = verify({sourceReference: hit,
-      sourceUseDecision: decision(hit, {status: 'corroborated', references: [hit, read]})});
-
-    expect(result.bindings[0]?.mechanismStatus).toBe(expected);
+  test('extraction reads source extensions with line numbers and ignores other text', () => {
+    expect(extractSourceCitations('see app/src/Foo.kt:L10-L20, Bar.java:7 and v1.2:3 or Foo.kt').citations.map(item => item.citation))
+      .toEqual(['app/src/Foo.kt:L10-L20', 'Bar.java:7']);
   });
 
-  test('never promotes graph-only evidence to corroborated', () => {
-    const sourceReference = reference('graph');
-    const result = verify({sourceReference});
+  test('every written line must be returned by one file version; overlap or a file-only reference is not enough', () => {
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L20-L80'), [ref({})]).status).toBe('unmatched');
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L12'), [ref({lineRange: undefined})]).status).toBe('unmatched');
+    // Adjacent windows of one version cover together; two versions never do.
+    const next = ref({id: 'source-ref-v1-n', lineRange: {start: 31, end: 50}});
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L20-L40'), [ref({}), next]).status).toBe('verified_body');
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L20-L40'),
+      [ref({}), ref({id: 'source-ref-v1-n', lineRange: {start: 31, end: 50}, sourceGeneration: 'live-2'})]).status)
+      .toBe('unmatched');
+    // Covered by a read window and a search hit together: located, not read.
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L20-L40'), [ref({}),
+      ref({id: 'source-ref-v1-n', lineRange: {start: 31, end: 50}, lookupKind: 'search_hit'})]).status).toBe('located');
+  });
 
-    expect(result.status).toBe('partial');
-    expect(result.bindings[0]?.mechanismStatus).toBe('compatible');
+  test('references with no known generation never cover lines together', () => {
+    const a = ref({id: 'source-ref-v1-a', sourceGeneration: undefined, lineRange: {start: 10, end: 20}});
+    const b = ref({id: 'source-ref-v1-b', referenceId: 'lookup-b', sourceGeneration: undefined, lineRange: {start: 21, end: 30}});
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L10-L30'), [a, b]).status).toBe('unmatched');
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L12-L18'), [a, b]).status).toBe('verified_body');
+  });
+
+  test('a range is read whole: an end that does not parse never shrinks to its first line', () => {
+    const single = ref({lineRange: {start: 20, end: 20}});
+    for (const written of ['app/src/Foo.kt:L20-L99999999999', '`app/src/Foo.kt:L20-L99999999999`', 'app/src/Foo.kt:L30-L20']) {
+      const extracted = extractSourceCitations(written).citations;
+      expect(extracted.every(item => matchSourceCitation(item, [single]).status !== 'verified_body')).toBe(true);
+    }
+    expect(extractSourceCitations('app/src/Foo.kt:L20-L30x').citations).toEqual([]);
+    // Every common separator is a range, never its first line alone; a dash ending a sentence is not.
+    for (const separator of ['-', '–', '—', '~', '～', ' - ']) {
+      expect(extractSourceCitations(`app/src/Foo.kt:L12${separator}L20`).citations[0]?.lineRange).toEqual({start: 12, end: 20});
+    }
+    expect(extractSourceCitations('见 app/src/Foo.kt:12-。').citations[0]?.lineRange).toEqual({start: 12, end: 12});
+    expect(extractSourceCitations('（app/src/Foo.kt:L12）').citations[0]?.lineRange).toEqual({start: 12, end: 12});
+    expect(matchSourceCitation(cite('app/src/Foo.kt:L20'), [single]).status).toBe('verified_body');
+  });
+
+  test('extraction says when it stopped before the last written location', () => {
+    const many = Array.from({length: 201}, (_, index) => `Foo.kt:${index + 1}`).join(' ');
+    expect(extractSourceCitations(many)).toMatchObject({truncated: true});
+    expect(extractSourceCitations(many).citations).toHaveLength(200);
+    expect(extractSourceCitations('Foo.kt:1').truncated).toBe(false);
   });
 });
 
@@ -476,11 +374,21 @@ describe('projectSafeSourceProvenance', () => {
       sourceReferenceIds: [sourceReference.id],
       traceEvidenceRefIds: ['data:trace-1'],
       reason: 'SECRET_BINDING_REASON_CANARY',
-    }];
+    } as SourceClaimBindingV1];
 
+    const unverified = projectSafeSourceProvenance({
+      conclusionContract,
+      actualSourceUseDecision: conclusionContract.sourceUseDecision,
+    });
+    // A declaration no verifier saw is a candidate, never an accepted binding.
+    expect(unverified?.sourceClaimBindings).toEqual([]);
+
+    const verification = verifySourceClaimBindings({conclusionContract, actualSourceUseDecision: sourceUseDecision,
+      matchedTraceEvidenceRefIdsByClaimId: {'claim-1': ['data:trace-1']}, body: 'Foo.run blocks at src/main/Foo.kt:L12.'});
     const projected = projectSafeSourceProvenance({
       conclusionContract,
       actualSourceUseDecision: conclusionContract.sourceUseDecision,
+      sourceClaimVerificationResult: verification,
     });
 
     expect(projected).toEqual({
@@ -491,10 +399,11 @@ describe('projectSafeSourceProvenance', () => {
       }),
       sourceClaimBindings: [{
         claimId: 'claim-1',
-        mechanismStatus: 'compatible',
         sourceReferenceIds: [sourceReference.id],
         traceEvidenceRefIds: ['data:trace-1'],
       }],
+      sourceClaimStatuses: [expect.objectContaining({claimId: 'claim-1', status: 'trace_linked'})],
+      sourceCitations: [expect.objectContaining({status: 'verified_body'})],
     });
     expect(JSON.stringify(projected)).not.toContain('/Users/chris');
     expect(JSON.stringify(projected)).not.toContain('SECRET_');

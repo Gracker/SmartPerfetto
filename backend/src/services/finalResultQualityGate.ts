@@ -9,7 +9,7 @@ import type {
 import {localize, type OutputLanguage} from '../agentv3/outputLanguage';
 import {assessFinalReportContract, type FinalReportContractAssessmentResult} from './finalReportContractGate';
 import {assessFinalInvestigationContract, type FinalInvestigationContractResult} from './finalInvestigationContractGate';
-import {verifySourceClaimBindingsForResult} from './codebase/sourceClaimVerifier';
+import {verifySourceClaimBindingsForResult, type StoredSourceClaimVerificationResult} from './codebase/sourceClaimVerifier';
 import {isUnusedSourceDecision} from './codebase/sourceUseDecision';
 import {assessScrollingJankClaimBoundary} from './scrollingJankClaimBoundary';
 import {isSemanticClaimIssueCode, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE} from './finalSemanticIssueCodes';
@@ -1275,7 +1275,7 @@ export interface FinalResultQualityAssessment {
   assurance: AnalysisDeliveryAssurance;
   report: FinalReportContractAssessmentResult;
   investigation?: FinalInvestigationContractResult;
-  sourceClaimVerification?: ReturnType<typeof verifySourceClaimBindingsForResult>;
+  sourceClaimVerification?: StoredSourceClaimVerificationResult;
 }
 
 function verifiedEvidenceRenderedOutput(
@@ -1397,12 +1397,15 @@ export function assessFinalResultQualityAssessment(
     Boolean(context.sourceUseFingerprint) && sourceBinding?.sourceUseFingerprint === context.sourceUseFingerprint &&
     sourceBinding?.sourceUseFingerprint === analysisDeliveryFingerprint(result.sourceUseDecision);
   if (sourceClaimVerification) {
+    // A weaker-than-linked source claim is delivered but not fully verified
+    // (`coverage_incomplete`, a `~`); only an error, a reference this run never
+    // issued or Trace evidence of another claim, fails the gate.
     assurance.source = sourceClaimVerification.status === 'partial' ? 'coverage_incomplete' :
       sourceClaimVerification.status === 'passed' ? sourceVerificationCurrent ? 'passed' : 'not_checked' :
       sourceClaimVerification.status === 'failed' ? 'failed' : 'not_checked';
-    for (const issue of sourceClaimVerification.issues) issues.push({
+    for (const issue of sourceClaimVerification.issues.filter(issue => issue.severity === 'error')) issues.push({
       code: 'source_claim_binding_invalid',
-      message: `Source/Trace 机制绑定未通过严格核验：${issue.message}`,
+      message: `源码引用绑定无效：${issue.message}`,
       recoveryKind: 'correct_evidence',
     });
   }

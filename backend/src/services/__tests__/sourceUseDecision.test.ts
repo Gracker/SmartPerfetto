@@ -204,6 +204,11 @@ describe('source use decision contract', () => {
     // An unknown generation is never the same one.
     expect(referenceHasReadBody(ref('search_hit', 12, 14), [ref('body', 10, 20)])).toBe(false);
     expect(referenceHasReadBody(ref('body', 1, 2), [])).toBe(true);
+    // Adjacent windows of one known version cover together, as a written citation is judged; of two versions, never.
+    const wide = ref('search_hit', 15, 25, 'live-1');
+    expect(referenceHasReadBody(wide, [ref('body', 10, 20, 'live-1'), ref('body', 21, 30, 'live-1')])).toBe(true);
+    expect(referenceHasReadBody(wide, [ref('body', 10, 20, 'live-1'), ref('body', 22, 30, 'live-1')])).toBe(false);
+    expect(referenceHasReadBody(wide, [ref('body', 10, 20, 'live-1'), ref('body', 21, 30, 'live-2')])).toBe(false);
   });
 
   it('keeps a binding to a reference the model cited in its visible form, without the internal referenceId', () => {

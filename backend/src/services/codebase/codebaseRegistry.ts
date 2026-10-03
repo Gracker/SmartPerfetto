@@ -25,7 +25,7 @@ import {
   withScopedIngestLease,
 } from '../scopedIngestLease';
 import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
-import {buildSourceSelectionIR, sourceExtensionsForKind} from './sourceSelectionPolicy';
+import {buildSourceSelectionIR, CODEBASE_KINDS, sourceExtensionsForKind} from './sourceSelectionPolicy';
 import {
   CodebaseStateError,
   codebaseNotFound,
@@ -39,7 +39,6 @@ export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kerne
  * chosen by the local user through that channel; see `channelAuthorizedRoots`.
  */
 export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker' | 'local_cli';
-const CODEBASE_KINDS: readonly CodebaseKind[] = ['app_source', 'aosp', 'kernel_source', 'oem_sdk'];
 const DEFAULT_TENANT_ID = 'default-dev-tenant';
 const DEFAULT_WORKSPACE_ID = 'default-workspace';
 const DEFAULT_USER_ID = 'dev-user-123';

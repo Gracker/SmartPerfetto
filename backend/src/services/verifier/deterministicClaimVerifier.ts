@@ -37,10 +37,10 @@ type Resolution<T> = {value: T} | {reason: string};
 type Unit = {dimension: string; numerator: bigint; denominator: bigint};
 
 const hasOwn = (value: object, key: PropertyKey): boolean => Object.prototype.hasOwnProperty.call(value, key);
-const proofKinds: Readonly<Record<string, DeterministicClaimProofKind>> = Object.freeze({
+// `source_location` stays in the stored union for historical results; no current rule produces it.
+const proofKinds: Readonly<Record<string, Exclude<DeterministicClaimProofKind, 'source_location'>>> = Object.freeze({
   'numeric.cell': 'numeric_cell',
   'captured.cell': 'captured_cell',
-  'source.location': 'source_location',
   'interval.overlap': 'interval_overlap',
   'comparison.delta': 'comparison_delta',
 });
@@ -422,10 +422,6 @@ function deterministicProof(claim: ClaimSupportV1, references: ClaimReferenceVer
   if (!semantics) return proof(kind, 'not_checked', 'semantics_not_declared');
   if (claim.bindingEligibility !== 'eligible') return proof(kind, 'candidate', 'binding_eligibility_unchecked');
   if (kind === 'none') return proof(kind, 'candidate', 'unsupported_predicate');
-  // Source locations are evaluated against the private current-run source ledger
-  // by the shared finalizer, never against Trace anchors or model metadata here.
-  if (kind === 'source_location') return proof(kind, 'not_checked', 'source_evidence_required');
-  if (semantics.source) return proof(kind, 'candidate', 'source_declaration_not_supported');
   const unresolved = references.some(reference => reference.status === 'missing' || reference.status === 'ambiguous' || reference.status === 'value_mismatch');
   // An extra broken citation must not hide a contradiction in the predicate's
   // own captured inputs. Evaluate those inputs, but never prove from bad refs.
@@ -475,7 +471,7 @@ function issueForReference(claim: ClaimSupportV1, reference: ClaimReferenceVerif
   // Unverified references are reported once per claim and reason by verifyClaim.
   if (reference.status === 'matched' || reference.status === 'not_checked' || reference.status === 'ineligible') return undefined;
   const anchors = claim.anchors.filter(anchor => anchor.anchorId === reference.anchorId);
-  const advisory = claim.kind !== 'identity' && !claim.semantics?.source &&
+  const advisory = claim.kind !== 'identity' &&
     anchors.length === 1 && referenceBindingFailureIsAdvisory(anchors[0], reference.status);
   return {
     claimId: claim.claimId,

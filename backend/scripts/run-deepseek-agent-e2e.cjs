@@ -879,16 +879,17 @@ function evaluateSemanticConditionReport(input) {
     (summary?.analysisCompletedSourceBindingCount || 0) === 0 &&
     sourceToolCount === 0
   );
-  const mechanismStatuses = Array.isArray(summary?.analysisCompletedSourceMechanismStatuses)
-    ? summary.analysisCompletedSourceMechanismStatuses
+  const claimStatuses = Array.isArray(summary?.analysisCompletedSourceClaimStatuses)
+    ? summary.analysisCompletedSourceClaimStatuses
     : [];
+  // Weaker-than-linked source claims are delivered (not failed); an invalid
+  // reference is the one failure. The oracle-linked claim must independently
+  // meet sourceIdentityPassed below.
   const sourceBindingPassed =
-    summary?.analysisCompletedSourceClaimVerifierStatus === 'passed' &&
+    summary?.analysisCompletedSourceClaimVerifierStatus !== 'failed' &&
     summary?.analysisCompletedSourceReferenceMembershipPassed === true &&
-    mechanismStatuses.length > 0 &&
-    // A valid source-only location can retain an unverified mechanism. The
-    // oracle-linked binding must independently meet sourceIdentityPassed below.
-    mechanismStatuses.every(status => ['corroborated', 'compatible', 'unverified'].includes(status));
+    claimStatuses.length > 0 &&
+    claimStatuses.every(status => status !== 'invalid');
   const sourceUseDecision = summary?.analysisCompletedSourceUseDecision ??
     summary?.terminalAnalysis?.conclusionContract?.sourceUseDecision;
   const references = sourceUseDecision?.references || [];
@@ -913,7 +914,8 @@ function evaluateSemanticConditionReport(input) {
   const matchingReferenceIds = new Set(matchingReferences.map(reference => reference.id));
   const verifiedBindings = summary?.analysisCompletedVerifiedSourceBindings || [];
   const sourceIdentityPassed = sourceBindingPassed && verifiedBindings.some(binding => {
-    if (!['corroborated', 'compatible'].includes(binding.mechanismStatus) ||
+    // A body-read source claim bound to Trace evidence of the same claim.
+    if (!['trace_linked', 'source_only'].includes(binding.status) ||
         !binding.sourceReferenceIds?.some(id => matchingReferenceIds.has(id))) return false;
     const boundAnchors = supports.filter(support => support.claimId === binding.claimId)
       .flatMap(support => support.anchors || [])

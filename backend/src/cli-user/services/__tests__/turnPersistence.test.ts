@@ -336,6 +336,11 @@ describe('commitTurnOutputs', () => {
         totalDurationMs: 20,
         sourceUseDecision,
         sourceReferences: sourceUseDecision.references,
+        // Only bindings a verifier saw are shown; this one is the product's own judgment.
+        sourceClaimVerificationResult: {schemaVersion: 'source_claim_verifier@2', status: 'partial',
+          bindings: [{claimId: 'claim-1', sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['trace-evidence-1']}],
+          claims: [{claimId: 'claim-1', status: 'source_only', sourceReferenceIds: [reference.id],
+            traceEvidenceRefIds: ['trace-evidence-1']}], citations: [], issues: []},
         conclusionContract: {
           schemaVersion: 'conclusion_contract_v1',
           mode: 'focused_answer',
@@ -358,7 +363,7 @@ describe('commitTurnOutputs', () => {
             sourceReferenceIds: [reference.id],
             traceEvidenceRefIds: ['trace-evidence-1'],
             reason: 'SECRET_BINDING_REASON_CANARY',
-          }],
+          } as any],
           uncertainties: [],
           nextSteps: [],
         },
@@ -418,7 +423,6 @@ describe('commitTurnOutputs', () => {
       }));
       expect(storedBindings).toEqual([{
         claimId: 'claim-1',
-        mechanismStatus: 'compatible',
         sourceReferenceIds: [reference.id],
         traceEvidenceRefIds: ['trace-evidence-1'],
       }]);
@@ -435,7 +439,8 @@ describe('commitTurnOutputs', () => {
           claims: [{id: 'claim-1', references: [{rowIndex: 0, value: null}]}],
           sourceUseDecision: {status: 'corroborated'},
           sourceReferences: [{id: reference.id}],
-          sourceClaimBindings: [{claimId: 'claim-1', mechanismStatus: 'compatible'}],
+          sourceClaimBindings: [{claimId: 'claim-1', sourceReferenceIds: [reference.id]}],
+          sourceClaimStatuses: [{claimId: 'claim-1', status: 'source_only'}],
         },
       });
       expect(JSON.stringify(evidence)).not.toContain('RAW_SEMANTICS_CANARY');

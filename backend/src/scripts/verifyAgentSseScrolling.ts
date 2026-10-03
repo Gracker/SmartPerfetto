@@ -37,7 +37,7 @@ import {
 } from '../middleware/auth';
 import { writeTraceMetadata } from '../services/traceMetadataStore';
 import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
-import {hasConcreteCodeReference} from '../services/codebase/codeReferenceContract';
+import {hasSourceCitation} from '../services/codebase/sourceCitations';
 import {sanitizeSourceUseDecision, type SourceClaimBindingV1, type SourceUseDecisionV1} from '../services/codebase/sourceUseDecision';
 import type {ClaimVerificationResult, ClaimVerificationClaimResult} from '../types/claimVerification';
 import type {ClaimSupportV1, EvidenceAnchorV1} from '../types/evidenceContract';
@@ -238,9 +238,11 @@ export interface SseSummary {
   analysisCompletedSourceReferenceCount?: number;
   analysisCompletedSourceBindingCount?: number;
   analysisCompletedSourceClaimVerifierStatus?: string;
-  analysisCompletedSourceMechanismStatuses?: string[];
+  /** Per source-dependent claim: the current verifier's status, or a historical binding's mechanism status. */
+  analysisCompletedSourceClaimStatuses?: string[];
   analysisCompletedSourceReferenceMembershipPassed?: boolean;
-  analysisCompletedVerifiedSourceBindings?: Array<Omit<SourceClaimBindingV1, 'reason'>>;
+  analysisCompletedVerifiedSourceBindings?: Array<Pick<SourceClaimBindingV1, 'claimId' | 'sourceReferenceIds' |
+    'traceEvidenceRefIds'> & {status: string}>;
   analysisCompletedReportUrl?: string;
   analysisCompletedPartial?: boolean;
   analysisCompletedTerminationReason?: string;
@@ -2162,7 +2164,7 @@ function recordConclusionEvidence(
     summary.conclusionChars = Math.max(summary.conclusionChars, text.length);
     summary.conclusionHasConcreteEvidenceRefs ||= hasConcreteEvidenceReferences(text);
     summary.conclusionHasEvidenceIndex ||= hasEvidenceIndex(text);
-    summary.conclusionHasConcreteCodeRefs ||= hasConcreteCodeReference(text);
+    summary.conclusionHasConcreteCodeRefs ||= hasSourceCitation(text);
     return;
   }
 
@@ -2174,7 +2176,7 @@ function recordConclusionEvidence(
   summary.analysisCompletedHasEvidenceIndex ||= hasEvidenceIndex(text);
   summary.analysisCompletedHasFinalReportHeading ||= hasFinalReportHeading(text);
   summary.analysisCompletedHasProcessNarration ||= hasProcessNarration(text);
-  summary.analysisCompletedHasConcreteCodeRefs ||= hasConcreteCodeReference(text);
+  summary.analysisCompletedHasConcreteCodeRefs ||= hasSourceCitation(text);
 }
 
 export class VerificationSseTimeoutError extends Error {
@@ -2759,26 +2761,29 @@ export async function collectSseSummary(
               summary.analysisCompletedSourceBindingCount = conclusionContract.sourceClaimBindings.length;
             }
             const sourceClaimVerification = asRecord(payload?.sourceClaimVerificationResult);
-            if (sourceClaimVerification?.schemaVersion === 'source_claim_verifier@1' &&
-                Array.isArray(sourceClaimVerification.bindings) && Array.isArray(sourceUseDecision?.references)) {
+            // The current verifier judges each source-dependent claim; a historical
+            // result keeps its bindings' mechanism status.
+            const current = sourceClaimVerification?.schemaVersion === 'source_claim_verifier@2';
+            const judged = current ? sourceClaimVerification?.claims
+              : sourceClaimVerification?.schemaVersion === 'source_claim_verifier@1' ? sourceClaimVerification.bindings : undefined;
+            if (sourceClaimVerification && Array.isArray(judged) && Array.isArray(sourceUseDecision?.references)) {
               const returnedReferenceIds = new Set(
                 sourceUseDecision.references.map(reference => asRecord(reference)?.id),
               );
+              const rows = judged.map(item => {
+                const record = asRecord(item) ?? {};
+                return {claimId: String(record.claimId), status: String(current ? record.status : record.mechanismStatus),
+                  sourceReferenceIds: Array.isArray(record.sourceReferenceIds) ? record.sourceReferenceIds.map(String) : [],
+                  traceEvidenceRefIds: Array.isArray(record.traceEvidenceRefIds) ? record.traceEvidenceRefIds.map(String) : []};
+              });
               summary.analysisCompletedSourceClaimVerifierStatus = String(sourceClaimVerification.status);
-              summary.analysisCompletedSourceMechanismStatuses = sourceClaimVerification.bindings
-                .map(binding => String(asRecord(binding)?.mechanismStatus));
+              summary.analysisCompletedSourceClaimStatuses = rows.map(row => row.status);
+              // An unbound claim has no references; every reference a claim does cite must be returned.
               summary.analysisCompletedSourceReferenceMembershipPassed =
-                sourceClaimVerification.bindings.length > 0 &&
-                sourceClaimVerification.bindings.every(binding => {
-                  const refs = asRecord(binding)?.sourceReferenceIds;
-                  return Array.isArray(refs) && refs.length > 0 && refs.every(ref => returnedReferenceIds.has(ref));
-                });
-              if (sourceClaimVerification.status === 'passed' && summary.analysisCompletedSourceReferenceMembershipPassed) {
-                summary.analysisCompletedVerifiedSourceBindings = sourceClaimVerification.bindings.map(binding => {
-                  const verified = binding as SourceClaimBindingV1;
-                  return {claimId: verified.claimId, mechanismStatus: verified.mechanismStatus,
-                    sourceReferenceIds: verified.sourceReferenceIds, traceEvidenceRefIds: verified.traceEvidenceRefIds};
-                });
+                rows.some(row => row.sourceReferenceIds.length > 0) &&
+                rows.every(row => row.sourceReferenceIds.every(ref => returnedReferenceIds.has(ref)));
+              if (sourceClaimVerification.status !== 'failed' && summary.analysisCompletedSourceReferenceMembershipPassed) {
+                summary.analysisCompletedVerifiedSourceBindings = rows;
               }
             }
             if (typeof payload?.reportUrl === 'string') {

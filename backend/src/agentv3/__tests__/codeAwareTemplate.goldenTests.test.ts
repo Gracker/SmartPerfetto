@@ -37,8 +37,10 @@ describe('typed source contract golden rules', () => {
   it.each(['zh', 'en'] as const)('explains provider-visible source binding IDs in the %s contract', language => {
     const contract = loadPromptTemplate(`prompt-code-reference-contract-${language}`) ?? '';
     for (const field of ['sourceReferences', 'result.sourceReferences', 'sourceClaimBindings', 'sourceReferenceIds',
-      'traceEvidenceRefIds', 'claimId', 'mechanismStatus']) expect(contract).toContain(field);
-    expect(contract).toContain('compatible');
+      'traceEvidenceRefIds', 'claimId', 'search_hit', 'read_codebase_file']) expect(contract).toContain(field);
+    // The product computes each source claim's standing; the model declares none.
+    expect(contract).not.toContain('mechanismStatus');
+    expect(contract).not.toContain('source.location');
   });
 
   it.each(getRegisteredScenes().map(definition => [definition.scene]))(

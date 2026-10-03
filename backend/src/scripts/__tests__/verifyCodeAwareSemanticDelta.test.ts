@@ -740,7 +740,7 @@ describe('real-provider semantic delta wrapper contract', () => {
           analysisCompletedSourceReferenceCount: 1,
           analysisCompletedSourceBindingCount: 1,
           analysisCompletedSourceClaimVerifierStatus: 'failed',
-          analysisCompletedSourceMechanismStatuses: ['corroborated'],
+          analysisCompletedSourceClaimStatuses: ['invalid'],
           analysisCompletedSourceReferenceMembershipPassed: false,
           toolCallCounts: {search_codebase: 1, read_codebase_file: 1},
         },
@@ -821,8 +821,8 @@ describe('real-provider task fact configuration', () => {
         matchedClaimIds: ['trace-duration'], matchedAnchorIds: ['anchor-marker']}}, uncoveredFacets: []},
       summary: {analysisCompletedSourceUseStatus: 'located', analysisCompletedSourceReferenceCount: 1,
         analysisCompletedSourceBindingCount: 1, analysisCompletedSourceClaimVerifierStatus: 'passed',
-        analysisCompletedSourceReferenceMembershipPassed: true, analysisCompletedSourceMechanismStatuses: ['compatible'],
-        analysisCompletedVerifiedSourceBindings: [{claimId: 'trace-duration', mechanismStatus: 'compatible',
+        analysisCompletedSourceReferenceMembershipPassed: true, analysisCompletedSourceClaimStatuses: ['trace_linked'],
+        analysisCompletedVerifiedSourceBindings: [{claimId: 'trace-duration', status: 'trace_linked',
           sourceReferenceIds: ['source-ref-v1-issued'], traceEvidenceRefIds: ['data-marker']}],
         terminalAnalysis: {claimSupport: [{claimId: 'trace-duration', anchors: [{anchorId: 'anchor-marker',
           evidenceRefId: 'data-marker', context: {traceId: 'trace', traceSide: 'current'},
@@ -845,7 +845,7 @@ describe('real-provider task fact configuration', () => {
       expect(wrapper.evaluateSemanticConditionReport({query, report: invalid, condition: 'A2', sourceRoot}).sourceIdentityPassed).toBe(false);
     }
     for (const changed of [{sourceReferenceIds: ['source-ref-v1-unrelated']}, {claimId: 'unrelated-claim'},
-      {traceEvidenceRefIds: ['data-unrelated']}, {mechanismStatus: 'unverified'}]) {
+      {traceEvidenceRefIds: ['data-unrelated']}, {status: 'location_only'}]) {
       const invalid = structuredClone(report);
       invalid.summary.analysisCompletedVerifiedSourceBindings[0] = {
         ...invalid.summary.analysisCompletedVerifiedSourceBindings[0], ...changed};

@@ -3189,7 +3189,7 @@ describe('final result quality gate', () => {
     })).toBe(conclusion);
   });
 
-  it('surfaces source-binding downgrades without deleting verified trace conclusions', async () => {
+  it('delivers a locate-only source claim unverified without failing or deleting verified trace conclusions', async () => {
     const sourceReference = sanitizeSourceReference({
       referenceId: 'lookup-1',
       codebaseId: 'app-source',
@@ -3247,20 +3247,21 @@ describe('final result quality gate', () => {
     const finalized = await finalizeWithConsistentSemanticFixture(sourceBoundResult, envelope, evidenceReadView, sourceUse);
     const verifiedResult = finalized.result;
 
-    expect(finalized.qualityIssue?.code).toBe('source_claim_binding_invalid');
-    expect(verifiedResult.partial).toBe(true);
+    // Weaker than linked is unverified (`~`), not a failed gate: only an invalid reference fails.
+    expect(finalized.qualityIssue?.code).not.toBe('source_claim_binding_invalid');
+    expect(verifiedResult.partial).not.toBe(true);
     expect(verifiedResult.conclusion).toBe(body);
     expect(verifiedResult.claimSupport).toHaveLength(1);
     expect(verifiedResult.claimVerificationResult).toMatchObject({schemaVersion: 'claim_verifier@2', status: 'passed',
       passed: true, claimResults: [{claimId: 'claim-1', status: 'verified', deterministicProof: {status: 'proved'}}]});
     expect(verifiedResult.deliveryAssurance).toMatchObject({claims: 'passed', source: 'coverage_incomplete'});
     expect(verifiedResult.conclusionContract?.claims).toEqual(sourceBoundResult.conclusionContract?.claims);
-    expect(sourceBoundResult.conclusionContract?.sourceClaimBindings?.[0]?.mechanismStatus)
-      .toBe('corroborated');
-    expect(verifiedResult.conclusionContract?.sourceClaimBindings?.[0]?.mechanismStatus).toBe('corroborated');
-    expect(verifiedResult.sourceClaimVerificationResult?.bindings[0]?.mechanismStatus).toBe('compatible');
+    // The retired declared status is dropped at parse; the product computes the claim's standing.
+    expect(verifiedResult.conclusionContract?.sourceClaimBindings?.[0]).not.toHaveProperty('mechanismStatus');
+    expect(verifiedResult.sourceClaimVerificationResult).toMatchObject({schemaVersion: 'source_claim_verifier@2',
+      status: 'partial', claims: [{claimId: 'claim-1', status: 'location_only'}]});
     expect(verifiedResult.sourceClaimVerificationResult?.issues).toEqual(expect.arrayContaining([
-      expect.objectContaining({code: 'source_binding_mechanism_unverified'}),
+      expect.objectContaining({code: 'source_claim_location_only', severity: 'warning'}),
     ]));
   });
 });

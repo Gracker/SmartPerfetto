@@ -91,7 +91,6 @@ import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import { verifyConclusion } from '../claude/claudeVerifier';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
-import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import { getProviderService, type ProviderConfig, type ProviderScope } from '../../../services/providerManager';
 import {providerSubprocessEnv} from '../../../services/providerManager/envIsolation';
@@ -898,7 +897,6 @@ export async function dispatchOpenCodeBridgeRequest(
         toolName: definition.name, result: projectedResult, isError: resultIsFailure,
       });
       const resultText = summarizeOpenCodeToolResult(projectedResult);
-      const codeReferences = extractSourceLookupCodeReferences(definition.name, result);
       recordPlanOrPrePlanToolCall(options.analysisPlan, {
         toolName: definition.name,
         toolCallId: taskId,
@@ -911,8 +909,6 @@ export async function dispatchOpenCodeBridgeRequest(
         resultText,
         // Read before truncation: planPhaseId and success sit after the body.
         resultFacts: readToolResultFacts(result),
-        returnedCodeReferences: codeReferences.length > 0,
-        returnedCodeReferenceHints: codeReferences,
       });
       emitOpenCodeBridgeUpdateIfDeliverable(emitUpdate, options, {
         type: 'agent_response',

@@ -16,13 +16,6 @@ import {
 } from './types';
 import {resolvePlanPhaseForCall} from './planPhaseSemantics';
 import { summarizeToolCallInput } from './toolCallSummary';
-import {
-  getSourceLookupCodeReferences,
-  rememberSourceLookupCodeReferences,
-  sourceLookupResultHasCodeReferences,
-  type SourceLookupCodeReference,
-} from '../services/codebase/sourceLookupTools';
-
 import {readRuntimeToolResultFacts, type RuntimeToolResultFacts} from '../agentRuntime/runtimeToolResult';
 
 const MCP_NAME_PREFIX = 'mcp__smartperfetto__';
@@ -50,10 +43,6 @@ export interface PlanToolCallRecorderInput {
    * attribution to an unresolved dispatch and leaves tool success unknown.
    */
   resultFacts?: ToolResultFacts;
-  /** Privacy-safe fact extracted from the raw result before any external-surface projection. */
-  returnedCodeReferences?: boolean;
-  /** Ephemeral only: retained in memory and never copied into ToolCallRecord or snapshots. */
-  returnedCodeReferenceHints?: readonly SourceLookupCodeReference[];
   timestamp?: number;
 }
 
@@ -114,12 +103,6 @@ function buildToolCallRecord(input: PlanToolCallRecorderInput): ToolCallRecord {
   const planCapability = getPlanToolCapability(input.toolName);
   const requestedPhaseId = input.input && typeof input.input === 'object'
     ? (input.input as Record<string, unknown>).planPhaseId : undefined;
-  const returnedCodeReferences = planCapability === 'evidence' && (
-    input.returnedCodeReferences ?? (
-      Boolean(input.returnedCodeReferenceHints?.length) ||
-      sourceLookupResultHasCodeReferences(input.toolName, input.resultText)
-    )
-  );
   return {
     toolName: input.toolName,
     ...(realToolCallId(input.toolCallId) ? {toolCallId: realToolCallId(input.toolCallId)} : {}),
@@ -127,7 +110,6 @@ function buildToolCallRecord(input: PlanToolCallRecorderInput): ToolCallRecord {
     ...(planCapability === 'evidence' ? {} : {planCapability}),
     ...(success === undefined ? {} : { success }),
     ...(typeof requestedPhaseId === 'string' ? {requestedPhaseId} : {}),
-    ...(returnedCodeReferences ? { returnedCodeReferences: true } : {}),
     ...callSummary,
   };
 }
@@ -169,7 +151,6 @@ export function recordPlanToolCall(
 
   const record = { ...candidate, matchedPhaseId };
   plan.toolCallLog.push(record);
-  rememberSourceLookupCodeReferences(plan, input.returnedCodeReferenceHints ?? []);
   if (plan.toolCallLog.length > MAX_PLAN_TOOL_CALL_LOG) {
     plan.toolCallLog.splice(0, plan.toolCallLog.length - MAX_PLAN_TOOL_CALL_LOG);
   }
@@ -207,7 +188,6 @@ export function recordPlanOrPrePlanToolCall(
   }
   const record = buildToolCallRecord(input);
   tracker.prePlanToolCallLog.push(record);
-  rememberSourceLookupCodeReferences(record, input.returnedCodeReferenceHints ?? []);
   if (tracker.prePlanToolCallLog.length > MAX_PLAN_TOOL_CALL_LOG) {
     tracker.prePlanToolCallLog.splice(0, tracker.prePlanToolCallLog.length - MAX_PLAN_TOOL_CALL_LOG);
   }
@@ -261,7 +241,6 @@ export function replayPrePlanToolCalls(tracker: AnalysisPlanTracker | null | und
       ...candidate,
       matchedPhaseId: matchedPhase?.id,
     });
-    rememberSourceLookupCodeReferences(plan, getSourceLookupCodeReferences(candidate));
     replayed++;
     if (plan.toolCallLog.length > MAX_PLAN_TOOL_CALL_LOG) {
       plan.toolCallLog.splice(0, plan.toolCallLog.length - MAX_PLAN_TOOL_CALL_LOG);

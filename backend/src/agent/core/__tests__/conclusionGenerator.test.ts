@@ -289,8 +289,8 @@ describe('versioned conclusion declaration sidecar', () => {
     return '<!-- smartperfetto:conclusion-contract@1\n```json\n' + JSON.stringify(raw) + '\n```\n-->';
   }
 
-  const sourceBinding = {claimId: 'claim:original', mechanismStatus: 'compatible' as const,
-    sourceReferenceIds: ['source-ref-v1-original'], traceEvidenceRefIds: []};
+  const sourceBinding = {claimId: 'claim:original',
+    sourceReferenceIds: ['source-ref-v1-original'], traceEvidenceRefIds: [] as string[]};
 
   it.each(['absent', 'empty', 'duplicate'] as const)('preserves %s original source-binding declarations', mode => {
     const original = contract();
@@ -308,7 +308,7 @@ describe('versioned conclusion declaration sidecar', () => {
     [{...sourceBinding, sourceReferenceIds: undefined}], [{...sourceBinding, traceEvidenceRefIds: null}],
     [{...sourceBinding, sourceReferenceIds: [null]}], [{...sourceBinding, claimId: ' claim:original '}],
     [{...sourceBinding, sourceReferenceIds: [' source-ref-v1-original ']}],
-    [{...sourceBinding, mechanismStatus: 'verified'}], [{...sourceBinding, reason: 1}],
+    [{...sourceBinding, status: 'trace_linked'}],
     [sourceBinding, {claimId: 'other'}], [sourceBinding, null],
   ])('keeps malformed original source bindings invalid through typed and sidecar round trips: %j', sourceClaimBindings => {
     const original = {...contract(), sourceClaimBindings};
@@ -332,30 +332,30 @@ describe('versioned conclusion declaration sidecar', () => {
     expect(Object.prototype.hasOwnProperty.call(parsed.contract?.rawDeclaration, 'sourceClaimBindings')).toBe(true);
   });
 
-  it('round-trips an original source location without inferring or normalizing its tuple', () => {
-    const original = contract();
-    original.claims![0].semantics!.source = {sourceReferenceId: 'source-ref-v1-original',
-      filePath: '目录/Probe "Data".kt', lineRange: {start: 9, end: 15}};
+  it.each([
+    {mechanismStatus: 'corroborated', reason: 'model wording'}, {mechanismStatus: 'not-a-status'}, {reason: 1},
+  ])('accepts and drops retired binding keys without judging them: %j', retired => {
+    const original = {...contract(), sourceClaimBindings: [{...sourceBinding, ...retired}]};
     const parsed = parseConclusionContractSidecar(rawSidecar(original));
-    expect(parsed.status).toBe('valid');
-    expect(parsed.contract?.claims![0].semantics?.source).toEqual(original.claims![0].semantics!.source);
-    const roundTrip = parseConclusionContractSidecar(renderConclusionContractSidecar(parsed.contract!));
-    expect(roundTrip.contract?.claims![0].semantics?.source).toEqual(original.claims![0].semantics!.source);
+    expect(parsed).toMatchObject({status: 'valid', bindingEligibility: 'eligible'});
+    expect(parsed.contract?.sourceClaimBindings).toEqual([sourceBinding]);
+  });
+
+  it('accepts an omitted Trace list as empty', () => {
+    const {traceEvidenceRefIds: _omitted, ...withoutTrace} = sourceBinding;
+    const parsed = parseConclusionContractSidecar(rawSidecar({...contract(), sourceClaimBindings: [withoutTrace]}));
+    expect(parsed.contract?.sourceClaimBindings).toEqual([sourceBinding]);
   });
 
   it.each([
-    {}, {sourceReferenceId: 'id', filePath: 'File.kt'},
-    {sourceReferenceId: '', filePath: 'File.kt', lineRange: {start: 1, end: 2}},
-    {sourceReferenceId: 'id', filePath: 'File.kt', lineRange: {start: 0, end: 2}},
-    {sourceReferenceId: 'id', filePath: 'File.kt', lineRange: {start: 2, end: 1}},
-    {sourceReferenceId: 'id', filePath: 'File.kt', lineRange: {start: '1', end: 2}},
-    {sourceReferenceId: 'id', filePath: 'File.kt', lineRange: {start: 1, end: 2}, verified: true},
-  ])('retains invalid source declarations as invalid: %j', source => {
+    {sourceReferenceId: 'source-ref-v1-original', filePath: 'File.kt', lineRange: {start: 9, end: 15}},
+    {}, 'not-an-object', {sourceReferenceId: 'id', filePath: 'File.kt', lineRange: {start: 2, end: 1}},
+  ])('drops a retired semantics.source of any shape and keeps the claim valid: %j', source => {
     const original = structuredClone(contract()) as any;
     original.claims[0].semantics.source = source;
     const parsed = parseConclusionContractSidecar(rawSidecar(original));
-    expect(parsed.status).toBe('invalid');
-    expect(parsed.contract?.claims![0].rawSemantics).toEqual(original.claims[0].semantics);
+    expect(parsed.status).toBe('valid');
+    expect(parsed.contract?.claims![0].semantics).toEqual(semantics());
   });
 
   it('preserves explicit SQL null in reference values and relation endpoints', () => {

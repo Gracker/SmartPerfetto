@@ -117,7 +117,6 @@ import {
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
-import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
@@ -1315,10 +1314,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               // Track tool call for plan adherence with phase matching (P0-1 + P1-1)
               // P1-G5: Best-fit phase-tool matching — search all eligible phases, not just first
               if (matchedTool) {
-                const codeReferences = extractSourceLookupCodeReferences(
-                  matchedTool.name,
-                  observed.result,
-                );
                 recordPlanOrPrePlanToolCall(ctx.analysisPlan, {
                   toolName: matchedTool.name,
                   toolCallId: matchedTool.id,
@@ -1328,8 +1323,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
                     timestamp: Date.now(),
                   }),
                   input: matchedTool.input,
-                  returnedCodeReferences: codeReferences.length > 0,
-                  returnedCodeReferenceHints: codeReferences,
                   // Read before truncation: planPhaseId and success sit after
                   // the body, so the projected/truncated text loses both.
                   resultFacts: {...readToolResultFacts(observed.result), ...(observed.isError === true ? {success: false} : {})},

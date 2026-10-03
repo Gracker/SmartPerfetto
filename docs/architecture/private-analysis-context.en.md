@@ -114,16 +114,16 @@ a declaration absent from that body cannot pass semantic review.
 Finite evidence proof and semantic review remain separate. `captured.cell`
 compares the originally declared string, boolean, or null against one captured
 cell using strict equality; numbers retain the unit-aware `numeric.cell` rule.
-`source.location` compares the declared reference, relative path, and line range
-with the current source ledger. It proves only a returned location snapshot and
-creates no Trace occurrence proof, behavior, call-chain, or causal evidence.
-Source-location verdicts also bind the ledger and source-binding fingerprints;
-changing either invalidates the previous verification.
-An exact `semantics.source` does not require a duplicate `sourceClaimBindings`
-entry. An explicit binding for that claim must still be unique and reference
-the same location. Malformed entries anywhere in the binding array cannot be
-filtered into an absent declaration. Omitting a binding does not pass the
-mechanism verifier; location facts still require complete body semantic review.
+Source is not a finite proof. `source_claim_verifier@2` computes each
+source-dependent claim's standing on the server (`invalid`, `unbound`,
+`location_only`, `source_only`, `trace_linked`) and matches every source location
+written in the body against this run's issued references. Only `invalid` (an
+unissued or out-of-selection reference, or a Trace ID not belonging to that
+claim) fails the answer; weaker standings stay unverified. Even `trace_linked`
+means only a read body plus same-claim Trace evidence: it proves no behavior,
+call chain, or causality, and complete body semantic review still applies.
+Malformed entries anywhere in the binding array cannot be filtered into an
+absent declaration.
 
 Raw SQL units also require execution evidence. Only an owned processor whose
 binary and documentation pins match, and which has not been exposed through

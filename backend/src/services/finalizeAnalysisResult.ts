@@ -18,8 +18,7 @@ import {canonicalizeAnalysisResult, isIssuedCanonicalAnalysisProjection} from '.
 import {attachSourceUseToAnalysisResult, verifySourceClaimBindings} from './codebase/sourceClaimVerifier';
 import {prepareAnalysisRelations} from './evidence/analysisRelationPreparation';
 import {prepareClaimEvidence, preparedClaimEvidenceSnapshot, preparedIdentityResolutions} from './evidence/claimEvidencePreparation';
-import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId,
-  collectVerifiedTraceOccurrenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
+import {runClaimVerification, collectMatchedTraceEvidenceRefIdsByClaimId} from './verifier/claimVerificationRunner';
 import {assessFinalSemantics, buildFinalSemanticPrompt, FINAL_SEMANTIC_INPUT_BYTE_LIMIT, FINAL_SEMANTIC_RULE_VERSION,
   semanticReviewNotRequired, type FinalSemanticAssessment, type FinalSemanticSnapshot} from './finalSemanticAssessment';
 import {SEMANTIC_NUMERIC_DISPLAY_ROUNDING_ISSUE_CODE, SEMANTIC_UNDECLARED_CLAIM_ISSUE_CODE, semanticClaimIssueCode} from './finalSemanticIssueCodes';
@@ -32,7 +31,6 @@ import {projectStoredConclusionSourceMetadata} from './security/analysisDelivery
 import {compactSemanticEvidenceSnapshot} from './evidence/semanticEvidenceSnapshot';
 import {compactSemanticSourceSnapshot} from './evidence/semanticSourceSnapshot';
 import {compactInvestigationEvidenceForSemantic, investigationEvidenceSemanticBudgets} from './evidence/investigationEvidenceLedger';
-import {applySourceLocationProofs} from './codebase/sourceLocationProof';
 import {isUnusedSourceDecision, type SourceExecutionScopeV1, type SourceUseDecisionV1} from './codebase/sourceUseDecision';
 import {projectOwnerClaimVerification, projectOwnerClaimSupport,
   projectOwnerConclusionContract} from './security/privateAnalysisProjection';
@@ -283,7 +281,9 @@ function semanticReviewTriggers(input: {
   const triggers: RuntimeFinalReviewTrigger[] = [];
   if (intent.status === 'resolved' && intent.deliverable === 'report') triggers.push('report');
   if (input.selectionPresent) triggers.push('selection');
-  // Read the raw declaration: a malformed source field is still a source declaration.
+  // Source access, not a source call: authorized source-derived history reaches
+  // the prompt without one. Read the raw declaration: a malformed source field is
+  // still a source declaration.
   if (input.sourceScope?.hasCodebaseAccess ||
     (input.rawDeclaration !== undefined && input.rawDeclaration !== null && !hasNoSourceDeclarations(input.rawDeclaration))) {
     triggers.push('source');
@@ -491,15 +491,14 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     const requirements = context ? pinnedRequirements(context) : undefined;
     const investigationRequirements = context ? resolveAnalysisInvestigationRequirements({
       intent: context.turnIntent, strategyRegistry: context.strategyRegistry}) : undefined;
-    const finiteProofs = applySourceLocationProofs({contract: validationContract, sourceUse,
-      draft: draft.claimVerificationResult});
     let semantic: FinalSemanticAssessment | undefined;
     const selectionScope = context?.getSelection(owner.signal);
     const declaredClaimCount = validationContract?.claims?.length ?? 0;
     // An ineligible declaration keeps its own unchecked reason; its review is never sent.
     const reviewTriggers = context && canonical.bindingEligibility !== 'ineligible' ? semanticReviewTriggers({
       context, delivery, selectionPresent: selectionScope?.present === true, sourceScope, rawDeclaration,
-      investigationRequirements, contract: validationContract, finiteProofs, candidate, body: result.conclusion,
+      investigationRequirements, contract: validationContract, finiteProofs: draft.claimVerificationResult,
+      candidate, body: result.conclusion,
       bindingEligibility: canonical.bindingEligibility}) : undefined;
     if (context) {
       recordRuntimeFinalReview(currentRuntimePerformanceRecorder(), {
@@ -511,7 +510,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
       semantic = semanticReviewNotRequired(candidate, analysisDeliveryFingerprint({decision: 'not_required',
         candidate, bindingEligibility: canonical.bindingEligibility, declaredClaimCount,
         turnIntent: context.turnIntent, hasCodebaseAccess: sourceScope?.hasCodebaseAccess === true,
-        investigationRequirements: investigationRequirements ?? null, finiteProofs}));
+        investigationRequirements: investigationRequirements ?? null, finiteProofs: draft.claimVerificationResult}));
     } else if (context) {
       const diagnostics = canonical.protocolDiagnostics;
       const snapshot: FinalSemanticSnapshot = {inputCoverage: 'complete', declarationBindingEligibility: canonical.bindingEligibility,
@@ -608,7 +607,7 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
         report({stage: 'final_review_finished', status: semantic.status, ...(semantic.reason ? {reason: semantic.reason} : {})});
       }
     }
-    result.claimVerificationResult = joinClaimVerification({contract: validationContract, draft: finiteProofs,
+    result.claimVerificationResult = joinClaimVerification({contract: validationContract, draft: draft.claimVerificationResult,
       semantic, candidate, body: result.conclusion, bindingEligibility: canonical.bindingEligibility});
     const statusByClaim = new Map(result.claimVerificationResult.claimResults.map(claim => [claim.claimId, claim.status]));
     result.claimSupport = draft.claimSupport.map(support => {
@@ -618,9 +617,8 @@ export async function finalizeAnalysisResult(input: FinalizeAnalysisResultInput)
     });
     result.identityResolutions = preparedIdentityResolutions(prepared);
     result.sourceClaimVerificationResult = verifySourceClaimBindings({conclusionContract: validationContract,
-      actualSourceUseDecision: sourceUse, semanticsPolicy: 'declared',
-      matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(result.claimVerificationResult),
-      verifiedTraceOccurrenceRefIdsByClaimId: collectVerifiedTraceOccurrenceRefIdsByClaimId(result.claimVerificationResult)});
+      actualSourceUseDecision: sourceUse, body: result.conclusion,
+      matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(result.claimVerificationResult)});
     if (nativeDeclaration) {
       // The verdict is computed from original values. Only its owner-safe projection enters private delivery artifacts.
       const storedContract = projectStoredConclusionSourceMetadata(validationContract, result.sourceUseDecision);

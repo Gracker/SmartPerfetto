@@ -236,7 +236,7 @@ describe('verifyConclusion runtime-only diagnostics', () => {
   it('does not impose a source-reference prose format after source evidence was collected', async () => {
     const plan = makePlan();
     plan.toolCallLog.push({toolName: 'lookup_app_source', timestamp: 3, success: true,
-      matchedPhaseId: 'phase-1', returnedCodeReferences: true});
+      matchedPhaseId: 'phase-1'});
     for (const body of ['Answer without CodeRef wording', 'Foo.kt:L10-L20', 'No source files exist']) {
       const result = await verifyConclusion([], body, {plan, deliveryContext: makeDeliveryContext(body, 'completed')});
       expect(result.heuristicIssues).toEqual([]);

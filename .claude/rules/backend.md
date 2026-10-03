@@ -114,10 +114,11 @@ Keep these boundaries intact:
   review could not matter: a contradiction only the review would find (`~` to
   `!`) then goes undetected, while a deterministic `unsupported` from finite
   proof still yields `!`. `finalizeAnalysisResult` decides after finite proof
-  (`prepareClaimEvidence`, the draft `runClaimVerification` and
-  `applySourceLocationProofs`) and before any semantic snapshot projection: it
-  is required for a report deliverable, a present selection (a scope mismatch is
-  an error), source access or any source field in the raw declaration, a
+  (`prepareClaimEvidence` and the draft `runClaimVerification`) and before any
+  semantic snapshot projection: it is required for a report deliverable, a
+  present selection (a scope mismatch is an error), source access (not only a
+  source call: authorized source-derived history reaches the prompt without
+  one) or any source field in the raw declaration, a
   resolved investigation requirement the ledger does not rule out
   (`investigationRequirementNeedsReview`), at least one declared claim for which
   the real `joinClaimVerification` against a hypothetical perfect review yields

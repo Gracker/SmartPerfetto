@@ -225,7 +225,6 @@ import type {AnalysisPlanTracker} from '../../../../agentv3/planToolCallRecorder
 import type {ClaudeSdkToolLike} from '../../../runtimeToolSpec';
 import type {RuntimeToolInvocationEvent, RuntimeToolObserver} from '../../../runtimeToolObserver';
 import {createRuntimeToolResult} from '../../../runtimeToolResult';
-import {getSourceLookupCodeReferences} from '../../../../services/codebase/sourceLookupTools';
 import {projectCodeAwareStreamingUpdate} from '../../../../services/security/codeAwareStreamingUpdateProjection';
 import {renderConclusionContractSidecar, type ConclusionContract} from '../../../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../../../services/canonicalAnalysisResult';
@@ -587,10 +586,7 @@ describe('QoderRuntime', () => {
         .resolves.toMatchObject({success: true});
 
       const record = tracker.prePlanToolCallLog![0];
-      expect(record).toMatchObject({success: true, returnedCodeReferences: true});
-      expect(getSourceLookupCodeReferences(record)).toEqual([
-        {referenceId: reference.referenceId, codebaseId: reference.codebaseId, filePath: rawPath, lineRange: reference.lineRange},
-      ]);
+      expect(record).toMatchObject({success: true});
       const publicResult = updates.find(update => update.type === 'agent_response').content;
       expect(publicResult.result).toContain('filePathHash');
       expect(JSON.stringify({updates, tracker})).not.toContain(rawText);

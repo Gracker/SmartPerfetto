@@ -109,7 +109,7 @@ export interface AnalysisResult {
   claimVerificationResult?: ClaimVerificationResult;
   sourceUseDecision?: import('../../services/codebase/sourceUseDecision').SourceUseDecisionV1;
   sourceReferences?: import('../../services/codebase/sourceUseDecision').SourceReferenceV1[];
-  sourceClaimVerificationResult?: import('../../services/codebase/sourceClaimVerifier').SourceClaimVerificationResult;
+  sourceClaimVerificationResult?: import('../../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
   identityResolutions?: IdentityResolutionV1[];
   confidence: number;
   rounds: number;

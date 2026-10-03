@@ -124,7 +124,7 @@ describe('conclusion protocol privacy roles', () => {
     expect(projectConclusionContractForDisplay(sessionId, projected)).toEqual(projected);
   });
 
-  it.each(['captured.cell', 'source.location', 'numeric.cell'])('preserves the registered proof predicate %s through source matching', predicate => {
+  it.each(['captured.cell', 'interval.overlap', 'numeric.cell'])('preserves the registered proof predicate %s through source matching', predicate => {
     registerOnDemandSourceLookupForEcho(sessionId, [{id: 'lookup', codebaseId: 'app', filePath: 'src/Probe.kt',
       text: predicate}]);
     const contract = declaration();

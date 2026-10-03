@@ -640,13 +640,17 @@ arrives.
 
 The terminal `analysis_completed` event can include `analysisReceipt`,
 `uiActionProposals`, and safely projected
-`conclusionContract.sourceUseDecision` / `sourceClaimBindings`.
-`sourceUseDecision` distinguishes selected, queried, and used codebases plus
-status/reason code and search coverage. `sourceClaimBindings` uses
-`corroborated|compatible|ambiguous|unverified` to bind an implementation
-mechanism to same-claim Trace evidence. A `CodeRef` explains mechanism and
-cannot raise occurrence or root-cause confidence alone. `metadata_only` is
-locate-only and cannot become `corroborated` merely by locating a file. The
+`conclusionContract.sourceUseDecision` / `sourceClaimBindings` with
+`sourceClaimVerificationResult`. `sourceUseDecision` distinguishes selected,
+queried, and used codebases plus status/reason code and search coverage.
+`sourceClaimBindings` links a claim to this run's source references and
+same-claim Trace evidence. `sourceClaimVerificationResult`
+(`source_claim_verifier@2`) reports `claims[].status` as
+`invalid|unbound|location_only|source_only|trace_linked` and `citations[]`, the
+source locations written in the body matched against this run's references
+(`verified_body|located|unmatched|ambiguous`); historical results may still be
+`@1` with `mechanismStatus`. A `CodeRef` explains mechanism and cannot raise
+occurrence or root-cause confidence alone; `metadata_only` is locate-only. The
 projection contains no absolute root, snippet, search query, or model-authored
 free-text binding reason.
 

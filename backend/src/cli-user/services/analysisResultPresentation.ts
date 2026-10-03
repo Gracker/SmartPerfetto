@@ -161,6 +161,13 @@ export function renderCliAnalysisEvidence(
   appendJsonSection(lines, localize(language, '源码使用决策', 'Source use decision'), evidence.sourceUseDecision);
   appendJsonSection(lines, localize(language, '源码引用', 'Source references'), evidence.sourceReferences);
   appendJsonSection(lines, localize(language, '声明与源码绑定', 'Claim-to-source bindings'), evidence.sourceClaimBindings);
+  // Present only for results the current verifier judged.
+  if (evidence.sourceClaimStatuses) {
+    appendJsonSection(lines, localize(language, '依赖源码的结论', 'Source-dependent conclusions'), evidence.sourceClaimStatuses);
+  }
+  if (evidence.sourceCitations) {
+    appendJsonSection(lines, localize(language, '答案中的源码引用', 'Source locations cited in the answer'), evidence.sourceCitations);
+  }
   return lines.join('\n');
 }
 

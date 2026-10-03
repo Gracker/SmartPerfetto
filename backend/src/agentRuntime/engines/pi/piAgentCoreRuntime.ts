@@ -49,7 +49,6 @@ import {
   isSensitiveRagToolName,
   projectToolResultForExternalSurface,
 } from '../../../services/rag/toolResultProjectionFilter';
-import { extractSourceLookupCodeReferences } from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {
   createPiAgentCoreSnapshotEngineState,
@@ -1014,14 +1013,11 @@ export function createPiAgentCoreToolFromSharedSpec(
           isError: true,
         };
       }
-      const codeReferences = extractSourceLookupCodeReferences(spec.name, result);
       recordPlanOrPrePlanToolCall(options.analysisPlan, {
         toolName: spec.name,
         toolCallId,
         onPhaseAutoCompleted: options.onPhaseAutoCompleted,
         input: toolArgs,
-        returnedCodeReferences: codeReferences.length > 0,
-        returnedCodeReferenceHints: codeReferences,
         // Read before truncation: planPhaseId and success sit after the body.
         resultFacts: readToolResultFacts(result),
         resultText: summarizePiToolResult(

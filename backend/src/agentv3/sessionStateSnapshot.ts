@@ -528,7 +528,7 @@ export interface SessionStateSnapshot {
   dataEnvelopes: DataEnvelope[];
   claimSupport?: ClaimSupportV1[];
   claimVerificationResult?: ClaimVerificationResult;
-  sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').SourceClaimVerificationResult;
+  sourceClaimVerificationResult?: import('../services/codebase/sourceClaimVerifier').StoredSourceClaimVerificationResult;
   identityResolutions?: IdentityResolutionV1[];
   /**
    * Protocol-format hypotheses (from AnalysisResult) for report generation.

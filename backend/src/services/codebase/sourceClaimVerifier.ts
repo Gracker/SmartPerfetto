@@ -6,7 +6,9 @@ import {parseClaimSemanticsDeclaration, type ConclusionContract} from '../../age
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {
   isLocateOnlyLookupKind,
+  lineRangesIntersect,
   referenceHasReadBody,
+  sourceReferenceIdentity,
   sanitizeSourceClaimBindings,
   sanitizeSourceReferences,
   sanitizeSourceUseDecision,
@@ -15,10 +17,14 @@ import {
   type SourceReferenceV1,
   type SourceUseDecisionV1,
 } from './sourceUseDecision';
+import {collectMatchedTraceEvidenceRefIdsByClaimId} from '../verifier/claimVerificationRunner';
 import {
-  collectMatchedTraceEvidenceRefIdsByClaimId,
-  collectVerifiedTraceOccurrenceRefIdsByClaimId,
-} from '../verifier/claimVerificationRunner';
+  extractSourceCitations,
+  hasSourceCitation,
+  matchSourceCitation,
+  splitAnswerBlocks,
+  type SourceCitationV1,
+} from './sourceCitations';
 import {randomUUID} from 'node:crypto';
 import {
   composeCodeAwareTextProjectionReceipts,
@@ -34,33 +40,74 @@ import {analysisDeliveryFingerprint, type AnalysisDeliveryContext} from '../../t
 import {projectConclusionProtocol, projectConclusionContractForDisplay, issueConclusionProtocolProjection,
   type IssuedConclusionProtocolProjection} from '../security/conclusionProtocolProjection';
 
+/**
+ * `failed`: a claim binds a reference this run never issued (or outside the
+ * selection), the one error; `partial`: some source-dependent claim or cited
+ * location is weaker than source plus Trace (delivered, never fully verified);
+ * `passed`: every one is `trace_linked` and every citation matched.
+ */
 export type SourceClaimVerificationStatus = 'passed' | 'failed' | 'partial' | 'not_checked';
+
+/**
+ * A source-dependent claim's standing, computed from the run's issued
+ * references. None states that a mechanism is proven: `trace_linked` means
+ * source explanation plus same-claim Trace evidence, not causality.
+ */
+export const SOURCE_CLAIM_STATUS_VALUES = ['invalid', 'unbound', 'location_only', 'source_only', 'trace_linked'] as const;
+export type SourceClaimStatus = typeof SOURCE_CLAIM_STATUS_VALUES[number];
+
+export interface SourceClaimStatusV1 {
+  claimId: string;
+  status: SourceClaimStatus;
+  sourceReferenceIds: string[];
+  traceEvidenceRefIds: string[];
+}
 
 export interface SourceClaimVerificationIssue {
   claimId?: string;
   severity: 'error' | 'warning';
   code:
-    | 'source_claim_missing'
     | 'source_reference_not_returned'
     | 'source_reference_outside_selection'
     | 'source_binding_trace_support_missing'
     | 'source_binding_trace_cross_claim'
-    | 'source_binding_trace_occurrence_not_verified'
+    | 'source_claim_unbound'
+    | 'source_claim_location_only'
+    | 'source_claim_trace_unlinked'
+    | 'source_claim_not_visible'
     | 'source_absence_requires_complete_search'
     | 'source_claim_semantics_unchecked'
-    | 'source_binding_mechanism_unverified'
-    | 'source_binding_strength_downgraded';
+    | 'source_citation_unmatched'
+    | 'source_citation_ambiguous'
+    | 'source_citation_extraction_truncated';
   message: string;
   sourceReferenceId?: string;
   traceEvidenceRefId?: string;
+  citation?: string;
 }
 
 export interface SourceClaimVerificationResult {
+  schemaVersion: 'source_claim_verifier@2';
+  status: SourceClaimVerificationStatus;
+  /** The declared bindings, canonical. */
+  bindings: SourceClaimBindingV1[];
+  /** One entry per source-dependent claim. */
+  claims: SourceClaimStatusV1[];
+  /** Source locations written in the answer body, matched against the run's references. */
+  citations: SourceCitationV1[];
+  issues: SourceClaimVerificationIssue[];
+}
+
+/** A result stored before source claims were judged per claim; read and rendered as stored. */
+export interface LegacySourceClaimVerificationResultV1 {
   schemaVersion: 'source_claim_verifier@1';
   status: SourceClaimVerificationStatus;
   bindings: SourceClaimBindingV1[];
-  issues: SourceClaimVerificationIssue[];
+  issues: Array<Omit<SourceClaimVerificationIssue, 'code'> & {code: string}>;
 }
+
+/** What a stored analysis result may carry: the current verifier's result or a historical one. */
+export type StoredSourceClaimVerificationResult = SourceClaimVerificationResult | LegacySourceClaimVerificationResultV1;
 
 export interface SourceUseDecisionReader {
   getSourceUseDecision(): SourceUseDecisionV1 | undefined;
@@ -69,6 +116,10 @@ export interface SourceUseDecisionReader {
 export interface SafeSourceProvenanceProjection {
   sourceUseDecision: SourceUseDecisionV1;
   sourceClaimBindings: SourceClaimBindingV1[];
+  /** The current verifier's per-claim standing; absent for historical results. */
+  sourceClaimStatuses?: SourceClaimStatusV1[];
+  /** Source locations the answer cites, matched against this run's references. */
+  sourceCitations?: SourceCitationV1[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -107,15 +158,6 @@ function boundedSourceReferenceCandidates(
       ? contractReferences.slice(0, MAX_SOURCE_REFERENCE_COUNT)
       : []),
   ].slice(0, MAX_SOURCE_REFERENCE_COUNT);
-}
-
-function negativeSourceAbsenceClaim(value: string): boolean {
-  const text = String(value || '').slice(0, 512).replace(/\s+/g, ' ').trim();
-  if (!text) return false;
-  return /(?:源码|源代码|代码|实现|函数|方法|类|调用).{0,32}(?:不存在|没有|未找到|找不到|未定义|未实现|不包含|未出现)/i.test(text) ||
-    /(?:不存在|没有|未找到|找不到|未定义|未实现|不包含|未出现).{0,32}(?:源码|源代码|代码|实现|函数|方法|类|调用)/i.test(text) ||
-    /(?:source|code|implementation|function|method|class).{0,48}(?:does\s+not|doesn't|not\s+(?:exist|found|present|defined|implemented)|never\s+(?:appears|occurs)|contains?\s+no)/i.test(text) ||
-    /(?:no|not|never).{0,32}(?:source|code|implementation|function|method|class)/i.test(text);
 }
 
 function authoritativeSourceContext(
@@ -198,6 +240,8 @@ export function sanitizeConclusionSourceContract(
 export function projectSafeSourceProvenance(input: {
   conclusionContract?: unknown;
   actualSourceUseDecision?: unknown;
+  /** The stored verifier result; a current one adds per-claim standing and cited locations. */
+  sourceClaimVerificationResult?: StoredSourceClaimVerificationResult;
 }): SafeSourceProvenanceProjection | undefined {
   if (
     !isRecord(input.conclusionContract) ||
@@ -231,23 +275,20 @@ export function projectSafeSourceProvenance(input: {
   const claimIds = new Set(
     (contract.claims || []).map((claim, index) => claim.id || `Q${index + 1}`),
   );
-  const sourceClaimBindings = sanitizeSourceClaimBindings(contract.sourceClaimBindings)
+  const declaredBindings = sanitizeSourceClaimBindings(contract.sourceClaimBindings)
     .filter(binding =>
       claimIds.has(binding.claimId) &&
       binding.sourceReferenceIds.length > 0 &&
       binding.sourceReferenceIds.every(referenceId => referenceById.has(referenceId)))
-    .map(binding => {
-      if (binding.mechanismStatus !== 'corroborated') return binding;
-      const hasBodyReference = binding.sourceReferenceIds.some(referenceId => {
-        const reference = referenceById.get(referenceId);
-        return reference !== undefined && referenceHasReadBody(reference, references);
-      });
-      return decision.codeAwareMode === 'provider_send' &&
-        hasBodyReference &&
-        binding.traceEvidenceRefIds.length > 0
-        ? binding
-        : {...binding, mechanismStatus: 'compatible' as const};
-    });
+    // A model-declared status is never shown; only a stored verdict is.
+    .map(({mechanismStatus: _declared, ...binding}) => binding);
+  const verification = input.sourceClaimVerificationResult;
+  // Every surface shows the same bindings: the current verifier's, or those a
+  // historical one checked, with the verdict it was stored with. Declarations
+  // no verifier saw are candidates, never shown as accepted.
+  const sourceClaimBindings = verification?.schemaVersion === 'source_claim_verifier@2'
+    ? sanitizeSourceClaimBindings(verification.bindings)
+    : historicalVerifiedBindings(declaredBindings, verification, decision.codeAwareMode);
   const reasonCode = decision.reasonCode === decision.status
     ? decision.reasonCode
     : undefined;
@@ -260,187 +301,221 @@ export function projectSafeSourceProvenance(input: {
       references,
     },
     sourceClaimBindings,
+    ...(verification?.schemaVersion === 'source_claim_verifier@2'
+      ? {sourceClaimStatuses: verification.claims, sourceCitations: verification.citations} : {}),
   };
 }
 
+function historicalVerifiedBindings(
+  declared: SourceClaimBindingV1[],
+  verification: LegacySourceClaimVerificationResultV1 | undefined,
+  codeAwareMode: SourceUseDecisionV1['codeAwareMode'],
+): SourceClaimBindingV1[] {
+  const identity = (binding: SourceClaimBindingV1) =>
+    JSON.stringify([binding.claimId, [...binding.sourceReferenceIds].sort(), [...binding.traceEvidenceRefIds].sort()]);
+  const verified = new Map(sanitizeSourceClaimBindings(verification?.bindings).map(binding => [identity(binding), binding]));
+  return declared.flatMap(binding => {
+    const stored = verified.get(identity(binding));
+    if (!stored) return [];
+    const mechanismStatus = codeAwareMode === 'metadata_only' && stored.mechanismStatus === 'corroborated'
+      ? 'compatible' : stored.mechanismStatus;
+    return [{...binding, ...(mechanismStatus ? {mechanismStatus} : {})}];
+  });
+}
+
+const MAX_STORED_CANDIDATE_REFERENCES = 16;
+
+/** Each outcome short of `trace_linked`, with the issue that explains it. */
+const SOURCE_CLAIM_OUTCOMES = {
+  unbound: {status: 'unbound', code: 'source_claim_unbound',
+    message: 'source-dependent claim has no binding to a reference returned by this run'},
+  location_only: {status: 'location_only', code: 'source_claim_location_only',
+    message: 'bound source references only locate code; no implementation body was read'},
+  trace_unlinked: {status: 'source_only', code: 'source_claim_trace_unlinked',
+    message: 'source explanation has no verified Trace evidence for the same claim'},
+  not_visible: {status: 'source_only', code: 'source_claim_not_visible',
+    message: 'the answer body does not cite this claim\'s source, so its context cannot be checked'},
+} as const satisfies Record<string, {status: SourceClaimStatus; code: SourceClaimVerificationIssue['code']; message: string}>;
+
+/**
+ * Per-claim source status from the run's issued references. A claim depends
+ * on source by structure, never by wording: a `source.*` predicate, codebase
+ * population, a binding, or a written source location in its text.
+ *
+ * Status, first match wins: `invalid` (a bound id this run never issued, or
+ * outside the selection, or Trace evidence of another claim) is the only
+ * error; `unbound` (no binding, or the claim's text or visible answer blocks
+ * cite a location the run never returned, or one several file versions fit
+ * that its binding does not pin to exactly one); `location_only` (no bound
+ * reference delivered a body); `source_only` (no matched same-claim Trace
+ * evidence, or no answer block cites the claim's bound lines, or more
+ * locations were written than are checked); `trace_linked`.
+ *
+ * A citation belongs to a claim when one of the claim's bound references has
+ * the citation's file version and shares a written line. A claim's binding
+ * pins an ambiguous citation for that claim only; the answer still carries
+ * the ambiguity.
+ */
 export function verifySourceClaimBindings(input: {
   conclusionContract?: ConclusionContract | null;
   actualSourceUseDecision?: SourceUseDecisionV1;
   matchedTraceEvidenceRefIdsByClaimId?: Record<string, string[]>;
-  verifiedTraceOccurrenceRefIdsByClaimId?: Record<string, string[]>;
-  /** Current @2 verification never classifies source assertions by their prose. */
-  semanticsPolicy?: 'declared' | 'legacy';
+  /** The canonical answer body whose written source locations are checked. */
+  body?: string;
 }): SourceClaimVerificationResult {
   const contract = input.conclusionContract;
-  const actualSourceUseDecision = sanitizeSourceUseDecision(input.actualSourceUseDecision);
-  if (contract && !actualSourceUseDecision && input.semanticsPolicy === 'declared' &&
-    (contract.sourceClaimBindings?.length || contract.sourceReferences?.length || contract.sourceUseDecision)) {
-    return {schemaVersion: 'source_claim_verifier@1', status: 'partial', bindings: [], issues: [{severity: 'warning',
-      code: 'source_claim_semantics_unchecked', message: 'declared source evidence has no current authorized execution ledger'}]};
-  }
-  if (!contract || !actualSourceUseDecision) {
-    return {schemaVersion: 'source_claim_verifier@1', status: 'not_checked', bindings: [], issues: []};
-  }
-  const context = authoritativeSourceContext(contract, actualSourceUseDecision);
-  const candidates = sanitizeSourceClaimBindings(contract.sourceClaimBindings, {
-    referenceIdAliases: context.aliases,
-  });
-  if (!context.decision || candidates.length === 0) {
-    return {schemaVersion: 'source_claim_verifier@1', status: 'not_checked', bindings: [], issues: []};
-  }
-
+  const decision = sanitizeSourceUseDecision(input.actualSourceUseDecision);
+  const empty = (status: SourceClaimVerificationStatus, issues: SourceClaimVerificationIssue[] = []):
+    SourceClaimVerificationResult => ({schemaVersion: 'source_claim_verifier@2', status, bindings: [], claims: [],
+    citations: [], issues});
+  if (!contract) return empty('not_checked');
   const declaredClaims = contract.claims || [];
-  const claims = input.semanticsPolicy === 'declared'
-    ? new Map(declaredClaims.filter(claim => typeof claim.id === 'string' && claim.id.trim() &&
-      declaredClaims.filter(other => other.id === claim.id).length === 1).map(claim => [claim.id!, claim]))
-    : new Map(declaredClaims.map((claim, index) => [claim.id || `Q${index + 1}`, claim]));
-  const actualReferences = new Map(context.references.map(reference => [reference.id, reference]));
-  const declaredReferences = new Map(context.declaredReferences.map(reference => [reference.id, reference]));
-  const selectedCodebaseIds = new Set(context.decision.selectedCodebaseIds);
+  const idCounts = new Map<string, number>();
+  for (const claim of declaredClaims) if (claim.id) idCounts.set(claim.id, (idCounts.get(claim.id) ?? 0) + 1);
+  const context = decision ? authoritativeSourceContext(contract, decision) : undefined;
+  const bindings = sanitizeSourceClaimBindings(contract.sourceClaimBindings, {referenceIdAliases: context?.aliases})
+    .map(({mechanismStatus: _retired, ...binding}) => binding);
+  const boundClaimIds = new Set(bindings.map(binding => binding.claimId));
+  const sourceDependent = declaredClaims.flatMap(claim => {
+    if (typeof claim.id !== 'string' || !claim.id.trim() || idCounts.get(claim.id) !== 1) return [];
+    const semantics = parseClaimSemanticsDeclaration(claim.semantics).semantics;
+    const textCitations = extractSourceCitations(claim.text ?? '');
+    return semantics?.predicate.startsWith('source.') || semantics?.scope.population === 'codebase' ||
+      boundClaimIds.has(claim.id) || textCitations.citations.length > 0
+      ? [{claimId: claim.id, semantics, textCitations}] : [];
+  });
+  if (!decision || !context) {
+    // Declared source evidence with no authorized execution ledger cannot be checked.
+    return sourceDependent.length > 0 || bindings.length > 0 || hasSourceCitation(input.body ?? '')
+      ? empty('partial', [{severity: 'warning', code: 'source_claim_semantics_unchecked',
+        message: 'declared source evidence has no current authorized execution ledger'}])
+      : empty('not_checked');
+  }
+
+  const references = context.references;
+  const referenceById = new Map(references.map(reference => [reference.id, reference]));
+  const declaredById = new Map(context.declaredReferences.map(reference => [reference.id, reference]));
+  const selected = new Set(decision.selectedCodebaseIds);
   const matchedTraceIdsByClaim = input.matchedTraceEvidenceRefIdsByClaimId || {};
-  const verifiedOccurrenceIdsByClaim = input.verifiedTraceOccurrenceRefIdsByClaimId || {};
-  const allTraceOwners = new Map<string, Set<string>>();
+  const traceOwners = new Map<string, Set<string>>();
   for (const [claimId, traceIds] of Object.entries(matchedTraceIdsByClaim)) {
-    for (const traceId of traceIds) {
-      const owners = allTraceOwners.get(traceId) ?? new Set<string>();
-      owners.add(claimId);
-      allTraceOwners.set(traceId, owners);
-    }
+    for (const traceId of traceIds) traceOwners.set(traceId, (traceOwners.get(traceId) ?? new Set()).add(claimId));
   }
-
-  const bindings: SourceClaimBindingV1[] = [];
   const issues: SourceClaimVerificationIssue[] = [];
-  for (const candidate of candidates) {
-    const claim = claims.get(candidate.claimId);
-    if (!claim) {
-      issues.push({
-        claimId: candidate.claimId,
-        severity: input.semanticsPolicy === 'declared' ? 'warning' : 'error',
-        code: input.semanticsPolicy === 'declared' ? 'source_claim_semantics_unchecked' : 'source_claim_missing',
-        message: 'source binding claimId does not exist in the structured claims',
-      });
-      continue;
-    }
-    if (candidate.sourceReferenceIds.length === 0) {
-      issues.push({claimId: candidate.claimId, severity: 'error', code: 'source_reference_not_returned',
-        message: 'source binding requires at least one reference returned by the current run'});
-      continue;
-    }
-    if (input.semanticsPolicy === 'declared') {
-      const semantics = parseClaimSemanticsDeclaration(claim.semantics).semantics;
-      if (!semantics || claim.semanticsParseIssues?.length || claim.rawSemantics !== undefined ||
-        contract.bindingEligibility === 'ineligible') {
-        issues.push({claimId: candidate.claimId, severity: 'warning', code: 'source_claim_semantics_unchecked',
-          message: 'source references do not establish the meaning of an unchecked claim declaration'});
-      } else if (semantics.predicate === 'source.existence' && semantics.polarity === 'negated' &&
-        semantics.discourse === 'asserted') {
-        // A search ledger's completion flag is not an exhaustive versioned-codebase proof.
-        issues.push({claimId: candidate.claimId, severity: 'warning', code: 'source_absence_requires_complete_search',
-          message: 'a negative source-existence proposition requires an explicit complete absence proof'});
-      }
-    } else if ((context.decision.coverageComplete === false || context.decision.status === 'search_incomplete') &&
-      negativeSourceAbsenceClaim(claim.text)) {
-      issues.push({
-        claimId: candidate.claimId,
-        severity: 'error',
-        code: 'source_absence_requires_complete_search',
-        message: 'an incomplete source search cannot support a negative source-absence claim',
-      });
-      continue;
-    }
 
-    let rejected = false;
-    const bindingReferences: SourceReferenceV1[] = [];
-    for (const sourceReferenceId of candidate.sourceReferenceIds) {
-      const declared = declaredReferences.get(sourceReferenceId);
-      if (declared && !selectedCodebaseIds.has(declared.codebaseId)) {
-        issues.push({
-          claimId: candidate.claimId,
-          severity: 'error',
-          code: 'source_reference_outside_selection',
-          message: 'source reference is outside the current selected codebase partition',
-          sourceReferenceId,
-        });
-        rejected = true;
-        continue;
-      }
-      const actual = actualReferences.get(sourceReferenceId);
-      if (!actual) {
-        issues.push({
-          claimId: candidate.claimId,
-          severity: 'error',
-          code: 'source_reference_not_returned',
-          message: 'source reference was not returned by the current run',
-          sourceReferenceId,
-        });
-        rejected = true;
-        continue;
-      }
-      bindingReferences.push(actual);
-    }
-
-    const allowedTraceIds = new Set(matchedTraceIdsByClaim[candidate.claimId] || []);
-    for (const traceEvidenceRefId of candidate.traceEvidenceRefIds) {
-      if (allowedTraceIds.has(traceEvidenceRefId)) continue;
-      const belongsToOtherClaim = [...(allTraceOwners.get(traceEvidenceRefId) || [])]
-        .some(owner => owner !== candidate.claimId);
-      issues.push({
-        claimId: candidate.claimId,
-        severity: 'error',
-        code: belongsToOtherClaim
-          ? 'source_binding_trace_cross_claim'
-          : 'source_binding_trace_support_missing',
-        message: belongsToOtherClaim
-          ? 'trace evidence belongs to a different structured claim'
-          : 'trace evidence was not verified for this structured claim',
-        traceEvidenceRefId,
-      });
-      rejected = true;
-    }
-    if (rejected) continue;
-
-    let mechanismStatus = candidate.mechanismStatus;
-    if (mechanismStatus === 'corroborated' && input.semanticsPolicy === 'declared') {
-      mechanismStatus = 'compatible';
-      issues.push({claimId: candidate.claimId, severity: 'warning', code: 'source_binding_mechanism_unverified',
-        message: 'source text and a trace interval do not establish a native execution mechanism'});
-    } else if (mechanismStatus === 'corroborated') {
-      // A bound search hit counts once a read window of the same file covered it.
-      const hasProviderBody = context.decision.codeAwareMode === 'provider_send' &&
-        bindingReferences.some(reference => referenceHasReadBody(reference, context.references));
-      const verifiedOccurrenceIds = new Set(
-        verifiedOccurrenceIdsByClaim[candidate.claimId] || [],
-      );
-      const hasVerifiedTraceOccurrence = candidate.traceEvidenceRefIds.some(
-        traceId => verifiedOccurrenceIds.has(traceId),
-      );
-      if (!hasProviderBody || !hasVerifiedTraceOccurrence) {
-        mechanismStatus = 'compatible';
-        issues.push({
-          claimId: candidate.claimId,
-          severity: 'warning',
-          code: hasVerifiedTraceOccurrence
-            ? 'source_binding_strength_downgraded'
-            : candidate.traceEvidenceRefIds.length > 0
-              ? 'source_binding_trace_occurrence_not_verified'
-              : 'source_binding_trace_support_missing',
-          message: hasVerifiedTraceOccurrence
-            ? 'corroborated requires provider-send body or indexed source evidence'
-            : 'corroborated requires a verified trace occurrence for the same claim',
-        });
-      }
-    }
-    bindings.push({...candidate, mechanismStatus});
+  const body = extractSourceCitations(input.body ?? '');
+  const blocks = splitAnswerBlocks(input.body ?? '');
+  let blockIndex = 0;
+  const citations = body.citations.map(citation => {
+    while (blockIndex < blocks.length && blocks[blockIndex]!.end <= citation.index) blockIndex++;
+    const block = blockIndex < blocks.length && blocks[blockIndex]!.start <= citation.index ? blockIndex : -1;
+    return {...matchSourceCitation(citation, references), block};
+  });
+  // The file versions a citation was matched to: its pin, or an ambiguous one's candidates.
+  const citedIdentities = (citation: SourceCitationV1): Set<string> => new Set(
+    (citation.sourceReferenceId !== undefined ? [citation.sourceReferenceId] : citation.candidateReferenceIds ?? [])
+      .flatMap(id => {
+        const reference = referenceById.get(id);
+        return reference ? [sourceReferenceIdentity(reference)] : [];
+      }));
+  if (body.truncated) {
+    issues.push({severity: 'warning', code: 'source_citation_extraction_truncated',
+      message: 'the answer writes more source locations than are checked'});
   }
 
-  const status: SourceClaimVerificationStatus = issues.some(issue => issue.severity === 'error')
-    ? 'failed'
-    : issues.length > 0
-      ? 'partial'
-      : bindings.length > 0
-        ? 'passed'
-        : 'not_checked';
-  return {schemaVersion: 'source_claim_verifier@1', status, bindings, issues};
+  const claimStatuses: SourceClaimStatusV1[] = [];
+  for (const {claimId, semantics, textCitations} of sourceDependent) {
+    const claimBindings = bindings.filter(binding => binding.claimId === claimId);
+    const sourceReferenceIds = [...new Set(claimBindings.flatMap(binding => binding.sourceReferenceIds))];
+    const traceEvidenceRefIds = [...new Set(claimBindings.flatMap(binding => binding.traceEvidenceRefIds))];
+    const record = (status: SourceClaimStatus) => claimStatuses.push({claimId, status, sourceReferenceIds, traceEvidenceRefIds});
+
+    let invalid = false;
+    for (const sourceReferenceId of sourceReferenceIds) {
+      const declared = declaredById.get(sourceReferenceId);
+      const outside = declared !== undefined && !selected.has(declared.codebaseId);
+      if (outside || !referenceById.has(sourceReferenceId)) {
+        issues.push({claimId, severity: 'error', sourceReferenceId,
+          code: outside ? 'source_reference_outside_selection' : 'source_reference_not_returned',
+          message: outside ? 'source reference is outside the current selected codebase partition'
+            : 'source reference was not returned by the current run'});
+        invalid = true;
+      }
+    }
+    const matchedTraceIds = new Set(matchedTraceIdsByClaim[claimId] || []);
+    for (const traceEvidenceRefId of traceEvidenceRefIds) {
+      if (matchedTraceIds.has(traceEvidenceRefId)) continue;
+      const otherClaim = [...(traceOwners.get(traceEvidenceRefId) || [])].some(owner => owner !== claimId);
+      issues.push({claimId, severity: 'error', traceEvidenceRefId,
+        code: otherClaim ? 'source_binding_trace_cross_claim' : 'source_binding_trace_support_missing',
+        message: otherClaim ? 'trace evidence belongs to a different structured claim'
+          : 'trace evidence was not verified for this structured claim'});
+      invalid = true;
+    }
+    if (invalid) {
+      record('invalid');
+      continue;
+    }
+    if (semantics?.predicate === 'source.existence' && semantics.polarity === 'negated' &&
+      semantics.discourse === 'asserted') {
+      // A search ledger's completion flag is not an exhaustive versioned-codebase proof.
+      issues.push({claimId, severity: 'warning', code: 'source_absence_requires_complete_search',
+        message: 'a negative source-existence proposition requires an explicit complete absence proof'});
+    }
+
+    const bound = sourceReferenceIds.map(id => referenceById.get(id)!);
+    // The file versions of this claim's bound references that share a written line.
+    const boundIdentities = (citation: SourceCitationV1): Set<string> => {
+      const cited = citedIdentities(citation);
+      return new Set(bound.filter(reference => reference.lineRange &&
+        lineRangesIntersect(reference.lineRange, citation.lineRange) && cited.has(sourceReferenceIdentity(reference)))
+        .map(sourceReferenceIdentity));
+    };
+    // Only a location the run never returned, or an ambiguity this claim's binding does not pin to one version, mismatches.
+    const mismatches = (citation: SourceCitationV1) => citation.status === 'unmatched' ||
+      (citation.status === 'ambiguous' && boundIdentities(citation).size !== 1);
+    // Citations of the claim's bound lines; the blocks holding the resolved ones are its visible text.
+    const related = citations.filter(citation => boundIdentities(citation).size > 0);
+    const visibleBlocks = new Set(related.filter(citation => citation.block >= 0 && !mismatches(citation))
+      .map(citation => citation.block));
+    const claimTextMismatch = textCitations.citations
+      .some(citation => mismatches(matchSourceCitation(citation, references)));
+    const answerMismatch = related.some(mismatches) ||
+      citations.some(citation => visibleBlocks.has(citation.block) && mismatches(citation));
+    const outcome = bound.length === 0 || claimTextMismatch || answerMismatch ? SOURCE_CLAIM_OUTCOMES.unbound
+      : !bound.some(reference => referenceHasReadBody(reference, references)) ? SOURCE_CLAIM_OUTCOMES.location_only
+        : !traceEvidenceRefIds.some(id => matchedTraceIds.has(id)) ? SOURCE_CLAIM_OUTCOMES.trace_unlinked
+          : visibleBlocks.size === 0 ? SOURCE_CLAIM_OUTCOMES.not_visible
+            : undefined;
+    if (outcome) {
+      issues.push({claimId, severity: 'warning', code: outcome.code, message: outcome.message});
+      record(outcome.status);
+    } else {
+      // Locations past the extraction limit were never checked against this claim.
+      record(body.truncated || textCitations.truncated ? 'source_only' : 'trace_linked');
+    }
+    if (textCitations.truncated) {
+      issues.push({claimId, severity: 'warning', code: 'source_citation_extraction_truncated',
+        message: 'the claim writes more source locations than are checked'});
+    }
+  }
+
+  for (const citation of citations) {
+    if (citation.status !== 'unmatched' && citation.status !== 'ambiguous') continue;
+    issues.push({severity: 'warning', citation: citation.citation,
+      code: citation.status === 'unmatched' ? 'source_citation_unmatched' : 'source_citation_ambiguous',
+      message: citation.status === 'unmatched'
+        ? 'the answer cites a source location this run never returned'
+        : 'the answer cites a source location several returned file versions fit'});
+  }
+  const status: SourceClaimVerificationStatus = issues.some(issue => issue.severity === 'error') ? 'failed'
+    : issues.length > 0 ? 'partial'
+      : claimStatuses.length > 0 || citations.length > 0 ? 'passed' : 'not_checked';
+  // Judged against every candidate; the stored list is bounded.
+  return {schemaVersion: 'source_claim_verifier@2', status, bindings, claims: claimStatuses,
+    citations: citations.map(({block: _block, ...citation}) => citation.candidateReferenceIds
+      ? {...citation, candidateReferenceIds: citation.candidateReferenceIds.slice(0, MAX_STORED_CANDIDATE_REFERENCES)}
+      : citation), issues};
 }
 
 export function verifySourceClaimBindingsForResult(
@@ -454,13 +529,10 @@ export function verifySourceClaimBindingsForResult(
   return verifySourceClaimBindings({
     conclusionContract: result.conclusionContract,
     actualSourceUseDecision,
-    semanticsPolicy: result.claimVerificationResult.schemaVersion === 'claim_verifier@2' ? 'declared' : 'legacy',
     matchedTraceEvidenceRefIdsByClaimId: collectMatchedTraceEvidenceRefIdsByClaimId(
       result.claimVerificationResult,
     ),
-    verifiedTraceOccurrenceRefIdsByClaimId: collectVerifiedTraceOccurrenceRefIdsByClaimId(
-      result.claimVerificationResult,
-    ),
+    body: result.conclusion,
   });
 }
 
@@ -586,7 +658,7 @@ export function finalizeSourceAwareAnalysisResultWithProjection(
   if (currentSourceVerification?.status === 'failed') {
     result.sourceClaimVerificationResult = sanitizeCodeAwareStructuredText(result.sessionId, currentSourceVerification);
     if (result.sourceClaimVerificationResult) {
-      result.sourceClaimVerificationResult.schemaVersion = 'source_claim_verifier@1';
+      result.sourceClaimVerificationResult.schemaVersion = 'source_claim_verifier@2';
       result.sourceClaimVerificationResult.status = 'failed';
       currentSourceVerification.issues.forEach((issue, index) => {
         if (issue.severity === 'error' && result.sourceClaimVerificationResult?.issues?.[index]) {

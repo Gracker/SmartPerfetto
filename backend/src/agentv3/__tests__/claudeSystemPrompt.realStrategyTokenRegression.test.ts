@@ -106,7 +106,7 @@ describe('typed prompt with real strategy assets', () => {
   });
 
   it('parses the source example with a binding to its own declared proposition', () => {
-    const template = stripTemplateComments(loadPromptTemplate('prompt-source-finding-binding')!);
+    const template = stripTemplateComments(loadPromptTemplate('prompt-source-recipe-mechanism')!);
     const example = JSON.parse(template.match(/^```json\n([\s\S]*?)\n```$/m)![1]);
     example.sourceClaimBindings[0].sourceReferenceIds = ['source-ref-current-run'];
     const parsed = parseConclusionContractSidecar(`${CONCLUSION_CONTRACT_SIDECAR_MARKER}\n\`\`\`json\n${JSON.stringify({
@@ -116,7 +116,7 @@ describe('typed prompt with real strategy assets', () => {
     expect(parsed.status).toBe('valid');
     const claim = parsed.contract!.claims![0];
     expect(claim.semantics).toMatchObject({discourse: 'hypothetical', modality: 'possible'});
-    expect(parsed.contract!.sourceClaimBindings).toEqual([{claimId: claim.id, mechanismStatus: 'compatible',
+    expect(parsed.contract!.sourceClaimBindings).toEqual([{claimId: claim.id,
       sourceReferenceIds: ['source-ref-current-run'], traceEvidenceRefIds: []}]);
     expect(claim.references).toEqual([]);
     const proof = runDeterministicClaimVerifier({claimSupport: [{claimId: claim.id!, kind: claim.kind!,
@@ -133,7 +133,8 @@ describe('typed prompt with real strategy assets', () => {
     expect(template).toContain('Allowed unit conversions only:');
     expect(template).toContain('other units must match verbatim');
     expect(template).not.toContain('`-` display is not null');
-    expect(template).toContain('never infer, narrow or extend its returned range');
+    // Source locations are judged from the run's references, not declared.
+    expect(template).not.toContain('source.location');
     expect(template).toContain('Every `evidenceChain` item requires string `conclusionId` and `text`');
     expect(template).toContain('require that same claim to own the Trace reference');
     expect(template).toContain('For successful empty results, cite only their emitted IDs; omit rowIndex/rowSelector/column/value (no row 0).');
@@ -328,7 +329,9 @@ describe('typed prompt with real strategy assets', () => {
           evidenceAccess: 'existing_only', registryFingerprint: registry.registryFingerprint},
         codeAwareMode: 'provider_send', codebaseIds: ['selected-app']});
       expect(parts.segments.some(segment => ['scene_strategy_details', 'investigation_findings',
-        'investigation_requirements', 'source_finding_binding'].includes(segment.label))).toBe(false);
+        'investigation_requirements'].includes(segment.label))).toBe(false);
+      // A factual turn may still ask where something is implemented: it gets the locate recipe only.
+      expect(parts.segments.find(segment => segment.label === 'source_recipe')?.content).toContain('locate depth');
     }
   });
 
@@ -342,7 +345,7 @@ describe('typed prompt with real strategy assets', () => {
         evidenceAccess: 'read_new', registryFingerprint: registry.registryFingerprint, unavailableReason: 'timeout'},
       codeAwareMode: 'provider_send', codebaseIds: ['selected-app']});
     expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
-    for (const label of ['investigation_findings', 'source_finding_binding']) {
+    for (const label of ['investigation_findings', 'source_recipe']) {
       expect(parts.segments.find(segment => segment.label === label))
         .toMatchObject({droppable: false, truncatable: false});
     }
@@ -364,12 +367,13 @@ describe('typed prompt with real strategy assets', () => {
           sceneId: scene.scene, scope: 'scene_wide', recommendedComplexity: 'full', deliverable: 'report',
           evidenceAccess: 'read_new', registryFingerprint: registry.registryFingerprint},
         codeAwareMode: 'provider_send', codebaseIds: ['selected-app'],
+        sourceAuthorization: {codebases: [], depth: 'mechanism'},
         selectionContext: {kind: 'area', startNs: 10, endNs: 20, tracks: [{uri: 'main', upid: 42}]},
         comparison: {referenceTraceId: 'reference', commonCapabilities: [], capabilityProbeStatus: 'not_checked'}});
       expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
       expect(parts.droppedLabels).toEqual([]);
       for (const label of ['investigation_requirements', 'investigation_findings', 'scene_strategy_details',
-        'selection_context', 'comparison_identity', 'source_use', 'source_finding_binding']) {
+        'selection_context', 'comparison_identity', 'source_use', 'source_recipe']) {
         expect(parts.segments.some(segment => segment.label === label)).toBe(true);
       }
       const findings = parts.segments.find(segment => segment.label === 'investigation_findings')!;
@@ -380,7 +384,7 @@ describe('typed prompt with real strategy assets', () => {
       expect(findings.content).toContain('never broader\nevent/mechanism absence');
       expect(findings.content).toContain('including support/limitation facts');
       expect(findings.content).toContain('omit propositions to save budget');
-      const sourceBinding = parts.segments.find(segment => segment.label === 'source_finding_binding')!;
+      const sourceBinding = parts.segments.find(segment => segment.label === 'source_recipe')!;
       expect(sourceBinding.content).toContain("does not prove an observed wait's origin");
       expect(sourceBinding.content).toContain('connection and remedy conditional');
       expect(sourceBinding.content).toContain('does not make\nthe full wait recoverable time');

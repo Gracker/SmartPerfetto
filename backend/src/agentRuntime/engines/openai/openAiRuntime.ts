@@ -63,7 +63,6 @@ import {RuntimeExecutionGuard, type RuntimeExecutionLease} from '../../runtimeEx
 import {createRuntimePerformanceRun, runtimeOutcomeFromError, type RuntimeModelCallPurpose, type RuntimeModelCallSpan,
   type RuntimeModelCallTrigger, type RuntimePerformanceOutcome, type RuntimePerformanceRun} from '../../runtimePerformance';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
-import {extractSourceLookupCodeReferences} from '../../../services/codebase/sourceLookupTools';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {
@@ -1602,7 +1601,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       });
       // Plan evidence must not depend on having observed the dispatch event.
       if (toolName !== 'unknown') {
-        const codeReferences = extractSourceLookupCodeReferences(toolName, rawOutput);
         recordPlanOrPrePlanToolCall(this.sessionPlans.get(streamContext.sessionId), {
           toolName,
           toolCallId: callKey,
@@ -1615,8 +1613,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           resultText,
           // Read before truncation: planPhaseId and success sit after the body.
           resultFacts: readToolResultFacts(rawOutput),
-          returnedCodeReferences: codeReferences.length > 0,
-          returnedCodeReferenceHints: codeReferences,
         });
       }
       if (callKey) streamContext.toolInputsByTaskId.delete(callKey);

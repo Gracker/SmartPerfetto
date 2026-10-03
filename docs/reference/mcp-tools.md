@@ -143,10 +143,10 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 
 图工具输出只包含 `codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 和 `graph.verificationRequired`。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，会省略无法证明路径范围的全仓 process 摘要，并保留已授权的相对 `CodeRef`。代码图元数据既不是当前 trace 证据，也不是已经核对的源码事实；任何影响结论的关系都必须再用有界 `read_codebase_file` 验证，当前权限不允许读取时必须保持未验证状态。绝对 root 始终留在后端信任边界内。Code-aware 输出会进入 report/export/snapshot 时，只能保留安全名称/ID 与相对 `CodeRef`，不能保留原始源码；处理隐私、路径和 patch 状态时不要只验证前端聊天窗口。
 
-源码结论使用双证据：Trace/Skill/SQL 证明本次发生，`CodeRef` 证明实现机制。
-`CodeRef` 单独不能提高发生/根因置信度。绑定状态只能是 `corroborated`、
-`compatible`、`ambiguous` 或 `unverified`；`corroborated` 要求同一 claim 的已验证 trace 发生证据
-与 `provider_send` body/indexed 证据。`metadata_only` 只能产生 locate-only 引用。
+源码结论使用双证据：Trace/Skill/SQL 证明本次发生，`CodeRef` 解释候选实现机制。
+`CodeRef` 单独不能提高发生/根因置信度。模型只声明绑定的引用 ID，claim 状态由服务端
+计算；最强的 `trace_linked` 要求读过正文（body/indexed）并有同一 claim 的已验证 trace
+发生证据。`metadata_only` 只能产生 locate-only 引用。
 
 GitNexus 是独立的第三方可选工具，其[官方项目](https://github.com/abhigyanpatwari/GitNexus)和 [npm 包](https://www.npmjs.com/package/gitnexus)目前声明使用 [PolyForm Noncommercial 1.0.0](https://github.com/abhigyanpatwari/GitNexus/blob/main/LICENSE)。使用前必须自行审阅上游条款；这不是法律建议。
 

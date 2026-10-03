@@ -270,14 +270,16 @@ RAG tools for new acquisition. Trace captures support referenced observations;
 source evidence provides mechanism-analysis background, while `CodeRef` metadata
 only locates code. `SourceUseDecision.status: corroborated` only audits an
 authorized body lookup with references in this run. It does not prove a Trace
-occurrence, mechanism or causal relationship, and is a different field from a
-claim binding's `mechanismStatus`.
+occurrence, mechanism or causal relationship.
 
-The shared finalizer uses `semanticsPolicy: declared`. Even with matched Trace
-references and source bodies, a model-declared `mechanismStatus: corroborated`
-is downgraded to `compatible` with `source_binding_mechanism_unverified`.
-This path has no native proof that establishes a general mechanism. Unknown
-mechanisms remain unverified/partial; a lookup-audit status cannot replace proof.
+A model's claim binding declares only `claimId`, `sourceReferenceIds` and
+optional same-claim `traceEvidenceRefIds`; it no longer declares a mechanism
+status (the legacy field is accepted and dropped). The shared finalizer's
+`source_claim_verifier@2` computes each source-dependent claim's standing from
+the actual ledger: `invalid` fails the answer; `unbound`, `location_only` and
+`source_only` stay partial; `trace_linked` means a read body linked to verified
+same-claim Trace evidence. No native proof establishes a general mechanism, and
+a lookup-audit status cannot replace proof.
 
 One canonical safe projector carries the same decision and binding through
 initial and replayed SSE, HTML reports, CLI JSON/Markdown/HTML,

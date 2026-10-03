@@ -49,7 +49,7 @@ function current(target: AnalysisResult): FinalContext {
     completion: {...acceptedCandidate, schemaVersion: 1, runtimeKind: 'openai-agents-sdk', status: 'completed'}};
 }
 
-async function verifiedFact(options: {declaredValue?: number; source?: boolean; sourceLocation?: boolean;
+async function verifiedFact(options: {declaredValue?: number; source?: boolean;
   metadataOnly?: boolean; report?: boolean; unusedSource?: Partial<SourceUseDecisionV1>;
   omitSourceScope?: boolean; sourceScope?: Partial<SourceExecutionScopeV1>; cloneContext?: boolean;
   rawSourceFields?: Record<string, unknown>; incompleteSemanticCoverage?: boolean} = {}) {
@@ -58,14 +58,15 @@ async function verifiedFact(options: {declaredValue?: number; source?: boolean; 
     traceId: 'trace-a', traceSide: 'current', executionStatus: 'observed',
   });
   const declaredValue = options.declaredValue ?? 12.5;
-  const draft = result(`The measured duration is ${declaredValue} ms.`);
+  // A source-backed fact cites its location in the answer, where it can be checked.
+  const draft = result(`The measured duration is ${declaredValue} ms${options.source ? ' at src/Foo.kt:L9-L15' : ''}.`);
   const reference = {evidenceRefId: 'data:duration', rowIndex: 0, column: 'dur_ms', value: declaredValue};
   const declaration = contract([{id: 'duration', kind: 'numeric', text: draft.conclusion, references: [reference],
     semantics: {schemaVersion: 'claim_semantics@1', predicate: 'numeric.cell', polarity: 'affirmed',
       discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'cited_rows', subjectRefs: [reference]},
       numeric: {operator: 'eq', value: declaredValue, unit: 'ms'}}}]);
   let sourceUse: SourceUseDecisionV1 | undefined;
-  if (options.source || options.sourceLocation) {
+  if (options.source) {
     const source = sanitizeSourceReference({referenceId: 'lookup-a', codebaseId: 'source-a',
       filePath: 'src/Foo.kt', lineRange: {start: 9, end: 15}, lookupKind: options.metadataOnly ? 'metadata' : 'body'})!;
     sourceUse = {schemaVersion: 'source_use_decision@1', codeAwareMode: options.metadataOnly ? 'metadata_only' : 'provider_send',
@@ -73,17 +74,8 @@ async function verifiedFact(options: {declaredValue?: number; source?: boolean; 
       queriedCodebaseIds: ['source-a'], usedCodebaseIds: ['source-a'], coverageComplete: true, references: [source]};
     declaration.sourceUseDecision = sourceUse;
     declaration.sourceReferences = [source];
-    declaration.sourceClaimBindings = [{claimId: 'duration', mechanismStatus: options.metadataOnly ? 'corroborated' : 'compatible',
+    declaration.sourceClaimBindings = [{claimId: 'duration',
       sourceReferenceIds: [source.id], traceEvidenceRefIds: ['data:duration']}];
-    if (options.sourceLocation) {
-      draft.conclusion = 'This query returned a source location at src/Foo.kt, lines 9–15.';
-      declaration.claims = [{id: 'duration', kind: 'categorical', text: draft.conclusion, references: [],
-        semantics: {schemaVersion: 'claim_semantics@1', predicate: 'source.location', polarity: 'affirmed',
-          discourse: 'asserted', quantifier: 'one', modality: 'certain', scope: {population: 'codebase'},
-          source: {sourceReferenceId: source.id, filePath: source.filePath, lineRange: source.lineRange!}}}];
-      declaration.sourceClaimBindings[0].traceEvidenceRefIds = [];
-      declaration.sourceClaimBindings[0].mechanismStatus = 'compatible';
-    }
   }
   const parsed = parseConclusionContractDeclaration(declaration);
   if (!parsed.contract) throw new Error('Expected a valid typed duration declaration');
@@ -132,7 +124,7 @@ async function verifiedFact(options: {declaredValue?: number; source?: boolean; 
     const finalized = await finalizeAnalysisResult({result: draft,
       context: options.cloneContext ? {...issuedContext} : issuedContext,
       owner: {runId: acceptedCandidate.runId, signal: new AbortController().signal, isCurrent: () => true, assertAuthorized: () => {}},
-      query: options.sourceLocation ? 'What source location did this query return?' : 'What is the measured duration?', dataEnvelopes: [envelope]});
+      query: 'What is the measured duration?', dataEnvelopes: [envelope]});
     const context = gate.mock.calls.find(([input]) => input.result === finalized.result)?.[0].context;
     if (context?.entry !== 'new_finalization') throw new Error('Expected the actual finalization binding context');
     return {target: finalized.result, context: structuredClone(context), envelope};
@@ -385,39 +377,16 @@ describe('server-owned analysis delivery assessment', () => {
     expect(assessFinalResultQualityAssessment({result: target, context}).assurance.source).toBe('passed');
   });
 
-  it.each([false, true])('verifies returned source locations without manufacturing Trace proof (metadata=%s)', async metadataOnly => {
-    const {target, context} = await verifiedFact({sourceLocation: true, metadataOnly});
-    expect(target.claimVerificationResult).toMatchObject({status: 'passed', passed: true, claimResults: [{
-      status: 'verified', referenceResults: [],
-      deterministicProof: {kind: 'source_location', status: 'proved', anchorIds: [], evidenceRefIds: []},
-    }]});
-    expect(target.sourceClaimVerificationResult).toMatchObject({status: 'passed',
-      bindings: [{mechanismStatus: 'compatible', traceEvidenceRefIds: []}]});
-    expect(assessFinalResultQualityAssessment({result: target, context}).assurance)
-      .toMatchObject({completion: 'passed', claims: 'passed', source: 'passed'});
-  });
-
-  it.each(['ledger', 'source_binding', 'contract_binding', 'candidate', 'declaration'] as const)(
-    'invalidates a source-location claim verdict after changing %s', async changed => {
-      const {target, context} = await verifiedFact({sourceLocation: true});
-      expect(target.claimVerificationResult?.passed).toBe(true);
-      if (changed === 'ledger') target.sourceUseDecision!.references[0].lineRange = {start: 1, end: 1};
-      else if (changed === 'source_binding') context.sourceVerificationBinding = undefined;
-      else if (changed === 'contract_binding') target.conclusionContract!.sourceClaimBindings = [];
-      else if (changed === 'candidate') context.acceptedCandidate = {...context.acceptedCandidate, attemptId: 'other-attempt'};
-      else target.conclusionContract!.claims![0].semantics!.source!.filePath = 'src/Other.kt';
-      expect(assessFinalResultQualityAssessment({result: target, context}).assurance.claims).toBe('not_checked');
-    });
-
-  it('keeps the accepted report contract stable when source verification downgrades a binding', async () => {
+  it('keeps the accepted report contract stable when a source claim is weaker than linked', async () => {
     const {target, context} = await sourceVerifiedFact({metadataOnly: true, report: true});
     expect(target.sourceUseDecision?.codeAwareMode).toBe('metadata_only');
-    expect(target.conclusionContract?.sourceClaimBindings?.[0].mechanismStatus).toBe('corroborated');
     const acceptedContract = structuredClone(target.conclusionContract);
     const assessedHash = context.reportAssessment!.binding.conclusionContractFingerprint;
     for (let application = 0; application < 2; application++) {
-      expect(applyFinalResultQualityGate({result: target, context})?.code).toBe('source_claim_binding_invalid');
-      expect(target.sourceClaimVerificationResult?.bindings[0].mechanismStatus).toBe('compatible');
+      // A locate-only claim is delivered unverified, not failed.
+      expect(applyFinalResultQualityGate({result: target, context})?.code).not.toBe('source_claim_binding_invalid');
+      expect(target.sourceClaimVerificationResult).toMatchObject({schemaVersion: 'source_claim_verifier@2',
+        claims: [{claimId: 'duration', status: 'location_only'}]});
       expect(target.conclusionContract).toEqual(acceptedContract);
       expect(analysisDeliveryFingerprint(target.conclusionContract)).toBe(assessedHash);
       expect(target.reportAssessment?.binding.conclusionContractFingerprint).toBe(assessedHash);

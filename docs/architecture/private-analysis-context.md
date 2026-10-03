@@ -59,12 +59,12 @@ finalization context 中；公开声明与正文另外经过安全投影。共�
 
 有限事实证明与语义核验分别执行。`captured.cell` 只验证原声明指定的非数值单元格，
 按字符串、布尔值或 null 严格比较；数值继续使用带单位的 `numeric.cell`。
-`source.location` 比较原始声明中的引用、相对路径和行范围与本轮源码账本，只证明查询
-返回的位置快照。它不生成 Trace 发生证据，不证明函数行为、调用链或因果。源码位置
-结论还绑定源码账本和 source binding 的指纹，修改任一项后旧核验状态失效。
-精确的 `semantics.source` 不要求在 `sourceClaimBindings` 重复声明；若显式提供该 claim
-的关联，仍必须唯一且引用相同位置。整个关联数组的错误结构不能被过滤成“未提供”。
-省略关联不会让机制 verifier 自动通过，位置事实仍需完整的正文语义复核。
+源码不走有限证明：`source_claim_verifier@2` 由服务端为每个依赖源码的 claim 计算状态
+（`invalid`、`unbound`、`location_only`、`source_only`、`trace_linked`），并把正文
+写出的源码位置与本轮签发的引用比对。只有 `invalid`（未签发或越出选择的引用、不属于
+该 claim 的 Trace ID）使答案失败；较弱的状态保持未核验。`trace_linked` 也只说明读取
+过正文且有同一 claim 的 Trace 证据，不证明函数行为、调用链或因果，仍需完整的正文
+语义复核。整个关联数组的错误结构不能被过滤成“未提供”。
 
 无需源码的回答不会被要求取得源码核验通过。共享 finalizer 仅在本轮实际 MCP 访问
 范围已捕获、没有源码访问或明确 `not_needed` 且账本为空、原始声明没有源码依赖，

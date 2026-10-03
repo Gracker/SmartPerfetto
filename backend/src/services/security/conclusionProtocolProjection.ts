@@ -11,7 +11,7 @@ import {
 } from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity} from '../../types/analysisDelivery';
-import {sanitizeSourceClaimBindings} from '../codebase/sourceUseDecision';
+import {isSourceMechanismStatus} from '../codebase/sourceUseDecision';
 import {
   issueCodeAwareStructuredProjectionReceipt, projectCodeAwareProtocolLiteral, projectCodeAwareSemanticInputStructure,
   projectCodeAwareAuthorizedInputText,
@@ -88,9 +88,7 @@ function literal(path: string[], value: string): boolean {
     'relationProposals.*.direction': CONCLUSION_PROTOCOL_VALUES.direction,
     'relationProposals.*.deltaDirection': CONCLUSION_PROTOCOL_VALUES.deltaDirection,
   };
-  if (key === 'sourceClaimBindings.*.mechanismStatus') return sanitizeSourceClaimBindings([{
-    claimId: 'literal-validation', mechanismStatus: value, sourceReferenceIds: [], traceEvidenceRefIds: [],
-  }]).length === 1;
+  if (key === 'sourceClaimBindings.*.mechanismStatus') return isSourceMechanismStatus(value);
   if (key === 'claims.*.semantics.predicate') return SUPPORTED_DETERMINISTIC_CLAIM_RULES.some(rule => rule.id === value);
   return values[key]?.includes(value) ?? false;
 }
@@ -347,16 +345,6 @@ export function projectConclusionSemanticInput(input: {
   for (const claim of contract?.claims ?? []) {
     maskList(claim.references); maskList(claim.artifactRefs);
     maskList(claim.semantics?.scope.subjectRefs); maskList(claim.semantics?.scope.objectRefs);
-    const source = claim.semantics?.source;
-    // This exact location was already returned under the current authorization.
-    // Restoring its input role grants no proof to the declaration or its binding.
-    if (source && input.snapshot.sourceUse?.references.some(reference =>
-      reference.id === source.sourceReferenceId && reference.filePath === source.filePath &&
-      reference.lineRange?.start === source.lineRange.start && reference.lineRange?.end === source.lineRange.end)) {
-      const target = claim.semantics as unknown as Record<string, unknown>;
-      replacements.set(target, new Map([['source', trusted(source)]]));
-      target.source = null;
-    }
   }
   for (const relation of contract?.relationProposals ?? []) {
     for (const key of ['subject', 'object', 'proof']) maskReference(relation as unknown as Record<string, unknown>, key);

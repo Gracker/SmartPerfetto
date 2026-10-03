@@ -167,10 +167,10 @@ describe('source binding acceptance', () => {
       }}},
       summary: {analysisCompletedSourceReferenceCount: 1, analysisCompletedSourceBindingCount: 2,
         analysisCompletedSourceClaimVerifierStatus: 'passed', analysisCompletedSourceReferenceMembershipPassed: true,
-        analysisCompletedSourceMechanismStatuses: ['compatible', 'unverified'],
+        analysisCompletedSourceClaimStatuses: ['trace_linked', 'location_only'],
         analysisCompletedVerifiedSourceBindings: [
-          {claimId: 'mapping', mechanismStatus: 'compatible', sourceReferenceIds: [sourceId], traceEvidenceRefIds: ['data-mapping']},
-          {claimId: 'location', mechanismStatus: 'unverified', sourceReferenceIds: [sourceId], traceEvidenceRefIds: []},
+          {claimId: 'mapping', status: 'trace_linked', sourceReferenceIds: [sourceId], traceEvidenceRefIds: ['data-mapping']},
+          {claimId: 'location', status: 'location_only', sourceReferenceIds: [sourceId], traceEvidenceRefIds: []},
         ],
         analysisCompletedSourceUseDecision: {references: [{id: sourceId, codebaseId: 'selected-source',
           filePath: 'StartupHooks.kt', lineRange: {start: 1, end: sourceLineCount}, lookupKind: 'body'}]},
@@ -210,12 +210,12 @@ describe('source binding acceptance', () => {
     return {...target, oracle, mapped, oracleProof, mappedProof};
   }
 
-  it('joins two current finite proofs by native row identity without promoting source compatibility', () => {
+  it('joins two current finite proofs by native row identity without changing the source claim status', () => {
     const target = nativeFixture();
     const before = structuredClone(target.report);
     expect(target.evaluate()).toMatchObject({sourceIdentityPassed: true, sourceSemanticPassed: true});
     expect(target.report).toEqual(before);
-    expect(target.report.summary.analysisCompletedVerifiedSourceBindings[0].mechanismStatus).toBe('compatible');
+    expect(target.report.summary.analysisCompletedVerifiedSourceBindings[0].status).toBe('trace_linked');
   });
 
   it('retains the proved Trace fact when other source claims remain partial', () => {
@@ -273,7 +273,7 @@ describe('source binding acceptance', () => {
         report.analysisContext.codebaseIds = [];
         report.summary.analysisCompletedSourceReferenceCount = 0;
         report.summary.analysisCompletedSourceBindingCount = 0;
-        report.summary.analysisCompletedSourceMechanismStatuses = [];
+        report.summary.analysisCompletedSourceClaimStatuses = [];
         report.summary.analysisCompletedVerifiedSourceBindings = [];
         report.summary.analysisCompletedSourceUseDecision.references = [];
       } else if (args[args.indexOf('--setup-codebase-mode') + 1] === 'register-and-index') {
@@ -352,7 +352,7 @@ describe('source binding acceptance', () => {
         change === 'missingOracleProof' ? undefined : target.oracleProof)).toBe(false);
     });
 
-  it('accepts an unverified location beside an oracle-linked compatible binding without promoting its mechanism', () => {
+  it('accepts a location-only claim beside an oracle-linked source claim without promoting it', () => {
     const target = fixture();
     const before = structuredClone(target.report);
     expect(target.evaluate()).toMatchObject({sourceBindingPassed: true, sourceIdentityPassed: true, sourceSemanticPassed: true,
@@ -360,10 +360,10 @@ describe('source binding acceptance', () => {
     expect(target.report).toEqual(before);
   });
 
-  it.each(['unverified', 'ambiguous'])('does not let a %s target binding establish the oracle association', status => {
+  it.each(['location_only', 'unbound'])('does not let a %s target claim establish the oracle association', status => {
     const target = fixture();
-    target.report.summary.analysisCompletedSourceMechanismStatuses[0] = status;
-    target.report.summary.analysisCompletedVerifiedSourceBindings[0].mechanismStatus = status;
+    target.report.summary.analysisCompletedSourceClaimStatuses[0] = status;
+    target.report.summary.analysisCompletedVerifiedSourceBindings[0].status = status;
     expect(target.evaluate()).toMatchObject({sourceIdentityPassed: false, sourceSemanticPassed: false});
   });
 
@@ -415,7 +415,8 @@ describe('source binding acceptance', () => {
 
   it.each(['verdict', 'membership'])('requires the current production binding %s', field => {
     const target = fixture();
-    if (field === 'verdict') target.report.summary.analysisCompletedSourceClaimVerifierStatus = 'partial';
+    // `partial` is the ordinary verdict beside a weaker claim; only `failed` (an invalid reference) blocks.
+    if (field === 'verdict') target.report.summary.analysisCompletedSourceClaimVerifierStatus = 'failed';
     else target.report.summary.analysisCompletedSourceReferenceMembershipPassed = false;
     expect(target.evaluate()).toMatchObject({sourceBindingPassed: false, sourceIdentityPassed: false, sourceSemanticPassed: false});
   });
