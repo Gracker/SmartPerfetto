@@ -14,11 +14,16 @@ import {assertEffectiveProcessScope} from '../../src/services/processIdentity/ef
 
 import {
   assertExpectationRows,
+  exactScopeBindingError,
+  exactSqlUnitPaths,
+  exactUnitKey,
+  exactUnitResultError,
   loadCorpus,
   resolveFrameTokens,
   resolveParameterTokens,
   runCorpusRegression,
   sqlResultState,
+  unboundExactUnitFailures,
   validateStrategyExpectationDeclaration,
 } from './corpusRunner';
 
@@ -97,6 +102,28 @@ describe('SkillEvaluator step sequence identity admission', () => {
         .rejects.toThrow(params.upid === 0 ? 'positive safe integer' : 'Explicit UPID could not be verified');
       expect(query.mock.calls.some(([, sql]) => sql.includes('AS selected_upid') || sql.includes('AS admitted_status'))).toBe(false);
       if (params.upid === 0) expect(query).not.toHaveBeenCalled();
+    } finally {db.close();}
+  });
+
+  it('runs a step exact_sql under the issued exact UPID and records exact target evidence', async () => {
+    const {db, executor, evaluator, definition} = scopedEvaluator();
+    const [{condition: _condition, ...target}, context] = definition.steps as any[];
+    const exactSkill: SkillDefinition = {...definition, steps: [{...target,
+      exact_sql: {process_scope: {role: 'target', binding: 'native_upid'},
+        sql: "SELECT upid AS selected_upid, 'exact' AS variant FROM process WHERE upid = ${__process_scope.upid}"}},
+    context]};
+    executor.registerSkills([exactSkill]);
+    Object.assign(evaluator, {skill: exactSkill});
+    try {
+      expect(exactSqlUnitPaths(exactSkill)).toEqual(['target.exact_sql']);
+      const [exact] = await evaluator.executeStepSequence(['target', 'context'], {upid: 43});
+      expect(exact.data).toEqual([{selected_upid: 43, variant: 'exact'}]);
+      expect(exactUnitResultError('target.exact_sql', exact, 43)).toBeUndefined();
+      expect(exactUnitResultError('target.exact_sql', exact, 42)).toContain('did not record evidence');
+      // A named run executes the step's own SQL and records named, not exact, evidence.
+      const [named] = await evaluator.executeStepSequence(['target', 'context'], {package: 'com.example.worker'});
+      expect(named.data).toEqual([{selected_upid: 43}]);
+      expect(exactUnitResultError('target.exact_sql', named, 43)).toContain('did not record evidence');
     } finally {db.close();}
   });
 
@@ -326,6 +353,73 @@ describe('Trace corpus regression runner', () => {
           {start_ts: '${frame_start:LayerT}', end_ts: '${frame_end:LayerT}'}, FIXTURE, query, 'case-a'))
           .resolves.toEqual({start_ts: '9007199254740993', end_ts: '9007199284740994'});
       } finally { db.close(); }
+    });
+  });
+
+  describe('exact_sql bindings', () => {
+    const scope = {role: 'target' as const, binding: 'native_upid' as const};
+    const exactSkill: SkillDefinition = {name: 'exact_fixture', version: '1', type: 'composite',
+      meta: {display_name: 'Exact', description: 'Exact unit fixture'},
+      steps: [{id: 'probe', type: 'atomic', process_scope: scope, sql: 'SELECT ${__process_scope.upid} AS upid',
+        exact_sql: {process_scope: scope, sql: 'SELECT ${__process_scope.upid} AS upid'}}]};
+    const semantic = {unit: 'probe.exact_sql', mode: 'semantic' as const, required_columns: ['upid'],
+      assertions: [{column: 'upid', operator: 'gt' as const, value: 0}]};
+    const exactEvidence = (upid: number) => ({version: 'process_scope_evidence@1' as const, entries: [{
+      role: 'target' as const, scope: {mode: 'exact_upid' as const, traceId: 't', traceSide: 'current' as const, upid}}]});
+
+    it('binds only exact units of the Skill, once each', () => {
+      const bind = (units: any[]) => exactScopeBindingError('exact_fixture', exactSkill, {process_name: 'p', units});
+      expect(bind([semantic])).toBeUndefined();
+      expect(bind([{unit: 'probe.exact_sql', mode: 'execution'}])).toBeUndefined();
+      expect(bind([semantic, semantic])).toContain('more than once');
+      expect(bind([{unit: 'other.exact_sql', mode: 'execution'}]))
+        .toBe('exact_scope binds other.exact_sql, which exact_fixture does not run as exact SQL (exact units: probe.exact_sql)');
+    });
+
+    it('counts a unit only when it executed and recorded target evidence under the bound UPID', () => {
+      const ok = {success: true, stepId: 'probe', data: [{upid: 7}], executionTimeMs: 0, scopeProvenance: exactEvidence(7)};
+      expect(exactUnitResultError('probe.exact_sql', ok, 7)).toBeUndefined();
+      expect(exactUnitResultError('probe.exact_sql', undefined, 7)).toContain('was not attempted');
+      expect(exactUnitResultError('probe.exact_sql', {...ok, success: false, code: 'condition_not_met'}, 7))
+        .toContain('skipped by its condition');
+      expect(exactUnitResultError('probe.exact_sql', {...ok, success: false, error: 'no such table: x'}, 7))
+        .toContain('failed under exact UPID 7: no such table: x');
+      expect(exactUnitResultError('probe.exact_sql', {...ok, scopeProvenance: exactEvidence(8)}, 7))
+        .toContain('did not record evidence');
+      const [target] = exactEvidence(7).entries;
+      const context = {role: 'global_context' as const, relativeTo: target.scope,
+        scope: {mode: 'unscoped' as const, traceId: 't', traceSide: 'current' as const}};
+      const provenance = (entry: object) => ({version: 'process_scope_evidence@1' as const, entries: [entry as any]});
+      expect(exactUnitResultError('probe.exact_sql', {...ok, scopeProvenance: provenance(context)}, 7)).toBeUndefined();
+      expect(exactUnitResultError('probe.exact_sql',
+        {...ok, scopeProvenance: provenance({...target, availability: 'unavailable'})}, 7)).toContain('did not record evidence');
+    });
+
+    it('fails every exact unit no passing binding executed instead of skipping it', () => {
+      expect(unboundExactUnitFailures([exactSkill], new Set())).toEqual([{case_id: 'corpus', target: 'exact_fixture',
+        reason: 'exact SQL unit probe.exact_sql was not executed by any corpus exact_scope binding'}]);
+      expect(unboundExactUnitFailures([exactSkill], new Set(['exact_fixture:probe.exact_sql']))).toEqual([]);
+      expect(unboundExactUnitFailures([exactSkill], new Set(), new Set(['other']))).toEqual([]);
+    });
+
+    it('names a nested exact unit as unsupported rather than not attempted', () => {
+      const [probe] = exactSkill.steps as any[];
+      const nestedSkill: SkillDefinition = {...exactSkill, name: 'nested_fixture',
+        steps: [{id: 'group', type: 'composite', steps: [{...probe, id: 'inner'}]} as any]};
+      const [unit] = exactSqlUnitPaths(nestedSkill);
+      expect(unit).toBeDefined();
+      expect(exactScopeBindingError('nested_fixture', nestedSkill, {process_name: 'p', units: [{unit, mode: 'execution'}]}))
+        .toBe(`nested exact units are not yet supported by the corpus runner: ${unit}`);
+      expect(unboundExactUnitFailures([nestedSkill], new Set())[0].reason)
+        .toContain('(nested exact units are not yet supported by the corpus runner)');
+    });
+
+    it('binds every exact unit of the registry in the generated corpus', () => {
+      const bound = new Set(loadCorpus(repoRoot).cases.flatMap(entry => entry.coverage.expectations
+        .flatMap(expectation => (expectation.exact_scope?.units ?? []).map(unit => exactUnitKey(expectation.target, unit.unit)))));
+      const definitions = SkillEvaluator.listSkillDefinitions();
+      expect(definitions.some(definition => exactSqlUnitPaths(definition).length > 0)).toBe(true);
+      expect(unboundExactUnitFailures(definitions, bound)).toEqual([]);
     });
   });
 

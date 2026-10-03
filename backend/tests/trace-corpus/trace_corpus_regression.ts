@@ -44,16 +44,19 @@ async function main(): Promise<void> {
       + `${result.sql.unavailable.length} unavailable`,
     );
   }
-  const executedSql = result.sql.normal.length + result.sql.forced.length + result.sql.isolated.length;
+  const exactSql = result.correctness.exact_positive.length + result.correctness.exact_execution_only.length;
+  const executedSql = result.sql.normal.length + result.sql.forced.length + result.sql.isolated.length + exactSql;
   console.log(
     `Trace corpus regression passed: ${result.executed.length} expectation(s), `
     + `${executedSql} SQL contract(s) executed `
     + `(${result.sql.normal.length} production, ${result.sql.forced.length} forced read-only/context, `
-    + `${result.sql.isolated.length} isolated branch probe), `
+    + `${result.sql.isolated.length} isolated branch probe, ${exactSql} exact_sql under a bound UPID), `
     + `${result.correctness.positive.length} positive semantic, `
     + `${result.correctness.execution_only.length} execution-only, `
     + `${result.correctness.negative.length} negative, `
-    + `${result.correctness.deferred.length} deferred, 0 skipped, 0 unavailable`,
+    + `${result.correctness.deferred.length} deferred, `
+    + `exact_sql ${result.correctness.exact_positive.length} positive semantic / `
+    + `${result.correctness.exact_execution_only.length} execution-only, 0 skipped, 0 unavailable`,
   );
 }
 

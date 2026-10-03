@@ -14,13 +14,15 @@ Pinned Perfetto SQL source: `99234d73fe356bf7edf6b2cb7afcf2a9eefc5368`. The gene
 
 Skill execution quality: 263 source-column-backed semantic, 4 execution-only composition, 1 expected-empty negative, 11 explicit deferred prerequisite, 32 definition-only.
 
+Exact-scope `exact_sql` bindings: 1 semantic, 0 execution-only.
+
 ## Commands
 
 `npm run trace:validate` checks manifests, hashes, evidence tiers, pinned Perfetto SQL source lineage, canonical SQL package sources, generated indexes, publication gates, legacy path coupling, and exact current Skill/Strategy inventory coverage.
 
 `npm run trace:build` deterministically materializes every base-plus-overlay case under ignored `Trace/.generated/` and reparses it with the pinned trace processor.
 
-`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, and source-provenance results stay separate; any skipped or unavailable SQL fails the gate. This is part of the default backend gate.
+`npm run trace:sql-regression` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, runs every `exact_sql` unit under the exact UPID of the uniquely named process its expectation binds (`exact_scope`), and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, exact_sql, and source-provenance results stay separate; any skipped or unavailable SQL, or an exact unit no expectation binds, fails the gate. This is part of the default backend gate.
 
 `npm run trace:regression` validates, builds, and executes the complete corpus. Per-case evidence is written below `Trace/.generated/<real|constructed>/<case-id>/`.
 

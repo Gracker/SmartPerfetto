@@ -9199,7 +9199,62 @@
                 "value": "limit_track_unavailable"
               }
             ],
-            "required_marker": "SmartPerfetto::CASE::rendering-jank"
+            "required_marker": "SmartPerfetto::CASE::rendering-jank",
+            "exact_scope": {
+              "process_name": "com.smartperfetto.fixture",
+              "units": [
+                {
+                  "unit": "buffer_tx_coverage_probe.exact_sql",
+                  "mode": "semantic",
+                  "required_columns": [
+                    "target_process_count",
+                    "target_process_status",
+                    "frame_timeline_frames",
+                    "buffer_tx_frames",
+                    "frame_timeline_to_buffer_tx_ratio",
+                    "buffer_tx_track_id",
+                    "frame_source_track",
+                    "buffer_tx_effective_span_ns",
+                    "coverage_status",
+                    "should_fallback",
+                    "buffer_tx_status",
+                    "root_cause_evidence_scope"
+                  ],
+                  "assertions": [
+                    {
+                      "column": "target_process_count",
+                      "operator": "eq",
+                      "value": 1
+                    },
+                    {
+                      "column": "frame_timeline_frames",
+                      "operator": "eq",
+                      "value": 2
+                    },
+                    {
+                      "column": "coverage_status",
+                      "operator": "eq",
+                      "value": "frame_timeline_only_exact_upid"
+                    },
+                    {
+                      "column": "buffer_tx_status",
+                      "operator": "eq",
+                      "value": "unavailable_exact_upid"
+                    },
+                    {
+                      "column": "should_fallback",
+                      "operator": "eq",
+                      "value": 0
+                    },
+                    {
+                      "column": "root_cause_evidence_scope",
+                      "operator": "eq",
+                      "value": "frame_timeline_only_unbenchmarked"
+                    }
+                  ]
+                }
+              ]
+            }
           },
           {
             "id": "execute-sf_composition_in_range",

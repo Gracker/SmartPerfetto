@@ -456,6 +456,40 @@ test('requires semantic expectations to declare source-level result columns', ()
   assert.ok(validation.issues.some((issue) => issue.code === 'semantic-expectation-without-columns'));
 });
 
+test('accepts an exact_scope binding only with a value-level contract for semantic units', () => {
+  const fixture = createFixture();
+  const manifestPath = path.join(fixture.constructedDir, 'case.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  const unit = {unit: 'step.exact_sql', mode: 'semantic', required_columns: ['value'],
+    assertions: [{column: 'value', operator: 'eq', value: 1}]};
+  const schemaIssues = (exactScope) => {
+    manifest.coverage.expectations[0].exact_scope = exactScope;
+    writeJson(manifestPath, manifest);
+    return validateCatalog(fixture.repoRoot).issues.filter((issue) => issue.code === 'case-schema-invalid');
+  };
+
+  assert.deepEqual(schemaIssues({process_name: 'com.example', units: [unit]}), []);
+  assert.deepEqual(schemaIssues({process_name: 'com.example', units: [{unit: 'step.exact_sql', mode: 'execution'}]}), []);
+  for (const invalid of [
+    {process_name: 'com.example', units: []},
+    {units: [unit]},
+    {process_name: 'com.example', upid: 7, units: [unit]},
+    {process_name: 'com.example', units: [{...unit, assertions: undefined}]},
+    {process_name: 'com.example', units: [{...unit, unit: 'step'}]},
+  ]) {
+    assert.equal(schemaIssues(JSON.parse(JSON.stringify(invalid))).length, 1, JSON.stringify(invalid));
+  }
+  // Only an executed Skill expectation runs steps, so only it can bind exact SQL.
+  manifest.coverage.expectations[0].mode = 'definition';
+  assert.equal(schemaIssues({process_name: 'com.example', units: [unit]}).length, 1);
+  manifest.coverage.expectations[0].mode = 'semantic';
+  for (const type of ['sql', 'strategy']) {
+    manifest.coverage.expectations[0].type = type;
+    const schemaText = (exactScope) => schemaIssues(exactScope).map((issue) => issue.message).join('\n');
+    assert.notEqual(schemaText({process_name: 'com.example', units: [unit]}), schemaText(undefined), type);
+  }
+});
+
 test('derives exact Skill SQL provenance from the pinned runtime source index', () => {
   const fixture = createFixture();
   const validation = validateCatalog(fixture.repoRoot);

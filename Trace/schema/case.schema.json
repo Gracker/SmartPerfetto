@@ -205,9 +205,44 @@
               },
               "limitation_reason": {"type": "string", "minLength": 1},
               "expected_empty_reason": {"type": "string", "minLength": 1},
-              "expected_error": {"type": "string", "minLength": 1}
+              "expected_error": {"type": "string", "minLength": 1},
+              "exact_scope": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["process_name", "units"],
+                "properties": {
+                  "process_name": {"type": "string", "minLength": 1},
+                  "units": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["unit", "mode"],
+                      "properties": {
+                        "unit": {"type": "string", "pattern": "\\.exact_sql$"},
+                        "mode": {"enum": ["semantic", "execution"]},
+                        "min_rows": {"type": "integer", "minimum": 1},
+                        "max_rows": {"type": "integer", "minimum": 0},
+                        "required_columns": {"$ref": "#/properties/coverage/properties/expectations/items/properties/required_columns"},
+                        "assertions": {"$ref": "#/properties/coverage/properties/expectations/items/properties/assertions"}
+                      },
+                      "if": {"properties": {"mode": {"const": "semantic"}}},
+                      "then": {"required": ["required_columns", "assertions"]}
+                    }
+                  }
+                }
+              }
             },
             "allOf": [
+              {
+                "if": {"properties": {"mode": {"const": "definition"}}, "required": ["mode"]},
+                "then": {"not": {"required": ["exact_scope"]}}
+              },
+              {
+                "if": {"properties": {"type": {"enum": ["sql", "strategy"]}}, "required": ["type"]},
+                "then": {"not": {"required": ["exact_scope"]}}
+              },
               {
                 "if": {
                   "properties": {

@@ -44,16 +44,24 @@ function markdownTable(cases, kind, directoryPrefix = '') {
   return [header, ...rows].join('\n');
 }
 
+function countModes(items) {
+  return items.reduce((counts, item) => {
+    counts[item.mode] = (counts[item.mode] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
 function renderRootReadme(catalog, coverage) {
   const real = catalog.cases.filter((entry) => entry.kind === 'real');
   const constructed = catalog.cases.filter((entry) => entry.kind === 'constructed');
-  const modes = constructed
+  const modes = countModes(constructed
     .flatMap((entry) => entry.coverage?.expectations ?? [])
-    .filter((expectation) => expectation.type === 'skill')
-    .reduce((counts, expectation) => {
-      counts[expectation.mode] = (counts[expectation.mode] ?? 0) + 1;
-      return counts;
-    }, {});
+    .filter((expectation) => expectation.type === 'skill'));
+  // Bound exact units as the manifests declare them; the runner holds the
+  // bindings to executableSqlUnits, which this tooling does not walk.
+  const exactModes = countModes(catalog.cases
+    .flatMap((entry) => entry.coverage?.expectations ?? [])
+    .flatMap((expectation) => expectation.exact_scope?.units ?? []));
   const tierCounts = Object.fromEntries(
     Object.entries(coverage.evidence_tiers ?? {}).map(([tier, ids]) => [tier, ids.length]),
   );
@@ -74,13 +82,15 @@ Pinned Perfetto SQL source: \`${sqlSources.runtime_revision ?? 'unavailable'}\`.
 
 Skill execution quality: ${modes.semantic ?? 0} source-column-backed semantic, ${modes.execution ?? 0} execution-only composition, ${modes.negative ?? 0} expected-empty negative, ${modes.deferred ?? 0} explicit deferred prerequisite, ${modes.definition ?? 0} definition-only.
 
+Exact-scope \`exact_sql\` bindings: ${exactModes.semantic ?? 0} semantic, ${exactModes.execution ?? 0} execution-only.
+
 ## Commands
 
 \`npm run trace:validate\` checks manifests, hashes, evidence tiers, pinned Perfetto SQL source lineage, canonical SQL package sources, generated indexes, publication gates, legacy path coupling, and exact current Skill/Strategy inventory coverage.
 
 \`npm run trace:build\` deterministically materializes every base-plus-overlay case under ignored \`Trace/.generated/\` and reparses it with the pinned trace processor.
 
-\`npm run trace:sql-regression\` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, and source-provenance results stay separate; any skipped or unavailable SQL fails the gate. This is part of the default backend gate.
+\`npm run trace:sql-regression\` validates the catalog, materializes the committed base-plus-overlay cases without requiring the Perfetto source submodule, executes every discovered Skill SQL contract, runs every \`exact_sql\` unit under the exact UPID of the uniquely named process its expectation binds (\`exact_scope\`), and loads the exact canonical portable SQL files against R1 real traces. Positive semantic, negative, deferred, execution-only, exact_sql, and source-provenance results stay separate; any skipped or unavailable SQL, or an exact unit no expectation binds, fails the gate. This is part of the default backend gate.
 
 \`npm run trace:regression\` validates, builds, and executes the complete corpus. Per-case evidence is written below \`Trace/.generated/<real|constructed>/<case-id>/\`.
 

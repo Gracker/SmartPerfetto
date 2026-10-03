@@ -176,9 +176,22 @@ Click actions should be explicit, for example:
   the step itself. SQL the executor never runs (root SQL of a non-atomic
   Skill, steps beside an atomic root, steps of a metadata-only Skill) is
   `sql_not_executed`, a `PREDATING_RULE_CODES` rule, rather than SQL no check
-  reads. Do not add a private walk. The Trace SQL regression generator
-  (`Trace/tools/lib/skill-sql-contract.cjs`) still runs named SQL only: an
-  exact run there needs a bound target process.
+  reads. Do not add a private walk. The Trace SQL regression's named-SQL
+  inventory (`Trace/tools/lib/skill-sql-contract.cjs`) predates the walk and
+  never reads `exact_sql`; its exact units come from `executableSqlUnits` in
+  the corpus runner (`backend/tests/trace-corpus/corpusRunner.ts`). An
+  executed Skill expectation's `exact_scope` names a process that must
+  resolve to exactly one UPID in the case trace and lists the exact units it
+  binds; the runner reloads the trace (so no view the named run created
+  leaks in) and repeats the expectation's steps through the production
+  identity gate and exact admission with that UPID. Each bound unit must
+  execute (no forced or isolated probe, so the trace must reach it), record
+  its evidence under that UPID (target scope, or context evidence relative to
+  it) and meet its row counts and assertions; a `semantic` unit also names
+  exactly the columns it returns. Every exact unit in the registry must be
+  executed by a passing binding somewhere in the corpus, so a new `exact_sql`
+  without one fails `trace:sql-regression`. The runner sees only the root and
+  top-level steps; a nested exact unit fails as not yet supported.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set
