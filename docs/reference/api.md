@@ -93,7 +93,7 @@ RAG 管理接口背后的服务把机器可读的原因码作为异常消息抛�
 `tenant_purge_failed`）；报告生成失败时 `reportError` 为 `report generation failed`；上传后
 trace_processor_shell 加载失败时返回 `trace_processor_shell could not load the trace`。trace
 上传接口的 `details` 只用于 URL 被拒和文件过大这类我们写的说明，不再携带异常消息。通过 API 提交的
-批量 trace 中，单个 trace 失败时 `error` 和诊断只保留原因码（否则为 `batch_trace_failed`），CLI
+批量 trace 中，单个 trace 失败时 `error` 和诊断只保留原因码（否则为 `batch_trace_failed`；Skill 执行返回失败时为 `batch_skill_failed`），CLI
 本地批量运行保留完整消息；代码库重建索引结果中每个被跳过文件的 `reason` 只保留原因码（否则为
 `source_file_unreadable`）。企业模式下 SSO 会话或 API Key 解析出错时 401 只返回固定说明。此前已经
 写入的记录保留原文。

@@ -134,7 +134,8 @@ after upload answers `trace_processor_shell could not load the trace`. A trace
 upload `details` field is kept only for explanations we write (a rejected URL,
 a file that is too large) and never carries exception text. In a batch trace
 submitted through the API, a failed trace keeps only its reason code (else
-`batch_trace_failed`) in `error` and its diagnostic, while a local CLI batch
+`batch_trace_failed`, or `batch_skill_failed` when the Skill execution reports
+the failure) in `error` and its diagnostic, while a local CLI batch
 keeps the whole message; each skipped file's `reason` in a codebase reindex
 result keeps only its reason code (else `source_file_unreadable`). In
 enterprise mode an SSO session or API key lookup failure answers 401 with
