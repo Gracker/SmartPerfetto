@@ -322,6 +322,72 @@ describeWithSqlite('android_heap_graph_leak_candidates SQL semantics', () => {
   });
 });
 
+describeWithSqlite('memory_analysis gc_frame_impact', () => {
+  const MS = 1000000;
+  const sql = `
+    CREATE TABLE _gc_events(gc_id INTEGER, ts INTEGER, dur INTEGER, gc_name TEXT, tid INTEGER, upid INTEGER, is_main_thread INTEGER);
+    CREATE TABLE actual_frame_timeline_slice(id INTEGER, upid INTEGER, ts INTEGER, dur INTEGER, jank_type TEXT);
+    -- com.example.app (upid 1): a 45ms GC over two of its frames, one janky,
+    -- and a 10ms GC over none. upid 2 has a janky frame during the first GC.
+    INSERT INTO _gc_events VALUES (1, 0, ${45 * MS}, 'young', 101, 1, 1), (2, ${100 * MS}, ${10 * MS}, 'young', 101, 1, 1);
+    -- upid 3 runs a GC but records no FrameTimeline at all.
+    INSERT INTO _gc_events VALUES (3, 0, ${20 * MS}, 'young', 301, 3, 1);
+    INSERT INTO actual_frame_timeline_slice VALUES
+      (1, 1, ${5 * MS}, ${8 * MS}, 'None'),
+      (2, 1, ${20 * MS}, ${30 * MS}, 'App Deadline Missed'),
+      (3, 2, ${10 * MS}, ${30 * MS}, 'Buffer Stuffing');
+    ${replaceParams(loadStepSql('skills/composite/memory_analysis.skill.yaml', 'gc_frame_impact'), {
+      '\${vsync_info.data[0].vsync_period_ns|16666667}': '16666667',
+    })};`;
+
+  it('reports each GC once over the frames of its own process', () => {
+    expect(runSqliteJson(sql)).toEqual([
+      {gc_name: 'young', gc_dur_ms: 45, frame_count: 2, janky_frame_count: 1,
+        jank_type: 'App Deadline Missed', frame_dur_ms: 30, impact: 'GC导致掉帧'},
+      {gc_name: 'young', gc_dur_ms: 20, frame_count: 0, janky_frame_count: 0,
+        jank_type: null, frame_dur_ms: null, impact: '无帧时间线数据'},
+      {gc_name: 'young', gc_dur_ms: 10, frame_count: 0, janky_frame_count: 0,
+        jank_type: null, frame_dur_ms: null, impact: '无重叠帧'},
+    ]);
+  });
+});
+
+describeWithSqlite('gc_analysis frame impact attribution', () => {
+  // One 45ms GC in com.example.app (upid 1); six janky frames overlap it.
+  const sqlFor = (frameUpid: number, frameCount = 6, gcCount = 1) => {
+    const frames = Array.from({length: frameCount}, (_, index) =>
+      `INSERT INTO actual_frame_timeline_slice VALUES (${index + 1}, ${frameUpid}, ${index * 7000000}, 5000000, 'App Deadline Missed');`);
+    const gcs = Array.from({length: gcCount}, () =>
+      "INSERT INTO android_garbage_collection_events VALUES (1, 'com.example.app', 'young', 0, 45000000, 4, 60, 64);");
+    return `
+      CREATE TABLE android_garbage_collection_events(
+        upid INTEGER, process_name TEXT, gc_type TEXT, gc_ts INTEGER, gc_dur INTEGER,
+        reclaimed_mb REAL, min_heap_mb REAL, max_heap_mb REAL
+      );
+      CREATE TABLE actual_frame_timeline_slice(id INTEGER, upid INTEGER, ts INTEGER, dur INTEGER, jank_type TEXT);
+      ${gcs.join('\n')}
+      ${frames.join('\n')}
+      ${replaceParams(loadStepSql('skills/composite/gc_analysis.skill.yaml', 'root_cause_classification'), {
+        '${package}': '',
+        '${start_ts}': 'NULL',
+        '${end_ts}': 'NULL',
+      })};`;
+  };
+
+  it('counts janky frames of the process that ran the GC', () => {
+    expect(runSqliteJson(sqlFor(1)).map(row => row.category)).toEqual(['GC_FRAME_IMPACT']);
+  });
+
+  it('does not charge a GC with janky frames of another process', () => {
+    expect(runSqliteJson(sqlFor(2)).map(row => row.category)).toEqual(['GC_NORMAL']);
+  });
+
+  it('counts a janky frame several GCs overlap once', () => {
+    // Three janky frames under two overlapping GCs are three frames, not six.
+    expect(runSqliteJson(sqlFor(1, 3, 2)).map(row => row.category)).toEqual(['GC_NORMAL']);
+  });
+});
+
 describeWithSqlite('RSS memory skill SQL semantics', () => {
   const rssSchema = `
     CREATE TABLE memory_rss_and_swap_per_process(

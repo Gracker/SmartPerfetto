@@ -158,6 +158,14 @@
       "cpu": 0
     },
     {
+      "type": "gpu-memory-total",
+      "at_ns": "455000000",
+      "gpu_id": 0,
+      "process": "app",
+      "size_bytes": "134217728",
+      "cpu": 0
+    },
+    {
       "type": "gpu-power-state",
       "at_ns": "460000000",
       "old_state": 0,
@@ -219,6 +227,14 @@
         "barriers_per_block": 1,
         "waves_per_multiprocessor": 2
       }
+    },
+    {
+      "type": "gpu-memory-total",
+      "at_ns": "560000000",
+      "gpu_id": 0,
+      "process": "app",
+      "size_bytes": "201326592",
+      "cpu": 0
     }
   ]
 }

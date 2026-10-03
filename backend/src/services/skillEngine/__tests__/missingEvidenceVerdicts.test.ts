@@ -251,13 +251,35 @@ describe('startup evidence producers', () => {
     `);
     db.table('ancestor_slice', {columns: ['id'], parameters: ['slice_id'], *rows() {}});
     const insert = db.prepare('INSERT INTO android_thread_slices_for_all_startups VALUES (1, ?, ?, ?, ?, 1)');
-    const names = ['ActivityThreadMain', 'Mutator threads suspended for EnableDebugFeatures',
-      'readFile', 'loadFile', 'SQLiteDatabase.query', 'open /data/app.db', 'fsync'];
-    names.forEach((name, index) => insert.run(index + 1, name, 'main', 10 * MS));
+    // Not file IO: an IO word inside another word, or a Binder parcel.
+    const notIo = ['ActivityThreadMain', 'Mutator threads suspended for EnableDebugFeatures', 'isReady',
+      'onReadyToRun', 'Parcel.readFromParcel', 'writeToParcel', 'ProfileInstallerInitializer'];
+    const io = ['readFile', 'loadFile', 'APKFile', 'SQLiteDatabase.query', 'SqliteLoad', 'readSP',
+      'open /data/app.db', 'openat', 'fsync', 'SharedPreferencesImpl.loadFromDisk'];
+    [...notIo, ...io].forEach((name, index) => insert.run(index + 1, name, 'main', 10 * MS));
     const rows = await produce(db, 'atomic/startup_main_thread_file_io_in_range.skill.yaml', {...window, top_k: 20});
-    expect(rows.map((row: any) => row.io_slice).sort()).toEqual(
-      ['SQLiteDatabase.query', 'fsync', 'loadFile', 'open /data/app.db', 'readFile']);
-    expect(rows[0].all_total_dur_ms).toBe(50);
+    expect(rows.map((row: any) => row.io_slice).sort()).toEqual([...io].sort());
+    expect(rows[0].all_total_dur_ms).toBe(10 * io.length);
+  });
+
+  it('applies the same whole-word rule to main-thread file IO outside startup', async () => {
+    db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE process(upid INTEGER, pid INTEGER, name TEXT);
+      CREATE TABLE thread(utid INTEGER, upid INTEGER, tid INTEGER);
+      CREATE TABLE thread_track(id INTEGER, utid INTEGER);
+      CREATE TABLE slice(track_id INTEGER, name TEXT, ts INTEGER, dur INTEGER);
+      INSERT INTO process VALUES (1, 100, 'com.example.app');
+      INSERT INTO thread VALUES (1, 1, 100);
+      INSERT INTO thread_track VALUES (1, 1);
+    `);
+    const notIo = ['ActivityThreadMain', 'isReady', 'Parcel.readFromParcel', 'writeToParcel'];
+    const io = ['readFile', 'SQLiteDatabase.query', 'openat', 'fsync'];
+    const insert = db.prepare('INSERT INTO slice VALUES (1, ?, ?, ?)');
+    [...notIo, ...io].forEach((name, index) => insert.run(name, index * 20 * MS, 10 * MS));
+    const rows = await produce(db, 'atomic/main_thread_file_io_in_range.skill.yaml',
+      {package: 'com.example.app', start_ts: 0, end_ts: 1000 * MS, top_k: 20});
+    expect(rows.map((row: any) => row.io_slice).sort()).toEqual([...io].sort());
   });
 
   it('orders scheduling states and totals them', async () => {
@@ -276,5 +298,39 @@ describe('startup evidence producers', () => {
     const rows = await produce(db, 'atomic/startup_sched_latency_in_range.skill.yaml', window);
     expect(rows.map((row: any) => [row.state, row.severe_delays, row.all_severe_delays, row.all_max_wait_ms]))
       .toEqual([['R+', 2, 2, 12], ['R', 0, 2, 12]]);
+  });
+});
+
+describe('fragments/file_io_slice_names.sql', () => {
+  it('types a slice name by its whole I/O words and excludes names of non-I/O work', () => {
+    db = new Database(':memory:');
+    const names: Array<[string, string | null]> = [
+      ['readFile', 'file,read'], ['Thread', null], ['isReady', null], ['FileUtils.copy', 'file'],
+      ['fsync', 'sync'], ['AsyncTask', null], ['flush commands', null], ['SharedPreferencesImpl.apply', 'shared_prefs'],
+      ['IO_read', 'read'], ['readahead', 'read'], ['Reader', null], ['SQLiteDatabase', 'database'],
+    ];
+    const rows = db.prepare(`WITH
+      ${fragments.get('fragments/file_io_slice_names.sql')},
+      names(name) AS (VALUES ${names.map(() => '(?)').join(', ')})
+      SELECT name,
+        (SELECT group_concat(io_type) FROM (SELECT DISTINCT io_type FROM file_io_slice_name_patterns n
+          WHERE name GLOB n.pattern ORDER BY io_type)) AS io_types
+      FROM names`).all(...names.map(([name]) => name)) as Array<{name: string; io_types: string | null}>;
+    expect(rows.map(row => [row.name, row.io_types])).toEqual(names);
+    const excluded = db.prepare(`WITH ${fragments.get('fragments/file_io_slice_names.sql')}
+      SELECT ? GLOB pattern AS hit FROM file_io_slice_name_exclusions`);
+    const hit = (name: string) => (excluded.all(name) as Array<{hit: number}>).some(row => row.hit === 1);
+    for (const name of ['Parcel.readFromParcel', 'writeToParcel', 'writeToProto', 'readLock',
+      'ReentrantReadWriteLock', 'OpenGLRenderer', 'ScopedCodeCacheWrite',
+      'JIT compiling void java.io.File.<init>(java.lang.String)', 'DefineClass_Lcom/a/FileUtils;',
+      'RegisterDexFile /product/app/A/A.apk', 'GC: Wait For Completion ClassLinkerForRegisterDexFile',
+      'monitor contention with owner main at void a.FileCache.read()',
+      'AIDL::java::INetworkStatsService::openSessionForUsageStats::server', 'Lcom/a/FileUtils;']) {
+      expect([name, hit(name)]).toEqual([name, true]);
+    }
+    for (const name of ['readFile', 'ParcelFileDescriptor.open', 'openDexFile', 'SQLiteDatabase.query',
+      'SharedPreferencesImpl.loadFromDisk']) {
+      expect([name, hit(name)]).toEqual([name, false]);
+    }
   });
 });

@@ -4,76 +4,41 @@
  * Tests the memory_analysis skill on known trace files.
  * Validates SQL queries produce correct structure and data.
  *
- * Note: memory_analysis requires GC events in the trace.
- * If the trace file lacks GC data, some tests will be skipped or handle empty results gracefully.
+ * Runs on the constructed memory-gc-pressure case, whose fixture app GC and
+ * FrameTimeline the suite asserts before any test.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
 import { SkillEvaluator, createSkillEvaluator, getTestTracePath, describeWithTrace } from './runner';
 
-// Use Android trace file - may or may not have GC events.
-// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
-const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+const TRACE_FILE = 'memory-gc-pressure';
 
 describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
-  let hasGCData = false;
-  let hasFrameTimelineData = false;
-  let targetProcessName = '';
+  // The fixture app: its main thread runs a 40ms GC inside one of its janky frames.
+  const targetProcessName = 'com.smartperfetto.fixture';
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('memory_analysis');
     await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
 
-    // Check if trace has any process we can analyze
-    try {
-      const processResult = await evaluator.executeSQL(`
-        SELECT name FROM process
-        WHERE name IS NOT NULL AND name != ''
-        ORDER BY pid DESC
-        LIMIT 1
-      `);
-      if (!processResult.error && processResult.rows.length > 0) {
-        targetProcessName = processResult.rows[0][0] as string;
-      }
-    } catch (e) {
-      // Ignore
-    }
-
-    // Check if trace has GC events
-    try {
-      const result = await evaluator.executeSQL(`
-        SELECT COUNT(*) as count
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        WHERE s.name GLOB '*GC*' OR s.name GLOB '*gc*' OR s.name GLOB '*ConcurrentCopying*'
-        LIMIT 1
-      `);
-      hasGCData = !result.error && result.rows.length > 0 && (result.rows[0][0] as number) > 0;
-    } catch (e) {
-      hasGCData = false;
-    }
-
-    // Check if trace has FrameTimeline data (for GC-frame impact analysis)
-    try {
-      const result = await evaluator.executeSQL(`
-        SELECT COUNT(*) as count
-        FROM actual_frame_timeline_slice
-        WHERE surface_frame_token IS NOT NULL
-        LIMIT 1
-      `);
-      hasFrameTimelineData = !result.error && result.rows.length > 0 && (result.rows[0][0] as number) > 0;
-    } catch (e) {
-      hasFrameTimelineData = false;
-    }
-
-    if (!hasGCData) {
-      console.warn(`[Test Warning] Trace ${TRACE_FILE} does not have GC data. Tests will handle empty results gracefully.`);
-    }
-    if (!hasFrameTimelineData) {
-      console.warn(`[Test Warning] Trace ${TRACE_FILE} does not have FrameTimeline data. GC-frame impact tests may have limited data.`);
-    }
+    // The assertions below read this fixture's GC slices and FrameTimeline.
+    const gc = await evaluator.executeSQL(`
+      SELECT COUNT(*) FROM slice s
+      JOIN thread_track tt ON s.track_id = tt.id
+      JOIN thread t USING (utid)
+      JOIN process p USING (upid)
+      WHERE p.name = '${targetProcessName}' AND t.tid = p.pid AND s.name GLOB '*GC*'
+    `);
+    expect(gc.error).toBeUndefined();
+    expect(Number(gc.rows[0][0])).toBeGreaterThan(0);
+    const frames = await evaluator.executeSQL(`
+      SELECT COUNT(*) FROM actual_frame_timeline_slice f
+      JOIN process p USING (upid)
+      WHERE p.name = '${targetProcessName}'
+    `);
+    expect(frames.error).toBeUndefined();
+    expect(Number(frames.rows[0][0])).toBeGreaterThan(0);
   }, 60000); // 60 second timeout for loading trace
 
   afterAll(async () => {
@@ -119,56 +84,34 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         expect(result.success).toBe(true);
       }, 30000);
 
-      it('should have valid GC count metrics when data exists', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should have valid GC count metrics', async () => {
         const result = await evaluator.executeStep('gc_overview', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          const overview = result.data[0];
-          expect(typeof overview.total_gc_count).toBe('number');
-          expect(overview.total_gc_count).toBeGreaterThanOrEqual(0);
-
-          if (overview.total_gc_count > 0) {
-            expect(overview.total_gc_time_ms).toBeGreaterThan(0);
-            expect(overview.avg_gc_time_ms).toBeGreaterThan(0);
-          }
-        }
+        expect(result.data.length).toBeGreaterThan(0);
+        const overview = result.data[0];
+        expect(overview.total_gc_count).toBeGreaterThan(0);
+        expect(overview.total_gc_time_ms).toBeGreaterThan(0);
+        expect(overview.avg_gc_time_ms).toBeGreaterThan(0);
       }, 30000);
 
-      it('should have GC frequency rating when data exists', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should have GC frequency rating', async () => {
         const result = await evaluator.executeStep('gc_overview', { package: targetProcessName });
 
-        if (result.data.length > 0 && result.data[0].total_gc_count > 0) {
-          const overview = result.data[0];
-          expect(['频繁', '较多', '正常', '良好']).toContain(overview.gc_frequency_rating);
-          expect(['严重', '需优化', '良好', '优秀']).toContain(overview.gc_time_rating);
-        }
+        expect(result.data.length).toBeGreaterThan(0);
+        const overview = result.data[0];
+        expect(['频繁', '较多', '正常', '良好']).toContain(overview.gc_frequency_rating);
+        expect(['严重', '需优化', '良好', '优秀']).toContain(overview.gc_time_rating);
       }, 30000);
 
       it('should track main thread GC separately', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('gc_overview', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          const overview = result.data[0];
-          // main_thread_gc_count can be null if no main thread GC occurred
-          const mainThreadCount = overview.main_thread_gc_count ?? 0;
-          expect(typeof mainThreadCount).toBe('number');
-          expect(mainThreadCount).toBeLessThanOrEqual(overview.total_gc_count);
-        }
+        expect(result.data.length).toBeGreaterThan(0);
+        const overview = result.data[0];
+        // main_thread_gc_count can be null if no main thread GC occurred
+        const mainThreadCount = overview.main_thread_gc_count ?? 0;
+        expect(typeof mainThreadCount).toBe('number');
+        expect(mainThreadCount).toBeLessThanOrEqual(overview.total_gc_count);
       }, 30000);
     });
 
@@ -179,38 +122,26 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         expect(result.success).toBe(true);
       }, 30000);
 
-      it('should categorize GC types correctly when data exists', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should categorize GC types correctly', async () => {
         const result = await evaluator.executeStep('gc_stats', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          for (const stat of result.data) {
-            expect(stat.gc_type).toBeDefined();
-            expect(typeof stat.gc_type).toBe('string');
-            expect(stat.count).toBeGreaterThan(0);
-            expect(stat.total_dur_ms).toBeGreaterThanOrEqual(0);
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        for (const stat of result.data) {
+          expect(stat.gc_type).toBeDefined();
+          expect(typeof stat.gc_type).toBe('string');
+          expect(stat.count).toBeGreaterThan(0);
+          expect(stat.total_dur_ms).toBeGreaterThanOrEqual(0);
         }
       }, 30000);
 
       it('should include average and max duration metrics', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('gc_stats', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          const stat = result.data[0];
-          expect(typeof stat.avg_dur_ms).toBe('number');
-          expect(typeof stat.max_dur_ms).toBe('number');
-          expect(stat.max_dur_ms).toBeGreaterThanOrEqual(stat.avg_dur_ms);
-        }
+        expect(result.data.length).toBeGreaterThan(0);
+        const stat = result.data[0];
+        expect(typeof stat.avg_dur_ms).toBe('number');
+        expect(typeof stat.max_dur_ms).toBe('number');
+        expect(stat.max_dur_ms).toBeGreaterThanOrEqual(stat.avg_dur_ms);
       }, 30000);
     });
   });
@@ -228,23 +159,21 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         expect(result.success).toBe(true);
       }, 30000);
 
-      it('should classify impact correctly when data exists', async () => {
-        if (!hasGCData || !hasFrameTimelineData) {
-          console.log('[Skip] No GC or FrameTimeline data in trace');
-          return;
-        }
-
+      it('should pair the main-thread GC only with its own process frame', async () => {
         const result = await evaluator.executeStep('gc_frame_impact', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          for (const impact of result.data) {
-            expect(impact.gc_name).toBeDefined();
-            expect(typeof impact.gc_dur_ms).toBe('number');
-            if (impact.impact) {
-              expect(['GC导致掉帧', '帧超时', '正常']).toContain(impact.impact);
-            }
-          }
-        }
+        // The 40ms main-thread GC runs inside the app's 60ms janky frame. Frames
+        // of other processes overlap it too; none of them may be paired with it.
+        expect(result.success).toBe(true);
+        const gc = result.data.filter(row => row.gc_name === 'Background concurrent copying GC');
+        expect(gc).toEqual([expect.objectContaining({
+          gc_dur_ms: 40,
+          frame_count: 1,
+          janky_frame_count: 1,
+          jank_type: 'App Deadline Missed',
+          frame_dur_ms: 60,
+          impact: 'GC导致掉帧',
+        })]);
       }, 30000);
     });
 
@@ -255,40 +184,27 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         expect(result.success).toBe(true);
       }, 30000);
 
-      it('should have severity classification when data exists', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should have severity classification', async () => {
         const result = await evaluator.executeStep('main_thread_gc', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          for (const gc of result.data) {
-            expect(gc.gc_type).toBeDefined();
-            expect(typeof gc.dur_ms).toBe('number');
-            expect(['critical', 'warning', 'notice', 'normal']).toContain(gc.severity);
-            expect(typeof gc.dropped_frames).toBe('number');
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        for (const gc of result.data) {
+          expect(gc.gc_type).toBeDefined();
+          expect(typeof gc.dur_ms).toBe('number');
+          expect(['critical', 'warning', 'notice', 'normal']).toContain(gc.severity);
+          expect(typeof gc.dropped_frames).toBe('number');
         }
       }, 30000);
 
-      it('should estimate dropped frames based on duration', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should estimate dropped frames from the detected VSync period', async () => {
+        const vsync = await evaluator.executeStep('get_vsync_period', { package: targetProcessName });
+        const periodNs = Number(vsync.data[0]?.vsync_period_ns);
+        expect(periodNs).toBeGreaterThan(0);
         const result = await evaluator.executeStep('main_thread_gc', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          for (const gc of result.data) {
-            // Dropped frames should be roughly dur_ms / 16.67
-            const expectedDropped = Math.floor(gc.dur_ms / 16.67);
-            // Allow some tolerance due to integer truncation
-            expect(gc.dropped_frames).toBeGreaterThanOrEqual(0);
-            expect(gc.dropped_frames).toBeLessThanOrEqual(expectedDropped + 1);
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        for (const gc of result.data) {
+          expect(gc.dropped_frames).toBe(Math.floor(Number(gc.dur_str) / periodNs));
         }
       }, 30000);
     });
@@ -300,21 +216,15 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         expect(result.success).toBe(true);
       }, 30000);
 
-      it('should show thread states when data exists', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should show thread states', async () => {
         const result = await evaluator.executeStep('gc_thread_state', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          for (const state of result.data) {
-            expect(state.gc_type).toBeDefined();
-            expect(typeof state.gc_dur_ms).toBe('number');
-            expect(state.state).toBeDefined();
-            expect(typeof state.state_dur_ms).toBe('number');
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        for (const state of result.data) {
+          expect(state.gc_type).toBeDefined();
+          expect(typeof state.gc_dur_ms).toBe('number');
+          expect(state.state).toBeDefined();
+          expect(typeof state.state_dur_ms).toBe('number');
         }
       }, 30000);
     });
@@ -326,21 +236,15 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         expect(result.success).toBe(true);
       }, 30000);
 
-      it('should bucket intervals correctly when data exists', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should bucket intervals correctly', async () => {
         const result = await evaluator.executeStep('gc_interval_analysis', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          const validBuckets = ['<100ms (频繁)', '100-500ms', '500ms-1s', '1-5s', '>5s'];
-          for (const interval of result.data) {
-            expect(validBuckets).toContain(interval.interval_bucket);
-            expect(interval.count).toBeGreaterThan(0);
-            expect(typeof interval.avg_interval_ms).toBe('number');
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        const validBuckets = ['<100ms (频繁)', '100-500ms', '500ms-1s', '1-5s', '>5s'];
+        for (const interval of result.data) {
+          expect(validBuckets).toContain(interval.interval_bucket);
+          expect(interval.count).toBeGreaterThan(0);
+          expect(typeof interval.avg_interval_ms).toBe('number');
         }
       }, 30000);
     });
@@ -352,33 +256,21 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         expect(result.success).toBe(true);
       }, 30000);
 
-      it('should order by duration descending when data exists', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
+      it('should order by duration descending', async () => {
         const result = await evaluator.executeStep('long_gc_events', { package: targetProcessName });
 
-        if (result.data.length > 1) {
-          for (let i = 1; i < result.data.length; i++) {
-            expect(result.data[i - 1].dur_ms).toBeGreaterThanOrEqual(result.data[i].dur_ms);
-          }
+        expect(result.data.length).toBeGreaterThan(1);
+        for (let i = 1; i < result.data.length; i++) {
+          expect(result.data[i - 1].dur_ms).toBeGreaterThanOrEqual(result.data[i].dur_ms);
         }
       }, 30000);
 
       it('should indicate main thread status', async () => {
-        if (!hasGCData) {
-          console.log('[Skip] No GC data in trace');
-          return;
-        }
-
         const result = await evaluator.executeStep('long_gc_events', { package: targetProcessName });
 
-        if (result.data.length > 0) {
-          for (const gc of result.data) {
-            expect(['是', '否']).toContain(gc.is_main_thread);
-          }
+        expect(result.data.length).toBeGreaterThan(0);
+        for (const gc of result.data) {
+          expect(['是', '否']).toContain(gc.is_main_thread);
         }
       }, 30000);
     });
@@ -429,11 +321,7 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
         WHERE ts IS NOT NULL
       `);
 
-      if (boundsResult.error || boundsResult.rows.length === 0) {
-        console.log('[Skip] Could not get trace bounds');
-        return;
-      }
-
+      expect(boundsResult.error).toBeUndefined();
       const minTs = BigInt(boundsResult.rows[0][0] as string);
       const maxTs = BigInt(boundsResult.rows[0][1] as string);
       const midTs = minTs + (maxTs - minTs) / 2n;
@@ -462,8 +350,7 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
 
       expect(result.error).toBeUndefined();
       expect(result.rows.length).toBe(1);
-      // Count can be 0 if no GC events
-      expect(result.rows[0][0]).toBeGreaterThanOrEqual(0);
+      expect(result.rows[0][0]).toBeGreaterThan(0);
     }, 30000);
 
     it('should execute GC type aggregation query', async () => {
@@ -482,7 +369,7 @@ describeWithTrace('memory_analysis skill', TRACE_FILE, () => {
       `);
 
       expect(result.error).toBeUndefined();
-      // Results may be empty if no GC events
+      expect(result.rows.length).toBeGreaterThan(0);
     }, 30000);
 
     it('should execute process lookup query', async () => {
@@ -510,7 +397,7 @@ describeWithTrace('memory_analysis edge cases', TRACE_FILE, () => {
 
     beforeAll(async () => {
       evaluator = createSkillEvaluator('memory_analysis');
-      await evaluator.loadTrace(getTestTracePath('app_aosp_scrolling_heavy_jank.pftrace'));
+      await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
     }, 60000);
 
     afterAll(async () => {
@@ -525,28 +412,14 @@ describeWithTrace('memory_analysis edge cases', TRACE_FILE, () => {
       expect(result.data.length).toBeGreaterThan(0);
     }, 30000);
 
-    it('should handle non-matching package filter gracefully', async () => {
+    it('should refuse a package that names no process', async () => {
       const result = await evaluator.executeSkill({
         package: 'com.nonexistent.app.that.does.not.exist',
       });
 
-      // Should succeed but may have no data in most steps
-      // The skill handles empty results gracefully via conditions
-      if (result.success) {
-        expect(Array.isArray(Object.keys(result.layers.overview || {}))).toBe(true);
-      } else {
-        // Failure with error message is also acceptable
-        expect(result.error).toBeDefined();
-      }
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/Process identity could not be verified.*status=not_found/);
     }, 60000);
-
-    it('should handle glob patterns in package name', async () => {
-      // Test with partial package name using GLOB pattern matching
-      const result = await evaluator.executeStep('get_process', { package: 'com.' });
-
-      expect(result.success).toBe(true);
-      // Should match processes starting with "com."
-    }, 30000);
   });
 
   describe('with time range constraints', () => {
@@ -554,7 +427,7 @@ describeWithTrace('memory_analysis edge cases', TRACE_FILE, () => {
 
     beforeAll(async () => {
       evaluator = createSkillEvaluator('memory_analysis');
-      await evaluator.loadTrace(getTestTracePath('app_aosp_scrolling_heavy_jank.pftrace'));
+      await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
     }, 60000);
 
     afterAll(async () => {
@@ -577,11 +450,7 @@ describeWithTrace('memory_analysis edge cases', TRACE_FILE, () => {
         SELECT MIN(ts) as min_ts FROM slice WHERE ts IS NOT NULL
       `);
 
-      if (boundsResult.error || boundsResult.rows.length === 0) {
-        console.log('[Skip] Could not get trace bounds');
-        return;
-      }
-
+      expect(boundsResult.error).toBeUndefined();
       const minTs = BigInt(boundsResult.rows[0][0] as string);
       const endTs = minTs + 1000000n; // 1ms window
 

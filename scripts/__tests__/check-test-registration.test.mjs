@@ -14,6 +14,7 @@ import {
   findUnreachable,
   gateScriptNames,
   listTestFiles,
+  parseNpmRun,
 } from '../check-test-registration.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -78,6 +79,39 @@ test('a script chain names only Jest commands, through cd backend and npm test',
     findUnreachable(['src/a/__tests__/typed.test.ts', 'src/a/__tests__/run.test.ts', 'tests/skill-eval/x.eval.ts'], targets),
     ['src/a/__tests__/typed.test.ts'],
   );
+});
+
+test('npm run is read in every spelling the scripts may use', () => {
+  const cases = [
+    ['npm run test:core', { script: 'test:core' }],
+    ['npm run -s test:core', { script: 'test:core' }],
+    ['npm run --silent test:core', { script: 'test:core' }],
+    ['npm --prefix backend run verify:pr', { prefix: 'backend', script: 'verify:pr' }],
+    ['npm --prefix=backend run verify:pr', { prefix: 'backend', script: 'verify:pr' }],
+    ['npm --prefix ./backend run verify:pr', { prefix: './backend', script: 'verify:pr' }],
+    ['NODE_OPTIONS=--max-old-space-size=4096 X=1 npm run test:core', { script: 'test:core' }],
+    ['npm test', { script: 'test' }],
+    ['npm --prefix backend test', { prefix: 'backend', script: 'test' }],
+    ['npx jest src/x.test.ts', undefined],
+    ['npm ci', undefined],
+  ];
+  for (const [command, expected] of cases) assert.deepEqual(parseNpmRun(command), expected, command);
+});
+
+test('cd and --prefix resolve from the package a command runs in', () => {
+  const root = {
+    'verify:pr': 'cd backend && npm run a && cd .. && npm run b && cd backend && npm --prefix .. run d',
+    b: 'npm --prefix=backend run c',
+    d: 'npm --prefix ./backend/ run e',
+    // Another package's scripts are not ours, whatever their names.
+    x: 'cd scripts && npm run a',
+  };
+  const backend = {
+    a: 'jest src/a.test.ts', c: 'jest src/c.test.ts', e: 'jest src/e.test.ts',
+    f: 'npm --prefix scripts run g', g: 'jest src/g.test.ts',
+  };
+  assert.deepEqual([...gateScriptNames(backend, root)].sort(), ['a', 'c', 'e']);
+  assert.deepEqual([...gateScriptNames(backend, {'verify:pr': 'npm --prefix backend run f'})].sort(), ['f']);
 });
 
 test('a chain that runs a script no package defines is an error', () => {

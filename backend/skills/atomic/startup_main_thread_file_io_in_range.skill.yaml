@@ -82,12 +82,10 @@ display:
     - {name: all_percent_of_startup, label: "全部文件 IO 启动占比", type: number, hidden: true}
     - {name: all_total_dur_ms, label: "全部文件 IO 总耗时", type: number, hidden: true}
 
+sql_fragments:
+  - fragments/file_io_slice_names.sql
 sql: |
-  WITH io_words(word, camel) AS (
-    VALUES ('open', 'Open'), ('read', 'Read'), ('write', 'Write'), ('fsync', 'Fsync'),
-      ('fdatasync', 'Fdatasync'), ('sqlite', 'SQLite'), ('sqlite', 'Sqlite'), ('database', 'Database'),
-      ('file', 'File'), ('disk', 'Disk')
-  ),
+  WITH
   io AS (
     SELECT
       ts.slice_id,
@@ -104,17 +102,15 @@ sql: |
       AND (${start_ts} IS NULL OR s.ts >= ${start_ts})
       AND (${end_ts} IS NULL OR s.ts + s.dur <= ${end_ts})
       AND ts.slice_dur > ${min_dur_ns|500000}
-      -- An IO word must start a word of the name: at its start, after a
-      -- non-letter, or capitalized inside it (loadFile, APKFile). A substring
-      -- match read "Thread" as "read", counting thread and process lifecycle
-      -- as file IO. A glued syscall name (pread64, fopen) and dlopen of a
-      -- library are not counted: so loading has its own startup reason.
+      -- File IO by whole slice-name word (fragments/file_io_slice_names.sql);
+      -- a SharedPreferences call is not startup file IO by its name alone.
+      AND EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(ts.slice_name), w.stem) > 0)
       AND EXISTS (
-        SELECT 1 FROM io_words w
-        WHERE lower(ts.slice_name) GLOB w.word || '*'
-          OR lower(ts.slice_name) GLOB '*[^a-z]' || w.word || '*'
-          OR ts.slice_name GLOB '*' || w.camel || '*'
+        SELECT 1 FROM file_io_slice_name_patterns n
+        WHERE n.io_type != 'shared_prefs'
+          AND ts.slice_name GLOB n.pattern
       )
+      AND NOT EXISTS (SELECT 1 FROM file_io_slice_name_exclusions x WHERE ts.slice_name GLOB x.pattern)
   ),
   -- An IO slice inside another IO slice (database > sqlite > read) is part of
   -- the outer one; only outermost IO slices add up to the startup total.

@@ -58,9 +58,9 @@
       "baseCaseId": "android-startup-light",
       "materialization": "committed-base-plus-overlay",
       "baseSha256": "6c5479fd1b765ee4d29692c43a8204b972bc0f97eb373aca98ea7e11e99fd8b4",
-      "overlaySha256": "e17e9b161f34cc70d27bd5f6bcd6bd96140d0b1c557102c2864549f82ffa585f",
-      "outputSha256": "cbc72c6b1d6b7777dad164106586cfef1e740d8ada1e0f1bc6090323b57bfb3b",
-      "runtimeRevision": "add693d8b338ba9599dbcbc3e300b1ab8c000897"
+      "overlaySha256": "b823bf83a939619b9feb4797fd5772d54dd780b7f0bb0f644a67487b921e451d",
+      "outputSha256": "35688d9944edf5fba00edcfc66874c085b1b8f8abae42af996ccea58098d0aa3",
+      "runtimeRevision": "99234d73fe356bf7edf6b2cb7afcf2a9eefc5368"
     }
   }
 }

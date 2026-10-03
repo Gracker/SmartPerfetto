@@ -4,6 +4,106 @@
   "marker": "SmartPerfetto::CASE::system-scheduling-evidence",
   "expectations": [
     {
+      "id": "wait-sources-no-network-receive-candidate",
+      "type": "skill",
+      "target": "process_thread_wait_sources_in_range",
+      "mode": "semantic",
+      "source_file": "backend/skills/atomic/process_thread_wait_sources_in_range.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "upid": "${fixture_upid}",
+        "start_ts": "${trace_start}",
+        "end_ts": "${trace_end}"
+      },
+      "required_steps": [
+        "wake_evidence_scope",
+        "role_state_summary",
+        "wait_class_summary",
+        "top_waits",
+        "packet_check",
+        "network_packet_correlation"
+      ],
+      "required_sql_steps": [
+        "wake_evidence_scope",
+        "role_state_summary",
+        "wait_class_summary",
+        "top_waits",
+        "packet_check",
+        "network_packet_correlation"
+      ],
+      "forced_sql_steps": [
+        "network_packet_correlation"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "wait_class_summary",
+      "max_rows": 1,
+      "required_columns": [
+        "thread_role",
+        "wait_class",
+        "wake_source",
+        "wait_count",
+        "thread_count",
+        "total_wait_ms",
+        "max_wait_ms"
+      ],
+      "assertions": [
+        {
+          "column": "wait_class",
+          "operator": "eq",
+          "value": "unknown"
+        },
+        {
+          "column": "wake_source",
+          "operator": "eq",
+          "value": "unknown"
+        },
+        {
+          "column": "thread_role",
+          "operator": "eq",
+          "value": "main"
+        }
+      ],
+      "required_marker": "SmartPerfetto::CASE::system-scheduling-evidence"
+    },
+    {
+      "id": "wait-sources-no-packet-confirmed-receive",
+      "type": "skill",
+      "target": "process_thread_wait_sources_in_range",
+      "mode": "negative",
+      "source_file": "backend/skills/atomic/process_thread_wait_sources_in_range.skill.yaml",
+      "parameters": {
+        "package": "com.smartperfetto.fixture",
+        "upid": "${fixture_upid}",
+        "start_ts": "${trace_start}",
+        "end_ts": "${trace_end}"
+      },
+      "required_steps": [
+        "wake_evidence_scope",
+        "role_state_summary",
+        "wait_class_summary",
+        "top_waits",
+        "packet_check",
+        "network_packet_correlation"
+      ],
+      "required_sql_steps": [
+        "wake_evidence_scope",
+        "role_state_summary",
+        "wait_class_summary",
+        "top_waits",
+        "packet_check",
+        "network_packet_correlation"
+      ],
+      "forced_sql_steps": [
+        "network_packet_correlation"
+      ],
+      "isolated_sql_probes": [],
+      "expected_condition_skips": [],
+      "semantic_step": "network_packet_correlation",
+      "expected_empty_reason": "This scenario emits only sched switch/waking events: the fixture process has no network-role thread, no irq-context wake and no android_network_packets row, so no wait can be raised from a candidate to a packet-correlated receive.",
+      "required_marker": "SmartPerfetto::CASE::system-scheduling-evidence"
+    },
+    {
       "id": "native-target-clipped-summary",
       "type": "skill",
       "target": "thread_system_summary_in_range",

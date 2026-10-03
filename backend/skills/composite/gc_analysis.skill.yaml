@@ -392,7 +392,7 @@ steps:
         SELECT
           gp.process_name,
           f.jank_type,
-          COUNT(*) AS frame_count
+          COUNT(DISTINCT f.id) AS frame_count
         FROM gc_periods gp
         JOIN actual_frame_timeline_slice f
           ON f.upid = gp.upid
@@ -599,10 +599,12 @@ steps:
       ),
       frame_impact AS (
         SELECT
-          COUNT(*) AS jank_during_gc
+          -- A janky frame several GCs overlap is still one frame.
+          COUNT(DISTINCT f.id) AS jank_during_gc
         FROM android_garbage_collection_events gc
         JOIN actual_frame_timeline_slice f
-          ON f.ts < gc.gc_ts + gc.gc_dur
+          ON f.upid = gc.upid
+          AND f.ts < gc.gc_ts + gc.gc_dur
           AND f.ts + f.dur > gc.gc_ts
         WHERE f.jank_type != 'None'
           AND CASE WHEN '${package}' != ''

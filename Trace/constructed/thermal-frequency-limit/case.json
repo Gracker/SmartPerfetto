@@ -14,7 +14,7 @@
   "trace": {
     "file": "trace.overlay.pftrace",
     "format": "perfetto-protobuf",
-    "sha256": "da163a5d17a1650074b357f5e4ad5e3583f4b91b308935020c316c15cf1938a0",
+    "sha256": "ee3365c705b69aae83aa196955a7ff462ed2520596a5777e930e6afdbd0164a4",
     "materialization": "base-plus-overlay"
   },
   "android": {

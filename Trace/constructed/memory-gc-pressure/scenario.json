@@ -146,12 +146,34 @@
       "value": 196608
     },
     {
+      "type": "frame-timeline",
+      "at_ns": "505000000",
+      "duration_ns": "60000000",
+      "process": "app",
+      "cookie": 401,
+      "token": 501,
+      "display_frame_token": 601,
+      "layer_name": "SyntheticGcJankLayer",
+      "jank_type": 64
+    },
+    {
       "type": "sched-running",
       "at_ns": "510000000",
       "duration_ns": "80000000",
       "thread": "main",
       "cpu": 0,
       "end_state": "S"
+    },
+    {
+      "type": "frame-timeline",
+      "at_ns": "510000000",
+      "duration_ns": "30000000",
+      "process": "system",
+      "cookie": 402,
+      "token": 502,
+      "display_frame_token": 602,
+      "layer_name": "SyntheticOtherProcessLayer",
+      "jank_type": 1
     },
     {
       "type": "atrace-slice",

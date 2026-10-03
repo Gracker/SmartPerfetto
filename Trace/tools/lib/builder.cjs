@@ -64,6 +64,32 @@ function updateBuildManifest(entry, {sha256, runtimeRevision}) {
   fs.writeFileSync(entry.manifest_path, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+/**
+ * Re-binds a generated source/trace ground truth (analysis/expected.json
+ * source_trace_ground_truth.trace) to the trace a build produced. The facts it
+ * asserts stay as generated; only the hashes and runtime that identify the
+ * trace they were read from follow the rebuild. Returns whether it was stale.
+ */
+function bindGroundTruthTrace(entry, provenance, runtimeRevision, check) {
+  const expectedPath = path.join(entry.case_dir, 'analysis', 'expected.json');
+  if (!fs.existsSync(expectedPath)) return false;
+  const expected = JSON.parse(fs.readFileSync(expectedPath, 'utf8'));
+  const trace = expected.source_trace_ground_truth?.trace;
+  if (!trace) return false;
+  const binding = {
+    baseSha256: provenance.base_sha256,
+    overlaySha256: provenance.overlay_sha256,
+    outputSha256: provenance.output_sha256,
+    runtimeRevision,
+  };
+  const stale = Object.entries(binding).some(([key, value]) => trace[key] !== value);
+  if (stale && !check) {
+    Object.assign(trace, binding);
+    fs.writeFileSync(expectedPath, `${JSON.stringify(expected, null, 2)}\n`);
+  }
+  return stale;
+}
+
 function buildCatalogCases(repoRoot, options = {}) {
   const catalog = loadCatalog(repoRoot);
   const constructed = catalog.cases.filter((entry) => entry.kind === 'constructed');
@@ -106,6 +132,9 @@ function buildCatalogCases(repoRoot, options = {}) {
       }
       if (!options.check) {
         updateBuildManifest(entry, {sha256: build.provenance.overlay_sha256, runtimeRevision});
+      }
+      if (bindGroundTruthTrace(entry, build.provenance, runtimeRevision, options.check) && options.check) {
+        throw new Error(`constructed ground truth drift for ${entry.id}: its trace binding does not match the build`);
       }
 
       const provenancePath = path.join(path.dirname(outputPath), 'build-provenance.json');
@@ -184,9 +213,8 @@ function materializeCatalogCases(repoRoot, options = {}) {
   return results;
 }
 
-/** Regenerate only the authored expectations projection; trace gold and overlays stay untouched. */
-function updateCaseExpectations(repoRoot, options = {}) {
-  const caseId = options.caseId;
+/** A constructed case's expected.json as it is and as its manifest projects it. */
+function caseExpectationsProjection(repoRoot, caseId) {
   if (typeof caseId !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(caseId)) {
     throw new Error('--case requires one lowercase kebab-case constructed case id');
   }
@@ -229,7 +257,13 @@ function updateCaseExpectations(repoRoot, options = {}) {
   }
   const content = `${JSON.stringify({schema_version: 1, case_id: caseId,
     marker: `SmartPerfetto::CASE::${caseId}`, expectations: manifest.coverage.expectations, ...extras}, null, 2)}\n`;
-  const changed = previous !== content;
+  return {root, analysisDir, analysisExists, outputPath, content, changed: previous !== content};
+}
+
+/** Regenerate only the authored expectations projection; trace gold and overlays stay untouched. */
+function updateCaseExpectations(repoRoot, options = {}) {
+  const caseId = options.caseId;
+  const {root, analysisDir, analysisExists, outputPath, content, changed} = caseExpectationsProjection(repoRoot, caseId);
   if (options.check && changed) throw new Error(`stale expectations file: ${outputPath}`);
   if (!options.check && changed) {
     if (!analysisExists) fs.mkdirSync(analysisDir);
@@ -244,11 +278,22 @@ function updateCaseExpectations(repoRoot, options = {}) {
   return {case_id: caseId, output: path.relative(root, outputPath).split(path.sep).join('/'), changed};
 }
 
+/**
+ * The constructed cases whose expected.json no longer projects their manifest.
+ * Nothing else reads the two together, so a manifest edit without
+ * `expectations --case` used to leave the projection behind unnoticed.
+ */
+function staleCaseExpectations(repoRoot, caseIds) {
+  return caseIds.filter((caseId) => caseExpectationsProjection(repoRoot, caseId).changed);
+}
+
 module.exports = {
+  bindGroundTruthTrace,
   buildCatalogCases,
   materializeCatalogCases,
   updateBuildManifest,
   updateCaseExpectations,
+  staleCaseExpectations,
   safeCaseFile,
   safeGeneratedPath,
 };

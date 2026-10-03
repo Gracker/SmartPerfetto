@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1368,
-    "explicitColumnCount": 5117
+    "explicitColumnCount": 5119
   },
   "skills": {
     "ams_module": {
@@ -26770,6 +26770,18 @@
                 "en": "GC Dur ms"
               }
             },
+            "frame_count": {
+              "label": {
+                "zh-CN": "重叠帧数",
+                "en": "Frame Count"
+              }
+            },
+            "janky_frame_count": {
+              "label": {
+                "zh-CN": "掉帧数",
+                "en": "Janky Frame Count"
+              }
+            },
             "jank_type": {
               "label": {
                 "zh-CN": "掉帧类型",
@@ -26778,7 +26790,7 @@
             },
             "frame_dur_ms": {
               "label": {
-                "zh-CN": "帧耗时",
+                "zh-CN": "最长帧耗时",
                 "en": "Frame Dur ms"
               }
             },

@@ -461,6 +461,35 @@ test('materializes ANR and perf callstack evidence for conditional SQL branches'
   fs.rmSync(tempDir, {recursive: true, force: true});
 });
 
+test('places a GPU work period at its trace time when MONOTONIC_RAW trails BOOTTIME', () => {
+  // gpu_work_period carries its own MONOTONIC_RAW bounds. A real base trace
+  // records that clock behind BOOTTIME by the time the device slept; an
+  // overlay that wrote trace time there would land the period that far late.
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-gpu-work-clock-'));
+  const outputPath = path.join(tempDir, 'combined.pftrace');
+  const clocks = {anchorNs: '1000000000', monotonicRawAnchorNs: '400000000', usedPids: new Set()};
+  const base = encodeScenarioOverlay(repoRoot, fixtureScenario(), {...clocks, sequenceId: 474747});
+  const scenario = fixtureScenario();
+  scenario.signals.push({
+    type: 'gpu-work-period',
+    at_ns: '50000000',
+    duration_ns: '10000000',
+    gpu_id: 0,
+    uid: 10999,
+    active_duration_ns: '8000000',
+    cpu: 0,
+  });
+  const overlay = encodeScenarioOverlay(repoRoot, scenario, {...clocks, sequenceId: 484848});
+  materializeTrace(base.buffer, overlay.buffer, outputPath);
+
+  const output = queryTrace(outputPath, `
+    INCLUDE PERFETTO MODULE android.gpu.work_period;
+    SELECT s.ts, s.dur, trace_end() <= 1500000000 AS bounded
+    FROM android_gpu_work_period_track t JOIN slice s ON s.track_id = t.id`);
+  assert.match(output, /\n1050000000,10000000,1\s*$/);
+  fs.rmSync(tempDir, {recursive: true, force: true});
+});
+
 test('materializes source-level Android log events for logcat SQL', () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-generator-android-log-'));
   const outputPath = path.join(tempDir, 'combined.pftrace');
@@ -553,6 +582,7 @@ test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async ev
       cpu: 0,
     },
     {type: 'gpu-frequency', at_ns: '90000000', gpu_id: 0, value: 700000, cpu: 0},
+    {type: 'gpu-memory-total', at_ns: '95000000', gpu_id: 0, process: 'app', size_bytes: '67108864', cpu: 0},
     {type: 'cpu-frequency', at_ns: '100000000', cpu_id: 0, value: 1800000, cpu: 0},
     {
       type: 'irq-span',
@@ -620,6 +650,7 @@ test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async ev
     INCLUDE PERFETTO MODULE android.gpu.mali_power_state;
     INCLUDE PERFETTO MODULE linux.cpu.idle;
     INCLUDE PERFETTO MODULE android.memory.lmk;
+    INCLUDE PERFETTO MODULE android.gpu.memory;
     SELECT
       (SELECT COUNT(*) FROM memory_rss_and_swap_per_process) AS rss,
       (SELECT COUNT(*) FROM android_battery_charge) AS battery,
@@ -635,8 +666,10 @@ test('materializes memory, battery, power, GPU, CPU frequency, IRQ, and async ev
       (SELECT COUNT(*) FROM slice s JOIN process_track pt ON pt.id = s.track_id WHERE s.name = 'SyntheticAsync') AS async_process_slice,
       (SELECT COUNT(*) FROM slice s JOIN process_track pt ON pt.id = s.track_id WHERE pt.name = 'SyntheticTrack' AND s.name = 'SyntheticTrackEvent') AS named_async,
       (SELECT COUNT(*) FROM android_lmk_events WHERE process_name = 'com.smartperfetto.fixture') AS lmk,
-      (SELECT COUNT(*) FROM android_oom_adj_intervals) AS oom_adj`);
-  assert.match(output, /\n(?:[1-9][0-9]*,){14}[1-9][0-9]*\s*$/);
+      (SELECT COUNT(*) FROM android_oom_adj_intervals) AS oom_adj,
+      (SELECT COUNT(*) FROM android_gpu_memory_per_process m JOIN process p USING (upid)
+        WHERE p.name = 'com.smartperfetto.fixture' AND m.gpu_memory = 67108864) AS gpu_memory`);
+  assert.match(output, /\n(?:[1-9][0-9]*,){15}[1-9][0-9]*\s*$/);
 });
 
 function thermalLimitSignals() {

@@ -4,8 +4,7 @@
  * 测试 scrolling_analysis skill 在已知 trace 文件上的行为
  * 验证 SQL 查询产生正确的结构和数据
  *
- * 注意：scrolling_analysis 需要 Android FrameTimeline 数据
- * 如果 trace 文件缺少 actual_frame_timeline_slice 表，部分测试会被跳过
+ * 夹具为 customer 滑动 trace，套件在任何测试之前先断言其 FrameTimeline 数据存在。
  */
 
 import { describe, it, expect, beforeAll, afterAll } from '@jest/globals';
@@ -15,33 +14,21 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 
 // 使用 Android trace 文件测试 - 需要有 FrameTimeline 数据的 Android trace.
-// Fixture removed in commit 52feac55; describeWithTrace skips when missing.
-const TRACE_FILE = 'app_aosp_scrolling_heavy_jank.pftrace';
+const TRACE_FILE = 'android-scroll-customer';
 
 describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
   let evaluator: SkillEvaluator;
-  let hasFrameTimelineData = false;
 
   beforeAll(async () => {
     evaluator = createSkillEvaluator('scrolling_analysis');
     await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
 
-    // 检查 trace 是否有 FrameTimeline 数据
-    try {
-      const result = await evaluator.executeSQL(`
-        SELECT COUNT(*) as count
-        FROM actual_frame_timeline_slice
-        WHERE surface_frame_token IS NOT NULL
-        LIMIT 1
-      `);
-      hasFrameTimelineData = !result.error && result.rows.length > 0 && result.rows[0][0] > 0;
-    } catch (e) {
-      hasFrameTimelineData = false;
-    }
-
-    if (!hasFrameTimelineData) {
-      console.warn(`[Test Warning] Trace ${TRACE_FILE} does not have FrameTimeline data. Some tests will be skipped.`);
-    }
+    // 下面的断言都读取该夹具的 FrameTimeline。
+    const result = await evaluator.executeSQL(`
+      SELECT COUNT(*) FROM actual_frame_timeline_slice WHERE surface_frame_token IS NOT NULL
+    `);
+    expect(result.error).toBeUndefined();
+    expect(result.rows[0][0]).toBeGreaterThan(0);
   }, 60000); // 60 秒超时用于加载 trace
 
   afterAll(async () => {
@@ -169,7 +156,7 @@ describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
         const result = await evaluator.executeStep('jank_type_stats');
 
         expect(result.success).toBe(true);
-        // app_aosp_scrolling_heavy_jank.pftrace is a heavy-jank fixture; empty means extraction regressed.
+        // The fixture has janky frames; empty means extraction regressed.
         expect(result.data.length).toBeGreaterThan(0);
       }, 30000);
 
@@ -301,20 +288,16 @@ describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
       );
       const target = sortedJankSessions[0];
 
-      if (!target || Number(target.janky_count || 0) < 3) {
-        console.warn('Skipping test: no session with >=3 janky frames');
-        return;
-      }
+      // The customer scroll fixture has a session with at least 3 janky frames.
+      expect(Number(target?.janky_count || 0)).toBeGreaterThanOrEqual(3);
 
       const sessions = await evaluator.executeStep('scroll_sessions');
       const window = sessions.data.find(
         (row: any) => Number(row.session_id) === Number(target.session_id)
       );
 
-      if (!window?.start_ts || !window?.end_ts) {
-        console.warn('Skipping test: no valid session window for target session');
-        return;
-      }
+      expect(window?.start_ts).toBeTruthy();
+      expect(window?.end_ts).toBeTruthy();
 
       const baseParams = {
         package: String(window.process_name || ''),
@@ -346,10 +329,8 @@ describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
         max_frames_per_session: 3,
       });
 
-      if (!result.success || result.data.length === 0) {
-        console.warn('Skipping test: no batch root cause rows');
-        return;
-      }
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThan(0);
 
       const row = result.data[0];
       const numericFields = [
@@ -419,6 +400,31 @@ describeWithTrace('scrolling_analysis skill', TRACE_FILE, () => {
       // 结果可能为空（如果没有 jank）或有数据
     }, 30000);
   });
+
+  describe('input evidence', () => {
+    it('should find the fixture input events matched to frames', async () => {
+      const result = await evaluator.executeStep('input_data_check');
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual([expect.objectContaining({input_data_status: 'available'})]);
+      expect(result.data[0].frame_matched_events).toBeGreaterThan(0);
+    }, 60000);
+
+    it('should keep batch root cause rows compatible with input evidence columns', async () => {
+      const result = await evaluator.executeStep('batch_frame_root_cause', {
+        max_frames_per_session: 3,
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.data.length).toBeGreaterThan(0);
+
+      const row = result.data[0];
+      expect(row).toHaveProperty('input_event_count');
+      expect(row).toHaveProperty('input_slice_ms');
+      expect(row).toHaveProperty('input_events_json');
+      expect(row).toHaveProperty('input_slices_json');
+    }, 120000);
+  });
 });
 
 // ===========================================================================
@@ -431,7 +437,7 @@ describeWithTrace('scrolling_analysis edge cases', TRACE_FILE, () => {
 
     beforeAll(async () => {
       evaluator = createSkillEvaluator('scrolling_analysis');
-      await evaluator.loadTrace(getTestTracePath('app_aosp_scrolling_heavy_jank.pftrace'));
+      await evaluator.loadTrace(getTestTracePath(TRACE_FILE));
     }, 60000);
 
     afterAll(async () => {
@@ -447,24 +453,13 @@ describeWithTrace('scrolling_analysis edge cases', TRACE_FILE, () => {
       expect(result.data[0].jank_rate).toBeGreaterThanOrEqual(0);
     }, 30000);
 
-    it('should return condition-not-met for non-matching package in performance_summary', async () => {
-      const result = await evaluator.executeStep('performance_summary', {
-        package: 'com.nonexistent.app',
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.data).toEqual([]);
-      expect(result.error).toContain('Condition not met');
-    }, 30000);
-
-    it('should return condition-not-met for non-matching package in scroll_sessions', async () => {
-      const result = await evaluator.executeStep('scroll_sessions', {
-        package: 'com.nonexistent.app',
-      });
-
-      expect(result.success).toBe(false);
-      expect(result.data).toEqual([]);
-      expect(result.error).toContain('Condition not met');
+    // A package that names no process is refused by the identity gate rather
+    // than analysed as an empty selection.
+    it('should refuse a package that names no process', async () => {
+      for (const stepId of ['performance_summary', 'scroll_sessions']) {
+        await expect(evaluator.executeStep(stepId, {package: 'com.nonexistent.app'}))
+          .rejects.toThrow(/Process identity could not be verified.*status=not_found/);
+      }
     }, 30000);
 
     it('should disable frame_variance_probe when enable_expert_probes is false', async () => {
@@ -473,14 +468,7 @@ describeWithTrace('scrolling_analysis edge cases', TRACE_FILE, () => {
       });
 
       expect(result.data).toEqual([]);
-      // Optional steps skipped by condition may appear as:
-      // - success=false + "Condition not met"
-      // - success=true + empty data (optional skip)
-      if (!result.success) {
-        expect(result.error).toContain('Condition not met');
-      } else {
-        expect(result.error).toBeUndefined();
-      }
+      expect(result.code).toBe('condition_not_met');
     }, 30000);
 
     it('should react to frame_variance_transition_threshold_ms changes', async () => {
@@ -504,47 +492,6 @@ describeWithTrace('scrolling_analysis edge cases', TRACE_FILE, () => {
       );
     }, 30000);
   });
-});
-
-describeWithTrace('scrolling_analysis input evidence on canonical trace', 'scroll-demo-customer-scroll.pftrace', () => {
-  let evaluator: SkillEvaluator;
-
-  beforeAll(async () => {
-    evaluator = createSkillEvaluator('scrolling_analysis');
-    await evaluator.loadTrace(getTestTracePath('scroll-demo-customer-scroll.pftrace'));
-  }, 60000);
-
-  afterAll(async () => {
-    await evaluator.cleanup();
-    await new Promise(resolve => setTimeout(resolve, 2500));
-  });
-
-  it('should execute input data check on a checked-in scroll trace', async () => {
-    const result = await evaluator.executeStep('input_data_check');
-
-    expect(result.success).toBe(true);
-    expect(result.data).toHaveLength(1);
-    expect(['available', 'no_frame_match', 'unavailable']).toContain(
-      result.data[0].input_data_status
-    );
-  }, 60000);
-
-  it('should keep batch root cause rows compatible with input evidence columns', async () => {
-    const result = await evaluator.executeStep('batch_frame_root_cause', {
-      max_frames_per_session: 3,
-    });
-
-    if (!result.success || result.data.length === 0) {
-      console.warn('Skipping canonical input evidence assertion: no batch root cause rows');
-      return;
-    }
-
-    const row = result.data[0];
-    expect(row).toHaveProperty('input_event_count');
-    expect(row).toHaveProperty('input_slice_ms');
-    expect(row).toHaveProperty('input_events_json');
-    expect(row).toHaveProperty('input_slices_json');
-  }, 120000);
 });
 
 describe('continuous main-thread work on canonical traces', () => {

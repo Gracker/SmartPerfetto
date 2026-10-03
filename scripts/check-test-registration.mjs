@@ -81,16 +81,68 @@ export function gateScriptNames(backendScripts, rootScripts, entry = 'verify:pr'
       continue;
     }
     reached.add(key);
-    // `cd backend && npm run x` runs the backend script for the rest of the chain.
+    // `cd backend && npm run x` runs the backend script for the rest of the
+    // chain, until a `cd ..` returns to the root.
+    // A directory outside both packages runs another package's scripts.
     let here = where;
     for (const command of commandsOf(packages[where][name])) {
-      if (/^cd\s+backend\b/.test(command)) here = 'backend';
-      const run = /^npm\s+(--prefix\s+backend\s+)?(?:run(?:-script)?(?:\s+-s)?\s+([\w:.-]+)|(test)\b)/.exec(command);
-      if (run) pending.push([run[1] ? 'backend' : here, run[2] ?? run[3]]);
+      const cd = /^cd\s+(\S+)/.exec(command);
+      if (cd) {
+        here = packageAt(here, cd[1]);
+        continue;
+      }
+      const run = parseNpmRun(command);
+      const target = run && (run.prefix === undefined ? here : packageAt(here, run.prefix));
+      if (target) pending.push([target, run.script]);
     }
   }
   if (missing.length > 0) throw new Error(`verify:pr runs scripts that do not exist: ${missing.join(', ')}`);
   return new Set([...reached].filter(key => key.startsWith('backend:')).map(key => key.slice('backend:'.length)));
+}
+
+/**
+ * The package (`root` or `backend`) a directory names from the package `here`,
+ * or undefined for any other directory or an unknown `here`.
+ */
+function packageAt(here, dir) {
+  if (here === undefined) return undefined;
+  const at = here === 'backend' ? ['backend'] : [];
+  for (const part of dir.split('/')) {
+    if (part === '' || part === '.') continue;
+    if (part !== '..') at.push(part);
+    else if (at.pop() === undefined) return undefined;
+  }
+  const path = at.join('/');
+  return path === '' ? 'root' : path === 'backend' ? 'backend' : undefined;
+}
+
+/**
+ * The script an `npm run` / `npm test` command runs and its `--prefix`
+ * directory, after leading environment assignments (`X=1 npm run a`), with
+ * `--prefix` in either spelling and run flags such as `-s`, `--silent` or
+ * `--if-present`; undefined for any other command.
+ */
+export function parseNpmRun(command) {
+  const words = command.split(/\s+/);
+  let at = 0;
+  while (at < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[at])) at++;
+  if (words[at] !== 'npm') return undefined;
+  let prefix;
+  for (at++; at < words.length; at++) {
+    const word = words[at];
+    const option = /^--prefix(?:=(.*))?$/.exec(word);
+    if (option) {
+      prefix = option[1] ?? words[++at] ?? '';
+      continue;
+    }
+    if (word.startsWith('-')) continue;
+    const found = (script) => (prefix === undefined ? { script } : { prefix, script });
+    if (word === 'test' || word === 't') return found('test');
+    if (word !== 'run' && word !== 'run-script') return undefined;
+    for (at++; at < words.length && words[at].startsWith('-'); at++);
+    return words[at] ? found(words[at]) : undefined;
+  }
+  return undefined;
 }
 
 /** The commands of a script body, split on `&&`, `||` and `;`. */

@@ -88,9 +88,14 @@ reachable and `scripts/test-registration-baseline.json` is empty, so the
 check is zero-tolerance: any new suite the gate cannot reach fails it.
 
 Evals that load a constructed or real trace live in `test:analysis-accuracy`,
-which materializes the corpus first; a suite whose fixture is absent skips
-through `describeWithTrace`, so a skip-only eval guards nothing until its
-fixture exists.
+which materializes the corpus first. `getTestTracePath` resolves a case id or
+alias to the trace it is analyzed on: a real case's committed trace, or a
+constructed case's materialized base plus overlay (its committed file is only
+the overlay). `describeWithTrace` fails a suite whose case does not resolve or
+whose trace is not on disk: seven evals once named a retired fixture and
+skipped forever while the gate stayed green. Assert what the fixture carries
+instead of returning early when data is missing, and do not accept both a
+step's success and its failure; either form passes without checking anything.
 
 Keep it that way. The baseline exists so the check could be introduced without
 a 237-file bang; it is not a parking space. `--update-baseline` records
@@ -754,9 +759,10 @@ Report Claude, OpenAI, Pi, OpenCode, and Qoder independently. Missing auth must
 remain `REAL PROVIDER NOT AVAILABLE`; never replace it with a unit, fixture, or
 deterministic five-runtime execution result.
 
-## Fixture Skip Behavior
+## Eval Fixtures
 
-Some historical skill-eval fixtures are intentionally not included in the
-repository. Suites that load optional traces should use `describeWithTrace(...)`
-so missing fixture files skip cleanly. The PR gate does not depend on those
-historical fixtures; it depends on `test:core` and `test:scene-trace-regression`.
+Every skill-eval trace is a Trace corpus case: committed under `Trace/real/`, or
+materialized from a committed overlay by `npm run trace:materialize`. There is
+no optional fixture. `describeWithTrace(...)` fails, rather than skips, a suite
+whose case is unknown or whose trace is missing; add a constructed case through
+`Trace/tools` when an eval needs data no case carries.

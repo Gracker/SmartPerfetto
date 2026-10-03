@@ -496,6 +496,8 @@ steps:
         - name: severity
           label: "严重程度"
           type: enum
+    sql_fragments:
+      - fragments/file_io_slice_names.sql
     sql: |
       SELECT
         printf('%d', s.ts) as block_ts,
@@ -506,10 +508,13 @@ steps:
           WHEN s.name GLOB '*inflate*' OR s.name GLOB '*LayoutInflater*' OR s.name GLOB '*setContentView*' THEN 'layout_inflate'
           WHEN s.name GLOB '*database*' OR s.name GLOB '*SQL*' OR s.name GLOB '*sqlite*' THEN 'database'
           WHEN s.name GLOB '*Binder*' OR s.name GLOB '*binder*' THEN 'binder'
-          WHEN s.name GLOB '*file*' OR s.name GLOB '*IO*' OR s.name GLOB '*read*' OR s.name GLOB '*write*' THEN 'file_io'
+          WHEN s.name GLOB '*SharedPreferences*' THEN 'shared_prefs'
           WHEN s.name GLOB '*GC*' OR s.name GLOB '*collector*' THEN 'gc'
+          -- File IO by whole slice-name word (fragments/file_io_slice_names.sql).
+          WHEN EXISTS (SELECT 1 FROM file_io_slice_name_words w WHERE instr(lower(s.name), w.stem) > 0)
+            AND EXISTS (SELECT 1 FROM file_io_slice_name_patterns n WHERE s.name GLOB n.pattern)
+            AND NOT EXISTS (SELECT 1 FROM file_io_slice_name_exclusions x WHERE s.name GLOB x.pattern) THEN 'file_io'
           WHEN s.name GLOB '*network*' OR s.name GLOB '*http*' OR s.name GLOB '*okhttp*' THEN 'network'
-          WHEN s.name GLOB '*SharedPreferences*' OR s.name GLOB '*getSharedPreferences*' THEN 'shared_prefs'
           ELSE 'other'
         END as block_type,
         CASE
