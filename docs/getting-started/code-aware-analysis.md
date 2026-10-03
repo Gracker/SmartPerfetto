@@ -91,7 +91,7 @@ npm run cli:dev -- run --format json \
 
 1. 先用当前 trace、匹配的 Skill 和 Perfetto SQL 确认性能现象、时间范围、线程、slice 与 symbol。这些才是性能结论的主证据。
 2. 如果后端发现用户已经安装且当前可用的本地 GitNexus，AI 可以调用 `query_code_graph` / `inspect_code_symbol` 导航候选调用关系和 symbol。代码图只是可选定位加速，不是 trace 证据，也不是源码事实。
-3. 用无需索引的 `search_codebase` 缩小到相对文件与行号，并在当前 consent 允许时用有界的 `read_codebase_file` 核对实际源码。任何影响结论的图关系都必须完成这一步；若权限不允许读取，则保留 `verificationRequired`，不得把候选关系升级为已验证结论。
+3. 用无需索引的 `search_codebase`（结果按声明行、trace 调用点优先排序并带上下文）或按文件名查找的 `find_codebase_files` 缩小到相对文件与行号，并在当前 consent 允许时用有界的 `read_codebase_file` 核对实际源码。任何影响结论的图关系都必须完成这一步；若权限不允许读取，则保留 `verificationRequired`，不得把候选关系升级为已验证结论。
 
 结论使用双证据语义：Trace/Skill/SQL 证明现象在本次 trace 中发生，`CodeRef` 解释可能的实现机制。`CodeRef` 单独不能提高现象或根因的置信度。`SourceClaimBindingV1.mechanismStatus` 只允许 `corroborated`、`compatible`、`ambiguous` 或 `unverified`；其中 `corroborated` 要求同一 claim 同时具有已核验的 trace 发生证据和 `provider_send` 正文/索引证据。`metadata_only` 只能定位，不能把机制升级为 `corroborated`。
 

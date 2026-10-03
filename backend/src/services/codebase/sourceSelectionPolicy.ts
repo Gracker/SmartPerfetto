@@ -156,6 +156,29 @@ function globMatches(globSegments: readonly string[], candidate: string): boolea
   return globIndex === globSegments.length;
 }
 
+/**
+ * A caller-supplied file glob over relative paths, in the same safe subset as
+ * registered exclude globs (`*`, `?`, whole-segment `**`; no classes, braces
+ * or negation). A glob without `/` matches a file name at any depth.
+ */
+export function compileSourcePathGlob(
+  value: string,
+  platform: NodeJS.Platform = process.platform,
+): (relativePath: string) => boolean {
+  if (value.length > 256) throw new Error('source_file_glob_invalid');
+  let normalized: string;
+  try {
+    normalized = normalizeExcludeGlob(value);
+  } catch {
+    throw new Error('source_file_glob_invalid');
+  }
+  const comparable = (text: string): string => platform === 'win32'
+    ? text.toLocaleLowerCase('en-US')
+    : text;
+  const segments = comparable(normalized.includes('/') ? normalized : `**/${normalized}`).split('/');
+  return relativePath => globMatches(segments, comparable(relativePath));
+}
+
 interface CompiledSourceSelection {
   comparable: (value: string) => string;
   hardExcludes: ReadonlySet<string>;

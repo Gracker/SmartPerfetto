@@ -19,6 +19,7 @@ import {formatToolCallNarration, formatToolResultNarration, readPrivateToolResul
 import {sanitizeCandidateProtocolDiagnostic} from '../canonicalAnalysisResult';
 import {projectSceneTimelineForOwner} from '../../agent/scene/sceneTimelineProjection';
 import type {SceneTimelineView} from '../../types/sceneTimeline';
+import {isClosedCode} from '../../utils/closedCode';
 
 type PrivateEventPolicy =
   | 'deterministic'
@@ -93,9 +94,7 @@ function privateDegradedFallback(
     return undefined;
   }
   const fallback = (content as Record<string, unknown>).fallback;
-  return typeof fallback === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(fallback)
-    ? fallback
-    : undefined;
+  return isClosedCode(fallback) ? fallback : undefined;
 }
 
 const PRIVATE_SAFE_VERIFICATION_ISSUE_TYPES = new Set<VerificationIssue['type']>([

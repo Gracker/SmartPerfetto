@@ -18,7 +18,6 @@ import {
   codebaseOnDemandAvailability,
 } from '../codebase/onDemandSourceAccess';
 import {PathSecurityGate} from '../codebase/pathSecurityGate';
-import {sourceSelectionForRef} from '../codebase/sourceSelectionPolicy';
 import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
 
 const scope = {
@@ -95,7 +94,7 @@ describe('OnDemandSourceAccessService', () => {
 
     expect(read.success).toBe(true);
     expect(read.reference?.lineRange).toEqual({start: startLine, end});
-    expect(read.window).toEqual({
+    expect(read.window).toMatchObject({
       totalLines: 7,
       omittedBefore: before,
       omittedAfter: after,
@@ -154,6 +153,7 @@ describe('OnDemandSourceAccessService', () => {
       query: 'loadTimeline',
       mode: 'provider_send',
       maxResults: 5,
+      contextLines: 0,
     });
 
     expect(search.success).toBe(true);
@@ -480,11 +480,13 @@ describe('OnDemandSourceAccessService', () => {
       fs.writeFileSync(path.join(root, 'app', 'private', 'Split.kt'), 'val first = 1\nval second = 2\n');
 
       // Called below search(), which already rejects line breaks: the withheld branch must not match across lines.
-      const result = await (nodeService() as any).searchWithNode(ref, fs.realpathSync(root), '1\nval second',
-        'provider_send', undefined, ['app'], 5, sourceSelectionForRef(ref));
+      const node = nodeService() as any;
+      const prepared = await node.prepareScopedLookup(ref, 'provider_send', undefined);
+      const result = await node.searchCandidatesWithNode(ref, prepared, '1\nval second', true,
+        () => true, () => 0);
 
-      expect(result.coverageComplete).toBe(true);
-      expect(result.searchIncompleteReason).toBeUndefined();
+      expect(result.grantWithheld).toBe(false);
+      expect(result.stopReason).toBeUndefined();
     });
 
     it('yields the event loop after each withheld file it reads', async () => {
@@ -744,18 +746,23 @@ describe('OnDemandSourceAccessService', () => {
       maxResults: 8,
     });
 
+    // Showing 8 of 12 is paging: the traversal still saw every file.
     expect(search).toEqual(expect.objectContaining({
       success: true,
-      truncated: true,
-      coverageComplete: false,
-      searchIncompleteReason: 'enumeration_budget',
+      truncated: false,
+      traversal: 'complete',
+      coverageComplete: true,
+      moreResults: true,
+      totalMatches: 12,
+      fileCount: 8,
       enumerationBackend: 'ripgrep',
       backendFidelity: 'exact',
     }));
+    expect(search.searchIncompleteReason).toBeUndefined();
     expect(search.matches).toHaveLength(8);
   });
 
-  it('reports one-file multi-match truncation instead of false complete coverage', async () => {
+  it('shows the best hits of one file in merged windows and pages the rest', async () => {
     if (process.platform === 'win32') return;
     const repeated = path.join(root, 'app', 'src', 'Repeated.kt');
     fs.writeFileSync(
@@ -784,10 +791,14 @@ describe('OnDemandSourceAccessService', () => {
       maxResults: 8,
     });
 
-    expect(search.matches).toHaveLength(8);
-    expect(search.truncated).toBe(true);
-    expect(search.coverageComplete).toBe(false);
-    expect(search.searchIncompleteReason).toBe('enumeration_budget');
+    // Eight adjacent hits share one context window; the other five are paged.
+    expect(search.matches).toHaveLength(1);
+    expect(search.matches[0]).toEqual(expect.objectContaining({
+      lineRange: {start: 1, end: 10},
+      matchLines: [1, 2, 3, 4, 5, 6, 7, 8],
+    }));
+    expect(search).toEqual(expect.objectContaining({
+      truncated: false, coverageComplete: true, moreResults: true, totalMatches: 13, fileCount: 1}));
   });
 
   it('preserves ripgrep exit 2 matches with traversal-error coverage', async () => {
@@ -879,6 +890,7 @@ describe('OnDemandSourceAccessService', () => {
         scope,
         query: 'loadTimeline',
         mode: 'provider_send',
+        contextLines: 0,
       });
 
       expect(search.success).toBe(true);
@@ -966,7 +978,7 @@ describe('OnDemandSourceAccessService', () => {
     }));
   });
 
-  it('returns bounded degraded coverage when ripgrep and full preview are unavailable', async () => {
+  it('pages a finished degraded walk when ripgrep and full preview are unavailable', async () => {
     for (let index = 0; index < 10; index += 1) {
       fs.writeFileSync(
         path.join(root, 'app', 'src', `Fallback${index}.kt`),
@@ -992,11 +1004,13 @@ describe('OnDemandSourceAccessService', () => {
       maxResults: 3,
     });
 
+    // The walk finishes (it is not bounded by the preview gate); 3 of 10 is paging.
     expect(search).toEqual(expect.objectContaining({
       success: true,
-      truncated: true,
-      coverageComplete: false,
-      searchIncompleteReason: 'enumeration_budget',
+      truncated: false,
+      coverageComplete: true,
+      moreResults: true,
+      totalMatches: 10,
       enumerationBackend: 'node-walk',
       backendFidelity: 'degraded',
     }));
@@ -1012,28 +1026,18 @@ describe('OnDemandSourceAccessService', () => {
       ripgrepPath: '__smartperfetto_missing_rg__',
       searchTimeoutMs: 1_000,
     });
+    const node = access as any;
+    const prepared = await node.prepareScopedLookup(ref, 'provider_send', undefined);
     const now = jest.spyOn(Date, 'now')
       .mockReturnValueOnce(0)
       .mockReturnValueOnce(0)
       .mockReturnValue(2_000);
 
     try {
-      const result = await (access as any).searchWithNode(
-        ref,
-        fs.realpathSync(root),
-        'deadlineNeedle',
-        'provider_send',
-        undefined,
-        ['app/src'],
-        5,
-        sourceSelectionForRef(ref),
-      );
+      const result = await node.searchCandidatesWithNode(ref, prepared, 'deadlineNeedle', true,
+        () => true, () => 0);
 
-      expect(result).toEqual(expect.objectContaining({
-        coverageComplete: false,
-        truncated: true,
-        searchIncompleteReason: 'time_budget',
-      }));
+      expect(result.stopReason).toBe('time_budget');
     } finally {
       now.mockRestore();
     }
@@ -1166,5 +1170,128 @@ describe('file-level read failures', () => {
       filePath: 'app/src/MainActivity.kt', startLine: 99, mode: 'provider_send'});
     expect(read).toMatchObject({success: false, unsupportedReason: 'source_line_out_of_range',
       window: {totalLines: 7}});
+  });
+
+  describe('search and read v2', () => {
+    const backends = [['ripgrep', 'rg'], ['node', '__smartperfetto_missing_rg__']] as const;
+    const write = (relativePath: string, content: string) => {
+      fs.mkdirSync(path.dirname(path.join(root, relativePath)), {recursive: true});
+      fs.writeFileSync(path.join(root, relativePath), content);
+    };
+
+    it.each(backends)('ranks declarations and trace sites above uses and test paths (%s)', async (backend, rgPath) => {
+      write('app/src/a/Caller.kt', 'fun call() {\n  StartupHooks.warmUp()\n}\n');
+      write('app/src/test/WarmUpTest.kt', 'fun warmUp() = check()\n');
+      write('app/src/z/StartupHooks.kt', 'object StartupHooks {\n  fun warmUp() {\n    Trace.beginSection("warmUp")\n  }\n}\n');
+      const ref = register();
+      const search = await service(rgPath).search({codebaseId: ref.codebaseId, scope, query: 'warmUp',
+        mode: 'provider_send', contextLines: 0});
+
+      expect(search.backend).toBe(backend);
+      // A file's hits stay together (adjacent lines share a window); files
+      // follow their best hit, and test code ranks below every production hit.
+      expect(search.matches.map(match => [match.filePath, match.matchLines])).toEqual([
+        ['app/src/z/StartupHooks.kt', [2, 3]],
+        ['app/src/a/Caller.kt', [2]],
+        ['app/src/test/WarmUpTest.kt', [1]],
+      ]);
+      expect(search).toEqual(expect.objectContaining({totalMatches: 4, fileCount: 3, moreResults: false,
+        traversal: 'complete', caseSensitive: true}));
+    });
+
+    it.each(backends)('uses smart case and filters by file glob (%s)', async (_backend, rgPath) => {
+      write('app/src/one/Frame.kt', 'val frameNeedle = 1\n');
+      write('app/src/two/frame.java', 'int FRAMENEEDLE = 2;\n');
+      const ref = register();
+      const access = service(rgPath);
+      const insensitive = await access.search({codebaseId: ref.codebaseId, scope, query: 'frameneedle',
+        mode: 'provider_send'});
+      const sensitive = await access.search({codebaseId: ref.codebaseId, scope, query: 'FRAMENEEDLE',
+        mode: 'provider_send'});
+      const globbed = await access.search({codebaseId: ref.codebaseId, scope, query: 'frameneedle',
+        mode: 'provider_send', fileGlob: '*.kt'});
+
+      expect(insensitive.caseSensitive).toBe(false);
+      expect(insensitive.matches.map(match => match.filePath).sort())
+        .toEqual(['app/src/one/Frame.kt', 'app/src/two/frame.java']);
+      expect(sensitive.matches.map(match => match.filePath)).toEqual(['app/src/two/frame.java']);
+      expect(globbed.matches.map(match => match.filePath)).toEqual(['app/src/one/Frame.kt']);
+      await expect(access.search({codebaseId: ref.codebaseId, scope, query: 'x', mode: 'provider_send',
+        fileGlob: '../*.kt'})).rejects.toThrow('source_file_glob_invalid');
+    });
+
+    it.each(backends)('returns only the location of a hit in a file above the read limit (%s)', async (_backend, rgPath) => {
+      write('app/src/Big.kt', `${'// filler line\n'.repeat(200)}val bigNeedle = 1\n`);
+      const ref = register();
+      const access = new OnDemandSourceAccessService({registry, gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+        ripgrepPath: rgPath, readMaxFileBytes: 1_024});
+
+      const search = await access.search({codebaseId: ref.codebaseId, scope, query: 'bigNeedle', mode: 'provider_send'});
+      const read = await access.read({codebaseId: ref.codebaseId, scope, filePath: 'app/src/Big.kt', mode: 'provider_send'});
+
+      expect(search.matches).toEqual([expect.objectContaining({
+        lineRange: {start: 201, end: 201}, matchLines: [201], bodyUnavailable: 'file_too_large'})]);
+      expect(search.matches[0]).not.toHaveProperty('text');
+      expect(search.coverageComplete).toBe(true);
+      expect(read).toMatchObject({success: false, unsupportedReason: 'source_file_too_large'});
+    });
+
+    it('reads around a line and names the enclosing declaration', async () => {
+      write('app/src/Window.kt', ['class Window {', ...Array.from({length: 30}, (_, i) => `  // ${i}`),
+        '  fun render() {', '    draw()', '  }', '}'].join('\n'));
+      const ref = register();
+      const read = await service().read({codebaseId: ref.codebaseId, scope, filePath: 'app/src/Window.kt',
+        aroundLine: 33, maxLines: 5, mode: 'provider_send'});
+
+      expect(read.reference?.lineRange).toEqual({start: 31, end: 35});
+      expect(read.window?.enclosingSymbol).toEqual({name: 'Window', line: 1, heuristic: true});
+      await expect(service().read({codebaseId: ref.codebaseId, scope, filePath: 'app/src/Window.kt',
+        aroundLine: 33, startLine: 1, mode: 'provider_send'})).resolves.toMatchObject({
+        success: false, unsupportedReason: 'source_read_window_conflict'});
+    });
+
+    it.each(backends)('suggests files with the same name when a read misses (%s)', async (_backend, rgPath) => {
+      write('app/src/deep/StartupHooks.kt', 'object StartupHooks\n');
+      const ref = register();
+      const read = await service(rgPath).read({codebaseId: ref.codebaseId, scope,
+        filePath: 'app/src/StartupHooks.kt', mode: 'provider_send'});
+
+      expect(read).toMatchObject({success: false, unsupportedReason: 'source_file_not_found',
+        candidates: ['app/src/deep/StartupHooks.kt']});
+    });
+
+    it.each(backends)('finds files by name, path or glob without reading them (%s)', async (backend, rgPath) => {
+      write('app/src/ui/RenderThread.kt', 'class RenderThread\n');
+      write('app/src/ui/RenderThreadTest.kt', 'class RenderThreadTest\n');
+      write('app/src/generated/RenderThreadGen.kt', 'class Gen\n');
+      const ref = register();
+      const access = service(rgPath);
+      const byName = await access.find({codebaseId: ref.codebaseId, scope, pattern: 'renderthread', mode: 'metadata_only'});
+      const byGlob = await access.find({codebaseId: ref.codebaseId, scope, pattern: 'ui/*Test.kt', mode: 'metadata_only'});
+
+      expect(byName).toEqual(expect.objectContaining({success: true, backend, traversal: 'complete',
+        coverageComplete: true, totalFiles: 2, moreResults: false}));
+      // Exact name first; the registered exclude glob keeps generated files out.
+      expect(byName.files).toEqual([{filePath: 'app/src/ui/RenderThread.kt'}, {filePath: 'app/src/ui/RenderThreadTest.kt'}]);
+      expect(byGlob.files).toEqual([]);
+      const anchored = await access.find({codebaseId: ref.codebaseId, scope, pattern: 'app/src/ui/*Test.kt', mode: 'metadata_only'});
+      expect(anchored.files).toEqual([{filePath: 'app/src/ui/RenderThreadTest.kt'}]);
+      expect(JSON.stringify(byName)).not.toContain(root);
+    });
+
+    it.each(backends)('withholds files outside the provider grant from find (%s)', async (_backend, rgPath) => {
+      fs.mkdirSync(path.join(root, 'app', 'private'), {recursive: true});
+      fs.writeFileSync(path.join(root, 'app', 'private', 'Hidden.kt'), 'class Hidden\n');
+      const registered = registry.register({kind: 'app_source', displayName: 'Narrow grant', rootPath: root,
+        pathFilters: ['app/src'], sendToProvider: true, ...scope});
+      const ref = registry.updateSelectionPolicy(registered.codebaseId, scope, {pathFilters: ['app']});
+
+      const sent = await service(rgPath).find({codebaseId: ref.codebaseId, scope, pattern: 'Hidden', mode: 'provider_send'});
+      const located = await service(rgPath).find({codebaseId: ref.codebaseId, scope, pattern: 'Hidden', mode: 'metadata_only'});
+
+      expect(sent).toEqual(expect.objectContaining({files: [], coverageComplete: false,
+        searchIncompleteReason: 'provider_grant_scope'}));
+      expect(located.files).toEqual([{filePath: 'app/private/Hidden.kt'}]);
+    });
   });
 });

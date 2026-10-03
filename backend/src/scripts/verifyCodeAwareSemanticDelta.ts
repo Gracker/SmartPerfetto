@@ -585,10 +585,23 @@ async function collectSourceEvidence(input: {
   if (input.indexed && !indexedReference) {
     throw new Error('Indexed setup did not produce an indexed CodeRef');
   }
-  const rawSourceText = isRecord(exactRead) && isRecord(exactRead.reference) &&
-    typeof exactRead.reference.text === 'string'
-    ? exactRead.reference.text
+  // The model reads one line-numbered body; its numbers must be the window's
+  // real lines, and the raw text under them is what echo checks look for.
+  const numberedText = isRecord(exactRead) && isRecord(exactRead.reference) &&
+    typeof exactRead.reference.numberedText === 'string'
+    ? exactRead.reference.numberedText
     : '';
+  const numberedLines = numberedText ? numberedText.split('\n') : [];
+  const numberedLinesMatchWindow = numberedLines.length ===
+    input.groundTruth.lineRange.end - input.groundTruth.lineRange.start + 1 &&
+    numberedLines.every((line, index) => line.startsWith(`${input.groundTruth.lineRange.start + index}: `));
+  if (!numberedLinesMatchWindow) {
+    throw new Error('Actual read handler did not number the returned lines with the window lines');
+  }
+  if (isRecord(exactRead) && isRecord(exactRead.reference) && 'text' in exactRead.reference) {
+    throw new Error('Actual read handler returned the source body twice');
+  }
+  const rawSourceText = numberedLines.map(line => line.replace(/^\d+: /, '')).join('\n');
   const sourceFacts: SourceFacts = {
     exactRelativeFile: exactReference.filePath === filePath,
     exactSymbol: handlerText.includes(`fun ${shortSymbol}`),

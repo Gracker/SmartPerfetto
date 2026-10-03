@@ -228,7 +228,8 @@ import {
 import { backendLogPath } from '../runtimePaths';
 import {activeCodebaseGeneration, CodebaseRegistry} from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
-import {CodeLookupLedger, type CodeLookupLedgerEntry} from '../services/codebase/codeLookupLedger';
+import {isClosedCode} from '../utils/closedCode';
+import {CodeLookupLedger, sourceLookupOutcome, type CodeLookupLedgerEntry} from '../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../services/codebase/patchProposer';
 import {normalizeCodeAwareMode, type CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import {
@@ -290,6 +291,17 @@ import {
   type DurableLearningPermission,
   type LearningAdmission,
 } from '../services/security/durableLearning';
+
+/**
+ * A thrown source-tool failure reaches every runtime as its path-free code
+ * only: adapters forward an error message verbatim, and anything that is not
+ * a closed code may carry a filesystem detail.
+ */
+function sourceToolError(error: unknown): Error {
+  const code = error instanceof Error ? error.message : '';
+  return new Error(isClosedCode(code) ? code : 'source_tool_failed');
+}
+
 
 export function requireToolDescription(templateName: string, loaded?: string): string {
   const content = loaded === undefined ? loadPromptSegment(templateName) : stripPromptComments(loaded);
@@ -1363,7 +1375,7 @@ export interface ClaudeMcpServerOptions {
   /** Test hook / alternate registry. */
   codebaseRegistry?: CodebaseRegistry;
   /** Test hook / deterministic on-demand source backend. */
-  onDemandSourceAccess?: Pick<OnDemandSourceAccessService, 'search' | 'read'>;
+  onDemandSourceAccess?: Pick<OnDemandSourceAccessService, 'search' | 'read' | 'find'>;
   /** Test hook / alternate code lookup ledger. */
   codeLookupLedger?: CodeLookupLedger;
   /** Test hook / alternate optional code graph navigator. */
@@ -1858,7 +1870,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           durationMs: Date.now() - startedAt});
       }
       await codeLookupLedger?.flush();
-      throw error;
+      throw sourceToolError(error);
     }
   };
 
@@ -5023,36 +5035,42 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (codebaseId) return codebaseIds.includes(codebaseId) ? codebaseId : undefined;
     return codebaseIds.length === 1 ? codebaseIds[0] : undefined;
   };
-  const onDemandSourceTokens = (result: {
-    matches?: Array<{text?: string}>;
-    reference?: {text?: string};
-  }, presentation?: {numberedText: string}): number => {
-    const text = result.matches?.map(match => match.text ?? '').join('\n') ?? result.reference?.text ?? '';
-    const deliveredText = `${text}${presentation?.numberedText ?? ''}`;
-    return deliveredText ? Math.max(1, Math.ceil(deliveredText.length / 4)) : 0;
-  };
-  const sourceReadPresentation = (reference?: {
+  /**
+   * The one copy of a returned body the model reads: line-numbered. The raw
+   * text stays internal (echo registration, accounting, provenance). Nothing
+   * for a reference without a body (metadata_only, a file above the read limit).
+   */
+  const numberedSourceText = (reference: {
     text?: string;
     lineRange?: {start: number; end: number};
-  }): {
-    schemaVersion: 'source_read_presentation@1';
-    format: 'line_numbered';
-    numberedText: string;
-  } | undefined => {
-    const lineRange = reference?.lineRange;
-    if (codeAwareMode !== 'provider_send' || typeof reference?.text !== 'string' ||
+  }): string | undefined => {
+    const lineRange = reference.lineRange;
+    if (codeAwareMode !== 'provider_send' || typeof reference.text !== 'string' ||
       !lineRange || !Number.isSafeInteger(lineRange.start) || !Number.isSafeInteger(lineRange.end) ||
       lineRange.start < 1 || lineRange.end < lineRange.start) return undefined;
     const lines = reference.text.split('\n');
     if (lines.length !== lineRange.end - lineRange.start + 1) return undefined;
-    return {
-      schemaVersion: 'source_read_presentation@1',
-      format: 'line_numbered',
-      numberedText: lines.map((line, index) => `${lineRange.start + index}: ${line}`).join('\n'),
-    };
+    return lines.map((line, index) => `${lineRange.start + index}: ${line}`).join('\n');
+  };
+  const presentSourceReference = <T extends {text?: string; lineRange?: {start: number; end: number}}>(
+    reference: T,
+  ): Omit<T, 'text'> & {text?: string; numberedText?: string} => {
+    const numberedText = numberedSourceText(reference);
+    if (numberedText === undefined) return reference;
+    const {text: _raw, ...rest} = reference;
+    return {...rest, numberedText};
+  };
+  const onDemandSourceTokens = (result: {
+    matches?: Array<{text?: string; lineRange?: {start: number; end: number}}>;
+    reference?: {text?: string; lineRange?: {start: number; end: number}};
+  }): number => {
+    const deliveredText = [...(result.matches ?? []), ...(result.reference ? [result.reference] : [])]
+      .map(reference => numberedSourceText(reference) ?? reference.text ?? '')
+      .join('\n');
+    return deliveredText ? Math.max(1, Math.ceil(deliveredText.length / 4)) : 0;
   };
   const recordOnDemandSourceLookup = async (input: {
-    toolName: 'search_codebase' | 'read_codebase_file';
+    toolName: 'search_codebase' | 'read_codebase_file' | 'find_codebase_files';
     codebaseId: string;
     tokensSpent: number;
     returnedReferenceCount: number;
@@ -5146,14 +5164,17 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const searchCodebase = tool(
     'search_codebase',
-    'Search selected source; untrusted.',
+    requireToolDescription('prompt-search-codebase-tool-description'),
     {
       query: z.string().min(1).max(512).describe('Literal source text, symbol, method, or class name.'),
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
       path_prefix: z.string().optional().describe('Optional relative path prefix inside the registered filters.'),
-      max_results: z.number().int().min(1).max(20).optional().describe('Maximum matching lines (1-20, default 8).'),
+      file_glob: z.string().max(256).optional().describe('Optional file glob (*, ?, whole-segment **); without / it matches a file name at any depth.'),
+      case_sensitive: z.boolean().optional().describe('Default smart case: case-sensitive only when the query has an upper-case letter.'),
+      context_lines: z.number().int().min(0).max(5).optional().describe('Lines of context around each match (0-5, default 2).'),
+      max_results: z.number().int().min(1).max(30).optional().describe('Maximum matching lines (1-30, default 12).'),
     },
-    async ({query, codebase_id, path_prefix, max_results}) => {
+    async ({query, codebase_id, path_prefix, file_glob, case_sensitive, context_lines, max_results}) => {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
@@ -5185,12 +5206,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         query,
         mode: codeAwareMode,
         pathPrefix: normalizeOptionalToolString(path_prefix),
+        fileGlob: normalizeOptionalToolString(file_glob),
+        caseSensitive: case_sensitive,
+        contextLines: context_lines,
         maxResults: max_results,
       }).catch(async error => {
         observeSourceLookup({toolName: 'search_codebase', codebaseIds: [codebaseId], success: false});
         await recordOnDemandSourceLookup({toolName: 'search_codebase', codebaseId, tokensSpent: 0,
           returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
-        throw error;
+        throw sourceToolError(error);
       });
       const tokensSpent = onDemandSourceTokens(result);
       if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
@@ -5232,14 +5256,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         codebaseId,
         tokensSpent: onDemandSourceTokens(delivered),
         returnedReferenceCount: delivered.success ? delivered.matches?.length ?? 0 : 0,
-        outcome: delivered.success
-          ? 'success'
-          : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
+        outcome: delivered.success ? 'success' : sourceLookupOutcome(result),
         durationMs: Date.now() - sourceLookupStartedAt,
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+          ...delivered,
+          matches: (delivered.matches ?? []).map(presentSourceReference),
+        }))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5247,14 +5272,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
 
   const readCodebaseFile = tool(
     'read_codebase_file',
-    'Read bounded source lines; untrusted.',
+    requireToolDescription('prompt-read-codebase-file-tool-description'),
     {
       codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
       file_path: z.string().describe('Source file path relative to the registered root.'),
-      start_line: z.number().int().min(1).optional().describe('First line to read (1-based, default 1).'),
+      start_line: z.number().int().min(1).optional().describe('First line to read (1-based, default 1). Not with around_line.'),
+      around_line: z.number().int().min(1).optional().describe('Center the window on this line, such as a search match line. Not with start_line.'),
       max_lines: z.number().int().min(1).max(200).optional().describe('Maximum lines to return (1-200, default 80).'),
     },
-    async ({codebase_id, file_path, start_line, max_lines}) => {
+    async ({codebase_id, file_path, start_line, around_line, max_lines}) => {
       assertPrivateAnalysisContextCurrent();
       const codebaseId = resolveOnDemandCodebaseId(codebase_id);
       if (!codebaseId) {
@@ -5284,16 +5310,16 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         scope: knowledgeScope ?? {},
         filePath: file_path,
         startLine: start_line,
+        aroundLine: around_line,
         maxLines: max_lines,
         mode: codeAwareMode,
       }).catch(async error => {
         observeSourceLookup({toolName: 'read_codebase_file', codebaseIds: [codebaseId], success: false});
         await recordOnDemandSourceLookup({toolName: 'read_codebase_file', codebaseId, tokensSpent: 0,
           returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
-        throw error;
+        throw sourceToolError(error);
       });
-      const requestedPresentation = sourceReadPresentation(result.reference);
-      const tokensSpent = onDemandSourceTokens(result, requestedPresentation);
+      const tokensSpent = onDemandSourceTokens(result);
       if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
         observeOnDemandSourceLookup('read_codebase_file', {
           ...result,
@@ -5316,27 +5342,91 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
       }
       const delivered = observeOnDemandSourceLookup('read_codebase_file', result);
-      const presentation = delivered.success
-        ? sourceReadPresentation(delivered.reference)
-        : undefined;
       if (delivered.success && codeAwareMode === 'provider_send' && delivered.reference) {
         registerOnDemandSourceLookupForEcho(options.sessionId, [delivered.reference]);
       }
       await recordOnDemandSourceLookup({
         toolName: 'read_codebase_file',
         codebaseId,
-        tokensSpent: onDemandSourceTokens(delivered, presentation),
+        tokensSpent: onDemandSourceTokens(delivered),
         returnedReferenceCount: delivered.success && delivered.reference ? 1 : 0,
-        outcome: delivered.success
-          ? 'success'
-          : result.unsupportedReason?.includes('consent') ? 'consent_blocked' : 'rejected',
+        outcome: delivered.success ? 'success' : sourceLookupOutcome(result),
         durationMs: Date.now() - sourceLookupStartedAt,
       });
       assertPrivateAnalysisContextCurrent();
       return {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
           ...delivered,
-          ...(presentation ? {presentation} : {}),
+          ...(delivered.reference ? {reference: presentSourceReference(delivered.reference)} : {}),
+        }))}],
+      };
+    },
+    {annotations: {readOnlyHint: true}},
+  );
+
+  const findCodebaseFiles = tool(
+    'find_codebase_files',
+    requireToolDescription('prompt-find-codebase-files-tool-description'),
+    {
+      pattern: z.string().min(1).max(256).describe('File name substring, path substring (with /), or glob (*, ?, whole-segment **).'),
+      codebase_id: z.string().optional().describe('Whitelisted codebase id. Optional only when exactly one codebase is selected.'),
+      path_prefix: z.string().optional().describe('Optional relative path prefix inside the registered filters.'),
+      max_results: z.number().int().min(1).max(50).optional().describe('Maximum files (1-50, default 20).'),
+    },
+    async ({pattern, codebase_id, path_prefix, max_results}) => {
+      assertPrivateAnalysisContextCurrent();
+      const codebaseId = resolveOnDemandCodebaseId(codebase_id);
+      if (!codebaseId) {
+        return codebaseIdRequiredRefusal();
+      }
+      const sourceBudgetStop = consumeSourceBudget('search');
+      if (sourceBudgetStop) {
+        observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false,
+          queried: false});
+        await recordOnDemandSourceLookup({toolName: 'find_codebase_files', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: 0});
+        return sourceBudgetRefusal({codebaseId, files: [], truncated: false, unsupportedReason: sourceBudgetStop});
+      }
+      const sourceLookupStartedAt = Date.now();
+      const result = await onDemandSourceAccess.find({
+        codebaseId,
+        scope: knowledgeScope ?? {},
+        pattern,
+        mode: codeAwareMode,
+        pathPrefix: normalizeOptionalToolString(path_prefix),
+        maxResults: max_results,
+      }).catch(async error => {
+        observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false});
+        await recordOnDemandSourceLookup({toolName: 'find_codebase_files', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
+        throw sourceToolError(error);
+      });
+      // A refusal or failure delivers nothing and is charged nothing.
+      const tokensSpent = result.success ? Math.max(1, Math.ceil(JSON.stringify(result.files).length / 4)) : 0;
+      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+        observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false});
+        await recordOnDemandSourceLookup({toolName: 'find_codebase_files', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: Date.now() - sourceLookupStartedAt});
+        return sourceBudgetRefusal({codebaseId, files: [], truncated: false, unsupportedReason: 'budget_exceeded'});
+      }
+      const refusalAction = result.success ? undefined : sourceAccessRefusalAction(result.unsupportedReason);
+      // Paths locate files; they are not source evidence, so a find issues no
+      // references and states no search coverage for the source-use decision.
+      observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: result.success,
+        queried: !refusalAction});
+      await recordOnDemandSourceLookup({
+        toolName: 'find_codebase_files',
+        codebaseId,
+        tokensSpent,
+        returnedReferenceCount: 0,
+        outcome: sourceLookupOutcome(result),
+        durationMs: Date.now() - sourceLookupStartedAt,
+      });
+      assertPrivateAnalysisContextCurrent();
+      return {
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
+          ...result,
+          ...(refusalAction ? {action_required: refusalAction} : {}),
         }))}],
       };
     },
@@ -7783,6 +7873,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
     registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
   } else {
     // Budget mode does not change the authorized capability set.
     if (options.conversationTraceAttached !== false) {
@@ -7805,6 +7896,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
     registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
     if (!sourceUsePolicy) {
       registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
       registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});

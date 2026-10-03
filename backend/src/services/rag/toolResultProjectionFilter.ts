@@ -10,7 +10,7 @@ import type {
   BackgroundKnowledgeReference,
   RagSourceKind,
 } from '../../types/sparkContracts';
-import type {CodeLookupOutcome} from '../codebase/codeLookupLedger';
+import {sourceLookupOutcome, type CodeLookupOutcome} from '../codebase/codeLookupLedger';
 import type {SanitizedRagResult} from './lookupResponseFilter';
 
 export interface ProjectedPayload {
@@ -58,6 +58,8 @@ export interface ProjectedPayload {
   action_required?: string;
   /** Present only as `false`: the search did not cover every admitted file. */
   coverageComplete?: false;
+  /** Files a `find_codebase_files` call returned, by path hash only. */
+  fileRefs?: Array<{filePathHash: string}>;
 }
 
 const SENSITIVE_RAG_TOOL_NAMES = new Set([
@@ -68,6 +70,7 @@ const SENSITIVE_RAG_TOOL_NAMES = new Set([
   'lookup_oem_sdk',
   'search_codebase',
   'read_codebase_file',
+  'find_codebase_files',
   'query_code_graph',
   'inspect_code_symbol',
 ]);
@@ -94,15 +97,45 @@ function hashSnippet(snippet: string): string {
   return createHash('sha256').update(snippet).digest('hex').slice(0, 12);
 }
 
+/** The facts every on-demand projection carries: outcome, refusal action and incomplete coverage. */
+function onDemandEnvelope(candidate: Record<string, unknown>): Pick<ProjectedPayload,
+'outcome' | 'action_required' | 'coverageComplete'> {
+  return {
+    outcome: sourceLookupOutcome(candidate),
+    ...(candidate.success === false && isSourceAccessRefusalAction(candidate.action_required)
+      ? {action_required: candidate.action_required}
+      : {}),
+    // Narration must not call an incomplete search "nothing found".
+    ...(candidate.coverageComplete === false ? {coverageComplete: false as const} : {}),
+  };
+}
+
+function onDemandCandidate(raw: unknown): Record<string, unknown> | undefined {
+  const payload = unwrapMcpPayload(raw);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  return ((payload as {result?: unknown}).result ?? payload) as Record<string, unknown>;
+}
+
+/** A file find returns relative paths only; external surfaces get their hashes. */
+function projectFileFindResult(toolName: string, raw: unknown): ProjectedPayload | undefined {
+  if (toolName !== 'find_codebase_files') return undefined;
+  const candidate = onDemandCandidate(raw);
+  if (!candidate || !Array.isArray(candidate.files)) return undefined;
+  const fileRefs = candidate.files.flatMap(file => {
+    const filePath = file && typeof file === 'object' ? (file as {filePath?: unknown}).filePath : undefined;
+    return typeof filePath === 'string' ? [{filePathHash: hashSnippet(filePath)}] : [];
+  });
+  return {toolName, chunkRefs: [], fileRefs, legacyPath: false, ...onDemandEnvelope(candidate)};
+}
+
 function projectOnDemandSourceResult(
   toolName: string,
   raw: unknown,
 ): ProjectedPayload | undefined {
   const isGraphTool = CODE_GRAPH_TOOL_NAMES.has(toolName);
   if (!ON_DEMAND_SOURCE_TOOL_NAMES.has(toolName) && !isGraphTool) return undefined;
-  const payload = unwrapMcpPayload(raw);
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
-  const candidate = ((payload as {result?: unknown}).result ?? payload) as Record<string, unknown>;
+  const candidate = onDemandCandidate(raw);
+  if (!candidate) return undefined;
   const rawReferences = isGraphTool
     ? candidate.references
     : toolName === 'search_codebase'
@@ -123,7 +156,10 @@ function projectOnDemandSourceResult(
       Number(lineRange.end) >= Number(lineRange.start)
       ? {start: Number(lineRange.start), end: Number(lineRange.end)}
       : undefined;
-    const text = typeof reference.text === 'string' ? reference.text : undefined;
+    // The model reads one numbered body; the raw text appears only when
+    // numbering did not apply.
+    const text = typeof reference.numberedText === 'string' ? reference.numberedText
+      : typeof reference.text === 'string' ? reference.text : undefined;
     const filePath = typeof reference.filePath === 'string' ? reference.filePath : undefined;
     const symbol = typeof reference.symbol === 'string' ? reference.symbol : undefined;
     const kind = typeof reference.kind === 'string' ? reference.kind : undefined;
@@ -140,25 +176,7 @@ function projectOnDemandSourceResult(
         : {}),
     }];
   });
-  const unsupportedReason = typeof candidate.unsupportedReason === 'string'
-    ? candidate.unsupportedReason
-    : undefined;
-  const outcome: CodeLookupOutcome = unsupportedReason?.includes('consent')
-    ? 'consent_blocked'
-    : unsupportedReason === 'budget_exceeded' ? 'budget_exceeded'
-    : candidate.success === false ? 'rejected' : 'success';
-  return {
-    toolName,
-    chunkRefs: [],
-    sourceRefs,
-    outcome,
-    legacyPath: false,
-    ...(candidate.success === false && isSourceAccessRefusalAction(candidate.action_required)
-      ? {action_required: candidate.action_required}
-      : {}),
-    // Narration must not call an incomplete search "nothing found".
-    ...(candidate.coverageComplete === false ? {coverageComplete: false} : {}),
-  };
+  return {toolName, chunkRefs: [], sourceRefs, legacyPath: false, ...onDemandEnvelope(candidate)};
 }
 
 export function projectRagResultForSseAndLog(toolName: string, result: SanitizedRagResult): ProjectedPayload {
@@ -315,7 +333,7 @@ export function projectToolResultForExternalSurface(toolName: string, raw: unkno
   const publish = (payload: ProjectedPayload) => ({
     ...payload, _meta: runtimeToolReceiptMetadata(readRuntimeToolResultFacts(raw)),
   });
-  const onDemandProjection = projectOnDemandSourceResult(toolName, raw);
+  const onDemandProjection = projectOnDemandSourceResult(toolName, raw) ?? projectFileFindResult(toolName, raw);
   if (onDemandProjection) return publish(onDemandProjection);
   const projected = projectSensitiveRagToolResult(toolName, raw);
   if (projected) return publish(projected);

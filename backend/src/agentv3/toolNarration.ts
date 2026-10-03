@@ -39,6 +39,12 @@ function readString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
 
+/** A positive integer a model may send as a number or a decimal string, as text. */
+function readPositiveInteger(value: unknown): string {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0 ? String(value) : '';
+  return typeof value === 'string' && /^[1-9]\d{0,15}$/.test(value.trim()) ? value.trim() : '';
+}
+
 /** A numeric selector a model may send as a number or a decimal string. */
 function readIdentifier(value: unknown, label: string): string {
   if (typeof value === 'number' && Number.isFinite(value)) return `${label} ${value}`;
@@ -486,9 +492,16 @@ export function formatToolCallNarration(
         ? localize(language, `搜索源码：${query}，确认 trace 现象对应的实现`, `Search source: ${query} to find the implementation behind the trace behaviour`)
         : localize(language, '搜索源码：确认 trace 现象对应的实现', 'Search source: find the implementation behind the trace behaviour'));
     }
+    case 'find_codebase_files': {
+      const pattern = readString(args.pattern);
+      return shorten(pattern
+        ? localize(language, `查找源码文件：${pattern}`, `Find source files: ${pattern}`)
+        : localize(language, '查找源码文件', 'Find source files'));
+    }
     case 'read_codebase_file': {
       const filePath = readString(args.file_path || args.filePath);
-      const startLine = readString(args.start_line || args.startLine);
+      const startLine = [args.start_line, args.startLine, args.around_line, args.aroundLine]
+        .map(readPositiveInteger).find(Boolean) ?? '';
       const location = filePath
         ? `${filePath}${startLine ? `:${startLine}` : ''}`
         : '';
@@ -883,6 +896,7 @@ const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
   'query_perfetto_source',
   'query_code_graph',
   'search_codebase',
+  'find_codebase_files',
   'inspect_code_symbol',
   'resolve_symbol',
   'recall_similar_case',
@@ -900,7 +914,7 @@ const RETRIEVAL_TOOLS: ReadonlySet<string> = new Set([
  * is not the same as zero.
  */
 function retrievalHitCount(body: Record<string, unknown>): number | undefined {
-  const counts = ['results', 'references', 'chunks', 'matches', 'entries', 'hits', 'items', 'skills', 'cases', 'candidates']
+  const counts = ['results', 'references', 'chunks', 'matches', 'entries', 'hits', 'items', 'skills', 'cases', 'candidates', 'files', 'fileRefs']
     .map((field) => readCount(body[field]))
     .filter((count): count is number => count !== undefined);
   return counts.length === 0 ? undefined : Math.max(...counts);

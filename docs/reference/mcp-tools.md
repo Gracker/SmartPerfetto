@@ -103,6 +103,7 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 | `list_codebases` | 列出已授权代码库 | 需要 codebase permission |
 | `search_codebase` | 在已注册 live root 中做有界文本/symbol 搜索 | 不要求 SmartPerfetto 索引；只接受已选 codebase 和相对 path prefix |
 | `read_codebase_file` | 读取已注册 root 内的有界行范围 | `metadata_only` 不返回正文；`provider_send` 仍要求双重 consent 和脱敏 |
+| `find_codebase_files` | 按文件名、路径子串或 glob 查找已注册文件 | 只返回相对路径，不读文件、不签发源码引用；`metadata_only` 下可用 |
 | `record_source_use_decision` | 在任何源码 lookup 之前记录受控的终止状态 | 只允许 policy 中的结构化状态与有界原因；一旦 lookup 开始就不能回写矛盾决策 |
 | `query_code_graph` | 用可选本地代码图导航相关流程与 symbol | metadata-only；图不可用时返回结构化不可用结果 |
 | `inspect_code_symbol` | 查看候选 symbol 的有界关系与位置 | metadata-only；关系必须再由有界源码读取验证 |
@@ -111,14 +112,19 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 | `resolve_symbol` | 解析 trace 符号到源码位置 | 保持源码引用可追踪 |
 | `propose_patch` | 生成 patch proposal | 必须标记 verified / sketch / unverified |
 
-四个无索引/图导航工具都需要 codebase permission，并使用当前请求已选择的代码库。只有恰好选择一个 codebase 时才可省略 `codebase_id`；选择多个时必须明确指定：
+五个无索引/图导航工具都需要 codebase permission，并使用当前请求已选择的代码库。只有恰好选择一个 codebase 时才可省略 `codebase_id`；选择多个时必须明确指定：
 
-- `search_codebase`：必填 `query`；可选 `codebase_id`、相对 `path_prefix` 和有界 `max_results`。
-- `read_codebase_file`：必填相对 `file_path`；可选 `codebase_id`、`start_line` 和有界 `max_lines`。
+- `search_codebase`：必填 `query`；可选 `codebase_id`、相对 `path_prefix`、`file_glob`（`*`、`?`、整段 `**`；不含 `/` 时匹配任意深度的文件名）、`case_sensitive`（缺省 smart-case：查询含大写字母才区分大小写）、`context_lines`（0–5，默认 2）和 `max_results`（1–30，默认 12）。
+- `read_codebase_file`：必填相对 `file_path`；可选 `codebase_id`、`start_line` 或 `around_line`（以该行为中心，二者互斥）和有界 `max_lines`。
+- `find_codebase_files`：必填 `pattern`（文件名子串、含 `/` 的路径子串或 glob）；可选 `codebase_id`、相对 `path_prefix` 和 `max_results`（1–50，默认 20）。
 - `query_code_graph`：必填 `query`；可选 `codebase_id` 和有界 `max_results`。
 - `inspect_code_symbol`：必填 `symbol`；可选 `codebase_id`、相对 `file_path` 和有界 `max_relations`。
 
 格式合法但不被 selection policy 接纳的路径或 `path_prefix`（在注册过滤范围外、位于排除目录下、非源码扩展名的文件路径；`provider_send` 下还包括不在 provider-send 授权内）返回策略拒绝：`success=false`、`unsupportedReason` 和 `action_required` 指令，例如 `locate_path_with_search_codebase`、`retry_search_without_path_prefix`，或用于授权范围外前缀的 `continue_without_this_path_prefix`。拒绝结果不回显请求路径，也不暴露注册过滤规则或 root，并且不带 backend 或覆盖率字段，因此不能支撑"源码中不存在"的结论。成功的搜索会给出 `coverageScope`（`codebase`，或前缀收窄了注册范围时为 `path_prefix`）；只有覆盖整个代码库的完整搜索才能支撑"不存在"。`provider_send` 搜索若因授权范围隐去了命中，会返回 `coverageComplete=false` 与 `searchIncompleteReason=provider_grant_scope`。格式错误的路径和不可读文件仍是工具失败。
+
+搜索先收集遍历到的全部命中，再确定性排序（该名字的声明行、trace section 调用点、整词与大小写精确匹配优先；test/generated/build 路径最后；再按路径与行号），只把排名靠前的候选经路径网关重新读取核对后返回。每条结果的 `lineRange` 含 `context_lines` 上下文，`matchLines` 标出命中行，同一文件相邻命中合并为一个窗口。`moreResults` 只表示还有未展示的命中（分页），不代表覆盖不完整；`traversal`（`complete`、`stopped_at_cap`、`timed_out`、`error`）说明遍历是否提前停止，只有 `complete` 且没有被授权范围隐去的命中时 `coverageComplete` 才为 true。按需搜索扫描不超过 16 MiB 的文件（`scope.maxFileBytes`），读取上限 4 MiB；命中落在两者之间的文件时只返回位置并标 `bodyUnavailable: "file_too_large"`，读取这类文件返回 `source_file_too_large`。索引入库仍沿用 200 KiB 上限。
+
+模型只收到一份正文：带真实行号的 `numberedText`；原始文本留在内部，用于回显登记、计费与来源追踪。读取结果的 `window.enclosingSymbol` 是窗口起点向上最近的声明行（启发式）；文件不存在时，`candidates` 列出范围内同名文件的相对路径（至多 5 个，`provider_send` 下不越出授权范围）。工具抛出的失败只把形如 `source_*` 的无路径错误码交给各 runtime，其余一律为 `source_tool_failed`。
 
 注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引。GitNexus 缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。
 

@@ -127,7 +127,7 @@ describe('AppSourceIngester', () => {
 
     try {
       expect(() => readOpenedTextFileBoundedSync(descriptor, opened, 1_024))
-        .toThrow('source_file_changed_or_too_large');
+        .toThrow('source_file_changed_during_read');
     } finally {
       fs.closeSync(descriptor);
     }

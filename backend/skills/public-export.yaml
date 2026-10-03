@@ -1733,6 +1733,15 @@ strategies:
   backend/strategies/prompt-propose-patch-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto provider-consented codebase patch proposal tool contract
+  backend/strategies/prompt-search-codebase-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto on-demand codebase search MCP tool contract
+  backend/strategies/prompt-read-codebase-file-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto on-demand codebase read MCP tool contract
+  backend/strategies/prompt-find-codebase-files-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto on-demand codebase file-find MCP tool contract
   backend/strategies/prompt-relation-proposal-recovery-en.template.md:
     disposition: product-only
     reason: SmartPerfetto native evidence relation candidate recovery protocol

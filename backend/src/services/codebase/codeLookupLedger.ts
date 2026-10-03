@@ -29,13 +29,23 @@ export type CodeLookupOutcome =
   | 'sidecar_missing'
   | 'rejected';
 
+/** The outcome of a returned on-demand source result, as the ledger and projections record it. */
+export function sourceLookupOutcome(
+  result: {success?: unknown; unsupportedReason?: unknown},
+): Extract<CodeLookupOutcome, 'success' | 'budget_exceeded' | 'consent_blocked' | 'rejected'> {
+  const reason = typeof result.unsupportedReason === 'string' ? result.unsupportedReason : undefined;
+  return reason?.includes('consent') ? 'consent_blocked'
+    : reason === 'budget_exceeded' ? 'budget_exceeded'
+    : result.success === false ? 'rejected' : 'success';
+}
+
 export interface CodeLookupLedgerEntry {
   turn: number;
   ts: number;
   toolName: 'resolve_symbol' | 'lookup_app_source' | 'lookup_aosp_source' |
     'lookup_kernel_source' | 'lookup_oem_sdk' | 'lookup_blog_knowledge' |
     'search_codebase' | 'read_codebase_file' | 'query_code_graph' |
-    'inspect_code_symbol' | 'propose_patch';
+    'inspect_code_symbol' | 'find_codebase_files' | 'propose_patch';
   codebaseId?: string;
   knowledgeSourceId?: string;
   sourceGeneration?: string;

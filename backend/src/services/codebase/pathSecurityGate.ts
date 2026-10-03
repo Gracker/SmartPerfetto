@@ -210,7 +210,9 @@ export function readOpenedTextFileBoundedSync(
   opened: fs.Stats,
   maxFileBytes: number,
 ): string {
-  const buffer = Buffer.allocUnsafe(maxFileBytes + 1);
+  // Size the buffer by the file, not the limit: one byte past the size it had
+  // at open detects growth, and the fstat comparison below rejects it.
+  const buffer = Buffer.allocUnsafe(Math.min(maxFileBytes, opened.size) + 1);
   let bytesRead = 0;
   while (bytesRead < buffer.length) {
     const count = fs.readSync(
@@ -223,7 +225,8 @@ export function readOpenedTextFileBoundedSync(
     if (count === 0) break;
     bytesRead += count;
   }
-  if (bytesRead > maxFileBytes) throw new Error('source_file_changed_or_too_large');
+  // Only growth after the size check can exceed the bound here.
+  if (bytesRead > maxFileBytes) throw new Error('source_file_changed_during_read');
   const after = fs.fstatSync(descriptor);
   if (
     !after.isFile() ||
@@ -306,7 +309,8 @@ function readRevalidatedTextFileSync(
   }
   try {
     const stat = fs.fstatSync(descriptor);
-    if (!stat.isFile() || stat.size > maxFileBytes) throw new Error('source_file_changed_or_too_large');
+    if (!stat.isFile()) throw new Error('source_path_not_regular_file');
+    if (stat.size > maxFileBytes) throw new Error('source_file_too_large');
     const identityError = openedFileIdentityError(before, stat, noFollowUsed);
     if (identityError) throw new Error(identityError);
     // Never read to EOF without a hard bound. A writable checkout can grow

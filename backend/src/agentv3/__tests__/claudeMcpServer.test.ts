@@ -308,6 +308,7 @@ import {RagStore} from '../../services/ragStore';
 import * as ragLookupFilter from '../../services/rag/lookupResponseFilter';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
+import {projectToolResultForExternalSurface} from '../../services/rag/toolResultProjectionFilter';
 import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../../services/codebase/patchProposer';
 import type {OnDemandSourceAccessService} from '../../services/codebase/onDemandSourceAccess';
@@ -1518,9 +1519,10 @@ describe('createClaudeMcpServer', () => {
       expect(runtimeDescriptions.length).toBeGreaterThanOrEqual(25);
       expect(sdkDescriptions).toEqual(runtimeDescriptions);
       // Every description is model context on every turn. The ceiling rose from
-      // 13_000 when `analyze_wait_chain` joined the set; raise it only for a new
-      // tool, never to make an existing description's growth pass.
-      expect(totalChars).toBeLessThanOrEqual(14_000);
+      // 13_000 when `analyze_wait_chain` joined the set and by 200 for
+      // `find_codebase_files`; raise it only for a new tool, never to make an
+      // existing description's growth pass.
+      expect(totalChars).toBeLessThanOrEqual(14_200);
       for (const description of runtimeDescriptions) {
         expect(description.length).toBeLessThanOrEqual(1000);
         expect(description).not.toMatch(/\n\nExamples:/);
@@ -7961,34 +7963,24 @@ describe('createClaudeMcpServer', () => {
         expect(read.success).toBe(true);
         expect(read.truncated).toBe(true);
         expect(read.reference.lineRange).toEqual({start: 10, end: 14});
-        expect(read.window).toEqual({
+        expect(read.window).toMatchObject({
           totalLines: 100, omittedBefore: 9, omittedAfter: 86,
           nextStartLine: 15, symbolCoverage: 'not_assessed',
         });
+        expect(read.reference).not.toHaveProperty('text');
         if (mode === 'metadata_only') {
-          expect(read.reference).not.toHaveProperty('text');
-          expect(read).not.toHaveProperty('presentation');
+          expect(read.reference).not.toHaveProperty('numberedText');
         } else {
-          expect(read.reference.text).toBe([
-            'object 启动入口 {',
-            '',
-            '  val api_key = "[REDACTED_SECRET]"',
-            '  fun onCreate() = Unit',
-            '}',
+          // The model reads one body, line-numbered with the window's real lines.
+          expect(read.reference.numberedText).toBe([
+            '10: object 启动入口 {',
+            '11: ',
+            '12:   val api_key = "[REDACTED_SECRET]"',
+            '13:   fun onCreate() = Unit',
+            '14: }',
           ].join('\n'));
-          expect(read.presentation).toEqual({
-            schemaVersion: 'source_read_presentation@1',
-            format: 'line_numbered',
-            numberedText: [
-              '10: object 启动入口 {',
-              '11: ',
-              '12:   val api_key = "[REDACTED_SECRET]"',
-              '13:   fun onCreate() = Unit',
-              '14: }',
-            ].join('\n'),
-          });
-          expect(read.reference).not.toHaveProperty('presentation');
         }
+        expect(read).not.toHaveProperty('presentation');
         expect(read.sourceReferences).toEqual([expect.objectContaining({filePath, id: expect.stringMatching(/^source-ref-v1-/)})]);
         const actual = sourceUse.getSourceUseDecision()!;
         expect(actual.status).toBe(mode === 'provider_send' ? 'corroborated' : 'located');
@@ -8006,7 +7998,7 @@ describe('createClaudeMcpServer', () => {
       } finally { fs.rmSync(tmpDir, {recursive: true, force: true}); }
     });
 
-    it('omits line-number presentation when redaction output no longer matches the declared range', async () => {
+    it('keeps the raw body unnumbered when redaction output no longer matches the declared range', async () => {
       const sourceAccess = {
         search: jest.fn<OnDemandSourceAccessService['search']>(),
         read: jest.fn<OnDemandSourceAccessService['read']>(async () => ({
@@ -8034,13 +8026,13 @@ describe('createClaudeMcpServer', () => {
         success: true,
         reference: expect.objectContaining({text: '[REDACTED_SECRET]'}),
       }));
-      expect(read).not.toHaveProperty('presentation');
+      expect(read.reference).not.toHaveProperty('numberedText');
     });
 
     it.each([
-      {capTokens: 7, admitted: true},
-      {capTokens: 6, admitted: false},
-    ])('charges raw and numbered read text before admission at the $capTokens-token boundary', async ({capTokens, admitted}) => {
+      {capTokens: 5, admitted: true},
+      {capTokens: 4, admitted: false},
+    ])('charges the one numbered read body before admission at the $capTokens-token boundary', async ({capTokens, admitted}) => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-numbered-read-budget-'));
       try {
         const sourceAccess = {
@@ -8074,19 +8066,14 @@ describe('createClaudeMcpServer', () => {
         const read = await callTool(tools, 'read_codebase_file', {file_path: 'src/Foo.kt'});
 
         if (admitted) {
-          expect(read.reference.text).toBe('alpha\nbeta');
-          expect(read.presentation).toEqual({
-            schemaVersion: 'source_read_presentation@1',
-            format: 'line_numbered',
-            numberedText: '10: alpha\n11: beta',
-          });
+          expect(read.reference.numberedText).toBe('10: alpha\n11: beta');
+          expect(read.reference).not.toHaveProperty('text');
           expect(ledger.getEntries()).toEqual([
-            expect.objectContaining({outcome: 'success', tokensSpent: 7, returnedReferenceCount: 1}),
+            expect.objectContaining({outcome: 'success', tokensSpent: 5, returnedReferenceCount: 1}),
           ]);
         } else {
           expect(read).toEqual(expect.objectContaining({success: false, unsupportedReason: 'budget_exceeded'}));
           expect(read).not.toHaveProperty('reference');
-          expect(read).not.toHaveProperty('presentation');
           expect(sourceUse.getSourceUseDecision()).toMatchObject({references: [], usedCodebaseIds: []});
           expect(ledger.getEntries()).toEqual([
             expect.objectContaining({outcome: 'budget_exceeded', tokensSpent: 0, returnedReferenceCount: 0}),
@@ -8101,7 +8088,7 @@ describe('createClaudeMcpServer', () => {
       const sourceAccess = {read: jest.fn(async () => ({success: false, codebaseId: 'app-a', truncated: false})), search: jest.fn(async (input: {codebaseId: string; query: string}) => ({
         success: true, codebaseId: input.codebaseId, matches: Array.from({length: 20}, (_, i) => ({
           referenceId: `lookup-${input.query}-${i}`, codebaseId: input.codebaseId,
-          filePath: `src/Batch${input.query}File${i}.kt`, lineRange: {start: 1, end: 1}, text: `class Batch${input.query}File${i}`,
+          filePath: `src/Batch${input.query}File${i}.kt`, lineRange: {start: 1, end: 1}, matchLines: [1], text: `class Batch${input.query}File${i}`,
         })), truncated: false, coverageComplete: true, backend: 'node' as const,
         enumerationBackend: 'node-walk' as const, backendFidelity: 'degraded' as const,
       }))};
@@ -8490,12 +8477,15 @@ describe('createClaudeMcpServer', () => {
         const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
         const root = path.join(tmpDir, 'app');
         fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.mkdirSync(path.join(root, 'private'), {recursive: true});
         fs.writeFileSync(
           path.join(root, 'src', 'StartupHooks.kt'),
           'SOURCE_USE_CANARY\nSOURCE_USE_CANARY\n',
         );
+        fs.writeFileSync(path.join(root, 'private', 'Hidden.kt'), 'SOURCE_USE_CANARY\n');
         const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
-        const ref = codebaseRegistry.register({
+        // The provider grant covers src only; private is registered but withheld.
+        const registered = codebaseRegistry.register({
           kind: 'app_source',
           displayName: 'App',
           rootPath: root,
@@ -8504,6 +8494,8 @@ describe('createClaudeMcpServer', () => {
           sendToProvider: true,
           ...scope,
         });
+        const ref = codebaseRegistry.updateSelectionPolicy(registered.codebaseId, scope,
+          {pathFilters: ['src', 'private']});
         const incomplete = createTestServer({
           codeAwareMode: 'provider_send',
           codebaseIds: [ref.codebaseId],
@@ -8519,6 +8511,7 @@ describe('createClaudeMcpServer', () => {
           knowledgeScope: scope,
         });
 
+        // Paging (max_results 1 of 2) is not incompleteness; the withheld hit is.
         await callTool(incomplete.tools, 'search_codebase', {
           query: 'SOURCE_USE_CANARY',
           max_results: 1,
@@ -8652,6 +8645,77 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('on-demand codebase access', () => {
+    it('finds files by name as relative paths without issuing source references', async () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-find-files-'));
+      try {
+        const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src', 'ui'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'ui', 'RenderThread.kt'), 'class RenderThread\n');
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({kind: 'app_source', displayName: 'App', rootPath: root,
+          rootAuthorization: 'native_picker', pathFilters: ['src'], sendToProvider: true, ...scope});
+        const ledger = new CodeLookupLedger('find-files', 12_000, 2, path.join(tmpDir, 'ledger.jsonl'));
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId],
+          codebaseRegistry, codeLookupLedger: ledger, knowledgeScope: scope});
+
+        const found = await callTool(tools, 'find_codebase_files', {pattern: 'RenderThread'});
+
+        expect(found).toEqual(expect.objectContaining({success: true, dataTrust: 'untrusted_retrieved_data',
+          files: [{filePath: 'src/ui/RenderThread.kt'}], coverageComplete: true, moreResults: false}));
+        expect(found).not.toHaveProperty('sourceReferences');
+        expect(JSON.stringify(found)).not.toContain(root);
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'attempted', references: [],
+          attemptedTools: ['find_codebase_files'], queriedCodebaseIds: [ref.codebaseId]});
+        expect(ledger.getEntries()).toEqual([expect.objectContaining({toolName: 'find_codebase_files',
+          outcome: 'success', returnedReferenceCount: 0})]);
+        const projected = projectToolResultForExternalSurface('find_codebase_files', {
+          content: [{type: 'text', text: JSON.stringify(found)}]}) as Record<string, unknown>;
+        expect(JSON.stringify(projected)).not.toContain('RenderThread');
+        expect(projected).toEqual(expect.objectContaining({fileRefs: [{filePathHash: expect.any(String)}]}));
+      } finally {
+        fs.rmSync(tmpDir, {recursive: true, force: true});
+      }
+    });
+
+    it('keeps snippet provenance for the one numbered body in external projections', async () => {
+      const sourceAccess = {
+        read: jest.fn(),
+        find: jest.fn(),
+        search: jest.fn(async () => ({
+          success: true, codebaseId: 'app-a', truncated: false, coverageComplete: true,
+          matches: [{referenceId: 'source-numbered', codebaseId: 'app-a', filePath: 'src/A.kt',
+            lineRange: {start: 4, end: 5}, matchLines: [4], text: 'alpha\nbeta'}],
+        })),
+      };
+      const {tools} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a'],
+        onDemandSourceAccess: sourceAccess as any});
+
+      const search = await callTool(tools, 'search_codebase', {query: 'alpha'});
+      const projected = projectToolResultForExternalSurface('search_codebase', {
+        content: [{type: 'text', text: JSON.stringify(search)}]}) as {sourceRefs: Array<Record<string, unknown>>};
+
+      expect(search.matches[0].numberedText).toBe('4: alpha\n5: beta');
+      expect(projected.sourceRefs[0]).toEqual(expect.objectContaining({
+        snippetHash: expect.any(String), snippetLength: '4: alpha\n5: beta'.length}));
+      expect(JSON.stringify(projected)).not.toContain('alpha');
+    });
+
+    it.each(['search_codebase', 'read_codebase_file', 'find_codebase_files'] as const)(
+      'lets only a path-free code escape a thrown %s failure', async toolName => {
+        const failure = async () => {
+          throw new Error('EACCES: permission denied, open /private/registered/root/src/Secret.kt');
+        };
+        const {tools} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a'],
+          onDemandSourceAccess: {search: jest.fn(failure), read: jest.fn(failure), find: jest.fn(failure)} as any});
+        const params = toolName === 'read_codebase_file' ? {file_path: 'src/Secret.kt'}
+          : toolName === 'find_codebase_files' ? {pattern: 'Secret'} : {query: 'Secret'};
+
+        const error = await callTool(tools, toolName, params).then(() => undefined, (thrown: Error) => thrown);
+
+        expect(error?.message).toBe('source_tool_failed');
+      });
+
     it('keeps source access bounded while retaining other authorized capabilities', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-bounded-source-'));
       try {
@@ -8752,6 +8816,7 @@ describe('createClaudeMcpServer', () => {
       });
 
       expect([...tools.keys()].sort()).toEqual([
+        'find_codebase_files',
         'list_codebases',
         'read_codebase_file',
         'search_codebase',
@@ -8796,6 +8861,7 @@ describe('createClaudeMcpServer', () => {
       });
 
       expect([...tools.keys()].sort()).toEqual([
+        'find_codebase_files',
         'list_codebases',
         'read_codebase_file',
         'search_codebase',
@@ -8833,7 +8899,7 @@ describe('createClaudeMcpServer', () => {
           query: 'ON_DEMAND_SEARCH_ECHO_CANARY',
         });
         const reference = search.matches[0];
-        const projected = sanitizeCodeAwareText(sessionId, `Model echoed: ${reference.text}`);
+        const projected = sanitizeCodeAwareText(sessionId, `Model echoed: ${reference.numberedText}`);
 
         expect(search).toEqual(expect.objectContaining({success: true}));
         expect(projected).not.toContain('ON_DEMAND_SEARCH_ECHO_CANARY');
@@ -8877,7 +8943,7 @@ describe('createClaudeMcpServer', () => {
           file_path: 'src/ReadGuard.kt',
         });
         const reference = read.reference;
-        const projected = sanitizeCodeAwareText(sessionId, `Model echoed: ${reference.text}`);
+        const projected = sanitizeCodeAwareText(sessionId, `Model echoed: ${reference.numberedText}`);
 
         expect(read).toEqual(expect.objectContaining({success: true}));
         expect(projected).not.toContain('ON_DEMAND_READ_ECHO_CANARY');
@@ -8886,7 +8952,7 @@ describe('createClaudeMcpServer', () => {
         );
         const sourceSupplementEvent = projectPrivateStructuredValue(sessionId, {
           type: 'source_enrichment_completed',
-          message: `Source supplement echoed: ${reference.text}`,
+          message: `Source supplement echoed: ${reference.numberedText}`,
         });
         expect(JSON.stringify(sourceSupplementEvent)).not.toContain(
           'ON_DEMAND_READ_ECHO_CANARY',
@@ -8955,12 +9021,15 @@ describe('createClaudeMcpServer', () => {
         expect(search).toEqual(expect.objectContaining({
           success: true,
           dataTrust: 'untrusted_retrieved_data',
+          // One numbered body with the match line and its context.
           matches: [expect.objectContaining({
             filePath: 'src/StartupHooks.kt',
-            lineRange: {start: 2, end: 2},
-            text: '  fun installTracing() = Unit',
+            lineRange: {start: 1, end: 3},
+            matchLines: [2],
+            numberedText: '1: class StartupHooks {\n2:   fun installTracing() = Unit\n3: }',
           })],
         }));
+        expect(search.matches[0]).not.toHaveProperty('text');
         // Either backend covers every selected file; only fidelity differs.
         expect(search).toEqual(expect.objectContaining({coverageComplete: true}));
         expect(search).not.toHaveProperty('searchIncompleteReason');
