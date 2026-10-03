@@ -931,6 +931,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             toolName,
             args: params,
             result: projectedResult,
+            ownerResult: rawResult,
             isError: resultFacts.success === false,
             language: outputLanguage,
           }),

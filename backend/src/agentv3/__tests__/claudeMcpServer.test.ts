@@ -8598,6 +8598,19 @@ describe('createClaudeMcpServer', () => {
   });
 
   describe('on-demand codebase access', () => {
+    it('says once per run how deep source access may go, only when source can be read', () => {
+      const depthLines = (updates: any[]) => updates.filter(update => update.type === 'progress' &&
+        String(update.content?.message ?? '').startsWith('本轮源码深度'));
+      const capable = capableCodebaseRegistry(['app-codebase']);
+      const run = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
+        codebaseRegistry: capable, sourceDepth: 'mechanism'});
+      expect(depthLines(run.emittedUpdates).map(update => update.content.message))
+        .toEqual(['本轮源码深度：机制分析（检索 16 次、读取 12 次）']);
+      expect(depthLines(createTestServer().emittedUpdates)).toEqual([]);
+      expect(depthLines(createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
+        codebaseRegistry: capable, allowNewEvidence: false}).emittedUpdates)).toEqual([]);
+    });
+
     it('locates a trace anchor as located-only references within the run locate budget', async () => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-locate-anchor-'));
       try {

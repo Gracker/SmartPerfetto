@@ -795,6 +795,7 @@ export function projectPiAgentCoreEventToStreamingUpdate(
       const resultNarration = formatToolResultNarration({
         toolName,
         result: projected,
+        ownerResult: event.result,
         isError: resultIsFailure,
         language: outputLanguage,
       });

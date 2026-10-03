@@ -222,6 +222,13 @@ Keep these boundaries intact:
   consumer must extract the embedded JSON rather than parse the whole string.
   A registered tool with no narration case prints `调用工具 <name>`; a coverage
   test in `src/agentv3/__tests__/toolResultNarration.test.ts` enforces the set.
+  On-demand source tools (`search_codebase`, `locate_trace_anchor`,
+  `read_codebase_file`, `find_codebase_files`) also get the tool's own result as
+  `ownerResult`, so the owner's process view can say what was found and where
+  (match and file counts, relative file names, read ranges, budget stops). Only
+  private runs have source tools, and strict surfaces never use the runtime's
+  narration text for a private run (they narrate from the projection or the
+  private receipt), so this widens no external projection.
 - A timeline line earns its place only when it says something the tool dispatch
   line could not. Result narration reports an *outcome*, not a shape: a row or
   column count answers "how much came back" when the reader is asking "did that

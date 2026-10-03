@@ -409,6 +409,7 @@ export function createSseBridge(
               toolName,
               args: toolUseIdToArgs.get(taskId),
               result: projected,
+              ownerResult: rawResult,
               isError: failed,
               language,
             }),

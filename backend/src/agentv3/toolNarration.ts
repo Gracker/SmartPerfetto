@@ -654,7 +654,17 @@ export interface ToolResultNarrationInput {
   language?: OutputLanguage;
   /** Only deterministic outcome fields may enter private-run progress. */
   privateContext?: boolean;
+  /**
+   * The tool's own result, for owner-only narration of source tools (counts,
+   * relative file names, line ranges). Strict surfaces never use the text this
+   * produces: for a private run they narrate from the projection or a receipt.
+   */
+  ownerResult?: unknown;
 }
+
+/** What a source budget stop leads to, shared by the projected refusal and the owner narration. */
+const CONTINUE_WITH_SOURCE_EVIDENCE = ['继续使用已取得的源码证据',
+  'analysis continues with the source evidence already collected'] as const;
 
 /**
  * A refused code-aware source call, in words. The projection keeps only the
@@ -678,8 +688,8 @@ function narrateSourceAccessRefusal(result: unknown, language: OutputLanguage): 
       return localize(language, '该文件不在发送给模型的授权范围内，未读取正文',
         'That file is outside the grant for sending source to the model; its content was not read');
     case 'continue_with_existing_source_evidence':
-      return localize(language, '源码访问已达本次上限，继续使用已取得的源码证据',
-        'Source access reached its limit for this run; analysis continues with the source evidence already collected');
+      return localize(language, `源码访问已达本次上限，${CONTINUE_WITH_SOURCE_EVIDENCE[0]}`,
+        `Source access reached its limit for this run; ${CONTINUE_WITH_SOURCE_EVIDENCE[1]}`);
     case 'continue_without_this_codebase':
       return localize(language, '该代码库未授权把源码发送给模型，未读取',
         'This codebase has no consent to send source to the model; nothing was read');
@@ -758,7 +768,127 @@ export function readPrivateToolResultNarrationReceipt(
   return {message: language === 'en' ? receipt.en : receipt.zh, isError: receipt.isError};
 }
 
-/** Decode the intact, already privacy-projected result before transport truncation. */
+const OWNER_SOURCE_TOOLS = new Set(['search_codebase', 'locate_trace_anchor', 'read_codebase_file', 'find_codebase_files']);
+
+const BUDGET_STOP_SUBJECTS: Readonly<Record<string, readonly [string, string]>> = {
+  source_search_budget_exceeded: ['本轮源码检索次数已用完', 'This run\'s source searches are used up'],
+  source_read_budget_exceeded: ['本轮源码读取次数已用完', 'This run\'s source reads are used up'],
+  source_locate_budget_exceeded: ['本轮源码定位次数已用完', 'This run\'s source locates are used up'],
+  budget_exceeded: ['本轮源码额度已用完', 'This run\'s source budget is used up'],
+};
+
+/** A run budget stop, said as which budget ran out and what happens next, not as an error. */
+function narrateSourceBudgetStop(reason: string, language: OutputLanguage): string | undefined {
+  const subject = BUDGET_STOP_SUBJECTS[reason];
+  return subject ? localize(language, `${subject[0]}，${CONTINUE_WITH_SOURCE_EVIDENCE[0]}`,
+    `${subject[1]}; ${CONTINUE_WITH_SOURCE_EVIDENCE[1]}`) : undefined;
+}
+
+const ANCHOR_MATCH_LABELS: Readonly<Record<string, readonly [string, string]>> = {
+  trace_call: ['trace 调用点', 'trace call site'],
+  constant_definition: ['常量定义', 'constant definition'],
+  thread_creation: ['线程创建处', 'thread creation'],
+  method_declaration: ['方法声明', 'method declaration'],
+  framework_override: ['App 覆写的框架方法', 'app override of the framework hook'],
+  template: ['同形字面量', 'same-shape literal'],
+  literal: ['字面量', 'literal'],
+};
+
+function fileName(filePath: unknown): string {
+  return readString(filePath).split('/').pop() ?? '';
+}
+
+function sourceFileNames(items: unknown): string[] {
+  return Array.isArray(items)
+    ? [...new Set(items.map(item => fileName(asRecord(item).filePath)).filter(Boolean))]
+    : [];
+}
+
+/** `A.kt`, or `A.kt 等 3 个文件` / `A.kt and 2 more files`. */
+function fileSummary(names: readonly string[], fileCount: number, language: OutputLanguage): string {
+  if (fileCount <= 1) return names[0] ?? '';
+  return localize(language, `${names[0]} 等 ${fileCount} 个文件`,
+    `${names[0]} and ${fileCount - 1} more file${fileCount - 1 === 1 ? '' : 's'}`);
+}
+
+/**
+ * Owner-only narration of a source tool from its own result: what was found,
+ * where, and whether more exists. Undefined falls back to the shared
+ * projection-based narration (refusals, unknown shapes).
+ */
+function narrateOwnerSourceResult(
+  toolName: string,
+  body: Record<string, unknown>,
+  language: OutputLanguage,
+): string | undefined {
+  if (body.success === false) return narrateSourceBudgetStop(readString(body.unsupportedReason), language);
+  const incomplete = body.coverageComplete === false;
+  const incompleteNote = localize(language, '；检索未完整覆盖', '; the search did not cover every file');
+  switch (toolName) {
+    case 'search_codebase': {
+      const matches = Array.isArray(body.matches) ? body.matches : [];
+      if (matches.length === 0) {
+        if (incomplete) return localize(language, '检索未完整覆盖，结果可能不全', 'The search did not cover every file; results may be missing');
+        return body.coverageComplete === true && body.coverageScope !== 'path_prefix'
+          ? localize(language, '未找到匹配（已搜索全部授权文件）', 'No match (every authorized file was searched)')
+          : localize(language, '在指定范围内未找到匹配', 'No match in the requested scope');
+      }
+      const names = sourceFileNames(matches);
+      const count = readCount(body.totalMatches) ?? matches.length;
+      const files = fileSummary(names, readCount(body.fileCount) ?? names.length, language);
+      return localize(language, `找到 ${count} 处匹配（${files}）`, `Found ${count} match${count === 1 ? '' : 'es'} (${files})`) +
+        (body.moreResults === true ? localize(language, '，还有更多', '; more exist') : '') +
+        (incomplete ? incompleteNote : '');
+    }
+    case 'locate_trace_anchor': {
+      const matches = Array.isArray(body.matches) ? body.matches : [];
+      const framework = Object.keys(asRecord(body.framework)).length > 0;
+      if (matches.length === 0) {
+        return framework
+          ? localize(language, '该 slice 由框架（AOSP）实现，App 中没有可覆写的方法',
+            'This slice is implemented by the framework (AOSP); the app has no override of it')
+          : localize(language, '没有定位到对应源码', 'No source location was found for it') +
+            (incomplete ? incompleteNote : '');
+      }
+      const top = asRecord(matches[0]);
+      const line = Array.isArray(top.matchLines) ? readPositiveInteger(top.matchLines[0]) : undefined;
+      const [zh, en] = ANCHOR_MATCH_LABELS[readString(top.matchedBy)] ?? ANCHOR_MATCH_LABELS.literal!;
+      const where = `${fileName(top.filePath)}${line ? `:${line}` : ''}`;
+      return localize(language, `定位到 ${where}（${zh}）`, `Located at ${where} (${en})`) +
+        (matches.length > 1 ? localize(language, `，另有 ${matches.length - 1} 个候选`,
+          `; ${matches.length - 1} more candidate${matches.length === 2 ? '' : 's'}`) : '') +
+        (body.ambiguous === true
+          ? localize(language, '；多个模块都有候选，未能唯一确定', '; candidates in several modules, not pinned to one') : '') +
+        (framework ? localize(language, '；该 slice 由框架实现，这里是 App 的覆写', '; the slice itself is a framework one') : '') +
+        (incomplete ? incompleteNote : '');
+    }
+    case 'read_codebase_file': {
+      const reference = asRecord(body.reference);
+      const range = asRecord(reference.lineRange);
+      const start = readPositiveInteger(range.start);
+      const end = readPositiveInteger(range.end);
+      const name = fileName(reference.filePath);
+      if (!name || !start || !end) return undefined;
+      const window = asRecord(body.window);
+      const total = readPositiveInteger(window.totalLines);
+      const more = readPositiveInteger(window.nextStartLine) !== '';
+      return localize(language, `读取 ${name} L${start}–L${end}`, `Read ${name} L${start}–L${end}`) +
+        (more && total ? localize(language, `（共 ${total} 行，后面还有）`, ` (of ${total} lines; more follow)`) : '');
+    }
+    case 'find_codebase_files': {
+      const files = Array.isArray(body.files) ? body.files : [];
+      if (files.length === 0) return localize(language, '没有找到匹配的文件', 'No matching file');
+      const names = sourceFileNames(files);
+      return localize(language, `找到 ${files.length} 个文件（${names[0]}${files.length > 1 ? ' 等' : ''}）`,
+        `Found ${files.length} files (${names[0]}${files.length > 1 ? ' and others' : ''})`) +
+        (body.moreResults === true ? localize(language, '，还有更多', '; more exist') : '') +
+        (incomplete ? incompleteNote : '');
+    }
+    default:
+      return undefined;
+  }
+}
+
 function readToolResultBody(result: unknown): Record<string, unknown> {
   return decodeRuntimeToolResult(result).body ?? {};
 }
@@ -923,6 +1053,10 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
   const language = input.language ?? DEFAULT_OUTPUT_LANGUAGE;
   const toolName = shortToolName(readString(input.toolName) || 'unknown');
   const args = asRecord(input.args);
+  if (!input.privateContext && input.ownerResult !== undefined && OWNER_SOURCE_TOOLS.has(toolName)) {
+    const owner = narrateOwnerSourceResult(toolName, readToolResultBody(input.ownerResult), language);
+    if (owner !== undefined) return shorten(owner);
+  }
   const body = readToolResultBody(input.result);
 
   if (toolName === 'read_session_history' && !toolResultIsFailure(input)) {

@@ -8087,6 +8087,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     ? {codebases: selectedCodebases, depth: sourceDepth,
         budget: {...sourceBudget.snapshot(), maxReadLines: sourceBudget.maxReadLines}}
     : {codebases: []};
+  // One line per run that says how deep source access may go (owner view only:
+  // strict surfaces drop progress for a private run).
+  if (emitUpdate && sourceAuthorization.budget && options.allowNewEvidence !== false && !sourceOnlyPhase) {
+    const {searchesLeft, readsLeft} = sourceAuthorization.budget;
+    emitUpdate({
+      type: 'progress',
+      content: {
+        phase: 'starting',
+        message: localize(outputLanguage,
+          `本轮源码深度：${sourceDepth === 'mechanism' ? '机制分析' : '快速定位'}（检索 ${searchesLeft} 次、读取 ${readsLeft} 次）`,
+          `Source depth this run: ${sourceDepth === 'mechanism' ? 'mechanism' : 'locate'} (${searchesLeft} searches, ${readsLeft} reads)`),
+      },
+      timestamp: Date.now(),
+    });
+  }
   runManifestAttributionSink?.recordToolAllowlist(
     toolDefinitions.map(definition => definition.name),
   );

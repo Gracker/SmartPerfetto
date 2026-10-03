@@ -732,3 +732,63 @@ describe('leading-sentence trimming', () => {
     }, 'en')).toBe('Completed phase "Overview": The model gave no summary.');
   });
 });
+
+describe('owner narration of source tools', () => {
+  const owner = (toolName: string, body: Record<string, unknown>, language?: 'en') =>
+    formatToolResultNarration({toolName, result: {}, ownerResult: mcpResult(body), language});
+  const match = (filePath: string, line: number, extra: Record<string, unknown> = {}) =>
+    ({filePath, lineRange: {start: line, end: line}, matchLines: [line], ...extra});
+
+  it('says how many matches came back, from which files, and whether more exist', () => {
+    expect(owner('search_codebase', {success: true, totalMatches: 12, fileCount: 3, moreResults: true,
+      matches: [match('app/src/StartupHooks.kt', 6), match('app/src/Other.kt', 9)]}))
+      .toBe('找到 12 处匹配（StartupHooks.kt 等 3 个文件），还有更多');
+    expect(owner('search_codebase', {success: true, matches: [match('app/src/StartupHooks.kt', 6)]}, 'en'))
+      .toBe('Found 1 match (StartupHooks.kt)');
+  });
+
+  it('separates a complete empty search from a narrowed or incomplete one', () => {
+    expect(owner('search_codebase', {success: true, matches: [], coverageComplete: true, coverageScope: 'codebase'}))
+      .toBe('未找到匹配（已搜索全部授权文件）');
+    expect(owner('search_codebase', {success: true, matches: [], coverageComplete: true, coverageScope: 'path_prefix'}))
+      .toBe('在指定范围内未找到匹配');
+    expect(owner('search_codebase', {success: true, matches: [], coverageComplete: false}))
+      .toBe('检索未完整覆盖，结果可能不全');
+  });
+
+  it('names the read window and whether the file continues', () => {
+    expect(owner('read_codebase_file', {success: true, reference: {filePath: 'app/src/StartupHooks.kt',
+      lineRange: {start: 1, end: 48}}, window: {totalLines: 120, nextStartLine: 49}}))
+      .toBe('读取 StartupHooks.kt L1–L48（共 120 行，后面还有）');
+    expect(owner('read_codebase_file', {success: true, reference: {filePath: 'app/src/StartupHooks.kt',
+      lineRange: {start: 73, end: 120}}, window: {totalLines: 120, nextStartLine: null}}))
+      .toBe('读取 StartupHooks.kt L73–L120');
+  });
+
+  it('names the best located line, its reason, and any ambiguity or framework origin', () => {
+    expect(owner('locate_trace_anchor', {success: true, ambiguous: true,
+      matches: [match('a/src/StartupHooks.kt', 6, {matchedBy: 'trace_call'}), match('b/src/X.kt', 4)]}))
+      .toBe('定位到 StartupHooks.kt:6（trace 调用点），另有 1 个候选；多个模块都有候选，未能唯一确定');
+    expect(owner('locate_trace_anchor', {success: true, matches: [],
+      framework: {implementation: 'aosp', overrides: []}}))
+      .toBe('该 slice 由框架（AOSP）实现，App 中没有可覆写的方法');
+  });
+
+  it('lists found files', () => {
+    expect(owner('find_codebase_files', {success: true, files: [{filePath: 'src/ui/RenderThread.kt'},
+      {filePath: 'src/ui/RenderView.kt'}]}))
+      .toBe('找到 2 个文件（RenderThread.kt 等）');
+  });
+
+  it('says a budget stop as what happens next', () => {
+    expect(owner('read_codebase_file', {success: false, unsupportedReason: 'source_read_budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence'}))
+      .toBe('本轮源码读取次数已用完，继续使用已取得的源码证据');
+  });
+
+  it('never reaches a private-context narration', () => {
+    const text = formatToolResultNarration({toolName: 'search_codebase', privateContext: true, result: {},
+      ownerResult: mcpResult({success: true, matches: [match('app/src/SECRET_PATH_CANARY.kt', 1)]})});
+    expect(text).not.toContain('SECRET_PATH_CANARY');
+  });
+});

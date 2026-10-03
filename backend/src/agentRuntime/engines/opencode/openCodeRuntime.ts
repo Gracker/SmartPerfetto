@@ -926,6 +926,7 @@ export async function dispatchOpenCodeBridgeRequest(
             toolName: definition.name,
             args,
             result: projectedResult,
+            ownerResult: result,
             isError: resultIsFailure,
             language: openCodeOutputLanguage(options),
           }),

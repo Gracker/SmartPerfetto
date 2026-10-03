@@ -1596,6 +1596,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         toolName,
         args: cached?.args,
         result: projectedOutput,
+        ownerResult: rawOutput,
         isError: resultIsFailure,
         language: outputLanguage,
       });
