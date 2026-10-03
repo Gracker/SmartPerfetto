@@ -258,14 +258,17 @@ describe('anr_detail evidence boundary contract', () => {
     const contextPath = path.resolve(process.cwd(), 'skills/atomic/anr_context_in_range.skill.yaml');
     const context = yaml.parse(fs.readFileSync(contextPath, 'utf-8')) as {
       inputs?: Array<{ name: string }>;
-      sql?: string;
+      sql_fragments?: string[];
     };
 
     expect(analysis.steps.find(step => step.id === 'get_anr_context')?.params).toMatchObject({
       anr_type: '${anr_type}',
     });
     expect(context.inputs?.map(input => input.name)).toContain('anr_type');
-    expect(context.sql).toContain("AND (anr_type = '${anr_type}' OR '${anr_type}' = '')");
+    // The ANR filter lives in the fragment every ANR step shares.
+    expect(context.sql_fragments).toEqual(['fragments/anr_matched.sql']);
+    expect(fs.readFileSync(path.resolve(process.cwd(), 'skills/fragments/anr_matched.sql'), 'utf-8'))
+      .toContain("AND (anr_type = '${anr_type}' OR '${anr_type}' = '')");
   });
 });
 

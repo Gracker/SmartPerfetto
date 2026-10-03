@@ -1404,7 +1404,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "e67e1d090ccd9f9aa852107ff2666c3ce82e821bc0653f022887c22e88e8c8b9",
+            "sha256": "332c7050027e52233296895e7013f84a9325cd8df8e5aed4c1bc60899aade0e6",
             "required_columns": [
               "anr_ts",
               "window_start_ts",
@@ -6624,7 +6624,7 @@
         "steps": [
           {
             "id": "anr_detection",
-            "sha256": "5a32879a1858c31229e327c13d09a12f55d50f587e86b638308c959cfd5f35c3",
+            "sha256": "d156c921d2880c3a8e1fff08fabf3c8336bdc40a3364ed070b68aed929b63721",
             "required_columns": [
               "total_anr_count",
               "affected_process_count",
@@ -6635,7 +6635,7 @@
           },
           {
             "id": "trigger_classification",
-            "sha256": "0e9f75cbd64939b2c966130cd2222bb16b66016e0aa23a5f1415d43f7d6c5399",
+            "sha256": "03ab2b10889854953a901b8b588d3e4f5fdab3069c3ab6a454e02a0e72a37a7f",
             "required_columns": [
               "source_anr_type",
               "trigger_type",
@@ -6707,7 +6707,7 @@
           },
           {
             "id": "anr_overview",
-            "sha256": "500a7f4c0c8bf9a7ca8f6e0ae5922860ced62e16e03100e936c210cdd9c07051",
+            "sha256": "aa77dbab34c8a6115a1eca2571c7be5bb7690e0cbdd8691288cc71abf9bf5e9e",
             "required_columns": [
               "anr_type",
               "trigger_type",
@@ -6723,7 +6723,7 @@
           },
           {
             "id": "get_anr_events",
-            "sha256": "19c33a6ea816475dfd9ebb1203d5239958989b5327a2d2897e2b9b1b3b462b7f",
+            "sha256": "f148524c27567a1098cb3f7e88dd2b77ec93d47c3adb0b9e983a94006b92d77f",
             "required_columns": [
               "error_id",
               "process_name",
@@ -8145,7 +8145,7 @@
           },
           {
             "id": "non_cpu_heat_context",
-            "sha256": "e832cf122a0b21a11c2d7d6993adbd7f55e7d9e934ce8121b18609964e1e4ea6",
+            "sha256": "7384ca0eb998051827282c8331f26c8f060a2abb92d16e7720703b12aea26cb3",
             "required_columns": [
               "source_kind",
               "source_key",
@@ -8635,6 +8635,10 @@
           {
             "name": "android.gpu.memory",
             "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/android/gpu/memory.sql"
+          },
+          {
+            "name": "intervals.intersect",
+            "source_path": "perfetto/src/trace_processor/perfetto_sql/stdlib/intervals/intersect.sql"
           }
         ],
         "steps": [
@@ -8689,16 +8693,16 @@
           },
           {
             "id": "gpu_frame_correlation",
-            "sha256": "20822b855df74a9665cb7f65798965b59171be30cb9cbf1ab52327515d57cea2",
+            "sha256": "44c62b85612dd6cb1dd7358801c42863c7201317827204a04bfad31ef985e0ea",
             "required_columns": [
+              "gpu_id",
               "jank_type",
               "frame_count",
               "frames_with_running_freq",
               "avg_gpu_freq_mhz",
               "avg_frame_dur_ms",
               "max_frame_dur_ms",
-              "gpu_freq_range",
-              "gpu_id"
+              "gpu_freq_range"
             ]
           },
           {
@@ -8900,8 +8904,8 @@
             ]
           },
           {
-            "id": "sustained_throttle_events",
-            "sha256": "3b9766c2e6e6439f5f3271e395666d849b7befc80a0c805c00eaf04bca40d123",
+            "id": "sustained_below_target_events",
+            "sha256": "d032accdc69372ec38357ce65d3e3c6d71c94d588bf78dd009b9e2baed612d3e",
             "required_columns": [
               "gpu",
               "gpu_name",

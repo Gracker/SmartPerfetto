@@ -563,29 +563,69 @@ describe('validateNormalizedStdlibReads', () => {
     expect(warnings).toEqual([expect.objectContaining({ stepId: 'root', message: expect.stringContaining("Fragment 'fragments/raw_reader.sql'") })]);
   });
 
-  it('reads GPU frequency only through its normalizing fragment', () => {
+  it('reads GPU frequency only through its normalizing fragment, by SQL structure', () => {
     const gpuOwner = 'fragments/gpu_frequency_intervals.sql';
     const gpuFragments = new Map([
       [gpuOwner, "gpu_frequency_samples AS (SELECT c.value FROM counter c JOIN gpu_counter_track t ON t.id = c.track_id WHERE t.name = 'gpufreq')"],
     ]);
+    const steps: Array<[string, string]> = [
+      ['by_name', "SELECT c.value FROM counter c JOIN gpu_counter_track gct ON gct.id = c.track_id WHERE gct.name = 'gpufreq'"],
+      ['by_list', "SELECT 1 FROM gpu_counter_track WHERE name IN ('gpu_mem', 'gpufreq')"],
+      ['reversed', "SELECT 1 FROM gpu_counter_track t WHERE 'gpufreq' = t.name"],
+      ['by_pattern', "SELECT 1 FROM counter_track ct WHERE ct.name GLOB '*gpu*freq*'"],
+      ['lowered', "SELECT 1 FROM counter_track ct WHERE LOWER(ct.name) = 'gpufreq'"],
+      ['wrapped', "SELECT 1 FROM counter_track ct WHERE TRIM(UPPER(COALESCE(CAST(ct.name AS TEXT), ''))) LIKE '%GPUFREQ%'"],
+      ['aliased', "WITH t AS (SELECT id, name AS track_name FROM gpu_counter_track) SELECT 1 FROM counter c JOIN t ON t.id = c.track_id AND t.track_name = 'gpufreq'"],
+      ['by_type', "SELECT 1 FROM counter_track WHERE type IS 'gpu_frequency'"],
+      ['comma_join', 'SELECT f.gpu_freq FROM process p, android_gpu_frequency AS f'],
+      ['subquery', 'SELECT 1 WHERE EXISTS (SELECT 1 FROM main.android_gpu_frequency)'],
+      ['after_on', 'SELECT 1 FROM a JOIN b ON a.id = b.id, android_gpu_frequency'],
+      ['nested_join', 'SELECT 1 FROM (android_gpu_frequency JOIN x USING (ts))'],
+      ['quoted_schema', 'SELECT 1 FROM "main"."android_gpu_frequency"'],
+      ['span_join', 'CREATE VIRTUAL TABLE j USING SPAN_JOIN(android_gpu_frequency PARTITIONED gpu_id, busy PARTITIONED gpu_id)'],
+      ['aggregate', "SELECT SUM(CASE WHEN t.name = 'gpufreq' THEN c.value END) FROM counter c JOIN counter_track t ON t.id = c.track_id"],
+      ['parenthesized', "SELECT 1 FROM counter_track t WHERE t.name = ('gpufreq')"],
+      ['reversed_in', "SELECT 1 FROM counter_track t WHERE 'gpufreq' IN (t.name, t.type)"],
+      ['not_distinct', "SELECT 1 FROM counter_track t WHERE t.name IS NOT DISTINCT FROM 'gpufreq'"],
+      ['prefix_pattern', "SELECT 1 FROM counter_track t WHERE t.type GLOB 'gpu_freq*'"],
+      ['class_pattern', "SELECT 1 FROM counter_track t WHERE t.name GLOB '[g]pufreq'"],
+      ['counters_view', "SELECT ts, value FROM counters WHERE name = 'gpufreq'"],
+      ['simple_case', "SELECT SUM(CASE t.name WHEN 'gpufreq' THEN c.value END) FROM counter c JOIN counter_track t ON t.id = c.track_id"],
+      ['iif', "SELECT MAX(IIF(t.name = 'gpufreq', c.value, NULL)) FROM counter c JOIN counter_track t ON t.id = c.track_id"],
+      ['product', "SELECT SUM(c.value * (t.name = 'gpufreq')) FROM counter c JOIN counter_track t ON t.id = c.track_id"],
+      ['case_pattern', "SELECT CASE WHEN t.name GLOB 'gpufreq' THEN c.value END FROM counter c JOIN counter_track t ON t.id = c.track_id"],
+      ['like_escape', "SELECT 1 FROM counter_track t WHERE t.type LIKE 'gpu\\_frequency' ESCAPE '\\'"],
+      ['if_not_exists', 'CREATE VIEW IF NOT EXISTS android_gpu_frequency AS SELECT 1; SELECT * FROM android_gpu_frequency'],
+      ['nested_in', "SELECT 1 FROM counter_track t WHERE t.name IN (('gpufreq'))"],
+      ['reversed_not_distinct', "SELECT 1 FROM counter_track t WHERE 'gpufreq' IS NOT DISTINCT FROM t.name"],
+    ];
     const warnings = validateNormalizedStdlibReads({
       name: 'gpu', sql: 'SELECT gpu_freq / 1e6 FROM android_gpu_frequency',
-      steps: [
-        { id: 'by_name', type: 'atomic', sql: "SELECT c.value FROM counter c JOIN gpu_counter_track gct ON gct.id = c.track_id WHERE gct.name = 'gpufreq'" },
-        { id: 'by_list', type: 'atomic', sql: "SELECT 1 FROM gpu_counter_track WHERE name IN ('gpu_mem', 'gpufreq')" },
-        { id: 'reversed', type: 'atomic', sql: "SELECT 1 FROM gpu_counter_track t WHERE 'gpufreq' = t.name" },
-        { id: 'by_pattern', type: 'atomic', sql: "SELECT 1 FROM counter_track ct WHERE ct.name GLOB '*gpufreq*'" },
-      ],
+      steps: steps.map(([id, sql]) => ({id, type: 'atomic', sql})),
     } as unknown as SkillDefinition, gpuFragments);
-    expect(warnings.map(warning => warning.stepId)).toEqual(['root', 'by_name', 'by_list', 'reversed', 'by_pattern']);
+    expect(warnings.map(warning => warning.stepId)).toEqual(['root', ...steps.map(([id]) => id)]);
     expect(warnings[1].message).toContain(gpuOwner);
 
+    // Exclusions, labels and other tracks are not selections; the owner may read the track.
     expect(validateNormalizedStdlibReads({
       name: 'ok', sql_fragments: [gpuOwner],
-      sql: `-- WHERE name = 'gpufreq'
-        SELECT freq_mhz FROM gpu_frequency_intervals
-        UNION ALL SELECT value FROM gpu_counter_track WHERE name != 'gpufreq'
-        UNION ALL SELECT 1 FROM counter_track ct WHERE LOWER(ct.name) GLOB '*gpufreq*'`,
+      sql: `-- WHERE name = 'gpufreq'; FROM android_gpu_frequency
+        SELECT freq_mhz, 'gpufreq' AS counter_name, 'FROM android_gpu_frequency' AS note
+        FROM gpu_frequency_intervals
+        UNION ALL SELECT value FROM gpu_counter_track WHERE name != 'gpufreq' AND name NOT IN ('gpufreq')
+        UNION ALL SELECT CASE WHEN LOWER(ct.name) GLOB '*gpufreq*' THEN 'gpufreq' ELSE 'other' END
+          FROM counter_track ct WHERE ct.type = 'cooling_device_counter' AND ct.name NOT GLOB '*gpufreq*'
+        UNION ALL SELECT 1 FROM sqlite_master WHERE name = 'android_gpu_frequency_view'
+        UNION ALL SELECT 1 FROM counter_track t WHERE t.name IS DISTINCT FROM 'gpufreq' AND t.name GLOB '*gpufreq['
+        UNION ALL SELECT 1 FROM counter_track t WHERE t.name GLOB '*freq*' OR t.name LIKE '%'`,
+      steps: [
+        // A label the Skill computed itself, filtered over no track table.
+        {id: 'label', type: 'atomic', sql: "SELECT * FROM presence WHERE source_key = 'gpu_frequency'"},
+        {id: 'cte', type: 'atomic', sql: 'WITH android_gpu_frequency AS (SELECT 1 AS x) SELECT x FROM android_gpu_frequency'},
+        {id: 'materialized_cte', type: 'atomic', sql: 'WITH android_gpu_frequency AS NOT MATERIALIZED (SELECT 1 AS x) SELECT x FROM android_gpu_frequency'},
+        // Accepted limit: a wildcard pattern outside a row filter reads as a label.
+        {id: 'wildcard_aggregate', type: 'atomic', sql: "SELECT MAX(CASE WHEN t.name GLOB '*gpufreq*' THEN c.value END) FROM counter c JOIN counter_track t ON t.id = c.track_id"},
+      ],
     } as unknown as SkillDefinition, gpuFragments)).toEqual([]);
   });
 });

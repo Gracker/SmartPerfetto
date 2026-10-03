@@ -158,6 +158,20 @@
       "cpu": 0
     },
     {
+      "type": "gpu-frequency",
+      "at_ns": "0",
+      "gpu_id": 1,
+      "value": 0,
+      "cpu": 0
+    },
+    {
+      "type": "gpu-frequency",
+      "at_ns": "450000000",
+      "gpu_id": 1,
+      "value": 300000,
+      "cpu": 0
+    },
+    {
       "type": "gpu-memory-total",
       "at_ns": "455000000",
       "gpu_id": 0,

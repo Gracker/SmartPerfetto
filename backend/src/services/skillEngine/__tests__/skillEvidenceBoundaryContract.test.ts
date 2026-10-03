@@ -12,7 +12,7 @@ import { allStepsOf, skillDocuments } from '../../../../tests/helpers/skillRuleH
 import { extractRootVariables } from '../expressionUtils';
 import { boundSqlPlaceholderPaths } from '../sqlTemplate';
 import { topLevelOperands } from '../resultPathReads';
-import { namesThermalCause } from '../../../../tests/helpers/skillWording';
+import { namesFrequencyCap, namesThermalCause } from '../../../../tests/helpers/skillWording';
 
 const repoRoot = path.resolve(__dirname, '../../../..');
 
@@ -55,14 +55,23 @@ describe('Skill evidence boundary contracts', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * What a step must read to speak of heat or a limit: temperature tracks,
- * cooling devices, or the cpufreq max-limit tracks, directly or through the
- * shared thermal / freq-limit fragments.
+ * Evidence a step can read: by the tables and columns of its SQL, by a literal
+ * it compares against (a track name; an identifier must match the stricter
+ * `sql`), or through a shared fragment.
  */
-const THERMAL_EVIDENCE_SQL = /thermal_zone|Temperature|cdev|cooling|cpu_frequency_limits|max_limit|freq_limit/i;
-/** A literal the SQL compares against names a track by these; an identifier must match the stricter list above. */
-const THERMAL_EVIDENCE_COMPARED = /thermal|\btemp|cdev|cooling|freq_limit|max_limit/i;
-const THERMAL_EVIDENCE_FRAGMENT = /fragments\/(thermal_|system_cpu_freq_limit_)/;
+interface EvidenceKind { sql: RegExp; compared: RegExp; fragment: RegExp }
+/** Heat or a limit: temperature tracks, cooling devices, the cpufreq max-limit tracks. */
+const THERMAL_EVIDENCE: EvidenceKind = {
+  sql: /thermal_zone|Temperature|cdev|cooling|cpu_frequency_limits|max_limit|freq_limit/i,
+  compared: /thermal|\btemp|cdev|cooling|freq_limit|max_limit/i,
+  fragment: /fragments\/(thermal_|system_cpu_freq_limit_)/,
+};
+/** A frequency cap: the cpufreq max-limit tracks or a cooling device. A temperature shows heat, not a cap. */
+const LIMIT_EVIDENCE: EvidenceKind = {
+  sql: /cdev|cooling|cpu_frequency_limits|max_limit|freq_limit/i,
+  compared: /cdev|cooling|freq_limit|max_limit/i,
+  fragment: /fragments\/(thermal_cooling_|system_cpu_freq_limit_)/,
+};
 
 const CJK = /[\u4e00-\u9fff]/;
 /** A `--` comment (skipped, so an apostrophe in it cannot misalign quotes) or a single-quoted literal. */
@@ -120,10 +129,10 @@ function sqlResultRoots(sql: unknown): string[] {
   return typeof sql === 'string' ? boundSqlPlaceholderPaths(sql).map(path => path.split(/[.[]/)[0]) : [];
 }
 
-/** Whether a step's own SQL reads thermal or limit evidence: by the tables and columns it reads, or the tracks it compares against. */
-function readsEvidenceSql(sql: unknown): boolean {
+/** Whether a step's own SQL reads `kind` evidence: by the tables and columns it reads, or the tracks it compares against. */
+function readsEvidenceSql(sql: unknown, kind: EvidenceKind): boolean {
   const {identifiers, comparedLiterals} = executedSql(sql);
-  return THERMAL_EVIDENCE_SQL.test(identifiers) || comparedLiterals.some(literal => THERMAL_EVIDENCE_COMPARED.test(literal));
+  return kind.sql.test(identifiers) || comparedLiterals.some(literal => kind.compared.test(literal));
 }
 
 /**
@@ -184,13 +193,13 @@ function requiresEvidence(condition: unknown, evidenceNames: ReadonlySet<string>
  * such step's result in their SQL or their condition, or, for a diagnostic
  * step, through its inputs. Returns them with the names their results are read under.
  */
-function thermalEvidenceSteps(skill: any, evidenceSkills: ReadonlySet<string>) {
+function evidenceSteps(skill: any, readers: ReadonlySet<string>, kind: EvidenceKind) {
   const steps = new Set<any>();
   const names = new Set<string>();
   for (const step of stepsOf(skill)) {
-    const reads = evidenceSkills.has(step.skill)
-      || readsEvidenceSql(step.sql)
-      || (step.sql_fragments ?? []).some((fragment: string) => THERMAL_EVIDENCE_FRAGMENT.test(fragment))
+    const reads = readers.has(step.skill)
+      || readsEvidenceSql(step.sql, kind)
+      || (step.sql_fragments ?? []).some((fragment: string) => kind.fragment.test(fragment))
       || [...sqlResultRoots(step.sql), ...(step.inputs ?? [])].some(root => names.has(root))
       || requiresEvidence(step.condition, names);
     if (!reads) continue;
@@ -200,13 +209,13 @@ function thermalEvidenceSteps(skill: any, evidenceSkills: ReadonlySet<string>) {
   return {steps, names};
 }
 
-/** Skills with a step that reads thermal or limit evidence; a reference to one reads it too. */
-function thermalEvidenceSkills(skills: any[]): Set<string> {
+/** Skills with a step that reads `kind` evidence; a reference to one reads it too. */
+function evidenceSkills(skills: any[], kind: EvidenceKind): Set<string> {
   const found = new Set<string>();
   for (let grew = true; grew;) {
     grew = false;
     for (const skill of skills) {
-      if (!found.has(skill.name) && thermalEvidenceSteps(skill, found).steps.size > 0) { found.add(skill.name); grew = true; }
+      if (!found.has(skill.name) && evidenceSteps(skill, found, kind).steps.size > 0) { found.add(skill.name); grew = true; }
     }
   }
   return found;
@@ -214,17 +223,22 @@ function thermalEvidenceSkills(skills: any[]): Set<string> {
 
 interface ThermalWording { site: string; allowedBy?: string; text: string }
 
+/** What a wording check looks for and the evidence that allows it. */
+interface WordingRule { names: (text: string) => boolean; kind: EvidenceKind }
+const HEAT_WORDING: WordingRule = {names: namesThermalCause, kind: THERMAL_EVIDENCE};
+const CAP_WORDING: WordingRule = {names: namesFrequencyCap, kind: LIMIT_EVIDENCE};
+
 /**
  * Every user-facing text of `skill` that names a thermal cause, with the
  * evidence that allows it: the step that reads thermal or limit evidence (for
  * its SQL text and labels), the Skill for its own description, or a rule whose
  * condition reads the result of such a step.
  */
-function thermalWording(skill: any, evidenceSkills: ReadonlySet<string>): ThermalWording[] {
+function thermalWording(skill: any, readers: ReadonlySet<string>, rule: WordingRule = HEAT_WORDING): ThermalWording[] {
   const found: ThermalWording[] = [];
   const name = String(skill?.name);
   const add = (site: string, text: unknown, allowedBy?: string) => {
-    if (typeof text === 'string' && namesThermalCause(text)) found.push({site, text, allowedBy});
+    if (typeof text === 'string' && rule.names(text)) found.push({site, text, allowedBy});
   };
   // What the Skill says it does, and the labels its results carry.
   const labels = (site: string, owner: any, allowedBy?: string) => {
@@ -233,11 +247,11 @@ function thermalWording(skill: any, evidenceSkills: ReadonlySet<string>): Therma
     for (const column of owner?.display?.columns ?? []) add(site, column?.label, allowedBy);
     for (const insight of owner?.synthesize?.insights ?? []) add(site, insight?.template, allowedBy);
   };
-  const skillAllowance = evidenceSkills.has(name) ? `skill ${name}` : undefined;
+  const skillAllowance = readers.has(name) ? `skill ${name}` : undefined;
   add(name, skill?.meta?.display_name, skillAllowance);
   add(name, skill?.meta?.description, skillAllowance);
   labels(name, {display: skill?.display, synthesize: skill?.synthesize}, skillAllowance);
-  const evidence = thermalEvidenceSteps(skill, evidenceSkills);
+  const evidence = evidenceSteps(skill, readers, rule.kind);
   for (const step of stepsOf(skill)) {
     const site = `${name}/${step.id}`;
     const stepAllowance = evidence.steps.has(step) ? `step ${site}` : undefined;
@@ -256,11 +270,27 @@ function thermalWording(skill: any, evidenceSkills: ReadonlySet<string>): Therma
 
 describe('thermal wording follows thermal evidence', () => {
   const skills = skillDocuments().map(({skill}) => skill);
-  const evidenceSkills = thermalEvidenceSkills(skills);
-  const wording = skills.flatMap(skill => thermalWording(skill, evidenceSkills));
+  /** Every wording `rule` flags across the Skills, with what allows it. */
+  const wordingOf = (rule: WordingRule) => {
+    const readers = evidenceSkills(skills, rule.kind);
+    return skills.flatMap(skill => thermalWording(skill, readers, rule));
+  };
+  const wording = wordingOf(HEAT_WORDING);
+  const capWording = wordingOf(CAP_WORDING);
 
   it('names a thermal cause only where the Skill reads thermal or limit evidence', () => {
     expect(wording.filter(entry => !entry.allowedBy).map(entry => `${entry.site}: ${entry.text}`)).toEqual([]);
+  });
+
+  it('says throttle only where the Skill reads a frequency cap, not a temperature alone', () => {
+    expect(capWording.filter(entry => !entry.allowedBy).map(entry => `${entry.site}: ${entry.text}`)).toEqual([]);
+    // A GPU temperature counter shows heat, not a cap.
+    const probe = {name: 'probe', steps: [{id: 'low_clock', type: 'atomic', name: 'Sustained GPU throttle events',
+      sql: "SELECT AVG(c.value) FROM counter c JOIN gpu_counter_track t ON t.id = c.track_id WHERE t.name = 'Temperature'"}]};
+    expect(thermalWording(probe, new Set(), CAP_WORDING)).toEqual([
+      {site: 'probe/low_clock', text: 'Sustained GPU throttle events', allowedBy: undefined},
+    ]);
+    expect(thermalWording(probe, new Set())).toEqual([]);
   });
 
   it('flags a cause in rule text or a user-facing literal, not a deferral or a code', () => {
@@ -304,6 +334,12 @@ describe('thermal wording follows thermal evidence', () => {
       expect([asserted, namesThermalCause(asserted)]).toEqual([asserted, true]);
     }
     expect(namesThermalCause('缺少 thermal 限频轨道')).toBe(false);
+    // "throttle" reads as a frequency cap; inside an identifier or a placeholder it is a name.
+    expect(namesFrequencyCap('Sustained GPU throttle events')).toBe(true);
+    expect(namesFrequencyCap('GPU throttling')).toBe(true);
+    expect(namesFrequencyCap('min_throttle_ns')).toBe(false);
+    expect(namesFrequencyCap('频率变化 ${throttle_events.data.length} 次')).toBe(false);
+    expect(namesThermalCause('Sustained GPU throttle events')).toBe(false);
     // 设备 is a source of evidence only in 散热设备; elsewhere it is what heat acts on.
     for (const asserted of ['温控让设备降频', '过热使设备降频', '高温下设备降频', '温控限制了设备性能',
       '发热严重设备卡顿', '设备过热后设备降频', '温控降频事件频发', '不是负载就是温控', '无法判断负载实为温控',

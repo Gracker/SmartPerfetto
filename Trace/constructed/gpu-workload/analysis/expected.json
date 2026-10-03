@@ -273,7 +273,7 @@
       "source_file": "backend/skills/composite/gpu_v57_ai_diagnostics.skill.yaml",
       "parameters": {
         "target_freq_ratio": 0.9,
-        "min_throttle_ns": 1000,
+        "min_below_target_ns": 1000,
         "max_rows": 20
       },
       "required_steps": [
@@ -283,7 +283,7 @@
         "idle_gaps",
         "frequency_residency",
         "dvfs_ramp_events",
-        "sustained_throttle_events",
+        "sustained_below_target_events",
         "no_data_contract"
       ],
       "required_sql_steps": [
@@ -293,7 +293,7 @@
         "idle_gaps",
         "frequency_residency",
         "dvfs_ramp_events",
-        "sustained_throttle_events",
+        "sustained_below_target_events",
         "no_data_contract"
       ],
       "forced_sql_steps": [
@@ -301,7 +301,7 @@
         "idle_gaps",
         "frequency_residency",
         "dvfs_ramp_events",
-        "sustained_throttle_events",
+        "sustained_below_target_events",
         "no_data_contract"
       ],
       "isolated_sql_probes": [],

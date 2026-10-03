@@ -25,6 +25,7 @@ triggers:
 prerequisites:
   modules:
     - android.gpu.memory
+    - intervals.intersect
 
 inputs:
   - name: package
@@ -337,6 +338,9 @@ steps:
       layer: list
       title: "GPU 频率与帧渲染关联"
       columns:
+        - name: gpu_id
+          label: "GPU"
+          type: number
         - name: jank_type
           label: "帧类型"
           type: string
@@ -365,22 +369,21 @@ steps:
         - name: gpu_freq_range
           label: "频率范围"
           type: string
-        - name: gpu_id
-          label: "GPU"
-          type: number
     sql_fragments:
       - fragments/gpu_frequency_intervals.sql
     sql: |
-      -- Each frame against the lowest-numbered GPU: the running frequency
-      -- weighted by time inside the frame, leaving out time the GPU was off.
-      -- A GPU often powers up after a frame starts, so a frame whose interval
-      -- holds no running time is counted, not dropped, and has no frequency.
+      -- Each frame against each GPU: the running frequency weighted by time
+      -- inside the frame, leaving out time that GPU was off. Which GPU renders
+      -- a frame is not in the trace, so every GPU gets its own rows rather than
+      -- one being picked. A GPU often powers up after a frame starts, so a
+      -- frame whose interval holds no running time on a GPU is counted, not
+      -- dropped, and has no frequency there. The overlap is an interval
+      -- intersection: a per-frame range scan costs frames x GPUs x intervals.
       WITH
       gpu AS MATERIALIZED (
-        SELECT ts, dur, freq_mhz, gpu_id
+        SELECT counter_id AS id, ts, dur, freq_mhz, gpu_id
         FROM gpu_frequency_intervals
-        WHERE freq_mhz > 0
-          AND gpu_id = (SELECT MIN(gpu_id) FROM gpu_frequency_intervals)
+        WHERE freq_mhz > 0 AND dur > 0
       ),
       frames AS (
         SELECT f.id, f.ts, f.dur, COALESCE(f.jank_type, 'None') as jank_type
@@ -393,30 +396,39 @@ steps:
           AND (${end_ts} IS NULL OR f.ts < ${end_ts})
           AND COALESCE(f.display_frame_token, f.surface_frame_token) IS NOT NULL
       ),
-      frame_gpu AS (
-        SELECT
-          f.id,
-          f.dur,
-          f.jank_type,
-          SUM(g.freq_mhz * (MIN(g.ts + g.dur, f.ts + f.dur) - MAX(g.ts, f.ts)))
-            / NULLIF(SUM(MIN(g.ts + g.dur, f.ts + f.dur) - MAX(g.ts, f.ts)), 0) as gpu_freq_mhz
+      frame_gpu_keys AS MATERIALIZED (
+        SELECT ROW_NUMBER() OVER () AS id, f.id AS frame_id, f.ts, f.dur, f.jank_type, k.gpu_id
         FROM frames f
-        LEFT JOIN gpu g ON g.ts < f.ts + f.dur AND g.ts + g.dur > f.ts
-        GROUP BY f.id
+        CROSS JOIN (SELECT DISTINCT gpu_id FROM gpu_frequency_samples) k
+      ),
+      running AS MATERIALIZED (
+        SELECT ii.id_0 AS key_id, SUM(g.freq_mhz * ii.dur) AS weighted, SUM(ii.dur) AS running_dur
+        FROM _interval_intersect!((frame_gpu_keys, gpu), (gpu_id)) AS ii
+        JOIN gpu AS g ON g.id = ii.id_1
+        GROUP BY ii.id_0
+      ),
+      per_type AS (
+        SELECT
+          k.gpu_id,
+          k.jank_type,
+          COUNT(*) as frame_count,
+          COUNT(r.key_id) as frames_with_running_freq,
+          ROUND(AVG(r.weighted / r.running_dur), 0) as avg_gpu_freq_mhz,
+          ROUND(AVG(k.dur) / 1e6, 2) as avg_frame_dur_ms,
+          ROUND(MAX(k.dur) / 1e6, 2) as max_frame_dur_ms,
+          ROUND(MIN(r.weighted / r.running_dur), 0) || ' - ' || ROUND(MAX(r.weighted / r.running_dur), 0) || ' MHz' as gpu_freq_range
+        FROM frame_gpu_keys k
+        LEFT JOIN running r ON r.key_id = k.id
+        GROUP BY k.gpu_id, k.jank_type
       )
-      SELECT
-        jank_type,
-        COUNT(*) as frame_count,
-        COUNT(gpu_freq_mhz) as frames_with_running_freq,
-        ROUND(AVG(gpu_freq_mhz), 0) as avg_gpu_freq_mhz,
-        ROUND(AVG(dur) / 1e6, 2) as avg_frame_dur_ms,
-        ROUND(MAX(dur) / 1e6, 2) as max_frame_dur_ms,
-        ROUND(MIN(gpu_freq_mhz), 0) || ' - ' || ROUND(MAX(gpu_freq_mhz), 0) || ' MHz' as gpu_freq_range,
-        (SELECT MIN(gpu_id) FROM gpu) as gpu_id
-      FROM frame_gpu
-      GROUP BY jank_type
-      ORDER BY frame_count DESC
-      LIMIT 10
+      SELECT gpu_id, jank_type, frame_count, frames_with_running_freq, avg_gpu_freq_mhz,
+        avg_frame_dur_ms, max_frame_dur_ms, gpu_freq_range
+      FROM (
+        SELECT *, ROW_NUMBER() OVER (PARTITION BY gpu_id ORDER BY frame_count DESC, jank_type) AS type_rank
+        FROM per_type
+      )
+      WHERE type_rank <= 10
+      ORDER BY gpu_id, frame_count DESC, jank_type
     save_as: gpu_frame_correlation
     condition: "data_check.data[0]?.has_gpu_data === 1 && data_check.data[0]?.has_frame_timeline === 1"
 

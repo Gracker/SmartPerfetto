@@ -19245,6 +19245,12 @@
             "en": "GPU Frame Correlation"
           },
           "columns": {
+            "gpu_id": {
+              "label": {
+                "zh-CN": "GPUId",
+                "en": "GPU"
+              }
+            },
             "jank_type": {
               "label": {
                 "zh-CN": "帧类型",
@@ -19285,12 +19291,6 @@
               "label": {
                 "zh-CN": "频率范围",
                 "en": "GPU Freq Range"
-              }
-            },
-            "gpu_id": {
-              "label": {
-                "zh-CN": "GPUId",
-                "en": "GPU"
               }
             }
           },
@@ -20462,7 +20462,7 @@
       },
       "description": {
         "zh-CN": "基于 Trace 指标与证据分析GPUV57AIDiagnostics。",
-        "en": "Translate Perfetto v57 GPU Agent Skill SQL into deterministic inventory, occupancy, frequency, ramp, and throttle evidence"
+        "en": "Translate Perfetto v57 GPU Agent Skill SQL into deterministic inventory, occupancy, frequency, ramp, and below-target-clock evidence; it reads no frequency-cap evidence"
       },
       "type": "composite",
       "steps": {
@@ -20761,19 +20761,19 @@
                 "en": "Dvfs Ramp Events"
               }
             },
-            "sustained_throttle_events": {
+            "sustained_below_target_events": {
               "label": {
-                "zh-CN": "SustainedThrottle事件",
-                "en": "Sustained Throttle Events"
+                "zh-CN": "SustainedBelowTarget事件",
+                "en": "Sustained Below Target Events"
               }
             }
           },
           "synthesizeLabels": {}
         },
-        "sustained_throttle_events": {
+        "sustained_below_target_events": {
           "title": {
-            "zh-CN": "SustainedThrottle事件",
-            "en": "Sustained GPU Throttle Events"
+            "zh-CN": "SustainedBelowTarget事件",
+            "en": "GPU Busy Time Below Target Clock (not frequency-cap evidence)"
           },
           "columns": {
             "gpu": {

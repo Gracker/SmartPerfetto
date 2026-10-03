@@ -10,9 +10,9 @@ tier: B
 
 meta:
   display_name: "GPU v57 AI Diagnostics"
-  description: "Translate Perfetto v57 GPU Agent Skill SQL into deterministic inventory, occupancy, frequency, ramp, and throttle evidence"
+  description: "Translate Perfetto v57 GPU Agent Skill SQL into deterministic inventory, occupancy, frequency, ramp, and below-target-clock evidence; it reads no frequency-cap evidence"
   icon: "memory"
-  tags: [gpu, occupancy, dvfs, throttle, upstream_v57, composite]
+  tags: [gpu, occupancy, dvfs, below_target_clock, upstream_v57, composite]
 
 triggers:
   keywords:
@@ -45,11 +45,11 @@ inputs:
     required: false
     default: 0.9
     description: "Target clock ratio relative to observed fmax"
-  - name: min_throttle_ns
+  - name: min_below_target_ns
     type: integer
     required: false
     default: 1000
-    description: "Minimum sustained throttle interval in ns"
+    description: "Minimum busy interval below the target clock, in ns"
   - name: max_rows
     type: integer
     required: false
@@ -465,15 +465,18 @@ steps:
       LIMIT (SELECT max_rows FROM params)
     save_as: dvfs_ramp_events
 
-  - id: sustained_throttle_events
+  # Upstream gpu_sustained_throttle.sql: busy time below target_freq_ratio of
+  # the observed top clock after a ramp reached it. It reads no frequency cap,
+  # so it says the clock was low while busy, never why.
+  - id: sustained_below_target_events
     type: atomic
-    name: "Sustained GPU throttle events"
+    name: "GPU busy time below the target clock"
     optional: true
     condition: "frequency_residency.data?.length > 0"
     display:
       level: detail
       layer: list
-      title: "Sustained GPU Throttle Events"
+      title: "GPU Busy Time Below Target Clock (not frequency-cap evidence)"
       columns:
         - name: gpu
           label: "GPU"
@@ -510,7 +513,7 @@ steps:
       params AS (
         SELECT
           COALESCE(${target_freq_ratio|0.9}, 0.9) AS target_ratio,
-          MIN(MAX(COALESCE(${min_throttle_ns|1000}, 1000), 1), 10000000000) AS min_throttle_ns,
+          MIN(MAX(COALESCE(${min_below_target_ns|1000}, 1000), 1), 10000000000) AS min_below_target_ns,
           MIN(MAX(COALESCE(${max_rows|20}, 20), 1), 200) AS max_rows
       ),
       low_busy AS (
@@ -570,7 +573,7 @@ steps:
       FROM low_busy AS l
       LEFT JOIN gpu AS g
         ON g.ugpu = l.ugpu
-      WHERE l.dur >= (SELECT min_throttle_ns FROM params)
+      WHERE l.dur >= (SELECT min_below_target_ns FROM params)
         AND l.ts >= (
           SELECT MAX(e.ramp_reach_ts)
           FROM ramp_reach AS e
@@ -580,7 +583,7 @@ steps:
         )
       ORDER BY l.dur DESC
       LIMIT (SELECT max_rows FROM params)
-    save_as: sustained_throttle_events
+    save_as: sustained_below_target_events
 
   - id: no_data_contract
     type: atomic
@@ -622,5 +625,5 @@ output:
       description: "Busy-time clock residency and effective occupancy translated from upstream gpu_frequency_residency.sql"
     - name: dvfs_ramp_events
       description: "Idle-to-busy clock ramp latency translated from upstream gpu_dvfs_ramp.sql"
-    - name: sustained_throttle_events
-      description: "Sustained low-clock busy intervals translated from upstream gpu_sustained_throttle.sql"
+    - name: sustained_below_target_events
+      description: "Busy intervals held below the target clock after a ramp reached it, translated from upstream gpu_sustained_throttle.sql. The upstream name says throttle, but no frequency-cap or thermal evidence is read: a governor lowers the clock for load as often as a cap does, so this is not a throttling finding"

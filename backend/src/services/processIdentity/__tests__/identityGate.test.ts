@@ -121,6 +121,9 @@ describe('IdentityGate', () => {
       'android_heap_graph_summary',
       'android_memory_v57_ai_diagnostics',
       'android_process_state_residency',
+      // Its process filter moved from step SQL into fragments/anr_matched.sql;
+      // the policy stays verify_if_present.
+      'anr_context_in_range',
       // Its package filter moved from step SQL into fragments/memory_gc_events.sql;
       // the policy stays verify_if_present.
       'art_module',

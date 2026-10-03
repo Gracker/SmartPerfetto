@@ -122,6 +122,12 @@ sql_fragments:
   backend/skills/fragments/art_gc_names.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/art_gc_names.sql
+  backend/skills/fragments/anr_matched.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/anr_matched.sql
+  backend/skills/fragments/anr_classified.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/anr_classified.sql
   backend/skills/fragments/memory_gc_events.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/memory_gc_events.sql

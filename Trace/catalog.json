@@ -3160,7 +3160,7 @@
       "trace": {
         "file": "trace.overlay.pftrace",
         "format": "perfetto-protobuf",
-        "sha256": "bbc01c6a7dc6f007b48b6a0b2fb5a281cf024e91e2f795f17311e26f86270508",
+        "sha256": "357cccf6d3ad731c45f5f42258c8e8de286f86ae9ec0ee1e5bb9871f891a2646",
         "materialization": "base-plus-overlay"
       },
       "android": {
@@ -3484,7 +3484,7 @@
             "source_file": "backend/skills/composite/gpu_v57_ai_diagnostics.skill.yaml",
             "parameters": {
               "target_freq_ratio": 0.9,
-              "min_throttle_ns": 1000,
+              "min_below_target_ns": 1000,
               "max_rows": 20
             },
             "required_steps": [
@@ -3494,7 +3494,7 @@
               "idle_gaps",
               "frequency_residency",
               "dvfs_ramp_events",
-              "sustained_throttle_events",
+              "sustained_below_target_events",
               "no_data_contract"
             ],
             "required_sql_steps": [
@@ -3504,7 +3504,7 @@
               "idle_gaps",
               "frequency_residency",
               "dvfs_ramp_events",
-              "sustained_throttle_events",
+              "sustained_below_target_events",
               "no_data_contract"
             ],
             "forced_sql_steps": [
@@ -3512,7 +3512,7 @@
               "idle_gaps",
               "frequency_residency",
               "dvfs_ramp_events",
-              "sustained_throttle_events",
+              "sustained_below_target_events",
               "no_data_contract"
             ],
             "isolated_sql_probes": [],
