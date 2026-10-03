@@ -113,12 +113,14 @@ text. For example:
 
 The services behind RAG administration throw machine reason codes as their
 messages (`root_outside_allowlist`, `source_chunk_limit_exceeded:5000`). Only
-the families a caller can act on (source paths, knowledge roots, the index
-lifecycle, consent and right-to-use acknowledgement) are returned as `code`
-and `error`, without the detail after the first `:` (an id, path or size), and
-the original message is logged at warn level; internal reason codes (store
-corruption, staged chunk count mismatches) and messages that are not reason
-codes get fixed text. Self-Evolution keeps its
+the codes listed one by one as caller-actionable (source paths, knowledge
+roots, the index lifecycle, consent and right-to-use acknowledgement;
+`CALLER_FACING_RAG_REASONS` in `ragAdminRoutes.ts`) are returned as `code` and
+`error`, without the detail after the first `:` (an id, path, size or excluded
+item count), and the original message is logged at warn level; any unlisted
+code, whatever its prefix (store corruption, staged chunk count mismatches,
+subprocess failures), and messages that are not reason codes get fixed
+text. Self-Evolution keeps its
 `{success: false, error: <code>}` shape and returns the whole lowercase reason
 code (only `a-z 0-9 _ : -`, possibly with an id after `:`); any other
 exception is `self_evolution_request_failed`.
