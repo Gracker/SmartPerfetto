@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, jest } from '@jest/globals
 import express from 'express';
 import fs from 'fs/promises';
 import http, { type Server } from 'http';
-import type { Socket as NetSocket } from 'net';
+import net, { type Socket as NetSocket } from 'net';
 import os from 'os';
 import path from 'path';
 import request from 'supertest';
@@ -29,8 +29,9 @@ import {
   resetTraceProcessorProxyCapabilitiesForTests,
 } from '../../services/traceProcessorProxyCapability';
 import traceProcessorProxyRoutes, {
-  handleTraceProcessorProxyUpgrade,
+  REJECTED_UPGRADE_LINGER_MS,
 } from '../traceProcessorProxyRoutes';
+import { dispatchUpgrade } from '../../middleware/httpEdge';
 
 const originalEnv = {
   enterprise: process.env[ENTERPRISE_FEATURE_FLAG_ENV],
@@ -152,7 +153,7 @@ async function upgradeStatus(
   });
 }
 
-async function withUpgradeProxy(run: (proxyPort: number) => Promise<void>): Promise<void> {
+async function withUpgradeProxy(run: (proxyPort: number, proxyServer: Server) => Promise<void>): Promise<void> {
   const proxyServer = http.createServer(makeApp());
   // Upgraded sockets leave the server's connection tracking, so close them here.
   const proxySockets = new Set<NetSocket>();
@@ -160,17 +161,71 @@ async function withUpgradeProxy(run: (proxyPort: number) => Promise<void>): Prom
     proxySockets.add(socket);
     socket.on('close', () => proxySockets.delete(socket));
   });
-  proxyServer.on('upgrade', (req, socket, head) => {
-    if (handleTraceProcessorProxyUpgrade(req, socket, head, ALLOWED_ORIGINS)) return;
-    socket.destroy();
-  });
+  // The production upgrade listener.
+  proxyServer.on('upgrade', (req, socket, head) => dispatchUpgrade(req, socket, head, ALLOWED_ORIGINS));
   const proxyPort = await listen(proxyServer);
   try {
-    await run(proxyPort);
+    await run(proxyPort, proxyServer);
   } finally {
     for (const socket of proxySockets) socket.destroy();
     await closeServer(proxyServer);
   }
+}
+
+/**
+ * Opens a raw SSO-authenticated upgrade from a peer that never closes its
+ * side, so only the proxy can end the connection. Returns the proxy's
+ * accepted socket and what the peer has received so far.
+ */
+async function openRawUpgrade(proxyServer: Server, proxyPort: number): Promise<{
+  proxySocket: NetSocket;
+  received: () => string;
+}> {
+  const accepted = new Promise<NetSocket>(resolve => proxyServer.once('connection', resolve));
+  const client = net.connect({host: '127.0.0.1', port: proxyPort, allowHalfOpen: true});
+  client.on('error', () => {});
+  let received = '';
+  client.on('data', chunk => {received += chunk.toString('utf8');});
+  const proxySocket = await accepted;
+  proxySocket.once('close', () => client.destroy());
+  client.write([
+    `GET /api/tp/${lease.id}/websocket?workspaceId=workspace-a HTTP/1.1`,
+    `Host: 127.0.0.1:${proxyPort}`,
+    'Connection: Upgrade',
+    'Upgrade: websocket',
+    'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==',
+    'Sec-WebSocket-Version: 13',
+    'X-SmartPerfetto-SSO-User-Id: user-a',
+    'X-SmartPerfetto-SSO-Tenant-Id: tenant-a',
+    '', '',
+  ].join('\r\n'));
+  return {proxySocket, received: () => received};
+}
+
+async function closedWithin(socket: NetSocket, ms: number): Promise<boolean> {
+  if (socket.destroyed) return true;
+  return new Promise<boolean>(resolve => {
+    const timer = setTimeout(() => resolve(false), ms);
+    socket.once('close', () => {clearTimeout(timer); resolve(true);});
+  });
+}
+
+async function waitFor(condition: () => boolean, ms = 5000): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('condition not met in time');
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+/** A raw TCP upstream that does `onRequest` to its socket once the proxied request arrives. */
+async function rawUpstream(onRequest: (socket: NetSocket) => void): Promise<net.Server> {
+  const server = net.createServer(socket => {
+    socket.on('error', () => {});
+    socket.once('data', () => onRequest(socket));
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  return server;
 }
 
 function frontendHolder(windowId: string) {
@@ -913,6 +968,64 @@ describe('trace processor lease proxy routes', () => {
       expect(await upgradeStatus(proxyPort, `/api/tp/${lease.id}/websocket?workspaceId=workspace-a`, {
         'X-SmartPerfetto-SSO-User-Id': 'user-a', 'X-SmartPerfetto-SSO-Tenant-Id': 'tenant-a',
       })).toBe(101);
+    });
+  });
+
+  describe('upstream failures', () => {
+    let rawServer: net.Server | undefined;
+
+    afterEach(async () => {
+      if (rawServer?.listening) await new Promise<void>(resolve => rawServer!.close(() => resolve()));
+      rawServer = undefined;
+    });
+
+    it('delivers a 502 when the upstream refuses, and leaves the socket to the rejection', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      // A refusal without a real port: a closed port can be taken by another
+      // process before the proxy connects. The proxy's connection to this
+      // sentinel port fails like ECONNREFUSED (error, then close, never
+      // connect); every other connection, the test client's included, is real.
+      const refusedPort = 1;
+      const connect = net.connect.bind(net) as (...args: unknown[]) => NetSocket;
+      const connectSpy = jest.spyOn(net, 'connect').mockImplementation(((...args: unknown[]) => {
+        const options = args[0] as {port?: number} | undefined;
+        if (options?.port !== refusedPort) return connect(...args);
+        const refused = new net.Socket();
+        process.nextTick(() => refused.destroy(Object.assign(
+          new Error(`connect ECONNREFUSED 127.0.0.1:${refusedPort}`), {code: 'ECONNREFUSED'})));
+        return refused;
+      }) as typeof net.connect);
+      upstreamPort = refusedPort;
+      await withUpgradeProxy(async (proxyPort, proxyServer) => {
+        const {proxySocket, received} = await openRawUpgrade(proxyServer, proxyPort);
+        await waitFor(() => received().endsWith('Trace processor WebSocket proxy failed'));
+        expect(received().split('\r\n')[0]).toBe('HTTP/1.1 502 Bad Gateway');
+        // The upstream's close must not cut the rejection short: the peer gets
+        // its linger to read the response, then the socket is released.
+        expect(await closedWithin(proxySocket, 250)).toBe(false);
+        expect(await closedWithin(proxySocket, REJECTED_UPGRADE_LINGER_MS + 1000)).toBe(true);
+        expect(connectSpy).toHaveBeenCalledWith(expect.objectContaining({port: refusedPort}));
+      });
+    });
+
+    it('drops a tunnel whose upstream resets without writing an HTTP error into it', async () => {
+      jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      rawServer = await rawUpstream(socket => socket.resetAndDestroy());
+      upstreamPort = (rawServer.address() as net.AddressInfo).port;
+      await withUpgradeProxy(async (proxyPort, proxyServer) => {
+        const {proxySocket, received} = await openRawUpgrade(proxyServer, proxyPort);
+        expect(await closedWithin(proxySocket, 2000)).toBe(true);
+        expect(received()).not.toContain('HTTP/1.1 502');
+      });
+    });
+
+    it('closes the client socket when a tunnelled upstream ends', async () => {
+      rawServer = await rawUpstream(socket => socket.end());
+      upstreamPort = (rawServer.address() as net.AddressInfo).port;
+      await withUpgradeProxy(async (proxyPort, proxyServer) => {
+        const {proxySocket} = await openRawUpgrade(proxyServer, proxyPort);
+        expect(await closedWithin(proxySocket, 500)).toBe(true);
+      });
     });
   });
 

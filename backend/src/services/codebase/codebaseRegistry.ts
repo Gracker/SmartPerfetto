@@ -26,7 +26,12 @@ import {
 } from '../scopedIngestLease';
 import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
 import {buildSourceSelectionIR, sourceExtensionsForKind} from './sourceSelectionPolicy';
-import {codebaseNotFound, invalidCodebaseMetadata, invalidCodebaseSelection} from './codebaseRequestError';
+import {
+  CodebaseStateError,
+  codebaseNotFound,
+  invalidCodebaseMetadata,
+  invalidCodebaseSelection,
+} from './codebaseRequestError';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
 export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker';
@@ -45,8 +50,8 @@ const INGEST_LEASE: ScopedIngestLeaseConfig = {
   // durable check and the generation switch is a fenced pair write, so only
   // those per-file/per-chunk checks are throttled.
   heartbeatMs: Math.max(1_000, Math.floor(INGEST_LEASE_TTL_MS / 3)),
-  inProgressError: 'codebase_reindex_in_progress',
-  lostError: 'codebase_reindex_lease_lost',
+  inProgressError: () => new CodebaseStateError('codebase_reindex_in_progress'),
+  lostError: () => new CodebaseStateError('codebase_reindex_lease_lost'),
   logPrefix: 'CodebaseRegistry',
 };
 export const PENDING_GENERATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -637,7 +642,7 @@ export class CodebaseRegistry {
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (existing.lifecycleState === 'deleting') {
-        throw new Error('codebase_deleting');
+        throw new CodebaseStateError('codebase_deleting');
       }
       const consentedAt = Date.now();
       const previousGrant = effectiveConsentGrant(existing);
@@ -672,7 +677,7 @@ export class CodebaseRegistry {
     patch: {pathFilters?: string[]; excludeGlobs?: string[]},
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
-      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
       const requestedPathFilters = patch.pathFilters === undefined
         ? existing.pathFilters
         : patch.pathFilters;
@@ -723,8 +728,8 @@ export class CodebaseRegistry {
     actor: string,
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
-      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
-      if (!existing.consent.sendToProvider) throw new Error('provider_send_consent_required');
+      if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
+      if (!existing.consent.sendToProvider) throw new CodebaseStateError('provider_send_consent_required');
       const now = Date.now();
       const grant = effectiveConsentGrant(existing);
       const extensions = [...sourceExtensionsForKind(existing.kind)];
@@ -760,8 +765,8 @@ export class CodebaseRegistry {
     actor: string,
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
-      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
-      if (!existing.consent.sendToProvider) throw new Error('provider_send_consent_required');
+      if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
+      if (!existing.consent.sendToProvider) throw new CodebaseStateError('provider_send_consent_required');
       const now = Date.now();
       const grant = effectiveConsentGrant(existing);
       const selection = buildSourceSelectionIR({
@@ -803,12 +808,12 @@ export class CodebaseRegistry {
     pending: PendingCodebaseGeneration,
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
-      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
       if (existing.indexGeneration !== expectedCurrentGeneration) {
         throw new Error('codebase_index_generation_changed');
       }
       if (pending.coverage.selectionPolicyRevision !== (existing.selectionPolicyRevision ?? 1)) {
-        throw new Error('pending_generation_stale');
+        throw new CodebaseStateError('pending_generation_stale');
       }
       return {
         ...existing,
@@ -830,17 +835,17 @@ export class CodebaseRegistry {
     now = Date.now(),
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
-      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
+      if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
       const pending = existing.pendingGeneration;
-      if (!pending) throw new Error('pending_generation_not_found');
+      if (!pending) throw new CodebaseStateError('pending_generation_not_found');
       if (
         pending.candidateGenerationId !== expectedCandidateGenerationId ||
         (existing.selectionPolicyRevision ?? 1) !== expectedSelectionPolicyRevision ||
         effectiveConsentGrant(existing).revision !== expectedGrantRevision ||
         pending.coverage.selectionPolicyRevision !== expectedSelectionPolicyRevision
-      ) throw new Error('pending_generation_stale');
+      ) throw new CodebaseStateError('pending_generation_stale');
       if (now - pending.createdAt >= PENDING_GENERATION_TTL_MS) {
-        throw new Error('pending_generation_expired');
+        throw new CodebaseStateError('pending_generation_expired');
       }
       return {
         ...existing,
@@ -869,10 +874,10 @@ export class CodebaseRegistry {
     expectedCandidateGenerationId: string,
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
-      if (existing.lifecycleState === 'deleting') throw new Error('codebase_deleting');
-      if (!existing.pendingGeneration) throw new Error('pending_generation_not_found');
+      if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
+      if (!existing.pendingGeneration) throw new CodebaseStateError('pending_generation_not_found');
       if (existing.pendingGeneration.candidateGenerationId !== expectedCandidateGenerationId) {
-        throw new Error('pending_generation_stale');
+        throw new CodebaseStateError('pending_generation_stale');
       }
       return {
         ...existing,
@@ -915,7 +920,7 @@ export class CodebaseRegistry {
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (existing.lifecycleState === 'deleting') {
-        throw new Error('codebase_deleting');
+        throw new CodebaseStateError('codebase_deleting');
       }
       if (existing.indexGeneration !== expectedCurrentGeneration) {
         throw new Error('codebase_index_generation_changed');
@@ -951,7 +956,7 @@ export class CodebaseRegistry {
           throw codebaseNotFound(codebaseId);
         }
         if (purpose === 'ingest' && current.lifecycleState === 'deleting') {
-          throw new Error('codebase_deleting');
+          throw new CodebaseStateError('codebase_deleting');
         }
         return operation(this.ingestLeaseGuard(codebaseId, scope, lease));
       },
@@ -1019,7 +1024,7 @@ export class CodebaseRegistry {
         throw new Error('codebase_index_generation_changed');
       }
       if (existing.lifecycleState === 'deleting') {
-        throw new Error('codebase_deleting');
+        throw new CodebaseStateError('codebase_deleting');
       }
       return {
         ...existing,

@@ -118,6 +118,8 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 - `query_code_graph`：必填 `query`；可选 `codebase_id` 和有界 `max_results`。
 - `inspect_code_symbol`：必填 `symbol`；可选 `codebase_id`、相对 `file_path` 和有界 `max_relations`。
 
+格式合法但不被 selection policy 接纳的路径或 `path_prefix`（在注册过滤范围外、位于排除目录下、非源码扩展名的文件路径；`provider_send` 下还包括不在 provider-send 授权内）返回策略拒绝：`success=false`、`unsupportedReason` 和 `action_required` 指令，例如 `locate_path_with_search_codebase`、`retry_search_without_path_prefix`，或用于授权范围外前缀的 `continue_without_this_path_prefix`。拒绝结果不回显请求路径，也不暴露注册过滤规则或 root，并且不带 backend 或覆盖率字段，因此不能支撑"源码中不存在"的结论。成功的搜索会给出 `coverageScope`（`codebase`，或前缀收窄了注册范围时为 `path_prefix`）；只有覆盖整个代码库的完整搜索才能支撑"不存在"。`provider_send` 搜索若因授权范围隐去了命中，会返回 `coverageComplete=false` 与 `searchIncompleteReason=provider_grant_scope`。格式错误的路径和不可读文件仍是工具失败。
+
 注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引。GitNexus 缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。
 
 按需 `search_codebase` / `read_codebase_file` 与 indexed lookup 使用同一条披露谓词：

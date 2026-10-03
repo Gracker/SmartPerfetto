@@ -97,7 +97,11 @@ category: rendering                  # 分类 (可选)
 
 meta:
   display_name: "Consumer Jank 检测"  # 显示名称 (必填)
+  display_name_i18n:                   # 另一种语言的显示名称 (可选)，未写时由标识符生成
+    en: "Consumer jank detection"
   description: "基于 present_ts 间隔的真实卡顿检测"  # 描述 (必填)
+  description_i18n:                    # 另一种语言的描述 (可选)
+    en: "Detects real jank from present_ts intervals"
   tags: [jank, consumer, surfaceflinger]  # 标签 (可选)
 
 # === 触发规则 (可选) ===
@@ -845,7 +849,7 @@ Skill 可以声明顶层 `tier: S | A | B`，用于表达目标复杂度和 revi
 | `skill-step-id-uniqueness` | 每个 Skill 内 step id 必须唯一 |
 | `skill-vendor-override-runtime-conformant` | Vendor override 必须有真实 `additional_steps`、vendor signatures，并指向已注册 base Skill |
 | `skill-top-level-key-unknown` | 顶层字段必须是加载器会读的字段，否则报错：Skill 是 `SkillDefinition` 的字段加上加载器归一化的旧写法（`display`、`description`、`tags`、`icon`、`display_name`、`displayName`）；pipeline 只能用 `PipelineDefinition` 的字段；vendor override 只能用 `extends`、`version`、`meta`、`vendor_detection`、`additional_steps`。外部 Skill Pack 带未知顶层字段时整包拒绝加载 |
-| `result-path-read-undecided` | 按路径读取前面顶层步骤结果的 SQL 占位符（`sql` 与 `exact_sql.sql`）必须带 `\|默认值`，或所在步骤的 `condition` 含顶层合取项 `<结果>.data?.length > 0`；否则报错 `result_path_read_undecided`。自进化提案门禁在提案定义或修改的 Skill 上报错（含该 Skill 上已有覆盖层的步骤），对其它已发布覆盖层只报警告 |
+| `result-path-read-undecided` | 按路径读取前面顶层步骤结果的 SQL 占位符（`sql` 与 `exact_sql.sql`）必须带 `\|默认值`，或所在步骤的 `condition` 含顶层合取项 `<结果>.data?.length > 0`；否则报错 `result_path_read_undecided`。自进化提案门禁在提案定义或修改的 Skill 上报错（含该 Skill 上已有覆盖层的步骤；`skill_sql` 候选 SQL 放进它替换的步骤后检查），对其它已发布覆盖层只报警告 |
 
 没人读的顶层字段不是无害注释：它看起来像会生效的配置（顶层 `diagnostics`、`thresholds`、`synthesis`、厂商
 `thresholds_override` 都曾这样静默无效，公开投影还把它们当作活配置渲染）。诊断规则写在 `type: diagnostic`

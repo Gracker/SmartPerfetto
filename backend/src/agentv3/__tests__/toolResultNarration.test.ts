@@ -580,14 +580,23 @@ describe('code-aware source refusals across the projection boundary', () => {
 
   it.each([
     ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
-      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'use_path_within_registered_filters',
+      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'locate_path_with_search_codebase',
+      sourceReferences: []}, '该路径不在已注册的源码范围内'],
+    ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
+      unsupportedReason: 'source_extension_not_allowed', action_required: 'locate_path_with_search_codebase',
       sourceReferences: []}, '该路径不在已注册的源码范围内'],
     ['read_codebase_file', {success: false, codebaseId: 'cb', truncated: false,
       unsupportedReason: 'source_path_outside_provider_grant', action_required: 'continue_without_this_file',
       sourceReferences: []}, '该文件不在发送给模型的授权范围内'],
     ['inspect_code_symbol', {success: false, codebaseId: 'cb', references: [], processes: [], truncated: false,
-      unsupportedReason: 'source_path_outside_registered_filters', action_required: 'use_path_within_registered_filters'},
+      unsupportedReason: 'source_path_excluded', action_required: 'locate_path_with_search_codebase'},
     '该路径不在已注册的源码范围内'],
+    ['search_codebase', {success: false, codebaseId: 'cb', matches: [], truncated: false,
+      unsupportedReason: 'source_path_prefix_outside_registered_filters', action_required: 'retry_search_without_path_prefix'},
+    '该路径前缀不在已注册的源码范围内'],
+    ['search_codebase', {success: false, codebaseId: 'cb', matches: [], truncated: false,
+      unsupportedReason: 'source_path_prefix_outside_provider_grant', action_required: 'continue_without_this_path_prefix'},
+    '该路径前缀已注册但未授权发送给模型'],
     ['search_codebase', {success: false, codebaseId: 'cb', matches: [], truncated: false,
       unsupportedReason: 'source_search_budget_exceeded', action_required: 'continue_with_existing_source_evidence'},
     '源码访问已达本次上限'],
@@ -616,6 +625,44 @@ describe('code-aware source refusals across the projection boundary', () => {
     expect(JSON.stringify(projected)).not.toContain('/Users/demo');
     expect(isPolicyRefusalResult(projected)).toBe(false);
     expect(formatToolResultNarration({toolName, result: projected, isError: true})).toBe(`${toolName} 失败`);
+  });
+
+  it.each([
+    ['a match withheld outside the provider grant', 'provider_grant_scope'],
+    ['a time budget', 'time_budget'],
+  ])('does not narrate an empty search cut short by %s as nothing found', (_label, searchIncompleteReason) => {
+    const raw = mcpResult({success: true, codebaseId: 'cb', matches: [], truncated: false, coverageComplete: false,
+      searchIncompleteReason});
+    const projected = projectToolResultForExternalSurface('search_codebase', raw);
+
+    for (const result of [raw, projected]) {
+      expect(formatToolResultNarration({toolName: 'search_codebase', result, language: 'zh-CN'}))
+        .toBe('检索未完整覆盖，结果可能不全');
+      expect(formatToolResultNarration({toolName: 'search_codebase', result, language: 'en'}))
+        .toBe('The search did not cover everything; results may be partial');
+    }
+    expect(formatToolResultNarration({toolName: 'search_codebase', language: 'zh-CN',
+      result: mcpResult({success: true, codebaseId: 'cb', matches: [], truncated: false, coverageComplete: true})}))
+      .toBe('未查到相关资料');
+  });
+
+  it('narrates a refused prefix outside the provider grant as unauthorized, in English too', () => {
+    const projected = projectToolResultForExternalSurface('search_codebase', mcpResult({success: false,
+      codebaseId: 'cb', matches: [], truncated: false, unsupportedReason: 'source_path_prefix_outside_provider_grant',
+      action_required: 'continue_without_this_path_prefix'}));
+
+    expect(formatToolResultNarration({toolName: 'search_codebase', result: projected, isError: true, language: 'en'}))
+      .toContain('registered but not authorized for sending to the model');
+  });
+
+  it('matches neither a reason nor an action by an Object.prototype key', () => {
+    const {sourceAccessRefusalAction, isSourceAccessRefusalAction} =
+      require('../../services/codebase/sourceAccessRefusal') as typeof import('../../services/codebase/sourceAccessRefusal');
+
+    for (const key of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      expect(sourceAccessRefusalAction(key)).toBeUndefined();
+      expect(isSourceAccessRefusalAction(key)).toBe(false);
+    }
   });
 
   it('does not project an action on a successful source result', () => {

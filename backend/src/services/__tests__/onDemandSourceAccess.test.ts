@@ -14,6 +14,8 @@ import {
   codebaseOnDemandAvailability,
 } from '../codebase/onDemandSourceAccess';
 import {PathSecurityGate} from '../codebase/pathSecurityGate';
+import {sourceSelectionForRef} from '../codebase/sourceSelectionPolicy';
+import {DeterministicFixtureSourceAccessService} from '../../testSupport/deterministicFixtureSourceAccess';
 
 const scope = {
   tenantId: 'tenant-a',
@@ -335,6 +337,196 @@ describe('OnDemandSourceAccessService', () => {
       });
     },
   );
+
+  it.each(['metadata_only', 'provider_send'] as const)(
+    'answers a %s read of a non-source extension as a refusal without echoing the path',
+    async mode => {
+      fs.writeFileSync(path.join(root, 'app', 'src', 'notes.txt'), 'MainActivity notes\n');
+      const ref = register();
+
+      await expect(service().read({codebaseId: ref.codebaseId, scope, filePath: 'app/src/notes.txt', mode}))
+        .resolves.toEqual({
+          success: false,
+          codebaseId: ref.codebaseId,
+          truncated: false,
+          unsupportedReason: 'source_extension_not_allowed',
+        });
+    },
+  );
+
+  it.each([
+    ['outside the registered filters', 'tools'],
+    ['inside an excluded directory', 'app/src/build'],
+    ['inside an exclude glob', 'app/src/generated'],
+  ])('refuses a search whose path prefix is %s instead of reporting complete absence', async (_label, pathPrefix) => {
+    fs.mkdirSync(path.join(root, 'app', 'src', 'build'), {recursive: true});
+    fs.writeFileSync(path.join(root, 'app', 'src', 'build', 'Built.kt'), 'class MainActivityBuilt\n');
+    const ref = register();
+
+    const search = await service().search({
+      codebaseId: ref.codebaseId,
+      scope,
+      query: 'MainActivity',
+      mode: 'provider_send',
+      pathPrefix,
+    });
+
+    // A refusal searched nothing, so it carries no backend or coverage claim.
+    expect(search).toEqual({
+      success: false,
+      codebaseId: ref.codebaseId,
+      matches: [],
+      truncated: false,
+      unsupportedReason: 'source_path_prefix_outside_registered_filters',
+    });
+  });
+
+  it('answers a consent refusal without a backend or coverage claim', async () => {
+    const ref = register(false);
+
+    await expect(service().search({codebaseId: ref.codebaseId, scope, query: 'MainActivity', mode: 'provider_send'}))
+      .resolves.toEqual({success: false, codebaseId: ref.codebaseId, matches: [], truncated: false,
+        unsupportedReason: 'no_send_to_provider_consent'});
+  });
+
+  it('compares a path prefix case-insensitively on win32, like the path gate', async () => {
+    const ref = register();
+    const win32 = new OnDemandSourceAccessService({registry, platform: 'win32',
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir], platform: 'win32'}),
+      ripgrepPath: '__smartperfetto_missing_rg__'});
+
+    const search = await win32.search({
+      codebaseId: ref.codebaseId, scope, query: 'loadTimeline', mode: 'metadata_only', pathPrefix: 'APP/SRC',
+    });
+
+    expect(search).toEqual(expect.objectContaining({success: true, coverageScope: 'codebase'}));
+  });
+
+  it.each([
+    ['equal to the registered filter', 'app/src', 'codebase'],
+    ['an ancestor of the registered filter', 'app', 'codebase'],
+    ['inside the registered filter', 'app/src/MainActivity.kt', 'path_prefix'],
+  ])('scopes the coverage of a search whose path prefix is %s', async (_label, pathPrefix, coverageScope) => {
+    const ref = register();
+
+    const search = await service().search({
+      codebaseId: ref.codebaseId, scope, query: 'loadTimeline', mode: 'metadata_only', pathPrefix,
+    });
+
+    expect(search).toEqual(expect.objectContaining({success: true, coverageComplete: true, coverageScope,
+      matches: [expect.objectContaining({filePath: 'app/src/MainActivity.kt'})]}));
+  });
+
+  describe('a provider-send grant narrower than the registered filters', () => {
+    const narrowGrant = () => {
+      fs.mkdirSync(path.join(root, 'app', 'private'), {recursive: true});
+      fs.writeFileSync(path.join(root, 'app', 'private', 'Hidden.kt'), 'class GrantNeedle\n');
+      const ref = registry.register({kind: 'app_source', displayName: 'Narrow grant', rootPath: root,
+        pathFilters: ['app/src'], sendToProvider: true, ...scope});
+      return registry.updateSelectionPolicy(ref.codebaseId, scope, {pathFilters: ['app']});
+    };
+
+    it('refuses a path prefix outside the grant', async () => {
+      const ref = narrowGrant();
+
+      await expect(service().search({codebaseId: ref.codebaseId, scope, query: 'GrantNeedle',
+        mode: 'provider_send', pathPrefix: 'app/private'})).resolves.toEqual({success: false,
+        codebaseId: ref.codebaseId, matches: [], truncated: false,
+        unsupportedReason: 'source_path_prefix_outside_provider_grant'});
+      // metadata_only sends no body, so the grant does not narrow it.
+      await expect(service().search({codebaseId: ref.codebaseId, scope, query: 'GrantNeedle',
+        mode: 'metadata_only', pathPrefix: 'app/private'})).resolves.toEqual(expect.objectContaining({
+        success: true, matches: [expect.objectContaining({filePath: 'app/private/Hidden.kt'})]}));
+    });
+
+    it('flags a match withheld by the grant in the Node fallback too, so a fixture cannot upgrade it', async () => {
+      const ref = narrowGrant();
+      const node = new OnDemandSourceAccessService({registry, gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+        ripgrepPath: '__smartperfetto_missing_rg__'});
+
+      const withheld = await node.search({codebaseId: ref.codebaseId, scope, query: 'GrantNeedle',
+        mode: 'provider_send'});
+      const clean = await node.search({codebaseId: ref.codebaseId, scope, query: 'NoSuchNeedleAnywhere',
+        mode: 'provider_send'});
+
+      expect(withheld).toEqual(expect.objectContaining({backend: 'node', matches: [], coverageComplete: false,
+        searchIncompleteReason: 'provider_grant_scope'}));
+      expect(clean).toEqual(expect.objectContaining({backend: 'node', searchIncompleteReason: 'backend_degraded'}));
+    });
+
+    const nodeService = () => new OnDemandSourceAccessService({registry,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}), ripgrepPath: '__smartperfetto_missing_rg__'});
+
+    it('rejects a multi-line query up front, since every backend matches per line', async () => {
+      const ref = narrowGrant();
+
+      for (const query of ['class\nGrantNeedle', 'GrantNeedle\r']) {
+        await expect(nodeService().search({codebaseId: ref.codebaseId, scope, query, mode: 'provider_send'}))
+          .rejects.toThrow('source_query_invalid');
+      }
+    });
+
+    it('matches a withheld file per line, like a granted one', async () => {
+      const ref = narrowGrant();
+      fs.writeFileSync(path.join(root, 'app', 'private', 'Split.kt'), 'val first = 1\nval second = 2\n');
+
+      // Called below search(), which already rejects line breaks: the withheld branch must not match across lines.
+      const result = await (nodeService() as any).searchWithNode(ref, fs.realpathSync(root), '1\nval second',
+        'provider_send', undefined, ['app'], 5, sourceSelectionForRef(ref));
+
+      expect(result.searchIncompleteReason).toBe('backend_degraded');
+    });
+
+    it('yields the event loop after each withheld file it reads', async () => {
+      const ref = narrowGrant();
+      for (const name of ['A', 'B', 'C']) {
+        fs.writeFileSync(path.join(root, 'app', 'private', `${name}.kt`), `class ${name}\n`);
+      }
+      const yields = jest.spyOn(global, 'setImmediate');
+      try {
+        await nodeService().search({codebaseId: ref.codebaseId, scope, query: 'NoSuchNeedleAnywhere',
+          mode: 'provider_send'});
+        // One granted file plus four withheld files, each followed by a yield.
+        expect(yields.mock.calls.length).toBeGreaterThanOrEqual(5);
+      } finally { yields.mockRestore(); }
+    });
+
+    it('is not upgraded to complete coverage by the deterministic fixture', async () => {
+      fs.mkdirSync(path.join(root, 'flat', 'granted'), {recursive: true});
+      fs.mkdirSync(path.join(root, 'flat', 'private'), {recursive: true});
+      fs.writeFileSync(path.join(root, 'flat', 'granted', 'Granted.kt'), 'class Granted\n');
+      fs.writeFileSync(path.join(root, 'flat', 'private', 'Hidden.kt'), 'class FixtureGrantNeedle\n');
+      const fixtureRegistry = new CodebaseRegistry(path.join(tmpDir, 'fixture-registry.json'));
+      const registered = fixtureRegistry.register({kind: 'app_source', displayName: 'Fixture', rootPath: root,
+        rootAuthorization: 'native_picker', pathFilters: ['flat/granted'], sendToProvider: true, ...scope});
+      const ref = fixtureRegistry.updateSelectionPolicy(registered.codebaseId, scope,
+        {pathFilters: ['flat/granted', 'flat/private']});
+      const fixture = new DeterministicFixtureSourceAccessService(fixtureRegistry);
+
+      const withheld = await fixture.search({codebaseId: ref.codebaseId, scope, query: 'FixtureGrantNeedle',
+        mode: 'provider_send'});
+      const clean = await fixture.search({codebaseId: ref.codebaseId, scope, query: 'NoSuchNeedleAnywhere',
+        mode: 'provider_send'});
+
+      expect(withheld).toEqual(expect.objectContaining({matches: [], coverageComplete: false,
+        searchIncompleteReason: 'provider_grant_scope'}));
+      expect(clean).toEqual(expect.objectContaining({matches: [], coverageComplete: true}));
+    });
+
+    it('withholds a match outside the grant without claiming complete coverage', async () => {
+      const ref = narrowGrant();
+
+      const withheld = await service().search({codebaseId: ref.codebaseId, scope, query: 'GrantNeedle',
+        mode: 'provider_send'});
+      const clean = await service().search({codebaseId: ref.codebaseId, scope, query: 'NoSuchNeedleAnywhere',
+        mode: 'provider_send'});
+
+      expect(withheld).toEqual(expect.objectContaining({success: true, matches: [], coverageComplete: false,
+        searchIncompleteReason: 'provider_grant_scope'}));
+      expect(JSON.stringify(withheld)).not.toContain('Hidden');
+      expect(clean).toEqual(expect.objectContaining({success: true, matches: [], coverageComplete: true}));
+    });
+  });
 
   it('evaluates a frozen provider grant once for a large rejected candidate set', async () => {
     const sourceRoot = path.join(root, 'grant-scale');
@@ -824,6 +1016,7 @@ describe('OnDemandSourceAccessService', () => {
         undefined,
         ['app/src'],
         5,
+        sourceSelectionForRef(ref),
       );
 
       expect(result).toEqual(expect.objectContaining({

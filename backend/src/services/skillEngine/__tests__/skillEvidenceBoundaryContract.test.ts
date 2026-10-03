@@ -11,6 +11,7 @@ import { renderStepSql } from '../../../../tests/helpers/skillFragmentSql';
 import { allStepsOf, skillDocuments } from '../../../../tests/helpers/skillRuleHarness';
 import { extractRootVariables } from '../expressionUtils';
 import { boundSqlPlaceholderPaths } from '../sqlTemplate';
+import { topLevelOperands } from '../resultPathReads';
 import { namesThermalCause } from '../../../../tests/helpers/skillWording';
 
 const repoRoot = path.resolve(__dirname, '../../../..');
@@ -59,15 +60,57 @@ describe('Skill evidence boundary contracts', () => {
  * shared thermal / freq-limit fragments.
  */
 const THERMAL_EVIDENCE_SQL = /thermal_zone|Temperature|cdev|cooling|cpu_frequency_limits|max_limit|freq_limit/i;
+/** A literal the SQL compares against names a track by these; an identifier must match the stricter list above. */
+const THERMAL_EVIDENCE_COMPARED = /thermal|\btemp|cdev|cooling|freq_limit|max_limit/i;
 const THERMAL_EVIDENCE_FRAGMENT = /fragments\/(thermal_|system_cpu_freq_limit_)/;
 
 const CJK = /[\u4e00-\u9fff]/;
 /** A `--` comment (skipped, so an apostrophe in it cannot misalign quotes) or a single-quoted literal. */
 const SQL_COMMENT_OR_LITERAL = /--[^\n\r]*|'((?:''|[^'])*)'/g;
+/** What precedes a literal the SQL compares something against: a track name, a type, a status. */
+const IN_LIST_OPEN = /\bIN\s*\(\s*$/i;
+const COMPARED_BEFORE = new RegExp(String.raw`(?:=|<>|\bGLOB|\bLIKE|\bWHEN)\s*$|${IN_LIST_OPEN.source}`, 'i');
+/** An SQL identifier, bare or quoted ("x", `x`, [x]); its name is matched case-insensitively. */
+const IDENTIFIER = '(?:"([^"]+)"|`([^`]+)`|\\[([^\\]]+)\\]|\\b([A-Za-z_]\\w*))';
+/** Names a step gives its own columns (AS name) and CTEs (name AS ( ... )). */
+const OWN_NAME = new RegExp(`\\bAS\\s+${IDENTIFIER}|${IDENTIFIER}\\s+AS\\s*\\(`, 'gi');
+const IDENTIFIER_EACH = new RegExp(IDENTIFIER, 'g');
+const identifierName = (match: RegExpMatchArray, from = 1) =>
+  (match.slice(from, from + 4).find(part => part !== undefined) ?? '').toLowerCase();
 
-/** The SQL a step executes: comments and its own user-facing (CJK) literals cannot read evidence. */
-const executedSql = (sql: unknown) => String(sql ?? '')
-  .replace(SQL_COMMENT_OR_LITERAL, (match, literal) => match.startsWith('--') ? '' : CJK.test(literal) ? "''" : match);
+/**
+ * What a step's SQL can read evidence through: the tables and columns it reads
+ * (`identifiers`, the SQL without comments and literals) and the literals it
+ * compares something against (a track name, a type, a status). A literal it
+ * only outputs (a code, a user-facing CJK label) and a name it gives its own
+ * columns or CTEs say nothing about its input, so `SELECT 'thermal_zone' AS
+ * kind` or `... AS cooling_hint` cannot authorise the step's own wording.
+ */
+function executedSql(sql: unknown): {identifiers: string; comparedLiterals: string[]} {
+  const text = String(sql ?? '');
+  const comparedLiterals: string[] = [];
+  let code = '';
+  let last = 0;
+  let inList = false;
+  for (const match of text.matchAll(SQL_COMMENT_OR_LITERAL)) {
+    const between = text.slice(last, match.index);
+    code += between;
+    last = match.index! + match[0].length;
+    if (between.includes(')')) inList = false;
+    if (match[0].startsWith('--')) continue;
+    const literal = match[1];
+    const compared: boolean = !CJK.test(literal) && (COMPARED_BEFORE.test(code) || (inList && /,\s*$/.test(code)));
+    inList = compared && (inList || IN_LIST_OPEN.test(code));
+    if (compared) comparedLiterals.push(literal);
+    code += "''";
+  }
+  code += text.slice(last);
+  const own = new Set([...code.matchAll(OWN_NAME)].map(match =>
+    identifierName(match, 1) || identifierName(match, 5)));
+  const identifiers = code.replace(IDENTIFIER_EACH, (...match) =>
+    own.has(identifierName(match as unknown as RegExpMatchArray)) ? '_' : match[0]);
+  return {identifiers, comparedLiterals};
+}
 
 const stepsOf = (skill: any) => [...(typeof skill?.sql === 'string'
   ? [{id: 'root', sql: skill.sql, sql_fragments: skill.sql_fragments}] : []), ...allStepsOf(skill)];
@@ -77,7 +120,63 @@ function sqlResultRoots(sql: unknown): string[] {
   return typeof sql === 'string' ? boundSqlPlaceholderPaths(sql).map(path => path.split(/[.[]/)[0]) : [];
 }
 
-const conditionRoots = (owner: any) => owner?.condition ? extractRootVariables(String(owner.condition)) : [];
+/** Whether a step's own SQL reads thermal or limit evidence: by the tables and columns it reads, or the tracks it compares against. */
+function readsEvidenceSql(sql: unknown): boolean {
+  const {identifiers, comparedLiterals} = executedSql(sql);
+  return THERMAL_EVIDENCE_SQL.test(identifiers) || comparedLiterals.some(literal => THERMAL_EVIDENCE_COMPARED.test(literal));
+}
+
+/**
+ * Whether a conjunct that reads only evidence results can hold while they are
+ * all empty: `limit.data.length === 0` and `limit.data[0]?.status !==
+ * 'observed'` do, so they read the absence of evidence. A conjunct that cannot
+ * be evaluated is not credited with reading evidence.
+ */
+function holdsWithoutEvidence(conjunct: string, roots: string[]): boolean {
+  try {
+    return Boolean(new Function(...roots, `return (${conjunct});`)(...roots.map(() => ({data: []}))));
+  } catch {
+    return true;
+  }
+}
+
+/** The inside of `expression` when one pair of parentheses wraps all of it: the first `(` closes at the end. */
+function unwrapParentheses(expression: string): string | undefined {
+  if (!expression.startsWith('(')) return undefined;
+  let depth = 0;
+  let quote = '';
+  for (let i = 0; i < expression.length; i++) {
+    const char = expression[i];
+    if (quote) {
+      if (char === '\\') i++;
+      else if (char === quote) quote = '';
+    } else if (char === "'" || char === '"' || char === '`') quote = char;
+    else if (char === '(') depth++;
+    else if (char === ')' && --depth === 0) return i === expression.length - 1 ? expression.slice(1, -1).trim() : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Whether a condition can only hold with thermal or limit evidence present:
+ * each top-level alternative has a conjunct that needs a non-empty evidence
+ * result, judged recursively through parentheses. Mentioning an evidence step
+ * is not reading it: a condition on its absence speaks to no cause, and a
+ * ternary or nullish fallback at the top level is not judged.
+ */
+function requiresEvidence(condition: unknown, evidenceNames: ReadonlySet<string>): boolean {
+  if (typeof condition !== 'string' || !condition.trim()) return false;
+  const alternatives = topLevelOperands(condition.trim(), '||');
+  if (!alternatives) return false;
+  return alternatives.every(alternative => (topLevelOperands(alternative, '&&') ?? []).some(conjunct => {
+    const inner = unwrapParentheses(conjunct);
+    if (inner !== undefined && /&&|\|\|/.test(inner)) return requiresEvidence(inner, evidenceNames);
+    // An atomic conjunct is credited only when it reads nothing but evidence:
+    // another name's value could make it hold without any.
+    const roots = extractRootVariables(conjunct);
+    return roots.length > 0 && roots.every(root => evidenceNames.has(root)) && !holdsWithoutEvidence(conjunct, roots);
+  }));
+}
 
 /**
  * The steps of `skill` that read thermal or limit evidence, in order: by their
@@ -90,9 +189,10 @@ function thermalEvidenceSteps(skill: any, evidenceSkills: ReadonlySet<string>) {
   const names = new Set<string>();
   for (const step of stepsOf(skill)) {
     const reads = evidenceSkills.has(step.skill)
-      || THERMAL_EVIDENCE_SQL.test(executedSql(step.sql))
+      || readsEvidenceSql(step.sql)
       || (step.sql_fragments ?? []).some((fragment: string) => THERMAL_EVIDENCE_FRAGMENT.test(fragment))
-      || [...sqlResultRoots(step.sql), ...(step.inputs ?? []), ...conditionRoots(step)].some(root => names.has(root));
+      || [...sqlResultRoots(step.sql), ...(step.inputs ?? [])].some(root => names.has(root))
+      || requiresEvidence(step.condition, names);
     if (!reads) continue;
     steps.add(step);
     for (const name of [step.id, step.save_as]) if (name) names.add(name);
@@ -147,7 +247,7 @@ function thermalWording(skill: any, evidenceSkills: ReadonlySet<string>): Therma
       if (literal && CJK.test(literal)) add(site, literal, stepAllowance);
     }
     for (const rule of step.rules ?? []) {
-      const readsEvidence = conditionRoots(rule).some(root => evidence.names.has(root));
+      const readsEvidence = requiresEvidence(rule.condition, evidence.names);
       for (const text of [rule.diagnosis, ...(rule.suggestions ?? [])]) add(site, text, readsEvidence ? `rule ${site}` : undefined);
     }
   }
@@ -179,8 +279,50 @@ describe('thermal wording follows thermal evidence', () => {
     expect(namesThermalCause('缺少 cpufreq 上限证据（及温度事件）后才能判断')).toBe(false);
     expect(namesThermalCause('确认由温控触发后，可在设备冷却后重测')).toBe(false);
     expect(namesThermalCause('若干核心因温控降频')).toBe(true);
-    // Accepted residual: refusing to rule heat out reads as a deferral.
-    expect(namesThermalCause('不能排除温控')).toBe(false);
+    // Refusing to rule heat out leaves it standing as a cause.
+    expect(namesThermalCause('不能排除温控')).toBe(true);
+    expect(namesThermalCause('无法排除温控导致卡顿')).toBe(true);
+    // The nearest deferral governs: an earlier 缺少 is about something else.
+    expect(namesThermalCause('缺少负载数据但不能排除温控')).toBe(true);
+    // A negation inside a condition's premise does not reach the consequence.
+    expect(namesThermalCause('如果没有负载突增则可能是温控导致降频')).toBe(true);
+    expect(namesThermalCause('如果频率正常则不是温控')).toBe(false);
+    // A deferral reaches the thermal word only when no consequence, attribution,
+    // contrast or time premise stands between them; a negated break word is the deferral.
+    expect(namesThermalCause('负载无异常而温控降频明显')).toBe(true);
+    expect(namesThermalCause('没有其他负载突增可能是温控导致')).toBe(true);
+    expect(namesThermalCause('缺少负载数据可能是温控导致')).toBe(true);
+    expect(namesThermalCause('没有前台负载时温控导致降频')).toBe(true);
+    expect(namesThermalCause('降频次数本身不能说明温控或限频')).toBe(false);
+    // Denying the absence of heat leaves it standing.
+    expect(namesThermalCause('这不代表设备没有发生热控')).toBe(true);
+    // A thermal word stands by default: missing data defers only the evidence that is missing,
+    // and a deferral reaches a few characters with no connective.
+    for (const asserted of ['缺少负载数据但温控降频明显', '没有负载突增因此是温控降频', '没有负载变化所以是温控降频',
+      '负载没有变化因为温控', '无异常且温控降频', '若负载正常即为温控', '无负载异常即温控', '缺少负载证据便是温控',
+      '尚未发现异常故判断为温控', '没有负载突增的情况下温控降频明显']) {
+      expect([asserted, namesThermalCause(asserted)]).toEqual([asserted, true]);
+    }
+    expect(namesThermalCause('缺少 thermal 限频轨道')).toBe(false);
+    // 设备 is a source of evidence only in 散热设备; elsewhere it is what heat acts on.
+    for (const asserted of ['温控让设备降频', '过热使设备降频', '高温下设备降频', '温控限制了设备性能',
+      '发热严重设备卡顿', '设备过热后设备降频', '温控降频事件频发', '不是负载就是温控', '无法判断负载实为温控',
+      '过热设备卡顿', '温控设备降频']) {
+      expect([asserted, namesThermalCause(asserted)]).toEqual([asserted, true]);
+    }
+    expect(namesThermalCause('无散热设备数据')).toBe(false);
+    expect(namesThermalCause('若为温控所致，先降低负载')).toBe(false);
+    // A negated judgement covers its object until a connective starts a new proposition.
+    expect(namesThermalCause('仅为频率观测，不能据此判定限频或温控')).toBe(false);
+    expect(namesThermalCause('仅凭频率变化无法判断是否温控')).toBe(false);
+    expect(namesThermalCause('不能判断负载因此是温控')).toBe(true);
+    // A condition's long premise ends the condition's reach even without a connective.
+    expect(namesThermalCause('如果用户在后台长时间运行游戏温控降频明显')).toBe(true);
+    // A denied deferral is no deferral.
+    expect(namesThermalCause('不意味着不是温控')).toBe(true);
+    // A slash after a Chinese word joins alternatives; only an ASCII name is a path.
+    expect(namesThermalCause('卡顿可能是温控/调度问题')).toBe(true);
+    expect(namesThermalCause('不排除是过热')).toBe(true);
     expect(namesThermalCause('确认后台负载正常，卡顿由温控导致')).toBe(true);
     expect(namesThermalCause('不是负载而是温控导致卡顿')).toBe(true);
     expect(namesThermalCause('仍需注意温控导致的卡顿')).toBe(true);
@@ -192,6 +334,20 @@ describe('thermal wording follows thermal evidence', () => {
     expect(namesThermalCause('热控风险仍需温度和直接限频证据')).toBe(false);
     expect(namesThermalCause('如果是温控导致，应先降低负载')).toBe(false);
     expect(namesThermalCause('降频原因需结合直接 thermal throttling 事件判断')).toBe(false);
+    // A condition and its consequence without a comma: the consequence asserts heat.
+    expect(namesThermalCause('如果频率突降说明温控限频')).toBe(true);
+    expect(namesThermalCause('若频率下降则温控降频')).toBe(true);
+    expect(namesThermalCause('如果频率突降可能是温控')).toBe(true);
+    expect(namesThermalCause('如果可能是温控导致，需要温度证据')).toBe(false);
+    expect(namesThermalCause('按规则温控降频')).toBe(true);
+    // Missing evidence, a prohibition and a reference to a source of evidence name no cause;
+    // a source to which something is attributed does.
+    expect(namesThermalCause('无内核散热设备数据')).toBe(false);
+    expect(namesThermalCause('不要把性能下降归因于温控')).toBe(false);
+    expect(namesThermalCause('加入 thermal/cdev_update 与 thermal/thermal_temperature')).toBe(false);
+    expect(namesThermalCause('请检查温控证据与热控守护进程')).toBe(false);
+    expect(namesThermalCause('温控事件导致卡顿')).toBe(true);
+    expect(namesThermalCause('缺少温控证据，可能是温控导致')).toBe(true);
   });
 
   // Strategy prose teaches thermal mechanisms legitimately; only the lines that
@@ -217,7 +373,30 @@ describe('thermal wording follows thermal evidence', () => {
         {condition: 'freq.data[0]?.x > 1', diagnosis: '可能是温控'},
         {condition: "limit_data.data[0]?.status === 'observed'", diagnosis: '观测到温控限频'},
       ]},
-      {id: 'gap', type: 'atomic', condition: 'limit_data.data.length === 0', sql: "SELECT '缺少 thermal 限频轨道' AS note"},
+      // A condition on the absence of evidence reads none: it cannot allow a cause.
+      {id: 'gap', type: 'atomic', condition: 'limit_data.data.length === 0',
+        sql: "SELECT '缺少 thermal 限频轨道' AS gap, '可能是温控导致' AS note"},
+      {id: 'absent', type: 'diagnostic', inputs: ['freq', 'limit_data'], rules: [
+        {condition: "limit_data.data[0]?.status !== 'observed'", diagnosis: '可能是温控限频'},
+        {condition: "limit_data.data[0]?.status === 'observed' || freq.data[0]?.x > 1", diagnosis: '可能是温控降频'},
+        {condition: "freq.data[0]?.x > 1 && limit_data.data[0]?.status === 'observed'", diagnosis: '温控降频'},
+        // An alternative inside parentheses, or another name's value, can make it hold without evidence.
+        {condition: '(limit_data.data.length > 0 || freq.data?.length > 0)', diagnosis: '温控导致掉帧'},
+        {condition: '(limit_data.data[0]?.depth ?? 0) > threshold', diagnosis: '温控导致卡顿'},
+        {condition: "(limit_data.data[0]?.status === 'observed' && freq.data[0]?.x > 1)", diagnosis: '温控限频'},
+        // Alternatives are judged through parentheses: names a single probe value cannot satisfy together.
+        {condition: "(limit_data.data[0]?.status === 'observed' || (mode === 1 && level === 'high'))", diagnosis: '温控降频明显'},
+        {condition: "(limit_data.data[0]?.status === 'observed' || (mode === 1 && level === 'high')) === true", diagnosis: '温控降频显著'},
+        {condition: '(limit_data.data.length > 0 || mode === 1) === (other === 2 && limit_data.data.length > 0)', diagnosis: '温控降频突出'},
+      ]},
+      // Its own output names and codes are not input: an alias or a value literal reads nothing.
+      {id: 'alias', type: 'atomic', sql: "SELECT freq_mhz AS cooling_hint, '温控导致降频' AS note FROM cpu_freq"},
+      {id: 'code', type: 'atomic', sql: "WITH thermal_zone AS (SELECT 1) SELECT 'thermal_zone' AS kind, '温控导致' AS note"},
+      // Its own names in any case or quoting: SQL identifiers are case-insensitive.
+      {id: 'own_cte', type: 'atomic', sql: "WITH cooling_hint AS (SELECT 1 AS x) SELECT '温控导致掉帧' AS note FROM COOLING_HINT"},
+      {id: 'own_quoted', type: 'atomic', sql: 'WITH "cdev_view" AS (SELECT 1 AS x) SELECT \'温控导致卡顿\' AS note FROM [cdev_view]'},
+      // A track it compares against is: a temperature track filter reads temperature.
+      {id: 'track', type: 'atomic', sql: "SELECT '高温导致降频' AS note FROM counter_track WHERE name GLOB '*temp*'"},
     ]};
     expect(thermalWording(skill, new Set()).map(entry => [entry.text, entry.allowedBy])).toEqual([
       ['频率下降，可能温控', undefined],
@@ -225,7 +404,21 @@ describe('thermal wording follows thermal evidence', () => {
       ['限频由温控触发', 'step probe/limit'],
       ['可能是温控', undefined],
       ['观测到温控限频', 'rule probe/diagnosis'],
-      ['缺少 thermal 限频轨道', 'step probe/gap'],
+      ['可能是温控导致', undefined],
+      ['可能是温控限频', undefined],
+      ['可能是温控降频', undefined],
+      ['温控降频', 'rule probe/absent'],
+      ['温控导致掉帧', undefined],
+      ['温控导致卡顿', undefined],
+      ['温控限频', 'rule probe/absent'],
+      ['温控降频明显', undefined],
+      ['温控降频显著', undefined],
+      ['温控降频突出', undefined],
+      ['温控导致降频', undefined],
+      ['温控导致', undefined],
+      ['温控导致掉帧', undefined],
+      ['温控导致卡顿', undefined],
+      ['高温导致降频', 'step probe/track'],
     ]);
   });
 });

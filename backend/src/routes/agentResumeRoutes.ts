@@ -25,7 +25,7 @@ import {
   getSnapshotRuntimeProviderSnapshotHash,
 } from '../agentv3/sessionStateSnapshot';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
-import {copyAnalysisResultForSnapshot, projectOwnerAnalysisResult, sessionUsesPrivateKnowledge} from '../services/security/privateAnalysisProjection';
+import {projectStoredAnalysisResultForOwner} from '../services/security/privateAnalysisProjection';
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
   requireAiEnabledForHttp,
@@ -232,9 +232,8 @@ export function registerAgentResumeRoutes(
       const matchingStoredFinal = storedFinal?.sessionId === sessionId && snapshotRun?.runId &&
         (!storedFinalRunId || storedFinalRunId === snapshotRun.runId);
       const recoveredResult = matchingStoredFinal
-        ? (sessionUsesPrivateKnowledge(snapshot!)
-            ? projectOwnerAnalysisResult(sessionId, storedFinal!, snapshot?.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
-            : copyAnalysisResultForSnapshot(storedFinal!))
+        ? projectStoredAnalysisResultForOwner(sessionId, snapshot!, storedFinal!,
+            snapshot?.outputLanguage ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE))
         : deps.buildRecoveredResultFromContext(sessionId, restoredContext);
       const restoredRunSequence = Math.max(0, restoredTurns.length);
       const fallbackRestoredRun: AnalyzeSessionRunContext | undefined = restoredRunSequence > 0

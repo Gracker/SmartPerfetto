@@ -135,7 +135,7 @@ export class AndroidInternalsWikiIngester {
     const acceptedPaths = new Set(preview.acceptedFiles.map(file => file.relativePath.split('\\').join('/')));
     const blockedArticles = corpus.articles.filter(article => !acceptedPaths.has(article.relativePath));
     if (blockedArticles.length > 0) {
-      throw new Error(`knowledge_path_gate_excluded_${blockedArticles.length}_articles`);
+      throw new Error(`knowledge_path_gate_excluded:${blockedArticles.length}_articles`);
     }
     const identity = inspectAndroidInternalsWikiIdentity(corpus);
     const generation = `wiki_${createHash('sha256')

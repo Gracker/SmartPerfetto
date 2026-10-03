@@ -248,7 +248,7 @@ implements SelfEvolutionAdminDependencies {
       const staticValidation = {
         validationPolicyFingerprint: canonicalContentHash({
           schemaVersion: 1,
-          validator: 'self-evolution-admin-gate-v1',
+          validator: 'self-evolution-admin-gate-v2',
           inProcessValidatorVersion: IN_PROCESS_VALIDATOR_VERSION,
           skillRegistryFingerprint:
             snapshot.skillRegistry.registryFingerprint,

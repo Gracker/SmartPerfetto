@@ -31,6 +31,7 @@ import {
 import {
   validateSkillDefinitionsInProcess,
   validateStrategyDefinitionsInProcess,
+  visitSteps,
 } from './inProcessValidator';
 import {
   parseProposalSqlRegressionProofV1,
@@ -228,7 +229,15 @@ export async function validateProposalStatic(input: {
       ) {
         errors.add('static_skill_base_snapshot_mismatch');
       } else {
-        collectSkillValidation(existing.skills, errors, warnings);
+        // The candidate is SQL for one step: validate the registry that SQL
+        // would make, charging the target Skill with what it reads.
+        const delta = proposal.deltas[0];
+        const candidateSkills = withCandidateStepSql(existing.skills, delta, candidate.serializedContent);
+        if (typeof candidateSkills === 'string') {
+          errors.add(candidateSkills);
+        } else {
+          collectSkillValidation(candidateSkills, errors, warnings, [delta.targetId]);
+        }
       }
     }
     const sql = candidate.serializedContent;
@@ -385,6 +394,38 @@ function skillRegistryFingerprint(
     getAppliedOverlayIds: skillId =>
       composition.appliedOverlayIds[skillId] ?? [],
   }).registryFingerprint;
+}
+
+/**
+ * The registry as a `skill_sql` candidate would make it: the anchored step of
+ * the target Skill runs `sql`, step `root` naming an atomic Skill's top-level
+ * SQL as the Trace corpus does. The step must still run the SQL the proposal
+ * replaces; otherwise the error code says why there is nothing to replace.
+ */
+function withCandidateStepSql(
+  skills: readonly SkillDefinition[],
+  delta: {targetId: string; operationId: string; before?: string},
+  sql: string,
+): SkillDefinition[] | 'static_skill_sql_target_step_missing' | 'static_skill_sql_anchor_stale' {
+  const target = skills.find(skill => skill.name === delta.targetId);
+  if (!target) return 'static_skill_sql_target_step_missing';
+  const candidate = structuredClone(target);
+  let outcome: 'missing' | 'stale' | 'replaced' = 'missing';
+  const replace = (owner: {sql?: string}) => {
+    if (owner.sql !== delta.before) {
+      outcome = 'stale';
+      return;
+    }
+    owner.sql = sql;
+    outcome = 'replaced';
+  };
+  if (delta.operationId === 'root' && typeof candidate.sql === 'string') replace(candidate);
+  visitSteps(candidate.steps ?? [], step => {
+    if (step.id === delta.operationId && 'sql' in step) replace(step);
+  });
+  if (outcome === 'missing') return 'static_skill_sql_target_step_missing';
+  if (outcome === 'stale') return 'static_skill_sql_anchor_stale';
+  return skills.map(skill => skill === target ? candidate : skill);
 }
 
 /**

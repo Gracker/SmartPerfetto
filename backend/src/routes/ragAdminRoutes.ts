@@ -190,16 +190,81 @@ function sendDirectoryPickerError(
 }
 
 /**
- * Reason tokens of the source, knowledge-root and index lifecycle a caller can
- * act on, by family prefix: a new internal token must not use these prefixes.
- * Anything else a service throws as a token (store corruption, staging
- * invariants) is internal and gets the route's fixed failure.
+ * The reason tokens a RAG admin caller can act on: a root or path the gate
+ * refused, a selection or file the source policy rejected, a lifecycle state
+ * to wait out (deletion, reindex, pending generation, a busy registry) and a
+ * consent or rights step. Only these are echoed. Any other token a service
+ * throws (store corruption, staging invariants, lock bookkeeping, subprocess
+ * failures) gets the route's fixed failure, whatever its prefix.
+ * ragAdminReasonCatalog.test.ts fails when a producer of these routes' errors
+ * adds a token it has not classified here or as internal.
  */
-const CALLER_FACING_RAG_REASON =
-  /^(?:root|source|knowledge|codebase|external_knowledge|submodule|pending_generation|provider_send|right_to_use)_/;
+export const CALLER_FACING_RAG_REASONS: ReadonlySet<string> = new Set([
+  // Root and knowledge-root gate
+  'root_not_found',
+  'root_outside_allowlist',
+  'knowledge_root_blocked',
+  'knowledge_root_realpath_drift',
+  'knowledge_path_gate_excluded',
+  'codebase_root_realpath_drift',
+  'submodule_not_initialized',
+  'submodule_outside_root',
+  'submodule_unavailable',
+  // Source selection and per-file policy
+  'source_changed_during_ingest',
+  'source_chunk_limit_exceeded',
+  'source_directory_invalid',
+  'source_enumeration_incomplete',
+  'source_exclude_glob_invalid',
+  'source_extension_not_allowed',
+  'source_file_changed_during_open',
+  'source_file_changed_during_read',
+  'source_file_changed_or_too_large',
+  'source_file_identity_changed',
+  'source_file_identity_unavailable',
+  'source_file_too_large',
+  'source_file_unreadable',
+  'source_generation_empty',
+  'source_include_prefix_invalid',
+  'source_max_file_bytes_invalid',
+  'source_metadata_identity_changed',
+  'source_metadata_not_regular_file',
+  'source_metadata_time_budget',
+  'source_metadata_too_large',
+  'source_not_found_or_out_of_scope',
+  'source_not_whitelisted',
+  'source_path_changed_during_read',
+  'source_path_excluded',
+  'source_path_invalid',
+  'source_path_not_materialized',
+  'source_path_not_regular_file',
+  'source_path_outside_root',
+  'source_path_prefix_invalid',
+  'source_selection_empty',
+  'source_total_bytes_exceeded',
+  // Index lifecycle
+  'codebase_deleting',
+  'codebase_index_generation_changed',
+  'codebase_registry_busy',
+  'codebase_reindex_blocked_by_security',
+  'codebase_reindex_in_progress',
+  'codebase_reindex_incomplete',
+  'codebase_reindex_lease_lost',
+  'external_knowledge_registry_busy',
+  'external_knowledge_reindex_in_progress',
+  'external_knowledge_reindex_lease_lost',
+  'pending_generation_expired',
+  'pending_generation_not_found',
+  'pending_generation_stale',
+  // Consent and rights
+  'provider_send_consent_required',
+  'provider_send_disabled_for_session',
+  'provider_send_not_consented',
+  'right_to_use_not_acknowledged',
+]);
 
 function callerFacing(reason: string | undefined): string | undefined {
-  return reason && CALLER_FACING_RAG_REASON.test(reason) ? reason : undefined;
+  return reason && CALLER_FACING_RAG_REASONS.has(reason) ? reason : undefined;
 }
 
 function callerFacingRagReason(status: number): (reason: string) => number | undefined {
@@ -606,7 +671,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           article => !acceptedPaths.has(article.relativePath),
         ).length;
         if (excludedArticleCount > 0) {
-          throw new Error(`knowledge_path_gate_excluded_${excludedArticleCount}_articles`);
+          throw new Error(`knowledge_path_gate_excluded:${excludedArticleCount}_articles`);
         }
         const identity = inspectAndroidInternalsWikiIdentity(corpus);
         const report = auditAndroidInternalsWiki(

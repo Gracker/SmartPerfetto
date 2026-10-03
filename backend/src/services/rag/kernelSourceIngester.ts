@@ -36,7 +36,12 @@ import {
   SOURCE_INGEST_WRITE_BATCH_SIZE,
   type SourceGenerationProvenance,
 } from './sourceFileSelection';
-import {codebaseNotFound, invalidCodebaseMetadata, invalidCodebaseSelection} from '../codebase/codebaseRequestError';
+import {
+  codebaseNotFound,
+  invalidCodebaseMetadata,
+  invalidCodebaseSelection,
+  isCodebaseStateError,
+} from '../codebase/codebaseRequestError';
 
 const DEFAULT_MAX_CHUNK_CHARS = 1800;
 const UNKNOWN_LICENSE = 'UNKNOWN';
@@ -128,7 +133,7 @@ export class KernelSourceIngester {
         lastIngestError: reason,
         blockedFileCount: 0,
       });
-      if (reason === 'codebase_root_realpath_drift') throw error;
+      if (isCodebaseStateError(error, 'codebase_root_realpath_drift')) throw error;
       return {
         codebaseId,
         filesProcessed: 0,

@@ -6,6 +6,7 @@ import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 
 import {readBoundedMetadataFile} from './boundedMetadataFile';
+import {CodebaseStateError} from './codebaseRequestError';
 
 export interface AospManifestProject {
   name: string;
@@ -73,10 +74,10 @@ async function discoverAospManifestProjects(
   try {
     repoRoot = await fsPromises.realpath(rootRealpath);
   } catch {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
   if (normalizeIdentity(repoRoot) !== normalizeIdentity(expectedRootRealpath)) {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
   const manifestPath = path.join(repoRoot, '.repo', 'manifest.xml');
   let realManifest: string;
@@ -99,10 +100,10 @@ async function discoverAospManifestProjects(
   try {
     rootAfterRead = await fsPromises.realpath(rootRealpath);
   } catch {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
   if (normalizeIdentity(rootAfterRead) !== normalizeIdentity(expectedRootRealpath)) {
-    throw new Error('codebase_root_realpath_drift');
+    throw new CodebaseStateError('codebase_root_realpath_drift');
   }
   let manifestAfterRead: string;
   try {

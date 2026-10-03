@@ -55,6 +55,27 @@ Detailed commit-level history is available via `git log`.
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 
 ### Fixed
+- A trace processor no longer outlives the process that started it. A backend,
+  CLI or test process that ended without destroying its processors (SIGKILL,
+  a default-handled SIGTERM, a crash, `jest --forceExit`) left
+  `trace_processor_shell` running under init, holding its port, until the next
+  backend start; later runs then failed with `socket hang up` or exhausted
+  their port range. On macOS and Linux processors now start as `server http
+  --idle-start orphaned`, which reaps the server about two seconds after its
+  owner is gone and never while the owner lives. On Windows and for a backend
+  running as PID 1 the server is not bound to its owner, so a processor left
+  behind there still lasts until the next backend start's orphan sweep.
+- The trace processor now accepts the configured Perfetto UI origins. Its
+  support probe read only `--help`, which the pinned binary no longer uses to
+  list the classic CORS flag, so no origin was passed; and that binary's
+  classic `--httpd` form keeps only the last of several comma-separated
+  origins. Processors now start through `server http`, which accepts the whole
+  list, whenever the binary has it; `--httpd` remains only for binaries
+  without it. With a non-default `PERFETTO_UI_ORIGIN` or frontend port, the
+  UI's direct-port trace processor access (`useDirectPort`) was refused by
+  CORS and now works. The default origins (`ui.perfetto.dev`,
+  `localhost:10000`, `127.0.0.1:10000`) were always allowed, and the processor
+  still listens on loopback only.
 - Trace download (`GET /api/traces/:id/file` and its workspace-scoped form)
   answered 404 whenever the stored trace sat below a directory whose name
   starts with a dot, such as the Linux portable data root

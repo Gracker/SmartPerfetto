@@ -67,8 +67,10 @@ steps:
   - id: inspect_existing_topology_object
     type: atomic
     name: "检查旧 CPU 拓扑对象"
-    display:
-      level: hidden
+    # Not displayed: _cpu_topology outlives this call on a loaded trace, so
+    # this check finds a row on every later call. A displayed check would
+    # become the step a parent reads by default, depending on call order.
+    display: false
     process_scope:
       role: global_context
     sql: |

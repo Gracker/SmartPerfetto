@@ -292,7 +292,9 @@ export function localizeSkillDefinition(
   options: SkillLocalizationOptions = {},
 ): SkillDefinition {
   const catalogSkill = getCatalogSkill(skill.name, options);
-  if (!catalogSkill) return skill;
+  // Authoring metadata belongs to the localization catalog, like display.title_i18n.
+  const {display_name_i18n: _displayName, description_i18n: _description, ...meta} = skill.meta;
+  if (!catalogSkill) return {...skill, meta};
   const projectSteps = (steps: SkillDefinition['steps']): SkillDefinition['steps'] =>
     steps?.map(definition => {
       const raw = definition as unknown as Record<string, unknown>;
@@ -321,7 +323,7 @@ export function localizeSkillDefinition(
   return {
     ...skill,
     meta: {
-      ...skill.meta,
+      ...meta,
       display_name: catalogSkill.displayName[outputLanguage],
       description: catalogSkill.description[outputLanguage],
     },

@@ -44115,11 +44115,11 @@
     "thermal_predictor": {
       "displayName": {
         "zh-CN": "CPU 频率趋势观察",
-        "en": "Thermal Predictor"
+        "en": "CPU Frequency Trend"
       },
       "description": {
         "zh-CN": "CPU 频率趋势观察；未提供温度或限频证据时不预测热机制",
-        "en": "Analyzes Thermal Predictor using trace metrics and supporting evidence."
+        "en": "Observes the CPU frequency trend; without temperature or frequency-limit evidence it predicts no thermal mechanism"
       },
       "type": "atomic",
       "steps": {
@@ -44134,7 +44134,7 @@
         "root": {
           "title": {
             "zh-CN": "CPU 频率趋势观察",
-            "en": "Thermal Predictor"
+            "en": "CPU Frequency Trend"
           },
           "columns": {
             "avg_start_freq_mhz": {

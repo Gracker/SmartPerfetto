@@ -80,10 +80,11 @@ SmartPerfetto 自己为调用方编写的错误保留可操作的文案，形状
   是原因码，可带 `:` 之后的包内相对路径、字段名或 Skill id。持久化失败等内部原因一律固定文案。
 
 RAG 管理接口背后的服务把机器可读的原因码作为异常消息抛出（如 `root_outside_allowlist`、
-`source_chunk_limit_exceeded:5000`）。只有调用方能处理的原因码族（源码路径、知识根、索引生命周期、
-授权与使用权确认）会被回显为 `code` 和 `error`，去掉第一个 `:` 之后的细节（可能是 id、路径或
-大小），原始消息以 warn 级别写入日志；存储损坏、暂存计数不一致等内部原因码和不是原因码的消息
-一律固定文案。自进化接口沿用 `{success: false, error: <code>}` 形状，返回
+`source_chunk_limit_exceeded:5000`）。只有逐个列入调用方可处理清单的原因码（源码路径、知识根、
+索引生命周期、授权与使用权确认，见 `ragAdminRoutes.ts` 的 `CALLER_FACING_RAG_REASONS`）会被回显为
+`code` 和 `error`，去掉第一个 `:` 之后的细节（可能是 id、路径、大小或被排除的条目数），原始消息以
+warn 级别写入日志；未列入的原因码（即使前缀相同，如存储损坏、暂存计数不一致、子进程失败）和不是
+原因码的消息一律固定文案。自进化接口沿用 `{success: false, error: <code>}` 形状，返回
 完整的小写原因码（只含 `a-z 0-9 _ : -`，可带 `:` 之后的 id），其他异常为
 `self_evolution_request_failed`。
 
@@ -93,7 +94,7 @@ RAG 管理接口背后的服务把机器可读的原因码作为异常消息抛�
 `tenant_purge_failed`）；报告生成失败时 `reportError` 为 `report generation failed`；上传后
 trace_processor_shell 加载失败时返回 `trace_processor_shell could not load the trace`。trace
 上传接口的 `details` 只用于 URL 被拒和文件过大这类我们写的说明，不再携带异常消息。通过 API 提交的
-批量 trace 中，单个 trace 失败时 `error` 和诊断只保留原因码（否则为 `batch_trace_failed`），CLI
+批量 trace 中，单个 trace 失败时 `error` 和诊断只保留原因码（否则为 `batch_trace_failed`；Skill 执行返回失败时为 `batch_skill_failed`），CLI
 本地批量运行保留完整消息；代码库重建索引结果中每个被跳过文件的 `reason` 只保留原因码（否则为
 `source_file_unreadable`）。企业模式下 SSO 会话或 API Key 解析出错时 401 只返回固定说明。此前已经
 写入的记录保留原文。

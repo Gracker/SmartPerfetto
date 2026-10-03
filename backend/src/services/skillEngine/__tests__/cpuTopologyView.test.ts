@@ -9,6 +9,8 @@ import yaml from 'js-yaml';
 import Database from 'better-sqlite3';
 import {describe, expect, it} from '@jest/globals';
 import {builtInSkillFragment, injectFragmentCtes} from '../skillFragments';
+import {createSkillExecutor} from '../skillExecutor';
+import {selectReferencedSkillStep} from '../referencedSkillStep';
 
 const loadSkillYaml = (relativePath: string): any => {
   const skillPath = path.join(process.cwd(), relativePath);
@@ -399,5 +401,29 @@ describe('shared CPU cluster load', () => {
     const db = openFixture(() => null);
     expect(clusterTable(db).find(row => row.cluster === '小核簇')?.load_pct).toBe(15);
     expect(jankClusterLoad(db)).toEqual({big_load_pct: 18.8, little_load_pct: 15});
+  });
+});
+
+describe('cpu_topology_view as a referenced Skill', () => {
+  // _cpu_topology persists on a loaded trace, so the existence check finds the
+  // table on every call after the first. A parent's default read must not
+  // depend on that call order.
+  it('exposes read_topology whether or not _cpu_topology already exists', () => {
+    const skill = loadSkillYaml('skills/atomic/cpu_topology_view.skill.yaml');
+    const shouldDisplay = (step: any): boolean =>
+      (createSkillExecutor({}) as any).shouldDisplay(step);
+    const displayResults = skill.steps
+      .filter(shouldDisplay)
+      .map((step: any) => ({stepId: step.id}));
+    for (const existing of [[], [{type: 'table'}]]) {
+      const rawResults = Object.fromEntries(skill.steps.map((step: any) => [step.id, {
+        stepId: step.id,
+        success: true,
+        data: step.id === 'inspect_existing_topology_object'
+          ? existing
+          : step.id === 'read_topology' ? [{cpu_id: 0}] : [],
+      }]));
+      expect(selectReferencedSkillStep({rawResults, displayResults})?.stepId).toBe('read_topology');
+    }
   });
 });

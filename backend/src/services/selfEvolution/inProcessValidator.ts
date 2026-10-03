@@ -91,7 +91,8 @@ function issue(
   return {severity, code, skillId, path, message};
 }
 
-function visitSteps(
+/** Every step of a step list, nested parallel and conditional branches included, with its path. */
+export function visitSteps(
   steps: readonly SkillStep[],
   callback: (step: SkillStep, path: string) => void,
   prefix = 'steps',
