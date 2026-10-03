@@ -1415,6 +1415,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       selectionContext: options.selectionContext, comparison: comparisonContext, traceCompleteness,
       traceOs: traceInfo?.traceOs, traceFormat: traceInfo?.traceFormat,
       outputLanguage: config.outputLanguage, codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds,
+      sourceAuthorization: mcp.sourceAuthorization,
     };
     return {
       systemPrompt: buildSystemPrompt(promptContext),

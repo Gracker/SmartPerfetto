@@ -795,34 +795,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     // The detector's primary app becomes citable current-run evidence.
     const citedFocusTarget = registerFocusAppEvidence({store: artifactStore, traceId, focusResult, focusTarget});
 
-    const analysisContext: ClaudeAnalysisContext = {
-      query,
-      turnIntent,
-      strategyRegistry: intentResolver.strategyRegistry,
-      onDemandContext: policy.onDemandContext,
-      packageName: effectivePackageName,
-      focusTarget: citedFocusTarget,
-      sceneType,
-      architecture,
-      selectionContext: options?.selectionContext,
-      outputLanguage,
-      traceCompleteness,
-      ...buildRuntimeMemoryContext({
-        allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
-        packageName: effectivePackageName, knowledgeScope, outputLanguage,
-      }),
-      comparison: comparisonContext,
-      codeAwareMode: options?.codeAwareMode,
-      codebaseIds: options?.codebaseIds,
-    };
-
-    const systemPrompt = buildSystemPrompt(analysisContext);
-
-    // Merge with optional env system prompt
-    const finalSystemPrompt = this.config.systemPrompt
-      ? `${this.config.systemPrompt}\n\n${systemPrompt}`
-      : systemPrompt;
-
     const skillRegistryPhase = runtimePerformance.startPhase('skill_registry');
     try {
       await ensureSkillRegistryInitialized();
@@ -1020,6 +992,36 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const allowedToolNames = mcp?.allowedTools ?? [];
     const sourceUse = mcp?.sourceUse;
     sessionState.sourceUse = sourceUse;
+
+    // Built after the MCP server, which describes the selected codebases' capabilities.
+    const analysisContext: ClaudeAnalysisContext = {
+      query,
+      turnIntent,
+      strategyRegistry: intentResolver.strategyRegistry,
+      onDemandContext: policy.onDemandContext,
+      packageName: effectivePackageName,
+      focusTarget: citedFocusTarget,
+      sceneType,
+      architecture,
+      selectionContext: options?.selectionContext,
+      outputLanguage,
+      traceCompleteness,
+      ...buildRuntimeMemoryContext({
+        allowAutomaticPrefetch: policy.allowAutomaticPrefetch, sceneType, architectureType: architecture?.type,
+        packageName: effectivePackageName, knowledgeScope, outputLanguage,
+      }),
+      comparison: comparisonContext,
+      codeAwareMode: options?.codeAwareMode,
+      codebaseIds: options?.codebaseIds,
+      sourceAuthorization: mcp?.sourceAuthorization,
+    };
+
+    const systemPrompt = buildSystemPrompt(analysisContext);
+
+    // Merge with optional env system prompt
+    const finalSystemPrompt = this.config.systemPrompt
+      ? `${this.config.systemPrompt}\n\n${systemPrompt}`
+      : systemPrompt;
 
     // The user prompt uses the shared, localized trace-context formatter. All
     // runtime methodology remains in strategies through the shared system prompt.

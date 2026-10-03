@@ -104,13 +104,14 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 | `search_codebase` | 在已注册 live root 中做有界文本/symbol 搜索 | 不要求 SmartPerfetto 索引；只接受已选 codebase 和相对 path prefix |
 | `read_codebase_file` | 读取已注册 root 内的有界行范围 | `metadata_only` 不返回正文；`provider_send` 仍要求双重 consent 和脱敏 |
 | `find_codebase_files` | 按文件名、路径子串或 glob 查找已注册文件 | 只返回相对路径，不读文件、不签发源码引用；`metadata_only` 下可用 |
-| `record_source_use_decision` | 在任何源码 lookup 之前记录受控的终止状态 | 只允许 policy 中的结构化状态与有界原因；一旦 lookup 开始就不能回写矛盾决策 |
-| `query_code_graph` | 用可选本地代码图导航相关流程与 symbol | metadata-only；图不可用时返回结构化不可用结果 |
-| `inspect_code_symbol` | 查看候选 symbol 的有界关系与位置 | metadata-only；关系必须再由有界源码读取验证 |
-| `lookup_app_source` | 查询应用源码 | 输出需要 CodeRef 过滤 |
-| `lookup_kernel_source` | 查询内核源码 | 输出需要 CodeRef 过滤 |
-| `resolve_symbol` | 解析 trace 符号到源码位置 | 保持源码引用可追踪 |
-| `propose_patch` | 生成 patch proposal | 必须标记 verified / sketch / unverified |
+| `query_code_graph` | 用可选本地代码图导航相关流程与 symbol | metadata-only；仅当所选库有 GitNexus 索引时提供 |
+| `inspect_code_symbol` | 查看候选 symbol 的有界关系与位置 | metadata-only；关系必须再由有界源码读取验证；仅当有 GitNexus 索引时提供 |
+| `lookup_app_source` | 查询应用源码 | 输出需要 CodeRef 过滤；仅当所选库有 active index 时提供 |
+| `lookup_kernel_source` | 查询内核源码 | 输出需要 CodeRef 过滤；仅当有 active index 时提供 |
+| `resolve_symbol` | 解析 trace 符号到源码位置 | 保持源码引用可追踪；仅当有 active index 时提供 |
+| `propose_patch` | 生成 patch proposal | 必须标记 verified / sketch / unverified；仅当有 active index 时提供 |
+
+每个 run 的 MCP server 一次性判定所选库各自的能力（`search`、`read_body`、`index`、`graph`），只有某个所选库具备图谱或 active index 时才注册对应工具。同一份事实连同本轮源码深度和初始额度，以 `source_authorization` 数据段进入系统提示（`codebases[]`：`id`、`displayName`、`kind`、`pathScope`——`whole_root` 或 `registered_filters`，从不列出过滤规则本身——以及 `capabilities`）。调用指定了不具备该能力的库时，在触达任何源码之前拒绝：`unsupportedReason: codebase_index_unavailable | codebase_graph_unavailable`，`action_required: use_search_codebase`。源码使用状态只按实际调用记录，不再有由模型声明的源码使用决策工具。
 
 五个无索引/图导航工具都需要 codebase permission，并使用当前请求已选择的代码库。只有恰好选择一个 codebase 时才可省略 `codebase_id`；选择多个时必须明确指定：
 
@@ -130,19 +131,12 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 
 模型只收到一份正文：带真实行号的 `numberedText`；原始文本留在内部，用于回显登记、计费与来源追踪。读取结果的 `window.enclosingSymbol` 是窗口起点向上最近的声明行（启发式）；文件不存在时，`candidates` 列出范围内同名文件的相对路径（至多 5 个，`provider_send` 下不越出授权范围）。工具抛出的失败只把形如 `source_*` 的无路径错误码交给各 runtime，其余一律为 `source_tool_failed`。
 
-注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引。GitNexus 缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。
+注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引；所选库都没有 `.gitnexus` 索引时图工具不提供。GitNexus 程序缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。
 
 按需 `search_codebase` / `read_codebase_file` 与 indexed lookup 使用同一条披露谓词：
 相对路径必须同时满足当前 selection policy 和注册时 consent grant。`.gitignore` 只决定
 候选召回；它不是授权。新版本新增的扩展名必须由用户再次授权，不能由旧 consent
 静默继承。
-
-已选 codebase 的 full 分析会把 source investigation 作为不可 waiver 的计划项。当
-Trace/Skill/SQL 已提供可查询锚点时，runtime 必须执行有界 lookup；如果没有必要、
-不允许、没有锚点或无法确定候选，必须在 lookup 前调用
-`record_source_use_decision`。当前 registry 发现的 19 个可路由场景全部继承默认
-policy，`startup`、`scrolling`、`anr`、`interaction` 和 `scroll_response` 增加更具体
-的锚点。
 
 图工具输出只包含 `codebaseId`、相对 `CodeRef`、脱敏后的 process/symbol 元数据、`graph.freshness` 和 `graph.verificationRequired`。注册项配置了 `pathFilters` 或 `excludeGlobs` 时，会省略无法证明路径范围的全仓 process 摘要，并保留已授权的相对 `CodeRef`。代码图元数据既不是当前 trace 证据，也不是已经核对的源码事实；任何影响结论的关系都必须再用有界 `read_codebase_file` 验证，当前权限不允许读取时必须保持未验证状态。绝对 root 始终留在后端信任边界内。Code-aware 输出会进入 report/export/snapshot 时，只能保留安全名称/ID 与相对 `CodeRef`，不能保留原始源码；处理隐私、路径和 patch 状态时不要只验证前端聊天窗口。
 

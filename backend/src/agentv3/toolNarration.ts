@@ -553,14 +553,6 @@ export function formatToolCallNarration(
     }
     case 'list_codebases':
       return shorten(localize(language, '列出可用源码库：确认哪些实现可以查', 'List available codebases: see which implementations can be inspected'));
-    case 'record_source_use_decision': {
-      const status = readString(args.status);
-      const reason = readString(args.reason);
-      const detail = [status, reason].filter(Boolean).join(localize(language, '，', ', '));
-      return shorten(detail
-        ? localize(language, `记录源码使用结论：${detail}`, `Record source-use decision: ${detail}`)
-        : localize(language, '记录源码使用结论：说明源码是否参与了本次判断', 'Record source-use decision: state whether source informed this analysis'));
-    }
     case 'recall_similar_case': {
       const scene = readString(args.scene) || readString(args.cuj);
       return shorten(scene
@@ -1057,7 +1049,6 @@ export function formatToolResultNarration(input: ToolResultNarrationInput): stri
     case 'flag_uncertainty':
     case 'list_skills':
     case 'write_analysis_note':
-    case 'record_source_use_decision':
       // These restate their own dispatch line. The skill engine reports its own
       // completion, and the `data` event lists the evidence that arrived.
       return '';

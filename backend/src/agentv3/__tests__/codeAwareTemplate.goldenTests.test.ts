@@ -22,31 +22,18 @@ function typedContext(overrides: Partial<ClaudeAnalysisContext> = {}): ClaudeAna
 }
 
 describe('typed source contract golden rules', () => {
-  it.each(['zh', 'en'] as const)('loads the %s source-use decision contract from assets', language => {
-    const contract = loadPromptTemplate(`prompt-source-use-decision-${language}`) ?? '';
-    expect(contract.match(/<!-- tool-description:start -->/g) ?? []).toHaveLength(1);
-    expect(contract.match(/<!-- tool-description:end -->/g) ?? []).toHaveLength(1);
-    const compactDescription = contract
-      .split('<!-- tool-description:start -->')[1]
-      ?.split('<!-- tool-description:end -->')[0]
-      ?.trim() ?? '';
-    expect(compactDescription.length).toBeGreaterThan(0);
-    expect(compactDescription.length).toBeLessThanOrEqual(240);
-    expect(contract).toContain('untrusted');
-    expect(contract).toContain('metadata_only');
-    expect(contract).toContain('provider_send');
-    expect(contract).toContain('record_source_use_decision');
-    expect(contract).toContain('not_needed');
-    expect(contract).toContain('disallowed');
-    expect(contract).toContain('no_queryable_anchor');
-    expect(contract).toContain('ambiguous_candidates');
-    expect(contract).toContain('not_found_complete');
-    expect(contract).toContain('search_incomplete');
-    expect(contract).toContain('unverified');
-    expect(contract).toContain('reason>=30');
-    expect(contract).toContain('contradictory=reject');
+  it.each(['zh', 'en'] as const)('loads the %s source-use guidance from assets', language => {
+    const guidance = loadPromptTemplate(`prompt-source-use-${language}`) ?? '';
+    expect(guidance).toContain(language === 'en' ? 'untrusted' : '不可信');
+    expect(guidance).toContain('metadata_only');
+    expect(guidance).toContain('provider_send');
+    expect(guidance).toContain('source_authorization');
+    expect(guidance).toContain('read_body');
+    expect(guidance).toContain('traversal');
+    // Source use is recorded from actual calls; no tool asks the model to declare it.
+    expect(guidance).not.toContain('record_source_use_decision');
+    expect(guidance).not.toContain('tool-description:start');
   });
-
   it.each(['zh', 'en'] as const)('explains provider-visible source binding IDs in the %s contract', language => {
     const contract = loadPromptTemplate(`prompt-code-reference-contract-${language}`) ?? '';
     for (const field of ['sourceReferences', 'result.sourceReferences', 'sourceClaimBindings', 'sourceReferenceIds',
@@ -72,11 +59,10 @@ describe('typed source contract golden rules', () => {
         outputLanguage: 'en',
       }));
 
-      expect(active).toContain('Source Use Decision Contract');
-      expect(active).toContain('record_source_use_decision');
+      expect(active).toContain('## Source Use');
+      expect(active).not.toContain('record_source_use_decision');
       expect(active).toContain('Trace evidence proves occurrence');
-      expect(traceOnly).not.toContain('Source Use Decision Contract');
-      expect(traceOnly).not.toContain('record_source_use_decision');
+      expect(traceOnly).not.toContain('## Source Use');
       expect(traceOnly).not.toContain('Trace evidence proves occurrence');
     },
   );
@@ -98,27 +84,25 @@ describe('typed source contract golden rules', () => {
       outputLanguage: 'en',
     }));
 
-    expect(active).toContain('Source Use Decision Contract');
+    expect(active).toContain('## Source Use');
     expect(active).toContain('cb_quick');
     expect(active).toContain('CodeRef Location Contract');
     expect(active).toContain('Trace evidence proves occurrence');
     expect(active).toContain('untrusted');
-    expect(off).not.toContain('Source Use Decision Contract');
-    expect(emptySelection).not.toContain('Source Use Decision Contract');
+    expect(off).not.toContain('## Source Use');
+    expect(emptySelection).not.toContain('## Source Use');
   });
 
-  it('gives Claude sub-agents source tools only with the same loaded contract and always excludes control tools', () => {
+  it('gives Claude sub-agents source tools only with the source guidance and the same selection facts', () => {
     const allowedTools = [
       'mcp__smartperfetto__execute_sql',
       'mcp__smartperfetto__search_codebase',
       'mcp__smartperfetto__read_codebase_file',
-      'mcp__smartperfetto__record_source_use_decision',
     ];
     const toolDefinitions = [
-      {name: 'execute_sql', exposure: 'public', planCapability: 'evidence'},
-      {name: 'search_codebase', exposure: 'requires_codebase_permission', planCapability: 'evidence'},
-      {name: 'read_codebase_file', exposure: 'requires_codebase_permission', planCapability: 'evidence'},
-      {name: 'record_source_use_decision', exposure: 'requires_codebase_permission', planCapability: 'control'},
+      {name: 'execute_sql', exposure: 'public'},
+      {name: 'search_codebase', exposure: 'requires_codebase_permission'},
+      {name: 'read_codebase_file', exposure: 'requires_codebase_permission'},
     ];
     const inactive = buildAgentDefinitions('general', {allowedTools, toolDefinitions} as any);
     const active = buildAgentDefinitions('general', {
@@ -133,15 +117,14 @@ describe('typed source contract golden rules', () => {
       expect(agent.tools).toContain('mcp__smartperfetto__execute_sql');
       expect(agent.tools).not.toContain('mcp__smartperfetto__search_codebase');
       expect(agent.tools).not.toContain('mcp__smartperfetto__read_codebase_file');
-      expect(agent.tools).not.toContain('mcp__smartperfetto__record_source_use_decision');
-      expect(agent.prompt).not.toContain('Source Use Decision Contract');
+      expect(agent.prompt).not.toContain('## Source Use');
     }
     for (const agent of Object.values(active)) {
       expect(agent.tools).toContain('mcp__smartperfetto__execute_sql');
       expect(agent.tools).toContain('mcp__smartperfetto__search_codebase');
       expect(agent.tools).toContain('mcp__smartperfetto__read_codebase_file');
-      expect(agent.tools).not.toContain('mcp__smartperfetto__record_source_use_decision');
-      expect(agent.prompt).toContain('Source Use Decision Contract');
+      expect(agent.prompt).toContain('## Source Use');
+      expect(agent.prompt).toContain('"context":"source_authorization"');
       expect(agent.prompt).toContain('cb_agent');
     }
   });

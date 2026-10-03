@@ -4,7 +4,8 @@
 
 import type {ClaudeAnalysisContext, TraceCompleteness} from './types';
 import {getFinalReportContract, loadPromptTemplate, renderTemplate} from './strategyLoader';
-import {loadSourceUseDecisionPrompt} from '../services/codebase/sourceUseDecision';
+import {loadSourceUsePrompt} from '../services/codebase/sourceUseDecision';
+import {sourceAuthorizationPayload} from '../services/codebase/selectedCodebaseCapabilities';
 import {DEFAULT_OUTPUT_LANGUAGE} from './outputLanguage';
 import {resolveRuntimeTurnPolicy, type RuntimeTurnPolicy} from '../agentRuntime/runtimeTurnPolicy';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
@@ -199,10 +200,7 @@ function buildTypedTurnSystemPromptParts(
     sceneId: intent.sceneId, registryFingerprint: registry.registryFingerprint, onDemandContext,
     preflight,
   });
-  data(3, 'source_authorization', {
-    mode: context.codeAwareMode ?? 'off', codebaseIds: context.codebaseIds ?? [],
-    evidenceAccess: intent.evidenceAccess,
-  });
+  data(3, 'source_authorization', sourceAuthorizationPayload({...context, evidenceAccess: intent.evidenceAccess}));
 
   // Scene meaning is a trace fact, not a scene-wide budget: a bounded question
   // still has to be read against the scene it is about. Only a run that read no
@@ -237,10 +235,10 @@ function buildTypedTurnSystemPromptParts(
 
   if (context.codeAwareMode && context.codeAwareMode !== 'off' && context.codebaseIds?.length) {
     if (policy.allowNewEvidence) {
-      const sourceUseDecision = loadSourceUseDecisionPrompt({
+      const sourceUse = loadSourceUsePrompt({
         codeAwareMode: context.codeAwareMode, codebaseIds: context.codebaseIds, outputLanguage: language,
       });
-      if (sourceUseDecision) push(3, 'source_use_decision', stripTemplateComments(sourceUseDecision));
+      if (sourceUse) push(3, 'source_use', sourceUse);
     }
     push(3, 'code_reference_contract', requiredAsset(language === 'en'
       ? 'prompt-code-reference-contract-en' : 'prompt-code-reference-contract-zh'));

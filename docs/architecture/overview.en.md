@@ -210,9 +210,11 @@ metadata-only visibility.
          -> active RAG generation -> bounded attributed background context
       (neither Android Internals source is current-trace evidence)
       -> selected codebase + live authorization + on-demand source access
-         -> record_source_use_decision (explicit status, not a mandatory prerequisite)
-         -> search_codebase / read_codebase_file (live root, no index required)
-      -> resolve_symbol / lookup_app_source / lookup_aosp_source / lookup_kernel_source
+         -> per-codebase capabilities (search / read_body / index / graph) + run depth and budget -> source_authorization
+         -> search_codebase / read_codebase_file / find_codebase_files (live root, no index required)
+         -> query_code_graph / inspect_code_symbol (only when a selected codebase has a GitNexus index)
+      -> resolve_symbol / lookup_app_source / lookup_kernel_source (only with an active index)
+      -> lookup_aosp_source
          -> LookupResponseFilter -> CodeRef metadata
       -> propose_patch -> PatchProposer -> verified / sketch / unverified
 

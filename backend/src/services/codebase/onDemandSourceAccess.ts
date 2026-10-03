@@ -232,6 +232,14 @@ export function codebaseOnDemandAvailability(
     : {available: false, reason: 'codebase_root_unavailable'};
 }
 
+/** provider_send reaches a codebase's source only with that codebase's own consent. */
+export function onDemandConsentFailure(
+  ref: Pick<CodebaseRef, 'consent'>,
+  mode: CodeAwareMode,
+): 'no_send_to_provider_consent' | undefined {
+  return mode === 'provider_send' && !ref.consent.sendToProvider ? 'no_send_to_provider_consent' : undefined;
+}
+
 /** One id per returned range: a window and a hit that start on the same line differ. */
 function referenceId(codebaseId: string, filePath: string, range: {start: number; end: number}): string {
   return `source_${createHash('sha256')
@@ -542,14 +550,6 @@ export class OnDemandSourceAccessService {
     return root;
   }
 
-  private consentFailure(
-    ref: RegisteredCodebase,
-    mode: CodeAwareMode,
-  ): string | undefined {
-    if (mode !== 'provider_send') return undefined;
-    return ref.consent.sendToProvider ? undefined : 'no_send_to_provider_consent';
-  }
-
   /**
    * The prefixes a search actually covers. `disjoint` means no admitted file
    * can lie under the requested prefix: it is outside the registered filters
@@ -629,7 +629,7 @@ export class OnDemandSourceAccessService {
     mode: CodeAwareMode,
     pathPrefix: string | undefined,
   ): Promise<{refusal: string} | ScopedLookup> {
-    const consentFailure = this.consentFailure(ref, mode);
+    const consentFailure = onDemandConsentFailure(ref, mode);
     if (consentFailure) return {refusal: consentFailure};
     const root = await this.validateRoot(ref);
     const policy = sourceSelectionForRef(ref, this.searchMaxFileBytes);
@@ -969,7 +969,7 @@ export class OnDemandSourceAccessService {
     });
     const ref = this.resolveRef(input.codebaseId, input.scope);
     if (input.mode === 'off') return failed('code_aware_disabled_for_session');
-    const consentFailure = this.consentFailure(ref, input.mode);
+    const consentFailure = onDemandConsentFailure(ref, input.mode);
     if (consentFailure) return failed(consentFailure);
     const root = await this.validateRoot(ref);
     const admission = this.gate.admitRelativeSourcePath(

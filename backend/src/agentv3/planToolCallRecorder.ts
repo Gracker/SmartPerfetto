@@ -7,7 +7,6 @@ import {
   expectedToolNames,
   formatExpectedCall,
   getPlanToolCapability,
-  isControlCapableToolName,
   isEvidenceCapableToolName,
   phaseMatchesCall,
   type AnalysisPlanV3,
@@ -21,7 +20,6 @@ import {
   getSourceLookupCodeReferences,
   rememberSourceLookupCodeReferences,
   sourceLookupResultHasCodeReferences,
-  isSourceLookupToolName,
   type SourceLookupCodeReference,
 } from '../services/codebase/sourceLookupTools';
 
@@ -134,14 +132,6 @@ function buildToolCallRecord(input: PlanToolCallRecorderInput): ToolCallRecord {
   };
 }
 
-function findSourceControlPhase(plan: AnalysisPlanV3): PlanPhase | undefined {
-  const matches = plan.phases.filter(phase => [
-    ...(phase.expectedTools ?? []),
-    ...(phase.expectedCalls ?? []).map(call => call.tool),
-  ].some(isSourceLookupToolName));
-  return matches.length === 1 ? matches[0] : undefined;
-}
-
 export type ToolResultFacts = RuntimeToolResultFacts;
 
 export function readToolResultFacts(result: unknown): ToolResultFacts {
@@ -166,7 +156,6 @@ export function recordPlanToolCall(
   }
   const shortName = shortToolName(input.toolName);
   const canSatisfyEvidence = isEvidenceCapableToolName(shortName);
-  const canControlPlan = isControlCapableToolName(shortName);
   const candidate = buildToolCallRecord(input);
 
   const returnedPhaseId = input.resultFacts !== undefined
@@ -176,7 +165,7 @@ export function recordPlanToolCall(
     candidate.requestedPhaseId !== returnedPhaseId;
   const matchedPhaseId = canSatisfyEvidence && !conflictingPhaseIds
     ? resolvePlanPhaseForCall(plan, candidate, explicitPhaseId).phase?.id
-    : canControlPlan ? findSourceControlPhase(plan)?.id : undefined;
+    : undefined;
 
   const record = { ...candidate, matchedPhaseId };
   plan.toolCallLog.push(record);
@@ -209,7 +198,7 @@ export function recordPlanOrPrePlanToolCall(
   }
 
   const shortName = shortToolName(input.toolName);
-  if (!isEvidenceCapableToolName(shortName) && !isControlCapableToolName(shortName)) {
+  if (!isEvidenceCapableToolName(shortName)) {
     return undefined;
   }
 
@@ -267,17 +256,6 @@ export function replayPrePlanToolCalls(tracker: AnalysisPlanTracker | null | und
 
   let replayed = 0;
   for (const candidate of prePlanToolCallLog) {
-    if (candidate.planCapability === 'control' || isControlCapableToolName(candidate.toolName)) {
-      plan.toolCallLog.push({
-        ...candidate,
-        matchedPhaseId: findSourceControlPhase(plan)?.id,
-      });
-      replayed++;
-      if (plan.toolCallLog.length > MAX_PLAN_TOOL_CALL_LOG) {
-        plan.toolCallLog.splice(0, plan.toolCallLog.length - MAX_PLAN_TOOL_CALL_LOG);
-      }
-      continue;
-    }
     const matchedPhase = resolvePlanPhaseForCall(plan, candidate, candidate.requestedPhaseId).phase;
     plan.toolCallLog.push({
       ...candidate,

@@ -1739,12 +1739,12 @@ strategies:
   backend/strategies/prompt-code-reference-contract-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto source lookup tools and codebase-aware report orchestration
-  backend/strategies/prompt-source-use-decision-en.template.md:
+  backend/strategies/prompt-source-use-en.template.md:
     disposition: product-only
-    reason: SmartPerfetto runtime source-use control, provider consent, and codebase-aware orchestration
-  backend/strategies/prompt-source-use-decision-zh.template.md:
+    reason: SmartPerfetto selected-codebase capabilities, provider consent, and codebase-aware orchestration
+  backend/strategies/prompt-source-use-zh.template.md:
     disposition: product-only
-    reason: SmartPerfetto runtime source-use control, provider consent, and codebase-aware orchestration
+    reason: SmartPerfetto selected-codebase capabilities, provider consent, and codebase-aware orchestration
   backend/strategies/prompt-source-activation-reset.template.md:
     disposition: product-only
     reason: SmartPerfetto provider session reset after private source activation changes
@@ -1945,9 +1945,6 @@ strategies:
     workflow: trace-overview
     disposition: exported
     destination: references/generated/strategies/smart.strategy.md
-  backend/strategies/source-investigation-policy.yaml:
-    disposition: product-only
-    reason: SmartPerfetto private codebase and kernel source investigation routing
   backend/strategies/startup.strategy.md:
     workflow: startup
     disposition: exported

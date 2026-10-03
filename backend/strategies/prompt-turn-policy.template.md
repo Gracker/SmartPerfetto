@@ -71,8 +71,9 @@ Do not repeat completed work just to follow a fixed sequence.
 
 Source access is limited by `source_authorization`: `off` forbids source access,
 `metadata_only` permits allowed reference metadata without source bodies, and
-`provider_send` permits only authorized bounded source content. Explicit
-codebase IDs are an allowlist, not proof that access or a lookup succeeded.
+`provider_send` permits only authorized bounded source content. Each listed
+codebase states its capabilities and the run's source depth and budget; the
+list is an allowlist, not proof that access or a lookup succeeded.
 Preserve returned evidence and source identifiers. Trace evidence establishes
 occurrence; source evidence explains implementation. A source location alone
 does not prove a cause. State uncertainty when evidence cannot establish the

@@ -182,9 +182,11 @@ Session 和数据库所有权为准；前端请求头只是传输上下文，不
          -> active RAG generation -> bounded attributed background context
       （两种 Android Internals 来源都不是当前 trace 证据）
       -> selected codebase + live authorization + on-demand source access
-         -> record_source_use_decision（显式结构化状态，不是强制前置步骤）
-         -> search_codebase / read_codebase_file（live root，不要求索引）
-      -> resolve_symbol / lookup_app_source / lookup_aosp_source / lookup_kernel_source
+         -> 每库能力（search / read_body / index / graph）+ 本轮深度与额度 -> source_authorization
+         -> search_codebase / read_codebase_file / find_codebase_files（live root，不要求索引）
+         -> query_code_graph / inspect_code_symbol（仅当所选库有 GitNexus 索引）
+      -> resolve_symbol / lookup_app_source / lookup_kernel_source（仅当所选库有 active index）
+      -> lookup_aosp_source
          -> LookupResponseFilter -> CodeRef metadata
       -> propose_patch -> PatchProposer -> verified / sketch / unverified
 

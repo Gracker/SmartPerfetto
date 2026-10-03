@@ -567,7 +567,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     const call = claudeSdkMock.__getQueryCalls()[0];
     expect(JSON.stringify(call.options.systemPrompt)).toContain('cb-claude-quick');
     expect(JSON.stringify(call.options.systemPrompt)).toContain('metadata_only');
-    expect(JSON.stringify(call.options.systemPrompt)).toContain('源码使用决策契约');
+    expect(JSON.stringify(call.options.systemPrompt)).toContain('## 源码使用');
   });
 
   it('does not run trace preflight for a no-trace conversation turn', async () => {

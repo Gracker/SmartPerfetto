@@ -111,9 +111,7 @@ entering the native prompt path. Missing or evicted data remains unavailable.
   scene core inside an unterminated HTML comment and pushed the methodology
   preamble after it. Write `Variable "name" = ...` instead.
 - HTML comments are stripped when a template becomes a prompt segment, so
-  SPDX and authoring notes cost no tokens and never reach the model. Marker
-  comments such as `<!-- tool-description:start -->` are consumed by their own
-  loader before that point; keep any new marker on the same contract.
+  SPDX and authoring notes cost no tokens and never reach the model.
 - The full-mode prompt is budget-bound (`MAX_PROMPT_TOKENS`). Before adding a
   section, measure with
   `npx jest src/agentv3/__tests__/claudeSystemPrompt.realStrategyTokenRegression.test.ts`

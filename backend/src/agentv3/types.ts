@@ -8,7 +8,7 @@ import type { FocusAppTarget } from '../agentRuntime/focusAppTarget';
 import type { SceneType } from './sceneClassifier';
 import type { OutputLanguage } from './outputLanguage';
 import type { CodeAwareMode } from '../services/codebase/codeAwareFeature';
-import type {SourceUseStatus} from '../services/codebase/sourceUseDecision';
+import type {SourceAuthorizationPromptData} from '../services/codebase/selectedCodebaseCapabilities';
 import type {CapabilityManifestResolutionV1, CapabilityUnprobedReasonCode} from '../types/capabilityManifest';
 import type {AnalysisRecoveryKind, AnalysisMissingReportSection} from '../types/analysisDelivery';
 import type {AnalysisTurnIntent} from '../agentRuntime/analysisTurnIntent';
@@ -156,6 +156,8 @@ export interface ClaudeAnalysisContext {
   codeAwareMode?: CodeAwareMode;
   /** Explicitly whitelisted codebase ids for this session. */
   codebaseIds?: string[];
+  /** Per-codebase capabilities and the run's source budget, from the run's MCP server. */
+  sourceAuthorization?: SourceAuthorizationPromptData;
 }
 
 // =============================================================================
@@ -415,11 +417,6 @@ export interface AnalysisPlanV3 {
   /** Agent-declared waivers for mandatory plan-template aspects. */
   waivers?: PlanAspectWaiver[];
   /**
-   * Bounded status-only marker used by provider-neutral completion gates.
-   * Full source references and free-text reasons stay outside the plan.
-   */
-  sourceUseDecisionStatus?: SourceUseStatus;
-  /**
    * Mandatory aspects the agent failed to cover *and* did not waive after
    * the hard-gate gave up enforcing (max attempts reached). Surfaced by
    * `verifyPlanAdherence` as an error so the final verifier still flags
@@ -457,25 +454,16 @@ const INFORMATIONAL_TOOL_NAMES = new Set([
   'write_analysis_note',
 ]);
 
-const CONTROL_TOOL_NAMES = new Set([
-  'record_source_use_decision',
-]);
-
-export type PlanToolCapability = 'evidence' | 'control' | 'informational';
+export type PlanToolCapability = 'evidence' | 'informational';
 
 export function getPlanToolCapability(toolName: string): PlanToolCapability {
   const shortName = shortToolName(toolName);
   if (INFORMATIONAL_TOOL_NAMES.has(shortName)) return 'informational';
-  if (CONTROL_TOOL_NAMES.has(shortName)) return 'control';
   return 'evidence';
 }
 
 export function isInformationalToolName(toolName: string): boolean {
   return getPlanToolCapability(toolName) === 'informational';
-}
-
-export function isControlCapableToolName(toolName: string): boolean {
-  return getPlanToolCapability(toolName) === 'control';
 }
 
 export function isEvidenceCapableToolName(toolName: string): boolean {

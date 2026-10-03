@@ -851,8 +851,8 @@ export async function runDeterministicSemanticDeltaVerification(input: {
       stateRoot,
     });
     sessions.push(quantitativeHarness.sessionId);
-    // This fixture deliberately leaves optional source auditing untouched. A
-    // trace-only answer does not need a record_source_use_decision ceremony.
+    // This fixture deliberately makes no source call: a trace-only answer
+    // leaves the source audit at its initial state.
     const quantitativeDecision = quantitativeHarness.sourceUse.getSourceUseDecision();
     if (!quantitativeDecision) throw new Error('Source harness audit state is unavailable');
 

@@ -2477,7 +2477,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: precomputed.sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease?.signal, canInvokeTool, pacing: precomputed.scenePacing});
-    const { server: mcpServer, allowedTools, toolDefinitions, sourceUse } = createClaudeMcpServer({
+    const { server: mcpServer, allowedTools, toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId: precomputed.runId,
       toolObserver: precomputed.toolObserver,
@@ -2546,6 +2546,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         toolDefinitions,
         codeAwareMode: options.codeAwareMode,
         codebaseIds: options.codebaseIds,
+        sourceAuthorization,
         outputLanguage: runtimeConfig.outputLanguage,
         subAgentModel: runtimeConfig.subAgentModel,
       });
@@ -2583,6 +2584,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage: runtimeConfig.outputLanguage,
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
+      sourceAuthorization,
     };
     const systemPromptParts = buildSystemPromptParts(analysisContextForRebuild);
     const systemPrompt = systemPromptParts.fullPrompt;

@@ -1206,7 +1206,7 @@ describe('experimental Pi agent-core runtime contract', () => {
     const agent = FakePiAgent.instances[FakePiAgent.instances.length - 1]!;
     expect(agent.state.systemPrompt).toContain('cb-pi-quick');
     expect(agent.state.systemPrompt).toContain('provider_send');
-    expect(agent.state.systemPrompt).toContain('源码使用决策契约');
+    expect(agent.state.systemPrompt).toContain('## 源码使用');
     expect(result).toMatchObject({
       success: true,
       partial: undefined,

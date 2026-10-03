@@ -103,13 +103,14 @@ These tools enforce investigation discipline and reduce context size. Artifact s
 | `search_codebase` | Run a bounded text/symbol search in a registered live root | No SmartPerfetto index required; selected codebases and relative path prefixes only |
 | `read_codebase_file` | Read a bounded line range inside a registered root | `metadata_only` returns no text; `provider_send` still requires dual consent and redaction |
 | `find_codebase_files` | Find registered files by name, path substring, or glob | Returns relative paths only; reads no file and issues no source reference; available in `metadata_only` |
-| `record_source_use_decision` | Record a controlled terminal state before any source lookup | Accepts only policy-defined structured states and a bounded reason; it rejects later or contradictory decisions once lookup begins |
-| `query_code_graph` | Navigate related flows and symbols through an optional local graph | Metadata-only; returns a structured unavailable result when the graph cannot be used |
-| `inspect_code_symbol` | Inspect bounded relationships and locations for a candidate symbol | Metadata-only; relationships require bounded source verification |
-| `lookup_app_source` | Query app source | Must keep CodeRef filtering |
-| `lookup_kernel_source` | Query kernel source | Must keep CodeRef filtering |
-| `resolve_symbol` | Resolve trace symbols to source locations | Keeps source references traceable |
-| `propose_patch` | Generate a patch proposal | Must label verified / sketch / unverified |
+| `query_code_graph` | Navigate related flows and symbols through an optional local graph | Metadata-only; offered only when a selected codebase has a GitNexus index |
+| `inspect_code_symbol` | Inspect bounded relationships and locations for a candidate symbol | Metadata-only; relationships require bounded source verification; offered only with a GitNexus index |
+| `lookup_app_source` | Query app source | Must keep CodeRef filtering; offered only when a selected codebase has an active index |
+| `lookup_kernel_source` | Query kernel source | Must keep CodeRef filtering; offered only with an active index |
+| `resolve_symbol` | Resolve trace symbols to source locations | Keeps source references traceable; offered only with an active index |
+| `propose_patch` | Generate a patch proposal | Must label verified / sketch / unverified; offered only with an active index |
+
+The run's MCP server decides each selected codebase's capabilities once (`search`, `read_body`, `index`, `graph`) and registers graph and index tools only when some selected codebase has the graph or an active index. The same facts, with the run's source depth and starting budget, reach the system prompt as the `source_authorization` data segment (`codebases[]` with `id`, `displayName`, `kind`, `pathScope` — `whole_root` or `registered_filters`, never the filters themselves — and `capabilities`). A call that names a codebase without the capability is refused before reaching any source: `unsupportedReason: codebase_index_unavailable | codebase_graph_unavailable`, `action_required: use_search_codebase`. Source use is recorded from actual calls only; there is no model-declared source-use decision tool.
 
 All five index-free/graph-navigation tools require codebase permission and use codebases selected for the current request. `codebase_id` may be omitted only when exactly one codebase is selected; it is required when several are selected:
 
@@ -129,7 +130,7 @@ Every returned item carries its issued reference `id`, the same as `sourceRefere
 
 The model receives one body: `numberedText`, with real line numbers. The raw text stays internal for echo registration, accounting, and provenance. A read's `window.enclosingSymbol` is the nearest declaration at or above the window start (a heuristic); for a missing file, `candidates` lists up to five same-name files in scope (never outside the grant in `provider_send`). A thrown tool failure reaches every runtime as a path-free `source_*` code only; anything else becomes `source_tool_failed`.
 
-A registered root that is still reachable immediately enables `search_codebase` / `read_codebase_file`; no active SmartPerfetto generation is required. `query_code_graph` / `inspect_code_symbol` only attempt to use a local GitNexus installation and index that the user already created. SmartPerfetto does not bundle, redistribute, install, require, or automatically index GitNexus. Missing, incompatible, timed-out, or failed graph access returns a structured unavailable result (`success=false` plus `unsupportedReason`); a stale index returns navigation metadata marked `freshness="stale"`. In either case, the AI/strategy continues by calling the existing index-free search/read tools instead of blocking analysis.
+A registered root that is still reachable immediately enables `search_codebase` / `read_codebase_file`; no active SmartPerfetto generation is required. `query_code_graph` / `inspect_code_symbol` only attempt to use a local GitNexus installation and index that the user already created. SmartPerfetto does not bundle, redistribute, install, require, or automatically index GitNexus; when no selected codebase has a `.gitnexus` index the graph tools are not offered. A missing GitNexus binary, or incompatible, timed-out, or failed graph access returns a structured unavailable result (`success=false` plus `unsupportedReason`); a stale index returns navigation metadata marked `freshness="stale"`. In either case, the AI/strategy continues by calling the existing index-free search/read tools instead of blocking analysis.
 
 Index-free `search_codebase` / `read_codebase_file` and indexed lookup use the
 same disclosure predicate: a relative path must be admitted by both the current
@@ -137,14 +138,6 @@ selection policy and the registration's consent grant. `.gitignore` controls
 candidate discovery only; it is not authorization. Extensions introduced by a
 later release require explicit renewed authorization and are never inherited
 silently from an older consent.
-
-Full analysis with selected codebases makes source investigation a non-waivable
-plan aspect. When Trace/Skill/SQL provides a queryable anchor, the runtime must
-perform bounded lookup. When source is unnecessary, disallowed, lacks an
-anchor, or remains ambiguous, it must call `record_source_use_decision` before
-lookup. All 19 routable scenes currently discovered by the registry inherit
-the default policy; `startup`, `scrolling`, `anr`, `interaction`, and
-`scroll_response` add richer anchors.
 
 Graph tools return only `codebaseId`, relative `CodeRef` values, sanitized process/symbol metadata, `graph.freshness`, and `graph.verificationRequired`. Registrations with `pathFilters` or `excludeGlobs` omit whole-repository process summaries whose path scope cannot be proven, while retaining authorized relative `CodeRef` values. Code-graph metadata is neither current-trace evidence nor verified source truth. Any relationship that affects a conclusion must be checked with bounded `read_codebase_file`; if the current permission mode blocks source reading, it must remain unverified. Absolute roots stay inside the backend trust boundary. When code-aware output reaches reports, exports, or snapshots, only safe names/IDs and relative `CodeRef` values may remain, never raw source. Do not validate only the live chat view.
 

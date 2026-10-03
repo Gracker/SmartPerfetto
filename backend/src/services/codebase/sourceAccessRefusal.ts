@@ -6,9 +6,9 @@
  * Governance reasons that stop a code-aware source call, with what the model
  * should do instead. A refused call carries the action as `action_required`,
  * which keeps it out of the circuit breaker's failure rate
- * (`isPolicyRefusalResult`). A reason absent from this map (an inactive index,
- * invalid codebase metadata, a missing GitNexus binary, a malformed path, an
- * unreadable file) is a failure and still counts.
+ * (`isPolicyRefusalResult`). A reason absent from this map (an index that went
+ * inactive mid-run, invalid codebase metadata, a missing GitNexus binary, a
+ * malformed path, an unreadable file) is a failure and still counts.
  *
  * The actions are closed product tokens, never derived from source content, so
  * the external-surface projection may carry them across its boundary.
@@ -35,6 +35,10 @@ const SOURCE_ACCESS_REFUSAL_ACTIONS: ReadonlyMap<string, string> = new Map([
   // The file is registered but not covered by the provider-send grant, so its
   // body cannot reach the model in this session.
   ['source_path_outside_provider_grant', 'continue_without_this_file'],
+  // The named codebase has no active index or no GitNexus graph for this run:
+  // decided before any source is reached, and its live root is still searchable.
+  ['codebase_index_unavailable', 'use_search_codebase'],
+  ['codebase_graph_unavailable', 'use_search_codebase'],
 ]);
 
 const SOURCE_ACCESS_REFUSAL_ACTION_VALUES: ReadonlySet<string> = new Set(

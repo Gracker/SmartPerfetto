@@ -139,7 +139,6 @@ import {
   stripPromptComments,
 } from './strategyLoader';
 import { buildActivePhaseReminder } from './activePhaseReminder';
-import {loadSourceInvestigationPolicy} from './sourceInvestigationPolicy';
 import { summarizeToolCallInput } from './toolCallSummary';
 import {
   getPhaseToolEvidenceStatus,
@@ -228,6 +227,11 @@ import {
 import { backendLogPath } from '../runtimePaths';
 import {activeCodebaseGeneration, CodebaseRegistry} from '../services/codebase/codebaseRegistry';
 import {getDefaultCodebaseRegistry} from '../services/codebase/defaultCodebaseServices';
+import {
+  describeSelectedCodebases,
+  type SelectedCodebaseCapabilities,
+  type SourceAuthorizationPromptData,
+} from '../services/codebase/selectedCodebaseCapabilities';
 import {isClosedCode} from '../utils/closedCode';
 import {CodeLookupLedger, sourceLookupOutcome, type CodeLookupLedgerEntry} from '../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../services/codebase/patchProposer';
@@ -236,7 +240,6 @@ import {
   SOURCE_USE_DECISION_SCHEMA_VERSION,
   MAX_SOURCE_REFERENCE_COUNT,
   isBodyLookupKind,
-  loadSourceUseDecisionToolDescription,
   mergeSourceUseStatus,
   sanitizeSourceIncompleteReason,
   sanitizeSourceReference,
@@ -1662,6 +1665,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const ref = codebaseRegistry.get(codebaseId, knowledgeScope);
     return ref ? [[codebaseId, activeCodebaseGeneration(ref)]] : [];
   }));
+  // Decided once per run, like the generation pins above: tools for a
+  // capability no selected codebase has are not registered, and a call naming a
+  // codebase without it is refused before reaching any source.
+  const selectedCodebases = describeSelectedCodebases(codebaseRegistry, codebaseIds, knowledgeScope, codeAwareMode);
+  const codebaseCapabilities = new Map(selectedCodebases.map(view => [view.id, view.capabilities]));
+  const anySelectedCodebaseHas = (capability: keyof SelectedCodebaseCapabilities): boolean =>
+    selectedCodebases.some(view => view.capabilities[capability]);
   const pinnedKnowledgeSourceGenerations = Object.fromEntries(knowledgeSourceIds.flatMap(sourceId => {
     const source = externalKnowledgeRegistry.get(sourceId, knowledgeScope ?? {});
     return source?.activeGeneration ? [[sourceId, source.activeGeneration]] : [];
@@ -1688,7 +1698,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   );
   // One run's source budget, in memory with this server; the ledger above is
   // the audit trail and patch authority, not the budget.
-  const sourceBudget = new SourceBudget(options.sourceDepth ?? 'locate', options.sourceDepthPolicy);
+  const sourceDepth = options.sourceDepth ?? 'locate';
+  const sourceBudget = new SourceBudget(sourceDepth, options.sourceDepthPolicy);
   const activeCodebaseGenerations = (ids: readonly string[]): Record<string, string> => {
     assertPrivateAnalysisContextCurrent();
     return Object.fromEntries(ids.flatMap(codebaseId => {
@@ -1717,7 +1728,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   let sourceUseDecision = initialSourceUseDecision?.selectedCodebaseIds.length
     ? initialSourceUseDecision
     : undefined;
-  let explicitSourceUseDecisionReason: string | undefined;
   const sourceExecutionScope: SourceExecutionScopeV1 = {
     codeAwareMode,
     selectedCodebaseIds: [...codebaseIds],
@@ -1738,23 +1748,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return undefined;
       }
     },
-  };
-
-  const syncSourceUseDecisionStatusToPlan = (): void => {
-    const plan = options.analysisPlan?.current;
-    if (!plan) return;
-    if (sourceUseDecision) {
-      plan.sourceUseDecisionStatus = sourceUseDecision.status;
-    } else {
-      delete plan.sourceUseDecisionStatus;
-    }
-  };
-
-  const commitSourceUseDecision = (value: SourceUseDecisionV1): void => {
-    const sanitized = sanitizeSourceUseDecision(value, codebaseIds);
-    if (!sanitized || sanitized.selectedCodebaseIds.length === 0) return;
-    sourceUseDecision = sanitized;
-    syncSourceUseDecisionStatusToPlan();
   };
 
   // Admission precedes provider delivery. Never expose a new source body or
@@ -1797,17 +1790,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     queried?: boolean;
   };
   const observeSourceLookup = (observation: SourceLookupObservation): void => {
-    let current = sourceUseDecision;
+    const current = sourceUseDecision;
     if (!current) return;
     const selected = new Set(current.selectedCodebaseIds);
     const queriedCodebaseIds = observation.codebaseIds.filter(id => selected.has(id));
     if (queriedCodebaseIds.length === 0) return;
-    if (explicitSourceUseDecisionReason) {
-      // A model's earlier decision cannot conceal later execution facts.
-      current = {...current, status: 'pending', reasonCode: undefined,
-        coverageComplete: undefined, incompleteReasons: undefined};
-      explicitSourceUseDecisionReason = undefined;
-    }
     const references = sanitizeSourceReferences(observation.references ?? [])
       .filter(reference => selected.has(reference.codebaseId));
     const incompleteReasons = [...new Set((observation.incompleteReasons ?? [])
@@ -1831,7 +1818,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const reasonCode = status === 'search_incomplete' || status === 'not_found_complete'
       ? status
       : undefined;
-    commitSourceUseDecision({
+    const next = sanitizeSourceUseDecision({
       ...current,
       status,
       reasonCode,
@@ -1857,7 +1844,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           ? {coverageComplete: true}
           : {}),
       references: sanitizeSourceReferences([...current.references, ...references]),
-    });
+    }, codebaseIds);
+    if (next?.selectedCodebaseIds.length) sourceUseDecision = next;
   };
 
   // `queriedOnDispatch: false` defers the queried mark to the result observer, for
@@ -4964,7 +4952,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const codebases = codebaseRegistry.list(knowledgeScope)
         .filter(ref => allowed.has(ref.codebaseId))
         .map(ref => {
-          const fullRef = codebaseRegistry.get(ref.codebaseId, knowledgeScope);
           return {
             codebaseId: ref.codebaseId,
             kind: ref.kind,
@@ -4978,7 +4965,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
             commitProvenance: ref.commitProvenance,
             chunkCount: ref.chunkCount,
             eligibleForSendToProvider: ref.eligibleForSendToProvider,
-            ...(ref.rootAvailable && fullRef && fs.existsSync(path.join(fullRef.rootRealpath, '.gitnexus'))
+            ...(codebaseCapabilities.get(ref.codebaseId)?.graph
               ? {optionalGraphNavigation: {engine: 'gitnexus', indexPresent: true, verificationRequired: true}}
               : {}),
           };
@@ -4991,85 +4978,32 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     {annotations: {readOnlyHint: true}},
   );
 
-  const recordSourceUseDecisionDescription = loadSourceUseDecisionToolDescription({
-    codeAwareMode,
-    codebaseIds,
-    outputLanguage,
-  });
-  if (sourceUseDecision && !recordSourceUseDecisionDescription) {
-    throw new Error('Missing required source-use decision prompt template');
-  }
-  const recordSourceUseDecision = tool(
-    'record_source_use_decision',
-    recordSourceUseDecisionDescription ?? '',
-    {
-      status: z.enum([
-        'not_needed',
-        'disallowed',
-        'no_queryable_anchor',
-        'ambiguous_candidates',
-        'not_found_complete',
-        'search_incomplete',
-        'unverified',
-      ]),
-      reason: z.string().min(30).max(1000),
-    },
-    async ({status, reason}) => {
-      const current = sourceUseDecision;
-      if (!current) {
-        return policyRefusal('continue_without_source_use_decision', {
-          unsupportedReason: 'source_use_decision_not_required',
-        }, {isError: true});
+  // A codebase named for a capability it lacks: refused before any source is
+  // reached, so nothing is queried or charged.
+  const codebaseCapabilityRefusal = (codebaseId: string | undefined, capability: 'graph' | 'index') => {
+    const unsupportedReason = capability === 'graph' ? 'codebase_graph_unavailable' : 'codebase_index_unavailable';
+    return policyRefusal(sourceAccessRefusalAction(unsupportedReason)!,
+      {...(codebaseId ? {codebaseId} : {}), unsupportedReason}, {isError: true});
+  };
+  const codebaseHas = (codebaseId: string, capability: 'graph' | 'index'): boolean =>
+    codebaseCapabilities.get(codebaseId)?.[capability] === true;
+  /**
+   * The whitelisted codebases an index tool reads: the named one, refused when
+   * it has no active index, or every selected codebase that has one.
+   */
+  const indexedLookupScope = (codebaseId: string | undefined) => {
+    if (codebaseId) {
+      if (!codebaseIds.includes(codebaseId)) {
+        return {refusal: codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session')};
       }
-      const normalizedReason = reason.trim();
-      if (
-        normalizedReason.length < 30 ||
-        normalizedReason.length > 1000 ||
-        /[\u0000-\u001f\u007f]/.test(normalizedReason)
-      ) {
-        return policyRefusal('retry_with_valid_reason', {
-          unsupportedReason: 'source_use_decision_reason_invalid',
-          reasonConstraints: {minChars: 30, maxChars: 1000, singleLine: true},
-        }, {isError: true});
-      }
-      const allowedStatuses = new Set(
-        loadSourceInvestigationPolicy().default.stopStates,
-      );
-      if (!allowedStatuses.has(status)) {
-        return policyRefusal('retry_with_allowed_status', {
-          unsupportedReason: 'source_use_decision_status_not_allowed',
-          status,
-          allowedStatuses: [...allowedStatuses],
-        }, {isError: true});
-      }
-      if (current.status !== 'pending' || current.attemptedTools.length > 0) {
-        // Recorded lookups already decide the status; a stop decision cannot override them.
-        return policyRefusal('continue_with_recorded_source_use', {
-          unsupportedReason: 'source_use_decision_conflict',
-          currentStatus: current.status,
-        }, {isError: true});
-      }
-      explicitSourceUseDecisionReason = normalizedReason;
-      commitSourceUseDecision({
-        ...current,
-        status,
-        reasonCode: status,
-        ...(status === 'search_incomplete'
-          ? {coverageComplete: false, incompleteReasons: ['explicit_decision']}
-          : status === 'not_found_complete'
-            ? {coverageComplete: true}
-            : {}),
-      });
-      return {
-        content: [{type: 'text' as const, text: JSON.stringify({
-          success: true,
-          status,
-        })}],
-      };
-    },
-    {annotations: {readOnlyHint: false}},
-  );
-
+      return codebaseHas(codebaseId, 'index')
+        ? {allowed: [codebaseId]}
+        : {refusal: codebaseCapabilityRefusal(codebaseId, 'index')};
+    }
+    // Index tools register only when some selected codebase has an index.
+    const allowed = codebaseIds.filter(id => codebaseHas(id, 'index'));
+    return allowed.length > 0 ? {allowed} : {refusal: codebaseCapabilityRefusal(undefined, 'index')};
+  };
   // Omission resolves only when exactly one codebase is selected, so name them instead.
   const codebaseIdRequiredRefusal = () =>
     policyRefusal('list_codebases', {unsupportedReason: 'whitelisted_codebase_id_required'}, {isError: true});
@@ -5521,6 +5455,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!codebaseId) {
         return codebaseIdRequiredRefusal();
       }
+      if (!codebaseHas(codebaseId, 'graph')) return codebaseCapabilityRefusal(codebaseId, 'graph');
       const graphBudgetStop = sourceBudget.beginCall('search');
       if (graphBudgetStop) {
         observeSourceLookup({toolName: 'query_code_graph', codebaseIds: [codebaseId], success: false, queried: false});
@@ -5596,6 +5531,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!codebaseId) {
         return codebaseIdRequiredRefusal();
       }
+      if (!codebaseHas(codebaseId, 'graph')) return codebaseCapabilityRefusal(codebaseId, 'graph');
       const graphBudgetStop = sourceBudget.beginCall('search');
       if (graphBudgetStop) {
         observeSourceLookup({toolName: 'inspect_code_symbol', codebaseIds: [codebaseId], success: false, queried: false});
@@ -5675,11 +5611,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const symbolExact = normalizeOptionalToolString(symbol);
       const filePath = normalizeOptionalToolString(file_path);
       const pathPrefix = normalizeOptionalToolString(path_prefix);
-      const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
-      const allowed = requestedIds.filter(id => codebaseIds.includes(id));
-      if (allowed.length === 0) {
-        return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
-      }
+      const lookupScope = indexedLookupScope(codebaseId);
+      if (lookupScope.refusal) return lookupScope.refusal;
+      const allowed = lookupScope.allowed;
       const budgetRefusal = await indexedSearchBudgetRefusal('lookup_app_source', allowed);
       if (budgetRefusal) return budgetRefusal;
       const raw = await observeSourceOperation('lookup_app_source', allowed, () => ragStore.search(query, {
@@ -5717,12 +5651,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const vendorId = normalizeOptionalToolString(vendor);
       const symbolExact = normalizeOptionalToolString(symbol);
       const pathPrefix = normalizeOptionalToolString(path_prefix);
-      const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
-      const allowed = requestedIds.filter(id => codebaseIds.includes(id));
-      if (allowed.length === 0) {
-        return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
-      }
-      const kernelRefs = allowed
+      const lookupScope = indexedLookupScope(codebaseId);
+      if (lookupScope.refusal) return lookupScope.refusal;
+      const kernelRefs = lookupScope.allowed
         .map(id => codebaseRegistry.get(id, knowledgeScope))
         .filter(ref => ref?.kind === 'kernel_source');
       const vendors = new Set(kernelRefs.map(ref => ref!.vendor).filter(Boolean));
@@ -5772,11 +5703,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const filePath = normalizeOptionalToolString(file_path);
       const buildId = normalizeOptionalToolString(build_id);
       const vendorId = normalizeOptionalToolString(vendor);
-      const requestedIds = codebaseId ? [codebaseId] : codebaseIds;
-      const allowed = requestedIds.filter(id => codebaseIds.includes(id));
-      if (allowed.length === 0) {
-        return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
-      }
+      const lookupScope = indexedLookupScope(codebaseId);
+      if (lookupScope.refusal) return lookupScope.refusal;
+      const allowed = lookupScope.allowed;
       const budgetRefusal = await indexedSearchBudgetRefusal('resolve_symbol', allowed);
       if (budgetRefusal) return budgetRefusal;
       const resolver = new SymbolResolver(ragStore, knowledgeScope, codebaseRegistry);
@@ -6377,9 +6306,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         successCriteria: normalizedSuccessCriteria,
         submittedAt: Date.now(),
         toolCallLog: [],
-        ...(sourceUseDecision
-          ? {sourceUseDecisionStatus: sourceUseDecision.status}
-          : {}),
         ...(waiverInputs.length > 0 ? {waivers: waiverInputs} : {}),
       };
       analysisPlanRef.current = plan;
@@ -8023,12 +7949,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
       registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});
       registry.registerSdk(lookupOemSdk, 'lookup_oem_sdk', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+      // Graph and index tools only accelerate source access; offered only when a
+      // selected codebase actually has the graph or an active index.
+      if (anySelectedCodebaseHas('graph')) {
+        registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+        registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+      }
+      if (anySelectedCodebaseHas('index')) {
+        registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+        registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+        registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+        registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+      }
     }
     registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
     registry.registerSdk(compareBaselines, 'compare_baselines', 'public', {evidenceEffect: 'read_existing'});
@@ -8058,17 +7990,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
   }
 
-  if (!sourceUsePolicy) {
-    registry.registerSdk(
-      recordSourceUseDecision,
-      'record_source_use_decision',
-      'requires_codebase_permission',
-      {evidenceEffect: 'none'},
-    );
-  }
-
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
+  const sourceAuthorization: SourceAuthorizationPromptData = selectedCodebases.length > 0
+    ? {codebases: selectedCodebases, depth: sourceDepth,
+        budget: {...sourceBudget.snapshot(), maxReadLines: sourceBudget.maxReadLines}}
+    : {codebases: []};
   runManifestAttributionSink?.recordToolAllowlist(
     toolDefinitions.map(definition => definition.name),
   );
@@ -8077,6 +8004,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     allowedTools,
     toolDefinitions,
     sourceUse,
+    sourceAuthorization,
   };
 }
 

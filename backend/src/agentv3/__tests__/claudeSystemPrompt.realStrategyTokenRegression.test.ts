@@ -24,7 +24,7 @@ import {bindCapturedAnchorFacts, captureEvidenceTable} from '../../services/evid
 import type {EvidenceAnchorV1} from '../../types/evidenceContract';
 import fs from 'fs';
 import path from 'path';
-import {loadSourceUseDecisionPrompt, loadSourceUseDecisionToolDescription} from '../../services/codebase/sourceUseDecision';
+import {loadSourceUsePrompt} from '../../services/codebase/sourceUseDecision';
 import {resolveFocusAppTarget} from '../../agentRuntime/focusAppTarget';
 
 describe('typed prompt with real strategy assets', () => {
@@ -68,13 +68,15 @@ describe('typed prompt with real strategy assets', () => {
     expect(withManifest.droppedLabels).toEqual([]);
   });
 
-  it.each(['zh-CN', 'en'] as const)('allows authorized source quotations in the actual %s prompt and tool description', outputLanguage => {
-    const input = {codeAwareMode: 'provider_send' as const, codebaseIds: ['selected-source'], outputLanguage};
-    for (const text of [loadSourceUseDecisionPrompt(input), loadSourceUseDecisionToolDescription(input)]) {
-      expect(text).toContain('Owner may quote authorized source; no secrets/root.');
-      expect(text).not.toContain('no echo code');
-    }
-    expect(loadSourceUseDecisionPrompt(input)).toContain('exclude secrets, registered absolute roots and unauthorized content');
+  it.each(['zh-CN', 'en'] as const)('allows authorized source quotations in the actual %s source guidance', outputLanguage => {
+    const text = loadSourceUsePrompt({codeAwareMode: 'provider_send', codebaseIds: ['selected-source'], outputLanguage});
+    expect(text).toContain(outputLanguage === 'en'
+      ? 'The owner may quote authorized source'
+      : 'owner 可引用已授权源码');
+    expect(text).toContain(outputLanguage === 'en'
+      ? 'exclude secrets, registered absolute roots and unauthorized content'
+      : '不得包含凭据、已注册的绝对根路径和未授权内容');
+    expect(text).not.toContain('no echo code');
   });
   it.each(['zh-CN', 'en'] as const)('keeps owner source and private knowledge boundaries in full %s prompts', outputLanguage => {
     const registry = buildStrategyRegistrySnapshotFromDefinitions({
@@ -202,9 +204,9 @@ describe('typed prompt with real strategy assets', () => {
           intent: context.turnIntent, strategyRegistry: registry,
         }));
         expect(requirementSegment).toMatchObject({droppable: false, truncatable: false});
-        expect(parts.segments.find(segment => segment.label === 'source_use_decision')).toBeUndefined();
+        expect(parts.segments.find(segment => segment.label === 'source_use')).toBeUndefined();
         expect(JSON.parse(parts.segments.find(segment => segment.label === 'source_authorization')!.content).data)
-          .toEqual({mode: 'off', codebaseIds: [], evidenceAccess: 'existing_only'});
+          .toEqual({mode: 'off', evidenceAccess: 'existing_only', codebases: []});
         expect(JSON.parse(parts.segments.find(segment => segment.label === 'selection_context')!.content).data)
           .toEqual(context.selectionContext);
         const turnProtocol = parts.segments.find(segment => segment.label === 'turn_protocol')!.content;
@@ -367,7 +369,7 @@ describe('typed prompt with real strategy assets', () => {
       expect(estimatePromptTokens(parts.fullPrompt)).toBeLessThanOrEqual(MAX_PROMPT_TOKENS);
       expect(parts.droppedLabels).toEqual([]);
       for (const label of ['investigation_requirements', 'investigation_findings', 'scene_strategy_details',
-        'selection_context', 'comparison_identity', 'source_use_decision', 'source_finding_binding']) {
+        'selection_context', 'comparison_identity', 'source_use', 'source_finding_binding']) {
         expect(parts.segments.some(segment => segment.label === label)).toBe(true);
       }
       const findings = parts.segments.find(segment => segment.label === 'investigation_findings')!;
@@ -690,14 +692,6 @@ describe('developer comments never reach the model', () => {
 
     expect(stripped).toBe('## 输出格式\n\n- rule one\n\n- rule two');
     expect(stripped).not.toContain('SPDX');
-  });
-
-  it('leaves marker-bearing content to its own loader, which runs first', () => {
-    // The source-use loader extracts <!-- tool-description:* --> before the
-    // text becomes a segment, so stripping at assembly cannot break it.
-    const toolDescription = loadPromptTemplate('prompt-source-use-decision-zh');
-    expect(toolDescription).toContain('tool-description:start');
-    expect(stripTemplateComments(toolDescription ?? '')).not.toContain('tool-description:start');
   });
 
   it('removes authoring comments while preserving the machine-readable sidecar marker', () => {

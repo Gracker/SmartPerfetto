@@ -176,7 +176,6 @@
     "src/agentv3/selfImprove/strategyFingerprint.ts#__testing",
     "src/agentv3/selfImprove/strategyFingerprint.ts#detectDrift",
     "src/agentv3/selfImprove/supersedeStore.ts#__testing",
-    "src/agentv3/sourceInvestigationPolicy.ts#buildSourceInvestigationPlanAspect",
     "src/agentv3/sqlIncludeInjector.ts#_getSymbolIndexForTesting",
     "src/agentv3/sqlIncludeInjector.ts#_resetCacheForTesting",
     "src/agentv3/standaloneMcpServer.ts#LineDelimitedJsonSink",

@@ -3284,7 +3284,8 @@ describe('experimental OpenCode runtime contract', () => {
 
     const prompt = record.promptInput as {body?: {system?: string}} | undefined;
     expect(readPromptContextFrame(prompt?.body?.system, 'source_authorization')).toMatchObject({
-      mode: 'metadata_only', codebaseIds: ['cb-opencode-quick'], evidenceAccess: 'read_new',
+      mode: 'metadata_only', evidenceAccess: 'read_new',
+      codebases: [expect.objectContaining({id: 'cb-opencode-quick'})],
     });
     expect(result).toMatchObject({
       success: false,

@@ -54,7 +54,7 @@ import {
   makeSparkProvenance,
   type McpPublicApiContract,
 } from '../types/sparkContracts';
-import {getPlanToolCapability, type PlanToolCapability} from './types';
+import {getPlanToolCapability} from './types';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {withRuntimeToolObserver, type RuntimeToolInvocationEvent, type RuntimeToolObserver} from '../agentRuntime/runtimeToolObserver';
 import {withRuntimeToolInvocationScope} from '../agentRuntime/runtimeToolInvocationContext';
@@ -87,20 +87,12 @@ export interface McpToolDefinition {
   summary?: string;
   /** Required env vars or capability flags. */
   requires?: string[];
-  /** Provider-neutral planning role derived from the canonical tool name. */
-  planCapability?: PlanToolCapability;
   evidenceEffect?: SharedToolSpec['evidenceEffect'];
 }
 
-export type McpToolRegistration = Omit<McpToolDefinition, 'shared' | 'planCapability'> & {
+export type McpToolRegistration = Omit<McpToolDefinition, 'shared'> & {
   shared?: SharedToolSpec;
 };
-
-export function resolveMcpToolPlanCapability(
-  definition: Pick<McpToolDefinition, 'name' | 'planCapability'>,
-): PlanToolCapability {
-  return definition.planCapability ?? getPlanToolCapability(definition.name);
-}
 
 export interface ToolRequestScope {
   readonly sessionId: string;
@@ -292,7 +284,6 @@ export class McpToolRegistry {
       exposure: runtimeShared.exposure,
       summary: runtimeShared.summary,
       requires: runtimeShared.requires,
-      planCapability,
       evidenceEffect: runtimeShared.evidenceEffect,
     }));
   }

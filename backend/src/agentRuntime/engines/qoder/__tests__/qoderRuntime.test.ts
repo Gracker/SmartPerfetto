@@ -1438,7 +1438,8 @@ describe('QoderRuntime', () => {
 
       const callArgs = mockQuery.mock.calls[0][0] as any;
       expect(readPromptContext(callArgs.options.systemPrompt, 'source_authorization')).toEqual({
-        mode: 'provider_send', codebaseIds: ['cb-qoder-quick'], evidenceAccess: 'read_new',
+        mode: 'provider_send', evidenceAccess: 'read_new',
+        codebases: [expect.objectContaining({id: 'cb-qoder-quick'})],
       });
     });
   });

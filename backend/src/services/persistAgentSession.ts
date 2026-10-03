@@ -48,6 +48,7 @@ import {
 } from './androidInternalsPack/sessionBackgroundKnowledgeRegistry';
 import {sanitizeStoredTraceSummaryAttribution} from './traceSummaryAttribution';
 import {AnalysisHistoryStore} from './analysisHistoryStore';
+import {safeCodebaseDisplayName} from './codebase/selectedCodebaseCapabilities';
 import {toAnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {
   privateContextRestrictsAudience,
@@ -59,15 +60,6 @@ const MAX_SQL_RESULT_ENTRY_BYTES = 100 * 1024;
 const MAX_TRUNCATED_CELL_CHARS = 2048;
 const MAX_TRUNCATED_SQL_CHARS = 4096;
 const MAX_SAFE_CODEBASE_DISPLAY_NAME = 120;
-
-function safeCodebaseDisplayName(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, ' ');
-  if (!trimmed || trimmed.includes('/') || trimmed.includes('\\') || trimmed.includes('://')) {
-    return undefined;
-  }
-  return trimmed.slice(0, MAX_SAFE_CODEBASE_DISPLAY_NAME);
-}
 
 type PersistableSqlEnvelope = DataEnvelope & {
   sql?: string;
@@ -86,20 +78,21 @@ function buildCodebaseSnapshot(
   return codebaseIds
     .map(id => registry.get(id, scope))
     .filter(Boolean)
-    .map(ref => ({
-      codebaseId: ref!.codebaseId,
-      ...(safeCodebaseDisplayName(ref!.displayName)
-        ? {displayName: safeCodebaseDisplayName(ref!.displayName)}
-        : {}),
-      ...(isCodebaseKind(ref!.kind) ? {kind: ref!.kind} : {}),
-      indexGeneration: ref!.indexGeneration,
-      activeGeneration: activeCodebaseGeneration(ref!),
-      contentFingerprint: ref!.contentFingerprint,
-      indexedRevision: ref!.indexedRevision,
-      indexedDirty: ref!.indexedDirty,
-      commitProvenance: ref!.commitProvenance,
-      consentHash: ref!.consent.consentHash,
-    }));
+    .map(ref => {
+      const displayName = safeCodebaseDisplayName(ref!.displayName, MAX_SAFE_CODEBASE_DISPLAY_NAME);
+      return {
+        codebaseId: ref!.codebaseId,
+        ...(displayName ? {displayName} : {}),
+        ...(isCodebaseKind(ref!.kind) ? {kind: ref!.kind} : {}),
+        indexGeneration: ref!.indexGeneration,
+        activeGeneration: activeCodebaseGeneration(ref!),
+        contentFingerprint: ref!.contentFingerprint,
+        indexedRevision: ref!.indexedRevision,
+        indexedDirty: ref!.indexedDirty,
+        commitProvenance: ref!.commitProvenance,
+        consentHash: ref!.consent.consentHash,
+      };
+    });
 }
 
 function buildKnowledgeSourceSnapshot(

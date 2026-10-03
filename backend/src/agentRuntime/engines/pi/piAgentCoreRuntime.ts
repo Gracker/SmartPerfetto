@@ -2074,7 +2074,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const sceneRunContext = await activateSceneRuntime(options, {sessionId, traceId, runId: options.runId ?? '',
       deadlineMs: sceneDeadlineMs ?? 0, traceProcessorService: this.traceProcessorService,
       artifactStore, sceneCoverageRegistry, signal: executionLease.signal, canInvokeTool});
-    const { toolDefinitions, sourceUse } = createClaudeMcpServer({
+    const { toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId: executionLease.key.runId!,
       toolObserver, canInvokeTool, analysisHistoryReader,
@@ -2168,6 +2168,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage,
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
+      sourceAuthorization,
       ...(comparisonContext ? { comparison: comparisonContext } : {}),
     };
     const sharedSystemPrompt = buildSystemPrompt(analysisContext);

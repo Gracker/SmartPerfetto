@@ -37,6 +37,7 @@ import {
   type SafeSourceProvenanceProjection,
 } from './codebase/sourceClaimVerifier';
 import {sanitizeSourceClaimBindings, type SourceUseDecisionV1} from './codebase/sourceUseDecision';
+import {safeCodebaseDisplayName} from './codebase/selectedCodebaseCapabilities';
 import {
   privateContextRestrictsAudience,
   type AnalysisPrivateContextMarker,
@@ -62,20 +63,6 @@ function safeReportSourceId(value: unknown): string | undefined {
   return trimmed;
 }
 
-function safeReportSourceDisplayName(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim().replace(/[\u0000-\u001f\u007f]/g, ' ');
-  if (
-    !trimmed ||
-    trimmed.includes('/') ||
-    trimmed.includes('\\') ||
-    trimmed.includes('://')
-  ) {
-    return undefined;
-  }
-  return trimmed.slice(0, MAX_REPORT_SOURCE_DISPLAY_NAME);
-}
-
 function safeSourceContext(
   snapshot: Pick<SessionStateSnapshot, 'codebaseSnapshot' | 'codeLookupSummary'> | undefined,
   provenance?: SafeSourceProvenanceProjection,
@@ -84,7 +71,7 @@ function safeSourceContext(
     .map(item => {
       const codebaseId = safeReportSourceId(item.codebaseId);
       if (!codebaseId) return undefined;
-      const displayName = safeReportSourceDisplayName(item.displayName);
+      const displayName = safeCodebaseDisplayName(item.displayName, MAX_REPORT_SOURCE_DISPLAY_NAME);
       const kind = isCodebaseKind(item.kind) ? item.kind : undefined;
       return {
         codebaseId,
