@@ -180,7 +180,7 @@ describe('route failure variants', () => {
           new Error(CANARY));
       })},
       codebaseManagementService: {get: jest.fn(downstream), delete: jest.fn(async (): Promise<never> => downstream())},
-      externalKnowledgeRegistry: {get: jest.fn(() => ({id: 'k1'})), setProviderConsent: jest.fn(downstream)},
+      externalKnowledgeRegistry: {get: jest.fn(() => ({id: 'k1', kind: 'android_internals_wiki'})), setProviderConsent: jest.fn(downstream)},
       androidInternalsWikiIngester: {ingest: jest.fn(async (): Promise<never> => downstream())},
     };
     const app = () => appWith(a => a.use('/api/rag', createRagAdminRoutes({} as never, services as never)));

@@ -10,6 +10,12 @@ import type {
   RagRetrievalResult,
 } from '../../types/sparkContracts';
 import {
+  knowledgeBm25,
+  knowledgeFtsMatchExpression,
+  knowledgeQueryTokens,
+  normalizeKnowledgeQuery,
+} from '../knowledge/knowledgeTokens';
+import {
   ANDROID_INTERNALS_PACK_LICENSE,
   type AndroidInternalsPackHandle,
   type AndroidInternalsPackSearchOptions,
@@ -24,7 +30,6 @@ const REQUIRED_TABLES = [
   'sections',
   'sources',
 ] as const;
-const MAX_QUERY_LENGTH = 1_000;
 const MAX_TOP_K = 20;
 
 interface SearchRow {
@@ -43,44 +48,6 @@ interface SearchRow {
   chunk_hash: string;
   token_count: number;
   rank: number;
-}
-
-function quoteFtsToken(token: string): string {
-  return `"${token.replace(/"/g, '""')}"`;
-}
-
-export function androidInternalsPackQueryTokens(query: string): string[] {
-  const normalized = query.normalize('NFKC').trim().slice(0, MAX_QUERY_LENGTH);
-  if (!normalized) return [];
-  const tokens = new Set<string>();
-  for (const match of normalized.matchAll(/[\p{L}\p{N}_.$:/-]+/gu)) {
-    const raw = match[0].toLowerCase();
-    if (!raw) continue;
-    tokens.add(raw);
-    for (const part of raw.split(/[_.$:/-]+/u)) {
-      if (part) tokens.add(part);
-    }
-    const camelParts = match[0]
-      .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-      .split(/\s+/u)
-      .map(part => part.toLowerCase())
-      .filter(Boolean);
-    for (const part of camelParts) tokens.add(part);
-  }
-  for (const latin of normalized.match(/[\p{Script=Latin}\p{N}_.$:/-]+/gu) ?? []) {
-    const raw = latin.toLowerCase();
-    tokens.add(raw);
-    for (const part of raw.split(/[_.$:/-]+/u)) {
-      if (part) tokens.add(part);
-    }
-  }
-  for (const sequence of normalized.match(/\p{Script=Han}+/gu) ?? []) {
-    if (sequence.length === 1) tokens.add(sequence);
-    for (let index = 0; index < sequence.length - 1; index += 1) {
-      tokens.add(sequence.slice(index, index + 2));
-    }
-  }
-  return Array.from(tokens).slice(0, 64);
 }
 
 function manifestValue(db: Database.Database, key: string): unknown {
@@ -154,14 +121,15 @@ export class AndroidInternalsPackStore implements AndroidInternalsPackStoreLike 
 
   search(query: string, options: AndroidInternalsPackSearchOptions = {}): RagRetrievalResult {
     if (this.closed) throw new Error('aiw_pack_store_closed');
-    const boundedQuery = query.normalize('NFKC').trim().slice(0, MAX_QUERY_LENGTH);
-    const tokens = androidInternalsPackQueryTokens(boundedQuery);
+    const boundedQuery = normalizeKnowledgeQuery(query);
+    const tokens = knowledgeQueryTokens(boundedQuery);
     const topK = Math.min(MAX_TOP_K, Math.max(1, Math.trunc(options.topK ?? 5)));
     if (!boundedQuery || tokens.length === 0) {
       return this.result(boundedQuery, [], 'empty_query');
     }
-    const expression = tokens.map(quoteFtsToken).join(' OR ');
-    const rows = this.db.prepare(`
+    // Tokens with no letter or digit match nothing; with none left there is no hit.
+    const expression = knowledgeFtsMatchExpression(tokens);
+    const rows = !expression ? [] : this.db.prepare(`
       SELECT
         c.chunk_id,
         c.article_id,
@@ -177,7 +145,7 @@ export class AndroidInternalsPackStore implements AndroidInternalsPackStoreLike 
         c.end_line,
         c.chunk_hash,
         c.token_count,
-        bm25(chunks_fts, 0.0, 8.0, 5.0, 3.0, 1.0, 2.0) AS rank
+        ${knowledgeBm25('chunks_fts', 1)} AS rank
       FROM chunks_fts
       JOIN chunks c ON c.chunk_id = chunks_fts.chunk_id
       JOIN articles a ON a.article_id = c.article_id

@@ -879,6 +879,12 @@ Base path: `/api/rag`
 | `GET` | `/android-internals/sources/:id/audit` | Return one metadata-only Skill disposition per article |
 | `PATCH` | `/android-internals/sources/:id/consent` | Explicitly grant or revoke provider-send consent |
 | `DELETE` | `/android-internals/sources/:id/index` | Deactivate and clear every chunk for the source |
+| `GET` | `/knowledge` | List every external knowledge source in the current scope (with `kind`, `description`, `documentCount`, `hasActiveIndex`), never its root path |
+| `POST` | `/knowledge/preview` | Preview a document collection: indexable documents, section/chunk counts and skips by reason; zero documents answers 400 `KNOWLEDGE_COLLECTION_EMPTY` |
+| `POST` | `/knowledge/register` | Register a document collection (`rootPath`, `rightsAcknowledged: true`, optional `displayName`, `description` of at most 280 characters, `attribution`, `license`, `sendToProvider`); an omitted `sendToProvider` keeps the recorded consent |
+| `POST` | `/knowledge/:sourceId/reindex` | Build the local SQLite FTS index in batches and atomically activate the new generation; needs the rights acknowledgement, not provider-send consent |
+| `POST` | `/knowledge/:sourceId/search` | Owner test search `{query, topK?}`: titles, relative paths, heading paths, line ranges and snippets |
+| `DELETE` | `/knowledge/:sourceId` | Write a tombstone that revokes access at once, then delete the index files (chunks for a Wiki) and the registration; a failure can be retried |
 | `GET` | `/codebases` | List registered codebases |
 | `GET` | `/codebases/directory-picker` | Report whether the backend can open a local system folder picker |
 | `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization |

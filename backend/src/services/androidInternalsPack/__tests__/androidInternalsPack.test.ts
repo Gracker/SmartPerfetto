@@ -6,9 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-import {
-  androidInternalsPackQueryTokens,
-} from '../androidInternalsPackStore';
+import {knowledgeQueryTokens} from '../../knowledge/knowledgeTokens';
 import {
   __resetAndroidInternalsPackStoresForTests,
   getDefaultAndroidInternalsPackStore,
@@ -164,7 +162,7 @@ describe('AndroidInternalsPack', () => {
   });
 
   it('normalizes Han bigrams and technical identifiers deterministically', () => {
-    expect(androidInternalsPackQueryTokens('Binder线程池 attachApplication foo_bar')).toEqual(
+    expect(knowledgeQueryTokens('Binder线程池 attachApplication foo_bar')).toEqual(
       expect.arrayContaining([
         'binder线程池',
         'binder',
@@ -176,7 +174,7 @@ describe('AndroidInternalsPack', () => {
         'bar',
       ]),
     );
-    expect(androidInternalsPackQueryTokens('')).toEqual([]);
+    expect(knowledgeQueryTokens('')).toEqual([]);
   });
 
   it('fails closed on an unsupported manifest format', () => {

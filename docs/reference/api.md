@@ -742,6 +742,12 @@ Base path: `/api/rag`
 | `GET` | `/android-internals/sources/:id/audit` | 返回每篇文章的 metadata-only Skill disposition |
 | `PATCH` | `/android-internals/sources/:id/consent` | 显式授予或撤销 provider-send 同意 |
 | `DELETE` | `/android-internals/sources/:id/index` | 停用 generation 并清除该 source 的全部 chunk |
+| `GET` | `/knowledge` | 列出当前 scope 的全部外部知识源（含 `kind`、`description`、`documentCount`、`hasActiveIndex`），不返回根路径 |
+| `POST` | `/knowledge/preview` | 预览文档集合：可入库篇数、section/chunk 数与按原因分类的跳过数；0 篇返回 400 `KNOWLEDGE_COLLECTION_EMPTY` |
+| `POST` | `/knowledge/register` | 注册文档集合（`rootPath`、`rightsAcknowledged: true`，可选 `displayName`、`description` ≤280 字、`attribution`、`license`、`sendToProvider`）；省略 `sendToProvider` 保留既有同意 |
+| `POST` | `/knowledge/:sourceId/reindex` | 分批建本地 SQLite FTS 索引并原子激活新 generation；只需权利确认，不需要 provider-send 同意 |
+| `POST` | `/knowledge/:sourceId/search` | 管理端试搜索 `{query, topK?}`：返回标题、相对路径、标题路径、行号与摘录 |
+| `DELETE` | `/knowledge/:sourceId` | 先写 tombstone 立即撤销访问，再删除索引文件（Wiki 为 chunk）与注册项；失败可重试 |
 | `GET` | `/codebases` | 列出已注册 codebase |
 | `GET` | `/codebases/directory-picker` | 返回当前后端是否支持本机系统文件夹选择 |
 | `POST` | `/codebases/directory-picker` | 打开本机系统选择器并返回短时、当前 scope 绑定的目录授权 |

@@ -26,6 +26,7 @@ const PRODUCERS = [
   'routes/ragAdminRoutes.ts',
   'services/rag',
   'services/androidInternalsWiki',
+  'services/knowledge',
   'services/externalKnowledgeSourceRegistry.ts',
   'services/scopedIngestLease.ts',
   'services/filesystemRegistryLock.ts',
@@ -64,6 +65,12 @@ const INTERNAL_OR_NOT_A_REASON = new Set([
   'source_file_glob_invalid',
   // The generic fallback of a source read; its fixed text says the same.
   'source_read_failed',
+  // A document collection's index: answered as a typed error with fixed text,
+  // or invariants and a cancellation no route requests.
+  'knowledge_index_unavailable',
+  'knowledge_index_id_invalid',
+  'knowledge_index_writer_closed',
+  'knowledge_ingest_cancelled',
 ]);
 
 const PREFIXED_TOKEN =

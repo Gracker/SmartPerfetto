@@ -12,6 +12,7 @@ import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../enterpriseMigration';
 import {
+  type ExternalKnowledgeSource,
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
 } from '../externalKnowledgeSourceRegistry';
@@ -496,5 +497,332 @@ describe('ExternalKnowledgeSourceRegistry', () => {
       indexedArticleCount: 1,
       indexedChunkCount: 2,
     }));
+  });
+});
+
+describe('ExternalKnowledgeSourceRegistry document collections and deletion', () => {
+  const scope = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
+
+  function wikiInput(sendToProvider?: boolean) {
+    return {
+      kind: 'android_internals_wiki' as const,
+      displayName: 'Android Internals Wiki',
+      rootRealpath: path.join(tmpDir, 'wiki'),
+      revision: 'a'.repeat(40),
+      contentFingerprint: 'b'.repeat(64),
+      dirty: false,
+      license: 'CC-BY-NC-SA-4.0',
+      rightsAcknowledged: true,
+      sendToProvider,
+      consentedBy: 'user-1',
+      scope,
+    };
+  }
+
+  function collectionInput(overrides: Record<string, unknown> = {}) {
+    return {
+      kind: 'document_collection' as const,
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
+      revision: 'content-1',
+      contentFingerprint: 'c'.repeat(64),
+      dirty: false,
+      rightsAcknowledged: true,
+      consentedBy: 'user-1',
+      scope,
+      ...overrides,
+    };
+  }
+
+  function activate(registry: ExternalKnowledgeSourceRegistry, sourceId: string, generation: string) {
+    return registry.withIngestLease(sourceId, scope, lease => lease.activateGeneration({
+      generation,
+      revision: `content-${generation}`,
+      contentFingerprint: generation,
+      dirty: false,
+      indexedArticleCount: 1,
+      indexedChunkCount: 1,
+    }));
+  }
+
+  it.each([
+    ['android_internals_wiki', wikiInput] as const,
+    ['document_collection', (sendToProvider?: boolean) => collectionInput({sendToProvider})] as const,
+  ])('keeps recorded consent when %s re-registration omits it and changes it only when explicit', (_kind, input) => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+    expect(registry.register(input()).sendToProvider).toBe(false);
+    const granted = registry.register(input(true));
+    expect(granted).toEqual(expect.objectContaining({sendToProvider: true, consentedAt: expect.any(Number)}));
+    const kept = registry.register({...input(), consentedBy: 'user-2'});
+    expect(kept).toEqual(expect.objectContaining({
+      sendToProvider: true,
+      consentedAt: granted.consentedAt,
+      consentedBy: 'user-1',
+    }));
+    const revoked = registry.register(input(false));
+    expect(revoked.sendToProvider).toBe(false);
+    expect(revoked.consentedAt).toBeUndefined();
+  });
+
+  it('records owner-written collection metadata, bounded and kept when omitted', () => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+    const source = registry.register(collectionInput({
+      description: '  Internal render framework and trace tags  ',
+      attribution: 'Render team',
+      license: 'Internal use only',
+    }));
+    expect(source).toEqual(expect.objectContaining({
+      kind: 'document_collection',
+      description: 'Internal render framework and trace tags',
+      attribution: 'Render team',
+      license: 'Internal use only',
+    }));
+    expect(registry.register(collectionInput())).toEqual(expect.objectContaining({
+      description: 'Internal render framework and trace tags',
+      attribution: 'Render team',
+    }));
+    expect(registry.register(collectionInput({attribution: ''})).attribution).toBeUndefined();
+    expect(() => registry.register(collectionInput({description: 'x'.repeat(281)})))
+      .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_METADATA_INVALID'}));
+  });
+
+  it('allows local indexing and owner search on rights alone; provider access still needs consent', () => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+    const source = registry.register(collectionInput());
+    expect(registry.requireIndexAccess(source.sourceId, scope)).toEqual(source);
+    expect(registry.evaluateAccess(source.sourceId, scope, [source.sourceId]))
+      .toEqual({allowed: false, reason: 'provider_send_not_consented'});
+    expect(() => registry.requireIndexAccess(source.sourceId, {...scope, userId: 'user-2'}))
+      .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_NOT_FOUND', status: 404}));
+  });
+
+  it('records the replaced generation of a document collection', async () => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+    const source = registry.register(collectionInput());
+    await activate(registry, source.sourceId, 'dc_one');
+    const second = await activate(registry, source.sourceId, 'dc_two');
+    expect(second).toEqual(expect.objectContaining({activeGeneration: 'dc_two', previousGeneration: 'dc_one'}));
+    expect(registry.referencedGenerations(source.sourceId, scope)).toEqual(new Set(['dc_one', 'dc_two']));
+  });
+
+  it('tombstones before removing the index: access is revoked and every mutation refused until the record is gone', async () => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+    const source = registry.register(collectionInput({sendToProvider: true}));
+    await activate(registry, source.sourceId, 'dc_one');
+    const observed: unknown[] = [];
+    await expect(registry.remove(source.sourceId, scope, 'user-2', tombstone => {
+      observed.push(
+        tombstone.lifecycleState,
+        tombstone.activeGeneration,
+        tombstone.sendToProvider,
+        registry.get(source.sourceId, scope),
+        registry.list(scope),
+        registry.evaluateAccess(source.sourceId, scope, [source.sourceId]),
+        (() => {
+          try {
+            return registry.requireIndexAccess(source.sourceId, scope);
+          } catch (error) {
+            return (error as {code?: string}).code;
+          }
+        })(),
+      );
+      throw new Error('index_removal_failed_for_test');
+    })).rejects.toThrow('index_removal_failed_for_test');
+    expect(observed).toEqual([
+      'deleting',
+      undefined,
+      false,
+      undefined,
+      [],
+      {allowed: false, reason: 'source_not_found_or_out_of_scope'},
+      'KNOWLEDGE_SOURCE_NOT_FOUND',
+    ]);
+
+    // The failed removal leaves the tombstone in force.
+    expect(registry.get(source.sourceId, scope)).toBeUndefined();
+    expect(() => registry.register(collectionInput({sendToProvider: true})))
+      .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_DELETING'}));
+    expect(() => registry.setProviderConsent(source.sourceId, scope, true, 'user-1'))
+      .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_DELETING'}));
+    await expect(activate(registry, source.sourceId, 'dc_two'))
+      .rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_DELETING'});
+
+    // A retry finishes it, and a later registration starts over.
+    const removeIndex = jest.fn<(tombstone: ExternalKnowledgeSource, fence: unknown) => void>();
+    await registry.remove(source.sourceId, scope, 'user-2', removeIndex);
+    expect(removeIndex).toHaveBeenCalledWith(expect.objectContaining({lifecycleState: 'deleting'}), expect.anything());
+    const stored = JSON.parse(fs.readFileSync(path.join(tmpDir, 'sources.json'), 'utf8'));
+    expect(stored.sources).toEqual([]);
+    await expect(registry.remove(source.sourceId, scope, 'user-2', removeIndex))
+      .rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_NOT_FOUND'});
+    const again = registry.register(collectionInput());
+    expect(again).toEqual(expect.objectContaining({sendToProvider: false, indexGeneration: 0}));
+    expect(again.activeGeneration).toBeUndefined();
+  });
+
+  it('does not let another scope delete a source', async () => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+    const source = registry.register(collectionInput());
+    await expect(registry.remove(source.sourceId, {...scope, workspaceId: 'workspace-2'}, 'user-1', () => undefined))
+      .rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_NOT_FOUND'});
+    expect(registry.get(source.sourceId, scope)).toEqual(source);
+  });
+
+  it('removes the record from the enterprise store when it is the authority', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise-remove.sqlite');
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'retired.json'));
+    const source = registry.register(collectionInput());
+    await registry.remove(source.sourceId, scope, 'user-1', () => undefined);
+    expect(getScopedKnowledgeRecord('external_knowledge_source', source.sourceId, scope)).toBeUndefined();
+    expect(registry.get(source.sourceId, scope)).toBeUndefined();
+  });
+
+  it('keeps a DB-only tombstone in force across dual-write until a retry removes both copies', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise-dual-remove.sqlite');
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'dual-write';
+    const storagePath = path.join(tmpDir, 'dual-remove.json');
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+    const source = registry.register(collectionInput({sendToProvider: true}));
+    jest.spyOn(registry as any, 'persist').mockImplementationOnce(() => {
+      throw new Error('simulated_filesystem_persist_failure');
+    });
+    await expect(registry.remove(source.sourceId, scope, 'user-1', () => undefined))
+      .rejects.toThrow('simulated_filesystem_persist_failure');
+    expect(getScopedKnowledgeRecord<{lifecycleState?: string}>(
+      'external_knowledge_source', source.sourceId, scope)?.record.lifecycleState).toBe('deleting');
+    const other = new ExternalKnowledgeSourceRegistry(storagePath);
+    expect(other.get(source.sourceId, scope)).toBeUndefined();
+    expect(() => other.register(collectionInput({sendToProvider: true})))
+      .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_DELETING'}));
+
+    await other.remove(source.sourceId, scope, 'user-1', () => undefined);
+    expect(getScopedKnowledgeRecord('external_knowledge_source', source.sourceId, scope)).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).sources).toEqual([]);
+  });
+
+  function useDualWrite(name: string): string {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, `${name}.sqlite`);
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'dual-write';
+    return path.join(tmpDir, `${name}.json`);
+  }
+
+  function failPersist(registry: ExternalKnowledgeSourceRegistry, pattern: readonly boolean[]): void {
+    const target = registry as unknown as {persist(): void};
+    // The prototype's method, not an earlier spy on this instance.
+    const original = (ExternalKnowledgeSourceRegistry.prototype as unknown as {persist(): void}).persist;
+    const spy = jest.spyOn(target, 'persist');
+    for (const fail of pattern) {
+      spy.mockImplementationOnce(() => {
+        if (fail) throw new Error('simulated_filesystem_persist_failure');
+        original.call(registry);
+      });
+    }
+  }
+
+  function expectDenied(storagePath: string, sourceId: string): void {
+    const reader = new ExternalKnowledgeSourceRegistry(storagePath);
+    expect(reader.get(sourceId, scope)).toBeUndefined();
+    expect(reader.evaluateAccess(sourceId, scope, [sourceId]))
+      .toEqual({allowed: false, reason: 'source_not_found_or_out_of_scope'});
+  }
+
+  it('keeps access denied through consecutive filesystem persist failures while deleting', async () => {
+    const storagePath = useDualWrite('dual-delete-retry');
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+    const source = registry.register(collectionInput({sendToProvider: true}));
+
+    // Attempt 1: the DB tombstone lands, the filesystem copy does not.
+    failPersist(registry, [true]);
+    await expect(registry.remove(source.sourceId, scope, 'user-1', () => undefined))
+      .rejects.toThrow('simulated_filesystem_persist_failure');
+    expectDenied(storagePath, source.sourceId);
+
+    // Attempt 2: the retry rewrites the tombstone everywhere before deleting, and fails there again.
+    failPersist(registry, [true]);
+    await expect(registry.remove(source.sourceId, scope, 'user-1', () => undefined))
+      .rejects.toThrow('simulated_filesystem_persist_failure');
+    expectDenied(storagePath, source.sourceId);
+
+    // Attempt 3: both tombstones land, the DB record goes, the filesystem deletion fails.
+    failPersist(registry, [false, true]);
+    await expect(registry.remove(source.sourceId, scope, 'user-1', () => undefined))
+      .rejects.toThrow('simulated_filesystem_persist_failure');
+    expect(getScopedKnowledgeRecord('external_knowledge_source', source.sourceId, scope)).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).sources)
+      .toEqual([expect.objectContaining({lifecycleState: 'deleting', sendToProvider: false})]);
+    expectDenied(storagePath, source.sourceId);
+
+    await registry.remove(source.sourceId, scope, 'user-1', () => undefined);
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).sources).toEqual([]);
+    expect(getScopedKnowledgeRecord('external_knowledge_source', source.sourceId, scope)).toBeUndefined();
+  });
+
+  it.each([
+    ['android_internals_wiki', wikiInput] as const,
+    ['document_collection', (sendToProvider?: boolean) => collectionInput({sendToProvider})] as const,
+  ])('does not let an omitted-consent %s re-registration restore a consent a partial dual write revoked', (_kind, input) => {
+    const storagePath = useDualWrite(`dual-consent-${_kind}`);
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+    const source = registry.register(input(true));
+    failPersist(registry, [true]);
+    expect(() => registry.setProviderConsent(source.sourceId, scope, false, 'user-2'))
+      .toThrow('simulated_filesystem_persist_failure');
+    expect(registry.get(source.sourceId, scope)?.sendToProvider).toBe(false);
+
+    const reregistered = registry.register(input());
+    expect(reregistered).toEqual(expect.objectContaining({sendToProvider: false, consentedBy: 'user-2'}));
+    expect(reregistered.consentedAt).toBeUndefined();
+    expect(registry.evaluateAccess(source.sourceId, scope, [source.sourceId]))
+      .toEqual({allowed: false, reason: 'provider_send_not_consented'});
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).sources[0].sendToProvider).toBe(false);
+    expect(getScopedKnowledgeRecord<{sendToProvider: boolean}>(
+      'external_knowledge_source', source.sourceId, scope)?.record.sendToProvider).toBe(false);
+    // Only an explicit grant restores it.
+    expect(registry.register(input(true)).sendToProvider).toBe(true);
+  });
+
+  it('refuses fenced activation and clearing when only the filesystem copy is a tombstone', async () => {
+    const storagePath = useDualWrite('dual-file-tombstone');
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+    const source = registry.register(collectionInput({sendToProvider: true}));
+    const stored = JSON.parse(fs.readFileSync(storagePath, 'utf8'));
+    stored.sources[0].lifecycleState = 'deleting';
+    fs.writeFileSync(storagePath, JSON.stringify(stored));
+
+    await expect(activate(registry, source.sourceId, 'dc_one'))
+      .rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_DELETING'});
+    await expect(registry.withIngestLease(source.sourceId, scope, lease => lease.clearActiveGeneration()))
+      .rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_DELETING'});
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).sources[0].lifecycleState).toBe('deleting');
+    expect(getScopedKnowledgeRecord<{activeGeneration?: string}>(
+      'external_knowledge_source', source.sourceId, scope)?.record.activeGeneration).toBeUndefined();
+    expect(registry.get(source.sourceId, scope)).toBeUndefined();
+  });
+
+  it('bounds the display name of every kind', () => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
+    for (const input of [wikiInput(), collectionInput()]) {
+      expect(() => registry.register({...input, displayName: 'x'.repeat(121)}))
+        .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_METADATA_INVALID'}));
+    }
+  });
+
+  it('lets a record stored before the limit keep its long name, but not take a new one', () => {
+    const storagePath = path.join(tmpDir, 'legacy-sources.json');
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+    const stored = registry.register(wikiInput());
+    const longName = 'Wiki '.repeat(40).trim();
+    // A record written before display names were bounded.
+    const envelope = JSON.parse(fs.readFileSync(storagePath, 'utf8'));
+    envelope.sources[0].displayName = longName;
+    fs.writeFileSync(storagePath, JSON.stringify(envelope));
+    expect(registry.register({...wikiInput(), displayName: longName})).toMatchObject({
+      sourceId: stored.sourceId, displayName: longName});
+    expect(() => registry.register({...wikiInput(), displayName: `${longName} renamed`}))
+      .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_METADATA_INVALID'}));
   });
 });

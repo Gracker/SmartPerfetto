@@ -22,6 +22,11 @@
  * operator-script-only because their authenticated source credentials do
  * not belong in the HTTP surface.
  *
+ * The `/knowledge` endpoints register, index, search and delete document
+ * collections (any allowlisted folder of documents) and delete any external
+ * knowledge source. Responses carry relative paths and counts, never the
+ * registered absolute root.
+ *
  * @module ragAdminRoutes
  */
 
@@ -85,10 +90,15 @@ import {SymbolResolver} from '../services/symbol/symbolResolver';
 import {codeAwareFeatureEnabled} from '../services/codebase/codeAwareFeature';
 import {
   ExternalKnowledgeSourceRegistry,
+  externalKnowledgeSourceHasActiveIndex,
   getDefaultExternalKnowledgeSourceRegistry,
   KnowledgeSourceRequestError,
+  type ExternalKnowledgeKind,
   type ExternalKnowledgeSource,
+  type KnowledgeCleanupFence,
 } from '../services/externalKnowledgeSourceRegistry';
+import {DocumentCollectionIngester} from '../services/knowledge/documentCollectionIngester';
+import {KnowledgeIndexUnavailableError} from '../services/knowledge/documentCollectionStore';
 import {AndroidInternalsWikiIngester} from '../services/androidInternalsWiki/androidInternalsWikiIngester';
 import {
   inspectAndroidInternalsWikiIdentity,
@@ -112,6 +122,7 @@ export interface RagAdminRouteServices {
   directoryPicker?: NativeDirectoryPicker;
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
   androidInternalsWikiIngester?: AndroidInternalsWikiIngester;
+  documentCollectionIngester?: DocumentCollectionIngester;
   androidInternalsWikiAuditPaths?: {
     capabilityMapPath: string;
     skillsPath: string;
@@ -277,6 +288,37 @@ function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
   return safeSource;
 }
 
+/** A knowledge source as the `/knowledge` routes list it: no root, plus its index state. */
+function projectKnowledgeSource(source: ExternalKnowledgeSource) {
+  return {
+    ...sanitizeExternalKnowledgeSource(source),
+    documentCount: source.indexedArticleCount ?? 0,
+    hasActiveIndex: externalKnowledgeSourceHasActiveIndex(source),
+  };
+}
+
+const LEGACY_WIKI_KIND = 'android_internals_wiki';
+
+/**
+ * An optional request string. Routes check only presence and type; the
+ * registry and the stores own every length and content limit.
+ */
+function optionalKnowledgeString(value: unknown, field: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'string') {
+    throw new KnowledgeSourceRequestError('KNOWLEDGE_REQUEST_INVALID', `\`${field}\` must be a string`);
+  }
+  return value;
+}
+
+function requiredKnowledgeString(value: unknown, field: string): string {
+  const text = optionalKnowledgeString(value, field);
+  if (!text?.trim()) throw new KnowledgeSourceRequestError('KNOWLEDGE_REQUEST_INVALID', `\`${field}\` is required`);
+  return text;
+}
+
+const KNOWLEDGE_ROUTE_ERRORS = [KnowledgeSourceRequestError, KnowledgeIndexUnavailableError];
+
 function routeParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
 }
@@ -332,6 +374,32 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         maxTotalBytes: 64 * 1024 * 1024,
       }),
     );
+  const documentCollectionIngester = services.documentCollectionIngester ??
+    new DocumentCollectionIngester(externalKnowledgeRegistry);
+  /** How each kind's index goes when its source is deleted; the Record type covers every kind. */
+  const removeIndexByKind: Readonly<Record<
+    ExternalKnowledgeKind,
+    (scope: KnowledgeScope, sourceId: string, fence: KnowledgeCleanupFence) => Promise<void> | void
+  >> = {
+    android_internals_wiki: (scope, sourceId) => {
+      removeWikiChunks(sourceId, scope);
+    },
+    document_collection: (scope, sourceId, fence) => documentCollectionIngester.removeIndex(scope, sourceId, fence),
+  };
+  /** The legacy Wiki connector's sources; a document collection is managed under `/knowledge`. */
+  const legacyWikiSource = (sourceId: string, scope: KnowledgeScope): ExternalKnowledgeSource | undefined => {
+    const source = externalKnowledgeRegistry.get(sourceId, scope);
+    return source?.kind === LEGACY_WIKI_KIND ? source : undefined;
+  };
+  const removeWikiChunks = (sourceId: string, scope: KnowledgeScope): number => {
+    const chunkIds = s.listChunks({
+      kind: 'android_internals_wiki',
+      registryOrigin: 'external_knowledge_registry',
+      scope,
+    }).filter(chunk => chunk.knowledgeSourceId === sourceId)
+      .map(chunk => chunk.chunkId);
+    return s.removeKnowledgeSourceChunkIds(sourceId, chunkIds, scope);
+  };
   const backendRoot = path.resolve(__dirname, '../..');
   const androidInternalsWikiAuditPaths = services.androidInternalsWikiAuditPaths ?? {
     capabilityMapPath: path.join(backendRoot, 'knowledge/android-internals-capability-map.yaml'),
@@ -495,10 +563,12 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         error: '`rightsAcknowledged: true` is required for CC BY-NC-SA use',
       });
     }
-    if (typeof req.body?.sendToProvider !== 'boolean') {
+    // Omitted keeps the consent already on record; a boolean grants or revokes it.
+    const sendToProvider: unknown = req.body?.sendToProvider;
+    if (sendToProvider !== undefined && typeof sendToProvider !== 'boolean') {
       return res.status(400).json({
         success: false,
-        error: '`sendToProvider` must be an explicit boolean',
+        error: '`sendToProvider` must be a boolean when provided',
       });
     }
     const preview = await androidInternalsWikiIngester.preview(rootPath);
@@ -518,7 +588,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       const context = requireRequestContext(req);
       const scope = knowledgeScopeFromRequestContext(context);
       const source = externalKnowledgeRegistry.register({
-        kind: 'android_internals_wiki',
+        kind: LEGACY_WIKI_KIND,
         displayName,
         rootRealpath: preview.rootRealpath,
         revision: identity.revision,
@@ -526,7 +596,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         dirty: identity.dirty,
         license: 'CC-BY-NC-SA-4.0',
         rightsAcknowledged: true,
-        sendToProvider: req.body.sendToProvider,
+        sendToProvider,
         consentedBy: context.userId,
         scope,
       });
@@ -542,7 +612,9 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
 
   router.get('/android-internals/sources', requireCodebaseScope('codebase:read'), (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const sources = externalKnowledgeRegistry.list(scope).map(sanitizeExternalKnowledgeSource);
+    const sources = externalKnowledgeRegistry.list(scope)
+      .filter(source => source.kind === LEGACY_WIKI_KIND)
+      .map(sanitizeExternalKnowledgeSource);
     return res.json({success: true, sources});
   });
 
@@ -552,7 +624,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     async (req, res) => {
       const sourceId = routeParam(req.params.id);
       const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-      if (!externalKnowledgeRegistry.get(sourceId, scope)) {
+      if (!legacyWikiSource(sourceId, scope)) {
         return res.status(404).json({
           success: false,
           error: `External knowledge source '${sourceId}' not found`,
@@ -607,7 +679,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     async (req, res) => {
       const sourceId = routeParam(req.params.id);
       const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-      if (!externalKnowledgeRegistry.get(sourceId, scope)) {
+      if (!legacyWikiSource(sourceId, scope)) {
         return res.status(404).json({
           success: false,
           error: `External knowledge source '${sourceId}' not found`,
@@ -615,14 +687,8 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       }
       try {
         return await externalKnowledgeRegistry.withIngestLease(sourceId, scope, lease => {
-          const chunkIds = s.listChunks({
-            kind: 'android_internals_wiki',
-            registryOrigin: 'external_knowledge_registry',
-            scope,
-          }).filter(chunk => chunk.knowledgeSourceId === sourceId)
-            .map(chunk => chunk.chunkId);
           const source = lease.clearActiveGeneration();
-          const removedChunkCount = s.removeKnowledgeSourceChunkIds(sourceId, chunkIds, scope);
+          const removedChunkCount = removeWikiChunks(sourceId, scope);
           return res.json({
             success: true,
             removedChunkCount,
@@ -645,7 +711,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     async (req, res) => {
       const sourceId = routeParam(req.params.id);
       const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-      const source = externalKnowledgeRegistry.get(sourceId, scope);
+      const source = legacyWikiSource(sourceId, scope);
       if (!source) {
         return res.status(404).json({
           success: false,
@@ -701,6 +767,128 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       }
     },
   );
+
+  router.get('/knowledge', requireCodebaseScope('codebase:read'), (req, res) => {
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    return res.json({
+      success: true,
+      sources: externalKnowledgeRegistry.list(scope).map(projectKnowledgeSource),
+    });
+  });
+
+  router.post('/knowledge/preview', requireCodebaseScope('codebase:manage'), async (req, res) => {
+    try {
+      const preview = await documentCollectionIngester.previewIndexable(
+        requiredKnowledgeString(req.body?.rootPath, 'rootPath'));
+      return res.json({success: true, preview: preview.summary});
+    } catch (error) {
+      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+        code: 'KNOWLEDGE_COLLECTION_PREVIEW_FAILED',
+        error: 'Knowledge collection preview failed',
+        logLabel: '[RagAdmin] Knowledge collection preview error',
+      }, KNOWLEDGE_ROUTE_ERRORS);
+    }
+  });
+
+  router.post('/knowledge/register', requireCodebaseScope('codebase:manage'), async (req, res) => {
+    try {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const rootPath = requiredKnowledgeString(body.rootPath, 'rootPath');
+      if (body.rightsAcknowledged !== true) {
+        throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED',
+          '`rightsAcknowledged: true` is required: confirm you may use these documents');
+      }
+      // Omitted keeps the consent in effect; a boolean grants or revokes it.
+      if (body.sendToProvider !== undefined && typeof body.sendToProvider !== 'boolean') {
+        throw new KnowledgeSourceRequestError('KNOWLEDGE_REQUEST_INVALID',
+          '`sendToProvider` must be a boolean when provided');
+      }
+      const displayName = optionalKnowledgeString(body.displayName, 'displayName')?.trim();
+      const description = optionalKnowledgeString(body.description, 'description');
+      const attribution = optionalKnowledgeString(body.attribution, 'attribution');
+      const license = optionalKnowledgeString(body.license, 'license');
+      const preview = await documentCollectionIngester.previewIndexable(rootPath);
+      const context = requireRequestContext(req);
+      const source = externalKnowledgeRegistry.register({
+        kind: 'document_collection',
+        displayName: displayName || path.basename(preview.rootRealpath),
+        rootRealpath: preview.rootRealpath,
+        revision: `content-${preview.summary.contentFingerprint.slice(0, 40)}`,
+        contentFingerprint: preview.summary.contentFingerprint,
+        dirty: false,
+        description,
+        attribution,
+        license,
+        rightsAcknowledged: true,
+        sendToProvider: body.sendToProvider as boolean | undefined,
+        consentedBy: context.userId,
+        scope: knowledgeScopeFromRequestContext(context),
+      });
+      return res.json({success: true, source: projectKnowledgeSource(source), preview: preview.summary});
+    } catch (error) {
+      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+        code: 'KNOWLEDGE_COLLECTION_REGISTER_FAILED',
+        error: 'Knowledge collection registration failed',
+        logLabel: '[RagAdmin] Knowledge collection register error',
+      }, KNOWLEDGE_ROUTE_ERRORS);
+    }
+  });
+
+  router.post('/knowledge/:sourceId/reindex', requireCodebaseScope('codebase:manage'), async (req, res) => {
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    try {
+      const result = await documentCollectionIngester.ingest(routeParam(req.params.sourceId), scope);
+      return res.json({success: true, result});
+    } catch (error) {
+      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+        code: 'KNOWLEDGE_COLLECTION_REINDEX_FAILED',
+        error: 'Knowledge collection reindex failed',
+        logLabel: '[RagAdmin] Knowledge collection reindex error',
+      }, KNOWLEDGE_ROUTE_ERRORS);
+    }
+  });
+
+  router.post('/knowledge/:sourceId/search', requireCodebaseScope('codebase:read'), (req, res) => {
+    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
+    try {
+      const query = requiredKnowledgeString(req.body?.query, 'query');
+      const topK = req.body?.topK ?? 5;
+      if (!Number.isInteger(topK)) {
+        throw new KnowledgeSourceRequestError('KNOWLEDGE_REQUEST_INVALID', '`topK` must be an integer');
+      }
+      return res.json({
+        success: true,
+        ...documentCollectionIngester.search(routeParam(req.params.sourceId), scope, query, topK),
+      });
+    } catch (error) {
+      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+        code: 'KNOWLEDGE_COLLECTION_SEARCH_FAILED',
+        error: 'Knowledge collection search failed',
+        logLabel: '[RagAdmin] Knowledge collection search error',
+      }, KNOWLEDGE_ROUTE_ERRORS);
+    }
+  });
+
+  router.delete('/knowledge/:sourceId', requireCodebaseScope('codebase:manage'), async (req, res) => {
+    const sourceId = routeParam(req.params.sourceId);
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
+    try {
+      await externalKnowledgeRegistry.remove(sourceId, scope, context.userId, (tombstone, fence) => {
+        // A stored record of a kind this build does not know keeps its tombstone.
+        const removeIndex = removeIndexByKind[tombstone.kind] as typeof removeIndexByKind[ExternalKnowledgeKind] | undefined;
+        if (!removeIndex) throw new Error('Unknown external knowledge kind');
+        return removeIndex(scope, sourceId, fence);
+      });
+      return res.json({success: true, sourceId, deleted: true});
+    } catch (error) {
+      return sendRouteReasonError(res, error, callerFacingRagReason(409), {
+        code: 'KNOWLEDGE_SOURCE_DELETE_FAILED',
+        error: 'Knowledge source deletion failed',
+        logLabel: '[RagAdmin] Knowledge source delete error',
+      }, KNOWLEDGE_ROUTE_ERRORS);
+    }
+  });
 
   router.get('/codebases', requireCodebaseScope('codebase:read'), async (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));

@@ -24,6 +24,8 @@ import {CodebaseManagementService} from '../../services/codebase/codebaseManagem
 import {CodebaseStateError} from '../../services/codebase/codebaseRequestError';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {AndroidInternalsWikiIngester} from '../../services/androidInternalsWiki/androidInternalsWikiIngester';
+import {DocumentCollectionIngester} from '../../services/knowledge/documentCollectionIngester';
+import {DocumentCollectionStore} from '../../services/knowledge/documentCollectionStore';
 
 let tmpDir: string;
 let store: RagStore;
@@ -35,6 +37,7 @@ let codebaseManagementService: CodebaseManagementService;
 let pickerSelectedRoot: string;
 let pickerSelectionSequence: number;
 let externalPickerDir: string | undefined;
+const originalKnowledgeRoots = process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS;
 const DEFAULT_SCOPE = {
   tenantId: 'default-dev-tenant',
   workspaceId: 'default-workspace',
@@ -43,6 +46,7 @@ const DEFAULT_SCOPE = {
 
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rag-admin-test-'));
+  process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = tmpDir;
   store = new RagStore(path.join(tmpDir, 'rag.json'));
   registry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
   externalKnowledgeRegistry = new ExternalKnowledgeSourceRegistry(
@@ -118,10 +122,16 @@ beforeEach(() => {
       skillsPath,
       fixtureManifestPath,
     },
+    documentCollectionIngester: new DocumentCollectionIngester(
+      externalKnowledgeRegistry,
+      new DocumentCollectionStore(path.join(tmpDir, 'knowledge-index')),
+    ),
   } as any));
 });
 
 afterEach(() => {
+  if (originalKnowledgeRoots === undefined) delete process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS;
+  else process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = originalKnowledgeRoots;
   if (fs.existsSync(tmpDir)) {
     fs.rmSync(tmpDir, {recursive: true, force: true});
   }
@@ -515,6 +525,220 @@ describe('Android Internals Wiki routes', () => {
     expect(audited.status).toBe(400);
     expect(audited.body.error).toBe('knowledge_root_realpath_drift');
     expect(JSON.stringify(audited.body)).not.toContain('AUDIT_REALPATH_DRIFT_PRIVATE_CANARY');
+  });
+});
+
+describe('document collection routes', () => {
+  function collection(name: string, files: Record<string, string>): string {
+    const root = path.join(tmpDir, name);
+    for (const [relativePath, content] of Object.entries(files)) {
+      fs.mkdirSync(path.dirname(path.join(root, relativePath)), {recursive: true});
+      fs.writeFileSync(path.join(root, relativePath), content);
+    }
+    return root;
+  }
+
+  function expectNoRoot(body: unknown, root: string): void {
+    const text = JSON.stringify(body);
+    expect(text).not.toContain(root);
+    expect(text).not.toContain(fs.realpathSync(root));
+  }
+
+  it('previews counts and skip reasons and refuses a folder with nothing indexable', async () => {
+    const root = collection('docs-preview', {
+      'guide.md': '# Guide\nRenderThread notes\n',
+      'blank.txt': '  \n',
+      'image.png': 'binary',
+    });
+    const preview = await request(app).post('/api/rag/knowledge/preview').send({rootPath: root});
+    expect(preview.status).toBe(200);
+    expect(preview.body.preview).toEqual(expect.objectContaining({
+      documentCount: 1,
+      skipped: {empty_text: 1, extension_not_allowed: 1},
+      contentFingerprint: expect.any(String),
+    }));
+    expectNoRoot(preview.body, root);
+    expect(JSON.stringify(preview.body)).not.toContain('RenderThread notes');
+
+    const empty = collection('docs-empty', {'blank.md': '\n', 'data.json': '{}'});
+    const refused = await request(app).post('/api/rag/knowledge/preview').send({rootPath: empty});
+    expect(refused.status).toBe(400);
+    expect(refused.body).toEqual(expect.objectContaining({
+      code: 'KNOWLEDGE_COLLECTION_EMPTY',
+      details: {empty_text: 1, extension_not_allowed: 1},
+    }));
+    const registerEmpty = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: empty, rightsAcknowledged: true});
+    expect(registerEmpty.status).toBe(400);
+    expect(registerEmpty.body.code).toBe('KNOWLEDGE_COLLECTION_EMPTY');
+
+    const outside = await request(app).post('/api/rag/knowledge/preview').send({rootPath: os.tmpdir()});
+    expect(outside.status).toBe(400);
+    expect(outside.body).toEqual(expect.objectContaining({
+      code: 'KNOWLEDGE_ROOT_BLOCKED',
+      details: {blockedReason: 'root_outside_allowlist'},
+    }));
+  });
+
+  it('registers, reindexes, searches and lists a collection without provider consent', async () => {
+    const root = collection('docs-team', {
+      'render/compositor.md': '# 渲染线程\nXRenderCompositorWorker 负责合成每一帧。\n',
+      'site/index.html': '<h1>Binder</h1><p>binder transactions</p>',
+    });
+    const missingRights = await request(app).post('/api/rag/knowledge/register').send({rootPath: root});
+    expect(missingRights.status).toBe(400);
+    expect(missingRights.body.code).toBe('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED');
+    const tooLong = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, description: 'x'.repeat(281)});
+    expect(tooLong.status).toBe(400);
+    expect(tooLong.body.code).toBe('KNOWLEDGE_SOURCE_METADATA_INVALID');
+
+    const registered = await request(app).post('/api/rag/knowledge/register').send({
+      rootPath: root,
+      displayName: 'Team docs',
+      description: 'Internal render framework and trace tags',
+      attribution: 'Render team',
+      rightsAcknowledged: true,
+    });
+    expect(registered.status).toBe(200);
+    expect(registered.body.source).toEqual(expect.objectContaining({
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      description: 'Internal render framework and trace tags',
+      attribution: 'Render team',
+      sendToProvider: false,
+      documentCount: 0,
+      hasActiveIndex: false,
+    }));
+    expectNoRoot(registered.body, root);
+    const sourceId = registered.body.source.sourceId;
+
+    const reindex = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+    expect(reindex.status).toBe(200);
+    expect(reindex.body.result).toEqual(expect.objectContaining({sourceId, documentCount: 2}));
+    expectNoRoot(reindex.body, root);
+
+    const search = await request(app).post(`/api/rag/knowledge/${sourceId}/search`)
+      .send({query: 'XRenderCompositorWorker'});
+    expect(search.status).toBe(200);
+    expect(search.body).toEqual(expect.objectContaining({
+      success: true,
+      generation: reindex.body.result.generation,
+    }));
+    expect(search.body.hits[0]).toEqual(expect.objectContaining({
+      relativePath: 'render/compositor.md',
+      title: '渲染线程',
+      headingPath: ['渲染线程'],
+      startLine: 1,
+      endLine: 2,
+      snippet: expect.stringContaining('XRenderCompositorWorker'),
+    }));
+    const cjk = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: '合成'});
+    expect(cjk.body.hits[0].relativePath).toBe('render/compositor.md');
+    const badQuery = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: ' '});
+    expect(badQuery.status).toBe(400);
+
+    const listed = await request(app).get('/api/rag/knowledge');
+    expect(listed.body.sources).toEqual([expect.objectContaining({
+      sourceId,
+      kind: 'document_collection',
+      description: 'Internal render framework and trace tags',
+      documentCount: 2,
+      hasActiveIndex: true,
+    })]);
+    expectNoRoot(listed.body, root);
+    // The legacy Wiki connector does not list or reindex a document collection.
+    const legacyList = await request(app).get('/api/rag/android-internals/sources');
+    expect(legacyList.body.sources).toEqual([]);
+    const legacyReindex = await request(app)
+      .post(`/api/rag/android-internals/sources/${sourceId}/reindex`).send({});
+    expect(legacyReindex.status).toBe(404);
+  });
+
+  it('re-registration keeps consent when omitted and revokes it only when explicit', async () => {
+    const root = collection('docs-consent', {'a.md': '# A\nalpha\n'});
+    const first = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
+    expect(first.body.source.sendToProvider).toBe(true);
+    const omitted = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    expect(omitted.body.source.sendToProvider).toBe(true);
+    const revoked = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: false});
+    expect(revoked.body.source.sendToProvider).toBe(false);
+    const invalid = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: 'yes'});
+    expect(invalid.status).toBe(400);
+  });
+
+  it('keeps every collection route inside the caller workspace', async () => {
+    const root = collection('docs-scoped', {'a.md': '# A\nalpha\n'});
+    const registered = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    const sourceId = registered.body.source.sourceId;
+    await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+
+    const other = (req: request.Test) => req.set('X-Workspace-Id', 'workspace-b');
+    expect((await other(request(app).get('/api/rag/knowledge'))).body.sources).toEqual([]);
+    for (const response of [
+      await other(request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'})),
+      await other(request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})),
+      await other(request(app).delete(`/api/rag/knowledge/${sourceId}`)),
+    ]) {
+      expect(response.status).toBe(404);
+      expect(response.body.code).toBe('KNOWLEDGE_SOURCE_NOT_FOUND');
+    }
+    const search = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
+    expect(search.body.hits).toHaveLength(1);
+  });
+
+  it('deletes a collection with its index files, and deletes a legacy Wiki source with its chunks', async () => {
+    const root = collection('docs-delete', {'a.md': '# A\nalpha\n'});
+    const registered = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    const sourceId = registered.body.source.sourceId;
+    await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+    const indexRoot = path.join(tmpDir, 'knowledge-index');
+    const indexFiles = () => fs.readdirSync(indexRoot, {recursive: true}).filter(entry =>
+      String(entry).endsWith('.sqlite'));
+    expect(indexFiles()).toHaveLength(1);
+
+    const deleted = await request(app).delete(`/api/rag/knowledge/${sourceId}`);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body).toEqual(expect.objectContaining({success: true, sourceId, deleted: true}));
+    expect(indexFiles()).toHaveLength(0);
+    expect((await request(app).get('/api/rag/knowledge')).body.sources).toEqual([]);
+    const searchAfter = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'alpha'});
+    expect(searchAfter.status).toBe(404);
+    const again = await request(app).delete(`/api/rag/knowledge/${sourceId}`);
+    expect(again.status).toBe(404);
+
+    const wikiRoot = createCommittedWiki('deleted-wiki');
+    const wiki = await request(app).post('/api/rag/android-internals/sources')
+      .send({rootPath: wikiRoot, rightsAcknowledged: true, sendToProvider: true});
+    const wikiId = wiki.body.source.sourceId;
+    await request(app).post(`/api/rag/android-internals/sources/${wikiId}/reindex`).send({});
+    expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE}).length).toBeGreaterThan(0);
+    const wikiDeleted = await request(app).delete(`/api/rag/knowledge/${wikiId}`);
+    expect(wikiDeleted.status).toBe(200);
+    expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(0);
+    expect((await request(app).get('/api/rag/android-internals/sources')).body.sources).toEqual([]);
+  });
+
+  it('keeps legacy Wiki consent when re-registration omits it', async () => {
+    const root = createCommittedWiki('consent-kept-wiki');
+    await request(app).post('/api/rag/android-internals/sources')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
+    const omitted = await request(app).post('/api/rag/android-internals/sources')
+      .send({rootPath: root, rightsAcknowledged: true});
+    expect(omitted.status).toBe(200);
+    expect(omitted.body.source.sendToProvider).toBe(true);
+    const revoked = await request(app).post('/api/rag/android-internals/sources')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: false});
+    expect(revoked.body.source.sendToProvider).toBe(false);
+    const invalid = await request(app).post('/api/rag/android-internals/sources')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: 'yes'});
+    expect(invalid.status).toBe(400);
   });
 });
 

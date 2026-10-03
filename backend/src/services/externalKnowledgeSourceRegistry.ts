@@ -15,6 +15,7 @@ import {
   legacyKnowledgeFilesystemWritesEnabled,
   listScopedKnowledgeRecords,
   mutateScopedKnowledgeRecord,
+  removeScopedKnowledgeRecordIf,
   upsertScopedKnowledgeRecord,
 } from './scopedKnowledgeStore';
 import {
@@ -32,34 +33,110 @@ function knowledgeSourceNotFound(sourceId: string): KnowledgeSourceRequestError 
     `External knowledge source '${sourceId}' not found`, 404);
 }
 
+function knowledgeSourceDeleting(sourceId: string): KnowledgeSourceRequestError {
+  return new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_DELETING',
+    `External knowledge source '${sourceId}' is being deleted`, 409);
+}
+
 export interface ExternalKnowledgeScope {
   tenantId?: string;
   workspaceId?: string;
   userId?: string;
 }
 
-export interface RegisterExternalKnowledgeSourceInput {
-  kind: 'android_internals_wiki';
+/**
+ * `android_internals_wiki` is the legacy connector for one Wiki layout;
+ * `document_collection` is any folder of documents, indexed into its own
+ * SQLite generation files (`services/knowledge/`).
+ */
+export type ExternalKnowledgeKind = 'android_internals_wiki' | 'document_collection';
+
+type DescriptiveField = 'description' | 'attribution' | 'license';
+
+const TEXT_LIMITS: Readonly<Record<DescriptiveField | 'displayName', number>> = {
+  displayName: 120,
+  description: 280,
+  attribution: 280,
+  license: 120,
+};
+
+interface ExternalKnowledgeKindPolicy {
+  /** Owner-written fields a registration carries: omitted keeps the recorded value, empty clears it. */
+  descriptiveFields: readonly DescriptiveField[];
+  /** Activation records the replaced generation, whose files a pinned reader may still hold. */
+  retainsPreviousGeneration: boolean;
+}
+
+/** Every kind's policy; the Record type makes a new kind a compile error until it is described here. */
+const KIND_POLICIES: Readonly<Record<ExternalKnowledgeKind, ExternalKnowledgeKindPolicy>> = {
+  android_internals_wiki: {descriptiveFields: ['license'], retainsPreviousGeneration: false},
+  document_collection: {
+    descriptiveFields: ['description', 'attribution', 'license'],
+    retainsPreviousGeneration: true,
+  },
+};
+
+interface RegisterExternalKnowledgeSourceBase {
   displayName: string;
   rootRealpath: string;
   revision: string;
   contentFingerprint: string;
   dirty: boolean;
-  license: string;
   rightsAcknowledged: boolean;
-  sendToProvider: boolean;
+  /**
+   * Omitted keeps the provider-send consent in effect (none for a new
+   * source); a boolean grants or revokes it. Re-registering a path must not
+   * silently revoke what the owner granted, nor restore what was revoked.
+   */
+  sendToProvider?: boolean;
   consentedBy: string;
   scope: ExternalKnowledgeScope;
 }
 
-export interface ExternalKnowledgeSource extends RegisterExternalKnowledgeSourceInput {
-  sourceId: string;
-  rightsAcknowledgedAt: number;
-  consentedAt?: number;
-  indexGeneration: number;
-  activeGeneration?: string;
-  indexedArticleCount?: number;
-  indexedChunkCount?: number;
+interface ExternalKnowledgeDescriptiveText {
+  /** Owner-written, at most 280 characters: what the collection covers. */
+  description?: string;
+  attribution?: string;
+  /** The owner's own license statement. */
+  license?: string;
+}
+
+export type RegisterExternalKnowledgeSourceInput =
+  | (RegisterExternalKnowledgeSourceBase & {kind: 'android_internals_wiki'; license: string})
+  | (RegisterExternalKnowledgeSourceBase & ExternalKnowledgeDescriptiveText & {kind: 'document_collection'});
+
+export type ExternalKnowledgeSource =
+  Omit<RegisterExternalKnowledgeSourceBase, 'sendToProvider'> & ExternalKnowledgeDescriptiveText & {
+    kind: ExternalKnowledgeKind;
+    sendToProvider: boolean;
+    sourceId: string;
+    rightsAcknowledgedAt: number;
+    consentedAt?: number;
+    indexGeneration: number;
+    activeGeneration?: string;
+    /** The generation the active one replaced (`retainsPreviousGeneration`). */
+    previousGeneration?: string;
+    indexedArticleCount?: number;
+    indexedChunkCount?: number;
+    /**
+     * `deleting` is the fenced tombstone `remove` writes on every store side
+     * before deleting anything: the source reads as absent everywhere and
+     * refuses every mutation until the record is gone.
+     */
+    lifecycleState?: 'active' | 'deleting';
+  };
+
+function isDeleting(source: Pick<ExternalKnowledgeSource, 'lifecycleState'>): boolean {
+  return source.lifecycleState === 'deleting';
+}
+
+function boundedText(value: string, field: keyof typeof TEXT_LIMITS): string {
+  const trimmed = value.trim();
+  if (trimmed.length > TEXT_LIMITS[field] || trimmed.includes('\0')) {
+    throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_METADATA_INVALID',
+      `\`${field}\` must be at most ${TEXT_LIMITS[field]} characters`);
+  }
+  return trimmed;
 }
 
 /**
@@ -111,6 +188,11 @@ const INGEST_LEASE: ScopedIngestLeaseConfig = {
   logPrefix: 'ExternalKnowledgeSourceRegistry',
 };
 
+/** What a destructive cleanup step checks before it runs: the caller still owns the source. */
+export interface KnowledgeCleanupFence {
+  assertHeld(): void;
+}
+
 export interface ExternalKnowledgeIngestLeaseGuard {
   /** Unique generation seed; prevents a later lease from reusing staged chunk ids. */
   operationId: string;
@@ -122,7 +204,8 @@ export interface ExternalKnowledgeIngestLeaseGuard {
   clearActiveGeneration(): ExternalKnowledgeSource;
 }
 
-function scopeKey(scope: ExternalKnowledgeScope): string {
+/** The scope identity every store of external knowledge partitions by. */
+export function scopeKey(scope: ExternalKnowledgeScope): string {
   return [scope.tenantId ?? '', scope.workspaceId ?? '', scope.userId ?? ''].join('\0');
 }
 
@@ -130,34 +213,69 @@ function sameScope(left: ExternalKnowledgeScope, right: ExternalKnowledgeScope):
   return scopeKey(left) === scopeKey(right);
 }
 
+/**
+ * `primary` carrying every denial `other` holds: a tombstone on either side
+ * deletes, and a consent revoked on either side stays revoked (with the
+ * revoking side's audit fields). Without `primary`, only an in-scope
+ * tombstone of `other` survives, so a deletion half done stays in force.
+ */
+function withDenialsOf(
+  primary: ExternalKnowledgeSource | undefined,
+  other: ExternalKnowledgeSource | undefined,
+  scope: ExternalKnowledgeScope,
+): ExternalKnowledgeSource | undefined {
+  const counterpart = other && sameScope(other.scope, scope) ? other : undefined;
+  if (!primary) return counterpart && isDeleting(counterpart) ? counterpart : undefined;
+  if (!counterpart || isDeleting(primary)) return primary;
+  if (isDeleting(counterpart)) return {...primary, lifecycleState: 'deleting'};
+  if (primary.sendToProvider && !counterpart.sendToProvider) {
+    const {consentedAt: _consentedAt, ...granted} = primary;
+    return {...granted, sendToProvider: false, consentedBy: counterpart.consentedBy};
+  }
+  return primary;
+}
+
+/**
+ * The dual-write read: the filesystem copy is the authority, with the DB
+ * copy's denials, and two different active generations serve neither.
+ */
 function mergeDualWriteExternalSourceFailClosed(
   filesystemSource: ExternalKnowledgeSource | undefined,
   databaseSource: ExternalKnowledgeSource | undefined,
   scope: ExternalKnowledgeScope,
 ): ExternalKnowledgeSource | undefined {
-  if (!filesystemSource || !sameScope(filesystemSource.scope, scope)) return undefined;
-  if (!databaseSource || !sameScope(databaseSource.scope, scope)) return filesystemSource;
-  let effective = filesystemSource;
-  if (filesystemSource.sendToProvider && !databaseSource.sendToProvider) {
-    effective = {
-      ...effective,
-      sendToProvider: false,
-      consentedAt: undefined,
-      consentedBy: databaseSource.consentedBy,
-    };
+  const authority = filesystemSource && sameScope(filesystemSource.scope, scope) ? filesystemSource : undefined;
+  const effective = withDenialsOf(authority, databaseSource, scope);
+  if (
+    !effective || isDeleting(effective) || !authority ||
+    !databaseSource || !sameScope(databaseSource.scope, scope)
+  ) {
+    return effective;
   }
   if (
-    filesystemSource.activeGeneration !== databaseSource.activeGeneration ||
-    filesystemSource.contentFingerprint !== databaseSource.contentFingerprint
+    authority.activeGeneration !== databaseSource.activeGeneration ||
+    authority.contentFingerprint !== databaseSource.contentFingerprint
   ) {
-    effective = {
-      ...effective,
-      activeGeneration: undefined,
-      indexedArticleCount: 0,
-      indexedChunkCount: 0,
-    };
+    return {...effective, activeGeneration: undefined, indexedArticleCount: 0, indexedChunkCount: 0};
   }
   return effective;
+}
+
+function markDeleting(source: ExternalKnowledgeSource, actor: string): ExternalKnowledgeSource {
+  const {
+    activeGeneration: _activeGeneration,
+    previousGeneration: _previousGeneration,
+    consentedAt: _consentedAt,
+    ...unchanged
+  } = source;
+  return {
+    ...unchanged,
+    lifecycleState: 'deleting',
+    sendToProvider: false,
+    consentedBy: actor,
+    indexedArticleCount: 0,
+    indexedChunkCount: 0,
+  };
 }
 
 /** Persistent policy boundary for operator-registered private knowledge. */
@@ -171,11 +289,20 @@ export class ExternalKnowledgeSourceRegistry {
     if (!input.rightsAcknowledged) {
       throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED', 'A separate right-to-use acknowledgement is required');
     }
+    const descriptive: Partial<Record<DescriptiveField, string>> = {};
+    for (const field of KIND_POLICIES[input.kind].descriptiveFields) {
+      const value = (input as ExternalKnowledgeDescriptiveText)[field];
+      if (value !== undefined) descriptive[field] = boundedText(value, field);
+    }
     const sourceId = `eks_${createHash('sha256')
       .update(`${input.kind}\0${path.resolve(input.rootRealpath)}\0${scopeKey(input.scope)}`)
       .digest('hex')
       .slice(0, 24)}`;
     return this.mutateSource(sourceId, input.scope, previous => {
+      if (previous && isDeleting(previous)) throw knowledgeSourceDeleting(sourceId);
+      // A record kept from before the limit may keep its own name; a new or changed name is bounded.
+      const displayName = previous && previous.displayName === input.displayName.trim()
+        ? previous.displayName : boundedText(input.displayName, 'displayName');
       const now = Date.now();
       const activeIdentity = previous?.activeGeneration
         ? {
@@ -188,15 +315,40 @@ export class ExternalKnowledgeSourceRegistry {
             contentFingerprint: input.contentFingerprint,
             dirty: input.dirty,
           };
+      // `previous` already carries every store side's denials, so an omitted
+      // consent keeps the consent in effect, never one a side revoked.
+      const consent = input.sendToProvider === undefined
+        ? {
+            sendToProvider: previous?.sendToProvider ?? false,
+            consentedBy: previous?.consentedBy ?? input.consentedBy,
+            consentedAt: previous?.consentedAt,
+          }
+        : {
+            sendToProvider: input.sendToProvider,
+            consentedBy: input.consentedBy,
+            consentedAt: input.sendToProvider ? now : undefined,
+          };
+      const descriptiveFields: Partial<Record<DescriptiveField, string>> = {};
+      for (const field of KIND_POLICIES[input.kind].descriptiveFields) {
+        const kept = descriptive[field] ?? previous?.[field];
+        if (kept) descriptiveFields[field] = kept;
+      }
       return {
-        ...input,
-        ...activeIdentity,
+        kind: input.kind,
+        displayName,
         rootRealpath: path.resolve(input.rootRealpath),
+        ...activeIdentity,
+        ...descriptiveFields,
+        rightsAcknowledged: true,
+        sendToProvider: consent.sendToProvider,
+        consentedBy: consent.consentedBy,
+        ...(consent.sendToProvider && consent.consentedAt !== undefined ? {consentedAt: consent.consentedAt} : {}),
+        scope: input.scope,
         sourceId,
         rightsAcknowledgedAt: previous?.rightsAcknowledgedAt ?? now,
-        ...(input.sendToProvider ? {consentedAt: now} : {}),
         indexGeneration: previous?.indexGeneration ?? 0,
         ...(previous?.activeGeneration ? {activeGeneration: previous.activeGeneration} : {}),
+        ...(previous?.previousGeneration ? {previousGeneration: previous.previousGeneration} : {}),
         ...(previous?.indexedArticleCount !== undefined
           ? {indexedArticleCount: previous.indexedArticleCount}
           : {}),
@@ -207,28 +359,31 @@ export class ExternalKnowledgeSourceRegistry {
     });
   }
 
+  /** A source being deleted reads as absent. */
   get(sourceId: string, scope: ExternalKnowledgeScope): ExternalKnowledgeSource | undefined {
-    if (enterpriseKnowledgeStoreEnabled()) {
-      const source = getScopedKnowledgeRecord<ExternalKnowledgeSource>(
-          REGISTRY_KNOWLEDGE_KIND,
-          sourceId,
-          scope,
-        )?.record;
-      return source && sameScope(source.scope, scope) ? source : undefined;
-    }
+    const source = this.getIncludingDeleting(sourceId, scope);
+    return source && !isDeleting(source) ? source : undefined;
+  }
+
+  private getIncludingDeleting(
+    sourceId: string,
+    scope: ExternalKnowledgeScope,
+  ): ExternalKnowledgeSource | undefined {
+    if (enterpriseKnowledgeStoreEnabled()) return this.databaseSource(sourceId, scope);
     const filesystemSource = this.getFilesystemSource(sourceId);
-    const databaseSource = enterpriseKnowledgeDbWritesEnabled()
-      ? getScopedKnowledgeRecord<ExternalKnowledgeSource>(
-          REGISTRY_KNOWLEDGE_KIND,
-          sourceId,
-          scope,
-        )?.record
-      : undefined;
-    return mergeDualWriteExternalSourceFailClosed(
-      filesystemSource,
-      databaseSource,
+    return enterpriseKnowledgeDbWritesEnabled()
+      ? mergeDualWriteExternalSourceFailClosed(filesystemSource, this.databaseSource(sourceId, scope), scope)
+      : filesystemSource && sameScope(filesystemSource.scope, scope) ? filesystemSource : undefined;
+  }
+
+  /** The DB copy, when it belongs to `scope`. */
+  private databaseSource(sourceId: string, scope: ExternalKnowledgeScope): ExternalKnowledgeSource | undefined {
+    const source = getScopedKnowledgeRecord<ExternalKnowledgeSource>(
+      REGISTRY_KNOWLEDGE_KIND,
+      sourceId,
       scope,
-    );
+    )?.record;
+    return source && sameScope(source.scope, scope) ? source : undefined;
   }
 
   list(scope: ExternalKnowledgeScope): ExternalKnowledgeSource[] {
@@ -259,7 +414,7 @@ export class ExternalKnowledgeSourceRegistry {
           return effective ? [effective] : [];
         });
     return sources
-      .filter(source => sameScope(source.scope, scope))
+      .filter(source => sameScope(source.scope, scope) && !isDeleting(source))
       .sort((left, right) => left.sourceId.localeCompare(right.sourceId));
   }
 
@@ -271,6 +426,7 @@ export class ExternalKnowledgeSourceRegistry {
   ): ExternalKnowledgeSource {
     return this.mutateSource(sourceId, scope, source => {
       if (!source) throw knowledgeSourceNotFound(sourceId);
+      if (isDeleting(source)) throw knowledgeSourceDeleting(sourceId);
       return {
         ...source,
         sendToProvider,
@@ -299,18 +455,80 @@ export class ExternalKnowledgeSourceRegistry {
     return {allowed: true, source};
   }
 
+  /**
+   * The source, for local indexing and its owner's search: rights are
+   * required, provider-send consent is not, since nothing leaves the machine.
+   * Body text reaching a provider still needs `evaluateAccess`.
+   */
+  requireIndexAccess(sourceId: string, scope: ExternalKnowledgeScope): ExternalKnowledgeSource {
+    const source = this.get(sourceId, scope);
+    if (!source) throw knowledgeSourceNotFound(sourceId);
+    if (!source.rightsAcknowledged) {
+      throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED',
+        'A separate right-to-use acknowledgement is required');
+    }
+    return source;
+  }
+
+  /**
+   * Every generation either store side still names as active or previous.
+   * After a failed activation this is what decides whether a new generation's
+   * files may go: a pointer on either side keeps them.
+   */
+  referencedGenerations(sourceId: string, scope: ExternalKnowledgeScope): Set<string> {
+    const records: Array<ExternalKnowledgeSource | undefined> = [];
+    if (enterpriseKnowledgeStoreEnabled() || enterpriseKnowledgeDbWritesEnabled()) {
+      records.push(this.databaseSource(sourceId, scope));
+    }
+    if (!enterpriseKnowledgeStoreEnabled() || legacyKnowledgeFilesystemWritesEnabled()) {
+      records.push(this.getFilesystemSource(sourceId));
+    }
+    const generations = new Set<string>();
+    for (const record of records) {
+      if (!record || !sameScope(record.scope, scope)) continue;
+      if (record.activeGeneration) generations.add(record.activeGeneration);
+      if (record.previousGeneration) generations.add(record.previousGeneration);
+    }
+    return generations;
+  }
+
+  /**
+   * Delete a source under its ingest lease. The fenced tombstone is written
+   * to every store side first, even when one side already holds it from an
+   * earlier attempt, which revokes access at once; then `removeIndex` (the
+   * kind's index files or chunks) runs with the lease as its fence; then the
+   * records go, DB copy first. Whatever step fails, every remaining record is
+   * a tombstone, so access stays denied and a retry finishes the deletion.
+   */
+  async remove(
+    sourceId: string,
+    scope: ExternalKnowledgeScope,
+    actor: string,
+    removeIndex: (tombstone: ExternalKnowledgeSource, fence: KnowledgeCleanupFence) => Promise<void> | void,
+  ): Promise<ExternalKnowledgeSource> {
+    // Checked before the lease too, so an unknown id never creates a lease record.
+    if (!this.getIncludingDeleting(sourceId, scope)) throw knowledgeSourceNotFound(sourceId);
+    return this.withLease(sourceId, scope, async lease => {
+      if (!this.getIncludingDeleting(sourceId, scope)) throw knowledgeSourceNotFound(sourceId);
+      const tombstone = this.mutateSourceWithLease(sourceId, scope, lease, current => {
+        if (!current) throw knowledgeSourceNotFound(sourceId);
+        return markDeleting(current, actor);
+      });
+      const fence: KnowledgeCleanupFence = {assertHeld: () => lease.assertHeld(true)};
+      fence.assertHeld();
+      await removeIndex(tombstone, fence);
+      this.deleteTombstoneWithLease(sourceId, scope, lease);
+      return tombstone;
+    });
+  }
+
   /** Serialize source generation changes across enterprise instances. */
   async withIngestLease<T>(
     sourceId: string,
     scope: ExternalKnowledgeScope,
     operation: (lease: ExternalKnowledgeIngestLeaseGuard) => Promise<T> | T,
   ): Promise<T> {
-    return withScopedIngestLease(
-      INGEST_LEASE,
-      sourceId,
-      scope,
-      {registryPath: this.storagePath, key: `${sourceId}\0${scopeKey(scope)}`},
-      lease => operation({
+    return this.withLease(sourceId, scope, lease => operation({
         operationId: lease.ownerToken,
         // The wiki ingester calls assertHeld() only as a fence: before staging,
         // before each chunk batch and before the staged count that gates
@@ -329,8 +547,57 @@ export class ExternalKnowledgeSourceRegistry {
           lease,
           source => this.clearSource(sourceId, source),
         ),
-      }),
+      }));
+  }
+
+  private withLease<T>(
+    sourceId: string,
+    scope: ExternalKnowledgeScope,
+    operation: (lease: ScopedIngestLease) => Promise<T> | T,
+  ): Promise<T> {
+    return withScopedIngestLease(
+      INGEST_LEASE,
+      sourceId,
+      scope,
+      {registryPath: this.storagePath, key: `${sourceId}\0${scopeKey(scope)}`},
+      operation,
     );
+  }
+
+  /**
+   * Remove a tombstoned record. Both copies are tombstones by now; the DB
+   * copy goes first, so a failure leaves the filesystem tombstone, which
+   * dual-write reads as the authority.
+   */
+  private deleteTombstoneWithLease(
+    sourceId: string,
+    scope: ExternalKnowledgeScope,
+    lease: ScopedIngestLease,
+  ): void {
+    const deleteRecord = (): void => {
+      lease.assertHeld(true);
+      if (lease.distributed) {
+        removeScopedKnowledgeRecordIf<ExternalKnowledgeSource>(
+          REGISTRY_KNOWLEDGE_KIND,
+          sourceId,
+          scope,
+          current => isDeleting(current) && sameScope(current.scope, scope),
+        );
+      }
+      if (legacyKnowledgeFilesystemWritesEnabled()) {
+        this.load(true);
+        const filesystemSource = this.sources.get(sourceId);
+        if (filesystemSource && sameScope(filesystemSource.scope, scope)) {
+          this.sources.delete(sourceId);
+          this.persist();
+        }
+      }
+    };
+    if (legacyKnowledgeFilesystemWritesEnabled()) {
+      withFilesystemRegistryLock(this.storagePath, 'external_knowledge_registry_busy', deleteRecord);
+    } else {
+      deleteRecord();
+    }
   }
 
   private activateSource(
@@ -339,8 +606,14 @@ export class ExternalKnowledgeSourceRegistry {
     input: ActivateExternalKnowledgeGenerationInput,
   ): ExternalKnowledgeSource {
     if (!source) throw knowledgeSourceNotFound(sourceId);
+    if (isDeleting(source)) throw knowledgeSourceDeleting(sourceId);
+    const replaced = KIND_POLICIES[source.kind].retainsPreviousGeneration &&
+      source.activeGeneration && source.activeGeneration !== input.generation
+      ? source.activeGeneration
+      : source.previousGeneration;
     return {
       ...source,
+      ...(replaced ? {previousGeneration: replaced} : {}),
       revision: input.revision,
       contentFingerprint: input.contentFingerprint,
       dirty: input.dirty,
@@ -356,6 +629,7 @@ export class ExternalKnowledgeSourceRegistry {
     source: ExternalKnowledgeSource | undefined,
   ): ExternalKnowledgeSource {
     if (!source) throw knowledgeSourceNotFound(sourceId);
+    if (isDeleting(source)) throw knowledgeSourceDeleting(sourceId);
     const {
       activeGeneration: _activeGeneration,
       indexedArticleCount: _indexedArticleCount,
@@ -380,6 +654,15 @@ export class ExternalKnowledgeSourceRegistry {
       return this.mutateSource(sourceId, scope, mutate);
     }
     const activate = (): ExternalKnowledgeSource => {
+      // Read under the filesystem lock: a filesystem tombstone or revoked
+      // consent must reach the mutation, which then overwrites that copy.
+      let filesystemSource: ExternalKnowledgeSource | undefined;
+      if (legacyKnowledgeFilesystemWritesEnabled()) {
+        filesystemSource = this.getFilesystemSource(sourceId);
+        if (filesystemSource && !sameScope(filesystemSource.scope, scope)) {
+          throw knowledgeSourceNotFound(sourceId);
+        }
+      }
       const updated = lease.mutateFenced<ExternalKnowledgeSource>({
         kind: REGISTRY_KNOWLEDGE_KIND,
         externalId: sourceId,
@@ -388,7 +671,7 @@ export class ExternalKnowledgeSourceRegistry {
           if (current && !sameScope(current.scope, scope)) {
             throw knowledgeSourceNotFound(sourceId);
           }
-          return mutate(current);
+          return mutate(withDenialsOf(current, filesystemSource, scope));
         },
       });
       if (legacyKnowledgeFilesystemWritesEnabled()) {
@@ -467,10 +750,15 @@ export class ExternalKnowledgeSourceRegistry {
     }
 
     this.load(true);
-    const current = this.sources.get(sourceId);
-    if (current && !sameScope(current.scope, scope)) {
+    const filesystemSource = this.sources.get(sourceId);
+    if (filesystemSource && !sameScope(filesystemSource.scope, scope)) {
       throw knowledgeSourceNotFound(sourceId);
     }
+    // The filesystem is the read authority here, but a tombstone or a revoked
+    // consent that only reached the DB copy must still reach the mutation.
+    const current = enterpriseKnowledgeDbWritesEnabled()
+      ? withDenialsOf(filesystemSource, this.databaseSource(sourceId, scope), scope)
+      : filesystemSource;
     const updated = mutate(current);
     if (enterpriseKnowledgeDbWritesEnabled()) {
       upsertScopedKnowledgeRecord(
