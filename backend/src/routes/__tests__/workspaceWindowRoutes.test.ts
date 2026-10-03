@@ -85,10 +85,14 @@ function clearGraph(): void {
   db.close();
 }
 
-function trustedSsoHeaders(req: request.Test, workspaceId = 'workspace-a'): request.Test {
+function trustedSsoHeaders(
+  req: request.Test,
+  workspaceId = 'workspace-a',
+  userId = 'user-a',
+): request.Test {
   return req
-    .set('X-SmartPerfetto-SSO-User-Id', 'user-a')
-    .set('X-SmartPerfetto-SSO-Email', 'user-a@example.test')
+    .set('X-SmartPerfetto-SSO-User-Id', userId)
+    .set('X-SmartPerfetto-SSO-Email', `${userId}@example.test`)
     .set('X-SmartPerfetto-SSO-Tenant-Id', 'tenant-a')
     .set('X-SmartPerfetto-SSO-Workspace-Id', workspaceId)
     .set('X-SmartPerfetto-SSO-Roles', 'analyst')
@@ -238,6 +242,43 @@ describe('workspace window routes', () => {
 
     expect(response.body.success).toBe(true);
     expect(response.body.activeWindows).toEqual([]);
+  });
+
+  test('another user heartbeating a listed window id cannot take over that window', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    clearGraph();
+    seedGraph({ tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a' });
+    const asUser = (req: request.Test, userId: string) => trustedSsoHeaders(req, 'workspace-a', userId);
+
+    await asUser(request(app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'), 'user-a')
+      .send({ traceId: 'trace-a', activeSessionId: 'session-a', traceTitle: 'A private trace' })
+      .expect(200);
+
+    const listedToB = await asUser(request(app()).get('/api/workspaces/workspace-a/windows/active'), 'user-b')
+      .expect(200);
+    // A's window points at no result B can read, so B is not told it exists.
+    expect(listedToB.body.activeWindows).toEqual([]);
+
+    const hijack = await asUser(
+      request(app()).post('/api/workspaces/workspace-a/windows/window-a/heartbeat'),
+      'user-b',
+    )
+      .send({ traceId: 'trace-b', activeSessionId: 'session-b' })
+      .expect(200);
+    expect(hijack.body.windowState).toMatchObject({ userId: 'user-b', windowId: 'window-a', traceId: 'trace-b' });
+
+    const seenByA = await asUser(request(app()).get('/api/workspaces/workspace-a/windows/active'), 'user-a')
+      .expect(200);
+    expect(seenByA.body.activeWindows).toEqual([
+      expect.objectContaining({
+        userId: 'user-a',
+        windowId: 'window-a',
+        traceId: 'trace-a',
+        activeSessionId: 'session-a',
+        traceTitle: 'A private trace',
+      }),
+    ]);
   });
 
   test('rejects invalid heartbeat scene type', async () => {

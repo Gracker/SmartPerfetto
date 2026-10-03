@@ -26,6 +26,7 @@ import {
 } from '../scopedIngestLease';
 import {effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
 import {buildSourceSelectionIR, sourceExtensionsForKind} from './sourceSelectionPolicy';
+import {codebaseNotFound, invalidCodebaseMetadata, invalidCodebaseSelection} from './codebaseRequestError';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
 /**
@@ -504,7 +505,7 @@ export class CodebaseRegistry {
   register(input: RegisterCodebaseInput): CodebaseRef {
     this.load();
     if (!CODEBASE_KINDS.includes(input.kind)) {
-      throw new Error(`Unsupported codebase kind: ${input.kind}`);
+      throw invalidCodebaseMetadata(`Unsupported codebase kind: ${input.kind}`);
     }
     // rootRealpath is a security identity, not a caller-provided display path.
     // Canonicalize even trusted preview input so consent and later drift checks
@@ -696,7 +697,7 @@ export class CodebaseRegistry {
         updatedAt: consentedAt,
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -725,7 +726,7 @@ export class CodebaseRegistry {
         ? selection.excludeGlobs
         : undefined;
       if (existing.kind === 'kernel_source' && !pathFilters?.length) {
-        throw new Error('kernel_source requires pathFilters');
+        throw invalidCodebaseSelection('kernel_source requires pathFilters');
       }
       if (
         listsEqual(existing.pathFilters, pathFilters) &&
@@ -747,7 +748,7 @@ export class CodebaseRegistry {
         updatedAt: Date.now(),
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -784,7 +785,7 @@ export class CodebaseRegistry {
         updatedAt: now,
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -826,7 +827,7 @@ export class CodebaseRegistry {
         updatedAt: now,
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -851,7 +852,7 @@ export class CodebaseRegistry {
         updatedAt: Date.now(),
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -893,7 +894,7 @@ export class CodebaseRegistry {
         updatedAt: now,
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -914,7 +915,7 @@ export class CodebaseRegistry {
         updatedAt: Date.now(),
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -937,7 +938,7 @@ export class CodebaseRegistry {
         updatedAt: now,
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -963,7 +964,7 @@ export class CodebaseRegistry {
         updatedAt: Date.now(),
       };
     });
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -982,7 +983,7 @@ export class CodebaseRegistry {
       lease => {
         const current = this.get(codebaseId, scope);
         if (!current) {
-          throw new Error(`Codebase '${codebaseId}' not found`);
+          throw codebaseNotFound(codebaseId);
         }
         if (purpose === 'ingest' && current.lifecycleState === 'deleting') {
           throw new Error('codebase_deleting');
@@ -1033,7 +1034,7 @@ export class CodebaseRegistry {
     lease.assertHeld(true);
     this.updateIngestStatus(codebaseId, patch, scope);
     const updated = this.get(codebaseId, scope);
-    if (!updated) throw new Error(`Codebase '${codebaseId}' not found`);
+    if (!updated) throw codebaseNotFound(codebaseId);
     return updated;
   }
 
@@ -1100,7 +1101,7 @@ export class CodebaseRegistry {
     lease.assertHeld(true);
     return this.withRegistryLock(() => {
       const existing = this.get(codebaseId, scope);
-      if (!existing) throw new Error(`Codebase '${codebaseId}' not found`);
+      if (!existing) throw codebaseNotFound(codebaseId);
       const updated = markDeleting(existing);
       this.replicateToFilesystem(codebaseId, updated);
       return updated;
@@ -1115,7 +1116,7 @@ export class CodebaseRegistry {
     return this.withRegistryLock(() => {
       lease.assertHeld(true);
       const existing = this.get(codebaseId, scope);
-      if (!existing) throw new Error(`Codebase '${codebaseId}' not found`);
+      if (!existing) throw codebaseNotFound(codebaseId);
       if (existing.lifecycleState !== 'deleting') {
         throw new Error('codebase_delete_not_started');
       }
@@ -1130,7 +1131,7 @@ export class CodebaseRegistry {
         const filesystemRef = this.codebases.get(codebaseId);
         if (!filesystemRef || !sameScope(filesystemRef, scope)) {
           if (!lease.distributed) {
-            throw new Error(`Codebase '${codebaseId}' not found`);
+            throw codebaseNotFound(codebaseId);
           }
         } else {
           this.codebases.delete(codebaseId);
@@ -1155,7 +1156,7 @@ export class CodebaseRegistry {
         options: {rowScope: REGISTRY_ROW_SCOPE},
         mutate: existing => {
           if (!existing || !sameScope(existing, scope)) {
-            throw new Error(`Codebase '${codebaseId}' not found`);
+            throw codebaseNotFound(codebaseId);
           }
           return mutate(existing);
         },
@@ -1199,7 +1200,7 @@ export class CodebaseRegistry {
         scope,
         existing => {
           if (!existing || !sameScope(existing, scope)) {
-            throw new Error(`Codebase '${codebaseId}' not found`);
+            throw codebaseNotFound(codebaseId);
           }
           return mutate(normalizeCodebaseRef(existing));
         },

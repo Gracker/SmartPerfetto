@@ -808,6 +808,79 @@ describe('createClaudeMcpServer', () => {
       }
     });
 
+    it('recalls curated cases only for the detected architecture, leaving manual cases to their key', async () => {
+      const viewCase = {
+        schemaVersion: 1,
+        source: 'curated_markdown_case',
+        createdAt: 1,
+        caseId: 'case-view-shader',
+        title: 'View-system shader case',
+        status: 'published',
+        redactionState: 'redacted',
+        tags: ['shader_compile'],
+        findings: [],
+        knowledge: {
+          sourceFile: 'cases/case-view-shader.md',
+          body: '',
+          quality: 'curated',
+          scene: 'scrolling',
+          domainPack: 'scrolling.v1',
+          taxonomy: {
+            primary_root_cause: 'shader_compile',
+            secondary_root_causes: [],
+            responsibility: 'app',
+            severity: 'warning',
+          },
+          context: { app_architecture: 'standard' },
+          evidenceSignatures: {
+            required: [{ field: 'reason_code', op: 'eq', value: 'shader_compile' }],
+            supportive: [],
+          },
+          recommendations: { app: [], oem: [] },
+        },
+      };
+      const manualCase = {
+        schemaVersion: 1,
+        source: 'manual',
+        createdAt: 1,
+        caseId: 'case-manual',
+        title: 'Manual case',
+        status: 'published',
+        redactionState: 'redacted',
+        tags: ['shader_compile'],
+        findings: [],
+      };
+      // Both cases are admitted; the architecture filter alone decides.
+      const caseLibrary = {
+        listAdmittedCases: jest.fn((statuses: readonly string[]) =>
+          [viewCase, manualCase].filter(caseNode => statuses.includes(caseNode.status))),
+      };
+      const ragStore = { search: jest.fn(() => ({ results: [] })) };
+      const recall = async (architecture: string) => {
+        const { tools } = createTestServer({
+          sceneType: 'scrolling',
+          caseLibrary,
+          ragStore,
+          cachedArchitecture: { type: architecture, confidence: 0.9, evidence: [] },
+        });
+        const byTags = await callTool(tools, 'recall_similar_case', { tags: ['shader_compile'] });
+        const byEvidence = await callTool(tools, 'recall_similar_case', {
+          root_cause: 'shader_compile',
+          evidence_signatures: { reason_code: 'shader_compile' },
+        });
+        return {
+          byTags: byTags.hits.map((hit: { caseId: string }) => hit.caseId).sort(),
+          byEvidence: byEvidence.hits.map((hit: { caseId: string }) => hit.caseId),
+        };
+      };
+
+      expect(await recall('FLUTTER')).toEqual({ byTags: ['case-manual'], byEvidence: [] });
+      expect(await recall('STANDARD')).toEqual({
+        byTags: ['case-manual', 'case-view-shader'],
+        byEvidence: ['case-view-shader'],
+      });
+    });
+
     it('recalls similar analysis results as navigation-only MCP hints', async () => {
       const current = analysisSnapshot('current');
       const similar = analysisSnapshot('similar', {
@@ -8052,7 +8125,7 @@ describe('createClaudeMcpServer', () => {
     it.each(['refused', 'throws'] as const)('records an actual %s source attempt after an earlier stop', async outcome => {
       const sourceAccess = {search: jest.fn<OnDemandSourceAccessService['search']>(),
         read: jest.fn<OnDemandSourceAccessService['read']>(async () => {
-          if (outcome === 'throws') throw new Error('source_path_outside_provider_grant');
+          if (outcome === 'throws') throw new Error('source_file_changed_during_read');
           return {success: false, codebaseId: 'app-a', truncated: false, unsupportedReason: 'provider_send_not_consented'};
         })};
       const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a'],
@@ -10383,6 +10456,104 @@ describe('source and knowledge governance refusals', () => {
     }), {
       unsupportedReason: 'private_knowledge_source_not_whitelisted',
       action_required: 'continue_without_private_knowledge',
+    });
+  });
+
+  // Path governance answers with what to do instead and never echoes the requested path or root.
+  describe('source path governance', () => {
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const withRegisteredSource = async (
+      run: (input: {codebaseRegistry: CodebaseRegistry; codebaseId: string; root: string}) => Promise<void>,
+    ) => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-source-path-refusal-'));
+      try {
+        const root = path.join(tmpDir, 'app');
+        fs.mkdirSync(path.join(root, 'src'), {recursive: true});
+        fs.mkdirSync(path.join(root, 'tools'), {recursive: true});
+        fs.mkdirSync(path.join(root, '.gitnexus'), {recursive: true});
+        fs.writeFileSync(path.join(root, 'src', 'StartupHooks.kt'), 'class StartupHooks\n');
+        fs.writeFileSync(path.join(root, 'tools', 'Unregistered.kt'), 'class Unregistered\n');
+        const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
+        const ref = codebaseRegistry.register({kind: 'app_source', displayName: 'App', rootPath: root,
+          rootAuthorization: 'native_picker', pathFilters: ['src'], sendToProvider: true, ...scope});
+        await run({codebaseRegistry, codebaseId: ref.codebaseId, root});
+      } finally { fs.rmSync(tmpDir, {recursive: true, force: true}); }
+    };
+
+    it.each(['metadata_only', 'provider_send'] as const)(
+      'refuses a %s read outside the registered path filters',
+      async codeAwareMode => withRegisteredSource(async ({codebaseRegistry, codebaseId, root}) => {
+        const {tools, sourceUse} = createTestServer({codeAwareMode, codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+
+        const raw = await callRaw(tools, 'read_codebase_file', {file_path: 'tools/Unregistered.kt'});
+
+        expectRefusal(raw, {
+          codebaseId,
+          unsupportedReason: 'source_path_outside_registered_filters',
+          action_required: 'use_path_within_registered_filters',
+          sourceReferences: [],
+        });
+        expect(raw.content[0].text).not.toContain('Unregistered');
+        expect(raw.content[0].text).not.toContain(root);
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({attemptedTools: ['read_codebase_file'],
+          queriedCodebaseIds: [codebaseId], usedCodebaseIds: [], references: []});
+      }),
+    );
+
+    it('refuses a provider read outside the provider-send grant', async () => {
+      const read = jest.fn<OnDemandSourceAccessService['read']>(async () => ({
+        success: false, codebaseId: 'app-a', truncated: false, unsupportedReason: 'source_path_outside_provider_grant',
+      }));
+      const {tools} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a'],
+        onDemandSourceAccess: {search: jest.fn<OnDemandSourceAccessService['search']>(), read}});
+
+      expectRefusal(await callRaw(tools, 'read_codebase_file', {file_path: 'src/Main.dart'}), {
+        unsupportedReason: 'source_path_outside_provider_grant',
+        action_required: 'continue_without_this_file',
+      });
+    });
+
+    it('refuses a graph symbol lookup scoped to a file outside the registered path filters', async () =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId, root}) => {
+        const {tools} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+
+        const raw = await callRaw(tools, 'inspect_code_symbol', {symbol: 'Unregistered', file_path: 'tools/Unregistered.kt'});
+
+        expectRefusal(raw, {
+          codebaseId,
+          unsupportedReason: 'source_path_outside_registered_filters',
+          action_required: 'use_path_within_registered_filters',
+          references: [],
+        });
+        expect(raw.content[0].text).not.toContain('tools/Unregistered.kt');
+        expect(raw.content[0].text).not.toContain(root);
+      }));
+
+    it('keeps a graph capability gap a failure, not a refusal', async () =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId, root}) => {
+        fs.rmSync(path.join(root, '.gitnexus'), {recursive: true, force: true});
+        const {tools} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+
+        const raw = await callRaw(tools, 'query_code_graph', {query: 'StartupHooks'});
+        const payload = JSON.parse(raw.content[0].text);
+
+        expect(payload).toMatchObject({success: false, unsupportedReason: 'missing_gitnexus_index'});
+        expect(payload).not.toHaveProperty('action_required');
+        expect(isPolicyRefusalResult(raw)).toBe(false);
+      }));
+
+    it('keeps an unreadable source a thrown failure, not a refusal', async () => {
+      const read = jest.fn<OnDemandSourceAccessService['read']>(async () => {
+        throw new Error('source_file_changed_during_read');
+      });
+      const {tools} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: ['app-a'],
+        onDemandSourceAccess: {search: jest.fn<OnDemandSourceAccessService['search']>(), read}});
+
+      await expect(callRaw(tools, 'read_codebase_file', {file_path: 'src/Main.kt'}))
+        .rejects.toThrow('source_file_changed_during_read');
     });
   });
 

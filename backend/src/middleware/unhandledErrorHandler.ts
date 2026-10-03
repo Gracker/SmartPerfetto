@@ -4,7 +4,7 @@
 
 import { STATUS_CODES } from 'http';
 import type { ErrorRequestHandler } from 'express';
-import { REQUEST_ID_HEADER, requestIdOf } from './requestId';
+import { logRouteFailure, sendRouteFailure } from './routeFailure';
 
 export const UNHANDLED_ERROR_CODE = 'unhandled_error';
 
@@ -14,14 +14,6 @@ function responseStatus(err: unknown): number {
   return typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 400 && candidate <= 599
     ? candidate
     : 500;
-}
-
-// body-parser attaches the raw request body to its errors; a malformed JSON
-// request can carry a provider key, so it stays out of the log as well.
-function loggableError(err: unknown): unknown {
-  if (!(err instanceof Error) || !('body' in err)) return err;
-  const {body: _requestBody, ...fields} = err as Error & Record<string, unknown>;
-  return {...fields, name: err.name, message: err.message, stack: err.stack};
 }
 
 /**
@@ -34,30 +26,18 @@ function loggableError(err: unknown): unknown {
  * parse error can quote the request body. The request id ties the response to
  * the log line.
  */
-export const unhandledErrorHandler: ErrorRequestHandler = (err, req, res, next) => {
-  const requestId = requestIdOf(req);
+export const unhandledErrorHandler: ErrorRequestHandler = (err, _req, res, next) => {
   const status = responseStatus(err);
-  console.error('[UnhandledError]', {
-    requestId,
-    method: req.method,
-    path: req.originalUrl.split('?')[0],
-    status,
-    headersSent: res.headersSent,
-  }, loggableError(err));
-
   // A started response cannot change its status; Express closes the connection.
   if (res.headersSent) {
+    logRouteFailure(res, '[UnhandledError]', status, UNHANDLED_ERROR_CODE, err);
     next(err);
     return;
   }
-
-  res
-    .status(status)
-    .set(REQUEST_ID_HEADER, requestId)
-    .json({
-      success: false,
-      code: UNHANDLED_ERROR_CODE,
-      error: STATUS_CODES[status] ?? (status < 500 ? 'Request failed' : 'Internal Server Error'),
-      requestId,
-    });
+  sendRouteFailure(res, {
+    status,
+    code: UNHANDLED_ERROR_CODE,
+    error: STATUS_CODES[status] ?? (status < 500 ? 'Request failed' : 'Internal Server Error'),
+    logLabel: '[UnhandledError]',
+  }, err);
 };

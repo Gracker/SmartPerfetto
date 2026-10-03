@@ -11,6 +11,7 @@ import {
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
 import {selfEvolutionErrorCode} from '../services/selfEvolution/selfEvolutionErrorCode';
+import {logRouteFailure} from '../middleware/routeFailure';
 import {
   getSelfEvolutionAdminService,
 } from '../services/selfEvolution/selfEvolutionAdminRuntime';
@@ -89,9 +90,16 @@ function terminal(event: SelfEvolutionOperationEvent): boolean {
   return event.type === 'completed' || event.type === 'failed';
 }
 
+const SELF_EVOLUTION_FALLBACK_CODE = 'self_evolution_request_failed';
+
 function sendError(response: Response, error: unknown): void {
-  const code = selfEvolutionErrorCode(error, 'self_evolution_request_failed');
+  const code = selfEvolutionErrorCode(error, SELF_EVOLUTION_FALLBACK_CODE);
   const status = errorStatus(code);
+  // Known codes are expected states (disabled, not found, conflict); only an
+  // unrecognized exception needs its message and stack in the log.
+  if (code === SELF_EVOLUTION_FALLBACK_CODE) {
+    logRouteFailure(response, '[SelfEvolutionAdmin] Request error', status, code, error);
+  }
   response.status(status).json({
     success: false,
     error: code,
@@ -244,13 +252,15 @@ export function createSelfEvolutionAdminRoutes(
         if (res.headersSent) {
           unsubscribe();
           if (heartbeat) clearInterval(heartbeat);
+          const errorCode = selfEvolutionErrorCode(error, SELF_EVOLUTION_FALLBACK_CODE);
+          logRouteFailure(res, '[SelfEvolutionAdmin] Operation stream error', 500, errorCode, error);
           if (!res.writableEnded) {
             sendSseEvent(res, {
               sequence: 0,
               type: 'failed',
               stage: 'failed',
               message: 'operation_stream_failed',
-              errorCode: selfEvolutionErrorCode(error, 'self_evolution_request_failed'),
+              errorCode,
               createdAt: Date.now(),
             });
             res.end();

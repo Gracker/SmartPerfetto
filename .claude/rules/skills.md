@@ -113,6 +113,14 @@ Click actions should be explicit, for example:
   public run. Compute derived or rounded numbers in SQL and cite the column; a
   rule `confidence` is a literal level or number, never a template; never put
   `AND`/`OR` inside a quoted string of a condition or filter.
+- A Skill SQL path read of an earlier step's result needs a `|default` or a
+  step `condition` with the top-level conjunct `<result>.data?.length > 0`.
+  SmartPerfetto binds a missing value as '' or NULL and runs; the public
+  runtime skips a step whose default-less path reads an empty result.
+  `validate:skills` rejects an undecided read as `result_path_read_undecided`;
+  Self-Evolution rejects it in the Skill a proposal defines or changes
+  (including that Skill's earlier overlay steps) and only warns about one in
+  other already-published overlays.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set

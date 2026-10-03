@@ -78,16 +78,12 @@ function redactCriticalPathFields(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (Array.isArray(value)) return value.map((item) => redactCriticalPathFields(item));
   if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => {
       const lk = k.toLowerCase();
       // Hypothesis text is built by the product from numeric-only
       // interpolation, and the prompt asks the model to reuse the SQL
       // verbatim; clamping it would cut the SQL mid-predicate.
-      if (lk === 'statement' || lk === 'verificationsql' || lk === 'notes') {
-        out[k] = v;
-        continue;
-      }
+      if (lk === 'statement' || lk === 'verificationsql' || lk === 'notes') return [k, v];
       // Hash-style obfuscation for sensitive identifiers (keep grouping but
       // not the literal value).
       if (
@@ -113,13 +109,11 @@ function redactCriticalPathFields(value: unknown): unknown {
         lk === 'blockedmethod'
       ) {
         if (typeof v === 'string' && v.length > 0) {
-          out[k] = `<${lk}_${Buffer.from(v).toString('base64').slice(0, 8)}>`;
-          continue;
+          return [k, `<${lk}_${Buffer.from(v).toString('base64').slice(0, 8)}>`];
         }
       }
-      out[k] = clampString(redactCriticalPathFields(v));
-    }
-    return out;
+      return [k, clampString(redactCriticalPathFields(v))];
+    }));
   }
   if (typeof value === 'string') {
     return clampString(value);

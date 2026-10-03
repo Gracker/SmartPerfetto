@@ -4,12 +4,13 @@
 
 import {describe, expect, it} from '@jest/globals';
 import type {ConclusionContract} from '../../../agent/core/conclusionContract';
-import {createDataEnvelope} from '../../../types/dataContract';
+import {createDataEnvelope, type DataPayload} from '../../../types/dataContract';
 import {
   QUERY_REVIEW_SCHEMA_VERSION,
   type QueryReviewV1,
 } from '../../../types/queryReviewContract';
 import {buildEvidenceContract} from '../evidenceContractBuilder';
+import {runDeterministicClaimVerifier} from '../../verifier/deterministicClaimVerifier';
 import {evidenceValuesMatch} from '../valueComparison';
 import type {EvidenceScopeProvenanceV1, IdentityResolutionV1} from '../../../types/identityContract';
 
@@ -63,6 +64,21 @@ describe('evidenceContractBuilder', () => {
         ? {verificationStatus: 'candidate', reasonCode: 'derived_not_verified'}
         : {verificationStatus: 'rejected', reasonCode: 'relation_endpoint_value_mismatch'});
     }
+  });
+
+  it('selects a row by a column aliased __proto__', () => {
+    // Model-written SQL can alias a column `__proto__`; JSON.parse keeps it as an own key.
+    const envelope = createDataEnvelope({columns: ['__proto__', 'value'], rows: [['main', 5], ['other', 6]]}, {
+      type: 'sql_result', source: 'execute_sql', title: 'Aliased evidence',
+      evidenceRefId: 'data:proto-column', traceId: 'trace-proto', traceSide: 'current',
+    });
+    const built = buildEvidenceContract({dataEnvelopes: [envelope], relationCandidates: [{
+      schemaVersion: 'evidence_relation_candidate@1', id: 'relation:proto-column',
+      kind: 'derived', direction: 'subject_to_object',
+      subject: {evidenceRefId: 'data:proto-column', rowSelector: JSON.parse('{"__proto__":"main"}'), column: 'value', value: 5},
+    }]});
+    expect(built.warnings).toEqual([]);
+    expect(built.anchors[0].cells![0]).toMatchObject({value: 5, actualValue: 5});
   });
 
   it('still rejects null relation selectors and aggregate proposal values', () => {
@@ -138,16 +154,62 @@ describe('evidenceContractBuilder', () => {
         expect(build('metric', wrong).anchors[0].missing).toBe(true);
       }
     });
+    const otherSide = {...resolution, target: {...resolution.target, traceSide: 'reference' as const}};
+    const ambiguous = {...resolution, status: 'ambiguous' as const};
+    const wrongProcess = {...resolution, processes: [{...resolution.processes[0], upid: 43}]};
     it('cannot transfer target identity from a different row instance or root side', () => {
       expect(build('metric', mixed, 43).anchors[0].identity).toBeUndefined();
-      const otherSide = {...resolution, target: {...resolution.target, traceSide: 'reference' as const}};
       expect(build('metric', mixed, 42, otherSide).anchors[0].identity).toBeUndefined();
-      const ambiguous = {...resolution, status: 'ambiguous' as const};
       expect(build('metric', mixed, 42, ambiguous).anchors[0].identity).toBeUndefined();
       const wrongTarget = {...resolution, target: {...resolution.target, upid: 43}};
       expect(build('metric', mixed, 42, wrongTarget).anchors[0].identity).toBeUndefined();
-      const wrongProcess = {...resolution, processes: [{...resolution.processes[0], upid: 43}]};
       expect(build('metric', mixed, 42, wrongProcess).anchors[0].identity).toBeUndefined();
+    });
+    it('leaves a whole-row citation of mixed scope unbound only when its target part would bind', () => {
+      expect(build().anchors[0]).toMatchObject({missing: true, missingReason: 'cited_scope_identity_unbound'});
+      for (const conflicting of [build(undefined, mixed, 43), build(undefined, mixed, 42, otherSide),
+        build(undefined, mixed, 42, ambiguous), build(undefined, mixed, 42, wrongProcess)]) {
+        expect(conflicting.anchors[0]).toMatchObject({missing: true, missingReason: 'captured_identity_conflict'});
+      }
+      const targetOnly = {version: mixed.version, entries: [mixed.entries[0]]};
+      const bound = build(undefined, targetOnly).anchors[0];
+      expect(bound).toMatchObject({identity: {status: 'verified'}});
+      expect(bound.missing).not.toBe(true);
+    });
+    it('binds a whole multi-row envelope to the target only when every row belongs to it', () => {
+      const targetOnly = {version: mixed.version, entries: [mixed.entries[0]]};
+      // Rows may be arrays or objects: the builder reads both, though DataPayload types only arrays.
+      const cite = (data: {columns: string[]; rows: unknown[]}) => {
+        const built = buildEvidenceContract({dataEnvelopes: [createDataEnvelope(data as DataPayload, {
+          type: 'skill_result', source: 'scoped', title: 'Target rows', traceId: 'trace-a', traceSide: 'current',
+          evidenceRefId: 'data:rows', scopeProvenance: targetOnly,
+          identityRefId: target.identityRefId, identityStatus: 'verified', identityResolution: resolution,
+        })], conclusionContract: {
+          schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [],
+          clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
+          claims: [{id: 'claim:rows', kind: 'identity', text: 'Rows of the target', references: [{evidenceRefId: 'data:rows'}]}],
+        }});
+        const claim = runDeterministicClaimVerifier({claimSupport: built.claimSupport}).claimResults[0];
+        return {anchor: built.anchors[0], cells: claim.referenceCells.map(cell => cell.status), status: claim.status};
+      };
+      const wholeCitation = (upids: unknown[]) => cite({columns: ['upid', 'metric'], rows: upids.map((upid, index) => [upid, index])});
+      expect(wholeCitation([42, 42, 42]).anchor).toMatchObject({identity: {status: 'verified'}});
+      expect(wholeCitation([42, 42, 42]).anchor.missing).not.toBe(true);
+      // A conflict anywhere wins over an unreadable cell elsewhere.
+      for (const upids of [[42, 42, 43], [42, null], [undefined, 43]]) {
+        expect(wholeCitation(upids)).toMatchObject({cells: ['missing'], status: 'unsupported',
+          anchor: {missing: true, missingReason: 'whole_result_identity_conflict'}});
+      }
+      // A declared upid column with an unreadable cell, explicit or past a short row, proves nothing.
+      for (const unreadable of [wholeCitation([42, undefined]), cite({columns: ['metric', 'upid'], rows: [[1, 42], [2]]}),
+        cite({columns: ['upid', 'metric'], rows: [{upid: 42, metric: 1}, {metric: 2}]}),
+        cite({columns: ['upid', 'metric'], rows: [{metric: 1}, {metric: 2}]}),
+        cite({columns: ['metric'], rows: [{upid: 42, metric: 1}, {metric: 2}]})]) {
+        expect(unreadable).toMatchObject({cells: ['not_checked'], status: 'not_checked',
+          anchor: {missing: true, missingReason: 'whole_result_identity_cell_unreadable'}});
+      }
+      // Rows that carry no upid at all leave the scope declaration as the authority.
+      expect(cite({columns: ['metric'], rows: [{metric: 1}, {metric: 2}]}).anchor).toMatchObject({identity: {status: 'verified'}});
     });
     it('preserves pure global context without borrowing a verified target', () => {
       const global = {version: mixed.version, entries: [mixed.entries[1]]};

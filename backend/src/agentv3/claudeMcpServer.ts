@@ -173,6 +173,7 @@ import {
 } from '../services/baselineDiffer';
 import {ProjectMemory} from './projectMemory';
 import {CaseLibrary} from '../services/caseLibrary';
+import { caseAppliesToArchitecture } from '../services/caseArchitecture';
 import { createCaseRetriever } from '../services/caseEvolution/caseRecommendationRetriever';
 import { recallCasesByTags } from '../services/caseEvolution/caseTagRecall';
 import { CURATED_CASE_STATUSES } from '../types/caseKnowledge';
@@ -244,6 +245,7 @@ import {
   type SourceUseDecisionV1,
 } from '../services/codebase/sourceUseDecision';
 import {OnDemandSourceAccessService} from '../services/codebase/onDemandSourceAccess';
+import {sourceAccessRefusalAction} from '../services/codebase/sourceAccessRefusal';
 import {registerOnDemandSourceLookupForEcho} from '../services/security/codeAwareOutputRegistry';
 import {
   GitNexusCodeGraphNavigator,
@@ -511,15 +513,12 @@ function coercePlanString(value: unknown): string | undefined {
 const FETCH_ARTIFACT_ROW_LIMIT = { min: 1, max: 200 } as const;
 
 /**
- * Governance reasons that stop a source or knowledge call, with what the model
- * should do instead. A reason absent from these maps (an inactive index, invalid
- * codebase metadata, a failed `git apply --check`) is a failure and still counts
- * toward the circuit breaker's failure rate.
+ * Governance reasons that stop a patch or knowledge call, with what the model
+ * should do instead; source lookups use `sourceAccessRefusalAction`. A reason
+ * absent from these maps (an inactive index, invalid codebase metadata, a
+ * failed `git apply --check`) is a failure and still counts toward the circuit
+ * breaker's failure rate.
  */
-const SOURCE_ACCESS_REFUSAL_ACTIONS: Readonly<Record<string, string>> = {
-  source_reference_limit_exceeded: 'continue_with_existing_source_evidence',
-  no_send_to_provider_consent: 'continue_without_this_codebase',
-};
 const PATCH_REFUSAL_ACTIONS: Readonly<Record<string, string>> = {
   missing_context_chunk: 'lookup_source_before_patch',
   prior_lookup_required: 'lookup_source_before_patch',
@@ -1268,11 +1267,8 @@ function previewFromColumnarData(data: any): Record<string, any> | undefined {
     : [];
   const firstRow = Array.isArray(data?.rows) ? data.rows[0] : undefined;
   if (columns.length === 0 || !Array.isArray(firstRow)) return undefined;
-  const preview: Record<string, any> = {};
-  columns.forEach((column, index) => {
-    preview[column] = index < firstRow.length ? firstRow[index] : null;
-  });
-  return preview;
+  return Object.fromEntries(columns.map((column, index) =>
+    [column, index < firstRow.length ? firstRow[index] : null]));
 }
 
 export interface ClaudeMcpServerOptions {
@@ -1893,7 +1889,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const readIncomplete = admitted.incompleteReason && toolName !== 'search_codebase';
     const success = readIncomplete ? false : result.success;
     const unsupportedReason = readIncomplete ? admitted.incompleteReason : result.unsupportedReason;
-    const refusalAction = success ? undefined : SOURCE_ACCESS_REFUSAL_ACTIONS[unsupportedReason ?? ''];
+    const refusalAction = success ? undefined : sourceAccessRefusalAction(unsupportedReason);
     const delivered = {
       ...result,
       ...(result.matches ? {matches: admitted.items} : {}),
@@ -1942,8 +1938,10 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
   ) => {
     const admitted = admitSourceItems(result.references, reference => ({...reference, lookupKind: 'graph'}));
+    const refusalAction = result.success ? undefined : sourceAccessRefusalAction(result.unsupportedReason);
     const delivered = {...result, references: admitted.items, sourceReferences: admitted.references,
-      ...(admitted.incompleteReason ? {truncated: true, unsupportedReason: admitted.incompleteReason, processes: []} : {})};
+      ...(admitted.incompleteReason ? {truncated: true, unsupportedReason: admitted.incompleteReason, processes: []} : {}),
+      ...(refusalAction ? {action_required: refusalAction} : {})};
     observeSourceLookup({
       toolName,
       codebaseIds: [result.codebaseId],
@@ -5733,6 +5731,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           scene: effectiveScene,
           domainPack: domain_pack || (effectiveScene === 'scrolling' ? 'scrolling.v1' : effectiveScene),
           rootCause: effectiveRootCause,
+          architectureType: options.cachedArchitecture?.type,
           audiences: ['app', 'oem'],
           evidenceSignatures: evidence_signatures as Record<string, unknown>,
           textQuery: [effectiveRootCause, ...(tags ?? [])].join(' '),
@@ -5754,6 +5753,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         cuj,
         includeReviewed: include_unpublished,
         topK: limit,
+        architectureType: options.cachedArchitecture?.type,
       }, knowledgeScope);
 
       return {

@@ -10,8 +10,10 @@ import fs from 'fs/promises';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { uuidv4 } from '../utils/uuid';
+import { sendResolvedFile } from '../utils/sendResolvedFile';
 import { resolveFeatureConfig } from '../config';
 import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import { getPortPool } from '../services/portPool';
@@ -22,6 +24,7 @@ import {
   recordEnterpriseAuditEventForContext,
 } from '../services/enterpriseAuditService';
 import {
+  frontendHolderInput,
   getTraceProcessorLeaseStore,
   type TraceProcessorLeaseMode,
   type TraceProcessorLeaseRecord,
@@ -71,6 +74,7 @@ import {issueTraceProcessorProxyCapability} from '../services/traceProcessorProx
 import {TraceProcessorAdmissionError} from '../services/traceProcessorRamBudget';
 import {
   downloadPublicHttpUrl,
+  PublicHttpFetchError,
   PublicHttpUrlRejectedError,
   sanitizedPublicHttpUrl,
   type PublicHttpDownloadResponse,
@@ -504,18 +508,21 @@ function ownedTraceIdForProcessorKey(processorKey: string, ownedTraceIds: Set<st
   return null;
 }
 
+/** The caller's `limit` query is invalid; its text is ours and safe to return. */
+class TraceListLimitError extends RangeError {}
+
 function traceListOptions(req: Request): {limit: number; cursor?: string} {
   const rawLimit = req.query.limit;
   const rawCursor = req.query.cursor;
   if (rawLimit !== undefined && typeof rawLimit !== 'string') {
-    throw new RangeError('Trace list limit must be a single integer');
+    throw new TraceListLimitError('Trace list limit must be a single integer');
   }
   if (rawCursor !== undefined && typeof rawCursor !== 'string') {
     throw new InvalidTraceMetadataCursorError();
   }
   const limit = rawLimit === undefined ? DEFAULT_TRACE_LIST_LIMIT : Number(rawLimit);
   if (!Number.isInteger(limit) || limit < 1 || limit > MAX_TRACE_LIST_LIMIT) {
-    throw new RangeError(`Trace list limit must be between 1 and ${MAX_TRACE_LIST_LIMIT}`);
+    throw new TraceListLimitError(`Trace list limit must be between 1 and ${MAX_TRACE_LIST_LIMIT}`);
   }
   return {limit, ...(rawCursor ? {cursor: rawCursor} : {})};
 }
@@ -602,32 +609,24 @@ function acquireFrontendTraceLease(
   if (!enterpriseLeasesEnabled() && options.requestedMode !== 'isolated') {
     return null;
   }
-  const holderRef =
-    context.windowId ||
-    options.sessionId ||
-    context.requestId ||
-    context.userId;
   const decision = decideLeaseModeForTrace(
     context,
     traceId,
     'frontend_http_rpc',
     options.requestedMode,
   );
+  const holder = frontendHolderInput(context, {
+    sessionId: options.sessionId,
+    metadata: {
+      requestId: context.requestId,
+      leaseModeReason: decision.reason,
+      leaseModeSignals: decision.signals,
+    },
+  });
   const lease = getTraceProcessorLeaseStore().acquireHolder(
     leaseScopeFromContext(context),
     traceId,
-    {
-      holderType: 'frontend_http_rpc',
-      holderRef,
-      windowId: context.windowId,
-      sessionId: options.sessionId,
-      metadata: {
-        requestId: context.requestId,
-        userId: context.userId,
-        leaseModeReason: decision.reason,
-        leaseModeSignals: decision.signals,
-      },
-    },
+    holder,
     { mode: decision.mode },
   );
   const readyLease = options.deferReady
@@ -636,7 +635,7 @@ function acquireFrontendTraceLease(
   return {
     lease: readyLease,
     decision,
-    holderRef,
+    holderRef: holder.holderRef,
   };
 }
 
@@ -702,24 +701,26 @@ async function finalizeTraceUpload(
   });
 
   if (tps) {
-    let processorError: string | undefined;
+    let processorFailed = false;
     try {
       await tps.completeUpload(traceId);
-    } catch (tpError: any) {
-      processorError = tpError.message;
-      console.error(`[TraceProcessor] Failed to load trace ${traceId}:`, tpError.message);
+    } catch (tpError) {
+      processorFailed = true;
+      console.error(`[TraceProcessor] Failed to load trace ${traceId}:`, tpError);
     }
 
     const traceWithPort = tps.getTraceWithPort(traceId);
     if (traceWithPort?.port) tps.exposeNativePort(traceWithPort.port);
-    if (processorError || traceWithPort?.status === 'error') {
+    if (processorFailed || traceWithPort?.status === 'error') {
+      // The processor's own error (stderr, paths) stays in the log above and
+      // in the service's; the client gets fixed text.
       return {
         id: traceId,
         filename,
         size,
         ...(traceWithPort ?? {}),
         status: 'error',
-        error: traceWithPort?.error ?? processorError ?? 'trace_processor_shell failed to start',
+        error: 'trace_processor_shell could not load the trace',
       };
     }
 
@@ -752,7 +753,7 @@ function traceUploadHasRpcTarget(traceInfo: FinalizedTraceUploadInfo | undefined
 
 function traceProcessorUnavailableMessage(traceInfo: FinalizedTraceUploadInfo | undefined): string {
   if (traceInfo?.error) {
-    return `Trace uploaded, but trace_processor_shell failed to start: ${traceInfo.error}`;
+    return `Trace uploaded, but ${traceInfo.error}`;
   }
 
   const status = traceInfo?.processor?.status ?? traceInfo?.status;
@@ -932,13 +933,13 @@ router.post(
         }
       });
 
-    } catch (error: any) {
+    } catch (error) {
       await cleanupFile(req.file?.path);
-      console.error('Upload error:', error);
-      res.status(500).json({
+      sendRouteFailure(res, {
+        code: 'trace_upload_failed',
         error: 'Upload failed',
-        details: error.message
-      });
+        logLabel: '[Traces] Upload error',
+      }, error);
     }
   },
 );
@@ -961,7 +962,15 @@ router.post('/upload-url', async (req, res) => {
       });
     }
 
-    const url = new URL(rawUrl);
+    let url: URL;
+    try {
+      url = new URL(rawUrl);
+    } catch {
+      return res.status(400).json({
+        code: 'INVALID_TRACE_URL',
+        error: 'The trace URL is not a valid URL',
+      });
+    }
     if (url.protocol !== 'http:' && url.protocol !== 'https:') {
       return res.status(400).json({
         error: 'Only http and https trace URLs are supported'
@@ -1059,11 +1068,11 @@ router.post('/upload-url', async (req, res) => {
         details: `Remote trace exceeds ${error.maxBytes} bytes`,
       });
     }
-    console.error('URL upload error:', error);
-    res.status(500).json({
+    sendRouteError(res, error, {
+      code: 'trace_url_upload_failed',
       error: 'URL upload failed',
-      details: error.message
-    });
+      logLabel: '[Traces] URL upload error',
+    }, [PublicHttpFetchError]);
   }
 });
 
@@ -1079,18 +1088,18 @@ router.get('/', async (req, res) => {
       ...page,
       traces: page.traces.map(normalizeTraceCatalogFilename),
     });
-  } catch (error: any) {
-    if (error instanceof InvalidTraceMetadataCursorError || error instanceof RangeError) {
+  } catch (error: unknown) {
+    if (error instanceof InvalidTraceMetadataCursorError || error instanceof TraceListLimitError) {
       return res.status(400).json({
         error: error.message,
         code: 'INVALID_TRACE_LIST_PAGE',
       });
     }
-    console.error('List traces error:', error);
-    res.status(500).json({
+    sendRouteFailure(res, {
+      code: 'trace_list_failed',
       error: 'Failed to list traces',
-      details: error.message
-    });
+      logLabel: '[Traces] List traces error',
+    }, error);
   }
 });
 
@@ -1206,12 +1215,12 @@ router.get('/stats', async (req, res) => {
         },
       },
     });
-  } catch (error: any) {
-    console.error('[Traces] Stats error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'trace_stats_failed',
+      error: 'Failed to collect trace stats',
+      logLabel: '[Traces] Stats error',
+    }, error);
   }
 });
 
@@ -1263,12 +1272,12 @@ router.post('/cleanup', async (req, res) => {
       message: `Cleanup complete. Released ${staleCount} port allocations.`,
       stats: portPool.getStats(),
     });
-  } catch (error: any) {
-    console.error('[Traces] Cleanup error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'trace_cleanup_failed',
+      error: 'Failed to clean up trace resources',
+      logLabel: '[Traces] Cleanup error',
+    }, error);
   }
 });
 
@@ -1331,12 +1340,12 @@ router.post('/register-rpc', async (req, res) => {
       message: `External RPC connection registered successfully`,
     });
 
-  } catch (error: any) {
-    console.error('[Traces] Register RPC error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message,
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'trace_rpc_register_failed',
+      error: 'Failed to register external RPC connection',
+      logLabel: '[Traces] Register RPC error',
+    }, error);
   }
 });
 
@@ -1451,7 +1460,6 @@ router.post(
           acquisition.lease.mode,
         );
       }
-      console.error('[Traces] Open isolated viewer error:', error);
       if (error instanceof TraceProcessorAdmissionError) {
         return res.status(503).json({
           success: false,
@@ -1463,11 +1471,11 @@ router.post(
       if (error?.code === 'ENOENT') {
         return res.status(404).json({error: 'Trace file not found', id});
       }
-      return res.status(500).json({
-        success: false,
+      return sendRouteFailure(res, {
+        code: 'trace_viewer_open_failed',
         error: 'Failed to open isolated trace viewer',
-        details: error.message,
-      });
+        logLabel: '[Traces] Open isolated viewer error',
+      }, error);
     }
   },
 );
@@ -1586,12 +1594,12 @@ router.get('/:id', async (req, res) => {
         ...websocketCapabilityResponseFields(context, lease?.lease.id),
       }
     });
-  } catch (error: any) {
-    console.error('[Traces] Get trace error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteFailure(res, {
+      code: 'trace_read_failed',
       error: 'Failed to get trace',
-      details: error.message
-    });
+      logLabel: '[Traces] Get trace error',
+    }, error);
   }
 });
 
@@ -1665,12 +1673,12 @@ router.delete('/:id', async (req, res) => {
     console.log(`[Traces] Trace ${id} fully deleted`);
     res.json({ success: true, message: 'Trace deleted successfully' });
 
-  } catch (error: any) {
-    console.error('[Traces] Delete trace error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteFailure(res, {
+      code: 'trace_delete_failed',
       error: 'Failed to delete trace',
-      details: error.message
-    });
+      logLabel: '[Traces] Delete trace error',
+    }, error);
   }
 });
 
@@ -1699,19 +1707,19 @@ router.get('/:id/file', async (req, res) => {
 
     try {
       await fs.access(tracePath);
-      res.sendFile(path.resolve(tracePath));
+      sendResolvedFile(res, tracePath);
     } catch (error) {
       res.status(404).json({
         error: 'Trace file not found',
         id
       });
     }
-  } catch (error: any) {
-    console.error('Download trace error:', error);
-    res.status(500).json({
+  } catch (error) {
+    sendRouteFailure(res, {
+      code: 'trace_download_failed',
       error: 'Failed to download trace',
-      details: error.message
-    });
+      logLabel: '[Traces] Download trace error',
+    }, error);
   }
 });
 

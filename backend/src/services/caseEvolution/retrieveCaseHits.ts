@@ -15,6 +15,8 @@ export interface RetrieveCaseHitsInput {
   dataEnvelopes: DataEnvelope[];
   /** The run's scene; retrieval covers scrolling only. */
   sceneType?: string;
+  /** The trace's detected rendering architecture; required so a caller says whether it knows it. */
+  architectureType: string | undefined;
   knowledgeScope?: KnowledgeScope;
   retrieve?: (query: CaseRecommendationQuery) => CaseKnowledgeReportRecommendation[];
 }
@@ -32,6 +34,7 @@ export function retrieveCaseHits(input: RetrieveCaseHitsInput): CaseKnowledgeRep
     scene: cluster.scene,
     domainPack: cluster.domainPack,
     rootCause: cluster.rootCause,
+    architectureType: input.architectureType,
     responsibility: cluster.responsibility,
     audiences: audienceForResponsibility(cluster.responsibility),
     evidenceSignatures: cluster.evidenceSignatures,

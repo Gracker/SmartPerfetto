@@ -11,6 +11,12 @@ import {createSkillExecutor} from '../skillExecutor';
 import {normalizeSkillDefinition} from '../skillLoader';
 import type {DiagnosticResult, SkillDefinition} from '../types';
 import {renderStepSql} from '../../../../tests/helpers/skillFragmentSql';
+import {allStepsOf, diagnoseRuleStep, fresh, skillDocuments, stepOf} from '../../../../tests/helpers/skillRuleHarness';
+import {displayResultToEnvelope} from '../../../types/dataContract';
+import {localizeSkillDisplayResults} from '../../skillLocalization';
+import {buildCompletedAnalysisResultSnapshot} from '../../analysisResultSnapshotPipeline';
+import {BIG_CORE_PCT_DEFINITION} from '../../comparisonMetricProducerContract';
+import {NO_PRIVATE_CONTEXT} from '../../security/analysisPrivateContext';
 
 /**
  * The big/little rollup contract over CPU core tiers, documented in
@@ -29,13 +35,6 @@ const loadYaml = (rel: string): any => {
   if (!yamlCache.has(rel)) yamlCache.set(rel, yaml.load(fs.readFileSync(path.join(skillsDir, rel), 'utf8')));
   return yamlCache.get(rel);
 };
-const stepOf = (skill: any, id: string): any => {
-  const step = skill.steps.find((candidate: any) => candidate.id === id);
-  if (!step) throw new Error(`step ${id} not found`);
-  return step;
-};
-/** A fresh plain copy per run: the executor must never see state from a previous one. */
-const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
 let sources: Array<{file: string; text: string}> | undefined;
 function skillSources(): Array<{file: string; text: string}> {
@@ -115,6 +114,42 @@ function siblingViolations(skill: any): string[] {
   return violations;
 }
 
+// Big-group share fields a condition may read; unknown time is not in them.
+// Keep this list in step with the share columns the producers emit.
+const BIG_GROUP_FIELD = 'big_core_pct|big_core_ms|big_group_percent|q1_big_running_ms|q1_big_pct';
+/** A row path such as `cpu.data[0]` or `rows.find(r => r.x === 'a')`. */
+const ROW_PATH = String.raw`[\w$]+(?:\.[\w$]+|\[\d+\]|\.find\([^()]*\))*`;
+/** A big-group field compared as low (`<`, `<=`), with the row path that holds it (none for a bare row field). */
+const LOW_BIG_GROUP = new RegExp(String.raw`(?:(${ROW_PATH})\.)?\b(${BIG_GROUP_FIELD})\s*<`, 'g');
+/** An exact zero on unrounded unknown time, with its row path. */
+const EXACT_UNKNOWN_ZERO = new RegExp(String.raw`(?:(${ROW_PATH})\.)?\bunknown_\w+_ns\s*===\s*0`, 'g');
+
+/**
+ * Conditions that call a big-group share low without an exact zero for unknown
+ * time on the same row. A share over all Running time is a lower bound when
+ * some of it has no tier, so "high" is safe and "low" is not; a rounded unknown
+ * column reads 0 for microseconds of unclassified time, so the zero must be on
+ * an unrounded `unknown_*_ns` column.
+ */
+function lowBigGroupGuardViolations(skill: any): string[] {
+  const violations: string[] = [];
+  const check = (site: string, condition: unknown) => {
+    if (typeof condition !== 'string') return;
+    const plain = condition.replace(/\?\.\[/g, '[').replace(/\?\./g, '.');
+    const guarded = new Set([...plain.matchAll(EXACT_UNKNOWN_ZERO)].map(([, rowPath = '']) => rowPath));
+    for (const [, rowPath = '', field] of plain.matchAll(LOW_BIG_GROUP)) {
+      if (guarded.has(rowPath)) continue;
+      const row = rowPath ? `${rowPath}.` : '';
+      violations.push(`${site}: ${row}${field} compared as low without ${row}unknown_*_ns === 0`);
+    }
+  };
+  for (const step of allStepsOf(skill)) {
+    for (const rule of step.rules ?? []) check(`${step.id} rule`, rule?.condition);
+    for (const insight of step.synthesize?.insights ?? []) check(`${step.id} insight`, insight?.condition);
+  }
+  return violations;
+}
+
 describe('core tier rollup contract (static)', () => {
   it('keeps every tier list in the Skills on the rollup contract', () => {
     const violations = skillSources().flatMap(({file, text}) =>
@@ -152,6 +187,26 @@ describe('core tier rollup contract (static)', () => {
     expect(siblingViolations({steps: [{id: 'a', sql: "SELECT 'x' AS big_core_pct_definition, 0 AS unknown_x"}]}))
       .toEqual(['a: big_core_pct_definition without big_core_pct']);
   });
+
+  it('gates every low big-group comparison on exact unknown time for the same row', () => {
+    const violations = skillDocuments()
+      .flatMap(({file, skill}) => lowBigGroupGuardViolations(skill).map(violation => `${file}: ${violation}`));
+    expect(violations).toEqual([]);
+  });
+
+  it.each([
+    ['cpu.data[0]?.big_core_pct < 20', 1],
+    ['cpu.data[0]?.unknown_core_ms === 0 && cpu.data[0]?.big_core_pct < 20', 1],
+    ['cpu.data[1]?.unknown_core_ns === 0 && cpu.data[0]?.big_core_pct < 20', 1],
+    ['cpu.data[0]?.unknown_core_ns === 0 && cpu.data[0]?.big_core_pct < 20', 0],
+    ['q.data[0]?.unknown_running_ns === 0 && q.data[0]?.q1_big_running_ms < q.data[0]?.q2_little_running_ms * 0.3', 0],
+    ["rows.find(r => r.x === 'a')?.unknown_core_ns === 0 && rows.find(r => r.x === 'a')?.big_core_pct <= 10", 0],
+    ['unknown_time_ns === 0 && big_group_percent < 30', 0],
+    ['big_group_percent < 30', 1],
+    ['cpu.data[0]?.big_core_pct > 60', 0],
+  ])('classifies %s', (condition, count) => {
+    expect(lowBigGroupGuardViolations({steps: [{id: 's', type: 'diagnostic', rules: [{condition}]}]})).toHaveLength(count);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -174,7 +229,7 @@ function openTrace(capacities: Array<number | null>, slices: Slice[]): Database.
     CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER, name TEXT, is_main_thread INTEGER, is_idle INTEGER);
     CREATE TABLE cpu(id INTEGER PRIMARY KEY, cpu INTEGER, machine_id INTEGER, cluster_id INTEGER, capacity INTEGER);
     CREATE TABLE sched_slice(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, cpu INTEGER, ucpu INTEGER, end_state TEXT, priority INTEGER);
-    CREATE TABLE thread_state(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT, cpu INTEGER, ucpu INTEGER, blocked_function TEXT, io_wait INTEGER, waker_utid INTEGER);
+    CREATE TABLE thread_state(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT, cpu INTEGER, ucpu INTEGER, blocked_function TEXT, io_wait INTEGER, waker_utid INTEGER, irq_context INTEGER);
     CREATE TABLE cpu_counter_track(id INTEGER, cpu INTEGER, name TEXT);
     CREATE TABLE counter(id INTEGER PRIMARY KEY, track_id INTEGER, ts INTEGER, value REAL);
     CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
@@ -204,6 +259,15 @@ function openTrace(capacities: Array<number | null>, slices: Slice[]): Database.
   return db;
 }
 
+const windowOf = (db: Database.Database) => db.prepare('SELECT end_ts FROM trace_bounds').pluck().get() as number;
+
+let fragments: Map<string, string> | undefined;
+/** The built-in SQL fragments keyed as the loader registers them. */
+function fragmentRegistry(): Map<string, string> {
+  fragments ??= new Map(skillSources().filter(({file}) => file.startsWith('fragments/')).map(({file, text}) => [file, text]));
+  return fragments;
+}
+
 /** Runs `use` over a fresh trace and closes it afterwards. */
 async function withTrace<T>(capacities: Array<number | null>, slices: Slice[],
   use: (db: Database.Database) => T | Promise<T>): Promise<T> {
@@ -220,7 +284,8 @@ const MAIN_ON_EVERY_TIER: Slice[] = [[1, 5, 10], [1, 4, 10], [1, 2, 40], [1, 0, 
  * Skill whose required process-identity gate needs Android tables a fixture
  * does not model; the step SQL and its substitution are unchanged.
  */
-async function runSkill(db: Database.Database, skillFile: string, params: Record<string, unknown>, stepIds?: string[]) {
+/** A Skill executor whose queries run on `db`, Perfetto-only syntax stripped. */
+function sqliteExecutor(db: Database.Database) {
   const query = jest.fn(async (_traceId: string, sql: string) => {
     const sqliteSql = sql.replace(/INCLUDE PERFETTO MODULE [^;]+;/g, '')
       .replace(/CREATE\s+PERFETTO\s+TABLE/gi, 'CREATE TABLE').trim();
@@ -236,7 +301,11 @@ async function runSkill(db: Database.Database, skillFile: string, params: Record
       return {columns: [], rows: [], error: (error as Error).message};
     }
   });
-  const executor = createSkillExecutor({query, touchTrace: jest.fn(), getTraceWithPort: jest.fn(async () => ({port: 1}))} as any);
+  return createSkillExecutor({query, touchTrace: jest.fn(), getTraceWithPort: jest.fn(async () => ({port: 1}))} as any);
+}
+
+async function runSkill(db: Database.Database, skillFile: string, params: Record<string, unknown>, stepIds?: string[]) {
+  const executor = sqliteExecutor(db);
   for (const rel of ['atomic/cpu_topology_view.skill.yaml', skillFile]) {
     executor.registerSkill(normalizeSkillDefinition(fresh(loadYaml(rel)), path.join(skillsDir, rel)) as SkillDefinition);
   }
@@ -274,7 +343,7 @@ describe('cpu_slice_analysis over a four-tier SoC', () => {
 describe('binder_detail over a four-tier SoC', () => {
   it('rolls medium into big and gives unknown Running its own bucket', async () => {
     const {rows} = await withTrace(FOUR_TIERS, MAIN_ON_EVERY_TIER, db => {
-      const end = db.prepare('SELECT end_ts FROM trace_bounds').pluck().get() as number;
+      const end = windowOf(db);
       return runSkill(db, 'composite/binder_detail.skill.yaml', {
         binder_ts: 0, binder_end_ts: end, dur_ms: end / MS, process_name: 'com.example.app',
       }, ['init_cpu_topology', 'cpu_core_analysis', 'quadrant_analysis']);
@@ -297,7 +366,6 @@ describe('cpu_profiling over a four-tier SoC', () => {
     expect(rows('core_distribution')).toEqual([expect.objectContaining({
       thread_name: 'main', total_ms: 100, big_core_pct: 60, medium_core_pct: 40, little_core_pct: 20,
       unknown_core_pct: 20, unknown_core_ms: close(20),
-      big_core_pct_definition: 'core_tier_group:prime+big+medium@2',
     })]);
   });
 
@@ -343,22 +411,6 @@ function stepRows(db: Database.Database, skillFile: string, stepId: string, vars
   return db.prepare(renderStepSql(step.sql, step.sql_fragments, vars)).all() as Array<Record<string, unknown>>;
 }
 
-/** Runs `ruleStep` with each input bound to the given rows through stub steps. */
-async function diagnose(ruleStep: any, inputs: Record<string, Array<Record<string, unknown>>>,
-  params: Record<string, unknown> = {}): Promise<DiagnosticResult[]> {
-  const stubs = Object.keys(inputs).map(name => ({id: `stub_${name}`, type: 'atomic', sql: `SELECT '${name}' AS stub`, save_as: name}));
-  const query = jest.fn(async (_traceId: string, sql: string) => {
-    const name = /SELECT '(\w+)' AS stub/.exec(sql)?.[1];
-    const rows = name ? inputs[name] : [];
-    const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
-    return {columns, rows: rows.map(row => columns.map(column => row[column]))};
-  });
-  const executor = createSkillExecutor({query, touchTrace: jest.fn(), getTraceWithPort: jest.fn(async () => ({port: 1}))} as any);
-  executor.registerSkill({name: 'rule_under_test', type: 'composite', version: '1',
-    meta: {display_name: 'under test', description: 'under test'}, steps: [...stubs, fresh(ruleStep)]} as SkillDefinition);
-  return (await executor.execute('rule_under_test', 'trace-1', params)).diagnostics;
-}
-
 describe('cpu_analysis big-group rule', () => {
   const coreStats = (capacities: Array<number | null>, slices: Slice[]) => withTrace(capacities, slices, db =>
     stepRows(db, 'composite/cpu_analysis.skill.yaml', 'core_type_stats', {
@@ -377,19 +429,19 @@ describe('cpu_analysis big-group rule', () => {
 
   it('does not call a medium-heavy process low on big cores', async () => {
     const rows = await coreStats([100, 400, 1024], [[1, 1, 60], [1, 2, 10], [1, 0, 30]]);
-    expect(lowBigGroup(await diagnose(RULE, {core_stats: rows}))).toEqual([]);
+    expect(lowBigGroup(await diagnoseRuleStep(RULE, {core_stats: rows}))).toEqual([]);
   });
 
   it('flags a little-heavy process from the big group share', async () => {
     const rows = await coreStats([100, 400, 1024], [[1, 1, 10], [1, 2, 10], [1, 0, 80]]);
-    expect(lowBigGroup(await diagnose(RULE, {core_stats: rows})).map(d => d.diagnosis))
+    expect(lowBigGroup(await diagnoseRuleStep(RULE, {core_stats: rows})).map(d => d.diagnosis))
       .toEqual(['大核组（超大/大/中核）使用率 20% 偏低 (<30%)']);
   });
 
   it('draws no big-group verdict when the topology is unknown', async () => {
     const rows = await coreStats([null, null, null], [[1, 0, 80], [1, 1, 20]]);
     expect(rows.map(row => [row.tier, row.unknown_time_ns])).toEqual([['unknown', 100 * MS]]);
-    expect(lowBigGroup(await diagnose(RULE, {core_stats: rows}))).toEqual([]);
+    expect(lowBigGroup(await diagnoseRuleStep(RULE, {core_stats: rows}))).toEqual([]);
   });
 });
 
@@ -411,9 +463,179 @@ describe('jank_frame_detail migration big-group rule', () => {
 
   it('flags a little-heavy thread but never an unclassified one', async () => {
     const little = firstThread(await migration([100, 400, 1024], [[1, 2, 10], [1, 0, 90]]));
-    expect(lowBig(await diagnose(RULE, {migration_data: little}, {start_ts: 1, end_ts: 2})).map(d => d.diagnosis))
+    expect(lowBig(await diagnoseRuleStep(RULE, {migration_data: little}, {start_ts: 1, end_ts: 2})).map(d => d.diagnosis))
       .toEqual(['main 大核组（超大/大/中核）运行占比仅 10%']);
     const unknown = firstThread(await migration([null, null, null], [[1, 2, 10], [1, 0, 90]]));
-    expect(lowBig(await diagnose(RULE, {migration_data: unknown}, {start_ts: 1, end_ts: 2}))).toEqual([]);
+    expect(lowBig(await diagnoseRuleStep(RULE, {migration_data: unknown}, {start_ts: 1, end_ts: 2}))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// cpu.big_core_pct producers (comparisonMetricProducerContract.ts): the main
+// thread's row with unrounded unknown time, through the production projection.
+// ---------------------------------------------------------------------------
+
+describe('cpu.big_core_pct producer rows', () => {
+  const PRODUCERS: Array<[string, string, (end: number) => Record<string, string | number>]> = [
+    ['composite/startup_detail.skill.yaml', 'cpu_core_analysis', end => ({
+      start_ts: 0, end_ts: end, package: 'com.example.app', '__process_scope.upid': 1})],
+    ['composite/click_response_detail.skill.yaml', 'cpu_core_analysis', end => ({
+      event_ts: 0, event_end_ts: end, process_name: 'com.example.app', '__process_scope.upid': 1})],
+  ];
+  const producerRows = (capacities: Array<number | null>, slices: Slice[], [file, step, vars]: typeof PRODUCERS[number],
+    extra?: (db: Database.Database) => void) => withTrace(capacities, slices, db => {
+    extra?.(db);
+    return stepRows(db, file, step, vars(windowOf(db)));
+  });
+
+  it.each(PRODUCERS)('%s declares one classified main thread', async (...producer) => {
+    // system_cpu_topology: 100 little, 400 medium, 1024 big; main 60 big, 10 medium, 30 little.
+    expect(await producerRows([100, 400, 1024], [[1, 2, 60], [1, 1, 10], [1, 0, 30], [2, 2, 50]], producer)).toEqual([
+      expect.objectContaining({big_core_pct: 70, unknown_core_ns: 0, main_thread_count: 1,
+        big_core_pct_definition: BIG_CORE_PCT_DEFINITION}),
+    ]);
+  });
+
+  it.each(PRODUCERS)('%s keeps a few microseconds of unknown time that its ms columns round away', async (...producer) => {
+    // 6 us on a classified big core, 4 us on a CPU with no identity: total 0.010 ms.
+    const rows = await producerRows([100, 400, 1024], [], producer, db => {
+      db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, 100, 6000, 2, 2, 'S', 120), (1, 200000, 4000, 9, 99, 'S', 120)").run();
+      db.prepare('UPDATE trace_bounds SET end_ts = 1000000').run();
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({unknown_core_ns: 4000, main_thread_count: 1});
+    // The rounded fields read as no unknown time at all.
+    expect(rows[0].unknown_core_ms ?? rows[0].unknown_running_ms).toBe(0);
+  });
+
+  it('startup_detail does not pass the big-core gate on 0.04% unknown time', async () => {
+    // main: 99.96 ms on little, 0.04 ms on an unidentified CPU; unknown_core_pct rounds to 0.
+    const rows = await producerRows([100, 400, 1024], [[1, 0, 99.96]], PRODUCERS[0], db => {
+      db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, 500000000, 40000, 9, 99, 'S', 120)").run();
+      db.prepare('UPDATE trace_bounds SET end_ts = 600000000').run();
+    });
+    expect(rows[0]).toMatchObject({unknown_core_pct: 0, unknown_core_ns: 40000, big_core_pct: 0});
+    const rule = stepOf(loadYaml('composite/startup_detail.skill.yaml'), 'startup_diagnosis');
+    const diagnoses = (await diagnoseRuleStep(rule, {cpu_core: rows, quadrant: [{q3_runnable_ms: 80}]})).map(d => d.diagnosis);
+    expect(diagnoses.filter(d => d.includes('大核占比偏低'))).toEqual([]);
+    expect(diagnoses.filter(d => d.includes('核类型未知'))).toHaveLength(1);
+  });
+
+  it('click_response_detail does not pass the big-core gate on rounded-away unknown time', async () => {
+    const rows = await producerRows([100, 400, 1024], [[1, 0, 99.996]], PRODUCERS[1], db => {
+      db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, 500000000, 4000, 9, 99, 'S', 120)").run();
+      db.prepare('UPDATE trace_bounds SET end_ts = 600000000').run();
+    });
+    expect(rows[0]).toMatchObject({unknown_running_ms: 0, unknown_core_ns: 4000, big_core_pct: 0});
+    const rule = stepOf(loadYaml('composite/click_response_detail.skill.yaml'), 'click_diagnosis');
+    const inputs = {cpu_core: rows, quadrant: [{q3_runnable_ms: 80}], sched_delay: [{severe_count: 1}]};
+    expect((await diagnoseRuleStep(rule, inputs)).filter(d => d.diagnosis.includes('大核占比偏低'))).toEqual([]);
+    const classified = {...rows[0], unknown_core_ns: 0};
+    expect((await diagnoseRuleStep(rule, {...inputs, cpu_core: [classified]})).filter(d => d.diagnosis.includes('大核占比偏低')))
+      .toHaveLength(1);
+  });
+
+  it('startup_detail does not read an early little-core bucket as placement on rounded-away unknown time', async () => {
+    // system_cpu_topology: cpu0 little, cpu2 big. main: 50 ms on little in the
+    // first 100 ms bucket, 60 ms on big in the third, and in one case 4 us on a
+    // CPU with no identity in the first bucket.
+    const buckets = (unknownNs: number) => withTrace([100, 400, 1024], [], db => {
+      const addSlice = db.prepare("INSERT INTO sched_slice(utid, ts, dur, cpu, ucpu, end_state, priority) VALUES (1, ?, ?, ?, ?, 'S', 120)");
+      addSlice.run(0, 50 * MS, 0, 0);
+      addSlice.run(210 * MS, 60 * MS, 2, 2);
+      if (unknownNs > 0) addSlice.run(60 * MS, unknownNs, 9, 99);
+      db.prepare('UPDATE trace_bounds SET end_ts = ?').run(300 * MS);
+      const skill = loadYaml('atomic/startup_cpu_placement_timeline.skill.yaml');
+      return db.prepare(renderStepSql(skill.sql, skill.sql_fragments, {package: 'com.example.app', start_ts: 0,
+        end_ts: 300 * MS, bucket_ms: 100, '__process_scope.upid': 1})).all() as Array<Record<string, unknown>>;
+    });
+    const rule = stepOf(loadYaml('composite/startup_detail.skill.yaml'), 'startup_diagnosis');
+    const shift = async (rows: Array<Record<string, unknown>>) => (await diagnoseRuleStep(rule, {cpu_placement: rows}))
+      .filter(d => d.diagnosis.startsWith('主线程大核组占比从初期'));
+
+    const unknown = await buckets(4000);
+    expect(unknown[0]).toMatchObject({big_core_pct: 0, unknown_core_ns: 4000});
+    expect(unknown[0].unknown_core_ms).toBeCloseTo(0.004, 6);
+    expect(unknown[2]).toMatchObject({big_core_pct: 100, unknown_core_ns: 0});
+    expect(await shift(unknown)).toEqual([]);
+    const classified = await buckets(0);
+    expect(classified[0]).toMatchObject({big_core_pct: 0, unknown_core_ns: 0});
+    expect((await shift(classified)).map(d => d.diagnosis)).toEqual(['主线程大核组占比从初期 0% 变为后段 100%；不能据此认定被困小核或亲和性配置错误']);
+  });
+
+  it('anr_detail does not report little-core placement on rounded-away unknown time', async () => {
+    // main: 10 ms big, 60 ms little, 14 ms Runnable (16%), and in one case 4 us
+    // on an unidentified CPU; only that unknown time decides the rule.
+    const quadrant = (unknownNs: number) => withTrace([100, 400, 1024], [[1, 2, 10], [1, 0, 60]], db => {
+      db.prepare("INSERT INTO thread_state(utid, ts, dur, state, cpu, ucpu) VALUES (1, 80000000, 10000000, 'R', NULL, NULL)").run();
+      if (unknownNs > 0) {
+        db.prepare("INSERT INTO thread_state(utid, ts, dur, state, cpu, ucpu) VALUES (1, 90000000, ?, 'Running', 9, 99)")
+          .run(unknownNs);
+      }
+      db.prepare('UPDATE trace_bounds SET end_ts = 100000000').run();
+      return stepRows(db, 'composite/anr_detail.skill.yaml', 'main_thread_quadrant', {
+        anr_ts: 100000000, timeout_ns: 100000000, upid: 1, pid: 100, process_name: 'com.example.app',
+        '__process_scope.upid': 1});
+    });
+    const rule = stepOf(loadYaml('composite/anr_detail.skill.yaml'), 'anr_event_diagnosis');
+    const placement = async (rows: Array<Record<string, unknown>>) => (await diagnoseRuleStep(rule, {
+      quadrant: rows, direct_blocker_candidates: [{direct_blocker_type: 'scheduler_pressure', confidence: 'medium'}],
+    })).filter(d => d.diagnosis.startsWith('主线程运行时间主要在小核'));
+
+    const unknown = await quadrant(4000);
+    expect(unknown).toEqual([expect.objectContaining({
+      q1_big_running_ms: 10, q2_little_running_ms: 60, unknown_running_ms: 0, unknown_running_ns: 4000})]);
+    expect(await placement(unknown)).toEqual([]);
+    const classified = await quadrant(0);
+    expect(classified).toEqual([expect.objectContaining({unknown_running_ns: 0, runnable_pct: 16.3})]);
+    expect(await placement(classified)).toHaveLength(1);
+  });
+});
+
+describe('cpu.big_core_pct through the production projection', () => {
+  // The real steps, normalized as the loader does (fragment resolution included).
+  const mini = (name: string, steps: any[]) => normalizeSkillDefinition({name, type: 'composite', version: '1',
+    meta: {display_name: name, description: name}, steps}, path.join(skillsDir, `composite/${name}.skill.yaml`)) as SkillDefinition;
+  const startupDetail = () => mini('startup_detail', [fresh(stepOf(loadYaml('composite/startup_detail.skill.yaml'), 'cpu_core_analysis'))]);
+
+  /** Executes `name`, then projects its display results the way invoke_skill emits envelopes. */
+  async function snapshotMetric(db: Database.Database, skills: SkillDefinition[], name: string, params: Record<string, unknown>) {
+    const executor = sqliteExecutor(db);
+    executor.setFragmentRegistry(fragmentRegistry());
+    for (const skill of skills) executor.registerSkill(skill);
+    const result = await executor.execute(name, 'trace-1', params);
+    const displayResults = localizeSkillDisplayResults(name, result.displayResults, 'zh-CN') ?? [];
+    const envelopes = displayResults.map(dr => displayResultToEnvelope(dr as any, name, (dr as any).columnDefinitions));
+    const snapshot = buildCompletedAnalysisResultSnapshot({tenantId: 't', workspaceId: 'w', traceId: 'trace-1',
+      sessionId: 's', runId: 'r', query: 'startup', conclusion: 'done', dataEnvelopes: envelopes,
+      privateContext: NO_PRIVATE_CONTEXT});
+    return snapshot!.metrics.find(metric => metric.key === 'cpu.big_core_pct');
+  }
+
+  it('admits a direct startup_detail row with its hidden columns intact', async () => {
+    const metric = await withTrace([100, 400, 1024], [[1, 2, 60], [1, 1, 10], [1, 0, 30]], db =>
+      snapshotMetric(db, [startupDetail()], 'startup_detail', {start_ts: 0, end_ts: windowOf(db), package: 'com.example.app'}));
+    expect(metric).toMatchObject({value: 70, source: {skillId: 'startup_detail', stepId: 'cpu_core_analysis',
+      metricDefinition: BIG_CORE_PCT_DEFINITION}});
+  });
+
+  it('withholds a direct row whose CPU topology is unknown', async () => {
+    const metric = await withTrace([null, null, null], [[1, 2, 60], [1, 0, 40]], db =>
+      snapshotMetric(db, [startupDetail()], 'startup_detail', {start_ts: 0, end_ts: windowOf(db), package: 'com.example.app'}));
+    expect(metric).toMatchObject({value: null, missingReason: 'producer_contract:unknown_core_time'});
+  });
+
+  it('reads the startup_analysis iterator item that returned rows', async () => {
+    const metric = await withTrace([100, 400, 1024], [[1, 2, 60], [1, 0, 40]], db => {
+      const end = windowOf(db);
+      // Item 0 is a window with no main-thread running time; item 1 covers the trace.
+      const source = {id: 'startups', type: 'atomic', save_as: 'startups', sql:
+        `SELECT 1 AS startup_id, ${end + 1} AS start_ts, ${end + 2} AS end_ts, 1 AS dur_ms, 'com.example.app' AS package, 'cold' AS startup_type ` +
+        `UNION ALL SELECT 2, 0, ${end}, ${end / MS}, 'com.example.app', 'cold'`};
+      const iterator = fresh(stepOf(loadYaml('composite/startup_analysis.skill.yaml'), 'analyze_startups'));
+      return snapshotMetric(db, [startupDetail(), mini('startup_analysis', [source, iterator])], 'startup_analysis', {});
+    });
+    expect(metric).toMatchObject({value: 60, source: {skillId: 'startup_analysis', stepId: 'analyze_startups',
+      section: 'cpu_core_analysis', itemIndex: 1, metricDefinition: BIG_CORE_PCT_DEFINITION}});
   });
 });

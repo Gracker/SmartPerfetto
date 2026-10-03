@@ -43,6 +43,12 @@ export interface AnalysisSessionReceiptSource {
   adaptiveRouting?: AdaptiveRoutingReceiptV1;
 }
 
+/**
+ * `reportError` when report generation threw: fixed, because the field reaches
+ * clients, the receipt, the report and external issue drafting.
+ */
+export const REPORT_GENERATION_FAILED = 'report generation failed';
+
 export interface AnalysisReceiptFinalArtifacts {
   reportId?: string;
   reportUrl?: string;

@@ -4,9 +4,11 @@
 
 import crypto from 'crypto';
 import type { Request } from 'express';
+import type { IncomingMessage } from 'http';
 import type Database from 'better-sqlite3';
 import { resolveAuthConfig } from '../config';
 import type { RequestContextAuthType } from '../middleware/auth';
+import { sanitizeContextId } from '../utils/contextId';
 import {deriveServerSecret} from '../security/serverSecret';
 import {
   listEnterpriseAuditEvents,
@@ -17,6 +19,7 @@ import {
 import { openEnterpriseDb } from './enterpriseDb';
 import type { EnterpriseOidcUserInfo } from './enterpriseOidcClient';
 import { logStoredReadFailure, tryParseStoredJson } from '../utils/storedData';
+import { PublicRequestError } from '../utils/publicRequestError';
 
 const SESSION_COOKIE_NAME = 'sp_sso_session';
 const STATE_COOKIE_NAME = 'sp_oidc_state';
@@ -108,11 +111,6 @@ function nowMs(): number {
   return Date.now();
 }
 
-function sanitizeId(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-}
-
 function safeString(value: unknown): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
@@ -147,7 +145,7 @@ function parseCookieHeader(header: string | undefined): Map<string, string> {
   return cookies;
 }
 
-function bearerTokenFromRequest(req: Request): string | undefined {
+function bearerTokenFromRequest(req: IncomingMessage): string | undefined {
   const authHeader = req.headers.authorization;
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     return authHeader.slice('Bearer '.length).trim();
@@ -200,6 +198,9 @@ export function normalizeOidcReturnTo(value: unknown): string | undefined {
     return undefined;
   }
 }
+
+/** An OIDC login SmartPerfetto refuses for the signed-in identity; the user or an admin has to act. */
+export class OidcLoginRejectedError extends PublicRequestError {}
 
 export class EnterpriseSsoService {
   private static instance: EnterpriseSsoService | undefined;
@@ -332,7 +333,7 @@ export class EnterpriseSsoService {
     `).get(tenantId, userId));
   }
 
-  resolveRequestIdentityFromRequest(req: Request): RequestSsoIdentity | null {
+  resolveRequestIdentityFromRequest(req: IncomingMessage): RequestSsoIdentity | null {
     const token = this.extractSessionToken(req);
     if (!token) return null;
     const session = this.getSessionFromToken(token);
@@ -576,7 +577,7 @@ export class EnterpriseSsoService {
         reason: 'OIDC personal workspace is assigned by the server and cannot be changed',
       };
     }
-    const workspaceId = sanitizeId(workspaceIdInput);
+    const workspaceId = sanitizeContextId(workspaceIdInput);
     const membership = this.listMemberships(session.tenantId, session.userId)
       .find(item => item.workspaceId === workspaceId);
     if (!membership) {
@@ -633,7 +634,7 @@ export class EnterpriseSsoService {
     return listEnterpriseAuditEvents(this.db);
   }
 
-  private extractSessionToken(req: Request): string | undefined {
+  private extractSessionToken(req: IncomingMessage): string | undefined {
     const bearer = bearerTokenFromRequest(req);
     if (bearer?.startsWith(SESSION_TOKEN_PREFIX)) return bearer;
     const cookieToken = parseCookieHeader(req.headers.cookie).get(SESSION_COOKIE_NAME);
@@ -852,7 +853,7 @@ export class EnterpriseSsoService {
 
   private resolveTenantId(userInfo: EnterpriseOidcUserInfo): string | null {
     if (!resolveAuthConfig(process.env).oidcEnabled) {
-      const claimTenant = sanitizeId(claimString(userInfo, [
+      const claimTenant = sanitizeContextId(claimString(userInfo, [
         'smartperfetto_tenant_id',
         'tenant_id',
         'https://smartperfetto.dev/tenant_id',
@@ -888,7 +889,7 @@ export class EnterpriseSsoService {
       'SELECT id, tenant_id FROM users WHERE id = ?',
     ).get(userId);
     if (existing && existing.tenant_id !== tenantId) {
-      throw new Error('OIDC subject is already bound to a different tenant');
+      throw new OidcLoginRejectedError('oidc_subject_tenant_conflict', 'OIDC subject is already bound to a different tenant', 403);
     }
     const now = nowMs();
     this.db.prepare(`
@@ -937,7 +938,7 @@ export class EnterpriseSsoService {
     userInfo: EnterpriseOidcUserInfo,
     memberships: WorkspaceMembership[],
   ): WorkspaceMembership | null {
-    const claimWorkspace = sanitizeId(claimString(userInfo, [
+    const claimWorkspace = sanitizeContextId(claimString(userInfo, [
       'smartperfetto_workspace_id',
       'workspace_id',
       'https://smartperfetto.dev/workspace_id',

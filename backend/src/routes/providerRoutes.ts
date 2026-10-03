@@ -12,11 +12,12 @@ import {
 import type { AgentRuntimeKind, ProviderCreateInput, ProviderScope, ProviderUpdateInput } from '../services/providerManager';
 import { testProviderConnection } from '../services/providerManager/connectionTester';
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteError } from '../middleware/routeFailure';
+import { ProviderRequestError } from '../services/providerManager/providerRequestError';
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
 import { requireAiEnabledForHttp } from './aiCapabilityPolicyHttp';
-import { sendProviderStoreUnreadableIfPresent } from './providerStoreHttp';
-import { PROVIDER_STORE_UNREADABLE_CODE } from '../services/providerManager/providerStore';
+import { PROVIDER_STORE_UNREADABLE_CODE, ProviderStoreUnreadableError } from '../services/providerManager/providerStore';
 
 const router = express.Router();
 
@@ -51,11 +52,6 @@ function providerStoreState(): {status: 'ok'} | {status: 'unreadable'; code: str
   return getProviderService().getStoreStatus() === 'unreadable'
     ? {status: 'unreadable', code: PROVIDER_STORE_UNREADABLE_CODE}
     : {status: 'ok'};
-}
-
-function sendProviderMutationError(res: express.Response, err: any): void {
-  if (sendProviderStoreUnreadableIfPresent(res, err)) return;
-  res.status(err.message.includes('not found') ? 404 : 400).json({success: false, error: err.message});
 }
 
 function recordProviderAudit(
@@ -162,6 +158,19 @@ router.get('/:id', (req, res) => {
   res.json({ success: true, provider });
 });
 
+/**
+ * A Provider Manager validation, not-found or unreadable-store error keeps its
+ * user-facing text; anything else (secret store, database, mutation lease)
+ * gets fixed text.
+ */
+function sendProviderError(res: express.Response, error: unknown, operation: string): void {
+  sendRouteError(res, error, {
+    code: 'provider_operation_failed',
+    error: 'Provider operation failed',
+    logLabel: `[ProviderRoutes] ${operation} error`,
+  }, [ProviderRequestError, ProviderStoreUnreadableError]);
+}
+
 router.post('/', (req, res) => {
   try {
     const svc = getProviderService();
@@ -175,8 +184,8 @@ router.post('/', (req, res) => {
       runtime: provider.connection.agentRuntime,
     });
     res.status(201).json({ success: true, provider: svc.get(provider.id, scope) });
-  } catch (err: any) {
-    sendProviderMutationError(res, err);
+  } catch (err: unknown) {
+    sendProviderError(res, err, 'Create provider');
   }
 });
 
@@ -192,8 +201,8 @@ router.patch('/:id', (req, res) => {
       changedFields: Object.keys(input),
     });
     res.json({ success: true, provider: svc.get(req.params.id, scope) });
-  } catch (err: any) {
-    sendProviderMutationError(res, err);
+  } catch (err: unknown) {
+    sendProviderError(res, err, 'Update provider');
   }
 });
 
@@ -208,8 +217,8 @@ router.delete('/:id', (req, res) => {
       type: existing?.type,
     });
     res.json({ success: true });
-  } catch (err: any) {
-    sendProviderMutationError(res, err);
+  } catch (err: unknown) {
+    sendProviderError(res, err, 'Delete provider');
   }
 });
 
@@ -224,8 +233,8 @@ router.post('/deactivate', (req, res) => {
       type: active?.type,
     });
     res.json({ success: true });
-  } catch (err: any) {
-    sendProviderMutationError(res, err);
+  } catch (err: unknown) {
+    sendProviderError(res, err, 'Deactivate provider');
   }
 });
 
@@ -240,8 +249,8 @@ router.post('/:id/activate', (req, res) => {
       type: provider?.type,
     });
     res.json({ success: true });
-  } catch (err: any) {
-    sendProviderMutationError(res, err);
+  } catch (err: unknown) {
+    sendProviderError(res, err, 'Activate provider');
   }
 });
 
@@ -260,8 +269,8 @@ router.post('/:id/runtime', (req, res) => {
       runtime,
     });
     res.json({ success: true, provider: svc.get(req.params.id, scope) });
-  } catch (err: any) {
-    sendProviderMutationError(res, err);
+  } catch (err: unknown) {
+    sendProviderError(res, err, 'Switch provider runtime');
   }
 });
 
@@ -277,8 +286,8 @@ router.post('/:id/rotate-secret', (req, res) => {
       secretVersion,
     });
     res.json({ success: true, secretVersion, provider: svc.get(req.params.id, scope) });
-  } catch (err: any) {
-    sendProviderMutationError(res, err);
+  } catch (err: unknown) {
+    sendProviderError(res, err, 'Rotate provider secret');
   }
 });
 

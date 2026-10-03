@@ -271,6 +271,7 @@ steps:
         - {name: upid, label: "upid", type: number, hidden: true}
         - {name: utid, label: "utid", type: number, hidden: true}
         - {name: unknown_running_ms, label: "unknown_running_ms", type: number, hidden: true}
+        - {name: unknown_running_ns, label: "unknown_running_ns", type: number, hidden: true}
         - {name: uninterruptible_ms, label: "uninterruptible_ms", type: number, hidden: true}
         - {name: interruptible_sleep_ms, label: "interruptible_sleep_ms", type: number, hidden: true}
         - {name: state_coverage_pct, label: "state_coverage_pct", type: number, hidden: true}
@@ -323,6 +324,7 @@ steps:
         ROUND(SUM(CASE WHEN state='Running' AND core_type IN ('prime','big','medium') THEN dur_ns ELSE 0 END)/1e6,2) AS q1_big_running_ms,
         ROUND(SUM(CASE WHEN state='Running' AND core_type='little' THEN dur_ns ELSE 0 END)/1e6,2) AS q2_little_running_ms,
         ROUND(SUM(CASE WHEN state='Running' AND core_type='unknown' THEN dur_ns ELSE 0 END)/1e6,2) AS unknown_running_ms,
+        SUM(CASE WHEN state='Running' AND core_type='unknown' THEN dur_ns ELSE 0 END) AS unknown_running_ns,
         ROUND(SUM(CASE WHEN state IN ('R','R+') THEN dur_ns ELSE 0 END)/1e6,2) AS q3_runnable_ms,
         ROUND(SUM(CASE WHEN state IN ('S','I','D','DK') THEN dur_ns ELSE 0 END)/1e6,2) AS q4_sleeping_ms,
         ROUND(SUM(CASE WHEN state IN ('D','DK') THEN dur_ns ELSE 0 END)/1e6,2) AS uninterruptible_ms,
@@ -1469,22 +1471,22 @@ steps:
           l.*,
           CASE
             WHEN '${process_name}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${process_name}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${process_name}')) > 0
               THEN 1 ELSE 0
           END AS process_match,
           CASE
             WHEN '${component}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${component}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${component}')) > 0
               THEN 1 ELSE 0
           END AS component_match,
           CASE
             WHEN '${intent}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${intent}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${intent}')) > 0
               THEN 1 ELSE 0
           END AS intent_match,
           CASE
             WHEN '${error_id}' <> ''
-              AND LOWER(COALESCE(l.msg, '')) LIKE '%' || LOWER('${error_id}') || '%'
+              AND instr(LOWER(COALESCE(l.msg, '')), LOWER('${error_id}')) > 0
               THEN 1 ELSE 0
           END AS error_match,
           CASE
@@ -1618,15 +1620,20 @@ steps:
           - "检查同一 ANR 窗口的 CPU health、Top CPU process 和调度延迟"
           - "不要只凭包名级 sched_latency 结果定因"
 
-      # 主线程活跃但大核占比偏低（需调度佐证）
-      - condition: "quadrant.data[0]?.running_pct > 50 && quadrant.data[0]?.q1_big_running_ms < quadrant.data[0]?.q2_little_running_ms * 0.3 && quadrant.data[0]?.runnable_pct > 10 && direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'scheduler_pressure' && r.confidence !== 'low')"
+      # 主线程运行时间主要在小核且存在调度等待（需调度佐证）
+      # A placement observation, not a cause: q1 counts prime/big/medium, and
+      # the share is defined only when every Running span has a core tier
+      # (unknown_running_ns is unrounded; unknown_running_ms can round to 0).
+      # anr_detail collects no cpufreq max-limit evidence. Templates stay within
+      # the portable expression subset (no ternary, no Math.*).
+      - condition: "quadrant.data[0]?.running_pct > 50 && quadrant.data[0]?.unknown_running_ns === 0 && quadrant.data[0]?.q1_big_running_ms < quadrant.data[0]?.q2_little_running_ms * 0.3 && quadrant.data[0]?.runnable_pct > 10 && direct_blocker_candidates.data?.find(r => r.direct_blocker_type === 'scheduler_pressure' && r.confidence !== 'low')"
         severity: warning
-        diagnosis: "主线程大核占比偏低且存在调度等待（Runnable ${quadrant.data[0].runnable_pct}%），可能有 CPU 供给不足"
+        diagnosis: "主线程运行时间主要在小核：大核组（超大/大/中核）${quadrant.data[0].q1_big_running_ms}ms、小核 ${quadrant.data[0].q2_little_running_ms}ms，同时 Runnable 等待 ${quadrant.data[0].runnable_pct}%"
         confidence: medium
         suggestions:
-          - "检查高优先级线程是否占用大核"
-          - "检查是否有高优先级任务抢占大核"
-          - "可能触发温控策略"
+          - "放置本身不说明原因；可能的解释包括负载均衡、EAS 能效放置、uclamp/cpuset 限制、主线程负载低于上迁阈值、大核组繁忙，需结合调度数据核对"
+          - "核对同一 ANR 窗口内占用大核组的任务（目标任务调度交接、窗口 CPU 系统上下文），确认 Runnable 等待是否来自大核组争用"
+          - "占比本身不是限频或温控证据；频率上限可能降低大核可用容量并影响放置，是否限频以 ANR 窗口的 CPU 限频证据为准：本 Skill 未采集该证据，限频与否未判定，可在同一窗口调用 cpu_throttling_in_range 核对"
 
       # === Binder 阻塞诊断 ===
 

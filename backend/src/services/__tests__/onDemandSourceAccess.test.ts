@@ -316,8 +316,33 @@ describe('OnDemandSourceAccessService', () => {
       scope,
       filePath: 'app/src/main.dart',
       mode: 'provider_send',
-    })).resolves.toMatchObject({success: false, unsupportedReason: 'source_path_outside_provider_grant'});
+    })).resolves.toEqual({
+      success: false,
+      codebaseId: ref.codebaseId,
+      truncated: false,
+      unsupportedReason: 'source_path_outside_provider_grant',
+    });
   });
+
+  it.each(['metadata_only', 'provider_send'] as const)(
+    'answers a %s read outside the registered path filters as a refusal without echoing the path',
+    async mode => {
+      const ref = register();
+      const read = await service().read({
+        codebaseId: ref.codebaseId,
+        scope,
+        filePath: 'tools/Ignored.kt',
+        mode,
+      });
+
+      expect(read).toEqual({
+        success: false,
+        codebaseId: ref.codebaseId,
+        truncated: false,
+        unsupportedReason: 'source_path_outside_registered_filters',
+      });
+    },
+  );
 
   it('evaluates a frozen provider grant once for a large rejected candidate set', async () => {
     const sourceRoot = path.join(root, 'grant-scale');

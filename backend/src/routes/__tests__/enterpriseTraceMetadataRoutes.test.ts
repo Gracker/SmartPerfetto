@@ -29,7 +29,11 @@ import {
 } from '../../services/traceMetadataStore';
 import { setTraceProcessorServiceForTests } from '../../services/traceProcessorService';
 import { persistAnalysisRunState, resetAnalysisRunStoreForTests } from '../../services/analysisRunStore';
-import { getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests } from '../../services/traceProcessorLeaseStore';
+import {
+  frontendHolderRef,
+  getTraceProcessorLeaseStore,
+  setTraceProcessorLeaseStoreForTests,
+} from '../../services/traceProcessorLeaseStore';
 import { TraceProcessorFactory } from '../../services/workingTraceProcessor';
 import {getPortPool} from '../../services/portPool';
 import * as traceMetadataStore from '../../services/traceMetadataStore';
@@ -1070,6 +1074,33 @@ describe('enterprise trace metadata routes', () => {
     });
   });
 
+  it('downloads a stored trace whose data directory sits below a dot-directory', async () => {
+    // The Linux portable data root is ~/.local/share/smartperfetto; a rootless
+    // sendFile applied its dotfile rule to every parent segment and answered 404.
+    const dotDataDir = path.join(tmpDir, '.local', 'share', 'data');
+    process.env[ENTERPRISE_DATA_DIR_ENV] = dotDataDir;
+    const app = makeApp();
+    const sourceTracePath = path.join(tmpDir, 'fixture.trace');
+    await fs.writeFile(sourceTracePath, 'dot-dir-trace');
+
+    const uploadRes = await ssoHeaders(
+      request(app).post('/api/traces/upload').attach('file', sourceTracePath),
+    );
+    expect(uploadRes.status).toBe(200);
+    const traceId = uploadRes.body.trace.id as string;
+    await expect(fs.access(
+      path.join(dotDataDir, 'tenant-a', 'workspace-a', 'traces', `${traceId}.trace`),
+    )).resolves.toBeUndefined();
+
+    const downloadRes = await ssoHeaders(request(app).get(`/api/traces/${traceId}/file`));
+    expect(downloadRes.status).toBe(200);
+    expect(
+      Buffer.isBuffer(downloadRes.body)
+        ? downloadRes.body.toString('utf-8')
+        : downloadRes.text,
+    ).toBe('dot-dir-trace');
+  });
+
   it('preserves UTF-8 upload names and repairs legacy mojibake in trace catalog responses', async () => {
     const app = makeApp();
     const filename = '直播跳转卡顿 修改后.perfetto';
@@ -1143,6 +1174,41 @@ describe('enterprise trace metadata routes', () => {
     ]));
   });
 
+  it('keeps one frontend holder for a client without a window id across trace requests', async () => {
+    const app = makeApp();
+    const sourceTracePath = path.join(tmpDir, 'windowless.trace');
+    await fs.writeFile(sourceTracePath, 'windowless');
+    fakeTraceProcessorService.getTraceWithPort.mockImplementation((traceId: unknown) => ({
+      id: String(traceId),
+      filename: 'windowless.trace',
+      size: 'windowless'.length,
+      uploadTime: new Date(),
+      status: 'ready',
+      port: 9555,
+    }));
+
+    const uploadRes = await ssoHeaders(
+      request(app)
+        .post('/api/traces/upload')
+        .attach('file', sourceTracePath),
+    );
+    expect(uploadRes.status).toBe(200);
+    const traceId = uploadRes.body.trace.id as string;
+    // Each request has its own request id, and the session id differs too.
+    for (const sessionId of ['pane-a', 'pane-b']) {
+      const res = await ssoHeaders(request(app).get(`/api/traces/${traceId}?sessionId=${sessionId}`));
+      expect(res.status).toBe(200);
+      expect(res.body.trace.leaseId).toBe(uploadRes.body.trace.leaseId);
+    }
+
+    expect(readTraceProcessorLeases(traceId)).toEqual([
+      expect.objectContaining({
+        holder_type: 'frontend_http_rpc',
+        holder_ref: frontendHolderRef({userId: 'user-a'}),
+      }),
+    ]);
+  });
+
   it('reports trace_processor startup failures without creating a frontend lease', async () => {
     const app = makeApp();
     const sourceTracePath = path.join(tmpDir, 'tp-failure.trace');
@@ -1167,10 +1233,12 @@ describe('enterprise trace metadata routes', () => {
     );
 
     expect(uploadRes.status).toBe(200);
+    // The processor's own error (here a server path) stays in the log.
     expect(uploadRes.body).toEqual(expect.objectContaining({
       success: false,
-      error: expect.stringContaining(tpError),
+      error: 'Trace uploaded, but trace_processor_shell could not load the trace',
     }));
+    expect(uploadRes.text).not.toContain('/missing/trace_processor_shell');
     const traceId = uploadRes.body.trace.id as string;
     expect(readTraceAsset(traceId)).toEqual(expect.objectContaining({
       id: traceId,
@@ -1202,10 +1270,12 @@ describe('enterprise trace metadata routes', () => {
     );
 
     expect(uploadRes.status).toBe(200);
+    // The processor's own error (here a server path) stays in the log.
     expect(uploadRes.body).toEqual(expect.objectContaining({
       success: false,
-      error: expect.stringContaining(tpError),
+      error: 'Trace uploaded, but trace_processor_shell could not load the trace',
     }));
+    expect(uploadRes.text).not.toContain('/missing/trace_processor_shell');
     expect(logSpy.mock.calls.some(call => String(call[0]).includes('[TraceProcessor] Loaded trace'))).toBe(false);
     expect(readTraceProcessorLeases(uploadRes.body.trace.id)).toEqual([]);
   });

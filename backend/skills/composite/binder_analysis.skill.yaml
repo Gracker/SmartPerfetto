@@ -675,7 +675,7 @@ steps:
       level: key
       layer: overview
       title: "问题诊断"
-    inputs: [binder_overview, main_thread_binder, binder_blocking, server_response]
+    inputs: [binder_check, binder_overview, main_thread_binder, binder_blocking, server_response]
     rules:
       # 数据不足时显式声明，避免误判
       - condition: "binder_check?.data?.[0]?.status !== 'available'"
@@ -688,7 +688,7 @@ steps:
         evidence_fields: [binder_check.data]
 
       # 主线程慢 Binder
-      - condition: "main_thread_binder.data[0]?.dur_ms > (inputs?.slow_binder_critical_ms ?? 50)"
+      - condition: "main_thread_binder.data[0]?.dur_ms > (slow_binder_critical_ms ?? 50)"
         severity: critical
         diagnosis: "主线程存在严重慢 Binder 调用 (${main_thread_binder.data[0].dur_ms}ms)"
         confidence: high
@@ -698,7 +698,7 @@ steps:
           - "[Verify] 复测主线程 slow binder 次数和单次耗时"
         evidence_fields: [main_thread_binder.data, binder_overview.data]
 
-      - condition: "main_thread_binder.data[0]?.dur_ms > (inputs?.slow_binder_warning_ms ?? 16)"
+      - condition: "main_thread_binder.data[0]?.dur_ms > (slow_binder_warning_ms ?? 16)"
         severity: warning
         diagnosis: "主线程 Binder 调用超过一帧时间 (${main_thread_binder.data[0].dur_ms}ms)"
         confidence: high
@@ -708,7 +708,7 @@ steps:
         evidence_fields: [main_thread_binder.data]
 
       # 主线程 Binder 调用过多
-      - condition: "binder_overview.data[0]?.main_thread_txns > (inputs?.main_thread_txn_warning ?? 50)"
+      - condition: "binder_overview.data[0]?.main_thread_txns > (main_thread_txn_warning ?? 50)"
         severity: warning
         diagnosis: "主线程发起 ${binder_overview.data[0].main_thread_txns} 次 Binder 调用"
         confidence: medium
@@ -718,7 +718,7 @@ steps:
         evidence_fields: [binder_overview.data]
 
       # 服务端响应慢
-      - condition: "server_response.data[0]?.avg_server_dur_ms > (inputs?.server_response_warning_ms ?? 20)"
+      - condition: "server_response.data[0]?.avg_server_dur_ms > (server_response_warning_ms ?? 20)"
         severity: warning
         diagnosis: "服务端平均处理时间较长 (${server_response.data[0].avg_server_dur_ms}ms)"
         confidence: medium

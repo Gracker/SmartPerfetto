@@ -354,7 +354,7 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       if (!(error instanceof ProviderStoreUnreadableError)) throw error;
       throw new AnalyzeSessionPreparationError(error.message, {
         code: error.code,
-        httpStatus: error.httpStatus,
+        httpStatus: error.status,
         hint: 'Repair or move providers.json, then retry; or select the system default (env) provider explicitly.',
       });
     }

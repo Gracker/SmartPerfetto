@@ -246,26 +246,33 @@ outputs:
 时同样绑定 `null`，即使目标步骤已有数据；按步骤 id 也读不到它的任何子步骤数据，包括失败前已经返回的部分结果。
 `save_from` 只在父 Skill 的顶层步骤生效，`validate:skills` 会拒绝不存在的目标步骤。
 
+分层输出（Skill HTTP API 与 HTML 报告背后的 composite 路径）展示引用步骤的方式与此一致：展示默认选中子步骤的
+数据和该步骤自己的范围来源（该步骤没有声明范围时就没有，绝不用全部子步骤合并后的范围）。失败的引用显示为失败、
+不带任何子步骤行；步骤为 `optional` 时，这个失败显示为可选步骤出错（`executionStatus: optional_error`，与
+可选查询出错相同），不会使整个 Skill 失败。
+
 默认选中的子步骤本身又是 Skill 引用时，绑定的是孙 Skill 的结果对象：表达式经 `.data` 访问时按同一规则再
 选一层，诊断与 AI 的 `inputs` 拿到的是这个结果对象，iterator 不能遍历它。`save_from` 只能选直接子 Skill
 的顶层步骤、不能穿透到孙 Skill：需要具体字段时，用它绑定子 Skill 中真正的读取步骤，而不是那个引用步骤。
 
 ### 4.3 iterator — 遍历数据行
 
-对上一步结果的每一行执行子 Skill。
+对上一步结果的每一行执行子 Skill。`item_params` 的值是当前行的列名：执行器读 `item[列名]`，该列不存在时把值原样作为常量传入，所以这里写 `${item.x}` 只会传出字面字符串。省略 `item_params` 时整行作为参数。
 
 ```yaml
 - id: per_frame_analysis
   type: iterator
   source: jank_frames           # 引用 save_as 的数据
   item_skill: jank_frame_detail # 对每一行调用的 Skill
-  item_params:
-    frame_id: "${item.frame_id}"
-    package: "${package}"
-  max_items: "${max_frames_per_session|8}"   # 最多处理 N 项
+  item_params:                  # 子 Skill 参数 ← 当前行的列名
+    frame_id: frame_id
+  max_items: 8                  # 最多处理 N 项（数字，不做 ${...} 替换；缺省 100）
   display:
     layer: deep
 ```
+
+每一项的结果会作为可展开数据挂回 iterator 读到行的那个步骤：iterator 运行前绑定 `source` 这个名字的步骤
+（按步骤 id 读取时就是该步骤）。多个步骤声明同一个 `save_as` 时也按这一规则确定。
 
 ### 4.4 parallel — 并行执行
 
@@ -315,15 +322,31 @@ outputs:
 ```yaml
 - id: diagnose
   type: diagnostic
+  inputs: [startups]
   rules:
-    - id: slow_startup
-      condition: "startups.data[0].dur_ms > 2000"
+    - condition: "startups.data[0]?.dur_ms > 2000"
       severity: critical
-      message: "启动时间超过 2 秒"
+      confidence: high
+      diagnosis: "启动耗时 ${startups.data[0].dur_ms}ms，超过 2 秒"
       suggestions:
         - "检查 Application.onCreate 耗时"
         - "优化 ContentProvider 初始化"
+      evidence_fields:
+        - startups.data[0]?.dur_ms
+        - startups.data.length
 ```
+
+`inputs` 列出规则读到的每个步骤（step id 或 `save_as`），它们就是步骤上报的
+`data.inputs`，也是 `evidence_fields` 唯一能引用的名字。阈值等 Skill 参数按参数名直接读，例如 `(threshold_ms ?? 50)`：作用域里没有 `inputs` 对象，`inputs?.threshold_ms` 永远是 `undefined`，规则只会用默认值。
+evidence field 是只读路径，不是 JavaScript 表达式，也不是 `${...}` 模板：以某个 input 的
+`name.data`（或 `name?.data`）开头，后接任意个 `.column`、`[n]`、`.length`、
+`.find(r => r.column OP literal)` / `.filter(...)`（OP 为比较运算，literal 为数字、带引号字符串、
+布尔或 `null`），每段都可写成 `?.`。它读的就是 condition 里 `name.data` 的同一个值，只读对象自有的数据属性，不调用函数、
+不写数据；谓词只比较标量，缺失或非标量的值一律不匹配。值上报前有界：行集变成 `{_rowCount, _firstRow}`，行只保留标量字段，长字符串截断。
+规则触发时还会附带它的 condition 读到的每个 input 的样本（同样有界），无论写成 `name.data`、`name?.data` 还是 `name?.["data"]`；只在字符串或注释里出现的名字不算读到。
+`validate:skills` 拒绝：不符合该语法或根不在 `inputs` 的 evidence field、读了不在 `inputs`
+里的步骤、condition 不经 `.data` 读步骤数据（按路径解析的占位符 `${name[0].x|默认值}` 或嵌在文本中的 `${name[0].x}` 里仍合法；占位符里的 JS 表达式和不带默认值的整串 `${...}` 按 condition 绑定，同样要经 `.data`），没有
+`inputs` 的 diagnostic 步骤，以及读了任何作用域都不绑定的名字（如 `inputs`）的规则。按根名的这几项检查只在能确定读到哪些根时生效：condition 里含函数体、方法、块语句等可能声明局部名的写法时不报。
 
 ### 4.7 pipeline — 渲染管线检测
 
@@ -366,7 +389,11 @@ ${step_id.data[0].字段}  → 引用某步骤结果
 4. **输入参数**: `${package}` → `params.package`（含声明的 `default`）
 5. **继承的上下文**: `${parent_var}` → `inherited[parent_var]`，即调用方 Skill 的继承值和它的 `save_as`
 
+SQL 里按路径读取前面步骤的结果（`${step_id.data[0].字段}`）时，必须二选一写明意图：带 `|默认值`（结果没有行时照常执行，引号内常用 `|`、其它位置常用 `|NULL`），或者让本步骤的 `condition` 以顶层合取项 `step_id.data?.length > 0` 要求该结果有行（结果没有行时不执行；只是提到该结果、在无行时仍可能为真的条件不算）。本运行时缺值会按下面的智能默认值照常执行，公开的 Perfetto-Skills 运行时则把没有默认值的路径当成依赖、结果无行时跳过整步；`validate:skills` 对没写明的读取报错 `result_path_read_undecided`。
+
 所以本 Skill 自己的绑定总会遮住调用方的同名值；`save_as` 先于同名步骤结果，读到的是它声明的绑定（包括 `save_from` 选中的子步骤）。一个步骤的 `save_as` 不能使用另一个步骤的 id（`validate:skills` 报 `save_as_step_id_collision`），以自身 id 命名则是常规写法。根名字一旦在某层找到就不再向更低的层回退（例如 `null` 变量不会让位给同名输入参数）；完整路径最终解析为 `null`/`undefined` 时（未绑定、绑定为 `null`、空数组取 `[0]`、字段不存在），再使用 `|默认值` 和下面的智能默认值。
+
+表达式（`condition`、iterator `filter`、`${...}` 里的 JS 表达式、诊断文案）里有一组名字始终是语言自带的标准全局，不从上面五层解析：`Infinity`、`NaN`、`undefined`、`isFinite`、`isNaN`、`parseFloat`、`parseInt`、`decodeURI`、`decodeURIComponent`、`encodeURI`、`encodeURIComponent`、`Array`、`BigInt`、`Boolean`、`Date`、`Error`、`Intl`、`JSON`、`Map`、`Math`、`Number`、`Object`、`RegExp`、`Set`、`String`、`Symbol`（清单在 `expressionUtils.ts` 的 `EXPRESSION_GLOBALS`）。所以输入、`save_as` 或数据列取了其中某个名字时，表达式读不到它。其余名字（包括 `window`、`process`、`console` 这类宿主全局名）都按五层解析，五层都没有就是 `undefined`；保留字（如 `enum`、`default`）不会被当成名字，写在字符串里也不影响求值。`validate:skills` 对步骤 `condition` 用同一套名字检查未声明的引用：占位符 `${path|默认值}` 读的是 `path` 的根名字（引号里也算），箭头函数参数和对象字面量的静态键不算引用。只检查 ASCII 名字；上下文关键字（`async`、`await`、`let`、`of`、`static`、`yield`）和 `window`、`console`、`globalThis` 不要求声明。字符串、模板、正则和注释的边界以 JS 引擎的编译结果为准；条件编译不过或无法确认时退回粗扫描（成对引号之外、不在 `.` 之后的标识符），正则、模板和注释里的词可能被当成引用。
 
 声明了 `save_as` 的步骤执行后总会绑定这个名字：成功时绑定选中的数据（可选步骤被条件跳过或查询出错时为 `[]`）；步骤没有成功（非可选步骤被条件跳过、exact scope 不可用、任何类型的步骤失败，包括失败的可选 Skill 引用）时绑定 `null`，带上该步骤自身结果的 scope（`save_from` 带上目标子步骤的 scope，目标不存在时不带 scope）。被条件跳过的步骤没有执行，不会覆盖本 Skill 前面步骤已经做出的绑定，所以互斥条件下的多个备选步骤可以声明同一个名字。
 
@@ -437,6 +464,8 @@ display:
   expandable: true
   expandableBindSource: frame_details  # 关联的详情数据源
 ```
+
+`expandableBindSource` 写 `save_as` 名：用该绑定的行展开本步骤的行，展开数据带的范围来源也是这个绑定自己的。
 
 ### 高亮规则
 
@@ -815,6 +844,13 @@ Skill 可以声明顶层 `tier: S | A | B`，用于表达目标复杂度和 revi
 | `skill-include-budget-soft-cap` | 当 `prerequisites.modules` 超过 8 个时发出成本 warning |
 | `skill-step-id-uniqueness` | 每个 Skill 内 step id 必须唯一 |
 | `skill-vendor-override-runtime-conformant` | Vendor override 必须有真实 `additional_steps`、vendor signatures，并指向已注册 base Skill |
+| `skill-top-level-key-unknown` | 顶层字段必须是加载器会读的字段，否则报错：Skill 是 `SkillDefinition` 的字段加上加载器归一化的旧写法（`display`、`description`、`tags`、`icon`、`display_name`、`displayName`）；pipeline 只能用 `PipelineDefinition` 的字段；vendor override 只能用 `extends`、`version`、`meta`、`vendor_detection`、`additional_steps`。外部 Skill Pack 带未知顶层字段时整包拒绝加载 |
+| `result-path-read-undecided` | 按路径读取前面顶层步骤结果的 SQL 占位符（`sql` 与 `exact_sql.sql`）必须带 `\|默认值`，或所在步骤的 `condition` 含顶层合取项 `<结果>.data?.length > 0`；否则报错 `result_path_read_undecided`。自进化提案门禁在提案定义或修改的 Skill 上报错（含该 Skill 上已有覆盖层的步骤），对其它已发布覆盖层只报警告 |
+
+没人读的顶层字段不是无害注释：它看起来像会生效的配置（顶层 `diagnostics`、`thresholds`、`synthesis`、厂商
+`thresholds_override` 都曾这样静默无效，公开投影还把它们当作活配置渲染）。诊断规则写在 `type: diagnostic`
+步骤里，综合结论写在步骤级 `synthesize`；vendor override 运行时只把厂商名、显示名和 `additional_steps` 的 id
+作为提示挂在基础 Skill 结果上。
 
 `backend/skills/_template/` 是作者模板，不进入运行时 registry。复制模板后必须删除占位符，放入正式 Skill 目录，再运行 `validate:skills` 和匹配的 trace regression。
 

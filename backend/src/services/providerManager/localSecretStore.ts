@@ -7,6 +7,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import {resolveAuthConfig} from '../../config';
+import {parseFlagValue} from '../../utils/envFlag';
 import {deriveServerSecret} from '../../security/serverSecret';
 import {withFilesystemRegistryLock} from '../filesystemRegistryLock';
 import {providerDataPath} from './providerPaths';
@@ -366,7 +367,7 @@ function readOrCreateLocalDevMasterKey(dir: string): Buffer {
 function localMasterKeyFallbackAllowed(): boolean {
   const configured = process.env[SECRET_STORE_ALLOW_LOCAL_MASTER_KEY_ENV];
   if (!configured) return process.env.NODE_ENV === 'test';
-  return ['1', 'true', 'yes', 'on', 'enabled'].includes(configured.trim().toLowerCase());
+  return parseFlagValue(configured) === true;
 }
 
 function resolveMasterKey(dir: string): {key: Buffer; source: MasterKeySource} {

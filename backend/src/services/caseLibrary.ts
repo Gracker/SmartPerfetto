@@ -59,6 +59,7 @@ import {
   type CaseCurationView,
 } from './security/caseCuration';
 import {CURATED_CASE_STATUSES, type CuratedCaseStatus} from '../types/caseKnowledge';
+import {KnowledgeCurationError} from './knowledgeCurationError';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -148,7 +149,7 @@ export class CaseLibrary {
     const record = {...withoutCurationView(input), ...(grant.actor ? {curatedBy: grant.actor} : {})};
     assertNotRetiredCaseWrite('case', isRetiredCaseNode(record), record.caseId);
     if (record.status === 'published') {
-      throw new Error(
+      throw new KnowledgeCurationError('case_save_rejected',
         `Use publishCase() to advance a case to 'published'; saveCase() rejects published records to keep the gate auditable`,
       );
     }
@@ -281,14 +282,16 @@ export class CaseLibrary {
   ): CuratedCaseView {
     const reviewer = (grant.actor ?? opts.reviewer)?.trim();
     if (!reviewer) {
-      throw new Error(
+      throw new KnowledgeCurationError('case_publish_rejected',
         `Cannot publish case '${caseId}' without a reviewer signoff`,
       );
     }
     return curationView(this.writeExisting(caseId, scope, existing => {
-      if (!existing || isRetiredCaseNode(existing)) throw new Error(`Cannot publish case '${caseId}': not found`);
+      if (!existing || isRetiredCaseNode(existing)) {
+        throw new KnowledgeCurationError('case_not_found', `Cannot publish case '${caseId}': not found`, 404);
+      }
       if (existing.redactionState !== 'redacted') {
-        throw new Error(
+        throw new KnowledgeCurationError('case_publish_rejected',
           `Cannot publish case '${caseId}': redactionState='${existing.redactionState}' (must be 'redacted')`,
         );
       }
@@ -319,10 +322,12 @@ export class CaseLibrary {
   ): CuratedCaseView {
     const reason = opts.reason?.trim();
     if (!reason) {
-      throw new Error(`archiveCase requires a non-empty reason`);
+      throw new KnowledgeCurationError('case_archive_rejected', 'archiveCase requires a non-empty reason');
     }
     return curationView(this.writeExisting(caseId, scope, (existing, attested) => {
-      if (!existing || isRetiredCaseNode(existing)) throw new Error(`Cannot archive case '${caseId}': not found`);
+      if (!existing || isRetiredCaseNode(existing)) {
+        throw new KnowledgeCurationError('case_not_found', `Cannot archive case '${caseId}': not found`, 404);
+      }
       const record: CaseNode = {
         ...existing,
         ...makeSparkProvenance({

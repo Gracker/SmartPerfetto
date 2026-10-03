@@ -42,6 +42,7 @@ type CaseInput = {
   redactionState?: CaseNode['redactionState'];
   required?: Array<{ field: string; op: 'eq' | 'contains_any' | 'gte' | 'lte'; value: unknown }>;
   supportive?: Array<{ field: string; op: 'eq' | 'contains_any' | 'gte' | 'lte'; value: unknown }>;
+  appArchitecture?: string | string[];
 };
 
 function caseRecord(input: CaseInput): CaseNode {
@@ -67,7 +68,7 @@ function caseRecord(input: CaseInput): CaseNode {
         responsibility: 'app',
         severity: 'warning',
       },
-      context: {},
+      context: {app_architecture: input.appArchitecture ?? 'any'},
       evidenceSignatures: {
         required: input.required ?? [{ field: 'reason_code', op: 'eq', value: 'shader_compile' }],
         supportive: input.supportive ?? [],
@@ -118,6 +119,7 @@ describe('caseRecommendationRetriever', () => {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
       responsibility: 'app',
       audiences: ['app'],
       evidenceSignatures: { reason_code: 'shader_compile', render_slices: ['makePipeline'] },
@@ -139,6 +141,7 @@ describe('caseRecommendationRetriever', () => {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
       audiences: ['app' as const],
       evidenceSignatures: { reason_code: 'shader_compile', render_slices: ['makePipeline'] },
       includeStatuses: ['published' as const],
@@ -165,6 +168,7 @@ describe('caseRecommendationRetriever', () => {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
       audiences: ['app'],
       evidenceSignatures: { reason_code: 'shader_compile' },
       includeStatuses: ['reviewed'],
@@ -180,6 +184,7 @@ describe('caseRecommendationRetriever', () => {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
       audiences: ['app' as const],
       evidenceSignatures: { reason_code: 'shader_compile' },
     };
@@ -202,6 +207,7 @@ describe('caseRecommendationRetriever', () => {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
       responsibility: 'app',
       audiences: ['app'],
       evidenceSignatures: { reason_code: 'shader_compile' },
@@ -209,5 +215,24 @@ describe('caseRecommendationRetriever', () => {
     });
 
     expect(hits.map(hit => hit.caseId)).toEqual(['curated-pub', 'imported-pub']);
+  });
+
+  it('retrieves only cases declared for the trace architecture, and every case when it is unknown', () => {
+    addCase({ caseId: 'case-view', appArchitecture: 'standard' });
+    addCase({ caseId: 'case-flutter', appArchitecture: ['flutter'] });
+    addCase({ caseId: 'case-any', appArchitecture: 'any' });
+    const retriever = createCaseRetriever({ library, ragStore });
+    const retrieve = (architectureType?: string) => retriever.retrieve({
+      scene: 'scrolling',
+      domainPack: 'scrolling.v1',
+      rootCause: 'shader_compile',
+      audiences: ['app'],
+      architectureType,
+      evidenceSignatures: { reason_code: 'shader_compile' },
+    }).map(hit => hit.caseId).sort();
+
+    expect(retrieve('FLUTTER')).toEqual(['case-any', 'case-flutter']);
+    expect(retrieve('STANDARD')).toEqual(['case-any', 'case-view']);
+    expect(retrieve(undefined)).toEqual(['case-any', 'case-flutter', 'case-view']);
   });
 });

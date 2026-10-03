@@ -53,6 +53,7 @@ import {
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {assertNotRetiredCaseWrite, isRetiredCaseEdge} from './retiredCaseData';
 import {logStoredReadFailure, parseStoredJson} from '../utils/storedData';
+import {KnowledgeCurationError} from './knowledgeCurationError';
 
 interface StorageEnvelope {
   schemaVersion: 1;
@@ -128,7 +129,7 @@ export class CaseGraph {
     this.load();
     assertNotRetiredCaseWrite('edge', isRetiredCaseEdge(edge, this.cases.retiredCaseIds(scope)), edge.edgeId);
     if (edge.fromCaseId === edge.toCaseId) {
-      throw new Error(
+      throw new KnowledgeCurationError('case_edge_rejected',
         `Self-loops are not permitted: edge '${edge.edgeId}' has fromCaseId === toCaseId === '${edge.fromCaseId}'`,
       );
     }

@@ -37,6 +37,71 @@ ID（见下文），与响应头 `X-Request-Id` 相同。完整的异常消息�
 同一个 ID 用于鉴权请求上下文、Agent 接口返回的 `requestId`、分析 run 的观测信息、
 Trace Processor 代理的 WebSocket 升级和服务端日志。请求体里的 `requestId` 字段不参与解析。
 
+## 路由级失败
+
+接口（含 `backend/src/controllers/` 实现的 SQL、Skill、Skill 包和批量 trace 接口）自己捕获的
+下游失败（存储、文件系统、trace processor、密钥库、导出、模型调用等）统一返回：
+
+```json
+{"success": false, "code": "report_read_failed", "error": "Failed to get report", "requestId": "req-…"}
+```
+
+`code` 稳定，标识失败的操作（如 `report_export_failed`、`provider_operation_failed`、
+`trace_processor_proxy_failed`），调用方应按 `code` 判断而不是 `error` 文本。`error` 是固定文案，
+不包含异常消息；`requestId` 与 `X-Request-Id` 的取值规则同上。异常消息和调用栈只写入该路由的
+服务端日志行，用 `requestId` 关联。
+
+SmartPerfetto 自己为调用方编写的错误保留可操作的文案，形状相同但 `error` 是该文案、HTTP 状态
+取错误自己的状态，个别错误另带结构化的 `details`（如 Agent 分析参数）。它们在后端是
+`PublicRequestError` 的领域子类，每个路由只回显自己列出的子类，其他异常一律固定文案；这类错误
+若是 5xx（如系统目录选择器打不开），原因同样写入服务端日志。逃逸到全局错误处理的这类错误沿用自身
+状态码，文案仍按全局规则固定。例如：
+
+- Provider Manager 输入（`provider_invalid_request` 400、`provider_not_found` 404）与 providers.json
+  不可读（`provider_store_unreadable` 409）、trace 列表分页（`INVALID_TRACE_LIST_PAGE`）、Agent 日志级别
+  （`invalid_log_level`）、Agent 分析参数、RAG 检索参数（`invalid_rag_search_input`）、目录选择器
+  （`DIRECTORY_*`）和企业工作区管理（`enterprise_admin_invalid_request` 400、`enterprise_admin_forbidden`
+  403、`enterprise_admin_not_found` 404、`enterprise_admin_conflict` 409）。
+- 对话：`CONVERSATION_NOT_FOUND` 404、`CONVERSATION_QUERY_REQUIRED` 400、会话上下文变化
+  （`CONVERSATION_TRACE_CHANGED`、`CONVERSATION_PROVIDER_CHANGED`、
+  `CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`、`ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED`；源码或知识源授权
+  在恢复时失效为小写的 `analysis_context_changed_restart_required`）409、
+  `RUN_ALREADY_ACTIVE` 409、`CANCELLATION_IN_PROGRESS` 409、停止已不在运行的 run 为
+  `CONVERSATION_RUN_NOT_ACTIVE` 409。状态由错误类型决定，不再按消息文本匹配。
+- URL 上传：`INVALID_TRACE_URL` 400、`TRACE_URL_TIMEOUT` 504、`TRACE_URL_REDIRECT_INVALID` 502。
+- 知识策展（baseline、case、memory 晋升）、企业 API Key 创建、OIDC 登录被拒
+  （`oidc_subject_tenant_conflict` 403）、trace 采集配置建议、反馈写入
+  （输入校验与目标缺失/矛盾 400，supersede/幂等冲突 409）、代码库和外部知识源的字段校验
+  （代码库管理接口统一为 `CODEBASE_*`，含 `CODEBASE_METADATA_INVALID`、`PENDING_GENERATION_ID_INVALID`）、
+  批量 trace 请求（`error` 可带 `:` 之后的字段名、数量或 Skill 类型，如
+  `invalid_batch_trace_limit:trace_count:2>1`；Skill 与工作区 Skill 包冲突为 409）。
+- Skill 包：清单、资产或包内 Skill 定义无效、不可安装 400，资产在预览后变化、同版本内容
+  已变化（`installed_pack_content_hash_mismatch`）、与工作区 Skill/片段冲突 409，包不存在 404；`error`
+  是原因码，可带 `:` 之后的包内相对路径、字段名或 Skill id。持久化失败等内部原因一律固定文案。
+
+RAG 管理接口背后的服务把机器可读的原因码作为异常消息抛出（如 `root_outside_allowlist`、
+`source_chunk_limit_exceeded:5000`）。只有调用方能处理的原因码族（源码路径、知识根、索引生命周期、
+授权与使用权确认）会被回显为 `code` 和 `error`，去掉第一个 `:` 之后的细节（可能是 id、路径或
+大小），原始消息以 warn 级别写入日志；存储损坏、暂存计数不一致等内部原因码和不是原因码的消息
+一律固定文案。自进化接口沿用 `{success: false, error: <code>}` 形状，返回
+完整的小写原因码（只含 `a-z 0-9 _ : -`，可带 `:` 之后的 id），其他异常为
+`self_evolution_request_failed`。
+
+后续通过其他接口读到的失败记录同样不含异常消息：对比 run 的 `error` 为 `Comparison failed`；
+租户清理任务（`GET /api/tenant/purge/:jobId`）的 `error` 只保留清理窗口未到和 tombstone 不存在
+两种文案，并附 `errorCode`（`tenant_purge_window_open`、`tenant_tombstone_not_found`、
+`tenant_purge_failed`）；报告生成失败时 `reportError` 为 `report generation failed`；上传后
+trace_processor_shell 加载失败时返回 `trace_processor_shell could not load the trace`。trace
+上传接口的 `details` 只用于 URL 被拒和文件过大这类我们写的说明，不再携带异常消息。通过 API 提交的
+批量 trace 中，单个 trace 失败时 `error` 和诊断只保留原因码（否则为 `batch_trace_failed`），CLI
+本地批量运行保留完整消息；代码库重建索引结果中每个被跳过文件的 `reason` 只保留原因码（否则为
+`source_file_unreadable`）。企业模式下 SSO 会话或 API Key 解析出错时 401 只返回固定说明。此前已经
+写入的记录保留原文。
+
+分析 run 本身的失败是例外：Agent 分析的 `error` SSE 事件、`/status` 的 `error`、对话的
+`run_failed` 事件携带运行时或模型服务给出的失败原因（如鉴权、额度），因为这是会话所有者唯一能
+据以处理的信息；使用私有知识（源码、外部知识源）的 run 在这些出口都只返回所有者投影后的文案。
+
 ## OIDC 鉴权
 
 | 方法 | 路径 | 说明 |
@@ -142,7 +207,7 @@ GET /api/traces?limit=100&cursor=<nextCursor>
 | `/api/workspaces/:workspaceId/agent` | workspace 范围内的 agent 分析、SSE、多轮、反馈 |
 | `/api/workspaces/:workspaceId/providers` | workspace 范围内的 Provider Manager profile |
 | `/api/workspaces/:workspaceId/analysis-results` | 分析结果 snapshot 列表、读取、更新 |
-| `/api/workspaces/:workspaceId/windows` | 前端窗口 heartbeat 与 active window 状态 |
+| `/api/workspaces/:workspaceId/windows` | 前端窗口 heartbeat 与 active window 状态；窗口按 (用户, windowId) 标识，其他用户的窗口只以“指向你可读分析结果”的形式列出 |
 | `/api/workspaces/:workspaceId/comparisons` | 多分析结果 comparison 创建、读取、stream、导出 |
 | `/api/workspaces/:workspaceId/trace-config` | 无副作用 trace config proposal |
 | `/api/workspaces/:workspaceId/skill-packs` | 本地目录型 Skill Pack 预检、安装、启停和移除 |
@@ -757,11 +822,30 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId` | 获取 comparison |
 | `GET` | `/:comparisonId/stream` | 订阅 comparison stream |
 
-Skill 结果行可以用同行的 `<列名>_definition` 字符串声明该指标列的口径（例如
-`cpu_profiling` 的 `big_core_pct_definition`），snapshot 把它保存为指标
-`source.metricDefinition`。两个 snapshot 的同一指标声明不同（含一方未声明）时，
+Skill 结果行可以用同行的 `<列名>_definition` 字符串声明该指标列的口径，snapshot
+把它保存为指标 `source.metricDefinition`。两个 snapshot 的同一指标声明不同（含一方未声明）时，
 comparison 不计算 delta（`deltaValue: null`、`assessment: "unknown"`），并在
 `matrix.warnings` 与结论 `uncertainty` 中写明两侧口径。未声明的历史指标之间照常比较。
+
+`cpu.big_core_pct` 另有生产者合同（`backend/src/services/comparisonMetricProducerContract.ts`），
+不再按列名取第一个 `big_core_pct`：
+
+- 口径 `main_thread_running:core_tier_group:prime+big+medium@3`：所选事件窗口内**一个**主线程
+  Running 时间中大核组（超大/大/中核）的占比，且该线程没有落在未分类核上的时间。它描述被选中的那一个
+  启动或慢输入事件，不是整场分析的汇总。
+- 只认这些来源（按信封的顶层 `skillId` + 展示 `stepId`）：`startup_detail` / `click_response_detail`
+  的 `cpu_core_analysis`，以及 `startup_analysis.analyze_startups`、
+  `click_response_analysis.analyze_slow_events` 迭代项里的 `cpu_core_analysis` 分节（`source.section`
+  与 `source.itemIndex` 记录是哪一项）。其他 Skill 的同名列、`type: skill` 嵌套步骤、raw SQL、
+  前端预查询和参考 trace 一侧的信封都不是候选。
+- 第一个返回行的候选单元决定结果：必须恰好一行、行内 `big_core_pct_definition` 等于上述口径、
+  `main_thread_count = 1`、未舍入的 `unknown_core_ns = 0`（数值类型）。不满足时指标以
+  `value: null` 与 `missingReason: "producer_contract:<原因>"`（`ambiguous_population`、
+  `definition_mismatch`、`unknown_core_time`、`unknown_core_time_unverified`、`value_unavailable`）
+  存入 snapshot，不会改取后面另一个线程、事件或信封的值；comparison 把它列为缺失并给出该原因。
+- 只有双方都是准入生产者按当前口径声明的值才计算 delta。历史值按来源分类后一律不计算 delta，
+  warning 写明类别：`legacy_admitted_producer`（准入生产者的旧值，未核对未知核时间）、
+  `outside_contract`（其他 Skill 步骤，含 `cpu_profiling` 早先的 `@2` 声明）、`non_skill_source`。
 
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 
@@ -802,11 +886,10 @@ trace 的诊断证据或 root-cause 证明。接口复用当前 workspace scope�
 - `/api/reports/*`，优先迁移到 `/api/workspaces/:workspaceId/reports/*`
 - `/api/agent/v1/*`，workspace 产品优先迁移到 `/api/workspaces/:workspaceId/agent/*`
 - `/api/v1/providers/*`，优先迁移到 `/api/workspaces/:workspaceId/providers/*`
-- `/api/template-analysis/*`
 
 仍在维护的辅助 API 包括 `/api/flamegraph/*`、`/api/critical-path/*`、`/api/baselines/*`、`/api/memory/*`、`/api/cases/*`、`/api/ci/*`、`/api/tp/*`、`/api/auth/*`、`/api/tenant/*` 和 `/api/admin/runtime/*`。这些接口面向特定产品面或管理面，调用前应先确认当前部署是否启用了对应 feature / auth。`/api/cases/*` 的读取只需登录；新建、删除、发布、归档与边的增删要求 `self_evolution:curate`，curator 与 reviewer 取自登录身份，请求体中的名字不被采用。学习产生的 case 已退役：以 `learned:` 开头的 id 与学习来源的 case 不再返回，写入会被拒绝。分析只读取 published / reviewed、已 `redacted` 且带有策展证明的 case：新建与 publish 时，服务端为 case 的当前内容签发证明；archive 只保留 case 原有的准入，不会让 case 进入分析。返回的每条 case 都附带 `analysisAdmitted` 与 `curation`（issuer、actor、issuedAt），POST 请求体里的这两个字段会被忽略。引入准入之前写入的 case 需要补戳：reviewed case 用 GET 读回后原样 POST，published case 重新 publish。
 
-legacy agent API base 会被 `rejectLegacyAgentApi` 拒绝，避免外部继续接入废弃路径。`/api/advanced-ai/*`、`/api/auto-analysis/*` 和 `/api/agent/v1/llm/*` 这类旧 direct AI route 已移除；统一使用 `/api/agent/v1/analyze`。`/api/perfetto-sql/*` 已移除，所有部署模式下都返回 410：场景端点（如 `/startup`、`/scrolling`）改用请求体相同（`{traceId, packageName}`）的 `POST /api/skills/execute/<skillId>`（enterprise 部署下该接口同样要求 workspace 路由），响应的 `migration.successor` 给出对应路径；`/sql`、`/tables`、`/functions`、`/skills`、`/analyze`、`/input`、`/buffer-flow`、`/systemserver` 没有直接替代，`migration.fallback` 指向 workspace agent 接口。
+legacy agent API base 会被 `rejectLegacyAgentApi` 拒绝，避免外部继续接入废弃路径。`/api/advanced-ai/*`、`/api/auto-analysis/*` 和 `/api/agent/v1/llm/*` 这类旧 direct AI route 已移除；统一使用 `/api/agent/v1/analyze`。`/api/perfetto-sql/*` 已移除，所有部署模式下都返回 410：场景端点（如 `/startup`、`/scrolling`）改用请求体相同（`{traceId, packageName}`）的 `POST /api/skills/execute/<skillId>`（enterprise 部署下该接口同样要求 workspace 路由），响应的 `migration.successor` 给出对应路径；`/sql`、`/tables`、`/functions`、`/skills`、`/analyze`、`/input`、`/buffer-flow`、`/systemserver` 没有直接替代，`migration.fallback` 指向 workspace agent 接口。`/api/template-analysis/*` 同样返回 410；`/auto`、`/four-quadrant`、`/cpu-core`、`/frame-stats` 都没有请求体相同的替代，只给出 `migration.fallback`。
 
 ### Critical path 等待链
 

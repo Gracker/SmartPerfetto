@@ -1831,6 +1831,31 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect([...providerCache.values()]).toEqual(expect.arrayContaining([firstLoad, secondLoad]));
   });
 
+  it('keys the Pi provider cache on content under an own __proto__ key', async () => {
+    const providerRuntimeLoader = jest.fn(loadFakePiProviderRuntime);
+    const runtime = new PiAgentCoreRuntime(
+      createFakeTraceProcessorService(),
+      {kind: 'pi-agent-core', source: 'env'},
+      {
+        env: {[PI_AGENT_CORE_MODEL_JSON_ENV]: PI_TEST_MODEL_JSON},
+        moduleLoader: async () => ({Agent: FakePiAgent}),
+        providerRuntimeLoader,
+      },
+    );
+    // JSON.parse keeps __proto__ as an own data key; the two configs differ only there.
+    const withCompat = (value: string) => ({
+      model: {...JSON.parse(PI_TEST_MODEL_JSON), compat: JSON.parse(`{"__proto__":{"mode":"${value}"}}`)},
+      apiKey: 'redacted-test-key',
+    });
+
+    const firstLoad = (runtime as any).getProviderRuntime(withCompat('a'));
+    const secondLoad = (runtime as any).getProviderRuntime(withCompat('b'));
+
+    expect(secondLoad).not.toBe(firstLoad);
+    await Promise.all([firstLoad, secondLoad]);
+    expect(providerRuntimeLoader).toHaveBeenCalledTimes(2);
+  });
+
   it('selects native Pi parallel by admitted scheduler and preserves per-tool sequential descriptors', () => {
     const makeSpec = (
       name: string,

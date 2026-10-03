@@ -116,7 +116,7 @@ describe('stop semantics transport helpers', () => {
     expect(classifyStopResponse('agent', stop({status: 'cancelled', outcome: 'cancelled'}))).toBe('full_cancel');
     expect(classifyStopResponse('agent', stop({status: 'cancelled', outcome: 'already_cancelled'}))).toBe('already_terminal');
     expect(classifyStopResponse('agent', stop({httpStatus: 409, code: 'RUN_NOT_CANCELLABLE'}))).toBe('already_terminal');
-    expect(classifyStopResponse('conversation', stop({httpStatus: 409, code: 'ACTIVE_RUN_NOT_FOUND'}))).toBe('already_terminal');
+    expect(classifyStopResponse('conversation', stop({httpStatus: 409, code: 'CONVERSATION_RUN_NOT_ACTIVE'}))).toBe('already_terminal');
     expect(classifyStopResponse('conversation', stop({status: 'answered'}))).toBe('force_committed');
     expect(classifyStopResponse('conversation', stop({httpStatus: 500}))).toBe('error');
     expect(classifyStopResponse('agent', stop({httpStatus: undefined, requestError: 'timeout'}))).toBe('error');

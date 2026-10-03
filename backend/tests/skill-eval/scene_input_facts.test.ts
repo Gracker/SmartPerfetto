@@ -26,9 +26,9 @@ function fixture(start = 0n, end = 10000000000n): Database.Database {
     CREATE TABLE actual_frame_timeline_slice(ts INTEGER, dur INTEGER, upid INTEGER, surface_frame_token INTEGER);`);
   db.prepare('INSERT INTO trace_bounds VALUES (?, ?)').run(start, end); return db;
 }
-function legacy(db: Database.Database, time: bigint, action: string | null, channel = 'A', upid = 1): void {
+function legacy(db: Database.Database, time: bigint, action: string | null, channel = 'A', upid = 1, processName = `app-${upid}`): void {
   db.prepare(`INSERT INTO android_input_events(input_event_id, event_seq, event_channel, dispatch_ts, receive_ts,
-    read_time, event_type, event_action, upid, process_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(String(time), String(time), channel, time, time, time, 'MOTION', action, upid, `app-${upid}`);
+    read_time, event_type, event_action, upid, process_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(String(time), String(time), channel, time, time, time, 'MOTION', action, upid, processName);
 }
 function native(db: Database.Database, id: number, ts: bigint, action: number, device = 1, display = 0, source = 4098): void {
   db.prepare('INSERT INTO android_motion_events VALUES (?, ?, ?, ?, ?, ?, ?)').run(id, id, ts, action, device, display, source);
@@ -149,6 +149,43 @@ describe('shared scene input facts: independent semantic cases', () => {
   it('does not choose an app when every receiver lacks action information',()=>{
     db=fixture();legacy(db,1n,null,'A',1);legacy(db,1n,null,'B',2);
     expect(query(db,'user_gestures')).toEqual([expect.objectContaining({event_count:1,dispatch_count:2,upid:null,app_package:null,identity_status:'multiple_recipients'})]);
+  });
+  it('assigns an action-free event to the one receiver that owns its window, whatever the stream order',()=>{
+    db=fixture();
+    for(const time of [1n,2n,3n]){
+      legacy(db,time,null,'[Gesture Monitor] swipe-to-screenshot (server)',10,'com.android.systemui');
+      legacy(db,time,null,'e620163 NavigationBar0 (server)',10,'com.android.systemui');
+      legacy(db,time,null,'PointerEventDispatcher0 (server)',11,'system_server');
+      legacy(db,time,null,'f4033a5 com.android.systemui.wallpapers.ImageWallpaper',10,'com.android.systemui');
+      legacy(db,time,null,'32c6ecb com.tencent.mm/com.tencent.mm.ui.LauncherUI (server)',2,'com.tencent.mm:appbrand0');
+    }
+    expect(query(db,'user_gestures')).toEqual([expect.objectContaining({event_count:3,dispatch_count:15,receiver_count:1,
+      upid:2,app_package:'com.tencent.mm:appbrand0',stream_key:'2:32c6ecb com.tencent.mm/com.tencent.mm.ui.LauncherUI (server)',
+      identity_status:'observed_recipient',gesture_type:'input_unknown',source_status:'partial',missing_action_count:3})]);
+  });
+  it('keeps an action-free event unassigned when two receivers own their windows, and never by name prefix alone',()=>{
+    db=fixture();
+    legacy(db,1n,null,'a1 com.foo/com.foo.Main',1,'com.foo');legacy(db,1n,null,'b2 com.bar/com.bar.Main',2,'com.bar');
+    legacy(db,1n,null,'[Gesture Monitor] edge-swipe',3,'com.android.systemui');
+    legacy(db,5n,null,'c3 com.foo/com.foo.Main',4,'com.foox');legacy(db,5n,null,'[Gesture Monitor] edge-swipe',3,'com.android.systemui');
+    expect(query(db,'user_gestures').map(r=>[r.ts,r.receiver_count,r.upid,r.identity_status,r.stream_key])).toEqual([
+      ['1',2,null,'multiple_recipients','1:a1 com.foo/com.foo.Main'],
+      ['5',2,null,'multiple_recipients','3:[Gesture Monitor] edge-swipe']]);
+  });
+  it('lets an action narrow past other window owners',()=>{
+    db=fixture();
+    for(const [time,action] of [[1n,'DOWN'],[2n,'UP']] as const){
+      legacy(db,time,null,'b2 com.bar/com.bar.WatchOutsideDialog',1,'com.bar');legacy(db,time,action,'a1 com.foo/com.foo.Main',9,'com.foo');
+    }
+    expect(query(db,'user_gestures')).toEqual([expect.objectContaining({gesture_type:'tap',receiver_count:1,upid:9,
+      identity_status:'observed_recipient',stream_key:'9:a1 com.foo/com.foo.Main'})]);
+  });
+  it('picks the representative in the same precedence as the candidates',()=>{
+    db=fixture();
+    for(const [time,action] of [[1n,'DOWN'],[2n,null],[3n,'UP']] as const){
+      legacy(db,time,null,'b2 com.bar/com.bar.Main',1,'com.bar');legacy(db,time,action,'NotificationShade',9,'com.android.systemui');
+    }
+    expect(query(db,'user_gestures')).toEqual([expect.objectContaining({event_count:3,receiver_count:1,upid:9,stream_key:'9:NotificationShade'})]);
   });
   it('orders same-timestamp native events by ingestion identity, preserving an instant contact',()=>{
     db=fixture();native(db,9,10n,0);native(db,10,10n,1);

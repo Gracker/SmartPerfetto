@@ -191,8 +191,5 @@ steps:
       JOIN {{stdlib_table_2}} b ON a.id = b.id
       WHERE {{deep_condition}}
 
-# 可选: 后处理 / 综合块（jank_frame_detail / scene_reconstruction 用了大块）
-# synthesis:
-#   - id: aggregate_all
-#     type: aggregation
-#     ...
+# 综合结论写在步骤级 `synthesize`（见 docs/reference/skill-system.md）；
+# Skill 没有顶层后处理块，validate:skills 拒绝未知顶层字段。

@@ -4,7 +4,6 @@
 
 import crypto from 'crypto';
 
-import {resolveAuthConfig, resolveFeatureConfig} from '../config';
 import type {RequestContext, RequestContextAuthType} from '../middleware/auth';
 import {deriveServerSecret, resetServerSecretForTests} from '../security/serverSecret';
 
@@ -33,29 +32,12 @@ export interface TraceProcessorProxyCapability {
   expiresAt: number;
 }
 
-let devProcessSecret: Buffer | undefined;
-
 function capabilitySecret(): Buffer {
-  if (resolveAuthConfig(process.env).oidcEnabled) {
-    return deriveServerSecret({
-      purpose: 'trace-processor-capability',
-      preferredEnvKeys: [TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
-      minimumBytes: MIN_SECRET_BYTES,
-    });
-  }
-  const configured = [
-    process.env[TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
-    process.env.SMARTPERFETTO_SSO_COOKIE_SECRET,
-    process.env.SMARTPERFETTO_API_KEY,
-  ].find(value => typeof value === 'string' && value.length >= MIN_SECRET_BYTES);
-  if (configured) return Buffer.from(configured, 'utf8');
-  if (resolveFeatureConfig().enterprise) {
-    throw new Error(
-      `${TRACE_PROCESSOR_CAPABILITY_SECRET_ENV} must contain at least ${MIN_SECRET_BYTES} bytes in enterprise mode`,
-    );
-  }
-  devProcessSecret ??= crypto.randomBytes(32);
-  return devProcessSecret;
+  return deriveServerSecret({
+    purpose: 'trace-processor-capability',
+    preferredEnvKeys: [TRACE_PROCESSOR_CAPABILITY_SECRET_ENV],
+    minimumBytes: MIN_SECRET_BYTES,
+  });
 }
 
 function sign(encodedPayload: string): string {
@@ -177,7 +159,6 @@ export function stripTraceProcessorCapabilityProtocols(
 }
 
 export function resetTraceProcessorProxyCapabilitiesForTests(): void {
-  devProcessSecret = undefined;
   resetServerSecretForTests();
 }
 

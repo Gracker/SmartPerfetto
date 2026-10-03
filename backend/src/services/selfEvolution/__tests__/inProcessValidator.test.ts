@@ -171,6 +171,188 @@ describe('in-process effective Skill validator', () => {
     ]);
   });
 
+  it('requires a diagnostic rule to read step data only through its declared inputs', () => {
+    const diagnosticIssues = (inputs: string[] | undefined, rule: Record<string, unknown>) => {
+      const definition = skill('diagnose');
+      definition.inputs = [{name: 'threshold_ms', type: 'number'}] as any;
+      definition.steps = [
+        {id: 'load_rows', type: 'atomic', sql: 'SELECT 1', save_as: 'rows'},
+        {id: 'other', type: 'atomic', sql: 'SELECT 2'},
+        {id: 'check', type: 'diagnostic', ...(inputs ? {inputs} : {}),
+          rules: [{condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}]} as any,
+      ];
+      // Structural shape issues and the confidence check have their own tests.
+      return validateSkillDefinitionsInProcess({definitions: [definition]}).issues
+        .filter(entry => entry.code.startsWith('diagnostic_')
+          && !['diagnostic_step_invalid', 'diagnostic_rule_invalid', 'diagnostic_confidence_invalid'].includes(entry.code))
+        .map(entry => `${entry.code} ${entry.path}`);
+    };
+    const at = (code: string, field: string) => `${code} steps[2].rules[0].${field}`;
+
+    // Declared data, a Skill parameter, arrow parameters and a bare existence check are all valid.
+    expect(diagnosticIssues(['rows'], {
+      condition: '(rows?.data?.length || 0) > 0 && rows.data.find(r => r.dur_ms > threshold_ms) && rows != null',
+      diagnosis: 'top ${rows.data[0].name} over ${threshold_ms|16}ms',
+      suggestions: ['look at ${rows.data[0]?.name}'],
+      evidence_fields: ['rows.data[0]?.dur_ms', "rows.data.filter(r => r.name === 'x').length", 'rows.data'],
+    })).toEqual([]);
+
+    // Reading a step the rule did not declare, including through the step id
+    // of a step whose binding is its save_as, and with no inputs at all.
+    expect(diagnosticIssues(['rows'], {condition: 'other.data.length > 0'}))
+      .toEqual([at('diagnostic_input_undeclared', 'condition')]);
+    expect(diagnosticIssues(['rows'], {condition: 'load_rows.data.length > 0'}))
+      .toEqual([at('diagnostic_input_undeclared', 'condition')]);
+    expect(diagnosticIssues(undefined, {diagnosis: 'top ${rows.data[0].name} of ${rows.data.length}'}))
+      .toEqual(['diagnostic_inputs_missing steps[2].inputs', at('diagnostic_input_undeclared', 'diagnosis')]);
+    // Missing inputs crash the step even when no rule reads step data.
+    expect(diagnosticIssues(undefined, {})).toEqual(['diagnostic_inputs_missing steps[2].inputs']);
+    expect(diagnosticIssues(['rows'], {suggestions: ['ok', 'see ${other.data[0].name}']}))
+      .toEqual([at('diagnostic_input_undeclared', 'suggestions[1]')]);
+
+    // An evidence field cites declared data only, in the read-only grammar.
+    expect(diagnosticIssues(['rows'], {evidence_fields: ['rows.data[0].name', 'other.data[0].name']}))
+      .toEqual([at('diagnostic_input_undeclared', 'evidence_fields[1]')]);
+    expect(diagnosticIssues(['rows'], {evidence_fields: ['threshold_ms.data']}))
+      .toEqual([at('diagnostic_evidence_field_root', 'evidence_fields[0]')]);
+    const notEvidence = ['rows[0].name', 'rows', 'rows.length', '${rows.data[0].name}', 'rows.data.pop()',
+      'rows.data[0].name = "x"', 'rows.data.constructor', 'this.process', 'rows.data.map(r => r.name)'];
+    expect(diagnosticIssues(['rows'], {evidence_fields: notEvidence}))
+      .toEqual(notEvidence.map((_, index) => at('diagnostic_evidence_field_shape', `evidence_fields[${index}]`)));
+    expect(diagnosticIssues(['rows'], {evidence_fields: [
+      'rows?.data?.[1]?.name', 'rows.data.length', 'rows.data.find(r => r.name === "it")?.dur_ms',
+      "rows.data.filter(t => t.state !== 'D').length", 'rows.data.find(r => r.dur_ms >= -1.5)',
+    ]})).toEqual([]);
+
+    // In a condition, step data is read through `.data`; a placeholder the
+    // evaluator resolves as a path indexes a save_as validly, but JavaScript in
+    // a placeholder, or a whole `${…}` without a default, binds as code does.
+    const misread = [at('diagnostic_step_data_shape', 'condition')];
+    expect(diagnosticIssues(['rows'], {condition: 'rows[0]?.dur_ms > 1'})).toEqual(misread);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].dur_ms|0} > 1 && ${rows[0].dur_ms} > 0 && rows != null && (rows ?? 0)',
+      diagnosis: '${rows[0].name}'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].dur_ms * 2} > 1'})).toEqual(misread);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].dur_ms > 1}'})).toEqual(misread);
+    // Each read in a placeholder is checked, whichever comes first.
+    expect(diagnosticIssues(['rows'], {condition: '${rows.data.length > 0 && rows[0].x > 0}'})).toEqual(misread);
+    expect(diagnosticIssues(['rows'], {condition: '${rows[0].x > 0 && rows.data.length > 0}'})).toEqual(misread);
+    // String literals, escaped quotes included, are text.
+    expect(diagnosticIssues(['rows'], {condition: "rows.data[0].name === 'it\\'s other.data'"})).toEqual([]);
+
+    // An arrow parameter binds only inside its callback: not past a ternary
+    // branch, and not a destructuring key.
+    const undeclared = [at('diagnostic_input_undeclared', 'condition')];
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(other => other.x) && other.data.length > 0'}))
+      .toEqual(undeclared);
+    expect(diagnosticIssues(['rows'], {condition: '(false ? other => other.x : other.data.length > 0)'}))
+      .toEqual(undeclared);
+    expect(diagnosticIssues(['rows'], {condition: '(false ? other => other.x ?? 0 : other.data.length > 0)'}))
+      .toEqual(undeclared);
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(({other: value}) => other.data.length > value)'}))
+      .toEqual(undeclared);
+    // A destructuring key reads nothing; a destructuring default is a read.
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(({other: value}) => value > 0)'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.find(({value = other.data[0]}) => value > 0)'}))
+      .toEqual(undeclared);
+    // A rest parameter binds; a computed key and a parenthesized default are reads.
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some((...other) => other[0].x > 0)'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(({...other}) => other.x > 0)'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(({[other.data[0].key]: value}) => value > 0)'}))
+      .toEqual(undeclared);
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(({value = (other.data[0])}) => value > 0)'}))
+      .toEqual(undeclared);
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(([a, {b: [c]}], i) => a + c + i > 0)'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows.data.some(({dur_ms}) => dur_ms > 0) && rows.data.some(other => other ? other.x : 0)'}))
+      .toEqual([]);
+
+    // Step names inside a regex or comment are not reads; a comment or an escape
+    // between a step name and its member is read as the engine reads it.
+    expect(diagnosticIssues(['rows'], {condition: "/other.data/.test(rows.data[0].name) /* other.data */"})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows /* c */ [0].x > 0'}))
+      .toEqual([at('diagnostic_step_data_shape', 'condition')]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows. /* c */ data.length > 0 && rows.\\u0064ata.length > 0'})).toEqual([]);
+    expect(diagnosticIssues(['rows'], {condition: 'rows?.["data"]?.length > 0'}))
+      .toEqual([at('diagnostic_step_data_shape', 'condition')]);
+  });
+
+  it('rejects a diagnostic rule that reads a name no scope binds, only when the read is exact', () => {
+    const ruleIssues = (rule: Record<string, unknown>, context?: string[]) => {
+      const definition = skill('thresholds');
+      definition.inputs = [{name: 'slow_ms', type: 'number', default: 50}] as any;
+      if (context) definition.context = context;
+      definition.steps = [
+        {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
+        {id: 'check', type: 'diagnostic', inputs: ['rows'],
+          rules: [{condition: 'true', diagnosis: 'hit', confidence: 'high', ...rule}]} as any,
+      ];
+      return validateSkillDefinitionsInProcess({definitions: [definition]}).issues
+        .filter(entry => entry.code.startsWith('diagnostic_')).map(entry => `${entry.code} ${entry.path}`);
+    };
+    // A declared input, a runtime parameter, a context dependency and arrow parameters are bound.
+    expect(ruleIssues({condition: 'rows.data[0].dur_ms > (slow_ms ?? 50) && package && rows.data.some(r => r.x > 0)'}))
+      .toEqual([]);
+    expect(ruleIssues({condition: 'parent_value > 0'}, ['parent_value'])).toEqual([]);
+    // `inputs` is no binding, in a condition or a template placeholder.
+    expect(ruleIssues({condition: 'rows.data[0].dur_ms > (inputs?.slow_ms ?? 50)'}))
+      .toEqual(['diagnostic_root_unknown steps[1].rules[0].condition']);
+    expect(ruleIssues({diagnosis: 'over ${inputs.slow_ms}ms', suggestions: ['raise ${slow_ms|50}']}))
+      .toEqual(['diagnostic_root_unknown steps[1].rules[0].diagnosis']);
+    // A read that is not exact is a guess, so no check on root names reports it:
+    // locals, even ones named like a step, and an unparsed condition.
+    expect(ruleIssues({condition: 'rows.data.some(r => { const check = [r]; return check[0].x > 1; })'})).toEqual([]);
+    expect(ruleIssues({condition: 'rows.data.some(r => { const limit = 1; return r.x > limit; })'})).toEqual([]);
+    expect(ruleIssues({condition: 'rows.data.some(function(r) { return r.x > 1; })'})).toEqual([]);
+    expect(ruleIssues({condition: '({check(r) { return r.x > 1; }}).check(rows.data[0])'})).toEqual([]);
+    expect(ruleIssues({condition: '({get ok() { return true; }}).ok'})).toEqual([]);
+    expect(ruleIssues({condition: "rows.data[0].state === 'ok' OR missing"})).toEqual([]);
+  });
+
+  it('rejects a saved-result path read that states neither a default nor a guarding condition', () => {
+    const reader = skill('reader');
+    reader.steps = [
+      {id: 'probe', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
+      {id: 'bare', type: 'atomic', sql: "SELECT '${cov.data[0].status}' AS s"},
+      {id: 'defaulted', type: 'atomic', sql: "SELECT '${cov.data[0].status|}' AS s"},
+      {id: 'guarded', type: 'atomic', condition: 'cov.data?.length > 0', sql: "SELECT '${cov.data[0].status}' AS s"},
+    ];
+    const result = validateSkillDefinitionsInProcess({definitions: [reader]});
+    expect(result.issues.filter(issue => issue.code === 'result_path_read_undecided')
+      .map(issue => `${issue.severity} ${issue.path}`)).toEqual(['error steps[1].sql']);
+    expect(result.valid).toBe(false);
+    // Composing published overlays reports it without taking the scope offline.
+    const composed = validateSkillDefinitionsInProcess({definitions: [reader], resultPathReadSeverity: 'warning'});
+    expect(composed.issues.filter(issue => issue.code === 'result_path_read_undecided')
+      .map(issue => issue.severity)).toEqual(['warning']);
+    expect(composed.valid).toBe(true);
+  });
+
+  it('rejects a top-level key no loader reads, by the set of the definition type', () => {
+    const unknownKeys = (definition: Record<string, unknown>) =>
+      validateSkillDefinitionsInProcess({definitions: [definition as unknown as SkillDefinition]}).issues
+        .filter(entry => entry.code === 'skill_top_level_key_unknown').map(entry => entry.path);
+    const base = skill('top_level_keys');
+    expect(unknownKeys({...base, synthesis: {template: 'x'}, thresholds: {}, priority: 'high'}))
+      .toEqual(['synthesis', 'thresholds', 'priority']);
+    // A Skill may use the legacy spellings the loader folds into meta and output.
+    expect(unknownKeys({...base, tier: 'B', display: {level: 'summary'}, description: 'd', tags: ['t']})).toEqual([]);
+    // A pipeline is not normalized: it has its own keys and no legacy spellings.
+    const pipeline = {name: 'pipeline_x', version: '1', type: 'pipeline_definition', category: 'rendering',
+      meta: {}, detection: {}, teaching: {}, auto_pin: {}, analysis: {}};
+    expect(unknownKeys(pipeline)).toEqual([]);
+    expect(unknownKeys({...pipeline, display: {}, steps: []})).toEqual(['display', 'steps']);
+  });
+
+  it('validates every definition when no affected Skill is named, as a new Skill proposal does', () => {
+    const existing = skill('existing');
+    existing.steps = [
+      {id: 'rows', type: 'atomic', sql: 'SELECT 1'},
+      {id: 'check', type: 'diagnostic', inputs: ['rows'],
+        rules: [{condition: 'rows.data.length > (inputs?.limit ?? 1)', diagnosis: 'hit', confidence: 'high'}]} as any,
+    ];
+    const codes = validateSkillDefinitionsInProcess({definitions: [existing, skill('candidate')]}).issues.map(entry => entry.code);
+    expect(codes).toContain('diagnostic_root_unknown');
+  });
+
   it('rejects invalid display contracts on effective definitions', () => {
     const definition = skill('display');
     definition.output = {
@@ -303,7 +485,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('2');
+    expect(gate.validatorVersion).toBe('6');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({

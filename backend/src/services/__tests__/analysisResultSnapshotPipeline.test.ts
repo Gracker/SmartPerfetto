@@ -522,6 +522,64 @@ describe('analysis result snapshot pipeline', () => {
     ]));
   });
 
+  test.each<[string, (env: DataEnvelope) => void]>([
+    ['meta', env => { env.meta.traceSide = 'reference'; }],
+    ['the envelope', env => { (env as any).traceSide = 'reference'; }],
+    ['trace provenance', env => { (env as any).traceProvenance = {traceSide: 'reference'}; }],
+    ['another trace id', env => { env.meta.traceId = 'trace-b'; }],
+  ])('reads no metric from an envelope of the other trace, marked by %s', (_name, mark) => {
+    const startupEnvelope = (stepId: string, rows: unknown[][]): DataEnvelope => {
+      const base = envelope();
+      return {...base, meta: {...base.meta, stepId}, data: {columns: ['total_ms', 'first_frame_ms', 'running_ms'], rows}};
+    };
+    const reference = startupEnvelope('reference_summary', [[9999, 8888, 7777]]);
+    mark(reference);
+    const snapshotOf = (dataEnvelopes: DataEnvelope[]) => buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', traceId: 'trace-a', sessionId: 'session-a',
+      runId: 'run-a', query: 'compare startup', dataEnvelopes, createdAt: 1234, privateContext: NO_PRIVATE_CONTEXT,
+    });
+
+    expect(snapshotOf([reference])?.metrics).toEqual([]);
+    const current = startupEnvelope('summary', [[1450.5, 620, 300]]);
+    current.meta.traceId = 'trace-a';
+    const snapshot = snapshotOf([reference, current]);
+    expect(snapshot?.metrics.map(({key, value, source}) => ({key, value, stepId: source.stepId}))).toEqual([
+      {key: 'startup.total_ms', value: 1450.5, stepId: 'summary'},
+      {key: 'startup.first_frame_ms', value: 620, stepId: 'summary'},
+      {key: 'cpu.main_thread_running_ms', value: 300, stepId: 'summary'},
+    ]);
+    // The reference envelope stays in the evidence refs for comparison provenance.
+    expect(snapshot?.evidenceRefs.map(ref => ref.metadata?.stepId)).toContain('reference_summary');
+  });
+
+  test('keeps trace-wide frame counts out of app scrolling metrics', () => {
+    const scoped = (stepId: string, rows: Record<string, unknown>[], role: 'target' | 'global_context') => ({
+      ...envelope(),
+      meta: {...envelope().meta, source: 'scrolling_analysis', skillId: 'scrolling_analysis', stepId,
+        evidenceRefId: `data:${stepId}`, scopeProvenance: {version: 'process_scope_evidence@1' as const, entries: [{role,
+          scope: role === 'target'
+            ? {mode: 'exact_upid' as const, upid: 885, traceId: 'trace-a', traceSide: 'current' as const}
+            : {mode: 'unscoped' as const, traceId: 'trace-a', traceSide: 'current' as const}}]}},
+      data: {rows} as any,
+    });
+    const snapshot = buildCompletedAnalysisResultSnapshot({
+      tenantId: 'tenant-a', workspaceId: 'workspace-a', traceId: 'trace-a', sessionId: 'session-a', runId: 'run-a',
+      privateContext: NO_PRIVATE_CONTEXT,
+      query: '分析滑动性能',
+      dataEnvelopes: [
+        scoped('frame_timeline_population', [{total_frames: 697, jank_frames: 21, trace_duration_ms: 7816}], 'global_context'),
+        scoped('performance_summary', [{total_frames: 347, janky_frames: 7}], 'target'),
+      ],
+      createdAt: 1234,
+    });
+
+    expect(snapshot?.metrics).toEqual(expect.arrayContaining([
+      expect.objectContaining({key: 'scrolling.frame_count', value: 347}),
+      expect.objectContaining({key: 'scrolling.jank_count', value: 7}),
+      expect.objectContaining({key: 'trace.duration_ms', value: 7816}),
+    ]));
+  });
+
   test('uses stable DataEnvelope evidence refs without collapsing SQL comparison tables', () => {
     const currentSql = {
       ...envelope(),

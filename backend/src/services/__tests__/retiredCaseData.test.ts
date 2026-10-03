@@ -244,6 +244,7 @@ describe.each(PHASES)('retired learned cases in $name storage', phase => {
       scene: 'scrolling',
       domainPack: 'scrolling.v1',
       rootCause: 'shader_compile',
+      architectureType: undefined,
       audiences: ['app'],
       evidenceSignatures: {reason_code: 'shader_compile'},
       textQuery: 'shader compile makePipeline',

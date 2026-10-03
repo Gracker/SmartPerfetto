@@ -7,12 +7,27 @@ import {
   DEFAULT_BACKEND_PORT,
   DEFAULT_FRONTEND_PORT,
   ENTERPRISE_FEATURE_FLAG_ENV,
+  isKeylessLocalMode,
+  readOidcEnv,
   resolveAuthConfig,
   resolveFeatureConfig,
   resolveServerConfig,
   SMARTPERFETTO_BACKEND_PORT_ENV,
   SMARTPERFETTO_FRONTEND_PORT_ENV,
+  selectServerSecretRoot,
 } from '../index';
+import { parseFlagValue } from '../../utils/envFlag';
+
+function oidcEnv(scheme: 'http' | 'https'): NodeJS.ProcessEnv {
+  return {
+    SMARTPERFETTO_OIDC_ISSUER_URL: `${scheme}://idp.example.test`,
+    SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+    SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+    SMARTPERFETTO_OIDC_REDIRECT_URI: `${scheme}://app.example.test/api/auth/oidc/callback`,
+    SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+    FRONTEND_URL: `${scheme}://app.example.test`,
+  };
+}
 
 describe('enterprise feature flag', () => {
   it('defaults enterprise mode off', () => {
@@ -98,17 +113,41 @@ describe('enterprise feature flag', () => {
     });
   });
 
-  it('rejects trusted identity headers when the built-in OIDC flow is active', () => {
-    expect(() => resolveAuthConfig({
-      SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
-      SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
-      SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
-      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
-      SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
-      SMARTPERFETTO_SSO_TRUSTED_HEADERS: 'true',
-      FRONTEND_URL: 'https://app.example.test',
-    })).toThrow(/cannot be combined/);
+  // The OIDC client reads the override by the same rule (enterpriseOidcClient tests).
+  const plaintextOidcEnv = (override: string): NodeJS.ProcessEnv => ({
+    ...oidcEnv('http'),
+    SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP: override,
   });
+
+  it.each(['1', 'yes', 'on', 'enabled', ' TRUE '])(
+    'accepts plaintext OIDC URLs for the insecure override spelling %p',
+    (value) => {
+      expect(resolveAuthConfig(plaintextOidcEnv(value)).allowInsecureHttp).toBe(true);
+    },
+  );
+
+  it.each(['', '0', 'false', 'no', 'off', 'disabled', 'maybe'])(
+    'keeps rejecting plaintext OIDC URLs for the insecure override %p',
+    (value) => {
+      expect(() => resolveAuthConfig(plaintextOidcEnv(value))).toThrow(/absolute HTTPS URL/);
+    },
+  );
+
+  // Every spelling request authentication honours must also stop startup.
+  it.each(['true', '1', 'yes', 'on', 'enabled', ' TRUE '])(
+    'rejects trusted identity headers (%s) when the built-in OIDC flow is active',
+    (value) => {
+      expect(() => resolveAuthConfig({
+        SMARTPERFETTO_OIDC_ISSUER_URL: 'https://idp.example.test',
+        SMARTPERFETTO_OIDC_CLIENT_ID: 'client-a',
+        SMARTPERFETTO_OIDC_CLIENT_SECRET: 'client-secret-a',
+        SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+        SMARTPERFETTO_SERVER_SECRET: 'test-server-secret-at-least-32-bytes',
+        SMARTPERFETTO_SSO_TRUSTED_HEADERS: value,
+        FRONTEND_URL: 'https://app.example.test',
+      })).toThrow(/cannot be combined/);
+    },
+  );
 
   it('rejects the legacy static API key when the built-in OIDC flow is active', () => {
     expect(() => resolveAuthConfig({
@@ -207,5 +246,89 @@ describe('server port config', () => {
       'http://localhost:11000',
       'http://127.0.0.1:11000',
     ]));
+  });
+});
+
+describe('operator API key and keyless local mode', () => {
+  it('runs keyless only without an operator key and outside enterprise mode', () => {
+    expect(isKeylessLocalMode({})).toBe(true);
+    expect(isKeylessLocalMode({ SMARTPERFETTO_API_KEY: 'operator-key' })).toBe(false);
+  });
+
+  it.each(['1', 'true', 'yes', 'on', 'enabled'])(
+    'requires authentication for the enterprise spelling %p',
+    (value) => {
+      expect(isKeylessLocalMode({ [ENTERPRISE_FEATURE_FLAG_ENV]: value })).toBe(false);
+    },
+  );
+
+  // The authenticator demands the exact configured key, so a whitespace-only
+  // value locks the API; auth mode and the OIDC conflict check must agree.
+  it('treats a whitespace-only operator key as configured', () => {
+    const env = { SMARTPERFETTO_API_KEY: '   ' } as NodeJS.ProcessEnv;
+    expect(resolveAuthConfig(env).mode).toBe('api_key');
+    expect(isKeylessLocalMode(env)).toBe(false);
+    expect(() => resolveAuthConfig({ ...oidcEnv('https'), ...env }))
+      .toThrow(/cannot be combined with SMARTPERFETTO_API_KEY/);
+  });
+});
+
+describe('shared switch spelling', () => {
+  it.each([
+    ['1', true], ['TRUE', true], [' yes ', true], ['on', true], ['enabled', true],
+    ['0', false], ['False', false], ['no', false], ['off', false], ['disabled', false],
+    [undefined, null], ['', null], ['   ', null], ['garbage', null],
+  ])('reads %p as %p', (value, expected) => {
+    expect(parseFlagValue(value)).toBe(expected);
+  });
+});
+
+describe('OIDC environment reader', () => {
+  it('trims each value and treats a blank one as absent', () => {
+    expect(readOidcEnv({
+      SMARTPERFETTO_OIDC_ISSUER_URL: '  https://idp.example.test  ',
+      SMARTPERFETTO_OIDC_CLIENT_ID: '   ',
+      SMARTPERFETTO_OIDC_REDIRECT_URI: 'https://app.example.test/api/auth/oidc/callback',
+    })).toEqual({
+      issuerUrl: 'https://idp.example.test',
+      redirectUri: 'https://app.example.test/api/auth/oidc/callback',
+    });
+  });
+
+  it('names exactly the blank or missing keys when OIDC is partial', () => {
+    expect(() => resolveAuthConfig({
+      ...oidcEnv('https'),
+      SMARTPERFETTO_OIDC_CLIENT_ID: '   ',
+      SMARTPERFETTO_OIDC_CLIENT_SECRET: undefined,
+    })).toThrow(
+      'OIDC mode requires SMARTPERFETTO_OIDC_CLIENT_ID, SMARTPERFETTO_OIDC_CLIENT_SECRET; '
+      + 'refusing to start with a partial OIDC configuration',
+    );
+  });
+});
+
+describe('server secret root selection', () => {
+  const long = (label: string) => `${label}-secret-padded-to-at-least-32-bytes`;
+
+  // Whenever the OIDC startup guard accepts the dedicated secret, every
+  // signing purpose (32-byte and 16-byte minimums) derives from that value.
+  it.each([
+    [{ SMARTPERFETTO_SERVER_SECRET: long('server') }, long('server')],
+    [{ SMARTPERFETTO_SSO_COOKIE_SECRET: `  ${long('cookie')}  ` }, long('cookie')],
+    [{ SMARTPERFETTO_SERVER_SECRET: '   ', SMARTPERFETTO_SSO_COOKIE_SECRET: long('cookie') }, long('cookie')],
+    [{ SMARTPERFETTO_SERVER_SECRET: long('server'), SMARTPERFETTO_SSO_COOKIE_SECRET: long('cookie') }, long('server')],
+  ])('selects the secret the OIDC startup guard accepted (%p)', (secrets, expected) => {
+    const env = { ...oidcEnv('https'), SMARTPERFETTO_SERVER_SECRET: undefined, ...secrets };
+    expect(resolveAuthConfig(env).oidcEnabled).toBe(true);
+    expect(selectServerSecretRoot(env, { minimumBytes: 32 })).toBe(expected);
+    expect(selectServerSecretRoot(env, { minimumBytes: 16 })).toBe(expected);
+  });
+
+  it('refuses a configured but short dedicated secret instead of skipping it', () => {
+    expect(() => resolveAuthConfig({
+      ...oidcEnv('https'),
+      SMARTPERFETTO_SERVER_SECRET: 'short',
+      SMARTPERFETTO_SSO_COOKIE_SECRET: long('cookie'),
+    })).toThrow(/SMARTPERFETTO_SERVER_SECRET \(at least 32 bytes\)/);
   });
 });

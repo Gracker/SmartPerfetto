@@ -37,6 +37,7 @@ import {proposalSqlRegressionTesting} from '../proposalSqlRegression';
 import {ProposalStore} from '../proposalStore';
 import {serializeProposalCandidateContent} from '../proposalSemanticGate';
 import {validateProposalStatic} from '../proposalStaticGate';
+import type {SkillDefinition} from '../../skillEngine/types';
 import {
   buildStrategyRegistrySnapshot,
   fingerprintStrategyDefinition,
@@ -823,6 +824,65 @@ describe('M7 static gate strategy_section Skill calls', () => {
     );
     expect(proof.validatorCodes).toEqual([]);
     expect(proof.verdict).toBe('passed');
+  });
+});
+
+describe('M7 static gate saved-result path reads', () => {
+  const reader = (name: string, sql: string): SkillDefinition => ({
+    name, version: '1', type: 'composite', meta: {display_name: name, description: name},
+    steps: [
+      {id: 'probe', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
+      {id: 'reader', type: 'atomic', sql},
+    ],
+  } as SkillDefinition);
+  const undecided = "SELECT '${cov.data[0].status}' AS s";
+  // A Skill already in the effective registry that predates the rule.
+  const legacy = reader('legacy_reader', undecided);
+
+  async function gate(candidateSql: string) {
+    const yamlText = [
+      'name: new_reader', 'version: "1"', 'type: composite',
+      'meta:', '  display_name: New Reader', '  description: Bounded test skill',
+      'steps:',
+      '  - id: probe', '    type: atomic', '    sql: SELECT 1 AS status', '    save_as: cov',
+      '  - id: reader', '    type: atomic', `    sql: ${JSON.stringify(candidateSql)}`, '',
+    ].join('\n');
+    const proposal = draftProposal({
+      kind: 'new_skill_draft',
+      tier: 'T5a',
+      deltas: [{
+        op: 'add', targetKind: 'skill_overlay', targetId: 'new_reader', operationId: 'new_reader',
+        anchor: 'skills[id="new_reader"]', baseContentHash, after: yamlText,
+      }],
+    });
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-new-reader',
+        targetKind: 'skill_overlay',
+        serializedContent: yamlText,
+      }),
+      base: {
+        targetId: 'new_reader', contentHash: baseContentHash, registryFingerprint,
+        skillRegistryFingerprint: registryFingerprint, strategyRegistryFingerprint: registryFingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration,
+      },
+      gateAttempt: {attemptId: 'attempt-1', ordinal: 1, gatePolicyFingerprint: canonicalContentHash('gate-policy')},
+      options: {...staticValidation(), skillSnapshot: {definitions: [legacy]}},
+    });
+  }
+
+  it('rejects the read in the Skill the candidate defines, not in one it did not touch', async () => {
+    const clean = await gate("SELECT '${cov.data[0].status|}' AS s");
+    expect(clean.validatorCodes).toEqual([]);
+    expect(clean.warningCodes).toEqual(['result_path_read_undecided']);
+    const offending = await gate(undecided);
+    expect(offending.validatorCodes).toEqual(['result_path_read_undecided']);
+    expect(offending.verdict).toBe('failed');
   });
 });
 

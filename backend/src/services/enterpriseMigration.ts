@@ -142,6 +142,8 @@ export function resolveEnterpriseMigrationPlan(
       `Built-in OIDC requires DB-authoritative storage; unset ${ENTERPRISE_MIGRATION_PHASE_ENV} or set it to retired`,
     );
   }
+  // Deliberately narrower than parseFlagValue: confirming an irreversible
+  // cutover accepts only 1/true/yes/on, so do not fold it into the shared set.
   if (
     phase === 'cutover' &&
     !['1', 'true', 'yes', 'on'].includes(

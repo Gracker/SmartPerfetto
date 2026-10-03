@@ -4,6 +4,10 @@
 
 import type { Request, Response } from 'express';
 import { requireRequestContext } from '../middleware/auth';
+import { sendRouteError } from '../middleware/routeFailure';
+import { BatchTraceRequestError, invalidBatchTraceRequest } from '../services/batchTrace/batchTraceRequestError';
+import { SkillPackRequestError } from '../services/skillPacks/skillPackRequestError';
+import { SkillRegistryRejectionError } from '../services/skillEngine/skillLoader';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { repositoryScopeFromRequestContext } from '../services/enterpriseRepository';
 import { createAnalysisResultSnapshotRepository } from '../services/analysisResultSnapshotStore';
@@ -29,7 +33,7 @@ function stringBody(value: unknown): string | null {
 function routeParam(req: Request, name: string): string {
   const value = req.params[name];
   if (typeof value === 'string' && value.trim()) return value.trim();
-  throw new Error(`${name} is required`);
+  throw invalidBatchTraceRequest(`${name} is required`);
 }
 
 function objectBody(value: unknown): Record<string, unknown> {
@@ -56,7 +60,7 @@ function optionalInteger(value: unknown): number | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   const parsed = typeof value === 'number' ? value : Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
-    throw new Error('maxConcurrency must be a positive integer');
+    throw invalidBatchTraceRequest('maxConcurrency must be a positive integer');
   }
   return parsed;
 }
@@ -90,10 +94,16 @@ function selectedSnapshotIds(run: BatchTraceRunV1, ordinals: number[]): string[]
     .filter((id): id is string => typeof id === 'string' && id.length > 0);
 }
 
+/**
+ * Batch request errors and workspace skill pack collisions keep their text;
+ * anything else (stores, Skill definitions, trace processing) gets fixed text.
+ */
 function errorResponse(res: Response, error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  const status = message.includes('not_found') || message.includes('not found') ? 404 : 400;
-  res.status(status).json({ success: false, error: message });
+  sendRouteError(res, error, {
+    code: 'batch_trace_request_failed',
+    error: 'Batch trace request failed',
+    logLabel: '[BatchTrace] Request error',
+  }, [BatchTraceRequestError, SkillPackRequestError, SkillRegistryRejectionError]);
 }
 
 export function createBatchTraceController() {

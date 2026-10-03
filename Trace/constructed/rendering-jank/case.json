@@ -825,7 +825,9 @@
           "freq_limit_trace_episode_id",
           "rt_freq_limit_state",
           "rt_freq_limit_binding_ns",
-          "rt_freq_limit_policy_cpu"
+          "rt_freq_limit_policy_cpu",
+          "ramp_to_high_ms",
+          "freq_ramp_evidence"
         ],
         "required_marker": "SmartPerfetto::CASE::rendering-jank",
         "assertions": [
@@ -1185,6 +1187,7 @@
           "init_cpu_topology",
           "frame_timeline_check",
           "vsync_config",
+          "frame_timeline_population",
           "buffer_tx_coverage_probe",
           "performance_summary",
           "buffer_tx_performance_fallback",
@@ -1214,6 +1217,7 @@
           "main_thread_work_cadence",
           "frame_timeline_check",
           "vsync_config",
+          "frame_timeline_population",
           "buffer_tx_coverage_probe",
           "performance_summary",
           "buffer_tx_performance_fallback",
@@ -1236,6 +1240,7 @@
         ],
         "forced_sql_steps": [
           "vsync_config",
+          "frame_timeline_population",
           "buffer_tx_coverage_probe",
           "performance_summary",
           "buffer_tx_performance_fallback",
@@ -1295,6 +1300,7 @@
           "big_avg_freq_mhz",
           "big_max_freq_mhz",
           "ramp_ms",
+          "freq_ramp_evidence",
           "top_slice_little_pct",
           "top_slice_big_pct",
           "top_slice_runnable_pct",

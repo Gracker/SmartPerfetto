@@ -5,6 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import {CASE_APP_ARCHITECTURE_FIELD, validateCaseAppArchitecture} from './caseArchitecture';
 import {parseCaseMarkdown} from './caseMarkdownParser';
 import {validateCaseDomainPack} from './caseDomainPacks';
 import {isRetiredCaseId} from './retiredCaseData';
@@ -158,6 +159,16 @@ function normalizeFrontmatter(
   const curator = optionalStringField(raw, 'curator', parsed.filePath, issues);
   const taxonomy = normalizeTaxonomy(raw.taxonomy, parsed.filePath, issues);
   const context = recordField(raw, 'context', parsed.filePath, issues);
+  if (context) {
+    const architecture = validateCaseAppArchitecture(context[CASE_APP_ARCHITECTURE_FIELD]);
+    if (!architecture.ok) {
+      issues.push(issue(
+        parsed.filePath,
+        architecture.message,
+        `context.${CASE_APP_ARCHITECTURE_FIELD}`,
+      ));
+    }
+  }
   const evidenceSignatures = normalizeEvidenceSignatures(
     raw.evidence_signatures,
     parsed.filePath,

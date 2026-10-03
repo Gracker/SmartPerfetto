@@ -4,6 +4,7 @@
 
 import {createHash} from 'crypto';
 import {decodeRuntimeToolResult, readRuntimeToolResultFacts, runtimeToolReceiptMetadata} from '../../agentRuntime/runtimeToolResult';
+import {isSourceAccessRefusalAction} from '../codebase/sourceAccessRefusal';
 
 import type {
   BackgroundKnowledgeReference,
@@ -53,6 +54,8 @@ export interface ProjectedPayload {
   outcome: CodeLookupOutcome;
   legacyPath: boolean;
   backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
+  /** A closed source-access refusal action; narration reads it to say "refused", not "failed". */
+  action_required?: string;
 }
 
 const SENSITIVE_RAG_TOOL_NAMES = new Set([
@@ -148,6 +151,9 @@ function projectOnDemandSourceResult(
     sourceRefs,
     outcome,
     legacyPath: false,
+    ...(candidate.success === false && isSourceAccessRefusalAction(candidate.action_required)
+      ? {action_required: candidate.action_required}
+      : {}),
   };
 }
 

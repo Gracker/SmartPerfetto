@@ -3,15 +3,18 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import express from 'express';
+import { readOidcEnv } from '../config';
 import {
   createPkceChallenge,
   EnterpriseOidcClient,
   type EnterpriseOidcUserInfo,
   type OidcExchangeOptions,
 } from '../services/enterpriseOidcClient';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import {
   EnterpriseSsoService,
   enterpriseSsoCookies,
+  OidcLoginRejectedError,
   normalizeOidcReturnTo,
   type OnboardingResult,
 } from '../services/enterpriseSsoService';
@@ -78,9 +81,7 @@ function tokenFromRequest(req: express.Request, service: EnterpriseSsoService): 
 
 function oidcCallbackCookiePath(): string {
   try {
-    return new URL(
-      process.env.SMARTPERFETTO_OIDC_REDIRECT_URI || '',
-    ).pathname || '/api/auth/oidc/callback';
+    return new URL(readOidcEnv().redirectUri || '').pathname || '/api/auth/oidc/callback';
   } catch {
     return '/api/auth/oidc/callback';
   }
@@ -202,10 +203,11 @@ export function createEnterpriseAuthRouter(deps: EnterpriseAuthRouteDeps = {}): 
       ));
       return res.redirect(302, authorizationUrl);
     } catch (error) {
-      return res.status(500).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to start OIDC login',
-      });
+      return sendRouteFailure(res, {
+        code: 'oidc_login_failed',
+        error: 'Failed to start OIDC login',
+        logLabel: '[EnterpriseAuth] OIDC login error',
+      }, error);
     }
   });
 
@@ -268,10 +270,13 @@ export function createEnterpriseAuthRouter(deps: EnterpriseAuthRouteDeps = {}): 
       const { accessToken: _accessToken, ...publicResult } = result;
       return res.json({ success: true, ...publicResult, returnTo: statePayload.returnTo });
     } catch (error) {
-      return res.status(502).json({
-        success: false,
-        error: error instanceof Error ? error.message : 'OIDC callback failed',
-      });
+      // The identity provider's and token library's messages stay in the log.
+      return sendRouteError(res, error, {
+        status: 502,
+        code: 'oidc_callback_failed',
+        error: 'OIDC callback failed',
+        logLabel: '[EnterpriseAuth] OIDC callback error',
+      }, [OidcLoginRejectedError]);
     }
   });
 

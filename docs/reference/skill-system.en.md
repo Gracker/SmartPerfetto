@@ -109,6 +109,19 @@ child's data, including partial results returned before the failure.
 `save_from` is honoured only on a top-level step of the parent, and
 `validate:skills` rejects an unknown target step.
 
+Layered output (the composite path behind the Skill HTTP API and HTML report)
+shows a reference step the same way: as the default child step's data and that
+step's own scope provenance (none when the step declares none, never the merged
+scope of every child step). A failed reference shows its failure with no child
+rows; when the step is `optional`, the failure is shown as an optional error
+(`executionStatus: optional_error`, as for an optional query) and does not fail
+the Skill.
+
+An iterator's per-item results attach as expandable data to the step whose
+rows it read: the step that bound its `source` name just before the iterator
+ran (or the step of that id), including when several steps declare the same
+`save_as`.
+
 When the default child step is itself a Skill reference, the binding holds the
 grandchild Skill's result: expressions reading `.data` select one more level by
 the same rule, diagnostic and AI `inputs` receive that result object, and an
@@ -116,6 +129,50 @@ iterator cannot iterate it. `save_from` selects only a top-level step of the
 direct child and cannot reach into the grandchild: when the parent needs
 specific fields, bind the child's own read step rather than that reference
 step.
+
+A `diagnostic` step lists in `inputs` every step it reads (by step id or
+`save_as`); those inputs are its reported `data.inputs` and the only names an
+`evidence_fields` entry may cite. Each rule has a `condition`, a `diagnosis`
+template, a literal `confidence`, optional `suggestions` and optional
+`evidence_fields`:
+
+```yaml
+- id: diagnose
+  type: diagnostic
+  inputs: [startups]
+  rules:
+    - condition: "startups.data[0]?.dur_ms > 2000"
+      severity: critical
+      confidence: high
+      diagnosis: "Startup took ${startups.data[0].dur_ms}ms"
+      evidence_fields:
+        - startups.data[0]?.dur_ms
+        - startups.data.length
+```
+
+An evidence field is a read-only path, not a JavaScript expression or a
+`${...}` template: an input's `name.data` (or `name?.data`), then any of
+`.column`, `[n]`, `.length` and `.find(r => r.column OP literal)` /
+`.filter(...)` (OP is a comparison, literal a number, quoted string, boolean or
+`null`), each optionally `?.`. It reads the same value the condition sees as
+`name.data`, reads own data properties only, calls nothing and writes nothing;
+a predicate compares scalar values, and a missing or non-scalar value never
+matches. Its value is bounded before it
+is reported: a row set becomes `{_rowCount, _firstRow}`, a row keeps its
+scalar fields, and long strings are cut. A fired rule also reports a bounded sample of every input its condition reads, whether written `name.data`, `name?.data` or `name?.["data"]`; a name that appears only inside a string or comment is not read. `validate:skills` rejects an evidence
+field outside that grammar or rooted outside `inputs`, a rule that reads a step
+missing from `inputs`, a condition that reads step data other than through
+`.data` (a placeholder resolved as a path, `${name[0].x|default}` or an
+embedded `${name[0].x}`, may still index it; JavaScript inside a placeholder,
+and a whole `${...}` without a default, bind as the condition does), a
+diagnostic step without `inputs`, and a rule that reads a name no scope binds.
+The checks on root names apply only when the roots read are certain; a
+condition with a function body, method or block, where a local may be
+declared, is not reported.
+Read a Skill parameter such as a threshold by its own name, for example
+`(threshold_ms ?? 50)`: there is no `inputs` object in scope, so
+`inputs?.threshold_ms` is always `undefined` and the rule silently uses its
+default.
 
 ## Rendering Pipeline Catalog
 
@@ -144,7 +201,11 @@ Skill parameters use `${param|default}`. Placeholders, `condition`, iterator `fi
 4. **Input**: `${package}` → `params.package`, including a declared `default`
 5. **Inherited context**: `${parent_var}` → `inherited[parent_var]`, the calling Skill's inherited values and `save_as` bindings
 
+A SQL path read of an earlier step's result (`${step_id.data[0].field}`) must state its intent: a `|default` (the step runs when the result has no row; usually `|` inside quotes and `|NULL` elsewhere), or a step `condition` with the top-level conjunct `step_id.data?.length > 0` (the step does not run without a row; a condition that merely mentions the result and can be true without a row does not count). This runtime binds a missing value with the type default below and runs; the public Perfetto-Skills runtime treats a path without a default as a dependency and skips the whole step when the result has no row. `validate:skills` rejects a read that states neither with `result_path_read_undecided`.
+
 A Skill's own binding therefore hides a caller's value of the same name, and a `save_as` reads its declared binding (including the child step `save_from` selects) rather than a same-named step result. A step's `save_as` may not reuse another step's id (`validate:skills` reports `save_as_step_id_collision`); naming the binding after its own step is the usual form. Once a scope binds the root name, lookup never falls back to a lower scope (a `null` variable does not yield to a same-named input). When the full path then resolves to `null` or `undefined` (unbound, bound to `null`, `[0]` of an empty array, a missing field), the inline `|default` applies, then the type default (`''` inside SQL quotes, otherwise `NULL`). The engine escapes substituted values to reduce SQL injection risk.
+
+In expressions (`condition`, iterator `filter`, JS expressions inside `${...}`, diagnosis text) a fixed set of names always means the standard language global and is never resolved through the five scopes above: `Infinity`, `NaN`, `undefined`, `isFinite`, `isNaN`, `parseFloat`, `parseInt`, `decodeURI`, `decodeURIComponent`, `encodeURI`, `encodeURIComponent`, `Array`, `BigInt`, `Boolean`, `Date`, `Error`, `Intl`, `JSON`, `Map`, `Math`, `Number`, `Object`, `RegExp`, `Set`, `String`, `Symbol` (the list is `EXPRESSION_GLOBALS` in `expressionUtils.ts`). An input, `save_as` or data column with one of these names cannot be read by an expression. Every other name, including host global names such as `window`, `process` and `console`, resolves through the five scopes and is `undefined` when none binds it; reserved words (such as `enum` or `default`) are never taken as names, so writing one inside a string does not affect evaluation. `validate:skills` checks step `condition` references against the same vocabulary: a `${path|default}` placeholder reads the root of `path` (also inside quotes), while arrow-function parameters and static object-literal keys are not references. Only ASCII names are checked; contextual keywords (`async`, `await`, `let`, `of`, `static`, `yield`) and `window`, `console` and `globalThis` need no declaration. Where strings, templates, regexes and comments end is confirmed by the JS engine's own compiler; a condition that does not compile, or cannot be confirmed, falls back to a coarse scan (identifiers outside paired quotes, not after `.`), which may read words inside regexes, templates or comments as references.
 
 A step that declares `save_as` always binds that name once it ran: the selected data on success (`[]` for an optional step skipped by its condition or whose query errored), and `null`, carrying that step's own result scope (with `save_from`, the named child step's scope, or none when that step is absent), when the step did not succeed (a non-optional step skipped by its condition, an unavailable exact scope, or a failed step of any type, including a failed optional Skill reference). A step skipped by its condition did not run, so it never replaces a binding an earlier step of the same Skill made; alternative steps under exclusive conditions can therefore declare one name.
 
@@ -160,6 +221,7 @@ Display metadata tells the frontend how to render results:
 | `columns` | Column definitions for table rendering |
 | `highlights` | Conditional highlighting rules |
 | `expandable` | Whether JSON/details can be expanded |
+| `expandableBindSource` | `save_as` name whose rows expand this step's rows; they carry the scope provenance of that binding |
 
 ## Layered Results
 
@@ -231,6 +293,16 @@ review expectations:
 | `skill-include-budget-soft-cap` | Warns when `prerequisites.modules` exceeds 8 modules |
 | `skill-step-id-uniqueness` | Requires unique step ids inside each Skill |
 | `skill-vendor-override-runtime-conformant` | Requires vendor overrides to contain real `additional_steps`, vendor signatures, and a registered base Skill |
+| `skill-top-level-key-unknown` | Rejects a top-level key no loader reads: a Skill may use the `SkillDefinition` fields plus the legacy spellings the loader normalizes (`display`, `description`, `tags`, `icon`, `display_name`, `displayName`); a pipeline only the `PipelineDefinition` fields; a vendor override only `extends`, `version`, `meta`, `vendor_detection` and `additional_steps`. An external Skill Pack with such a key is rejected as a whole |
+| `result-path-read-undecided` | Rejects a SQL placeholder that reads an earlier top-level step result by path (in `sql` and `exact_sql.sql`) without a `\|default` or a step `condition` with the top-level conjunct `<result>.data?.length > 0` (`result_path_read_undecided`). Self-Evolution proposal gates reject it in the Skill a proposal defines or changes (including that Skill's earlier overlay steps) and only warn about other already-published overlays |
+
+A top-level key nothing reads is not a harmless comment: it reads as
+configuration that takes effect. A top-level `diagnostics`, `thresholds`,
+`synthesis` and vendor `thresholds_override` all sat in the corpus doing
+nothing, and the public projection rendered them as live. Diagnostic rules
+belong in a `type: diagnostic` step and summaries in step-level `synthesize`;
+a vendor override contributes only its vendor, display name and the ids of its
+`additional_steps`, as a hint on the base Skill's result.
 
 `backend/skills/_template/` contains authoring templates and is not loaded into
 the runtime registry. After copying a template, remove placeholders, place the

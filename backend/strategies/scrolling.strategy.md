@@ -444,6 +444,7 @@ invoke_skill("scrolling_analysis", { start_ts: "<trace_start>", end_ts: "<trace_
   - `no_frame_timeline_coverage`：只能交付目标包 BufferTX 正向 delta 支持的帧产出数和 FPS；不能从 BufferTX 推出 App/SF 责任、掉帧率、峰值长帧或帧根因；实际主线程任务/等待仍可独立分析。相应小节标记“当前 trace 证据不可用”，不得填 0 或根据 FPS 推断无卡顿。
   - `partial_frame_timeline_coverage`：overview 帧数/FPS 以 BufferTX 为准；`jank_type_stats` / `batch_frame_root_cause` 仅是 FrameTimeline 覆盖到的 sparse sample。只能表述“已观测样本中的根因”，必须引用 `evidence_scope=partial_sample` 和 coverage ratio，不得写成全量根因分布或用样本比例估算全量帧数。
   - `frame_timeline_to_buffer_tx_ratio` = FrameTimeline 帧数 / BufferTX 产出帧数，是两个独立来源的比值，**不是有界覆盖率**（字段与标签都已按"帧数比"命名，不要再当成百分比覆盖率读）：`> 1 说明 BufferTX 少计`（track 选择或 rising-edge 判定漏帧），不代表覆盖超过 100%。此时以 FrameTimeline 为准并写明 BufferTX 少计，不要表述成“覆盖率 100.x%”。
+- `jank_type_stats` / `batch_frame_root_cause` 的 `evidence_scope`：只有 `full_frame_timeline` 是经 BufferTX 比对的全量分布；`frame_timeline_only_unbenchmarked`（精确 UPID 或无 BufferTX 候选）写成 FrameTimeline 统计并注明未经 BufferTX 校核；`coverage_unverified`（覆盖探针无结果或状态未知）只能写成“已观测样本中的根因”。
 - GraphicBuffer/dma-buf 是图形物理内存证据面；BufferQueue/Fence slice 只能证明队列、同步和背压候选，不能单独证明图形内存泄漏或占用峰值。
 
 **Phase 1.8 — 帧内指标 / GPU / CPU 利用率补充（按需执行）：**
@@ -562,7 +563,7 @@ invoke_skill("frame_production_gap", { process_name: "<包名>", start_ts: "<滑
 Phase 1 的 `batch_frame_root_cause` 已包含每个**已分析帧**的完整统计数据。先检查 root-cause X/Y coverage；可行动分类仍需按 Phase 1.9 补齐机制证据，terminal codes 按其证据边界直接收口：
 - MainThread 四象限（Q1 大核运行 / Q2 小核运行 / Q3 调度等待 / Q4 休眠）
 - RenderThread 四象限（render_q1 大核 / render_q3 调度 / render_q4 休眠）
-- CPU 大核频率（big_avg_freq_mhz / big_max_freq_mhz）+ 升频延迟（ramp_ms）
+- CPU 大核频率（big_avg_freq_mhz / big_max_freq_mhz）+ 升频延迟（ramp_ms；只在 freq_ramp_evidence = observed，即整帧每个大核频率都有观测时有值；为空表示升频时间未知，不是 0）
 - Binder 同步重叠（binder_overlap_ms）+ GC 重叠（gc_overlap_ms）
 - Input 管线证据（input_stage / input_slice_ms / input_handling_ms / input_event_count / input_events_json）
 - 根因分类（reason_code）+ 关键操作（top_slice_name / top_slice_ms）
@@ -645,7 +646,7 @@ invoke_skill("jank_frame_detail", {
    - 主线程：Q1=XX% Q2=XX% Q3=XX% Q4=XX%
    - RenderThread：Q1=XX% Q3=XX% Q4=XX%
    - 关键操作：[top_slice_name] 耗时 XXms
-   - CPU 频率：均频 XXMHz / 峰频 XXMHz，升频延迟 XXms
+   - CPU 频率：均频 XXMHz / 峰频 XXMHz，升频延迟 XXms（ramp_ms 为空时写“升频未观测”）
    - Binder: XXms / GC: XXms
    - Input: 阶段 [input_stage] / 重叠 XXms / 最慢处理 XXms（如有 input 证据）
    ```

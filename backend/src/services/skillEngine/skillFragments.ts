@@ -9,6 +9,7 @@
 
 import fs from 'fs';
 import path from 'path';
+import {substituteSqlPlaceholders} from './sqlTemplate';
 
 /** The built-in skills directory shipped with the backend. */
 export function builtInSkillsDir(): string {
@@ -37,63 +38,6 @@ export function builtInSkillFragment(file: string): string {
   const content = readSkillFragmentFile(path.join(builtInSkillsDir(), 'fragments'), file);
   builtInCache.set(file, content);
   return content;
-}
-
-/** One `${path}` or `${path|default}` placeholder found in SQL. */
-export interface SqlPlaceholder {
-  /** The whole token, e.g. `${max_rows|50}`. */
-  match: string;
-  path: string;
-  /** The text after `|`, when the placeholder declares one. */
-  defaultValue?: string;
-  /** Whether the token sits inside a single-quoted SQL string literal. */
-  insideQuotes: boolean;
-}
-
-/**
- * True when `offset` in `sql` lies inside a single-quoted literal (`''` escapes
- * a quote). Outside a literal, `--` line comments and `/* *\/` block comments
- * are skipped, so an apostrophe in comment prose ("process's") does not flip
- * the state for every later placeholder. A placeholder inside a comment reads
- * as unquoted.
- */
-function insideSingleQuotes(sql: string, offset: number): boolean {
-  let inSingle = false;
-  for (let i = 0; i < offset; i++) {
-    const ch = sql[i];
-    if (inSingle) {
-      if (ch !== "'") continue;
-      if (sql[i + 1] === "'") i++;
-      else inSingle = false;
-    } else if (ch === "'") {
-      inSingle = true;
-    } else if (sql.startsWith('--', i) || sql.startsWith('/*', i)) {
-      const close = ch === '-' ? '\n' : '*/';
-      const end = sql.indexOf(close, i + 2);
-      if (end < 0 || end + close.length > offset) return false;
-      i = end + close.length - 1;
-    }
-  }
-  return inSingle;
-}
-
-/**
- * The one placeholder scanner for Skill SQL and fragments: every `${...}`
- * token is handed to `resolve`, which returns its SQL text or throws. Skill
- * steps and the critical-path engine bind values differently; they find and
- * parse placeholders the same way.
- */
-export function substituteSqlPlaceholders(sql: string, resolve: (placeholder: SqlPlaceholder) => string): string {
-  return sql.replace(/\$\{([^}]+)\}/g, (match: string, body: string, offset: number, full: string) => {
-    const raw = String(body ?? '').trim();
-    const pipe = raw.indexOf('|');
-    return resolve({
-      match,
-      path: pipe >= 0 ? raw.slice(0, pipe).trim() : raw,
-      ...(pipe >= 0 ? {defaultValue: raw.slice(pipe + 1).trim()} : {}),
-      insideQuotes: insideSingleQuotes(full, offset),
-    });
-  });
 }
 
 /**

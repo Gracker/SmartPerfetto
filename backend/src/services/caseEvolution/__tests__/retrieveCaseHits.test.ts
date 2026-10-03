@@ -31,6 +31,7 @@ describe('retrieveCaseHits', () => {
         ['gc_jank', 1, 2, 'APP', 1, '[]'],
       ])],
       sceneType: 'scrolling',
+      architectureType: 'FLUTTER',
       retrieve,
     });
 
@@ -38,6 +39,8 @@ describe('retrieveCaseHits', () => {
     expect(retrieve).toHaveBeenCalledTimes(1);
     expect(retrieve.mock.calls[0][0]).toMatchObject({
       rootCause: 'shader_compile',
+      // The run's architecture reaches every query, so a case declared for another one is filtered.
+      architectureType: 'FLUTTER',
       evidenceSignatures: { reason_code: 'shader_compile', vsync_missed: 2, render_slices: ['DrawFrame'] },
       evidenceRefIds: ['data:scrolling:root-causes'],
     });
@@ -45,14 +48,14 @@ describe('retrieveCaseHits', () => {
 
   it('retrieves nothing without trace clusters, whatever the answer concluded', () => {
     const retrieve = jest.fn(() => [rec('case-shader')]);
-    expect(retrieveCaseHits({ dataEnvelopes: [], sceneType: 'scrolling', retrieve })).toEqual([]);
+    expect(retrieveCaseHits({ dataEnvelopes: [], sceneType: 'scrolling', architectureType: undefined, retrieve })).toEqual([]);
     expect(retrieve).not.toHaveBeenCalled();
   });
 
   it('retrieves nothing for another scene', () => {
     const retrieve = jest.fn(() => [rec('case-shader')]);
     const dataEnvelopes = [clusterEnvelope([['shader_compile', 4, 20, 'APP', 2, '[]']])];
-    expect(retrieveCaseHits({ dataEnvelopes, sceneType: 'startup', retrieve })).toEqual([]);
+    expect(retrieveCaseHits({ dataEnvelopes, sceneType: 'startup', architectureType: undefined, retrieve })).toEqual([]);
     expect(retrieve).not.toHaveBeenCalled();
   });
 
@@ -64,6 +67,7 @@ describe('retrieveCaseHits', () => {
     const hits = retrieveCaseHits({
       dataEnvelopes,
       sceneType: 'scrolling',
+      architectureType: undefined,
       retrieve: query => Array.from({ length: 6 }, (_, index) => rec(`case-${query.rootCause === 'gc_jank' ? index + 3 : index}`)),
     });
     expect(hits.map(hit => hit.caseId)).toEqual(['case-0', 'case-1', 'case-2', 'case-3', 'case-4', 'case-5', 'case-6', 'case-7']);

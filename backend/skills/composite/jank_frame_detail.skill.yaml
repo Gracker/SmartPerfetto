@@ -2,6 +2,9 @@
 # Copyright (C) 2024-2026 Gracker (Chris)
 # This file is part of SmartPerfetto. See LICENSE for details.
 
+# v2.3: freq_ramp_slow 只在整帧每个大核都有频率观测时成立
+#   （fragments/system_cpu_big_freq_coverage.sql，与 batch_frame_root_cause 共用）；
+#   拓扑未知或覆盖不全时 ramp_to_high_ms 为 NULL，不再把空窗口算成整帧爬升
 # v2.2: root_cause_summary 与 scrolling_analysis batch_frame_root_cause 共用
 #   fragments/system_cpu_freq_limit_frame_binding.sql 判定 thermal_throttling /
 #   cpu_max_limited；"大核平均频率 < 1200MHz" 只作频率观测，不再声称限频或温控
@@ -10,7 +13,7 @@
 #   根因因此依赖 init_cpu_topology 物化的 _cpu_topology
 # v2.0: Replaced inline CPU topology CTEs with shared _cpu_topology VIEW
 name: jank_frame_detail
-version: "2.2"
+version: "2.3"
 type: composite
 category: rendering
 tier: S
@@ -944,6 +947,8 @@ steps:
     optional: true
 
   # ===== P0: 大小核迁移分析 (引用 atomic skill) =====
+  # The child begins with a cpu_topology_view reference; frame_diagnosis reads
+  # the migration rows, never that setup step's result.
   - id: task_migration
     skill: task_migration_in_range
     params:
@@ -951,6 +956,7 @@ steps:
       end_ts: "${end_ts}"
       package: "${package}"
     save_as: migration_data
+    save_from: migration_analysis
     optional: true
 
   # ===== P0: GPU 渲染操作分析 (引用 atomic skill) =====
@@ -988,12 +994,14 @@ steps:
     optional: true
 
   # ===== P0: CPU 簇负载分析 (引用 atomic skill) =====
+  # As task_migration: bind the cluster rows, not the topology setup step.
   - id: cpu_cluster_load
     skill: cpu_cluster_load_in_range
     params:
       start_ts: "${start_ts}"
       end_ts: "${end_ts}"
     save_as: cluster_load_data
+    save_from: cluster_load
     optional: true
 
   # ===== P0: 内存页面错误分析 (引用 atomic skill) =====
@@ -1055,7 +1063,7 @@ steps:
       role: target
       binding: effective_target_processes
       context_fields:
-        global_context: [frame_budget_ms, primary_cause, secondary_info]
+        global_context: [frame_budget_ms, primary_cause, secondary_info, ramp_to_high_ms, freq_ramp_evidence]
         peer_context: [deep_reason]
       limitations:
         - "根因分类结合目标线程、全局 CPU/VSync 资源及对端信息；混合解释文本不是目标进程的独立实测指标。"
@@ -1063,6 +1071,7 @@ steps:
       - fragments/system_thread_state_spans.sql
       - fragments/system_cpu_frequency_spans.sql
       - fragments/system_sched_spans.sql
+      - fragments/system_cpu_big_freq_coverage.sql
       - fragments/system_cpu_freq_limit_spans.sql
       - fragments/system_cpu_freq_limit_episodes.sql
       - fragments/thermal_cooling_spans.sql
@@ -1207,6 +1216,16 @@ steps:
         - name: rt_freq_limit_policy_cpu
           label: "RenderThread 限频 policy"
           type: number
+          hidden: true
+        - name: ramp_to_high_ms
+          label: "大核升频延迟"
+          type: duration
+          format: duration_ms
+          unit: ms
+          hidden: true
+        - name: freq_ramp_evidence
+          label: "大核升频观测"
+          type: string
           hidden: true
     sql: |
       -- 根因分析: 综合四象限、CPU频率、耗时操作等数据，输出明确的根因结论
@@ -1457,7 +1476,12 @@ steps:
           SUM(freq_khz*1.0*dur_ns)/NULLIF(SUM(dur_ns),0) as avg_khz
         FROM big_freq_window
       ),
-      big_freq_ramp AS (
+      -- 频率爬升只在整帧每个大核频率都有观测时计时（fragments/system_cpu_big_freq_coverage.sql）；
+      -- 拓扑未知或覆盖不全时为 NULL，不能把"没有观测"当成"一直没升到高频"。
+      frame_freq_ramp_evidence AS (
+        SELECT freq_ramp_evidence FROM system_cpu_big_freq_coverage WHERE window_id='frame'
+      ),
+      big_freq_ramp_timing AS (
         SELECT
           ROUND(
             (
@@ -1484,6 +1508,11 @@ steps:
           ) as ramp_to_2g_ms
         FROM big_freq_window b
         CROSS JOIN big_freq_stats s
+      ),
+      -- 聚合在空窗口上也返回一行（MIN 为 NULL → COALESCE 成整帧），所以证据门控在聚合之后
+      big_freq_ramp AS (
+        SELECT r.* FROM big_freq_ramp_timing r CROSS JOIN frame_freq_ramp_evidence e
+        WHERE e.freq_ramp_evidence = 'observed'
       ),
       system_target_threads AS (
         SELECT 'frame' AS window_id,t.upid,tt.utid,tt.thread_type AS role
@@ -1705,6 +1734,7 @@ steps:
           (SELECT top_little_avg_freq_mhz FROM top_slice_freq) as top_little_avg_freq_mhz,
           (SELECT ramp_to_high_ms FROM big_freq_ramp) as ramp_to_high_ms,
           (SELECT ramp_to_2g_ms FROM big_freq_ramp) as ramp_to_2g_ms,
+          (SELECT freq_ramp_evidence FROM frame_freq_ramp_evidence) as freq_ramp_evidence,
           (SELECT overlap_ms FROM binder_overlap) as binder_overlap_ms,
           (SELECT max_overlap_ms FROM binder_overlap) as binder_max_overlap_ms,
           (SELECT overlap_server FROM binder_overlap) as binder_overlap_server,
@@ -1801,9 +1831,11 @@ steps:
               AND COALESCE(top_big_max_freq_mhz, 0) > 0
               AND top_big_avg_freq_mhz < top_big_max_freq_mhz * 0.55
               THEN 'big_core_low_freq'
-            -- P6: 频率爬升慢（仅适用于边际情况：slice 在 1x-2x 帧预算区间）
+            -- P6: 频率爬升慢（仅适用于边际情况：slice 在 1x-2x 帧预算区间），且整帧
+            -- 每个大核的频率都有观测；否则爬升时间未知，落到 P7 兜底
             WHEN slice_dur > slice_critical_ms
-              AND COALESCE(ramp_to_high_ms, 0) > freq_ramp_critical_ms
+              AND freq_ramp_evidence = 'observed'
+              AND ramp_to_high_ms > freq_ramp_critical_ms
               AND COALESCE(top_slice_offset_ms, 0) <= ramp_to_high_ms
               THEN 'freq_ramp_slow'
             -- P7: 工作负载超时兜底（1x-2x 帧预算，无特定供给侧因素）
@@ -2094,6 +2126,7 @@ steps:
           top_big_avg_freq_mhz,
           top_big_max_freq_mhz,
           ramp_to_high_ms,
+          freq_ramp_evidence,
           binder_overlap_ms,
           lock_contention_ms,
           render_sync_wait_ms,
@@ -2170,6 +2203,9 @@ steps:
         rt_freq_limit_state,
         rt_freq_limit_binding_ns,
         rt_freq_limit_policy_cpu,
+        -- 大核频率爬升（fragments/system_cpu_big_freq_coverage.sql），无完整观测时为 NULL
+        ramp_to_high_ms,
+        freq_ramp_evidence,
         CASE
           WHEN cause_type IN ('slice', 'blocking', 'io_blocking') THEN 'trigger'
           WHEN cause_type IN ('sched_latency', 'cpu_contention', 'small_core', 'freq_limit', 'low_freq', 'cpu_overload') THEN 'supply'
@@ -2341,21 +2377,27 @@ steps:
           - "检查是否有密集计算任务"
 
       # ===== 高优先级：大小核迁移 =====
+      # Placement observations, not causes; a frequency limit is one candidate
+      # only freq_limit_evidence can confirm. migration_data[0] is the thread
+      # with the most migrations, not necessarily the UI thread or one on this
+      # frame's critical path. Templates stay within the portable expression
+      # subset (no ternary, no Math.*): the public runtime evaluates them too.
       - condition: "migration_data?.data?.length > 0 && migration_data.data[0]?.big_to_little > 2"
         severity: warning
-        diagnosis: "${migration_data.data[0].thread_name} 从大核迁移到小核 ${migration_data.data[0].big_to_little}次"
+        diagnosis: "${migration_data.data[0].thread_name} 从大核组（超大/大/中核）迁移到小核 ${migration_data.data[0].big_to_little} 次，小核迁回大核组 ${migration_data.data[0].little_to_big} 次（迁移次数最多的线程）"
         confidence: high
         suggestions:
-          - "检查系统温控策略是否过于激进"
-          - "考虑绑定 UI 线程到大核"
+          - "迁移次数只说明调度把该线程放到了不同核组，不说明原因；可能的解释包括负载均衡、EAS 能效放置、uclamp/cpuset 限制、线程负载低于上迁阈值，需结合调度数据核对"
+          - "迁移本身不是限频或温控证据；频率上限可能降低大核可用容量并影响放置，是否限频以本帧的 CPU 限频证据为准"
+          - "先确认该线程是否在本帧关键路径上，再对照它在小核上的运行时长与 Runnable 等待判断迁移的影响"
 
       - condition: "migration_data?.data?.length > 0 && migration_data.data[0]?.unknown_core_ns === 0 && migration_data.data[0]?.big_core_pct < 30"
         severity: warning
         diagnosis: "${migration_data.data[0].thread_name} 大核组（超大/大/中核）运行占比仅 ${migration_data.data[0].big_core_pct}%"
         confidence: high
         suggestions:
-          - "UI 线程未能获得足够大核资源"
-          - "检查调度器配置"
+          - "大核组占比低不说明资源不足；可能的解释包括线程负载低而被放在小核、cpuset/uclamp 限制、大核组繁忙，需对照该线程的 Runnable 等待与大核簇负载区分"
+          - "占比本身不是限频或温控证据；频率上限可能降低大核可用容量并影响放置，是否限频以本帧的 CPU 限频证据为准"
 
       # ===== 高优先级：GPU 操作 =====
       - condition: "gpu_data?.data?.find(g => g.operation === 'GPU Fence Wait')?.total_ms > 3"
@@ -2441,7 +2483,7 @@ steps:
         diagnosis: "帧窗口内 ${freq_data.data.find(f => ['prime', 'big', 'medium'].includes(f.core_type) && f.max_freq_mhz > 0 && f.max_freq_mhz - f.min_freq_mhz > 0.2 * f.max_freq_mhz).core_type} 核组频率最高 ${freq_data.data.find(f => ['prime', 'big', 'medium'].includes(f.core_type) && f.max_freq_mhz > 0 && f.max_freq_mhz - f.min_freq_mhz > 0.2 * f.max_freq_mhz).max_freq_mhz} MHz、最低 ${freq_data.data.find(f => ['prime', 'big', 'medium'].includes(f.core_type) && f.max_freq_mhz > 0 && f.max_freq_mhz - f.min_freq_mhz > 0.2 * f.max_freq_mhz).min_freq_mhz} MHz（组内各 CPU 与时间合计，跨度超过 20%）；trace 未采集 cpufreq 上限轨道。仅为频率观测，不能据此判定限频或温控"
         confidence: medium
         suggestions:
-          - "采集 power/cpu_frequency_limits（及 thermal 事件）后才能判断是否限频"
+          - "采集 power/cpu_frequency_limits 后才能判断是否限频；判断触发方还需温度轨道与 cooling device 事件"
 
       # Evidence state: the max-limit track has no valid sample.
       - condition: "freq_limit_evidence?.data?.[0]?.limit_evidence_missing_reason === 'max_limit_samples_missing' && Boolean(freq_data?.data?.find(f => ['prime', 'big', 'medium'].includes(f.core_type) && f.max_freq_mhz > 0 && f.max_freq_mhz - f.min_freq_mhz > 0.2 * f.max_freq_mhz))"
@@ -2460,13 +2502,17 @@ steps:
           - "检查 cpu_throttling_in_range 的 limit_evidence 步骤为何未产出结果"
 
       # ===== 高优先级：CPU 簇负载 =====
+      # load_pct is Running time over all of the tier's cores while awake; it
+      # carries no frequency and says nothing on its own about which threads
+      # waited, so a cluster rule states the tier it measured and leaves the
+      # effect on this frame to scheduling data and freq_limit_evidence.
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '大核簇')?.load_pct > 90"
         severity: critical
         diagnosis: "大核簇负载 ${cluster_load_data.data.find(c => c.cluster === '大核簇')?.load_pct}%，接近跑满"
         confidence: high
         suggestions:
-          - "大核资源严重不足"
-          - "检查是否有后台密集计算任务"
+          - "检查占用大核簇的线程，区分本帧关键线程与后台密集计算任务"
+          - "负载只按 Running 时间计算、不反映运行频率；频率偏低时同样的工作可能占用更长时间，是否限频以本帧的 CPU 限频证据为准"
           - "考虑优化或推迟非关键任务"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '超大核簇')?.load_pct > 90"
@@ -2474,32 +2520,34 @@ steps:
         diagnosis: "超大核簇负载 ${cluster_load_data.data.find(c => c.cluster === '超大核簇')?.load_pct}%，接近跑满"
         confidence: high
         suggestions:
-          - "超大核资源严重不足，关键线程可能被迫落到大核或更小的核"
+          - "关键线程是否因此被放到其他核组或排队，需对照其核组占比与 Runnable 等待"
           - "检查是否有后台密集计算任务占用超大核"
+          - "负载只按 Running 时间计算、不反映运行频率；频率偏低时同样的工作可能占用更长时间，是否限频以本帧的 CPU 限频证据为准"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '中核簇')?.load_pct > 90"
         severity: warning
         diagnosis: "中核簇负载 ${cluster_load_data.data.find(c => c.cluster === '中核簇')?.load_pct}%，接近跑满"
         confidence: high
         suggestions:
-          - "中核簇跑满时从大核迁出的任务无处可去，调度会继续挤压大核或落到小核"
+          - "需要中核的任务可能排队或被放到其他核组，需对照关键线程的核组占比与 Runnable 等待"
           - "检查是否有后台密集计算任务占用中核"
+          - "负载只按 Running 时间计算、不反映运行频率；频率偏低时同样的工作可能占用更长时间，是否限频以本帧的 CPU 限频证据为准"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '小核簇')?.load_pct > 95"
         severity: warning
         diagnosis: "小核簇负载 ${cluster_load_data.data.find(c => c.cluster === '小核簇')?.load_pct}%，几乎跑满"
         confidence: high
         suggestions:
-          - "系统整体负载很高"
+          - "运行在小核的任务可能排队；小核簇跑满不代表其他核组也满载，需对照其他核组负载"
           - "后台任务可能挤占资源"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '大核簇')?.load_pct > 70 && cluster_load_data?.data?.find(c => c.cluster === '小核簇')?.load_pct > 70"
         severity: warning
-        diagnosis: "CPU 整体负载高: 大核 ${cluster_load_data.data.find(c => c.cluster === '大核簇')?.load_pct}%, 小核 ${cluster_load_data.data.find(c => c.cluster === '小核簇')?.load_pct}%"
+        diagnosis: "大核簇与小核簇负载均高于 70%: 大核簇 ${cluster_load_data.data.find(c => c.cluster === '大核簇')?.load_pct}%, 小核簇 ${cluster_load_data.data.find(c => c.cluster === '小核簇')?.load_pct}%"
         confidence: high
         suggestions:
-          - "系统 CPU 资源紧张"
-          - "多任务竞争导致调度延迟"
+          - "多任务竞争是否造成本帧关键线程的调度延迟，以 Runnable 与调度延迟数据为准"
+          - "检查同时占用大核与小核的后台任务"
 
       - condition: "cluster_load_data?.data?.find(c => c.cluster === '大核簇')?.max_single_core_pct > 95"
         severity: info
@@ -2599,14 +2647,14 @@ steps:
           - "检查是否有 IO 操作或锁等待"
           - "考虑使用异步 IO"
 
-      # Q2 小核运行占比高 - 说明调度可能有问题
+      # Q2 小核运行占比高 - 放置观测，与上方迁移规则同理，不是原因
       - condition: "quadrant_data?.data?.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage > 60"
         severity: info
         diagnosis: "主线程主要运行在小核 (${quadrant_data.data.find(q => q.quadrant?.includes('MainThread') && q.quadrant?.includes('Q2'))?.percentage}%)"
         confidence: medium
         suggestions:
-          - "检查系统温控是否限制大核"
-          - "考虑提高线程优先级"
+          - "小核运行占比高本身不说明调度异常；可能的解释包括主线程负载低而被放在小核、cpuset/uclamp 限制、大核组繁忙，需对照主线程的 Runnable 等待与大核簇负载区分"
+          - "占比本身不是限频或温控证据；频率上限可能降低大核可用容量并影响放置，是否限频以本帧的 CPU 限频证据为准"
 
       # ===== 主线程耗时操作 =====
       - condition: "main_slices?.data?.length > 0 && main_slices.data[0]?.dur_ms > 5"

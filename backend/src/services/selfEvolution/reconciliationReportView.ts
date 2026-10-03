@@ -7,6 +7,7 @@ import type {
   UpgradeReconciliationIssueV1,
   UpgradeReconciliationReportV1,
 } from '../../types/selfEvolution';
+import {isSelfEvolutionErrorCode} from './selfEvolutionErrorCode';
 
 type ReconciliationReasonCode =
   | VendorOverrideLoadIssue['reasonCode']
@@ -25,9 +26,6 @@ const ISSUE_TEXT: ReadonlyMap<string, string> = new Map(Object.entries({
 
 const UNKNOWN_ISSUE_TEXT = 'Reconciliation issue';
 
-// The admin surface's error-code shape (see the routes' `sendError`): no
-// quote, space or capital, so it cannot carry a parser's quotation.
-const ERROR_CODE = /^[a-z0-9_:-]{1,160}$/;
 
 /**
  * The admin view of a stored, hash-verified reconciliation report.
@@ -45,7 +43,7 @@ export function projectReconciliationReportForAdmin(
   if (!report) return report;
   let changed = false;
   const issues = report.issues.map((issue): UpgradeReconciliationIssueV1 => {
-    if (ERROR_CODE.test(issue.message)) return issue;
+    if (isSelfEvolutionErrorCode(issue.message)) return issue;
     changed = true;
     return {
       ...issue,

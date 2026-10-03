@@ -1209,6 +1209,56 @@ const MIGRATIONS: MigrationStep[] = [
       }
     },
   },
+  {
+    // Version 18 is the private-context marker migration, numbered before this
+    // one was written; the ledger is keyed by version, so each number is used once.
+    version: 19,
+    up: (db) => {
+      // Window ids are browser-generated and listed to the whole workspace, so
+      // a window is identified within its owner's namespace. The old key let
+      // any reader heartbeat another user's window id and take over its row.
+      // Rows are short-lived heartbeat state: only live rows with an owner move.
+      if (!tableHasColumn(db, 'analysis_result_window_states', 'window_id')) return;
+      db.exec(`
+        CREATE TABLE analysis_result_window_states_v19 (
+          tenant_id TEXT NOT NULL,
+          workspace_id TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          window_id TEXT NOT NULL,
+          trace_id TEXT,
+          backend_trace_id TEXT,
+          active_session_id TEXT,
+          latest_snapshot_id TEXT,
+          trace_title TEXT,
+          scene_type TEXT,
+          metadata_json TEXT,
+          updated_at INTEGER NOT NULL,
+          expires_at INTEGER NOT NULL,
+          PRIMARY KEY (tenant_id, workspace_id, user_id, window_id),
+          FOREIGN KEY (tenant_id) REFERENCES organizations(id) ON DELETE CASCADE,
+          FOREIGN KEY (tenant_id, workspace_id) REFERENCES workspaces(tenant_id, id) ON DELETE CASCADE
+        );
+        INSERT INTO analysis_result_window_states_v19
+          (tenant_id, workspace_id, user_id, window_id, trace_id, backend_trace_id,
+           active_session_id, latest_snapshot_id, trace_title, scene_type,
+           metadata_json, updated_at, expires_at)
+        SELECT tenant_id, workspace_id, user_id, window_id, trace_id, backend_trace_id,
+               active_session_id, latest_snapshot_id, trace_title, scene_type,
+               metadata_json, updated_at, expires_at
+        FROM analysis_result_window_states
+        WHERE user_id IS NOT NULL AND TRIM(user_id) <> ''
+          AND expires_at > CAST(strftime('%s', 'now') AS INTEGER) * 1000;
+        DROP TABLE analysis_result_window_states;
+        ALTER TABLE analysis_result_window_states_v19 RENAME TO analysis_result_window_states;
+        CREATE INDEX IF NOT EXISTS idx_analysis_result_window_states_workspace
+          ON analysis_result_window_states(tenant_id, workspace_id, expires_at, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_analysis_result_window_states_trace
+          ON analysis_result_window_states(tenant_id, workspace_id, trace_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_analysis_result_window_states_snapshot
+          ON analysis_result_window_states(tenant_id, workspace_id, latest_snapshot_id, updated_at);
+      `);
+    },
+  },
 ];
 
 export function applyEnterpriseMinimalSchema(db: Database.Database): void {

@@ -41,7 +41,9 @@ import {copyScopeProvenance, scopeProvenanceForFields,
 import {evidenceReferenceKey, preparedReferenceResolution, preparedEvidenceBindingEligibility, preparedEvidenceMatchesInput,
   type PreparedClaimEvidence} from './claimEvidencePreparation';
 import {bindReadResolutionToAnchor, evidenceReadFailureIsUnreadable, type EvidenceReadResolution} from './evidenceReadView';
-import {getCapturedAnchorFacts, markUnreadableEvidenceAnchor} from './evidenceCapture';
+import {getCapturedAnchorFacts, markIdentityUnboundEvidenceAnchor, markUnreadableEvidenceAnchor} from './evidenceCapture';
+import {scopeRequiresTargetIdentity, targetRowUpidPredicate, toNumber, wholeResultRowPredicate} from './scopedRowIdentity';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 export interface BuildEvidenceContractInput {
   conclusionContract?: ConclusionContract | null;
@@ -243,21 +245,14 @@ function inferClaimKind(
   return references.length > 0 ? 'categorical' : 'inference';
 }
 
-function rowsAsObjects(envelope: DataEnvelope): Record<string, unknown>[] {
+/** Envelope rows keyed by column; rows that are already objects pass through. */
+export function rowsAsObjects(envelope: DataEnvelope): Record<string, unknown>[] {
   const data = envelope.data as DataPayload | undefined;
   if (!data || !Array.isArray(data.rows)) return [];
-  const columns = Array.isArray(data.columns)
-    ? data.columns.map(col => String(col))
-    : [];
+  const columns = Array.isArray(data.columns) ? data.columns.map(String) : [];
   return data.rows.map((row) => {
     if (row && typeof row === 'object' && !Array.isArray(row)) return row as Record<string, unknown>;
-    const record: Record<string, unknown> = {};
-    if (Array.isArray(row)) {
-      columns.forEach((col, index) => {
-        record[col] = row[index];
-      });
-    }
-    return record;
+    return Array.isArray(row) ? rowObject(columns, row) : {};
   });
 }
 
@@ -429,11 +424,22 @@ function resolveRowAndCell(envelope: DataEnvelope, ref: ConclusionContractClaimR
   if (row && ref.column && !(ref.column in row)) {
     missingReason = `column "${ref.column}" was not found in the referenced evidence row`;
   }
+  // A whole multi-row result binds the target identity only if every row belongs to it. A
+  // declared upid column with an unreadable cell proves nothing; a result with no upid
+  // anywhere leaves the scope declaration as the authority, as a single row does.
+  const admits = !row && !missingReason ? wholeResultRowPredicate(envelope.meta ?? {}) : undefined;
+  let unreadableReason: string | undefined;
+  if (admits && rows.some(candidate => !admits(candidate.upid))) missingReason = 'whole_result_identity_conflict';
+  else if (admits && rows.some(candidate => candidate.upid === undefined) &&
+      (envelope.data?.columns?.includes('upid') || rows.some(candidate => Object.prototype.hasOwnProperty.call(candidate, 'upid')))) {
+    missingReason = unreadableReason = 'whole_result_identity_cell_unreadable';
+  }
 
   return {
     ...(row ? { row } : {}),
     ...(rowIndex !== undefined ? { rowIndex } : {}),
     ...(missingReason ? { missingReason } : {}),
+    ...(unreadableReason ? {unreadableReason} : {}),
   };
 }
 
@@ -499,12 +505,6 @@ function normalizePaneSide(value: unknown): EvidencePaneSide | undefined {
   return value === 'left' || value === 'right' || value === 'top' || value === 'bottom'
     ? value
     : undefined;
-}
-
-function toNumber(value: unknown): number | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : undefined;
 }
 
 function toTimestamp(value: unknown): TraceTimestampNs | undefined {
@@ -679,13 +679,10 @@ function deriveIdentity(envelope: DataEnvelope, row: Record<string, unknown> | u
       (resolution.target.traceSide ?? 'unknown') !== normalizeTraceSide(meta.traceSide)) return undefined;
     const exactUpids = new Set(entries.filter(entry => entry.scope.mode === 'exact_upid')
       .map(entry => entry.scope.upid));
-    if (exactUpids.size > 1 || (exactUpids.size === 1 && source.upid !== undefined &&
-      !exactUpids.has(toNumber(source.upid)))) return undefined;
+    if (exactUpids.size > 1 || !targetRowUpidPredicate(provenance, resolution)(source.upid)) return undefined;
     if (exactUpids.size === 1 && (resolution.processes.length === 0 ||
       resolution.processes.some(process => !exactUpids.has(process.upid)) ||
       (resolution.target.upid !== undefined && !exactUpids.has(resolution.target.upid)))) return undefined;
-    if (source.upid !== undefined && !resolution.processes.some(process =>
-      process.upid === toNumber(source.upid))) return undefined;
   }
   const status = ['verified', 'ambiguous', 'weak', 'missing', 'not_required', 'error'].includes(meta.identityStatus)
     ? meta.identityStatus as EvidenceIdentityV1['status']
@@ -884,13 +881,33 @@ function buildAnchor(
     ...declaredQualifiers,
     confidence: 1,
   };
-  const requiresTargetIdentity = scopeProvenance?.entries.some(entry => entry.role === 'target' && entry.scope.mode !== 'unscoped');
+  const requiresTargetIdentity = scopeRequiresTargetIdentity(scopeProvenance);
   if (identity?.status === 'error' || (requiresTargetIdentity && identity?.status !== 'verified')) {
     anchor.missing = true;
-    anchor.missingReason = 'captured_identity_conflict';
     anchor.confidence = 0;
+    if (identity?.status !== 'error' && citationLeavesTargetIdentityUnbound(envelope, row, ref, scopeProvenance)) {
+      anchor.missingReason = 'cited_scope_identity_unbound';
+      markIdentityUnboundEvidenceAnchor(anchor);
+    } else {
+      anchor.missingReason = 'captured_identity_conflict';
+    }
   } else if (match.readResolution) bindReadResolutionToAnchor(anchor, match.readResolution);
   return anchor;
+}
+
+/**
+ * A citation of a whole result whose fields mix target and other scopes binds
+ * no identity, though nothing conflicts: had it named only the target fields,
+ * the same row and provenance would have bound the target identity. That is
+ * unverified, not contradicted. A conflicting row, identity or resolution
+ * fails the target-only derivation too and stays a conflict.
+ */
+function citationLeavesTargetIdentityUnbound(envelope: DataEnvelope, row: Record<string, unknown> | undefined,
+  ref: ConclusionContractClaimReference, provenance: EvidenceScopeProvenanceV1 | undefined): boolean {
+  if (ref.column || !provenance) return false;
+  const target = provenance.entries.filter(entry => entry.role === 'target');
+  if (target.length === 0 || target.length === provenance.entries.length) return false;
+  return deriveIdentity(envelope, row, {...provenance, entries: target})?.status === 'verified';
 }
 
 function canonicalBigIntRange(anchor: EvidenceAnchorV1): {start: bigint; end: bigint} | undefined {

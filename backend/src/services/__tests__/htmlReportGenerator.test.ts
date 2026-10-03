@@ -544,6 +544,25 @@ describe('HTMLReportGenerator', () => {
     expect(html).not.toContain('无汇总数据');
   });
 
+  test('labels a DataEnvelope whose trace side is stamped only in its provenance', () => {
+    const envelope = {
+      meta: {type: 'sql_result', version: '2.0.0', source: 'execute_sql', timestamp: 1},
+      traceProvenance: {traceId: 'trace-ref', traceSide: 'reference', paneSide: 'right'},
+      display: {layer: 'overview', format: 'summary', title: 'Provenance-marked summary'},
+      data: {summary: {title: 'SQL Summary', content: 'Total rows: 1', metrics: []}},
+    } as unknown as DataEnvelope;
+
+    const html = new HTMLReportGenerator().generateAgentDrivenHTML({
+      traceId: 'trace-current', query: 'compare', timestamp: 1, hypotheses: [], dialogue: [],
+      dataEnvelopes: [envelope],
+      result: {sessionId: 'session-p', success: true, findings: [], hypotheses: [], conclusion: 'ok',
+        confidence: 0.8, rounds: 1, totalDurationMs: 1},
+    } as any);
+
+    expect(html).toContain('Provenance-marked summary');
+    expect(html).toContain('右侧/参考 Trace');
+  });
+
   test('renders every claim, reference, verifier issue and identity without preview-only tails', () => {
     const claims = Array.from({length: 4}, (_, i) => ({id: `claim-${i}`, text: `Full claim ${i}`,
       references: Array.from({length: 2}, (_, j) => ({evidenceRefId: `evidence-${i}-${j}`,

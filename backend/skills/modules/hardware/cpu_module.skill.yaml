@@ -5,7 +5,8 @@
 # Hardware CPU Module Expert
 #
 # Provides CPU hardware analysis capabilities.
-# Covers CPU frequency, thermal throttling, and power state.
+# Covers CPU frequency, frequency changes, and power state; it reads no
+# cpufreq max-limit evidence, so it never names a frequency cap or a thermal cause.
 
 name: cpu_module
 version: "1.0"
@@ -14,7 +15,7 @@ category: hardware
 
 meta:
   display_name: "CPU 硬件分析"
-  description: "分析 CPU 频率、热节流和电源状态"
+  description: "分析 CPU 频率、频率变化和电源状态"
   tags: ["hardware", "cpu", "frequency", "thermal", "power"]
 
 # Module metadata
@@ -91,7 +92,7 @@ steps:
   # Step 2: Detect frequency throttling events
   - id: throttling_events
     type: atomic
-    name: "频率限制事件"
+    name: "频率变化事件"
     sql: |
       WITH freq_changes AS (
         SELECT
@@ -199,10 +200,10 @@ steps:
     inputs: [freq_overview, throttle_events, cluster_util]
     rules:
       - condition: "freq_overview.data.find(f => f.cluster === 'big')?.avg_freq_mhz < 1500"
-        diagnosis: "大核 CPU 平均频率较低 (${freq_overview.data.find(f => f.cluster === 'big')?.avg_freq_mhz}MHz)，可能存在热节流或功耗限制"
+        diagnosis: "大核 CPU 平均频率较低 (${freq_overview.data.find(f => f.cluster === 'big')?.avg_freq_mhz}MHz)；仅为频率观测，低频可能来自负载、调速器或频率上限"
         confidence: high
         suggestions:
-          - "检查设备温度"
+          - "是否限频以同窗口的 CPU 限频证据（cpu_throttling_in_range）为准"
           - "检查是否开启省电模式"
         evidence_fields:
           - freq_overview.data[0].avg_freq_mhz
@@ -218,10 +219,10 @@ steps:
           - throttle_events.data.length
 
       - condition: "freq_overview.data.find(f => f.cluster === 'little')?.avg_freq_mhz > freq_overview.data.find(f => f.cluster === 'big')?.avg_freq_mhz"
-        diagnosis: "小核频率高于大核，可能存在调度异常或热节流"
+        diagnosis: "小核平均频率高于大核；仅为频率观测，可能来自两簇负载不同或大核频率上限"
         confidence: medium
         suggestions:
-          - "检查大核是否被热节流"
+          - "是否限频以同窗口的 CPU 限频证据（cpu_throttling_in_range）为准"
           - "检查 CPU affinity 设置"
         evidence_fields:
           - freq_overview.data[0].avg_freq_mhz

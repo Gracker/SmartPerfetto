@@ -12,13 +12,12 @@ import type { Server } from 'http';
 import type { Duplex } from 'stream';
 
 // Import configuration
-import { resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
+import { isKeylessLocalMode, resolveAuthConfig, resolveFeatureConfig, serverConfig } from './config';
 
 // Import routes (now after dotenv.config())
 import sqlRoutes from './routes/sql';
 import simpleTraceRoutes from './routes/simpleTraceRoutes';
 import exportRoutes from './routes/exportRoutes';
-import templateAnalysisRoutes from './routes/templateAnalysisRoutes';
 import skillRoutes from './routes/skillRoutes';
 import skillAdminRoutes from './routes/skillAdminRoutes';
 import strategyAdminRoutes from './routes/strategyAdminRoutes';
@@ -43,7 +42,10 @@ import comparisonRoutes from './routes/comparisonRoutes';
 import traceConfigProposalRoutes from './routes/traceConfigProposalRoutes';
 import skillPackRoutes from './routes/skillPackRoutes';
 import batchTraceRoutes from './routes/batchTraceRoutes';
-import traceProcessorProxyRoutes, { handleTraceProcessorProxyUpgrade } from './routes/traceProcessorProxyRoutes';
+import traceProcessorProxyRoutes, {
+  handleTraceProcessorProxyUpgrade,
+  writeUpgradeError,
+} from './routes/traceProcessorProxyRoutes';
 import applicationUpdateRoutes from './routes/applicationUpdateRoutes';
 import {authenticate, requireRequestContext} from './middleware/auth';
 import { collectEnvCredentialSources } from './agentRuntime/envCredentialSources';
@@ -57,12 +59,13 @@ import {
   markLegacyApi,
   rejectLegacyAgentApi,
 } from './middleware/legacyAgentApi';
-import { rejectRemovedPerfettoSqlApi, rejectRemovedSessionsApi } from './middleware/removedApi';
+import { rejectRemovedPerfettoSqlApi, rejectRemovedSessionsApi, rejectRemovedTemplateAnalysisApi } from './middleware/removedApi';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,
 } from './middleware/workspaceRouteContext';
 import {
+  hostnameOfHostHeader,
   isCorsOriginAllowed,
   isLoopbackRequestHostname,
   isSsoCookieMutationOriginAllowed,
@@ -73,6 +76,7 @@ import {unhandledErrorHandler} from './middleware/unhandledErrorHandler';
 import {REQUEST_ID_HEADER, requestIdMiddleware} from './middleware/requestId';
 import {hasRbacPermission, sendForbidden} from './services/rbac';
 import {getSmartPerfettoVersion} from './version';
+import {sendResolvedFile} from './utils/sendResolvedFile';
 
 // Import cleanup utilities
 import { TraceProcessorFactory, killOrphanProcessors } from './services/workingTraceProcessor';
@@ -154,11 +158,15 @@ app.use(express.json({ limit: serverConfig.bodyLimit }));
 app.use(express.urlencoded({ extended: true, limit: serverConfig.bodyLimit }));
 
 // In keyless local mode, reject Host-header DNS rebinding even though the
-// process itself listens only on loopback by default.
+// process itself listens only on loopback by default. WebSocket upgrades skip
+// Express, so the upgrade dispatch below applies the same rule.
+const UNTRUSTED_KEYLESS_HOST = 'Untrusted Host in local keyless mode';
+function isUntrustedKeylessHost(hostname: string): boolean {
+  return isKeylessLocalMode() && !isLoopbackRequestHostname(hostname);
+}
 app.use('/api', (req, res, next) => {
-  const keylessLocalMode = !process.env.SMARTPERFETTO_API_KEY && !resolveFeatureConfig(process.env).enterprise;
-  if (keylessLocalMode && !isLoopbackRequestHostname(req.hostname)) {
-    res.status(403).json({success: false, error: 'Untrusted Host in local keyless mode'});
+  if (isUntrustedKeylessHost(req.hostname)) {
+    res.status(403).json({success: false, error: UNTRUSTED_KEYLESS_HOST});
     return;
   }
   next();
@@ -281,7 +289,7 @@ app.use(
 app.use('/api/sessions', rejectRemovedSessionsApi);
 app.use('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
 app.use('/api/export', exportRoutes);
-app.use('/api/template-analysis', rejectEnterpriseUnscopedApi, templateAnalysisRoutes);
+app.use('/api/template-analysis', rejectRemovedTemplateAnalysisApi);
 app.use('/api/skills', rejectEnterpriseUnscopedApi, skillRoutes);
 app.use('/api/admin/runtime', enterpriseRuntimeDashboardRoutes);
 app.use('/api/admin', skillAdminRoutes);
@@ -323,20 +331,15 @@ app.use(LEGACY_AGENT_API_BASE, rejectLegacyAgentApi);
 
 const assistantShellDir = path.resolve(__dirname, '../public/assistant-shell');
 app.get('/assistant-shell', (_req, res) => {
-  res.sendFile(path.join(assistantShellDir, 'index.html'));
+  sendResolvedFile(res, path.join(assistantShellDir, 'index.html'));
 });
 app.use('/assistant-shell', express.static(assistantShellDir));
 
 const adminControlPlaneDir = path.resolve(__dirname, '../public/admin-control-plane');
 app.get('/admin-control-plane', (_req, res) => {
-  res.sendFile(path.join(adminControlPlaneDir, 'index.html'));
+  sendResolvedFile(res, path.join(adminControlPlaneDir, 'index.html'));
 });
 app.use('/admin-control-plane', express.static(adminControlPlaneDir));
-
-// Serve uploaded files in development
-if (NODE_ENV === 'development') {
-  app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
-}
 
 // 404 handler
 app.use((req, res) => {
@@ -530,7 +533,11 @@ async function startBackend(): Promise<void> {
   server.on('upgrade', (req, socket, head) => {
     upgradedSockets.add(socket);
     socket.once('close', () => upgradedSockets.delete(socket));
-    if (handleTraceProcessorProxyUpgrade(req, socket, head)) return;
+    if (isUntrustedKeylessHost(hostnameOfHostHeader(req.headers.host))) {
+      writeUpgradeError(socket, 403, UNTRUSTED_KEYLESS_HOST);
+      return;
+    }
+    if (handleTraceProcessorProxyUpgrade(req, socket, head, corsAllowedOrigins)) return;
     socket.destroy();
   });
 

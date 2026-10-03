@@ -159,6 +159,6 @@ invoke_skill("mali_gpu_power_state")
 1. **帧率概览**：平均/P50/P90/P99 帧间隔、稳定性评级
 2. **卡顿帧分析**：卡顿帧时间分布、帧间隔直方图
 3. **GPU 状态**：频率、利用率、Fence 等待
-4. **热节流影响**：CPU/GPU 频率是否被限制
+4. **限频影响**：CPU/GPU 频率是否被限制（限频以 `cpu_throttling_in_range` 的限频证据为准；温控触发还需温度/散热设备证据）
 5. **优化建议**：按 GPU-bound / CPU-bound / Thermal 分类
 <!-- /strategy-detail -->

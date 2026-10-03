@@ -10,6 +10,7 @@
  */
 
 import { DEFAULT_FRAME_TIME_DISPLAY_THRESHOLDS } from '../../config/thresholds';
+import { outsideTargetScopeFields } from '../../types/identityContract';
 
 // =============================================================================
 // 类型定义
@@ -583,7 +584,10 @@ export class AnswerGenerator {
         continue;
       }
 
-      const row = section.data[0];
+      // Key metrics describe the analysed app, not fields declared trace-wide or peer.
+      const outsideTarget = outsideTargetScopeFields(section.scopeProvenance);
+      const row = Object.fromEntries(Object.entries(section.data[0])
+        .filter(([field]) => !outsideTarget(field))) as Record<string, any>;
 
       // 帧相关
       if (row.total_frames != null) {

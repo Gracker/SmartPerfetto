@@ -322,6 +322,149 @@ describe('runtime execution evidence read view', () => {
     if (kind !== 'global') expect(anchor.missing).toBe(true);
   });
 
+  // A whole-result citation spanning target and global fields cannot bind the
+  // target identity. Unless the cited row itself conflicts, that is unverified
+  // evidence, not a contradicted reference.
+  const unverified = [expect.objectContaining({severity: 'warning', code: 'claim_reference_unverified',
+    message: 'cited_scope_identity_unbound'})];
+  it.each([
+    ['one row', [[42, 2, 16]], 'cited_scope_identity_unbound', 'not_checked', 'not_checked', 'not_checked', unverified],
+    ['several rows, none selected', [[42, 2, 16], [42, 3, 16]], 'cited_scope_identity_unbound', 'not_checked',
+      'not_checked', 'not_checked', unverified],
+    ['a row of another process', [[43, 2, 16]], 'captured_identity_conflict', 'missing', 'unsupported', 'failed',
+      [expect.objectContaining({severity: 'error', code: 'claim_reference_missing'})]],
+  ] as const)('classifies a whole-result citation of mixed process scope with %s', async (
+    _label, rows, reason, referenceStatus, claimStatus, verificationStatus, issues) => {
+    const store = new ArtifactStore();
+    const scope: EvidenceScopeProvenanceV1 = {version: 'process_scope_evidence@1', entries: [
+      {...targetScope.entries[0], fields: ['upid', 'metric']},
+      {role: 'global_context', scope: {mode: 'unscoped', traceId: 'trace', traceSide: 'current'}, fields: ['vsync']},
+    ]};
+    const {id} = add(store, {columns: ['upid', 'metric', 'vsync'], rows: rows.map(row => [...row])}, {scope});
+    const conclusionContract: ConclusionContract = {...contract({artifactId: id}), claims: [
+      {id: 'context', kind: 'categorical', text: 'Display context', references: [{artifactId: id}]}]};
+    const preparedEvidence = await prepareClaimEvidence({conclusionContract,
+      evidenceReadView: store.createEvidenceReadView(readOptions)});
+    const {anchors, claimSupport} = buildEvidenceContract({conclusionContract, preparedEvidence});
+    expect(anchors[0]).toMatchObject({missing: true, missingReason: reason, confidence: 0});
+    expect(anchors[0].identity).toBeUndefined();
+    expect(anchors[0].cells).toBeUndefined();
+    const verification = runDeterministicClaimVerifier({claimSupport});
+    expect(verification.claimResults[0].referenceCells.map(cell => cell.status)).toEqual([referenceStatus]);
+    expect(verification.claimResults[0].status).toBe(claimStatus);
+    expect(verification.status).toBe(verificationStatus);
+    expect(verification.issues).toEqual(issues);
+    // A copied anchor carries no issued mark: its reason string cannot downgrade a missing reference.
+    const copied = runDeterministicClaimVerifier({claimSupport: structuredClone(claimSupport)});
+    expect(copied.claimResults[0].referenceCells.map(cell => cell.status)).toEqual(['missing']);
+  });
+
+  describe('whole multi-row result under a target scope', () => {
+    const namedScope: EvidenceScopeProvenanceV1 = {version: 'process_scope_evidence@1', entries: [{role: 'target',
+      scope: {mode: 'named', traceId: 'trace', traceSide: 'current', requestedName: 'example', identityRefId: identity.identityRefId}}]};
+    const twoProcesses: IdentityResolutionV1 = {...identity, target: {traceId: 'trace', traceSide: 'current', processName: 'example', source: 'skill_param'},
+      processes: [{upid: 42, processName: 'example', confidence: 1, matchSources: ['name']},
+        {upid: 44, processName: 'example:remote', confidence: 1, matchSources: ['name']}]};
+    // With no semantics the claim is decided by its reference alone; numeric semantics add a proof attempt.
+    const claimsFor = (id: string): ConclusionContract => {
+      const numeric = contract({artifactId: id});
+      return {...numeric, claims: [
+        {id: 'plain', kind: 'categorical', text: 'The result belongs to the target', references: [{artifactId: id}]},
+        {...numeric.claims![0], id: 'numeric'}]};
+    };
+    async function cite(rows: unknown[][], options: {columns?: string[]; scope?: EvidenceScopeProvenanceV1;
+      identity?: IdentityResolutionV1; budget?: EvidenceReadViewOptions['budget']} = {}) {
+      const store = new ArtifactStore();
+      const {id} = add(store, {columns: options.columns || ['upid', 'metric'], rows}, options);
+      const view = store.createEvidenceReadView({...readOptions, ...(options.budget ? {budget: options.budget} : {})});
+      const [resolution] = await read(view, {artifactId: id});
+      const conclusionContract = claimsFor(id);
+      const preparedEvidence = await prepareClaimEvidence({conclusionContract, evidenceReadView: view});
+      const {anchors, claimSupport} = buildEvidenceContract({conclusionContract, preparedEvidence});
+      return {resolution, anchor: anchors[0], verification: runDeterministicClaimVerifier({claimSupport})};
+    }
+    const verifiedBinding = (result: Awaited<ReturnType<typeof cite>>) => {
+      expect(result.resolution).toMatchObject({status: 'resolved'});
+      expect(result.anchor.missing).not.toBe(true);
+      expect(result.anchor.identity?.status).toBe('verified');
+      expect(result.verification.issues.filter(issue => issue.severity === 'error')).toEqual([]);
+    };
+    const conflict = (result: Awaited<ReturnType<typeof cite>>) => {
+      expect(result.resolution).toMatchObject({status: 'missing', reason: 'whole_result_identity_conflict'});
+      expect(result.anchor).toMatchObject({missing: true, missingReason: 'whole_result_identity_conflict'});
+      expect(result.anchor.identity).toBeUndefined();
+      expect(result.verification.claimResults.map(claim => [claim.referenceCells.map(cell => cell.status), claim.status]))
+        .toEqual([[['missing'], 'unsupported'], [['missing'], 'unsupported']]);
+      expect(result.verification.status).toBe('failed');
+      expect(result.verification.issues).toContainEqual(expect.objectContaining({severity: 'error', code: 'claim_reference_missing'}));
+    };
+    const unproven = (result: Awaited<ReturnType<typeof cite>>, reason = 'whole_result_identity_scan_incomplete') => {
+      expect(result.resolution).toMatchObject({status: 'incomplete', reason});
+      expect(result.anchor.missing).not.toBe(true);
+      expect(result.anchor.identity).toBeUndefined();
+      expect(result.verification.claimResults.map(claim => [claim.referenceCells.map(cell => cell.status), claim.status]))
+        .toEqual([[['not_checked'], 'not_checked'], [['not_checked'], 'partial']]);
+      expect(result.verification.claimResults[1].deterministicProof).toMatchObject({status: 'candidate'});
+      expect(result.verification.status).toBe('partial');
+      expect(result.verification.issues.filter(issue => issue.severity === 'error')).toEqual([]);
+    };
+
+    it('binds the target only when every row belongs to it', async () => {
+      verifiedBinding(await cite([[42, 1], [42, 2], [42, 3]]));
+      conflict(await cite([[42, 1], [42, 2], [43, 3]]));
+      // A null upid is no more the target in a whole result than in a single cited row.
+      conflict(await cite([[42, 1], [null, 2]]));
+    });
+
+    it('admits every resolved process of a named scope and nothing else', async () => {
+      verifiedBinding(await cite([[42, 1], [44, 2]], {scope: namedScope, identity: twoProcesses}));
+      conflict(await cite([[42, 1], [45, 2]], {scope: namedScope, identity: twoProcesses}));
+    });
+
+    it('proves nothing from an unfinished scan, but a conflict it already saw still counts', async () => {
+      unproven(await cite([[42, 1], [42, 2], [42, 3]], {budget: {maxScannedRows: 2}}));
+      conflict(await cite([[43, 1], [42, 2], [42, 3]], {budget: {maxScannedRows: 2}}));
+    });
+
+    it('proves nothing from an unreadable upid cell, but a conflict anywhere still counts', async () => {
+      unproven(await cite([[42, 1], [undefined, 2]]), 'whole_result_identity_cell_unreadable');
+      unproven(await cite([[1, 42], [2]], {columns: ['metric', 'upid']}), 'whole_result_identity_cell_unreadable');
+      conflict(await cite([[undefined, 1], [43, 2]]));
+    });
+
+    it('stops at the read deadline mid-scan', async () => {
+      const base = Date.now();
+      let calls = 0;
+      let lateAfter = Infinity;
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => ++calls > lateAfter ? base + 60_000 : base);
+      const readOf = async (rows: unknown[][]) => {
+        const store = new ArtifactStore();
+        const {id} = add(store, {columns: ['upid', 'metric'], rows});
+        calls = 0;
+        return (await read(store.createEvidenceReadView(readOptions), {artifactId: id}))[0];
+      };
+      try {
+        // A one-row citation needs no scan: its clock reads are the ones before a scan plus the final size check.
+        expect(await readOf([[42, 1]])).toMatchObject({status: 'resolved'});
+        lateAfter = calls - 1;
+        expect(await readOf([[42, 1], [42, 2]])).toMatchObject({status: 'incomplete', reason: 'whole_result_identity_scan_incomplete'});
+      } finally {clock.mockRestore();}
+    });
+
+    it('keeps the scope declaration as the authority for an empty result or rows without upid', async () => {
+      verifiedBinding(await cite([]));
+      verifiedBinding(await cite([[1, 2], [3, 4]], {columns: ['id', 'metric']}));
+    });
+
+    it('turns a mixed-scope whole citation with a foreign row into a conflict', async () => {
+      const mixed: EvidenceScopeProvenanceV1 = {version: 'process_scope_evidence@1', entries: [
+        {...targetScope.entries[0], fields: ['upid', 'metric']},
+        {role: 'global_context', scope: {mode: 'unscoped', traceId: 'trace', traceSide: 'current'}, fields: ['vsync']},
+      ]};
+      conflict(await cite([[42, 1, 16], [43, 2, 16]], {columns: ['upid', 'metric', 'vsync'], scope: mixed}));
+    });
+  });
+
   it('does not read or bind any positive reference for invalid machine declarations', async () => {
     const conclusionContract = contract({artifactId: 'art-1', rowIndex: 0, column: 'metric'});
     const resolveReferences = jest.fn(async () => []);

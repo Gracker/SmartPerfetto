@@ -24,6 +24,7 @@ import {
   type PathPreviewFile,
   type PathPreviewResult,
 } from '../codebase/pathSecurityGate';
+import {invalidCodebaseSelection} from '../codebase/codebaseRequestError';
 
 export const MAX_SOURCE_CHUNKS_PER_GENERATION = 20_000;
 export const SOURCE_INGEST_WRITE_BATCH_SIZE = 500;
@@ -132,7 +133,7 @@ export function selectEnumeratedSourceFiles(
 export function resolveMaxChunkChars(value: unknown, fallback: number): number {
   if (value === undefined) return fallback;
   if (!Number.isInteger(value) || Number(value) < 256 || Number(value) > 65_536) {
-    throw new Error('maxChunkChars must be an integer between 256 and 65536');
+    throw invalidCodebaseSelection('maxChunkChars must be an integer between 256 and 65536');
   }
   return Number(value);
 }
@@ -144,7 +145,7 @@ export function resolveMaxSourceChunks(value: unknown): number {
     Number(value) < 1 ||
     Number(value) > MAX_SOURCE_CHUNKS_PER_GENERATION
   ) {
-    throw new Error(
+    throw invalidCodebaseSelection(
       `maxChunks must be an integer between 1 and ${MAX_SOURCE_CHUNKS_PER_GENERATION}`,
     );
   }
@@ -162,7 +163,7 @@ export function isSourceChunkLimitExceeded(error: unknown): error is Error {
 export function resolveSourcePathPrefix(value: unknown): string | undefined {
   if (value === undefined || value === null || value === '') return undefined;
   if (typeof value !== 'string' || value.length > 1024) {
-    throw new Error('pathPrefix must be a string of at most 1024 characters');
+    throw invalidCodebaseSelection('pathPrefix must be a string of at most 1024 characters');
   }
   return value;
 }
@@ -173,22 +174,22 @@ export function resolveSourcePathPatterns(
 ): string[] | undefined {
   if (value === undefined) return undefined;
   if (!Array.isArray(value) || value.length > 128) {
-    throw new Error(`${fieldName} must be an array with at most 128 entries`);
+    throw invalidCodebaseSelection(`${fieldName} must be an array with at most 128 entries`);
   }
   return value.map((entry, index) => {
     if (typeof entry !== 'string') {
-      throw new Error(`${fieldName}[${index}] must be a string`);
+      throw invalidCodebaseSelection(`${fieldName}[${index}] must be a string`);
     }
     const trimmed = entry.trim();
     if (!trimmed || trimmed.length > 1024 || trimmed.includes('\0')) {
-      throw new Error(`${fieldName}[${index}] must be a non-empty string of at most 1024 characters`);
+      throw invalidCodebaseSelection(`${fieldName}[${index}] must be a non-empty string of at most 1024 characters`);
     }
     if (path.posix.isAbsolute(trimmed) || path.win32.isAbsolute(trimmed)) {
-      throw new Error(`${fieldName}[${index}] must be relative`);
+      throw invalidCodebaseSelection(`${fieldName}[${index}] must be relative`);
     }
     const normalized = normalizeSourceRelativePath(trimmed);
     if (normalized.split('/').includes('..')) {
-      throw new Error(`${fieldName}[${index}] must not traverse parent directories`);
+      throw invalidCodebaseSelection(`${fieldName}[${index}] must not traverse parent directories`);
     }
     return normalized;
   });

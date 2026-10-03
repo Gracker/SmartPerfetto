@@ -584,15 +584,15 @@ steps:
           AND s.ts >= si.ts AND s.ts < si.ts + si.dur
       ) WHERE inflate_ms > 100
 
-      -- SR16: 热节流 (根因 B4)
+      -- SR16: 启动期频率未达本 trace 峰值（B2/B4 候选；频率比值不证明限频或热节流）
       -- 按 CPU 分组比较同一 CPU 的 startup max vs global max，取最低比值
       -- 避免跨大小核比较导致假阳性
       UNION ALL
-      SELECT 'SR16', 'CPU 热节流（CPU' || throttled_cpu || ' 启动期间频率仅达峰值 ' || min_pct || '%）',
+      SELECT 'SR16', 'CPU 频率未达本 trace 峰值（CPU' || throttled_cpu || ' 启动期间最高频率为全 trace 峰值的 ' || min_pct || '%）',
         CASE WHEN min_pct < 70 THEN 'critical'
              WHEN min_pct < 90 THEN 'warning' ELSE 'info' END,
         'CPU' || throttled_cpu || ': 启动期间最高 ' || startup_freq || ' KHz, 全局峰值 ' || global_freq || ' KHz (' || min_pct || '%)',
-        '设备可能过热; 冷却后重测对比; 检查 thermal governor 参数'
+        '仅为频率观测：可能来自负载、调速器升频或频率上限；是否限频以启动窗口的 CPU 限频证据（cpu_throttling_in_range）为准，本项未采集该证据'
       FROM (
         SELECT
           per_cpu.cpu as throttled_cpu,

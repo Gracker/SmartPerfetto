@@ -6,22 +6,29 @@ import express, { Router, type Request, type Response } from 'express';
 import type { IncomingMessage } from 'http';
 import net, { type Socket } from 'net';
 import type { Duplex } from 'stream';
-import { resolveFeatureConfig, serverConfig } from '../config';
+import { isKeylessLocalMode, serverConfig } from '../config';
 import {
   authenticate,
+  buildRequestContext,
   DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
+  resolveCredentialIdentity,
+  type ContextIdentity,
   type RequestContext,
-  type RequestContextAuthType,
 } from '../middleware/auth';
-import { getFirstHeaderValue, getHeaderValue, parseHeaderList, sanitizeContextId } from '../middleware/requestHeaders';
+import { sanitizeContextId } from '../utils/contextId';
 import { requestIdOf } from '../middleware/requestId';
+import {
+  isOriginAllowedForRequirement,
+  type BrowserOriginRequirement,
+} from '../security/requestOriginPolicy';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { getTraceProcessorService, isPrivateAnalysisLease } from '../services/traceProcessorService';
 import {traceProcessorProcessorKey} from '../services/traceProcessorConnectionModel';
 import {
+  frontendHolderInput,
   getTraceProcessorLeaseStore,
+  TraceProcessorLeaseUnavailableError,
   type FrontendHolderVisibility,
   type TraceProcessorHolderInput,
   type TraceProcessorLeaseRecord,
@@ -29,8 +36,6 @@ import {
 } from '../services/traceProcessorLeaseStore';
 import { normalizeTraceProcessorQueryPriority } from '../services/traceProcessorSqlWorker';
 import { hasRbacPermission, sendForbidden } from '../services/rbac';
-import { EnterpriseSsoService } from '../services/enterpriseSsoService';
-import { EnterpriseApiKeyService } from '../services/enterpriseApiKeyService';
 import type { EnterpriseRepositoryScope } from '../services/enterpriseRepository';
 import {
   issueTraceProcessorProxyCapability,
@@ -62,120 +67,58 @@ class TraceProcessorProxyError extends Error {
   }
 }
 
-interface RequestIdentity {
-  userId: string;
-  authType: RequestContextAuthType;
-  tenantId?: string;
-  workspaceId?: string;
-  roles?: string[];
-  scopes?: string[];
-}
-
 interface ProxyTarget {
   lease: TraceProcessorLeaseRecord;
   port: number;
   scope: EnterpriseRepositoryScope;
 }
 
-function trustedHeadersEnabled(): boolean {
-  const value = process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS;
-  return ['1', 'true', 'yes', 'on', 'enabled'].includes(String(value || '').trim().toLowerCase());
+/**
+ * The upgrade request's RequestContext. A browser cannot set headers on a
+ * WebSocket upgrade, so the query string supplies scope after the headers;
+ * everything else follows HTTP authentication through buildRequestContext.
+ */
+function upgradeRequestContext(
+  req: IncomingMessage,
+  query: URLSearchParams,
+  identity: ContextIdentity,
+): RequestContext {
+  return buildRequestContext(req, identity, {
+    tenantId: queryId(query, 'tenantId'),
+    workspaceId: queryId(query, 'workspaceId'),
+    windowId: queryId(query, 'windowId'),
+  });
 }
 
-function defaultRolesForAuthType(authType: RequestContextAuthType): string[] {
-  return authType === 'dev' ? ['org_admin'] : ['analyst'];
+function queryId(query: URLSearchParams, key: string): string {
+  return sanitizeContextId(query.get(key) || '');
 }
 
-function defaultScopesForAuthType(authType: RequestContextAuthType): string[] {
-  return authType === 'dev'
-    ? ['*']
-    : ['trace:read', 'trace:write', 'agent:run', 'report:read'];
+/**
+ * An upgrade skips Express, so no CORS check has admitted its Origin; an
+ * ambient credential needs one before any lease work.
+ */
+function requireUpgradeOrigin(
+  req: IncomingMessage,
+  requirement: BrowserOriginRequirement,
+  allowedOrigins: ReadonlySet<string>,
+): void {
+  if (isOriginAllowedForRequirement(req.headers.origin, requirement, allowedOrigins)) return;
+  throw new TraceProcessorProxyError(403, 'Trace processor WebSocket Origin is not allowed');
 }
 
-function resolveTrustedSsoIdentity(req: IncomingMessage): RequestIdentity | null {
-  if (!trustedHeadersEnabled()) return null;
-  const userId = sanitizeContextId(getFirstHeaderValue(req, [
-    'x-smartperfetto-sso-user-id',
-    'x-sso-user-id',
-    'x-auth-request-user',
-  ]));
-  if (!userId) return null;
-
-  return {
-    userId,
-    authType: 'sso',
-    tenantId: sanitizeContextId(getFirstHeaderValue(req, [
-      'x-smartperfetto-sso-tenant-id',
-      'x-sso-tenant-id',
-      'x-tenant-id',
-    ])) || undefined,
-    workspaceId: sanitizeContextId(getFirstHeaderValue(req, [
-      'x-smartperfetto-sso-workspace-id',
-      'x-sso-workspace-id',
-      'x-workspace-id',
-    ])) || undefined,
-    roles: parseHeaderList(req, [
-      'x-smartperfetto-sso-roles',
-      'x-sso-roles',
-    ], defaultRolesForAuthType('sso')),
-    scopes: parseHeaderList(req, [
-      'x-smartperfetto-sso-scopes',
-      'x-sso-scopes',
-    ], defaultScopesForAuthType('sso')),
-  };
-}
-
-function queryValue(req: IncomingMessage, key: string): string {
-  const url = new URL(req.url || '/', 'http://127.0.0.1');
-  return sanitizeContextId(url.searchParams.get(key) || '');
-}
-
-function contextFromIdentity(req: IncomingMessage, identity: RequestIdentity): RequestContext {
-  const authType = identity.authType;
-  const windowId =
-    sanitizeContextId(getHeaderValue(req, 'x-window-id')) ||
-    queryValue(req, 'windowId') ||
-    undefined;
-
-  return {
-    tenantId:
-      identity.tenantId ||
-      sanitizeContextId(getFirstHeaderValue(req, ['x-tenant-id', 'x-sso-tenant-id'])) ||
-      queryValue(req, 'tenantId') ||
-      DEFAULT_TENANT_ID,
-    workspaceId:
-      identity.workspaceId ||
-      sanitizeContextId(getFirstHeaderValue(req, ['x-workspace-id', 'x-sso-workspace-id'])) ||
-      queryValue(req, 'workspaceId') ||
-      DEFAULT_WORKSPACE_ID,
-    userId: identity.userId,
-    authType,
-    roles: identity.roles ?? defaultRolesForAuthType(authType),
-    scopes: identity.scopes ?? defaultScopesForAuthType(authType),
-    requestId: requestIdOf(req),
-    ...(windowId ? { windowId } : {}),
-  };
-}
-
-function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): RequestContext | null {
-  const trustedIdentity = resolveTrustedSsoIdentity(req);
-  if (trustedIdentity) return contextFromIdentity(req, trustedIdentity);
-
-  try {
-    const ssoIdentity = EnterpriseSsoService.getInstance()
-      .resolveRequestIdentityFromRequest(req as Request);
-    if (ssoIdentity) return contextFromIdentity(req, ssoIdentity);
-  } catch {
-    // Fall through to API key or dev fallback.
+function resolveUpgradeRequestContext(
+  req: IncomingMessage,
+  leaseId: string,
+  allowedOrigins: ReadonlySet<string>,
+): RequestContext | null {
+  const query = new URL(req.url || '/', 'http://127.0.0.1').searchParams;
+  const credential = resolveCredentialIdentity(req);
+  if (credential.kind === 'identity') {
+    requireUpgradeOrigin(req, credential.originRequirement, allowedOrigins);
+    return upgradeRequestContext(req, query, credential.identity);
   }
-
-  try {
-    const apiKeyIdentity = EnterpriseApiKeyService.getInstance()
-      .resolveRequestIdentityFromRequest(req as Request);
-    if (apiKeyIdentity) return contextFromIdentity(req, apiKeyIdentity);
-  } catch {
-    // Fall through to dev fallback.
-  }
+  if (credential.kind === 'rejected') return null;
 
   const capabilityContext = resolveTraceProcessorProxyCapability(
     req.headers['sec-websocket-protocol'],
@@ -183,9 +126,11 @@ function resolveUpgradeRequestContext(req: IncomingMessage, leaseId: string): Re
   );
   if (capabilityContext) return {...capabilityContext, requestId: requestIdOf(req)};
 
-  if (!resolveFeatureConfig().enterprise && !process.env.SMARTPERFETTO_API_KEY?.trim()) {
-    return contextFromIdentity(req, {
-      userId: queryValue(req, 'userId') || DEFAULT_DEV_USER_ID,
+  if (isKeylessLocalMode()) {
+    // Keyless local mode authenticates by network position, which any page shares.
+    requireUpgradeOrigin(req, 'if_present', allowedOrigins);
+    return upgradeRequestContext(req, query, {
+      userId: queryId(query, 'userId') || DEFAULT_DEV_USER_ID,
       authType: 'dev',
     });
   }
@@ -206,19 +151,14 @@ function frontendHolderForContext(
   metadata: Record<string, unknown> = {},
   frontendVisibility?: FrontendHolderVisibility,
 ): TraceProcessorHolderInput {
-  const holderRef = context.windowId || context.requestId || context.userId;
-  return {
-    holderType: 'frontend_http_rpc',
-    holderRef,
-    windowId: context.windowId,
+  return frontendHolderInput(context, {
     ...(frontendVisibility ? { frontendVisibility } : {}),
     metadata: {
       requestId: context.requestId,
-      userId: context.userId,
       proxy: 'trace_processor',
       ...metadata,
     },
-  };
+  });
 }
 
 function parseFrontendVisibility(value: unknown): FrontendHolderVisibility {
@@ -417,12 +357,10 @@ async function heartbeatLease(req: Request, res: Response): Promise<void> {
   try {
     lease = store.acquireHolderForLease(scope, lease.id, holder);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes('not acquirable')) {
-      throw new TraceProcessorProxyError(409, message);
-    }
-    if (message.includes('not found')) {
-      throw new TraceProcessorProxyError(404, 'Trace processor lease not found');
+    if (error instanceof TraceProcessorLeaseUnavailableError) {
+      throw error.reason === 'not_acquirable'
+        ? new TraceProcessorProxyError(409, error.message)
+        : new TraceProcessorProxyError(404, 'Trace processor lease not found');
     }
     throw error;
   }
@@ -519,16 +457,15 @@ function sendProxyError(res: Response, error: unknown): void {
     });
     return;
   }
-  const message = error instanceof Error ? error.message : String(error);
-  console.error('[TraceProcessorProxy] Proxy error:', message);
-  res.status(502).json({
-    success: false,
+  sendRouteFailure(res, {
+    status: 502,
+    code: 'trace_processor_proxy_failed',
     error: 'Trace processor proxy failed',
-    details: message,
-  });
+    logLabel: '[TraceProcessorProxy] Proxy error',
+  }, error);
 }
 
-function writeUpgradeError(socket: Duplex, statusCode: number, message: string): void {
+export function writeUpgradeError(socket: Duplex, statusCode: number, message: string): void {
   if (!socket.writable) return;
   socket.write(
     `HTTP/1.1 ${statusCode} ${message}\r\n`
@@ -625,8 +562,9 @@ async function proxyWebSocket(
   socket: Duplex,
   head: Buffer,
   leaseId: string,
+  allowedOrigins: ReadonlySet<string>,
 ): Promise<void> {
-  const context = resolveUpgradeRequestContext(req, leaseId);
+  const context = resolveUpgradeRequestContext(req, leaseId, allowedOrigins);
   if (!context) {
     throw new TraceProcessorProxyError(401, 'Trace processor WebSocket requires authentication');
   }
@@ -659,8 +597,9 @@ async function proxyWebSocket(
   });
 
   upstream.once('error', (error) => {
+    console.error('[TraceProcessorProxy] WebSocket upstream error:', error);
     if (!socket.destroyed) {
-      writeUpgradeError(socket, 502, `Trace processor WebSocket proxy failed: ${error.message}`);
+      writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
     }
   });
   socket.once('error', () => upstream.destroy());
@@ -710,28 +649,39 @@ router.post('/:leaseId/restart', express.json({ limit: '32kb' }), async (req, re
   }
 });
 
+/**
+ * Routes a trace-processor WebSocket upgrade. `allowedOrigins` is the
+ * normalized browser origin set the HTTP API admits through CORS.
+ */
 export function handleTraceProcessorProxyUpgrade(
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
+  allowedOrigins: ReadonlySet<string>,
 ): boolean {
   const url = new URL(req.url || '/', 'http://127.0.0.1');
   const match = url.pathname.match(/^\/api\/tp\/([^/]+)\/websocket$/);
   if (!match) return false;
 
-  const leaseId = sanitizeContextId(decodeURIComponent(match[1]));
+  // This listener is synchronous: a malformed escape any page can send must
+  // not escape it as an uncaught URIError, which shuts the backend down.
+  let leaseId: string;
+  try {
+    leaseId = sanitizeContextId(decodeURIComponent(match[1]));
+  } catch {
+    leaseId = '';
+  }
   if (!leaseId) {
     writeUpgradeError(socket, 400, 'leaseId is required');
     return true;
   }
 
-  void proxyWebSocket(req, socket, head, leaseId).catch((error) => {
+  void proxyWebSocket(req, socket, head, leaseId, allowedOrigins).catch((error) => {
     if (error instanceof TraceProcessorProxyError) {
       writeUpgradeError(socket, error.statusCode, error.message);
       return;
     }
-    const message = error instanceof Error ? error.message : String(error);
-    console.error('[TraceProcessorProxy] WebSocket proxy error:', message);
+    console.error('[TraceProcessorProxy] WebSocket proxy error:', error);
     writeUpgradeError(socket, 502, 'Trace processor WebSocket proxy failed');
   });
   return true;

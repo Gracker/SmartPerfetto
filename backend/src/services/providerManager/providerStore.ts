@@ -15,9 +15,11 @@ import {
 import { recordEnterpriseAuditEvent } from '../enterpriseAuditService';
 import type { ProviderConfig, ProviderConnection, ProviderScope } from './types';
 import { LocalEncryptedSecretStore } from './localSecretStore';
+import { PublicRequestError } from '../../utils/publicRequestError';
 import { atomicWriteFileSync } from '../../utils/atomicFileWriter';
 import { isPlainJsonObject } from '../../utils/isPlainJsonObject';
 import { logStoredReadFailure, parseStoredJson } from '../../utils/storedData';
+import { providerNotFound } from './providerRequestError';
 import {
   localProviderMutationScope,
   ProviderMutationGenerationStore,
@@ -301,14 +303,12 @@ const PROVIDER_STORE_UNREADABLE_MESSAGES: Record<ProviderStoreUnreadableOperatio
     + 'repair or move the file, or choose the system default (env) explicitly',
 };
 
-export class ProviderStoreUnreadableError extends Error {
-  readonly code = PROVIDER_STORE_UNREADABLE_CODE;
-  /** A conflict with the file's state, which the user can repair. */
-  readonly httpStatus = 409;
+/** A conflict (409) with the file's state, which the user can repair; fixed messages only. */
+export class ProviderStoreUnreadableError extends PublicRequestError {
+  declare readonly code: typeof PROVIDER_STORE_UNREADABLE_CODE;
 
   constructor(operation: ProviderStoreUnreadableOperation = 'write') {
-    super(PROVIDER_STORE_UNREADABLE_MESSAGES[operation]);
-    this.name = 'ProviderStoreUnreadableError';
+    super(PROVIDER_STORE_UNREADABLE_CODE, PROVIDER_STORE_UNREADABLE_MESSAGES[operation], 409);
   }
 }
 
@@ -584,7 +584,7 @@ export class ProviderStore {
         const resolved = resolveProviderScope(scope);
         const existing = this.getEnterpriseRowById(id);
         if (existing && !this.getWritableEnterpriseRowById(id, resolved)) {
-          throw new Error(`Provider not found: ${id}`);
+          throw providerNotFound(id);
         }
       }
       return localProviderMutationScope();
@@ -593,7 +593,7 @@ export class ProviderStore {
     const row = oidcWriteIsolation
       ? this.getWritableEnterpriseRowById(id, resolved)
       : this.getAccessibleEnterpriseRowById(id, resolved);
-    if (!row) throw new Error(`Provider not found: ${id}`);
+    if (!row) throw providerNotFound(id);
     return {
       level: row.scope,
       tenantId: row.tenant_id,
@@ -659,7 +659,7 @@ export class ProviderStore {
       ? this.getWritableEnterpriseRowById(provider.id, resolved)
       : this.getAccessibleEnterpriseRowById(provider.id, resolved);
     if (oidcWriteIsolation && !existing && this.getEnterpriseRowById(provider.id)) {
-      throw new Error(`Provider not found: ${provider.id}`);
+      throw providerNotFound(provider.id);
     }
     const effectiveScope = existing?.scope ?? (resolved.userId ? 'personal' : 'workspace');
     const workspaceId = effectiveScope === 'org' ? null : resolved.workspaceId;
@@ -730,7 +730,7 @@ export class ProviderStore {
           updatedAt: toEpochMs(provider.updatedAt),
         });
         if (result.changes !== 1) {
-          throw new Error(`Provider not found: ${provider.id}`);
+          throw providerNotFound(provider.id);
         }
       } else {
         db.prepare(`

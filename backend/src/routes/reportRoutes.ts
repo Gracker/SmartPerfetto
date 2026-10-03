@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type Database from 'better-sqlite3';
 import { attachRequestContext, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import { recordEnterpriseAuditEventForContext } from '../services/enterpriseAuditService';
 import {
@@ -55,6 +56,7 @@ import {
   type AnalysisPrivateContextMarker,
 } from '../services/security/analysisPrivateContext';
 import { insertAnalysisRunIfMissing } from '../services/analysisRunStore';
+import {sendResolvedFile} from '../utils/sendResolvedFile';
 
 const router = express.Router();
 
@@ -744,11 +746,7 @@ router.get('/assets/mermaid.min.js', (_req, res) => {
   res.setHeader('Content-Type', 'application/javascript; charset=utf-8');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Cache-Control', 'private, max-age=3600');
-  // The repository's isolated worktrees live below a `.worktrees` segment.
-  // `sendFile` rejects such an already-validated absolute path unless dotfile
-  // traversal is explicitly allowed, even though the target itself is not a
-  // dotfile and `resolveReportMermaidAssetPath` has already fail-closed it.
-  return res.sendFile(assetPath, {dotfiles: 'allow'}, error => {
+  return sendResolvedFile(res, assetPath, error => {
     if (!error || res.headersSent) return;
     res.status(404).type('text/plain').send('Mermaid report asset is unavailable');
   });
@@ -1131,12 +1129,12 @@ router.get('/:reportId/export', async (req, res) => {
     res.setHeader('Expires', '0');
     recordReportAudit(context, 'report.exported', reportId, report);
     res.send(upgradeLegacyReportHtml(report.html));
-  } catch (error: any) {
-    console.error('[ReportRoutes] Export report error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to export report',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'report_export_failed',
+      error: 'Failed to export report',
+      logLabel: '[ReportRoutes] Export report error',
+    }, error);
   }
 });
 
@@ -1184,12 +1182,12 @@ router.get('/:reportId', (req, res) => {
     res.setHeader('Expires', '0');
     recordReportAudit(context, 'report.read', reportId, report);
     res.send(upgradeLegacyReportHtml(report.html));
-  } catch (error: any) {
-    console.error('[ReportRoutes] Get report error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to get report',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'report_read_failed',
+      error: 'Failed to get report',
+      logLabel: '[ReportRoutes] Get report error',
+    }, error);
   }
 });
 
@@ -1227,12 +1225,12 @@ router.delete('/:reportId', (req, res) => {
       success: deleted,
       error: deleted ? undefined : 'Report not found',
     });
-  } catch (error: any) {
-    console.error('[ReportRoutes] Delete report error:', error);
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to delete report',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'report_delete_failed',
+      error: 'Failed to delete report',
+      logLabel: '[ReportRoutes] Delete report error',
+    }, error);
   }
 });
 

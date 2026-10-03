@@ -61,6 +61,7 @@ import {
 
 import {isTerminalSseEvent} from '../assistant/stream/sessionSseReplay';
 import {createSceneSseObservation, recordSceneSseEvent, evaluateSceneSseVerification, SCENE_RUN_TERMINAL_EVENTS, parseSceneOracleSpecs, collectSceneOracleRows, evaluateSceneOracleRows, type SceneOracleSpec, type SceneOracleObservation, type SceneSseObservation} from './sceneSseVerification';
+import {rowObject} from '../utils/traceProcessorRowUtils';
 
 type CodeAwareMode = 'off' | 'metadata_only' | 'provider_send';
 type SmartAction = 'preview' | 'analyze';
@@ -983,7 +984,7 @@ export async function collectAgentSseOracleRows(expectation: AgentSseExpectation
         throw new Error(`Task fact oracle unavailable: ${fact.id}`);
       }
     }
-    out[fact.id] = result.rows.map(row => Object.fromEntries(result.columns.map((column, index) => [column, row[index]])));
+    out[fact.id] = result.rows.map(row => rowObject(result.columns, row));
   }
   return out;
 }

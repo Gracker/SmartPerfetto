@@ -287,7 +287,9 @@ describe('normalizeAnalyzeOptions', () => {
       );
     } catch (error: any) {
       expect(error.code).toBe('SMART_COMPARISON_UNSUPPORTED');
-      expect(error.httpStatus).toBe(400);
+      expect(error.status).toBe(400);
+      // (message, code) maps onto PublicRequestError's (code, message).
+      expect(error.message).not.toBe(error.code);
     }
   });
 

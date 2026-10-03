@@ -246,6 +246,9 @@ steps:
           type: string
         - {name: unknown_core_ms, label: "未知核类型运行(ms)", type: duration, format: duration_ms, unit: ms}
         - {name: unknown_core_pct, label: "未知核类型占比", type: percentage}
+        - {name: unknown_core_ns, label: "未知核运行(ns)", type: number, hidden: true}
+        - {name: main_thread_count, label: "主线程数", type: number, hidden: true}
+        - {name: big_core_pct_definition, label: "大核占比口径", type: string, hidden: true}
     process_scope:
       role: target
       binding: effective_target_processes
@@ -275,6 +278,9 @@ steps:
           ss.cpu,
           SUM(
             MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})
+          ) as dur_ns,
+          SUM(
+            MIN(ss.ts + ss.dur, ${end_ts}) - MAX(ss.ts, ${start_ts})
           ) / 1e6 as dur_ms,
           COALESCE(ct.core_type, 'unknown') as core_type,
           COALESCE(ct.topology_source, 'unavailable') as topology_source
@@ -299,7 +305,12 @@ steps:
         GROUP_CONCAT(DISTINCT topology_source) as classify_method,
         ROUND(SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ms ELSE 0 END), 2) as unknown_core_ms,
         ROUND(100.0 * SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ms ELSE 0 END) /
-          NULLIF(SUM(dur_ms), 0), 1) as unknown_core_pct
+          NULLIF(SUM(dur_ms), 0), 1) as unknown_core_pct,
+        -- Comparison producer contract for cpu.big_core_pct (comparisonMetricProducerContract.ts):
+        -- unrounded unknown time, the main threads merged into this row, and the declared definition.
+        SUM(CASE WHEN core_type NOT IN ('prime', 'big', 'medium', 'little') THEN dur_ns ELSE 0 END) as unknown_core_ns,
+        COUNT(DISTINCT utid) as main_thread_count,
+        'main_thread_running:core_tier_group:prime+big+medium@3' as big_core_pct_definition
       FROM cpu_time
       GROUP BY 1
     save_as: cpu_core
@@ -767,6 +778,7 @@ steps:
         - {name: window_start_ts, label: "window_start_ts", type: timestamp, unit: ns, hidden: true}
         - {name: window_end_ts, label: "window_end_ts", type: timestamp, unit: ns, hidden: true}
         - {name: unknown_core_ms, label: "unknown_core_ms", type: duration, unit: ms, hidden: true}
+        - {name: unknown_core_ns, label: "unknown_core_ns", type: duration, unit: ns, hidden: true}
         - {name: used_ucpus, label: "used_ucpus", type: string, hidden: true}
         - {name: sched_covered_ns, label: "sched_covered_ns", type: duration, unit: ns, hidden: true}
         - {name: sched_evidence, label: "sched_evidence", type: string, hidden: true}
@@ -1565,7 +1577,7 @@ steps:
     inputs: [startup_basic, cpu_core, cpu_freq, per_cpu_context, preemption_handoffs, freq_rampup, quadrant, cpu_placement, main_slices, actionable_main_slices, main_file_io, binder_calls, main_sync_binder, binder_pool, sched_delay, thread_states, critical_tasks, blocking_graph, jit_analysis, hot_slice_states]
     rules:
       # 大核占比偏低 + Runnable 明显（仅在判定来源可信时触发）
-      - condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.unknown_core_pct === 0 && quadrant.data[0]?.q3_runnable_ms > 50"
+      - condition: "cpu_core.data[0]?.big_core_pct < 20 && cpu_core.data[0]?.unknown_core_ns === 0 && quadrant.data[0]?.q3_runnable_ms > 50"
         severity: warning
         diagnosis: "主线程大核占比偏低（${cpu_core.data[0].big_core_pct}%）且 Runnable 排队明显（${quadrant.data[0].q3_runnable_ms}ms），可能存在调度供给不足"
         confidence: medium
@@ -1574,9 +1586,9 @@ steps:
           - "对照关键线程 kernel priority、R+ 切换和 affinity/cgroup 证据，再评估调度配置"
 
       # 核判定来源不可靠时，避免把大小核结论当根因
-      - condition: "cpu_core.data[0]?.unknown_core_pct > 0"
+      - condition: "cpu_core.data[0]?.unknown_core_ns > 0"
         severity: info
-        diagnosis: "主线程运行时间中 ${cpu_core.data[0].unknown_core_pct}% 的核类型未知，不能把未知部分计为小核或据此认定摆核不足"
+        diagnosis: "主线程有 ${cpu_core.data[0].unknown_core_ms}ms（${cpu_core.data[0].unknown_core_pct}%）运行时间的核类型未知，不能把未知部分计为小核或据此认定摆核不足"
         confidence: medium
         suggestions:
           - "补充或检查 cpu_frequency/cpu capacity 数据后再判断大小核调度问题"
@@ -1738,10 +1750,11 @@ steps:
         suggestions:
           - "对齐该 CPU 上关键任务、DVFS 请求/限制及频率响应，再评估是否影响关键路径"
 
-      # 核驻留变化不等于曾被困小核。
-      - condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
+      # 核驻留变化不等于曾被困小核。A low share needs unknown_core_ns === 0 (see
+      # lowBigGroupGuardViolations); a high one is a lower bound.
+      - condition: "cpu_placement?.data?.length > 2 && cpu_placement.data[0]?.big_core_pct != null && cpu_placement.data[2]?.big_core_pct != null && cpu_placement.data[0].unknown_core_ns === 0 && cpu_placement.data[0].big_core_pct < 20 && cpu_placement.data[2].big_core_pct > 60"
         severity: info
-        diagnosis: "主线程已分类大核占比从初期 ${cpu_placement.data[0].big_core_pct}% 变为后段 ${cpu_placement.data[2].big_core_pct}%；需保留未知核占比，不能据此认定被困小核或亲和性配置错误"
+        diagnosis: "主线程大核组占比从初期 ${cpu_placement.data[0].big_core_pct}% 变为后段 ${cpu_placement.data[2].big_core_pct}%；不能据此认定被困小核或亲和性配置错误"
         confidence: medium
         suggestions:
           - "结合实际 CPU 容量、核驻留时间及任务需求说明变化；未知拓扑保持未知"

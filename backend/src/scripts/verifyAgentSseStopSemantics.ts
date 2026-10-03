@@ -302,10 +302,6 @@ async function sendStop(ctx: RunContext, entry: StopEntry, sessionId: string, ru
   if (typeof body?.status === 'string') attempt.status = body.status;
   if (typeof body?.outcome === 'string') attempt.outcome = body.outcome;
   if (typeof body?.code === 'string') attempt.code = body.code;
-  else if (entry === 'conversation' && response.status === 409) {
-    // The conversation cancel answers a settled run with its error text only.
-    attempt.code = /Active conversation run not found/.test(String(body?.error)) ? 'ACTIVE_RUN_NOT_FOUND' : 'CONFLICT';
-  }
   return attempt;
 }
 

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type express from 'express';
+import {sendPublicRequestError} from '../middleware/routeFailure';
 import {ProviderStoreUnreadableError} from '../services/providerManager';
 
 /**
@@ -11,6 +12,6 @@ import {ProviderStoreUnreadableError} from '../services/providerManager';
  */
 export function sendProviderStoreUnreadableIfPresent(res: express.Response, error: unknown): boolean {
   if (!(error instanceof ProviderStoreUnreadableError)) return false;
-  res.status(error.httpStatus).json({success: false, code: error.code, error: error.message});
+  sendPublicRequestError(res, error);
   return true;
 }

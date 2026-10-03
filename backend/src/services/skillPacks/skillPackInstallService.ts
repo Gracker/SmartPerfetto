@@ -18,6 +18,7 @@ import type {
   SkillPackPreviewResult,
   SkillPackRecordMetadata,
 } from './skillPackTypes';
+import { SkillPackRequestError } from './skillPackRequestError';
 
 export interface SkillPackInstallServiceOptions {
   now?: () => number;
@@ -31,7 +32,7 @@ function requireInstallablePreview(preview: SkillPackPreviewResult): {
   contentHash: string;
 } {
   if (!preview.success || !preview.manifest || !preview.manifestHash || !preview.contentHash) {
-    throw new Error('skill_pack_preview_not_installable');
+    throw new SkillPackRequestError('skill_pack_preview_not_installable');
   }
   return {
     manifest: preview.manifest,
@@ -49,18 +50,18 @@ function readVerifiedAsset(preview: SkillPackPreviewResult, asset: SkillPackMani
   const sourcePath = path.join(preview.sourcePath, asset.path);
   const content = fs.readFileSync(sourcePath);
   if (content.byteLength !== asset.sizeBytes) {
-    throw new Error(`asset_size_mismatch:${asset.path}`);
+    throw new SkillPackRequestError('asset_size_mismatch', 409, asset.path);
   }
   const sha256 = createHash('sha256').update(content).digest('hex');
   if (sha256 !== asset.sha256) {
-    throw new Error(`asset_hash_mismatch:${asset.path}`);
+    throw new SkillPackRequestError('asset_hash_mismatch', 409, asset.path);
   }
   return content;
 }
 
 function copyDeclaredAssets(preview: SkillPackPreviewResult, destinationRoot: string): void {
   if (!preview.manifest) {
-    throw new Error('skill_pack_preview_not_installable');
+    throw new SkillPackRequestError('skill_pack_preview_not_installable');
   }
   fs.rmSync(destinationRoot, { recursive: true, force: true });
   fs.mkdirSync(destinationRoot, { recursive: true });
@@ -96,7 +97,8 @@ export class SkillPackInstallService {
       && existing.version === manifest.version
       && existing.metadata.contentHash !== contentHash
     ) {
-      throw new Error('installed_pack_content_hash_mismatch');
+      // The same version with different content: the caller bumps the version.
+      throw new SkillPackRequestError('installed_pack_content_hash_mismatch', 409);
     }
 
     const now = this.options.now?.() ?? Date.now();
@@ -139,7 +141,7 @@ export class SkillPackInstallService {
   ): Promise<InstalledSkillPackRecord> {
     const existing = this.repository.get(scope, packId);
     if (!existing) {
-      throw new Error('skill_pack_not_found');
+      throw new SkillPackRequestError('skill_pack_not_found', 404);
     }
     const now = this.options.now?.() ?? Date.now();
     const metadata: SkillPackRecordMetadata = {
@@ -162,7 +164,7 @@ export class SkillPackInstallService {
   async removeSkillPack(scope: EnterpriseRepositoryScope, packId: string): Promise<InstalledSkillPackRecord> {
     const existing = this.repository.get(scope, packId);
     if (!existing) {
-      throw new Error('skill_pack_not_found');
+      throw new SkillPackRequestError('skill_pack_not_found', 404);
     }
     const now = this.options.now?.() ?? Date.now();
     const disabled = this.repository.update(scope, {

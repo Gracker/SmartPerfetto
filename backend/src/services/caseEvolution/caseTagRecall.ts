@@ -4,6 +4,7 @@
 
 import {CURATED_CASE_STATUSES, caseStatusRank} from '../../types/caseKnowledge';
 import type {CaseNode} from '../../types/sparkContracts';
+import {caseAppliesToArchitecture} from '../caseArchitecture';
 import type {CaseLibrary} from '../caseLibrary';
 import type {KnowledgeScope} from '../scopedKnowledgeStore';
 
@@ -15,6 +16,8 @@ export interface CaseTagRecallQuery {
   /** Also recall reviewed cases; published ones rank first on a tie. */
   includeReviewed?: boolean;
   topK?: number;
+  /** The trace's detected rendering architecture; required so a caller says whether it knows it. */
+  architectureType: string | undefined;
 }
 
 export type CaseTagRecallHit = Pick<CaseNode,
@@ -24,7 +27,8 @@ export type CaseTagRecallHit = Pick<CaseNode,
 
 /**
  * `recall_similar_case` without evidence signatures, for both MCP servers:
- * admitted cases (`CaseLibrary.listAdmittedCases`) ranked by the share of the
+ * admitted cases (`CaseLibrary.listAdmittedCases`) that apply to the trace's
+ * architecture (`caseAppliesToArchitecture`), ranked by the share of the
  * requested tags they carry, optionally restricted to one App/Device/CUJ key.
  * Without tags, published cases rank above reviewed ones.
  */
@@ -39,6 +43,7 @@ export function recallCasesByTags(
     if (query.appId && caseNode.key?.appId !== query.appId) continue;
     if (query.deviceId && caseNode.key?.deviceId !== query.deviceId) continue;
     if (query.cuj && caseNode.key?.cuj !== query.cuj) continue;
+    if (!caseAppliesToArchitecture(caseNode, query.architectureType)) continue;
     let score: number;
     if (wantedTags) {
       const shared = caseNode.tags.filter(tag => wantedTags.has(tag)).length;

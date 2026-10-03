@@ -912,6 +912,7 @@ describe('enterprise core schema', () => {
       { version: 16 },
       { version: 17 },
       { version: 18 },
+      { version: 19 },
     ]);
   });
 
@@ -999,6 +1000,69 @@ describe('enterprise core schema', () => {
     expect(db!.prepare<[], {count: number}>(`
       SELECT COUNT(*) AS count FROM enterprise_schema_migrations WHERE version = 18
     `).get()?.count).toBe(1);
+  });
+
+  test('re-keys window state by owner and keeps live owned rows of a schema-v17 table', () => {
+    applyEnterpriseMinimalSchema(db!);
+    seedCoreGraph(db!);
+    // Restore the migration-8 table shape: keyed by window id alone.
+    db!.exec(`
+      DROP TABLE analysis_result_window_states;
+      CREATE TABLE analysis_result_window_states (
+        tenant_id TEXT NOT NULL,
+        workspace_id TEXT NOT NULL,
+        window_id TEXT NOT NULL,
+        user_id TEXT,
+        trace_id TEXT,
+        backend_trace_id TEXT,
+        active_session_id TEXT,
+        latest_snapshot_id TEXT,
+        trace_title TEXT,
+        scene_type TEXT,
+        metadata_json TEXT,
+        updated_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        PRIMARY KEY (tenant_id, workspace_id, window_id)
+      );
+      DELETE FROM enterprise_schema_migrations WHERE version = 19;
+    `);
+    const live = Date.now() + 60_000;
+    db!.prepare(`
+      INSERT INTO analysis_result_window_states
+        (tenant_id, workspace_id, window_id, user_id, latest_snapshot_id, updated_at, expires_at)
+      VALUES
+        ('tenant-a', 'workspace-a', 'window-owned', 'user-a', 'snapshot-a', 1, @live),
+        ('tenant-a', 'workspace-a', 'window-unowned', NULL, 'snapshot-x', 1, @live),
+        ('tenant-a', 'workspace-a', 'window-expired', 'user-a', 'snapshot-old', 1, 2)
+    `).run({ live });
+
+    applyEnterpriseMinimalSchema(db!);
+
+    expect(db!.prepare(`
+      SELECT name, pk FROM pragma_table_info('analysis_result_window_states')
+      WHERE pk > 0 ORDER BY pk
+    `).all()).toEqual([
+      { name: 'tenant_id', pk: 1 },
+      { name: 'workspace_id', pk: 2 },
+      { name: 'user_id', pk: 3 },
+      { name: 'window_id', pk: 4 },
+    ]);
+    expect(db!.prepare(`
+      SELECT window_id, user_id, latest_snapshot_id FROM analysis_result_window_states
+    `).all()).toEqual([
+      { window_id: 'window-owned', user_id: 'user-a', latest_snapshot_id: 'snapshot-a' },
+    ]);
+    const indexes = new Set(db!.prepare<[], { name: string }>(`
+      SELECT name FROM pragma_index_list('analysis_result_window_states')
+    `).all().map(row => row.name));
+    for (const index of [
+      'idx_analysis_result_window_states_workspace',
+      'idx_analysis_result_window_states_trace',
+      'idx_analysis_result_window_states_snapshot',
+    ]) {
+      expect(indexes.has(index)).toBe(true);
+    }
+    expect(db!.prepare('PRAGMA foreign_key_check(analysis_result_window_states)').all()).toEqual([]);
   });
 
   test('enforces the full tenant workspace session run event chain', () => {

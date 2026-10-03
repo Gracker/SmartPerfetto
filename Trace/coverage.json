@@ -1901,7 +1901,7 @@
           },
           {
             "id": "per_layer_transactions",
-            "sha256": "8c20ab5274750d6203f337349b44d2eb90caca67b64cd6a11b619bc1058028da",
+            "sha256": "26b70db8e53204e1f67e2072f4bb54a5067c8e1eda1ae32fd8c7beafaef278de",
             "required_columns": [
               "layer_name",
               "frame_count",
@@ -2113,7 +2113,7 @@
           },
           {
             "id": "presentation_cadence_audit",
-            "sha256": "f475b04219e2b72a461bc19367474b8d6d9034c45b0d38e257d46da973709cc7",
+            "sha256": "cb50b6ccf30bea95bdd1947f67ac62170e2dbeef8b41b09e5133976464136550",
             "required_columns": [
               "layer_name",
               "burst_id",
@@ -2136,7 +2136,7 @@
           },
           {
             "id": "consumer_jank_frames",
-            "sha256": "2e419532f243a443cfd897682e248b60474790c1ed885599c6a988b22fd28c1b",
+            "sha256": "c8b174d3ef075528b507c1a43e2fee7265831a27abaa6e273d3ddcf0fedb9532",
             "required_columns": [
               "frame_id",
               "layer_name",
@@ -2156,7 +2156,7 @@
           },
           {
             "id": "consumer_jank_summary",
-            "sha256": "a68011979698ee9b596f2b614137448250458f40dd5e7b72cd2e92779f67379b",
+            "sha256": "b06bd8bfa5baa49433da698b454996591f3c00062e6685a32126c9638cf03b6a",
             "required_columns": [
               "total_frames",
               "consumer_jank_frames",
@@ -2173,7 +2173,7 @@
           },
           {
             "id": "jank_severity_distribution",
-            "sha256": "1e41532df370fc15fde3ebc2e18bc8ddd572c4c14f458a2eaee06dee797c81bd",
+            "sha256": "bc1c349c857c7beb56e1a1462ef80f12b3fb081acf96737ec639e212237e0628",
             "required_columns": [
               "severity",
               "count",
@@ -2688,7 +2688,7 @@
           },
           {
             "id": "throttle_detection",
-            "sha256": "291cab9f82f8d802d4157e7b367a1d66c72d56c01486e857f75d1f6511daa55f",
+            "sha256": "b9c3f7ab69b98217677b6b380feedbdd6919a87cef9b5a6f328f65e4e619a8b5",
             "required_columns": [
               "core_type",
               "start_freq_mhz",
@@ -3375,7 +3375,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "158672a7330e164c764ead2ec860dd4fcc1fe522715d0b5d7da95b7ac29db4eb",
+            "sha256": "c60dd8978eefc6b1014a938bb574c4f305dbdefd5633fe4ddaa2a435a6248d2e",
             "required_columns": [
               "metric",
               "value",
@@ -3731,7 +3731,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "54df0b30e5ec52be404874aaf54911b920b8d99020c38daba7e288208ad39b24",
+            "sha256": "7b0aa48efeb90dc0a23d0838acb3b22999e5db9e7268e573cf8bb60cad2e6cb7",
             "required_columns": [
               "ts_str",
               "prio_label",
@@ -3848,7 +3848,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "3250f6d3c5de3f0d297aa367d1106fe14963693381c8714eb8032a338083e497",
+            "sha256": "e1602920c7b4ae81dc7c083f0ad5e9234bc5f6a9050d261755c6216f4d8932c1",
             "required_columns": [
               "ts_str",
               "prio",
@@ -4682,7 +4682,7 @@
           },
           {
             "id": "layer_signals",
-            "sha256": "2f660789abf414b61579e8597697ff86f6c56c205161cf98303c41a8d5dfb1cd",
+            "sha256": "65e3636a52ee4c05abf47814728891057c75ebe063c42fd00d4816b71795c6ac",
             "required_columns": [
               "app_layer_count",
               "app_layer_names",
@@ -5163,13 +5163,14 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "f5ebc168ef65b918be7268153f3f5af1afc756f1df78324173509c1b18bfc412",
+            "sha256": "b5da088294195b345f6a90729ee89fbe7551a24b54ba6ae6ed9c7d0c098fd58a",
             "required_columns": [
               "upid",
               "utid",
               "window_start_ts",
               "window_end_ts",
               "unknown_core_ms",
+              "unknown_core_ns",
               "used_ucpus",
               "sched_covered_ns",
               "sched_evidence",
@@ -5587,7 +5588,7 @@
           },
           {
             "id": "slow_reason_checks",
-            "sha256": "c729d4f3b91406147ccad9fd2f88a7dbcddd26bc3f67b79033a161a824e5e58e",
+            "sha256": "6c96b41a1b4aabc4431712599afb0320c3089a6546da67a6a285eae182fafa72",
             "required_columns": [
               "reason_id",
               "reason",
@@ -6068,7 +6069,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "5bfe8c3ebee212dc057ac0ab26e5c20a6205097f4fd422a652adf5ff42f18bbf",
+            "sha256": "c60009b5d1df98cf72a1b4e4fa698031d88bf29be9a2fa9de055f165b3eb9bea",
             "required_columns": [
               "track_name",
               "category",
@@ -6646,7 +6647,7 @@
           },
           {
             "id": "system_cpu_health",
-            "sha256": "115b781c64d4b6488a86ca898f297dc3bb9cd842560ea11c8b9f7719bde4af1e",
+            "sha256": "c2031d18f713c72c92c9c97bb9e3f2562d6f041c9c0a57914f9d59db71e0cb35",
             "required_columns": [
               "sched_covered_ns",
               "idle_identity_unknown_ns",
@@ -6677,7 +6678,7 @@
           },
           {
             "id": "system_freeze_check",
-            "sha256": "d2e815feb85a91b730d45be7edd01ce2fc63ef9ea4d8a5173d93a7b99d25cfa8",
+            "sha256": "647beedec814ebeddc1453c02a65230e85391fea5749088885d45bf604009995",
             "required_columns": [
               "total_apps",
               "frozen_apps",
@@ -6778,11 +6779,12 @@
           },
           {
             "id": "main_thread_quadrant",
-            "sha256": "306b382152ccf61cc4eba246de101b33c1948d0146f31a09eaedd0fbfaf57905",
+            "sha256": "6bdfc926e69f39c3d5fd542fffd2a2e363c93d9b32f08943d8f923c23a41f92b",
             "required_columns": [
               "upid",
               "utid",
               "unknown_running_ms",
+              "unknown_running_ns",
               "uninterruptible_ms",
               "interruptible_sleep_ms",
               "state_coverage_pct",
@@ -6937,7 +6939,7 @@
           },
           {
             "id": "anr_logcat_context",
-            "sha256": "17fc3d3d33d4ed8c06332b58e71579658e98f0ed6fb7326bd8aeff20c485e653",
+            "sha256": "91395c48db9305b188ddc4a304e8e5e266a7a8c48f0044e3618c398a3baaa8b8",
             "required_columns": [
               "error_id",
               "relation_to_anr_ms",
@@ -7623,7 +7625,7 @@
           },
           {
             "id": "cpu_core_analysis",
-            "sha256": "9f45895f52db5ea5eeb6bd33b7e251b6e87240beef6eba3ac68877b0f0d68f17",
+            "sha256": "c87ad6f118493d06b3ba6bdeff5cfe7599e368796d810d3f398f84f044a15efb",
             "required_columns": [
               "upid",
               "utid",
@@ -7640,7 +7642,10 @@
               "running_pct",
               "used_ucpus",
               "used_cpus",
-              "classify_method"
+              "classify_method",
+              "unknown_core_ns",
+              "main_thread_count",
+              "big_core_pct_definition"
             ]
           },
           {
@@ -7913,7 +7918,7 @@
           },
           {
             "id": "episodes",
-            "sha256": "a10e6f2d374a9f4be03c7a033e9e7c9a97d467784e94876571f93d6363393848",
+            "sha256": "2608eaae475adf4b3ff0bed0ec938c3f534f950ba81dd4b058a3a1a2e09f66a2",
             "required_columns": [
               "episode_id",
               "trace_episode_id",
@@ -7963,7 +7968,7 @@
           },
           {
             "id": "attribution_summary",
-            "sha256": "ccb1ccf470b816b8597b16c9b56ea85dae49d1a9eb1700251a97700b9dcf517c",
+            "sha256": "1d5b28fefdd701cf2485d5d996d11c59bb598e3f3bfb7e6956822b2cf0a4c403",
             "required_columns": [
               "classification",
               "classification_scope",
@@ -7995,7 +8000,7 @@
           },
           {
             "id": "vendor_signal_discovery",
-            "sha256": "f674e1693f41958834438c9d4fc1c9c36a6e83c6db0532f1430e15e014e06dc3",
+            "sha256": "c252e506c03b0331103f633da533978c3ce0dd5af1ba5f622f0e97c4d9ae7334",
             "required_columns": [
               "candidate_kind",
               "candidate_name",
@@ -8063,7 +8068,7 @@
           },
           {
             "id": "who_cooling",
-            "sha256": "88ac87d99b9e9a8a5ae0c38a131eff87c603a8c58b818f15724e0a305083938a",
+            "sha256": "4ca0decf9205bbaad8cd0094ce22118d9e70599530f63dc1d781fd2f90404097",
             "required_columns": [
               "ts",
               "rel_to_limit_ns",
@@ -8083,7 +8088,7 @@
           },
           {
             "id": "who_daemon",
-            "sha256": "5b436fd8462cd569c1bd0947c0d014235029c95c0237bbb5a3a43b7eae2d5b88",
+            "sha256": "a1a2724267706768fce6fdb1ef52daaf0f4c8cd3079f8cd376dfb9a3ca821a60",
             "required_columns": [
               "process_name",
               "thread_name",
@@ -8104,7 +8109,7 @@
           },
           {
             "id": "temperature_context",
-            "sha256": "c554a56aa5d0e4c23a92875c4a30ec216afe1d537bbc554af812fcadb2276fb3",
+            "sha256": "d5b5eb5e58f5da886d4152c3f11314dae9e45076f683c555d2f9995cdb6f9ccc",
             "required_columns": [
               "sensor_name",
               "sample_count_in_window",
@@ -8123,7 +8128,7 @@
           },
           {
             "id": "non_cpu_heat_context",
-            "sha256": "df2916a57ea0274f8cb8e101b477a5947e6b157de3d3cfd83ef245fd1a8e016d",
+            "sha256": "e832cf122a0b21a11c2d7d6993adbd7f55e7d9e934ce8121b18609964e1e4ea6",
             "required_columns": [
               "source_kind",
               "source_key",
@@ -8692,7 +8697,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "6b7741aae8e437113c4f4be412371a36551ca764eeb24540c6c71470bad0d2f5",
+            "sha256": "52bb4b8c7b874df58f588e37ab1b72074d91d0338e844a41f6877f3a36581252",
             "required_columns": [
               "gpu_category",
               "confidence",
@@ -9308,7 +9313,7 @@
           },
           {
             "id": "root_cause_summary",
-            "sha256": "4abae76fa17cb77770086613dae93a1d7f3b28e6dc7be6a4915e9ad24b96234e",
+            "sha256": "e4188118f0c1a35dd5216a07f8fb6c4eb4422f802b7c8d21f679b345a1fea1a5",
             "required_columns": [
               "primary_cause",
               "deep_reason",
@@ -9341,7 +9346,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ]
           }
         ]
@@ -10851,8 +10858,22 @@
             ]
           },
           {
+            "id": "frame_timeline_population",
+            "sha256": "d75d05c35dbd7f76ce6d7e800e66760cbe1844dec22aff39d517738dad8fc553",
+            "required_columns": [
+              "total_frames",
+              "jank_frames",
+              "process_count",
+              "unattributed_frames",
+              "evidence_scope",
+              "trace_start_ts",
+              "trace_end_ts",
+              "frame_population_evidence"
+            ]
+          },
+          {
             "id": "buffer_tx_coverage_probe",
-            "sha256": "e2fa3fd9496db3959b05033ea3219a53a466c1cfbe2d394245d361f0ab721579",
+            "sha256": "58e3f404a6b66427f1268df714a7a482c6448c0a9b5a0a684a0dcc4e527d5218",
             "required_columns": [
               "target_process_count",
               "target_process_status",
@@ -10863,7 +10884,8 @@
               "frame_source_track",
               "buffer_tx_effective_span_ns",
               "coverage_status",
-              "should_fallback"
+              "should_fallback",
+              "root_cause_evidence_scope"
             ]
           },
           {
@@ -10972,7 +10994,7 @@
           },
           {
             "id": "jank_type_stats",
-            "sha256": "18e999a2238ab2d6d0c35eca3f94ab21962971c269f1bc71c342b1a4d27c0f9e",
+            "sha256": "0b24e61087f6f11b7dfc83e0753c9c3403d2101e3bacb6350e12cd481f955ad3",
             "required_columns": [
               "jank_type",
               "count",
@@ -11067,7 +11089,7 @@
           },
           {
             "id": "batch_frame_root_cause",
-            "sha256": "073fdcd138d1351e2485c58551364b0b9876a4066aa42b48795d0ae228c10133",
+            "sha256": "247d25017bb2e6eec9a6693366c70f7cfdf23f594a613ded8d1156c9a91ceb31",
             "required_columns": [
               "system_evidence_json",
               "frame_id",
@@ -11107,6 +11129,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -11249,7 +11272,7 @@
           },
           {
             "id": "fallback_no_frame_timeline",
-            "sha256": "08f0d1811ef40777c1e42eecf2dff7ef835e60cdd37d9437124c891d4a259287",
+            "sha256": "2b2d963521058e260c0742490de5d54a11b49204824a61e2893622941895a979",
             "required_columns": [
               "status",
               "missing_table",
@@ -11387,7 +11410,7 @@
           },
           {
             "id": "startup_evidence_matrix",
-            "sha256": "e20a3dcd96a68466421576a523ed3416766a31f4d8c99f5ff9812b0d4bae9728",
+            "sha256": "7e3078c5eac55979545b4e867750ee01f32685c68125ac39ba9048f8499d4862",
             "required_columns": [
               "item",
               "primary_metric",
@@ -11439,7 +11462,7 @@
           },
           {
             "id": "cpu_core_analysis",
-            "sha256": "059c1430f96c2c1ed77f46eb2b3b3ab54e337407d0ba990ef551ebac02717be4",
+            "sha256": "44c908dafa0de0b1362bbe79d0ed18227791e76a6d89d0e1b598593a2b95a224",
             "required_columns": [
               "thread_type",
               "big_core_ms",
@@ -11450,7 +11473,10 @@
               "used_cpus",
               "classify_method",
               "unknown_core_ms",
-              "unknown_core_pct"
+              "unknown_core_pct",
+              "unknown_core_ns",
+              "main_thread_count",
+              "big_core_pct_definition"
             ]
           },
           {
@@ -11764,7 +11790,7 @@
           },
           {
             "id": "composition_overview",
-            "sha256": "c1ad861ade38cbe4e6dd35418363b6400484804584e198e878ac8711e94e17be",
+            "sha256": "8bd5af2f6d2a25438490c1f16f5dcbcd65229cc4fa552a5730425d0173a0c232",
             "required_columns": [
               "total_compositions",
               "avg_composition_dur",
@@ -11787,7 +11813,7 @@
           },
           {
             "id": "slow_compositions",
-            "sha256": "0e32f47fdadfa98613e2eb0c84f81929674d39d85b427b81687d9fa22e78bae8",
+            "sha256": "c4f19aadeca3f3591a0eba184e73b0028752f6d39df5f44524e97bbcc153d035",
             "required_columns": [
               "start_ts",
               "dur",
@@ -11830,7 +11856,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "09b8f3cf6f423807d22b71d0fa6ce6608fbd3a1dbaf1b04953c76baf7ff1e616",
+            "sha256": "f10fa90bf36bd05f0e1bee9297a970e0176a5eca3217ac9f79d0fb268b998ef3",
             "required_columns": [
               "sf_category",
               "confidence",
@@ -12103,7 +12129,7 @@
           },
           {
             "id": "root_cause_classification",
-            "sha256": "2aed2f14bb7c17e5bf4ed598b7f1b2e6901487eb12b4cb9b31bdd5993d1b6133",
+            "sha256": "38228eff286a7a1606a51a40778529799428c9837c063784f8e4b5a1e21c4a82",
             "required_columns": [
               "classification",
               "peak_temp_c",
@@ -12314,7 +12340,7 @@
           },
           {
             "id": "core_distribution",
-            "sha256": "6b88083f63949dd4ef89009c07cc5403098573797d2846f49fcd03ab73eca5eb",
+            "sha256": "2fda67d75376d18eac775ee078b44195cdf23ed4788993a66484191cd3aea9f4",
             "required_columns": [
               "thread_name",
               "tid",
@@ -12324,8 +12350,7 @@
               "medium_core_pct",
               "little_core_pct",
               "unknown_core_pct",
-              "unknown_core_ms",
-              "big_core_pct_definition"
+              "unknown_core_ms"
             ]
           },
           {

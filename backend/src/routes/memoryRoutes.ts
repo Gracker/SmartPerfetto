@@ -37,6 +37,8 @@ import {hasRbacPermission, sendForbidden} from '../services/rbac';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 import type {MemoryPromotionPolicy} from '../types/sparkContracts';
 import {backendLogPath} from '../runtimePaths';
+import {sendRouteError, sendRouteFailure} from '../middleware/routeFailure';
+import {KnowledgeCurationError} from '../services/knowledgeCurationError';
 
 let cachedMemory: ProjectMemory | null = null;
 function getDefaultMemory(): ProjectMemory {
@@ -111,11 +113,11 @@ export function createMemoryRoutes(memory?: ProjectMemory): ExpressRouter {
         result,
       });
     } catch (err) {
-      console.error('[MemoryRoutes] sweep-confirm failed:', err);
-      return res.status(500).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return sendRouteFailure(res, {
+        code: 'memory_sweep_failed',
+        error: 'Failed to confirm aged analysis patterns',
+        logLabel: '[MemoryRoutes] sweep-confirm failed',
+      }, err);
     }
   });
 
@@ -158,10 +160,11 @@ export function createMemoryRoutes(memory?: ProjectMemory): ExpressRouter {
       });
       return res.status(200).json({success: true, entry});
     } catch (err) {
-      return res.status(400).json({
-        success: false,
-        error: err instanceof Error ? err.message : String(err),
-      });
+      return sendRouteError(res, err, {
+        code: 'memory_promotion_failed',
+        error: 'Failed to promote memory entry',
+        logLabel: '[MemoryRoutes] Promote error',
+      }, [KnowledgeCurationError]);
     }
   });
 

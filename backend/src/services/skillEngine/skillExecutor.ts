@@ -35,7 +35,15 @@ import {
   SynthesizeConfig,
 } from './types';
 import { validateSkillInputs } from './skillValidator';
-import { injectFragmentCtes, substituteSqlPlaceholders } from './skillFragments';
+import {
+  EXPRESSION_GLOBALS, SKILL_PLACEHOLDER, decodeIdentifier, extractRootVariables, identifierMatches, isBindableName,
+  ownDataValue, parseEvidenceField, readEvidenceField, routePlaceholder, wholePlaceholderBody,
+} from './expressionUtils';
+import { injectFragmentCtes } from './skillFragments';
+import {
+  absentPlaceholderSql, boundSqlPlaceholderPaths, readPlaceholderBody, sqlCodeText, sqlIdentifier, sqlLiteral,
+  sqlStringLiteralText, substituteSqlPlaceholders,
+} from './sqlTemplate';
 import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
 import { sqlScopeEvidence, resultScopeProvenance, resultScopeLimitations } from './scopeEvidence';
@@ -106,7 +114,8 @@ import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 // =============================================================================
 
 import { DisplayLayer } from './types';
-import { isObservedStepResult, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
+import { isObservedStepResult, isOptionalStep, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 /**
  * Synthesize Data - 标记为 synthesize 的步骤数据
@@ -165,6 +174,39 @@ export interface LayeredResult {
   partial?: boolean;
   /** YAML 中标记为 synthesize: true 的步骤数据，用于最终总结 */
   synthesizeData?: SynthesizeData[];
+}
+
+/** Diagnostic evidence bounds (string code points, keys per row): evidence reaches LLM payloads. */
+const EVIDENCE_STRING_MAX_CHARS = 256;
+const EVIDENCE_MAX_KEYS = 64;
+
+/**
+ * evidence 值的有界投影：行集只留行数和首行，行只留一层标量字段，长字符串截断。
+ * 只读自有数据属性（不执行 getter），不递归：嵌套值只留占位，深层或循环的值都是固定大小。
+ */
+function boundEvidenceValue(value: unknown): unknown {
+  if (!Array.isArray(value)) return boundEvidenceRow(value);
+  return value.length === 0
+    ? { _rowCount: 0 }
+    : { _rowCount: value.length, _firstRow: boundEvidenceRow(ownDataValue(value, '0')) };
+}
+
+function boundEvidenceRow(value: unknown): unknown {
+  if (Array.isArray(value)) return `[Array(${value.length})]`;
+  if (!value || typeof value !== 'object') return truncateEvidenceString(value);
+  return Object.fromEntries(Object.keys(value).slice(0, EVIDENCE_MAX_KEYS).map(key => {
+    const field = ownDataValue(value, key);
+    return [key, Array.isArray(field) ? `[Array(${field.length})]`
+      : field && typeof field === 'object' ? '[Object]' : truncateEvidenceString(field)];
+  }));
+}
+
+function truncateEvidenceString(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length <= EVIDENCE_STRING_MAX_CHARS) return value;
+  const codePoints = Array.from(value);
+  return codePoints.length > EVIDENCE_STRING_MAX_CHARS
+    ? `${codePoints.slice(0, EVIDENCE_STRING_MAX_CHARS).join('')}…`
+    : value;
 }
 
 function getSkillExecutionSignal(inherited: Record<string, any> | undefined): AbortSignal | undefined {
@@ -227,76 +269,37 @@ class ExpressionEvaluator {
    * 支持：${variable}、${step.field}、比较运算符等
    */
   static evaluate(expression: string, context: SkillExecutionContext): any {
-    const parsePathWithDefault = (raw: string): { actualPath: string; defaultValue: string } | null => {
-      const m = raw.trim().match(
-        /^([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*)\|([^|].*)$/
-      );
-      if (!m) return null;
-      return { actualPath: m[1].trim(), defaultValue: m[2].trim() };
-    };
-
-    // 检查是否是完整的 ${...} 表达式（整个字符串被包裹）
-    const fullExprMatch = expression.match(/^\$\{(.+)\}$/s);
-    // 如果内部还包含 ${...}，说明这是一个模板串（如 "${a} + ${b}"），不要当成单个 JS 表达式执行
-    if (fullExprMatch && !fullExprMatch[1].includes('${')) {
-      const innerExpr = fullExprMatch[1].trim();
-      // Support ${varName|defaultValue} syntax for full expressions
-      const defaultSyntax = parsePathWithDefault(innerExpr);
-      if (defaultSyntax) {
-        const value = this.resolvePath(defaultSyntax.actualPath, context);
-        if (value !== undefined && value !== null) return value;
-        const defaultPart = defaultSyntax.defaultValue;
-        // Parse default: try number, boolean, then string
-        if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
-        if (defaultPart === 'true') return true;
-        if (defaultPart === 'false') return false;
-        return defaultPart;
-      }
-      // 这是一个 JavaScript 表达式，需要完整求值
-      return this.evaluateJsExpression(innerExpr, context);
+    // 整串是一个 ${...}（不是 "${a} + ${b}" 这样的模板）时求它的值；路径还是 JS 由 routePlaceholder 决定
+    const wholeBody = wholePlaceholderBody(expression);
+    if (wholeBody !== undefined) {
+      const route = routePlaceholder(wholeBody, true);
+      if (route.kind === 'js') return this.evaluateJsExpression(route.expression, context);
+      const value = this.resolvePath(route.path, context);
+      if (value !== undefined && value !== null) return value;
+      // A whole placeholder is a path only with a default: try number, boolean, then string
+      const defaultPart = route.defaultValue ?? '';
+      if (/^\d+(\.\d+)?$/.test(defaultPart)) return parseFloat(defaultPart);
+      if (defaultPart === 'true') return true;
+      if (defaultPart === 'false') return false;
+      return defaultPart;
     }
 
-    // 否则，做变量替换（支持嵌入的 JavaScript 表达式）
-    let result = expression;
-
-    // 替换 ${xxx} 格式的变量
-    // 简单路径走 resolvePath；复杂表达式走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
-    const isSimplePath = (path: string): boolean => {
-      const p = path.trim();
-      // 仅允许：标识符 + ".prop" + "[0]" 组合（不支持 ?. / 函数调用 / 算术运算等）
-      return /^[a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|\[[0-9]+\])*$/.test(p);
-    };
-
-    result = result.replace(/\$\{([^}]+)\}/g, (_match, path) => {
-      const rawPath = String(path ?? '').trim();
-
-      // Support ${varName|defaultValue} syntax
-      const defaultSyntax = parsePathWithDefault(rawPath);
-      const actualPath = defaultSyntax?.actualPath ?? rawPath;
-      const defaultValue = defaultSyntax?.defaultValue;
-
-      // 复杂表达式：使用完整的 JS 表达式求值
-      if (!isSimplePath(actualPath)) {
-        try {
-          const value = this.evaluateJsExpression(actualPath, context);
-          if (value === undefined || value === null) {
-            return defaultValue !== undefined ? defaultValue : '';
-          }
-          if (typeof value === 'object') return JSON.stringify(value);
-          return String(value);
-        } catch (e) {
-          logger.debug('ExpressionEvaluator', `Failed to evaluate embedded JS: ${actualPath}`);
-          return defaultValue !== undefined ? defaultValue : '';
-        }
+    // 否则逐个替换 ${...}：路径走 resolvePath，其余走 JS 表达式求值（例如: a * 16.7, foo?.bar, arr.find(...)）
+    const asText = (value: unknown) => typeof value === 'object' ? JSON.stringify(value) : String(value);
+    const result = expression.replace(SKILL_PLACEHOLDER, (_match, inner) => {
+      const route = routePlaceholder(String(inner ?? ''), false);
+      if (route.kind === 'path') {
+        const value = this.resolvePath(route.path, context);
+        return value === undefined || value === null ? route.defaultValue ?? '' : asText(value);
       }
-
-      // 简单路径：使用 resolvePath
-      const value = this.resolvePath(actualPath, context);
-      if (value === undefined || value === null) {
-        return defaultValue !== undefined ? defaultValue : '';
+      // 嵌入的 JS：求值和转成文本的任何异常都替换为空串
+      try {
+        const value = this.evaluateJsExpression(route.expression, context);
+        return value === undefined || value === null ? '' : asText(value);
+      } catch {
+        logger.debug('ExpressionEvaluator', `Failed to evaluate embedded JS: ${route.expression}`);
+        return '';
       }
-      if (typeof value === 'object') return JSON.stringify(value);
-      return String(value);
     });
 
     // 如果是简单的比较表达式，尝试求值
@@ -322,13 +325,12 @@ class ExpressionEvaluator {
     options?: { suppressErrorLog?: boolean }
   ): any {
     try {
-      // 从表达式中提取根变量名
-      const rootVarNames = this.extractRootVariables(expr);
-
-      // 构建作用域对象。未找到的名字也显式注入 undefined，避免 ReferenceError（例如 expr: "package"）
+      // 构建作用域对象。标准全局（parseFloat、Math…）和保留字不绑定；其余名字按 Skill 作用域解析，
+      // 未找到的也显式注入 undefined，避免 ReferenceError（例如 expr: "package"）
       const scope: Record<string, any> = {};
 
-      for (const varName of rootVarNames) {
+      for (const varName of this.scopeCandidates(expr)) {
+        if (!isBindableName(varName) || EXPRESSION_GLOBALS.has(varName)) continue;
         const binding = this.resolveRootBinding(varName, context);
         scope[varName] = binding?.source === 'result' || binding?.source === 'variable'
           ? this.wrapAsDataScope(binding.value)
@@ -359,38 +361,20 @@ class ExpressionEvaluator {
   }
 
   /**
-   * 从表达式中提取根变量名
+   * 从表达式中提取根变量名，用于绑定求值作用域
    * "performance_summary.data[0]?.app_jank_rate > 10" => ["performance_summary"]
-   * "jank_stats.data.find(j => j.jank_type)" => ["jank_stats"]
+   * "jank_stats.data.find(j => j.jank_type)" => ["jank_stats", "j"]
+   *
+   * 结果必须是表达式可能读到的根名的超集：漏掉一个就是 ReferenceError，规则静默不触发；
+   * 多出来的名字（字面量里的词、对象键、关键字）只会被跳过或绑定为 undefined。所以这里
+   * 不剥离字面量，只排除属性名（`.x`、`?.x`，但 `...x` 是展开的根名）；哪些名字不绑定
+   * 由求值时决定。extractRootVariables 求精确（校验与 evidence 引用用），不能用来绑定作用域。
    */
-  private static extractRootVariables(expr: string): string[] {
+  private static scopeCandidates(expr: string): string[] {
     const varNames = new Set<string>();
-
-    // 匹配标识符开头的词（不是关键字）
-    const identifierRegex = /\b([a-zA-Z_][a-zA-Z0-9_]*)\b/g;
-    const jsKeywords = new Set([
-      'true', 'false', 'null', 'undefined', 'if', 'else', 'return',
-      'function', 'var', 'let', 'const', 'new', 'this', 'typeof',
-      'instanceof', 'in', 'of', 'for', 'while', 'do', 'break', 'continue',
-      'switch', 'case', 'default', 'try', 'catch', 'finally', 'throw',
-      'async', 'await', 'class', 'extends', 'super', 'import', 'export',
-      'NaN', 'Infinity', 'Math', 'JSON', 'Array', 'Object', 'String',
-      'Number', 'Boolean', 'Date', 'RegExp', 'Error', 'Map', 'Set',
-    ]);
-
-    let match;
-    while ((match = identifierRegex.exec(expr)) !== null) {
-      const name = match[1];
-      // 跳过 JavaScript 关键字和内置对象
-      if (!jsKeywords.has(name)) {
-        // 检查是否是表达式开头或者在运算符后面（说明是根变量）
-        const beforeMatch = expr.substring(0, match.index);
-        const lastChar = beforeMatch.trim().slice(-1);
-        // 如果之前没有 . 则是根变量
-        if (lastChar !== '.') {
-          varNames.add(name);
-        }
-      }
+    for (const match of identifierMatches(expr)) {
+      const before = expr.substring(0, match.index).trimEnd();
+      if (!before.endsWith('.') || before.endsWith('...')) varNames.add(decodeIdentifier(match[0]));
     }
 
     return Array.from(varNames);
@@ -454,6 +438,15 @@ class ExpressionEvaluator {
     if (context.params?.[name] !== undefined) return { source: 'param', value: context.params[name] };
     if (context.inherited?.[name] !== undefined) return { source: 'inherited', value: context.inherited[name] };
     return undefined;
+  }
+
+  /** What `name.data` reads in a rule expression; undefined when the name is unbound. */
+  static readDataView(name: string, context: SkillExecutionContext): unknown {
+    const binding = this.resolveRootBinding(name, context);
+    if (!binding) return undefined;
+    return binding.source === 'result' || binding.source === 'variable'
+      ? this.unwrapSkillResultData(binding.value)
+      : (binding.value as any)?.data;
   }
 
   /** The value a root name holds, without the `.data` wrapper expressions see. */
@@ -593,7 +586,8 @@ class ExpressionEvaluator {
 // =============================================================================
 
 function substituteVariables(sql: string, context: SkillExecutionContext): string {
-  return substituteSqlPlaceholders(sql, ({match, path: actualPath, defaultValue: explicitDefault, insideQuotes}) => {
+  return substituteSqlPlaceholders(sql, (placeholder) => {
+    const {match, path: actualPath} = placeholder;
     if (actualPath === '__process_scope' || actualPath.startsWith('__process_scope.')) {
       if (match !== EXACT_UPID_TOKEN) throw new Error('Unsupported reserved process scope binding');
       const scope = context.processScope;
@@ -603,53 +597,53 @@ function substituteVariables(sql: string, context: SkillExecutionContext): strin
     }
     const value = ExpressionEvaluator.resolvePath(actualPath, context);
 
-    // 缺省值优先级：
-    // 1. 显式 |default 值
-    // 2. 字符串常量内部：用 ''
-    // 3. 其它位置：用 NULL
-    if (value === undefined || value === null) {
-      if (explicitDefault !== undefined) return explicitDefault;
-      if (insideQuotes) return '';
-      return 'NULL';
+    // 缺省值：显式 |default（作者写的 SQL 文本，原样插入），否则字符串内 ''、其它位置 NULL
+    if (value === undefined || value === null) return absentPlaceholderSql(placeholder);
+
+    // 字符串常量内部：转义单引号；GLOB/LIKE 模式字面量里值的通配符按字面匹配
+    if (placeholder.context === 'string') return sqlStringLiteralText(value, placeholder);
+
+    if (Array.isArray(value)) {
+      if (value.length === 0) return '';
+      // save_as 存储的是行数组 [{col: val, ...}, ...]。
+      // 当下游 SQL 用 SELECT * FROM ${variable} 引用时，需要转为 inline CTE。
+      if (value[0] !== null && typeof value[0] === 'object') return arrayToInlineCte(value);
+      return value.map(sqlLiteral).join(', ');
     }
 
-    // 如果值被插入到单引号字符串中，必须转义单引号，避免 SQL 解析错误
-    if (insideQuotes && typeof value === 'string') {
-      return value.replace(/'/g, '\'\'');
-    }
-
-    // save_as 存储的是行数组 [{col: val, ...}, ...]。
-    // 当下游 SQL 用 SELECT * FROM ${variable} 引用时，需要转为 inline CTE。
-    if (Array.isArray(value) && value.length > 0 && typeof value[0] === 'object') {
-      return arrayToInlineCte(value);
-    }
-
-    return String(value);
+    // 代码位置只接受数字或 SQL 字面量列表，其它文本会成为调用方写的 SQL
+    return sqlCodeText(value, placeholder);
   });
 }
 
 /**
  * Convert a save_as row array to an inline SQLite CTE.
- * [{a: 1, b: 'x'}, {a: 2, b: 'y'}]  →  (SELECT 1 as a, 'x' as b UNION ALL SELECT 2, 'y')
+ * [{a: 1, b: 'x'}, {a: 2, b: 'y'}]  →  (SELECT 1 as "a", 'x' as "b" UNION ALL SELECT 2, 'y')
  */
 function arrayToInlineCte(rows: Record<string, unknown>[]): string {
-  if (rows.length === 0) return '(SELECT NULL LIMIT 0)';
   const columns = Object.keys(rows[0]);
   const selects = rows.map((row, i) => {
-    const values = columns.map((col) => {
-      const v = row[col];
-      if (v === null || v === undefined) return 'NULL';
-      if (typeof v === 'number' || typeof v === 'bigint') return String(v);
-      // String values: escape single quotes for SQL
-      return `'${String(v).replace(/'/g, "''")}'`;
-    });
+    const values = columns.map((col) => sqlLiteral(row[col]));
     // First row includes column aliases; subsequent rows omit them
     if (i === 0) {
-      return `SELECT ${values.map((v, j) => `${v} as ${columns[j]}`).join(', ')}`;
+      return `SELECT ${values.map((v, j) => `${v} as ${sqlIdentifier(columns[j])}`).join(', ')}`;
     }
     return `SELECT ${values.join(', ')}`;
   });
   return `(${selects.join(' UNION ALL ')})`;
+}
+
+/**
+ * A display title's placeholders as plain text. An unset value takes its
+ * `|default`, or stays visible, as localized titles do.
+ */
+function substituteDisplayText(text: string, context: SkillExecutionContext): string {
+  return text.replace(SKILL_PLACEHOLDER, (match: string, body: string) => {
+    const {path: actualPath, defaultValue} = readPlaceholderBody(body);
+    const value = ExpressionEvaluator.resolvePath(actualPath, context);
+    if (value === undefined || value === null) return defaultValue ?? match;
+    return String(value);
+  });
 }
 
 // =============================================================================
@@ -668,13 +662,8 @@ function processDisplayConfig(
 
   // 处理 title 字段（字符串类型）
   if (processed.title && typeof processed.title === 'string') {
-    processed.title = substituteVariables(processed.title, context);
+    processed.title = substituteDisplayText(processed.title, context);
   }
-
-  // 如果未来需要处理其他字符串字段（如 description），可以在这里添加
-  // if (processed.description && typeof processed.description === 'string') {
-  //   processed.description = substituteVariables(processed.description, context);
-  // }
 
   return processed;
 }
@@ -733,13 +722,7 @@ function transformDeepFrameAnalysis(displayResults: any[]): { diagnosis_summary:
       dataArray = rawData;
     } else if (rawData?.rows && rawData?.columns) {
       // Convert table format to object array (generic transformation)
-      dataArray = rawData.rows.map((row: any[]) => {
-        const obj: any = {};
-        rawData.columns.forEach((col: string, idx: number) => {
-          obj[col] = row[idx];
-        });
-        return obj;
-      });
+      dataArray = rawData.rows.map((row: any[]) => rowObject(rawData.columns, row));
     }
 
     // Handle diagnostic step specially (extracts diagnosis text)
@@ -1652,7 +1635,7 @@ export class SkillExecutor {
   /** Root atomic SQL and nested SQL use the same scope and fragment checks. */
   private prepareSql(source: ScopedSqlSource, context: SkillExecutionContext): string {
     const usesRuntimeScope = [source.sql || '', ...(source.sql_fragments || []).map(path => this.fragmentRegistry.get(path) || '')]
-      .some(sql => /\$\{\s*__process_scope\b/.test(sql));
+      .some(sql => boundSqlPlaceholderPaths(sql).some(path => /^__process_scope\b/.test(path)));
     if (usesRuntimeScope) {
       if (!context.processScope) throw new Error('Reserved process scope binding requires an issued process scope');
       assertEffectiveProcessScope(context.processScope, context.traceId, context.processScope.traceSide);
@@ -1825,6 +1808,7 @@ export class SkillExecutor {
       results: {},
       variables: {},
       variableScopes: {},
+      variableSteps: {},
       moduleIncludes,
     }
 
@@ -2064,6 +2048,39 @@ export class SkillExecutor {
     const observed = stepResult.success && source !== undefined && (!saveFrom || isObservedStepResult(source));
     context.variables[step.save_as] = observed ? source.data ?? null : null;
     if (context.variableScopes) context.variableScopes[step.save_as] = resultScopeProvenance(source);
+    if (context.variableSteps) context.variableSteps[step.save_as] = step.id;
+  }
+
+  /**
+   * The step whose result a source name reads right now, resolved as the reader
+   * resolves it: the step that made the save_as binding, or the step of that id.
+   * Undefined for an input, an inherited value, or an unknown name. An iterator's
+   * results bind back to this step, resolved just before the iterator runs.
+   */
+  private boundSourceStepId(source: string, context: SkillExecutionContext): string | undefined {
+    const binding = ExpressionEvaluator.resolveRootBinding(source, context);
+    if (binding?.source === 'variable') return context.variableSteps?.[source];
+    return binding?.source === 'result' ? source : undefined;
+  }
+
+  /**
+   * A step as layered output shows it. A Skill reference shows the child step
+   * it exposes, data and scope alike, as a read by id or a default save_as sees
+   * it. A failed reference shows its own failure with no child rows or scope;
+   * when the step is optional the failure is an optional error, as for an
+   * optional query, and does not fail the Skill. Only the display changes: the
+   * execution result, and the Skill-level scope built from it, are untouched.
+   */
+  private layerStepResult(step: SkillStep, stepResult: StepResult): StepResult {
+    if (stepResult.stepType !== 'skill') return stepResult;
+    const { stepId, executionTimeMs, error, code, skippedCondition } = stepResult;
+    const exposed = exposedStepResult(stepResult);
+    // The exposed child step carries its own stepType; the entry stays a reference.
+    if (exposed) return { ...exposed, stepId, stepType: 'skill', executionTimeMs };
+    const failure = { stepId, stepType: 'skill', data: [], error, executionTimeMs } as const;
+    return isOptionalStep(step)
+      ? { ...failure, success: true, code: 'optional_query_error' }
+      : { ...failure, success: false, code, skippedCondition };
   }
 
   /**
@@ -2104,6 +2121,7 @@ export class SkillExecutor {
 
     for (const step of skill.steps) {
       throwIfTraceProcessorQueryCancelled(context.signal);
+      const iteratorSourceStepId = step.type === 'iterator' ? this.boundSourceStepId(step.source, context) : undefined;
       const stepResult = await this.executeStep(step, context, skillId);
 
       // Collect synthesize-marked data for downstream summarization (execute path parity).
@@ -2140,14 +2158,8 @@ export class SkillExecutor {
         }
 
         // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 DisplayResult
-        if ((step as any).type === 'iterator' && 'source' in step && (step as any).source) {
-          const sourceName = (step as any).source;
-          // source 引用的是 save_as 名称，需要找到对应的 step.id
-          const sourceStep = skill.steps!.find((s: any) =>
-            s.save_as === sourceName || s.id === sourceName
-          );
-          const sourceStepId = sourceStep ? sourceStep.id : sourceName;
-          const sourceDisplayResult = displayResults.find(dr => dr.stepId === sourceStepId);
+        if (iteratorSourceStepId) {
+          const sourceDisplayResult = displayResults.find(dr => dr.stepId === iteratorSourceStepId);
           // expandableData 在 DisplayResult.data 中（由 flattenIteratorResults 创建）
           const iteratorDisplayResult = displayResults.find(dr => dr.stepId === step.id);
           if (sourceDisplayResult?.data && iteratorDisplayResult?.data?.expandableData) {
@@ -2172,8 +2184,7 @@ export class SkillExecutor {
         }
         if (stepResult.code === 'condition_not_met') continue;
         if (isQueryOrSkillResult(stepResult)) {
-          const optional = 'optional' in step && Boolean(step.optional);
-          if (!optional) {
+          if (!isOptionalStep(step)) {
             return {
               aiSummary,
               error: stepResult.error || `Required step failed: ${step.id}`,
@@ -2191,8 +2202,20 @@ export class SkillExecutor {
   }
 
   /**
-   * Apply expandableBindSource declarations: for each step that declares an expandableBindSource,
-   * find the batch data in context.variables and bind it as expandableData on the target DisplayResult.
+   * The batch rows a step's expandableBindSource names, with the scope of that
+   * binding (the one result it holds); undefined when the binding has no rows.
+   */
+  private expandableBindRows(step: SkillStep, context: SkillExecutionContext):
+    { rows: Record<string, any>[]; scope?: EvidenceScopeProvenanceV1 } | undefined {
+    const bindSource = this.getDisplayConfig(step)?.expandableBindSource;
+    if (!bindSource) return undefined;
+    const rows = context.variables[bindSource];
+    return Array.isArray(rows) && rows.length > 0 ? { rows, scope: context.variableScopes?.[bindSource] } : undefined;
+  }
+
+  /**
+   * Apply expandableBindSource declarations: bind each declared batch as
+   * expandableData on the declaring step's DisplayResult.
    */
   private applyExpandableBindSources(
     steps: SkillStep[],
@@ -2200,21 +2223,15 @@ export class SkillExecutor {
     displayResults: DisplayResult[]
   ): void {
     for (const step of steps) {
-      const display = this.getDisplayConfig(step);
-      const bindSource = display?.expandableBindSource;
-      if (!bindSource) continue;
-
-      const sourceData = context.variables[bindSource];
+      const source = this.expandableBindRows(step, context);
+      if (!source) continue;
       const targetDisplayResult = displayResults.find(dr => dr.stepId === step.id);
-
-      if (!Array.isArray(sourceData) || sourceData.length === 0) continue;
       if (!targetDisplayResult?.data?.rows?.length || !targetDisplayResult.data.columns?.length) continue;
 
       targetDisplayResult.data.expandableData = this.buildExpandableFromBatch(
         targetDisplayResult.data.rows,
         targetDisplayResult.data.columns,
-        sourceData, undefined,
-        resultScopeProvenance(context.results[steps.find(candidate => 'save_as' in candidate && candidate.save_as === bindSource)?.id || ''])
+        source.rows, undefined, source.scope,
       );
     }
   }
@@ -2322,10 +2339,7 @@ export class SkillExecutor {
       // Reconstruct item object only for matched rows
       let item: Record<string, any>;
       if (isColumnar) {
-        item = {};
-        for (let c = 0; c < targetColumns.length; c++) {
-          item[targetColumns[c]] = targetRows[i][c];
-        }
+        item = rowObject(targetColumns, targetRows[i]);
       } else {
         item = { ...targetObjects![i] };
       }
@@ -2699,6 +2713,7 @@ export class SkillExecutor {
       results: {},
       variables: {},
       variableScopes: {},
+      variableSteps: {},
       moduleIncludes: prerequisiteModules,
     };
 
@@ -2715,13 +2730,11 @@ export class SkillExecutor {
     const synthesizeData: SynthesizeData[] = [];
 
     if (skill.steps) {
-      for (let i = 0; i < skill.steps.length; i++) {
+      for (const step of skill.steps) {
         throwIfTraceProcessorQueryCancelled(execContext.signal);
-        const step = skill.steps[i];
+        const iteratorSourceStepId = step.type === 'iterator' ? this.boundSourceStepId(step.source, execContext) : undefined;
         const stepResult = await this.executeStep(step, execContext, skill.name);
-        const layerStepResult = stepResult.stepType === 'skill'
-          ? { ...stepResult, ...selectedStepResult(stepResult), stepId: step.id, stepType: stepResult.stepType }
-          : stepResult;
+        const shown = this.layerStepResult(step, stepResult);
 
         this.recordStepResult(step, stepResult, execContext);
 
@@ -2729,7 +2742,7 @@ export class SkillExecutor {
         // This is needed for organizeByLayer to correctly place results in layers
         // Process display config with template variable substitution (e.g., ${frame_id})
         if ('display' in step && typeof step.display === 'object') {
-          layerStepResult.display = processDisplayConfig(step.display, execContext);
+          shown.display = processDisplayConfig(step.display, execContext);
         }
 
         // 收集标记为 synthesize 的步骤数据
@@ -2751,38 +2764,15 @@ export class SkillExecutor {
           synthesizeData.push(this.createSynthesizeData(step, stepResult, displayConfig, config));
         }
 
-        stepResults.push(layerStepResult);
-      }
-    }
+        stepResults.push(shown);
 
-    // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 StepResult
-    // 这样 convertDisplayResultsToSections 可以在源步骤的 data 上找到 expandableData
-    if (skill.steps) {
-      for (let i = 0; i < skill.steps.length; i++) {
-        const step = skill.steps[i];
-        if (step.type === 'iterator' && 'source' in step && (step as any).source) {
-          const sourceName = (step as any).source;
-          // source 引用的是 save_as 名称，需要找到对应的 step.id
-          const sourceStep = skill.steps.find((s: any) =>
-            s.save_as === sourceName || s.id === sourceName
-          );
-          const sourceStepId = sourceStep ? sourceStep.id : sourceName;
-          const sourceResult = stepResults.find(sr => sr.stepId === sourceStepId);
-          const iteratorResult = stepResults[i];
-          // 在 executeCompositeSkill 路径中，iterator 的 data 是原始 [{itemIndex, item, result}, ...]
-          // 需要将其转换为 expandableData 格式
-          if (sourceResult?.data && iteratorResult?.success && Array.isArray(iteratorResult.data)) {
-            const expandableData = iteratorResult.data.map((iterItem: any) => ({
-              item: iterItem.item,
-              result: {
-                success: iterItem.result?.success ?? false,
-                sections: this.convertDisplayResultsToSections(iterItem.result?.displayResults || []),
-                scopeProvenance: resultScopeProvenance(iterItem.result),
-                error: iterItem.result?.error,
-              },
-            }));
-            // 直接在 data 上挂载 expandableData（JS 数组/对象都支持额外属性）
-            (sourceResult.data as any).expandableData = expandableData;
+        // Iterator 结果绑回源列表：将 expandableData 绑定到 source step 的 StepResult，
+        // 这样 convertDisplayResultsToSections 可以在源步骤的 data 上找到 expandableData。
+        // 此路径中 iterator 的 data 是原始 [{itemIndex, item, result}, ...]
+        if (iteratorSourceStepId) {
+          const sourceResult = stepResults.find(sr => sr.stepId === iteratorSourceStepId);
+          if (sourceResult?.data && shown.success && Array.isArray(shown.data)) {
+            (sourceResult.data as any).expandableData = this.iteratorExpandableData(shown.data);
           }
         }
       }
@@ -2791,20 +2781,13 @@ export class SkillExecutor {
     // Batch-to-expandable binding for executeCompositeSkill path (object-array variant)
     if (skill.steps) {
       for (const step of skill.steps) {
-        const display = step.display && typeof step.display === 'object' ? step.display as DisplayConfig : undefined;
-        const bindSource = display?.expandableBindSource;
-        if (!bindSource) continue;
-
-        const sourceData = execContext.variables[bindSource];
+        const source = this.expandableBindRows(step, execContext);
+        if (!source) continue;
         const targetResult = stepResults.find(sr => sr.stepId === step.id);
-
-        if (!Array.isArray(sourceData) || sourceData.length === 0) continue;
         if (!targetResult?.data || !Array.isArray(targetResult.data) || targetResult.data.length === 0) continue;
         if (typeof targetResult.data[0] !== 'object' || targetResult.data[0] === null) continue;
 
-        const sourceStepId = skill.steps.find(candidate => 'save_as' in candidate && candidate.save_as === bindSource)?.id;
-        const expandableData = this.buildExpandableFromBatch(null, null, sourceData, targetResult.data,
-          sourceStepId ? resultScopeProvenance(execContext.results[sourceStepId]) : undefined);
+        const expandableData = this.buildExpandableFromBatch(null, null, source.rows, targetResult.data, source.scope);
         (targetResult.data as any).expandableData = expandableData;
       }
     }
@@ -2813,6 +2796,7 @@ export class SkillExecutor {
     try {
       const layers = organizeByLayer(stepResults);
 
+      const scopeLimitations = resultScopeLimitations({ rawResults: execContext.results });
       const result: LayeredResult = {
         layers,
         defaultExpanded: ['overview', 'list'],
@@ -2822,9 +2806,10 @@ export class SkillExecutor {
           executedAt: new Date().toISOString()
         },
         stepResults,
-        scopeProvenance: mergeScopeProvenance(stepResults.map(resultScopeProvenance)),
-        scopeLimitations: stepResults.flatMap(resultScopeLimitations),
-        partial: stepResults.some(step => resultScopeLimitations(step).length > 0),
+        // From what ran, as on the execute path; a display entry shows only part of a reference.
+        scopeProvenance: mergeScopeProvenance(Object.values(execContext.results).map(resultScopeProvenance)),
+        scopeLimitations,
+        partial: scopeLimitations.length > 0,
         // 添加收集的 synthesize 数据
         synthesizeData: synthesizeData.length > 0 ? synthesizeData : undefined,
       };
@@ -3434,6 +3419,7 @@ export class SkillExecutor {
     for (const inputName of step.inputs) {
       inputs[inputName] = ExpressionEvaluator.resolveRootValue(inputName, context);
     }
+    const inputNames: ReadonlySet<string> = new Set(step.inputs);
 
     // 评估规则
     for (const rule of step.rules) {
@@ -3451,7 +3437,7 @@ export class SkillExecutor {
         const diagnosis = ExpressionEvaluator.evaluate(rule.diagnosis, context);
 
         // 收集 evidence 数据
-        const evidence = this.collectDiagnosticEvidence(rule, inputs);
+        const evidence = this.collectDiagnosticEvidence(rule, inputs, inputNames, context);
 
         // Evaluate suggestions templates (e.g., "${root_cause.data[0].secondary_info}")
         const evaluatedSuggestions = rule.suggestions?.map((s: string) =>
@@ -3498,95 +3484,67 @@ export class SkillExecutor {
   }
 
   /**
-   * 收集诊断结论的数据依据
-   * 从 rule.evidence_fields 或自动从 condition 解析引用的数据源
+   * 收集诊断结论的数据依据：rule.evidence_fields 加上 condition 引用的数据源。
+   * evidence field 是 condition 方言的只读子集（parseEvidenceField），从 condition
+   * 里 `x.data` 的同一个值读起，只能读本 diagnostic step 声明的 inputs；它不经
+   * JS 求值，不会调用函数或写数据。每个值都经 boundEvidenceValue 截断：evidence
+   * 会进 _diagnostics artifact、CLI JSON 和 LLM payload。
    */
   private collectDiagnosticEvidence(
     rule: any,
-    inputs: Record<string, any>
+    inputs: Record<string, any>,
+    inputNames: ReadonlySet<string>,
+    context: SkillExecutionContext,
   ): Record<string, any> {
     const evidence: Record<string, any> = {};
 
     // 1. 如果规则定义了 evidence_fields，使用它们
-    if (rule.evidence_fields && Array.isArray(rule.evidence_fields)) {
+    if (Array.isArray(rule.evidence_fields)) {
       for (const field of rule.evidence_fields) {
-        const value = this.resolveEvidenceField(field, inputs);
-        if (value !== undefined) {
-          evidence[field] = value;
-        }
+        const path = parseEvidenceField(String(field));
+        if (!path || !inputNames.has(path.root)) continue;
+        this.recordEvidence(evidence, field, () =>
+          readEvidenceField(path, ExpressionEvaluator.readDataView(path.root, context)));
       }
     }
 
-    // 2. 自动从 condition 中提取数据源引用
-    const conditionSources = this.extractDataSources(rule.condition);
+    // 2. condition 读到的数据源样本（行数 + 首行），不是规则命中的那一行；读的是 condition 里
+    //    这个 input 的同一个值，无论写成 `x.data`、`x?.data` 还是 `x?.["data"]`
+    const conditionSources = SkillExecutor.conditionRoots(String(rule.condition ?? '')).filter(name => inputNames.has(name));
     for (const source of conditionSources) {
-      // 只提取第一行数据作为 evidence（避免数据过大）
-      const sourceData = inputs[source];
-      if (sourceData && !evidence[source]) {
-        if (Array.isArray(sourceData) && sourceData.length > 0) {
-          // 只取第一条记录的关键字段
-          const firstRow = sourceData[0];
-          evidence[source] = {
-            _summary: `共 ${sourceData.length} 条记录`,
-            _firstRow: this.extractKeyFields(firstRow),
-          };
-        } else if (typeof sourceData === 'object') {
-          evidence[source] = this.extractKeyFields(sourceData);
-        }
-      }
+      this.recordEvidence(evidence, source, () => {
+        const sourceData = ExpressionEvaluator.readDataView(source, context);
+        return sourceData && typeof sourceData === 'object' ? sourceData : undefined;
+      });
     }
 
     // 3. 添加时间戳用于 Perfetto 跳转
-    const tsField = this.findTimestampField(inputs, conditionSources);
-    if (tsField) {
-      evidence._perfettoTs = tsField;
-    }
+    this.recordEvidence(evidence, '_perfettoTs', () => this.findTimestampField(inputs, conditionSources));
 
     return Object.keys(evidence).length > 0 ? evidence : undefined as any;
   }
 
-  /**
-   * 从表达式中提取数据源名称
-   * 例如: "lock_data.data[0]?.wait_ms > 2" => ["lock_data"]
-   */
-  private extractDataSources(expression: string): string[] {
-    const sources: Set<string> = new Set();
-    // 匹配 xxx.data 或 xxx.xxx 形式的数据源引用
-    const matches = expression.match(/(\w+)\.data/g);
-    if (matches) {
-      for (const match of matches) {
-        const source = match.replace('.data', '');
-        sources.add(source);
-      }
+  /** Root names per authored condition string; the extraction compiles once per identifier. */
+  private static readonly conditionRootCache = new Map<string, readonly string[]>();
+
+  private static conditionRoots(condition: string): readonly string[] {
+    let roots = SkillExecutor.conditionRootCache.get(condition);
+    if (!roots) {
+      roots = extractRootVariables(condition);
+      SkillExecutor.conditionRootCache.set(condition, roots);
     }
-    return Array.from(sources);
+    return roots;
   }
 
   /**
-   * 解析 evidence_fields 中的字段路径
-   * 支持格式: "source.field" 或 "source.data[0].field"
+   * 记录一条 evidence 的有界投影；读取或投影失败只丢这一条，不影响诊断本身。
    */
-  private resolveEvidenceField(
-    field: string,
-    inputs: Record<string, any>
-  ): any {
+  private recordEvidence(evidence: Record<string, any>, key: string, read: () => unknown): void {
     try {
-      // 尝试从 inputs 中解析
-      const parts = field.split('.');
-      let value: any = inputs;
-      for (const part of parts) {
-        if (value === undefined) return undefined;
-        // 处理数组索引，如 data[0]
-        const arrayMatch = part.match(/^(\w+)\[(\d+)\]$/);
-        if (arrayMatch) {
-          value = value[arrayMatch[1]]?.[parseInt(arrayMatch[2])];
-        } else {
-          value = value[part];
-        }
-      }
-      return value;
-    } catch {
-      return undefined;
+      const value = read();
+      if (value !== undefined) evidence[key] = boundEvidenceValue(value);
+    } catch (error: any) {
+      logger.debug('SkillExecutor', `Evidence ${key} failed: ${error?.message}`);
     }
   }
 
@@ -3617,18 +3575,20 @@ export class SkillExecutor {
     for (const source of sources) {
       const data = inputs[source];
       if (Array.isArray(data) && data.length > 0) {
-        const firstRow = data[0];
-        // 常见的时间戳字段名
+        const firstRow = ownDataValue(data, '0');
+        // 常见的时间戳字段名；只读自有的标量数据属性
         const tsFields = ['ts', 'start_ts', 'timestamp', 'begin_ts'];
         for (const field of tsFields) {
-          if (firstRow[field] !== undefined && firstRow[field] !== null) {
-            return String(firstRow[field]);
+          const ts = ownDataValue(firstRow, field);
+          if (typeof ts === 'number' || typeof ts === 'bigint' || (typeof ts === 'string' && ts !== '')) {
+            return String(ts);
           }
         }
       }
     }
     return undefined;
   }
+
 
   /**
    * 执行 AI 决策步骤
@@ -4485,13 +4445,8 @@ export class SkillExecutor {
         data.columns && Array.isArray(data.columns) &&
         Array.isArray(data.rows) && data.rows.length > 0
       ) {
-        const row: Record<string, any> = {};
-        const cols = data.columns as string[];
         const firstRow = data.rows[0] as any[];
-        for (let i = 0; i < cols.length && i < firstRow.length; i++) {
-          row[cols[i]] = firstRow[i];
-        }
-        return row;
+        return rowObject((data.columns as string[]).slice(0, firstRow.length), firstRow);
       }
 
       if (Array.isArray(data) && data.length > 0) {
@@ -4801,6 +4756,19 @@ export class SkillExecutor {
   /**
    * 将迭代器结果展平为可显示的表格
    */
+  /** One expandable entry per iterated item: the item and its Skill result as sections. */
+  private iteratorExpandableData(data: any[]): NonNullable<DisplayResult['data']['expandableData']> {
+    return data.map((iterItem) => ({
+      item: iterItem.item,
+      result: {
+        success: iterItem.result?.success ?? false,
+        sections: this.convertDisplayResultsToSections(iterItem.result?.displayResults || []),
+        scopeProvenance: resultScopeProvenance(iterItem.result),
+        error: iterItem.result?.error,
+      },
+    }));
+  }
+
   private flattenIteratorResults(
     data: any[],
     _isIterator: boolean,
@@ -4865,15 +4833,7 @@ export class SkillExecutor {
         });
       });
 
-      const expandableData = data.map((iterItem) => ({
-        item: iterItem.item,
-        result: {
-          success: iterItem.result?.success ?? false,
-          sections: this.convertDisplayResultsToSections(iterItem.result?.displayResults || []),
-          scopeProvenance: resultScopeProvenance(iterItem.result),
-          error: iterItem.result?.error,
-        },
-      }));
+      const expandableData = this.iteratorExpandableData(data);
 
       const summary = this.generateIteratorSummary(data, expandableData);
 
@@ -5108,13 +5068,7 @@ export class SkillExecutor {
       const dataColumns = drData?.columns || [];
 
       // 将 rows 转换为对象数组（像 adapter 中的 rowsToObjects）
-      const objects = dataRows.map((row: any[]) => {
-        const obj: Record<string, any> = {};
-        dataColumns.forEach((col: string, idx: number) => {
-          obj[col] = row[idx];
-        });
-        return obj;
-      });
+      const objects = dataRows.map((row: any[]) => rowObject(dataColumns, row));
 
       sections[dr.stepId] = {
         ...scopeMetadata(dr.scopeProvenance),
@@ -5163,13 +5117,7 @@ export class SkillExecutor {
    * 将行数组转换为对象数组
    */
   private rowsToObjects(columns: string[], rows: any[][]): Record<string, any>[] {
-    return rows.map(row => {
-      const obj: Record<string, any> = {};
-      columns.forEach((col, idx) => {
-        obj[col] = row[idx];
-      });
-      return obj;
-    });
+    return rows.map(row => rowObject(columns, row));
   }
 }
 

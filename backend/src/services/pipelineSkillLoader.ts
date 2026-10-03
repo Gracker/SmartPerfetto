@@ -16,27 +16,16 @@
 import fs from 'fs';
 import path from 'path';
 import yaml from 'js-yaml';
-import type { RenderingArchitectureType } from '../agent/detectors/types';
+import {
+  RENDERING_ARCHITECTURE_TYPES,
+  type RenderingArchitectureType,
+} from '../agent/detectors/types';
 import type {
   PipelineCandidate,
   RelatedRenderingTypeCandidate,
 } from '../types/teaching.types';
 
-const RENDERING_ARCHITECTURE_TYPES = new Set<RenderingArchitectureType>([
-  'STANDARD',
-  'FLUTTER',
-  'WEBVIEW',
-  'COMPOSE',
-  'SURFACEVIEW',
-  'GLSURFACEVIEW',
-  'SOFTWARE',
-  'MIXED',
-  'GAME_ENGINE',
-  'CAMERA',
-  'VIDEO_OVERLAY',
-  'REACT_NATIVE',
-  'UNKNOWN',
-]);
+const RENDERING_ARCHITECTURE_TYPE_SET: ReadonlySet<string> = new Set(RENDERING_ARCHITECTURE_TYPES);
 
 // =============================================================================
 // Types
@@ -236,7 +225,7 @@ class PipelineSkillLoaderClass {
       if (!['app', 'global'].includes(entry.signal_scope)) {
         throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid signal scope`);
       }
-      if (!RENDERING_ARCHITECTURE_TYPES.has(entry.architecture_type)) {
+      if (!RENDERING_ARCHITECTURE_TYPE_SET.has(entry.architecture_type)) {
         throw new Error(`[PipelineSkillLoader] Pipeline ${pipelineId} has invalid architecture type`);
       }
       if (entry.classification_role === 'variant') {

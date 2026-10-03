@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import {piRuntimeFingerprintInput} from '../../agentRuntime/engines/pi/piAgentCoreConfig';
 import {redactUrlForDiagnostics} from '../../agentRuntime/envCredentialSources';
 import { mergeIsolatedProviderEnv } from './envIsolation';
+import { providerNotFound } from './providerRequestError';
 import type { ProviderService } from './providerService';
 import type { AgentRuntimeKind, ProviderConfig, ProviderScope, ProviderTuning } from './types';
 
@@ -206,12 +207,11 @@ function normalizeForJson(value: unknown): JsonValue | undefined {
       .filter((item): item is JsonValue => item !== undefined);
   }
   if (typeof value === 'object') {
-    const out: { [key: string]: JsonValue } = {};
-    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
-      const normalized = normalizeForJson((value as Record<string, unknown>)[key]);
-      if (normalized !== undefined) out[key] = normalized;
-    }
-    return out;
+    const record = value as Record<string, unknown>;
+    return Object.fromEntries(Object.keys(record).sort().flatMap((key) => {
+      const normalized = normalizeForJson(record[key]);
+      return normalized === undefined ? [] : [[key, normalized]];
+    }));
   }
   return undefined;
 }
@@ -474,7 +474,7 @@ export function resolveProviderRuntimeSnapshot(
   const snapshot = typeof providerId === 'string'
     ? (() => {
         const provider = providerService.getRawProvider(providerId, providerScope);
-        if (!provider) throw new Error(`Provider not found: ${providerId}`);
+        if (!provider) throw providerNotFound(providerId);
         return providerRuntimeSnapshot(providerService, provider, providerScope);
       })()
     : envRuntimeSnapshot(runtimeOverride);

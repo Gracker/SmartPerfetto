@@ -656,6 +656,20 @@ configured twice. Set `FRONTEND_URL` only when the browser-visible frontend
 origin differs, such as HTTPS or a reverse proxy. When the browser cannot infer
 the backend address, set `SMARTPERFETTO_BACKEND_PUBLIC_URL`.
 
+By default the backend admits browser origins on `localhost` / `127.0.0.1` at the
+frontend port (plus the 8080, 5173 and 5174 development ports) and
+`FRONTEND_URL`; `CORS_ORIGINS` (comma-separated) replaces that list. A Trace
+Processor WebSocket authenticated by a session cookie, trusted SSO headers, or
+the keyless local identity accepts only those origins too: a page anywhere else,
+including a same-site sibling subdomain or another local port, gets 403. A
+session-cookie connection must also send an Origin. A connection authenticated
+by a credential the page itself holds (an enterprise API key, a Bearer session
+token, or the Trace Processor capability protocol) is not Origin-checked, but a
+request that carries the session cookie and no `Authorization: Bearer` header
+(for example, the cookie plus a capability) follows the cookie rule. A reverse proxy
+must not strip the browser's `Origin` header, or trusted-SSO-header mode loses
+this check.
+
 URL Trace downloads reject private, reserved, and RFC 2544 `198.18.0.0/15`
 addresses by default. If a local TUN maps a trusted public hostname to fake IP,
 the deployment operator may list exact comma-separated hostnames in
@@ -713,6 +727,21 @@ least 32 bytes and must not reuse the OIDC client secret. Sessions are fixed at
 eight hours with `SameSite=Lax`; HTTPS automatically enables Secure cookies,
 and scopes are fixed at `openid email profile`.
 
+In every auth mode, server-side signing (browser sessions, Trace Processor
+WebSocket capabilities, external-issue review attestations, and under OIDC the
+Provider secret-store encryption key) derives from one root per purpose: the
+first of `SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET` (WebSocket capabilities
+only), `SMARTPERFETTO_SERVER_SECRET`, `SMARTPERFETTO_SSO_COOKIE_SECRET` and
+`SMARTPERFETTO_API_KEY` whose trimmed value is long enough in UTF-8 bytes (32
+for capabilities and the secret store, 16 otherwise); shorter values are
+skipped. OIDC is stricter at startup: if the first non-empty
+`SMARTPERFETTO_SERVER_SECRET` / `SMARTPERFETTO_SSO_COOKIE_SECRET` is shorter
+than 32 bytes, the backend refuses to start instead of skipping it. Enterprise
+mode refuses to sign when none qualifies; other modes fall back to a random
+per-process root, so sessions, WebSocket capabilities and review attestations
+stop verifying after a restart. Set a `SMARTPERFETTO_SERVER_SECRET` of at least
+32 bytes so every purpose shares the same root.
+
 For local split-port testing through `./start.sh` or `./scripts/start-dev.sh`,
 set only `SMARTPERFETTO_FRONTEND_PORT`; the launcher derives `FRONTEND_URL`.
 The explicit `FRONTEND_URL` above is for domain or reverse-proxy deployments,
@@ -723,16 +752,19 @@ OIDC subject. Different users may have the same workspace display name, but
 their user IDs, workspace IDs, memberships, and data scopes remain separate.
 The OIDC frontend does not let users change the workspace, backend URL, or API
 key. Tenant identity is derived only from the normalized issuer and cannot be
-overridden by a user claim. Built-in OIDC cannot be combined with
-`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` or the legacy
-`SMARTPERFETTO_API_KEY`.
+overridden by a user claim. Built-in OIDC cannot be combined with an enabled
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS` (any of `true`, `1`, `yes`, `on`,
+`enabled`) or the legacy `SMARTPERFETTO_API_KEY`; under OIDC neither HTTP
+requests nor the Trace Processor WebSocket accept trusted SSO headers or
+enterprise API keys.
 OIDC automatically uses the scoped database as the only read and write
 authority. No enterprise migration phase is required, and OIDC rejects the
 `legacy` and `dual-write` modes that do not preserve user-level isolation.
 
 Production mode requires HTTPS for the issuer, callback, and frontend URL and
 uses Secure cookies by default. Only controlled test deployments may explicitly
-set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`; this permits plaintext HTTP
+set `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true` (any of `true`, `1`, `yes`,
+`on`, `enabled`, like the other switches); this permits plaintext HTTP
 and disables Secure cookies by default, so it must not be used on an untrusted
 network. `FRONTEND_URL` must be the browser-visible frontend origin, and
 must not be a container-internal address. The frontend URL and OIDC callback
@@ -762,6 +794,10 @@ trace by id after a backend restart all use that one directory. Set
 `SMARTPERFETTO_TRACE_UPLOAD_DIR` only to move the trace directory elsewhere; it
 overrides all three together (the npm CLI uses it to keep trace copies under
 its own home).
+
+The backend never serves the upload directory as static files. Trace files are
+downloaded only through the authenticated, ownership-checked trace download API
+(`GET /api/traces/:id/file`, or its workspace-scoped form).
 
 `TRACE_PROCESSOR_PATH` usually does not need manual configuration.
 `./start.sh` and `./scripts/start-dev.sh` prefer SHA256-pinned prebuilts. An

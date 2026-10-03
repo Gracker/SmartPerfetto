@@ -8,10 +8,15 @@ import {
 } from '../skillEngine/displayContractValidator';
 import {validateSkillBatchAnalysis} from '../skillEngine/skillBatchAnalysis';
 import {
+  declaredSkillNames,
+  isUncheckedConditionRoot,
   validateFragmentReferences,
   validateNormalizedStdlibReads,
   validateSkillConditions,
 } from '../skillEngine/skillValidator';
+import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
+import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillEngine/skillTopLevelKeys';
+import {undecidedResultPathReads} from '../skillEngine/resultPathReads';
 import type {SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
@@ -27,7 +32,7 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '2';
+export const IN_PROCESS_VALIDATOR_VERSION = '6';
 
 export type InProcessValidationSeverity = 'error' | 'warning';
 
@@ -53,6 +58,14 @@ export interface ValidateSkillDefinitionsInProcessInput {
   knownSkillIds?: ReadonlySet<string>;
   validateReferences?: boolean;
   sqlGuardrailMode?: 'default' | 'disabled';
+  /**
+   * Severity of `result_path_read_undecided` (default error). Runtime
+   * composition and a proposal's view of Skills it does not change pass
+   * 'warning': the rule is a public-runtime portability check, this runtime's
+   * own behaviour for the read is defined, and one published overlay that
+   * predates it would otherwise take every overlay of the scope offline.
+   */
+  resultPathReadSeverity?: InProcessValidationSeverity;
 }
 
 export interface InProcessStrategyValidationResult {
@@ -242,6 +255,7 @@ export function validateSkillDefinitionInProcess(
     sqlGuardrailMode?: 'default' | 'disabled';
     /** The complete registry by name; when present, `save_from` targets are checked against it. */
     definitions?: ReadonlyMap<string, SkillDefinition>;
+    resultPathReadSeverity?: InProcessValidationSeverity;
   } = {},
 ): InProcessValidationIssue[] {
   const issues = options.includeStructuralChecks === false
@@ -250,6 +264,9 @@ export function validateSkillDefinitionInProcess(
         skill,
         options.sqlGuardrailMode !== 'disabled',
       );
+  for (const key of unknownSkillTopLevelKeys(skill)) {
+    issues.push(issue('error', 'skill_top_level_key_unknown', skill.name, key, UNKNOWN_TOP_LEVEL_KEY_MESSAGE));
+  }
   for (const warning of validateSkillConditions(skill)) {
     issues.push(issue(
       'warning',
@@ -287,6 +304,14 @@ export function validateSkillDefinitionInProcess(
     ));
   }
   issues.push(...validateDiagnosticConfidence(skill));
+  issues.push(...validateDiagnosticReads(skill));
+  // A saved-result path read without a default runs on '' / NULL here but is
+  // skipped by the public runtime when the result has no row (resultPathReads.ts).
+  for (const read of undecidedResultPathReads(skill)) {
+    issues.push(issue(options.resultPathReadSeverity ?? 'error', 'result_path_read_undecided', skill.name, read.path,
+      `${read.placeholder} reads an earlier step's result without a default: write \`|default\` (the step runs `
+      + 'without its row) or give the step a condition with the conjunct `<result>.data?.length > 0` (it does not).'));
+  }
   issues.push(...validateSaveFromPlacement(skill));
   if (options.definitions) issues.push(...validateSaveFromTargets(skill, options.definitions));
   if (options.fragmentCache) {
@@ -320,6 +345,96 @@ function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidati
         issues.push(issue('error', 'diagnostic_confidence_invalid', skill.name, `${path}.rules[${index}].confidence`,
           `Diagnostic rule confidence must be high, medium, low or a number, got ${JSON.stringify(rule.confidence)}.`));
       }
+    });
+  });
+  return issues;
+}
+
+/**
+ * A diagnostic step's `inputs` are the step data its rules read: they are what
+ * the step reports as `data.inputs` and the only names an evidence field may
+ * cite. Skill parameters stay readable (thresholds) but are not evidence.
+ *
+ * An evidence field must parse as the read-only grammar the executor reads
+ * (parseEvidenceField), rooted at an input. For a condition and `${...}`
+ * placeholders this is a lint over arbitrary JS: it finds step data the rule
+ * reads without declaring it, and, outside placeholders (where `${rows[0].x}`
+ * is a valid simple path), JS access to step data other than through `.data`,
+ * which is always undefined. Arrow parameters bind inside their callback only.
+ *
+ * Any other root a rule reads must be a Skill input, a context dependency or
+ * a runtime parameter: no scope binds anything else, so it is always
+ * undefined (`inputs?.threshold_ms` once silently ignored every caller's
+ * threshold). Every check here judges root names, so it runs only on exact
+ * reads: where a local could share a step's name, a guess is no finding.
+ */
+function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIssue[] {
+  const issues: InProcessValidationIssue[] = [];
+  const skillNames = declaredSkillNames(skill);
+  const stepData = new Set<string>();
+  visitSteps(skill.steps ?? [], step => {
+    if (typeof step.id === 'string') stepData.add(step.id);
+    const saveAs = 'save_as' in step ? step.save_as : undefined;
+    if (typeof saveAs === 'string') stepData.add(saveAs);
+  });
+  visitSteps(skill.steps ?? [], (step, path) => {
+    if (step.type !== 'diagnostic') return;
+    const report = (code: string, fieldPath: string, message: string) =>
+      issues.push(issue('error', code, skill.name, fieldPath, message));
+    if (!Array.isArray(step.inputs) || !step.inputs.every(name => typeof name === 'string')) {
+      report('diagnostic_inputs_missing', `${path}.inputs`,
+        'A diagnostic step must declare inputs as a list of step names (it may be empty).');
+    }
+    const inputs = new Set(Array.isArray(step.inputs) ? step.inputs : []);
+    const reportUndeclared = (names: string[], fieldPath: string) => {
+      const undeclared = names.filter(name => stepData.has(name) && !inputs.has(name));
+      if (undeclared.length > 0) {
+        report('diagnostic_input_undeclared', fieldPath,
+          `Reads step data ${undeclared.map(name => `'${name}'`).join(', ')} not listed in this diagnostic step's inputs.`);
+      }
+    };
+    const checkReads = ({reads, exact}: RootReads, fieldPath: string, {accessChecked = false} = {}) => {
+      if (!exact) return;
+      const names = [...new Set(reads.map(read => read.name))];
+      reportUndeclared(names, fieldPath);
+      const unknown = names.filter(name => !stepData.has(name) && !skillNames.has(name) && !isUncheckedConditionRoot(name));
+      if (unknown.length > 0) {
+        report('diagnostic_root_unknown', fieldPath,
+          `Reads ${unknown.map(name => `'${name}'`).join(', ')}, which is no Skill input, step, context dependency or `
+          + 'runtime parameter, so it is always undefined.');
+      }
+      const misread = accessChecked && reads.find(read =>
+        stepData.has(read.name) && read.access !== undefined && read.access !== 'data');
+      if (misread) {
+        report('diagnostic_step_data_shape', fieldPath,
+          `Step data '${misread.name}' is read as '${misread.name}.data...'; any other access is always undefined.`);
+      }
+    };
+    (step.rules ?? []).forEach((rule, index) => {
+      const rulePath = `${path}.rules[${index}]`;
+      if (typeof rule.condition === 'string') {
+        checkReads(rootReads(rule.condition), `${rulePath}.condition`, {accessChecked: true});
+      }
+      (rule.evidence_fields ?? []).forEach((field, fieldIndex) => {
+        const fieldPath = `${rulePath}.evidence_fields[${fieldIndex}]`;
+        const parsed = typeof field === 'string' ? parseEvidenceField(field) : undefined;
+        if (!parsed) {
+          report('diagnostic_evidence_field_shape', fieldPath,
+            'An evidence field is `input.data` followed by `.column`, `[n]`, `.length` or '
+            + '`.find(r => r.column OP literal)` / `.filter(...)`, each optionally `?.`.');
+        } else if (stepData.has(parsed.root)) {
+          reportUndeclared([parsed.root], fieldPath);
+        } else if (!inputs.has(parsed.root)) {
+          report('diagnostic_evidence_field_root', fieldPath,
+            `An evidence field cites this step's inputs only; '${parsed.root}' is not one.`);
+        }
+      });
+      const templates = [rule.diagnosis, ...(rule.suggestions ?? [])];
+      templates.forEach((template, templateIndex) => {
+        if (typeof template !== 'string') return;
+        checkReads(templateRootReads(template),
+          `${rulePath}.${templateIndex === 0 ? 'diagnosis' : `suggestions[${templateIndex - 1}]`}`);
+      });
     });
   });
   return issues;
@@ -454,6 +569,7 @@ export function validateSkillDefinitionsInProcess(
       fragmentCache: input.fragmentCache,
       sqlGuardrailMode: input.sqlGuardrailMode,
       definitions: input.validateReferences !== false ? byId : undefined,
+      resultPathReadSeverity: input.resultPathReadSeverity,
     }));
     if (input.validateReferences !== false) {
       issues.push(...validateSkillReferences(definition, knownSkillIds));

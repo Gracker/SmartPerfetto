@@ -10,15 +10,21 @@ import {
   getLegacyApiUsageSnapshot,
   resetLegacyApiUsageTelemetryForTests,
 } from '../../services/legacyApiTelemetry';
-import { PERFETTO_SQL_SKILL_IDS, rejectRemovedPerfettoSqlApi, rejectRemovedSessionsApi } from '../removedApi';
+import {
+  AGENT_API_FALLBACK as FALLBACK,
+  PERFETTO_SQL_SKILL_IDS,
+  rejectRemovedPerfettoSqlApi,
+  rejectRemovedSessionsApi,
+  rejectRemovedTemplateAnalysisApi,
+} from '../removedApi';
 
-const FALLBACK = '/api/workspaces/:workspaceId/agent';
-
-function perfettoSqlApp() {
+function appFor(mount: string, handler: express.RequestHandler) {
   const app = express();
-  app.use('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
+  app.use(mount, handler);
   return app;
 }
+
+const perfettoSqlApp = () => appFor('/api/perfetto-sql', rejectRemovedPerfettoSqlApi);
 
 describe('removed /api/perfetto-sql', () => {
   afterEach(() => {
@@ -103,5 +109,25 @@ describe('removed /api/sessions', () => {
     const res = await request(sessionsApp()).get(url).expect(410);
     expect(res.headers.link).toBeUndefined();
     expect(res.body.migration).toEqual({ successor: null, fallback: sessionsFallback });
+  });
+});
+
+describe('removed /api/template-analysis', () => {
+  test.each([
+    ['post', '/api/template-analysis/auto'],
+    ['post', '/api/template-analysis/four-quadrant'],
+    ['post', '/api/template-analysis/cpu-core'],
+    ['post', '/api/template-analysis/frame-stats'],
+    ['get', '/api/template-analysis'],
+  ] as const)('%s %s answers 410 with the agent fallback', async (method, url) => {
+    const app = appFor('/api/template-analysis', rejectRemovedTemplateAnalysisApi);
+    const res = await request(app)[method](url).expect(410);
+
+    expect(res.headers.link).toBeUndefined();
+    expect(res.body).toMatchObject({
+      success: false,
+      error: 'Template analysis API has been removed',
+      migration: { successor: null, fallback: FALLBACK },
+    });
   });
 });

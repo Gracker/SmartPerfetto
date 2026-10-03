@@ -485,7 +485,7 @@ invoke_skill("startup_slow_reasons")
 |------|----------|---------|
 | App 层基础 | SR01-SR08 | JIT/DEX2OAT/GC/锁/IO/Binder/广播/类验证 |
 | App 层扩展 | SR09-SR15 | ContentProvider 过多/SP 阻塞/显式 sleep/SDK 初始化/Native 库/.so/WebView/Inflate |
-| 系统层 | SR16-SR20 | 热节流/后台干扰/system_server 锁/并发启动/数据库 fsync |
+| 系统层 | SR16-SR20 | 频率未达峰值/后台干扰/system_server 锁/并发启动/数据库 fsync |
 
 **解读指引**：
 - **SR09(ContentProvider过多)**: 结合 A1 根因，检查每个 CP 的包名是否为三方 SDK。仅冷启动有意义（需有 bindApplication slice）
@@ -494,7 +494,7 @@ invoke_skill("startup_slow_reasons")
 - **SR12(非框架初始化工作)**：非框架占比不能识别三方 SDK；需源码/符号证明身份，模拟负载保持模拟负载，不能套用 SDK 根因。
 - **SR13-SR14(Native库/WebView)**: 冷启动特有，受 page cache(B3) 影响大
 - **SR15(inflate 命名活动)**：按区间分解 Running 与等待；是否真实 XML inflate、反射模拟或其他行为，需要实际实现/事件证据。
-- **SR16(热节流)**: 系统因素(B4)，对比设备冷却后重测
+- **SR16(频率未达峰值)**: 只是频率观测，B2/B4 候选；频率比值不证明限频或热节流，是否限频以启动窗口的 `cpu_throttling_in_range` 限频证据为准，温控机制还需温度/散热设备证据
 - **SR17(后台干扰)**: Runnable 表示等待 CPU；核对 R+ 切出、同 CPU 直接交接和关键路径时间后再评估后台竞争(B9)，比例本身不能证明抢占。
 - **SR18(system_server锁)**: 间接影响 Binder 延迟(B6→B7)
 - **SR19(并发启动)**: Boot storm 场景(B12)，放大所有系统层问题

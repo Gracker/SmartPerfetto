@@ -338,8 +338,8 @@ steps:
     sql: |
       WITH system_windows AS (
         SELECT 0 AS window_id,
-          ${analysis_window.data[0].window_start_ts} AS window_start_ts,
-          ${analysis_window.data[0].window_end_ts} AS window_end_ts
+          ${analysis_window.data[0].window_start_ts|NULL} AS window_start_ts,
+          ${analysis_window.data[0].window_end_ts|NULL} AS window_end_ts
       )
       -- Windows are anchored on the trace-wide onset, never on the clipped
       -- window start: a window that cuts through an episode must not invent a
@@ -357,8 +357,8 @@ steps:
           THEN 1 ELSE 0 END AS window_clipped_to_data_start,
         MAX(db.data_start_ts, e.onset_ts - CAST(${who_window_ms|2000} * 1000000 AS INTEGER)) AS who_start_ts,
         MIN(db.data_end_ts, e.onset_ts + CAST(${who_window_ms|2000} * 1000000 AS INTEGER)) AS who_end_ts,
-        ${analysis_window.data[0].window_start_ts} AS window_start_ts,
-        ${analysis_window.data[0].window_end_ts} AS window_end_ts,
+        ${analysis_window.data[0].window_start_ts|NULL} AS window_start_ts,
+        ${analysis_window.data[0].window_end_ts|NULL} AS window_end_ts,
         '${package}' AS package,
         '${process_name}' AS process_name,
         ${lookback_ms|10000} AS lookback_ms,
@@ -481,8 +481,8 @@ steps:
     sql: |
       WITH system_windows AS (
         SELECT 0 AS window_id,
-          ${analysis_window.data[0].window_start_ts} AS window_start_ts,
-          ${analysis_window.data[0].window_end_ts} AS window_end_ts
+          ${analysis_window.data[0].window_start_ts|NULL} AS window_start_ts,
+          ${analysis_window.data[0].window_end_ts|NULL} AS window_end_ts
         UNION ALL
         SELECT 1,
           ${episode_rows[0].before_start_ts},
@@ -566,8 +566,8 @@ steps:
     on_empty: "分析窗口内没有名字匹配温控/性能策略签名的计数器、slice 或线程。"
     sql: |
       WITH win AS (
-        SELECT ${analysis_window.data[0].window_start_ts} AS window_start_ts,
-          ${analysis_window.data[0].window_end_ts} AS window_end_ts
+        SELECT ${analysis_window.data[0].window_start_ts|NULL} AS window_start_ts,
+          ${analysis_window.data[0].window_end_ts|NULL} AS window_end_ts
       ),
       counter_sig AS (
         SELECT * FROM thermal_signal_signatures WHERE match_target = 'counter_or_slice'
@@ -744,7 +744,7 @@ steps:
           - "系统侧：在采集配置中加入 ftrace 事件 power/cpu_frequency_limits，并尽量同时加入 thermal/cdev_update 与 thermal/thermal_temperature"
           - "App 侧：在拿到限频证据之前，不要把性能下降归因于温控；先用同窗口负载数据判断是否是自身工作量导致"
       - id: no_episode
-        condition: "data_check.data?.[0]?.has_max_limit_data === 1 && !(episodes.data?.length > 0)"
+        condition: "data_check.data?.[0]?.has_max_limit_data === 1 && !(episode_rows.data?.length > 0)"
         severity: info
         diagnosis: "NO_LIMIT_EPISODE：窗口内存在有效的上限样本，但没有超过 ${episode_drop_pct|10}% 阈值的限频区段；未观测到显著限频"
         confidence: medium

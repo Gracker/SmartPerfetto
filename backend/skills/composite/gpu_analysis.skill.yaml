@@ -596,60 +596,55 @@ steps:
           COALESCE((SELECT drop_count FROM freq_drops LIMIT 1), 0) as freq_drop_count,
           COALESCE((SELECT gpu_jank_frames FROM frame_stats), 0) as gpu_jank_frames,
           COALESCE((SELECT total_frames FROM frame_stats), 0) as total_frames
+      ),
+      -- One classification; every column below follows it, so they cannot drift apart.
+      verdict AS (
+        SELECT a.*,
+          CASE
+            WHEN high_freq_pct > ${high_freq_threshold_pct|70} THEN 'GPU_BOUND'
+            WHEN freq_drop_count > ${freq_drop_count_threshold|20} AND high_freq_pct > 30 THEN 'GPU_FREQ_DROPS'
+            WHEN low_freq_pct > ${high_freq_threshold_pct|70} THEN 'GPU_IDLE'
+            WHEN gpu_jank_frames > 0 THEN 'GPU_JANK_RELATED'
+            ELSE 'NORMAL'
+          END AS gpu_category
+        FROM analysis a
       )
       SELECT
-        -- GPU 状态分类
-        CASE
-          WHEN (SELECT high_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN 'GPU_BOUND'
-          WHEN (SELECT freq_drop_count FROM analysis) > ${freq_drop_count_threshold|20}
-               AND (SELECT high_freq_pct FROM analysis) > 30 THEN 'GPU_THROTTLED'
-          WHEN (SELECT low_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN 'GPU_IDLE'
-          WHEN (SELECT gpu_jank_frames FROM analysis) > 0 THEN 'GPU_JANK_RELATED'
-          ELSE 'NORMAL'
-        END as gpu_category,
-        -- 置信度
-        CASE
-          WHEN (SELECT high_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN 0.9
-          WHEN (SELECT freq_drop_count FROM analysis) > ${freq_drop_count_threshold|20} THEN 0.75
-          WHEN (SELECT low_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN 0.85
-          WHEN (SELECT gpu_jank_frames FROM analysis) > 0 THEN 0.7
+        gpu_category,
+        CASE gpu_category
+          WHEN 'GPU_BOUND' THEN 0.9
+          WHEN 'GPU_FREQ_DROPS' THEN 0.75
+          WHEN 'GPU_IDLE' THEN 0.85
+          WHEN 'GPU_JANK_RELATED' THEN 0.7
           ELSE 0.6
         END as confidence,
-        -- 根因总结
-        CASE
-          WHEN (SELECT high_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN
-            'GPU 瓶颈: 高频区间 (>=90%最高频) 运行时间占 ' || (SELECT high_freq_pct FROM analysis) || '%，GPU 持续满载'
-          WHEN (SELECT freq_drop_count FROM analysis) > ${freq_drop_count_threshold|20}
-               AND (SELECT high_freq_pct FROM analysis) > 30 THEN
-            'GPU 限频: 检测到 ' || (SELECT freq_drop_count FROM analysis) || ' 次频率突降，可能受温控限制'
-          WHEN (SELECT low_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN
-            'GPU 空闲: 低频区间运行时间占 ' || (SELECT low_freq_pct FROM analysis) || '%，GPU 负载极低'
-          WHEN (SELECT gpu_jank_frames FROM analysis) > 0 THEN
-            'GPU 相关掉帧: 检测到 ' || (SELECT gpu_jank_frames FROM analysis) || ' 帧 GPU 相关 Jank'
+        CASE gpu_category
+          WHEN 'GPU_BOUND' THEN
+            'GPU 瓶颈: 高频区间 (>=90%最高频) 运行时间占 ' || high_freq_pct || '%，GPU 持续满载'
+          WHEN 'GPU_FREQ_DROPS' THEN
+            'GPU 频率突降: 检测到 ' || freq_drop_count || ' 次（仅为频率观测：可能来自负载变化、DVFS 调速或频率上限，本 Skill 未采集 GPU 频率上限证据，是否限频未判定）'
+          WHEN 'GPU_IDLE' THEN
+            'GPU 空闲: 低频区间运行时间占 ' || low_freq_pct || '%，GPU 负载极低'
+          WHEN 'GPU_JANK_RELATED' THEN
+            'GPU 相关掉帧: 检测到 ' || gpu_jank_frames || ' 帧 GPU 相关 Jank'
           ELSE
             'GPU 状态正常，频率分布合理'
         END as root_cause_summary,
-        -- 证据
         '[' ||
-          '"最高频占比: ' || COALESCE((SELECT max_freq_pct FROM analysis), 0) || '%",' ||
-          '"高频区间占比: ' || COALESCE((SELECT high_freq_pct FROM analysis), 0) || '%",' ||
-          '"低频区间占比: ' || COALESCE((SELECT low_freq_pct FROM analysis), 0) || '%",' ||
-          '"频率突降次数: ' || COALESCE((SELECT freq_drop_count FROM analysis), 0) || '",' ||
-          '"GPU 相关掉帧: ' || COALESCE((SELECT gpu_jank_frames FROM analysis), 0) || '"' ||
+          '"最高频占比: ' || max_freq_pct || '%",' ||
+          '"高频区间占比: ' || high_freq_pct || '%",' ||
+          '"低频区间占比: ' || low_freq_pct || '%",' ||
+          '"频率突降次数: ' || freq_drop_count || '",' ||
+          '"GPU 相关掉帧: ' || gpu_jank_frames || '"' ||
         ']' as evidence,
-        -- 优化建议
-        CASE
-          WHEN (SELECT high_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN
-            '减少 GPU 负载：简化 shader、降低绘制复杂度、减少 overdraw'
-          WHEN (SELECT freq_drop_count FROM analysis) > ${freq_drop_count_threshold|20} THEN
-            '检查设备温度，考虑降低渲染负载以避免温控降频'
-          WHEN (SELECT low_freq_pct FROM analysis) > ${high_freq_threshold_pct|70} THEN
-            'GPU 空闲，性能瓶颈不在 GPU 侧'
-          WHEN (SELECT gpu_jank_frames FROM analysis) > 0 THEN
-            '检查 GPU 渲染管线，优化 RenderThread 工作负载'
-          ELSE
-            '当前 GPU 运行状态良好，无需特别优化'
+        CASE gpu_category
+          WHEN 'GPU_BOUND' THEN '减少 GPU 负载：简化 shader、降低绘制复杂度、减少 overdraw'
+          WHEN 'GPU_FREQ_DROPS' THEN '结合 GPU 负载与 DVFS 调速记录核对频率突降的原因；仅凭频率变化不能据此判定限频或温控'
+          WHEN 'GPU_IDLE' THEN 'GPU 空闲，性能瓶颈不在 GPU 侧'
+          WHEN 'GPU_JANK_RELATED' THEN '检查 GPU 渲染管线，优化 RenderThread 工作负载'
+          ELSE '当前 GPU 运行状态良好，无需特别优化'
         END as suggestion
+      FROM verdict
     save_as: conclusion
     condition: "data_check.data[0]?.has_gpu_data === 1"
 

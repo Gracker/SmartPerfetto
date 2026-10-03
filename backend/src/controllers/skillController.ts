@@ -17,6 +17,7 @@ import {
 } from '../services/skillEngine/skillAnalysisAdapter';
 import { ErrorResponse } from '../types';
 import { toSingleString } from '../utils/httpValue';
+import { sendRouteFailure } from '../middleware/routeFailure';
 import {
   localize,
   parseOutputLanguage,
@@ -44,17 +45,17 @@ function localizedError(
   };
 }
 
-function localizedFailure(
+function sendLocalizedFailure(
+  res: Response,
   outputLanguage: OutputLanguage,
   error: unknown,
-  message: {zh: string; en: string},
-): ErrorResponse {
-  return {
-    error: localize(outputLanguage, message.zh, message.en),
-    details: error instanceof Error
-      ? error.message
-      : localize(outputLanguage, '未知错误', 'Unknown error'),
-  };
+  failure: {code: string; message: {zh: string; en: string}; logLabel: string},
+): void {
+  sendRouteFailure(res, {
+    code: failure.code,
+    error: localize(outputLanguage, failure.message.zh, failure.message.en),
+    logLabel: failure.logLabel,
+  }, error);
 }
 
 class SkillController {
@@ -86,12 +87,11 @@ class SkillController {
         count: skills.length,
       });
     } catch (error) {
-      console.error('[SkillController] Error listing skills:', error);
-      const errorResponse = localizedFailure(outputLanguage, error, {
-        zh: '无法列出 Skills',
-        en: 'Failed to list Skills',
+      sendLocalizedFailure(res, outputLanguage, error, {
+        code: 'skill_list_failed',
+        message: {zh: '无法列出 Skills', en: 'Failed to list Skills'},
+        logLabel: '[SkillController] Error listing skills',
       });
-      res.status(500).json(errorResponse);
     }
   };
 
@@ -149,16 +149,14 @@ class SkillController {
           description: s.description,
         })),
         inputs: localizedSkill.inputs,
-        thresholds: localizedSkill.thresholds,
         output: localizedSkill.output,
       });
     } catch (error) {
-      console.error('[SkillController] Error getting skill detail:', error);
-      const errorResponse = localizedFailure(outputLanguage, error, {
-        zh: '无法获取 Skill 详情',
-        en: 'Failed to get Skill details',
+      sendLocalizedFailure(res, outputLanguage, error, {
+        code: 'skill_detail_failed',
+        message: {zh: '无法获取 Skill 详情', en: 'Failed to get Skill details'},
+        logLabel: '[SkillController] Error getting skill detail',
       });
-      res.status(500).json(errorResponse);
     }
   };
 
@@ -209,12 +207,11 @@ class SkillController {
 
       res.json(result);
     } catch (error) {
-      console.error('[SkillController] Error executing skill:', error);
-      const errorResponse = localizedFailure(outputLanguage, error, {
-        zh: '无法执行 Skill',
-        en: 'Failed to execute Skill',
+      sendLocalizedFailure(res, outputLanguage, error, {
+        code: 'skill_execute_failed',
+        message: {zh: '无法执行 Skill', en: 'Failed to execute Skill'},
+        logLabel: '[SkillController] Error executing skill',
       });
-      res.status(500).json(errorResponse);
     }
   };
 
@@ -264,12 +261,11 @@ class SkillController {
 
       res.json(result);
     } catch (error) {
-      console.error('[SkillController] Error analyzing trace:', error);
-      const errorResponse = localizedFailure(outputLanguage, error, {
-        zh: '无法分析 Trace',
-        en: 'Failed to analyze Trace',
+      sendLocalizedFailure(res, outputLanguage, error, {
+        code: 'skill_trace_analysis_failed',
+        message: {zh: '无法分析 Trace', en: 'Failed to analyze Trace'},
+        logLabel: '[SkillController] Error analyzing trace',
       });
-      res.status(500).json(errorResponse);
     }
   };
 
@@ -324,12 +320,11 @@ class SkillController {
         skillDescription: localizedSkill?.meta.description,
       });
     } catch (error) {
-      console.error('[SkillController] Error detecting intent:', error);
-      const errorResponse = localizedFailure(outputLanguage, error, {
-        zh: '无法识别分析意图',
-        en: 'Failed to detect intent',
+      sendLocalizedFailure(res, outputLanguage, error, {
+        code: 'skill_intent_detection_failed',
+        message: {zh: '无法识别分析意图', en: 'Failed to detect intent'},
+        logLabel: '[SkillController] Error detecting intent',
       });
-      res.status(500).json(errorResponse);
     }
   };
 
@@ -356,12 +351,11 @@ class SkillController {
       // SkillVendorDetection is the response contract (trace_vendor@1).
       res.json(await adapter.detectVendor(traceId));
     } catch (error) {
-      console.error('[SkillController] Error detecting vendor:', error);
-      const errorResponse = localizedFailure(outputLanguage, error, {
-        zh: '无法识别设备厂商',
-        en: 'Failed to detect device vendor',
+      sendLocalizedFailure(res, outputLanguage, error, {
+        code: 'skill_vendor_detection_failed',
+        message: {zh: '无法识别设备厂商', en: 'Failed to detect device vendor'},
+        logLabel: '[SkillController] Error detecting vendor',
       });
-      res.status(500).json(errorResponse);
     }
   };
 }

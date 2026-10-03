@@ -3,11 +3,20 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import crypto from 'crypto';
-import type { Request } from 'express';
+import type { IncomingMessage } from 'http';
 import type Database from 'better-sqlite3';
 import type { RequestContext, RequestContextAuthType } from '../middleware/auth';
+import { sanitizeContextId } from '../utils/contextId';
 import { openEnterpriseDb } from './enterpriseDb';
 import { recordEnterpriseAuditEvent } from './enterpriseAuditService';
+import { PublicRequestError } from '../utils/publicRequestError';
+
+/** An API key request the caller has to change: an invalid field or a delegation it may not make. */
+export class ApiKeyRequestError extends PublicRequestError {
+  constructor(message: string) {
+    super('invalid_api_key_request', message);
+  }
+}
 
 export const ENTERPRISE_API_KEY_PREFIX = 'spak_';
 
@@ -74,11 +83,6 @@ function nowMs(): number {
   return Date.now();
 }
 
-function sanitizeId(value: unknown): string {
-  if (typeof value !== 'string') return '';
-  return value.trim().replace(/[^a-zA-Z0-9._:-]/g, '').slice(0, 128);
-}
-
 function sanitizeScope(value: unknown): string {
   if (typeof value !== 'string') return '';
   const trimmed = value.trim();
@@ -120,10 +124,10 @@ function normalizeExpiresAt(value: unknown): number | undefined {
       ? Number.parseInt(value, 10)
       : Date.parse(String(value));
   if (!Number.isFinite(parsed)) {
-    throw new Error('expiresAt must be a Unix millisecond timestamp or ISO date string');
+    throw new ApiKeyRequestError('expiresAt must be a Unix millisecond timestamp or ISO date string');
   }
   if (parsed <= nowMs()) {
-    throw new Error('expiresAt must be in the future');
+    throw new ApiKeyRequestError('expiresAt must be in the future');
   }
   return parsed;
 }
@@ -145,10 +149,10 @@ function parseApiKeyToken(token: string | undefined): ApiKeyTokenParts | null {
   if (separator <= 0) return null;
   const id = payload.slice(0, separator);
   const secret = payload.slice(separator + 1);
-  return sanitizeId(id) === id && secret.length >= 32 ? { id, secret } : null;
+  return sanitizeContextId(id) === id && secret.length >= 32 ? { id, secret } : null;
 }
 
-export function extractEnterpriseApiKeyToken(req: Request): string | undefined {
+export function extractEnterpriseApiKeyToken(req: IncomingMessage): string | undefined {
   const authHeader = req.headers.authorization;
   if (typeof authHeader === 'string' && authHeader.startsWith('Bearer ')) {
     const token = authHeader.slice('Bearer '.length).trim();
@@ -161,7 +165,7 @@ export function extractEnterpriseApiKeyToken(req: Request): string | undefined {
   return undefined;
 }
 
-export function requestHasEnterpriseApiKeyCredential(req: Request): boolean {
+export function requestHasEnterpriseApiKeyCredential(req: IncomingMessage): boolean {
   return Boolean(extractEnterpriseApiKeyToken(req));
 }
 
@@ -204,37 +208,37 @@ export class EnterpriseApiKeyService {
     const canDelegateOrg = context.roles.includes('org_admin')
       || context.scopes.includes('*')
       || context.scopes.includes('api_key:delegate_org');
-    const requestedTenantId = sanitizeId(input.tenantId);
+    const requestedTenantId = sanitizeContextId(input.tenantId);
     if (requestedTenantId && requestedTenantId !== context.tenantId) {
-      throw new Error('tenantId must match the authenticated RequestContext');
+      throw new ApiKeyRequestError('tenantId must match the authenticated RequestContext');
     }
-    const requestedWorkspaceId = sanitizeId(input.workspaceId);
+    const requestedWorkspaceId = sanitizeContextId(input.workspaceId);
     if (requestedWorkspaceId && requestedWorkspaceId !== context.workspaceId) {
-      throw new Error('workspaceId must match the authenticated RequestContext');
+      throw new ApiKeyRequestError('workspaceId must match the authenticated RequestContext');
     }
     if (input.workspaceId === null && !canDelegateOrg) {
-      throw new Error('Only an org admin can create a tenant-wide API key');
+      throw new ApiKeyRequestError('Only an org admin can create a tenant-wide API key');
     }
     if (input.ownerUserId === null) {
-      throw new Error('API keys must retain an accountable owner');
+      throw new ApiKeyRequestError('API keys must retain an accountable owner');
     }
-    const requestedOwnerUserId = sanitizeId(input.ownerUserId) || context.userId;
+    const requestedOwnerUserId = sanitizeContextId(input.ownerUserId) || context.userId;
     if (requestedOwnerUserId !== context.userId && !canDelegateOrg) {
-      throw new Error('Only an org admin can create an API key for another user');
+      throw new ApiKeyRequestError('Only an org admin can create an API key for another user');
     }
     const tenantId = context.tenantId;
     const workspaceId = input.workspaceId === null ? undefined : context.workspaceId;
     const ownerUserId = this.existingUserId(tenantId, requestedOwnerUserId);
-    if (!ownerUserId) throw new Error('API key owner must be an active tenant user');
+    if (!ownerUserId) throw new ApiKeyRequestError('API key owner must be an active tenant user');
     const scopes = normalizeScopes(input.scopes);
     if (!canDelegateOrg) {
       if (scopes.includes('*')) {
-        throw new Error('Workspace administrators cannot delegate wildcard scope');
+        throw new ApiKeyRequestError('Workspace administrators cannot delegate wildcard scope');
       }
       const callerScopes = new Set(context.scopes);
       const unsupportedScope = scopes.find(scope => !callerScopes.has(scope));
       if (unsupportedScope) {
-        throw new Error(`Cannot delegate scope not held by caller: ${unsupportedScope}`);
+        throw new ApiKeyRequestError(`Cannot delegate scope not held by caller: ${unsupportedScope}`);
       }
     }
     const expiresAt = normalizeExpiresAt(input.expiresAt);
@@ -300,7 +304,7 @@ export class EnterpriseApiKeyService {
   }
 
   revokeApiKey(context: RequestContext, idInput: string): EnterpriseApiKeyRecord | null {
-    const id = sanitizeId(idInput);
+    const id = sanitizeContextId(idInput);
     const existing = id ? this.getRowForContext(context, id) : null;
     if (!existing || existing.revoked_at) return null;
     const revokedAt = nowMs();
@@ -325,7 +329,7 @@ export class EnterpriseApiKeyService {
     return row ? rowToRecord(row) : null;
   }
 
-  resolveRequestIdentityFromRequest(req: Request): RequestApiKeyIdentity | null {
+  resolveRequestIdentityFromRequest(req: IncomingMessage): RequestApiKeyIdentity | null {
     const parts = parseApiKeyToken(extractEnterpriseApiKeyToken(req));
     if (!parts) return null;
     const row = this.getRow(parts.id);

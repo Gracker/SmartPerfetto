@@ -306,3 +306,46 @@ describe('conversation routes authorized recovery', () => {
     });
 
 });
+
+describe('conversation route failures', () => {
+  const CANARY = 'canary-conv /srv/data/conversations.sqlite SQLITE_CORRUPT';
+
+  function expectFixed(res: request.Response, status: number, code: string, errorLog: jest.SpiedFunction<typeof console.error>) {
+    expect(res.status).toBe(status);
+    expect(res.body).toEqual({success: false, code, error: expect.any(String), requestId: expect.any(String)});
+    expect(res.text).not.toContain('canary-conv');
+    expect(errorLog.mock.calls.flat().map(value => (value instanceof Error ? value.message : '')).join()).toContain(CANARY);
+  }
+
+  it('answers a store failure on start and on read with fixed text, the cause in the log', async () => {
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const store = getConversationSessionStore();
+    const save = jest.spyOn(store, 'save').mockImplementation(() => {
+      throw new Error(CANARY);
+    });
+    expectFixed(await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'}), 500,
+      'CONVERSATION_START_FAILED', errorLog);
+
+    save.mockRestore();
+    storeSnapshot();
+    jest.spyOn(store, 'listTurns').mockImplementation(() => {
+      throw new Error(CANARY);
+    });
+    expectFixed(await request(app()).get(`/api/agent/v1/conversation/${descriptor.sessionId}`), 500,
+      'CONVERSATION_READ_FAILED', errorLog);
+  });
+
+  it('answers a stop for a run that is no longer active with a typed 409', async () => {
+    const started = await request(app()).post('/api/agent/v1/conversation').send({query: 'trace 时长'});
+    expect(started.status).toBe(202);
+
+    const cancelled = await request(app()).post(`/api/agent/v1/conversation/${started.body.sessionId}/cancel`)
+      .send({runId: 'some-other-run'});
+    expect(cancelled.status).toBe(409);
+    expect(cancelled.body).toMatchObject({
+      success: false,
+      code: 'CONVERSATION_RUN_NOT_ACTIVE',
+      error: 'Active conversation run not found: some-other-run',
+    });
+  });
+});

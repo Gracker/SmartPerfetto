@@ -5,6 +5,7 @@
 import { Router, type Response } from 'express';
 
 import { authenticate, requireRequestContext, type RequestContext } from '../middleware/auth';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import { openEnterpriseDb } from '../services/enterpriseDb';
 import {
   createEnterpriseWorkspace,
@@ -23,6 +24,7 @@ import {
   purgeTenantNow,
   TenantPurgeBlockedError,
   TenantPurgeWindowError,
+  TenantTombstoneNotFoundError,
   type TenantPurgeProof,
 } from '../services/enterpriseTenantLifecycleService';
 import { sendForbidden } from '../services/rbac';
@@ -35,7 +37,9 @@ interface TenantPurgeJob {
   completedAt?: number;
   proof?: TenantPurgeProof;
   blockers?: unknown[];
+  /** Fixed text served by GET /purge/:jobId; never an exception message. */
   error?: string;
+  errorCode?: 'tenant_purge_window_open' | 'tenant_tombstone_not_found' | 'tenant_purge_failed';
 }
 
 const router = Router();
@@ -95,12 +99,11 @@ function requireWorkspaceManagePermission(
 }
 
 function sendControlPlaneError(res: Response, error: unknown): void {
-  if (error instanceof EnterpriseAdminControlPlaneError) {
-    res.status(error.status).json({ success: false, error: error.message });
-    return;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  res.status(500).json({ success: false, error: message || 'Enterprise admin control plane failed' });
+  sendRouteError(res, error, {
+    code: 'enterprise_admin_failed',
+    error: 'Enterprise admin control plane failed',
+    logLabel: '[EnterpriseTenantRoutes] Control plane error',
+  }, [EnterpriseAdminControlPlaneError]);
 }
 
 function requireTenantConfirmation(body: unknown, tenantId: string): string | null {
@@ -243,11 +246,12 @@ router.post('/tombstone', (req, res) => {
       success: true,
       tombstone,
     });
-  } catch (error: any) {
-    res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to tombstone tenant',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'tenant_tombstone_failed',
+      error: 'Failed to tombstone tenant',
+      logLabel: '[EnterpriseTenantRoutes] Tombstone error',
+    }, error);
   } finally {
     db.close();
   }
@@ -311,18 +315,22 @@ router.post('/purge', (req, res) => {
       job.proof = await purgeTenantNow(jobDb, context);
       job.status = 'completed';
       job.completedAt = Date.now();
-    } catch (error: any) {
+    } catch (error) {
       job.completedAt = Date.now();
       if (error instanceof TenantPurgeBlockedError) {
         job.status = 'blocked';
         job.blockers = error.blockers;
-      } else if (error instanceof TenantPurgeWindowError) {
-        job.status = 'failed';
-        job.error = error.message;
-      } else {
-        job.status = 'failed';
-        job.error = error.message || 'Tenant purge failed';
+        return;
       }
+      job.status = 'failed';
+      if (error instanceof TenantPurgeWindowError || error instanceof TenantTombstoneNotFoundError) {
+        job.error = error.message;
+        job.errorCode = error.code;
+        return;
+      }
+      job.error = 'Tenant purge failed';
+      job.errorCode = 'tenant_purge_failed';
+      console.error('[EnterpriseTenantRoutes] Tenant purge job failed', {jobId}, error);
     } finally {
       jobDb.close();
     }

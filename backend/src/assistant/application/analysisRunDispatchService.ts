@@ -359,7 +359,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
                 !Array.isArray(rawOptions) && rawOptions.outputLanguage === 'zh-CN'
               ? 'zh-CN'
               : configuredOutputLanguage();
-          respond(error.httpStatus, {
+          respond(error.status, {
             success: false,
             error: analyzeOptionsErrorMessage(error, requestedErrorLanguage),
             code: error.code,
@@ -441,7 +441,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         selectionContext = normalizeSelectionContext(rawSelectionContext);
       } catch (error) {
         if (error instanceof AnalyzeOptionsError) {
-          respond(error.httpStatus, {
+          respond(error.status, {
             success: false,
             code: error.code,
             error: analyzeOptionsErrorMessage(error, requestOutputLanguage),

@@ -39,6 +39,7 @@ import {
   SceneAnalysisSelection,
 } from './types';
 import {displaySceneType, isKnownSceneType} from './scenePresentation';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 // ---------------------------------------------------------------------------
 // Threshold table — drives priority and severity for each scene category.
@@ -1399,13 +1400,7 @@ function payloadToObjectRows(payload: any): Array<Record<string, any>> {
   const rows: any[][] | undefined = payload.rows;
   if (!Array.isArray(columns) || !Array.isArray(rows)) return [];
 
-  return rows.map((row) => {
-    const obj: Record<string, any> = {};
-    for (let i = 0; i < columns.length; i++) {
-      obj[columns[i]] = row[i];
-    }
-    return obj;
-  });
+  return rows.map((row) => rowObject(columns, row));
 }
 
 // ---------------------------------------------------------------------------

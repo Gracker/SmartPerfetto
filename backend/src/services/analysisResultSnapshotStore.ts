@@ -174,17 +174,22 @@ function boundedLimit(limit: number | undefined): number {
   return limit;
 }
 
-function readableClause(scope: SnapshotAccessScope, options: SnapshotReadOptions = {}): {
+/**
+ * The snapshots `scope` may read, for a query whose snapshot table is `alias`
+ * (the window state store joins it as `s`). A private snapshot stays its
+ * owner's however the workspace sees the rest.
+ */
+export function readableClause(scope: SnapshotAccessScope, options: SnapshotReadOptions = {}, alias = 's'): {
   sql: string;
   params: Record<string, string | number | null>;
 } {
   return {
     sql: [
-      's.tenant_id = @tenantId',
-      's.workspace_id = @workspaceId',
+      `${alias}.tenant_id = @tenantId`,
+      `${alias}.workspace_id = @workspaceId`,
       // Workspace visibility and owner-less rows widen only an unrestricted snapshot.
-      restrictableArtifactAudienceSql('s.', "(s.visibility = 'workspace' OR s.created_by IS NULL)"),
-      ...(options.excludeRestricted ? [unrestrictedPrivateContextSql('s.private_context')] : []),
+      restrictableArtifactAudienceSql(`${alias}.`, `(${alias}.visibility = 'workspace' OR ${alias}.created_by IS NULL)`),
+      ...(options.excludeRestricted ? [unrestrictedPrivateContextSql(`${alias}.private_context`)] : []),
     ].join(' AND '),
     params: {
       tenantId: scope.tenantId,

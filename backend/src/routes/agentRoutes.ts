@@ -30,6 +30,7 @@ import {
 import {
   buildAnalysisReceipt,
   buildLegacyAnalysisReceipt,
+  REPORT_GENERATION_FAILED,
   type BuildAnalysisReceiptInput,
 } from '../services/analysisReceiptBuilder';
 import { deriveUiActionProposals } from '../services/uiActionProposalDeriver';
@@ -59,6 +60,7 @@ import {
   type RequestContext,
 } from '../middleware/auth';
 import { createRequestId, requestIdOf } from '../middleware/requestId';
+import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import {
   isOwnedByContext,
   ownersMatch,
@@ -75,6 +77,7 @@ import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { finalReviewProgressUpdate } from '../services/finalizationProgress';
 import { diagnosticLogIdentity } from '../utils/logger';
+import {rowObject} from '../utils/traceProcessorRowUtils';
 import { registerSceneReconstructRoutes } from './agentSceneReconstructRoutes';
 import { SceneStoryService } from '../agent/scene/sceneStoryService';
 import { buildSmartSceneSelectionReport } from '../agent/scene/buildSmartChatReport';
@@ -237,6 +240,7 @@ import {createRunManifestLifecycle, disposeRunManifestLifecyclesForSession, getA
 import {getRunManifestStore} from '../services/selfEvolution/runManifestStore';
 import {
   FeedbackEventStore,
+  FeedbackRequestError,
   privateFeedbackStorePaths,
 } from '../services/selfEvolution/feedbackEventStore';
 import {
@@ -723,10 +727,9 @@ async function abortSessionBestEffort(session: AnalysisSession, component: strin
   try {
     await session.orchestrator.abortSession(session.sessionId, session.referenceTraceId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn(component, 'Runtime abortSession failed during cancellation cleanup', {
       sessionId: session.sessionId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -750,17 +753,15 @@ function cleanupSessionBestEffort(sessionId: string, session: AnalysisSession, c
   try {
     const cleanup = session.orchestrator.cleanupSession(sessionId);
     void Promise.resolve(cleanup).catch((error) => {
-      const message = error instanceof Error ? error.message : String(error);
       session.logger.warn(component, 'Runtime cleanupSession failed', {
         sessionId,
-        error: message,
+        error: errorMessage(error),
       });
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn(component, 'Runtime cleanupSession failed', {
       sessionId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1520,12 +1521,11 @@ function persistSessionRunState(
       updateSessionStatus: shouldUpdateSessionStatusForRun(session, scope.runId),
     });
   } catch (persistError) {
-    const message = persistError instanceof Error ? persistError.message : String(persistError);
     session.logger.warn('AnalysisRun', 'Failed to persist run state', {
       sessionId: session.sessionId,
       runId: scope.runId,
       status,
-      error: message,
+      error: errorMessage(persistError),
     });
   }
 }
@@ -1536,11 +1536,10 @@ function heartbeatSessionRun(session: AnalysisSession, runId?: string): void {
   try {
     heartbeatAnalysisRun(scope);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AnalysisRun', 'Failed to persist run heartbeat', {
       sessionId: session.sessionId,
       runId: scope.runId,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1557,11 +1556,10 @@ function isPersistedSessionRunFresh(session: AnalysisSession, now: number): bool
   try {
     return isAnalysisRunHeartbeatFresh(scope, scope.runId, now, AGENT_RUN_HEARTBEAT_MAX_STALE_MS);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AnalysisRun', 'Failed to inspect persisted run heartbeat', {
       sessionId: session.sessionId,
       runId: scope.runId,
-      error: message,
+      error: errorMessage(error),
     });
     return true;
   }
@@ -1583,13 +1581,12 @@ function persistBufferedAgentEvent(session: AnalysisSession, event: SerializedAg
       updateSessionStatus: shouldUpdateSessionStatusForRun(session, scope.runId),
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AgentEvents', 'Failed to persist SSE event', {
       sessionId: session.sessionId,
       runId: scope.runId,
       eventType: event.eventType,
       cursor: event.cursor,
-      error: message,
+      error: errorMessage(error),
     });
   }
 }
@@ -1817,12 +1814,11 @@ function replayPersistedAgentEvents(
   try {
     events = listSerializedAgentEventsAfter(scope, scope.runId, lastEventId);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
     session.logger.warn('AgentEvents', 'Failed to load persisted SSE replay events', {
       sessionId: session.sessionId,
       runId: scope.runId,
       lastEventId,
-      error: message,
+      error: errorMessage(error),
     });
     return { replayed: 0, includesTerminal: false, lastCursor: lastEventId };
   }
@@ -3286,17 +3282,11 @@ router.post('/:sessionId/feedback', async (req, res) => {
       patternStatus: projected.patternStatus,
     });
   } catch (err) {
-    console.error('[Feedback] Failed to save feedback:', (err as Error).message);
-    const code = (err as Error).message;
-    const conflict = code === 'legacy_feedback_not_retractable' ||
-      code.startsWith('feedback_supersedes_') ||
-      code === 'feedback_idempotency_conflict' ||
-      code === 'feedback_id_conflict';
-    return res.status(conflict ? 409 : 500).json({
-      success: false,
-      error: code,
-      idempotencyKey,
-    });
+    return sendRouteError(res, err, {
+      code: 'feedback_save_failed',
+      error: 'Failed to save feedback',
+      logLabel: '[Feedback] Failed to save feedback',
+    }, [FeedbackRequestError]);
   } finally {
     store?.close();
   }
@@ -3482,12 +3472,12 @@ router.post('/:sessionId/interaction', async (req, res) => {
       sessionId,
       focusCount: 0,
     });
-  } catch (error: any) {
-    console.error(`[Interaction] Error recording interaction for session ${sessionId}:`, error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to record interaction',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'interaction_record_failed',
+      error: 'Failed to record interaction',
+      logLabel: '[Interaction] Error recording interaction',
+    }, error);
   }
 });
 
@@ -3550,12 +3540,12 @@ router.get('/:sessionId/focus', (req, res) => {
       focuses,
       context,
     });
-  } catch (error: any) {
-    console.error(`[Focus] Error getting focus for session ${sessionId}:`, error);
-    return res.status(500).json({
-      success: false,
-      error: error.message || 'Failed to get focus state',
-    });
+  } catch (error: unknown) {
+    sendRouteFailure(res, {
+      code: 'focus_read_failed',
+      error: 'Failed to get focus state',
+      logLabel: '[Focus] Error getting focus',
+    }, error);
   }
 });
 
@@ -5114,7 +5104,12 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     let caseRecommendations: CaseKnowledgeReportRecommendation[] | undefined;
     if (canPrefetch() && loadCaseEvolutionConfig().retrieveEnabled) {
       try {
-        caseRecommendations = retrieveCaseHits({dataEnvelopes: rawDataEnvelopes, sceneType: sceneIdHint, knowledgeScope});
+        caseRecommendations = retrieveCaseHits({
+          dataEnvelopes: rawDataEnvelopes,
+          sceneType: sceneIdHint,
+          architectureType: resolveSessionArchitectureType(session, traceId),
+          knowledgeScope,
+        });
       } catch {
         // A store error can quote stored text, so the log names only the failure.
         session.logger.warn('AgentDrivenAnalysis', 'Curated case retrieval failed', {sessionId, runId: runIdForAnalysis});
@@ -6425,16 +6420,8 @@ function payloadToObjectRowsLocal(payload: any): Array<Record<string, any>> {
   const rows = (payload as any).rows;
   if (!Array.isArray(cols) || !Array.isArray(rows)) return [];
 
-  const out: Array<Record<string, any>> = [];
-  for (const row of rows) {
-    if (!Array.isArray(row)) continue;
-    const obj: Record<string, any> = {};
-    for (let i = 0; i < cols.length; i++) {
-      obj[String(cols[i])] = row[i];
-    }
-    out.push(obj);
-  }
-  return out;
+  const columns = cols.map(String);
+  return rows.filter(Array.isArray).map(row => rowObject(columns, row));
 }
 
 function normalizeNs(value: any): string | null {
@@ -7159,9 +7146,9 @@ function ensureCompletedAnalysisFinalArtifacts(
     } catch (error: any) {
       input.assertCurrent?.();
       reportId = undefined;
-      finalArtifacts.reportError = error.message || 'Unknown error';
+      finalArtifacts.reportError = REPORT_GENERATION_FAILED;
       console.error('[AgentRoutes] Failed to generate agent-driven HTML report:', {
-        error: finalArtifacts.reportError,
+        error: error?.message,
         stack: error.stack?.split('\n').slice(0, 5).join('\n'),
         resultConclusion: result?.conclusion ? `${result.conclusion.length} chars` : 'EMPTY/NULL',
         resultConfidence: result?.confidence,

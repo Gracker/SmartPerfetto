@@ -48,6 +48,105 @@ analysis run's observability id, the Trace Processor proxy's WebSocket upgrade
 id, and the id in server logs. A `requestId` field in the request body is not
 read.
 
+## Route-Level Failures
+
+When an endpoint (including the SQL, Skill, Skill pack and batch trace
+endpoints implemented under `backend/src/controllers/`) catches a downstream
+failure itself (storage, filesystem, trace processor, secret store, export,
+model call), it answers with the same shape:
+
+```json
+{"success": false, "code": "report_read_failed", "error": "Failed to get report", "requestId": "req-…"}
+```
+
+`code` is stable and names the failed operation (`report_export_failed`,
+`provider_operation_failed`, `trace_processor_proxy_failed`, …); branch on it,
+not on `error`. `error` is fixed text that never contains the exception
+message, and `requestId` / `X-Request-Id` follow the rules above. The message
+and stack go only to the server log line of that route, correlated by
+`requestId`.
+
+Errors SmartPerfetto writes for the caller keep their actionable text: the
+same shape, with that text as `error`, the error's own HTTP status, and for a
+few errors (Agent analyze options) structured `details`. In the backend they
+are domain subclasses of `PublicRequestError`, and each route echoes only the
+subclasses it lists; any other exception gets fixed text. A 5xx one (a system
+directory picker that cannot open) still logs its cause. One that escapes to
+the global error handler keeps its status there, with the handler's fixed
+text. For example:
+
+- Provider Manager input (`provider_invalid_request` 400, `provider_not_found`
+  404) and an unreadable providers.json (`provider_store_unreadable` 409),
+  trace list paging (`INVALID_TRACE_LIST_PAGE`), agent log level
+  (`invalid_log_level`), Agent analyze options, RAG search input
+  (`invalid_rag_search_input`), the directory picker (`DIRECTORY_*`), and
+  enterprise workspace administration (`enterprise_admin_invalid_request` 400,
+  `enterprise_admin_forbidden` 403, `enterprise_admin_not_found` 404,
+  `enterprise_admin_conflict` 409).
+- Conversations: `CONVERSATION_NOT_FOUND` 404, `CONVERSATION_QUERY_REQUIRED`
+  400, a changed conversation context (`CONVERSATION_TRACE_CHANGED`,
+  `CONVERSATION_PROVIDER_CHANGED`, `CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`,
+  `ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED`, or the lowercase
+  `analysis_context_changed_restart_required` when a source or knowledge grant
+  no longer holds at recovery) 409, `RUN_ALREADY_ACTIVE` 409,
+  `CANCELLATION_IN_PROGRESS` 409, and stopping a run that is no longer active
+  `CONVERSATION_RUN_NOT_ACTIVE` 409. The error type decides the status; the
+  message text is no longer matched.
+- URL upload: `INVALID_TRACE_URL` 400, `TRACE_URL_TIMEOUT` 504,
+  `TRACE_URL_REDIRECT_INVALID` 502.
+- Knowledge curation (baselines, cases, memory promotion), enterprise API key
+  creation, a refused OIDC login (`oidc_subject_tenant_conflict` 403), trace
+  config proposals, feedback writes (input validation and a missing or contradictory target 400,
+  supersede/idempotency conflicts 409), codebase and external knowledge source
+  field validation (codebase management uses `CODEBASE_*` codes, including
+  `CODEBASE_METADATA_INVALID` and `PENDING_GENERATION_ID_INVALID`), and batch
+  trace requests (`error` may carry a field name, count or Skill type after
+  `:`, e.g. `invalid_batch_trace_limit:trace_count:2>1`; a Skill colliding with
+  a workspace Skill pack is 409).
+- Skill packs: an invalid manifest, asset or pack Skill definition, or a pack
+  that is not installable 400; an asset that changed
+  since preview, an installed version whose content changed
+  (`installed_pack_content_hash_mismatch`), or a collision with workspace Skills
+  or fragments 409; an unknown pack 404. `error` is the reason code, possibly
+  followed by the pack-relative path, field name or Skill id after `:`.
+  Internal failures such as persistence get fixed text.
+
+The services behind RAG administration throw machine reason codes as their
+messages (`root_outside_allowlist`, `source_chunk_limit_exceeded:5000`). Only
+the families a caller can act on (source paths, knowledge roots, the index
+lifecycle, consent and right-to-use acknowledgement) are returned as `code`
+and `error`, without the detail after the first `:` (an id, path or size), and
+the original message is logged at warn level; internal reason codes (store
+corruption, staged chunk count mismatches) and messages that are not reason
+codes get fixed text. Self-Evolution keeps its
+`{success: false, error: <code>}` shape and returns the whole lowercase reason
+code (only `a-z 0-9 _ : -`, possibly with an id after `:`); any other
+exception is `self_evolution_request_failed`.
+
+Failure records read later through other endpoints carry no exception text
+either: a comparison run's `error` is `Comparison failed`; a tenant purge job
+(`GET /api/tenant/purge/:jobId`) keeps only the purge-window and
+missing-tombstone texts in `error` and adds `errorCode`
+(`tenant_purge_window_open`, `tenant_tombstone_not_found`,
+`tenant_purge_failed`); a failed report generation sets `reportError` to
+`report generation failed`; and a trace that trace_processor_shell cannot load
+after upload answers `trace_processor_shell could not load the trace`. A trace
+upload `details` field is kept only for explanations we write (a rejected URL,
+a file that is too large) and never carries exception text. In a batch trace
+submitted through the API, a failed trace keeps only its reason code (else
+`batch_trace_failed`) in `error` and its diagnostic, while a local CLI batch
+keeps the whole message; each skipped file's `reason` in a codebase reindex
+result keeps only its reason code (else `source_file_unreadable`). In
+enterprise mode an SSO session or API key lookup failure answers 401 with
+fixed text. Records written before this change keep their stored text.
+
+Analysis run failures are the exception: the Agent analysis `error` SSE
+event, the `error` of `/status`, and the conversation `run_failed` event carry
+the runtime or model provider's failure reason (authentication, quota),
+because it is the only thing the session owner can act on. A run that uses
+private knowledge (source code, external knowledge sources) returns only the
+owner-projected text on every one of them.
+
 ## OIDC Authentication
 
 | Method | Path | Purpose |
@@ -162,7 +261,7 @@ for local and compatibility flows.
 | `/api/workspaces/:workspaceId/agent` | Workspace-scoped agent analysis, SSE, turns, and feedback |
 | `/api/workspaces/:workspaceId/providers` | Workspace-scoped Provider Manager profiles |
 | `/api/workspaces/:workspaceId/analysis-results` | Analysis-result snapshot list, read, and update |
-| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state |
+| `/api/workspaces/:workspaceId/windows` | Frontend window heartbeat and active-window state; a window is identified by (user, windowId), and other users' windows are listed only as pointers to analysis results you can read |
 | `/api/workspaces/:workspaceId/comparisons` | Multi-result comparison create, read, stream, and export |
 | `/api/workspaces/:workspaceId/trace-config` | Side-effect-free trace config proposals |
 | `/api/workspaces/:workspaceId/skill-packs` | Local-directory Skill Pack preview, install, enable/disable, and remove |
@@ -877,13 +976,43 @@ Workspace base path: `/api/workspaces/:workspaceId/comparisons`
 | `GET` | `/:comparisonId/stream` | Subscribe to comparison stream |
 
 A Skill result row may declare the definition of a metric column with a
-`<column>_definition` string on the same row (for example `cpu_profiling`'s
-`big_core_pct_definition`); the snapshot stores it as the metric's
-`source.metricDefinition`. When two snapshots declare different definitions for
-the same metric (including one side undeclared), the comparison computes no delta
-(`deltaValue: null`, `assessment: "unknown"`) and names both definitions in
-`matrix.warnings` and the conclusion `uncertainty`. Undeclared historical metrics
-keep comparing as before.
+`<column>_definition` string on the same row; the snapshot stores it as the
+metric's `source.metricDefinition`. When two snapshots declare different
+definitions for the same metric (including one side undeclared), the comparison
+computes no delta (`deltaValue: null`, `assessment: "unknown"`) and names both
+definitions in `matrix.warnings` and the conclusion `uncertainty`. Undeclared
+historical metrics keep comparing as before.
+
+`cpu.big_core_pct` has a producer contract
+(`backend/src/services/comparisonMetricProducerContract.ts`) instead of taking the
+first `big_core_pct` column:
+
+- Definition `main_thread_running:core_tier_group:prime+big+medium@3`: the
+  big-group (prime/big/medium) share of **one** main thread's Running time in the
+  selected event window, with no time on unclassified cores. It describes the one
+  selected startup or slow input event, not an aggregate over the analysis.
+- Admitted sources, by envelope top-level `skillId` + display `stepId`:
+  `cpu_core_analysis` of `startup_detail` and `click_response_detail`, and the
+  `cpu_core_analysis` section of the iterator items of
+  `startup_analysis.analyze_startups` and
+  `click_response_analysis.analyze_slow_events` (`source.section` and
+  `source.itemIndex` record which item). Same-named columns of other Skills,
+  `type: skill` nested steps, raw SQL, frontend pre-queried data and
+  reference-trace envelopes are never candidates.
+- The first candidate unit that returned rows decides: exactly one row, its
+  `big_core_pct_definition` equal to the definition above, `main_thread_count = 1`,
+  and an unrounded numeric `unknown_core_ns = 0`. Otherwise the snapshot stores the
+  metric with `value: null` and `missingReason: "producer_contract:<reason>"`
+  (`ambiguous_population`, `definition_mismatch`, `unknown_core_time`,
+  `unknown_core_time_unverified`, `value_unavailable`) and never takes a later
+  thread, event or envelope instead; the comparison lists it as missing with that
+  reason.
+- A delta is computed only when both values were declared under the current
+  definition by admitted producers. History is classified by provenance and never
+  diffed; the warning names the class: `legacy_admitted_producer` (an admitted
+  producer's earlier value, unknown-core time never checked), `outside_contract`
+  (any other Skill step, including `cpu_profiling`'s earlier `@2` declaration), or
+  `non_skill_source`.
 
 Analysis-result snapshot base path: `/api/workspaces/:workspaceId/analysis-results`
 
@@ -925,7 +1054,6 @@ should prefer the `/api/workspaces/:workspaceId/*` paths above:
 - `/api/reports/*`; prefer `/api/workspaces/:workspaceId/reports/*`
 - `/api/agent/v1/*`; workspace products should prefer `/api/workspaces/:workspaceId/agent/*`
 - `/api/v1/providers/*`; prefer `/api/workspaces/:workspaceId/providers/*`
-- `/api/template-analysis/*`
 
 Maintained auxiliary APIs include `/api/flamegraph/*`, `/api/critical-path/*`,
 `/api/baselines/*`, `/api/memory/*`, `/api/cases/*`, `/api/ci/*`, `/api/tp/*`,
@@ -944,7 +1072,7 @@ actor, issuedAt); a POST body's copies of these are ignored. A case written
 before attestations needs one again: send a reviewed case back as GET returned
 it, and publish a published case again.
 
-The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API.
+The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API. `/api/template-analysis/*` likewise answers 410; `/auto`, `/four-quadrant`, `/cpu-core` and `/frame-stats` have no successor that takes the same body, so only `migration.fallback` is set.
 
 ### Critical-path wait chain
 

@@ -579,6 +579,16 @@ Node/Docker/PaaS 兼容 fallback。Perfetto UI 端口使用
 域名或反向代理）时才显式设置 `FRONTEND_URL`。浏览器无法安全推导后端地址时，显式设置
 `SMARTPERFETTO_BACKEND_PUBLIC_URL`。
 
+后端接受的浏览器 Origin 默认是本机 `localhost` / `127.0.0.1` 上的前端端口（以及
+8080、5173、5174 开发端口）加上 `FRONTEND_URL`；`CORS_ORIGINS`（逗号分隔）会整体
+替换这份列表。Trace Processor WebSocket 由 Session Cookie、可信 SSO Header 或本地
+免密身份认证时，同样只接受这些 Origin，其他页面（包括同站的兄弟子域名或本机其他端口）
+发起的连接返回 403。Session Cookie 认证的连接还必须带 Origin。由页面自己持有的凭据
+（企业 API Key、Bearer Session Token、Trace Processor 能力协议）认证的连接不检查
+Origin；但请求带着 Session Cookie 且没有 `Authorization: Bearer` 头时（例如 Cookie
+加能力协议），按 Cookie 的规则检查。反向代理不能剥掉浏览器
+的 `Origin` 头，否则可信 SSO Header 模式下的这层检查不生效。
+
 URL Trace 下载默认拒绝所有私有、保留和 RFC 2544 `198.18.0.0/15` 地址。若本机
 TUN 代理把可信公网域名解析为 fake-IP，部署管理员可以通过
 `SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS` 以逗号分隔精确主机名；不要配置
@@ -627,6 +637,17 @@ FRONTEND_URL=https://smartperfetto.example.com
 字节，不能复用 OIDC Client Secret。Session 固定为 8 小时、`SameSite=Lax`，Secure
 Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email profile`。
 
+无论哪种认证模式，服务端签名（浏览器 Session、Trace Processor WebSocket 凭证、外部问题
+复核证明，OIDC 下还有 Provider 密钥库的加密 key）都从同一个根按用途派生：依次检查
+`SMARTPERFETTO_TP_PROXY_CAPABILITY_SECRET`（只用于 WebSocket 凭证）、
+`SMARTPERFETTO_SERVER_SECRET`、`SMARTPERFETTO_SSO_COOKIE_SECRET` 和
+`SMARTPERFETTO_API_KEY`，取第一个去掉首尾空白后足够长的值（按 UTF-8 字节计，WebSocket
+凭证和密钥库要求 32 字节，其余 16 字节），更短的值会被跳过。OIDC 模式例外：启动时第一个
+非空的 `SMARTPERFETTO_SERVER_SECRET` / `SMARTPERFETTO_SSO_COOKIE_SECRET` 不足 32 字节就
+拒绝启动，而不是跳过。企业模式下找不到可用值时拒绝签发；其他模式退回进程内随机根，重启后
+Session、WebSocket 凭证和复核证明都会失效。建议始终设置至少 32 字节的
+`SMARTPERFETTO_SERVER_SECRET`，这样所有用途共用同一个根。
+
 使用 `./start.sh` 或 `./scripts/start-dev.sh` 做本地分端口联调时，只设置
 `SMARTPERFETTO_FRONTEND_PORT` 即可，脚本会生成对应的 `FRONTEND_URL`。上面的
 `FRONTEND_URL` 是域名/反向代理部署示例，不需要和本地端口重复填写。
@@ -634,13 +655,16 @@ Cookie 根据 HTTPS 地址自动启用，OIDC Scope 固定为 `openid email prof
 同一个 Issuer 下，每个 OIDC Subject 只创建一个由后端管理的个人工作区。不同用户的
 工作区显示名称可以相同，但内部 User ID、Workspace ID、成员关系和所有数据范围都不同；
 OIDC 前端不会允许用户修改工作区、后端地址或 API Key。租户 ID 只由标准化 Issuer
-稳定派生，不接受用户 Claim 覆盖。内置 OIDC 不能和
-`SMARTPERFETTO_SSO_TRUSTED_HEADERS=true` 或旧的 `SMARTPERFETTO_API_KEY` 同时启用。
+稳定派生，不接受用户 Claim 覆盖。内置 OIDC 不能和启用的
+`SMARTPERFETTO_SSO_TRUSTED_HEADERS`（`true`、`1`、`yes`、`on`、`enabled` 任一值）
+或旧的 `SMARTPERFETTO_API_KEY` 同时启用；OIDC 下 HTTP 请求和 Trace Processor
+WebSocket 都不接受可信 SSO Header 或企业 API Key。
 OIDC 会自动使用数据库作为分区数据的唯一读写来源，不需要再配置企业迁移阶段，也不允许
 回退到会忽略用户范围的 `legacy` 或 `dual-write` 模式。
 
 生产模式默认要求 Issuer、回调和前端 URL 全部使用 HTTPS，并使用 Secure Cookie。
-只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`；该开关会
+只有受控联调环境才能显式设置 `SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP=true`（`true`、`1`、
+`yes`、`on`、`enabled` 任一值，与其他开关相同）；该开关会
 允许明文 HTTP 并默认关闭 Secure Cookie，不能用于不可信网络。`FRONTEND_URL` 必须是
 浏览器实际访问的前端 Origin，不能填写容器内部地址。前端 URL 与 OIDC 回调必须使用相同
 协议和主机，端口可以不同；前端默认直接从回调地址的 Origin 推导后端地址，不需要再填写
@@ -662,6 +686,9 @@ TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 `${UPLOAD_DIR}/traces`；上传接口、元数据和后端重启后按 traceId 重新加载 trace 都使用这同一个目录。
 `SMARTPERFETTO_TRACE_UPLOAD_DIR` 只在需要把 trace 目录单独放到别处时设置，它会同时覆盖上述三处
 （npm CLI 用它把 trace 副本放在自己的 home 下）。
+
+后端不会把上传目录作为静态文件对外提供。trace 文件只能通过经过鉴权和归属检查的 trace 下载接口获取
+（`GET /api/traces/:id/file` 或其 workspace 作用域形式）。
 
 默认不需要手动设置 `TRACE_PROCESSOR_PATH`。普通 `./start.sh` 和开发模式 `./scripts/start-dev.sh` 都优先使用经过固定 SHA256 校验的 prebuilt。显式的 `TRACE_PROCESSOR_PATH` 是用户拥有的覆盖路径：启动和 backend `predev` 只检查文件存在、可执行以及 `--version`，不会改权限、按固定 SHA 替换或向该路径下载。
 

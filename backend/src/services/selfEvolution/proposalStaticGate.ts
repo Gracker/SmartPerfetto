@@ -110,7 +110,7 @@ export async function validateProposalStatic(input: {
       errors.add('static_skill_yaml_invalid');
     } else {
       const existing = input.options.skillSnapshot?.definitions ?? [];
-      collectSkillValidation([...existing, parsed], errors, warnings);
+      collectSkillValidation([...existing, parsed], errors, warnings, [parsed.name]);
     }
   } else if (
     proposal.kind === 'skill_overlay_delta'
@@ -146,10 +146,12 @@ export async function validateProposalStatic(input: {
           candidateComposition,
           snapshot,
         );
+        const target = (JSON.parse(candidate.serializedContent) as {baseSkillId?: unknown}).baseSkillId;
         collectSkillValidation(
           candidateComposition.skills,
           errors,
           warnings,
+          typeof target === 'string' ? [target] : [],
         );
       }
     }
@@ -385,13 +387,26 @@ function skillRegistryFingerprint(
   }).registryFingerprint;
 }
 
+/**
+ * Validates the composed registry. A saved-result read the candidate did not
+ * write is not this proposal's to fix (a published overlay or pack may predate
+ * the rule), so it is a warning everywhere but in the Skills the candidate
+ * defines or changes.
+ */
 function collectSkillValidation(
   definitions: readonly SkillDefinition[],
   errors: Set<string>,
   warnings: Set<string>,
+  candidateSkillIds: readonly string[] = [],
 ): void {
-  const validation = validateSkillDefinitionsInProcess({definitions});
-  for (const issue of validation.issues) {
+  const issues = [
+    ...validateSkillDefinitionsInProcess({definitions, resultPathReadSeverity: 'warning'}).issues,
+    ...(candidateSkillIds.length > 0
+      ? validateSkillDefinitionsInProcess({definitions, affectedSkillIds: candidateSkillIds}).issues
+        .filter(issue => issue.code === 'result_path_read_undecided')
+      : []),
+  ];
+  for (const issue of issues) {
     if (issue.severity === 'error') errors.add(issue.code);
     else warnings.add(issue.code);
   }

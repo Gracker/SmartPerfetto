@@ -9,9 +9,11 @@ import type {
   NormalizedMetricValue,
   StandardComparisonMetricKey,
 } from '../../types/multiTraceComparison';
-import { STANDARD_COMPARISON_METRICS } from '../../types/multiTraceComparison';
+import { STANDARD_COMPARISON_METRICS, standardMetricDescribesApp } from '../../types/multiTraceComparison';
+import { outsideTargetScopeFields } from '../../types/identityContract';
 import type { SkillExecutionResult } from '../skillEngine/types';
 import type { BatchTraceMetricV1 } from './batchTraceTypes';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 interface ExtractBatchTraceMetricsInput {
   skillId: string;
@@ -121,7 +123,7 @@ function synthesizeRows(data: unknown): Record<string, unknown>[] {
       const columns = data.columns.filter((column): column is string => typeof column === 'string');
       return data.rows
         .filter((row): row is unknown[] => Array.isArray(row))
-        .map(row => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+        .map(row => rowObject(columns, row));
     }
     return [data];
   }
@@ -165,7 +167,7 @@ function payloadRows(payload: DataPayload): Array<Record<string, unknown>> {
   if (columns.length === 0 || rows.length === 0) return [];
   return rows
     .filter((row): row is unknown[] => Array.isArray(row))
-    .map(row => Object.fromEntries(columns.map((column, index) => [column, row[index]])));
+    .map(row => rowObject(columns, row));
 }
 
 function columnLabel(envelope: DataEnvelope, column: string): string {
@@ -181,12 +183,17 @@ function extractFromDataEnvelopes(input: ExtractBatchTraceMetricsInput): BatchTr
     if (layer !== 'overview' && level !== 'key') continue;
     const stepId = envelope.meta.stepId;
     const rows = payloadRows(envelope.data);
+    // A field declared trace-wide or peer stays a local metric, never an app standard metric.
+    const outsideTarget = outsideTargetScopeFields(envelope.meta.scopeProvenance);
     rows.forEach((row, rowIndex) => {
       for (const [column, value] of Object.entries(row)) {
         const numericValue = toFiniteNumber(value);
         const contextNames = [input.skillId, envelope.meta.source, stepId, envelope.display.title]
           .filter((name): name is string => typeof name === 'string');
-        const standardKey = standardKeyForName(column, contextNames);
+        const namedKey = standardKeyForName(column, contextNames);
+        const definition = namedKey && STANDARD_METRIC_DEFINITIONS.get(namedKey);
+        const standardKey = definition && standardMetricDescribesApp(definition) && outsideTarget(column)
+          ? undefined : namedKey;
         const canKeepString = typeof value === 'string' && standardKey !== undefined;
         if (numericValue === undefined && !canKeepString) continue;
         const normalized = normalizeMetricName(column);

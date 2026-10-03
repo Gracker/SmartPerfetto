@@ -9,6 +9,8 @@
  * 遵循 12-factor app 原则
  */
 
+import { parseFlagValue } from '../utils/envFlag';
+
 // =============================================================================
 // Helper Functions
 // =============================================================================
@@ -45,11 +47,7 @@ function parseBoolEnv(key: string, defaultValue: boolean, env: NodeJS.ProcessEnv
 }
 
 function parseFeatureFlag(value: string | undefined, defaultValue: boolean = false): boolean {
-  if (!value) return defaultValue;
-  const normalized = value.trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on', 'enabled'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off', 'disabled'].includes(normalized)) return false;
-  return defaultValue;
+  return parseFlagValue(value) ?? defaultValue;
 }
 
 // =============================================================================
@@ -59,6 +57,8 @@ function parseFeatureFlag(value: string | undefined, defaultValue: boolean = fal
 export const ENTERPRISE_FEATURE_FLAG_ENV = 'SMARTPERFETTO_ENTERPRISE';
 export const SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV = 'SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP';
 export const SMARTPERFETTO_SERVER_SECRET_ENV = 'SMARTPERFETTO_SERVER_SECRET';
+const SMARTPERFETTO_SSO_COOKIE_SECRET_ENV = 'SMARTPERFETTO_SSO_COOKIE_SECRET';
+export const SMARTPERFETTO_API_KEY_ENV = 'SMARTPERFETTO_API_KEY';
 export const SMARTPERFETTO_BACKEND_PORT_ENV = 'SMARTPERFETTO_BACKEND_PORT';
 export const SMARTPERFETTO_FRONTEND_PORT_ENV = 'SMARTPERFETTO_FRONTEND_PORT';
 export const SMARTPERFETTO_BACKEND_PUBLIC_PORT_ENV = 'SMARTPERFETTO_BACKEND_PUBLIC_PORT';
@@ -86,19 +86,83 @@ export interface AuthConfig {
   allowInsecureHttp: boolean;
 }
 
-const OIDC_CONFIG_ENV_KEYS = [
-  'SMARTPERFETTO_OIDC_ISSUER_URL',
-  'SMARTPERFETTO_OIDC_CLIENT_ID',
-  'SMARTPERFETTO_OIDC_CLIENT_SECRET',
-  'SMARTPERFETTO_OIDC_REDIRECT_URI',
-] as const;
+const OIDC_ENV = {
+  issuerUrl: 'SMARTPERFETTO_OIDC_ISSUER_URL',
+  clientId: 'SMARTPERFETTO_OIDC_CLIENT_ID',
+  clientSecret: 'SMARTPERFETTO_OIDC_CLIENT_SECRET',
+  redirectUri: 'SMARTPERFETTO_OIDC_REDIRECT_URI',
+} as const;
 
-function hasConfiguredValue(value: string | undefined): boolean {
-  return typeof value === 'string' && value.trim().length > 0;
+export type OidcEnvValues = Partial<Record<keyof typeof OIDC_ENV, string>>;
+
+/**
+ * The built-in OIDC values, each trimmed; an empty value is absent. The
+ * startup guard, the OIDC client and the callback cookie path all read OIDC
+ * configuration through this one function.
+ */
+export function readOidcEnv(env: NodeJS.ProcessEnv = process.env): OidcEnvValues {
+  const values: OidcEnvValues = {};
+  for (const [field, key] of Object.entries(OIDC_ENV) as Array<[keyof typeof OIDC_ENV, string]>) {
+    const value = env[key]?.trim();
+    if (value) values[field] = value;
+  }
+  return values;
+}
+
+/** The env keys a server secret root is chosen from, in priority order. */
+export function serverSecretCandidateKeys(preferredEnvKeys: readonly string[] = []): string[] {
+  return [
+    ...preferredEnvKeys,
+    SMARTPERFETTO_SERVER_SECRET_ENV,
+    SMARTPERFETTO_SSO_COOKIE_SECRET_ENV,
+    SMARTPERFETTO_API_KEY_ENV,
+  ];
+}
+
+/**
+ * Picks the root secret every server-side signing purpose derives from: the
+ * first candidate whose trimmed value has at least `minimumBytes` UTF-8 bytes.
+ * Shorter values are skipped. Signing and the OIDC startup guard both choose
+ * the root through this function.
+ */
+export function selectServerSecretRoot(
+  env: NodeJS.ProcessEnv,
+  options: {preferredEnvKeys?: readonly string[]; minimumBytes: number},
+): string | undefined {
+  return serverSecretCandidateKeys(options.preferredEnvKeys)
+    .map(key => env[key]?.trim())
+    .find((value): value is string =>
+      typeof value === 'string' && Buffer.byteLength(value, 'utf8') >= options.minimumBytes);
+}
+
+/**
+ * Whether request headers from a trusted SSO proxy carry identity. The OIDC
+ * startup guard and request authentication must read the flag identically.
+ */
+export function isSsoTrustedHeadersEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseFeatureFlag(env.SMARTPERFETTO_SSO_TRUSTED_HEADERS);
+}
+
+/**
+ * Whether built-in OIDC may use plaintext HTTP. The startup guard and the OIDC
+ * client must read the flag identically: a spelling only one of them honoured
+ * would let the client accept insecure discovery endpoints the guard refused.
+ */
+export function isOidcInsecureHttpAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return parseFeatureFlag(env[SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV]);
+}
+
+/**
+ * Whether the operator API key is set. Any non-empty value counts, even one
+ * that is only whitespace: the authenticator then demands that exact key, so
+ * auth mode and startup checks must not treat it as absent.
+ */
+export function isOperatorApiKeyConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env[SMARTPERFETTO_API_KEY_ENV]);
 }
 
 export function isOidcConfigurationPresent(env: NodeJS.ProcessEnv = process.env): boolean {
-  return OIDC_CONFIG_ENV_KEYS.some(key => hasConfiguredValue(env[key]));
+  return Object.keys(readOidcEnv(env)).length > 0;
 }
 
 /**
@@ -106,47 +170,56 @@ export function isOidcConfigurationPresent(env: NodeJS.ProcessEnv = process.env)
  * value enables OIDC, while a partial configuration fails closed.
  */
 export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
-  const oidcConfigured = isOidcConfigurationPresent(env);
+  const oidc = readOidcEnv(env);
+  const oidcConfigured = Object.keys(oidc).length > 0;
   const mode: SmartPerfettoAuthMode = oidcConfigured
     ? 'oidc'
-    : hasConfiguredValue(env.SMARTPERFETTO_API_KEY) ? 'api_key' : 'local';
-  const allowInsecureHttp = mode === 'oidc'
-    && parseBoolEnv(SMARTPERFETTO_OIDC_ALLOW_INSECURE_HTTP_ENV, false, env);
+    : isOperatorApiKeyConfigured(env) ? 'api_key' : 'local';
+  const allowInsecureHttp = mode === 'oidc' && isOidcInsecureHttpAllowed(env);
 
   if (mode === 'oidc') {
-    const missing = OIDC_CONFIG_ENV_KEYS.filter(key => !hasConfiguredValue(env[key]));
+    const missing = (Object.keys(OIDC_ENV) as Array<keyof typeof OIDC_ENV>)
+      .filter(field => !oidc[field])
+      .map(field => OIDC_ENV[field]);
     if (missing.length > 0) {
       throw new Error(
         `OIDC mode requires ${missing.join(', ')}; refusing to start with a partial OIDC configuration`,
       );
     }
-    if (!hasConfiguredValue(env.FRONTEND_URL)) {
+    if (!env.FRONTEND_URL?.trim()) {
       throw new Error('OIDC mode requires FRONTEND_URL for the post-login redirect');
     }
-    if (hasConfiguredValue(env.SMARTPERFETTO_API_KEY)) {
+    if (isOperatorApiKeyConfigured(env)) {
       throw new Error('OIDC mode cannot be combined with SMARTPERFETTO_API_KEY');
     }
-    const serverSecret = env[SMARTPERFETTO_SERVER_SECRET_ENV]?.trim()
-      || env.SMARTPERFETTO_SSO_COOKIE_SECRET?.trim();
+    // The root signing will pick, with no length floor: a dedicated secret
+    // that is set but too short is an operator error here, not a value to
+    // skip. The API key cannot be the candidate, it was rejected above.
+    const serverSecret = selectServerSecretRoot(env, {minimumBytes: 1});
     if (!serverSecret || Buffer.byteLength(serverSecret, 'utf8') < 32) {
       throw new Error(
         `OIDC mode requires ${SMARTPERFETTO_SERVER_SECRET_ENV} (at least 32 bytes)`,
       );
     }
-    if (parseBoolEnv('SMARTPERFETTO_SSO_TRUSTED_HEADERS', false, env)) {
+    if (isSsoTrustedHeadersEnabled(env)) {
       throw new Error('OIDC mode cannot be combined with SMARTPERFETTO_SSO_TRUSTED_HEADERS');
     }
+    const urlInputs = {
+      [OIDC_ENV.issuerUrl]: oidc.issuerUrl!,
+      [OIDC_ENV.redirectUri]: oidc.redirectUri!,
+      FRONTEND_URL: env.FRONTEND_URL!,
+    };
     const urls = new Map<string, URL>();
-    for (const key of ['SMARTPERFETTO_OIDC_ISSUER_URL', 'SMARTPERFETTO_OIDC_REDIRECT_URI', 'FRONTEND_URL'] as const) {
+    for (const [key, value] of Object.entries(urlInputs)) {
       try {
-        const url = new URL(env[key]!);
+        const url = new URL(value);
         if (url.protocol !== 'http:' && url.protocol !== 'https:') {
           throw new Error('http_required');
         }
         if (url.username || url.password || url.hash) {
           throw new Error('credentials_or_fragment_not_allowed');
         }
-        if (key !== 'SMARTPERFETTO_OIDC_REDIRECT_URI' && url.search) {
+        if (key !== OIDC_ENV.redirectUri && url.search) {
           throw new Error('query_not_allowed');
         }
         if (url.protocol !== 'https:' && !allowInsecureHttp) {
@@ -160,7 +233,7 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthCon
         throw new Error(`${key} must be an ${suffix} in OIDC mode`);
       }
     }
-    const redirectUrl = urls.get('SMARTPERFETTO_OIDC_REDIRECT_URI')!;
+    const redirectUrl = urls.get(OIDC_ENV.redirectUri)!;
     const frontendUrl = urls.get('FRONTEND_URL')!;
     if (redirectUrl.search || !redirectUrl.pathname.endsWith('/api/auth/oidc/callback')) {
       throw new Error(
@@ -220,7 +293,7 @@ export function resolveAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthCon
   }
 
   const cookieSecure = mode === 'oidc'
-    && new URL(env.SMARTPERFETTO_OIDC_REDIRECT_URI!).protocol === 'https:';
+    && new URL(oidc.redirectUri!).protocol === 'https:';
 
   return {
     mode,
@@ -235,6 +308,16 @@ export function resolveFeatureConfig(env: NodeJS.ProcessEnv = process.env): Feat
     enterprise: parseFeatureFlag(env[ENTERPRISE_FEATURE_FLAG_ENV], false)
       || resolveAuthConfig(env).oidcEnabled,
   };
+}
+
+/**
+ * Whether the API runs without authentication, so an unauthenticated request
+ * acts as the local dev identity: no operator API key and not enterprise mode
+ * (which built-in OIDC implies). Request and WebSocket authentication, the
+ * local Host guard and the health report all read this one predicate.
+ */
+export function isKeylessLocalMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  return !isOperatorApiKeyConfigured(env) && !resolveFeatureConfig(env).enterprise;
 }
 
 export const featureConfig = resolveFeatureConfig();

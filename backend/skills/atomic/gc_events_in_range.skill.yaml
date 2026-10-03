@@ -112,7 +112,5 @@ sql: |
     AND (${end_ts} IS NULL OR gc_ts < ${end_ts})
   ORDER BY gc_ts
 
-save_as: gc_events
-
 output:
   format: structured

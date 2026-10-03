@@ -57,7 +57,7 @@ final_report_contract:
 phase_hints:
   - id: freeze_verdict
     keywords: ['verdict', '判定', 'freeze', 'diagnosis', '诊断', '原因', 'anr_analysis', '系统', 'system']
-    constraints: '有 ANR 窗口时先读 freeze_verdict：system freeze → 系统原因排查；app_specific → App 根因决策树。无 ANR 窗口或 verdict 不可得时继续无锚点主线程调查，并保留系统健康证据缺口。'
+    constraints: '有 ANR 窗口时先读 freeze_verdict：system freeze → 系统原因排查；app_specific → App 根因决策树；undetermined（窗口内无可评估主线程）或 verdict 不可得时继续 App 决策树与无锚点主线程调查，保留系统健康证据缺口，既不排除也不断言系统冻结。'
     critical_tools: ['anr_analysis']
     critical: true
   - id: anr_diagnostic_api_boundary
@@ -91,7 +91,7 @@ plan_template:
 - anr_root_cause: ANR 场景建议包含 ANR 原因定位阶段 (anr_analysis) (required: invoke_skill(anr_analysis))
 
 **Phase reminders**
-- freeze_verdict: 有 ANR 窗口时先读 freeze_verdict：system freeze → 系统原因排查；app_specific → App 根因决策树。无 ANR 窗口或 verdict 不可得时继续无锚点主线程调查，并保留系统健康证据缺口。 工具: anr_analysis
+- freeze_verdict: 有 ANR 窗口时先读 freeze_verdict：system freeze → 系统原因排查；app_specific → App 根因决策树；undetermined（窗口内无可评估主线程）或 verdict 不可得时继续 App 决策树与无锚点主线程调查，保留系统健康证据缺口，既不排除也不断言系统冻结。 工具: anr_analysis
 - anr_diagnostic_api_boundary: ApplicationExitInfo、ProfilingTrigger 产物、Play/Android Vitals、客户端 watchdog 都只能补充 ANR 证据。必须说明 API/Android 版本、reason/trigger type、record/artifact 时间、事件窗口对齐；根因仍需 Perfetto ANR window、direct_blocker、logcat、Binder/lock/IO/GC/scheduler 证据闭环。 工具: anr_analysis, lookup_knowledge
 
 **无 ANR 锚点仍须调查无响应**
@@ -180,15 +180,16 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 | freeze_verdict | 含义 | 后续分析方向 |
 |---------------|------|-------------|
 | `system_server_freeze` | system_server 冻结（running_pct < 5%） | **系统级问题**：system_server watchdog、kernel panic、硬件故障。报告为系统问题，不是 App Bug |
-| `system_freeze` | 多数应用冻结（frozen_pct > 70%）但 system_server 未冻结 | **系统级问题**：可能是 CPU 饥饿（thermal throttling、后台负载）、内存压力（大量 LMK）、IO 风暴。交叉检查 `cpu_health` 和 `memory_pressure` |
+| `system_freeze` | 多数应用冻结（frozen_pct > 50%）但 system_server 未冻结 | **系统级问题**：可能是 CPU 饥饿（后台负载；频率上限只是候选，是否限频以 `cpu_throttling_in_range` 的限频证据为准）、内存压力（大量 LMK）、IO 风暴。交叉检查 `cpu_health` 和 `memory_pressure` |
 | `app_specific` | 仅目标应用受影响 | **应用级问题**：进入 Phase 3 详细分析主线程阻塞原因 |
+| `undetermined` | ANR 窗口内没有可评估的应用主线程 | **系统/应用未判定**：不能仅凭 freeze_check 判定为 App 问题或系统冻结；进入 Phase 3，由逐 ANR 证据闭环定因，结论中保留系统健康证据缺口 |
 
 **当 `freeze_verdict = system_server_freeze` 或 `system_freeze` 时：**
 - 如果 `detection.total_anr_count === 1`：可报告为系统级问题，不要深入推测 App 代码；交叉检查 `cpu_health`、`memory_pressure`、`io_load` 和系统侧日志后到 Phase 4 输出
 - 如果 `detection.total_anr_count > 1`：`freeze_check` 只代表首个 ANR 窗口 baseline context，不能直接推广到全部 ANR。必须继续读取逐 ANR `direct_blocker_candidates`、`direct_blocker_slice_candidates`、`logcat_event_context` 和 `app_freeze_check`，逐事件确认是否同属系统冻结链路
 - 多 ANR 只有在每个关键事件窗口都有系统侧线程/日志/资源压力证据闭环时，才能升级为整体系统根因；否则按事件分别输出系统背景 + App/对端候选
 
-**Phase 3 — App 级根因诊断决策树（当 freeze_verdict = app_specific）：**
+**Phase 3 — App 级根因诊断决策树（当 freeze_verdict = app_specific；为 undetermined 或缺少 freeze_check 时也进入，但不排除系统冻结）：**
 
 ### 第一步：看四象限分布（来自 anr_detail 的 `quadrant`）
 
@@ -295,7 +296,7 @@ fetch_artifact(artifactId, detail="rows", offset=0, limit=50)
 4. **优化建议**：
    - 按影响面排序
    - 区分系统侧 vs 应用侧建议
-   - 系统冻屏：建议检查 system_server watchdog、thermal、内存压力
+   - 系统冻屏：建议检查 system_server watchdog、CPU 限频证据、内存压力
    - 应用锁等待：建议减少 synchronized 范围、使用异步 Binder
    - 应用 IO/page-cache 候选：先补齐 io_wait/blocked_function 与文件/数据库/Provider 证据，再建议将同步 IO 移到后台线程
    - CPU 饥饿：建议检查后台进程、调整线程优先级

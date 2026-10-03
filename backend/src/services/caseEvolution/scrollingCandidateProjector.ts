@@ -5,6 +5,7 @@
 import type { CaseKnowledgeResponsibility } from '../../types/caseKnowledge';
 import type { DataEnvelope } from '../../types/dataContract';
 import { dataEnvelopeRefId } from './dataEnvelopeRef';
+import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 export interface CaseCandidateCluster {
   scene: string;
@@ -65,12 +66,7 @@ function countEvidenceRefIds(dataEnvelopes: DataEnvelope[]): Map<string, number>
 }
 
 function rowToRecord(columns: string[], row: unknown): Record<string, unknown> {
-  const values = Array.isArray(row) ? row : [];
-  const record: Record<string, unknown> = {};
-  columns.forEach((column, index) => {
-    record[column] = values[index];
-  });
-  return record;
+  return rowObject(columns, Array.isArray(row) ? row : []);
 }
 
 function toNumber(value: unknown): number {

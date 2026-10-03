@@ -368,6 +368,7 @@ function assertPlainDataTree(value: unknown, active = new Set<object>()): void {
     } else if (!isPlainObjectPrototype(prototype)) {
       throw new Error('analysis_evidence_non_plain_object');
     }
+    rejectOwnProtoKey(value);
     for (const key of Object.keys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
       if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) {
@@ -403,6 +404,7 @@ function prepareWriterTree(value: unknown, active = new Set<object>(), dynamicRe
     if (Object.getOwnPropertyNames(value).length !== Object.keys(value).length) {
       throw new Error('analysis_evidence_hidden_property');
     }
+    rejectOwnProtoKey(value);
     const output: Record<string, unknown> = {};
     for (const key of Object.keys(value)) {
       const descriptor = Object.getOwnPropertyDescriptor(value, key);
@@ -423,6 +425,15 @@ function prepareWriterTree(value: unknown, active = new Set<object>(), dynamicRe
   } finally {
     active.delete(value);
   }
+}
+
+/**
+ * JSON.parse and js-yaml keep `__proto__` as an own key, but zod skips it in
+ * every object and record schema (strictObject included, without an issue), so
+ * a parsed presentation would silently differ from the claim it displays.
+ */
+function rejectOwnProtoKey(value: object): void {
+  if (Object.prototype.hasOwnProperty.call(value, '__proto__')) throw new Error('analysis_evidence_proto_key');
 }
 
 function deepFreeze<T>(value: T): T {

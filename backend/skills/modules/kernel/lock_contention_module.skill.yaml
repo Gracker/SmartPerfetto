@@ -287,7 +287,7 @@ steps:
   - id: lock_diagnosis
     type: diagnostic
     name: "锁竞争诊断"
-    inputs: [lock_overview, monitor_contention, blocked_threads, main_thread_locks]
+    inputs: [lock_overview, monitor_contention, blocked_threads, main_thread_locks, thread_contention_pairs]
     rules:
       - condition: "main_thread_locks.data.length > 0"
         diagnosis: "主线程检测到 ${main_thread_locks.data.length} 次锁等待，最长 ${main_thread_locks.data[0]?.wait_ms}ms"

@@ -10,8 +10,8 @@
     "skillCount": 252,
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
-    "stepCount": 1367,
-    "explicitColumnCount": 5084
+    "stepCount": 1368,
+    "explicitColumnCount": 5103
   },
   "skills": {
     "ams_module": {
@@ -3789,6 +3789,12 @@
               "label": {
                 "zh-CN": "UnknownRunningms",
                 "en": "unknown_running_ms"
+              }
+            },
+            "unknown_running_ns": {
+              "label": {
+                "zh-CN": "UnknownRunningns",
+                "en": "unknown_running_ns"
               }
             },
             "uninterruptible_ms": {
@@ -9340,6 +9346,24 @@
                 "zh-CN": "核判定来源",
                 "en": "Classify Method"
               }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核运行(ns)",
+                "en": "Unknown Core ns"
+              }
+            },
+            "main_thread_count": {
+              "label": {
+                "zh-CN": "主线程数",
+                "en": "Main Thread Count"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核占比口径",
+                "en": "Big Core Pct Definition"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -14090,7 +14114,7 @@
         "en": "CPU Module"
       },
       "description": {
-        "zh-CN": "分析 CPU 频率、热节流和电源状态",
+        "zh-CN": "分析 CPU 频率、频率变化和电源状态",
         "en": "Analyzes CPU Module using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -14338,12 +14362,6 @@
               "label": {
                 "zh-CN": "未知核类型运行时间",
                 "en": "Unknown Core ms"
-              }
-            },
-            "big_core_pct_definition": {
-              "label": {
-                "zh-CN": "大核组口径",
-                "en": "Big Core Pct Definition"
               }
             }
           },
@@ -15005,7 +15023,7 @@
         "en": "CPU Throttling In Range"
       },
       "description": {
-        "zh-CN": "观测 CPU 频率变化；频率跨度不能独立证明热控限频",
+        "zh-CN": "观测 CPU 频率变化与 cpufreq 频率上限；频率跨度不能独立证明限频，限频本身也不说明是否由温控触发",
         "en": "Analyzes CPU Throttling In Range using trace metrics and supporting evidence."
       },
       "type": "composite",
@@ -15117,7 +15135,7 @@
         },
         "throttle_detection": {
           "title": {
-            "zh-CN": "热控限频",
+            "zh-CN": "CPU 限频",
             "en": "Throttle Detection"
           },
           "columns": {
@@ -15165,7 +15183,7 @@
             },
             "evidence_status": {
               "label": {
-                "zh-CN": "热原因证据",
+                "zh-CN": "限频证据状态",
                 "en": "Evidence Status"
               }
             },
@@ -15177,7 +15195,7 @@
             },
             "throttle_detected": {
               "label": {
-                "zh-CN": "已核验热控限频",
+                "zh-CN": "已观测 CPU 限频",
                 "en": "Throttle Detected"
               }
             }
@@ -19763,7 +19781,7 @@
         "en": "GPU Frequency Analysis"
       },
       "description": {
-        "zh-CN": "分析 GPU 频率变化和 thermal throttling",
+        "zh-CN": "分析 GPU 频率变化（不采集 GPU 频率上限证据，不判定限频或温控）",
         "en": "Analyzes GPU Frequency Analysis using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -22884,6 +22902,18 @@
               "label": {
                 "zh-CN": "RenderThread 限频 policy",
                 "en": "Rt Freq Limit Policy CPU"
+              }
+            },
+            "ramp_to_high_ms": {
+              "label": {
+                "zh-CN": "大核升频延迟",
+                "en": "Ramp To High ms"
+              }
+            },
+            "freq_ramp_evidence": {
+              "label": {
+                "zh-CN": "大核升频观测",
+                "en": "Freq Ramp Evidence"
               }
             }
           },
@@ -34239,6 +34269,12 @@
                 "en": "Ramp ms"
               }
             },
+            "freq_ramp_evidence": {
+              "label": {
+                "zh-CN": "大核升频观测",
+                "en": "Freq Ramp Evidence"
+              }
+            },
             "top_slice_little_pct": {
               "label": {
                 "zh-CN": "小核占比%",
@@ -34724,6 +34760,63 @@
             "en": "Frame Timeline Check"
           },
           "columns": {},
+          "synthesizeLabels": {}
+        },
+        "frame_timeline_population": {
+          "title": {
+            "zh-CN": "整个 Trace · 所有进程 · FrameTimeline 原始标签",
+            "en": "Whole trace · all processes · raw FrameTimeline tags (jank tags include Buffer Stuffing)"
+          },
+          "columns": {
+            "total_frames": {
+              "label": {
+                "zh-CN": "FrameTimeline 帧数（全部进程）",
+                "en": "Total Frames"
+              }
+            },
+            "jank_frames": {
+              "label": {
+                "zh-CN": "带 jank 标签的帧（含 Buffer Stuffing，非感知掉帧）",
+                "en": "Jank Frames"
+              }
+            },
+            "process_count": {
+              "label": {
+                "zh-CN": "有帧的进程数",
+                "en": "Process Count"
+              }
+            },
+            "unattributed_frames": {
+              "label": {
+                "zh-CN": "无进程归属的帧",
+                "en": "Unattributed Frames"
+              }
+            },
+            "evidence_scope": {
+              "label": {
+                "zh-CN": "证据范围",
+                "en": "Evidence Scope"
+              }
+            },
+            "trace_start_ts": {
+              "label": {
+                "zh-CN": "Trace 起点",
+                "en": "Trace Start Ts"
+              }
+            },
+            "trace_end_ts": {
+              "label": {
+                "zh-CN": "Trace 终点",
+                "en": "Trace End Ts"
+              }
+            },
+            "frame_population_evidence": {
+              "label": {
+                "zh-CN": "证据状态",
+                "en": "Frame Population Evidence"
+              }
+            }
+          },
           "synthesizeLabels": {}
         },
         "frame_variance_probe": {
@@ -37982,6 +38075,12 @@
                 "en": "unknown_core_ms"
               }
             },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "UnknownCorens",
+                "en": "unknown_core_ns"
+              }
+            },
             "used_ucpus": {
               "label": {
                 "zh-CN": "UsedUcpus",
@@ -38506,6 +38605,24 @@
                 "zh-CN": "未知核类型占比",
                 "en": "Unknown Core Pct"
               }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "未知核运行(ns)",
+                "en": "Unknown Core ns"
+              }
+            },
+            "main_thread_count": {
+              "label": {
+                "zh-CN": "主线程数",
+                "en": "Main Thread Count"
+              }
+            },
+            "big_core_pct_definition": {
+              "label": {
+                "zh-CN": "大核占比口径",
+                "en": "Big Core Pct Definition"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -38583,6 +38700,12 @@
               "label": {
                 "zh-CN": "UnknownCorems",
                 "en": "unknown_core_ms"
+              }
+            },
+            "unknown_core_ns": {
+              "label": {
+                "zh-CN": "UnknownCorens",
+                "en": "unknown_core_ns"
               }
             },
             "used_ucpus": {
@@ -43895,7 +44018,7 @@
     },
     "thermal_predictor": {
       "displayName": {
-        "zh-CN": "热控风险预测",
+        "zh-CN": "CPU 频率趋势观察",
         "en": "Thermal Predictor"
       },
       "description": {
@@ -43914,7 +44037,7 @@
         },
         "root": {
           "title": {
-            "zh-CN": "热控风险预测",
+            "zh-CN": "CPU 频率趋势观察",
             "en": "Thermal Predictor"
           },
           "columns": {
@@ -44571,8 +44694,8 @@
         },
         "thermal_predictor_probe": {
           "title": {
-            "zh-CN": "热风险预测（专家探针）",
-            "en": "Thermal Predictor Probe"
+            "zh-CN": "CPU 频率趋势（专家探针）",
+            "en": "CPU frequency trend (expert probe)"
           },
           "columns": {
             "avg_start_freq_mhz": {

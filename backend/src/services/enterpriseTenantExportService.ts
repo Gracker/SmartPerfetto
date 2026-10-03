@@ -15,6 +15,7 @@ import {
   decodePrivateContextColumn,
   privateContextRestrictsAudience,
 } from './security/analysisPrivateContext';
+import { stableStringify } from '../utils/stableJson';
 
 type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
@@ -250,27 +251,8 @@ function sanitizeJson(value: unknown): JsonValue {
     return value;
   }
   if (typeof value !== 'object') return null;
-  const out: Record<string, JsonValue> = {};
-  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    out[key] = SENSITIVE_KEY_RE.test(key) ? '[redacted]' : sanitizeJson(child);
-  }
-  return out;
-}
-
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (!value || typeof value !== 'object') return value;
-  const input = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  for (const key of Object.keys(input).sort()) {
-    const child = input[key];
-    if (child !== undefined) out[key] = canonicalize(child);
-  }
-  return out;
-}
-
-export function stableStringify(value: unknown): string {
-  return JSON.stringify(canonicalize(value));
+  return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([key, child]) =>
+    [key, SENSITIVE_KEY_RE.test(key) ? '[redacted]' : sanitizeJson(child)]));
 }
 
 function sha256(value: string): string {

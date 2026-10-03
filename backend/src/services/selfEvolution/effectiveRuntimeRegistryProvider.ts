@@ -135,6 +135,7 @@ export class EffectiveRuntimeRegistryManager {
 }
 
 const reportedStrategyValidationWarnings = new Set<string>();
+const reportedSkillValidationWarnings = new Set<string>();
 
 export const effectiveRuntimeRegistryManager =
   new EffectiveRuntimeRegistryManager();
@@ -622,7 +623,19 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
       definitions: composition.skills,
       affectedSkillIds,
       fragmentCache: baseHandle.registry.getFragmentCache(),
+      // Published overlays may predate the rule; the proposal gate rejects it in the Skill a proposal changes.
+      resultPathReadSeverity: 'warning',
     });
+    for (const warning of validation.issues) {
+      if (warning.severity !== 'warning' || warning.code !== 'result_path_read_undecided') continue;
+      const line =
+        `[SelfEvolution] effective_skill_validation_warning:${warning.skillId}:`
+        + `${warning.code}:${warning.path}: ${warning.message}`;
+      // Snapshots are rebuilt per replay/reconcile; report each finding once.
+      if (reportedSkillValidationWarnings.has(line)) continue;
+      reportedSkillValidationWarnings.add(line);
+      console.warn(line);
+    }
     if (!validation.valid) {
       const firstIssue = validation.issues.find(issue =>
         issue.severity === 'error');

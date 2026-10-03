@@ -420,4 +420,25 @@ describe('CodebaseManagementService', () => {
       }),
     );
   });
+
+  it('treats only a typed not-found as already deleted, not any message that says so', async () => {
+    const ref = registerApp('Untyped Failure App');
+    const lease = jest.spyOn(registry, 'withIngestLease').mockImplementation(() => {
+      throw new Error('ENOENT: chunk file not found');
+    });
+    try {
+      await expect(service.delete(ref.codebaseId, DEFAULT_SCOPE)).rejects.toMatchObject({
+        code: 'CODEBASE_DELETE_FAILED',
+        status: 500,
+      });
+    } finally {
+      lease.mockRestore();
+    }
+  });
+
+  it('passes a typed selection rejection through with its text', async () => {
+    const ref = registerApp('Selection App');
+    await expect(service.updateSelection(ref.codebaseId, {pathFilters: ['/abs']}, DEFAULT_SCOPE))
+      .rejects.toMatchObject({code: 'CODEBASE_SELECTION_INVALID', status: 400, message: 'pathFilters[0] must be relative'});
+  });
 });

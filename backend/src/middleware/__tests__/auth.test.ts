@@ -2,14 +2,22 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { afterEach, describe, expect, it } from '@jest/globals';
+import { afterEach, describe, expect, it, jest } from '@jest/globals';
 import express from 'express';
+import fs from 'fs';
+import type { IncomingMessage } from 'http';
+import os from 'os';
+import path from 'path';
 import request from 'supertest';
 import {
   attachRequestContext,
   authenticate,
+  buildRequestContext,
+  resolveCredentialIdentity,
   type AuthenticatedRequest,
 } from '../auth';
+import { EnterpriseApiKeyService } from '../../services/enterpriseApiKeyService';
+import { openEnterpriseDb } from '../../services/enterpriseDb';
 
 const originalApiKey = process.env.SMARTPERFETTO_API_KEY;
 const originalEnterprise = process.env.SMARTPERFETTO_ENTERPRISE;
@@ -23,6 +31,18 @@ const oidcEnvKeys = [
 const originalOidcEnv = Object.fromEntries(
   oidcEnvKeys.map(key => [key, process.env[key]]),
 );
+
+function setOidcEnv(): void {
+  process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
+  process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
+  process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
+  process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
+    'https://app.example.test/api/auth/oidc/callback';
+}
+
+function headerRequest(headers: Record<string, string>): IncomingMessage {
+  return { headers } as unknown as IncomingMessage;
+}
 
 function makeProbeApp(middleware = authenticate): express.Express {
   const app = express();
@@ -194,11 +214,7 @@ describe('authenticate RequestContext', () => {
 
   it('does not allow the legacy static API key to bypass built-in OIDC', async () => {
     process.env.SMARTPERFETTO_API_KEY = 'test-secret';
-    process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
-    process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
-    process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
-    process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
-      'https://app.example.test/api/auth/oidc/callback';
+    setOidcEnv();
 
     const res = await request(makeProbeApp())
       .get('/probe')
@@ -215,11 +231,7 @@ describe('authenticate RequestContext', () => {
 
   it('treats a malformed OIDC session cookie as unauthorized instead of failing', async () => {
     delete process.env.SMARTPERFETTO_API_KEY;
-    process.env.SMARTPERFETTO_OIDC_ISSUER_URL = 'https://idp.example.test';
-    process.env.SMARTPERFETTO_OIDC_CLIENT_ID = 'client-a';
-    process.env.SMARTPERFETTO_OIDC_CLIENT_SECRET = 'client-secret-a';
-    process.env.SMARTPERFETTO_OIDC_REDIRECT_URI =
-      'https://app.example.test/api/auth/oidc/callback';
+    setOidcEnv();
 
     const res = await request(makeProbeApp())
       .get('/probe')
@@ -230,6 +242,106 @@ describe('authenticate RequestContext', () => {
       error: 'Unauthorized',
       details: 'OIDC session authentication is required',
     });
+  });
+
+  it.each(['true', 'yes', 'on'])(
+    'never trusts SSO identity headers under built-in OIDC (trusted headers=%s)',
+    async (value) => {
+      delete process.env.SMARTPERFETTO_API_KEY;
+      process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = value;
+      setOidcEnv();
+      const forged = {
+        'x-smartperfetto-sso-user-id': 'mallory',
+        'x-smartperfetto-sso-roles': 'org_admin',
+      };
+
+      // The shared resolver also serves the WebSocket upgrade, which has no
+      // outer OIDC check of its own.
+      expect(resolveCredentialIdentity(headerRequest(forged))).toEqual({ kind: 'none' });
+      const res = await request(makeProbeApp()).get('/probe').set(forged);
+      expect(res.status).toBe(401);
+      expect(res.body.details).toBe('OIDC session authentication is required');
+    },
+  );
+
+  it('does not accept an enterprise API key under built-in OIDC', () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    setOidcEnv();
+
+    expect(resolveCredentialIdentity(headerRequest({
+      authorization: 'Bearer spak_not-a-real-key',
+    }))).toEqual({ kind: 'none' });
+  });
+
+  it('rejects a present but unusable enterprise API key instead of falling back', () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-auth-'));
+    const db = openEnterpriseDb(path.join(tmpDir, 'enterprise.sqlite'));
+    EnterpriseApiKeyService.setInstanceForTests(new EnterpriseApiKeyService(db));
+    try {
+      expect(resolveCredentialIdentity(headerRequest({
+        authorization: 'Bearer spak_not-a-real-key',
+      }))).toEqual({ kind: 'rejected', details: 'Invalid or expired API key' });
+    } finally {
+      EnterpriseApiKeyService.resetForTests();
+      db.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('answers a failing credential lookup with fixed text and logs the cause', () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_ENTERPRISE = 'true';
+    const canary = 'canary-auth /srv/enterprise.sqlite SQLITE_CORRUPT';
+    EnterpriseApiKeyService.setInstanceForTests({
+      resolveRequestIdentityFromRequest: () => {
+        throw new Error(canary);
+      },
+    } as unknown as EnterpriseApiKeyService);
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      expect(resolveCredentialIdentity(headerRequest({
+        authorization: 'Bearer spak_not-a-real-key',
+      }))).toEqual({ kind: 'rejected', details: 'Invalid or expired API key' });
+      expect(errorLog.mock.calls.flat()).toContainEqual(new Error(canary));
+    } finally {
+      errorLog.mockRestore();
+      EnterpriseApiKeyService.resetForTests();
+    }
+  });
+
+  it('consults context fallbacks after the headers and before the defaults', () => {
+    const fallbacks = { tenantId: 'tenant-q', workspaceId: 'workspace-q', windowId: 'window-q' };
+
+    expect(buildRequestContext(headerRequest({}), { userId: 'u', authType: 'dev' }, fallbacks))
+      .toMatchObject({ tenantId: 'tenant-q', workspaceId: 'workspace-q', windowId: 'window-q' });
+    expect(buildRequestContext(headerRequest({
+      'x-tenant-id': 'tenant-h',
+      'x-workspace-id': 'workspace-h',
+      'x-window-id': 'window-h',
+    }), { userId: 'u', authType: 'sso' }, fallbacks))
+      .toMatchObject({ tenantId: 'tenant-h', workspaceId: 'workspace-h', windowId: 'window-h' });
+  });
+
+  it('never lets headers or fallbacks choose the workspace of an unbound API key', () => {
+    const context = buildRequestContext(
+      headerRequest({ 'x-workspace-id': 'workspace-h' }),
+      { userId: 'owner', authType: 'api_key', tenantId: 'tenant-a', roles: ['api_key'], scopes: ['trace:read'] },
+      { workspaceId: 'workspace-q' },
+    );
+
+    expect(context).toMatchObject({ tenantId: 'tenant-a', workspaceId: 'default-workspace' });
+  });
+
+  it('treats a malformed SSO session cookie as no session outside OIDC', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+
+    const res = await request(makeProbeApp())
+      .get('/probe')
+      .set('Cookie', 'sp_sso_session=%');
+
+    expect(res.status).toBe(200);
+    expect(res.body.requestContext).toMatchObject({ authType: 'dev' });
   });
 
   it('attachRequestContext keeps the same behavior as authenticate for route coverage', async () => {

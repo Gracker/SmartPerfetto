@@ -8642,7 +8642,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::rendering-jank",
             "assertions": [
@@ -9002,6 +9004,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -9031,6 +9034,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -9053,6 +9057,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -9112,6 +9117,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -12618,6 +12624,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -12647,6 +12654,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -12669,6 +12677,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -12728,6 +12737,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -12841,6 +12851,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -12870,6 +12881,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -12892,6 +12904,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -12951,6 +12964,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13054,6 +13068,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13083,6 +13098,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13105,6 +13121,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13164,6 +13181,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13272,6 +13290,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13301,6 +13320,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13323,6 +13343,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13382,6 +13403,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13450,6 +13472,16 @@
                 "column": "reason_code",
                 "operator": "eq",
                 "value": "workload_heavy"
+              },
+              {
+                "column": "ramp_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank"
@@ -13480,6 +13512,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13509,6 +13542,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13531,6 +13565,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13590,6 +13625,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13688,6 +13724,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13717,6 +13754,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13739,6 +13777,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13798,6 +13837,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -13896,6 +13936,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13925,6 +13966,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -13947,6 +13989,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -14006,6 +14049,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -14104,6 +14148,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -14133,6 +14178,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -14155,6 +14201,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -14214,6 +14261,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -14317,6 +14365,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -14346,6 +14395,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -14368,6 +14418,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -14427,6 +14478,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
@@ -14595,7 +14647,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -14722,7 +14776,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -14849,7 +14905,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -14860,13 +14918,18 @@
               },
               {
                 "column": "reason_code",
-                "operator": "ne",
-                "value": "thermal_throttling"
+                "operator": "eq",
+                "value": "workload_heavy"
               },
               {
-                "column": "reason_code",
-                "operator": "ne",
-                "value": "cpu_max_limited"
+                "column": "ramp_to_high_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ]
           },
@@ -14966,7 +15029,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -14977,13 +15042,18 @@
               },
               {
                 "column": "reason_code",
-                "operator": "ne",
-                "value": "thermal_throttling"
+                "operator": "eq",
+                "value": "workload_heavy"
               },
               {
-                "column": "reason_code",
-                "operator": "ne",
-                "value": "cpu_max_limited"
+                "column": "ramp_to_high_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ]
           },
@@ -15083,7 +15153,9 @@
               "freq_limit_trace_episode_id",
               "rt_freq_limit_state",
               "rt_freq_limit_binding_ns",
-              "rt_freq_limit_policy_cpu"
+              "rt_freq_limit_policy_cpu",
+              "ramp_to_high_ms",
+              "freq_ramp_evidence"
             ],
             "required_marker": "SmartPerfetto::CASE::scrolling-frequency-limit-jank",
             "assertions": [
@@ -15094,13 +15166,18 @@
               },
               {
                 "column": "reason_code",
-                "operator": "ne",
-                "value": "thermal_throttling"
+                "operator": "eq",
+                "value": "workload_heavy"
               },
               {
-                "column": "reason_code",
-                "operator": "ne",
-                "value": "cpu_max_limited"
+                "column": "ramp_to_high_ms",
+                "operator": "eq",
+                "value": null
+              },
+              {
+                "column": "freq_ramp_evidence",
+                "operator": "eq",
+                "value": "big_core_topology_unknown"
               }
             ]
           }
@@ -15496,6 +15573,7 @@
               "window_start_ts",
               "window_end_ts",
               "unknown_core_ms",
+              "unknown_core_ns",
               "used_ucpus",
               "sched_covered_ns",
               "sched_evidence",
@@ -18019,6 +18097,7 @@
               "init_cpu_topology",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -18048,6 +18127,7 @@
               "main_thread_work_cadence",
               "frame_timeline_check",
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -18070,6 +18150,7 @@
             ],
             "forced_sql_steps": [
               "vsync_config",
+              "frame_timeline_population",
               "buffer_tx_coverage_probe",
               "performance_summary",
               "buffer_tx_performance_fallback",
@@ -18129,6 +18210,7 @@
               "big_avg_freq_mhz",
               "big_max_freq_mhz",
               "ramp_ms",
+              "freq_ramp_evidence",
               "top_slice_little_pct",
               "top_slice_big_pct",
               "top_slice_runnable_pct",
