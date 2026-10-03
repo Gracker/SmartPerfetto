@@ -26,7 +26,8 @@ import {
   ValidatedParams,
 } from './types';
 import { CONTEXTUAL_KEYWORDS, extractRootVariables } from './expressionUtils';
-import { sqlScopeDeclarationError } from './processScopeSql';
+import { executableSqlUnits, sqlScopeDeclarationError } from './processScopeSql';
+import { stepNodesOf } from './skillSteps';
 import { sqlReads } from './normalizedSourceReads';
 
 // =============================================================================
@@ -334,20 +335,13 @@ export function validateFragmentReferences(
   availableFragments: Set<string>,
 ): SkillValidationWarning[] {
   const warnings: SkillValidationWarning[] = [];
-
-  const visit = (node: any, path: string): void => {
-    if (!node || typeof node !== 'object') return;
-    for (const fragPath of node.sql_fragments || []) {
+  for (const {path, source} of executableSqlUnits(skill)) {
+    for (const fragPath of source.sql_fragments || []) {
       if (!availableFragments.has(fragPath)) {
         warnings.push({ stepId: path, message: `SQL fragment '${fragPath}' not found in fragments directory` });
       }
     }
-    if (node.exact_sql !== undefined) visit(node.exact_sql, `${path}.exact_sql`);
-    for (const child of node.steps || []) visit(child, child.id || path);
-    for (const branch of node.conditions || []) visit(branch.then, path);
-    visit(node.else, path);
-  };
-  visit(skill, 'root');
+  }
   return warnings;
 }
 
@@ -404,19 +398,13 @@ export function validateNormalizedStdlibReads(
       }
     }
   };
-  const visit = (node: any, path: string): void => {
-    if (!node || typeof node !== 'object') return;
-    if (typeof node.sql === 'string') check(node.sql, path, 'SQL');
-    for (const fragPath of node.sql_fragments || []) {
+  for (const {path, source} of executableSqlUnits(skill)) {
+    if (typeof source.sql === 'string') check(source.sql, path, 'SQL');
+    for (const fragPath of source.sql_fragments || []) {
       const body = fragments.get(fragPath);
       if (body !== undefined) check(body, path, `Fragment '${fragPath}'`, fragPath);
     }
-    if (node.exact_sql !== undefined) visit(node.exact_sql, `${path}.exact_sql`);
-    for (const child of node.steps || []) visit(child, child.id || path);
-    for (const branch of node.conditions || []) visit(branch.then, path);
-    visit(node.else, path);
-  };
-  visit(skill, 'root');
+  }
   return warnings;
 }
 
@@ -426,21 +414,15 @@ export function validateProcessScopeDeclarations(
   fragments: ReadonlyMap<string, string>,
 ): SkillValidationWarning[] {
   const warnings: SkillValidationWarning[] = [];
-  const visit = (node: any, path: string): void => {
-    if (!node || typeof node !== 'object') return;
-    if (node.process_scope) {
-      const reason = sqlScopeDeclarationError(node, fragments);
-      if (reason) warnings.push({ stepId: path, message: reason });
-    }
+  for (const {path, source} of executableSqlUnits(skill)) {
+    const reason = source.process_scope ? sqlScopeDeclarationError(source, fragments) : undefined;
+    if (reason) warnings.push({ stepId: path, message: reason });
+  }
+  for (const {node, name} of [{node: skill as any, name: 'root'}, ...stepNodesOf(skill)]) {
     if ([...(node.inputs || []).map((input: SkillInput) => input.name), node.save_as]
-      .some(name => typeof name === 'string' && name.startsWith('__process_scope'))) {
-      warnings.push({ stepId: path, message: '__process_scope is reserved for trusted execution bindings' });
+      .some(binding => typeof binding === 'string' && binding.startsWith('__process_scope'))) {
+      warnings.push({ stepId: name, message: '__process_scope is reserved for trusted execution bindings' });
     }
-    if (node.exact_sql !== undefined) visit(node.exact_sql, `${path}.exact_sql`);
-    for (const child of node.steps || []) visit(child, child.id || path);
-    for (const branch of node.conditions || []) visit(branch.then, path);
-    visit(node.else, path);
-  };
-  visit(skill, 'root');
+  }
   return warnings;
 }

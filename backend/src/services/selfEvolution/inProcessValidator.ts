@@ -16,6 +16,8 @@ import {
 } from '../skillEngine/skillValidator';
 import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
 import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillEngine/skillTopLevelKeys';
+import {skillExecution} from '../skillEngine/skillSteps';
+import {executableSqlUnits} from '../skillEngine/processScopeSql';
 import {undecidedResultPathReads} from '../skillEngine/resultPathReads';
 import {causeWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
 import type {SkillDefinition, SkillStep} from '../skillEngine/types';
@@ -33,7 +35,7 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {validateScopedSqlDeclarations, validateSkillStepListRuntime, type SkillStepRuntimeIssue} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '8';
+export const IN_PROCESS_VALIDATOR_VERSION = '9';
 
 /**
  * Rules that already-published overlays and packs may predate. Each is an
@@ -47,11 +49,15 @@ export const IN_PROCESS_VALIDATOR_VERSION = '8';
  * - process_scope_invalid: a malformed process_scope declaration; the runtime
  *   only reports exact scope unsupported for it (processScopeSql.ts), and a
  *   Skill root's declaration was not checked before validator version 8.
+ * - sql_not_executed: SQL the executor never runs (skillSteps.skillExecution),
+ *   which no SQL check reads; it does nothing at runtime, and it was accepted
+ *   before validator version 9.
  */
 export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
   'result_path_read_undecided',
   'cause_wording_without_evidence',
   'process_scope_invalid',
+  'sql_not_executed',
 ]);
 
 export type InProcessValidationSeverity = 'error' | 'warning';
@@ -207,9 +213,33 @@ function validateDefinitionShape(
     ));
   }
 
+  // SQL the executor never runs is in no SQL unit (executableSqlUnits), so no SQL check reads it.
+  const execution = skillExecution(skill);
+  const root = skill as unknown as Record<string, unknown>;
+  if (execution !== 'root' && ['sql', 'sql_fragments', 'exact_sql'].some(key => root[key] !== undefined)) {
+    issues.push(issue(
+      'error',
+      'sql_not_executed',
+      skill.name,
+      'sql',
+      `A Skill of type '${String(skill.type)}' never runs root SQL; only an atomic Skill with root sql does.`,
+    ));
+  }
+  if (execution !== 'steps' && hasSteps) {
+    issues.push(issue(
+      'error',
+      'sql_not_executed',
+      skill.name,
+      'steps',
+      execution === 'root'
+        ? 'An atomic Skill with root sql never runs its steps.'
+        : `A Skill of type '${String(skill.type)}' runs no steps.`,
+    ));
+  }
+
   const stepIds = new Set<string>();
   const rootIssues: SkillStepRuntimeIssue[] = [];
-  validateScopedSqlDeclarations(skill as unknown as Record<string, unknown>, '', rootIssues);
+  validateScopedSqlDeclarations(root, '', rootIssues);
   const stepContractIssues = [
     ...rootIssues,
     ...(hasSteps ? validateSkillStepListRuntime(skill.steps, 'steps') : []),
@@ -243,20 +273,6 @@ function validateDefinitionShape(
     } else {
       stepIds.add(step.id);
     }
-    const sql = 'sql' in step ? step.sql : undefined;
-    if (includeSqlGuardrails && typeof sql === 'string') {
-      for (const guardrail of analyzeSqlGuardrails(sql, {
-        includeRules: DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
-      })) {
-        issues.push(issue(
-          guardrail.ruleId === 'percentile-percent-scale' ? 'error' : 'warning',
-          `sql_guardrail_${guardrail.ruleId}`,
-          skill.name,
-          `${path}.sql`,
-          guardrail.message,
-        ));
-      }
-    }
     });
     // Expressions resolve a save_as binding before a step result of the same
     // name, so another step's id reused as a save_as would never be readable.
@@ -274,19 +290,22 @@ function validateDefinitionShape(
       }
     });
   }
-  if (includeSqlGuardrails && hasRootSql) {
-    for (const guardrail of analyzeSqlGuardrails(skill.sql!, {
+  // Every SQL the executor runs, named and exact (executableSqlUnits).
+  for (const unit of includeSqlGuardrails ? executableSqlUnits(skill) : []) {
+    if (typeof unit.source.sql !== 'string') continue;
+    for (const guardrail of analyzeSqlGuardrails(unit.source.sql, {
       includeRules: DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
     })) {
       issues.push(issue(
         guardrail.ruleId === 'percentile-percent-scale' ? 'error' : 'warning',
         `sql_guardrail_${guardrail.ruleId}`,
         skill.name,
-        'sql',
+        unit.sqlAt,
         guardrail.message,
       ));
     }
   }
+
   return issues;
 }
 

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { SkillDefinition, SqlProcessScopeDeclaration, ExactSqlSource } from './types';
+import { skillExecution, stepNodesOf, type StepNode } from './skillSteps';
 
 export const EFFECTIVE_TARGET_FRAGMENT = 'fragments/effective_target_processes.sql';
 export const EXACT_UPID_TOKEN = '${__process_scope.upid}';
@@ -66,11 +67,61 @@ export function isExactSqlSource(value: unknown): value is ExactSqlSource {
 }
 
 export function selectProcessScopeSql(source: ScopedSqlSource, exact: boolean): ScopedSqlSource {
-  if (!exact || source.exact_sql === undefined) return source;
-  if (!isExactSqlSource(source.exact_sql)) {
-    throw new Error('Invalid exact_sql override; refusing the named SQL fallback');
-  }
-  return source.exact_sql;
+  const run = sqlRunBy(source, exact ? 'exact' : 'named');
+  if (!run) throw new Error('Invalid exact_sql override; refusing the named SQL fallback');
+  return run;
+}
+
+/** How SQL runs: as written, or under an exact process scope, with each exact_sql in its place. */
+export type SqlVariant = 'named' | 'exact';
+
+/** One SQL source a Skill can execute: the SQL beside a step (or the Skill's root), or its exact_sql. */
+export interface ExecutableSqlUnit {
+  /** The step the SQL belongs to, or the Skill itself for its root SQL. */
+  node: Record<string, any>;
+  /** How a finding names it: `root` or the step's name (StepNode), with `.exact_sql` for an override. */
+  path: string;
+  /** Where its SQL is written: `sql`, `exact_sql.sql`, `steps[0].sql`, `steps[2].else.exact_sql.sql`. */
+  sqlAt: string;
+  variant: SqlVariant;
+  source: ScopedSqlSource;
+  /** Whether it may not run when the Skill runs (StepNode.guarded). */
+  guarded: boolean;
+}
+
+/**
+ * Every SQL source the executor runs of a Skill (skillSteps.skillExecution),
+ * from the one walk every check shares: an atomic Skill's root SQL, or else
+ * each atomic step at any depth (nested steps and inline conditional branches,
+ * stepNodesOf; a step without an id by its position), each with the SQL it
+ * runs as written and, when it declares one, its exact_sql as written (valid
+ * or not: the checks that report on it need to see it). An exact run executes
+ * `sqlRunBy(node, 'exact')`. SQL the executor never runs is no unit: the
+ * validator rejects it (sql_not_executed).
+ */
+export function executableSqlUnits(skill: unknown): ExecutableSqlUnit[] {
+  const execution = skillExecution(skill);
+  const nodes: StepNode[] = execution === 'root' ? [{node: skill, at: '', name: 'root', guarded: false}]
+    : execution === 'steps' ? stepNodesOf(skill).filter(({node}) => node.type === 'atomic') : [];
+  return nodes.flatMap(({node, at, name, guarded}): ExecutableSqlUnit[] => {
+    const prefix = at ? `${at}.` : '';
+    return [
+      {node, path: name, sqlAt: `${prefix}sql`, variant: 'named', source: node, guarded},
+      ...(isRecord(node.exact_sql) ? [{
+        node, path: `${name}.exact_sql`, sqlAt: `${prefix}exact_sql.sql`,
+        variant: 'exact' as const, source: node.exact_sql as ScopedSqlSource, guarded,
+      }] : []),
+    ];
+  });
+}
+
+/**
+ * The SQL `node` runs in `variant` (selectProcessScopeSql): itself, or under an
+ * exact scope a valid exact_sql; an invalid exact_sql runs nothing.
+ */
+export function sqlRunBy(node: ScopedSqlSource, variant: SqlVariant): ScopedSqlSource | undefined {
+  if (variant === 'named' || node.exact_sql === undefined) return node;
+  return isExactSqlSource(node.exact_sql) ? node.exact_sql : undefined;
 }
 
 export function sqlScopeDeclarationError(
@@ -113,17 +164,20 @@ export function getExactProcessScopeSupport(
   if (visiting.has(skill.name)) return { supported: false, reason: `Cyclic Skill dependency: ${skill.name}` };
   const next = new Set(visiting).add(skill.name);
   const limitations = new Set<string>();
+  // The Skill's own SQL, as an exact run executes it.
+  for (const unit of executableSqlUnits(skill)) {
+    if (unit.variant !== 'named' || typeof unit.source.sql !== 'string') continue;
+    const where = unit.path === 'root' ? skill.name : `${skill.name}.${unit.path}`;
+    const selected = sqlRunBy(unit.source, 'exact');
+    if (!selected) return { supported: false, reason: `${where}: Invalid exact_sql override; refusing the named SQL fallback` };
+    const reason = sqlScopeDeclarationError(selected, fragments);
+    if (reason) return { supported: false, reason: `${where}: ${reason}` };
+    if (selected.process_scope?.exact_unavailable) limitations.add(selected.process_scope.exact_unavailable);
+    for (const limitation of selected.process_scope?.limitations || []) limitations.add(limitation);
+  }
+  // The Skills it runs, and the steps no exact run can take.
   const inspect = (node: any, path: string): string | undefined => {
     if (!node || typeof node !== 'object') return undefined;
-    if (typeof node.sql === 'string') {
-      let selected: ScopedSqlSource;
-      try { selected = selectProcessScopeSql(node, true); }
-      catch (error) { return `${path}: ${(error as Error).message}`; }
-      const reason = sqlScopeDeclarationError(selected, fragments);
-      if (reason) return `${path}: ${reason}`;
-      if (selected.process_scope?.exact_unavailable) limitations.add(selected.process_scope.exact_unavailable);
-      for (const limitation of selected.process_scope?.limitations || []) limitations.add(limitation);
-    }
     const referenced = node.item_skill || node.skill;
     if (typeof referenced === 'string') {
       const child = registry.get(referenced);

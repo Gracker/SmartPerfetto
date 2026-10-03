@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {boundSqlPlaceholders} from './sqlTemplate';
+import {executableSqlUnits} from './processScopeSql';
 
 /**
  * A Skill's SQL may read an earlier step's saved result by path. When that
@@ -99,9 +100,11 @@ export function undecidedResultPathReads(skill: {steps?: readonly unknown[]}): U
   const found: UndecidedResultPathRead[] = [];
   // Each earlier step's result is readable under its id and its save_as.
   const producers = new Map<string, readonly string[]>();
-  (skill.steps ?? []).forEach((raw, index) => {
-    const step = (raw ?? {}) as {id?: unknown; save_as?: unknown; condition?: unknown; sql?: unknown; exact_sql?: {sql?: unknown}};
-    const sites: Array<[string, unknown]> = [[`steps[${index}].sql`, step.sql], [`steps[${index}].exact_sql.sql`, step.exact_sql?.sql]];
+  // The shared SQL units (processScopeSql.ts), of the top-level steps the public runtime runs.
+  const units = executableSqlUnits(skill);
+  for (const raw of skill.steps ?? []) {
+    const step = (raw ?? {}) as {id?: unknown; save_as?: unknown; condition?: unknown};
+    const sites = units.filter(unit => unit.node === raw).map(unit => [unit.sqlAt, unit.source.sql] as const);
     for (const [path, sql] of sites) {
       if (typeof sql !== 'string') continue;
       for (const placeholder of boundSqlPlaceholders(sql)) {
@@ -115,6 +118,6 @@ export function undecidedResultPathReads(skill: {steps?: readonly unknown[]}): U
     }
     const names = [step.id, step.save_as].filter((name): name is string => typeof name === 'string' && name !== '');
     for (const name of names) producers.set(name, names);
-  });
+  }
   return found;
 }

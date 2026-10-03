@@ -23,9 +23,9 @@ import {namesFrequencyCap, namesThermalCause} from './causeWording';
 import {extractRootVariables, parseEvidenceField, parseEvidenceLiteral, readEvidenceField} from './expressionUtils';
 import {sqlReads} from './normalizedSourceReads';
 import {builtInFragmentText} from './skillFragments';
-import {isExactSqlSource} from './processScopeSql';
+import {executableSqlUnits, sqlRunBy, type SqlVariant} from './processScopeSql';
 import {scanOutsideStrings, topLevelOperands} from './resultPathReads';
-import {allStepsOf} from './skillSteps';
+import {stepNodesOf} from './skillSteps';
 import {boundSqlPlaceholderPaths} from './sqlTemplate';
 import {closingParen, operandEndingAt, operandStartingAt, structuralSqlTokens, tokenMatchers} from './sqlStructure';
 import {
@@ -86,26 +86,30 @@ const RULES = [HEAT_WORDING, CAP_WORDING] as const;
  * Skill runs exact too). Evidence and wording are judged per variant: text an
  * exact run shows needs evidence that run reads.
  */
-type Variant = 'named' | 'exact';
+type Variant = SqlVariant;
 
 /**
- * A step as `variant` runs it: an exact run executes a valid exact_sql
- * (selectProcessScopeSql; an invalid one fails as exact_sql_invalid).
- * `sqlField` says where the SQL it runs is written.
+ * Every step of a Skill as `variant` runs it, its root first when the root
+ * runs SQL: the SQL a step runs and shows comes from the shared SQL units
+ * (executableSqlUnits; an exact run executes a valid exact_sql, an invalid one
+ * fails as exact_sql_invalid), and a step that runs none keeps only its texts.
+ * `sqlField` says where the SQL it runs is written, and `site` names the step
+ * in findings (its position when it has no id); evidence relates steps by the
+ * object, never by a name two steps can share.
  */
-function asRun(step: any, variant: Variant): any {
-  return variant === 'exact' && isExactSqlSource(step?.exact_sql)
-    ? {...step, sql: step.exact_sql.sql, sql_fragments: step.exact_sql.sql_fragments, sqlField: 'exact_sql.'}
-    : step;
-}
-
-/** A Skill's root SQL as a step, then every step at any depth, as `variant` runs them. */
 function stepsOf(skill: any, variant: Variant): any[] {
-  const root = typeof skill?.sql === 'string'
-    ? [{id: CATALOG_ROOT_STEP, sql: skill.sql, sql_fragments: skill.sql_fragments, exact_sql: skill.exact_sql}] : [];
-  return [...root, ...allStepsOf(skill)].map(step => asRun(step, variant));
+  const runs = new Map(executableSqlUnits(skill).filter(unit => unit.variant === 'named')
+    .map(unit => [unit.node, sqlRunBy(unit.source, variant)]));
+  const sqlOf = (node: any) => {
+    const run = runs.get(node);
+    return run ? {sql: run.sql, sql_fragments: run.sql_fragments, ...(run !== node ? {sqlField: 'exact_sql.'} : {})} : {};
+  };
+  const root = runs.has(skill) ? [{id: CATALOG_ROOT_STEP, ...sqlOf(skill)}] : [];
+  return [...root, ...stepNodesOf(skill).map(({node, name}) => {
+    const {sql: _sql, sql_fragments: _fragments, ...texts} = node;
+    return {...texts, site: name, ...sqlOf(node)};
+  })];
 }
-
 
 /** Roots of the saved results a step's SQL reads through placeholders. */
 function sqlResultRoots(sql: unknown): string[] {
@@ -370,6 +374,7 @@ function sitesOf(skill: SkillDefinition, texts: SkillTexts, readers: ReadonlySet
   const name = String(raw?.name);
   const skillAllowance = readers.has(name) ? `skill ${name}` : undefined;
   const evidence = evidenceSteps(texts.steps, readers, rule.kind);
+  // A catalog entry belongs to the step with its id (validate:skills keeps ids unique).
   const evidenceIds = new Set([...evidence.steps].map(step => step.id));
   const allowanceOf = (stepId: string | undefined) => stepId === undefined
     ? skillAllowance : evidenceIds.has(stepId) ? `step ${name}/${stepId}` : undefined;
@@ -398,8 +403,9 @@ function sitesOf(skill: SkillDefinition, texts: SkillTexts, readers: ReadonlySet
   }
 
   for (const step of texts.steps) {
-    const stepId = step.id === CATALOG_ROOT_STEP ? undefined : step.id;
-    const allowedBy = allowanceOf(stepId);
+    const stepId: string | undefined = step.id === CATALOG_ROOT_STEP ? undefined : step.site;
+    const allowedBy = stepId === undefined ? skillAllowance
+      : evidence.steps.has(step) ? `step ${name}/${stepId}` : undefined;
     add(stepId, 'name', step.name, allowedBy);
     add(stepId, 'display.title', step.display?.title, allowedBy);
     for (const insight of step.synthesize?.insights ?? []) add(stepId, 'synthesize.insights', insight?.template, allowedBy);
@@ -408,7 +414,7 @@ function sitesOf(skill: SkillDefinition, texts: SkillTexts, readers: ReadonlySet
       for (const literal of shownSqlLiterals(sql)) add(stepId, field, literal, allowedBy);
     }
     (Array.isArray(step.rules) ? step.rules : []).forEach((ruleDefinition: any, index: number) => {
-      const ruleAllowance = requiresEvidence(ruleDefinition?.condition, evidence.names) ? `rule ${name}/${step.id}` : undefined;
+      const ruleAllowance = requiresEvidence(ruleDefinition?.condition, evidence.names) ? `rule ${name}/${stepId}` : undefined;
       add(stepId, `rules[${index}].diagnosis`, ruleDefinition?.diagnosis, ruleAllowance);
       (Array.isArray(ruleDefinition?.suggestions) ? ruleDefinition.suggestions : []).forEach((text: unknown, at: number) =>
         add(stepId, `rules[${index}].suggestions[${at}]`, text, ruleAllowance));
@@ -437,7 +443,7 @@ export function unsupportedCauseWording(skill: SkillDefinition, readers: CauseWo
   const catalog = skillCatalogEntry(skill);
   // The exact run differs where the Skill has an exact_sql of its own, or where
   // some Skill reads evidence in one run and not the other (a child it references).
-  const exactDiffers = readers.variantsDiffer || stepsOf(skill, 'named').some(step => isExactSqlSource(step?.exact_sql));
+  const exactDiffers = readers.variantsDiffer || executableSqlUnits(skill).some(unit => unit.variant === 'exact');
   for (const variant of exactDiffers ? (['named', 'exact'] as const) : (['named'] as const)) {
     const texts = {steps: stepsOf(skill, variant), catalog};
     for (const rule of RULES) {

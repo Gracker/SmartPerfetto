@@ -20,8 +20,12 @@ export function rowsTable(rows: Rows): Table {
 /** A fresh plain copy per run: the executor must never see state from a previous one. */
 export const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
-export {allStepsOf} from '../../src/services/skillEngine/skillSteps';
-import {allStepsOf} from '../../src/services/skillEngine/skillSteps';
+import {stepNodesOf} from '../../src/services/skillEngine/skillSteps';
+
+/** Every step of a parsed Skill that has an id, at any depth, in order. */
+export function allStepsOf(skill: any): any[] {
+  return stepNodesOf(skill).map(({node}) => node).filter(step => step.id);
+}
 
 /** The step `id` of a parsed Skill, at any depth, or a thrown error naming it. */
 export function stepOf(skill: any, id: string): any {

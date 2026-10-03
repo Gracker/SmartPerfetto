@@ -94,8 +94,8 @@ const EVIDENCE_CONDITION = /确认[^，,]*(?:证据|温控|限频|触发|温度)
 const EVIDENCE_REFERENCE = /^\s*(?:限频|档位|状态)?\s*(?:证据|数据|轨道|事件|传感器|守护进程)/;
 /**
  * The English counterpart: a thermal or throttle word that only names the
- * component or record it belongs to. The rest of its clause, parentheticals
- * aside, must be a bare noun phrase of such nouns (thermal HAL service process,
+ * component or record it belongs to. The rest of its clause, a parenthetical
+ * included, must be a bare noun phrase of such nouns (thermal HAL service process,
  * thermal zone worker thread, thermal-named track or slice, throttling naming);
  * anything said of it (Thermal zone overheated, Thermal HAL is responsible for
  * latency) makes it a cause again.
@@ -109,6 +109,47 @@ const ENGLISH_NEGATION = /\b(?:not|no|non|without)[\s-]+(?:an?\s+|the\s+)?$/i;
 /** Sentence and clause boundaries; brackets are neither, so a parenthetical stays with its clause. */
 const SENTENCE_BOUNDARY = /[。；;]/;
 const CLAUSE_BOUNDARY = /[，,：:]/;
+
+/**
+ * The matched bracket pairs of `text` ((…) or （…）, nested) as [open, close]
+ * indexes. An unmatched bracket is plain text everywhere it is read.
+ */
+function bracketPairs(text: string): Array<[number, number]> {
+  const pairs: Array<[number, number]> = [];
+  const open: number[] = [];
+  for (let index = 0; index < text.length; index++) {
+    if (text[index] === '(' || text[index] === '（') open.push(index);
+    else if ((text[index] === ')' || text[index] === '）') && open.length > 0) pairs.push([open.pop()!, index]);
+  }
+  return pairs;
+}
+
+/**
+ * `text` split at the `boundary` characters outside every matched bracket pair:
+ * a boundary inside a parenthetical does not end the clause the parenthetical
+ * belongs to (Thermal HAL (service process, caused jank)).
+ */
+function splitOutsideBrackets(text: string, boundary: RegExp): string[] {
+  const pairs = bracketPairs(text);
+  if (pairs.length === 0) return text.split(boundary);
+  // Bracket depth by difference array: +1 after each opening, -1 at its closing.
+  const step = new Array<number>(text.length + 1).fill(0);
+  for (const [open, close] of pairs) {
+    step[open + 1]++;
+    step[close]--;
+  }
+  const parts: string[] = [];
+  let from = 0;
+  let depth = 0;
+  for (let index = 0; index < text.length; index++) {
+    depth += step[index];
+    if (depth === 0 && boundary.test(text[index])) {
+      parts.push(text.slice(from, index));
+      from = index + 1;
+    }
+  }
+  return [...parts, text.slice(from)];
+}
 
 /** Contrasts that split a clause into propositions an undetermined marker covers separately. */
 const CONTRAST = /但是?|然而|不过|而/g;
@@ -156,10 +197,31 @@ function clauseNamesCause(clause: string, words: RegExp, attributedOnly = false)
     const pattern = (/[*%]$/.test(before) || /^[*%]/.test(after)) && !/\s/.test(clause.trim());
     const inName = ascii && (/[\w/]$/.test(before) || /^[\w/]/.test(after) || pattern);
     const coolingDevice = match[0] === '散热' && after.startsWith('设备');
-    if (ascii && (ENGLISH_COMPONENT_PHRASE.test(after.replace(/\([^)]*\)/g, ' ')) || ENGLISH_NEGATION.test(before))) return false;
+    // A parenthetical is part of the clause: `Thermal HAL (caused jank)` says something of the component.
+    if (ascii && (ENGLISH_COMPONENT_PHRASE.test(after.replace(/[()（）]/g, ' ')) || ENGLISH_NEGATION.test(before))) return false;
     if ((inName || coolingDevice || EVIDENCE_REFERENCE.test(after)) && !ATTRIBUTION.test(after)) return false;
     return !defersCause(before);
   });
+}
+
+/**
+ * Where the stretch of `clause` an evidence condition at `at` covers starts:
+ * the clause itself (0), or, for a condition inside a parenthetical, the
+ * innermost matched pair holding it or the last boundary directly inside that
+ * pair before the condition.
+ */
+function conditionStart(clause: string, at: number): number {
+  const pairs = bracketPairs(clause);
+  const holding = pairs.filter(([open, close]) => open < at && at < close)
+    .reduce<[number, number] | undefined>((inner, pair) => !inner || pair[0] > inner[0] ? pair : inner, undefined);
+  if (!holding) return 0;
+  const nested = pairs.filter(([open, close]) => open > holding[0] && close < at);
+  let start = holding[0];
+  for (let index = holding[0] + 1; index < at; index++) {
+    if (nested.some(([open, close]) => open < index && index < close)) continue;
+    if (CLAUSE_BOUNDARY.test(clause[index]) || SENTENCE_BOUNDARY.test(clause[index])) start = index;
+  }
+  return start;
 }
 
 /**
@@ -168,9 +230,17 @@ function clauseNamesCause(clause: string, words: RegExp, attributedOnly = false)
  * sentence, never those before it.
  */
 function namesCause(text: string, words: RegExp, attributedOnly = false): boolean {
-  for (const sentence of text.split(SENTENCE_BOUNDARY)) {
-    for (const clause of sentence.split(CLAUSE_BOUNDARY)) {
-      if (EVIDENCE_CONDITION.test(clause)) break;
+  // A clause names a word only where the text does.
+  if (text.search(words) < 0) return false;
+  for (const sentence of splitOutsideBrackets(text, SENTENCE_BOUNDARY)) {
+    for (const clause of splitOutsideBrackets(sentence, CLAUSE_BOUNDARY)) {
+      const condition = EVIDENCE_CONDITION.exec(clause);
+      if (condition) {
+        // A condition inside a parenthetical covers its own part and what follows, never the text before it.
+        const start = conditionStart(clause, condition.index);
+        if (start > 0 && namesCause(clause.slice(0, start), words, attributedOnly)) return true;
+        break;
+      }
       if (clauseNamesCause(clause, words, attributedOnly)) return true;
     }
   }

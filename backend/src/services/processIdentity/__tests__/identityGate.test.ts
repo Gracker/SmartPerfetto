@@ -82,7 +82,7 @@ describe('IdentityGate', () => {
     const resolve = (fragmentPath: string) => fragments[fragmentPath];
     const collectSkillSql = (definition: SkillDefinition, resolver: (fragmentPath: string) => string | undefined) =>
       collectSkillSqlUnits(definition, resolver).join('\n');
-    const skill = (step: Record<string, unknown>) => ({name: 'fragment_skill', steps: [{id: 's', ...step}]}) as unknown as SkillDefinition;
+    const skill = (step: Record<string, unknown>) => ({name: 'fragment_skill', type: 'composite', steps: [{id: 's', type: 'atomic', ...step}]}) as unknown as SkillDefinition;
 
     expect(sqlUsesProcessNameFilter(collectSkillSql(skill({sql: 'SELECT 1', sql_fragments: ['fragments/filter.sql']}), resolve))).toBe(true);
     expect(sqlUsesProcessNameFilter(collectSkillSql(skill({sql: 'SELECT 1', exact_sql: {sql: 'SELECT 1',

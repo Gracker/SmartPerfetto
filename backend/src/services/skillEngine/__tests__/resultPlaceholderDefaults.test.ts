@@ -10,7 +10,7 @@ import {skillDocuments} from '../../../../tests/helpers/skillRuleHarness';
 // validator enforces it on every Skill (validate:skills) and overlay.
 describe('saved-result path reads', () => {
   it('flags only an undecided path read', () => {
-    const skill = {name: 'probe', steps: [
+    const skill = {name: 'probe', type: 'composite', steps: [
       {id: 'probe_step', type: 'atomic', sql: 'SELECT 1 AS status', save_as: 'cov'},
       {id: 'bare', type: 'atomic', sql: "SELECT '${cov.data[0].status}' AS s, ${cov.data[0].ratio} AS r"},
       {id: 'defaulted', type: 'atomic', sql: "SELECT '${cov.data[0].status|unknown}' AS s, ${cov.data[0].ratio|NULL} AS r"},
@@ -41,7 +41,7 @@ describe('saved-result path reads', () => {
 
   it('takes an overlay step name as text, never as a pattern', () => {
     // A name with regex syntax neither throws nor guards a read it does not name.
-    const skill = {steps: [
+    const skill = {type: 'composite', steps: [
       {id: 'cov', type: 'atomic', sql: 'SELECT 1 AS x'},
       {id: 'a(b', type: 'atomic', condition: 'a(b.data?.length > 0', sql: 'SELECT ${cov.data[0].x} AS x'},
       {id: 'c.v', type: 'atomic', sql: 'SELECT 1 AS x'},
@@ -56,7 +56,7 @@ describe('saved-result path reads', () => {
   });
 
   it('reads a result only after the step that saves it', () => {
-    const skill = {steps: [
+    const skill = {type: 'composite', steps: [
       {id: 'early', type: 'atomic', sql: 'SELECT ${late.data[0].x} AS x'},
       {id: 'late', type: 'atomic', sql: 'SELECT 1 AS x'},
     ]};

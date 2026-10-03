@@ -115,6 +115,7 @@ import {fingerprintSkillDefinition} from '../selfEvolution/skillFingerprint';
 
 import { DisplayLayer } from './types';
 import { isObservedStepResult, isOptionalStep, isQueryOrSkillResult, nonObservedStepState, type StepExecutionState } from './stepExecutionState';
+import { skillExecution } from './skillSteps';
 import {rowObject} from '../../utils/traceProcessorRowUtils';
 
 /**
@@ -1844,10 +1845,11 @@ export class SkillExecutor {
       let stepExecutionError: string | undefined;
 
 
-      // 根据 skill 类型执行
-      switch (skill.type) {
-        case 'atomic':
-          if (skill.sql) {
+      // What the executor runs of the Skill (skillSteps.skillExecution, shared with
+      // the SQL-unit walk): its root SQL, its steps, or nothing.
+      switch (skillExecution(skill)) {
+        case 'root':
+          {
             const atomicResult = await this.executeAtomicSkill(skill, context);
             // Handle atomic skill errors
             if (!atomicResult.success) {
@@ -1878,34 +1880,10 @@ export class SkillExecutor {
             if (atomicResult.display) {
               displayResults.push(this.createDisplayResult('root', skill.meta.display_name, atomicResult, skill.output?.display));
             }
-          } else {
-            // Backward compatibility: some "atomic" skills are authored as step-based YAML.
-            // Treat them as composite execution when `sql` is absent but `steps` exist.
-            if (!skill.steps || skill.steps.length === 0) {
-              return {
-                skillId,
-                skillName: skill.meta.display_name,
-                success: false,
-                displayResults: [],
-                diagnostics: [],
-                ...(identityResolution ? { identityResolution } : {}),
-                executionTimeMs: Date.now() - startTime,
-                error: 'No SQL or steps defined for atomic skill',
-              };
-            }
-            const stepExec = await this.executeStepBasedSkill(skill, skillId, context, displayResults, diagnostics, synthesizeData);
-            aiSummary = stepExec.aiSummary;
-            stepExecutionError = stepExec.error;
           }
           break;
 
-        case 'composite':
-        case 'deep':
-        case 'iterator':
-        case 'diagnostic':
-        case 'ai_decision':
-        case 'ai_summary':
-        case 'pipeline':
+        case 'steps':
           {
             if (!skill.steps || skill.steps.length === 0) {
               return {
@@ -1916,7 +1894,7 @@ export class SkillExecutor {
                 diagnostics: [],
                 ...(identityResolution ? { identityResolution } : {}),
                 executionTimeMs: Date.now() - startTime,
-                error: `No steps defined for skill: ${skillId}`,
+                error: skill.type === 'atomic' ? 'No SQL or steps defined for atomic skill' : `No steps defined for skill: ${skillId}`,
               };
             }
             const stepExec = await this.executeStepBasedSkill(skill, skillId, context, displayResults, diagnostics, synthesizeData);
@@ -1925,18 +1903,20 @@ export class SkillExecutor {
           }
           break;
 
-        case 'pipeline_definition':
-        case 'comparison':
-          return {
-            skillId,
-            skillName: skill.meta.display_name,
-            success: false,
-            displayResults: [],
-            diagnostics: [],
-            ...(identityResolution ? { identityResolution } : {}),
-            executionTimeMs: Date.now() - startTime,
-            error: `Skill type '${skill.type}' is metadata-only and not executable by the single-trace SkillExecutor: ${skillId}`,
-          };
+        case 'none':
+          if (skill.type === 'pipeline_definition' || skill.type === 'comparison') {
+            return {
+              skillId,
+              skillName: skill.meta.display_name,
+              success: false,
+              displayResults: [],
+              diagnostics: [],
+              ...(identityResolution ? { identityResolution } : {}),
+              executionTimeMs: Date.now() - startTime,
+              error: `Skill type '${skill.type}' is metadata-only and not executable by the single-trace SkillExecutor: ${skillId}`,
+            };
+          }
+          break;
       }
 
       if (stepExecutionError) {

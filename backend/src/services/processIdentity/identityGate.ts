@@ -2,8 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { SkillDefinition, SkillStep } from '../skillEngine/types';
+import type { SkillDefinition } from '../skillEngine/types';
 import { builtInFragmentText, injectFragmentCtes } from '../skillEngine/skillFragments';
+import { executableSqlUnits } from '../skillEngine/processScopeSql';
 import type { SqlToken } from '../skillEngine/sqlTemplate';
 import {
   closingParen,
@@ -596,29 +597,6 @@ function sqlUnit(source: any, resolveFragment: SkillFragmentResolver): string | 
   return injectFragmentCtes(source.sql, fragments);
 }
 
-function collectStepSql(step: SkillStep | any, out: string[], resolveFragment: SkillFragmentResolver): void {
-  if (!step || typeof step !== 'object') return;
-  for (const unit of [sqlUnit(step, resolveFragment), sqlUnit(step.exact_sql, resolveFragment)]) {
-    if (unit !== undefined) out.push(unit);
-  }
-
-  if (Array.isArray(step.steps)) {
-    for (const nested of step.steps) collectStepSql(nested, out, resolveFragment);
-  }
-
-  if (Array.isArray(step.conditions)) {
-    for (const branch of step.conditions) {
-      if (branch?.then && typeof branch.then === 'object') {
-        collectStepSql(branch.then, out, resolveFragment);
-      }
-    }
-  }
-
-  if (step.else && typeof step.else === 'object') {
-    collectStepSql(step.else, out, resolveFragment);
-  }
-}
-
 /**
  * Every statement a Skill can execute, each with the fragments injected into
  * it. Detection runs per statement: a process table read in one step and a
@@ -628,13 +606,7 @@ export function collectSkillSqlUnits(
   skill: SkillDefinition,
   resolveFragment: SkillFragmentResolver = builtInFragmentText,
 ): string[] {
-  const units: string[] = [];
-  const root = sqlUnit(skill, resolveFragment);
-  if (root !== undefined) units.push(root);
-  if (Array.isArray(skill.steps)) {
-    for (const step of skill.steps) collectStepSql(step, units, resolveFragment);
-  }
-  return units;
+  return executableSqlUnits(skill).flatMap(unit => sqlUnit(unit.source, resolveFragment) ?? []);
 }
 
 export function skillUsesProcessNameFilter(

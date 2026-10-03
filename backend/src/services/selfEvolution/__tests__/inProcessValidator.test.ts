@@ -531,7 +531,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('8');
+    expect(gate.validatorVersion).toBe('9');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({
@@ -645,6 +645,9 @@ describe('in-process effective Skill validator', () => {
     expect(showing("SELECT dur FROM slice WHERE name = 'Thermal throttling detected'")).toEqual([]);
     expect(showing("SELECT * FROM slice WHERE name GLOB '*thermal*' OR name LIKE '%throttl%'")).toEqual([]);
     expect(showing("SELECT '*thermal-engine*' AS pattern, 'cpu_throttled' AS code, 'OEM thermal manager daemon' AS note")).toEqual([]);
+    // A parenthetical is part of the clause it sits in: what it says of the component counts.
+    expect(showing("SELECT 'Thermal HAL (caused jank)' AS note FROM slice")).toEqual(['steps.rows.sql']);
+    expect(showing("SELECT 'Thermal HAL (service process)' AS note FROM slice")).toEqual([]);
     // An exact run shows its exact_sql's text and reads its exact_sql's evidence, at a step and at the root.
     const exactSql = (sql: string) => ({sql, process_scope: {role: 'target', binding: 'native_upid'}});
     expect(showing('SELECT value FROM cpu_frequency_limits',

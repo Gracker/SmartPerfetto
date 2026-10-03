@@ -80,7 +80,7 @@ describe('thermal wording follows thermal evidence', () => {
   it('says throttle only where the Skill reads a frequency cap, not a temperature alone', () => {
     expect(capWording.filter(entry => !entry.allowedBy).map(entry => `${entry.site}: ${entry.text}`)).toEqual([]);
     // A GPU temperature counter shows heat, not a cap.
-    const probe = {name: 'probe', steps: [{id: 'low_clock', type: 'atomic', name: 'Sustained GPU throttle events',
+    const probe = {name: 'probe', type: 'composite', steps: [{id: 'low_clock', type: 'atomic', name: 'Sustained GPU throttle events',
       sql: "SELECT AVG(c.value) FROM counter c JOIN gpu_counter_track t ON t.id = c.track_id WHERE t.name = 'Temperature'"}]};
     expect(causeWording(probe, new Set(), CAP_WORDING)).toEqual([
       {site: 'probe/low_clock', text: 'Sustained GPU throttle events', allowedBy: undefined},
@@ -89,7 +89,7 @@ describe('thermal wording follows thermal evidence', () => {
   });
 
   it('flags a cause in rule text or a user-facing literal, not a deferral or a code', () => {
-    const skill = {name: 'probe', steps: [
+    const skill = {name: 'probe', type: 'composite', steps: [
       {id: 'rules', type: 'diagnostic', rules: [
         {condition: 'true', diagnosis: '大核占比偏低', suggestions: ['可能触发温控策略', '占比本身不是限频或温控证据']},
       ]},
@@ -148,6 +148,20 @@ describe('thermal wording follows thermal evidence', () => {
       ['Thermal zone overheated', true], ['Thermal HAL is responsible for latency', true],
       ['*thermal-engine*', false], ['*mtk*thermal*', false],
       ['thermal daemon slowed the frame', true], ['thermal track caused jank', true],
+      // A parenthetical is part of the clause: what it says of the component counts.
+      ['Thermal HAL (caused jank)', true], ['Android thermal HAL service process (vendor implementation varies)', true],
+      ['Thermal HAL (service process)', false],
+      // A boundary inside the parenthetical does not cut the component off from what is said of it.
+      ['Thermal HAL (service process, caused jank)', true], ['Thermal HAL（service process，caused jank）', true],
+      ['Thermal HAL (service process: caused jank)', true], ['Thermal HAL (service process; caused jank)', true],
+      ['Thermal HAL ((service) process, caused jank)', true],
+      // An evidence condition in a parenthetical covers what follows it, never the text it qualifies.
+      ['温控导致卡顿（建议：确认温控证据后再进一步分析）', true], ['Thermal HAL（确认温度证据后再判断）', false],
+      ['分析结果（温控导致卡顿，只有温度证据确认后才报告）', true], ['Thermal HAL (caused jank, 只有温度证据确认后才报告)', true],
+      ['结论（原因（温控导致卡顿，只有温度证据确认后才报告））', true], ['结论（温控只有在温度证据确认后才可判定）', false],
+      ['Thermal HAL (service process), 只有温度证据确认后才报告温控', false],
+      // An unmatched bracket is text: it neither guards a boundary nor scopes a condition.
+      ['温控导致卡顿 (确认温控证据后', false], ['温控导致卡顿 确认温控证据后', false],
       // In a Chinese sentence an English component name is judged like any English word;
       // the Chinese reference (用户态温控守护进程) is what names the component.
       ['thermal HAL 是卡顿的根因', true], ['thermal HAL 让帧变慢', true], ['thermal HAL 降低帧率', true],
@@ -237,7 +251,7 @@ describe('thermal wording follows thermal evidence', () => {
   });
 
   it('judges each rule on its own condition, even when its text repeats an allowed one', () => {
-    const skill = {name: 'probe', steps: [
+    const skill = {name: 'probe', type: 'composite', steps: [
       {id: 'limit', type: 'atomic', sql_fragments: ['fragments/system_cpu_freq_limit_spans.sql'], sql: 'SELECT 1', save_as: 'limit_data'},
       {id: 'diagnosis', type: 'diagnostic', inputs: ['limit_data'], rules: [
         {condition: 'limit_data.data.length > 0', diagnosis: '温控导致降频'},
@@ -248,7 +262,7 @@ describe('thermal wording follows thermal evidence', () => {
   });
 
   it('allows thermal wording only in steps and rules that read thermal or limit evidence', () => {
-    const skill = {name: 'probe', steps: [
+    const skill = {name: 'probe', type: 'composite', steps: [
       {id: 'freq', type: 'atomic', sql: "SELECT '频率下降，可能温控' AS note", save_as: 'freq'},
       // Its own user-facing text naming a cooling device is not evidence it read.
       {id: 'self_named', type: 'atomic', sql: "SELECT '可能是温控（cooling device）' AS note"},

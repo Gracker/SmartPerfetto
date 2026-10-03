@@ -135,7 +135,10 @@ Click actions should be explicit, for example:
   inside an identifier, a path or a pattern written as data (`*thermal-engine*`)
   is a name, and so is an English one whose clause only names its component
   (thermal HAL service process, thermal-named track); Thermal zone overheated
-  still names heat. Heat words (温控, 过热, thermal) need temperature, cooling
+  still names heat, and so does `Thermal HAL (caused jank)`: a parenthetical,
+  punctuation inside it included, belongs to the clause it sits in, and an
+  evidence condition inside one covers what follows it, never the text it
+  qualifies. Heat words (温控, 过热, thermal) need temperature, cooling
   or cpufreq-limit evidence; cap words (throttle, 限频, 降频, 热节流, and 频率上限
   when blamed for something) need cooling or cpufreq-limit evidence, since a
   temperature shows heat, not a cap. Write an observed step-down as 频率下调.
@@ -156,6 +159,26 @@ Click actions should be explicit, for example:
   registry has no error under it (`inProcessValidator.test.ts`), so a base
   Skill never blocks an overlay; a rule the base cannot meet yet belongs in
   `PREDATING_RULE_CODES` with its reason, not in a switch that skips the check.
+- Every check that reads a Skill's SQL takes its units from one walk,
+  `executableSqlUnits` in `skillEngine/processScopeSql.ts`, which follows what
+  the executor runs (`skillSteps.skillExecution`, the executor's own dispatch):
+  an atomic Skill's root SQL, or else every atomic step at any depth (nested
+  steps, inline conditional branches, a step without an id named by its
+  position), each with its named SQL and its `exact_sql`; `sqlRunBy` says which
+  of the two a run executes. Fragment references, stdlib reads, scope
+  declarations, SQL guardrails, the CLI's SQL and variable checks, the stdlib
+  dependency lint (one sequence per run, where a table a step that may not run
+  defines serves no later step) and stdlib coverage, exact scope support, the
+  identity gate and the wording guard read that set, and the saved-result read check reads its
+  top-level subset (`executableSqlUnits.test.ts` holds each of them to it,
+  unit by unit, and allows no other `exact_sql` read). Two steps can share a
+  name (an id written like a position), so anything relating steps keys by
+  the step itself. SQL the executor never runs (root SQL of a non-atomic
+  Skill, steps beside an atomic root, steps of a metadata-only Skill) is
+  `sql_not_executed`, a `PREDATING_RULE_CODES` rule, rather than SQL no check
+  reads. Do not add a private walk. The Trace SQL regression generator
+  (`Trace/tools/lib/skill-sql-contract.cjs`) still runs named SQL only: an
+  exact run there needs a bound target process.
 - After a source or policy change, regenerate in the public checkout, commit the
   updated source commit/hash provenance, and run `npm run verify:public-skills`.
 - The verification script uses sibling `../Perfetto-Skills` by default; set

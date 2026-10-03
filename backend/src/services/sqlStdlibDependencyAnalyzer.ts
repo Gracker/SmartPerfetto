@@ -588,19 +588,29 @@ function analyzeSingleSqlFragment(
   };
 }
 
+/**
+ * Analyzes fragments that run in order, each seeing the tables, views and
+ * INCLUDEs the fragments before it established. `reaches[i] === false` marks a
+ * fragment that may not run (a conditional branch, a guarded step): what it
+ * establishes holds for its own later statements, never for the fragments
+ * after it.
+ */
 export function analyzeSqlStdlibDependencySequence(
   sqlFragments: string[],
-  options: AnalyzeSqlStdlibDependenciesOptions = {},
+  options: AnalyzeSqlStdlibDependenciesOptions & {reaches?: readonly boolean[]} = {},
 ): SqlStdlibDependencyAnalysis[] {
   const index = getPerfettoStdlibSymbolIndex();
-  const previousLocalSymbols = new Set<string>();
-  const previousIncludedModules = new Set<string>();
+  const establishedLocalSymbols = new Set<string>();
+  const establishedIncludedModules = new Set<string>();
   for (const symbol of options.extraLocalSymbols ?? []) {
-    previousLocalSymbols.add(symbol.toLowerCase());
+    establishedLocalSymbols.add(symbol.toLowerCase());
   }
 
   const analyses: SqlStdlibDependencyAnalysis[] = [];
-  for (const fragment of sqlFragments) {
+  for (const [position, fragment] of sqlFragments.entries()) {
+    const reaches = options.reaches?.[position] ?? true;
+    const previousLocalSymbols = reaches ? establishedLocalSymbols : new Set(establishedLocalSymbols);
+    const previousIncludedModules = reaches ? establishedIncludedModules : new Set(establishedIncludedModules);
     const fragmentIncludes = new Set<string>();
     const fragmentLocalSymbols = new Set<string>();
     const fragmentDependencies = new Map<string, SqlStdlibDependency>();
