@@ -10,7 +10,8 @@ import {afterEach, describe, expect, it, jest} from '@jest/globals';
 import {createSkillExecutor} from '../skillExecutor';
 import {normalizeSkillDefinition} from '../skillLoader';
 import type {SkillDefinition} from '../types';
-import {fresh, stepOf} from '../../../../tests/helpers/skillRuleHarness';
+import {diagnoseRuleStep, fresh, stepOf} from '../../../../tests/helpers/skillRuleHarness';
+import {renderStepSql} from '../../../../tests/helpers/skillFragmentSql';
 
 /**
  * Missing evidence is reported as missing, never as a negative finding. The
@@ -75,29 +76,35 @@ function stub(id: string, saveAs: string, rows: Array<Record<string, number>>, c
 describe('anr_analysis first-ANR-window steps', () => {
   const ANR = 'composite/anr_analysis.skill.yaml';
   const anr = load(ANR);
-  const WINDOWED = ['system_cpu_health', 'memory_pressure', 'io_load', 'futex_wait_probe', 'system_freeze_check', 'top_cpu_processes'];
+  const WINDOWED = ['system_cpu_health', 'memory_pressure', 'io_load', 'anr_process_io_wait', 'futex_wait_probe',
+    'system_freeze_check', 'top_cpu_processes'];
   const detection = stub('anr_detection', 'detection', [{total_anr_count: 1}], ['total_anr_count']);
   const context = (rows: Array<Record<string, number>>) =>
     stub('get_anr_context', 'anr_ctx', rows, ['anr_ts', 'timeout_ns', 'upid']);
 
   /**
    * Main threads in a 10 ms window, each given as its state segments in ms
-   * (`[['Running', 2], ['S', 8]]`). App threads get uid 10100 + n.
+   * (`[['Running', 2], ['S', 8]]`), a D segment optionally with its wait
+   * channel (`['D', 6, 'io_schedule']`). App threads get uid 10100 + n.
    */
-  type Segments = Array<[string, number]>;
+  type Segments = Array<[string, number] | [string, number, string]>;
   function trace(threads: {apps?: Segments[]; systemServer?: Segments}) {
     db = new Database(':memory:');
     db.exec(`
       CREATE TABLE process(upid INTEGER PRIMARY KEY, pid INTEGER, name TEXT, uid INTEGER);
-      CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER);
-      CREATE TABLE thread_state(utid INTEGER, ts INTEGER, dur INTEGER, state TEXT);
+      CREATE TABLE thread(utid INTEGER PRIMARY KEY, upid INTEGER, tid INTEGER, name TEXT);
+      CREATE TABLE thread_state(id INTEGER PRIMARY KEY, utid INTEGER, ts INTEGER, dur INTEGER, state TEXT,
+        blocked_function TEXT, cpu INTEGER, ucpu INTEGER, io_wait INTEGER, waker_utid INTEGER, irq_context INTEGER);
+      CREATE TABLE trace_bounds(start_ts INTEGER, end_ts INTEGER);
+      INSERT INTO trace_bounds VALUES (0, ${10 * MS});
     `);
     const add = (upid: number, name: string, uid: number, segments: Segments) => {
       db!.prepare('INSERT INTO process VALUES (?, ?, ?, ?)').run(upid, 100 + upid, name, uid);
-      db!.prepare('INSERT INTO thread VALUES (?, ?, ?)').run(upid, upid, 100 + upid);
+      db!.prepare('INSERT INTO thread VALUES (?, ?, ?, ?)').run(upid, upid, 100 + upid, 'main');
       let at = 0;
-      for (const [state, ms] of segments) {
-        db!.prepare('INSERT INTO thread_state VALUES (?, ?, ?, ?)').run(upid, at * MS, ms * MS, state);
+      for (const [state, ms, wchan] of segments) {
+        db!.prepare('INSERT INTO thread_state (utid, ts, dur, state, blocked_function) VALUES (?, ?, ?, ?, ?)')
+          .run(upid, at * MS, ms * MS, state, wchan ?? null);
         at += ms;
       }
     };
@@ -117,8 +124,35 @@ describe('anr_analysis first-ANR-window steps', () => {
   it('runs every windowed step once the window exists', async () => {
     // Tables this fixture does not model make some steps fail; failing is running.
     const rows = await run(trace({apps: [IDLE], systemServer: IDLE}), ANR,
-      [detection, context([{anr_ts: 10 * MS, timeout_ns: 10 * MS}]), ...WINDOWED.map(id => fresh(stepOf(anr, id)))]);
+      [detection, context([{anr_ts: 10 * MS, timeout_ns: 10 * MS, upid: 1}]), ...WINDOWED.map(id => fresh(stepOf(anr, id)))]);
     expect(WINDOWED.filter(id => rows(id) === 'not_run')).toEqual([]);
+  });
+
+  it('reads the D waits of the ANR process, not the longest one system-wide', async () => {
+    const rows = await run(trace({apps: [[['Running', 2], ['D', 6, 'io_schedule'], ['S', 2]]], systemServer: [['D', 9], ['S', 1]]}),
+      ANR, [detection, context([{anr_ts: 10 * MS, timeout_ns: 10 * MS, upid: 1}]), fresh(stepOf(anr, 'anr_process_io_wait'))]);
+    expect(rows('anr_process_io_wait')).toEqual([{
+      process_name: 'com.example.app0', main_thread_uninterruptible_ms: 6, process_uninterruptible_ms: 6,
+      top_thread_name: 'main', top_thread_ms: 6, main_thread_io_wchan_ms: 6, frozen_ms: 0, blocked_function_coverage_pct: 100,
+    }]);
+  });
+
+  it('does not read an ANR without a process as one without D waits', async () => {
+    const rows = await run(trace({apps: [[['D', 10]]]}), ANR,
+      [detection, context([{anr_ts: 10 * MS, timeout_ns: 10 * MS}]), fresh(stepOf(anr, 'anr_process_io_wait'))]);
+    expect(rows('anr_process_io_wait')).toBe('not_run');
+  });
+
+  it('diagnoses a D wait of the ANR main thread, not one elsewhere', async () => {
+    const rule = stepOf(anr, 'anr_diagnosis');
+    const dWait = (results: Awaited<ReturnType<typeof diagnoseRuleStep>>) =>
+      results.filter(result => /D-state/.test(result.diagnosis));
+    const systemWide = {io_load: [{process_name: 'msm_hw_fence_soccp_listener', uninterruptible_wait_ms: 3086}]};
+    expect(dWait(await diagnoseRuleStep(rule, {detection: [{total_anr_count: 1}], ...systemWide,
+      anr_io_wait: [{process_name: 'com.example.app', main_thread_uninterruptible_ms: 40}]}))).toEqual([]);
+    expect(dWait(await diagnoseRuleStep(rule, {detection: [{total_anr_count: 1}], ...systemWide,
+      anr_io_wait: [{process_name: 'com.example.app', main_thread_uninterruptible_ms: 800}]})).map(result => result.diagnosis))
+      .toEqual(['ANR 进程 com.example.app 主线程在 ANR 窗口内 D-state 不可中断等待 800ms']);
   });
 
   async function verdict(threads: Parameters<typeof trace>[0], anrUpid?: number) {
@@ -299,6 +333,41 @@ describe('startup evidence producers', () => {
     expect(rows.map((row: any) => [row.state, row.severe_delays, row.all_severe_delays, row.all_max_wait_ms]))
       .toEqual([['R+', 2, 2, 12], ['R', 0, 2, 12]]);
   });
+
+  it('groups breakdown reasons by their exact value, totalling each category before the top-K cut', async () => {
+    db = new Database(':memory:');
+    db.exec(`
+      CREATE TABLE android_startups(startup_id INTEGER, ts INTEGER, dur INTEGER, package TEXT);
+      CREATE TABLE android_startup_opinionated_breakdown(startup_id INTEGER, ts INTEGER, dur INTEGER, reason TEXT);
+      INSERT INTO android_startups VALUES (1, 0, ${1000 * MS}, 'com.example.app');
+    `);
+    const insert = db.prepare('INSERT INTO android_startup_opinionated_breakdown VALUES (1, 0, ?, ?)');
+    // Each of these once read as IO through the substring io; D without
+    // io_wait is a thread state, and an unlisted reason is Other.
+    insert.run(380 * MS, 'bind_application');
+    insert.run(200 * MS, 'monitor_contention');
+    insert.run(120 * MS, 'verify_class');
+    insert.run(100 * MS, 'open_dex_files_from_oat');
+    insert.run(100 * MS, 'io');
+    insert.run(50 * MS, 'D');
+    insert.run(50 * MS, 'some_new_reason');
+    const rows = await produce(db, 'atomic/startup_breakdown_in_range.skill.yaml', {...window, top_k: 3});
+    expect(rows.map((row: any) => [row.reason, row.category, row.percent, row.category_percent])).toEqual([
+      ['bind_application', 'AppPhase', 38, 38],
+      ['monitor_contention', 'Lock', 20, 20],
+      ['verify_class', 'ClassLoading', 12, 22],
+    ]);
+    const all = await produce(db, 'atomic/startup_breakdown_in_range.skill.yaml', {...window, top_k: 10});
+    expect(Object.fromEntries(all.map((row: any) => [row.reason, [row.category, row.category_percent]]))).toEqual({
+      bind_application: ['AppPhase', 38],
+      monitor_contention: ['Lock', 20],
+      verify_class: ['ClassLoading', 22],
+      open_dex_files_from_oat: ['ClassLoading', 22],
+      io: ['IO', 10],
+      D: ['Uninterruptible', 5],
+      some_new_reason: ['Other', 5],
+    });
+  });
 });
 
 describe('fragments/file_io_slice_names.sql', () => {
@@ -308,6 +377,8 @@ describe('fragments/file_io_slice_names.sql', () => {
       ['readFile', 'file,read'], ['Thread', null], ['isReady', null], ['FileUtils.copy', 'file'],
       ['fsync', 'sync'], ['AsyncTask', null], ['flush commands', null], ['SharedPreferencesImpl.apply', 'shared_prefs'],
       ['IO_read', 'read'], ['readahead', 'read'], ['Reader', null], ['SQLiteDatabase', 'database'],
+      // All-caps is not a form of a word: the real all-caps OPEN is a transition type.
+      ['playTransition: OPEN', null], ['Transition-OPEN#409', null],
     ];
     const rows = db.prepare(`WITH
       ${fragments.get('fragments/file_io_slice_names.sql')},
@@ -332,5 +403,71 @@ describe('fragments/file_io_slice_names.sql', () => {
       'SharedPreferencesImpl.loadFromDisk']) {
       expect([name, hit(name)]).toEqual([name, false]);
     }
+  });
+});
+
+describe('fragments/gpu_frequency_intervals.sql', () => {
+  // The gpufreq track is labelled kHz, but its writers use kHz, Hz and MHz.
+  const gpuFixture = () => {
+    db = new Database(':memory:');
+    db.function('trace_end', () => 1000);
+    db.exec(`
+      CREATE TABLE gpu_counter_track(id INTEGER PRIMARY KEY, name TEXT, gpu_id INTEGER, ugpu INTEGER);
+      CREATE TABLE counter(id INTEGER PRIMARY KEY, ts INTEGER, track_id INTEGER, value REAL);
+      INSERT INTO gpu_counter_track VALUES
+        (1, 'gpufreq', 0, 0),     -- power/gpu_frequency: kHz, with power-off samples
+        (2, 'gpufreq', 1, 1),     -- kHz and kgsl Hz on one track
+        (3, 'gpufreq', 2, 2),     -- sys_stats gpufreq_mhz, and two values no GPU clock has
+        (4, 'gpu_mem', 0, 0),
+        (5, 'gpufreq', NULL, 3);
+      INSERT INTO counter VALUES
+        (1, 0, 1, 434000), (2, 100, 1, 0), (3, 200, 1, 251000),
+        (4, 0, 2, 700000), (5, 50, 2, 700000000), (6, 80, 2, 900000000),
+        (7, 0, 3, 600), (8, 30, 3, 5), (9, 60, 3, 2e10),
+        (10, 0, 4, 123456), (11, 0, 5, 300000);
+    `);
+  };
+  const intervals = () => fragments.get('fragments/gpu_frequency_intervals.sql')!;
+
+  it('reads each sample by its own magnitude and compares normalized neighbours', () => {
+    gpuFixture();
+    const rows = db!.prepare(`WITH ${intervals()}
+      SELECT gpu_id, ts, dur, freq_mhz, is_off, unit_basis, prev_freq_mhz
+      FROM gpu_frequency_intervals ORDER BY gpu_id, ts`).all();
+    expect(rows).toEqual([
+      {gpu_id: 0, ts: 0, dur: 100, freq_mhz: 434, is_off: 0, unit_basis: 'khz', prev_freq_mhz: null},
+      {gpu_id: 0, ts: 100, dur: 100, freq_mhz: 0, is_off: 1, unit_basis: 'off', prev_freq_mhz: 434},
+      {gpu_id: 0, ts: 200, dur: 800, freq_mhz: 251, is_off: 0, unit_basis: 'khz', prev_freq_mhz: 0},
+      {gpu_id: 1, ts: 0, dur: 50, freq_mhz: 700, is_off: 0, unit_basis: 'khz', prev_freq_mhz: null},
+      {gpu_id: 1, ts: 50, dur: 30, freq_mhz: 700, is_off: 0, unit_basis: 'hz', prev_freq_mhz: 700},
+      {gpu_id: 1, ts: 80, dur: 920, freq_mhz: 900, is_off: 0, unit_basis: 'hz', prev_freq_mhz: 700},
+      {gpu_id: 2, ts: 0, dur: 30, freq_mhz: 600, is_off: 0, unit_basis: 'mhz', prev_freq_mhz: null},
+      {gpu_id: 2, ts: 30, dur: 30, freq_mhz: null, is_off: 0, unit_basis: 'out_of_domain', prev_freq_mhz: 600},
+      {gpu_id: 2, ts: 60, dur: 940, freq_mhz: null, is_off: 0, unit_basis: 'out_of_domain', prev_freq_mhz: null},
+    ]);
+  });
+
+  it('clips intervals to a window and summarizes running, off and changes per GPU', () => {
+    gpuFixture();
+    const windowed = (start: number, end: number, select: string) => db!.prepare(renderStepSql(select,
+      ['fragments/gpu_frequency_intervals.sql', 'fragments/gpu_frequency_window.sql', 'fragments/gpu_frequency_summary.sql'],
+      {start_ts: start, end_ts: end})).all();
+    expect(windowed(150, 250, `SELECT gpu_id, ts, dur, running_mhz, is_running_change
+      FROM gpu_frequency_window WHERE gpu_id = 0 ORDER BY ts`)).toEqual([
+      {gpu_id: 0, ts: 150, dur: 50, running_mhz: null, is_running_change: 0},
+      {gpu_id: 0, ts: 200, dur: 50, running_mhz: 251, is_running_change: 0},
+    ]);
+    // GPU 1 ran at 700 MHz (kHz then Hz: no change) and 900 MHz; GPU 0 was off
+    // for a third of the window; GPU 2 has 30 ns at 600 MHz and the rest unreadable.
+    expect(windowed(0, 300, 'SELECT * FROM gpu_frequency_summary ORDER BY gpu_id')).toEqual([
+      {gpu_id: 0, observed_ns: 300, running_ns: 200, off_ns: 100, out_of_domain_ns: 0,
+        avg_running_mhz: 342.5, max_running_mhz: 434, min_running_mhz: 251, running_levels: 2, running_change_count: 0},
+      {gpu_id: 1, observed_ns: 300, running_ns: 300, off_ns: 0, out_of_domain_ns: 0,
+        avg_running_mhz: (80 * 700 + 220 * 900) / 300, max_running_mhz: 900, min_running_mhz: 700, running_levels: 2,
+        running_change_count: 1},
+      {gpu_id: 2, observed_ns: 300, running_ns: 30, off_ns: 0, out_of_domain_ns: 270,
+        avg_running_mhz: 600, max_running_mhz: 600, min_running_mhz: 600, running_levels: 1, running_change_count: 0},
+    ]);
+    expect(windowed(250, 150, 'SELECT * FROM gpu_frequency_window')).toEqual([]);
   });
 });

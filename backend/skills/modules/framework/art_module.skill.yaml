@@ -43,25 +43,26 @@ inputs:
     description: "Analysis end timestamp"
 
 steps:
-  # Step 1: Get GC overview
+  # Step 1: GC by kind and name for the package in the window. Runs and the
+  # waits on them are fragments/memory_gc_events.sql rows told apart by
+  # gc_kind; a wait overlaps what it waits on, so totals take runs only.
   - id: gc_overview
     type: atomic
     name: "GC 概览"
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       SELECT
-        slice.name AS gc_type,
+        gc_name AS gc_type,
+        gc_kind,
         COUNT(*) AS gc_count,
-        CAST(SUM(slice.dur) / 1e6 AS INTEGER) AS total_gc_ms,
-        CAST(AVG(slice.dur) / 1e6 AS REAL) AS avg_gc_ms,
-        CAST(MAX(slice.dur) / 1e6 AS REAL) AS max_gc_ms
-      FROM slice
-      JOIN thread_track ON slice.track_id = thread_track.id
-      JOIN thread ON thread_track.utid = thread.utid
-      WHERE slice.name LIKE '%GC%'
-        OR slice.name LIKE '%garbage%'
-        OR slice.name LIKE '%collection%'
-      GROUP BY slice.name
-      ORDER BY total_gc_ms DESC
+        CAST(SUM(dur) / 1e6 AS INTEGER) AS total_gc_ms,
+        CAST(AVG(dur) / 1e6 AS REAL) AS avg_gc_ms,
+        CAST(MAX(dur) / 1e6 AS REAL) AS max_gc_ms
+      FROM memory_gc_events
+      GROUP BY gc_kind, gc_name
+      ORDER BY gc_kind, total_gc_ms DESC
     display:
       level: key
       layer: overview
@@ -78,22 +79,46 @@ steps:
           label: 总耗时
           format: "{{value}}ms"
 
-  # Step 2: Get individual GC events
+  # Step 2: One row of totals: collector runs, and time threads waited on
+  # the collector, overall and on the main thread.
+  - id: gc_totals
+    type: atomic
+    name: "GC 合计"
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
+    sql: |
+      SELECT
+        COALESCE(SUM(gc_kind = 'collection'), 0) AS collection_count,
+        CAST(COALESCE(SUM(CASE WHEN gc_kind = 'collection' THEN dur END), 0) / 1e6 AS INTEGER) AS collection_ms,
+        COALESCE(SUM(gc_kind = 'wait'), 0) AS wait_count,
+        CAST(COALESCE(SUM(CASE WHEN gc_kind = 'wait' THEN dur END), 0) / 1e6 AS INTEGER) AS wait_ms,
+        COALESCE(SUM(gc_kind = 'collection' AND is_main_thread = 1), 0) AS main_thread_collection_count,
+        COALESCE(SUM(gc_kind = 'wait' AND is_main_thread = 1), 0) AS main_thread_wait_count,
+        CAST(COALESCE(SUM(CASE WHEN is_main_thread = 1 THEN dur END), 0) / 1e6 AS INTEGER) AS main_thread_gc_ms
+      FROM memory_gc_events
+    display:
+      level: key
+      layer: overview
+      title: "GC 合计"
+    save_as: gc_totals
+
+  # Step 3: Individual GC events, collector runs first.
   - id: gc_events
     type: atomic
     name: "GC 事件列表"
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       SELECT
-        slice.ts,
-        slice.name AS gc_type,
-        CAST(slice.dur / 1e6 AS REAL) AS dur_ms,
-        thread.name AS thread_name
-      FROM slice
-      JOIN thread_track ON slice.track_id = thread_track.id
-      JOIN thread ON thread_track.utid = thread.utid
-      WHERE slice.name LIKE '%GC%'
-        OR slice.name LIKE '%garbage%'
-      ORDER BY slice.dur DESC
+        ts,
+        gc_name AS gc_type,
+        gc_kind,
+        CAST(dur / 1e6 AS REAL) AS dur_ms,
+        thread_name
+      FROM memory_gc_events
+      ORDER BY gc_kind = 'collection' DESC, dur DESC
       LIMIT 30
     display:
       level: detail
@@ -101,23 +126,23 @@ steps:
       title: "GC 事件列表"
     save_as: gc_events
 
-  # Step 3: Check for GC during main thread work
+  # Step 4: GC runs and waits on the main thread (tid = pid: the main thread
+  # is named after its process, not "main").
   - id: gc_during_main_thread
     type: atomic
     name: "主线程 GC"
+    sql_fragments:
+      - fragments/art_gc_names.sql
+      - fragments/memory_gc_events.sql
     sql: |
       SELECT
-        slice.ts,
-        slice.name AS gc_type,
-        CAST(slice.dur / 1e6 AS REAL) AS dur_ms
-      FROM slice
-      JOIN thread_track ON slice.track_id = thread_track.id
-      JOIN thread ON thread_track.utid = thread.utid
-      JOIN process ON thread.upid = process.upid
-      WHERE (slice.name LIKE '%GC%' OR slice.name LIKE '%garbage%')
-        AND thread.name = 'main'
-        AND ('${package}' = '' OR process.name = '${package}' OR process.name GLOB '${package}:*')
-      ORDER BY slice.dur DESC
+        ts,
+        gc_name AS gc_type,
+        gc_kind,
+        CAST(dur / 1e6 AS REAL) AS dur_ms
+      FROM memory_gc_events
+      WHERE is_main_thread = 1
+      ORDER BY dur DESC
       LIMIT 20
     display:
       level: detail
@@ -125,7 +150,7 @@ steps:
       title: "主线程 GC"
     save_as: main_thread_gc
 
-  # Step 4: JIT compilation events
+  # Step 5: JIT compilation events
   - id: jit_events
     type: atomic
     name: "JIT 编译事件"
@@ -146,34 +171,35 @@ steps:
       title: "JIT 编译事件"
     save_as: jit_events
 
-  # Step 5: Diagnose ART issues
+  # Step 6: Diagnose ART issues
   - id: art_diagnosis
     type: diagnostic
     name: "ART 诊断"
-    inputs: [gc_overview, gc_events, main_thread_gc, jit_events]
+    inputs: [gc_overview, gc_totals, gc_events, main_thread_gc, jit_events]
     rules:
-      - condition: "main_thread_gc.data.length > 0"
-        diagnosis: "主线程发生 ${main_thread_gc.data.length} 次 GC，可能导致卡顿"
+      - condition: "(gc_totals.data[0]?.main_thread_collection_count || 0) + (gc_totals.data[0]?.main_thread_wait_count || 0) > 0"
+        diagnosis: "主线程执行 GC 回收 ${gc_totals.data[0].main_thread_collection_count} 次、等待 GC 完成 ${gc_totals.data[0].main_thread_wait_count} 次，共 ${gc_totals.data[0].main_thread_gc_ms}ms，可能导致卡顿"
         confidence: high
         suggestions:
           - "减少临时对象分配"
           - "使用对象池复用对象"
         evidence_fields:
-          - main_thread_gc.data.length
-          - main_thread_gc.data[0]?.dur_ms
+          - gc_totals.data[0].main_thread_collection_count
+          - gc_totals.data[0].main_thread_wait_count
+          - gc_totals.data[0].main_thread_gc_ms
 
-      - condition: "gc_overview.data[0]?.total_gc_ms > 100"
-        diagnosis: "GC 总耗时过长 (${gc_overview.data[0]?.total_gc_ms}ms)，内存压力大"
+      - condition: "(gc_totals.data[0]?.collection_ms || 0) > 100"
+        diagnosis: "GC 回收总耗时过长 (${gc_totals.data[0].collection_ms}ms，${gc_totals.data[0].collection_count} 次)，内存压力大"
         confidence: high
         suggestions:
           - "检查是否有内存泄漏"
           - "优化数据结构减少内存使用"
         evidence_fields:
-          - gc_overview.data[0].total_gc_ms
-          - gc_overview.data[0].gc_count
+          - gc_totals.data[0].collection_ms
+          - gc_totals.data[0].collection_count
 
-      - condition: "gc_events.data[0]?.dur_ms > 10"
-        diagnosis: "存在长 GC 暂停 (${gc_events.data[0]?.dur_ms}ms)"
+      - condition: "gc_events.data[0]?.gc_kind === 'collection' && gc_events.data[0]?.dur_ms > 10"
+        diagnosis: "存在长 GC 回收 (${gc_events.data[0]?.dur_ms}ms)"
         confidence: medium
         suggestions:
           - "增加堆大小"

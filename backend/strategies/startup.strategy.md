@@ -882,7 +882,7 @@ TTID 和 TTFD 是两个不同的指标，必须区分：
 - 把启动锚点之前或闲期的主线程长 sleep 计入启动阻塞总量；或在缺少唤醒证据（waker + 唤醒时刻 slice）时把闲期 sleep 写成"等待输入/空闲"
 - 在忙/闲分期未建立的情况下，仅凭 Q4 聚合占比下"主线程睡眠严重/不严重"的结论
 - 不区分 GC 在主线程还是后台线程
-- 把延迟归因（opinionated_breakdown）的 category 字段（IO/Layout/Other 等）当作真实的阻塞原因。这些 category 是 Perfetto 基于 slice 名称的**启发式分类**，不代表实际线程状态。例如 bind_application 被标记为 IO 类别，但实际阻塞原因可能是锁等待。**必须用线程状态数据（特别是 hot_slice_states）来验证真实根因**
+- 把延迟归因（opinionated_breakdown）的 category 字段当作真实的阻塞原因。reason 是 stdlib 对主线程最内层 slice 名或线程状态的归并（只有 io_wait=1 才记为 io），category 是 reason 的精确分组：AppPhase（bind_application、activity_start 等）只说明时间落在哪个应用阶段，Running/Runnable/Sleep/Uninterruptible 是没有已知 slice 时的线程状态，都不是根因；category_percent 才是整个类别的占比，percent 只是单个 reason。**必须用线程状态数据（特别是 hot_slice_states）来验证真实根因**
 - 用 slice wall time 与全区间线程状态总量做直接数值对比来推断因果（如"inflate 479ms ≈ S状态 468ms 所以它是 S 状态的根因"）。wall time 包含所有线程状态，正确做法是使用 hot_slice_states 的 per-slice 状态分解
 - **将嵌套 slice 的 wall time 作为独立根因并列报告**，导致百分比总和超过 100%。必须用 self_ms 归因
 - **只分析 activityStart 阶段而遗漏 bindApplication 阶段**（反之亦然）。两个阶段都必须覆盖

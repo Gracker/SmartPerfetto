@@ -37,7 +37,11 @@ export interface SqlPlaceholder {
   pattern?: SqlPatternLiteral;
 }
 
-interface Token {
+/**
+ * One token of Skill SQL. A placeholder in code is a `word` with empty text;
+ * one inside a literal sets `bound` and is not part of `text`.
+ */
+export interface SqlToken {
   kind: 'word' | 'identifier' | 'string' | 'punct';
   /** Upper-cased word or quoted name, the punctuation, or the decoded literal text. */
   text: string;
@@ -48,6 +52,7 @@ interface Token {
   /** A string literal with a placeholder in it. */
   bound?: boolean;
 }
+type Token = SqlToken;
 
 interface ScannedPlaceholder {
   start: number;
@@ -81,7 +86,7 @@ export function readPlaceholderBody(body: string): {path: string; defaultValue?:
 
 // Skill SQL and fragments are a fixed set of texts, each substituted on every
 // run; the scan depends only on the text.
-const scanCache = new Map<string, ScannedPlaceholder[]>();
+const scanCache = new Map<string, {placeholders: ScannedPlaceholder[]; tokens: Token[]}>();
 const SCAN_CACHE_LIMIT = 1024;
 
 /**
@@ -89,6 +94,19 @@ const SCAN_CACHE_LIMIT = 1024;
  * quote or comment marker inside `${...}` (a `|'x'` default) is not SQL.
  */
 function scanSqlPlaceholders(sql: string): ScannedPlaceholder[] {
+  return scanSql(sql).placeholders;
+}
+
+/**
+ * Skill SQL as tokens, comments dropped, each GLOB/LIKE pattern literal marked
+ * (`pattern`): the scan placeholder binding reads, for readers that need the
+ * SQL structure. Callers must not modify the tokens.
+ */
+export function skillSqlTokens(sql: string): readonly SqlToken[] {
+  return scanSql(sql).tokens;
+}
+
+function scanSql(sql: string): {placeholders: ScannedPlaceholder[]; tokens: Token[]} {
   const cached = scanCache.get(sql);
   if (cached) return cached;
   const at = new Map<number, string>();
@@ -156,8 +174,9 @@ function scanSqlPlaceholders(sql: string): ScannedPlaceholder[] {
   }
   markPatternOperands(tokens);
   if (scanCache.size >= SCAN_CACHE_LIMIT) scanCache.clear();
-  scanCache.set(sql, placeholders);
-  return placeholders;
+  const scanned = {placeholders, tokens};
+  scanCache.set(sql, scanned);
+  return scanned;
 }
 
 const isPunct = (token: Token | undefined, text: string) => token?.kind === 'punct' && token.text === text;

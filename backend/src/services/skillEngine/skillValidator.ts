@@ -27,6 +27,7 @@ import {
 } from './types';
 import { CONTEXTUAL_KEYWORDS, extractRootVariables } from './expressionUtils';
 import { sqlScopeDeclarationError } from './processScopeSql';
+import { sqlReads } from './normalizedSourceReads';
 
 // =============================================================================
 // Validation Types
@@ -351,22 +352,39 @@ export function validateFragmentReferences(
 }
 
 /**
- * Stdlib relations whose raw values differ across trace-processor runtimes and
- * must be read through one normalizing fragment. Key: the stdlib relation;
- * value: the fragment that owns the only raw read.
+ * The fragment that owns the only raw read of a source, the relation it
+ * defines, and the names or types of the counter tracks that source reads.
  */
-const NORMALIZED_STDLIB_READS: ReadonlyMap<string, string> = new Map([
-  ['android_input_events', 'fragments/android_input_events_normalized.sql'],
-]);
-
-/** SQL with comments and string literals blanked, so only executable text is matched. */
-function executableSqlText(sql: string): string {
-  return sql.replace(/--[^\n\r]*|\/\*[\s\S]*?\*\/|'(?:''|[^'])*'/g, ' ');
+interface NormalizedReadOwner {
+  fragment: string;
+  relation: string;
+  trackSelectors?: readonly string[];
 }
 
 /**
- * Reject a raw FROM/JOIN of a normalized stdlib relation in Skill SQL or in a
- * referenced fragment other than the relation's own normalizing fragment.
+ * Stdlib relations whose raw values differ across trace-processor runtimes or
+ * writers and must be read through one normalizing fragment.
+ * android_gpu_frequency returns the gpufreq counter as written: kHz, Hz or MHz,
+ * and selecting that track by name or type reads the same raw values.
+ */
+const NORMALIZED_STDLIB_READS: ReadonlyMap<string, NormalizedReadOwner> = new Map([
+  ['android_input_events', {
+    fragment: 'fragments/android_input_events_normalized.sql', relation: 'android_input_events_normalized',
+  }],
+  ['android_gpu_frequency', {
+    fragment: 'fragments/gpu_frequency_intervals.sql', relation: 'gpu_frequency_intervals',
+    trackSelectors: ['gpufreq', 'gpu_frequency'],
+  }],
+]);
+
+/**
+ * Reject a read of a normalized stdlib relation, or a selection of its track
+ * by name or type, in Skill SQL or in a referenced fragment other than the
+ * owning fragment. The check follows the SQL structure
+ * (normalizedSourceReads.ts): a wrapped or aliased column (LOWER(t.name),
+ * track_name) and an exact comparison in a conditional aggregate select as
+ * surely as a bare filter, while an exclusion (!=, NOT IN) or a CASE label
+ * does not. Its accepted limits are listed there.
  */
 export function validateNormalizedStdlibReads(
   skill: SkillDefinition,
@@ -374,11 +392,15 @@ export function validateNormalizedStdlibReads(
 ): SkillValidationWarning[] {
   const warnings: SkillValidationWarning[] = [];
   const check = (sql: string, path: string, where: string, exemptFragment?: string): void => {
-    const executable = executableSqlText(sql);
-    for (const [relation, owner] of NORMALIZED_STDLIB_READS) {
-      if (owner === exemptFragment) continue;
-      if (new RegExp(`\\b(?:FROM|JOIN)\\s+${relation}(?![\\w.])`, 'i').test(executable)) {
-        warnings.push({ stepId: path, message: `${where} reads ${relation} directly; read ${relation}_normalized via sql_fragments: [${owner}]` });
+    const reads = sqlReads(sql);
+    for (const [source, owner] of NORMALIZED_STDLIB_READS) {
+      if (owner.fragment === exemptFragment) continue;
+      if (reads.readsRelation(source)) {
+        warnings.push({ stepId: path, message: `${where} reads ${source} directly; read ${owner.relation} via sql_fragments: [${owner.fragment}]` });
+      }
+      const selector = owner.trackSelectors?.find(value => reads.selectsTrack(value));
+      if (selector) {
+        warnings.push({ stepId: path, message: `${where} selects the ${selector} counter track directly; read ${owner.relation} via sql_fragments: [${owner.fragment}]` });
       }
     }
   };

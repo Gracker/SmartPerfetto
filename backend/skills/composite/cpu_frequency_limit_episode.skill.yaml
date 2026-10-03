@@ -474,6 +474,7 @@ steps:
       role: global_context
     sql_fragments:
       - fragments/thermal_signal_signatures.sql
+      - fragments/gpu_frequency_intervals.sql
     display:
       level: detail
       layer: list
@@ -494,17 +495,23 @@ steps:
         SELECT ${episode_windows.data[0].before_start_ts|NULL} AS before_start_ts,
           ${episode_windows.data[0].before_end_ts|NULL} AS before_end_ts
       ),
+      -- GPU frequency samples come through their normalizing fragment.
       counter_presence AS (
-        SELECT 'counter_track_type' AS source_kind, ct.type AS source_key,
-          printf('%d tracks', COUNT(DISTINCT ct.id)) AS detail,
-          COUNT(c.id) AS observed_count, NULL AS running_ns,
-          MIN(c.ts) AS first_ts, MAX(c.ts) AS last_ts,
+        SELECT 'counter_track_type' AS source_kind, source_key,
+          printf('%d tracks', COUNT(DISTINCT track_id)) AS detail,
+          COUNT(*) AS observed_count, NULL AS running_ns,
+          MIN(ts) AS first_ts, MAX(ts) AS last_ts,
           '存在该类计数器样本，不代表该子系统是本次限频的热源' AS interpretation
-        FROM counter_track ct JOIN counter c ON c.track_id = ct.id
-        WHERE ct.type IN ('battery_counter', 'power_rails', 'gpu_frequency', 'gpu_memory')
-          AND c.ts >= (SELECT before_start_ts FROM win)
-          AND c.ts < (SELECT before_end_ts FROM win)
-        GROUP BY ct.type
+        FROM (
+          SELECT ct.type AS source_key, c.track_id, c.ts
+          FROM counter_track ct JOIN counter c ON c.track_id = ct.id
+          WHERE ct.type IN ('battery_counter', 'power_rails', 'gpu_memory')
+          UNION ALL
+          SELECT 'gpu_frequency', track_id, ts FROM gpu_frequency_samples
+        )
+        WHERE ts >= (SELECT before_start_ts FROM win)
+          AND ts < (SELECT before_end_ts FROM win)
+        GROUP BY source_key
       ),
       sig AS (
         SELECT * FROM thermal_signal_signatures WHERE match_target = 'non_cpu_heat_process'

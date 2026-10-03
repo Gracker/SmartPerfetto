@@ -11,6 +11,8 @@ import {describe, expect, it} from '@jest/globals';
 import {SkillExecutor} from '../skillExecutor';
 import {normalizeSkillDefinition} from '../skillLoader';
 import {injectFragmentCtes, readSkillFragmentFile} from '../skillFragments';
+import {sqlLiteral} from '../sqlTemplate';
+import {diagnoseRuleStep, stepOf} from '../../../../tests/helpers/skillRuleHarness';
 
 const sqlite3Available = spawnSync('sqlite3', ['-version'], {encoding: 'utf-8'}).status === 0;
 const describeWithSqlite = sqlite3Available ? describe : describe.skip;
@@ -322,33 +324,153 @@ describeWithSqlite('android_heap_graph_leak_candidates SQL semantics', () => {
   });
 });
 
-describeWithSqlite('memory_analysis gc_frame_impact', () => {
+// Raw ART slices for fragments/memory_gc_events.sql: process, thread,
+// thread_track and slice, one track per thread (track id = utid).
+const gcSliceSchema = `
+  CREATE TABLE process(upid INTEGER, pid INTEGER, name TEXT);
+  CREATE TABLE thread(utid INTEGER, tid INTEGER, name TEXT, upid INTEGER);
+  CREATE TABLE thread_track(id INTEGER, utid INTEGER);
+  CREATE TABLE slice(id INTEGER, ts INTEGER, dur INTEGER, name TEXT, track_id INTEGER);
+`;
+const gcEventParams = {'${package}': '', '${start_ts}': 'NULL', '${end_ts}': 'NULL'};
+
+describeWithSqlite('ART GC names (fragments/art_gc_names.sql)', () => {
+  const fragment = readSkillFragmentFile(fragmentsDir, 'art_gc_names.sql');
+  const classify = (names: string[], query: string) => runSqliteJson(`${injectFragmentCtes(
+    `WITH input(name) AS (VALUES ${names.map(name => `(${sqlLiteral(name)})`).join(', ')})
+    ${query}`, [fragment])};`);
+
+  it('names collector runs and waits, and nothing that only says gc', () => {
+    const kinds: Array<[string, string | null]> = [
+      ['Background concurrent copying GC', 'collection'],
+      ['Background young concurrent copying GC', 'collection'],
+      ['Alloc concurrent copying GC', 'collection'],
+      ['Background concurrent mark compact GC', 'collection'],
+      ['Alloc partial concurrent mark sweep GC', 'collection'],
+      ['Background sticky concurrent mark sweep GC', 'collection'],
+      ['Explicit mark sweep GC', 'collection'],
+      ['Alloc semispace GC', 'collection'],
+      ['GC: Wait For Completion Alloc', 'wait'],
+      ['MetricsCollector', null],
+      ['BatchSignalCollector', null],
+      ['PackUcscIgc1DLut', null],
+      ['lhc->lgc', null],
+      ['/system/bin/logcat', null],
+      ['SparseArray.gc()', null],
+      ['art::gc::Heap::TrimSpaces', null],
+      ['Lock contention on GC barrier lock (owner tid: 0)', null],
+      ['f2fs_gc-254:48', null],
+      ['SmartPerfetto::CASE::memory-gc-pressure', null],
+    ];
+    const rows = classify(kinds.map(([name]) => name), `SELECT name,
+      (SELECT n.gc_kind FROM art_gc_slice_name_patterns n WHERE input.name GLOB n.pattern ORDER BY n.gc_kind LIMIT 1) AS kind,
+      (SELECT n.gc_kind FROM art_gc_slice_name_patterns n WHERE lower(input.name) GLOB lower(n.pattern) ORDER BY n.gc_kind LIMIT 1) AS lower_kind
+      FROM input`);
+    expect(rows).toEqual(kinds.map(([name, kind]) => ({name, kind, lower_kind: kind})));
+  });
+
+  it('reads ART GC log lines, not a bare gc in a path or method', () => {
+    const lines: Array<[string, number]> = [
+      ['Background concurrent copying GC freed 123(4KB) AllocSpace objects, 0(0B) LOS objects', 1],
+      ['WaitForGcToComplete blocked Alloc on HeapTrim for 12.3ms', 1],
+      ['Waiting for a blocking GC Alloc', 1],
+      ['Starting a blocking GC Alloc', 1],
+      ['Clamp target GC heap from 256MB to 128MB', 1],
+      ['/system/bin/logcat -b all', 0],
+      ['open com/xiaomi/push/gcp failed', 0],
+      ['SparseArray.gc() took 2ms', 0],
+      ['Starting activity com.example/.Main', 0],
+    ];
+    const rows = classify(lines.map(([line]) => line), `SELECT name,
+      EXISTS (SELECT 1 FROM art_gc_text_patterns g WHERE lower(input.name) GLOB g.pattern) AS gc_text
+      FROM input`);
+    expect(rows).toEqual(lines.map(([name, gc_text]) => ({name, gc_text})));
+  });
+});
+
+describeWithSqlite('memory_analysis GC steps', () => {
   const MS = 1000000;
-  const sql = `
-    CREATE TABLE _gc_events(gc_id INTEGER, ts INTEGER, dur INTEGER, gc_name TEXT, tid INTEGER, upid INTEGER, is_main_thread INTEGER);
+  // com.example.app (upid 1, main tid 101): a 45ms Alloc collection and a
+  // 10ms wait on the main thread, a 30ms background collection on its heap
+  // daemon, and two slices that only say gc. upid 3 runs one main-thread
+  // collection and records no FrameTimeline at all.
+  const fixture = `${gcSliceSchema}
     CREATE TABLE actual_frame_timeline_slice(id INTEGER, upid INTEGER, ts INTEGER, dur INTEGER, jank_type TEXT);
-    -- com.example.app (upid 1): a 45ms GC over two of its frames, one janky,
-    -- and a 10ms GC over none. upid 2 has a janky frame during the first GC.
-    INSERT INTO _gc_events VALUES (1, 0, ${45 * MS}, 'young', 101, 1, 1), (2, ${100 * MS}, ${10 * MS}, 'young', 101, 1, 1);
-    -- upid 3 runs a GC but records no FrameTimeline at all.
-    INSERT INTO _gc_events VALUES (3, 0, ${20 * MS}, 'young', 301, 3, 1);
+    INSERT INTO process VALUES (1, 101, 'com.example.app'), (2, 201, 'com.other'), (3, 301, 'com.third');
+    INSERT INTO thread VALUES
+      (1, 101, 'com.example.app', 1), (2, 102, 'HeapTaskDaemon', 1), (3, 301, 'com.third', 3);
+    INSERT INTO thread_track VALUES (1, 1), (2, 2), (3, 3);
+    INSERT INTO slice VALUES
+      (1, 0, ${45 * MS}, 'Alloc young concurrent copying GC', 1),
+      (2, ${100 * MS}, ${10 * MS}, 'GC: Wait For Completion Alloc', 1),
+      (3, ${95 * MS}, ${30 * MS}, 'Background concurrent copying GC', 2),
+      (4, ${200 * MS}, ${50 * MS}, 'MetricsCollector', 1),
+      (5, ${300 * MS}, ${50 * MS}, 'SmartPerfetto::CASE::memory-gc-pressure', 1),
+      (6, 0, ${20 * MS}, 'Background concurrent copying GC', 3);
     INSERT INTO actual_frame_timeline_slice VALUES
       (1, 1, ${5 * MS}, ${8 * MS}, 'None'),
       (2, 1, ${20 * MS}, ${30 * MS}, 'App Deadline Missed'),
-      (3, 2, ${10 * MS}, ${30 * MS}, 'Buffer Stuffing');
-    ${replaceParams(loadStepSql('skills/composite/memory_analysis.skill.yaml', 'gc_frame_impact'), {
-      '\${vsync_info.data[0].vsync_period_ns|16666667}': '16666667',
-    })};`;
+      (3, 2, ${10 * MS}, ${30 * MS}, 'Buffer Stuffing');`;
+  const step = (stepId: string, params: Record<string, string> = {}) => runSqliteJson(`${fixture}
+    ${replaceParams(loadStepSql('skills/composite/memory_analysis.skill.yaml', stepId), {...gcEventParams, ...params})};`);
 
-  it('reports each GC once over the frames of its own process', () => {
-    expect(runSqliteJson(sql)).toEqual([
-      {gc_name: 'young', gc_dur_ms: 45, frame_count: 2, janky_frame_count: 1,
+  it('reports each main-thread GC once over the frames of its own process', () => {
+    expect(step('gc_frame_impact', {'\${vsync_info.data[0].vsync_period_ns|16666667}': '16666667'})).toEqual([
+      {gc_name: 'Alloc young concurrent copying GC', gc_dur_ms: 45, frame_count: 2, janky_frame_count: 1,
         jank_type: 'App Deadline Missed', frame_dur_ms: 30, impact: 'GC导致掉帧'},
-      {gc_name: 'young', gc_dur_ms: 20, frame_count: 0, janky_frame_count: 0,
+      {gc_name: 'Background concurrent copying GC', gc_dur_ms: 20, frame_count: 0, janky_frame_count: 0,
         jank_type: null, frame_dur_ms: null, impact: '无帧时间线数据'},
-      {gc_name: 'young', gc_dur_ms: 10, frame_count: 0, janky_frame_count: 0,
+      {gc_name: 'GC: Wait For Completion Alloc', gc_dur_ms: 10, frame_count: 0, janky_frame_count: 0,
         jank_type: null, frame_dur_ms: null, impact: '无重叠帧'},
     ]);
+  });
+
+  it('counts collector runs and reports the waits on them apart', () => {
+    const [overview] = step('gc_overview', {
+      '\${gc_count_critical|100}': '100',
+      '\${gc_count_warning|50}': '50',
+      '\${gc_total_time_critical_ms|2000}': '2000',
+      '\${package}': 'com.example.app',
+    });
+    expect(overview).toEqual(expect.objectContaining({
+      total_gc_count: 2,
+      total_gc_time_ms: 75,
+      main_thread_gc_count: 1,
+      main_thread_gc_time_ms: 45,
+      main_thread_gc_wait_count: 1,
+      main_thread_gc_wait_ms: 10,
+      gc_wait_ms: 10,
+    }));
+  });
+});
+
+describeWithSqlite('art_module GC totals', () => {
+  const MS = 1000000;
+  const ART = 'skills/modules/framework/art_module.skill.yaml';
+  // A ProfileSaver wait on the main thread and no collector run at all.
+  const fixture = `${gcSliceSchema}
+    INSERT INTO process VALUES (1, 101, 'com.example.app'), (2, 201, 'com.other');
+    INSERT INTO thread VALUES (1, 101, 'com.example.app', 1), (2, 201, 'com.other', 2);
+    INSERT INTO thread_track VALUES (1, 1), (2, 2);
+    INSERT INTO slice VALUES
+      (1, 0, ${154 * MS}, 'GC: Wait For Completion ProfileSaver', 1),
+      (2, 0, ${300 * MS}, 'Background concurrent copying GC', 2);`;
+  const step = (stepId: string) => runSqliteJson(`${fixture}
+    ${replaceParams(loadStepSql(ART, stepId), {...gcEventParams, '${package}': 'com.example.app'})};`);
+
+  it('does not read a wait, or another process, as GC time', async () => {
+    const totals = step('gc_totals');
+    expect(totals).toEqual([{
+      collection_count: 0, collection_ms: 0, wait_count: 1, wait_ms: 154,
+      main_thread_collection_count: 0, main_thread_wait_count: 1, main_thread_gc_ms: 154,
+    }]);
+    const events = step('gc_events');
+    const rules = stepOf(loadYaml(ART), 'art_diagnosis');
+    const diagnoses = (await diagnoseRuleStep(rules, {
+      gc_overview: step('gc_overview'), gc_totals: totals, gc_events: events,
+      main_thread_gc: step('gc_during_main_thread'), jit_events: [],
+    })).map(result => result.diagnosis);
+    expect(diagnoses).toEqual(['主线程执行 GC 回收 0 次、等待 GC 完成 1 次，共 154ms，可能导致卡顿']);
   });
 });
 

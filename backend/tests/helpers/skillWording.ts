@@ -7,6 +7,12 @@
  * explanation.
  */
 const THERMAL_CAUSE = /温控|热控|过热|发热|高温|热节流|热降频|热限频|散热|设备温度|温度过高|温度升高|冷却后|thermal/gi;
+/**
+ * Wording that names a frequency cap: "throttle" reads as one to any reader,
+ * whether or not heat is said to set it. Inside an identifier
+ * (min_throttle_ns) it is a name.
+ */
+const FREQUENCY_CAP = /throttl[a-z]*/gi;
 
 /**
  * Markers that defer a thermal word close after them: a negation, an open
@@ -84,12 +90,13 @@ function defersCause(before: string): boolean {
   });
 }
 
-/** Whether a clause names a thermal cause: some thermal word in it is neither deferred nor a source of evidence. */
-function clauseNamesCause(clause: string): boolean {
+/** Whether a clause names the cause `words` stand for: some word in it is neither deferred nor a source of evidence. */
+function clauseNamesCause(clause: string, words: RegExp): boolean {
   if (UNDETERMINED.test(clause)) return false;
-  return [...clause.matchAll(THERMAL_CAUSE)].some(match => {
+  return [...clause.matchAll(words)].some(match => {
     const after = clause.slice(match.index! + match[0].length);
-    // An ASCII word inside an identifier or path (thermal/cdev_update, thermal_zone) is a name.
+    // An ASCII word inside an identifier or path (thermal/cdev_update, thermal_zone,
+    // ${throttle_events.data.length}) is a name.
     const inName = /^[a-z]/i.test(match[0]) && (/[\w/]$/.test(clause.slice(0, match.index)) || /^[\w/]/.test(after));
     const coolingDevice = match[0] === '散热' && after.startsWith('设备');
     if ((inName || coolingDevice || EVIDENCE_REFERENCE.test(after)) && !ATTRIBUTION.test(after)) return false;
@@ -98,16 +105,26 @@ function clauseNamesCause(clause: string): boolean {
 }
 
 /**
- * Whether some clause of `text` names a thermal cause without deferring it. An
- * evidence condition covers the clauses that follow it in its sentence, never
- * those before it.
+ * Whether some clause of `text` names the cause `words` stand for without
+ * deferring it. An evidence condition covers the clauses that follow it in its
+ * sentence, never those before it.
  */
-export function namesThermalCause(text: string): boolean {
+function namesCause(text: string, words: RegExp): boolean {
   for (const sentence of text.split(SENTENCE_BOUNDARY)) {
     for (const clause of sentence.split(CLAUSE_BOUNDARY)) {
       if (EVIDENCE_CONDITION.test(clause)) break;
-      if (clauseNamesCause(clause)) return true;
+      if (clauseNamesCause(clause, words)) return true;
     }
   }
   return false;
+}
+
+/** Whether `text` names heat as a cause. */
+export function namesThermalCause(text: string): boolean {
+  return namesCause(text, THERMAL_CAUSE);
+}
+
+/** Whether `text` names a frequency cap ("throttle"), which only limit evidence can show. */
+export function namesFrequencyCap(text: string): boolean {
+  return namesCause(text, FREQUENCY_CAP);
 }

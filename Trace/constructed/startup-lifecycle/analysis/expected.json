@@ -194,7 +194,8 @@
         "avg_dur_ms",
         "max_dur_ms",
         "percent",
-        "category"
+        "category",
+        "category_percent"
       ],
       "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
     },

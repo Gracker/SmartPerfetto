@@ -831,7 +831,7 @@ describe('ANR and frame-detail real YAML scope closure', () => {
         blocked_thread_name TEXT, process_name TEXT, is_blocked_thread_main INTEGER,
         waiter_count INTEGER, ts INTEGER, dur INTEGER);
       CREATE TABLE android_logs(ts INTEGER, prio INTEGER, tag TEXT, msg TEXT);
-      CREATE TABLE android_gpu_frequency(gpu_id INTEGER, gpu_freq INTEGER, dur INTEGER, ts INTEGER);
+      CREATE TABLE gpu_counter_track(id INTEGER PRIMARY KEY, name TEXT, gpu_id INTEGER, ugpu INTEGER);
       CREATE TABLE android_process_metadata(upid INTEGER, process_name TEXT, package_name TEXT,
         uid INTEGER, shared_uid INTEGER, is_kernel_task INTEGER);
       CREATE TABLE actual_frame_timeline_slice(upid INTEGER, ts INTEGER, dur INTEGER, jank_type TEXT, layer_name TEXT);
@@ -896,11 +896,15 @@ describe('ANR and frame-detail real YAML scope closure', () => {
         (2,100000000,2000000),(2,190000000,1500000),
         (30,100000000,1),(30,116000000,1),(30,132000000,1),(30,148000000,1),
         (30,164000000,1),(30,180000000,1),(30,196000000,1);
-      INSERT INTO android_gpu_frequency VALUES (0,800000000,50000000,100000000),(0,400000000,50000000,150000000);
+      -- kgsl_gpu_frequency samples, which trace_processor stores in Hz.
+      INSERT INTO gpu_counter_track VALUES (40,'gpufreq',0,0);
+      INSERT INTO counter VALUES (40,100000000,800000000),(40,150000000,400000000);
     `);
     db.exec(`
       CREATE TABLE trace_bounds(start_ts INTEGER,end_ts INTEGER);
       INSERT INTO trace_bounds VALUES(0,1000000000);
+      ALTER TABLE counter ADD COLUMN id INTEGER;
+      UPDATE counter SET id = rowid;
       ALTER TABLE thread ADD COLUMN is_idle INTEGER DEFAULT 0;
       ALTER TABLE cpu ADD COLUMN cpu INTEGER;
       ALTER TABLE cpu ADD COLUMN machine_id INTEGER;

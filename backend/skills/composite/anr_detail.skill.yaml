@@ -1180,6 +1180,7 @@ steps:
       role: target
       binding: effective_target_processes
     sql_fragments:
+      - fragments/art_gc_names.sql
       - fragments/effective_target_processes.sql
     name: "Slice 直接阻塞点候选"
     optional: true
@@ -1284,11 +1285,11 @@ steps:
               OR slice_name GLOB '*disk*'
               OR slice_name GLOB '*sharedpreferences*'
               OR slice_name GLOB '*queuedwork*'), 0) AS main_io_slice_ns,
-          COALESCE((SELECT SUM(clipped_ns) FROM main_slices
-            WHERE slice_name GLOB '*gc*'
-              OR slice_name GLOB '*garbage*'
-              OR slice_name GLOB '*waitforgctocomplete*'
-              OR slice_name GLOB '*suspend*'), 0) AS gc_wait_ns,
+          -- ART GC runs and waits on them on the main thread
+          -- (fragments/art_gc_names.sql; slice_name is lower-cased). A
+          -- SuspendAll in an ANR window is mostly the SIGQUIT stack dump.
+          COALESCE((SELECT SUM(clipped_ns) FROM main_slices m
+            WHERE EXISTS (SELECT 1 FROM art_gc_slice_name_patterns n WHERE m.slice_name GLOB lower(n.pattern))), 0) AS gc_wait_ns,
           COALESCE((SELECT SUM(clipped_ns) FROM main_slices
             WHERE slice_name GLOB '*syncanddraw*'
               OR slice_name GLOB '*waitforfence*'
@@ -1434,6 +1435,8 @@ steps:
         - name: msg_preview
           label: "消息"
           type: string
+    sql_fragments:
+      - fragments/art_gc_names.sql
     sql: |
       WITH anr_window AS (
         SELECT
@@ -1456,7 +1459,9 @@ steps:
             WHEN LOWER(COALESCE(l.tag, '')) GLOB '*jobscheduler*' OR LOWER(COALESCE(l.msg, '')) GLOB '*jobservice*' THEN 'job_scheduler'
             WHEN LOWER(COALESCE(l.tag, '')) GLOB '*watchdog*' OR LOWER(COALESCE(l.msg, '')) GLOB '*system_server*watchdog*' THEN 'watchdog'
             WHEN LOWER(COALESCE(l.tag, '')) GLOB '*lmkd*' OR LOWER(COALESCE(l.tag, '')) GLOB '*lowmemorykiller*' OR LOWER(COALESCE(l.msg, '')) GLOB '*lowmemory*' THEN 'memory_pressure'
-            WHEN LOWER(COALESCE(l.tag, '')) GLOB '*art*' OR LOWER(COALESCE(l.msg, '')) GLOB '*gc*' THEN 'gc_or_art'
+            -- ART logs under tag "art"; its GC lines: fragments/art_gc_names.sql.
+            WHEN LOWER(COALESCE(l.tag, '')) = 'art'
+              OR EXISTS (SELECT 1 FROM art_gc_text_patterns g WHERE LOWER(COALESCE(l.msg, '')) GLOB g.pattern) THEN 'gc_or_art'
             WHEN LOWER(COALESCE(l.tag, '')) GLOB '*strictmode*'
               OR LOWER(COALESCE(l.tag, '')) GLOB '*binder*'
               OR LOWER(COALESCE(l.msg, '')) GLOB '*anr*'

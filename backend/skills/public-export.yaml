@@ -119,6 +119,33 @@ sql_fragments:
   backend/skills/fragments/sleep_wake_source_labels.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/sleep_wake_source_labels.sql
+  backend/skills/fragments/art_gc_names.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/art_gc_names.sql
+  backend/skills/fragments/anr_matched.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/anr_matched.sql
+  backend/skills/fragments/anr_classified.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/anr_classified.sql
+  backend/skills/fragments/memory_gc_events.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/memory_gc_events.sql
+  backend/skills/fragments/gpu_frequency_intervals.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_intervals.sql
+  backend/skills/fragments/gpu_frequency_window.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_window.sql
+  backend/skills/fragments/gpu_frequency_summary.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_summary.sql
+  backend/skills/fragments/gpu_frequency_by_ugpu.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_frequency_by_ugpu.sql
+  backend/skills/fragments/gpu_descriptor_frequency_tracks.sql:
+    disposition: exported
+    destination: references/generated/runtime/fragments/gpu_descriptor_frequency_tracks.sql
   backend/skills/fragments/file_io_slice_names.sql:
     disposition: exported
     destination: references/generated/runtime/fragments/file_io_slice_names.sql

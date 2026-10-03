@@ -194,6 +194,8 @@ steps:
         - name: claim_boundary
           label: "证据边界"
           type: string
+    sql_fragments:
+      - fragments/art_gc_names.sql
     sql: |
       WITH startup_info AS (
         SELECT
@@ -232,19 +234,34 @@ steps:
           AND p.start_ts IS NOT NULL
           AND p.start_ts < (SELECT ts + dur FROM startup_info)
       ),
-      -- Check: GC during startup
+      -- Check: GC during startup. Count and time take collector runs; runs and
+      -- waits on the collector of the main thread are counted apart, and a
+      -- wait alone still reports the main thread blocked
+      -- (fragments/art_gc_names.sql).
+      gc_slices AS (
+        SELECT * FROM (
+          SELECT
+            s.dur,
+            tt.utid,
+            (SELECT n.gc_kind FROM art_gc_slice_name_patterns n WHERE s.name GLOB n.pattern
+             ORDER BY n.gc_kind LIMIT 1) AS gc_kind
+          FROM slice s
+          JOIN thread_track tt ON s.track_id = tt.id
+          JOIN thread t ON tt.utid = t.utid
+          JOIN startup_info si ON t.upid = si.upid
+          WHERE s.name GLOB '*GC*'
+            AND s.ts >= si.ts AND s.ts < si.ts + si.dur
+            AND s.dur > 100000  -- > 0.1ms
+        )
+        WHERE gc_kind IS NOT NULL
+      ),
       gc_check AS (
         SELECT
-          COUNT(*) as gc_count,
-          ROUND(COALESCE(SUM(s.dur), 0) / 1e6, 1) as gc_total_ms,
-          SUM(CASE WHEN tt.utid = (SELECT utid FROM main_thread) THEN 1 ELSE 0 END) as main_thread_gc_count
-        FROM slice s
-        JOIN thread_track tt ON s.track_id = tt.id
-        JOIN thread t ON tt.utid = t.utid
-        JOIN startup_info si ON t.upid = si.upid
-        WHERE (s.name GLOB '*GC*' OR s.name GLOB '*gc*')
-          AND s.ts >= si.ts AND s.ts < si.ts + si.dur
-          AND s.dur > 100000  -- > 0.1ms
+          COALESCE(SUM(gc_kind = 'collection'), 0) as gc_count,
+          ROUND(COALESCE(SUM(CASE WHEN gc_kind = 'collection' THEN dur END), 0) / 1e6, 1) as gc_total_ms,
+          COALESCE(SUM(gc_kind = 'collection' AND utid = (SELECT utid FROM main_thread)), 0) as main_thread_gc_count,
+          COALESCE(SUM(gc_kind = 'wait' AND utid = (SELECT utid FROM main_thread)), 0) as main_thread_gc_wait_count
+        FROM gc_slices
       ),
       -- Check: Lock contention
       lock_check AS (
@@ -343,12 +360,13 @@ steps:
 
       UNION ALL
       SELECT 'SR03',
-        CASE WHEN main_thread_gc_count > 0 THEN '主线程 GC（直接阻塞）'
+        CASE WHEN main_thread_gc_count + main_thread_gc_wait_count > 0 THEN '主线程 GC（直接阻塞）'
              ELSE 'GC 活动（间接影响）' END,
-        CASE WHEN main_thread_gc_count > 0 THEN 'warning' ELSE 'info' END,
-        gc_count || ' 次 GC, 总耗时 ' || gc_total_ms || ' ms, 主线程 ' || main_thread_gc_count || ' 次',
+        CASE WHEN main_thread_gc_count + main_thread_gc_wait_count > 0 THEN 'warning' ELSE 'info' END,
+        gc_count || ' 次 GC 回收, 总耗时 ' || gc_total_ms || ' ms; 主线程执行回收 ' || main_thread_gc_count
+          || ' 次、等待 GC 完成 ' || main_thread_gc_wait_count || ' 次',
         '减少启动期间的对象分配，避免触发 GC'
-      FROM gc_check WHERE gc_count > 0
+      FROM gc_check WHERE gc_count + main_thread_gc_wait_count > 0
 
       UNION ALL
       SELECT 'SR04', '主线程锁竞争',

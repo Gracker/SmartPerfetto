@@ -3678,7 +3678,7 @@ describe('诊断规则读声明的阈值输入', () => {
     });
 
   it('covers every threshold rule of both Skills', () => {
-    expect(thresholdRules).toHaveLength(9);
+    expect(thresholdRules).toHaveLength(10);
   });
 
   it.each(thresholdRules)('%s follows the caller threshold', async (_name, {skill, rule, match}) => {

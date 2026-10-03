@@ -20,6 +20,7 @@
 // zh-CN, and a projection renders any other language from the same ids.
 
 import {enrichSegmentsWithSemantics, segmentKeyOf, type SegmentInput as SemanticSegmentInput} from './criticalPathSemantics';
+import {artGcSliceKind} from './artGcNames';
 import {hintText} from './criticalPathText';
 import {resolveDirectWaker, type WakerChainResult} from './criticalPathWakerChain';
 import {
@@ -251,7 +252,14 @@ function stripPrefix(value: string, prefix: string): string | null {
 // name ("RenderThread", "pool-1-thread-1") says what a thread is, not what it
 // waited on. Role classes may also read names. Order is priority: the first
 // label is the segment's primary module.
-const TEXT_MODULES: Array<{id: CriticalPathModuleId; waitOnly: boolean; pattern: RegExp}> = [
+// A text item may also be matched whole: `names` tests each item of the texts
+// the class reads (original case), not the joined lower-cased text.
+const TEXT_MODULES: Array<{
+  id: CriticalPathModuleId;
+  waitOnly: boolean;
+  pattern: RegExp;
+  names?: (text: string) => boolean;
+}> = [
   {id: 'binder_ipc', waitOnly: false, pattern: /\bbinder|hwbinder|ipc(threadstate|transaction)|transact/},
   {
     id: 'lock_futex',
@@ -271,17 +279,27 @@ const TEXT_MODULES: Array<{id: CriticalPathModuleId; waitOnly: boolean; pattern:
     pattern: /renderthread|surfaceflinger|blast|bufferqueue|queuebuffer|dequeuebuffer|doframe|drawframe|traversal|hwui|skia|egl|vulkan|opengl/,
   },
   {id: 'input', waitOnly: false, pattern: /inputdispatcher|inputreader|motionevent|touch|gesture/},
-  {id: 'art_gc', waitOnly: false, pattern: /\bgc\b|garbage|art::|dalvik|jit|dex2oat/},
+  // GC by the ART slice names the Skills count (fragments/art_gc_names.sql),
+  // not a "gc" word: SparseArray.gc() is no GC run. ART runtime work
+  // (art::, dalvik, JIT, dex2oat) carries the same ART label.
+  {
+    id: 'art_gc',
+    waitOnly: false,
+    pattern: /garbage collect|art::|dalvik|\bjit\b|dex2oat/,
+    names: (text) => artGcSliceKind(text) !== undefined,
+  },
   {id: 'kernel_irq', waitOnly: false, pattern: /\birq\/|kworker|softirq|workqueue|rcu|kernel|interrupt/},
   {id: 'power_wakeup', waitOnly: false, pattern: /wakeup|wakelock|suspend|cpuidle|power/},
 ];
 
 function classifyModulesFromText(waitTexts: string[], roleTexts: string[]): CriticalPathModuleId[] {
+  const allTexts = [...waitTexts, ...roleTexts];
   const waitJoined = waitTexts.join('\n').toLowerCase();
-  const allJoined = [...waitTexts, ...roleTexts].join('\n').toLowerCase();
-  return TEXT_MODULES.filter(({waitOnly, pattern}) => pattern.test(waitOnly ? waitJoined : allJoined)).map(
-    ({id}) => id
-  );
+  const allJoined = allTexts.join('\n').toLowerCase();
+  return TEXT_MODULES.filter(({waitOnly, pattern, names}) =>
+    pattern.test(waitOnly ? waitJoined : allJoined)
+    || (names !== undefined && (waitOnly ? waitTexts : allTexts).some(names))
+  ).map(({id}) => id);
 }
 
 /** Attributable ms of each stdlib signal on one segment, capped at the segment's duration. */

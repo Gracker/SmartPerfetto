@@ -39,16 +39,38 @@ steps:
   - id: gpu_frequency_overview
     type: atomic
     name: "GPU 频率概览"
+    sql_fragments:
+      - fragments/gpu_frequency_intervals.sql
+      - fragments/gpu_descriptor_frequency_tracks.sql
     sql: |
+      -- MHz. gpufreq is normalized by fragments/gpu_frequency_intervals.sql,
+      -- leaving out time the GPU was off; another GPU frequency counter is
+      -- converted only by the unit it declares.
       SELECT
-        track.name AS counter_name,
-        CAST(AVG(value) AS INTEGER) AS avg_value,
-        CAST(MAX(value) AS INTEGER) AS max_value,
-        CAST(MIN(value) AS INTEGER) AS min_value
-      FROM counter
-      JOIN gpu_counter_track track ON counter.track_id = track.id
-      WHERE track.name LIKE '%freq%' OR track.name LIKE '%clock%'
-      GROUP BY track.name
+        'gpufreq' AS counter_name,
+        gpu_id,
+        ROUND(SUM(freq_mhz * dur) / NULLIF(SUM(dur), 0), 0) AS avg_freq_mhz,
+        ROUND(MAX(freq_mhz), 0) AS max_freq_mhz,
+        ROUND(MIN(freq_mhz), 0) AS min_freq_mhz
+      FROM gpu_frequency_intervals
+      WHERE freq_mhz > 0 AND dur > 0
+      GROUP BY gpu_id
+      UNION ALL
+      SELECT
+        t.name AS counter_name,
+        NULL AS gpu_id,
+        ROUND(AVG(c.value * t.to_mhz), 0) AS avg_freq_mhz,
+        ROUND(MAX(c.value * t.to_mhz), 0) AS max_freq_mhz,
+        ROUND(MIN(c.value * t.to_mhz), 0) AS min_freq_mhz
+      FROM counter c
+      JOIN gpu_descriptor_frequency_tracks t ON c.track_id = t.id
+      WHERE t.to_mhz IS NOT NULL
+      GROUP BY t.name
+      UNION ALL
+      -- A frequency counter without a known unit is named, not read.
+      SELECT t.name || '（单位未声明）', NULL, NULL, NULL, NULL
+      FROM gpu_descriptor_frequency_tracks t
+      WHERE t.to_mhz IS NULL
     display:
       level: key
       layer: overview

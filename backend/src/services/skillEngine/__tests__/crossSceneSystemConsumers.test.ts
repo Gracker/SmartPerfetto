@@ -7,6 +7,7 @@ import yaml from 'js-yaml';
 import { SkillExecutor } from '../skillExecutor';
 import { normalizeSkillDefinition } from '../skillLoader';
 import { validateSkillInputs } from '../skillValidator';
+import { withStepFragments } from '../../../../tests/helpers/skillFragmentSql';
 
 function load(name: string, id: string): any {
   const skill = yaml.load(fs.readFileSync(path.join(process.cwd(), 'skills', name.startsWith('atomic/') ? '' : 'composite', `${name}.skill.yaml`), 'utf8')) as any;
@@ -15,10 +16,8 @@ function load(name: string, id: string): any {
 
 function query(db: Database.Database, name: string, id: string, extra: Record<string, string> = {}): any[] {
   const step = load(name, id);
-  let sql = step.sql as string;
-  for (const fragment of step.sql_fragments || []) {
-    sql = sql.replace(/\bWITH\s+/i, `WITH ${fs.readFileSync(path.join(process.cwd(), 'skills', fragment), 'utf8')}\n,\n`);
-  }
+  // Fragments injected as the executor injects them.
+  let sql = withStepFragments(step.sql as string, step.sql_fragments);
   const params: Record<string, string> = {
     start_ts: '10000000', end_ts: '40000000', main_start_ts: 'NULL', main_end_ts: 'NULL',
     render_start_ts: 'NULL', render_end_ts: 'NULL', event_ts: '10000000', event_end_ts: '40000000',

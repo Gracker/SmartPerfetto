@@ -258,14 +258,17 @@ describe('anr_detail evidence boundary contract', () => {
     const contextPath = path.resolve(process.cwd(), 'skills/atomic/anr_context_in_range.skill.yaml');
     const context = yaml.parse(fs.readFileSync(contextPath, 'utf-8')) as {
       inputs?: Array<{ name: string }>;
-      sql?: string;
+      sql_fragments?: string[];
     };
 
     expect(analysis.steps.find(step => step.id === 'get_anr_context')?.params).toMatchObject({
       anr_type: '${anr_type}',
     });
     expect(context.inputs?.map(input => input.name)).toContain('anr_type');
-    expect(context.sql).toContain("AND (anr_type = '${anr_type}' OR '${anr_type}' = '')");
+    // The ANR filter lives in the fragment every ANR step shares.
+    expect(context.sql_fragments).toEqual(['fragments/anr_matched.sql']);
+    expect(fs.readFileSync(path.resolve(process.cwd(), 'skills/fragments/anr_matched.sql'), 'utf-8'))
+      .toContain("AND (anr_type = '${anr_type}' OR '${anr_type}' = '')");
   });
 });
 
@@ -537,6 +540,36 @@ describeWithTrace('anr_analysis skill', TRACE_FILE, () => {
         expect(typeof ioLoad.uninterruptible_wait_ms).toBe('number');
         expect(ioLoad.uninterruptible_wait_ms).toBeGreaterThan(10); // > 10ms filter in SQL
       }, 30000);
+    });
+
+    describe('anr_process_io_wait step', () => {
+      it('should measure the D waits of the ANR process and diagnose its main thread', async () => {
+        // Independent oracle: the fixture main thread's D/DK time inside the 5 s
+        // input-dispatch window; its last D state is still open (dur -1).
+        const oracle = await evaluator.executeSQL(`
+          INCLUDE PERFETTO MODULE android.anrs;
+          WITH anr AS (SELECT a.ts AS end_ts, a.ts - 5000000000 AS start_ts, a.upid FROM android_anrs a)
+          SELECT ROUND(SUM(MIN(IIF(ts.dur < 0, anr.end_ts, ts.ts + ts.dur), anr.end_ts) - MAX(ts.ts, anr.start_ts)) / 1e6, 2)
+          FROM thread_state ts JOIN thread t USING (utid) JOIN process p USING (upid) JOIN anr ON p.upid = anr.upid
+          WHERE ts.state IN ('D', 'DK') AND t.tid = p.pid AND ts.ts < anr.end_ts
+            AND IIF(ts.dur < 0, anr.end_ts, ts.ts + ts.dur) > anr.start_ts
+        `);
+        expect(oracle.error).toBeUndefined();
+        const mainMs = Number(oracle.rows[0][0]);
+        expect(mainMs).toBeGreaterThan(500);
+
+        const result = await evaluator.executeStep('anr_process_io_wait');
+        expect(result.success).toBe(true);
+        expect(result.data).toEqual([expect.objectContaining({
+          process_name: 'com.smartperfetto.fixture',
+          main_thread_uninterruptible_ms: mainMs,
+          top_thread_name: 'main',
+        })]);
+
+        const diagnosis = await evaluator.executeStep('anr_diagnosis');
+        expect(diagnosis.data.map(item => item.diagnosis)).toContain(
+          `ANR 进程 com.smartperfetto.fixture 主线程在 ANR 窗口内 D-state 不可中断等待 ${mainMs}ms`);
+      }, 60000);
     });
 
     describe('top_cpu_processes step', () => {

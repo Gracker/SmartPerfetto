@@ -214,7 +214,8 @@
           "max_freq_mhz",
           "downshift_count",
           "upshift_count",
-          "downshift_ratio_pct"
+          "downshift_ratio_pct",
+          "off_pct"
         ],
         "required_marker": "SmartPerfetto::CASE::power-thermal"
       },

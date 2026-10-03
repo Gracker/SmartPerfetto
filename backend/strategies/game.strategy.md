@@ -106,6 +106,8 @@ plan_template:
 
 写 execute_sql 时优先使用（完整列表见方法论模板）：`android_gpu_frequency`、`cpu_utilization_per_second`、`cpu_frequency_counters`、`android_dvfs_counters`、`android_screen_state`
 
+`android_gpu_frequency.gpu_freq` 是 gpufreq 计数器原值，单位随写入源是 kHz、Hz 或 MHz，0 表示 GPU 关闭；要 GPU 频率数值时读 `gpu_freq_in_range` / `gpu_analysis` 的 MHz 列，不要自己换算。
+
 **Phase 1 — 游戏帧率分析（1 次调用）：**
 ```
 invoke_skill("game_fps_analysis", { package: "<游戏包名>" })

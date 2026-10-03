@@ -81,6 +81,7 @@
         "max_freq_time_pct",
         "freq_levels",
         "freq_change_count",
+        "off_pct",
         "total_time_sec",
         "rating"
       ],
@@ -166,7 +167,9 @@
         "max_freq_mhz",
         "min_freq_mhz",
         "freq_changes",
-        "low_freq_pct"
+        "low_freq_pct",
+        "off_pct",
+        "out_of_domain_pct"
       ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
@@ -225,7 +228,8 @@
         "min_freq_mhz",
         "median_freq_mhz",
         "sample_count",
-        "freq_counters"
+        "freq_counters",
+        "undeclared_unit_counters"
       ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
@@ -254,9 +258,10 @@
       "semantic_step": "gpu_frequency_overview",
       "required_columns": [
         "counter_name",
-        "avg_value",
-        "max_value",
-        "min_value"
+        "gpu_id",
+        "avg_freq_mhz",
+        "max_freq_mhz",
+        "min_freq_mhz"
       ],
       "required_marker": "SmartPerfetto::CASE::gpu-workload"
     },
@@ -268,7 +273,7 @@
       "source_file": "backend/skills/composite/gpu_v57_ai_diagnostics.skill.yaml",
       "parameters": {
         "target_freq_ratio": 0.9,
-        "min_throttle_ns": 1000,
+        "min_below_target_ns": 1000,
         "max_rows": 20
       },
       "required_steps": [
@@ -278,7 +283,7 @@
         "idle_gaps",
         "frequency_residency",
         "dvfs_ramp_events",
-        "sustained_throttle_events",
+        "sustained_below_target_events",
         "no_data_contract"
       ],
       "required_sql_steps": [
@@ -288,30 +293,21 @@
         "idle_gaps",
         "frequency_residency",
         "dvfs_ramp_events",
-        "sustained_throttle_events",
+        "sustained_below_target_events",
         "no_data_contract"
       ],
       "forced_sql_steps": [
         "gpu_inventory",
         "idle_gaps",
+        "frequency_residency",
+        "dvfs_ramp_events",
+        "sustained_below_target_events",
         "no_data_contract"
       ],
       "isolated_sql_probes": [],
       "expected_condition_skips": [
         {
           "step": "timeline_occupancy",
-          "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
-        },
-        {
-          "step": "frequency_residency",
-          "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
-        },
-        {
-          "step": "dvfs_ramp_events",
-          "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
-        },
-        {
-          "step": "sustained_throttle_events",
           "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
         }
       ],

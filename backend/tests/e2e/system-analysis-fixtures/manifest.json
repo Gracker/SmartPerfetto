@@ -92,12 +92,12 @@
       "id": "memory-constructed",
       "evidenceTier": "constructed",
       "trace": "../Trace/.generated/constructed/memory-gc-pressure/trace.pftrace",
-      "query": "这是构造的 memory 数据。本轮只调查选中的 RenderThread / GC Young Concurrent 精确窗口内的系统 CPU 忙碌背景，并报告选区持续时间。保留实际线程身份，不把它替换成进程主线程。事件名称不能证明真实领域机制；缺少设备/GPU/IO/能量或因果证据时明确无法判定，不扩展成完整场景报告。",
+      "query": "这是构造的 memory 数据。本轮只调查选中的 RenderThread / Alloc young concurrent copying GC 精确窗口内的系统 CPU 忙碌背景，并报告选区持续时间。保留实际线程身份，不把它替换成进程主线程。事件名称不能证明真实领域机制；缺少设备/GPU/IO/能量或因果证据时明确无法判定，不扩展成完整场景报告。",
       "expectation": "memory-constructed.expectation.json",
       "selectSlice": {
         "processName": "com.smartperfetto.fixture",
         "threadName": "RenderThread",
-        "eventName": "GC Young Concurrent"
+        "eventName": "Alloc young concurrent copying GC"
       }
     },
     {

@@ -484,7 +484,6 @@
       },
       "required_steps": [
         "get_process",
-        "init_gc_view",
         "get_vsync_period",
         "memory_growth_summary",
         "rss_swap_peaks",
@@ -503,7 +502,6 @@
       ],
       "required_sql_steps": [
         "get_process",
-        "init_gc_view",
         "gc_overview",
         "gc_stats",
         "gc_frame_impact",
@@ -522,12 +520,7 @@
         "long_gc_events"
       ],
       "isolated_sql_probes": [],
-      "expected_condition_skips": [
-        {
-          "step": "init_gc_view",
-          "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
-        }
-      ],
+      "expected_condition_skips": [],
       "semantic_step": "get_process",
       "required_columns": [
         "upid",

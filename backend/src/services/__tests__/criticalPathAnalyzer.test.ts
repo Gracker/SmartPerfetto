@@ -362,6 +362,34 @@ describe('critical path analyzer module classification', () => {
     expect(analysis.recommendations.join('\n')).not.toContain('同步 IO');
   });
 
+  it('labels GC by the ART slice names the Skills count, not by a gc word', async () => {
+    const {tp} = sqliteTraceProcessor(
+      `INSERT INTO process(upid, name) VALUES (7, 'com.demo');
+      INSERT INTO thread VALUES (1, 1001, 7, 'main'), (3, 1003, 7, 'worker'), (5, 1005, 7, 'loader'),
+        (4, 1004, 7, 'HeapTaskDaemon');
+      INSERT INTO thread_state(id, utid, ts, dur, state) VALUES (110, 1, ${8000 * MS}, ${40 * MS}, 'S');
+      `,
+      {rules: [
+        {
+          match: /FROM _critical_path_stack/i,
+          responder: () =>
+            stackResult([
+              {ts: 8000 * MS, dur: 10 * MS, utid: 3, state: 'S', thread: 'worker', process: 'com.demo',
+                slices: ['SparseArray.gc()']},
+              {ts: 8010 * MS, dur: 10 * MS, utid: 5, state: 'S', thread: 'loader', process: 'com.demo',
+                slices: ['GC: Wait For Completion Alloc']},
+              {ts: 8020 * MS, dur: 10 * MS, utid: 4, state: 'R', thread: 'HeapTaskDaemon', process: 'com.demo',
+                slices: ['Background concurrent copying GC']},
+            ]),
+        },
+      ]}
+    );
+
+    const analysis = await analyzeCriticalPath(tp, 'trace-1', {threadStateId: 110, recursionEnabled: false});
+
+    expect(analysis.wakeupChain.map((segment) => segment.modules.includes('ART / GC'))).toEqual([false, true, true]);
+  });
+
   it('keeps the IO fallback label from wait evidence but raises no IO finding from the label alone', async () => {
     const {tp} = sqliteTraceProcessor(
       `${BASE_THREADS}
