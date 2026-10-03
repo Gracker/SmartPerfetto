@@ -910,6 +910,18 @@ export function projectPrivateSessionStateSnapshot(
 export function projectOwnerAnalysisResult(...args: Parameters<typeof projectPrivateAnalysisResult>): AnalysisResult {
   return withOwnerCodeAwareProjection(() => projectPrivateAnalysisResult(...args));
 }
+/**
+ * A stored result as every owner surface serves it: the owner projection for a
+ * private-knowledge session, the public-field snapshot copy otherwise.
+ */
+export function projectStoredAnalysisResultForOwner(
+  sessionId: string, session: Omit<PrivateAnalysisSessionSelection, 'sessionId'>, result: AnalysisResult,
+  language: OutputLanguage,
+): AnalysisResult {
+  return sessionUsesPrivateKnowledge(session)
+    ? projectOwnerAnalysisResult(sessionId, result, language)
+    : copyAnalysisResultForSnapshot(result);
+}
 export function projectOwnerConclusion(...args: Parameters<typeof projectPrivateConclusion>): string {
   return withOwnerCodeAwareProjection(() => projectPrivateConclusion(...args));
 }

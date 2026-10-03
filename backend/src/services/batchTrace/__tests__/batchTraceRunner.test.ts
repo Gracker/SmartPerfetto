@@ -254,6 +254,44 @@ describe('runBatchSkill', () => {
     }
   });
 
+  it('keeps only the reason token of a failed Skill execution in an API run, the whole error in a CLI run', async () => {
+    const failure = 'canary-skill near "SELECT * FROM /srv/smartperfetto/private_table": syntax error';
+    const failedSkill = (error: string) => {
+      executeMock.mockResolvedValue({skillId: 'startup_analysis', skillName: 'Startup', success: false,
+        displayResults: [], diagnostics: [], executionTimeMs: 5, error});
+    };
+    const errorLog = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const apiInput = {
+        scope: {tenantId: 'tenant-a', workspaceId: 'workspace-a'},
+        surface: 'api' as const,
+        skillId: 'startup_analysis',
+        traceInputs: [{ordinal: 0, source: 'workspace_trace' as const, traceId: 't1'}],
+      };
+      failedSkill(failure);
+      const api = await runBatchSkill(apiInput, {traceProcessor: traceProcessor(), registry: registry(),
+        leaseStore: leaseStore()});
+      expect(api.perTrace[0]).toMatchObject({status: 'failed', error: 'batch_skill_failed'});
+      expect(JSON.stringify(api)).not.toContain('canary-skill');
+      expect(errorLog.mock.calls.flat().join()).toContain('canary-skill');
+
+      failedSkill('trace_missing_required_tables:android_startups');
+      const token = await runBatchSkill(apiInput, {traceProcessor: traceProcessor(), registry: registry(),
+        leaseStore: leaseStore()});
+      expect(token.perTrace[0].error).toBe('trace_missing_required_tables');
+
+      failedSkill(failure);
+      const cli = await runBatchSkill({
+        surface: 'cli',
+        skillId: 'startup_analysis',
+        traceInputs: [{ordinal: 0, source: 'local_path', tracePath: 'a.pftrace'}],
+      }, {traceProcessor: traceProcessor(), registry: registry(), leaseStore: leaseStore()});
+      expect(cli.perTrace[0].error).toBe(failure);
+    } finally {
+      errorLog.mockRestore();
+    }
+  });
+
   it('rejects comparison skills before loading traces', async () => {
     const tp = traceProcessor();
 

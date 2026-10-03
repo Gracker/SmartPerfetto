@@ -31,15 +31,17 @@ export interface ScopedIngestLeaseConfig {
    * which makes every check durable.
    */
   heartbeatMs?: number;
-  inProgressError: string;
-  lostError: string;
+  /** The error thrown when another operation holds the lease. */
+  inProgressError: () => Error;
+  /** The error thrown once this operation's ownership has changed. */
+  lostError: () => Error;
   logPrefix: string;
 }
 
 interface IngestLeaseBase {
   /** Unique per operation; registries seed staged generation ids with it. */
   readonly ownerToken: string;
-  /** Renews the lease, or throws `lostError` once ownership has changed. */
+  /** Renews the lease, or throws `lostError()` once ownership has changed. */
   assertHeld(forceDurableCheck?: boolean): void;
 }
 
@@ -93,22 +95,34 @@ export async function withScopedIngestLease<T>(
       .update(filesystemLock.key)
       .digest('hex')
       .slice(0, 24)}`;
-    return withFilesystemRegistryLockAsync(
-      lockPath,
-      config.inProgressError,
-      filesystemLease => operation({
-        ownerToken,
-        distributed: false,
-        assertHeld: throttledCheck(heartbeatMs, () => {
-          try {
-            filesystemLease.assertHeld();
-          } catch {
-            throw new Error(config.lostError);
-          }
-        }),
-      }),
-      config.ttlMs,
-    );
+    // The filesystem lock reports a held lock as a message; give the caller
+    // its typed in-progress error, and only for this lock's own acquisition.
+    const busy = config.inProgressError().message;
+    let acquired = false;
+    try {
+      return await withFilesystemRegistryLockAsync(
+        lockPath,
+        busy,
+        filesystemLease => {
+          acquired = true;
+          return operation({
+            ownerToken,
+            distributed: false,
+            assertHeld: throttledCheck(heartbeatMs, () => {
+              try {
+                filesystemLease.assertHeld();
+              } catch {
+                throw config.lostError();
+              }
+            }),
+          });
+        },
+        config.ttlMs,
+      );
+    } catch (error) {
+      if (!acquired && error instanceof Error && error.message === busy) throw config.inProgressError();
+      throw error;
+    }
   }
 
   const options = {rowScope: config.rowScope};
@@ -119,7 +133,7 @@ export async function withScopedIngestLease<T>(
     mutate: current => {
       const now = Date.now();
       if (current?.ownerToken !== ownerToken || current.expiresAt <= now) {
-        throw new Error(config.lostError);
+        throw config.lostError();
       }
       return {...current, expiresAt: now + config.ttlMs};
     },
@@ -132,7 +146,7 @@ export async function withScopedIngestLease<T>(
     current => {
       const now = Date.now();
       if (current && current.expiresAt > now) {
-        throw new Error(config.inProgressError);
+        throw config.inProgressError();
       }
       return {ownerToken, expiresAt: now + config.ttlMs};
     },

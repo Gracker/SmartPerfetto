@@ -52,6 +52,13 @@ shared with every other suite. `isolatedModules` also makes `tsc` reject code
 that per-file transpilation cannot compile, such as re-exporting a type
 without `export type`.
 
+`tsconfig.typecheck.json` also sets `noUnusedLocals` and `noUnusedParameters`,
+so an unused import, local, private member or parameter fails `npm run
+typecheck`; the build config does not, and its emit is unchanged. Name a
+parameter a framework signature requires but the body ignores with a leading
+`_`. A compile-time-only check belongs in a type position or a test that uses
+it, not in an unused production constant.
+
 When adding a test file, register it in the matching `test:*` script in the same
 change, and make sure that script is reachable from `test:gate`. For a new
 subsystem, add a directory-scoped `test:<subsystem>` script and wire it into

@@ -10,8 +10,7 @@ import {copyAnalysisDeliveryFields} from '../services/security/analysisDeliveryP
 import {parseOutputLanguage} from '../agentv3/outputLanguage';
 import {
   privateAnalysisQueryMessage,
-  projectOwnerAnalysisResult,
-  copyAnalysisResultForSnapshot,
+  projectStoredAnalysisResultForOwner,
   projectOwnerStructuredValue,
   projectOwnerTerminationMessage,
   projectPrivateTerminationReason,
@@ -59,9 +58,7 @@ export function registerAgentReportRoutes(
     const privateKnowledge = sessionUsesPrivateKnowledge(session);
     const outputLanguage = session.outputLanguage
       ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-    const result = privateKnowledge
-      ? projectOwnerAnalysisResult(sessionId, storedResult, outputLanguage)
-      : copyAnalysisResultForSnapshot(storedResult);
+    const result = projectStoredAnalysisResultForOwner(sessionId, session, storedResult, outputLanguage);
     const conclusion = result.conclusion;
     const findings = Array.isArray(result.findings) ? result.findings : [];
     const rawClientFindings = deps.buildClientFindings(findings, session.scenes || []);

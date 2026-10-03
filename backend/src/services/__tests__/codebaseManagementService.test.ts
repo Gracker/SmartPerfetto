@@ -17,6 +17,7 @@ import {
   type IndexCoverage,
 } from '../codebase/codebaseRegistry';
 import {PathSecurityGate} from '../codebase/pathSecurityGate';
+import {CodebaseStateError, type CodebaseStateReason} from '../codebase/codebaseRequestError';
 import {SourceEnumerator} from '../codebase/sourceEnumerator';
 import {RagStore} from '../ragStore';
 import type {RagChunk} from '../../types/sparkContracts';
@@ -190,7 +191,7 @@ describe('CodebaseManagementService', () => {
       gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
       sourceEnumerator: new SourceEnumerator(),
       readAospManifestProjects: async () => {
-        throw new Error('codebase_root_realpath_drift');
+        throw new CodebaseStateError('codebase_root_realpath_drift');
       },
     });
     await expect(drifted.preview({rootPath: root, kind: 'aosp'}, DEFAULT_SCOPE))
@@ -198,6 +199,48 @@ describe('CodebaseManagementService', () => {
         code: 'CODEBASE_ROOT_DRIFT',
         status: 400,
       } satisfies Partial<CodebaseManagementError>);
+
+    // The state is the error's type; a plain message that spells the token is
+    // an unclassified manifest failure.
+    const spelled = new CodebaseManagementService({
+      registry,
+      store,
+      gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+      sourceEnumerator: new SourceEnumerator(),
+      readAospManifestProjects: async () => {
+        throw new Error('codebase_root_realpath_drift');
+      },
+    });
+    await expect(spelled.preview({rootPath: root, kind: 'aosp'}, DEFAULT_SCOPE))
+      .resolves.toMatchObject({manifestUnavailableReason: 'aosp_manifest_discovery_failed'});
+  });
+
+  it.each([
+    ['codebase_deleting', 'CODEBASE_DELETING', 409],
+    ['codebase_reindex_in_progress', 'CODEBASE_BUSY', 409],
+    ['codebase_reindex_lease_lost', 'CODEBASE_BUSY', 409],
+    ['codebase_root_realpath_drift', 'CODEBASE_ROOT_DRIFT', 400],
+    ['pending_generation_expired', 'PENDING_GENERATION_EXPIRED', 409],
+    ['pending_generation_not_found', 'PENDING_GENERATION_NOT_FOUND', 409],
+    ['pending_generation_stale', 'PENDING_GENERATION_STALE', 409],
+    ['provider_send_consent_required', 'CODEBASE_CONSENT_REQUIRED', 409],
+  ] satisfies Array<[CodebaseStateReason, string, number]>)(
+    'answers the %s state with %s by type', async (reason, code, status) => {
+      const ref = registerApp();
+      jest.spyOn(registry, 'setProviderConsent').mockImplementation(() => {
+        throw new CodebaseStateError(reason);
+      });
+      await expect(service.setConsent(ref.codebaseId, true, 'user', DEFAULT_SCOPE))
+        .rejects.toMatchObject({code, status, message: reason});
+    });
+
+  it('does not classify a plain error by its message', async () => {
+    const ref = registerApp();
+    jest.spyOn(registry, 'setProviderConsent').mockImplementation(() => {
+      throw new Error('codebase_deleting');
+    });
+    await expect(service.setConsent(ref.codebaseId, true, 'user', DEFAULT_SCOPE))
+      .rejects.toMatchObject({code: 'CODEBASE_OPERATION_FAILED', status: 500});
   });
 
   it('does not expose a root from unexpected preview diagnostics', async () => {

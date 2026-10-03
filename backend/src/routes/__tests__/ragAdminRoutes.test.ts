@@ -21,6 +21,7 @@ import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
 import {NativeDirectoryPicker} from '../../services/codebase/nativeDirectoryPicker';
 import {SourceEnumerator} from '../../services/codebase/sourceEnumerator';
 import {CodebaseManagementService} from '../../services/codebase/codebaseManagementService';
+import {CodebaseStateError} from '../../services/codebase/codebaseRequestError';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {AndroidInternalsWikiIngester} from '../../services/androidInternalsWiki/androidInternalsWikiIngester';
 
@@ -546,7 +547,7 @@ describe('codebase routes', () => {
     const root = path.join(tmpDir, 'aosp-manifest-reason');
     fs.mkdirSync(root, {recursive: true});
     fs.writeFileSync(path.join(root, 'Foo.java'), 'class Foo {}\n');
-    const requestPreview = async (reason: string) => {
+    const requestPreview = async (reason: string | Error) => {
       const previewGate = new PathSecurityGate({allowlistRoots: [tmpDir]});
       const previewService = new CodebaseManagementService({
         registry,
@@ -554,7 +555,7 @@ describe('codebase routes', () => {
         gate: previewGate,
         sourceEnumerator: new SourceEnumerator(),
         readAospManifestProjects: async () => {
-          throw new Error(reason);
+          throw typeof reason === 'string' ? new Error(reason) : reason;
         },
       });
       const previewApp = express();
@@ -582,7 +583,7 @@ describe('codebase routes', () => {
     expect(known.status).toBe(200);
     expect(known.body.preview.manifestUnavailableReason).toBe('source_metadata_too_large');
 
-    const drift = await requestPreview('codebase_root_realpath_drift');
+    const drift = await requestPreview(new CodebaseStateError('codebase_root_realpath_drift'));
     expect(drift.status).toBe(400);
     expect(drift.body.error).toBe('codebase_root_realpath_drift');
   });
@@ -1459,7 +1460,7 @@ describe('codebase routes', () => {
       ...DEFAULT_SCOPE,
     });
     const leaseSpy = jest.spyOn(registry, 'withIngestLease')
-      .mockRejectedValueOnce(new Error('codebase_reindex_in_progress'));
+      .mockRejectedValueOnce(new CodebaseStateError('codebase_reindex_in_progress'));
 
     const response = await request(app).delete(`/api/rag/codebases/${ref.codebaseId}`);
 

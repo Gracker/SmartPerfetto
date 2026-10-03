@@ -106,8 +106,8 @@ const INGEST_LEASE: ScopedIngestLeaseConfig = {
   kind: 'external_knowledge_ingest_lease',
   rowScope: 'external-knowledge-ingest-lease',
   ttlMs: 10 * 60 * 1000,
-  inProgressError: 'external_knowledge_reindex_in_progress',
-  lostError: 'external_knowledge_reindex_lease_lost',
+  inProgressError: () => new Error('external_knowledge_reindex_in_progress'),
+  lostError: () => new Error('external_knowledge_reindex_lease_lost'),
   logPrefix: 'ExternalKnowledgeSourceRegistry',
 };
 

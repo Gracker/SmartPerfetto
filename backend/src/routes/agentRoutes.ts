@@ -207,7 +207,7 @@ import {
   privateAnalysisQueryMessage,
   projectPrivateAnalysisReceipt,
   projectOwnerAnalysisResult,
-  copyAnalysisResultForSnapshot,
+  projectStoredAnalysisResultForOwner,
   projectOwnerFindings,
   projectOwnerConclusion,
   projectOwnerProvisionalConclusion,
@@ -7504,9 +7504,7 @@ function projectStoredHttpError(session: AnalysisSession): string | undefined {
 }
 
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {
-  return sessionUsesPrivateKnowledge(session)
-    ? projectOwnerAnalysisResult(session.sessionId, result, sessionOutputLanguage(session))
-    : copyAnalysisResultForSnapshot(result);
+  return projectStoredAnalysisResultForOwner(session.sessionId, session, result, sessionOutputLanguage(session));
 }
 
 function ensureCompletedAnalysisResultPayload(

@@ -10,6 +10,7 @@ import {
   buildSourceSelectionIR,
   sourceExtensionsForKind,
   sourceSelectionAdmits,
+  sourceSelectionCanDescend,
   sourceSelectionForRef,
   type SourceSelectionIR,
 } from './sourceSelectionPolicy';
@@ -39,6 +40,24 @@ export function effectiveConsentGrant(
   return ref.consent.grant ?? legacyConsentGrant(ref);
 }
 
+function providerGrantPolicy(ref: SourceProviderRef, grant = effectiveConsentGrant(ref)): SourceSelectionIR {
+  return buildSourceSelectionIR({
+    kind: ref.kind,
+    includePrefixes: grant.includePrefixes,
+    excludeGlobs: grant.excludeGlobs,
+  });
+}
+
+/** Whether any file the provider-send grant covers can lie under a relative directory. */
+export function sourceProviderGrantCanDescend(
+  ref: SourceProviderRef,
+  relativeDirectory: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  return ref.consent.sendToProvider &&
+    sourceSelectionCanDescend(providerGrantPolicy(ref), relativeDirectory, platform);
+}
+
 export function createSourceProviderPathPredicate(
   ref: SourceProviderRef,
   platform: NodeJS.Platform = process.platform,
@@ -46,11 +65,7 @@ export function createSourceProviderPathPredicate(
 ): (relativePath: string) => boolean {
   if (!ref.consent.sendToProvider) return () => false;
   const grant = effectiveConsentGrant(ref);
-  const grantPolicy = buildSourceSelectionIR({
-    kind: ref.kind,
-    includePrefixes: grant.includePrefixes,
-    excludeGlobs: grant.excludeGlobs,
-  });
+  const grantPolicy = providerGrantPolicy(ref, grant);
   const comparable = (value: string): string => platform === 'win32'
     ? value.toLocaleLowerCase('en-US')
     : value;

@@ -56,6 +56,8 @@ export interface ProjectedPayload {
   backgroundKnowledgeReferences?: BackgroundKnowledgeReference[];
   /** A closed source-access refusal action; narration reads it to say "refused", not "failed". */
   action_required?: string;
+  /** Present only as `false`: the search did not cover every admitted file. */
+  coverageComplete?: false;
 }
 
 const SENSITIVE_RAG_TOOL_NAMES = new Set([
@@ -154,6 +156,8 @@ function projectOnDemandSourceResult(
     ...(candidate.success === false && isSourceAccessRefusalAction(candidate.action_required)
       ? {action_required: candidate.action_required}
       : {}),
+    // Narration must not call an incomplete search "nothing found".
+    ...(candidate.coverageComplete === false ? {coverageComplete: false} : {}),
   };
 }
 

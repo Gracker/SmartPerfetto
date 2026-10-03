@@ -299,6 +299,7 @@ import * as ragLookupFilter from '../../services/rag/lookupResponseFilter';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
+import {PatchProposer} from '../../services/codebase/patchProposer';
 import type {OnDemandSourceAccessService} from '../../services/codebase/onDemandSourceAccess';
 import type {
   CodeGraphNavigationResult,
@@ -10243,7 +10244,7 @@ describe('source and knowledge governance refusals', () => {
   };
 
   it('refuses an exhausted source budget with what to do instead', async () => {
-    const {tools} = createTestServer({
+    const {tools, sourceUse} = createTestServer({
       codeAwareMode: 'metadata_only',
       codebaseIds: ['app-codebase'],
       sourceUsePolicy: {phase: 'explicit', maxSearchCalls: 0, maxReadCalls: 0},
@@ -10257,6 +10258,9 @@ describe('source and knowledge governance refusals', () => {
       unsupportedReason: 'source_read_budget_exceeded',
       action_required: 'continue_with_existing_source_evidence',
     });
+    // Stopped before dispatch: attempted and incomplete, but nothing was queried.
+    expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'search_incomplete',
+      attemptedTools: ['search_codebase', 'read_codebase_file'], queriedCodebaseIds: []});
   });
 
   it('refuses a codebase outside the session whitelist', async () => {
@@ -10310,6 +10314,22 @@ describe('source and knowledge governance refusals', () => {
     });
   });
 
+  it.each(['constructor', '__proto__', 'toString'])('does not read a patch reason %s as a refusal', async reason => {
+    const propose = jest.spyOn(PatchProposer.prototype, 'propose').mockReturnValue({
+      patchStatus: 'unverified', unsupportedReason: reason,
+    } as ReturnType<PatchProposer['propose']>);
+    try {
+      const {tools} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase']});
+
+      const raw = await callRaw(tools, 'propose_patch', {
+        context_chunk_ids: ['chunk-a'], problem: 'Startup hook blocks the main thread.',
+      });
+
+      expect(JSON.parse(raw.content[0].text)).not.toHaveProperty('action_required');
+      expect(isPolicyRefusalResult(raw)).toBe(false);
+    } finally { propose.mockRestore(); }
+  });
+
   it('refuses a private knowledge source that is not authorized for the request', async () => {
     const {tools} = createTestServer();
 
@@ -10325,7 +10345,9 @@ describe('source and knowledge governance refusals', () => {
   describe('source path governance', () => {
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
     const withRegisteredSource = async (
-      run: (input: {codebaseRegistry: CodebaseRegistry; codebaseId: string; root: string}) => Promise<void>,
+      run: (input: {
+        codebaseRegistry: CodebaseRegistry; codebaseId: string; root: string; ledger: CodeLookupLedger;
+      }) => Promise<void>,
     ) => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-source-path-refusal-'));
       try {
@@ -10338,9 +10360,14 @@ describe('source and knowledge governance refusals', () => {
         const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
         const ref = codebaseRegistry.register({kind: 'app_source', displayName: 'App', rootPath: root,
           rootAuthorization: 'native_picker', pathFilters: ['src'], sendToProvider: true, ...scope});
-        await run({codebaseRegistry, codebaseId: ref.codebaseId, root});
+        const ledger = new CodeLookupLedger('path-refusal', 100_000, 1, path.join(tmpDir, 'ledger.jsonl'));
+        await run({codebaseRegistry, codebaseId: ref.codebaseId, root, ledger});
       } finally { fs.rmSync(tmpDir, {recursive: true, force: true}); }
     };
+    // A refusal is charged like the thrown path it replaced: rejected, zero tokens, nothing returned.
+    const expectRejectedLedgerEntry = (ledger: CodeLookupLedger, toolName: string) =>
+      expect(ledger.getEntries()).toEqual([expect.objectContaining({toolName, outcome: 'rejected',
+        returnedReferenceCount: 0, tokensSpent: 0, chunkIds: []})]);
 
     it.each(['metadata_only', 'provider_send'] as const)(
       'refuses a %s read outside the registered path filters',
@@ -10353,15 +10380,171 @@ describe('source and knowledge governance refusals', () => {
         expectRefusal(raw, {
           codebaseId,
           unsupportedReason: 'source_path_outside_registered_filters',
-          action_required: 'use_path_within_registered_filters',
+          action_required: 'locate_path_with_search_codebase',
           sourceReferences: [],
         });
         expect(raw.content[0].text).not.toContain('Unregistered');
         expect(raw.content[0].text).not.toContain(root);
+        // A refused call reached no source, so it queried nothing.
         expect(sourceUse.getSourceUseDecision()).toMatchObject({attemptedTools: ['read_codebase_file'],
-          queriedCodebaseIds: [codebaseId], usedCodebaseIds: [], references: []});
+          queriedCodebaseIds: [], usedCodebaseIds: [], references: []});
       }),
     );
+
+    it.each([
+      ['a non-source extension', 'src/notes.txt', 'notes', 'source_extension_not_allowed'],
+      ['an excluded directory', 'src/build/Generated.kt', 'Generated', 'source_path_outside_registered_filters'],
+    ])('refuses a read of %s without echoing it', async (_label, filePath, needle, unsupportedReason) =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId, root, ledger}) => {
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope, codeLookupLedger: ledger});
+
+        const raw = await callRaw(tools, 'read_codebase_file', {file_path: filePath});
+
+        expectRefusal(raw, {codebaseId, unsupportedReason, action_required: 'locate_path_with_search_codebase',
+          sourceReferences: []});
+        expect(raw.content[0].text).not.toContain(needle);
+        expect(raw.content[0].text).not.toContain(root);
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'attempted',
+          attemptedTools: ['read_codebase_file'], queriedCodebaseIds: [], usedCodebaseIds: [], references: []});
+        expectRejectedLedgerEntry(ledger, 'read_codebase_file');
+      }));
+
+    it.each([
+      ['an excluded directory', 'src/build/Generated.kt', 'Generated', 'source_path_outside_registered_filters'],
+      ['a non-source extension', 'src/notes.txt', 'notes', 'source_extension_not_allowed'],
+    ])('refuses a graph symbol lookup scoped to %s without echoing it', async (_label, filePath, needle, unsupportedReason) =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId, root, ledger}) => {
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope, codeLookupLedger: ledger});
+
+        const raw = await callRaw(tools, 'inspect_code_symbol', {symbol: 'StartupHooks', file_path: filePath});
+
+        expectRefusal(raw, {codebaseId, unsupportedReason, action_required: 'locate_path_with_search_codebase',
+          references: []});
+        expect(raw.content[0].text).not.toContain(needle);
+        expect(raw.content[0].text).not.toContain(root);
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'attempted',
+          attemptedTools: ['inspect_code_symbol'], queriedCodebaseIds: [], usedCodebaseIds: [], references: []});
+        expectRejectedLedgerEntry(ledger, 'inspect_code_symbol');
+      }));
+
+    it('keeps a malformed graph file path a thrown failure, not a refusal', async () =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId}) => {
+        const {tools} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+
+        await expect(callRaw(tools, 'inspect_code_symbol', {symbol: 'StartupHooks', file_path: 'src/../tools/X.kt'}))
+          .rejects.toThrow('source_path_invalid');
+      }));
+
+    // An empty, complete search of a prefix nothing admitted lies under would read as source absence.
+    it.each([
+      ['outside the registered filters', 'tools'],
+      ['inside an excluded directory', 'src/build'],
+    ])('refuses a search whose path prefix is %s instead of reporting complete absence', async (_label, prefix) =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId, root, ledger}) => {
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope, codeLookupLedger: ledger});
+
+        const raw = await callRaw(tools, 'search_codebase', {query: 'Unregistered', path_prefix: prefix});
+
+        expectRefusal(raw, {codebaseId, matches: [],
+          unsupportedReason: 'source_path_prefix_outside_registered_filters',
+          action_required: 'retry_search_without_path_prefix'});
+        expect(raw.content[0].text).not.toContain(`"${prefix}`);
+        expect(raw.content[0].text).not.toContain(root);
+        // Nothing was searched: no backend or coverage claim reaches the model.
+        for (const field of ['coverageComplete', 'backend', 'enumerationBackend', 'backendFidelity']) {
+          expect(JSON.parse(raw.content[0].text)).not.toHaveProperty(field);
+        }
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'attempted', queriedCodebaseIds: [],
+          usedCodebaseIds: []});
+        expect(sourceUse.getSourceUseDecision()?.coverageComplete).toBeUndefined();
+        expectRejectedLedgerEntry(ledger, 'search_codebase');
+
+        // The refusal states no coverage, so a later complete search in scope can still conclude absence.
+        await callRaw(tools, 'search_codebase', {query: 'NoSuchSymbolAnywhere'});
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'not_found_complete', coverageComplete: true});
+      }));
+
+    it('lets an ancestor path prefix search the whole registered scope and conclude absence', async () =>
+      withRegisteredSource(async ({codebaseRegistry, root}) => {
+        fs.mkdirSync(path.join(root, 'src', 'feature'));
+        fs.writeFileSync(path.join(root, 'src', 'feature', 'Feature.kt'), 'class FeatureNeedle\n');
+        const feature = codebaseRegistry.register({kind: 'app_source', displayName: 'Feature', rootPath: root,
+          rootAuthorization: 'native_picker', pathFilters: ['src/feature'], sendToProvider: true, ...scope});
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [feature.codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+
+        const found = JSON.parse((await callRaw(tools, 'search_codebase', {query: 'FeatureNeedle', path_prefix: 'src'}))
+          .content[0].text);
+        expect(found).toMatchObject({success: true, coverageScope: 'codebase',
+          matches: [expect.objectContaining({filePath: 'src/feature/Feature.kt'})]});
+
+        const fresh = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [feature.codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+        await callRaw(fresh.tools, 'search_codebase', {query: 'NoSuchSymbolAnywhere', path_prefix: 'src'});
+        expect(fresh.sourceUse.getSourceUseDecision()).toMatchObject({status: 'not_found_complete',
+          coverageComplete: true, queriedCodebaseIds: [feature.codebaseId]});
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'located'});
+      }));
+
+    it('does not let a narrower path prefix establish codebase-wide absence', async () =>
+      withRegisteredSource(async ({codebaseRegistry, codebaseId, root}) => {
+        fs.mkdirSync(path.join(root, 'src', 'feature'));
+        fs.writeFileSync(path.join(root, 'src', 'feature', 'Feature.kt'), 'class Feature\n');
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: [codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+
+        const raw = await callRaw(tools, 'search_codebase', {query: 'NoSuchSymbolAnywhere', path_prefix: 'src/feature'});
+
+        expect(JSON.parse(raw.content[0].text)).toMatchObject({success: true, matches: [], coverageComplete: true,
+          coverageScope: 'path_prefix'});
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'attempted', queriedCodebaseIds: [codebaseId]});
+        expect(sourceUse.getSourceUseDecision()?.coverageComplete).toBeUndefined();
+      }));
+
+    it('does not write a consent-refused search into the decision as coverage', async () =>
+      withRegisteredSource(async ({codebaseId}) => {
+        const search = jest.fn<OnDemandSourceAccessService['search']>(async () => ({
+          success: false, codebaseId, matches: [], truncated: false, unsupportedReason: 'no_send_to_provider_consent',
+        }));
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [codebaseId],
+          onDemandSourceAccess: {search, read: jest.fn<OnDemandSourceAccessService['read']>()}});
+
+        const raw = await callRaw(tools, 'search_codebase', {query: 'StartupHooks'});
+
+        expectRefusal(raw, {unsupportedReason: 'no_send_to_provider_consent',
+          action_required: 'continue_without_this_codebase'});
+        expect(JSON.parse(raw.content[0].text)).not.toHaveProperty('coverageComplete');
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'attempted', queriedCodebaseIds: []});
+        expect(sourceUse.getSourceUseDecision()?.coverageComplete).toBeUndefined();
+      }));
+
+    it('refuses a provider search whose path prefix is outside the provider-send grant', async () =>
+      withRegisteredSource(async ({codebaseRegistry, root}) => {
+        fs.mkdirSync(path.join(root, 'src', 'granted'));
+        fs.mkdirSync(path.join(root, 'src', 'private'));
+        fs.writeFileSync(path.join(root, 'src', 'private', 'Hidden.kt'), 'class HiddenNeedle\n');
+        // The grant keeps the scope consented at registration; widening the filters later does not widen it.
+        const narrowed = codebaseRegistry.register({kind: 'app_source', displayName: 'Narrow grant', rootPath: root,
+          rootAuthorization: 'native_picker', pathFilters: ['src/granted'], sendToProvider: true, ...scope});
+        codebaseRegistry.updateSelectionPolicy(narrowed.codebaseId, scope, {pathFilters: ['src']});
+        const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [narrowed.codebaseId],
+          codebaseRegistry, knowledgeScope: scope});
+
+        expectRefusal(await callRaw(tools, 'search_codebase', {query: 'HiddenNeedle', path_prefix: 'src/private'}), {
+          unsupportedReason: 'source_path_prefix_outside_provider_grant',
+          action_required: 'continue_without_this_path_prefix',
+        });
+        // Without a prefix the match outside the grant is withheld, and the search does not claim completeness.
+        const whole = JSON.parse((await callRaw(tools, 'search_codebase', {query: 'HiddenNeedle'})).content[0].text);
+        expect(whole).toMatchObject({success: true, matches: [], coverageComplete: false,
+          searchIncompleteReason: 'provider_grant_scope'});
+        expect(JSON.stringify(whole)).not.toContain('Hidden.kt');
+        expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'search_incomplete'});
+      }));
 
     it('refuses a provider read outside the provider-send grant', async () => {
       const read = jest.fn<OnDemandSourceAccessService['read']>(async () => ({
@@ -10386,7 +10569,7 @@ describe('source and knowledge governance refusals', () => {
         expectRefusal(raw, {
           codebaseId,
           unsupportedReason: 'source_path_outside_registered_filters',
-          action_required: 'use_path_within_registered_filters',
+          action_required: 'locate_path_with_search_codebase',
           references: [],
         });
         expect(raw.content[0].text).not.toContain('tools/Unregistered.kt');

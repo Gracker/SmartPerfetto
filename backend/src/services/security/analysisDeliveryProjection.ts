@@ -4,8 +4,7 @@
 
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import type {InvestigationEvidenceRecord} from '../evidence/investigationEvidenceLedger';
-import type {FinalInvestigationAssessment,
-  InvestigationLedgerAcquisitionRow} from '../../types/analysisInvestigationAssessment';
+import type {InvestigationLedgerAcquisitionRow} from '../../types/analysisInvestigationAssessment';
 import {INVESTIGATION_CONDITION_OPERATORS} from '../../types/analysisInvestigation';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import {
@@ -157,14 +156,12 @@ function copyAssuranceStatus(value: unknown): AnalysisAssuranceStatus {
 }
 
 /**
- * Every top-level field `copyAnalysisDeliveryFields` copies for an investigation
- * assessment. The projection treats any field it drops as tampering and
- * withdraws the whole assessment, so a field added to the type without a
- * copier fails to compile here instead of silently turning every row unknown.
+ * `copyAnalysisDeliveryFields` copies every top-level investigation assessment
+ * field. The projection treats any field it drops as tampering and withdraws
+ * the whole assessment, so a field added to the type needs a copier here;
+ * privateAnalysisProjection.test.ts fails to compile until its round-trip
+ * fixture carries the new field.
  */
-const COPIED_INVESTIGATION_ASSESSMENT_FIELDS = {schemaVersion: true, binding: true, status: true, requirements: true,
-  evidenceRecords: true, ledgerAcquisition: true} as const satisfies Record<keyof FinalInvestigationAssessment, true>;
-
 /** Explicit serialization only. These stored fields never issue current-run authority. */
 export function copyAnalysisDeliveryFields(input: AnalysisDeliveryFields): AnalysisDeliveryFields {
   const output: AnalysisDeliveryFields = {};
