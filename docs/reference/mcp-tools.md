@@ -124,6 +124,8 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 
 搜索先收集遍历到的全部命中，再确定性排序（该名字的声明行、trace section 调用点、整词与大小写精确匹配优先；test/generated/build 路径最后；再按路径与行号），只把排名靠前的候选经路径网关重新读取核对后返回。每条结果的 `lineRange` 含 `context_lines` 上下文，`matchLines` 标出命中行，同一文件相邻命中合并为一个窗口。`moreResults` 只表示还有未展示的命中（分页），不代表覆盖不完整；`traversal`（`complete`、`stopped_at_cap`、`timed_out`、`error`）说明遍历是否提前停止，只有 `complete` 且没有被授权范围隐去的命中时 `coverageComplete` 才为 true。按需搜索扫描不超过 16 MiB 的文件（`scope.maxFileBytes`），读取上限 4 MiB；命中落在两者之间的文件时只返回位置并标 `bodyUnavailable: "file_too_large"`，读取这类文件返回 `source_file_too_large`。索引入库仍沿用 200 KiB 上限。
 
+源码额度按 run 计、由 `sourceDepth` 选档（`source-depth-policy.yaml`）：搜索类调用（`search_codebase`、`find_codebase_files`、图谱工具、`resolve_symbol`、命中已注册库的索引 lookup）与 `read_codebase_file` 各有次数，调用到达源码时扣次数（失败不退）；token 按实际下发计，超出时搜索保留排名靠前的结果、读取保留前面的行（其余为分页），一点都放不下才返回 `budget_exceeded` 拒绝；图谱工具与 `resolve_symbol` 只返回元数据，超额时整块保守拒绝（在签发任何引用之前）。每个源码工具结果都带 `budget: {searchesLeft, readsLeft, tokensLeft}`；单次读取行数受档位上限约束。检索到的知识正文（Knowledge Pack、私有知识、博客检索）用单独的 token 池；`lookup_knowledge` 返回的内置方法论模板属于产品提示内容，不计入。`CodeLookupLedger` 只做审计与 patch 授权，不再参与额度。
+
 模型只收到一份正文：带真实行号的 `numberedText`；原始文本留在内部，用于回显登记、计费与来源追踪。读取结果的 `window.enclosingSymbol` 是窗口起点向上最近的声明行（启发式）；文件不存在时，`candidates` 列出范围内同名文件的相对路径（至多 5 个，`provider_send` 下不越出授权范围）。工具抛出的失败只把形如 `source_*` 的无路径错误码交给各 runtime，其余一律为 `source_tool_failed`。
 
 注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引。GitNexus 缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。

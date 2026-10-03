@@ -147,6 +147,7 @@ import {
   createRunManifestLifecycle,
   withRunManifestLifecycle,
 } from '../../services/selfEvolution/runManifestLifecycle';
+import type {RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
 
 /**
  * The finalized-history writer requires an owner-authorized run parent
@@ -204,6 +205,7 @@ export interface RunTurnInput {
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: RequestedSourceDepth;
   /** Backend-session ancestry for CLI Level-3 degraded resume bridges. */
   lineage?: CliSessionLineage;
   /** 1-indexed CLI-visible turn number, bound before analysis starts. */
@@ -760,6 +762,7 @@ export class CliAnalyzeService {
             codebaseIds: primaryOptions.codebaseIds,
             knowledgeSourceIds: primaryOptions.knowledgeSourceIds,
             sourceUsePolicy: primaryOptions.sourceUsePolicy,
+            sourceDepth: input.sourceDepth,
             analysisContextFingerprint: primaryOptions.analysisContextFingerprint,
             runManifestAttributionSink: runManifestLifecycle.builder,
             ...knowledgeScope,

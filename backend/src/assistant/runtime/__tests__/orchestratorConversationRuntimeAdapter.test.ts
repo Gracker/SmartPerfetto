@@ -630,13 +630,30 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     expect(orchestrator.analyze).toHaveBeenCalledTimes(1);
   });
 
+  it('runs each turn at its own source depth, not the one the adapter was built with', async () => {
+    const received: AnalysisOptions[] = [];
+    const orchestrator = createOrchestrator(async options => {
+      received.push(options);
+      return result('answer');
+    });
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {
+      codeAwareMode: 'provider_send', codebaseIds: ['private-app'], sourceDepth: 'locate',
+    }});
+    await adapter.run({sessionId: 'conversation', runId: 'run-1', query: 'locate', history: [],
+      traceContext: {kind: 'none'}});
+    await adapter.run({sessionId: 'conversation', runId: 'run-2', query: 'explain', history: [],
+      traceContext: {kind: 'none'}, sourceDepth: 'mechanism'});
+
+    expect(received.map(options => options.sourceDepth)).toEqual(['locate', 'mechanism']);
+  });
+
   it('preserves an explicit caller source policy and the total runtime budget', async () => {
     let receivedOptions: AnalysisOptions | undefined;
     const orchestrator = createOrchestrator(async options => {
       receivedOptions = options;
       return result('answer');
     });
-    const sourceUsePolicy = {phase: 'explicit' as const, maxSearchCalls: 4, maxReadCalls: 5, maxDurationMs: 17_000};
+    const sourceUsePolicy = {phase: 'explicit' as const};
     const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {
       codeAwareMode: 'provider_send', codebaseIds: ['private-app'], sourceUsePolicy, taskTimeoutMs: 25_000,
     }});

@@ -210,6 +210,7 @@ interface QoderSdkModule {
 // ---------------------------------------------------------------------------
 
 import { loadQoderSdkModule, resetQoderSdkModuleCache } from './qoderSdkLoader';
+import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -1011,6 +1012,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       codebaseIds: options?.codebaseIds,
       knowledgeSourceIds: options?.knowledgeSourceIds,
       sourceUsePolicy: options?.sourceUsePolicy,
+      sourceDepth: runtimeSourceDepth(policy, options),
       analysisContextFingerprint: options?.analysisContextFingerprint,
       androidInternalsPackPin: options?.androidInternalsPackPin,
     });

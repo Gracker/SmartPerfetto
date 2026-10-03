@@ -148,6 +148,7 @@ import {
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
+import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 
 export type ExperimentalOpenCodeRuntimeKind = typeof EXPERIMENTAL_OPENCODE_RUNTIME_KIND;
 export type PublicOpenCodeRuntimeKind = typeof OPENCODE_RUNTIME_KIND;
@@ -3218,6 +3219,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
       sourceUsePolicy: options.sourceUsePolicy,
+      sourceDepth: runtimeSourceDepth(turnPolicy, options),
       analysisContextFingerprint: options.analysisContextFingerprint,
       androidInternalsPackPin: options.androidInternalsPackPin,
       referenceTraceId: options.referenceTraceId,

@@ -103,6 +103,14 @@ describe('logical conversation durability', () => {
     expect(JSON.stringify(stored)).not.toMatch(/runtimeSessionId|evidenceWitness|sdkTranscript/);
   });
 
+  it('keeps a valid requested source depth across a restart and drops anything else', () => {
+    new ConversationSessionStore(db).save({...descriptor(), sourceDepth: 'mechanism'}, turn());
+    expect(new ConversationSessionStore(db).load(owner, scope.sessionId)?.sourceDepth).toBe('mechanism');
+
+    new ConversationSessionStore(db).save({...descriptor(), sourceDepth: 'deep' as never}, turn());
+    expect(new ConversationSessionStore(db).load(owner, scope.sessionId)).not.toHaveProperty('sourceDepth');
+  });
+
   it('atomically recovers finalized body, partial status, uncertainty, and logical clarification', () => {
     const store = new ConversationSessionStore(db);
     store.save(descriptor(), turn());

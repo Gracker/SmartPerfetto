@@ -20,6 +20,7 @@ import { assertAnalysisRuntimeReady } from '../services/runtimeGuard';
 import { withConsoleLogToStderr } from '../io/stdio';
 import type {CodeAwareMode} from '../../services/codebase/codeAwareFeature';
 import type {CliAnalysisMode} from '../types';
+import type {RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
 
 export interface AnalyzeCommandArgs {
   trace: string;
@@ -33,6 +34,7 @@ export interface AnalyzeCommandArgs {
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: RequestedSourceDepth;
 }
 
 export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<number> {
@@ -56,6 +58,7 @@ export async function runAnalyzeCommand(args: AnalyzeCommandArgs): Promise<numbe
         codeAwareMode: args.codeAwareMode,
         codebaseIds: args.codebaseIds,
         knowledgeSourceIds: args.knowledgeSourceIds,
+        sourceDepth: args.sourceDepth,
       });
       exitCode = turn.success ? 0 : 1;
     });

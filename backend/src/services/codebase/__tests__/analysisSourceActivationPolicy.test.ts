@@ -3,7 +3,6 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {
-  boundedAnalysisSourceUsePolicy,
   loadAnalysisSourceActivationPolicy,
   parseAnalysisSourceActivationPolicy,
   projectPrimaryAnalysisOptions,
@@ -16,20 +15,16 @@ const authorized = {
 };
 
 const validPolicy = {
-  schema_version: 'analysis_source_activation_policy@2',
-  bounded_explicit: {max_search_calls: 1, max_read_calls: 2, max_duration_ms: 6000},
+  schema_version: 'analysis_source_activation_policy@3',
   safe_replay: {max_turns: 6, max_chars_per_entry: 1200},
 };
 
 describe('analysis source activation policy', () => {
-  it('loads optional source budgets and safe replay limits without an intent controller', () => {
+  it('loads safe replay limits without an intent controller or a source budget', () => {
+    // Source budgets are per-run depth limits in source-depth-policy.yaml.
     expect(loadAnalysisSourceActivationPolicy()).toEqual({
-      schemaVersion: 'analysis_source_activation_policy@2',
-      boundedExplicit: {maxSearchCalls: 1, maxReadCalls: 2, maxDurationMs: 6_000},
+      schemaVersion: 'analysis_source_activation_policy@3',
       safeReplay: {maxTurns: 6, maxCharsPerEntry: 1200},
-    });
-    expect(boundedAnalysisSourceUsePolicy()).toEqual({
-      phase: 'explicit', maxSearchCalls: 1, maxReadCalls: 2, maxDurationMs: 6_000,
     });
   });
 
@@ -77,7 +72,7 @@ describe('analysis source activation policy', () => {
         ...authorized,
         knowledgeSourceIds: ['wiki'],
         analysisContextFingerprint: 'authorization',
-        sourceUsePolicy: {phase: 'explicit' as const, maxSearchCalls: 4, maxReadCalls: 7, maxDurationMs: 19_000},
+        sourceUsePolicy: {phase: 'explicit' as const},
         taskTimeoutMs: 27_000,
       };
       expect(projectPrimaryAnalysisOptions(options, activation)).toBe(options);
@@ -91,15 +86,15 @@ describe('analysis source activation policy', () => {
     expect(projectPrimaryAnalysisOptions(options, 'bounded_explicit')).not.toHaveProperty('sourceUsePolicy');
   });
 
-  it('rejects malformed budgets, replay limits, old schemas, and lexical controller fields', () => {
+  it('rejects replay limits, old schemas, a retired budget, and lexical controller fields', () => {
     expect(() => parseAnalysisSourceActivationPolicy({
-      ...validPolicy, bounded_explicit: {...validPolicy.bounded_explicit, max_search_calls: 0},
-    })).toThrow('analysis_source_activation_policy_invalid_budget');
+      ...validPolicy, bounded_explicit: {max_search_calls: 1, max_read_calls: 2, max_duration_ms: 6000},
+    })).toThrow('analysis_source_activation_policy_invalid_root');
     expect(() => parseAnalysisSourceActivationPolicy({
       ...validPolicy, safe_replay: {...validPolicy.safe_replay, max_turns: 0},
     })).toThrow('analysis_source_activation_policy_invalid_safe_replay');
     expect(() => parseAnalysisSourceActivationPolicy({
-      ...validPolicy, schema_version: 'analysis_source_activation_policy@1',
+      ...validPolicy, schema_version: 'analysis_source_activation_policy@2',
     })).toThrow('analysis_source_activation_policy_invalid_root');
     expect(() => parseAnalysisSourceActivationPolicy({
       ...validPolicy, intent: {explicit_patterns: ['source']},

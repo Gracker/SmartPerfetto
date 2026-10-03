@@ -344,7 +344,6 @@ function persistAgentState(input: PersistAgentTurnInput, appendTurnMessages: boo
             ),
             codeLookupSummary: CodeLookupLedger.restore(
               sessionId,
-              12_000,
               2,
               undefined,
               session.analysisContextFingerprint,

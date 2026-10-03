@@ -478,7 +478,6 @@ function createSourceHarness(input: {
     ragStore: input.store,
     codeLookupLedger: new CodeLookupLedger(
       input.sessionId,
-      20_000,
       20,
       path.join(input.stateRoot, `${input.sessionId}.jsonl`),
     ),

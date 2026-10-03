@@ -4,24 +4,18 @@
 
 import type {AnalysisOptions} from '../../agent/core/orchestratorTypes';
 import {loadStrategyYaml} from '../../agentv3/strategyLoader';
+import {exactKeys, isRecord, positiveInteger} from './policyYaml';
 
 const POLICY_ASSET_NAME = 'analysis-source-activation-policy';
-const POLICY_SCHEMA_VERSION = 'analysis_source_activation_policy@2' as const;
+const POLICY_SCHEMA_VERSION = 'analysis_source_activation_policy@3' as const;
 
 export type AnalysisSourceActivation =
   | 'dormant'
   | 'bounded_explicit'
   | 'deep_supplement';
 
-export interface AnalysisSourceBudget {
-  readonly maxSearchCalls: number;
-  readonly maxReadCalls: number;
-  readonly maxDurationMs: number;
-}
-
 export interface AnalysisSourceActivationPolicy {
   readonly schemaVersion: typeof POLICY_SCHEMA_VERSION;
-  readonly boundedExplicit: AnalysisSourceBudget;
   readonly safeReplay: {
     readonly maxTurns: number;
     readonly maxCharsPerEntry: number;
@@ -36,38 +30,13 @@ interface AnalysisSourcePolicyInput {
   codebaseIds?: readonly string[];
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
-}
-
-function exactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
-}
-
-function positiveInteger(value: unknown, errorCode: string): number {
-  if (!Number.isSafeInteger(value) || Number(value) <= 0) throw new Error(errorCode);
-  return Number(value);
-}
-
 export function parseAnalysisSourceActivationPolicy(value: unknown): AnalysisSourceActivationPolicy {
   if (
     !isRecord(value) ||
-    !exactKeys(value, ['schema_version', 'bounded_explicit', 'safe_replay']) ||
+    !exactKeys(value, ['schema_version', 'safe_replay']) ||
     value.schema_version !== POLICY_SCHEMA_VERSION
   ) {
     throw new Error('analysis_source_activation_policy_invalid_root');
-  }
-  if (
-    !isRecord(value.bounded_explicit) ||
-    !exactKeys(value.bounded_explicit, [
-      'max_search_calls',
-      'max_read_calls',
-      'max_duration_ms',
-    ])
-  ) {
-    throw new Error('analysis_source_activation_policy_invalid_budget');
   }
   if (
     !isRecord(value.safe_replay) ||
@@ -77,20 +46,6 @@ export function parseAnalysisSourceActivationPolicy(value: unknown): AnalysisSou
   }
   return Object.freeze({
     schemaVersion: POLICY_SCHEMA_VERSION,
-    boundedExplicit: Object.freeze({
-      maxSearchCalls: positiveInteger(
-        value.bounded_explicit.max_search_calls,
-        'analysis_source_activation_policy_invalid_budget',
-      ),
-      maxReadCalls: positiveInteger(
-        value.bounded_explicit.max_read_calls,
-        'analysis_source_activation_policy_invalid_budget',
-      ),
-      maxDurationMs: positiveInteger(
-        value.bounded_explicit.max_duration_ms,
-        'analysis_source_activation_policy_invalid_budget',
-      ),
-    }),
     safeReplay: Object.freeze({
       maxTurns: positiveInteger(
         value.safe_replay.max_turns,
@@ -126,13 +81,6 @@ export function resolveAnalysisSourceActivation(
   input: AnalysisSourcePolicyInput,
 ): AnalysisSourceActivation {
   return hasAuthorizedCodebase(input) ? 'bounded_explicit' : 'dormant';
-}
-
-export function boundedAnalysisSourceUsePolicy(): NonNullable<AnalysisOptions['sourceUsePolicy']> {
-  return {
-    phase: 'explicit',
-    ...loadAnalysisSourceActivationPolicy().boundedExplicit,
-  };
 }
 
 export function projectPrimaryAnalysisOptions<T extends AnalysisOptions>(

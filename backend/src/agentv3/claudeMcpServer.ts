@@ -244,7 +244,19 @@ import {
   type SourceReferenceV1,
   type SourceUseDecisionV1,
 } from '../services/codebase/sourceUseDecision';
-import {OnDemandSourceAccessService} from '../services/codebase/onDemandSourceAccess';
+import {
+  OnDemandSourceAccessService,
+  type OnDemandSourceReadResult,
+  type OnDemandSourceSearchResult,
+} from '../services/codebase/onDemandSourceAccess';
+import {
+  estimateTextTokens,
+  longestPrefixWithin,
+  SourceBudget,
+  type SourceBudgetSnapshot,
+} from '../services/codebase/sourceBudget';
+import type {SourceDepth, SourceDepthPolicy} from '../services/codebase/sourceDepthPolicy';
+import {REDACTED_SECRET} from '../services/security/secretPatterns';
 import {sourceAccessRefusalAction} from '../services/codebase/sourceAccessRefusal';
 import {registerOnDemandSourceLookupForEcho} from '../services/security/codeAwareOutputRegistry';
 import {
@@ -1361,13 +1373,17 @@ export interface ClaudeMcpServerOptions {
   codebaseIds?: string[];
   /** Private external-knowledge source ids whitelisted for this analysis session. */
   knowledgeSourceIds?: string[];
-  /** Source phase routing and optional hard tool budget. */
+  /** Source phase routing. */
   sourceUsePolicy?: {
     phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
-    maxSearchCalls?: number;
-    maxReadCalls?: number;
-    maxDurationMs?: number;
   };
+  /**
+   * The run's effective source depth (`resolveEffectiveSourceDepth`), which
+   * sizes its source budget; `locate` when absent.
+   */
+  sourceDepth?: SourceDepth;
+  /** Overrides the shipped depth policy (tests); each run still builds its own budget. */
+  sourceDepthPolicy?: SourceDepthPolicy;
   /** Non-secret authorization partition for active lookup/patch capability state. */
   analysisContextFingerprint?: string;
   /** Test hook / alternate private external-knowledge registry. */
@@ -1469,18 +1485,21 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     payload: Record<string, unknown>,
     resultOptions: {isError?: boolean} = {},
   ) => createRuntimeToolResult({success: false, action_required: action, ...payload}, resultOptions);
+  // Every source budget refusal reports what is left.
   const sourceBudgetRefusal = (payload: Record<string, unknown>) =>
-    policyRefusal('continue_with_existing_source_evidence', retrievedData(payload));
+    policyRefusal('continue_with_existing_source_evidence',
+      retrievedData({...payload, budget: sourceBudget.snapshot()}));
   // Every lookup that takes a codebase id falls back to the selected ones when it is omitted.
   const codebaseIdRefusal = (unsupportedReason: string, error?: string) =>
     policyRefusal('retry_without_codebase_id', {...(error ? {error} : {}), unsupportedReason}, {isError: true});
   const ragToolResult = (
     result: RagRetrievalResult | SanitizedRagResult,
     shape: 'inline' | 'nested',
+    budget?: SourceBudgetSnapshot,
   ) => {
     // A top-level reason denotes whole-retrieval failure; zero hits alone do not.
     const success = result.unsupportedReason === undefined;
-    const payload = shape === 'nested' ? {success, result} : {...result};
+    const payload = {...(shape === 'nested' ? {success, result} : {...result}), ...(budget ? {budget} : {})};
     return {
       _meta: runtimeToolReceiptMetadata({success}),
       content: [{type: 'text' as const, text: JSON.stringify(retrievedData(payload))}],
@@ -1659,15 +1678,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     options.sessionId
       ? CodeLookupLedger.restore(
           options.sessionId,
-          sourceUsePolicy?.phase === 'deep_enrichment'
-            ? Number.MAX_SAFE_INTEGER
-            : 12_000,
           2,
           undefined,
           pinnedAnalysisContextFingerprint,
         )
       : undefined
   );
+  // One run's source budget, in memory with this server; the ledger above is
+  // the audit trail and patch authority, not the budget.
+  const sourceBudget = new SourceBudget(options.sourceDepth ?? 'locate', options.sourceDepthPolicy);
   const activeCodebaseGenerations = (ids: readonly string[]): Record<string, string> => {
     assertPrivateAnalysisContextCurrent();
     return Object.fromEntries(ids.flatMap(codebaseId => {
@@ -2030,6 +2049,26 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
     return delivered;
   };
+  /**
+   * An indexed lookup that reaches a registered codebase is a source search
+   * and spends one; a lookup of public indexes only does not.
+   */
+  const indexedSearchBudgetRefusal = async (
+    toolName: CodeLookupLedgerEntry['toolName'],
+    queriedCodebaseIds: readonly string[],
+  ) => {
+    if (queriedCodebaseIds.length === 0) return undefined;
+    const stop = sourceBudget.beginCall('search');
+    if (!stop) return undefined;
+    observeSourceLookup({toolName, codebaseIds: queriedCodebaseIds, success: false, queried: false});
+    for (const codebaseId of new Set(queriedCodebaseIds)) {
+      codeLookupLedger?.record({turn: 0, ts: Date.now(), toolName, codebaseId, chunkIds: [],
+        returnedReferenceCount: 0, tokensSpent: 0, consentApplied: codeAwareMode === 'provider_send',
+        outcome: 'budget_exceeded', legacyPath: false});
+    }
+    await codeLookupLedger?.flush();
+    return sourceBudgetRefusal({success: false, results: [], unsupportedReason: stop});
+  };
   const filterIndexedSourceLookup = async (
     toolName: Parameters<typeof observeIndexedSourceLookup>[0],
     raw: RagRetrievalResult,
@@ -2037,7 +2076,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   ) => {
     let bodyAdmissionReason: string | undefined;
     const filtered = await observeSourceOperation(toolName, queriedCodebaseIds, () => filterRagLookup(raw, {toolName, turn: 0, codebaseRegistry,
-      ledger: codeLookupLedger, allowProviderSend: codeAwareMode === 'provider_send',
+      ledger: codeLookupLedger, budget: sourceBudget, allowProviderSend: codeAwareMode === 'provider_send',
       sessionId: options.sessionId, knowledgeScope,
       admitSourceHit: hit => {
         const admitted = admitSourceItems([hit], indexedSourceReference);
@@ -4588,7 +4627,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const filtered = await filterRagLookup(raw, {
           toolName: 'lookup_blog_knowledge',
           turn: 0,
-          ledger: codeLookupLedger,
+          ledger: codeLookupLedger, budget: sourceBudget,
           sessionId: options.sessionId,
         });
         await codeLookupLedger?.flush();
@@ -4640,7 +4679,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const filtered = await filterRagLookup(raw, {
           toolName: 'lookup_blog_knowledge',
           turn: 0,
-          ledger: codeLookupLedger,
+          ledger: codeLookupLedger, budget: sourceBudget,
           sessionId: options.sessionId,
           externalKnowledgeRegistry,
           knowledgeSourceIds,
@@ -4660,7 +4699,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const filtered = await filterRagLookup(raw, {
         toolName: 'lookup_blog_knowledge',
         turn: 0,
-        ledger: codeLookupLedger,
+        ledger: codeLookupLedger, budget: sourceBudget,
         sessionId: options.sessionId,
       });
       await codeLookupLedger?.flush();
@@ -4823,6 +4862,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (codebaseId && !selectedAospIds.includes(codebaseId)) {
         return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered AOSP source');
       }
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_aosp_source', effectiveCodebaseIds);
+      if (budgetRefusal) return budgetRefusal;
       const result = await observeSourceOperation('lookup_aosp_source', effectiveCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['aosp'],
@@ -4843,14 +4884,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const delivered = await filterIndexedSourceLookup('lookup_aosp_source', scopedResult, effectiveCodebaseIds);
         await codeLookupLedger?.flush();
         assertPrivateAnalysisContextCurrent();
-        return ragToolResult(delivered, 'nested');
+        return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
       }
       observeSourceLookup({
         toolName: 'lookup_aosp_source',
         codebaseIds: effectiveCodebaseIds,
         success: result.unsupportedReason === undefined,
       });
-      return ragToolResult(result, 'inline');
+      return ragToolResult(result, 'inline', sourceBudget.snapshot());
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -4881,6 +4922,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (codebaseId && !selectedOemIds.includes(codebaseId)) {
         return codebaseIdRefusal('codebase_kind_mismatch', 'Requested codebase is not a registered OEM SDK source');
       }
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_oem_sdk', effectiveCodebaseIds);
+      if (budgetRefusal) return budgetRefusal;
       const result = await observeSourceOperation('lookup_oem_sdk', effectiveCodebaseIds, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['oem_sdk'],
@@ -4899,14 +4942,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         const delivered = await filterIndexedSourceLookup('lookup_oem_sdk', scopedResult, effectiveCodebaseIds);
         await codeLookupLedger?.flush();
         assertPrivateAnalysisContextCurrent();
-        return ragToolResult(delivered, 'nested');
+        return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
       }
       observeSourceLookup({
         toolName: 'lookup_oem_sdk',
         codebaseIds: effectiveCodebaseIds,
         success: result.unsupportedReason === undefined,
       });
-      return ragToolResult(result, 'inline');
+      return ragToolResult(result, 'inline', sourceBudget.snapshot());
     },
     { annotations: { readOnlyHint: true } },
   );
@@ -5067,7 +5110,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const deliveredText = [...(result.matches ?? []), ...(result.reference ? [result.reference] : [])]
       .map(reference => numberedSourceText(reference) ?? reference.text ?? '')
       .join('\n');
-    return deliveredText ? Math.max(1, Math.ceil(deliveredText.length / 4)) : 0;
+    return estimateTextTokens(deliveredText);
   };
   const recordOnDemandSourceLookup = async (input: {
     toolName: 'search_codebase' | 'read_codebase_file' | 'find_codebase_files';
@@ -5092,39 +5135,53 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
     await codeLookupLedger?.flush();
   };
-  let sourceBudgetStartedAt: number | undefined;
-  let sourceSearchCalls = 0;
-  let sourceReadCalls = 0;
-  const consumeSourceBudget = (
-    kind: 'search' | 'read',
-  ): 'source_search_budget_exceeded' | 'source_read_budget_exceeded' | 'source_deadline_exceeded' | undefined => {
-    if (!sourceUsePolicy) return undefined;
-    const now = Date.now();
-    sourceBudgetStartedAt ??= now;
-    if (
-      sourceUsePolicy.maxDurationMs !== undefined &&
-      now - sourceBudgetStartedAt >= sourceUsePolicy.maxDurationMs
-    ) {
-      return 'source_deadline_exceeded';
-    }
-    if (kind === 'search') {
-      if (
-        sourceUsePolicy.maxSearchCalls !== undefined &&
-        sourceSearchCalls >= sourceUsePolicy.maxSearchCalls
-      ) {
-        return 'source_search_budget_exceeded';
-      }
-      sourceSearchCalls += 1;
-      return undefined;
-    }
-    if (
-      sourceUsePolicy.maxReadCalls !== undefined &&
-      sourceReadCalls >= sourceUsePolicy.maxReadCalls
-    ) {
-      return 'source_read_budget_exceeded';
-    }
-    sourceReadCalls += 1;
-    return undefined;
+  /**
+   * What fits in the run's remaining source tokens. A search keeps its best
+   * matches (files come in rank order) and a find its first files; a read keeps
+   * its first lines and pages the rest. Undefined when nothing fits.
+   */
+  const deliveredLength = (reference: {text?: string; lineRange?: {start: number; end: number}}): number =>
+    (numberedSourceText(reference) ?? reference.text ?? '').length;
+  const fitSearchToBudget = (result: OnDemandSourceSearchResult): OnDemandSourceSearchResult | undefined => {
+    const keep = longestPrefixWithin(result.matches.map(deliveredLength), sourceBudget.sourceTokens.left());
+    if (keep === result.matches.length) return result;
+    if (keep === 0) return undefined;
+    const matches = result.matches.slice(0, keep);
+    return {...result, matches, moreResults: true, fileCount: new Set(matches.map(match => match.filePath)).size};
+  };
+  const fitReadToBudget = (result: OnDemandSourceReadResult): OnDemandSourceReadResult | undefined => {
+    const {reference, window} = result;
+    if (!reference?.text) return result;
+    const lines = reference.text.split('\n');
+    const start = reference.lineRange.start;
+    // Numbered lines exactly as numberedSourceText delivers them.
+    const keep = longestPrefixWithin(lines.map((line, index) => `${start + index}: `.length + line.length),
+      sourceBudget.sourceTokens.left());
+    if (keep === lines.length) return result;
+    if (keep === 0) return undefined;
+    const text = lines.slice(0, keep).join('\n');
+    const end = start + keep - 1;
+    return {
+      ...result,
+      reference: {...reference, text, lineRange: {start, end},
+        redactedCount: Math.min(reference.redactedCount ?? 0, text.split(REDACTED_SECRET).length - 1)},
+      ...(window ? {window: {...window, omittedAfter: window.totalLines - end,
+        nextStartLine: end < window.totalLines ? end + 1 : null}} : {}),
+      truncated: true,
+    };
+  };
+  const metadataTokens = (value: unknown): number => estimateTextTokens(JSON.stringify(value));
+  const fileFindTokens = (files: readonly {filePath: string}[]): number => files.length === 0 ? 0 : metadataTokens(files);
+  // A symbol lookup issues metadata only, so it never authorizes a patch.
+  const recordResolvedSymbolLookup = (
+    queriedCodebaseIds: readonly string[],
+    tokensSpent: number,
+    returnedReferenceCount: number,
+    outcome: 'success' | 'budget_exceeded' | 'rejected',
+  ): void => {
+    codeLookupLedger?.record({turn: 0, ts: Date.now(), toolName: 'resolve_symbol',
+      ...(queriedCodebaseIds.length === 1 ? {codebaseId: queriedCodebaseIds[0]} : {}),
+      chunkIds: [], returnedReferenceCount, tokensSpent, consentApplied: false, outcome, legacyPath: false});
   };
   // A refused graph lookup delivers nothing and is charged like a refused read: zero.
   const graphMetadataTokens = (result: {
@@ -5135,11 +5192,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     graph?: unknown;
   }): number => !result.success && sourceAccessRefusalAction(result.unsupportedReason)
     ? 0
-    : Math.max(1, Math.ceil(JSON.stringify({
-      references: result.references ?? [],
-      processes: result.processes ?? [],
-      graph: result.graph,
-    }).length / 4));
+    : metadataTokens({references: result.references ?? [], processes: result.processes ?? [], graph: result.graph});
   const recordCodeGraphLookup = async (input: {
     toolName: 'query_code_graph' | 'inspect_code_symbol';
     codebaseId: string;
@@ -5180,7 +5233,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!codebaseId) {
         return codebaseIdRequiredRefusal();
       }
-      const sourceBudgetStop = consumeSourceBudget('search');
+      const sourceBudgetStop = sourceBudget.beginCall('search');
       if (sourceBudgetStop) {
         observeSourceLookup({toolName: 'search_codebase', codebaseIds: [codebaseId], success: false,
           coverageComplete: false, incompleteReasons: [sourceBudgetStop], queried: false});
@@ -5216,8 +5269,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
         throw sourceToolError(error);
       });
-      const tokensSpent = onDemandSourceTokens(result);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      const fitted = fitSearchToBudget(result);
+      if (!fitted) {
         observeOnDemandSourceLookup('search_codebase', {
           ...result,
           success: false,
@@ -5247,10 +5300,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           unsupportedReason: 'budget_exceeded',
         });
       }
-      const delivered = observeOnDemandSourceLookup('search_codebase', result);
+      const delivered = observeOnDemandSourceLookup('search_codebase', fitted);
       if (delivered.success && codeAwareMode === 'provider_send') {
         registerOnDemandSourceLookupForEcho(options.sessionId, delivered.matches ?? []);
       }
+      sourceBudget.sourceTokens.spend(onDemandSourceTokens(delivered));
       await recordOnDemandSourceLookup({
         toolName: 'search_codebase',
         codebaseId,
@@ -5264,6 +5318,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
           ...delivered,
           matches: (delivered.matches ?? []).map(presentSourceReference),
+          budget: sourceBudget.snapshot(),
         }))}],
       };
     },
@@ -5286,7 +5341,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!codebaseId) {
         return codebaseIdRequiredRefusal();
       }
-      const sourceBudgetStop = consumeSourceBudget('read');
+      const sourceBudgetStop = sourceBudget.beginCall('read');
       if (sourceBudgetStop) {
         observeSourceLookup({toolName: 'read_codebase_file', codebaseIds: [codebaseId], success: false,
           incompleteReasons: [sourceBudgetStop], queried: false});
@@ -5312,6 +5367,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         startLine: start_line,
         aroundLine: around_line,
         maxLines: max_lines,
+        lineCap: sourceBudget.maxReadLines,
         mode: codeAwareMode,
       }).catch(async error => {
         observeSourceLookup({toolName: 'read_codebase_file', codebaseIds: [codebaseId], success: false});
@@ -5319,8 +5375,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
         throw sourceToolError(error);
       });
-      const tokensSpent = onDemandSourceTokens(result);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      const fitted = fitReadToBudget(result);
+      if (!fitted) {
         observeOnDemandSourceLookup('read_codebase_file', {
           ...result,
           success: false,
@@ -5341,7 +5397,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           unsupportedReason: 'budget_exceeded',
         });
       }
-      const delivered = observeOnDemandSourceLookup('read_codebase_file', result);
+      const delivered = observeOnDemandSourceLookup('read_codebase_file', fitted);
+      sourceBudget.sourceTokens.spend(onDemandSourceTokens(delivered));
       if (delivered.success && codeAwareMode === 'provider_send' && delivered.reference) {
         registerOnDemandSourceLookupForEcho(options.sessionId, [delivered.reference]);
       }
@@ -5358,6 +5415,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
           ...delivered,
           ...(delivered.reference ? {reference: presentSourceReference(delivered.reference)} : {}),
+          budget: sourceBudget.snapshot(),
         }))}],
       };
     },
@@ -5379,7 +5437,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!codebaseId) {
         return codebaseIdRequiredRefusal();
       }
-      const sourceBudgetStop = consumeSourceBudget('search');
+      const sourceBudgetStop = sourceBudget.beginCall('search');
       if (sourceBudgetStop) {
         observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false,
           queried: false});
@@ -5401,9 +5459,12 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           returnedReferenceCount: 0, outcome: 'rejected', durationMs: Date.now() - sourceLookupStartedAt});
         throw sourceToolError(error);
       });
-      // A refusal or failure delivers nothing and is charged nothing.
-      const tokensSpent = result.success ? Math.max(1, Math.ceil(JSON.stringify(result.files).length / 4)) : 0;
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      // A refusal or failure delivers nothing and is charged nothing; past the
+      // budget only the first (best-ranked) files are delivered.
+      const files = result.files.slice(0, longestPrefixWithin(result.files.map(file => JSON.stringify(file).length),
+        sourceBudget.sourceTokens.left(), {fixedChars: 2}));
+      const tokensSpent = fileFindTokens(files);
+      if (result.files.length > 0 && files.length === 0) {
         observeSourceLookup({toolName: 'find_codebase_files', codebaseIds: [codebaseId], success: false});
         await recordOnDemandSourceLookup({toolName: 'find_codebase_files', codebaseId, tokensSpent: 0,
           returnedReferenceCount: 0, outcome: 'budget_exceeded', durationMs: Date.now() - sourceLookupStartedAt});
@@ -5422,11 +5483,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         outcome: sourceLookupOutcome(result),
         durationMs: Date.now() - sourceLookupStartedAt,
       });
+      sourceBudget.sourceTokens.spend(tokensSpent);
       assertPrivateAnalysisContextCurrent();
       return {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
           ...result,
+          files,
+          ...(files.length < result.files.length ? {moreResults: true} : {}),
           ...(refusalAction ? {action_required: refusalAction} : {}),
+          budget: sourceBudget.snapshot(),
         }))}],
       };
     },
@@ -5447,6 +5512,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!codebaseId) {
         return codebaseIdRequiredRefusal();
       }
+      const graphBudgetStop = sourceBudget.beginCall('search');
+      if (graphBudgetStop) {
+        observeSourceLookup({toolName: 'query_code_graph', codebaseIds: [codebaseId], success: false, queried: false});
+        await recordCodeGraphLookup({toolName: 'query_code_graph', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded'});
+        return sourceBudgetRefusal({codebaseId, references: [], processes: [], truncated: false,
+          unsupportedReason: graphBudgetStop});
+      }
       const result = await observeSourceOperation('query_code_graph', [codebaseId], () => codeGraphNavigator.query({
         codebaseId,
         scope: knowledgeScope ?? {},
@@ -5454,7 +5527,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         limit: max_results,
       }), {queriedOnDispatch: false});
       const tokensSpent = graphMetadataTokens(result);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      if (tokensSpent > sourceBudget.sourceTokens.left()) {
         observeGraphSourceLookup('query_code_graph', {
           ...result,
           success: false,
@@ -5479,16 +5552,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
       }
       const delivered = observeGraphSourceLookup('query_code_graph', result);
+      // The check above used the whole result; admission may drop references.
+      const deliveredTokens = graphMetadataTokens(delivered);
+      sourceBudget.sourceTokens.spend(deliveredTokens);
       await recordCodeGraphLookup({
         toolName: 'query_code_graph',
         codebaseId,
-        tokensSpent,
+        tokensSpent: deliveredTokens,
         returnedReferenceCount: delivered.references.length,
         outcome: result.success ? 'success' : 'rejected',
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered, budget: sourceBudget.snapshot()}))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5509,6 +5585,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (!codebaseId) {
         return codebaseIdRequiredRefusal();
       }
+      const graphBudgetStop = sourceBudget.beginCall('search');
+      if (graphBudgetStop) {
+        observeSourceLookup({toolName: 'inspect_code_symbol', codebaseIds: [codebaseId], success: false, queried: false});
+        await recordCodeGraphLookup({toolName: 'inspect_code_symbol', codebaseId, tokensSpent: 0,
+          returnedReferenceCount: 0, outcome: 'budget_exceeded'});
+        return sourceBudgetRefusal({codebaseId, references: [], processes: [], truncated: false,
+          unsupportedReason: graphBudgetStop});
+      }
       const result = await observeSourceOperation('inspect_code_symbol', [codebaseId], () => codeGraphNavigator.inspectSymbol({
         codebaseId,
         scope: knowledgeScope ?? {},
@@ -5517,7 +5601,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         limit: max_relations,
       }), {queriedOnDispatch: false});
       const tokensSpent = graphMetadataTokens(result);
-      if (codeLookupLedger && tokensSpent > codeLookupLedger.remainingTokens()) {
+      if (tokensSpent > sourceBudget.sourceTokens.left()) {
         observeGraphSourceLookup('inspect_code_symbol', {
           ...result,
           success: false,
@@ -5542,16 +5626,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         });
       }
       const delivered = observeGraphSourceLookup('inspect_code_symbol', result);
+      // The check above used the whole result; admission may drop references.
+      const deliveredTokens = graphMetadataTokens(delivered);
+      sourceBudget.sourceTokens.spend(deliveredTokens);
       await recordCodeGraphLookup({
         toolName: 'inspect_code_symbol',
         codebaseId,
-        tokensSpent,
+        tokensSpent: deliveredTokens,
         returnedReferenceCount: delivered.references.length,
         outcome: result.success ? 'success' : 'rejected',
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered, budget: sourceBudget.snapshot()}))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5580,6 +5667,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (allowed.length === 0) {
         return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
       }
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_app_source', allowed);
+      if (budgetRefusal) return budgetRefusal;
       const raw = await observeSourceOperation('lookup_app_source', allowed, () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['app_source'],
@@ -5593,7 +5682,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const delivered = await filterIndexedSourceLookup('lookup_app_source', raw, allowed);
       await codeLookupLedger?.flush();
       assertPrivateAnalysisContextCurrent();
-      return ragToolResult(delivered, 'nested');
+      return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
     },
     {annotations: {readOnlyHint: true}},
   );
@@ -5630,6 +5719,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           vendors: Array.from(vendors).sort(),
         }, {isError: true});
       }
+      const budgetRefusal = await indexedSearchBudgetRefusal('lookup_kernel_source', kernelRefs.map(ref => ref!.codebaseId));
+      if (budgetRefusal) return budgetRefusal;
       const raw = await observeSourceOperation('lookup_kernel_source', kernelRefs.map(ref => ref!.codebaseId), () => ragStore.search(query, {
         topK: top_k ?? 5,
         kinds: ['kernel_source'],
@@ -5643,7 +5734,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       const delivered = await filterIndexedSourceLookup('lookup_kernel_source', raw, kernelRefs.map(ref => ref!.codebaseId));
       await codeLookupLedger?.flush();
       assertPrivateAnalysisContextCurrent();
-      return ragToolResult(delivered, 'nested');
+      return ragToolResult(delivered, 'nested', sourceBudget.snapshot());
     },
     {annotations: {readOnlyHint: true}},
   );
@@ -5673,6 +5764,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       if (allowed.length === 0) {
         return codebaseIdRefusal('codebase_not_whitelisted', 'No requested codebase is whitelisted for this session');
       }
+      const budgetRefusal = await indexedSearchBudgetRefusal('resolve_symbol', allowed);
+      if (budgetRefusal) return budgetRefusal;
       const resolver = new SymbolResolver(ragStore, knowledgeScope, codebaseRegistry);
       const results = await observeSourceOperation('resolve_symbol', allowed, () => allowed.map(id => {
         const ref = codebaseRegistry.get(id, knowledgeScope);
@@ -5701,6 +5794,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           topK: top_k ?? 5,
         });
       }));
+      // Checked before any reference is issued; charged for what is delivered.
+      if (metadataTokens(results) > sourceBudget.sourceTokens.left()) {
+        observeSourceLookup({toolName: 'resolve_symbol', codebaseIds: allowed, success: false});
+        recordResolvedSymbolLookup(allowed, 0, 0, 'budget_exceeded');
+        await codeLookupLedger?.flush();
+        return sourceBudgetRefusal({success: false, results: [], unsupportedReason: 'budget_exceeded'});
+      }
       const admitted = admitSourceItems(results.flatMap(result => result.candidates),
         candidate => ({...candidate, lookupKind: 'metadata'}));
       const admittedCandidates = new Set(admitted.items);
@@ -5714,6 +5814,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         success: results.some(result => result.success),
         ...(admitted.incompleteReason ? {coverageComplete: false, incompleteReasons: [admitted.incompleteReason]} : {}),
       });
+      const tokensSpent = metadataTokens(delivered);
+      sourceBudget.sourceTokens.spend(tokensSpent);
+      recordResolvedSymbolLookup(allowed, tokensSpent, admitted.references.length,
+        results.some(result => result.success) ? 'success' : 'rejected');
+      await codeLookupLedger?.flush();
       assertPrivateAnalysisContextCurrent();
       return {
         content: [{type: 'text' as const, text: JSON.stringify({
@@ -5721,6 +5826,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
           results: delivered,
           sourceReferences: admitted.references,
           ...(admitted.incompleteReason ? {coverageComplete: false, searchIncompleteReason: admitted.incompleteReason} : {}),
+          budget: sourceBudget.snapshot(),
         })}],
       };
     },

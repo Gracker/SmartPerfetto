@@ -1,9 +1,4 @@
-schema_version: analysis_source_activation_policy@2
-
-bounded_explicit:
-  max_search_calls: 1
-  max_read_calls: 2
-  max_duration_ms: 6000
+schema_version: analysis_source_activation_policy@3
 
 safe_replay:
   max_turns: 6

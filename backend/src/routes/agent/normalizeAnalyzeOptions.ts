@@ -22,6 +22,7 @@ import type {
 import type {OutputLanguage} from '../../agentv3/outputLanguage';
 import {resolveEffectiveAnalysisMode} from '../../services/effectiveAnalysisMode';
 import {PublicRequestError} from '../../utils/publicRequestError';
+import {isRequestedSourceDepth, type RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
 
 export type AnalyzeEndpointKind = '/analyze' | '/sessions/:id/runs';
 export type AnalyzePreset = 'smart';
@@ -36,6 +37,7 @@ export interface NormalizedAnalyzeOptions {
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: RequestedSourceDepth;
   generateTracks?: boolean;
   forceRefresh?: boolean;
   selectionContext?: SelectionContext;
@@ -143,6 +145,17 @@ export function normalizeAnalyzeOptions(
     );
   }
   if (codeAwareMode) normalized.codeAwareMode = codeAwareMode;
+
+  // Sizes the run's source budget only; it grants no access.
+  if (raw.sourceDepth !== undefined) {
+    if (!isRequestedSourceDepth(raw.sourceDepth)) {
+      throw new AnalyzeOptionsError(
+        'sourceDepth must be auto, locate or mechanism',
+        'SOURCE_DEPTH_INVALID',
+      );
+    }
+    normalized.sourceDepth = raw.sourceDepth;
+  }
 
   // Source and comparison context preserve the caller's requested budget mode.
   normalized.analysisMode = resolveEffectiveAnalysisMode(normalized.analysisMode, {

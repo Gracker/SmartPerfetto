@@ -327,6 +327,7 @@ knowledge-source ID is selected. `--knowledge-source-id <id>` can enable an
 authorized private external RAG source alone or together with a codebase.
 Source, private RAG, and reference-trace selections resolve an explicit `fast`
 request to `full` so the lightweight runtime cannot silently drop capabilities.
+`--source-depth auto|locate|mechanism` sizes the run's source budget (default `auto`, the same as the API's `options.sourceDepth`) and is kept in the session for later turns.
 `preview` and `register --dry-run` report the actual `ripgrep → git → node-walk`
 enumeration backend, fidelity, completeness, and truncation reason. A bounded
 preview truncation remains a successful command rather than masquerading as a

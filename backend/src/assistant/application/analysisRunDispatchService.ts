@@ -155,6 +155,7 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
     codeAwareMode?: import('../../services/codebase/codeAwareFeature').CodeAwareMode;
     codebaseIds?: string[];
     knowledgeSourceIds?: string[];
+    sourceDepth?: NormalizedAnalyzeOptions['sourceDepth'];
     runManifestAttributionSink: RunManifestAttributionSink;
   }): Promise<void>;
   smartSelectionReportId(selection?: SceneAnalysisSelection): string | undefined;
@@ -782,6 +783,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
             codeAwareMode: options.codeAwareMode,
             codebaseIds: options.codebaseIds,
             knowledgeSourceIds: options.knowledgeSourceIds,
+            sourceDepth: options.sourceDepth,
             runManifestAttributionSink: runManifestLifecycle.builder,
           })),
         )

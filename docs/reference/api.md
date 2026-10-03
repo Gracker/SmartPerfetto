@@ -558,6 +558,8 @@ DataEnvelope 证据和列点击元数据派生的安全 UI 提案，例如跳转
 }
 ```
 
+选了代码库时，`options.sourceDepth` 可取 `auto`（默认）、`locate` 或 `mechanism`，只决定本次 run 的源码额度，不授予任何访问：`locate` 用于找到代码位置，`mechanism` 允许读足够多的代码解释机制；`auto` 在完整预算下取 `mechanism`、快速预算下取 `locate`；`metadata_only` 封顶 `locate`。额度值在 `backend/strategies/source-depth-policy.yaml`，非法值返回 `SOURCE_DEPTH_INVALID`。轻量对话（`/conversation`）中某一轮给出的 `sourceDepth` 沿用到后续轮次，并随会话恢复。
+
 双 trace 对比需要传 `referenceTraceId`，且不能与 `traceId` 相同。`traceId` 表示基线，`referenceTraceId` 表示对比；两者都可以来自 workspace 历史 Trace。
 
 智能分析通过同一个 `/analyze` 入口启动。第一次请求建议只做场景盘点：

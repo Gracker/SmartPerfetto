@@ -309,6 +309,7 @@ import * as ragLookupFilter from '../../services/rag/lookupResponseFilter';
 import {ExternalKnowledgeSourceRegistry} from '../../services/externalKnowledgeSourceRegistry';
 import {CodebaseRegistry} from '../../services/codebase/codebaseRegistry';
 import {projectToolResultForExternalSurface} from '../../services/rag/toolResultProjectionFilter';
+import {parseSourceDepthPolicy, type SourceDepth, type SourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
 import {CodeLookupLedger} from '../../services/codebase/codeLookupLedger';
 import {PatchProposer} from '../../services/codebase/patchProposer';
 import type {OnDemandSourceAccessService} from '../../services/codebase/onDemandSourceAccess';
@@ -378,10 +379,9 @@ function createTestServer(options: {
   analysisHistoryReader?: AnalysisHistoryReader;
   sourceUsePolicy?: {
     phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
-    maxSearchCalls?: number;
-    maxReadCalls?: number;
-    maxDurationMs?: number;
   };
+  sourceDepth?: SourceDepth;
+  sourceDepthPolicy?: SourceDepthPolicy;
   durableLearning?: DurableLearningPermission;
 } = {}) {
   const analysisNotes: AnalysisNote[] = [];
@@ -463,6 +463,8 @@ function createTestServer(options: {
     analysisHistoryReader: options.analysisHistoryReader,
     conversationTraceAttached: options.conversationTraceAttached,
     sourceUsePolicy: options.sourceUsePolicy,
+    sourceDepth: options.sourceDepth,
+    sourceDepthPolicy: options.sourceDepthPolicy,
     allowNewEvidence: options.allowNewEvidence,
     strategyRegistry: options.strategyRegistry,
     lightweight: options.lightweight,
@@ -580,6 +582,18 @@ function horizontalTracePairContext(): TracePairContext {
       },
     ],
   };
+}
+
+/** A depth policy whose locate depth has these limits and otherwise the shipped ones. */
+function locatePolicy({tokens = 12_000, searches = 4}: {tokens?: number; searches?: number} = {}): SourceDepthPolicy {
+  return parseSourceDepthPolicy({
+    schema_version: 'source_depth_policy@1',
+    depths: {
+      locate: {searches, reads: 3, max_read_lines: 80, tokens},
+      mechanism: {searches: 16, reads: 12, max_read_lines: 200, tokens: Math.max(tokens, 60_000)},
+    },
+    knowledge: {tokens: 12_000},
+  });
 }
 
 async function callTool(tools: Map<string, ToolDef>, name: string, params: Record<string, any> = {}): Promise<any> {
@@ -8030,9 +8044,10 @@ describe('createClaudeMcpServer', () => {
     });
 
     it.each([
-      {capTokens: 5, admitted: true},
-      {capTokens: 4, admitted: false},
-    ])('charges the one numbered read body before admission at the $capTokens-token boundary', async ({capTokens, admitted}) => {
+      {capTokens: 5, delivered: '10: alpha\n11: beta'},
+      {capTokens: 4, delivered: '10: alpha'},
+      {capTokens: 2, delivered: undefined},
+    ])('charges the one numbered read body before admission at the $capTokens-token boundary', async ({capTokens, delivered}) => {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-numbered-read-budget-'));
       try {
         const sourceAccess = {
@@ -8052,7 +8067,6 @@ describe('createClaudeMcpServer', () => {
         };
         const ledger = new CodeLookupLedger(
           `numbered-budget-${capTokens}`,
-          capTokens,
           1,
           path.join(tmpDir, 'ledger.jsonl'),
         );
@@ -8061,15 +8075,19 @@ describe('createClaudeMcpServer', () => {
           codebaseIds: ['app-a'],
           onDemandSourceAccess: sourceAccess,
           codeLookupLedger: ledger,
+          sourceDepthPolicy: locatePolicy({tokens: capTokens}),
         });
 
         const read = await callTool(tools, 'read_codebase_file', {file_path: 'src/Foo.kt'});
 
-        if (admitted) {
-          expect(read.reference.numberedText).toBe('10: alpha\n11: beta');
+        if (delivered) {
+          // What does not fit is paged, not refused: the first line still fits in 4.
+          expect(read.reference.numberedText).toBe(delivered);
           expect(read.reference).not.toHaveProperty('text');
+          expect(read.truncated).toBe(delivered.includes('11:') ? false : true);
           expect(ledger.getEntries()).toEqual([
-            expect.objectContaining({outcome: 'success', tokensSpent: 5, returnedReferenceCount: 1}),
+            expect.objectContaining({outcome: 'success', tokensSpent: Math.ceil(delivered.length / 4),
+              returnedReferenceCount: 1}),
           ]);
         } else {
           expect(read).toEqual(expect.objectContaining({success: false, unsupportedReason: 'budget_exceeded'}));
@@ -8093,7 +8111,7 @@ describe('createClaudeMcpServer', () => {
         enumerationBackend: 'node-walk' as const, backendFidelity: 'degraded' as const,
       }))};
       const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-a', 'app-b'],
-        onDemandSourceAccess: sourceAccess});
+        sourceDepth: 'mechanism', onDemandSourceAccess: sourceAccess});
       for (let i = 0; i < 5; i++) {
         const result = await callTool(tools, 'search_codebase', {codebase_id: i % 2 ? 'app-b' : 'app-a', query: String(i)});
         expect(result.matches).toHaveLength(20);
@@ -8139,7 +8157,7 @@ describe('createClaudeMcpServer', () => {
         const registry = new CodebaseRegistry(path.join(tmpDir, 'registry.json'));
         const ref = registry.register({kind: 'app_source', displayName: 'Source', rootPath: root,
           rootAuthorization: 'native_picker', sendToProvider: true});
-        const ledger = new CodeLookupLedger('graph-rejected', 1000, 1, path.join(tmpDir, 'ledger.jsonl'));
+        const ledger = new CodeLookupLedger('graph-rejected', 1, path.join(tmpDir, 'ledger.jsonl'));
         const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId],
           codebaseRegistry: registry, codeLookupLedger: ledger});
         await callTool(tools, 'record_source_use_decision', {status: 'not_needed',
@@ -8165,7 +8183,7 @@ describe('createClaudeMcpServer', () => {
         const registry = new CodebaseRegistry(path.join(tmpDir, 'registry.json'));
         const ref = registry.register({kind, displayName: 'Source', rootPath: root, sendToProvider: true});
         const search = jest.fn<RagStore['search']>(() => {throw new Error('source_store_unavailable');});
-        const ledger = new CodeLookupLedger('indexed-rejected', 1000, 1, path.join(tmpDir, 'ledger.jsonl'));
+        const ledger = new CodeLookupLedger('indexed-rejected', 1, path.join(tmpDir, 'ledger.jsonl'));
         const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId],
           codebaseRegistry: registry, codeLookupLedger: ledger, ragStore: {search}});
         await callTool(tools, 'record_source_use_decision', {status: 'not_needed',
@@ -8239,13 +8257,13 @@ describe('createClaudeMcpServer', () => {
           uri: `codebase://${ref.codebaseId}/src/File${i}.c`, filePath: `src/File${i}.c`, lineRange: {start: 1, end: 1},
           symbol: batchNames[Math.floor(i / 20)], snippet: `void ${batchNames[Math.floor(i / 20)]}() { /* ${i} */ }`,
           license: 'Apache-2.0', indexedAt: Date.now()})), scope);
-        const ledger = new CodeLookupLedger('indexed-admission', 100_000, 2, path.join(tmpDir, 'ledger.jsonl'));
+        const ledger = new CodeLookupLedger('indexed-admission', 2, path.join(tmpDir, 'ledger.jsonl'));
         const graphResult: CodeGraphNavigationResult = {success: true, codebaseId: ref.codebaseId,
           references: [{referenceId: 'graph-extra', codebaseId: ref.codebaseId, filePath: 'src/Extra.c'}],
           processes: [], graph: {engine: 'gitnexus', freshness: 'current', verificationRequired: true}, truncated: false};
         const server = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId],
           codebaseRegistry: registry, ragStore: store, codeLookupLedger: ledger,
-          knowledgeScope: scope,
+          knowledgeScope: scope, sourceDepth: 'mechanism',
           codeGraphNavigator: {query: async () => graphResult, inspectSymbol: async () => graphResult}});
         for (let batch = 0; batch < 5; batch++) {
           const result = await callTool(server.tools, toolName, {query: batchNames[batch], symbol: batchNames[batch],
@@ -8411,7 +8429,6 @@ describe('createClaudeMcpServer', () => {
         }, scope);
         const indexedLedger = new CodeLookupLedger(
           'indexed-source-use-levels',
-          1000,
           2,
           path.join(tmpDir, 'indexed-ledger.jsonl'),
         );
@@ -8655,7 +8672,7 @@ describe('createClaudeMcpServer', () => {
         const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
         const ref = codebaseRegistry.register({kind: 'app_source', displayName: 'App', rootPath: root,
           rootAuthorization: 'native_picker', pathFilters: ['src'], sendToProvider: true, ...scope});
-        const ledger = new CodeLookupLedger('find-files', 12_000, 2, path.join(tmpDir, 'ledger.jsonl'));
+        const ledger = new CodeLookupLedger('find-files', 2, path.join(tmpDir, 'ledger.jsonl'));
         const {tools, sourceUse} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: [ref.codebaseId],
           codebaseRegistry, codeLookupLedger: ledger, knowledgeScope: scope});
 
@@ -8739,7 +8756,6 @@ describe('createClaudeMcpServer', () => {
         });
         const ledger = new CodeLookupLedger(
           'bounded-source-test',
-          12_000,
           2,
           path.join(tmpDir, 'ledger.jsonl'),
         );
@@ -8751,12 +8767,8 @@ describe('createClaudeMcpServer', () => {
           codebaseRegistry,
           codeLookupLedger: ledger,
           knowledgeScope: scope,
-          sourceUsePolicy: {
-            phase: 'explicit',
-            maxSearchCalls: 1,
-            maxReadCalls: 2,
-            maxDurationMs: 6_000,
-          },
+          sourceUsePolicy: {phase: 'explicit'},
+          sourceDepth: 'locate',
         });
 
         expect([...tools.keys()]).toEqual(expect.arrayContaining([
@@ -8766,17 +8778,21 @@ describe('createClaudeMcpServer', () => {
         ]));
         expect(tools.has('execute_sql')).toBe(false);
         expect(tools.has('query_code_graph')).toBe(false);
-        expect(await callTool(tools, 'search_codebase', {
-          query: 'installTracing',
-        })).toEqual(expect.objectContaining({success: true}));
+        // The locate depth allows 4 searches and 3 reads per run.
+        for (let i = 0; i < 4; i++) {
+          expect(await callTool(tools, 'search_codebase', {
+            query: 'installTracing',
+          })).toEqual(expect.objectContaining({success: true}));
+        }
         expect(await callTool(tools, 'search_codebase', {
           query: 'StartupHooks',
         })).toEqual(expect.objectContaining({
           success: false,
           unsupportedReason: 'source_search_budget_exceeded',
+          budget: expect.objectContaining({searchesLeft: 0, readsLeft: 3}),
         }));
 
-        for (let i = 0; i < 2; i++) {
+        for (let i = 0; i < 3; i++) {
           expect(await callTool(tools, 'read_codebase_file', {
             file_path: 'src/StartupHooks.kt',
             start_line: 1,
@@ -8807,12 +8823,7 @@ describe('createClaudeMcpServer', () => {
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: ['app-codebase'],
-        sourceUsePolicy: {
-          phase: 'automatic_enrichment',
-          maxSearchCalls: 1,
-          maxReadCalls: 2,
-          maxDurationMs: 6_000,
-        },
+        sourceUsePolicy: {phase: 'automatic_enrichment'},
       });
 
       expect([...tools.keys()].sort()).toEqual([
@@ -8828,12 +8839,7 @@ describe('createClaudeMcpServer', () => {
         lightweight: false,
         codeAwareMode: 'provider_send',
         codebaseIds: ['app-codebase'],
-        sourceUsePolicy: {
-          phase: 'explicit',
-          maxSearchCalls: 1,
-          maxReadCalls: 2,
-          maxDurationMs: 6_000,
-        },
+        sourceUsePolicy: {phase: 'explicit'},
       });
 
       expect(tools.has('execute_sql')).toBe(true);
@@ -8987,7 +8993,6 @@ describe('createClaudeMcpServer', () => {
         });
         const ledger = new CodeLookupLedger(
           'on-demand-test',
-          12_000,
           2,
           path.join(tmpDir, 'ledger.jsonl'),
         );
@@ -9113,7 +9118,6 @@ describe('createClaudeMcpServer', () => {
         };
         const ledger = new CodeLookupLedger(
           'graph-test',
-          12_000,
           2,
           path.join(tmpDir, 'ledger.jsonl'),
         );
@@ -9244,7 +9248,6 @@ describe('createClaudeMcpServer', () => {
         };
         const ledger = new CodeLookupLedger(
           'graph-budget-test',
-          1,
           2,
           path.join(tmpDir, 'ledger.jsonl'),
         );
@@ -9255,6 +9258,7 @@ describe('createClaudeMcpServer', () => {
           codeGraphNavigator,
           codeLookupLedger: ledger,
           knowledgeScope: scope,
+          sourceDepthPolicy: locatePolicy({tokens: 20}),
         });
 
         await expect(callTool(tools, 'query_code_graph', {
@@ -10451,11 +10455,22 @@ describe('source and knowledge governance refusals', () => {
   };
 
   it('refuses an exhausted source budget with what to do instead', async () => {
+    const reference = {referenceId: 'source-a', codebaseId: 'app-codebase', filePath: 'src/StartupHooks.kt',
+      lineRange: {start: 1, end: 1}};
+    const sourceAccess = {
+      find: jest.fn(),
+      search: jest.fn(async () => ({success: true, codebaseId: 'app-codebase', truncated: false,
+        coverageComplete: true, matches: [{...reference, matchLines: [1]}]})),
+      read: jest.fn(async () => ({success: true, codebaseId: 'app-codebase', truncated: false, reference})),
+    };
     const {tools, sourceUse} = createTestServer({
       codeAwareMode: 'metadata_only',
       codebaseIds: ['app-codebase'],
-      sourceUsePolicy: {phase: 'explicit', maxSearchCalls: 0, maxReadCalls: 0},
+      sourceDepth: 'locate',
+      onDemandSourceAccess: sourceAccess as any,
     });
+    for (let i = 0; i < 4; i++) await callRaw(tools, 'search_codebase', {query: 'StartupHooks'});
+    for (let i = 0; i < 3; i++) await callRaw(tools, 'read_codebase_file', {file_path: 'src/StartupHooks.kt'});
 
     expectRefusal(await callRaw(tools, 'search_codebase', {query: 'StartupHooks'}), {
       unsupportedReason: 'source_search_budget_exceeded',
@@ -10465,9 +10480,77 @@ describe('source and knowledge governance refusals', () => {
       unsupportedReason: 'source_read_budget_exceeded',
       action_required: 'continue_with_existing_source_evidence',
     });
-    // Stopped before dispatch: attempted and incomplete, but nothing was queried.
-    expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'search_incomplete',
-      attemptedTools: ['search_codebase', 'read_codebase_file'], queriedCodebaseIds: []});
+    // The refused calls never reached the source.
+    expect(sourceAccess.search).toHaveBeenCalledTimes(4);
+    expect(sourceAccess.read).toHaveBeenCalledTimes(3);
+    expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'search_incomplete'});
+  });
+
+  it('delivers what fits in the run token budget instead of refusing a whole result', async () => {
+    const big = 'x'.repeat(20_000);
+    const sourceAccess = {
+      find: jest.fn(),
+      search: jest.fn(async () => ({success: true, codebaseId: 'app-codebase', truncated: false,
+        coverageComplete: true, moreResults: false, matches: [1, 2, 3].map(line => ({
+          referenceId: `source-${line}`, codebaseId: 'app-codebase', filePath: `src/F${line}.kt`,
+          lineRange: {start: 1, end: 1}, matchLines: [1], text: big}))})),
+      read: jest.fn(async (input: {maxLines?: number; lineCap?: number}) => {
+        const count = Math.min(input.maxLines ?? 80, input.lineCap ?? 200);
+        return {success: true, codebaseId: 'app-codebase', truncated: false,
+          reference: {referenceId: 'source-read', codebaseId: 'app-codebase', filePath: 'src/R.kt',
+            lineRange: {start: 1, end: count}, text: Array.from({length: count}, () => 'y'.repeat(400)).join('\n')},
+          window: {totalLines: 500, omittedBefore: 0, omittedAfter: 500 - count, nextStartLine: count + 1,
+            symbolCoverage: 'not_assessed' as const}};
+      }),
+    };
+    const {tools} = createTestServer({codeAwareMode: 'provider_send', codebaseIds: ['app-codebase'],
+      sourceDepth: 'locate', onDemandSourceAccess: sourceAccess as any});
+
+    // Locate allows 12000 tokens: two 5000-token windows fit, the third is paged.
+    const search = await callTool(tools, 'search_codebase', {query: 'x'});
+    expect(search.matches.map((match: {filePath: string}) => match.filePath)).toEqual(['src/F1.kt', 'src/F2.kt']);
+    expect(search).toEqual(expect.objectContaining({success: true, moreResults: true, fileCount: 2,
+      coverageComplete: true}));
+    expect(search.budget.tokensLeft).toBeLessThan(2_000);
+
+    // The depth caps one window at 80 lines; the rest of the budget trims it further.
+    const read = await callTool(tools, 'read_codebase_file', {file_path: 'src/R.kt', max_lines: 200});
+    expect(sourceAccess.read).toHaveBeenCalledWith(expect.objectContaining({maxLines: 200, lineCap: 80}));
+    expect(read.success).toBe(true);
+    const end = read.reference.lineRange.end;
+    expect(end).toBeLessThan(80);
+    expect(end).toBeGreaterThan(0);
+    expect(read.reference.numberedText.split('\n')).toHaveLength(end);
+    expect(read).toEqual(expect.objectContaining({truncated: true,
+      window: expect.objectContaining({omittedAfter: 500 - end, nextStartLine: end + 1})}));
+    expect(read.budget.tokensLeft).toBeGreaterThanOrEqual(0);
+
+    // Nothing fits any more: a refusal with what to do instead.
+    const refused = await callRaw(tools, 'search_codebase', {query: 'x'});
+    expectRefusal(refused, {unsupportedReason: 'budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence'});
+  });
+
+  it('counts resolve_symbol against the run search budget', async () => {
+    const {tools} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'],
+      sourceDepthPolicy: locatePolicy({searches: 1})});
+    await callRaw(tools, 'resolve_symbol', {symbol: 'StartupHooks'});
+
+    expectRefusal(await callRaw(tools, 'resolve_symbol', {symbol: 'StartupHooks'}), {
+      unsupportedReason: 'source_search_budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence',
+    });
+  });
+
+  it('refuses a resolve_symbol result past the token budget before issuing any reference', async () => {
+    const {tools, sourceUse} = createTestServer({codeAwareMode: 'metadata_only', codebaseIds: ['app-codebase'],
+      sourceDepthPolicy: locatePolicy({tokens: 1})});
+
+    expectRefusal(await callRaw(tools, 'resolve_symbol', {symbol: 'StartupHooks'}), {
+      unsupportedReason: 'budget_exceeded',
+      action_required: 'continue_with_existing_source_evidence',
+    });
+    expect(sourceUse.getSourceUseDecision()).toMatchObject({references: [], usedCodebaseIds: []});
   });
 
   it('refuses a codebase outside the session whitelist', async () => {
@@ -10567,7 +10650,7 @@ describe('source and knowledge governance refusals', () => {
         const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
         const ref = codebaseRegistry.register({kind: 'app_source', displayName: 'App', rootPath: root,
           rootAuthorization: 'native_picker', pathFilters: ['src'], sendToProvider: true, ...scope});
-        const ledger = new CodeLookupLedger('path-refusal', 100_000, 1, path.join(tmpDir, 'ledger.jsonl'));
+        const ledger = new CodeLookupLedger('path-refusal', 1, path.join(tmpDir, 'ledger.jsonl'));
         await run({codebaseRegistry, codebaseId: ref.codebaseId, root, ledger});
       } finally { fs.rmSync(tmpDir, {recursive: true, force: true}); }
     };

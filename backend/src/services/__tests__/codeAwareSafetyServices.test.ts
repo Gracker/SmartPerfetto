@@ -236,7 +236,7 @@ describe('CodeLookupLedger', () => {
       '',
     ].join('\n'));
     const warnings = warningsDuring(() => {
-      expect(() => CodeLookupLedger.restore('session-a', 100, 1, ledgerPath))
+      expect(() => CodeLookupLedger.restore('session-a', 1, ledgerPath))
         .toThrow(/^code_lookup_ledger_corrupt_record: line 2$/);
     });
     expect(warnings).toEqual([['[CodeLookupLedger] Ledger unreadable', expect.objectContaining({
@@ -246,7 +246,7 @@ describe('CodeLookupLedger', () => {
 
   it('persists append-only lookup entries and restores caps', async () => {
     const ledgerPath = path.join(tmpDir, 'ledger.jsonl');
-    const ledger = new CodeLookupLedger('session-a', 100, 1, ledgerPath);
+    const ledger = new CodeLookupLedger('session-a', 1, ledgerPath);
 
     ledger.record({
       turn: 1,
@@ -272,10 +272,9 @@ describe('CodeLookupLedger', () => {
     });
     await ledger.flush();
 
-    const restored = CodeLookupLedger.restore('session-a', 100, 1, ledgerPath);
+    const restored = CodeLookupLedger.restore('session-a', 1, ledgerPath);
     expect(restored.hasPriorLookupOf('chunk-a')).toBe(true);
     expect(restored.hasSuccessfulCodeLookup()).toBe(true);
-    expect(restored.remainingTokens()).toBe(88);
     expect(restored.remainingPatches()).toBe(0);
     expect(restored.toSnapshotSummary()).toEqual({
       lookupCount: 1,
@@ -288,7 +287,7 @@ describe('CodeLookupLedger', () => {
 
   it('keeps audit history but never restores capability across authorization fingerprints', async () => {
     const ledgerPath = path.join(tmpDir, 'partitioned-ledger.jsonl');
-    const oldLedger = new CodeLookupLedger('session-partitioned', 100, 1, ledgerPath, 'context-old');
+    const oldLedger = new CodeLookupLedger('session-partitioned', 1, ledgerPath, 'context-old');
     oldLedger.record({
       turn: 1,
       ts: 1714600000000,
@@ -304,14 +303,12 @@ describe('CodeLookupLedger', () => {
 
     const restored = CodeLookupLedger.restore(
       'session-partitioned',
-      100,
       1,
       ledgerPath,
       'context-new',
     );
     expect(restored.hasPriorLookupOf('chunk-old')).toBe(false);
     expect(restored.hasSuccessfulCodeLookup()).toBe(false);
-    expect(restored.remainingTokens()).toBe(100);
     expect(restored.toSnapshotSummary()).toEqual({
       lookupCount: 1,
       patchCount: 0,
@@ -322,7 +319,7 @@ describe('CodeLookupLedger', () => {
 
   it('keeps attempted codebases separate from actually returned references', async () => {
     const ledgerPath = path.join(tmpDir, 'used-ledger.jsonl');
-    const ledger = new CodeLookupLedger('session-used', 100, 1, ledgerPath);
+    const ledger = new CodeLookupLedger('session-used', 1, ledgerPath);
     ledger.record({
       turn: 1,
       ts: 1714600000000,
@@ -360,7 +357,7 @@ describe('CodeLookupLedger', () => {
     });
     await ledger.flush();
 
-    expect(CodeLookupLedger.restore('session-used', 100, 1, ledgerPath).toSnapshotSummary()).toEqual({
+    expect(CodeLookupLedger.restore('session-used', 1, ledgerPath).toSnapshotSummary()).toEqual({
       lookupCount: 3,
       patchCount: 0,
       referencedCodebaseIds: ['cb_attempted', 'cb_graph', 'cb_indexed'],
@@ -382,7 +379,7 @@ describe('CodeLookupLedger', () => {
       legacyPath: false,
     })}\n`);
 
-    expect(CodeLookupLedger.restore('session-old', 100, 1, ledgerPath).toSnapshotSummary()).toEqual({
+    expect(CodeLookupLedger.restore('session-old', 1, ledgerPath).toSnapshotSummary()).toEqual({
       lookupCount: 1,
       patchCount: 0,
       referencedCodebaseIds: ['cb_old'],
@@ -430,7 +427,6 @@ describe('CodeLookupLedger', () => {
 
     const restored = CodeLookupLedger.restore(
       'session-migrated-partition',
-      100,
       1,
       ledgerPath,
       'context-new',
@@ -449,7 +445,6 @@ describe('CodeLookupLedger', () => {
     const ledgerPath = path.join(tmpDir, 'source-decision-ledger.jsonl');
     const ledger = new CodeLookupLedger(
       'session-source-decision',
-      100,
       1,
       ledgerPath,
       'context-current',
@@ -504,7 +499,6 @@ describe('CodeLookupLedger', () => {
     const persisted = fs.readFileSync(ledgerPath, 'utf8');
     const restored = CodeLookupLedger.restore(
       'session-source-decision',
-      100,
       1,
       ledgerPath,
       'context-current',
@@ -538,24 +532,25 @@ describe('CodeLookupLedger', () => {
 describe('filterRagLookup', () => {
   it('admits only authorized redacted source bodies before granting patch context or spending tokens', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
-    const ledger = new CodeLookupLedger('admission', 100, 2, path.join(tmpDir, 'admission.jsonl'));
+    const ledger = new CodeLookupLedger('admission', 2, path.join(tmpDir, 'admission.jsonl'));
+    const pool = {left: () => 100, spend: jest.fn()};
     const seen: string[] = [];
     const source = makeChunk({codebaseId, sourceGeneration, snippet: 'class PRIVATE_ADMISSION_BODY { val api_key = "1234567890" }'});
     const filtered = await filterRagLookup(makeRawResult(source), {toolName: 'lookup_app_source', turn: 0,
-      codebaseRegistry: registry, knowledgeScope: CODEBASE_SCOPE, ledger, sessionId: 'admission',
-      admitSourceHit: hit => {seen.push(hit.snippet ?? ''); return false;}});
+      codebaseRegistry: registry, knowledgeScope: CODEBASE_SCOPE, ledger, budget: {sourceTokens: pool, knowledgeTokens: pool},
+      sessionId: 'admission', admitSourceHit: hit => {seen.push(hit.snippet ?? ''); return false;}});
     await ledger.flush();
     expect(seen).toHaveLength(1);
     expect(seen[0]).not.toContain('1234567890');
     expect(filtered.hits).toEqual([]);
     expect(ledger.hasPriorLookupOf(source.chunkId)).toBe(false);
-    expect(ledger.remainingTokens()).toBe(100);
+    expect(pool.spend).not.toHaveBeenCalled();
     expect(sanitizeCodeAwareText('admission', 'PRIVATE_ADMISSION_BODY')).toBe('PRIVATE_ADMISSION_BODY');
   });
 
   it('redacts secrets and records successful user codebase lookups when consent allows provider send', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
-    const ledger = new CodeLookupLedger('session-b', 1000, 1, path.join(tmpDir, 'ledger-b.jsonl'));
+    const ledger = new CodeLookupLedger('session-b', 1, path.join(tmpDir, 'ledger-b.jsonl'));
     const result = await filterRagLookup(
       makeRawResult(makeChunk({codebaseId, sourceGeneration})),
       {
@@ -577,7 +572,7 @@ describe('filterRagLookup', () => {
 
   it('registers returned snippets with the output echo guard', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(true);
-    const ledger = new CodeLookupLedger('session-echo', 1000, 1, path.join(tmpDir, 'ledger-echo.jsonl'));
+    const ledger = new CodeLookupLedger('session-echo', 1, path.join(tmpDir, 'ledger-echo.jsonl'));
     await filterRagLookup(
       makeRawResult(makeChunk({
         codebaseId,
@@ -603,7 +598,7 @@ describe('filterRagLookup', () => {
 
   it('returns metadata-only hits when provider-send consent is absent', async () => {
     const {registry, codebaseId, sourceGeneration} = makeRegistry(false);
-    const ledger = new CodeLookupLedger('session-c', 1000, 1, path.join(tmpDir, 'ledger-c.jsonl'));
+    const ledger = new CodeLookupLedger('session-c', 1, path.join(tmpDir, 'ledger-c.jsonl'));
     const result = await filterRagLookup(
       makeRawResult(makeChunk({codebaseId, sourceGeneration})),
       {
@@ -723,8 +718,28 @@ describe('filterRagLookup', () => {
     expect(result.hits).toEqual([]);
   });
 
+  it('charges legacy knowledge to the run knowledge pool and refuses past it', async () => {
+    const legacyChunk = makeChunk({chunkId: 'legacy-blog', kind: 'androidperformance.com',
+      uri: 'https://androidperformance.com/article', snippet: 'legacy article text', tokenCount: 5,
+      registryOrigin: 'legacy_plan55', codebaseId: undefined});
+    let left = 5;
+    const knowledge = {left: () => left, spend: (tokens: number) => {left -= tokens;}};
+    const source = {left: () => 1_000, spend: jest.fn()};
+
+    const first = await filterRagLookup(makeRawResult(legacyChunk),
+      {toolName: 'lookup_blog_knowledge', turn: 1, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
+    const second = await filterRagLookup(makeRawResult(legacyChunk),
+      {toolName: 'lookup_blog_knowledge', turn: 2, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
+
+    expect(first.hits[0]?.snippet).toBe('legacy article text');
+    expect(left).toBe(0);
+    expect(second.hits[0]).toEqual(expect.objectContaining({unsupportedReason: 'budget_exceeded'}));
+    expect(second.hits[0]).not.toHaveProperty('snippet');
+    expect(source.spend).not.toHaveBeenCalled();
+  });
+
   it('keeps legacy knowledge snippets on the legacy path', async () => {
-    const ledger = new CodeLookupLedger('session-d', 1000, 1, path.join(tmpDir, 'ledger-d.jsonl'));
+    const ledger = new CodeLookupLedger('session-d', 1, path.join(tmpDir, 'ledger-d.jsonl'));
     const legacyChunk = makeChunk({
       chunkId: 'legacy-blog',
       kind: 'androidperformance.com',

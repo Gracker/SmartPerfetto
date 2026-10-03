@@ -159,7 +159,8 @@ export async function runAnalysisSourceSupplement(input: {
   const native = Promise.resolve().then(() => {
     assertCurrent();
     return orchestrator.analyze(prompt, runtimeSessionId, input.traceId, {...analysisOptions,
-      analysisMode: 'fast', runId: supplementRunId, sourceUsePolicy: {phase: 'deep_enrichment'},
+      // A deep supplement exists to read mechanism, whatever its fast budget.
+      analysisMode: 'fast', runId: supplementRunId, sourceUsePolicy: {phase: 'deep_enrichment'}, sourceDepth: 'mechanism',
       analysisContextFingerprint: sourceFingerprint, knowledgeSourceIds: undefined});
   }).then(result => {
     // Take before any success/protocol check, including results delivered after cancel.
@@ -174,7 +175,7 @@ export async function runAnalysisSourceSupplement(input: {
     const finalized = await Promise.race([finalizeAnalysisResult({result, context, owner, query: prompt}), aborted]);
     assertCurrent();
     const finalResult = projectOwnerAnalysisResult(runtimeSessionId, finalized.result, analysisOptions.outputLanguage ?? 'zh-CN');
-    const executed = CodeLookupLedger.restore(runtimeSessionId, 12_000, 2).getEntries()
+    const executed = CodeLookupLedger.restore(runtimeSessionId, 2).getEntries()
       .filter(entry => entry.outcome !== 'budget_exceeded');
     const metrics: AnalysisSourceSupplementMetrics = {
       searchCalls: executed.filter(entry => entry.toolName === 'search_codebase').length,

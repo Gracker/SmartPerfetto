@@ -1524,7 +1524,10 @@ strategies:
     reason: SmartPerfetto incomplete delivery projection
   backend/strategies/analysis-source-activation-policy.yaml:
     disposition: product-only
-    reason: SmartPerfetto request-scoped private source authorization and runtime budget orchestration
+    reason: SmartPerfetto request-scoped private source authorization and history replay limits
+  backend/strategies/source-depth-policy.yaml:
+    disposition: product-only
+    reason: SmartPerfetto per-run source tool budgets by requested depth
   backend/strategies/analysis-source-deep-supplement.template.md:
     disposition: product-only
     reason: SmartPerfetto provider follow-up and private source supplement orchestration

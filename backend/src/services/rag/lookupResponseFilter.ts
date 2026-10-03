@@ -10,6 +10,7 @@ import type {
 import {activeCodebaseGeneration, type CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
 import {sourceSelectionAdmits, sourceSelectionForRef} from '../codebase/sourceSelectionPolicy';
+import {estimateTextTokens, type SourceBudget} from '../codebase/sourceBudget';
 import type {CodeLookupLedger} from '../codebase/codeLookupLedger';
 import {credentialContextForPath, redactSecrets} from '../security/secretPatterns';
 import {registerCodeAwareLookupForEcho} from '../security/codeAwareOutputRegistry';
@@ -76,7 +77,13 @@ export interface FilterContext {
     'lookup_oem_sdk' | 'lookup_blog_knowledge';
   turn: number;
   codebaseRegistry?: CodebaseRegistry;
+  /** Audit trail and patch authority; records every delivery and refusal. */
   ledger?: CodeLookupLedger;
+  /**
+   * The run's delivered-token pools: knowledge-base text (the Knowledge Pack
+   * and private knowledge) and user codebase source are budgeted apart.
+   */
+  budget?: Pick<SourceBudget, 'sourceTokens' | 'knowledgeTokens'>;
   allowProviderSend?: boolean;
   sessionId?: string;
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
@@ -171,7 +178,7 @@ function privateKnowledgeMetadata(chunk: RagChunk): SanitizedRagHit['metadata'] 
 }
 
 function estimateTokens(chunk: RagChunk, snippet: string): number {
-  return chunk.tokenCount ?? Math.max(1, Math.ceil(snippet.length / 4));
+  return chunk.tokenCount ?? Math.max(1, estimateTextTokens(snippet));
 }
 
 export async function filterRagLookup(
@@ -194,6 +201,15 @@ export async function filterRagLookup(
 
     const chunk = hit.chunk;
     if (isLegacyChunk(chunk)) {
+      // Public retrieved knowledge draws on the knowledge pool like the rest.
+      const tokens = estimateTokens(chunk, chunk.snippet);
+      if (ctx.budget && tokens > ctx.budget.knowledgeTokens.left()) {
+        hits.push({chunkId: hit.chunkId, score: hit.score, metadata: metadata(chunk),
+          unsupportedReason: 'budget_exceeded'});
+        ctx.ledger?.record({turn: ctx.turn, ts: Date.now(), toolName: ctx.toolName, chunkIds: [],
+          consentApplied: false, tokensSpent: 0, outcome: 'budget_exceeded', legacyPath: true});
+        continue;
+      }
       hits.push({
         chunkId: hit.chunkId,
         score: hit.score,
@@ -201,6 +217,7 @@ export async function filterRagLookup(
         snippet: chunk.snippet,
         unsupportedReason: hit.unsupportedReason,
       });
+      ctx.budget?.knowledgeTokens.spend(tokens);
       ctx.ledger?.record({
         turn: ctx.turn,
         ts: Date.now(),
@@ -208,7 +225,7 @@ export async function filterRagLookup(
         codebaseId: chunk.codebaseId,
         chunkIds: [chunk.chunkId],
         consentApplied: false,
-        tokensSpent: estimateTokens(chunk, chunk.snippet),
+        tokensSpent: tokens,
         outcome: 'success',
         legacyPath: true,
       });
@@ -219,7 +236,7 @@ export async function filterRagLookup(
     if (isBuiltInKnowledgePackChunk(chunk)) {
       const redacted = redactSecrets(chunk.snippet);
       const tokens = estimateTokens(chunk, redacted.text);
-      if (ctx.ledger && tokens > ctx.ledger.remainingTokens()) {
+      if (ctx.budget && tokens > ctx.budget.knowledgeTokens.left()) {
         hits.push({
           chunkId: hit.chunkId,
           score: hit.score,
@@ -227,7 +244,7 @@ export async function filterRagLookup(
           unsupportedReason: 'budget_exceeded',
           redactedCount: redacted.redactedCount,
         });
-        ctx.ledger.record({
+        ctx.ledger?.record({
           turn: ctx.turn,
           ts: Date.now(),
           toolName: ctx.toolName,
@@ -258,6 +275,7 @@ export async function filterRagLookup(
         snippet: redacted.text,
         redactedCount: redacted.redactedCount,
       });
+      ctx.budget?.knowledgeTokens.spend(tokens);
       ctx.ledger?.record({
         turn: ctx.turn,
         ts: Date.now(),
@@ -308,7 +326,7 @@ export async function filterRagLookup(
       }
       const redacted = redactSecrets(chunk.snippet);
       const tokens = estimateTokens(chunk, redacted.text);
-      if (ctx.ledger && tokens > ctx.ledger.remainingTokens()) {
+      if (ctx.budget && tokens > ctx.budget.knowledgeTokens.left()) {
         hits.push({
           chunkId: hit.chunkId,
           score: hit.score,
@@ -316,7 +334,7 @@ export async function filterRagLookup(
           unsupportedReason: 'budget_exceeded',
           redactedCount: redacted.redactedCount,
         });
-        ctx.ledger.record({
+        ctx.ledger?.record({
           turn: ctx.turn,
           ts: Date.now(),
           toolName: ctx.toolName,
@@ -335,6 +353,7 @@ export async function filterRagLookup(
         snippet: redacted.text,
         redactedCount: redacted.redactedCount,
       });
+      ctx.budget?.knowledgeTokens.spend(tokens);
       ctx.ledger?.record({
         turn: ctx.turn,
         ts: Date.now(),
@@ -487,7 +506,7 @@ export async function filterRagLookup(
 
     const redacted = redactSecrets(chunk.snippet, credentialContextForPath(chunk.filePath));
     const tokens = estimateTokens(chunk, redacted.text);
-    if (ctx.ledger && tokens > ctx.ledger.remainingTokens()) {
+    if (ctx.budget && tokens > ctx.budget.sourceTokens.left()) {
       hits.push({
         chunkId: hit.chunkId,
         score: hit.score,
@@ -495,7 +514,7 @@ export async function filterRagLookup(
         unsupportedReason: 'budget_exceeded',
         redactedCount: redacted.redactedCount,
       });
-      ctx.ledger.record({
+      ctx.ledger?.record({
         turn: ctx.turn,
         ts: Date.now(),
         toolName: ctx.toolName,
@@ -523,6 +542,7 @@ export async function filterRagLookup(
       continue;
     }
     hits.push(sourceHit);
+    ctx.budget?.sourceTokens.spend(tokens);
     ctx.ledger?.record({
       turn: ctx.turn,
       ts: Date.now(),

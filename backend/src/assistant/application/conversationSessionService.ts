@@ -58,6 +58,8 @@ export interface ConversationRuntimeInput {
   getHistoryTurns?(): readonly AnalysisHistoryTurn[];
   traceContext: ConversationTraceContext;
   selectionContext?: AnalysisOptions['selectionContext'];
+  /** This turn's requested source depth: its own, else the conversation's last one. */
+  sourceDepth?: AnalysisOptions['sourceDepth'];
   onUpdate?(update: unknown): void;
   /**
    * Display-only answer draft (`answer_token` / `answer_segment_reset`) from a
@@ -166,6 +168,7 @@ export interface ConversationSession extends ManagedAssistantSession {
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: AnalysisOptions['sourceDepth'];
   sourceAuthorization?: {
     codeAwareMode: NonNullable<AnalysisOptions['codeAwareMode']>;
     codebaseIds: string[];
@@ -439,6 +442,7 @@ export class ConversationSessionService {
         ...(input.runtimeOptions?.knowledgeSourceIds?.length
           ? {knowledgeSourceIds: [...input.runtimeOptions.knowledgeSourceIds]}
           : {}),
+        ...(input.runtimeOptions?.sourceDepth ? {sourceDepth: input.runtimeOptions.sourceDepth} : {}),
         ...(input.runtimeOptions?.codeAwareMode &&
           input.runtimeOptions.codeAwareMode !== 'off' &&
           input.runtimeOptions.codebaseIds?.length
@@ -503,6 +507,7 @@ export class ConversationSessionService {
     const runId = this.createId('run');
     const stop = this.createRunStop(session, () => run);
     const privateContext = resolveAnalysisPrivateContext(session);
+    const sourceDepth = input.runtimeOptions?.sourceDepth ?? session.sourceDepth;
     const runtimeInput: ConversationRuntimeInput = {
       sessionId: session.sessionId,
       runId,
@@ -515,6 +520,7 @@ export class ConversationSessionService {
       },
       traceContext: session.traceContext,
       selectionContext: input.runtimeOptions?.selectionContext,
+      ...(sourceDepth ? {sourceDepth} : {}),
       onUpdate: (update) => {
         if (!this.isCurrentRun(session!, run) || this.cancellationRequested.has(run)) return;
         this.runAuthorizationChecks.get(run)?.();
@@ -587,6 +593,8 @@ export class ConversationSessionService {
       }
       throw error;
     }
+    // A started turn that names a depth keeps it for the turns after it.
+    if (input.runtimeOptions?.sourceDepth) session.sourceDepth = input.runtimeOptions.sourceDepth;
     if (this.isCurrentRun(session, run) && !this.cancellationRequested.has(run)) {
       this.publish(session.sessionId, {type: 'run_started', sessionId: session.sessionId, runId});
     }

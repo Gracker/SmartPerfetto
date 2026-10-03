@@ -148,6 +148,27 @@ describe('ConversationSessionService', () => {
     expect(inputs[2].selectionContext).toBeUndefined();
   });
 
+  it('applies a requested source depth to its turn and keeps it for later turns', async () => {
+    const inputs: ConversationRuntimeInput[] = [];
+    const service = createService({
+      run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
+        inputs.push(input);
+        return {kind: 'answered', message: 'answer'};
+      }),
+      cancel: jest.fn(async () => undefined),
+    });
+
+    const first = service.startTurn({query: 'Locate it', runtimeOptions: {sourceDepth: 'locate'}});
+    await first.completion;
+    const second = service.startTurn({sessionId: first.sessionId, query: 'Explain the mechanism',
+      runtimeOptions: {sourceDepth: 'mechanism'}});
+    await second.completion;
+    const third = service.startTurn({sessionId: first.sessionId, query: 'Continue'});
+    await third.completion;
+
+    expect(inputs.map(input => input.sourceDepth)).toEqual(['locate', 'mechanism', 'mechanism']);
+  });
+
   it('physically ends a clarification run and resumes the same session next turn', async () => {
     const inputs: ConversationRuntimeInput[] = [];
     const outcomes: ConversationRuntimeOutcome[] = [

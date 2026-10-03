@@ -13,6 +13,7 @@ import type {AnalysisHistoryTurn} from '../agentRuntime/analysisHistory';
 import {AnalysisHistoryStore, type AnalysisHistoryScope} from './analysisHistoryStore';
 import {openEnterpriseDb, resolveEnterpriseDbPath} from './enterpriseDb';
 import {parseStoredJson} from '../utils/storedData';
+import {isRequestedSourceDepth} from './codebase/sourceDepthPolicy';
 
 const RUNTIME_TYPE = 'conversation-logical-session@1';
 type WithoutRuntimeResult<T> = T extends unknown ? Omit<T, 'finalResult' | 'recoveryStatus'> : never;
@@ -32,6 +33,7 @@ export interface ConversationSessionDescriptor extends ConversationSessionOwner 
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: AnalysisOptions['sourceDepth'];
   status: AssistantSessionStatus;
   createdAt: number;
   lastActivityAt: number;
@@ -70,6 +72,8 @@ function projectedDescriptor(input: ConversationSessionDescriptor): Conversation
     outputLanguage: input.outputLanguage, codeAwareMode: input.codeAwareMode,
     codebaseIds: input.codebaseIds ? [...input.codebaseIds] : undefined,
     knowledgeSourceIds: input.knowledgeSourceIds ? [...input.knowledgeSourceIds] : undefined,
+    // Only a depth the request validator accepts is kept.
+    ...(isRequestedSourceDepth(input.sourceDepth) ? {sourceDepth: input.sourceDepth} : {}),
     status: input.status, createdAt: input.createdAt, lastActivityAt: input.lastActivityAt,
     lastRun: {runId: input.lastRun.runId, query: input.lastRun.query, turnIndex: input.lastRun.turnIndex,
       startedAt: input.lastRun.startedAt, completedAt: input.lastRun.completedAt, status: input.lastRun.status,

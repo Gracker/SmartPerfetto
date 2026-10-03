@@ -1408,23 +1408,13 @@ describe('QoderRuntime', () => {
       const runtime = createRuntime();
       await runtime.analyze('test', 'session-1', 'trace-1', {
         analysisMode: 'fast',
-        sourceUsePolicy: {
-          phase: 'explicit',
-          maxSearchCalls: 1,
-          maxReadCalls: 2,
-          maxDurationMs: 6_000,
-        },
+        sourceUsePolicy: {phase: 'explicit'},
       });
 
       expect(mockCreateClaudeMcpServer).toHaveBeenCalledWith(
         expect.objectContaining({
           lightweight: false,
-          sourceUsePolicy: {
-            phase: 'explicit',
-            maxSearchCalls: 1,
-            maxReadCalls: 2,
-            maxDurationMs: 6_000,
-          },
+          sourceUsePolicy: {phase: 'explicit'},
         }),
       );
       const callArgs = mockCreateClaudeMcpServer.mock.calls[0][0] as any;

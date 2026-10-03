@@ -17,6 +17,7 @@ import type {
   CapturePresetId,
   CaptureTarget,
 } from '../services/traceCaptureConfig';
+import type {RequestedSourceDepth} from '../services/codebase/sourceDepthPolicy';
 
 export type CliAnalysisMode = 'fast' | 'full' | 'auto';
 
@@ -103,6 +104,8 @@ export interface CliSessionConfig {
   codebaseIds?: string[];
   /** Registered private knowledge source ids exposed to this analysis turn. */
   knowledgeSourceIds?: string[];
+  /** Requested source depth (`--source-depth`), kept for later turns. */
+  sourceDepth?: RequestedSourceDepth;
   /** Analysis mode selected for the latest turn. */
   analysisMode?: CliAnalysisMode;
   /** Capture metadata when the session was created by `smp capture ... --analyze`. */

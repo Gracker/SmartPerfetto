@@ -651,7 +651,7 @@ describe('persistAgentTurn', () => {
       turn: number,
       status: 'located' | 'search_incomplete',
     ): Promise<void> => {
-      const ledger = new CodeLookupLedger(sessionId, 12_000, 2, ledgerPath, fingerprint);
+      const ledger = new CodeLookupLedger(sessionId, 2, ledgerPath, fingerprint);
       ledger.record({
         turn,
         ts: turn,
@@ -688,10 +688,9 @@ describe('persistAgentTurn', () => {
 
     const restore = CodeLookupLedger.restore;
     const restoreSpy = jest.spyOn(CodeLookupLedger, 'restore').mockImplementation(
-      (restoredSessionId, capTokens, capPatches, _sidecarPath, authorizationFingerprint) =>
+      (restoredSessionId, capPatches, _sidecarPath, authorizationFingerprint) =>
         restore(
           restoredSessionId,
-          capTokens,
           capPatches,
           ledgerPath,
           authorizationFingerprint,
@@ -741,7 +740,6 @@ describe('persistAgentTurn', () => {
         .toEqual(persisted.sourceUseDecision);
       expect(restoreSpy).toHaveBeenCalledWith(
         sessionId,
-        12_000,
         2,
         undefined,
         currentFingerprint,

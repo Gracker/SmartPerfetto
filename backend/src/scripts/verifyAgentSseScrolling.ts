@@ -3339,7 +3339,7 @@ async function main(): Promise<void> {
       oracleNativeSchemas: oracleEvidence?.schemas,
     }) : undefined;
     const auditedLookupCounts = successfulCodeLookupToolCounts(
-      CodeLookupLedger.restore(sessionId, 12_000, 2).getEntries(),
+      CodeLookupLedger.restore(sessionId, 2).getEntries(),
     );
     sse.successfulLookupCounts = auditedLookupCounts;
     for (const [toolName, count] of Object.entries(auditedLookupCounts)) {

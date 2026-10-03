@@ -131,7 +131,7 @@ describe('analysis source supplement', () => {
     expect(take).toHaveBeenCalledTimes(1);
     expect(fixture.analyze).toHaveBeenCalledWith(expect.any(String),
       analysisSourceSupplementRuntimeSessionId('session-a', 'run-a'), 'trace-a', expect.objectContaining({
-        analysisMode: 'fast', runId: 'run-a:analysis-source-enrichment', sourceUsePolicy: {phase: 'deep_enrichment'},
+        analysisMode: 'fast', runId: 'run-a:analysis-source-enrichment', sourceUsePolicy: {phase: 'deep_enrichment'}, sourceDepth: 'mechanism',
         knowledgeSourceIds: undefined, analysisContextFingerprint: 'source-auth-1', codebaseIds: ['app'],
       }));
     expect(finalize.mock.calls[0][0].owner.runId).toBe('run-a:analysis-source-enrichment');

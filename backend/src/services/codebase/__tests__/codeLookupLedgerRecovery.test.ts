@@ -51,7 +51,7 @@ async function writeLedger(
   entries: CodeLookupLedgerEntry[],
   authorizationFingerprint?: string,
 ): Promise<void> {
-  const ledger = new CodeLookupLedger('session', 1000, 2, ledgerPath, authorizationFingerprint);
+  const ledger = new CodeLookupLedger('session', 2, ledgerPath, authorizationFingerprint);
   for (const entry of entries) ledger.record(entry);
   await ledger.flush();
 }
@@ -75,7 +75,7 @@ function evidenceBytes(name: string): Buffer {
 }
 
 function restore(authorizationFingerprint?: string): CodeLookupLedger {
-  return CodeLookupLedger.restore('session', 1000, 2, ledgerPath, authorizationFingerprint);
+  return CodeLookupLedger.restore('session', 2, ledgerPath, authorizationFingerprint);
 }
 
 describe('CodeLookupLedger torn-tail recovery', () => {
@@ -86,8 +86,8 @@ describe('CodeLookupLedger torn-tail recovery', () => {
     const restored = restore();
     expect(restored.getEntries()).toHaveLength(1);
     expect(restored.hasPriorLookupOf(`chunk-${PRIVATE_MARKER}`)).toBe(true);
-    // The torn record may have spent everything that remained, and may have been a patch.
-    expect(restored.remainingTokens()).toBe(0);
+    // The torn record may have been a patch. Token budgets are per run and
+    // live outside the ledger, so a torn record no longer touches them.
     expect(restored.remainingPatches()).toBe(1);
     expect(restored.toSnapshotSummary()).toEqual({
       lookupCount: 1,
@@ -146,7 +146,6 @@ describe('CodeLookupLedger torn-tail recovery', () => {
     const reread = restore();
     expect(reread.getEntries().map(entry => entry.turn)).toEqual([1, 2]);
     expect(reread.hasPriorLookupOf('chunk-after')).toBe(true);
-    expect(reread.remainingTokens()).toBe(0);
     expect(reread.remainingPatches()).toBe(1);
     expect(reread.toSnapshotSummary().unreadableRecordCount).toBe(1);
 
@@ -169,7 +168,6 @@ describe('CodeLookupLedger torn-tail recovery', () => {
 
     const restored = restore();
     expect(restored.toSnapshotSummary().unreadableRecordCount).toBe(2);
-    expect(restored.remainingTokens()).toBe(0);
     expect(restored.remainingPatches()).toBe(0);
     restored.record(lookup({turn: 2}));
     await restored.flush();
@@ -182,7 +180,6 @@ describe('CodeLookupLedger torn-tail recovery', () => {
 
     const writer = restore('context-new');
     expect(writer.hasPriorLookupOf('chunk-old')).toBe(false);
-    expect(writer.remainingTokens()).toBe(0);
     expect(writer.remainingPatches()).toBe(1);
     writer.record(lookup({chunkIds: ['chunk-new'], tokensSpent: 0}));
     await writer.flush();
@@ -190,7 +187,6 @@ describe('CodeLookupLedger torn-tail recovery', () => {
     const oldPartition = restore('context-old');
     expect(oldPartition.hasPriorLookupOf('chunk-old')).toBe(true);
     expect(oldPartition.hasPriorLookupOf('chunk-new')).toBe(false);
-    expect(oldPartition.remainingTokens()).toBe(0);
 
     const newPartition = restore('context-new');
     expect(newPartition.hasPriorLookupOf('chunk-new')).toBe(true);
@@ -204,14 +200,14 @@ describe('CodeLookupLedger torn-tail recovery', () => {
 
     const writer = restore();
     expect(writer.getEntries()).toHaveLength(2);
-    expect(writer.remainingTokens()).toBe(983);
+    expect(writer.getEntries().map(entry => entry.tokensSpent)).toEqual([10, 7]);
     expect(writer.toSnapshotSummary().unreadableRecordCount).toBeUndefined();
     writer.record(lookup({turn: 3, tokensSpent: 0}));
     await writer.flush();
 
     const reread = restore();
     expect(reread.getEntries().map(entry => entry.turn)).toEqual([1, 2, 3]);
-    expect(reread.remainingTokens()).toBe(983);
+    expect(reread.getEntries().map(entry => entry.tokensSpent)).toEqual([10, 7, 0]);
     expect(evidenceFiles()).toEqual([]);
   });
 
@@ -274,7 +270,7 @@ describe('CodeLookupLedger torn-tail recovery', () => {
     appendTornRecord(lookup());
     const before = fs.readFileSync(ledgerPath);
 
-    const fresh = new CodeLookupLedger('session', 1000, 2, ledgerPath);
+    const fresh = new CodeLookupLedger('session', 2, ledgerPath);
     fresh.record(lookup({turn: 2}));
     await expect(fresh.flush()).rejects.toThrow(/^code_lookup_ledger_unterminated_record$/);
     expect(fs.readFileSync(ledgerPath).equals(before)).toBe(true);

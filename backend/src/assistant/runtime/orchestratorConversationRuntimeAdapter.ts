@@ -235,6 +235,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       // History questions are registered by the runtime's history reader on every read.
       if (privateKnowledge) registerPrivateAnalysisQueryForEcho(runtimeSessionId, input.query);
       const options: AnalysisOptions = {...analysisOptions, selectionContext: input.selectionContext, analysisMode: 'fast',
+        ...(input.sourceDepth ? {sourceDepth: input.sourceDepth} : {}),
         assistantSurface: 'conversation', conversationTraceAttached: input.traceContext.kind === 'attached', runId: input.runId};
       const scope = {logicalSessionId: input.sessionId, traceId, options};
       evidenceContext = this.evidenceContexts.get(input.sessionId);

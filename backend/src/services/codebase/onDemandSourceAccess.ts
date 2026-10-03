@@ -928,6 +928,8 @@ export class OnDemandSourceAccessService {
     startLine?: number;
     aroundLine?: number;
     maxLines?: number;
+    /** The run's per-window cap; a larger request is paged with nextStartLine. */
+    lineCap?: number;
     mode: CodeAwareMode;
   }): Promise<OnDemandSourceReadResult> {
     // A refusal or file-level failure is data the caller can act on, like
@@ -976,7 +978,8 @@ export class OnDemandSourceAccessService {
     let startLine: number;
     let content: string;
     try {
-      maxLines = boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines');
+      maxLines = Math.min(boundedPositiveInteger(input.maxLines, 80, MAX_READ_LINES, 'max_lines'),
+        input.lineCap ?? MAX_READ_LINES);
       startLine = input.aroundLine !== undefined
         ? Math.max(1, boundedPositiveInteger(input.aroundLine, 1, Number.MAX_SAFE_INTEGER, 'around_line') -
           Math.floor((maxLines - 1) / 2))

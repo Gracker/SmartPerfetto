@@ -46,6 +46,8 @@ import {
   moduleCoveredByStdlibDeclaration,
 } from '../../services/sqlStdlibDependencyAnalyzer';
 import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
+import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
+import {parseAnalysisSourceActivationPolicy} from '../../services/codebase/analysisSourceActivationPolicy';
 import {parseInvestigationContract, parseInvestigationProfiles, type InvestigationProfiles} from '../../agentv3/strategyLoader';
 
 // ANSI color codes (fallback for chalk ESM issues)
@@ -1202,15 +1204,35 @@ function validateStrategySkillReferences(): number {
     console.log(`${colors.green('PASS')} ${file} (${referencedSkills.size} skill refs OK)`);
   }
 
+  // Runtime policy YAMLs are otherwise checked only when a run loads them.
+  const policyErrors = STRATEGY_POLICY_PARSERS.flatMap(([name, parse]) => {
+    try {
+      parse(yaml.load(fs.readFileSync(path.join(STRATEGIES_DIR, `${name}.yaml`), 'utf8')));
+      console.log(`${colors.green('PASS')} ${name}.yaml`);
+      return [];
+    } catch (error) {
+      console.log(`${colors.red('FAIL')} ${name}.yaml`);
+      console.log(`  ${colors.red('ERROR:')} ${error instanceof Error ? error.message : String(error)}`);
+      return [name];
+    }
+  });
+
   console.log(colors.bold('\nStrategy Validation Summary:'));
   console.log(`  Strategy files: ${strategyFiles.length}`);
   const count = (n: number) => n > 0 ? colors.red(String(n)) : colors.green('0');
   console.log(`  Missing skills: ${count(totalMissing)}`);
   console.log(`  Undeclared skill params: ${count(totalUndeclaredParams)}`);
   console.log(`  Contract/frontmatter errors: ${count(totalFrontmatterErrors)}`);
+  console.log(`  Policy file errors: ${count(policyErrors.length)}`);
 
-  return totalMissing + totalUndeclaredParams + totalFrontmatterErrors;
+  return totalMissing + totalUndeclaredParams + totalFrontmatterErrors + policyErrors.length;
 }
+
+/** Policy YAMLs under backend/strategies with the parser each run uses. */
+const STRATEGY_POLICY_PARSERS: ReadonlyArray<readonly [string, (value: unknown) => unknown]> = [
+  ['source-depth-policy', parseSourceDepthPolicy],
+  ['analysis-source-activation-policy', parseAnalysisSourceActivationPolicy],
+];
 
 /**
  * Validate command

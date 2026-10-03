@@ -70,6 +70,7 @@ import type {CodeAwareMode} from '../services/codebase/codeAwareFeature';
 import type {CapturePresetId, CliAnalysisMode} from './types';
 import {localize, parseOutputLanguage} from '../agentv3/outputLanguage';
 import {usePerProcessPortScanOrigin} from '../services/portPool';
+import {isRequestedSourceDepth, type RequestedSourceDepth} from '../services/codebase/sourceDepthPolicy';
 
 interface GlobalOpts {
   file?: string;
@@ -154,6 +155,11 @@ function main(): void {
     await exitAfterFlush(exitCode);
   };
   const collectRepeatedOption = (value: string, previous: string[] = []): string[] => [...previous, value];
+  const sourceDepth = (value?: string): RequestedSourceDepth | undefined => {
+    if (!value) return undefined;
+    if (isRequestedSourceDepth(value)) return value;
+    throw new Error(`Invalid source depth: ${value}. Expected auto, locate, or mechanism.`);
+  };
   const codeAwareMode = (value?: string): CodeAwareMode | undefined => {
     if (!value) return undefined;
     if (value === 'off' || value === 'metadata_only' || value === 'provider_send') return value;
@@ -168,7 +174,8 @@ function main(): void {
     .option('--code-aware <mode>', 'code-aware mode: off, metadata_only, provider_send')
     .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectRepeatedOption, [])
     .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectRepeatedOption, [])
-    .action(async (trace: string, question: string[] | undefined, opts: { format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[] }) => {
+    .option('--source-depth <depth>', 'source budget: auto, locate, mechanism (default auto)')
+    .action(async (trace: string, question: string[] | undefined, opts: { format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[]; sourceDepth?: string }) => {
       const g = globals();
       await runAndExit(() => runAnalyzeCommand({
         trace,
@@ -182,6 +189,7 @@ function main(): void {
         codeAwareMode: codeAwareMode(opts.codeAware),
         codebaseIds: opts.codebaseId,
         knowledgeSourceIds: opts.knowledgeSourceId,
+        sourceDepth: sourceDepth(opts.sourceDepth),
       }));
     });
 
@@ -194,7 +202,8 @@ function main(): void {
     .option('--code-aware <mode>', 'code-aware mode: off, metadata_only, provider_send')
     .option('--codebase-id <id>', 'registered codebase id to expose to the analysis session', collectRepeatedOption, [])
     .option('--knowledge-source-id <id>', 'registered private knowledge source id to expose', collectRepeatedOption, [])
-    .action(async (trace: string, opts: { query?: string; format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[] }) => {
+    .option('--source-depth <depth>', 'source budget: auto, locate, mechanism (default auto)')
+    .action(async (trace: string, opts: { query?: string; format?: string; mode?: string; codeAware?: string; codebaseId?: string[]; knowledgeSourceId?: string[]; sourceDepth?: string }) => {
       const g = globals();
       const query = g.prompt ?? g.query ?? opts.query ?? DEFAULT_ANALYSIS_QUERY;
       await runAndExit(() => runAnalyzeCommand({
@@ -209,6 +218,7 @@ function main(): void {
         codeAwareMode: codeAwareMode(opts.codeAware),
         codebaseIds: opts.codebaseId,
         knowledgeSourceIds: opts.knowledgeSourceId,
+        sourceDepth: sourceDepth(opts.sourceDepth),
       }));
     });
 

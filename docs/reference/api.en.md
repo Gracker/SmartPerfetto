@@ -685,6 +685,8 @@ Names, thread/process labels, depth, or child counts sent by older clients are
 stripped during request normalization and do not enter runtime prompts or
 evidence state.
 
+With a codebase selected, `options.sourceDepth` may be `auto` (default), `locate`, or `mechanism`. It only sizes the run's source budget and grants no access: `locate` finds code, `mechanism` allows reading enough code to explain a mechanism, and `auto` picks `mechanism` under a full budget and `locate` under a quick one; `metadata_only` is capped at `locate`. The limits live in `backend/strategies/source-depth-policy.yaml`; an invalid value returns `SOURCE_DEPTH_INVALID`. In a lightweight conversation (`/conversation`), a `sourceDepth` given in one turn carries over to later turns and survives conversation recovery.
+
 Dual-trace comparison requires `referenceTraceId`, and it must be different from `traceId`. `traceId` is the baseline and `referenceTraceId` is the comparison; either may be a workspace-history trace.
 
 Smart analysis uses the same `/analyze` endpoint. The first request should usually run only the scene inventory:

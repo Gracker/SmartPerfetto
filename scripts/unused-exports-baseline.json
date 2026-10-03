@@ -227,7 +227,6 @@
     "src/services/auth/codebaseScopes.ts#hasCodebaseScope",
     "src/services/batchTrace/batchTraceTypes.ts#BatchTraceComparisonBridgeResult",
     "src/services/capabilityManifestRuntimeIdentity.ts#clearCapabilityRuntimeIdentityCaches",
-    "src/services/codebase/analysisSourceActivationPolicy.ts#boundedAnalysisSourceUsePolicy",
     "src/services/codebase/codeReferenceContract.ts#completeFinalReportCodeReferences",
     "src/services/codebase/codeReferenceContract.ts#loadCodeReferenceContractPrompt",
     "src/services/codebase/defaultCodebaseServices.ts#resetDefaultCodebaseRegistryForTests",

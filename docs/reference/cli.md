@@ -293,6 +293,7 @@ smp run trace.perfetto-trace \
 `--knowledge-source-id <id>` 可单独启用已授权的私有外部 RAG，也可与 codebase
 叠加。源码、私有 RAG 或 reference trace 会把显式 `fast` 解析为 `full`，避免
 轻量 runtime 静默丢失能力。
+`--source-depth auto|locate|mechanism` 决定本次 run 的源码额度（默认 `auto`，含义同 API 的 `options.sourceDepth`），会记入 session 供后续轮次沿用。
 `preview` 和 `register --dry-run` 会输出实际使用的 `ripgrep → git → node-walk`
 枚举后端、fidelity、完整性和截断原因；截断只表示有界预览，不再用非零退出码冒充
 命令失败。portable 包不内置 ripgrep，缺失时按上述顺序安全降级。

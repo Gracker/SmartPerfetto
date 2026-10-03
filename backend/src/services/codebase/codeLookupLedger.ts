@@ -205,7 +205,6 @@ export class CodeLookupLedger {
 
   constructor(
     private readonly sessionId: string,
-    private readonly capTokens: number,
     private readonly capPatches: number,
     sidecarPath = defaultLedgerPath(sessionId),
     private readonly authorizationFingerprint?: string,
@@ -215,14 +214,12 @@ export class CodeLookupLedger {
 
   static restore(
     sessionId: string,
-    capTokens: number,
     capPatches: number,
     sidecarPath = defaultLedgerPath(sessionId),
     authorizationFingerprint?: string,
   ): CodeLookupLedger {
     const ledger = new CodeLookupLedger(
       sessionId,
-      capTokens,
       capPatches,
       sidecarPath,
       authorizationFingerprint,
@@ -369,16 +366,6 @@ export class CodeLookupLedger {
   hasSuccessfulCodeLookup(): boolean {
     return this.entries.some(entry =>
       entry.outcome === 'success' && !entry.legacyPath && entry.chunkIds.length > 0);
-  }
-
-  /**
-   * An unreadable record may have spent everything that remained (a lookup is
-   * refused only above the remaining budget), so none remains after one.
-   */
-  remainingTokens(): number {
-    if (this.unreadableRecords > 0) return 0;
-    const spent = this.entries.reduce((sum, entry) => sum + Math.max(0, entry.tokensSpent || 0), 0);
-    return Math.max(0, this.capTokens - spent);
   }
 
   remainingPatches(): number {

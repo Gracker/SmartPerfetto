@@ -636,4 +636,14 @@ describe('normalizeAnalyzeOptions', () => {
       { endpoint: '/analyze', hasReferenceTraceId: false },
     )).toThrow(/sceneTypes is required/);
   });
+
+  it.each(['auto', 'locate', 'mechanism'] as const)('keeps the requested source depth %s', sourceDepth => {
+    expect(normalizeAnalyzeOptions({codeAwareMode: 'provider_send', codebaseIds: ['app'], sourceDepth},
+      {endpoint: '/analyze', hasReferenceTraceId: false}).sourceDepth).toBe(sourceDepth);
+  });
+
+  it.each(['deep', '', 3])('rejects source depth %j', sourceDepth => {
+    expect(() => normalizeAnalyzeOptions({sourceDepth}, {endpoint: '/analyze', hasReferenceTraceId: false}))
+      .toThrow(expect.objectContaining({code: 'SOURCE_DEPTH_INVALID'}));
+  });
 });

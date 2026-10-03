@@ -161,6 +161,7 @@ export {
   createPiAgentCoreProviderRuntime,
   type PiAgentCoreProviderRuntime,
 } from './piAgentCoreProvider';
+import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 export type {PiAgentCoreModelConfig} from './piAgentCoreConfig';
 
 export type ExperimentalPiAgentCoreRuntimeKind = typeof EXPERIMENTAL_PI_AGENT_CORE_RUNTIME_KIND;
@@ -2112,6 +2113,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
       sourceUsePolicy: options.sourceUsePolicy,
+      sourceDepth: runtimeSourceDepth(policy, options),
       analysisContextFingerprint: options.analysisContextFingerprint,
       androidInternalsPackPin: options.androidInternalsPackPin,
       referenceTraceId: options.referenceTraceId,

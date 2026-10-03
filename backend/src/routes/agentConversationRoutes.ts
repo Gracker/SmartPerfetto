@@ -147,6 +147,7 @@ function sessionDescriptor(session: ConversationSession, run: ConversationRun): 
     providerSnapshotHash: session.providerSnapshotHash, analysisContextFingerprint: session.analysisContextFingerprint,
     outputLanguage: session.outputLanguage, codeAwareMode: session.codeAwareMode,
     codebaseIds: session.codebaseIds, knowledgeSourceIds: session.knowledgeSourceIds,
+    ...(session.sourceDepth ? {sourceDepth: session.sourceDepth} : {}),
     status: session.status, createdAt: session.createdAt, lastActivityAt: session.lastActivityAt,
     // The creator's conversation record keeps the question; the run store keeps none.
     lastRun: {runId: run.runId, query: run.query, turnIndex: run.turnIndex,
@@ -372,6 +373,7 @@ async function startConversation(req: express.Request, res: express.Response): P
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
+      sourceDepth: options.sourceDepth,
       selectionContext: options.selectionContext,
       analysisContextFingerprint,
     };
@@ -554,7 +556,7 @@ async function readAuthorizedConversation(req: express.Request, res: express.Res
   if (live) return live;
   const runtimeOptions: AnalysisOptions = {outputLanguage: stored!.outputLanguage, codeAwareMode: stored!.codeAwareMode,
     codebaseIds: stored!.codebaseIds, knowledgeSourceIds: stored!.knowledgeSourceIds,
-    analysisContextFingerprint: stored!.analysisContextFingerprint};
+    sourceDepth: stored!.sourceDepth, analysisContextFingerprint: stored!.analysisContextFingerprint};
   return conversationSessionService.restoreSession(stored!, getConversationSessionStore().listTurns(stored!), {
     query: '', sessionId, owner, traceContext: stored!.traceContext, providerId: stored!.providerId,
     providerFollowsActive: stored!.providerFollowsActive, runtimeKind: stored!.runtimeKind,

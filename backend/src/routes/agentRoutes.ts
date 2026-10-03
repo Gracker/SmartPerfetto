@@ -257,6 +257,7 @@ import type {
 } from '../types/selfEvolution';
 import type {AnalysisReceipt, ProvisionalConclusionEventData} from '../types/dataContract';
 import type {CapabilityManifestAttributionV1} from '../types/capabilityManifest';
+import type {RequestedSourceDepth} from '../services/codebase/sourceDepthPolicy';
 
 function configuredOutputLanguage(): OutputLanguage {
   return parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -3669,6 +3670,7 @@ async function runSmartAnalysis(
     codeAwareMode?: import('../services/codebase/codeAwareFeature').CodeAwareMode;
     codebaseIds?: string[];
     knowledgeSourceIds?: string[];
+    sourceDepth?: RequestedSourceDepth;
     runManifestAttributionSink: RunManifestAttributionSink;
   },
 ): Promise<void> {
@@ -3855,6 +3857,7 @@ async function runSmartAnalysis(
       codeAwareMode: options.codeAwareMode,
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
+      sourceDepth: options.sourceDepth,
       runManifestAttributionSink: options.runManifestAttributionSink,
     }));
   } catch (error: any) {
@@ -3914,6 +3917,7 @@ export function buildSmartDeepDiveRunOptions(input: {
   codeAwareMode?: import('../services/codebase/codeAwareFeature').CodeAwareMode;
   codebaseIds?: readonly string[];
   knowledgeSourceIds?: readonly string[];
+  sourceDepth?: RequestedSourceDepth;
   runManifestAttributionSink: RunManifestAttributionSink;
 }): Record<string, unknown> {
   return {
@@ -3929,6 +3933,7 @@ export function buildSmartDeepDiveRunOptions(input: {
     knowledgeScope: input.knowledgeScope,
     outputLanguage: input.outputLanguage,
     runManifestAttributionSink: input.runManifestAttributionSink,
+    ...(input.sourceDepth ? {sourceDepth: input.sourceDepth} : {}),
     ...buildSmartDeepDiveAnalysisContext(input.analysisMode, input),
   };
 }
@@ -4990,6 +4995,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
               ? options.knowledgeSourceIds
               : undefined,
             sourceUsePolicy: options.sourceUsePolicy,
+            sourceDepth: options.sourceDepth,
             analysisContextFingerprint: options.analysisContextFingerprint,
             androidInternalsPackPin: session.androidInternalsPackPin,
             tenantId: session.tenantId,

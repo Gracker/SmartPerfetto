@@ -18,6 +18,7 @@ import type { ClaimSupportV1 } from '../../types/evidenceContract';
 import type { ClaimVerificationResult } from '../../types/claimVerification';
 import type { IdentityResolutionV1 } from '../../types/identityContract';
 import type { CodeAwareMode } from '../../services/codebase/codeAwareFeature';
+import type { RequestedSourceDepth } from '../../services/codebase/sourceDepthPolicy';
 import type { AnalysisReceipt, UiActionProposalV1 } from '../../types/dataContract';
 import type {RunManifestAttributionSink} from '../../types/selfEvolution';
 import type {AnalysisTurnIntent} from '../../agentRuntime/analysisTurnIntent';
@@ -203,13 +204,16 @@ export interface AnalysisOptions {
   codebaseIds?: string[];
   /** Explicit external knowledge-source allowlist for this analysis session. */
   knowledgeSourceIds?: string[];
-  /** Internal source phase and optional hard tool budget. */
+  /** Internal source phase routing. */
   sourceUsePolicy?: {
     phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
-    maxSearchCalls?: number;
-    maxReadCalls?: number;
-    maxDurationMs?: number;
   };
+  /**
+   * Requested source depth, sizing the run's source budget: `locate` finds
+   * code, `mechanism` reads enough to explain it, `auto` follows the run's
+   * budget. It grants no access.
+   */
+  sourceDepth?: RequestedSourceDepth;
   /** Internal non-secret partition for source/RAG capability continuity. */
   analysisContextFingerprint?: string;
   /** Internal immutable public Knowledge Pack identity pinned to this session. */

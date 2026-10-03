@@ -97,6 +97,7 @@ import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolu
 import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type AnalysisCompletion, type AnalysisDeliveryContext, type AnalysisOutputOrigin} from '../../../types/analysisDelivery';
 import {analysisHasPrivateContext} from '../../../services/security/analysisPrivateContext';
 import {resolveDurableLearningPermission} from '../../../services/security/durableLearning';
+import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 
 interface OpenAiChatTerminal {
   responseId?: string;
@@ -1398,6 +1399,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds, knowledgeSourceIds: options.knowledgeSourceIds,
       sourceUsePolicy: options.sourceUsePolicy, analysisContextFingerprint: options.analysisContextFingerprint,
+      sourceDepth: runtimeSourceDepth(policy, options),
       androidInternalsPackPin: options.androidInternalsPackPin,
     });
     const traceInfo = this.traceProcessorService.getTrace(traceId);

@@ -42,6 +42,7 @@ import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {toAnalysisHistoryTurn, type AnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {parseAnalysisHistoryTurn} from '../../services/analysisHistoryStore';
 import {isTurnInterrupted, TurnInterruptController, TurnInterruptedError, type InterruptSource} from './turnInterrupt';
+import type {RequestedSourceDepth} from '../../services/codebase/sourceDepthPolicy';
 
 /**
  * Text output shows the answer while its semantic review runs. json/ndjson keep
@@ -121,6 +122,7 @@ interface StartSessionInput {
   codeAwareMode?: CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
+  sourceDepth?: RequestedSourceDepth;
   capture?: TraceCaptureResult;
 }
 
@@ -179,6 +181,7 @@ async function runStartSession(
     codeAwareMode: input.codeAwareMode,
     codebaseIds: input.codebaseIds,
     knowledgeSourceIds: input.knowledgeSourceIds,
+    sourceDepth: input.sourceDepth,
     turn: 1,
     resolveCliTurnPath: (sid, turn) => path.join(
       sessionPaths(ctx.paths, sid).turnsDir,
@@ -221,6 +224,7 @@ async function runStartSession(
     codeAwareMode: result.codeAwareMode,
     codebaseIds: input.codebaseIds,
     knowledgeSourceIds: input.knowledgeSourceIds,
+    sourceDepth: input.sourceDepth,
     capture: input.capture,
     createdAt: startedAt,
     lastTurnAt: now,
@@ -355,6 +359,7 @@ async function runContinueSession(
     codeAwareMode: existingConfig.codeAwareMode,
     codebaseIds: existingConfig.codebaseIds,
     knowledgeSourceIds: existingConfig.knowledgeSourceIds,
+    sourceDepth: existingConfig.sourceDepth,
     analysisMode: existingConfig.analysisMode,
     lineage: pendingLineage,
     turn: nextTurn,

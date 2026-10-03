@@ -195,6 +195,7 @@ import {
   type RuntimePerformanceOutcome,
   type RuntimePerformanceRun,
 } from '../../runtimePerformance';
+import {runtimeSourceDepth} from '../../../services/codebase/sourceDepthPolicy';
 
 const TEXT_ONLY_CORRECTION_TIMEOUT_MS = 120_000;
 
@@ -2524,6 +2525,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       codebaseIds: options.codebaseIds,
       knowledgeSourceIds: options.knowledgeSourceIds,
       sourceUsePolicy: options.sourceUsePolicy,
+      sourceDepth: runtimeSourceDepth(turnPolicy, options),
       analysisContextFingerprint: options.analysisContextFingerprint,
       androidInternalsPackPin: options.androidInternalsPackPin,
     });
