@@ -981,10 +981,21 @@ describe('trace processor lease proxy routes', () => {
 
     it('delivers a 502 when the upstream refuses, and leaves the socket to the rejection', async () => {
       jest.spyOn(console, 'error').mockImplementation(() => undefined);
-      rawServer = net.createServer();
-      upstreamPort = await new Promise<number>(resolve => rawServer!.listen(0, '127.0.0.1', () =>
-        resolve((rawServer!.address() as net.AddressInfo).port)));
-      await new Promise<void>(resolve => rawServer!.close(() => resolve()));
+      // A refusal without a real port: a closed port can be taken by another
+      // process before the proxy connects. The proxy's connection to this
+      // sentinel port fails like ECONNREFUSED (error, then close, never
+      // connect); every other connection, the test client's included, is real.
+      const refusedPort = 1;
+      const connect = net.connect.bind(net) as (...args: unknown[]) => NetSocket;
+      const connectSpy = jest.spyOn(net, 'connect').mockImplementation(((...args: unknown[]) => {
+        const options = args[0] as {port?: number} | undefined;
+        if (options?.port !== refusedPort) return connect(...args);
+        const refused = new net.Socket();
+        process.nextTick(() => refused.destroy(Object.assign(
+          new Error(`connect ECONNREFUSED 127.0.0.1:${refusedPort}`), {code: 'ECONNREFUSED'})));
+        return refused;
+      }) as typeof net.connect);
+      upstreamPort = refusedPort;
       await withUpgradeProxy(async (proxyPort, proxyServer) => {
         const {proxySocket, received} = await openRawUpgrade(proxyServer, proxyPort);
         await waitFor(() => received().endsWith('Trace processor WebSocket proxy failed'));
@@ -993,6 +1004,7 @@ describe('trace processor lease proxy routes', () => {
         // its linger to read the response, then the socket is released.
         expect(await closedWithin(proxySocket, 250)).toBe(false);
         expect(await closedWithin(proxySocket, REJECTED_UPGRADE_LINGER_MS + 1000)).toBe(true);
+        expect(connectSpy).toHaveBeenCalledWith(expect.objectContaining({port: refusedPort}));
       });
     });
 
