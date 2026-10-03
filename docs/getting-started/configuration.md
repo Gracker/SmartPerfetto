@@ -168,7 +168,7 @@ smp config init
 `metadata_only` / `provider_send` 模式。注册且仍可访问的 live root 无需索引就能有界搜索；
 reindex 是可选加速。
 
-`metadata_only` 只允许定位相对文件、行号和 `referenceId`。`provider_send` 要求注册时
+`metadata_only` 只允许定位相对文件、行号和引用 `id`。`provider_send` 要求注册时
 `sendToProvider` 已开启，并且目标路径同时位于当前 selection 与 consent grant 的交集内。
 放宽 path filter、exclude glob 或新增语言不会自动扩大 provider 授权；使用
 **授权当前范围** / **授权新语言** 显式更新 grant。

@@ -414,6 +414,38 @@ describe('verifySourceClaimBindings', () => {
     ]));
   });
 
+  test('rejects a negative source claim on incomplete run coverage even after source was located', () => {
+    const sourceReference = reference('body');
+    const result = verify({
+      sourceReference,
+      // A later read located source; one earlier search still did not finish.
+      sourceUseDecision: decision(sourceReference, {status: 'corroborated', coverageComplete: false,
+        incompleteReasons: ['time_budget']}),
+      claimText: '源码中不存在 Foo.run 的实现',
+      binding: {claimId: 'claim-1', mechanismStatus: 'compatible', sourceReferenceIds: [sourceReference.id],
+        traceEvidenceRefIds: []},
+    });
+
+    expect(result.status).toBe('failed');
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({code: 'source_absence_requires_complete_search'}),
+    ]));
+  });
+
+  test.each([
+    [{start: 10, end: 20}, 'corroborated'],
+    [{start: 13, end: 20}, 'compatible'],
+  ] as const)('upgrades a bound search hit only when a read window covers its whole range (%j)', (window, expected) => {
+    const hit = sanitizeSourceReference({referenceId: 'hit-1', codebaseId: 'app-source', filePath: 'src/main/Foo.kt',
+      lineRange: {start: 12, end: 14}, sourceGeneration: 'live-1', lookupKind: 'search_hit'})!;
+    const read = sanitizeSourceReference({referenceId: 'read-1', codebaseId: 'app-source', filePath: 'src/main/Foo.kt',
+      lineRange: window, sourceGeneration: 'live-1', lookupKind: 'body'})!;
+    const result = verify({sourceReference: hit,
+      sourceUseDecision: decision(hit, {status: 'corroborated', references: [hit, read]})});
+
+    expect(result.bindings[0]?.mechanismStatus).toBe(expected);
+  });
+
   test('never promotes graph-only evidence to corroborated', () => {
     const sourceReference = reference('graph');
     const result = verify({sourceReference});

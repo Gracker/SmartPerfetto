@@ -3,13 +3,17 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {
+  mergeSourceUseStatus,
+  referenceHasReadBody,
   MAX_SOURCE_REFERENCE_COUNT,
   SOURCE_USE_DECISION_SCHEMA_VERSION,
   normalizeSourceReferencePath,
   sanitizeSourceReference,
   sanitizeSourceReferences,
   sanitizeSourceUseDecision,
+  type SourceReferenceV1,
 } from '../codebase/sourceUseDecision';
+import {projectStoredConclusionSourceMetadata} from '../security/analysisDeliveryProjection';
 
 describe('source use decision contract', () => {
   it.each([
@@ -184,5 +188,56 @@ describe('source use decision contract', () => {
       status: 'located',
     }));
     expect(decision).not.toHaveProperty('reasonCode');
+  });
+
+  it('counts a located range as read only inside a body window of the same file and generation', () => {
+    const ref = (lookupKind: SourceReferenceV1['lookupKind'], start: number, end: number, sourceGeneration?: string) =>
+      sanitizeSourceReference({referenceId: `${lookupKind}-${start}-${end}`, codebaseId: 'app', filePath: 'src/A.kt',
+        lineRange: {start, end}, lookupKind, ...(sourceGeneration ? {sourceGeneration} : {})})!;
+    const hit = ref('search_hit', 12, 14, 'live-1');
+
+    expect(referenceHasReadBody(hit, [ref('body', 10, 20, 'live-1')])).toBe(true);
+    expect(referenceHasReadBody(hit, [ref('body', 13, 20, 'live-1')])).toBe(false);
+    expect(referenceHasReadBody(hit, [ref('metadata', 10, 20, 'live-1')])).toBe(false);
+    // The file changed between the search and the read.
+    expect(referenceHasReadBody(hit, [ref('body', 10, 20, 'live-2')])).toBe(false);
+    // An unknown generation is never the same one.
+    expect(referenceHasReadBody(ref('search_hit', 12, 14), [ref('body', 10, 20)])).toBe(false);
+    expect(referenceHasReadBody(ref('body', 1, 2), [])).toBe(true);
+  });
+
+  it('keeps a binding to a reference the model cited in its visible form, without the internal referenceId', () => {
+    const issued = sanitizeSourceReference({referenceId: 'source_internal', codebaseId: 'app', filePath: 'src/A.kt',
+      lineRange: {start: 1, end: 5}, sourceGeneration: 'live-1', lookupKind: 'body'})!;
+    const {referenceId: _internal, ...visible} = issued;
+    const decision = {schemaVersion: SOURCE_USE_DECISION_SCHEMA_VERSION, codeAwareMode: 'provider_send' as const,
+      selectedCodebaseIds: ['app'], status: 'corroborated' as const, attemptedTools: ['read_codebase_file'],
+      queriedCodebaseIds: ['app'], usedCodebaseIds: ['app'], references: [issued]};
+    const contract = {schemaVersion: 'conclusion_contract_v1', sourceReferences: [visible],
+      sourceClaimBindings: [{claimId: 'c', mechanismStatus: 'compatible', sourceReferenceIds: [visible.id],
+        traceEvidenceRefIds: []}]};
+
+    const projected = projectStoredConclusionSourceMetadata(contract, decision) as typeof contract;
+
+    expect(visible.id).toBe(issued.id);
+    expect(projected.sourceClaimBindings).toEqual([expect.objectContaining({sourceReferenceIds: [issued.id]})]);
+  });
+
+  it.each([
+    // [current, observedPositive, observedIncomplete, runIncomplete, completeAbsence, expected]
+    ['search_incomplete', 'located', false, true, false, 'located'],
+    ['located', undefined, true, true, false, 'located'],
+    ['located', 'corroborated', false, false, false, 'corroborated'],
+    ['corroborated', 'located', false, false, false, 'corroborated'],
+    ['attempted', undefined, true, true, false, 'search_incomplete'],
+    ['pending', undefined, false, false, true, 'not_found_complete'],
+    ['not_found_complete', undefined, false, true, false, 'search_incomplete'],
+    ['pending', undefined, false, false, false, 'attempted'],
+    ['not_needed', 'located', false, false, false, 'not_needed'],
+    ['not_needed', undefined, true, true, false, 'search_incomplete'],
+  ] as const)('merges %s with a %s lookup into the strongest finding', (
+    current, observedPositive, observedIncomplete, runIncomplete, observedCompleteAbsence, expected) => {
+    expect(mergeSourceUseStatus({current, observedPositive, observedIncomplete, runIncomplete,
+      observedCompleteAbsence})).toBe(expected);
   });
 });

@@ -189,7 +189,7 @@ describe('runtime source finalization behavior', () => {
     const result = plainResult('protocol-projection-regression');
     const reference = sanitizeSourceReference({referenceId: 'read-probe', codebaseId: 'app-source',
       filePath: input.filePath, lineRange: {start: 1, end: 1}, lookupKind: 'body'})!;
-    registerOnDemandSourceLookupForEcho(result.sessionId, [{...reference, referenceId: 'read-probe', text: input.snippet}]);
+    registerOnDemandSourceLookupForEcho(result.sessionId, [{...reference, id: 'read-probe', text: input.snippet}]);
     result.conclusion = `The measured value is 49.\n${renderConclusionContractSidecar({
       schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer', conclusions: [], clusters: [],
       evidenceChain: [], uncertainties: [], nextSteps: [], claims: [{id: 'measured', kind: 'numeric',

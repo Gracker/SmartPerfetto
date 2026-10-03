@@ -559,7 +559,7 @@ describe('persistAgentTurn', () => {
     const traceId = 'trace-private-durable';
     const canary = 'PRIVATE_DURABLE_CANARY';
     const source = 'fun scheduleFrame() { workOnMainThread() }';
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'history-source', codebaseId: 'private-codebase', filePath: 'Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'history-source', codebaseId: 'private-codebase', filePath: 'Main.kt', text: source}]);
     const envelope = {
       ...createDataEnvelope({columns: ['dur_ms', 'leak'], rows: [[42, canary]]}, {
         type: 'sql_result',

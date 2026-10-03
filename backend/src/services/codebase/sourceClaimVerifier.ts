@@ -5,6 +5,8 @@
 import {parseClaimSemanticsDeclaration, type ConclusionContract} from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {
+  isLocateOnlyLookupKind,
+  referenceHasReadBody,
   sanitizeSourceClaimBindings,
   sanitizeSourceReferences,
   sanitizeSourceUseDecision,
@@ -223,8 +225,7 @@ export function projectSafeSourceProvenance(input: {
   if (!decision) return undefined;
 
   const references = decision.codeAwareMode === 'metadata_only'
-    ? decision.references.filter(reference =>
-        reference.lookupKind === 'metadata' || reference.lookupKind === 'graph')
+    ? decision.references.filter(reference => isLocateOnlyLookupKind(reference.lookupKind))
     : decision.references;
   const referenceById = new Map(references.map(reference => [reference.id, reference]));
   const claimIds = new Set(
@@ -239,7 +240,7 @@ export function projectSafeSourceProvenance(input: {
       if (binding.mechanismStatus !== 'corroborated') return binding;
       const hasBodyReference = binding.sourceReferenceIds.some(referenceId => {
         const reference = referenceById.get(referenceId);
-        return reference?.lookupKind === 'body' || reference?.lookupKind === 'indexed';
+        return reference !== undefined && referenceHasReadBody(reference, references);
       });
       return decision.codeAwareMode === 'provider_send' &&
         hasBodyReference &&
@@ -337,7 +338,8 @@ export function verifySourceClaimBindings(input: {
         issues.push({claimId: candidate.claimId, severity: 'warning', code: 'source_absence_requires_complete_search',
           message: 'a negative source-existence proposition requires an explicit complete absence proof'});
       }
-    } else if (context.decision.status === 'search_incomplete' && negativeSourceAbsenceClaim(claim.text)) {
+    } else if ((context.decision.coverageComplete === false || context.decision.status === 'search_incomplete') &&
+      negativeSourceAbsenceClaim(claim.text)) {
       issues.push({
         claimId: candidate.claimId,
         severity: 'error',
@@ -403,8 +405,9 @@ export function verifySourceClaimBindings(input: {
       issues.push({claimId: candidate.claimId, severity: 'warning', code: 'source_binding_mechanism_unverified',
         message: 'source text and a trace interval do not establish a native execution mechanism'});
     } else if (mechanismStatus === 'corroborated') {
+      // A bound search hit counts once a read window of the same file covered it.
       const hasProviderBody = context.decision.codeAwareMode === 'provider_send' &&
-        bindingReferences.some(reference => reference.lookupKind === 'body' || reference.lookupKind === 'indexed');
+        bindingReferences.some(reference => referenceHasReadBody(reference, context.references));
       const verifiedOccurrenceIds = new Set(
         verifiedOccurrenceIdsByClaim[candidate.claimId] || [],
       );

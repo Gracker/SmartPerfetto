@@ -111,7 +111,7 @@ describe('conclusion protocol privacy roles', () => {
   });
 
   it('is idempotent for quoted CodeRefs on sidecar, typed JSON and stored declarations', () => {
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'lookup', codebaseId: 'app',
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'lookup', codebaseId: 'app',
       filePath: 'src/Probe"Data.kt', lineRange: {start: 1, end: 1},
       text: 'const marker = "synthetic_source_marker_long_name";'}]);
     for (const input of [raw(), JSON.stringify({...declaration(), relationProposals: []}),
@@ -125,7 +125,7 @@ describe('conclusion protocol privacy roles', () => {
   });
 
   it.each(['captured.cell', 'source.location', 'numeric.cell'])('preserves the registered proof predicate %s through source matching', predicate => {
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'lookup', codebaseId: 'app', filePath: 'src/Probe.kt',
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'lookup', codebaseId: 'app', filePath: 'src/Probe.kt',
       text: predicate}]);
     const contract = declaration();
     const withSemantics = {...contract, claims: [{...contract.claims[0], semantics: {
@@ -842,7 +842,7 @@ describe('registerOnDemandSourceLookupForEcho', () => {
 
     registerOnDemandSourceLookupForEcho('session-on-demand-output', [
       {
-        referenceId: 'source-on-demand-1',
+        id: 'source-on-demand-1',
         codebaseId: 'cb-on-demand',
         filePath: 'src/SourceGuard.kt',
         lineRange: {start: 4, end: 4},
@@ -850,7 +850,7 @@ describe('registerOnDemandSourceLookupForEcho', () => {
         text: sourceBody,
       },
       {
-        referenceId: 'source-without-text',
+        id: 'source-without-text',
         codebaseId: 'cb-on-demand',
         filePath: 'src/SourceGuard.kt',
       },
@@ -1911,7 +1911,7 @@ describe('owner source output isolation', () => {
   afterEach(() => clearCodeAwareOutputGuards(sessionId));
   it('retains source, query and knowledge for the owner but keeps credentials and canaries private', () => {
     const source = 'fun executeStartup() { synchronizeWindowLayout(); }';
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
     registerPrivateAnalysisQueryForEcho(sessionId, 'Why is startup slow in executeStartup?');
     registerCodeAwareCanary(sessionId, 'CANARY_NEVER_DISPLAY');
     const knowledge = 'INTERNAL_KNOWLEDGE_PRIVATE_TEXT token=knowledge-secret-token-123';
@@ -1930,7 +1930,7 @@ describe('owner source output isolation', () => {
   });
   it('preserves source after strict registration overflow and redacts split generated credentials', () => {
     for (let index = 0; index < 201; index++) registerOnDemandSourceLookupForEcho(sessionId,
-      [{referenceId: `read-${index}`, codebaseId: 'app', filePath: 'Main.kt', text: `fun boundedSource${index}() { renderFrame(); }`}]);
+      [{id: `read-${index}`, codebaseId: 'app', filePath: 'Main.kt', text: `fun boundedSource${index}() { renderFrame(); }`}]);
     const projection = createCodeAwareStreamingTextProjection(sessionId, 'owner-stream', 'owner');
     const output = projection.write('fun boundedSource200() { renderFrame(); }\napi_') +
       projection.write('key="generated-secret-value-123"\n') + projection.flush();

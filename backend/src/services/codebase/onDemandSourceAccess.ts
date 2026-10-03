@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {createHash} from 'crypto';
+import {createHash, createHmac, randomBytes} from 'crypto';
 import {spawn} from 'child_process';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
@@ -129,6 +129,8 @@ export interface OnDemandSourceReference {
   codebaseId: string;
   filePath: string;
   lineRange: {start: number; end: number};
+  /** The live file content this range was read from (`liveContentVersion`). */
+  sourceGeneration?: string;
   text?: string;
   redactedCount?: number;
 }
@@ -230,9 +232,10 @@ export function codebaseOnDemandAvailability(
     : {available: false, reason: 'codebase_root_unavailable'};
 }
 
-function referenceId(codebaseId: string, filePath: string, line: number): string {
+/** One id per returned range: a window and a hit that start on the same line differ. */
+function referenceId(codebaseId: string, filePath: string, range: {start: number; end: number}): string {
   return `source_${createHash('sha256')
-    .update(`${codebaseId}\0${filePath}\0${line}`)
+    .update(`${codebaseId}\0${filePath}\0${range.start}\0${range.end}`)
     .digest('hex')
     .slice(0, 20)}`;
 }
@@ -260,12 +263,30 @@ function placeholderCount(text: string): number {
  * hit line never starts inside a literal or comment whose start it cannot see;
  * redaction keeps every line break, so its lines stay aligned with the file's.
  */
+/** Per-process key: a content version matches within a run but fingerprints nothing outside it. */
+const LIVE_CONTENT_VERSION_KEY = randomBytes(32);
+
+/**
+ * Identifies the live file content a returned range came from, so a read of a
+ * file that changed after a search never stands in for the hit it searched.
+ */
+function liveContentVersion(content: string): string {
+  return `live-${createHmac('sha256', LIVE_CONTENT_VERSION_KEY).update(content).digest('hex').slice(0, 16)}`;
+}
+
 class SourceFileView {
   readonly lines: string[];
   private redactedLines?: string[];
+  private version?: string;
 
   constructor(private readonly content: string, readonly filePath: string) {
     this.lines = content.split(/\r?\n/);
+  }
+
+  /** Computed only for files whose ranges are returned. */
+  get contentVersion(): string {
+    this.version ??= liveContentVersion(this.content);
+    return this.version;
   }
 
   /**
@@ -805,13 +826,15 @@ export class OnDemandSourceAccessService {
       }
       for (const window of windows) {
         shown.push({
-          referenceId: referenceId(input.ref.codebaseId, filePath, window.start),
+          referenceId: referenceId(input.ref.codebaseId, filePath, window),
           codebaseId: input.ref.codebaseId,
           filePath,
           lineRange: {start: window.start, end: window.end},
           matchLines: window.matchLines,
+          // A location-only hit has no version: no read can ever cover it.
           ...(bodyAvailable
-            ? view.providerProjection(window.start - 1, window.end, input.mode)
+            ? {sourceGeneration: view.contentVersion,
+              ...view.providerProjection(window.start - 1, window.end, input.mode)}
             : {bodyUnavailable: 'file_too_large' as const}),
         });
       }
@@ -1012,10 +1035,11 @@ export class OnDemandSourceAccessService {
       success: true,
       codebaseId: input.codebaseId,
       reference: {
-        referenceId: referenceId(input.codebaseId, filePath, startLine),
+        referenceId: referenceId(input.codebaseId, filePath, {start: startLine, end: endLine}),
         codebaseId: input.codebaseId,
         filePath,
         lineRange: {start: startLine, end: endLine},
+        sourceGeneration: file.contentVersion,
         ...projected,
       },
       window: {

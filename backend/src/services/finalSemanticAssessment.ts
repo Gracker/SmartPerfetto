@@ -15,7 +15,7 @@ import {
   type AnalysisReportRequirementAssessment,
   type PinnedAnalysisReportRequirements,
 } from '../types/analysisDelivery';
-import type {SourceUseDecisionV1} from './codebase/sourceUseDecision';
+import {SOURCE_LOOKUP_KIND_VALUES, type SourceUseDecisionV1} from './codebase/sourceUseDecision';
 import {isPlainJsonObject} from '../utils/isPlainJsonObject';
 import {resolveAnalysisInvestigationRequirements} from '../agentRuntime/analysisInvestigationRequirements';
 import type {ResolvedAnalysisInvestigationRequirements} from '../types/analysisInvestigation';
@@ -332,7 +332,7 @@ function validSourceLedger(raw: unknown): boolean {
     if (!record(reference) || !keys(reference, ['id', 'codebaseId', 'filePath', 'lookupKind'],
       ['chunkId', 'referenceId', 'lineRange', 'symbol', 'buildId', 'commitHash', 'sourceGeneration']) ||
       !['id', 'codebaseId', 'filePath'].every(key => nonempty(reference[key])) ||
-      !member(reference.lookupKind, ['metadata', 'body', 'indexed', 'graph']) ||
+      !member(reference.lookupKind, SOURCE_LOOKUP_KIND_VALUES) ||
       ['chunkId', 'referenceId', 'symbol', 'buildId', 'commitHash', 'sourceGeneration'].some(key =>
         reference[key] !== undefined && typeof reference[key] !== 'string')) return false;
     const lines = reference.lineRange;

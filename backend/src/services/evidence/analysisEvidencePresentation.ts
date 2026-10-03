@@ -13,7 +13,12 @@ import type {SafeSourceProvenanceProjection} from '../codebase/sourceClaimVerifi
 import type {ClaimSupportV1} from '../../types/evidenceContract';
 import type {ClaimVerificationResult} from '../../types/claimVerification';
 import type {IdentityResolutionV1} from '../../types/identityContract';
-import type {SourceClaimBindingV1, SourceReferenceV1, SourceUseDecisionV1} from '../codebase/sourceUseDecision';
+import {
+  SOURCE_LOOKUP_KIND_VALUES,
+  type SourceClaimBindingV1,
+  type SourceReferenceV1,
+  type SourceUseDecisionV1,
+} from '../codebase/sourceUseDecision';
 
 type FormalConclusionClaim = Omit<ConclusionContractClaimItem,
   'rawSemantics' | 'rawReferences' | 'semanticsParseIssues'>;
@@ -264,7 +269,7 @@ function schemas(strict: boolean) {
     id: z.string(), chunkId: z.string().optional(), referenceId: z.string().optional(), codebaseId: z.string(),
     filePath: z.string(), lineRange: object({start: z.number().int().positive(), end: z.number().int().positive()}).optional(),
     symbol: z.string().optional(), buildId: z.string().optional(), commitHash: z.string().optional(),
-    sourceGeneration: z.string().optional(), lookupKind: z.enum(['metadata', 'body', 'indexed', 'graph']),
+    sourceGeneration: z.string().optional(), lookupKind: z.enum(SOURCE_LOOKUP_KIND_VALUES),
   });
   const sourceUseDecision = object({
     schemaVersion: z.literal('source_use_decision@1'), codeAwareMode: z.enum(['metadata_only', 'provider_send']),

@@ -15,6 +15,7 @@ import {
 } from '../../types/analysisDelivery';
 import {
   sanitizeSourceClaimBindings,
+  isLocateOnlyLookupKind,
   sanitizeSourceReference,
   sanitizeSourceUseDecision,
 } from '../codebase/sourceUseDecision';
@@ -433,16 +434,19 @@ export function projectStoredConclusionSourceMetadata<T>(contract: T, actualDeci
   const decision = sanitizeSourceUseDecision(actualDecision ?? record.sourceUseDecision);
   const {sourceUseDecision: _decision, sourceReferences: _refs, sourceClaimBindings: _bindings, ...rest} = record;
   if (!decision) return rest as T;
+  const references = decision.references.filter(reference => decision.codeAwareMode !== 'metadata_only' ||
+    isLocateOnlyLookupKind(reference.lookupKind));
+  const allowed = new Set(references.map(reference => reference.id));
+  // A declared id the run issued stays as it is; only an older declaration
+  // whose id the ledger does not know maps to its recomputed identity.
   const aliases = new Map<string, string>();
   for (const reference of Array.isArray(record.sourceReferences) ? record.sourceReferences : []) {
     const safe = sanitizeSourceReference(reference);
-    if (safe && reference && typeof reference === 'object' && typeof reference.id === 'string') {
+    if (safe && reference && typeof reference === 'object' && typeof reference.id === 'string' &&
+      !allowed.has(reference.id)) {
       aliases.set(reference.id, safe.id);
     }
   }
-  const references = decision.references.filter(reference => decision.codeAwareMode !== 'metadata_only' ||
-    reference.lookupKind === 'metadata' || reference.lookupKind === 'graph');
-  const allowed = new Set(references.map(reference => reference.id));
   const bindings = sanitizeSourceClaimBindings(record.sourceClaimBindings, {referenceIdAliases: aliases})
     .filter(binding => binding.sourceReferenceIds.every(id => allowed.has(id)));
   // Keep absent optional declarations absent so storage alone cannot change a signed contract.

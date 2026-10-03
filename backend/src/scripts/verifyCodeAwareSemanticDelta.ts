@@ -30,9 +30,10 @@ import {
   finalizeOwnerSourceAwareAnalysisResultWithProjection,
   verifySourceClaimBindings,
 } from '../services/codebase/sourceClaimVerifier';
-import type {
-  SourceReferenceV1,
-  SourceUseDecisionV1,
+import {
+  isBodyLookupKind,
+  type SourceReferenceV1,
+  type SourceUseDecisionV1,
 } from '../services/codebase/sourceUseDecision';
 import {RagStore} from '../services/ragStore';
 import {clearCodeAwareOutputGuards} from '../services/security/codeAwareOutputRegistry';
@@ -576,7 +577,7 @@ async function collectSourceEvidence(input: {
     reference.filePath === filePath &&
     reference.lineRange?.start === input.groundTruth.lineRange.start &&
     reference.lineRange.end === input.groundTruth.lineRange.end &&
-    (reference.lookupKind === 'body' || reference.lookupKind === 'indexed'));
+    isBodyLookupKind(reference.lookupKind));
   if (!exactReference) throw new Error('Actual source handlers did not return the exact CodeRef');
   const indexedReference = isRecord(indexedPayload) && Array.isArray(indexedPayload.sourceReferences)
     ? (indexedPayload.sourceReferences as SourceReferenceV1[]).find(reference => reference.lookupKind === 'indexed')

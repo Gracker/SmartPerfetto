@@ -1236,6 +1236,22 @@ describe('file-level read failures', () => {
       expect(read).toMatchObject({success: false, unsupportedReason: 'source_file_too_large'});
     });
 
+    it('stamps search and read ranges with the live content they came from', async () => {
+      write('app/src/Version.kt', 'class Version {\n  fun versionNeedle() = 1\n}\n');
+      const ref = register();
+      const access = service();
+      const search = await access.search({codebaseId: ref.codebaseId, scope, query: 'versionNeedle', mode: 'provider_send'});
+      const sameRead = await access.read({codebaseId: ref.codebaseId, scope, filePath: 'app/src/Version.kt', mode: 'provider_send'});
+      write('app/src/Version.kt', 'class Version {\n  fun versionNeedle() = 2\n}\n');
+      const changedRead = await access.read({codebaseId: ref.codebaseId, scope, filePath: 'app/src/Version.kt', mode: 'provider_send'});
+
+      const hitVersion = search.matches[0]?.sourceGeneration;
+      expect(hitVersion).toMatch(/^live-[0-9a-f]{16}$/);
+      expect(sameRead.reference?.sourceGeneration).toBe(hitVersion);
+      // A changed file never vouches for the hit that searched the old one.
+      expect(changedRead.reference?.sourceGeneration).not.toBe(hitVersion);
+    });
+
     it('reads around a line and names the enclosing declaration', async () => {
       write('app/src/Window.kt', ['class Window {', ...Array.from({length: 30}, (_, i) => `  // ${i}`),
         '  fun render() {', '    draw()', '  }', '}'].join('\n'));

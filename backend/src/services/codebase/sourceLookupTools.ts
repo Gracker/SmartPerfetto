@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {normalizeSourceReferencePath} from './sourceUseDecision';
+import {isIssuedSourceReferenceId, normalizeSourceReferencePath} from './sourceUseDecision';
 
 const SOURCE_LOOKUP_TOOLS = new Set([
   'lookup_app_source',
@@ -143,7 +143,9 @@ function collectCodeReferences(
     : undefined;
   const reference = normalizeCodeReference({
     chunkId: record.chunkId,
-    referenceId: record.referenceId,
+    // Returned items carry their issued reference id; older results a referenceId.
+    referenceId: record.referenceId ??
+      (isIssuedSourceReferenceId(record.id) ? record.id : undefined),
     codebaseId: record.codebaseId ?? record.codebase_id ?? metadata?.codebaseId ?? metadata?.codebase_id,
     filePath: record.filePath ?? metadata?.filePath,
     lineRange: record.lineRange ?? metadata?.lineRange,

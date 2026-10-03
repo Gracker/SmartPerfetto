@@ -145,7 +145,10 @@ function projectOnDemandSourceResult(
   const sourceRefs = rawReferences.flatMap(rawReference => {
     if (!rawReference || typeof rawReference !== 'object' || Array.isArray(rawReference)) return [];
     const reference = rawReference as Record<string, unknown>;
-    if (typeof reference.referenceId !== 'string' || typeof reference.codebaseId !== 'string') return [];
+    // The model sees each item's issued `id`; older payloads carried `referenceId`.
+    const referenceId = typeof reference.referenceId === 'string' ? reference.referenceId
+      : typeof reference.id === 'string' ? reference.id : undefined;
+    if (!referenceId || typeof reference.codebaseId !== 'string') return [];
     const lineRange = reference.lineRange && typeof reference.lineRange === 'object'
       ? reference.lineRange as Record<string, unknown>
       : undefined;
@@ -164,7 +167,7 @@ function projectOnDemandSourceResult(
     const symbol = typeof reference.symbol === 'string' ? reference.symbol : undefined;
     const kind = typeof reference.kind === 'string' ? reference.kind : undefined;
     return [{
-      referenceId: reference.referenceId,
+      referenceId,
       codebaseId: reference.codebaseId,
       ...(validLineRange ? {lineRange: validLineRange} : {}),
       ...(filePath ? {filePathHash: hashSnippet(filePath)} : {}),

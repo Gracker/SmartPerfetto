@@ -126,6 +126,8 @@ SSE/日志事件只保留版本化引用、哈希、长度、许可、出处和�
 
 源码额度按 run 计、由 `sourceDepth` 选档（`source-depth-policy.yaml`）：搜索类调用（`search_codebase`、`find_codebase_files`、图谱工具、`resolve_symbol`、命中已注册库的索引 lookup）与 `read_codebase_file` 各有次数，调用到达源码时扣次数（失败不退）；token 按实际下发计，超出时搜索保留排名靠前的结果、读取保留前面的行（其余为分页），一点都放不下才返回 `budget_exceeded` 拒绝；图谱工具与 `resolve_symbol` 只返回元数据，超额时整块保守拒绝（在签发任何引用之前）。每个源码工具结果都带 `budget: {searchesLeft, readsLeft, tokensLeft}`；单次读取行数受档位上限约束。检索到的知识正文（Knowledge Pack、私有知识、博客检索）用单独的 token 池；`lookup_knowledge` 返回的内置方法论模板属于产品提示内容，不计入。`CodeLookupLedger` 只做审计与 patch 授权，不再参与额度。
 
+每条结果带签发的引用 `id`，与 `sourceReferences[].id` 相同，是模型唯一应引用的 id（内部 `referenceId` 不再下发）。搜索命中为 `lookupKind: search_hit`，只定位代码；读取窗口（`body`）或索引片段才是正文证据，读取窗口完整覆盖某个命中的范围时，该命中也算已读正文。来源使用状态按最强发现推导，不再被一次不完整搜索钉死；run 级 `coverageComplete` 单调，否定性源码结论以它为准。
+
 模型只收到一份正文：带真实行号的 `numberedText`；原始文本留在内部，用于回显登记、计费与来源追踪。读取结果的 `window.enclosingSymbol` 是窗口起点向上最近的声明行（启发式）；文件不存在时，`candidates` 列出范围内同名文件的相对路径（至多 5 个，`provider_send` 下不越出授权范围）。工具抛出的失败只把形如 `source_*` 的无路径错误码交给各 runtime，其余一律为 `source_tool_failed`。
 
 注册且仍可访问的 root 立即满足 `search_codebase` / `read_codebase_file`，不要求 SmartPerfetto active generation。`query_code_graph` / `inspect_code_symbol` 只会尝试用户已经安装并已有索引的本地 GitNexus；SmartPerfetto 不打包、再分发、安装、要求或自动建索引。GitNexus 缺失、不兼容、超时或调用失败会让图工具返回结构化不可用结果（`success=false` 与 `unsupportedReason`）；陈旧索引只返回标有 `freshness="stale"` 的导航元数据。AI/策略在这两种情况下都继续调用现有无索引搜索/读取工具，而不是阻断分析。

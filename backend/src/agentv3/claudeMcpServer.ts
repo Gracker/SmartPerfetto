@@ -235,7 +235,9 @@ import {normalizeCodeAwareMode, type CodeAwareMode} from '../services/codebase/c
 import {
   SOURCE_USE_DECISION_SCHEMA_VERSION,
   MAX_SOURCE_REFERENCE_COUNT,
+  isBodyLookupKind,
   loadSourceUseDecisionToolDescription,
+  mergeSourceUseStatus,
   sanitizeSourceIncompleteReason,
   sanitizeSourceReference,
   sanitizeSourceReferences,
@@ -1762,6 +1764,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const known = issuedSourceReferences;
     const admitted: T[] = [];
     const references: SourceReferenceV1[] = [];
+    // The issued id of each admitted item, in the same order.
+    const ids: string[] = [];
     let incompleteReason: 'source_reference_limit_exceeded' | 'invalid_source_reference' | undefined;
     for (const item of items) {
       const reference = sanitizeSourceReference(referenceFor(item));
@@ -1776,8 +1780,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       known.set(reference.id, reference);
       admitted.push(item);
       references.push(reference);
+      ids.push(reference.id);
     }
-    return {items: admitted, references: sanitizeSourceReferences(references), incompleteReason};
+    return {items: admitted, ids, references: sanitizeSourceReferences(references), incompleteReason};
   };
 
   type SourceLookupObservation = {
@@ -1809,34 +1814,20 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       .map(sanitizeSourceIncompleteReason)
       .filter((reason): reason is string => Boolean(reason)))];
     const incomplete = observation.coverageComplete === false || incompleteReasons.length > 0;
+    // Coverage is monotone for the run (one incomplete search keeps a negative
+    // claim unsupported); the status is not: positive findings from any lookup
+    // outrank an incomplete one, and an incomplete search outranks absence.
+    const anyIncomplete = current.coverageComplete === false || incomplete;
     const mayCorroborate = codeAwareMode === 'provider_send' &&
       observation.bodyAvailable === true &&
-      references.some(reference => reference.lookupKind === 'body' || reference.lookupKind === 'indexed');
-    const observedStatus = incomplete
-      ? 'search_incomplete'
-      : references.length > 0
-        ? mayCorroborate ? 'corroborated' : 'located'
-        : observation.success && observation.coverageComplete === true
-          ? 'not_found_complete'
-          : 'attempted';
-    const rank = {
-      pending: 0,
-      attempted: 1,
-      not_found_complete: 2,
-      located: 3,
-      corroborated: 4,
-    } as const;
-    const currentRank = current.status in rank
-      ? rank[current.status as keyof typeof rank]
-      : Number.POSITIVE_INFINITY;
-    const observedRank = observedStatus in rank
-      ? rank[observedStatus as keyof typeof rank]
-      : Number.POSITIVE_INFINITY;
-    const status = current.status === 'search_incomplete'
-      ? current.status
-      : observedStatus === 'search_incomplete'
-        ? observedStatus
-        : observedRank >= currentRank ? observedStatus : current.status;
+      references.some(reference => isBodyLookupKind(reference.lookupKind));
+    const status = mergeSourceUseStatus({
+      current: current.status,
+      observedPositive: references.length > 0 ? mayCorroborate ? 'corroborated' : 'located' : undefined,
+      observedIncomplete: incomplete,
+      runIncomplete: anyIncomplete,
+      observedCompleteAbsence: observation.success && observation.coverageComplete === true,
+    });
     const reasonCode = status === 'search_incomplete' || status === 'not_found_complete'
       ? status
       : undefined;
@@ -1852,13 +1843,14 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         ...current.usedCodebaseIds,
         ...references.map(reference => reference.codebaseId),
       ])],
-      ...(status === 'search_incomplete'
+      ...(anyIncomplete
         ? {
             coverageComplete: false,
             incompleteReasons: [...new Set([
               ...(current.incompleteReasons ?? []),
               ...incompleteReasons,
-              ...(incompleteReasons.length === 0 ? ['coverage_incomplete'] : []),
+              ...(incompleteReasons.length === 0 && (current.incompleteReasons ?? []).length === 0
+                ? ['coverage_incomplete'] : []),
             ])],
           }
         : observation.coverageComplete === true && current.coverageComplete !== false
@@ -1920,10 +1912,15 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
   ) => {
     const rawReferences = [...(result.matches ?? []), ...(result.reference ? [result.reference] : [])];
+    // A search hit locates code, with or without its context; only a read
+    // window delivers a body the run can cite as evidence.
     const admitted = admitSourceItems(rawReferences, reference => ({
       ...reference,
-      lookupKind: codeAwareMode === 'provider_send' && reference.text ? 'body' : 'metadata',
+      referenceId: undefined,
+      lookupKind: toolName === 'search_codebase' ? 'search_hit'
+        : codeAwareMode === 'provider_send' && reference.text ? 'body' : 'metadata',
     }));
+    const items = admitted.items.map((item, index) => ({...item, id: admitted.ids[index]!}));
     // A search keeps what it admitted; a read without its one reference fails.
     const searchIncomplete = admitted.incompleteReason && toolName === 'search_codebase';
     const readIncomplete = admitted.incompleteReason && toolName !== 'search_codebase';
@@ -1933,8 +1930,8 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     const refusedAtSource = !result.success && sourceAccessRefusalAction(result.unsupportedReason) !== undefined;
     const delivered = {
       ...result,
-      ...(result.matches ? {matches: admitted.items} : {}),
-      ...(result.reference ? {reference: admitted.items[0]} : {}),
+      matches: result.matches ? items : undefined,
+      reference: result.reference ? items[0] : undefined,
       sourceReferences: admitted.references,
       ...(searchIncomplete
         ? {coverageComplete: false, truncated: true, searchIncompleteReason: admitted.incompleteReason}
@@ -1942,17 +1939,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       ...(readIncomplete ? {success, unsupportedReason} : {}),
       ...(refusalAction ? {action_required: refusalAction} : {}),
     };
-    const incompleteReasons = [
+    // A read window states nothing about search coverage, failed or not.
+    const incompleteReasons = toolName !== 'search_codebase' ? [] : [
       delivered.searchIncompleteReason,
       admitted.incompleteReason,
       ...(result.unsupportedReason === 'budget_exceeded' ? ['budget_exceeded'] : []),
-      ...(toolName === 'search_codebase' && result.truncated && result.coverageComplete !== true ? ['result_truncated'] : []),
+      ...(result.truncated && result.coverageComplete !== true ? ['result_truncated'] : []),
     ].filter((reason): reason is string => Boolean(reason));
     observeSourceLookup({
       toolName,
       codebaseIds: [result.codebaseId],
       references: admitted.references,
-      bodyAvailable: admitted.items.some(reference => Boolean(reference.text)),
+      bodyAvailable: toolName !== 'search_codebase' && admitted.items.some(reference => Boolean(reference.text)),
       success: delivered.success,
       // A refused call searched nothing, so it states no coverage either way; a
       // complete search of one path_prefix is not codebase-wide coverage.
@@ -1982,9 +1980,11 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       unsupportedReason?: string;
     },
   ) => {
-    const admitted = admitSourceItems(result.references, reference => ({...reference, lookupKind: 'graph'}));
+    const admitted = admitSourceItems(result.references, reference => ({...reference, referenceId: undefined,
+      lookupKind: 'graph'}));
     const refusalAction = result.success ? undefined : sourceAccessRefusalAction(result.unsupportedReason);
-    const delivered = {...result, references: admitted.items, sourceReferences: admitted.references,
+    const references = admitted.items.map((item, index) => ({...item, id: admitted.ids[index]!}));
+    const delivered = {...result, references, sourceReferences: admitted.references,
       ...(admitted.incompleteReason ? {truncated: true, unsupportedReason: admitted.incompleteReason, processes: []} : {}),
       ...(refusalAction ? {action_required: refusalAction} : {})};
     observeSourceLookup({
@@ -5095,12 +5095,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     if (lines.length !== lineRange.end - lineRange.start + 1) return undefined;
     return lines.map((line, index) => `${lineRange.start + index}: ${line}`).join('\n');
   };
-  const presentSourceReference = <T extends {text?: string; lineRange?: {start: number; end: number}}>(
+  /**
+   * A returned item as the model sees it: its issued `id` is the one id to
+   * cite (the lookup's own referenceId never leaves the runtime, nor enters
+   * the reference ledger), and a body is the one numbered copy.
+   */
+  const presentSourceReference = <T extends {text?: string; referenceId?: string; lineRange?: {start: number; end: number}}>(
     reference: T,
-  ): Omit<T, 'text'> & {text?: string; numberedText?: string} => {
+  ): Omit<T, 'referenceId'> | (Omit<T, 'text' | 'referenceId'> & {numberedText: string}) => {
     const numberedText = numberedSourceText(reference);
-    if (numberedText === undefined) return reference;
-    const {text: _raw, ...rest} = reference;
+    const {referenceId: _internal, ...visible} = reference;
+    if (numberedText === undefined) return visible;
+    const {referenceId: _ref, text: _raw, ...rest} = reference;
     return {...rest, numberedText};
   };
   const onDemandSourceTokens = (result: {
@@ -5318,6 +5324,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
           ...delivered,
           matches: (delivered.matches ?? []).map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences,
           budget: sourceBudget.snapshot(),
         }))}],
       };
@@ -5343,8 +5350,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       }
       const sourceBudgetStop = sourceBudget.beginCall('read');
       if (sourceBudgetStop) {
+        // A read stop says nothing about search coverage.
         observeSourceLookup({toolName: 'read_codebase_file', codebaseIds: [codebaseId], success: false,
-          incompleteReasons: [sourceBudgetStop], queried: false});
+          queried: false});
         await recordOnDemandSourceLookup({
           toolName: 'read_codebase_file',
           codebaseId,
@@ -5415,6 +5423,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         content: [{type: 'text' as const, text: JSON.stringify(retrievedData({
           ...delivered,
           ...(delivered.reference ? {reference: presentSourceReference(delivered.reference)} : {}),
+          sourceReferences: delivered.sourceReferences,
           budget: sourceBudget.snapshot(),
         }))}],
       };
@@ -5564,7 +5573,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered, budget: sourceBudget.snapshot()}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered,
+          references: delivered.references.map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences, budget: sourceBudget.snapshot()}))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5638,7 +5649,9 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
       });
       assertPrivateAnalysisContextCurrent();
       return {
-        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered, budget: sourceBudget.snapshot()}))}],
+        content: [{type: 'text' as const, text: JSON.stringify(retrievedData({...delivered,
+          references: delivered.references.map(presentSourceReference),
+          sourceReferences: delivered.sourceReferences, budget: sourceBudget.snapshot()}))}],
       };
     },
     {annotations: {readOnlyHint: true}},
@@ -5802,10 +5815,13 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         return sourceBudgetRefusal({success: false, results: [], unsupportedReason: 'budget_exceeded'});
       }
       const admitted = admitSourceItems(results.flatMap(result => result.candidates),
-        candidate => ({...candidate, lookupKind: 'metadata'}));
-      const admittedCandidates = new Set(admitted.items);
+        candidate => ({...candidate, referenceId: undefined, lookupKind: 'metadata'}));
+      const issuedIds = new Map(admitted.items.map((candidate, index) => [candidate, admitted.ids[index]!]));
       const delivered = results.map(result => ({...result,
-        candidates: result.candidates.filter(candidate => admittedCandidates.has(candidate)),
+        candidates: result.candidates.flatMap(candidate => {
+          const id = issuedIds.get(candidate);
+          return id ? [presentSourceReference({...candidate, id})] : [];
+        }),
       }));
       observeSourceLookup({
         toolName: 'resolve_symbol',

@@ -42,9 +42,21 @@ export interface SourceReferenceV1 {
   symbol?: string;
   buildId?: string;
   commitHash?: string;
+  /**
+   * The content the range came from: an index generation (`codebase_…`), or
+   * for on-demand reads the live content version (`live-…`, keyed per process,
+   * so comparable only within one run, never across a restart).
+   */
   sourceGeneration?: string;
-  lookupKind: 'metadata' | 'body' | 'indexed' | 'graph';
+  /**
+   * How the reference was returned. `search_hit` and `metadata`/`graph` locate
+   * code; only `body` (a read window) and `indexed` deliver it as evidence.
+   */
+  lookupKind: SourceLookupKind;
 }
+
+export const SOURCE_LOOKUP_KIND_VALUES = ['metadata', 'search_hit', 'body', 'indexed', 'graph'] as const;
+export type SourceLookupKind = typeof SOURCE_LOOKUP_KIND_VALUES[number];
 
 export interface SourceUseDecisionV1 {
   schemaVersion: typeof SOURCE_USE_DECISION_SCHEMA_VERSION;
@@ -182,12 +194,7 @@ const CODEBASE_KINDS = [
   'kernel_source',
   'oem_sdk',
 ] as const satisfies readonly CodebaseKind[];
-const SOURCE_LOOKUP_KINDS: ReadonlySet<SourceReferenceV1['lookupKind']> = new Set([
-  'metadata',
-  'body',
-  'indexed',
-  'graph',
-]);
+const SOURCE_LOOKUP_KINDS: ReadonlySet<SourceLookupKind> = new Set(SOURCE_LOOKUP_KIND_VALUES);
 const SOURCE_USE_STATUSES: ReadonlySet<SourceUseStatus> = new Set([
   'pending',
   'not_needed',
@@ -303,13 +310,83 @@ export function normalizeSourceReferencePath(value: unknown): string | undefined
   return SUPPORTED_SOURCE_EXTENSIONS.has(extension) ? normalized : undefined;
 }
 
+/** A reference that locates code without delivering its body as evidence. */
+export function isLocateOnlyLookupKind(kind: SourceLookupKind): boolean {
+  return kind === 'metadata' || kind === 'graph' || kind === 'search_hit';
+}
+
+/** A reference whose body the run delivered: a read window or an indexed chunk. */
+export function isBodyLookupKind(kind: SourceLookupKind): boolean {
+  return kind === 'body' || kind === 'indexed';
+}
+
+/**
+ * Whether the run delivered this reference's whole range as a body: it is a
+ * body reference itself, or an issued body reference of the same file and
+ * the same known source generation (an index generation, or the live content
+ * version on-demand reads carry) contains its range. An unknown generation
+ * never matches, so a changed file cannot stand in for the one searched. It
+ * never widens a reference beyond its own range.
+ */
+export function referenceHasReadBody(
+  reference: SourceReferenceV1,
+  issued: Iterable<SourceReferenceV1>,
+): boolean {
+  if (isBodyLookupKind(reference.lookupKind)) return true;
+  const range = reference.lineRange;
+  if (!range || reference.sourceGeneration === undefined) return false;
+  for (const other of issued) {
+    if (!isBodyLookupKind(other.lookupKind) || !other.lineRange) continue;
+    if (other.codebaseId === reference.codebaseId && other.filePath === reference.filePath &&
+      other.sourceGeneration === reference.sourceGeneration &&
+      other.lineRange.start <= range.start && other.lineRange.end >= range.end) return true;
+  }
+  return false;
+}
+
+const ISSUED_SOURCE_REFERENCE_ID = /^source-ref-v1-[0-9a-f]{24}$/;
+
+/** The shape of an id `sanitizeSourceReference` issues. */
+export function isIssuedSourceReferenceId(value: unknown): value is string {
+  return typeof value === 'string' && ISSUED_SOURCE_REFERENCE_ID.test(value);
+}
+
+const DERIVABLE_SOURCE_USE_STATUSES: ReadonlySet<SourceUseStatus> = new Set([
+  'pending', 'attempted', 'not_found_complete', 'search_incomplete', 'located', 'corroborated',
+]);
+
+/**
+ * The run's source-use status after one lookup. Positive findings outrank an
+ * incomplete search, which outranks absence: one unfinished search no longer
+ * pins the run, while run coverage (kept separately, monotone) still blocks
+ * negative source claims. A status the product set (not_needed and the like)
+ * yields only to incompleteness.
+ */
+export function mergeSourceUseStatus(input: {
+  current: SourceUseStatus;
+  observedPositive?: 'located' | 'corroborated';
+  observedIncomplete: boolean;
+  runIncomplete: boolean;
+  observedCompleteAbsence: boolean;
+}): SourceUseStatus {
+  if (!DERIVABLE_SOURCE_USE_STATUSES.has(input.current)) {
+    return input.observedIncomplete ? 'search_incomplete' : input.current;
+  }
+  const currentPositive = input.current === 'corroborated' || input.current === 'located' ? input.current : undefined;
+  if (currentPositive === 'corroborated' || input.observedPositive === 'corroborated') return 'corroborated';
+  if (currentPositive ?? input.observedPositive) return 'located';
+  if (input.runIncomplete) return 'search_incomplete';
+  return input.current === 'not_found_complete' || input.observedCompleteAbsence ? 'not_found_complete' : 'attempted';
+}
+
 function sourceReferenceId(reference: Omit<SourceReferenceV1, 'id'>): string {
   const identity = [
     reference.lookupKind,
     reference.codebaseId,
     reference.filePath,
     reference.chunkId ?? '',
-    reference.referenceId ?? '',
+    // Not the internal referenceId: the model cites references without it,
+    // and the range, symbol and generation already make an identity.
     reference.lineRange?.start ?? '',
     reference.lineRange?.end ?? '',
     reference.symbol ?? '',
@@ -330,8 +407,8 @@ export function sanitizeSourceReference(value: unknown): SourceReferenceV1 | und
   const codebaseId = strictIdentifier(value.codebaseId);
   const filePath = normalizeSourceReferencePath(value.filePath);
   const lookupKind = typeof value.lookupKind === 'string' &&
-    SOURCE_LOOKUP_KINDS.has(value.lookupKind as SourceReferenceV1['lookupKind'])
-    ? value.lookupKind as SourceReferenceV1['lookupKind']
+    SOURCE_LOOKUP_KINDS.has(value.lookupKind as SourceLookupKind)
+    ? value.lookupKind as SourceLookupKind
     : undefined;
   if (!codebaseId || !filePath || !lookupKind) return undefined;
 

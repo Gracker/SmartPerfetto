@@ -34,7 +34,7 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
   it('retains owner source commentary and evidence while filtering private canaries and raw internals', () => {
     const sessionId = 'private-report-session';
     const source = 'fun scheduleFrame() { workOnMainThread() }';
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'report-source', codebaseId: 'private-app', filePath: 'Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'report-source', codebaseId: 'private-app', filePath: 'Main.kt', text: source}]);
     [
       'PRIVATE_CONCLUSION_CANARY',
       'PRIVATE_FINDING_CANARY',
@@ -447,7 +447,7 @@ describe('buildAgentDrivenReportData private knowledge projection', () => {
   it('summarizes every turn\'s findings of a private session under the owner projection', () => {
     const sessionId = 'private-multi-turn-report';
     const source = 'fun renderFrame() { inflateLayout() }';
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'turn-source', codebaseId: 'private-app',
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'turn-source', codebaseId: 'private-app',
       filePath: 'Frame.kt', text: source}]);
     registerCodeAwareCanary(sessionId, 'PRIVATE_TURN_CANARY');
     const finding = (id: string, title: string) => ({id, title, severity: 'warning', description: title,

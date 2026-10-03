@@ -45,6 +45,19 @@ describe('codeReferenceContract', () => {
     expect(hasConcreteCodeReference(reference)).toBe(false);
   });
 
+  it('collects on-demand results by their issued reference id', () => {
+    const id = 'source-ref-v1-0123456789abcdef01234567';
+    const references = extractSourceLookupCodeReferences('search_codebase', {
+      content: [{type: 'text', text: JSON.stringify({success: true,
+        matches: [{id, codebaseId: 'codebase-a', filePath: 'src/A.kt', lineRange: {start: 3, end: 7}}],
+        sourceReferences: [{id, codebaseId: 'codebase-a', filePath: 'src/A.kt', lineRange: {start: 3, end: 7},
+          lookupKind: 'search_hit'}]})}],
+    });
+
+    expect(references).toEqual([{referenceId: id, codebaseId: 'codebase-a', filePath: 'src/A.kt',
+      lineRange: {start: 3, end: 7}}]);
+  });
+
   it('extracts only safe, locatable references from nested source lookup results', () => {
     const references = extractSourceLookupCodeReferences('lookup_app_source', {
       content: [{

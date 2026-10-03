@@ -101,7 +101,8 @@ describe('applySourceLocationProofs', () => {
   it('rejects an old reference even when the model copies it into declared sourceReferences', () => {
     const input = fixture();
     input.contract.sourceReferences = input.sourceUse.references;
-    input.sourceUse.references = [reference({referenceId: 'new-current-lookup'})];
+    // The file was read again after it changed: a different reference.
+    input.sourceUse.references = [reference({sourceGeneration: 'live-new'})];
     expectProof(input, 'rejected', 'source_location_reference_not_returned');
   });
 

@@ -8000,7 +8000,8 @@ describe('createClaudeMcpServer', () => {
         expect(actual.status).toBe(mode === 'provider_send' ? 'corroborated' : 'located');
         expect(actual.reasonCode).toBeUndefined();
         expect(actual.coverageComplete).toBeUndefined();
-        expect(actual.references).toEqual(read.sourceReferences);
+        // The model sees each reference without the internal referenceId.
+        expect(actual.references.map(({referenceId: _internal, ...visible}) => visible)).toEqual(read.sourceReferences);
         expect(actual.attemptedTools).toEqual(['read_codebase_file']);
         const verification = verifySourceClaimBindings({actualSourceUseDecision: actual,
           conclusionContract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
@@ -8213,7 +8214,7 @@ describe('createClaudeMcpServer', () => {
       } finally { filter.mockRestore(); }
     });
 
-    it('keeps incomplete search coverage after an exact read without losing a positive source binding', async () => {
+    it('keeps run coverage incomplete after an exact read while the positive read decides the status', async () => {
       const sourceAccess = {search: jest.fn<OnDemandSourceAccessService['search']>(async () => ({
         success: true, codebaseId: 'app-a', matches: [], truncated: true, coverageComplete: false,
         searchIncompleteReason: 'time_budget', backend: 'node', enumerationBackend: 'node-walk', backendFidelity: 'degraded',
@@ -8225,8 +8226,11 @@ describe('createClaudeMcpServer', () => {
       await callTool(tools, 'search_codebase', {query: 'Foo'});
       const read = await callTool(tools, 'read_codebase_file', {file_path: 'src/Foo.kt'});
       const actual = sourceUse.getSourceUseDecision()!;
-      expect(actual).toMatchObject({status: 'search_incomplete', coverageComplete: false,
-        references: read.sourceReferences, usedCodebaseIds: ['app-a']});
+      // The read found the source; the incomplete search still keeps any
+      // negative source claim unsupported through run coverage.
+      expect(actual).toMatchObject({status: 'corroborated', coverageComplete: false,
+        incompleteReasons: expect.arrayContaining(['time_budget']), usedCodebaseIds: ['app-a']});
+      expect(actual.references.map(({referenceId: _internal, ...visible}) => visible)).toEqual(read.sourceReferences);
       const verified = verifySourceClaimBindings({actualSourceUseDecision: actual,
         conclusionContract: {schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
           conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
@@ -8499,7 +8503,7 @@ describe('createClaudeMcpServer', () => {
           path.join(root, 'src', 'StartupHooks.kt'),
           'SOURCE_USE_CANARY\nSOURCE_USE_CANARY\n',
         );
-        fs.writeFileSync(path.join(root, 'private', 'Hidden.kt'), 'SOURCE_USE_CANARY\n');
+        fs.writeFileSync(path.join(root, 'private', 'Hidden.kt'), 'SOURCE_USE_CANARY\nHIDDEN_ONLY_CANARY\n');
         const codebaseRegistry = new CodebaseRegistry(path.join(tmpDir, 'codebases.json'));
         // The provider grant covers src only; private is registered but withheld.
         const registered = codebaseRegistry.register({
@@ -8528,9 +8532,9 @@ describe('createClaudeMcpServer', () => {
           knowledgeScope: scope,
         });
 
-        // Paging (max_results 1 of 2) is not incompleteness; the withheld hit is.
+        // Only a withheld file matches: nothing located, coverage incomplete.
         await callTool(incomplete.tools, 'search_codebase', {
-          query: 'SOURCE_USE_CANARY',
+          query: 'HIDDEN_ONLY_CANARY',
           max_results: 1,
         });
         await callTool(complete.tools, 'search_codebase', {
@@ -8910,7 +8914,7 @@ describe('createClaudeMcpServer', () => {
         expect(search).toEqual(expect.objectContaining({success: true}));
         expect(projected).not.toContain('ON_DEMAND_SEARCH_ECHO_CANARY');
         expect(projected).toContain(
-          `[Code: ${reference.referenceId} @ src/SearchGuard.kt:1-1]`,
+          `[Code: ${reference.id} @ src/SearchGuard.kt:1-1]`,
         );
       } finally {
         clearCodeAwareOutputGuards(sessionId);
@@ -8954,7 +8958,7 @@ describe('createClaudeMcpServer', () => {
         expect(read).toEqual(expect.objectContaining({success: true}));
         expect(projected).not.toContain('ON_DEMAND_READ_ECHO_CANARY');
         expect(projected).toContain(
-          `[Code: ${reference.referenceId} @ src/ReadGuard.kt:1-1]`,
+          `[Code: ${reference.id} @ src/ReadGuard.kt:1-1]`,
         );
         const sourceSupplementEvent = projectPrivateStructuredValue(sessionId, {
           type: 'source_enrichment_completed',
@@ -9035,6 +9039,11 @@ describe('createClaudeMcpServer', () => {
           })],
         }));
         expect(search.matches[0]).not.toHaveProperty('text');
+        // A hit locates code under the one id the model can cite.
+        expect(search.matches[0]).not.toHaveProperty('referenceId');
+        expect(search.matches[0].id).toBe(search.sourceReferences[0].id);
+        expect(search.sourceReferences[0]).toMatchObject({lookupKind: 'search_hit'});
+        expect(search.sourceReferences[0]).not.toHaveProperty('referenceId');
         // Either backend covers every selected file; only fidelity differs.
         expect(search).toEqual(expect.objectContaining({coverageComplete: true}));
         expect(search).not.toHaveProperty('searchIncompleteReason');
@@ -9179,7 +9188,9 @@ describe('createClaudeMcpServer', () => {
           })],
           graph: {engine: 'gitnexus', freshness: 'stale', verificationRequired: true},
         }));
-        expect(inspect.references[0].referenceId).toBe(`graph-${refB.codebaseId}`);
+        // One copyable id: the item's issued id, not the navigator's internal one.
+        expect(inspect.references[0]).not.toHaveProperty('referenceId');
+        expect(inspect.references[0].id).toBe(inspect.sourceReferences[0].id);
         expect(query.sourceReferences).toEqual(inspect.sourceReferences);
         expect(query.sourceReferences[0]).toMatchObject({lookupKind: 'graph', id: expect.stringMatching(/^source-ref-v1-/)});
         expect(sourceUse.getSourceUseDecision()).toEqual(expect.objectContaining({
@@ -10483,7 +10494,8 @@ describe('source and knowledge governance refusals', () => {
     // The refused calls never reached the source.
     expect(sourceAccess.search).toHaveBeenCalledTimes(4);
     expect(sourceAccess.read).toHaveBeenCalledTimes(3);
-    expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'search_incomplete'});
+    // Earlier hits located source; the budget stop keeps coverage incomplete.
+    expect(sourceUse.getSourceUseDecision()).toMatchObject({status: 'located', coverageComplete: false});
   });
 
   it('delivers what fits in the run token budget instead of refusing a whole result', async () => {

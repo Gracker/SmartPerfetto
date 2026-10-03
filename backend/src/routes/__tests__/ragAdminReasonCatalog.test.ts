@@ -60,6 +60,10 @@ const INTERNAL_OR_NOT_A_REASON = new Set([
   // Invariants and process failures the caller cannot act on.
   'codebase_delete_not_started',
   'source_enumerator_failed',
+  // On-demand search arguments; no RAG admin route reads a glob.
+  'source_file_glob_invalid',
+  // The generic fallback of a source read; its fixed text says the same.
+  'source_read_failed',
 ]);
 
 const PREFIXED_TOKEN =

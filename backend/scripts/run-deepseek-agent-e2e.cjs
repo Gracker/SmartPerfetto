@@ -895,13 +895,19 @@ function evaluateSemanticConditionReport(input) {
   const selectedCodebases = new Set(report?.analysisContext?.codebaseIds || []);
   const sourceGroundTruth = JSON.parse(fs.readFileSync(path.resolve(backendRoot,
     '../Trace/constructed/source-analysis-semantic/analysis/expected.json'), 'utf8')).source_trace_ground_truth;
-  const bodyReferences = references.filter(reference =>
+  const fileReferences = references.filter(reference =>
     typeof reference.id === 'string' && reference.id.startsWith('source-ref-v1-') &&
     selectedCodebases.has(reference.codebaseId) && reference.filePath === SEMANTIC_DELTA_SOURCE_FILE &&
-    (reference.lookupKind === 'body' || reference.lookupKind === 'indexed') &&
     Number.isSafeInteger(reference.lineRange?.start) && Number.isSafeInteger(reference.lineRange?.end) &&
     reference.lineRange.start > 0 && reference.lineRange.start <= reference.lineRange.end);
-  const matchingReferences = bodyReferences.filter(reference =>
+  const isBody = reference => reference.lookupKind === 'body' || reference.lookupKind === 'indexed';
+  // Mirror of referenceHasReadBody (sourceUseDecision.ts); this script loads
+  // no TypeScript, so keep the two in step.
+  const hasReadBody = reference => isBody(reference) || fileReferences.some(other => isBody(other) &&
+    other.codebaseId === reference.codebaseId && reference.sourceGeneration !== undefined &&
+    other.sourceGeneration === reference.sourceGeneration &&
+    other.lineRange.start <= reference.lineRange.start && other.lineRange.end >= reference.lineRange.end);
+  const matchingReferences = fileReferences.filter(reference => hasReadBody(reference) &&
     reference.lineRange.start <= sourceGroundTruth.lineRange.start &&
     reference.lineRange.end >= sourceGroundTruth.lineRange.end);
   const matchingReferenceIds = new Set(matchingReferences.map(reference => reference.id));
@@ -917,7 +923,9 @@ function evaluateSemanticConditionReport(input) {
   });
   const canaryLine = fs.readFileSync(path.join(sourceRoot, SEMANTIC_DELTA_SOURCE_FILE), 'utf8')
     .split(/\r?\n/).findIndex(line => line.includes(PRIVATE_SOURCE_CANARY)) + 1;
-  const privacyCanaryCovered = canaryLine > 0 && bodyReferences.some(reference =>
+  // Search hits carry their context text to the provider too.
+  const privacyCanaryCovered = canaryLine > 0 && fileReferences.some(reference =>
+    (isBody(reference) || reference.lookupKind === 'search_hit') &&
     reference.lineRange.start <= canaryLine && reference.lineRange.end >= canaryLine);
   const quantitativeOutputPassed = traceFactPassed && claims.length > 0 && claims.every(claim =>
     ['numeric', 'time_range', 'comparison'].includes(claim.kind) && claim.semantics?.scope?.population !== 'codebase');

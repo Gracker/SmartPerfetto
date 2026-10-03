@@ -855,7 +855,7 @@ describe('owner source analysis delivery', () => {
   it('retains authorized declaration text while redacting credentials', () => {
     const sessionId = 'owner-contract';
     const source = 'fun readStartupPolicySynchronously() = policyFile.readText()';
-    registerOnDemandSourceLookupForEcho(sessionId, [{referenceId: 'owner-contract-read', codebaseId: 'app',
+    registerOnDemandSourceLookupForEcho(sessionId, [{id: 'owner-contract-read', codebaseId: 'app',
       filePath: 'src/StartupHooks.kt', lineRange: {start: 28, end: 28}, text: source}]);
     const contract = {schemaVersion: 'conclusion_contract_v1' as const, mode: 'focused_answer' as const,
       conclusions: [], clusters: [], evidenceChain: [], uncertainties: [], nextSteps: [],
@@ -875,7 +875,7 @@ describe('owner source analysis delivery', () => {
   it.each(['quality_gate_failed', 'plan_incomplete'] as const)('retains a generated answer and diagnostics for %s', terminationReason => {
     const result = deliveredResult();
     const source = 'fun dispatchWork() { trace.beginSection("startup"); }';
-    registerOnDemandSourceLookupForEcho(result.sessionId, [{referenceId: 'owner-read', codebaseId: 'app', filePath: 'src/Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(result.sessionId, [{id: 'owner-read', codebaseId: 'app', filePath: 'src/Main.kt', text: source}]);
     registerPrivateAnalysisQueryForEcho(result.sessionId, source);
     result.conclusion = `Source candidate: ${source}`;
     result.success = false;
@@ -894,7 +894,7 @@ describe('owner source analysis delivery', () => {
     const result = deliveredResult();
     const source = 'fun renderFrame() { invalidate(); }';
     result.conclusion = source;
-    registerOnDemandSourceLookupForEcho(result.sessionId, [{referenceId: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
+    registerOnDemandSourceLookupForEcho(result.sessionId, [{id: 'read', codebaseId: 'app', filePath: 'Main.kt', text: source}]);
     const snapshot = normalizeSessionStateSnapshot({version: 1, snapshotTimestamp: 1, sessionId: result.sessionId,
       traceId: 'trace', codeAwareMode: 'provider_send', codebaseIds: ['app'], finalResult: result,
       conversationSteps: [], queryHistory: [], conclusionHistory: [], agentDialogue: [], agentResponses: [],

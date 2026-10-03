@@ -391,7 +391,8 @@ export function registerCodeAwareLookupForEcho(sessionId: string | undefined, re
 }
 
 export interface OnDemandEchoReference {
-  referenceId: string;
+  /** The issued reference id the model cites; the CodeRef label shows it. */
+  id: string;
   codebaseId: string;
   filePath: string;
   lineRange?: {start: number; end: number};
@@ -401,7 +402,7 @@ export interface OnDemandEchoReference {
 
 /**
  * Registers provider-sent source returned by bounded on-demand tools. These
- * references do not have RAG chunk ids, so use their stable reference ids for
+ * references do not have RAG chunk ids, so use their issued reference ids for
  * a relative CodeRef replacement instead of retaining source text in output.
  */
 export function registerOnDemandSourceLookupForEcho(
@@ -415,7 +416,7 @@ export function registerOnDemandSourceLookupForEcho(
       kind: 'snippet',
       snippet: reference.text,
       ref: {
-        chunkId: reference.referenceId,
+        chunkId: reference.id,
         codebaseId: reference.codebaseId,
         filePath: reference.filePath,
         ...(reference.lineRange ? {lineRange: reference.lineRange} : {}),

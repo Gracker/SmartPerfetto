@@ -200,7 +200,7 @@ The user must explicitly select the codebase and `metadata_only` /
 `provider_send` mode for the current request. A reachable registered live root
 supports bounded search without an index; reindexing is optional acceleration.
 
-`metadata_only` can locate only relative files, line ranges, and `referenceId`
+`metadata_only` can locate only relative files, line ranges, and reference `id`s
 values. `provider_send` requires registration-level `sendToProvider` consent,
 and the target path must be admitted by both the current selection and consent
 grant. Expanding path filters, relaxing exclude globs, or adding source

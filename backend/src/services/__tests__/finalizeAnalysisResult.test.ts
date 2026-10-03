@@ -97,7 +97,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
       declared.sourceClaimBindings = [{claimId: 'count', mechanismStatus: options.source.mechanismStatus ?? 'compatible',
         sourceReferenceIds: [reference.id], traceEvidenceRefIds: ['data:count']}];
     }
-    registerOnDemandSourceLookupForEcho(result.sessionId, [{...reference, referenceId: 'source-read',
+    registerOnDemandSourceLookupForEcho(result.sessionId, [{...reference, id: 'source-read',
       text: `Trace.beginSection("${options.source.marker}");\nTrace.endSection("${options.source.declaredMarker ?? options.source.marker}");`}]);
     result.conclusion = `${body}\n${options.source.invalid
       ? '<!-- smartperfetto:conclusion-contract@1\n```json\n' + JSON.stringify({...declared, verified: true}) + '\n```\n-->'

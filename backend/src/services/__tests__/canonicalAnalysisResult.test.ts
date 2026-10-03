@@ -59,7 +59,7 @@ async function proseFixture(attach = true) {
       semantics: {schemaVersion: 'claim_semantics@1', predicate: 'source.prose', polarity: 'affirmed', discourse: 'asserted',
         quantifier: 'one', modality: 'possible', conditions: [prose('condition')], scope: {population: 'codebase'}}}]};
   const source = result(`Visible ${marker}.\n${renderConclusionContractSidecar(contract)}`);
-  registerOnDemandSourceLookupForEcho(source.sessionId, [{referenceId: 'prose-read', codebaseId: 'cb-prose',
+  registerOnDemandSourceLookupForEcho(source.sessionId, [{id: 'prose-read', codebaseId: 'cb-prose',
     filePath: 'src/Prose.kt', lineRange: {start: 1, end: 1}, text: `val marker = "${marker}"`}]);
   const projected = finalizeSourceAwareAnalysisResultWithProjection(source, undefined, {context: contextFor(source)});
   const token = projected.protocolProjection!;
@@ -138,7 +138,7 @@ describe('exact native prose semantic input receipt', () => {
         if (kind === 'released') releaseConclusionProtocolProjection(target.token);
         if (kind === 'historical') input.canonicalProjection = canonicalizeAnalysisResult(target.source,
           {context: {entry: 'historical_restore'}}).projection;
-        if (kind === 'session') registerOnDemandSourceLookupForEcho(input.sessionId, [{referenceId: 'other-read',
+        if (kind === 'session') registerOnDemandSourceLookupForEcho(input.sessionId, [{id: 'other-read',
           codebaseId: 'other', filePath: 'Other.kt', text: target.marker}]);
         const projected = projectConclusionSemanticInput(input);
         expect(projected.changed).toBe(true);

@@ -151,7 +151,9 @@ describe('typed source contract golden rules', () => {
     expect(contract).toContain('成功返回源码 CodeRef');
     expect(contract).toContain('search_codebase');
     expect(contract).toContain('read_codebase_file');
-    expect(contract).toContain('referenceId');
+    // One citable id; the internal referenceId is not shown to the model.
+    expect(contract).toContain('`id`/`chunkId`');
+    expect(contract).not.toContain('referenceId');
     expect(contract).toContain('relative/path/File.kt:L10-L20');
     expect(contract).toContain('不能只写文件名');
     expect(contract).toContain('不得编造行号');

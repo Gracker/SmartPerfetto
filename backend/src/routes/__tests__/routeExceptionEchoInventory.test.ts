@@ -78,7 +78,6 @@ const ALLOWED: Record<string, {count: number; why: string}> = {
   'routes/analysisResultRoutes.ts': {count: 2, why: 'route-local limit/boolean parsers'},
   'routes/enterpriseTenantRoutes.ts': {count: 1, why: 'typed purge window/tombstone job error'},
   'routes/ragAdminRoutes.ts': {count: 1, why: 'index failure legacy `error`: CodebaseRequestError text'},
-  'routes/selfEvolutionAdminRoutes.ts': {count: 2, why: 'reason-code filter: only a lowercase code token is returned'},
   'routes/simpleTraceRoutes.ts': {
     count: 3,
     why: 'PublicHttpUrlRejectedError; trace list cursor/limit errors; TraceProcessorAdmissionError',
