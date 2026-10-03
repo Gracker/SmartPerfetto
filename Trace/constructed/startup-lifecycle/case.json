@@ -216,7 +216,8 @@
           "avg_dur_ms",
           "max_dur_ms",
           "main_thread_calls",
-          "percent_of_startup"
+          "percent_of_startup",
+          "all_percent_of_startup"
         ],
         "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
       },
@@ -683,7 +684,9 @@
           "avg_dur_ms",
           "max_dur_ms",
           "percent_of_startup",
-          "startup_type"
+          "startup_type",
+          "all_percent_of_startup",
+          "all_total_dur_ms"
         ],
         "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
       },
@@ -771,7 +774,8 @@
           "total_dur_ms",
           "avg_dur_ms",
           "max_dur_ms",
-          "percent_of_startup"
+          "percent_of_startup",
+          "all_percent_of_startup"
         ],
         "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
       },
@@ -798,7 +802,9 @@
           "total_wait_ms",
           "avg_wait_ms",
           "max_wait_ms",
-          "severe_delays"
+          "severe_delays",
+          "all_severe_delays",
+          "all_max_wait_ms"
         ],
         "required_marker": "SmartPerfetto::CASE::startup-lifecycle"
       },

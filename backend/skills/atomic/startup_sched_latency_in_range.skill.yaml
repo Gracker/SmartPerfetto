@@ -69,6 +69,8 @@ display:
     - name: severe_delays
       label: "严重延迟次数"
       type: number
+    - {name: all_severe_delays, label: "全部状态严重延迟次数", type: number, hidden: true}
+    - {name: all_max_wait_ms, label: "全部状态最大等待", type: number, hidden: true}
 
 sql: |
   SELECT
@@ -77,7 +79,10 @@ sql: |
     SUM(ts.dur) / 1e6 as total_wait_ms,
     ROUND(AVG(ts.dur) / 1e6, 2) as avg_wait_ms,
     ROUND(MAX(ts.dur) / 1e6, 2) as max_wait_ms,
-    SUM(CASE WHEN ts.dur / 1e6 > 8 THEN 1 ELSE 0 END) as severe_delays
+    SUM(CASE WHEN ts.dur / 1e6 > 8 THEN 1 ELSE 0 END) as severe_delays,
+    -- Over both runnable states (R and R+), not only the first row.
+    SUM(SUM(CASE WHEN ts.dur / 1e6 > 8 THEN 1 ELSE 0 END)) OVER () as all_severe_delays,
+    ROUND(MAX(MAX(ts.dur)) OVER () / 1e6, 2) as all_max_wait_ms
   FROM thread_state ts
   JOIN android_startup_threads st ON ts.utid = st.utid
   JOIN android_startups s ON st.startup_id = s.startup_id
@@ -90,6 +95,7 @@ sql: |
     AND ts.ts >= s.ts
     AND ts.ts <= s.ts + s.dur
   GROUP BY ts.state
+  ORDER BY total_wait_ms DESC, ts.state
 
 output:
   format: structured

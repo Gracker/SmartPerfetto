@@ -11,7 +11,7 @@
     "pipelineDefinitionCount": 31,
     "moduleExpertCount": 18,
     "stepCount": 1368,
-    "explicitColumnCount": 5103
+    "explicitColumnCount": 5117
   },
   "skills": {
     "ams_module": {
@@ -3017,20 +3017,26 @@
           "columns": {
             "total_apps": {
               "label": {
-                "zh-CN": "检测应用数",
+                "zh-CN": "可评估主线程数",
                 "en": "Total Apps"
               }
             },
-            "frozen_apps": {
+            "demanding_apps": {
               "label": {
-                "zh-CN": "冻结应用数",
-                "en": "Frozen Apps"
+                "zh-CN": "有运行需求的主线程数",
+                "en": "Demanding Apps"
               }
             },
-            "frozen_pct": {
+            "stalled_apps": {
               "label": {
-                "zh-CN": "冻结占比",
-                "en": "Frozen Pct"
+                "zh-CN": "停滞主线程数",
+                "en": "Stalled Apps"
+              }
+            },
+            "stalled_pct": {
+              "label": {
+                "zh-CN": "停滞占比（有需求者中）",
+                "en": "Stalled Pct"
               }
             },
             "freeze_verdict": {
@@ -3039,16 +3045,22 @@
                 "en": "Freeze Verdict"
               }
             },
+            "system_server_evaluated": {
+              "label": {
+                "zh-CN": "system_server 可评估",
+                "en": "System Server Evaluated"
+              }
+            },
+            "system_server_stalled_pct": {
+              "label": {
+                "zh-CN": "system_server 停滞时间占比",
+                "en": "System Server Stalled Pct"
+              }
+            },
             "system_server_running_pct": {
               "label": {
                 "zh-CN": "system_server 运行占比",
                 "en": "System Server Running Pct"
-              }
-            },
-            "system_server_frozen": {
-              "label": {
-                "zh-CN": "system_server 冻结",
-                "en": "System Server Frozen"
               }
             }
           },
@@ -37249,6 +37261,18 @@
                 "zh-CN": "启动类型",
                 "en": "Startup Type"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部文件 IO 启动占比",
+                "en": "All Percent Of Startup"
+              }
+            },
+            "all_total_dur_ms": {
+              "label": {
+                "zh-CN": "全部文件 IO 总耗时",
+                "en": "All Total Dur ms"
+              }
             }
           },
           "synthesizeLabels": {
@@ -37436,6 +37460,12 @@
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部主线程同步 Binder 启动占比",
+                "en": "All Percent Of Startup"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -37488,6 +37518,18 @@
               "label": {
                 "zh-CN": "严重延迟次数",
                 "en": "Severe Delays"
+              }
+            },
+            "all_severe_delays": {
+              "label": {
+                "zh-CN": "全部状态严重延迟次数",
+                "en": "All Severe Delays"
+              }
+            },
+            "all_max_wait_ms": {
+              "label": {
+                "zh-CN": "全部状态最大等待",
+                "en": "All Max Wait ms"
               }
             }
           },
@@ -37545,6 +37587,12 @@
               "label": {
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
+              }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部 Binder 启动占比",
+                "en": "All Percent Of Startup"
               }
             }
           },
@@ -37827,6 +37875,12 @@
               "label": {
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
+              }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部 Binder 启动占比",
+                "en": "All Percent Of Startup"
               }
             }
           },
@@ -41007,6 +41061,18 @@
                 "zh-CN": "启动类型",
                 "en": "Startup Type"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部文件 IO 启动占比",
+                "en": "All Percent Of Startup"
+              }
+            },
+            "all_total_dur_ms": {
+              "label": {
+                "zh-CN": "全部文件 IO 总耗时",
+                "en": "All Total Dur ms"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -41247,6 +41313,12 @@
                 "zh-CN": "启动占比",
                 "en": "Percent Of Startup"
               }
+            },
+            "all_percent_of_startup": {
+              "label": {
+                "zh-CN": "全部主线程同步 Binder 启动占比",
+                "en": "All Percent Of Startup"
+              }
             }
           },
           "synthesizeLabels": {}
@@ -41312,6 +41384,18 @@
               "label": {
                 "zh-CN": "严重延迟次数",
                 "en": "Severe Delays"
+              }
+            },
+            "all_severe_delays": {
+              "label": {
+                "zh-CN": "全部状态严重延迟次数",
+                "en": "All Severe Delays"
+              }
+            },
+            "all_max_wait_ms": {
+              "label": {
+                "zh-CN": "全部状态最大等待",
+                "en": "All Max Wait ms"
               }
             }
           },

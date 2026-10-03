@@ -529,42 +529,58 @@ steps:
       title: "首个 ANR 窗口系统冻结检测"
       columns:
         - name: total_apps
-          label: "检测应用数"
+          label: "可评估主线程数"
           type: number
-        - name: frozen_apps
-          label: "冻结应用数"
+        - name: demanding_apps
+          label: "有运行需求的主线程数"
           type: number
-        - name: frozen_pct
-          label: "冻结占比"
+        - name: stalled_apps
+          label: "停滞主线程数"
+          type: number
+        - name: stalled_pct
+          label: "停滞占比（有需求者中）"
           type: percentage
           format: percentage
         - name: freeze_verdict
           label: "判定"
           type: string
+        - name: system_server_evaluated
+          label: "system_server 可评估"
+          type: boolean
+        - name: system_server_stalled_pct
+          label: "system_server 停滞时间占比"
+          type: percentage
+          format: percentage
         - name: system_server_running_pct
           label: "system_server 运行占比"
           type: percentage
           format: percentage
-        - name: system_server_frozen
-          label: "system_server 冻结"
-          type: boolean
+    # A main thread that sleeps (S) through the window is idle or waiting on
+    # something: the state alone cannot tell, so it is no freeze evidence (an
+    # idle Looper sleeps nearly the whole window). Stall evidence is time the
+    # thread wanted the CPU and did not get it (R, R+) or spent blocked in the
+    # kernel (D, DK). The app share is taken over threads with demand (running
+    # or stalled for at least 10% of their alive time), so idle apps neither
+    # prove nor dilute a system-wide stall, and the ANR process itself is left
+    # out of it (its stall is what is being explained). Positive evidence
+    # decides first; without it and without an evaluable system_server the
+    # verdict is undetermined. A system_server deadlock that sleeps in S is not
+    # detected here: the per-ANR blocker analysis reads it.
     sql: |
       WITH anr_window AS (
         SELECT
           ${anr_ctx.data[0].anr_ts} - ${anr_ctx.data[0].timeout_ns} AS start_ts,
-          ${anr_ctx.data[0].anr_ts} AS end_ts
+          ${anr_ctx.data[0].anr_ts} AS end_ts,
+          ${anr_ctx.data[0].timeout_ns} AS window_ns,
+          ${anr_ctx.data[0].upid|NULL} AS anr_upid
       ),
-      app_activity AS (
+      main_thread_states AS (
         SELECT
-          p.name as process_name,
-          SUM(CASE WHEN ts.state = 'Running' THEN
-            MIN(CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END, aw.end_ts)
-              - MAX(ts.ts, aw.start_ts)
-          ELSE 0 END) as running_ns,
-          SUM(
-            MIN(CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END, aw.end_ts)
-              - MAX(ts.ts, aw.start_ts)
-          ) as total_ns
+          p.upid,
+          p.name AS process_name,
+          ts.state,
+          MIN(CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END, aw.end_ts)
+            - MAX(ts.ts, aw.start_ts) AS clipped_ns
         FROM thread_state ts
         CROSS JOIN anr_window aw
         JOIN thread t ON ts.utid = t.utid
@@ -572,36 +588,64 @@ steps:
         WHERE ts.ts < aw.end_ts
           AND (CASE WHEN ts.dur < 0 THEN aw.end_ts ELSE ts.ts + ts.dur END) > aw.start_ts
           AND t.tid = p.pid  -- 主线程
+          -- Regular app uids (isolated and app-zygote ranges excluded), plus
+          -- system_server; a process without a uid is not sampled.
           AND (
-            COALESCE(p.uid, 0) >= 10000
+            COALESCE(p.uid, 0) % 100000 BETWEEN 10000 AND 89999
             OR p.name = 'system_server'
-            OR p.name = 'com.android.systemui'
           )
-        GROUP BY p.name
       ),
-      freeze_eval AS (
+      -- One row per process (a name can belong to several), over its alive
+      -- time: a dead (Z, X, x) main thread is not frozen.
+      main_threads AS (
+        SELECT
+          upid,
+          process_name,
+          SUM(CASE WHEN upper(state) NOT IN ('Z', 'X') THEN clipped_ns ELSE 0 END) AS alive_ns,
+          SUM(CASE WHEN state = 'Running' THEN clipped_ns ELSE 0 END) AS running_ns,
+          SUM(CASE WHEN state IN ('R', 'R+', 'D', 'DK') THEN clipped_ns ELSE 0 END) AS stalled_ns
+        FROM main_thread_states
+        GROUP BY upid, process_name
+      ),
+      -- Evaluable: alive for at least 90% of the window. Stalled: runnable or
+      -- uninterruptible for at least half of that alive time.
+      evaluated AS (
         SELECT
           process_name,
-          100.0 * running_ns / NULLIF(total_ns, 0) as running_pct
-        FROM app_activity
+          upid IS NOT anr_upid AS sampled,
+          100.0 * running_ns / alive_ns AS running_pct,
+          100.0 * stalled_ns / alive_ns AS stalled_time_pct,
+          CASE WHEN running_ns + stalled_ns >= 0.1 * alive_ns THEN 1 ELSE 0 END AS demanding,
+          CASE WHEN stalled_ns >= 0.5 * alive_ns THEN 1 ELSE 0 END AS stalled
+        FROM main_threads, anr_window
+        WHERE alive_ns >= 0.9 * window_ns
+      ),
+      verdict_input AS (
+        SELECT
+          COUNT(*) AS total_apps,
+          SUM(CASE WHEN sampled AND process_name IS NOT 'system_server' THEN demanding ELSE 0 END) AS demanding_apps,
+          SUM(CASE WHEN sampled AND process_name IS NOT 'system_server' THEN stalled ELSE 0 END) AS stalled_apps,
+          COALESCE(MAX(CASE WHEN process_name = 'system_server' THEN 1 ELSE 0 END), 0) AS system_server_evaluated,
+          MAX(CASE WHEN process_name = 'system_server' THEN stalled END) AS system_server_stalled,
+          MAX(CASE WHEN process_name = 'system_server' THEN ROUND(stalled_time_pct, 1) END) AS system_server_stalled_pct,
+          MAX(CASE WHEN process_name = 'system_server' THEN ROUND(running_pct, 1) END) AS system_server_running_pct
+        FROM evaluated
       )
       SELECT
-        COUNT(*) as total_apps,
-        SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) as frozen_apps,
-        ROUND(100.0 * SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) /
-              NULLIF(COUNT(*), 0), 1) as frozen_pct,
-        MAX(CASE WHEN process_name = 'system_server' THEN ROUND(running_pct, 1) END) as system_server_running_pct,
-        MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) as system_server_frozen,
-        -- No evaluable main thread in the window decides nothing: not app-specific.
+        total_apps,
+        COALESCE(demanding_apps, 0) AS demanding_apps,
+        COALESCE(stalled_apps, 0) AS stalled_apps,
+        ROUND(100.0 * stalled_apps / NULLIF(demanding_apps, 0), 1) AS stalled_pct,
+        system_server_evaluated,
+        system_server_stalled_pct,
+        system_server_running_pct,
         CASE
-          WHEN COUNT(*) = 0 THEN 'undetermined'
-          WHEN MAX(CASE WHEN process_name = 'system_server' AND running_pct < 5 THEN 1 ELSE 0 END) = 1
-            THEN 'system_server_freeze'
-          WHEN 100.0 * SUM(CASE WHEN running_pct < 5 THEN 1 ELSE 0 END) /
-               NULLIF(COUNT(*), 0) > 50 THEN 'system_freeze'
+          WHEN system_server_stalled = 1 THEN 'system_server_freeze'
+          WHEN demanding_apps >= 3 AND 2 * stalled_apps > demanding_apps THEN 'system_freeze'
+          WHEN system_server_evaluated = 0 THEN 'undetermined'
           ELSE 'app_specific'
-        END as freeze_verdict
-      FROM freeze_eval
+        END AS freeze_verdict
+      FROM verdict_input
     save_as: freeze_check
     condition: detection.data[0]?.total_anr_count > 0 && anr_ctx.data?.length > 0
     optional: true
@@ -1075,20 +1119,20 @@ steps:
     rules:
       # === 系统级问题判定 ===
 
-      # system_server 冻结（系统服务自身无调度）
+      # system_server 停滞（主线程过半时间可运行等待或不可中断等待）
       - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
         severity: critical
-        diagnosis: "system_server 运行占比仅 ${freeze_check.data[0].system_server_running_pct}%（疑似系统服务冻结）"
+        diagnosis: "system_server 主线程 ${freeze_check.data[0].system_server_stalled_pct}% 的存活时间处于可运行等待或不可中断等待（系统服务停滞）"
         confidence: high
         suggestions:
           - "这是系统级问题，优先排查 system_server 调度阻塞"
           - "检查 Binder 死锁、IO 堵塞和内核锁等待"
           - "结合内核调度与系统服务线程栈定位阻塞点"
 
-      # 系统冻结（多个应用同时卡住）
+      # 系统停滞（有运行需求的应用主线程过半同时停滞）
       - condition: "(detection.data[0]?.total_anr_count || 0) === 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
         severity: critical
-        diagnosis: "系统级冻结：${freeze_check.data[0].frozen_apps}/${freeze_check.data[0].total_apps} 个应用主线程几乎无运行"
+        diagnosis: "系统级停滞：${freeze_check.data[0].stalled_apps}/${freeze_check.data[0].demanding_apps} 个有运行需求的应用主线程过半存活时间处于可运行等待或不可中断等待"
         confidence: high
         suggestions:
           - "这是系统级问题，非单个应用问题"
@@ -1098,7 +1142,7 @@ steps:
       # 多 ANR 场景下，首个窗口系统冻结只能作为 baseline context
       - condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_server_freeze'"
         severity: warning
-        diagnosis: "首个 ANR 窗口 baseline 显示 system_server 运行占比仅 ${freeze_check.data[0].system_server_running_pct}%，需逐 ANR 复核后才能升级为系统根因"
+        diagnosis: "首个 ANR 窗口 baseline 显示 system_server 主线程 ${freeze_check.data[0].system_server_stalled_pct}% 存活时间停滞，需逐 ANR 复核后才能升级为系统根因"
         confidence: medium
         suggestions:
           - "该 freeze_check 只覆盖首个 ANR 窗口"
@@ -1107,7 +1151,7 @@ steps:
 
       - condition: "(detection.data[0]?.total_anr_count || 0) > 1 && freeze_check.data[0]?.freeze_verdict === 'system_freeze'"
         severity: warning
-        diagnosis: "首个 ANR 窗口 baseline 显示 ${freeze_check.data[0].frozen_apps}/${freeze_check.data[0].total_apps} 个应用主线程低活动，需逐 ANR 复核后才能升级为系统根因"
+        diagnosis: "首个 ANR 窗口 baseline 显示 ${freeze_check.data[0].stalled_apps}/${freeze_check.data[0].demanding_apps} 个有运行需求的应用主线程停滞，需逐 ANR 复核后才能升级为系统根因"
         confidence: medium
         suggestions:
           - "该 freeze_check 只覆盖首个 ANR 窗口"
