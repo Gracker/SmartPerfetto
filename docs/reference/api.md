@@ -427,7 +427,7 @@ Base path: `/api/agent/v1`
 Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路径与上表一致。`/api/agent/v1` 当前仍存在，响应带上文所述的 `Deprecation` / `Sunset` / `Link` 头，并计入 legacy telemetry。
 
 `/logs*` 受 `FEATURE_AGENT_LOGS_API`（默认开启）控制，关闭时返回 503 `FEATURE_DISABLED`；只有
-`org_admin` 角色或 `*` scope 的调用方可访问，其他调用方得到 404。`/admin/log-level` 只要求登录。
+`org_admin` 角色或 `*` scope 的调用方可访问，其他调用方得到 404。`/admin/log-level` 的读取和设置都需要 `runtime:manage` 权限（日志级别作用于整个进程），缺权限返回 403。
 
 ### 轻量对话
 

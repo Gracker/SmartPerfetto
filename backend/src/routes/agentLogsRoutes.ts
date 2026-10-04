@@ -7,6 +7,7 @@ import express from 'express';
 import { featureFlagsConfig } from '../config';
 import { requireRequestContext } from '../middleware/auth';
 import { sendRouteFailure } from '../middleware/routeFailure';
+import { requireRbacPermission } from '../services/rbac';
 import { isPrivilegedRequestContext, sendResourceNotFound } from '../services/resourceOwnership';
 import { getSessionLoggerManager } from '../services/sessionLogger';
 import { getLogLevel, setLogLevel, type LogLevel } from '../utils/logger';
@@ -105,7 +106,13 @@ export function registerAgentLogsRoutes(router: express.Router): void {
   });
 
   // ─── Runtime log level management ───────────────────────────────────
-  router.get('/admin/log-level', (_req, res) => {
+  // The level is process-wide: changing it changes what every tenant's runs
+  // log, so both reading and setting it manage the runtime.
+  const canManageLogLevel = requireRbacPermission(
+    'runtime:manage',
+    'Managing the log level requires runtime:manage permission',
+  );
+  router.get('/admin/log-level', canManageLogLevel, (_req, res) => {
     res.json({
       success: true,
       level: getLogLevel(),
@@ -113,7 +120,7 @@ export function registerAgentLogsRoutes(router: express.Router): void {
     });
   });
 
-  router.put('/admin/log-level', (req, res) => {
+  router.put('/admin/log-level', canManageLogLevel, (req, res) => {
     const { level } = req.body;
     try {
       setLogLevel(level === null ? null : (level as LogLevel));

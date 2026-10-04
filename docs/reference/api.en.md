@@ -477,8 +477,9 @@ and are counted by legacy telemetry.
 
 `/logs*` is gated by `FEATURE_AGENT_LOGS_API` (on by default) and answers 503
 `FEATURE_DISABLED` when it is off; only callers with the `org_admin` role or the
-`*` scope can read it, everyone else gets 404. `/admin/log-level` requires only
-authentication.
+`*` scope can read it, everyone else gets 404. Reading and setting `/admin/log-level`
+require the `runtime:manage` permission (the level is process-wide); without
+it the route answers 403.
 
 ### Lightweight Conversation
 
