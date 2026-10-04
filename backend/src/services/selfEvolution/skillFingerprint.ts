@@ -8,6 +8,7 @@ import type {
   RunSkillDefinitionAttribution,
   RunSkillRegistryAttribution,
 } from '../../types/selfEvolution';
+import {createHash} from 'crypto';
 import {canonicalContentHash} from './canonicalJson';
 
 export interface SkillFingerprintRegistry {
@@ -112,6 +113,26 @@ export function buildSkillRegistryAttribution(
       registry.overlayGeneration ?? `builtin:${registryFingerprint}`,
     skills,
   };
+}
+
+/**
+ * The key of state derived from a whole Skill registry (evidence readers,
+ * exact scope support): it changes whenever a definition or a fragment does.
+ * Definitions are hashed as serialized, without the canonical key order of
+ * fingerprintSkillDefinition: that costs about as much as the readers it would
+ * key, and a registry written in another key order only misses the cache. A
+ * missing fragment is no error here; the checks the key caches report it.
+ */
+export function skillRegistryCacheKey(
+  definitions: Iterable<SkillDefinition>,
+  fragments: ReadonlyMap<string, string> = new Map(),
+): string {
+  const hash = createHash('sha256');
+  for (const definition of [...definitions].sort((a, b) => String(a.name).localeCompare(String(b.name)))) {
+    hash.update(JSON.stringify(definition) ?? 'null').update('\n');
+  }
+  hash.update(JSON.stringify([...fragments.entries()].sort(([a], [b]) => a.localeCompare(b))));
+  return hash.digest('hex');
 }
 
 /** @internal Test seam. */

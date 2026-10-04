@@ -10,6 +10,7 @@ import {
 import {loadStrategies} from '../../../agentv3/strategyLoader';
 import {ensureSkillRegistryInitialized, skillRegistry} from '../../skillEngine/skillLoader';
 import * as skillFragments from '../../skillEngine/skillFragments';
+import {exactProcessScopeSupportCatalog, getExactProcessScopeSupport} from '../../skillEngine/processScopeSql';
 
 function skill(
   name: string,
@@ -169,7 +170,7 @@ describe('in-process effective Skill validator', () => {
       ]},
     ])).toEqual([
       'save_from_invalid steps[0].steps[0].save_from',
-      'save_from_invalid steps[1].conditions[0].then[0].save_from',
+      'save_from_invalid steps[1].conditions[0].then.save_from',
     ]);
   });
 
@@ -531,7 +532,7 @@ describe('in-process effective Skill validator', () => {
       undeclaredSkillParamSeverity: 'warning',
     });
 
-    expect(gate.validatorVersion).toBe('9');
+    expect(gate.validatorVersion).toBe('10');
     expect(gate.valid).toBe(false);
     expect(gate.issues).toEqual([
       expect.objectContaining({
@@ -559,6 +560,48 @@ describe('in-process effective Skill validator', () => {
       .filter(definition => skillRegistry.getSkillOrigin(definition.name)?.origin !== 'external_pack');
     const result = validateSkillDefinitionsInProcess({definitions, fragmentCache: skillRegistry.getFragmentCache()});
     expect(result.issues.filter(entry => entry.severity === 'error')).toEqual([]);
+  });
+
+  // The catalog shares one memo across the registry; each Skill's answer is the one it gets alone.
+  it('gives every built-in Skill the exact scope support of its own closure', async () => {
+    await ensureSkillRegistryInitialized();
+    const definitions = new Map(skillRegistry.getAllSkills().map(definition => [definition.name, definition]));
+    const fragments = skillRegistry.getFragmentCache();
+    const catalog = exactProcessScopeSupportCatalog(definitions, fragments);
+    expect([...catalog.keys()]).toEqual([...definitions.keys()]);
+    for (const [name, definition] of definitions) {
+      expect([name, catalog.get(name)]).toEqual([name, getExactProcessScopeSupport(definition, definitions, fragments)]);
+    }
+  });
+
+  // A condition is JavaScript (ExpressionEvaluator.evaluateCondition): SQL AND/OR
+  // never compiles, so the step, branch or rule silently never applies.
+  it('rejects SQL AND/OR in every condition the executor evaluates, but not in an iterator filter', () => {
+    const definition = skill('booleans');
+    definition.steps = [
+      {id: 'rows', type: 'atomic', sql: 'SELECT 1', save_as: 'rows'},
+      {id: 'gated', type: 'atomic', sql: 'SELECT 2', condition: 'rows.data.length > 0 AND rows.data[0].n > 1'},
+      {id: 'quoted', type: 'atomic', sql: 'SELECT 3', condition: "rows.data[0]?.label === 'A AND B' && rows.data.or !== 0"},
+      {id: 'choice', type: 'conditional', conditions: [
+        {when: 'rows.data.length > 0 or true', then: {id: 'nested', type: 'atomic', sql: 'SELECT 4', condition: 'true OR false'}},
+      ]},
+      {id: 'each', type: 'iterator', source: 'rows', item_skill: 'booleans', filter: "n > 1 OR n < 0"},
+      {id: 'check', type: 'diagnostic', inputs: ['rows'], rules: [
+        {condition: 'rows.data.length > 0 AND true', diagnosis: 'hit', confidence: 'high'},
+      ]},
+    ] as any;
+    const issues = (severity?: 'warning') =>
+      validateSkillDefinitionsInProcess({definitions: [definition], predatingRuleSeverity: severity}).issues
+        .filter(entry => entry.code === 'condition_uses_sql_boolean_words');
+    expect(issues().map(entry => `${entry.severity} ${entry.path}`)).toEqual([
+      'error steps[1].condition',
+      'error steps[3].conditions[0].when',
+      'error steps[3].conditions[0].then.condition',
+      'error steps[5].rules[0].condition',
+    ]);
+    expect(issues()[0].message).toContain("SQL 'AND'");
+    // A published overlay predating the rule warns rather than going offline.
+    expect(issues('warning').every(entry => entry.severity === 'warning')).toBe(true);
   });
 
   it('checks the process_scope, exact_sql and investigation_evidence an atomic step or root declares', () => {

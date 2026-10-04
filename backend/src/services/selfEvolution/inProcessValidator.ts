@@ -14,13 +14,13 @@ import {
   validateNormalizedStdlibReads,
   validateSkillConditions,
 } from '../skillEngine/skillValidator';
-import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
+import {parseEvidenceField, rootReads, sqlBooleanWords, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
 import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillEngine/skillTopLevelKeys';
-import {skillExecution} from '../skillEngine/skillSteps';
+import {skillExecution, stepConditionExpressions, stepNodesOf, stepSkillReferences} from '../skillEngine/skillSteps';
 import {executableSqlUnits} from '../skillEngine/processScopeSql';
 import {undecidedResultPathReads} from '../skillEngine/resultPathReads';
-import {causeWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
-import type {SkillDefinition, SkillStep} from '../skillEngine/types';
+import {registryCauseWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
+import type {DiagnosticStep, SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
   DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
@@ -35,7 +35,7 @@ import {
 } from '../../agentv3/strategySkillCalls';
 import {validateScopedSqlDeclarations, validateSkillStepListRuntime, type SkillStepRuntimeIssue} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '9';
+export const IN_PROCESS_VALIDATOR_VERSION = '10';
 
 /**
  * Rules that already-published overlays and packs may predate. Each is an
@@ -52,12 +52,16 @@ export const IN_PROCESS_VALIDATOR_VERSION = '9';
  * - sql_not_executed: SQL the executor never runs (skillSteps.skillExecution),
  *   which no SQL check reads; it does nothing at runtime, and it was accepted
  *   before validator version 9.
+ * - condition_uses_sql_boolean_words: a condition written with SQL AND/OR,
+ *   which never compiles, so its step is silently skipped (or its branch or
+ *   rule never fires); it was accepted before validator version 10.
  */
 export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
   'result_path_read_undecided',
   'cause_wording_without_evidence',
   'process_scope_invalid',
   'sql_not_executed',
+  'condition_uses_sql_boolean_words',
 ]);
 
 export type InProcessValidationSeverity = 'error' | 'warning';
@@ -89,7 +93,7 @@ export interface ValidateSkillDefinitionsInProcessInput {
    * and a proposal's view of Skills it does not change pass 'warning'.
    */
   predatingRuleSeverity?: InProcessValidationSeverity;
-  /** Evidence readers across `definitions`, when the caller validates the same registry more than once. */
+  /** Evidence readers across `definitions`; computed once per registry content when absent. */
   causeWordingReaders?: CauseWordingReaders;
 }
 
@@ -114,54 +118,6 @@ function issue(
   message: string,
 ): InProcessValidationIssue {
   return {severity, code, skillId, path, message};
-}
-
-const readersByRegistry = new WeakMap<ReadonlyMap<string, SkillDefinition>, CauseWordingReaders>();
-
-/**
- * Evidence readers across the registry `skill` is validated in, computed once
- * per registry; without one, only `skill` itself is known.
- */
-function registryCauseWordingReaders(
-  skill: SkillDefinition,
-  definitions: ReadonlyMap<string, SkillDefinition> | undefined,
-): CauseWordingReaders {
-  if (!definitions) return causeWordingReaders([skill]);
-  let readers = readersByRegistry.get(definitions);
-  if (!readers) {
-    readers = causeWordingReaders([...definitions.values()]);
-    readersByRegistry.set(definitions, readers);
-  }
-  return readers;
-}
-
-/** Every step of a step list, nested parallel and conditional branches included, with its path. */
-export function visitSteps(
-  steps: readonly SkillStep[],
-  callback: (step: SkillStep, path: string) => void,
-  prefix = 'steps',
-): void {
-  steps.forEach((step, index) => {
-    const path = `${prefix}[${index}]`;
-    callback(step, path);
-    if (step.type === 'parallel') {
-      visitSteps(step.steps, callback, `${path}.steps`);
-    }
-    if (step.type === 'conditional') {
-      step.conditions.forEach((condition, conditionIndex) => {
-        if (typeof condition.then !== 'string') {
-          visitSteps(
-            [condition.then],
-            callback,
-            `${path}.conditions[${conditionIndex}].then`,
-          );
-        }
-      });
-      if (step.else && typeof step.else !== 'string') {
-        visitSteps([step.else], callback, `${path}.else`);
-      }
-    }
-  });
 }
 
 function validateDefinitionShape(
@@ -253,7 +209,7 @@ function validateDefinitionShape(
   )));
   // A malformed process_scope only leaves exact scope unsupported; the step itself is checked on.
   if (stepContractIssues.every(entry => entry.code === 'process_scope_invalid')) {
-    visitSteps(skill.steps ?? [], (step, path) => {
+    for (const {node: step, at: path} of stepNodesOf(skill)) {
     if (!step.id?.trim()) {
       issues.push(issue(
         'error',
@@ -273,12 +229,12 @@ function validateDefinitionShape(
     } else {
       stepIds.add(step.id);
     }
-    });
+    }
     // Expressions resolve a save_as binding before a step result of the same
     // name, so another step's id reused as a save_as would never be readable.
     // A separate pass: the colliding id may belong to a later step.
-    visitSteps(skill.steps ?? [], (step, path) => {
-      const saveAs = 'save_as' in step ? step.save_as : undefined;
+    for (const {node: step, at: path} of stepNodesOf(skill)) {
+      const saveAs = step.save_as;
       if (typeof saveAs === 'string' && saveAs !== step.id && stepIds.has(saveAs)) {
         issues.push(issue(
           'error',
@@ -288,7 +244,7 @@ function validateDefinitionShape(
           `save_as '${saveAs}' is the id of another step; name the binding after its own step or choose a distinct name.`,
         ));
       }
-    });
+    }
   }
   // Every SQL the executor runs, named and exact (executableSqlUnits).
   for (const unit of includeSqlGuardrails ? executableSqlUnits(skill) : []) {
@@ -362,6 +318,16 @@ export function validateSkillDefinitionInProcess(
     ));
   }
   issues.push(...validateDiagnosticReads(skill));
+  // Only an iterator filter has AND/OR rewritten; every other condition runs as written.
+  const skipped = {condition: 'its step is silently skipped', when: 'its branch is never taken', rule: 'the rule never fires'};
+  for (const {text, kind, at} of stepConditionExpressions(skill)) {
+    const words = typeof text === 'string' ? sqlBooleanWords(text) : [];
+    if (words.length > 0) {
+      issues.push(issue('error', 'condition_uses_sql_boolean_words', skill.name, at,
+        `Writes SQL ${words.map(word => `'${word}'`).join(', ')}; a condition is JavaScript, so it never compiles, `
+        + `evaluates to false and ${skipped[kind]}: write && / ||.`));
+    }
+  }
   // A saved-result path read without a default runs on '' / NULL here but is
   // skipped by the public runtime when the result has no row (resultPathReads.ts).
   for (const read of undecidedResultPathReads(skill)) {
@@ -371,7 +337,8 @@ export function validateSkillDefinitionInProcess(
   }
   // Heat or frequency-cap wording reads as a conclusion in either language;
   // only evidence the Skill reads may support it (causeWordingEvidence.ts).
-  const readers = options.causeWordingReaders ?? registryCauseWordingReaders(skill, options.definitions);
+  const readers = options.causeWordingReaders
+    ?? registryCauseWordingReaders(options.definitions ? [...options.definitions.values()] : [skill]);
   for (const site of unsupportedCauseWording(skill, readers)) {
     const quoted = site.text.length > 80 ? `${site.text.slice(0, 80)}…` : site.text;
     issues.push(issue('error', 'cause_wording_without_evidence', skill.name,
@@ -423,13 +390,14 @@ function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIss
   const issues: InProcessValidationIssue[] = [];
   const skillNames = declaredSkillNames(skill);
   const stepData = new Set<string>();
-  visitSteps(skill.steps ?? [], step => {
+  const steps = stepNodesOf(skill);
+  for (const {node: step} of steps) {
     if (typeof step.id === 'string') stepData.add(step.id);
-    const saveAs = 'save_as' in step ? step.save_as : undefined;
-    if (typeof saveAs === 'string') stepData.add(saveAs);
-  });
-  visitSteps(skill.steps ?? [], (step, path) => {
-    if (step.type !== 'diagnostic') return;
+    if (typeof step.save_as === 'string') stepData.add(step.save_as);
+  }
+  for (const {node, at: path} of steps) {
+    if (node.type !== 'diagnostic') continue;
+    const step = node as DiagnosticStep;
     const report = (code: string, fieldPath: string, message: string) =>
       issues.push(issue('error', code, skill.name, fieldPath, message));
     if (!Array.isArray(step.inputs) || !step.inputs.every(name => typeof name === 'string')) {
@@ -487,7 +455,7 @@ function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIss
           `${rulePath}.${templateIndex === 0 ? 'diagnosis' : `suggestions[${templateIndex - 1}]`}`);
       });
     });
-  });
+  }
   return issues;
 }
 
@@ -497,13 +465,13 @@ function validateDiagnosticReads(skill: SkillDefinition): InProcessValidationIss
  */
 function validateSaveFromPlacement(skill: SkillDefinition): InProcessValidationIssue[] {
   const issues: InProcessValidationIssue[] = [];
-  const topLevel = new Set<SkillStep>(skill.steps ?? []);
-  visitSteps(skill.steps ?? [], (step, path) => {
+  const topLevel = new Set(stepNodesOf(skill, {topLevelOnly: true}).map(({node}) => node));
+  for (const {node: step, at: path} of stepNodesOf(skill)) {
     const problem = saveFromPlacementProblem(step, topLevel.has(step));
     if (problem) {
       issues.push(issue('error', 'save_from_invalid', skill.name, `${path}.save_from`, `save_from ${problem}.`));
     }
-  });
+  }
   return issues;
 }
 
@@ -563,22 +531,17 @@ function validateSkillReferences(
   knownSkillIds: ReadonlySet<string>,
 ): InProcessValidationIssue[] {
   const issues: InProcessValidationIssue[] = [];
-  visitSteps(skill.steps ?? [], (step, path) => {
-    const target = 'skill' in step && typeof step.skill === 'string'
-      ? step.skill
-      : step.type === 'iterator'
-        ? step.item_skill
-        : undefined;
-    if (target && !knownSkillIds.has(target)) {
+  for (const {skillId: target, at} of stepSkillReferences(skill)) {
+    if (!knownSkillIds.has(target)) {
       issues.push(issue(
         'error',
         'skill_reference_missing',
         skill.name,
-        path,
+        at,
         `Referenced Skill '${target}' is not present in the effective registry.`,
       ));
     }
-  });
+  }
   return issues;
 }
 
@@ -604,7 +567,7 @@ export function validateSkillDefinitionsInProcess(
     ? [...new Set(input.affectedSkillIds)].sort()
     : [...byId.keys()].sort();
   const knownSkillIds = input.knownSkillIds ?? new Set(byId.keys());
-  const readers = input.causeWordingReaders ?? causeWordingReaders([...byId.values()]);
+  const readers = input.causeWordingReaders ?? registryCauseWordingReaders([...byId.values()]);
   for (const skillId of selectedIds) {
     const definition = byId.get(skillId);
     if (!definition) {

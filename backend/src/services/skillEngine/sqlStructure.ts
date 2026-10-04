@@ -45,6 +45,7 @@ export function structuralSqlTokens(sql: string, options: {cache?: boolean} = {}
         merged[merged.length - 1] = {
           kind: last.kind === 'word' && token.kind === 'word' ? 'word' : 'identifier',
           text: last.text + token.text,
+          written: (last.written ?? '') + (token.written ?? ''),
         };
       } else {
         merged.push(token);
@@ -167,4 +168,79 @@ export function cteDefinitionAt(tokens: readonly SqlToken[], index: number): Cte
   if (word(at, 'NOT')) at++;
   if (word(at, 'MATERIALIZED')) at++;
   return punct(at, '(') ? {columns, bodyStart: at, bodyEnd: closingParen(tokens, at)} : undefined;
+}
+
+/** Keywords a projection term never ends with as an alias: an ordering, a CASE end, a literal value. */
+const NON_ALIAS_WORDS: ReadonlySet<string> = new Set(['ASC', 'DESC', 'END', 'NULL', 'TRUE', 'FALSE']);
+/** A plain or once-qualified column name as written. */
+const COLUMN_NAME = /^(?:[A-Za-z_][A-Za-z0-9_]*\.)?([A-Za-z_][A-Za-z0-9_$]*)$/;
+/** An alias name as written. */
+const ALIAS_NAME = /^[A-Za-z_][A-Za-z0-9_$]*$/;
+
+/**
+ * The result column names of SQL, as written, when its first query's
+ * projection names them: each term's `AS` alias, a bare column (`ts`,
+ * `s.dur`), or a trailing bare alias (`COUNT(*) cnt`). A term that names no
+ * column (`*`, `COUNT(*)`, a CASE without an alias) has none. The first query
+ * is the first `SELECT` outside parentheses, so a WITH query's main SELECT,
+ * not a CTE body; its projection runs to the first FROM outside parentheses.
+ */
+export function sqlResultColumns(sql: string): string[] {
+  const tokens = structuralSqlTokens(sql);
+  const {word, punct} = tokenMatchers(tokens);
+  let depth = 0;
+  let select = -1;
+  let end = tokens.length;
+  for (let at = 0; at < tokens.length; at++) {
+    if (punct(at, '(')) depth++;
+    else if (punct(at, ')')) depth = Math.max(0, depth - 1);
+    else if (depth === 0 && select < 0 && word(at, 'SELECT')) select = at;
+    else if (depth === 0 && select >= 0 && word(at, 'FROM')) {
+      end = at;
+      break;
+    }
+  }
+  if (select < 0) return [];
+  const terms: SqlToken[][] = [[]];
+  for (let at = select + 1, nesting = 0; at < end; at++) {
+    if (punct(at, '(')) nesting++;
+    else if (punct(at, ')')) nesting = Math.max(0, nesting - 1);
+    if (nesting === 0 && punct(at, ',')) terms.push([]);
+    else terms[terms.length - 1].push(tokens[at]);
+  }
+  const names = terms.map(term => {
+    const last = term[term.length - 1];
+    const written = isNameToken(last) ? last.written ?? '' : '';
+    if (term.length >= 2 && term[term.length - 2].kind === 'word' && term[term.length - 2].text === 'AS'
+      && isNameToken(last)) {
+      return last.kind === 'identifier' || ALIAS_NAME.test(written) ? written : undefined;
+    }
+    if (term.length === 1) return COLUMN_NAME.exec(written)?.[1];
+    return last?.kind === 'word' && ALIAS_NAME.test(written) && !NON_ALIAS_WORDS.has(last.text) ? written : undefined;
+  });
+  return [...new Set(names.filter((name): name is string => Boolean(name)))];
+}
+
+/** Statements that write, or change the connection. */
+const WRITING_WORDS: ReadonlySet<string> = new Set([
+  'ALTER', 'ATTACH', 'CREATE', 'DELETE', 'DETACH', 'DROP', 'INSERT', 'PRAGMA', 'REPLACE', 'UPDATE', 'VACUUM',
+]);
+
+/**
+ * Whether SQL only reads: after any leading `INCLUDE PERFETTO MODULE …;`
+ * statements it is a query (SELECT or WITH), and no writing keyword appears
+ * in its code (comments and string literals are not code). Conservative: the
+ * REPLACE() function reads as the REPLACE statement.
+ */
+export function sqlIsReadOnly(sql: string): boolean {
+  const tokens = structuralSqlTokens(sql);
+  const {word, punct} = tokenMatchers(tokens);
+  let at = 0;
+  while (word(at, 'INCLUDE') && word(at + 1, 'PERFETTO') && word(at + 2, 'MODULE')) {
+    at += 3;
+    while (at < tokens.length && !punct(at, ';')) at++;
+    at++;
+  }
+  if (!word(at, 'SELECT') && !word(at, 'WITH')) return false;
+  return !tokens.some(token => token.kind === 'word' && WRITING_WORDS.has(token.text));
 }

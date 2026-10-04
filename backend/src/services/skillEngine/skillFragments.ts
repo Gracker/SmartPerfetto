@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import {substituteSqlPlaceholders} from './sqlTemplate';
+import {SKILL_LAYOUT} from './skillLayout';
 
 /** The built-in skills directory shipped with the backend. */
 export function builtInSkillsDir(): string {
@@ -26,6 +27,14 @@ export function readSkillFragmentFile(fragmentsDir: string, file: string): strin
   return fs.readFileSync(path.join(fragmentsDir, file), 'utf-8').trim();
 }
 
+/** Every fragment of a Skill root by registry key, read as the loader reads them. */
+export function readSkillFragments(skillsDir: string): Map<string, string> {
+  const fragmentsDir = path.join(skillsDir, SKILL_LAYOUT.fragmentsDir);
+  if (!fs.existsSync(fragmentsDir)) return new Map();
+  return new Map(fs.readdirSync(fragmentsDir).filter(file => file.endsWith('.sql'))
+    .map(file => [skillFragmentKey(file), readSkillFragmentFile(fragmentsDir, file)]));
+}
+
 const builtInCache = new Map<string, string>();
 
 /**
@@ -35,7 +44,7 @@ const builtInCache = new Map<string, string>();
 export function builtInSkillFragment(file: string): string {
   const cached = builtInCache.get(file);
   if (cached !== undefined) return cached;
-  const content = readSkillFragmentFile(path.join(builtInSkillsDir(), 'fragments'), file);
+  const content = readSkillFragmentFile(path.join(builtInSkillsDir(), SKILL_LAYOUT.fragmentsDir), file);
   builtInCache.set(file, content);
   return content;
 }

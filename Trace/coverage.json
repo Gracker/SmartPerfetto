@@ -12026,6 +12026,7 @@
               "has_thermal_data",
               "has_freq_data",
               "has_gpu_freq_data",
+              "has_max_limit_data",
               "limit_evidence_missing_reason"
             ]
           },

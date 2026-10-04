@@ -44,7 +44,7 @@ import {
   absentPlaceholderSql, boundSqlPlaceholderPaths, readPlaceholderBody, sqlCodeText, sqlIdentifier, sqlLiteral,
   sqlStringLiteralText, substituteSqlPlaceholders,
 } from './sqlTemplate';
-import { EXACT_UPID_TOKEN, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
+import { EXACT_UPID_TOKEN, exactProcessScopeSupportCatalog, getExactProcessScopeSupport, sqlScopeDeclarationError, selectProcessScopeSql, type ScopedSqlSource } from './processScopeSql';
 import { assertEffectiveProcessScope, type EffectiveProcessScope } from '../processIdentity/effectiveProcessScope';
 import { sqlScopeEvidence, resultScopeProvenance, resultScopeLimitations } from './scopeEvidence';
 import { SYNTHESIZE_SUMMARY_STEP_ID, exposedStepResult, hasMeaningfulData, selectReferencedSkillStep, selectedStepResult } from './referencedSkillStep';
@@ -1617,11 +1617,13 @@ export class SkillExecutor {
   private exactScopeAdmissionError(skill: SkillDefinition): string | undefined {
     const support = getExactProcessScopeSupport(skill, this.skillRegistry, this.fragmentRegistry);
     if (support.supported) return undefined;
+    // Every candidate's closure at once, each shared Skill computed once.
+    const catalog = exactProcessScopeSupportCatalog(this.skillRegistry, this.fragmentRegistry);
     const alternatives = [...this.skillRegistry.values()]
       .filter(candidate => candidate.type === 'atomic' && candidate.name !== 'process_identity_resolver' &&
         (candidate.process_scope?.role === 'target' || candidate.steps?.some(step =>
           'process_scope' in step && step.process_scope?.role === 'target')) &&
-        getExactProcessScopeSupport(candidate, this.skillRegistry, this.fragmentRegistry).supported)
+        catalog.get(candidate.name)?.supported)
       .map(candidate => candidate.name).sort();
     return `Exact UPID scope is unsupported: ${support.reason}. ` +
       (alternatives.length ? `Use a supported exact Skill: ${alternatives.join(', ')}.` :

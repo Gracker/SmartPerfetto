@@ -32,9 +32,8 @@ import {
   PREDATING_RULE_CODES,
   validateSkillDefinitionsInProcess,
   validateStrategyDefinitionsInProcess,
-  visitSteps,
 } from './inProcessValidator';
-import {causeWordingReaders} from '../skillEngine/causeWordingEvidence';
+import {stepNodesOf} from '../skillEngine/skillSteps';
 import {
   parseProposalSqlRegressionProofV1,
   parseProposalCandidateMaterializationV1,
@@ -113,7 +112,7 @@ export async function validateProposalStatic(input: {
       errors.add('static_skill_yaml_invalid');
     } else {
       const existing = input.options.skillSnapshot?.definitions ?? [];
-      collectSkillValidation([...existing, parsed], errors, warnings, [parsed.name]);
+      collectSkillValidation([...existing, parsed], input.options.skillSnapshot?.fragments, errors, warnings, [parsed.name]);
     }
   } else if (
     proposal.kind === 'skill_overlay_delta'
@@ -152,6 +151,7 @@ export async function validateProposalStatic(input: {
         const target = (JSON.parse(candidate.serializedContent) as {baseSkillId?: unknown}).baseSkillId;
         collectSkillValidation(
           candidateComposition.skills,
+          snapshot.fragments,
           errors,
           warnings,
           typeof target === 'string' ? [target] : [],
@@ -238,7 +238,7 @@ export async function validateProposalStatic(input: {
         if (typeof candidateSkills === 'string') {
           errors.add(candidateSkills);
         } else {
-          collectSkillValidation(candidateSkills, errors, warnings, [delta.targetId]);
+          collectSkillValidation(candidateSkills, snapshot.fragments, errors, warnings, [delta.targetId]);
         }
       }
     }
@@ -422,9 +422,9 @@ function withCandidateStepSql(
     outcome = 'replaced';
   };
   if (delta.operationId === 'root' && typeof candidate.sql === 'string') replace(candidate);
-  visitSteps(candidate.steps ?? [], step => {
+  for (const {node: step} of stepNodesOf(candidate)) {
     if (step.id === delta.operationId && 'sql' in step) replace(step);
-  });
+  }
   if (outcome === 'missing') return 'static_skill_sql_target_step_missing';
   if (outcome === 'stale') return 'static_skill_sql_anchor_stale';
   return skills.map(skill => skill === target ? candidate : skill);
@@ -439,16 +439,19 @@ function withCandidateStepSql(
  */
 function collectSkillValidation(
   definitions: readonly SkillDefinition[],
+  // The snapshot's fragments: without them, fragment references and the
+  // stdlib reads inside fragments would go unchecked.
+  fragments: ReadonlyMap<string, string> | undefined,
   errors: Set<string>,
   warnings: Set<string>,
   candidateSkillIds: readonly string[] = [],
 ): void {
-  // The registry is the same for both passes; its evidence readers are computed once.
-  const readers = causeWordingReaders(definitions);
+  const fragmentCache = fragments ?? new Map<string, string>();
+  // Both passes read the same registry; its evidence readers are computed once (registryCauseWordingReaders).
   const issues = [
-    ...validateSkillDefinitionsInProcess({definitions, predatingRuleSeverity: 'warning', causeWordingReaders: readers}).issues,
+    ...validateSkillDefinitionsInProcess({definitions, fragmentCache, predatingRuleSeverity: 'warning'}).issues,
     ...(candidateSkillIds.length > 0
-      ? validateSkillDefinitionsInProcess({definitions, affectedSkillIds: candidateSkillIds, causeWordingReaders: readers}).issues
+      ? validateSkillDefinitionsInProcess({definitions, fragmentCache, affectedSkillIds: candidateSkillIds}).issues
         .filter(issue => PREDATING_RULE_CODES.has(issue.code))
       : []),
   ];

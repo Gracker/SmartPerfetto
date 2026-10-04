@@ -26,6 +26,8 @@ import {builtInFragmentText} from './skillFragments';
 import {executableSqlUnits, sqlRunBy, type SqlVariant} from './processScopeSql';
 import {scanOutsideStrings, topLevelOperands} from './resultPathReads';
 import {stepNodesOf} from './skillSteps';
+import {RegistryDerivedCache} from './registryDerivedCache';
+import {skillRegistryCacheKey} from '../selfEvolution/skillFingerprint';
 import {boundSqlPlaceholderPaths} from './sqlTemplate';
 import {closingParen, operandEndingAt, operandStartingAt, structuralSqlTokens, tokenMatchers} from './sqlStructure';
 import {
@@ -322,6 +324,17 @@ export function causeWordingReaders(skills: readonly SkillDefinition[]): CauseWo
   const same = (left: ReadonlySet<string>, right: ReadonlySet<string>) =>
     left.size === right.size && [...left].every(name => right.has(name));
   return {named, exact, variantsDiffer: !same(named.heat, exact.heat) || !same(named.cap, exact.cap)};
+}
+
+const readersByRegistry = new RegistryDerivedCache<CauseWordingReaders>();
+
+/**
+ * causeWordingReaders of a registry, computed once per registry content
+ * (skillRegistryCacheKey): the readers are a fixed point over every Skill, and
+ * each validation of the same registry would otherwise repeat it.
+ */
+export function registryCauseWordingReaders(skills: readonly SkillDefinition[]): CauseWordingReaders {
+  return readersByRegistry.get(skillRegistryCacheKey(skills), () => causeWordingReaders(skills));
 }
 
 function readersIn(stepLists: ReadonlyArray<{name: string; steps: any[]}>): Record<Wording, ReadonlySet<string>> {

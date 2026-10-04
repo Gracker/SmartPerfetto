@@ -888,6 +888,60 @@ describe('M7 static gate saved-result path reads', () => {
   });
 });
 
+describe('M7 static gate SQL fragments', () => {
+  async function gate(fragmentPath: string, fragments?: ReadonlyMap<string, string>) {
+    const yamlText = [
+      'name: fragment_reader', 'version: "1"', 'type: composite',
+      'meta:', '  display_name: Fragment Reader', '  description: Bounded test skill',
+      'steps:',
+      '  - id: reader', '    type: atomic', '    sql: SELECT 1 AS s',
+      `    sql_fragments: [${JSON.stringify(fragmentPath)}]`, '',
+    ].join('\n');
+    const proposal = draftProposal({
+      kind: 'new_skill_draft',
+      tier: 'T5a',
+      deltas: [{
+        op: 'add', targetKind: 'skill_overlay', targetId: 'fragment_reader', operationId: 'fragment_reader',
+        anchor: 'skills[id="fragment_reader"]', baseContentHash, after: yamlText,
+      }],
+    });
+    return validateProposalStatic({
+      proposal,
+      candidate: createProposalCandidateMaterializationV1({
+        proposalId: proposal.proposalId,
+        proposalRevision: 1,
+        draftContentHash: proposalDraftContentHash(proposal),
+        planContentHash: canonicalContentHash('plan'),
+        artifactId: 'artifact-fragment-reader',
+        targetKind: 'skill_overlay',
+        serializedContent: yamlText,
+      }),
+      base: {
+        targetId: 'fragment_reader', contentHash: baseContentHash, registryFingerprint,
+        skillRegistryFingerprint: registryFingerprint, strategyRegistryFingerprint: registryFingerprint,
+        overlayGeneration: proposal.expectedOverlayGeneration,
+      },
+      gateAttempt: {attemptId: 'attempt-1', ordinal: 1, gatePolicyFingerprint: canonicalContentHash('gate-policy')},
+      options: {...staticValidation(), skillSnapshot: {definitions: [], ...(fragments ? {fragments} : {})}},
+    });
+  }
+
+  it('rejects a candidate referencing a fragment the snapshot does not have', async () => {
+    const present = new Map([['fragments/present.sql', 'present AS (SELECT 1 AS x)']]);
+    expect((await gate('fragments/present.sql', present)).validatorCodes).toEqual([]);
+    const missing = await gate('fragments/missing.sql', present);
+    expect(missing.validatorCodes).toEqual(['fragment_reference_missing']);
+    expect(missing.verdict).toBe('failed');
+    // A snapshot without fragments holds none: the reference cannot resolve.
+    expect((await gate('fragments/present.sql')).validatorCodes).toEqual(['fragment_reference_missing']);
+  });
+
+  it('checks the stdlib reads inside a referenced fragment', async () => {
+    const fragments = new Map([['fragments/raw_input.sql', 'raw AS (SELECT * FROM android_input_events)']]);
+    expect((await gate('fragments/raw_input.sql', fragments)).validatorCodes).toEqual(['normalized_stdlib_read']);
+  });
+});
+
 describe('M7 static gate saved-result path reads in changed Skills', () => {
   const undecided = "SELECT '${cov.data[0].status}' AS s";
   const decided = "SELECT '${cov.data[0].status|}' AS s";

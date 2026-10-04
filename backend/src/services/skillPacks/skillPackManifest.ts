@@ -11,6 +11,7 @@ import type {
   SkillPackManifestV1,
 } from './skillPackTypes';
 import { SkillPackRequestError } from './skillPackRequestError';
+import { PACK_SKILL_DIRS, SKILL_FILE_PATTERN, SKILL_LAYOUT } from '../skillEngine/skillLayout';
 
 export const SKILL_PACK_MANIFEST_SCHEMA_VERSION = 1 as const;
 export const SKILL_PACK_MANIFEST_FILE = 'smartperfetto-skill-pack.json';
@@ -21,19 +22,11 @@ export const MAX_SKILL_PACK_TOTAL_ASSET_BYTES = 100 * 1024 * 1024;
 const PACK_ID_RE = /^[A-Za-z0-9_.-]{1,96}$/;
 const VERSION_RE = /^[A-Za-z0-9_.+-]{1,96}$/;
 const SHA256_RE = /^[a-f0-9]{64}$/i;
-const ALLOWED_SKILL_ROOTS = new Set([
-  'atomic',
-  'composite',
-  'deep',
-  'system',
-  'comparison',
-  'modules',
-  'pipelines',
-]);
-const ALLOWED_ROOTS = new Set([
+const ALLOWED_SKILL_ROOTS: ReadonlySet<string> = new Set(PACK_SKILL_DIRS);
+const ALLOWED_ROOTS: ReadonlySet<string> = new Set([
   ...ALLOWED_SKILL_ROOTS,
-  'fragments',
-  'docs',
+  SKILL_LAYOUT.fragmentsDir,
+  SKILL_LAYOUT.docsDir,
 ]);
 const EXECUTABLE_EXTENSIONS = new Set([
   '.js',
@@ -125,14 +118,14 @@ function normalizeAsset(value: unknown): SkillPackManifestAssetV1 {
 
   const root = assetPath.split('/')[0];
   if (kindRaw === 'skill') {
-    if (!ALLOWED_SKILL_ROOTS.has(root) || !/\.skill\.ya?ml$/i.test(assetPath)) {
+    if (!ALLOWED_SKILL_ROOTS.has(root) || !SKILL_FILE_PATTERN.test(assetPath)) {
       throw new SkillPackRequestError('invalid_asset_path');
     }
   } else if (kindRaw === 'fragment') {
-    if (root !== 'fragments' || assetPath.split('/').length !== 2 || !assetPath.endsWith('.sql')) {
+    if (root !== SKILL_LAYOUT.fragmentsDir || assetPath.split('/').length !== 2 || !assetPath.endsWith('.sql')) {
       throw new SkillPackRequestError('invalid_asset_path');
     }
-  } else if (kindRaw === 'doc' && root !== 'docs') {
+  } else if (kindRaw === 'doc' && root !== SKILL_LAYOUT.docsDir) {
     throw new SkillPackRequestError('invalid_asset_path');
   }
 

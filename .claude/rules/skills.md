@@ -113,6 +113,19 @@ Click actions should be explicit, for example:
   public run. Compute derived or rounded numbers in SQL and cite the column; a
   rule `confidence` is a literal level or number, never a template; never put
   `AND`/`OR` inside a quoted string of a condition or filter.
+- A step `condition`, a conditional branch `when` and a diagnostic rule
+  `condition` are JavaScript as written (`evaluateCondition`): write `&&` /
+  `||`. SQL `AND`/`OR` there never compiles, evaluates to false, and the step
+  is silently skipped (the branch never taken, the rule never fired). Only an
+  iterator `filter` has `AND`/`OR` rewritten. The shared validator rejects the
+  words in code as `condition_uses_sql_boolean_words`
+  (`skillSteps.stepConditionExpressions`, `expressionUtils.sqlBooleanWords`;
+  a word in a string literal or a property name is not code), with the
+  `PREDATING_RULE_CODES` severities, since overlays published before
+  validator version 10 may predate it. The Perfetto-Skills exporter's
+  `normalize_condition` still rewrites `AND`/`OR` in conditions, so the
+  public runtime runs a step SmartPerfetto skips; that difference is a
+  tracked handoff, not a license to write them.
 - A Skill SQL path read of an earlier step's result needs a `|default` or a
   step `condition` with the top-level conjunct `<result>.data?.length > 0`.
   SmartPerfetto binds a missing value as '' or NULL and runs; the public
@@ -176,10 +189,30 @@ Click actions should be explicit, for example:
   the step itself. SQL the executor never runs (root SQL of a non-atomic
   Skill, steps beside an atomic root, steps of a metadata-only Skill) is
   `sql_not_executed`, a `PREDATING_RULE_CODES` rule, rather than SQL no check
-  reads. Do not add a private walk. The Trace SQL regression's named-SQL
-  inventory (`Trace/tools/lib/skill-sql-contract.cjs`) predates the walk and
-  never reads `exact_sql`; its exact units come from `executableSqlUnits` in
-  the corpus runner (`backend/tests/trace-corpus/corpusRunner.ts`). An
+  reads. Do not add a private walk. The same holds for steps: every check that
+  reads a Skill's steps (step ids, conditions, iterator sources, Skill
+  references, diagnostic reads, `save_from`, display contracts, the
+  localization catalog, exact scope support, the CLI's step checks) takes them
+  from `stepNodesOf` in `skillEngine/skillSteps.ts`, which walks nested steps
+  and inline conditional branches at any depth; a check that needs other
+  semantics asks with an option (`topLevelOnly`, `executedOnly`) or reads
+  `topLevelIndex`, and `stepSkillReferences` lists the Skills the steps run,
+  a branch written as a Skill id included. Only the executor and the closed
+  step schema read conditional branches themselves
+  (`executableSqlUnits.test.ts` holds this). A private walk once descended
+  only into parallel steps, so a branch's condition, step id and catalog
+  label went unchecked. The Trace SQL regression's named-SQL
+  contract (`Trace/tools/lib/skill-sql-contract.cjs`) keeps no reader of its
+  own: it reads the committed `Trace/skill-sql.inventory.json`, which
+  `npm run generate:skill-sql-inventory` builds from the same walk and readers
+  (`skillEngine/skillSqlInventory.ts`: `executableSqlUnits`,
+  `sqlScopeDeclarationError`, `boundSqlPlaceholders`, `recordedStepNames`,
+  the structural `sqlResultColumns` / `sqlIsReadOnly`, `SKILL_LAYOUT`), so the
+  tooling runs on a clean checkout without the TypeScript build.
+  `validate:skills` fails when the inventory is stale, and `trace:validate`
+  when a Skill file no longer has the text hash it was generated from. The
+  inventory lists named SQL only; exact units come from `executableSqlUnits`
+  in the corpus runner (`backend/tests/trace-corpus/corpusRunner.ts`). An
   executed Skill expectation's `exact_scope` names a process that must
   resolve to exactly one UPID in the case trace and lists the exact units it
   binds; the runner reloads the trace (so no view the named run created

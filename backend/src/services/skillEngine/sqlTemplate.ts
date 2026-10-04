@@ -45,6 +45,8 @@ export interface SqlToken {
   kind: 'word' | 'identifier' | 'string' | 'punct';
   /** Upper-cased word or quoted name, the punctuation, or the decoded literal text. */
   text: string;
+  /** A word or quoted name as written: its case kept, a quoted name decoded. */
+  written?: string;
   /** This string literal is the whole GLOB/LIKE pattern. */
   pattern?: SqlPatternLiteral;
   /** Inside a GLOB/LIKE/REGEXP/MATCH operand, but not as its only string literal. */
@@ -163,13 +165,14 @@ function scanSql(sql: string, cache = true): {placeholders: ScannedPlaceholder[]
       const token: Token = {kind: 'identifier', text: ''};
       tokens.push(token);
       i = quoted(i + 1, IDENTIFIER_CLOSE[ch], 'identifier', token);
+      token.written = token.text;
       token.text = token.text.toUpperCase();
     } else {
       WORD_AT.lastIndex = i;
       const word = WORD_AT.exec(sql)?.[0];
       OPERATOR_AT.lastIndex = i;
       const text = word ?? OPERATOR_AT.exec(sql)![0];
-      tokens.push(word ? {kind: 'word', text: word.toUpperCase()} : {kind: 'punct', text});
+      tokens.push(word ? {kind: 'word', text: word.toUpperCase(), written: word} : {kind: 'punct', text});
       i += text.length;
     }
   }

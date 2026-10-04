@@ -31,7 +31,10 @@ describe('authored display title translations', () => {
     expect(sanitizeDisplayConfigForRuntime({columns: [{name: 'n', label: '次数', label_i18n: {en: 'Count'}}]}).config.columns)
       .toEqual([{name: 'n', label: '次数'}]);
   });
-  it.each(['root', 'output', 'then', 'else', 'conditions', 'unnamed'])('rejects title overrides at unsupported %s locations', location => {
+  // The display walk is stepNodesOf: the branches the executor runs. A `then`
+  // written on the conditional itself is no branch; the closed step schema
+  // rejects it (conditional_step_invalid).
+  it.each(['root', 'output', 'else', 'conditions', 'unnamed'])('rejects title overrides at unsupported %s locations', location => {
     const display = {title_i18n: {en: 'Explicit title'}};
     const child = {id: 'child', type: 'atomic', display};
     const branch = location === 'conditions' ? {conditions: [{then: child}]} : {[location]: child};

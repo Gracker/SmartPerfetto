@@ -23,6 +23,7 @@ import {
   unknownSkillTopLevelKeys, unknownVendorOverrideKeys, type LegacySkillSpellings, type VendorOverrideSource,
 } from './skillTopLevelKeys';
 import { builtInSkillsDir, readSkillFragmentFile, skillFragmentKey } from './skillFragments';
+import { listSkillFiles, SKILL_LAYOUT, type SkillFile } from './skillLayout';
 import { PublicRequestError } from '../../utils/publicRequestError';
 import {
   DisplayContractIssue,
@@ -388,7 +389,7 @@ export class SkillRegistry {
     }
     for (const root of roots) {
       if (root.origin !== 'built_in') continue;
-      const vendorsDir = path.join(root.rootPath, 'vendors');
+      const vendorsDir = path.join(root.rootPath, SKILL_LAYOUT.vendorsDir);
       if (fs.existsSync(vendorsDir)) {
         this.loadVendorOverrides(vendorsDir);
       }
@@ -405,30 +406,9 @@ export class SkillRegistry {
 
     this.loadFragments(skillsDir, root);
 
-    for (const dirName of ['atomic', 'composite', 'deep', 'system', 'comparison']) {
-      const skillDir = path.join(skillsDir, dirName);
-      if (fs.existsSync(skillDir)) {
-        await this.loadSkillsFromDir(skillDir, root);
-      }
+    for (const file of listSkillFiles(skillsDir, {includeCustom: root.origin === 'built_in'})) {
+      await this.loadSkillFile(file, root);
     }
-
-    if (root.origin === 'built_in') {
-      const customDir = path.join(skillsDir, 'custom');
-      if (fs.existsSync(customDir)) {
-        await this.loadSkillsFromDir(customDir, root);
-      }
-    }
-
-    const modulesDir = path.join(skillsDir, 'modules');
-    if (fs.existsSync(modulesDir)) {
-      await this.loadModuleSkillsRecursively(modulesDir, root);
-    }
-
-    const pipelinesDir = path.join(skillsDir, 'pipelines');
-    if (fs.existsSync(pipelinesDir)) {
-      await this.loadPipelineSkills(pipelinesDir, root);
-    }
-
   }
 
   /**
@@ -436,7 +416,7 @@ export class SkillRegistry {
    * Fragments are reusable CTE definitions that can be injected into step SQL.
    */
   private loadFragments(skillsDir: string, root?: SkillRootDescriptor): void {
-    const fragmentsDir = path.join(skillsDir, 'fragments');
+    const fragmentsDir = path.join(skillsDir, SKILL_LAYOUT.fragmentsDir);
     if (!fs.existsSync(fragmentsDir)) return;
 
     const files = fs.readdirSync(fragmentsDir);
@@ -606,72 +586,33 @@ export class SkillRegistry {
   }
 
   /**
-   * 递归加载 modules 目录下的 skills
-   * modules/
-   *   ├── app/
-   *   ├── framework/
-   *   ├── kernel/
-   *   └── hardware/
+   * Load one Skill file (listSkillFiles): a Skill or module expert Skill is
+   * normalized; a pipeline file is registered only as a pipeline definition.
    */
-  private async loadModuleSkillsRecursively(dir: string, root?: SkillRootDescriptor): Promise<void> {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-
-      if (entry.isDirectory()) {
-        await this.loadModuleSkillsRecursively(fullPath, root);
-      } else if (entry.name.endsWith('.skill.yaml') || entry.name.endsWith('.skill.yml')) {
-        try {
-          const content = fs.readFileSync(fullPath, 'utf-8');
-          const loaded = loadSkillYaml(content) as any;
-          const skill = normalizeSkillDefinition(loaded, fullPath);
-
-          if (skill && skill.name) {
-            this.registerLoadedSkill(skill, fullPath, root);
-            if (skill.module) {
-              logger.debug('SkillLoader', `Loaded module skill: ${skill.name} (${skill.module.layer}/${skill.module.component})`);
-            } else {
-              logger.debug('SkillLoader', `Loaded skill: ${skill.name} (${skill.type})`);
-            }
-          }
-        } catch (error: any) {
-          if (root?.origin === 'external_pack') {
-            throw packLoadError(entry.name, error);
-          }
-          logger.error('SkillLoader', `Failed to load ${fullPath}:`, error.message);
-        }
-      }
-    }
-  }
-
-  /**
-   * 加载 pipeline skills
-   * Pipeline skills are a special type that define rendering pipeline configurations
-   */
-  private async loadPipelineSkills(dir: string, root?: SkillRootDescriptor): Promise<void> {
-    const files = fs.readdirSync(dir);
-
-    for (const file of files) {
-      // Skip non-skill files and template files
-      if (!file.endsWith('.skill.yaml') && !file.endsWith('.skill.yml')) continue;
-      if (file.startsWith('_')) continue;
-
-      const filePath = path.join(dir, file);
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
+  private async loadSkillFile(file: SkillFile, root?: SkillRootDescriptor): Promise<void> {
+    const name = path.basename(file.path);
+    try {
+      const content = fs.readFileSync(file.path, 'utf-8');
+      if (file.kind === 'pipeline') {
         const skill = loadSkillYaml(content) as SkillDefinition;
-
         if (skill && skill.name && skill.type === 'pipeline_definition') {
-          this.registerLoadedSkill(skill, filePath, root);
+          this.registerLoadedSkill(skill, file.path, root);
           logger.debug('SkillLoader', `Loaded pipeline skill: ${skill.name}`);
         }
-      } catch (error: any) {
-        if (root?.origin === 'external_pack') {
-          throw packLoadError(file, error);
-        }
-        logger.error('SkillLoader', `Failed to load pipeline ${file}:`, error.message);
+        return;
       }
+      const skill = normalizeSkillDefinition(loadSkillYaml(content) as any, file.path);
+      if (skill && skill.name) {
+        this.registerLoadedSkill(skill, file.path, root);
+        logger.debug('SkillLoader', skill.module
+          ? `Loaded module skill: ${skill.name} (${skill.module.layer}/${skill.module.component})`
+          : `Loaded skill: ${skill.name} (${skill.type})`);
+      }
+    } catch (error: any) {
+      if (root?.origin === 'external_pack') {
+        throw packLoadError(name, error);
+      }
+      logger.error('SkillLoader', `Failed to load ${file.kind === 'pipeline' ? 'pipeline ' : ''}${file.kind === 'module' ? file.path : name}:`, error.message);
     }
   }
 
@@ -830,36 +771,6 @@ export class SkillRegistry {
       'SkillLoader',
       `${issue.kind} vendor override ${issue.sourcePath}: ${issue.message}`,
     );
-  }
-
-  /**
-   * 从目录加载 skills
-   */
-  private async loadSkillsFromDir(dir: string, root?: SkillRootDescriptor): Promise<void> {
-    const files = fs.readdirSync(dir);
-
-    for (const file of files) {
-      if (!file.endsWith('.skill.yaml') && !file.endsWith('.skill.yml')) {
-        continue;
-      }
-
-      const filePath = path.join(dir, file);
-      try {
-        const content = fs.readFileSync(filePath, 'utf-8');
-        const loaded = loadSkillYaml(content) as any;
-        const skill = normalizeSkillDefinition(loaded, filePath);
-
-        if (skill && skill.name) {
-          this.registerLoadedSkill(skill, filePath, root);
-          logger.debug('SkillLoader', `Loaded skill: ${skill.name} (${skill.type})`);
-        }
-      } catch (error: any) {
-        if (root?.origin === 'external_pack') {
-          throw packLoadError(file, error);
-        }
-        logger.error('SkillLoader', `Failed to load ${file}:`, error.message);
-      }
-    }
   }
 
   /**

@@ -574,6 +574,16 @@ export function templateRootReads(template: string): RootReads {
 }
 
 /**
+ * The SQL boolean words (`AND`, `OR`, any case) a Skill condition writes as
+ * code. A condition is JavaScript: such a word does not compile, the
+ * condition evaluates to false and its step is silently skipped. Words in
+ * string literals and property names are not code ({@link rootReads}).
+ */
+export function sqlBooleanWords(expr: string): string[] {
+  return [...new Set(rootReads(expr).reads.map(read => read.name).filter(name => /^(?:and|or)$/i.test(name)))];
+}
+
+/**
  * Root names a Skill condition reads ({@link rootReads}), each once, in the
  * order first written: for load-time validation, and for the inputs a fired
  * diagnostic rule cites as evidence.

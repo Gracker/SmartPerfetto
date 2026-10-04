@@ -2,7 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { DisplayConfig, SkillDefinition, SkillStep } from './types';
+import type { DisplayConfig, SkillDefinition } from './types';
+import { stepNodesOf } from './skillSteps';
 import {
   VALID_CLICK_ACTIONS,
   VALID_COLUMN_FORMATS,
@@ -281,6 +282,7 @@ function validateDisplayConfig(
   }
 }
 
+/** One step's own display and synthesize labels; validateSkillDisplayContract walks the steps. */
 function validateStepDisplay(
   issues: DisplayContractIssue[],
   skillName: string,
@@ -297,28 +299,6 @@ function validateStepDisplay(
   if (synthesize && typeof synthesize === 'object' && Array.isArray(synthesize.fields)) {
     synthesize.fields.forEach((field, index) => validateLabelTranslations(issues, skillName,
       (field as {label_i18n?: unknown} | null)?.label_i18n, `${path}.synthesize.fields[${index}]`, options, stepId));
-  }
-
-  if (Array.isArray(stepObj.steps)) {
-    stepObj.steps.forEach((nestedStep, index) => {
-      validateStepDisplay(issues, skillName, nestedStep, `${path}.steps[${index}]`, options);
-    });
-  }
-
-  if (stepObj.then) {
-    validateStepDisplay(issues, skillName, stepObj.then, `${path}.then`, options);
-  }
-
-  if (Array.isArray(stepObj.conditions)) {
-    stepObj.conditions.forEach((condition, index) => {
-      if (!condition || typeof condition !== 'object') return;
-      const thenStep = (condition as Record<string, unknown>).then;
-      validateStepDisplay(issues, skillName, thenStep, `${path}.conditions[${index}].then`, options);
-    });
-  }
-
-  if (stepObj.else) {
-    validateStepDisplay(issues, skillName, stepObj.else, `${path}.else`, options);
   }
 }
 
@@ -348,10 +328,8 @@ export function validateSkillDisplayContract(
     }
   }
 
-  if (Array.isArray((skill as any).steps)) {
-    (skill as any).steps.forEach((step: SkillStep, index: number) => {
-      validateStepDisplay(issues, skillName, step, `steps[${index}]`, options);
-    });
+  for (const {node, at} of stepNodesOf(skill)) {
+    validateStepDisplay(issues, skillName, node, at, options);
   }
 
   return issues;
