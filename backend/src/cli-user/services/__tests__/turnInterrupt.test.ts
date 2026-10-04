@@ -18,7 +18,7 @@ describe('TurnInterruptController', () => {
   it('after a printed answer: review-only, then full abort, then exit 130', () => {
     const {source, exit, notices, value} = controller();
     try {
-      value.markProvisionalDelivered();
+      value.markProvisionalDelivered('Answer.');
       source.interrupt();
       expect(value.reviewStopSignal.aborted).toBe(true);
       expect(value.signal.aborted).toBe(false);
@@ -38,7 +38,7 @@ describe('TurnInterruptController', () => {
       expect(value.signal.aborted).toBe(true);
       expect(value.interrupted).toBe(true);
       // A delivery that races the abort cannot turn the next press into a review stop.
-      value.markProvisionalDelivered();
+      value.markProvisionalDelivered('Answer.');
       source.interrupt();
       expect(exit).toHaveBeenCalledWith(130);
     } finally {value.dispose();}
@@ -66,7 +66,7 @@ describe('TurnInterruptController', () => {
   it('escalates a review-only stop to the full abort when the commit outlives the watchdog', async () => {
     const {source, notices, value} = controller({watchdogMs: 5});
     try {
-      value.markProvisionalDelivered();
+      value.markProvisionalDelivered('Answer.');
       source.interrupt();
       await new Promise(resolve => setTimeout(resolve, 30));
       expect(value.signal.aborted).toBe(true);
@@ -76,7 +76,7 @@ describe('TurnInterruptController', () => {
 
   it('a committed turn releases Ctrl-C and is never aborted by a pending review watchdog', async () => {
     const {source, exit, value} = controller({watchdogMs: 5, graceMs: 5});
-    value.markProvisionalDelivered();
+    value.markProvisionalDelivered('Answer.');
     source.interrupt();
     value.markCommitted();
     await new Promise(resolve => setTimeout(resolve, 30));
