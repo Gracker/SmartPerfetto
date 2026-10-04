@@ -1700,6 +1700,15 @@ strategies:
   backend/strategies/prompt-analyze-wait-chain-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto analyze_wait_chain MCP tool contract
+  backend/strategies/prompt-artifact-sql-misuse-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto execute_sql refusal of artifact pseudo-tables (English)
+  backend/strategies/prompt-artifact-sql-misuse-hint.template.md:
+    disposition: product-only
+    reason: SmartPerfetto execute_sql hint toward fetch_artifact for artifact references
+  backend/strategies/prompt-artifact-sql-misuse-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto execute_sql refusal of artifact pseudo-tables (Chinese)
   backend/strategies/prompt-critical-path-summary-zh.template.md:
     disposition: product-only
     reason: SmartPerfetto critical-path route one-shot summary over its engine payload
@@ -1718,12 +1727,21 @@ strategies:
   backend/strategies/prompt-investigation-findings.template.md:
     disposition: product-only
     reason: SmartPerfetto typed-turn finding presentation and runtime strategy discovery
+  backend/strategies/prompt-reasoning-nudge-en.template.md:
+    disposition: product-only
+    reason: SmartPerfetto MCP data-tool result reasoning reminder (English)
+  backend/strategies/prompt-reasoning-nudge-zh.template.md:
+    disposition: product-only
+    reason: SmartPerfetto MCP data-tool result reasoning reminder (Chinese)
   backend/strategies/prompt-invoke-skill-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP artifact projection and exact process handoff guidance
   backend/strategies/prompt-strategy-detail-tool-description.template.md:
     disposition: product-only
     reason: SmartPerfetto MCP strategy catalog and detail tool description
+  backend/strategies/prompt-submit-plan-tool-description.template.md:
+    disposition: product-only
+    reason: SmartPerfetto submit_plan MCP tool description
   backend/strategies/prompt-source-recipe-locate.template.md:
     disposition: product-only
     reason: SmartPerfetto locate-depth source recipe for its codebase-aware tools
