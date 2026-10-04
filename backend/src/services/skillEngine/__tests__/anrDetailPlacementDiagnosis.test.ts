@@ -8,7 +8,7 @@ import yaml from 'js-yaml';
 import {describe, expect, it} from '@jest/globals';
 import type {DiagnosticResult} from '../types';
 import {diagnoseRuleStep, stepOf, type Rows} from '../../../../tests/helpers/skillRuleHarness';
-import {namesThermalCause} from '../../../../tests/helpers/skillWording';
+import {namesThermalCause} from '../causeWording';
 
 /**
  * anr_detail's main-thread placement rule reports where the main thread ran,

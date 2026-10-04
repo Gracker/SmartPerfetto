@@ -10,7 +10,6 @@
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import fs from 'fs';
-import path from 'path';
 import {randomUUID} from 'crypto';
 import {TraceProcessorFactory, WorkingTraceProcessor} from '../../workingTraceProcessor';
 import {resolveTraceCase} from '../../../../tests/helpers/traceCorpus';
@@ -37,20 +36,20 @@ const CANONICAL = [
   {selector: 'flutter-scroll-texture-view', vendor: 'other', brand: 'nubia', soc: 'qualcomm', source: 'metadata_fingerprint'},
 ] as const;
 
-// Device traces kept outside this repository (a sibling TraceDemo checkout).
-// Optional: each case skips when its file is absent and is never acceptance.
-const TRACE_DEMO_ROOT = process.env.SMARTPERFETTO_TRACEDEMO_DIR
-  ?? path.resolve(__dirname, '../../../../../../TraceDemo');
-const EXTERNAL = [
-  {label: 'pixel6pro-api37', file: 'traces/device/pixel6pro-api37/device_startup_cold.perfetto-trace',
-    vendor: 'pixel', soc: 'google_tensor'},
-  {label: 'Honor 300 Pro (Android 16)', file: 'traces/imported/hpc-scroll-runs/Honor-300-Pro/trace/AMP-AN00-AY8CUT4B27009707-scrolling-webview-surface-minimal-20260215-180327.ptrace',
-    vendor: 'honor', soc: 'qualcomm'},
-  {label: 'OUKITEL WP62', file: 'traces/imported/hpc-scroll-runs/DUT-WP62-02131232314454-20260419-224755/trace/WP62-02131232314454-scrolling-aosp-softwarerender-heavy-20260419-230120.ptrace',
-    vendor: 'other', brand: 'oukitel', soc: 'mtk'},
-  {label: 'vivo X300 Pro', file: 'traces/imported/hpc-scroll-runs/VivoX300Pro/trace/V2502A-10AF6X0J18000LU-scrolling-webview-minimal-20260213-220202.ptrace',
-    vendor: 'vivo', soc: 'mtk'},
-];
+// Constructed cases that replay only the SystemInfo identity of four device
+// captures kept outside the repository, over a real base of a different
+// vendor and SoC, so a pass proves the replayed identity was read; the
+// evidence repeats the replayed values the resolver must report.
+const DEVICE_IDENTITY = [
+  {selector: 'device-identity-pixel-6-pro', vendor: 'pixel', soc: 'google_tensor', source: 'metadata_manufacturer',
+    evidence: {manufacturer: 'Google', fingerprintBrand: 'google', socModel: 'Tensor', sdk: 37}},
+  {selector: 'device-identity-honor-300-pro', vendor: 'honor', soc: 'qualcomm', source: 'metadata_manufacturer',
+    evidence: {manufacturer: 'HONOR', fingerprintBrand: 'HONOR', socModel: 'SM8650', sdk: 36}},
+  {selector: 'device-identity-oukitel-wp62', vendor: 'other', brand: 'oukitel', soc: 'mtk',
+    source: 'metadata_fingerprint', evidence: {fingerprintBrand: 'OUKITEL', socModel: 'MT6855', sdk: 35}},
+  {selector: 'device-identity-vivo-x300-pro', vendor: 'vivo', soc: 'mtk', source: 'metadata_manufacturer',
+    evidence: {manufacturer: 'vivo', fingerprintBrand: 'vivo', socModel: 'MT6993(ENG)', sdk: 36}},
+] as const;
 
 async function openTrace(tracePath: string): Promise<{service: TraceVendorQueryService; traceId: string;
   sql: string[]; errors: string[]; processor: WorkingTraceProcessor}> {
@@ -77,7 +76,7 @@ async function timed<T>(work: () => Promise<T>): Promise<{value: T; ms: number}>
 }
 
 describe('trace vendor resolution on the pinned trace processor', () => {
-  it.each(CANONICAL)('$selector -> $vendor / $soc', async expected => {
+  it.each([...CANONICAL, ...DEVICE_IDENTITY])('$selector -> $vendor / $soc', async expected => {
     const {service, traceId, sql, errors, processor} = await openTrace(resolveTraceCase(expected.selector));
     const cold = await timed(() => resolveTraceVendor(service, traceId));
     const cached = await timed(() => resolveTraceVendor(service, traceId));
@@ -95,23 +94,10 @@ describe('trace vendor resolution on the pinned trace processor', () => {
       expect(result.brand).toBe('brand' in expected ? expected.brand : undefined);
       expect(result.vendor).not.toBe('harmonyos');
       expect(result.evidence.scopeConflict).toBeUndefined();
+      if ('evidence' in expected) expect(result.evidence).toEqual(expected.evidence);
     }
     // One metadata query per uncached resolution; nothing reads slice.
     expect(sql).toEqual([TRACE_VENDOR_METADATA_SQL, TRACE_VENDOR_METADATA_SQL]);
     expect(sql.every(statement => !/\bslice\b/i.test(statement))).toBe(true);
   });
-});
-
-describe('trace vendor resolution on optional external device traces', () => {
-  for (const expected of EXTERNAL) {
-    const tracePath = path.join(TRACE_DEMO_ROOT, expected.file);
-    const test = fs.existsSync(tracePath) ? it : it.skip;
-    test(`${expected.label} -> ${expected.vendor} / ${expected.soc}`, async () => {
-      const {service, traceId, errors} = await openTrace(tracePath);
-      const result = await resolveTraceVendor(service, traceId);
-      expect(errors).toEqual([]);
-      expect(result).toMatchObject({vendor: expected.vendor, soc: expected.soc, os: 'android'});
-      expect(result.brand).toBe(expected.brand);
-    });
-  }
 });

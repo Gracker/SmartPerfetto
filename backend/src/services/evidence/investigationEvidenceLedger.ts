@@ -138,16 +138,27 @@ function validScanDeclaration(scan: InvestigationScanDeclaration): boolean {
     [scan.sourceColumn, scan.resultSourceColumn].every(value => value === undefined || nonempty(value)));
 }
 
+/**
+ * Why `value` is not an investigation_evidence declaration the executor
+ * admits (its shape, or conflicting field semantics), or undefined.
+ */
+export function investigationEvidenceDeclarationError(value: unknown): string | undefined {
+  if (!isInvestigationEvidenceDeclaration(value)) return 'Invalid investigation_evidence producer declaration';
+  try {
+    investigationCaptureFields(value, {kind: 'skill_literal', definitionFingerprint: 'declaration_validation'});
+  } catch (error) {
+    return (error as Error).message;
+  }
+  return undefined;
+}
+
 /** Validate nested Skill declarations before admitting a definition into the executor. */
 export function validateInvestigationEvidenceDeclarations(definition: object): void {
   const visit = (value: unknown): void => {
     if (!value || typeof value !== 'object') return;
     for (const [key, child] of Object.entries(value)) {
-      if (key === 'investigation_evidence' && !isInvestigationEvidenceDeclaration(child)) {
-        throw new Error('Invalid investigation_evidence producer declaration');
-      }
-      if (key === 'investigation_evidence') investigationCaptureFields(child as InvestigationEvidenceDeclaration,
-        {kind: 'skill_literal', definitionFingerprint: 'declaration_validation'});
+      const error = key === 'investigation_evidence' ? investigationEvidenceDeclarationError(child) : undefined;
+      if (error) throw new Error(error);
       visit(child);
     }
   };

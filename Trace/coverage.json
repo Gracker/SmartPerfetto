@@ -798,6 +798,10 @@
     "R3": [
       "app-background-power",
       "binder-io-blocking",
+      "device-identity-honor-300-pro",
+      "device-identity-oukitel-wp62",
+      "device-identity-pixel-6-pro",
+      "device-identity-vivo-x300-pro",
       "framework-pipelines",
       "general-runtime-contracts",
       "gpu-workload",
@@ -3372,7 +3376,7 @@
         "steps": [
           {
             "id": "root",
-            "sha256": "0d27fa3fcf54adb3658d089fe7c50a18f028ab36f4ba2efd6e4e97d51ef37792",
+            "sha256": "45dce4741b705146bdd76edfad4872744c52819f6cc5f4e1a6ae8db5124e427a",
             "required_columns": [
               "metric",
               "value",
@@ -5804,7 +5808,7 @@
           },
           {
             "id": "cooling_unavailable",
-            "sha256": "f0dd697e054d422b303666ef0732fd9a136a2bd7fa6fecf691c17352e51c9ddf",
+            "sha256": "cdaf4a2c7fbeedde53fa1a4b2cccffb759810cbe5c09a9a0db683eebaa983b78",
             "required_columns": [
               "cooling_evidence",
               "required_ftrace_event",
@@ -8145,7 +8149,7 @@
           },
           {
             "id": "non_cpu_heat_context",
-            "sha256": "7384ca0eb998051827282c8331f26c8f060a2abb92d16e7720703b12aea26cb3",
+            "sha256": "16c3b11aea942a3a677f87f98e2d808d98064a2deaa97cd52702bdfea287b261",
             "required_columns": [
               "source_kind",
               "source_key",

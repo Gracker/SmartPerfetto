@@ -40,6 +40,15 @@ export function builtInSkillFragment(file: string): string {
   return content;
 }
 
+/** The built-in text of a declared `fragments/<file>.sql` path, or undefined when there is none. */
+export function builtInFragmentText(fragmentPath: string): string | undefined {
+  try {
+    return builtInSkillFragment(fragmentPath.replace(/^fragments\//, ''));
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Put fragment CTE bodies (bare `name AS (...)`, no WITH) in front of `sql`:
  * after its own WITH (leading comments kept) or as a new WITH clause.

@@ -976,6 +976,35 @@ describe('M7 static gate saved-result path reads in changed Skills', () => {
     expect(offending.verdict).toBe('failed');
   });
 
+  it('charges an overlay with the cause wording it adds, and only warns about wording it did not write', async () => {
+    const wording = "SELECT '限频导致卡顿' AS note";
+    const legacyWording: SkillDefinition = {...target(wording), name: 'legacy_wording'};
+    const appended = async (stepSql: string) => {
+      const base = target();
+      const proposal = draftProposal({
+        kind: 'skill_overlay_delta', tier: 'T3',
+        deltas: [{
+          op: 'add', targetKind: 'skill_overlay', targetId: base.name, operationId: 'append-reader',
+          anchor: `skills[id="${base.name}"].overlays[operationId="append-reader"]`, baseContentHash, after: '{}',
+        }],
+      });
+      const overlay = canonicalJsonString({
+        schemaVersion: 1, overlayId: 'overlay_reader', baseSkillId: base.name,
+        baseFingerprint: fingerprintSkillDefinition(base), proposalId: proposal.proposalId,
+        createdAt: '2026-10-03T00:00:00.000Z', scope: proposal.scope,
+        operations: [{op: 'append_steps', operationId: 'append-reader',
+          steps: [{id: 'ovl_overlay_reader_read', type: 'atomic', sql: stepSql}]}],
+      });
+      return gate(proposal, overlay, [legacyWording, base]);
+    };
+    const clean = await appended('SELECT 1 AS s');
+    expect(clean.validatorCodes).toEqual([]);
+    expect(clean.warningCodes).toContain('cause_wording_without_evidence');
+    const offending = await appended(wording);
+    expect(offending.validatorCodes).toEqual(['cause_wording_without_evidence']);
+    expect(offending.verdict).toBe('failed');
+  });
+
   it('checks skill_sql candidate SQL in the step it replaces, under that step condition', async () => {
     const codes = async (sql: string, base = target()) =>
       (await gate(skillSqlProposal(), sql, [legacy, base])).validatorCodes;

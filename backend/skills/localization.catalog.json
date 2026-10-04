@@ -12567,7 +12567,7 @@
             },
             "downclocks": {
               "label": {
-                "zh-CN": "降频次数",
+                "zh-CN": "频率下调次数",
                 "en": "Downclocks"
               }
             }
@@ -13194,7 +13194,7 @@
         "no_limit_throttle_observation": {
           "title": {
             "zh-CN": "无限频数据时的频率观测",
-            "en": "No Limit Throttle Observation"
+            "en": "Frequency observation without limit data"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -13311,7 +13311,7 @@
         },
         "before_anomalies": {
           "title": {
-            "zh-CN": "限频前异常线程",
+            "zh-CN": "区段起点前异常线程",
             "en": "Before Anomalies"
           },
           "columns": {},
@@ -13319,7 +13319,7 @@
         },
         "before_workload": {
           "title": {
-            "zh-CN": "限频前负载归因",
+            "zh-CN": "区段起点前负载归因",
             "en": "Before Workload"
           },
           "columns": {},
@@ -13513,7 +13513,7 @@
         },
         "non_cpu_heat_context": {
           "title": {
-            "zh-CN": "限频前回溯窗口内的非 CPU 热源迹象（仅存在性观测）",
+            "zh-CN": "区段起点前回溯窗口内的非 CPU 热源迹象（仅存在性观测）",
             "en": "Non CPU Heat Context"
           },
           "columns": {
@@ -13584,7 +13584,7 @@
         },
         "temperature_context": {
           "title": {
-            "zh-CN": "限频前回溯窗口内的温度",
+            "zh-CN": "区段起点前回溯窗口内的温度",
             "en": "Temperature Context"
           },
           "columns": {
@@ -13764,7 +13764,7 @@
         },
         "who_daemon": {
           "title": {
-            "zh-CN": "限频前后的温控/性能策略守护进程活动（名字匹配，仅候选）",
+            "zh-CN": "区段起点前后的温控/性能策略守护进程活动（名字匹配，仅候选）",
             "en": "Who Daemon"
           },
           "columns": {
@@ -13830,19 +13830,19 @@
             },
             "ran_before_limit_ns": {
               "label": {
-                "zh-CN": "限频前运行",
+                "zh-CN": "区段起点前运行",
                 "en": "Ran Before Limit ns"
               }
             },
             "last_run_end_before_ts": {
               "label": {
-                "zh-CN": "限频前最后一次运行结束",
+                "zh-CN": "区段起点前最后一次运行结束",
                 "en": "Last Run End Before Ts"
               }
             },
             "lead_ns": {
               "label": {
-                "zh-CN": "距离限频时刻",
+                "zh-CN": "距区段起点",
                 "en": "Lead ns"
               }
             },
@@ -14260,7 +14260,7 @@
         "throttling_events": {
           "title": {
             "zh-CN": "频率变化事件",
-            "en": "Throttling Events"
+            "en": "Frequency Change Events"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -20305,7 +20305,7 @@
         "en": "GPU Power State Analysis"
       },
       "description": {
-        "zh-CN": "分析 GPU 频率状态切换，识别降频压力与抖动",
+        "zh-CN": "分析 GPU 频率状态切换，识别频率下调与抖动",
         "en": "Analyzes GPU Power State Analysis using trace metrics and supporting evidence."
       },
       "type": "atomic",
@@ -20356,7 +20356,7 @@
             },
             "downshift_count": {
               "label": {
-                "zh-CN": "降频次数",
+                "zh-CN": "频率下调次数",
                 "en": "Downshift Count"
               }
             },
@@ -20368,7 +20368,7 @@
             },
             "downshift_ratio_pct": {
               "label": {
-                "zh-CN": "降频占比",
+                "zh-CN": "频率下调占比",
                 "en": "Downshift Ratio Pct"
               }
             },
@@ -22409,7 +22409,7 @@
         },
         "cpu_throttling": {
           "title": {
-            "zh-CN": "CPUThrottling",
+            "zh-CN": "CPU 限频证据",
             "en": "CPU Throttling"
           },
           "columns": {},
@@ -44240,7 +44240,7 @@
         "throttling_events": {
           "title": {
             "zh-CN": "频率骤降事件（原因待查）",
-            "en": "Throttling Events"
+            "en": "Frequency Drop Events (cause not determined)"
           },
           "columns": {},
           "synthesizeLabels": {}
@@ -44254,7 +44254,7 @@
       },
       "description": {
         "zh-CN": "CPU 频率趋势观察；未提供温度或限频证据时不预测热机制",
-        "en": "Observes the CPU frequency trend; without temperature or frequency-limit evidence it predicts no thermal mechanism"
+        "en": "Observes the CPU frequency trend; it reads no temperature or frequency-limit evidence and names no cause"
       },
       "type": "atomic",
       "steps": {
@@ -44293,7 +44293,7 @@
             "throttled_core_ratio_pct": {
               "label": {
                 "zh-CN": "频率变化核心占比",
-                "en": "Throttled Core Ratio Pct"
+                "en": "Frequency-drop core ratio (%)"
               }
             },
             "frequency_trend_risk": {
@@ -44305,7 +44305,7 @@
             "thermal_risk": {
               "label": {
                 "zh-CN": "热原因证据",
-                "en": "Thermal Risk"
+                "en": "Heat-cause evidence"
               }
             },
             "prediction": {
@@ -44377,13 +44377,13 @@
             "throttle_ratio": {
               "label": {
                 "zh-CN": "观测频率跨度(%)",
-                "en": "Throttle Ratio"
+                "en": "Observed frequency span (%)"
               }
             },
             "throttling_status": {
               "label": {
                 "zh-CN": "状态",
-                "en": "Throttling Status"
+                "en": "Status"
               }
             }
           },
@@ -44402,7 +44402,7 @@
             },
             "field:throttle_ratio": {
               "zh-CN": "观测频率跨度",
-              "en": "Throttle Ratio"
+              "en": "Observed frequency span"
             }
           }
         },
@@ -44956,7 +44956,7 @@
             "throttled_core_ratio_pct": {
               "label": {
                 "zh-CN": "频率变化核心占比",
-                "en": "Throttled Core Ratio Pct"
+                "en": "Frequency-drop core ratio (%)"
               }
             },
             "frequency_trend_risk": {
@@ -44968,7 +44968,7 @@
             "thermal_risk": {
               "label": {
                 "zh-CN": "热原因证据",
-                "en": "Thermal Risk"
+                "en": "Heat-cause evidence"
               }
             },
             "prediction": {

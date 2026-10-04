@@ -119,6 +119,7 @@ steps:
       level: detail
       layer: list
       title: "频率变化事件"
+      title_i18n: {en: "Frequency Change Events"}
     save_as: throttle_events
 
   # Step 3: CPU utilization by cluster

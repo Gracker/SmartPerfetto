@@ -41,6 +41,8 @@ import {
   summarizeSqlGuardrailIssues,
 } from '../../services/sqlGuardrailAnalyzer';
 import { skillUsesProcessNameFilter } from '../../services/processIdentity/identityGate';
+import { EXACT_UPID_TOKEN, executableSqlUnits, sqlRunBy, type ExecutableSqlUnit } from '../../services/skillEngine/processScopeSql';
+import { stepNodesOf } from '../../services/skillEngine/skillSteps';
 import {
   analyzeSqlStdlibDependencySequence,
   moduleCoveredByStdlibDeclaration,
@@ -202,17 +204,20 @@ function validateTierAndStdlib(skill: SkillDefinition): { errors: string[]; warn
   // ---- Rule 2: stdlib-detected-vs-declared ----
   // Reuses the same dependency analyzer as raw execute_sql auto-INCLUDE, so
   // validation covers stdlib tables, functions, and macro invocations.
-  const allSql: string[] = [];
-  if (typeof (skill as any).sql === 'string') allSql.push((skill as any).sql);
-  if (Array.isArray(skill.steps)) {
-    for (const step of skill.steps) {
-      if (typeof (step as any).sql === 'string') allSql.push((step as any).sql);
-    }
-  }
+  // Each run is its own sequence: the SQL every unit runs, named or exact (executableSqlUnits);
+  // what a unit that may not run defines reaches no unit after it.
+  const units = executableSqlUnits(skill);
+  const named = units.filter(unit => unit.variant === 'named');
+  const variants = units.some(unit => unit.variant === 'exact') ? ['named', 'exact'] as const : ['named'] as const;
+  const runs = variants.map(variant => named.flatMap(unit => {
+    const sql = sqlRunBy(unit.source, variant)?.sql;
+    return typeof sql === 'string' ? [{sql, reaches: !unit.guarded}] : [];
+  }));
 
-  if (allSql.length > 0) {
+  if (named.length > 0) {
     const reported = new Set<string>();
-    for (const analysis of analyzeSqlStdlibDependencySequence(allSql)) {
+    for (const analysis of runs.flatMap(run => analyzeSqlStdlibDependencySequence(
+      run.map(unit => unit.sql), {reaches: run.map(unit => unit.reaches)}))) {
       if (analysis.source === 'empty') continue;
 
       for (const dependency of analysis.dependencies) {
@@ -456,31 +461,9 @@ function validateSkillDefinition(skill: SkillDefinition, filePath: string): Vali
         return 'unknown';
       })();
 
-      // SQL validation for atomic steps
-      if (stepType === 'atomic') {
-        const sql = (step as any).sql;
-        if (!sql || typeof sql !== 'string') {
-          errors.push(`${stepPath}: Missing required field: sql for atomic step`);
-        } else {
-          // Validate SQL syntax (basic checks)
-          const sqlIssues = validateSql(sql);
-          errors.push(...sqlIssues.errors.map(e => `${stepPath}: ${e}`));
-          warnings.push(...sqlIssues.warnings.map(w => `${stepPath}: ${w}`));
-
-          // Validate variable references
-          const varRefs = extractVariableReferences(sql);
-          for (const ref of varRefs) {
-            const actualRef = String(ref || '').split('|')[0].trim();
-            if (actualRef.startsWith('prev.') || actualRef.startsWith('item.')) {
-              // These are valid context references
-              continue;
-            }
-            const root = actualRef.split('.')[0];
-            if (!savedVariables.has(root)) {
-              warnings.push(`${stepPath}: Variable reference '${ref}' may not be defined at this step`);
-            }
-          }
-        }
+      // An atomic step's SQL is checked with every other SQL unit below.
+      if (stepType === 'atomic' && typeof (step as any).sql !== 'string') {
+        errors.push(`${stepPath}: Missing required field: sql for atomic step`);
       }
 
       // Track saved variables
@@ -499,30 +482,36 @@ function validateSkillDefinition(skill: SkillDefinition, filePath: string): Vali
     }
   }
 
-  // Validate root-level SQL for atomic skills (legacy form)
-  if (skill.type === 'atomic' && typeof (skill as any).sql === 'string') {
-    const sql = String((skill as any).sql);
-    const sqlIssues = validateSql(sql);
-    errors.push(...sqlIssues.errors.map(e => `sql: ${e}`));
-    warnings.push(...sqlIssues.warnings.map(w => `sql: ${w}`));
-
-    const defined = new Set<string>(['start_ts', 'end_ts', 'package', 'vendor']);
-    if (Array.isArray(skill.inputs)) {
-      for (const input of skill.inputs) {
-        if (input && typeof (input as any).name === 'string') {
-          defined.add(String((input as any).name));
+  // Every SQL the executor runs, named and exact (executableSqlUnits). A variable
+  // reads as defined once an input or an earlier top-level step saves it; the
+  // trusted UPID binding belongs to the process-scope checks.
+  const definedVariables = new Set<string>(['start_ts', 'end_ts', 'package', 'vendor']);
+  for (const input of Array.isArray(skill.inputs) ? skill.inputs : []) {
+    if (input && typeof (input as any).name === 'string') definedVariables.add(String((input as any).name));
+  }
+  const unitsOf = new Map<unknown, ExecutableSqlUnit[]>();
+  for (const unit of executableSqlUnits(skill)) unitsOf.set(unit.node, [...(unitsOf.get(unit.node) ?? []), unit]);
+  const checkSql = (node: unknown) => {
+    for (const unit of unitsOf.get(node) ?? []) {
+      if (typeof unit.source.sql !== 'string') continue;
+      const label = unit.sqlAt.replace(/\.sql$/, '');
+      const sqlIssues = validateSql(unit.source.sql);
+      errors.push(...sqlIssues.errors.map(e => `${label}: ${e}`));
+      warnings.push(...sqlIssues.warnings.map(w => `${label}: ${w}`));
+      for (const ref of extractVariableReferences(unit.source.sql)) {
+        const actualRef = String(ref || '').split('|')[0].trim();
+        // prev.* and item.* are context references.
+        if (actualRef.startsWith('prev.') || actualRef.startsWith('item.') || `\${${ref}}` === EXACT_UPID_TOKEN) continue;
+        if (!definedVariables.has(actualRef.split('.')[0])) {
+          warnings.push(`${label}: Variable reference '${ref}' may not be defined at this step`);
         }
       }
     }
-    const varRefs = extractVariableReferences(sql);
-    for (const ref of varRefs) {
-      const actualRef = String(ref || '').split('|')[0].trim();
-      if (actualRef.startsWith('prev.') || actualRef.startsWith('item.')) continue;
-      const root = actualRef.split('.')[0];
-      if (!defined.has(root)) {
-        warnings.push(`sql: Variable reference '${ref}' may not be defined (inputs/save_as)`);
-      }
-    }
+  };
+  checkSql(skill);
+  for (const step of Array.isArray(skill.steps) ? skill.steps as any[] : []) {
+    for (const node of [step, ...stepNodesOf(step).map(nested => nested.node)]) checkSql(node);
+    if (step && typeof step.save_as === 'string' && step.save_as) definedVariables.add(step.save_as);
   }
 
   // Validate diagnostic rules (in diagnostic steps, not skill-level)
@@ -764,7 +753,6 @@ export function validateContracts(skill: SkillDefinition): { errors: string[]; w
   // intentionally use the same pure validator; no npm/child-process boundary.
   for (const validationIssue of validateSkillDefinitionInProcess(skill, {
     fragmentCache: loadSkillFragmentCache(),
-    includeStructuralChecks: false,
     definitions: loadSkillDefinitionsById(),
   })) {
     const formatted = `${validationIssue.path}: ${validationIssue.message}`;

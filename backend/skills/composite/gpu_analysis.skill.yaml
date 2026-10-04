@@ -64,7 +64,7 @@ inputs:
     type: number
     required: false
     default: 20
-    description: "频率突降次数阈值（超过该值判定为限频）"
+    description: "频率突降次数阈值（超过该值标记为频率频繁突降；不判定限频）"
   - name: high_load_min_dur_ns
     type: number
     required: false

@@ -43,6 +43,7 @@ import {
 import {buildSkillRegistryAttribution} from './skillFingerprint';
 import {currentRunManifestAttributionSink} from './runManifestLifecycle';
 import {
+  PREDATING_RULE_CODES,
   validateSkillDefinitionsInProcess,
   validateStrategyDefinitionsInProcess,
 } from './inProcessValidator';
@@ -623,11 +624,11 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
       definitions: composition.skills,
       affectedSkillIds,
       fragmentCache: baseHandle.registry.getFragmentCache(),
-      // Published overlays may predate the rule; the proposal gate rejects it in the Skill a proposal changes.
-      resultPathReadSeverity: 'warning',
+      // Published overlays may predate these rules; the proposal gate rejects them in the Skill a proposal changes.
+      predatingRuleSeverity: 'warning',
     });
     for (const warning of validation.issues) {
-      if (warning.severity !== 'warning' || warning.code !== 'result_path_read_undecided') continue;
+      if (warning.severity !== 'warning' || !PREDATING_RULE_CODES.has(warning.code)) continue;
       const line =
         `[SelfEvolution] effective_skill_validation_warning:${warning.skillId}:`
         + `${warning.code}:${warning.path}: ${warning.message}`;

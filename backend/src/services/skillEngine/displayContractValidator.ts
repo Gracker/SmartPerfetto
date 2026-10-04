@@ -57,6 +57,20 @@ function pushIssue(
   });
 }
 
+/** A label's `label_i18n`, when present, maps en or zh-CN to non-empty strings. */
+function validateLabelTranslations(
+  issues: DisplayContractIssue[],
+  skillName: string,
+  translations: unknown,
+  path: string,
+  options: ValidateDisplayContractOptions,
+  stepId: string | undefined,
+): void {
+  if (translations === undefined || isDisplayTitleTranslations(translations)) return;
+  pushIssue(issues, skillName, `${path}.label_i18n`, `${path}.label_i18n`,
+    'label_i18n must map en or zh-CN to non-empty strings', translations, options, stepId);
+}
+
 function validateColumnDefinition(
   issues: DisplayContractIssue[],
   skillName: string,
@@ -78,6 +92,7 @@ function validateColumnDefinition(
   }
 
   const col = column as Record<string, unknown>;
+  validateLabelTranslations(issues, skillName, col.label_i18n, path, options, stepId);
   if (!col.name || typeof col.name !== 'string') {
     pushIssue(
       issues,
@@ -278,6 +293,11 @@ function validateStepDisplay(
   const stepObj = step as Record<string, unknown>;
   const stepId = typeof stepObj.id === 'string' ? stepObj.id : undefined;
   validateDisplayConfig(issues, skillName, stepObj.display, `${path}.display`, options, stepId);
+  const synthesize = stepObj.synthesize as {fields?: unknown} | undefined;
+  if (synthesize && typeof synthesize === 'object' && Array.isArray(synthesize.fields)) {
+    synthesize.fields.forEach((field, index) => validateLabelTranslations(issues, skillName,
+      (field as {label_i18n?: unknown} | null)?.label_i18n, `${path}.synthesize.fields[${index}]`, options, stepId));
+  }
 
   if (Array.isArray(stepObj.steps)) {
     stepObj.steps.forEach((nestedStep, index) => {
@@ -451,6 +471,7 @@ export function sanitizeDisplayConfigForRuntime(
         }
 
         const cleanColumn: Record<string, unknown> = { ...rawColumn };
+        delete cleanColumn.label_i18n; // Authoring metadata belongs to the localization catalog.
         if (cleanColumn.type && !VALID_COLUMN_TYPES.includes(cleanColumn.type as any)) {
           pushIssue(
             issues,

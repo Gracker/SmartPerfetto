@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "clock": {
+    "anchor": "trace-start",
+    "duration_ns": "10000000"
+  },
+  "actors": {
+    "processes": [
+      {
+        "id": "app",
+        "name": "com.smartperfetto.fixture",
+        "uid": 10999
+      }
+    ],
+    "threads": [
+      {
+        "id": "main",
+        "process": "app",
+        "name": "main",
+        "is_main": true
+      }
+    ]
+  },
+  "signals": [
+    {
+      "type": "atrace-slice",
+      "at_ns": "0",
+      "duration_ns": "1000000",
+      "process": "app",
+      "thread": "main",
+      "name": "SmartPerfetto::CASE::device-identity-vivo-x300-pro"
+    },
+    {
+      "type": "android-system-info",
+      "at_ns": "0",
+      "android_build_fingerprint": "vivo/PD2502/PD2502:16/BP2A.250605.031.A3_V000L1/compiler251016035215:user/release-keys",
+      "android_device_manufacturer": "vivo",
+      "android_soc_model": "MT6993(ENG)",
+      "android_sdk_version": 36
+    }
+  ]
+}

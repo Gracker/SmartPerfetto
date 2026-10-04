@@ -7,42 +7,7 @@ import path from 'path';
 import type {OutputLanguage} from '../agentv3/outputLanguage';
 import type {SkillDefinition} from './skillEngine/types';
 import {humanizeSkillIdentifier} from './skillLocalizationLabels';
-
-interface LocalizedText {
-  'zh-CN': string;
-  en: string;
-}
-
-interface CatalogColumn {
-  label: LocalizedText;
-  tooltip?: LocalizedText;
-}
-
-interface CatalogStep {
-  title: LocalizedText;
-  description?: LocalizedText;
-  columns: Record<string, CatalogColumn>;
-  synthesizeLabels: Record<string, LocalizedText>;
-}
-
-interface CatalogSkill {
-  displayName: LocalizedText;
-  description: LocalizedText;
-  type: string;
-  steps: Record<string, CatalogStep>;
-}
-
-interface SkillLocalizationCatalog {
-  schemaVersion: 1;
-  inventory: {
-    skillCount: number;
-    pipelineDefinitionCount: number;
-    moduleExpertCount: number;
-    stepCount: number;
-    explicitColumnCount: number;
-  };
-  skills: Record<string, CatalogSkill>;
-}
+import type {CatalogSkill, CatalogStep, LocalizedText, SkillLocalizationCatalog} from './skillLocalizationCatalog';
 
 export interface LocalizableSkillListItem {
   id: string;
@@ -202,8 +167,9 @@ function localizeColumnDefinitions(
     const name = typeof typed.name === 'string' ? typed.name : '';
     if (!name) return column;
     const catalogColumn = step.columns[name];
+    const {label_i18n: _labelTranslations, ...authored} = typed;
     return {
-      ...typed,
+      ...authored,
       label: catalogColumn?.label[outputLanguage] ||
         localizedSchemaLabel(name, outputLanguage),
       ...(catalogColumn?.tooltip

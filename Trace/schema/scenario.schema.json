@@ -65,7 +65,8 @@
               "cpu-frequency-limits", "thermal-temperature", "cdev-update",
               "irq-span", "frame-timeline", "lmk-kill", "managed-heap-graph",
               "gpu-compute-kernel", "anr-event", "perf-sample", "android-log",
-              "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change"
+              "statsd-atom", "battery-stats-span", "android-process-state-snapshot", "android-process-state-change",
+              "android-system-info"
             ]
           },
           "at_ns": {"type": "string", "pattern": "^[0-9]+$"},
@@ -226,6 +227,10 @@
               }
             }
           },
+          "android_build_fingerprint": {"type": "string", "minLength": 1, "description": "android-system-info: SystemInfo.android_build_fingerprint."},
+          "android_device_manufacturer": {"type": "string", "minLength": 1, "description": "android-system-info: SystemInfo.android_device_manufacturer."},
+          "android_soc_model": {"type": "string", "minLength": 1, "description": "android-system-info: SystemInfo.android_soc_model."},
+          "android_sdk_version": {"type": "integer", "minimum": 1, "description": "android-system-info: SystemInfo.android_sdk_version."},
           "context": {"type": "string", "pattern": "^[1-9][0-9]*$"},
           "kernel": {"type": "string", "minLength": 1},
           "demangled_kernel": {"type": "string", "minLength": 1},
@@ -282,6 +287,17 @@
           {
             "if": {"properties": {"type": {"const": "battery-stats-span"}}},
             "then": {"required": ["process", "thread", "duration_ns", "event", "owner_process", "tag"]}
+          },
+          {
+            "if": {"properties": {"type": {"const": "android-system-info"}}},
+            "then": {
+              "anyOf": [
+                {"required": ["android_build_fingerprint"]},
+                {"required": ["android_device_manufacturer"]},
+                {"required": ["android_soc_model"]},
+                {"required": ["android_sdk_version"]}
+              ]
+            }
           },
           {
             "if": {"properties": {"type": {"const": "android-process-state-snapshot"}}},

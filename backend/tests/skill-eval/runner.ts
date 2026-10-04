@@ -14,8 +14,10 @@ import { SkillExecutor, createSkillExecutor, LayeredResult } from '../../src/ser
 import { SkillDefinition, StepResult, SkillExecutionResult, SkillExecutionContext } from '../../src/services/skillEngine/types';
 import { validateSkillInputs } from '../../src/services/skillEngine/skillValidator';
 import { selectedStepResult } from '../../src/services/skillEngine/referencedSkillStep';
+import { resultScopeProvenance } from '../../src/services/skillEngine/scopeEvidence';
 import { normalizeSkillDefinition } from '../../src/services/skillEngine/skillLoader';
 import { assertEffectiveProcessScope } from '../../src/services/processIdentity/effectiveProcessScope';
+import type { EvidenceScopeProvenanceV1 } from '../../src/types/identityContract';
 import yaml from 'js-yaml';
 import fs from 'fs';
 import { resolveTraceCase } from '../helpers/traceCorpus';
@@ -31,6 +33,8 @@ export interface EvalStepResult {
   error?: string;
   code?: string;
   executionTimeMs: number;
+  /** The process scope the step's evidence was produced under, as the executor recorded it. */
+  scopeProvenance?: EvidenceScopeProvenanceV1;
 }
 
 export interface EvalSkillResult {
@@ -130,7 +134,7 @@ export class SkillEvaluator {
    */
   private async loadSkill(): Promise<void> {
     const skillsDir = path.join(process.cwd(), 'skills');
-    const skill = this.getSkillRegistry(skillsDir).get(this.skillId);
+    const skill = SkillEvaluator.getSkillRegistry(skillsDir).get(this.skillId);
     if (skill) {
       this.skill = skill;
       this.availablePrerequisiteModules = null;
@@ -140,13 +144,14 @@ export class SkillEvaluator {
     throw new Error(`Skill not found: ${this.skillId}`);
   }
 
-  private getSkillRegistry(skillsDir: string): Map<string, SkillDefinition> {
+  private static getSkillRegistry(skillsDir: string): Map<string, SkillDefinition> {
     if (SkillEvaluator.skillRegistry) return SkillEvaluator.skillRegistry;
+    // An empty registry would read as "no Skill has exact SQL"; fail closed instead.
+    if (!fs.existsSync(skillsDir)) throw new Error(`Skills directory not found: ${skillsDir}`);
     const registry = new Map<string, SkillDefinition>();
     const stack = [skillsDir];
     while (stack.length > 0) {
       const current = stack.pop()!;
-      if (!fs.existsSync(current)) continue;
       for (const entry of fs.readdirSync(current, {withFileTypes: true})) {
         const absolute = path.join(current, entry.name);
         if (entry.isDirectory()) {
@@ -169,6 +174,7 @@ export class SkillEvaluator {
         }
       }
     }
+    if (registry.size === 0) throw new Error(`No Skill definitions loaded from ${skillsDir}`);
     SkillEvaluator.skillRegistry = registry;
     return registry;
   }
@@ -276,7 +282,7 @@ export class SkillEvaluator {
    * 查找并加载 skill
    */
   private async findAndLoadSkill(skillName: string, skillsDir: string): Promise<SkillDefinition | null> {
-    return this.getSkillRegistry(skillsDir).get(skillName) ?? null;
+    return SkillEvaluator.getSkillRegistry(skillsDir).get(skillName) ?? null;
   }
 
   /**
@@ -400,6 +406,7 @@ export class SkillEvaluator {
         error: stepResult.error,
         code: stepResult.code,
         executionTimeMs: stepResult.executionTimeMs || 0,
+        scopeProvenance: resultScopeProvenance(stepResult),
       });
     }
 
@@ -437,6 +444,7 @@ export class SkillEvaluator {
       error: root.error,
       code: root.code,
       executionTimeMs: root.executionTimeMs || result.executionTimeMs || 0,
+      scopeProvenance: resultScopeProvenance(root),
     };
   }
 
@@ -695,6 +703,11 @@ export class SkillEvaluator {
     }
     this.executor = null;
     this.skill = null;
+  }
+
+  /** Every Skill the evaluator can select, normalized as the production loader does. */
+  static listSkillDefinitions(): SkillDefinition[] {
+    return [...SkillEvaluator.getSkillRegistry(path.join(process.cwd(), 'skills')).values()];
   }
 
   /**

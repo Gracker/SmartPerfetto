@@ -57,14 +57,15 @@ describe('validate --contracts diagnostic confidence', () => {
   const confidenceErrors = (confidence: unknown) =>
     validateContracts(withConfidence(confidence)).errors.filter(error => error.includes('confidence'));
 
-  it('accepts a literal level, a number, or no confidence', () => {
-    for (const confidence of ['high', 'medium', 'low', 0.8, undefined]) {
+  it('accepts a literal level or a number', () => {
+    for (const confidence of ['high', 'medium', 'low', 0.8]) {
       expect(confidenceErrors(confidence)).toEqual([]);
     }
   });
 
-  it('rejects a template, a severity word and a non-finite number', () => {
-    for (const confidence of ["${level === '高' ? 'high' : 'low'}", 'critical', Number.NaN]) {
+  // The executor would read a missing one as 0.5 without anyone having said so.
+  it('rejects a template, a severity word, a non-finite number and no confidence', () => {
+    for (const confidence of ["${level === '高' ? 'high' : 'low'}", 'critical', Number.NaN, undefined]) {
       expect(confidenceErrors(confidence)).toEqual([
         expect.stringContaining('steps[0].rules[0].confidence: Diagnostic rule confidence must be high, medium, low or a number'),
       ]);
@@ -90,6 +91,21 @@ describe('validate --contracts saved-result path reads', () => {
     expect(readErrors(reading("SELECT '${cov.data[0].status}' AS s", 'cov.data?.length > 0'))).toEqual([]);
     expect(readErrors(reading("SELECT '${cov.data[0].status}' AS s")))
       .toEqual([expect.stringContaining('steps[1].sql: ${cov.data[0].status} reads')]);
+  });
+});
+
+/** Heat or cap wording must have the evidence behind it, as validate:skills and Self-Evolution read it. */
+describe('validate --contracts cause wording', () => {
+  it('rejects a cap the Skill reads no limit evidence for, in the text the catalog shows', () => {
+    const probe = (label: string): SkillDefinition => ({
+      name: 'cause_wording_contract_probe', version: '1', type: 'atomic',
+      meta: {display_name: 'probe', description: 'probe'},
+      steps: [{id: 'drops', type: 'atomic', sql: 'SELECT 1 AS n', display: {columns: [{name: 'n', label}]}}] as any,
+    });
+    const wordingErrors = (skill: SkillDefinition) =>
+      validateContracts(skill).errors.filter(error => error.includes('as a cause'));
+    expect(wordingErrors(probe('频率下调次数'))).toEqual([]);
+    expect(wordingErrors(probe('降频次数'))).toEqual([expect.stringContaining('steps.drops.catalog.columns.n.label.zh-CN')]);
   });
 });
 

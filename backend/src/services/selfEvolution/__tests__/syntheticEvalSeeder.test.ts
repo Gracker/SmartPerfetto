@@ -73,7 +73,7 @@ describe('synthetic EvalCase seeder', () => {
     return registryPath;
   }
 
-  it('keeps the packed registry aligned with every constructed trace catalog entry', () => {
+  it('keeps the packed registry aligned with every constructed analysis case in the catalog', () => {
     const registry = loadSyntheticEvalSeedRegistry();
     const catalogPath = path.resolve(
       __dirname,
@@ -83,11 +83,14 @@ describe('synthetic EvalCase seeder', () => {
       cases: Array<{
         id: string;
         kind: string;
+        purpose?: string;
         scene: string;
         trace: {sha256: string};
       }>;
     };
-    const constructed = catalog.cases.filter(entry => entry.kind === 'constructed');
+    // One seed per constructed analysis case; only an explicit fixture is unseeded.
+    const constructed = catalog.cases.filter(entry =>
+      entry.kind === 'constructed' && entry.purpose !== 'fixture');
     expect(registry.seeds).toHaveLength(constructed.length);
     expect(registry.seeds.map(seed => seed.catalogAlias).sort())
       .toEqual(constructed.map(entry => entry.id).sort());

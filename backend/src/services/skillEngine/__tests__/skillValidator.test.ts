@@ -524,6 +524,18 @@ describe('validateSkillConditions', () => {
 // validateNormalizedStdlibReads
 // =============================================================================
 
+/**
+ * A fixture's root SQL as an atomic Skill, then its steps as a composite one:
+ * the executor runs one or the other (skillExecution), and so does every check.
+ */
+function asRun<T>(fixture: any, check: (skill: SkillDefinition) => T[]): T[] {
+  const {steps, ...root} = fixture;
+  return [
+    ...(root.sql !== undefined ? check({...root, type: 'atomic'} as SkillDefinition) : []),
+    ...(Array.isArray(steps) ? check({name: fixture.name, type: 'composite', steps} as SkillDefinition) : []),
+  ];
+}
+
 describe('validateNormalizedStdlibReads', () => {
   const owner = 'fragments/android_input_events_normalized.sql';
   const fragments = new Map([
@@ -533,7 +545,7 @@ describe('validateNormalizedStdlibReads', () => {
   ]);
 
   it('rejects raw FROM/JOIN reads in root, step, branch and exact SQL', () => {
-    const warnings = validateNormalizedStdlibReads({
+    const warnings = asRun({
       name: 'raw', sql: 'SELECT * FROM android_input_events',
       steps: [
         { id: 'joined', type: 'atomic', sql: 'SELECT 1 FROM frames f JOIN Android_Input_Events ie ON ie.upid = f.upid' },
@@ -541,25 +553,26 @@ describe('validateNormalizedStdlibReads', () => {
           id: 'nested', type: 'atomic', sql: 'SELECT 1', exact_sql: { sql: 'SELECT 1 FROM android_input_events', process_scope: { role: 'target' } },
         } }] },
       ],
-    } as unknown as SkillDefinition, fragments);
-    expect(warnings.map(warning => warning.stepId)).toEqual(['root', 'joined', 'branch.exact_sql']);
+    }, skill => validateNormalizedStdlibReads(skill, fragments));
+    // A branch's SQL is named by its own step (executableSqlUnits).
+    expect(warnings.map(warning => warning.stepId)).toEqual(['root', 'joined', 'nested.exact_sql']);
     expect(warnings[0].message).toContain(owner);
   });
 
   it('accepts the normalized relation, the owner fragment, comments, strings and existence probes', () => {
-    expect(validateNormalizedStdlibReads({
+    expect(asRun({
       name: 'ok', sql: `-- FROM android_input_events
         SELECT 'FROM android_input_events', (SELECT 1 FROM sqlite_master WHERE name = 'android_input_events')
         FROM android_input_events_normalized`,
       sql_fragments: [owner, 'fragments/good_reader.sql'],
       steps: [{ id: 'fallback', type: 'atomic', sql: 'CREATE VIEW IF NOT EXISTS android_input_events AS SELECT NULL AS event_action WHERE 0' }],
-    } as unknown as SkillDefinition, fragments)).toEqual([]);
+    }, skill => validateNormalizedStdlibReads(skill, fragments))).toEqual([]);
   });
 
   it('rejects a referenced fragment that bypasses the owner fragment', () => {
-    const warnings = validateNormalizedStdlibReads({
+    const warnings = asRun({
       name: 'frag', sql: 'SELECT * FROM raw_reader', sql_fragments: ['fragments/raw_reader.sql'],
-    } as SkillDefinition, fragments);
+    }, skill => validateNormalizedStdlibReads(skill, fragments));
     expect(warnings).toEqual([expect.objectContaining({ stepId: 'root', message: expect.stringContaining("Fragment 'fragments/raw_reader.sql'") })]);
   });
 
@@ -599,15 +612,15 @@ describe('validateNormalizedStdlibReads', () => {
       ['nested_in', "SELECT 1 FROM counter_track t WHERE t.name IN (('gpufreq'))"],
       ['reversed_not_distinct', "SELECT 1 FROM counter_track t WHERE 'gpufreq' IS NOT DISTINCT FROM t.name"],
     ];
-    const warnings = validateNormalizedStdlibReads({
+    const warnings = asRun({
       name: 'gpu', sql: 'SELECT gpu_freq / 1e6 FROM android_gpu_frequency',
       steps: steps.map(([id, sql]) => ({id, type: 'atomic', sql})),
-    } as unknown as SkillDefinition, gpuFragments);
+    }, skill => validateNormalizedStdlibReads(skill, gpuFragments));
     expect(warnings.map(warning => warning.stepId)).toEqual(['root', ...steps.map(([id]) => id)]);
     expect(warnings[1].message).toContain(gpuOwner);
 
     // Exclusions, labels and other tracks are not selections; the owner may read the track.
-    expect(validateNormalizedStdlibReads({
+    expect(asRun({
       name: 'ok', sql_fragments: [gpuOwner],
       sql: `-- WHERE name = 'gpufreq'; FROM android_gpu_frequency
         SELECT freq_mhz, 'gpufreq' AS counter_name, 'FROM android_gpu_frequency' AS note
@@ -626,7 +639,7 @@ describe('validateNormalizedStdlibReads', () => {
         // Accepted limit: a wildcard pattern outside a row filter reads as a label.
         {id: 'wildcard_aggregate', type: 'atomic', sql: "SELECT MAX(CASE WHEN t.name GLOB '*gpufreq*' THEN c.value END) FROM counter c JOIN counter_track t ON t.id = c.track_id"},
       ],
-    } as unknown as SkillDefinition, gpuFragments)).toEqual([]);
+    }, skill => validateNormalizedStdlibReads(skill, gpuFragments))).toEqual([]);
   });
 });
 
@@ -636,12 +649,12 @@ describe('validateNormalizedStdlibReads', () => {
 
 describe('validateFragmentReferences', () => {
   it('validates root and conditional branch fragment references', () => {
-    const warnings = validateFragmentReferences({
+    const warnings = asRun({
       name: 'root', sql: 'SELECT 1', sql_fragments: ['fragments/root_missing.sql'],
       steps: [{ id: 'branch', type: 'conditional', conditions: [{ when: 'true', then: {
         id: 'nested', type: 'atomic', sql: 'SELECT 1', sql_fragments: ['fragments/nested_missing.sql'],
       } }] }],
-    } as SkillDefinition, new Set());
+    }, skill => validateFragmentReferences(skill, new Set()));
     expect(warnings).toHaveLength(2);
   });
 

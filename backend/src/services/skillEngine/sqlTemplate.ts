@@ -102,11 +102,12 @@ function scanSqlPlaceholders(sql: string): ScannedPlaceholder[] {
  * (`pattern`): the scan placeholder binding reads, for readers that need the
  * SQL structure. Callers must not modify the tokens.
  */
-export function skillSqlTokens(sql: string): readonly SqlToken[] {
-  return scanSql(sql).tokens;
+export function skillSqlTokens(sql: string, options: {cache?: boolean} = {}): readonly SqlToken[] {
+  return scanSql(sql, options.cache !== false).tokens;
 }
 
-function scanSql(sql: string): {placeholders: ScannedPlaceholder[]; tokens: Token[]} {
+/** The scan of `sql`, kept by text when `cache` (Skill SQL is a fixed set of texts). */
+function scanSql(sql: string, cache = true): {placeholders: ScannedPlaceholder[]; tokens: Token[]} {
   const cached = scanCache.get(sql);
   if (cached) return cached;
   const at = new Map<number, string>();
@@ -173,9 +174,11 @@ function scanSql(sql: string): {placeholders: ScannedPlaceholder[]; tokens: Toke
     }
   }
   markPatternOperands(tokens);
-  if (scanCache.size >= SCAN_CACHE_LIMIT) scanCache.clear();
   const scanned = {placeholders, tokens};
-  scanCache.set(sql, scanned);
+  if (cache) {
+    if (scanCache.size >= SCAN_CACHE_LIMIT) scanCache.clear();
+    scanCache.set(sql, scanned);
+  }
   return scanned;
 }
 

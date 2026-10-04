@@ -29,10 +29,12 @@ import {
   type EffectiveSkillCompositionResult,
 } from './effectiveSkillComposer';
 import {
+  PREDATING_RULE_CODES,
   validateSkillDefinitionsInProcess,
   validateStrategyDefinitionsInProcess,
   visitSteps,
 } from './inProcessValidator';
+import {causeWordingReaders} from '../skillEngine/causeWordingEvidence';
 import {
   parseProposalSqlRegressionProofV1,
   parseProposalCandidateMaterializationV1,
@@ -429,10 +431,11 @@ function withCandidateStepSql(
 }
 
 /**
- * Validates the composed registry. A saved-result read the candidate did not
- * write is not this proposal's to fix (a published overlay or pack may predate
- * the rule), so it is a warning everywhere but in the Skills the candidate
- * defines or changes.
+ * Validates the composed registry. A predating-rule finding (a saved-result
+ * read, unsupported heat or cap wording) the candidate did not write is not
+ * this proposal's to fix (a published overlay or pack may predate the rule),
+ * so it is a warning everywhere but in the Skills the candidate defines or
+ * changes.
  */
 function collectSkillValidation(
   definitions: readonly SkillDefinition[],
@@ -440,11 +443,13 @@ function collectSkillValidation(
   warnings: Set<string>,
   candidateSkillIds: readonly string[] = [],
 ): void {
+  // The registry is the same for both passes; its evidence readers are computed once.
+  const readers = causeWordingReaders(definitions);
   const issues = [
-    ...validateSkillDefinitionsInProcess({definitions, resultPathReadSeverity: 'warning'}).issues,
+    ...validateSkillDefinitionsInProcess({definitions, predatingRuleSeverity: 'warning', causeWordingReaders: readers}).issues,
     ...(candidateSkillIds.length > 0
-      ? validateSkillDefinitionsInProcess({definitions, affectedSkillIds: candidateSkillIds}).issues
-        .filter(issue => issue.code === 'result_path_read_undecided')
+      ? validateSkillDefinitionsInProcess({definitions, affectedSkillIds: candidateSkillIds, causeWordingReaders: readers}).issues
+        .filter(issue => PREDATING_RULE_CODES.has(issue.code))
       : []),
   ];
   for (const issue of issues) {

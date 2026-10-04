@@ -16,7 +16,10 @@ import {
 } from '../skillEngine/skillValidator';
 import {parseEvidenceField, rootReads, templateRootReads, type RootReads} from '../skillEngine/expressionUtils';
 import {UNKNOWN_TOP_LEVEL_KEY_MESSAGE, unknownSkillTopLevelKeys} from '../skillEngine/skillTopLevelKeys';
+import {skillExecution} from '../skillEngine/skillSteps';
+import {executableSqlUnits} from '../skillEngine/processScopeSql';
 import {undecidedResultPathReads} from '../skillEngine/resultPathReads';
+import {causeWordingReaders, unsupportedCauseWording, type CauseWordingReaders} from '../skillEngine/causeWordingEvidence';
 import type {SkillDefinition, SkillStep} from '../skillEngine/types';
 import {
   analyzeSqlGuardrails,
@@ -30,9 +33,32 @@ import {
   strategySkillCallTexts,
   type StrategySkillInputs,
 } from '../../agentv3/strategySkillCalls';
-import {isDiagnosticConfidence, validateSkillStepListRuntime} from './skillStepRuntimeValidator';
+import {validateScopedSqlDeclarations, validateSkillStepListRuntime, type SkillStepRuntimeIssue} from './skillStepRuntimeValidator';
 
-export const IN_PROCESS_VALIDATOR_VERSION = '6';
+export const IN_PROCESS_VALIDATOR_VERSION = '9';
+
+/**
+ * Rules that already-published overlays and packs may predate. Each is an
+ * error for the Skills a proposal defines or changes and in validate:skills,
+ * and a warning everywhere else (`predatingRuleSeverity`): one predating
+ * overlay must not take every overlay of its scope offline.
+ * - result_path_read_undecided: a public-runtime portability check; this
+ *   runtime's own behaviour for the read is defined (resultPathReads.ts).
+ * - cause_wording_without_evidence: heat or frequency-cap wording in a text
+ *   the Skill shows with no evidence read behind it (causeWordingEvidence.ts).
+ * - process_scope_invalid: a malformed process_scope declaration; the runtime
+ *   only reports exact scope unsupported for it (processScopeSql.ts), and a
+ *   Skill root's declaration was not checked before validator version 8.
+ * - sql_not_executed: SQL the executor never runs (skillSteps.skillExecution),
+ *   which no SQL check reads; it does nothing at runtime, and it was accepted
+ *   before validator version 9.
+ */
+export const PREDATING_RULE_CODES: ReadonlySet<string> = new Set([
+  'result_path_read_undecided',
+  'cause_wording_without_evidence',
+  'process_scope_invalid',
+  'sql_not_executed',
+]);
 
 export type InProcessValidationSeverity = 'error' | 'warning';
 
@@ -59,13 +85,12 @@ export interface ValidateSkillDefinitionsInProcessInput {
   validateReferences?: boolean;
   sqlGuardrailMode?: 'default' | 'disabled';
   /**
-   * Severity of `result_path_read_undecided` (default error). Runtime
-   * composition and a proposal's view of Skills it does not change pass
-   * 'warning': the rule is a public-runtime portability check, this runtime's
-   * own behaviour for the read is defined, and one published overlay that
-   * predates it would otherwise take every overlay of the scope offline.
+   * Severity of the PREDATING_RULE_CODES (default error). Runtime composition
+   * and a proposal's view of Skills it does not change pass 'warning'.
    */
-  resultPathReadSeverity?: InProcessValidationSeverity;
+  predatingRuleSeverity?: InProcessValidationSeverity;
+  /** Evidence readers across `definitions`, when the caller validates the same registry more than once. */
+  causeWordingReaders?: CauseWordingReaders;
 }
 
 export interface InProcessStrategyValidationResult {
@@ -89,6 +114,25 @@ function issue(
   message: string,
 ): InProcessValidationIssue {
   return {severity, code, skillId, path, message};
+}
+
+const readersByRegistry = new WeakMap<ReadonlyMap<string, SkillDefinition>, CauseWordingReaders>();
+
+/**
+ * Evidence readers across the registry `skill` is validated in, computed once
+ * per registry; without one, only `skill` itself is known.
+ */
+function registryCauseWordingReaders(
+  skill: SkillDefinition,
+  definitions: ReadonlyMap<string, SkillDefinition> | undefined,
+): CauseWordingReaders {
+  if (!definitions) return causeWordingReaders([skill]);
+  let readers = readersByRegistry.get(definitions);
+  if (!readers) {
+    readers = causeWordingReaders([...definitions.values()]);
+    readersByRegistry.set(definitions, readers);
+  }
+  return readers;
 }
 
 /** Every step of a step list, nested parallel and conditional branches included, with its path. */
@@ -169,10 +213,37 @@ function validateDefinitionShape(
     ));
   }
 
+  // SQL the executor never runs is in no SQL unit (executableSqlUnits), so no SQL check reads it.
+  const execution = skillExecution(skill);
+  const root = skill as unknown as Record<string, unknown>;
+  if (execution !== 'root' && ['sql', 'sql_fragments', 'exact_sql'].some(key => root[key] !== undefined)) {
+    issues.push(issue(
+      'error',
+      'sql_not_executed',
+      skill.name,
+      'sql',
+      `A Skill of type '${String(skill.type)}' never runs root SQL; only an atomic Skill with root sql does.`,
+    ));
+  }
+  if (execution !== 'steps' && hasSteps) {
+    issues.push(issue(
+      'error',
+      'sql_not_executed',
+      skill.name,
+      'steps',
+      execution === 'root'
+        ? 'An atomic Skill with root sql never runs its steps.'
+        : `A Skill of type '${String(skill.type)}' runs no steps.`,
+    ));
+  }
+
   const stepIds = new Set<string>();
-  const stepContractIssues = hasSteps
-    ? validateSkillStepListRuntime(skill.steps, 'steps')
-    : [];
+  const rootIssues: SkillStepRuntimeIssue[] = [];
+  validateScopedSqlDeclarations(root, '', rootIssues);
+  const stepContractIssues = [
+    ...rootIssues,
+    ...(hasSteps ? validateSkillStepListRuntime(skill.steps, 'steps') : []),
+  ];
   issues.push(...stepContractIssues.map(stepIssue => issue(
     'error',
     stepIssue.code,
@@ -180,7 +251,8 @@ function validateDefinitionShape(
     stepIssue.path,
     stepIssue.message,
   )));
-  if (stepContractIssues.length === 0) {
+  // A malformed process_scope only leaves exact scope unsupported; the step itself is checked on.
+  if (stepContractIssues.every(entry => entry.code === 'process_scope_invalid')) {
     visitSteps(skill.steps ?? [], (step, path) => {
     if (!step.id?.trim()) {
       issues.push(issue(
@@ -201,20 +273,6 @@ function validateDefinitionShape(
     } else {
       stepIds.add(step.id);
     }
-    const sql = 'sql' in step ? step.sql : undefined;
-    if (includeSqlGuardrails && typeof sql === 'string') {
-      for (const guardrail of analyzeSqlGuardrails(sql, {
-        includeRules: DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
-      })) {
-        issues.push(issue(
-          guardrail.ruleId === 'percentile-percent-scale' ? 'error' : 'warning',
-          `sql_guardrail_${guardrail.ruleId}`,
-          skill.name,
-          `${path}.sql`,
-          guardrail.message,
-        ));
-      }
-    }
     });
     // Expressions resolve a save_as binding before a step result of the same
     // name, so another step's id reused as a save_as would never be readable.
@@ -232,19 +290,22 @@ function validateDefinitionShape(
       }
     });
   }
-  if (includeSqlGuardrails && hasRootSql) {
-    for (const guardrail of analyzeSqlGuardrails(skill.sql!, {
+  // Every SQL the executor runs, named and exact (executableSqlUnits).
+  for (const unit of includeSqlGuardrails ? executableSqlUnits(skill) : []) {
+    if (typeof unit.source.sql !== 'string') continue;
+    for (const guardrail of analyzeSqlGuardrails(unit.source.sql, {
       includeRules: DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
     })) {
       issues.push(issue(
         guardrail.ruleId === 'percentile-percent-scale' ? 'error' : 'warning',
         `sql_guardrail_${guardrail.ruleId}`,
         skill.name,
-        'sql',
+        unit.sqlAt,
         guardrail.message,
       ));
     }
   }
+
   return issues;
 }
 
@@ -252,19 +313,15 @@ export function validateSkillDefinitionInProcess(
   skill: SkillDefinition,
   options: {
     fragmentCache?: ReadonlyMap<string, string>;
-    includeStructuralChecks?: boolean;
     sqlGuardrailMode?: 'default' | 'disabled';
     /** The complete registry by name; when present, `save_from` targets are checked against it. */
     definitions?: ReadonlyMap<string, SkillDefinition>;
-    resultPathReadSeverity?: InProcessValidationSeverity;
+    predatingRuleSeverity?: InProcessValidationSeverity;
+    /** Skills that read heat or cap evidence across the registry; derived from `definitions` when absent. */
+    causeWordingReaders?: CauseWordingReaders;
   } = {},
 ): InProcessValidationIssue[] {
-  const issues = options.includeStructuralChecks === false
-    ? []
-    : validateDefinitionShape(
-        skill,
-        options.sqlGuardrailMode !== 'disabled',
-      );
+  const issues = validateDefinitionShape(skill, options.sqlGuardrailMode !== 'disabled');
   for (const key of unknownSkillTopLevelKeys(skill)) {
     issues.push(issue('error', 'skill_top_level_key_unknown', skill.name, key, UNKNOWN_TOP_LEVEL_KEY_MESSAGE));
   }
@@ -304,14 +361,24 @@ export function validateSkillDefinitionInProcess(
       readIssue.message,
     ));
   }
-  issues.push(...validateDiagnosticConfidence(skill));
   issues.push(...validateDiagnosticReads(skill));
   // A saved-result path read without a default runs on '' / NULL here but is
   // skipped by the public runtime when the result has no row (resultPathReads.ts).
   for (const read of undecidedResultPathReads(skill)) {
-    issues.push(issue(options.resultPathReadSeverity ?? 'error', 'result_path_read_undecided', skill.name, read.path,
+    issues.push(issue('error', 'result_path_read_undecided', skill.name, read.path,
       `${read.placeholder} reads an earlier step's result without a default: write \`|default\` (the step runs `
       + 'without its row) or give the step a condition with the conjunct `<result>.data?.length > 0` (it does not).'));
+  }
+  // Heat or frequency-cap wording reads as a conclusion in either language;
+  // only evidence the Skill reads may support it (causeWordingEvidence.ts).
+  const readers = options.causeWordingReaders ?? registryCauseWordingReaders(skill, options.definitions);
+  for (const site of unsupportedCauseWording(skill, readers)) {
+    const quoted = site.text.length > 80 ? `${site.text.slice(0, 80)}…` : site.text;
+    issues.push(issue('error', 'cause_wording_without_evidence', skill.name,
+      `${site.stepId ? `steps.${site.stepId}` : 'skill'}.${site.field}`,
+      `"${quoted}" names ${site.rule.cause} as a cause, but the ${site.stepId ? 'step' : 'Skill'} reads no `
+      + `${site.rule.evidence}: state the observation, leave the cause undetermined (是否…以…证据为准, 未判定), `
+      + 'or read the evidence.'));
   }
   issues.push(...validateSaveFromPlacement(skill));
   if (options.definitions) issues.push(...validateSaveFromTargets(skill, options.definitions));
@@ -329,26 +396,9 @@ export function validateSkillDefinitionInProcess(
       ));
     }
   }
-  return issues;
-}
-
-/**
- * A diagnostic rule's confidence must be a literal level or number even when
- * structural checks are off: the executor maps anything else to 0.5 and the
- * public runtime would publish the text, so a template there silently misreports.
- */
-function validateDiagnosticConfidence(skill: SkillDefinition): InProcessValidationIssue[] {
-  const issues: InProcessValidationIssue[] = [];
-  visitSteps(skill.steps ?? [], (step, path) => {
-    if (step.type !== 'diagnostic') return;
-    (step.rules ?? []).forEach((rule, index) => {
-      if (rule.confidence !== undefined && !isDiagnosticConfidence(rule.confidence)) {
-        issues.push(issue('error', 'diagnostic_confidence_invalid', skill.name, `${path}.rules[${index}].confidence`,
-          `Diagnostic rule confidence must be high, medium, low or a number, got ${JSON.stringify(rule.confidence)}.`));
-      }
-    });
-  });
-  return issues;
+  // A rule published overlays may predate is graded once, here, wherever it was found.
+  const predatingSeverity = options.predatingRuleSeverity ?? 'error';
+  return issues.map(entry => PREDATING_RULE_CODES.has(entry.code) ? {...entry, severity: predatingSeverity} : entry);
 }
 
 /**
@@ -554,6 +604,7 @@ export function validateSkillDefinitionsInProcess(
     ? [...new Set(input.affectedSkillIds)].sort()
     : [...byId.keys()].sort();
   const knownSkillIds = input.knownSkillIds ?? new Set(byId.keys());
+  const readers = input.causeWordingReaders ?? causeWordingReaders([...byId.values()]);
   for (const skillId of selectedIds) {
     const definition = byId.get(skillId);
     if (!definition) {
@@ -570,7 +621,8 @@ export function validateSkillDefinitionsInProcess(
       fragmentCache: input.fragmentCache,
       sqlGuardrailMode: input.sqlGuardrailMode,
       definitions: input.validateReferences !== false ? byId : undefined,
-      resultPathReadSeverity: input.resultPathReadSeverity,
+      predatingRuleSeverity: input.predatingRuleSeverity,
+      causeWordingReaders: readers,
     }));
     if (input.validateReferences !== false) {
       issues.push(...validateSkillReferences(definition, knownSkillIds));

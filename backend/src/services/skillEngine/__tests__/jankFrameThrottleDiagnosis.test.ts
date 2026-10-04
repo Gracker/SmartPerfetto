@@ -10,7 +10,7 @@ import {createSkillExecutor} from '../skillExecutor';
 import {readSkillFragmentFile, skillFragmentKey} from '../skillFragments';
 import type {DiagnosticResult, SkillDefinition, SkillExecutionResult} from '../types';
 import {diagnoseRuleStep, fresh, rowsTable as table, stepOf, type Rows, type Table} from '../../../../tests/helpers/skillRuleHarness';
-import {namesThermalCause} from '../../../../tests/helpers/skillWording';
+import {namesThermalCause} from '../causeWording';
 
 /**
  * jank_frame_detail's frame_diagnosis may assert a CPU frequency limit only

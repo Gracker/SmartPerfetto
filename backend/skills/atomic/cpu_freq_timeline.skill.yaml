@@ -108,7 +108,7 @@ steps:
           type: number
           format: compact
         - name: downclocks
-          label: "降频次数"
+          label: "频率下调次数"
           type: number
           format: compact
     sql: |

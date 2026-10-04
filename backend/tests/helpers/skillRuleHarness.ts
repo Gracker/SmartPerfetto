@@ -20,13 +20,11 @@ export function rowsTable(rows: Rows): Table {
 /** A fresh plain copy per run: the executor must never see state from a previous one. */
 export const fresh = <T>(value: T): T => JSON.parse(JSON.stringify(value));
 
-/** Every step of a Skill, including nested steps and inline conditional branches. */
-export function allStepsOf(node: any): any[] {
-  if (!node || typeof node !== 'object') return [];
-  const branches = [...(node.conditions ?? []).map((c: any) => c?.then), node.else]
-    .filter(branch => branch && typeof branch === 'object');
-  return [...(node.id ? [node] : []),
-    ...[...(node.steps ?? []), ...branches].flatMap(allStepsOf)];
+import {stepNodesOf} from '../../src/services/skillEngine/skillSteps';
+
+/** Every step of a parsed Skill that has an id, at any depth, in order. */
+export function allStepsOf(skill: any): any[] {
+  return stepNodesOf(skill).map(({node}) => node).filter(step => step.id);
 }
 
 /** The step `id` of a parsed Skill, at any depth, or a thrown error naming it. */

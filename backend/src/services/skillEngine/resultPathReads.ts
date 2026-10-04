@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {boundSqlPlaceholders} from './sqlTemplate';
+import {executableSqlUnits} from './processScopeSql';
 
 /**
  * A Skill's SQL may read an earlier step's saved result by path. When that
@@ -40,31 +41,49 @@ export interface UndecidedResultPathRead {
  */
 export function topLevelOperands(expr: string, operator: '&&' | '||'): string[] | undefined {
   const parts: string[] = [];
+  let from = 0;
+  let operatorTail = false;
+  let looser = false;
+  scanOutsideStrings(expr, (i, depth) => {
+    const c = expr[i];
+    if (depth > 0 || '([{)]}'.includes(c)) return;
+    if (operatorTail) {
+      operatorTail = false;
+    } else if (expr.startsWith(operator, i)) {
+      parts.push(expr.slice(from, i));
+      from = i + 2;
+      operatorTail = true;
+    } else if ((operator === '&&' && expr.startsWith('||', i)) || (c === '?' && expr[i + 1] !== '.')) {
+      looser = true;
+      return true;
+    }
+  });
+  return looser ? undefined : [...parts, expr.slice(from)].map(part => part.trim());
+}
+
+/**
+ * Calls `visit` for each character of a JS expression outside its string
+ * literals, with the bracket depth before that character; stops when `visit`
+ * returns true.
+ */
+export function scanOutsideStrings(expr: string, visit: (index: number, depth: number) => boolean | void): void {
   let depth = 0;
   let quote = '';
-  let from = 0;
   for (let i = 0; i < expr.length; i++) {
     const c = expr[i];
     if (quote) {
       if (c === '\\') i++;
       else if (c === quote) quote = '';
-    } else if (c === '"' || c === "'" || c === '`') {
-      quote = c;
-    } else if ('([{'.includes(c)) {
-      depth++;
-    } else if (')]}'.includes(c)) {
-      depth--;
-    } else if (depth > 0) {
       continue;
-    } else if (expr.startsWith(operator, i)) {
-      parts.push(expr.slice(from, i));
-      from = i + 2;
-      i++;
-    } else if ((operator === '&&' && expr.startsWith('||', i)) || (c === '?' && expr[i + 1] !== '.')) {
-      return undefined;
     }
+    if (c === '"' || c === "'" || c === '`') {
+      quote = c;
+      continue;
+    }
+    if (visit(i, depth)) return;
+    if ('([{'.includes(c)) depth++;
+    else if (')]}'.includes(c)) depth--;
   }
-  return [...parts, expr.slice(from)].map(part => part.trim());
 }
 
 /** Whether `condition` is false whenever the result saved under one of `names` has no row. */
@@ -81,9 +100,11 @@ export function undecidedResultPathReads(skill: {steps?: readonly unknown[]}): U
   const found: UndecidedResultPathRead[] = [];
   // Each earlier step's result is readable under its id and its save_as.
   const producers = new Map<string, readonly string[]>();
-  (skill.steps ?? []).forEach((raw, index) => {
-    const step = (raw ?? {}) as {id?: unknown; save_as?: unknown; condition?: unknown; sql?: unknown; exact_sql?: {sql?: unknown}};
-    const sites: Array<[string, unknown]> = [[`steps[${index}].sql`, step.sql], [`steps[${index}].exact_sql.sql`, step.exact_sql?.sql]];
+  // The shared SQL units (processScopeSql.ts), of the top-level steps the public runtime runs.
+  const units = executableSqlUnits(skill);
+  for (const raw of skill.steps ?? []) {
+    const step = (raw ?? {}) as {id?: unknown; save_as?: unknown; condition?: unknown};
+    const sites = units.filter(unit => unit.node === raw).map(unit => [unit.sqlAt, unit.source.sql] as const);
     for (const [path, sql] of sites) {
       if (typeof sql !== 'string') continue;
       for (const placeholder of boundSqlPlaceholders(sql)) {
@@ -97,6 +118,6 @@ export function undecidedResultPathReads(skill: {steps?: readonly unknown[]}): U
     }
     const names = [step.id, step.save_as].filter((name): name is string => typeof name === 'string' && name !== '');
     for (const name of names) producers.set(name, names);
-  });
+  }
   return found;
 }

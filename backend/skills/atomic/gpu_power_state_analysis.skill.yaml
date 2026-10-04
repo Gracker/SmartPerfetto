@@ -16,7 +16,7 @@ tier: B
 
 meta:
   display_name: "GPU 功耗状态分析"
-  description: "分析 GPU 频率状态切换，识别降频压力与抖动"
+  description: "分析 GPU 频率状态切换，识别频率下调与抖动"
   icon: "bolt"
   tags: [gpu, power, dvfs, thermal]
 
@@ -41,7 +41,7 @@ inputs:
     type: number
     required: false
     default: 15
-    description: "判定升降频的百分比阈值"
+    description: "判定频率上调或下调的百分比阈值"
 
 display:
   level: detail
@@ -64,13 +64,13 @@ display:
       label: "最高频率(MHz)"
       type: number
     - name: downshift_count
-      label: "降频次数"
+      label: "频率下调次数"
       type: number
     - name: upshift_count
       label: "升频次数"
       type: number
     - name: downshift_ratio_pct
-      label: "降频占比"
+      label: "频率下调占比"
       type: percentage
       format: percentage
     - name: off_pct
