@@ -17,7 +17,9 @@ import type {
   CurationRunObservation,
 } from './curationContracts';
 
-type RetirableCategory = 'phaseHints' | 'skillNotes';
+// Skill notes are the only retirable injection: phase hints reach no
+// analysis, so retiring one could not change a run.
+type RetirableCategory = 'skillNotes';
 
 interface RetireInjectionTarget extends RunInjectionReference {
   category: RetirableCategory;
@@ -28,11 +30,7 @@ export interface RetireInjectionAnalysisResult {
   diagnostics: CurationDiagnostic[];
 }
 
-const SUPPORTED_TIERS: Readonly<Record<
-  RetirableCategory,
-  'T0' | 'T1'
->> = {
-  phaseHints: 'T0',
+const SUPPORTED_TIERS: Readonly<Record<RetirableCategory, 'T1'>> = {
   skillNotes: 'T1',
 };
 
@@ -47,6 +45,7 @@ export function proposeRetireInjectionHypotheses(
     for (const category of [
       'patterns',
       'cases',
+      'phaseHints',
       'knowledgeDocs',
     ] as const) {
       if (observation.manifest.injections[category].length > 0) {
@@ -62,7 +61,7 @@ export function proposeRetireInjectionHypotheses(
   }
 
   const targets = uniqueTargets(sorted.flatMap(observation =>
-    (['phaseHints', 'skillNotes'] as const).flatMap(category =>
+    (['skillNotes'] as const).flatMap(category =>
       observation.manifest.injections[category].map(ref => ({
         category,
         ...ref,

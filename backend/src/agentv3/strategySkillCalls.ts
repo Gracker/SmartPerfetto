@@ -52,14 +52,12 @@ export function extractStrategySkillCalls(content: string): StrategySkillCall[] 
 
 /** Every text of a loaded strategy that may carry `invoke_skill` examples, keyed by path. */
 export function strategySkillCallTexts(
-  definition: Pick<StrategyDefinition, 'content' | 'detailSections' | 'phaseHints'>,
+  definition: Pick<StrategyDefinition, 'content' | 'detailSections'>,
 ): Array<[path: string, content: string]> {
   return [
     ['content', definition.content],
     ...definition.detailSections.map((section): [string, string] =>
       [`detailSections.${section.id}`, section.content]),
-    ...definition.phaseHints.map((hint): [string, string] =>
-      [`phaseHints.${hint.id}.constraints`, hint.constraints]),
   ];
 }
 

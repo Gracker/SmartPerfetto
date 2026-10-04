@@ -23,7 +23,7 @@ Self-Improving 的目标是让历史分析结果在受控边界内改善后续�
 | 学习 case（capture/review/ingest） | 已退役 | 管线、worker、CLI 与指标端点已删除；旧数据不再被读取、导出或写入，见下文 |
 | 人工 case 准入与读取 | 已接入 | 分析只读取策展证明有效的 case；终结召回需 `CASE_EVOLUTION_RETRIEVE_ENABLED`，背景注入另需 `CASE_EVOLUTION_PROMPT_INJECT_ENABLED`（均默认关闭）；`recall_similar_case` 与 similarity case hint 按需读取 |
 | Legacy ReviewWorker / review SDK | 已删除 | 从未接入应用启动；旧 review outbox 只保留只读计数（见存储与安全），`SELF_IMPROVE_REVIEW_ENABLED` 没有读取点 |
-| Strategy auto-patch | 已删除 | 只能生成不参与运行时的 `phase_hints`；`SELF_IMPROVE_AUTOPATCH_ENABLED` 没有读取点 |
+| Strategy auto-patch | 已删除 | 只能生成不参与运行时的 `phase_hints`（该字段也已移除）；`SELF_IMPROVE_AUTOPATCH_ENABLED` 没有读取点 |
 | Skill SQL auto-patch | 不支持 | 没有生产入口，不允许模型直接修改 Skill SQL |
 | Self-Evolution manifest / feedback / eval corpus | 已接入，默认关闭 | `SELF_EVOLUTION_ENABLED=true`；private feedback 与 public curation 物理隔离 |
 | 显式策展与提案生命周期 | 已接入，默认关闭 | 只处理 effective public feedback；每次人工触发最多生成一个有界提案 |
@@ -282,11 +282,20 @@ fingerprint 和 supersede。这些是可测试组件，不代表生产启动：
   review outbox 只剩只读视图，供指标端点统计旧数据，产品不再创建或写入它；
 - `SELF_IMPROVE_NOTES_WRITE_ENABLED` 没有生产读取点；
 - 组件级 strategy patch（phase-hint renderer、patch applier、worktree runner）已删除：
-  它只能生成 `phase_hints`，而 `phase_hints` 不参与分析运行时。Self-Evolution 的
-  `phaseHints` 注入同理：提案、门控、应用、对账都会成功，
-  但注入结果不改变任何一次分析的行为。需要影响运行时的注入请用 `skillNotes`
-  （由五个 runtime 消费），需要绑定实际取证的义务请用场景的
-  `investigation_contract`；`phase_hints` 的持久化结构保留是为了兼容既有 overlay；
+  它只能生成 `phase_hints`，而 `phase_hints` 从未进入分析运行时。strategy
+  frontmatter 的 `phase_hints` / `plan_template` 也已移除：`validate:strategies`
+  拒绝声明它们的 strategy 文件，加载时遇到则忽略并告警
+  （`strategy_frontmatter_removed_field`）。Self-Evolution 不再以 phase hint 为目标：
+  `phase_hint` 提案、锚定 `injections.phaseHints` 的 `retire_injection`、追加
+  phase hint 的 `strategy_section` 在门控第一项（schema）即以
+  `inert_injection_target` 失败，不会进入物化或 paired replay；新草稿、物化计划、
+  treatment 与 overlay 创建都会拒绝它们。此前持久化的 phase-hint overlay
+  （`phase_hint_delta`、`retire_phase_hint`、`append_phase_hints`）仍可读取、可回滚，
+  对账时被标为 `validationState: error` / `inert_injection_target_unsupported`
+  （quarantined），报告中有同名 `validation_error` issue，且永不应用；RunManifest
+  的 `injections.phaseHints` 保留为恒空数组，supersede 库的 `phase_hint_id` 列保留但不再读写。
+  需要影响运行时的注入请用 `skillNotes`（由五个 runtime 消费），需要绑定实际取证的义务
+  请用场景的 `investigation_contract`；
 - 内容扫描、fingerprint 和测试通过也只生成候选变更，永不自动 merge；
 - Skill SQL patch 没有可用入口。
 

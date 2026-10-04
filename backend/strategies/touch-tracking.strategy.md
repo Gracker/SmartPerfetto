@@ -41,14 +41,6 @@ keywords:
   - touch latency
   - 输入延迟持续
 
-plan_template:
-  mandatory_aspects:
-    - id: per_frame_latency_measurement
-      match_keywords: ['input', 'touch', '跟手', '延迟', 'latency', 'per_frame', 'tracking']
-      suggestion: '跟手度场景建议包含逐帧 Input-to-Display 延迟测量阶段'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: touch_to_display_latency
 ---
 
 #### touch_tracking Core Strategy

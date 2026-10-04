@@ -145,7 +145,7 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
       ? {...input.resumeAncestry}
       : undefined;
     for (const category of Object.keys(emptyInjections()) as RunInjectionCategory[]) {
-      this.injections.set(category, new Map());
+      if (category !== 'phaseHints') this.injections.set(category, new Map());
     }
   }
 
@@ -512,7 +512,9 @@ export class RunManifestBuilder implements RunManifestAttributionSink {
         patterns: this.sortedInjection('patterns'),
         skillNotes: this.sortedInjection('skillNotes'),
         cases: this.sortedInjection('cases'),
-        phaseHints: this.sortedInjection('phaseHints'),
+        // Strategy phase hints reach no analysis, so nothing records one; the
+        // field stays (always empty) so every stored manifest keeps one shape.
+        phaseHints: [],
         knowledgeDocs: this.sortedInjection('knowledgeDocs'),
       },
       turns: this.turns,

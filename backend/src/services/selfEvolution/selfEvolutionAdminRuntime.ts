@@ -46,7 +46,6 @@ import {
 } from './evaluationReplayService';
 import {
   evaluationFullTreatmentContractHash,
-  evaluationPhaseHintInjectionContentHash,
   evaluationRoleVariantRefs,
   type EvaluationRoleVariantV1,
 } from './evaluationTreatment';
@@ -279,7 +278,7 @@ implements SelfEvolutionAdminDependencies {
         traceProcessorService: getTraceProcessorService(),
         providerService: getProviderService(),
         runManifestStore: getRunManifestStore(),
-        resolveRolePlan: async ({replay, commonRegistry}) => {
+        resolveRolePlan: async ({replay}) => {
           const treatment = treatmentByProposal.get(replay.candidateId ?? '');
           if (!treatment) {
             throw new Error('evaluation_treatment_unavailable');
@@ -287,7 +286,6 @@ implements SelfEvolutionAdminDependencies {
           return rolePlan({
             role: replay.role,
             treatment: treatment.roleVariant,
-            commonRegistry,
             selected: sourceManifest.injections,
           });
         },
@@ -297,12 +295,9 @@ implements SelfEvolutionAdminDependencies {
           if (!treatment) {
             throw new Error('evaluation_treatment_unavailable');
           }
-          const commonRegistry =
-            await buildEffectiveRuntimeRegistrySnapshot({scope});
           const plan = rolePlan({
             role: 'baseline',
             treatment: treatment.roleVariant,
-            commonRegistry,
             selected: sourceManifest.injections,
           });
           return {
@@ -362,10 +357,6 @@ implements SelfEvolutionAdminDependencies {
             cases,
             store: replayService!.store,
             publisher: replayService!.publisher,
-            resolveBaselinePhaseHint: (scene, hintId) =>
-              snapshot.strategyRegistry.getStrategy(scene)?.phaseHints.find(
-                hint => hint.id === hintId,
-              ),
           };
         },
       });
@@ -589,15 +580,11 @@ function selectPairedReplayCases(
 function rolePlan(input: {
   role: 'baseline' | 'candidate';
   treatment: EvaluationRoleVariantV1;
-  commonRegistry: EffectiveRuntimeRegistrySnapshot;
   selected?: RunInjectionAttribution;
 }) {
   const refs = evaluationRoleVariantRefs({
     variant: input.treatment,
     role: input.role,
-    resolveBaselinePhaseHint: (scene, hintId) =>
-      input.commonRegistry.strategyRegistry
-        .getStrategy(scene)?.phaseHints.find(hint => hint.id === hintId),
   });
   const expectedKeys = new Set(refs.materializedRefs.map(injectionRefKey));
   return {
@@ -678,16 +665,6 @@ function findInjection(
   snapshot: EffectiveRuntimeRegistrySnapshot,
   targetId: string,
 ): {contentHash: string; content: string} | undefined {
-  for (const strategy of snapshot.strategyRegistry.getAllStrategies()) {
-    const hint = strategy.phaseHints.find(candidate =>
-      candidate.id === targetId);
-    if (hint) {
-      return {
-        contentHash: evaluationPhaseHintInjectionContentHash(hint),
-        content: canonicalJsonString(hint),
-      };
-    }
-  }
   for (const skillId of snapshot.skillNotes.getSkillIds()) {
     const note = snapshot.skillNotes.getSkillNotes(skillId).find(candidate =>
       candidate.id === targetId);

@@ -30,8 +30,6 @@
     "src/agentv3/selfImprove/failureTaxonomy.ts#FAILURE_CATEGORY_DESCRIPTIONS",
     "src/agentv3/selfImprove/feedbackEnricher.ts#enrichFeedbackEntry",
     "src/agentv3/selfImprove/skillNotesWriter.ts#writeSkillNote",
-    "src/agentv3/selfImprove/strategyFingerprint.ts#detectDrift",
-    "src/agentv3/strategyLoader.ts#getPlanTemplate",
     "src/agentv3/strategyLoader.ts#getVerifierMisdiagnosisPatterns",
     "src/agentv3/types.ts#phaseMatchesExpectedCall",
     "src/assistant/contracts/conversationContract.ts#parseConversationResponse",

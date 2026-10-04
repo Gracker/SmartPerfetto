@@ -2,10 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {
-  parseStrategyContribution,
-  type PhaseHint,
-} from '../../agentv3/strategyLoader';
+import {parseStrategyContribution} from '../../agentv3/strategyLoader';
 import type {
   CurationProposalV1,
   ProposalCandidateMaterializationV1,
@@ -23,7 +20,11 @@ import {
   parseProposalCandidateMaterializationV1,
   proposalDraftContentHash,
 } from './proposalGateContract';
-import {parseM6DraftProposal} from './proposalContract';
+import {
+  assertProposalTargetIsLive,
+  INERT_INJECTION_TARGET,
+  parseM6DraftProposal,
+} from './proposalContract';
 
 // A delta's content is read back from a stored proposal.
 const DELTA_CONTENT = 'proposal delta content';
@@ -44,6 +45,7 @@ export function materializeProposalTreatment(input: {
   base: ProposalTreatmentBaseV1;
 }): ProposalTreatmentMaterializationV1 | undefined {
   const proposal = parseM6DraftProposal(input.proposal);
+  assertProposalTargetIsLive(proposal);
   const candidate = parseProposalCandidateMaterializationV1(input.candidate);
   if (
     candidate.proposalId !== proposal.proposalId
@@ -75,27 +77,8 @@ function materializeEntry(
 ): EvaluationTreatmentEntryV1 {
   const delta = proposal.deltas[0];
   switch (proposal.kind) {
-    case 'phase_hint': {
-      const match =
-        /^injections\.phaseHints\[scene=("(?:\\.|[^"\\])*")\]\[id=("(?:\\.|[^"\\])*")\]$/
-          .exec(delta.anchor);
-      if (!match) throw new Error('proposal_treatment_phase_hint_anchor_invalid');
-      const scene = parseJsonString(match[1]);
-      const hintId = parseJsonString(match[2]);
-      const after = delta.after === undefined
-        ? undefined
-        : parseStoredJson<PhaseHint>(delta.after, DELTA_CONTENT);
-      return {
-        kind: 'phase_hint_delta',
-        op: delta.op,
-        scene,
-        hintId,
-        ...(delta.op === 'add'
-          ? {}
-          : {beforeContentHash: delta.baseContentHash}),
-        ...(after === undefined ? {} : {after}),
-      };
-    }
+    case 'phase_hint':
+      throw new Error(INERT_INJECTION_TARGET);
     case 'skill_note':
       return {
         kind: 'skill_note',
@@ -157,14 +140,12 @@ function materializeEntry(
       return {kind: 'skill_overlay_delta', overlay};
     }
     case 'retire_injection': {
-      const match = /^injections\.(phaseHints|skillNotes)\[id=(.+)\]$/.exec(
-        delta.anchor,
-      );
+      const match = /^injections\.skillNotes\[id=(.+)\]$/.exec(delta.anchor);
       if (!match) throw new Error('proposal_treatment_retire_anchor_invalid');
       return {
         kind: 'retire_injection',
-        category: match[1] as 'phaseHints' | 'skillNotes',
-        id: parseJsonString(match[2]),
+        category: 'skillNotes',
+        id: parseJsonString(match[1]),
         contentHash: delta.baseContentHash,
         injectionContentHash: delta.baseContentHash,
       };

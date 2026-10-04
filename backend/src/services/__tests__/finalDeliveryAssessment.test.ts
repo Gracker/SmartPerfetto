@@ -92,7 +92,7 @@ async function verifiedFact(options: {declaredValue?: number; source?: boolean;
   }), {meta: envelope.meta, display: envelope.display});
   const strategy: StrategyDefinition = {scene: 'startup', classificationDescription: 'Measured duration.',
     strategyKind: 'normal', priority: 1, effort: 'low', keywords: [], requiredCapabilities: [],
-    optionalCapabilities: [], phaseHints: [], planTemplate: null, verifierMisdiagnosisPatterns: [], content: 'Measured duration.',
+    optionalCapabilities: [], verifierMisdiagnosisPatterns: [], content: 'Measured duration.',
     detailSections: [], sourcePath: '/fixtures/duration.strategy.md', finalReportContract: {requiredSections: [{
       id: 'duration', label: 'Measured duration', required: true, triggerPatterns: [], patterns: [], patternGroups: [],
       recoveryText: {zh: [], en: []},

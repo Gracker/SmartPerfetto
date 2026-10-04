@@ -37,6 +37,18 @@ function validationContext(): StrategyFrontmatterValidationContext {
   };
 }
 
+describe('removed strategy frontmatter fields', () => {
+  it.each(['phase_hints', 'plan_template'])('rejects a strategy that declares %s', key => {
+    const errors = validateStrategyFrontmatter(
+      frontmatter(`scene: startup\n${key}:\n  - id: legacy`),
+      'legacy.strategy.md',
+    );
+    expect(errors).toContain(
+      `legacy.strategy.md: ${key} was removed and has no effect; use investigation_contract for evidence obligations`,
+    );
+  });
+});
+
 describe('semantic final report requirements', () => {
   const contract = (extra: string) => frontmatter(`scene: startup
 final_report_contract:

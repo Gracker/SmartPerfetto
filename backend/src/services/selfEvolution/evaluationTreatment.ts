@@ -7,10 +7,7 @@ import path from 'path';
 import {AsyncLocalStorage} from 'async_hooks';
 import Database from 'better-sqlite3';
 
-import type {
-  PhaseHint,
-  StrategyRegistryContribution,
-} from '../../agentv3/strategyLoader';
+import type {StrategyRegistryContribution} from '../../agentv3/strategyLoader';
 import {userDataPath} from '../../runtimePaths';
 import type {
   RunInjectionCategory,
@@ -34,14 +31,6 @@ export interface EvaluationSkillNoteV1 {
 }
 
 export type EvaluationTreatmentEntryV1 =
-  | {
-      kind: 'phase_hint_delta';
-      op: 'add' | 'modify' | 'remove';
-      scene: string;
-      hintId: string;
-      beforeContentHash?: string;
-      after?: PhaseHint;
-    }
   | {
       kind: 'skill_note';
       op: 'add' | 'modify' | 'remove';
@@ -89,10 +78,6 @@ export interface EvaluationRoleVariantV1 {
   baseStrategyRegistryFingerprint: string;
   skillOverlays: SkillOverlayDeltaV1[];
   strategyContributions: StrategyRegistryContribution[];
-  phaseHintDeltas: Array<Extract<
-    EvaluationTreatmentEntryV1,
-    {kind: 'phase_hint_delta'}
-  >>;
   skillNoteDeltas: Array<Extract<
     EvaluationTreatmentEntryV1,
     {kind: 'skill_note'}
@@ -128,16 +113,6 @@ export async function withEvaluationRoleVariant<T>(
   callback: () => Promise<T>,
 ): Promise<T> {
   return roleVariantContext.run(variant, callback);
-}
-
-export function evaluationPhaseHintInjectionContentHash(
-  hint: Pick<PhaseHint, 'constraints' | 'criticalTools' | 'maxToolCalls'>,
-): string {
-  return canonicalContentHash({
-    constraints: hint.constraints,
-    criticalTools: hint.criticalTools,
-    ...(hint.maxToolCalls ? {maxToolCalls: hint.maxToolCalls} : {}),
-  });
 }
 
 export function evaluationSkillNoteInjectionContentHash(
@@ -187,10 +162,6 @@ function normalizeInjectionRefs(
 export function evaluationRoleVariantRefs(input: {
   variant: EvaluationRoleVariantV1;
   role: 'baseline' | 'candidate';
-  resolveBaselinePhaseHint(
-    scene: string,
-    hintId: string,
-  ): PhaseHint | undefined;
 }): EvaluationRoleVariantRefsV1 {
   const materializedRefs: EvaluationInjectionRefV1[] = [];
   const treatmentNamespaceRefs: EvaluationInjectionRefV1[] = [];
@@ -201,42 +172,7 @@ export function evaluationRoleVariantRefs(input: {
     treatmentNamespaceRefs.push(ref);
     if (input.role === materializedForRole) materializedRefs.push(ref);
   };
-  const resolveBaselinePhaseHint = (
-    scene: string,
-    hintId: string,
-    beforeContentHash: string,
-  ): PhaseHint => {
-    const hint = input.resolveBaselinePhaseHint(scene, hintId);
-    if (
-      !hint
-      || canonicalContentHash(hint) !== beforeContentHash
-    ) {
-      throw new Error('evaluation_treatment_phase_hint_before_hash_mismatch');
-    }
-    return hint;
-  };
   const {variant} = input;
-  for (const delta of variant.phaseHintDeltas) {
-    if (delta.op !== 'add') {
-      const before = resolveBaselinePhaseHint(
-        delta.scene,
-        delta.hintId,
-        delta.beforeContentHash!,
-      );
-      addRef({
-        category: 'phaseHints',
-        id: delta.hintId,
-        contentHash: evaluationPhaseHintInjectionContentHash(before),
-      }, 'baseline');
-    }
-    if (delta.after) {
-      addRef({
-        category: 'phaseHints',
-        id: delta.hintId,
-        contentHash: evaluationPhaseHintInjectionContentHash(delta.after),
-      }, 'candidate');
-    }
-  }
   for (const delta of variant.skillNoteDeltas) {
     if (delta.op !== 'add') {
       addRef({
@@ -251,18 +187,6 @@ export function evaluationRoleVariantRefs(input: {
         id: delta.noteId,
         contentHash: evaluationSkillNoteInjectionContentHash(delta.after),
       }, 'candidate');
-    }
-  }
-  for (const contribution of variant.strategyContributions) {
-    for (const operation of contribution.operations) {
-      if (operation.op !== 'append_phase_hints') continue;
-      for (const hint of operation.hints) {
-        addRef({
-          category: 'phaseHints',
-          id: hint.id,
-          contentHash: evaluationPhaseHintInjectionContentHash(hint),
-        }, 'candidate');
-      }
     }
   }
   for (const retired of variant.retiredInjections) {
@@ -305,51 +229,6 @@ function exactKeys(
   }
 }
 
-function normalizePhaseHint(value: unknown): PhaseHint {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('evaluation_treatment_phase_hint_invalid');
-  }
-  const hint = value as PhaseHint;
-  if (
-    Object.keys(hint).some(key =>
-      !['id', 'keywords', 'constraints', 'criticalTools', 'maxToolCalls', 'critical'].includes(
-        key,
-      ))
-    || !hint.id
-    || !Array.isArray(hint.keywords)
-    || !hint.keywords.every(keyword => typeof keyword === 'string')
-    || typeof hint.constraints !== 'string'
-    || !hint.constraints.trim()
-    || !Array.isArray(hint.criticalTools)
-    || !hint.criticalTools.every(tool => typeof tool === 'string')
-    || (
-      hint.maxToolCalls !== undefined
-      && (
-        !hint.maxToolCalls
-        || typeof hint.maxToolCalls !== 'object'
-        || Array.isArray(hint.maxToolCalls)
-        || Object.entries(hint.maxToolCalls).some(([toolName, limit]) =>
-          !toolName.trim()
-          || (toolName !== 'execute_sql' && toolName !== 'execute_sql_on')
-          || typeof limit !== 'number'
-          || !Number.isInteger(limit)
-          || limit < 0)
-      )
-    )
-    || typeof hint.critical !== 'boolean'
-  ) {
-    throw new Error('evaluation_treatment_phase_hint_invalid');
-  }
-  return immutableCanonicalSnapshot({
-    id: hint.id,
-    keywords: [...hint.keywords],
-    constraints: hint.constraints,
-    criticalTools: [...hint.criticalTools],
-    ...(hint.maxToolCalls ? {maxToolCalls: {...hint.maxToolCalls}} : {}),
-    critical: hint.critical,
-  });
-}
-
 function normalizeSkillNote(value: unknown): EvaluationSkillNoteV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('evaluation_treatment_skill_note_invalid');
@@ -375,61 +254,26 @@ function normalizeSkillNote(value: unknown): EvaluationSkillNoteV1 {
   });
 }
 
+function isInertTreatmentEntry(entry: Record<string, unknown>): boolean {
+  if (entry.kind === 'phase_hint_delta') return true;
+  if (entry.kind === 'retire_injection') return entry.category === 'phaseHints';
+  if (entry.kind !== 'strategy_contribution') return false;
+  const operations = (entry.contribution as {operations?: unknown} | undefined)
+    ?.operations;
+  return Array.isArray(operations) && operations.some(operation =>
+    (operation as {op?: unknown} | null)?.op === 'append_phase_hints');
+}
+
 function normalizeEntry(value: unknown): EvaluationTreatmentEntryV1 {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('evaluation_treatment_entry_invalid');
   }
-  const entry = value as EvaluationTreatmentEntryV1;
-  if (entry.kind === 'phase_hint_delta') {
-    exactKeys(
-      entry,
-      ['kind', 'op', 'scene', 'hintId', 'beforeContentHash', 'after'],
-      'evaluation_treatment_entry_unknown_field',
-    );
-    if (!['add', 'modify', 'remove'].includes(entry.op)) {
-      throw new Error('evaluation_treatment_phase_hint_op_invalid');
-    }
-    const scene = nonempty(
-      entry.scene,
-      'evaluation_treatment_phase_hint_scene_invalid',
-    );
-    const hintId = nonempty(
-      entry.hintId,
-      'evaluation_treatment_phase_hint_id_invalid',
-    );
-    if (entry.op === 'add') {
-      if (entry.beforeContentHash !== undefined || entry.after === undefined) {
-        throw new Error('evaluation_treatment_phase_hint_add_invalid');
-      }
-    } else if (
-      entry.beforeContentHash === undefined
-      || (entry.op === 'modify' && entry.after === undefined)
-      || (entry.op === 'remove' && entry.after !== undefined)
-    ) {
-      throw new Error('evaluation_treatment_phase_hint_delta_invalid');
-    }
-    const after = entry.after === undefined
-      ? undefined
-      : normalizePhaseHint(entry.after);
-    if (after && after.id !== hintId) {
-      throw new Error('evaluation_treatment_phase_hint_id_mismatch');
-    }
-    return immutableCanonicalSnapshot({
-      kind: 'phase_hint_delta',
-      op: entry.op,
-      scene,
-      hintId,
-      ...(entry.beforeContentHash === undefined
-        ? {}
-        : {
-            beforeContentHash: assertHash(
-              entry.beforeContentHash,
-              'evaluation_treatment_phase_hint_before_hash_invalid',
-            ),
-          }),
-      ...(after ? {after} : {}),
-    });
+  // Phase hints reach no analysis; an artifact that targets one was gated
+  // before they were removed and has nothing left to replay or apply.
+  if (isInertTreatmentEntry(value as Record<string, unknown>)) {
+    throw new Error('evaluation_treatment_inert_injection_target');
   }
+  const entry = value as EvaluationTreatmentEntryV1;
   if (entry.kind === 'skill_note') {
     exactKeys(
       entry,
@@ -533,7 +377,6 @@ function normalizeEntry(value: unknown): EvaluationTreatmentEntryV1 {
         'patterns',
         'skillNotes',
         'cases',
-        'phaseHints',
         'knowledgeDocs',
       ].includes(entry.category)
     ) {
@@ -577,9 +420,6 @@ export function createEvaluationTreatmentArtifact(input: Omit<
   if (!input.entries.length) throw new Error('evaluation_treatment_entries_empty');
   const entries = input.entries.map(normalizeEntry);
   const targetKeys = entries.flatMap(entry => {
-    if (entry.kind === 'phase_hint_delta') {
-      return [`phase_hint\0${entry.scene}\0${entry.hintId}`];
-    }
     if (entry.kind === 'skill_note') {
       return [`skill_note\0${entry.skillId}\0${entry.noteId}`];
     }
@@ -694,23 +534,6 @@ export function resolveEvaluationRoleVariant(input: {
     entry.kind === 'skill_overlay_delta' ? [entry.overlay] : []);
   const strategyContributions = artifact.entries.flatMap(entry =>
     entry.kind === 'strategy_contribution' ? [entry.contribution] : []);
-  const phaseHintDeltas = artifact.entries.flatMap(entry => {
-    if (entry.kind === 'phase_hint_delta') return [entry];
-    if (
-      entry.kind === 'retire_injection'
-      && entry.category === 'phaseHints'
-      && entry.scene
-    ) {
-      return [{
-        kind: 'phase_hint_delta' as const,
-        op: 'remove' as const,
-        scene: entry.scene,
-        hintId: entry.id,
-        beforeContentHash: entry.contentHash,
-      }];
-    }
-    return [];
-  });
   const skillNoteDeltas = artifact.entries.flatMap(entry =>
     entry.kind === 'skill_note' ? [entry] : []);
   const retiredInjections = artifact.entries.flatMap(entry =>
@@ -721,7 +544,10 @@ export function resolveEvaluationRoleVariant(input: {
     treatmentArtifactContentHash: artifact.contentHash,
     skillOverlays,
     strategyContributions,
-    phaseHintDeltas,
+    // Always empty since phase hints were removed. The slot stays so a
+    // proposal gated before then still matches its paired-replay proof when
+    // it is applied.
+    phaseHintDeltas: [],
     skillNoteDeltas,
     retiredInjections,
     artifactCreatedAtMs,
@@ -736,7 +562,6 @@ export function resolveEvaluationRoleVariant(input: {
     baseStrategyRegistryFingerprint: artifact.baseStrategyRegistryFingerprint,
     skillOverlays,
     strategyContributions,
-    phaseHintDeltas,
     skillNoteDeltas,
     retiredInjections,
     artifactCreatedAtMs,

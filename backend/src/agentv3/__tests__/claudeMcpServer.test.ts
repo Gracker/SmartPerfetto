@@ -35,7 +35,7 @@ import {
   sanitizeCodeAwareText,
 } from '../../services/security/codeAwareOutputRegistry';
 import {projectPrivateStructuredValue} from '../../services/security/privateAnalysisProjection';
-import {buildStrategyRegistrySnapshotFromDefinitions, getPhaseHints, getRegisteredScenes} from '../strategyLoader';
+import {buildStrategyRegistrySnapshotFromDefinitions, getRegisteredScenes} from '../strategyLoader';
 import {recordPlanOrPrePlanToolCall} from '../planToolCallRecorder';
 import {planPhaseUpdatedContent} from '../planPhaseEvents';
 import {readRuntimeToolResultFacts} from '../../agentRuntime/runtimeToolResult';
@@ -2980,14 +2980,6 @@ describe('createClaudeMcpServer', () => {
         toolCallLog: [],
       };
     }
-
-    it('keeps scrolling phase guidance free of executable SQL quotas', () => {
-      const hints = getPhaseHints('scrolling');
-      expect(hints.find(hint => hint.id === 'root_cause_drill')?.maxToolCalls)
-        .toBeUndefined();
-      expect(hints.find(hint => hint.id === 'architecture_specific_jank')?.maxToolCalls)
-        .toBeUndefined();
-    });
 
     it('allows further evidence within the run budget regardless of the phase title', async () => {
       const {tools, analysisPlan, mockTpService} = createTestServer({sceneType: 'scrolling'});

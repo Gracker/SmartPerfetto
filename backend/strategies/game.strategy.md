@@ -41,32 +41,6 @@ keywords:
   - godot
   - cocos
 
-phase_hints:
-  - id: game_loop_jank
-    keywords: ['game', 'Unity', 'Unreal', 'Cocos', 'Godot', '主循环', 'Tick', 'PlayerLoop', 'GameThread', '帧率', '卡顿']
-    constraints: '游戏/引擎场景必须先用 game_fps_analysis 看整体帧率，再用 game_main_loop_jank 检查引擎主循环/Tick 超预算切片。不要把缺 FrameTimeline 误判成没有掉帧。'
-    critical_tools: ['game_fps_analysis', 'game_main_loop_jank']
-    critical: true
-  - id: game_gpu_power
-    keywords: ['gpu', 'work period', 'mali', 'thermal', '功耗', '发热', '降频']
-    constraints: 'GPU/功耗/发热问题按数据完整度补充 android_gpu_work_period_track、mali_gpu_power_state、thermal_throttling、wattson_thread_power_attribution；缺 capability 时标注证据等级。'
-    critical_tools: ['android_gpu_work_period_track', 'mali_gpu_power_state', 'thermal_throttling', 'wattson_thread_power_attribution']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: fps_and_gpu
-      match_keywords: ['game', 'fps', '游戏', 'gpu', 'frame', '帧率']
-      suggestion: '游戏场景建议包含帧率分析和 GPU 状态检查阶段'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: game_fps_analysis
-    - id: engine_loop_jank
-      match_keywords: ['Unity', 'Unreal', 'Cocos', 'Godot', 'GameThread', 'PlayerLoop', 'Tick', '主循环']
-      suggestion: '游戏引擎场景建议包含 game_main_loop_jank 阶段，检查引擎自管帧循环'
-      required_expected_calls:
-        - tool: invoke_skill
-          skill_id: game_main_loop_jank
 ---
 
 #### game Core Strategy

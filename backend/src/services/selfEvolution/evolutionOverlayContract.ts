@@ -2,10 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {
-  parseStrategyContribution,
-  type PhaseHint,
-} from '../../agentv3/strategyLoader';
+import {parseStrategyContribution} from '../../agentv3/strategyLoader';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {ApplicationBuildIdentity} from '../applicationUpdate/types';
 import type {
@@ -97,12 +94,6 @@ export function createEvolutionOverlayPayloadFromTreatmentEntry(
           contribution: entry.contribution,
         },
       });
-    case 'phase_hint_delta':
-      return parseEvolutionOverlayPayloadV1({
-        schemaVersion: 1,
-        payloadKind: 'strategy_delta',
-        strategyDelta: entry,
-      });
     case 'skill_note':
       return parseEvolutionOverlayPayloadV1({
         schemaVersion: 1,
@@ -119,26 +110,16 @@ export function createEvolutionOverlayPayloadFromTreatmentEntry(
         },
       });
     case 'retire_injection':
-      return entry.category === 'phaseHints'
-        ? parseEvolutionOverlayPayloadV1({
-            schemaVersion: 1,
-            payloadKind: 'strategy_delta',
-            strategyDelta: {
-              kind: 'retire_phase_hint',
-              hintId: entry.id,
-              contentHash: entry.contentHash,
-              ...(entry.scene ? {scene: entry.scene} : {}),
-            },
-          })
-        : parseEvolutionOverlayPayloadV1({
-            schemaVersion: 1,
-            payloadKind: 'skill_note',
-            skillNoteDelta: {
-              kind: 'retire_skill_note',
-              noteId: entry.id,
-              contentHash: entry.contentHash,
-            },
-          });
+      if (entry.category !== 'skillNotes') fail('inert_injection_target');
+      return parseEvolutionOverlayPayloadV1({
+        schemaVersion: 1,
+        payloadKind: 'skill_note',
+        skillNoteDelta: {
+          kind: 'retire_skill_note',
+          noteId: entry.id,
+          contentHash: entry.contentHash,
+        },
+      });
   }
 }
 
@@ -176,11 +157,29 @@ export function parseEvolutionOverlayPayloadV1(
   fail('evolution_overlay_payload_kind_invalid');
 }
 
+/**
+ * A strategy delta that targets phase hints, which no analysis reads. Overlays
+ * persisted before their removal still parse, so their content hash verifies;
+ * reconciliation quarantines them instead of applying them, and no new overlay
+ * of this shape is created.
+ */
+export function isInertStrategyDelta(delta: EvolutionStrategyDeltaV1): boolean {
+  return delta.kind !== 'strategy_contribution'
+    || delta.contribution.operations.some(operation =>
+      operation.op === 'append_phase_hints');
+}
+
 export function createEvolutionOverlayArtifactV1(input: {
   artifactId: string;
   payload: EvolutionOverlayPayloadV1;
   provenance: EvolutionOverlayProvenanceV1;
 }): EvolutionOverlayArtifactV1 {
+  if (
+    input.payload.payloadKind === 'strategy_delta'
+    && isInertStrategyDelta(input.payload.strategyDelta)
+  ) {
+    fail('inert_injection_target');
+  }
   const withoutHash = {
     schemaVersion: 1 as const,
     artifactId: input.artifactId,
@@ -833,7 +832,9 @@ function parseEvolutionStrategyDelta(value: unknown): EvolutionStrategyDeltaV1 {
     exactKeys(delta, ['kind', 'contribution']);
     return {
       kind: 'strategy_contribution',
-      contribution: parseStrategyContribution(delta.contribution),
+      contribution: parseStrategyContribution(delta.contribution, {
+        legacyPhaseHints: 'read',
+      }),
     };
   }
   if (delta.kind === 'phase_hint_delta') {
@@ -863,7 +864,9 @@ function parseEvolutionStrategyDelta(value: unknown): EvolutionStrategyDeltaV1 {
       ...(delta.beforeContentHash
         ? {beforeContentHash: delta.beforeContentHash as string}
         : {}),
-      ...(delta.after ? {after: delta.after as PhaseHint} : {}),
+      ...(delta.after
+        ? {after: delta.after as Readonly<Record<string, unknown>>}
+        : {}),
     });
   }
   if (delta.kind === 'retire_phase_hint') {

@@ -42,8 +42,6 @@ describe('scene reconstruction strategy contracts', () => {
     expect(strategy?.finalReportContract?.requiredSections.map(section => section.id)).toEqual(expect.arrayContaining([
       'scene_timeline', 'scene_evidence_coverage', 'scene_uncertainty_and_revisions',
     ]));
-    expect(strategy?.phaseHints).toEqual([]);
-    expect(strategy?.planTemplate).toBeNull();
   });
 
   it('binds acquisition metrics to declarations in the real input and device Skills', () => {

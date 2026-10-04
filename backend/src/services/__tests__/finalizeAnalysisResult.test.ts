@@ -135,7 +135,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     conclusionFingerprint: analysisDeliveryFingerprint(result.conclusion)};
   const investigationStrategy: StrategyDefinition | undefined = options.investigationRequirement ? {scene: 'general',
     classificationDescription: 'General.', strategyKind: 'normal', priority: 1, effort: 'low', keywords: [],
-    requiredCapabilities: [], optionalCapabilities: [], phaseHints: [], planTemplate: null, verifierMisdiagnosisPatterns: [],
+    requiredCapabilities: [], optionalCapabilities: [], verifierMisdiagnosisPatterns: [],
     content: 'General.', detailSections: [], sourcePath: '/fixture/general.strategy.md',
     investigationContract: {schemaVersion: 1, profileRefs: [], requirements: [options.investigationRequirement]},
     finalReportContract: null} : undefined;
@@ -173,7 +173,7 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   }));
   const reportStrategy: StrategyDefinition = {scene: 'general', classificationDescription: 'General analysis.',
     strategyKind: 'normal', priority: 1, effort: 'low', keywords: [], requiredCapabilities: [],
-    optionalCapabilities: [], phaseHints: [], planTemplate: null, verifierMisdiagnosisPatterns: [], content: 'General analysis.',
+    optionalCapabilities: [], verifierMisdiagnosisPatterns: [], content: 'General analysis.',
     detailSections: [], sourcePath: '/fixture/general.strategy.md', finalReportContract: {requiredSections: [{
       id: 'detail', label: 'Detail', required: true, triggerPatterns: [], patterns: [], patternGroups: [], recoveryText: {zh: [], en: []},
     }]}};
@@ -694,7 +694,7 @@ describe('issued investigation ledger through finalization', () => {
     }
     const strategy: StrategyDefinition = {scene: 'general', classificationDescription: 'General.', strategyKind: 'normal',
       priority: 1, effort: 'low', keywords: [], requiredCapabilities: [], optionalCapabilities: [],
-      phaseHints: [], planTemplate: null, verifierMisdiagnosisPatterns: [], content: 'General.', detailSections: [], sourcePath: '/fixture/general.strategy.md',
+      verifierMisdiagnosisPatterns: [], content: 'General.', detailSections: [], sourcePath: '/fixture/general.strategy.md',
       investigationContract: {schemaVersion: 1, profileRefs: [], requirements: [{id: 'system-frequency', domain: 'cpu_frequency',
         description: 'Describe the selected CPU window.', required: true,
         ...(settings.explanationOnly ? {} : {evidenceMetrics: ['system.cpu.frequency.time_weighted']})}]},

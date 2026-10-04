@@ -53,7 +53,7 @@ function fixture(options: {
   const strategy: StrategyDefinition = {
     scene: 'general', classificationDescription: 'General performance interpretation.', strategyKind: 'normal',
     priority: 1, effort: 'low', keywords: [], requiredCapabilities: [], optionalCapabilities: [],
-    phaseHints: [], planTemplate: null, verifierMisdiagnosisPatterns: [], content: 'Scene context.', detailSections: [],
+    verifierMisdiagnosisPatterns: [], content: 'Scene context.', detailSections: [],
     sourcePath: '/fixtures/general.strategy.md', finalReportContract: {requiredSections: requirements.map(requirement => ({
       ...requirement, triggerPatterns: [], patterns: [], patternGroups: [], recoveryText: {zh: [], en: []},
     }))},

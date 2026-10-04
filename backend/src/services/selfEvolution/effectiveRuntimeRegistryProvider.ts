@@ -4,7 +4,6 @@
 
 import {
   buildStrategyRegistrySnapshot,
-  buildStrategyRegistrySnapshotFromDefinitions,
   fingerprintStrategyDefinition,
   type StrategyRegistryContribution,
 } from '../../agentv3/strategyLoader';
@@ -16,7 +15,6 @@ import {
 import type {PersistedSkillNote} from '../../agentv3/selfImprove/skillNotesWriter';
 import type {
   EvolutionSkillNoteDeltaV1,
-  EvolutionStrategyDeltaV1,
   RunManifestScope,
   SkillOverlayDeltaV1,
 } from '../../types/selfEvolution';
@@ -53,10 +51,6 @@ export interface BuildEffectiveRuntimeRegistrySnapshotInput {
   scope: EnterpriseRepositoryScope;
   skillOverlays?: readonly SkillOverlayDeltaV1[];
   strategyContributions?: readonly StrategyRegistryContribution[];
-  strategyDeltas?: readonly Exclude<
-    EvolutionStrategyDeltaV1,
-    {kind: 'strategy_contribution'}
-  >[];
   skillNoteDeltas?: readonly EvolutionSkillNoteDeltaV1[];
   publishedGeneration?: string;
   skillNoteSourceOptions?: NoteSourceOptions;
@@ -411,102 +405,6 @@ function sameScope(
     && left.workspaceId === right.workspaceId;
 }
 
-type PhaseHintDelta = Exclude<
-  EvolutionStrategyDeltaV1,
-  {kind: 'strategy_contribution'}
-> | EvaluationRoleVariantV1['phaseHintDeltas'][number];
-
-function applyPhaseHintDeltas(input: {
-  snapshot: ReturnType<typeof buildStrategyRegistrySnapshot>;
-  deltas: readonly PhaseHintDelta[];
-  overlayGeneration: string;
-}): ReturnType<typeof buildStrategyRegistrySnapshot> {
-  const byScene = new Map(
-    input.snapshot.getAllStrategies().map(definition => [
-      definition.scene,
-      definition,
-    ]),
-  );
-  const targetKeys = new Set<string>();
-  for (const delta of [...input.deltas].sort((left, right) =>
-    (left.scene ?? '').localeCompare(right.scene ?? '')
-    || left.hintId.localeCompare(right.hintId))) {
-    if (delta.kind === 'retire_phase_hint') {
-      const matchingScenes = delta.scene
-        ? [delta.scene]
-        : [...byScene.entries()]
-            .filter(([, definition]) =>
-              definition.phaseHints.some(hint => hint.id === delta.hintId))
-            .map(([scene]) => scene);
-      if (matchingScenes.length !== 1) {
-        throw new Error('effective_strategy_retire_target_ambiguous');
-      }
-      const definition = byScene.get(matchingScenes[0]);
-      const existing = definition?.phaseHints.find(
-        hint => hint.id === delta.hintId,
-      );
-      if (!existing || canonicalContentHash(existing) !== delta.contentHash) {
-        throw new Error('effective_strategy_retire_hash_mismatch');
-      }
-      byScene.set(matchingScenes[0], {
-        ...definition!,
-        phaseHints: definition!.phaseHints.filter(
-          hint => hint.id !== delta.hintId,
-        ),
-      });
-      continue;
-    }
-    const targetKey = `${delta.scene}\0${delta.hintId}`;
-    if (targetKeys.has(targetKey)) {
-      throw new Error('evaluation_strategy_mutation_duplicate_target');
-    }
-    targetKeys.add(targetKey);
-    const definition = byScene.get(delta.scene);
-    if (!definition) {
-      throw new Error('evaluation_strategy_mutation_scene_missing');
-    }
-    const index = definition.phaseHints.findIndex(hint => hint.id === delta.hintId);
-    if (delta.op === 'add') {
-      if (index >= 0 || !delta.after || delta.after.id !== delta.hintId) {
-        throw new Error('evaluation_strategy_mutation_add_conflict');
-      }
-      byScene.set(delta.scene, {
-        ...definition,
-        phaseHints: [...definition.phaseHints, delta.after],
-      });
-      continue;
-    }
-    if (index < 0 || !delta.beforeContentHash) {
-      throw new Error('evaluation_strategy_mutation_target_missing');
-    }
-    if (
-      canonicalContentHash(definition.phaseHints[index])
-      !== delta.beforeContentHash
-    ) {
-      throw new Error('evaluation_strategy_mutation_before_hash_mismatch');
-    }
-    if (delta.op === 'modify') {
-      if (!delta.after || delta.after.id !== delta.hintId) {
-        throw new Error('evaluation_strategy_mutation_modify_invalid');
-      }
-      const phaseHints = [...definition.phaseHints];
-      phaseHints[index] = delta.after;
-      byScene.set(delta.scene, {...definition, phaseHints});
-    } else {
-      byScene.set(delta.scene, {
-        ...definition,
-        phaseHints: definition.phaseHints.filter(
-          hint => hint.id !== delta.hintId,
-        ),
-      });
-    }
-  }
-  return buildStrategyRegistrySnapshotFromDefinitions({
-    definitions: [...byScene.values()],
-    overlayGeneration: input.overlayGeneration,
-  });
-}
-
 function deriveOverlayGeneration(input: {
   scope: RunManifestScope;
   baseSkillRegistryFingerprint: string;
@@ -545,18 +443,11 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
     scope,
     overlayGeneration: 'building:base',
   });
-  const contributedStrategySnapshot = buildStrategyRegistrySnapshot({
+  const commonStrategySnapshot = buildStrategyRegistrySnapshot({
     scope,
     overlayGeneration: 'building:common',
     contributions: strategyContributions,
   });
-  const commonStrategySnapshot = input.strategyDeltas?.length
-    ? applyPhaseHintDeltas({
-        snapshot: contributedStrategySnapshot,
-        deltas: input.strategyDeltas,
-        overlayGeneration: 'building:common-deltas',
-      })
-    : contributedStrategySnapshot;
   const commonSkillNotes = buildSkillNoteRegistrySnapshot({
     skillIds: commonComposition.skills.map(skill => skill.name),
     deltas: input.skillNoteDeltas ?? [],
@@ -574,7 +465,6 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
     hasContributions:
       skillOverlays.length > 0
       || strategyContributions.length > 0
-      || (input.strategyDeltas?.length ?? 0) > 0
       || (input.skillNoteDeltas?.length ?? 0) > 0,
   });
   if (
@@ -648,45 +538,16 @@ export async function buildEffectiveRuntimeRegistrySnapshot(
       ].filter(Boolean).join(':'));
     }
   }
-  const variantContributedStrategySnapshot =
-    variant?.strategyContributions.length
-      ? buildStrategyRegistrySnapshot({
-          scope,
-          overlayGeneration: commonOverlayGeneration,
-          contributions: [
-            ...strategyContributions,
-            ...variant.strategyContributions,
-          ],
-        })
-      : commonStrategySnapshot;
-  const variantCommonStrategySnapshot =
-    variant?.strategyContributions.length && input.strategyDeltas?.length
-      ? applyPhaseHintDeltas({
-          snapshot: variantContributedStrategySnapshot,
-          deltas: input.strategyDeltas,
-          overlayGeneration: commonOverlayGeneration,
-        })
-      : variantContributedStrategySnapshot;
-  const evaluationStrategyDeltas: PhaseHintDelta[] = variant
-    ? [
-        ...variant.phaseHintDeltas,
-        ...variant.retiredInjections
-          .filter(entry => entry.category === 'phaseHints')
-          .map(entry => ({
-            kind: 'retire_phase_hint' as const,
-            hintId: entry.id,
-            contentHash: entry.contentHash,
-            ...(entry.scene ? {scene: entry.scene} : {}),
-          })),
-      ]
-    : [];
-  const effectiveStrategySnapshot = evaluationStrategyDeltas.length > 0
-    ? applyPhaseHintDeltas({
-        snapshot: variantCommonStrategySnapshot,
-        deltas: evaluationStrategyDeltas,
+  const effectiveStrategySnapshot = variant?.strategyContributions.length
+    ? buildStrategyRegistrySnapshot({
+        scope,
         overlayGeneration: commonOverlayGeneration,
+        contributions: [
+          ...strategyContributions,
+          ...variant.strategyContributions,
+        ],
       })
-    : variantCommonStrategySnapshot;
+    : commonStrategySnapshot;
   const baseStrategies = new Map(
     baseStrategySnapshot.getAllStrategies().map(definition => [
       definition.scene,
@@ -814,7 +675,6 @@ export async function getEffectiveRuntimeRegistrySnapshot(
   if (
     input.skillOverlays?.length
     || input.strategyContributions?.length
-    || input.strategyDeltas?.length
     || input.skillNoteDeltas?.length
     || input.publishedGeneration !== undefined
   ) {

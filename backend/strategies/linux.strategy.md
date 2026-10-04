@@ -41,33 +41,6 @@ keywords:
   - 缓存未命中
   - 分支预测
 
-phase_hints:
-  - id: sched_latency
-    keywords: ['sched', 'runnable', 'runqueue', '调度', '延迟', '等待']
-    constraints: '调度问题优先调用 linux_sched_latency_distribution 和 linux_runqueue_depth_timeline；如果用户给定时间窗必须传 start_ts/end_ts。'
-    critical_tools: ['linux_sched_latency_distribution', 'linux_runqueue_depth_timeline']
-    critical: true
-  - id: pmu_perf
-    keywords: ['PMU', 'perf', 'cache miss', 'branch miss', '缓存未命中', '分支预测']
-    constraints: 'PMU 问题调用 linux_perf_counter_hotspots。无 perf sample/counter 数据时必须说明 trace 未启用 PMU，不能给 cache/branch 结论。'
-    critical_tools: ['linux_perf_counter_hotspots']
-    critical: false
-  - id: linux_memory
-    keywords: ['RSS', 'swap', '内存', 'resident', 'process memory']
-    constraints: 'Linux 进程内存问题调用 linux_process_rss_swap_timeline；page fault/reclaim 仍用 page_fault_in_range 做窗口级阻塞证据。'
-    critical_tools: ['linux_process_rss_swap_timeline', 'page_fault_in_range']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: sched_or_linux_signal
-      match_keywords: ['linux_sched_latency_distribution', 'linux_runqueue_depth_timeline', 'sched', 'runqueue', '调度']
-      suggestion: 'Linux 调度问题需要包含 sched latency 或 runqueue 深度分析'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: linux_sched_latency_distribution
-        - tool: invoke_skill
-          skill_id: linux_runqueue_depth_timeline
 ---
 
 #### linux Core Strategy
