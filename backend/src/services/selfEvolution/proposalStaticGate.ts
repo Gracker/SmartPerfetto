@@ -113,7 +113,7 @@ export async function validateProposalStatic(input: {
       errors.add('static_skill_yaml_invalid');
     } else {
       const existing = input.options.skillSnapshot?.definitions ?? [];
-      collectSkillValidation([...existing, parsed], errors, warnings, [parsed.name]);
+      collectSkillValidation([...existing, parsed], input.options.skillSnapshot?.fragments, errors, warnings, [parsed.name]);
     }
   } else if (
     proposal.kind === 'skill_overlay_delta'
@@ -152,6 +152,7 @@ export async function validateProposalStatic(input: {
         const target = (JSON.parse(candidate.serializedContent) as {baseSkillId?: unknown}).baseSkillId;
         collectSkillValidation(
           candidateComposition.skills,
+          snapshot.fragments,
           errors,
           warnings,
           typeof target === 'string' ? [target] : [],
@@ -238,7 +239,7 @@ export async function validateProposalStatic(input: {
         if (typeof candidateSkills === 'string') {
           errors.add(candidateSkills);
         } else {
-          collectSkillValidation(candidateSkills, errors, warnings, [delta.targetId]);
+          collectSkillValidation(candidateSkills, snapshot.fragments, errors, warnings, [delta.targetId]);
         }
       }
     }
@@ -439,16 +440,24 @@ function withCandidateStepSql(
  */
 function collectSkillValidation(
   definitions: readonly SkillDefinition[],
+  // The snapshot's fragments: without them, fragment references and the
+  // stdlib reads inside fragments would go unchecked.
+  fragments: ReadonlyMap<string, string> | undefined,
   errors: Set<string>,
   warnings: Set<string>,
   candidateSkillIds: readonly string[] = [],
 ): void {
+  const fragmentCache = fragments ?? new Map<string, string>();
   // The registry is the same for both passes; its evidence readers are computed once.
   const readers = causeWordingReaders(definitions);
   const issues = [
-    ...validateSkillDefinitionsInProcess({definitions, predatingRuleSeverity: 'warning', causeWordingReaders: readers}).issues,
+    ...validateSkillDefinitionsInProcess({
+      definitions, fragmentCache, predatingRuleSeverity: 'warning', causeWordingReaders: readers,
+    }).issues,
     ...(candidateSkillIds.length > 0
-      ? validateSkillDefinitionsInProcess({definitions, affectedSkillIds: candidateSkillIds, causeWordingReaders: readers}).issues
+      ? validateSkillDefinitionsInProcess({
+        definitions, fragmentCache, affectedSkillIds: candidateSkillIds, causeWordingReaders: readers,
+      }).issues
         .filter(issue => PREDATING_RULE_CODES.has(issue.code))
       : []),
   ];
