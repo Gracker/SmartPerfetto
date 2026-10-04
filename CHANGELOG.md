@@ -57,6 +57,15 @@ Detailed commit-level history is available via `git log`.
   template or returned a canned query without reading a trace. No route takes
   the same request bodies, so the response points to the workspace agent API.
   The SQL template engine and the generator service only it used are gone.
+- The runtime dashboard (`GET /api/admin/runtime`) no longer returns
+  `llmCost`. Its counters came from a legacy model router that no analysis
+  path called, so they were always zero, while the router itself read
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `DEEPSEEK_API_KEY` around Provider
+  Manager. The router, its session-log telemetry hook and the unread
+  `MODEL_DEFAULT`, `MODEL_FALLBACK_CHAIN`, `MODEL_ENABLE_ENSEMBLE`,
+  `MODEL_ENSEMBLE_THRESHOLD` and `MODEL_NATIVE_*` settings are gone. The
+  enterprise load-test script now reports the LLM counters as missing instead
+  of reading a constant zero.
 - Agent endpoints no longer take a request id from a `requestId` field in the
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 

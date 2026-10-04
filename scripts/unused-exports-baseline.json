@@ -2,7 +2,6 @@
   "note": "Backend exports no production module uses, in or outside its own file: used only by tests, or by nothing, including barrel re-exports nothing imports through the barrel. Each entry is accepted debt, and a suite over it vouches for nothing the product does. Shrink this list; do not grow it.",
   "generated": "2026-10-04",
   "unusedExports": [
-    "src/agent/core/modelRouter.ts#default",
     "src/agent/scene/buildSmartChatReport.ts#buildSmartChatReport",
     "src/agent/scene/sceneTimelineContract.ts#SceneTimelineProposal",
     "src/agentRuntime/analysisHistory.ts#resolveAnalysisHistoryReader",

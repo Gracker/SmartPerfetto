@@ -2,17 +2,9 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import { createHash } from 'crypto';
-
-export const LLM_REDACTION_VERSION = '1.0.0';
-
 export interface LlmRedactionStats {
   applied: boolean;
   replacements: Record<string, number>;
-}
-
-export function hashSha256(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
 }
 
 type TextRule = {

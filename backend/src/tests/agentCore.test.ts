@@ -7,7 +7,6 @@
  *
  * Unit tests for the new Agent architecture components:
  * - SessionLogger
- * - ModelRouter
  */
 
 import { describe, it, expect, beforeEach, afterAll } from '@jest/globals';
@@ -20,8 +19,6 @@ import {
   getSessionLoggerManager,
   SessionLogger,
 } from '../services/sessionLogger';
-
-import { ModelRouter } from '../agent/core/modelRouter';
 
 describe('SessionLogger', () => {
   const testLogDir = path.join(process.cwd(), 'logs', 'test-sessions');
@@ -155,74 +152,5 @@ describe('SessionLoggerManager', () => {
 
     // Should return same instance
     expect(logger1).toBe(logger2);
-  });
-});
-
-describe('ModelRouter', () => {
-  let modelRouter: ModelRouter;
-  const originalDeepSeekApiKey = process.env.DEEPSEEK_API_KEY;
-
-  beforeEach(() => {
-    process.env.DEEPSEEK_API_KEY = 'test-deepseek-key';
-    modelRouter = new ModelRouter();
-  });
-
-  afterEach(() => {
-    if (originalDeepSeekApiKey === undefined) {
-      delete process.env.DEEPSEEK_API_KEY;
-    } else {
-      process.env.DEEPSEEK_API_KEY = originalDeepSeekApiKey;
-    }
-  });
-
-  describe('task routing', () => {
-    it('should route reasoning tasks appropriately', () => {
-      const model = modelRouter.routeByTask('intent_understanding');
-      expect(model.strengths).toContain('reasoning');
-    });
-
-    it('should route coding tasks appropriately', () => {
-      const model = modelRouter.routeByTask('sql_generation');
-      expect(model.strengths).toContain('coding');
-    });
-
-    it('should route fast/cost tasks appropriately', () => {
-      const model = modelRouter.routeByTask('simple_extraction');
-      // simple_extraction requires ['speed', 'cost'] - may match on 'cost' if 'speed' model disabled
-      expect(model.strengths.some(s => s === 'speed' || s === 'cost')).toBe(true);
-    });
-  });
-
-  describe('model management', () => {
-    it('should return enabled models', () => {
-      const models = modelRouter.getEnabledModels();
-      expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBeGreaterThan(0);
-    });
-
-    it('should find model by strengths', () => {
-      // findByStrengths takes an array of strengths
-      const reasoningModel = modelRouter.findByStrengths(['reasoning']);
-      expect(reasoningModel).toBeDefined();
-      expect(reasoningModel!.strengths).toContain('reasoning');
-    });
-
-    it('should list all models', () => {
-      const models = modelRouter.listModels();
-      expect(Array.isArray(models)).toBe(true);
-      expect(models.length).toBeGreaterThan(0);
-    });
-  });
-
-  describe('fallback chain', () => {
-    it('should provide fallback model IDs', () => {
-      const primary = modelRouter.routeByTask('evaluation');
-      // getFallbackChain takes a model ID string, returns string[]
-      const fallbacks = modelRouter.getFallbackChain(primary.id);
-
-      expect(Array.isArray(fallbacks)).toBe(true);
-      // Fallbacks should not include primary (comparing strings)
-      expect(fallbacks.includes(primary.id)).toBe(false);
-    });
   });
 });
