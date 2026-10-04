@@ -75,7 +75,8 @@ import {
 } from '../../runtimePerformance';
 import {createAnalysisRunSpec, type AnalysisRunSelection} from '../../analysisRunSpec';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog} from '../../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, usesLightweightToolCatalog} from '../../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
   acceptNativeDeclarationCompletion,
@@ -94,8 +95,11 @@ import {
 } from '../../analysisFinalizationContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {
+  captureSkillDisplayEntities,
   createRuntimeSkillNotesBudget,
   buildQuickRunReceipt,
+  getLruCacheEntry,
+  setLruCacheEntry,
   quickStopReasonFromTermination,
   resolveQuickTurnBudget,
   toProtocolHypothesis,
@@ -494,14 +498,12 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             runId: executionLease.key.runId!, sessionId, deadlineMs: sessionState.deadlineMs,
             turnIntent: sessionState.turnIntent, strategyRegistry: sessionState.strategyRegistry,
             selection: sessionState.analysisRunSelection,
-            traceIdentity: {currentTraceId: traceId, referenceTraceId: normalizedOptions.referenceTraceId},
+            traceIdentity: runTraceIdentity(traceId, normalizedOptions),
             deliveryContext: sessionState.delivery.context, protocolProjection: sessionState.delivery.protocolProjection,
             ...sourceUseFinalizationFields(sessionState.sourceUse),
             evidenceReadView: sessionState.artifactStore?.createEvidenceReadView({
               currentRunId: executionLease.key.runId!,
-              allowedTraces: [{traceId, traceSide: 'current'},
-                ...(normalizedOptions.referenceTraceId
-                  ? [{traceId: normalizedOptions.referenceTraceId, traceSide: 'reference' as const}] : [])],
+              allowedTraces: runAllowedTraces(runTraceIdentity(traceId, normalizedOptions)),
               ownerKey,
             }),
             ...(result.success && result.outputOrigin === 'sdk_final' && result.completion?.status === 'completed'
@@ -639,7 +641,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     sessionState.strategyRegistry = intentResolver.strategyRegistry;
     const turnIntent = await intentResolver.resolve();
     sessionState.turnIntent = turnIntent;
-    const policy = resolveRuntimeTurnPolicy(turnIntent, options.analysisMode);
+    const policy = resolveRunTurnPolicy(turnIntent, options);
     const sceneType = turnIntent.sceneId;
     const isQuickMode = policy.budgetMode === 'quick';
     const quickBudget = resolveQuickTurnBudget({
@@ -684,8 +686,8 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const effectivePackageName = focusTarget.packageName;
 
     // Architecture detection
-    let architecture: ArchitectureInfo | undefined;
-    if (!skipTracePreflightDetection) {
+    let architecture = skipTracePreflightDetection ? undefined : getLruCacheEntry(this.architectureCache, traceId);
+    if (!architecture && !skipTracePreflightDetection) {
       const architecturePhase = runtimePerformance.startPhase('architecture');
       try {
         const detector = createArchitectureDetector();
@@ -696,7 +698,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         });
         executionLease.throwIfAborted();
         architecture = detectedArchitecture;
-        this.architectureCache.set(traceId, architecture);
+        setLruCacheEntry(this.architectureCache, traceId, architecture);
         architecturePhase.end('ok');
       } catch (error) {
         architecturePhase.end(runtimeOutcomeFromError(error, executionLease.signal));
@@ -951,9 +953,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       analysisHistoryReader,
       canInvokeTool,
       runAuthorization: authorization,
-      conversationTraceAttached: options?.assistantSurface === 'conversation'
-        ? options.conversationTraceAttached === true
-        : undefined,
+      conversationTraceAttached: conversationTraceAttachedOption(options ?? {}),
       runManifestAttributionSink: options?.runManifestAttributionSink,
       sessionId,
       traceId,
@@ -963,6 +963,11 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       packageName: effectivePackageName,
       focusTarget,
       emitUpdate: emitToolUpdate,
+      onSkillResult: result => {
+        if (isRunDeliverable() && result.displayResults) {
+          captureSkillDisplayEntities(result.displayResults, sessionContext.getEntityStore(), QODER_AGENT_RUNTIME_KIND);
+        }
+      },
       analysisNotes: notes,
       artifactStore,
       cachedArchitecture: architecture,
@@ -1545,7 +1550,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       planHistory: privateKnowledge ? [] : planState?.history ?? [],
       uncertaintyFlags: privateKnowledge ? [] : this.sessionUncertaintyFlags.get(sessionId) ?? [],
       claudeHypotheses: privateKnowledge ? undefined : this.sessionHypotheses.get(sessionId) ?? undefined,
-      architecture: this.architectureCache.get(traceId),
+      architecture: getLruCacheEntry(this.architectureCache, traceId),
       engineState: createQoderSnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
         providerSnapshotHash: sessionFields.agentRuntimeProviderSnapshotHash,
@@ -1574,7 +1579,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       this.sessionUncertaintyFlags.set(sessionId, [...snapshot.uncertaintyFlags]);
     }
     if (snapshot.architecture) {
-      this.architectureCache.set(traceId, snapshot.architecture);
+      setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
     }
     if (snapshot.artifacts) {
       try {
@@ -1586,11 +1591,11 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
   }
 
   restoreArchitectureCache(traceId: string, architecture: any): void {
-    this.architectureCache.set(traceId, architecture);
+    setLruCacheEntry(this.architectureCache, traceId, architecture);
   }
 
   getCachedArchitecture(traceId: string): any {
-    return this.architectureCache.get(traceId);
+    return getLruCacheEntry(this.architectureCache, traceId);
   }
 
   // -------------------------------------------------------------------------

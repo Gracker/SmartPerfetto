@@ -5,6 +5,8 @@
 import {resolveTurnIntentComplexity, type AnalysisTurnIntent} from './analysisTurnIntent';
 import type {SourceNeed} from '../types/sourceNeed';
 import type {SourceNeedMissingReason} from '../services/codebase/sourceDepthPolicy';
+import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
+import {runAttachesTrace} from './runtimeTraceAttachment';
 
 export interface RuntimeTurnPolicy {
   readonly budgetMode: 'quick' | 'full';
@@ -73,4 +75,18 @@ export function resolveRuntimeTurnPolicy(
       : {sourceNeedMissing: intent.status !== 'resolved' ? 'intent_unavailable' as const
         : intent.source === 'product' ? 'product_run' as const : 'source_need_missing' as const}),
   });
+}
+
+/**
+ * The policy a runtime executes: the intent's policy, with nothing gathered
+ * before the first turn when the run has no mounted trace (a trace-less
+ * conversation). Every runtime resolves its policy here.
+ */
+export function resolveRunTurnPolicy(
+  intent: AnalysisTurnIntent,
+  options: Pick<AnalysisOptions, 'analysisMode' | 'assistantSurface' | 'conversationTraceAttached'>,
+): RuntimeTurnPolicy {
+  const policy = resolveRuntimeTurnPolicy(intent, options.analysisMode ?? 'auto');
+  return runAttachesTrace(options) ? policy
+    : Object.freeze({...policy, allowAutomaticPrefetch: false, preflight: 'none' as const});
 }

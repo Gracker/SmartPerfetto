@@ -7,7 +7,8 @@ import { EventEmitter } from 'events';
 import {randomUUID} from 'node:crypto';
 import {tmpdir} from 'node:os';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
   acceptNativeDeclarationCompletion,
@@ -582,7 +583,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
 
   /** Get cached architecture for a traceId (used for persistence). */
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
-    return this.architectureCache.get(traceId);
+    return getLruCacheEntry(this.architectureCache, traceId);
   }
 
   async analyze(
@@ -658,11 +659,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       if (!finalizationSetup || attemptNumber === 0 ||
           (!hasAcceptedSdkFinal() && !acceptedRawBody?.trim())) return;
       const store = this.artifactStores.get(sessionId);
-      const identity = finalizationSetup.input.traceIdentity;
-      const allowedTraces = [
-        ...(identity.currentTraceId ? [{traceId: identity.currentTraceId, traceSide: 'current' as const}] : []),
-        ...(identity.referenceTraceId ? [{traceId: identity.referenceTraceId, traceSide: 'reference' as const}] : []),
-      ];
+      const allowedTraces = runAllowedTraces(finalizationSetup.input.traceIdentity);
       const semanticCall = allowSemantic && result.completion?.status === 'completed' &&
         result.outputOrigin === 'sdk_final' && result.conclusion.trim().length > 0;
       const intent = finalizationSetup.input.turnIntent;
@@ -751,9 +748,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       });
       turnIntent = await intentResolver.resolve();
       executionLease.throwIfAborted();
-      const resolvedPolicy = resolveRuntimeTurnPolicy(turnIntent, options.analysisMode ?? 'auto');
-      const turnPolicy = options.assistantSurface === 'conversation' && options.conversationTraceAttached !== true
-        ? {...resolvedPolicy, allowAutomaticPrefetch: false, preflight: 'none' as const} : resolvedPolicy;
+      const turnPolicy = resolveRunTurnPolicy(turnIntent, options);
       const quickBudgetConfig = createQuickConfig(resolvedConfig, sdkEnv);
       // A failed light-model classifier must not send the main answer back to
       // that same unavailable model. Provider identity remains pinned.
@@ -809,11 +804,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           selection: analysisRunSpec.selection,
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
-          traceIdentity: {
-            currentTraceId: options.assistantSurface === 'conversation' && options.conversationTraceAttached !== true
-              ? undefined : traceId,
-            referenceTraceId: options.referenceTraceId,
-          },
+          traceIdentity: runTraceIdentity(traceId, options),
           dispatchText: async input => {
             const directory = await fs.promises.mkdtemp(path.join(tmpdir(), 'smartperfetto-claude-review-'));
             try {
@@ -2050,7 +2041,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
     const claudeHypotheses = this.sessionHypotheses.get(sessionId) || [];
     const flags = this.sessionUncertaintyFlags.get(sessionId) || [];
     const artifactStore = this.artifactStores.get(sessionId);
-    const architecture = this.architectureCache.get(traceId);
+    const architecture = getLruCacheEntry(this.architectureCache, traceId);
 
     return {
       version: 1,
@@ -2493,9 +2484,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       analysisHistoryReader: precomputed.analysisHistoryReader,
       canInvokeTool,
       runAuthorization: precomputed.runAuthorization,
-      conversationTraceAttached: options.assistantSurface === 'conversation'
-        ? options.conversationTraceAttached === true
-        : undefined,
+      conversationTraceAttached: conversationTraceAttachedOption(options),
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,

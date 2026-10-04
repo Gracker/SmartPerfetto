@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import {DEFAULT_RUNTIME_CACHE_LIMIT} from '../../agentRuntime/runtimeCache';
 import {sessionContextManager} from '../../agent/context/enhancedSessionContext';
 import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../tests/helpers/runtimeDraftTerminalState';
 import fs from 'fs';
@@ -2274,6 +2275,19 @@ describe('OpenAI snapshot compatibility', () => {
     const next = runtime.takeSnapshot('s1', 'trace-1', {...sessionFields,
       ...('referenceTraceId' in runtimeState ? {referenceTraceId: runtimeState.referenceTraceId} : {})});
     expect(JSON.stringify(next)).not.toMatch(/resp_old|previous question|opaque/);
+  });
+});
+
+describe('OpenAI architecture cache bound', () => {
+  it('keeps restored architectures within the shared LRU bound', () => {
+    const runtime = createOpenAiRuntimeForTest();
+    const architecture = {type: 'STANDARD', confidence: 0.9, evidence: []};
+    for (let index = 0; index <= DEFAULT_RUNTIME_CACHE_LIMIT; index++) {
+      runtime.restoreFromSnapshot(`s-${index}`, `trace-${index}`, {...emptySnapshot(`s-${index}`, `trace-${index}`), architecture});
+    }
+    expect(runtime.architectureCache.size).toBe(DEFAULT_RUNTIME_CACHE_LIMIT);
+    expect(runtime.getCachedArchitecture('trace-0')).toBeUndefined();
+    expect(runtime.getCachedArchitecture(`trace-${DEFAULT_RUNTIME_CACHE_LIMIT}`)).toEqual(architecture);
   });
 });
 

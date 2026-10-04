@@ -3714,6 +3714,22 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(correctionPrompt).toContain('candidateProtocolDiagnostic');
   });
 
+  it('gathers no trace facts and binds no trace for a conversation without a mounted trace', async () => {
+    passVerification();
+    const trace = createFakeTraceProcessorService();
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop',
+      content: [{type: 'text', text: declaredPiCandidate('No trace is attached.')}]}];
+    const sessionId = 'pi-no-trace';
+    try {
+      const result = await typedRuntime({trace}).analyze('A question', sessionId, `conversation-no-trace:${sessionId}`,
+        {assistantSurface: 'conversation', conversationTraceAttached: false, analysisMode: 'full'});
+      expect(trace.query).not.toHaveBeenCalled();
+      const context = takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({});
+      context?.dispose();
+    } finally {sessionContextManager.remove(sessionId);}
+  });
+
   it('leaves the terminal state to the finalizer when a draft diagnostic has no repair', async () => {
     mockClaudeVerifierVerifyConclusion.mockImplementation(async () => ({passed: false,
       heuristicIssues: [UNREPAIRABLE_DRAFT_ISSUE], llmIssues: []}));

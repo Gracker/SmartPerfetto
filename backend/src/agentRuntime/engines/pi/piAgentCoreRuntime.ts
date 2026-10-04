@@ -13,7 +13,8 @@ import {
   sourceUseFinalizationFields,
 } from '../../analysisFinalizationContext';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
 import {
   acceptNativeDeclarationCompletion,
@@ -331,10 +332,7 @@ function createPiEvidenceReadView(
       tenantId: options.tenantId ?? scope?.tenantId,
       workspaceId: options.workspaceId ?? scope?.workspaceId,
       userId: options.userId}),
-    allowedTraces: [
-      ...(traceId ? [{traceId, traceSide: 'current' as const}] : []),
-      ...(options.referenceTraceId ? [{traceId: options.referenceTraceId, traceSide: 'reference' as const}] : []),
-    ],
+    allowedTraces: runAllowedTraces(runTraceIdentity(traceId, options)),
   });
 }
 
@@ -1266,7 +1264,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             runId: executionLease.key.runId!, sessionId, deadlineMs: startedAt + requestTimeoutMs,
             turnIntent, strategyRegistry,
             selection: analysisRunSelection,
-            traceIdentity: {currentTraceId: traceId || undefined, referenceTraceId: options.referenceTraceId},
+            traceIdentity: runTraceIdentity(traceId, options),
             deliveryContext: projected.deliveryContext, protocolProjection: projected.protocolProjection,
             ...sourceUseFinalizationFields(sourceUse),
             evidenceReadView: createPiEvidenceReadView(currentArtifactStore, executionLease.key.runId!, sessionId, traceId, options),
@@ -1527,7 +1525,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     });
     const turnIntent = await intentResolver.resolve();
     executionLease.throwIfAborted();
-    const policy = resolveRuntimeTurnPolicy(turnIntent, options.analysisMode ?? 'auto');
+    const policy = resolveRunTurnPolicy(turnIntent, options);
     onPolicyReady(turnIntent, policy, intentResolver.strategyRegistry);
     runtimePerformance.finishClassification(turnIntent.status === 'resolved' ? 'ok' : 'error');
     const sdkStartPhase = runtimePerformance.startPhase('sdk_start');
@@ -1864,7 +1862,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       attachFinalizationContext(result, {
         runId, sessionId, deadlineMs, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
         selection: prep.analysisRunSpec.selection,
-        traceIdentity: {currentTraceId: traceId || undefined, referenceTraceId: options.referenceTraceId},
+        traceIdentity: runTraceIdentity(traceId, options),
         deliveryContext: projected.deliveryContext, protocolProjection: projected.protocolProjection,
         ...sourceUseFinalizationFields(prep.sourceUse),
         evidenceReadView: createPiEvidenceReadView(prep.artifactStore, runId, sessionId, traceId, options),
@@ -2056,9 +2054,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       sceneRunContext,
       runId: executionLease.key.runId!,
       toolObserver, canInvokeTool, runAuthorization, analysisHistoryReader,
-      conversationTraceAttached: options.assistantSurface === 'conversation'
-        ? options.conversationTraceAttached === true
-        : undefined,
+      conversationTraceAttached: conversationTraceAttachedOption(options),
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,

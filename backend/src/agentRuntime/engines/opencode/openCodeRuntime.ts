@@ -113,7 +113,8 @@ import {
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
 import {runOpenCodeIntentTransport, type OpenCodeClassifierHost, type OpenCodeIntentTransportInput} from './openCodeIntentTransport';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {attachFinalizationContext, sourceUseFinalizationFields} from '../../analysisFinalizationContext';
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliveryContext} from '../../../types/analysisDelivery';
@@ -2608,7 +2609,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       }),
     });
     const turnIntent = await resolver.resolve();
-    const turnPolicy = resolveRuntimeTurnPolicy(turnIntent, options.analysisMode);
+    const turnPolicy = resolveRunTurnPolicy(turnIntent, options);
     runtimePerformance.finishClassification(turnIntent.status === 'resolved' ? 'ok' : 'error');
     executionLease.throwIfAborted();
     // The classifier and answer share a fully configured provider/model. A
@@ -2970,15 +2971,12 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     attachFinalizationContext(result, {
       runId, sessionId, deadlineMs, turnIntent, strategyRegistry: resolver.strategyRegistry,
       selection: prep.analysisRunSpec.selection,
-      traceIdentity: {currentTraceId: traceId, referenceTraceId: options.referenceTraceId},
+      traceIdentity: runTraceIdentity(traceId, options),
       deliveryContext, protocolProjection,
       ...sourceUseFinalizationFields(prep.sourceUse),
       ...(artifactStore ? {evidenceReadView: artifactStore.createEvidenceReadView({
         currentRunId: runId,
-        allowedTraces: [
-          {traceId, traceSide: 'current'},
-          ...(options.referenceTraceId ? [{traceId: options.referenceTraceId, traceSide: 'reference' as const}] : []),
-        ],
+        allowedTraces: runAllowedTraces(runTraceIdentity(traceId, options)),
         ownerKey: canonicalContentHash({runId, sessionId, scopes: {
           provider: scopeIdentity(prep.analysisRunSpec.scopes.provider),
           knowledge: scopeIdentity(prep.analysisRunSpec.scopes.knowledge),
@@ -3134,9 +3132,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       runId,
       toolObserver, canInvokeTool, runAuthorization, analysisHistoryReader,
       strategyRegistry,
-      conversationTraceAttached: options.assistantSurface === 'conversation'
-        ? options.conversationTraceAttached === true
-        : undefined,
+      conversationTraceAttached: conversationTraceAttachedOption(options),
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId,
       traceId,

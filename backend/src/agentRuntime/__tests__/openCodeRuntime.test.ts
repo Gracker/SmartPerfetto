@@ -867,6 +867,21 @@ describe('OpenCode native turn intent and delivery', () => {
     }
   }));
 
+  it('gathers no trace facts and binds no trace for a conversation without a mounted trace', async () => withBackendDataDir(async () => {
+    useIntent({...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide', recommendedComplexity: 'full'});
+    const sessionId = 'opencode-no-trace';
+    try {
+      const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide',
+        recommendedComplexity: 'full'}});
+      const result = await harness.runtime.analyze('A question', sessionId, `conversation-no-trace:${sessionId}`,
+        {assistantSurface: 'conversation', conversationTraceAttached: false, analysisMode: 'full'});
+      expect(harness.traceProcessor.query).not.toHaveBeenCalled();
+      const context = finalizationContext.takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({});
+      context?.dispose();
+    } finally {sessionContextManager.remove(sessionId);}
+  }));
+
   it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => withBackendDataDir(async () => {
     const sessionId = 'privacy-replaced-terminal-state';
     revokeCodeAwareOutputGuards(sessionId);

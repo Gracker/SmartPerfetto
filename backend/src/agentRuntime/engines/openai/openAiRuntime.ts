@@ -73,7 +73,8 @@ import {createDeadlineRuntimeTimeout, createProgressAwareRunDeadline, createRese
 import {randomUUID} from 'node:crypto';
 import {TransformStream} from 'node:stream/web';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {runOpenAiIntentTransport} from './openAiIntentTransport';
 import {
   attachFinalizationContext,
@@ -560,7 +561,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   }
 
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
-    return this.architectureCache.get(traceId);
+    return getLruCacheEntry(this.architectureCache, traceId);
   }
 
   getSessionNotes(sessionId: string): AnalysisNote[] {
@@ -641,9 +642,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const resolvedTurnIntent = await intentResolver.resolve();
       turnIntent = resolvedTurnIntent;
       analysisAbortScope.throwIfAborted();
-      const resolvedPolicy = resolveRuntimeTurnPolicy(turnIntent, options.analysisMode);
-      const policy = options.assistantSurface === 'conversation' && options.conversationTraceAttached !== true
-        ? {...resolvedPolicy, allowAutomaticPrefetch: false, preflight: 'none' as const} : resolvedPolicy;
+      const policy = resolveRunTurnPolicy(turnIntent, options);
       const quickMode = policy.budgetMode === 'quick';
       const sceneType = turnIntent.sceneId;
       // A failed light-model classifier does not authorize a provider switch.
@@ -654,13 +653,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const finalizationConfig = Object.freeze({baseURL: config.baseURL, apiKey: config.apiKey,
         protocol: config.protocol, lightModel: config.model,
         ...(config.maxOutputTokens !== undefined ? {maxOutputTokens: config.maxOutputTokens} : {})});
-      const currentTraceId = traceId && (options.assistantSurface !== 'conversation' || options.conversationTraceAttached === true)
-        ? traceId : undefined;
-      const referenceTraceId = currentTraceId ? options.referenceTraceId : undefined;
-      const allowedTraces = [
-        ...(currentTraceId ? [{traceId: currentTraceId, traceSide: 'current' as const}] : []),
-        ...(referenceTraceId ? [{traceId: referenceTraceId, traceSide: 'reference' as const}] : []),
-      ];
+      const traceIdentity = runTraceIdentity(traceId, options);
+      const allowedTraces = runAllowedTraces(traceIdentity);
       const evidenceOwnerKey = analysisDeliveryFingerprint({runId, sessionId,
         tenantId: options.tenantId, workspaceId: options.workspaceId, userId: options.userId,
         analysisContextFingerprint: options.analysisContextFingerprint,
@@ -1066,7 +1060,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
           selection: analysisRunSpec.selection,
-          traceIdentity: {currentTraceId, referenceTraceId}, deliveryContext, protocolProjection,
+          traceIdentity, deliveryContext, protocolProjection,
           ...sourceUseFinalizationFields(sourceUse),
           evidenceReadView: this.artifactStores.get(sessionId)?.createEvidenceReadView({
             allowedTraces, ownerKey: evidenceOwnerKey, currentRunId: runId,
@@ -1194,7 +1188,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       planHistory: privateKnowledge ? [] : planState?.history ?? [],
       uncertaintyFlags: privateKnowledge ? [] : this.sessionUncertaintyFlags.get(sessionId) || [],
       claudeHypotheses: privateKnowledge ? undefined : this.sessionHypotheses.get(sessionId) || undefined,
-      architecture: this.architectureCache.get(traceId),
+      architecture: getLruCacheEntry(this.architectureCache, traceId),
       // No native SDK state crosses a logical turn, so only the provider pin is engine-local.
       engineState: createOpenAISnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
@@ -1227,7 +1221,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.artifactStores.set(sessionId, ArtifactStore.fromSnapshot(snapshot.artifacts));
     }
     if (snapshot.architecture) {
-      this.architectureCache.set(traceId, snapshot.architecture);
+      setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
     }
   }
 
@@ -1364,7 +1358,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       toolObserver: runtime.toolObserver,
       canInvokeTool,
       runAuthorization: runtime.runAuthorization,
-      conversationTraceAttached: options.assistantSurface === 'conversation' ? options.conversationTraceAttached === true : undefined,
+      conversationTraceAttached: conversationTraceAttachedOption(options),
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId, traceId, userQuery: query, traceProcessorService: this.traceProcessorService, skillExecutor,
       packageName: effectivePackageName, focusTarget, emitUpdate: update => {

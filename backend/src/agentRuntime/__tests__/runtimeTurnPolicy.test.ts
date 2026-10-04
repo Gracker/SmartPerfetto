@@ -4,7 +4,8 @@
 
 import {describe, expect, it} from '@jest/globals';
 import type {AnalysisTurnIntent} from '../analysisTurnIntent';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog} from '../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, resolveRuntimeTurnPolicy, usesLightweightToolCatalog} from '../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runAttachesTrace, runTraceIdentity} from '../runtimeTraceAttachment';
 
 const intent: AnalysisTurnIntent = Object.freeze({
   schemaVersion: 1, status: 'resolved', source: 'semantic', registryFingerprint: 'test',
@@ -86,5 +87,32 @@ describe('runtime turn policy', () => {
     for (const reason of ['full report', 'do not inspect anything', 'confirm-like follow-up: thanks']) {
       expect(resolveRuntimeTurnPolicy({...intent, reason})).toEqual(expected);
     }
+  });
+});
+
+describe('run trace attachment', () => {
+  const sceneWide: AnalysisTurnIntent = {...intent, scope: 'scene_wide'};
+  const noTrace = {assistantSurface: 'conversation' as const, conversationTraceAttached: false};
+
+  it('gathers nothing before the first turn when a conversation has no mounted trace', () => {
+    expect(resolveRunTurnPolicy(sceneWide, {analysisMode: 'full'})).toMatchObject({preflight: 'full', allowAutomaticPrefetch: true});
+    expect(resolveRunTurnPolicy(sceneWide, {analysisMode: 'full', ...noTrace}))
+      .toEqual({...resolveRuntimeTurnPolicy(sceneWide, 'full'), preflight: 'none', allowAutomaticPrefetch: false});
+    expect(resolveRunTurnPolicy(sceneWide, {assistantSurface: 'conversation', conversationTraceAttached: true}))
+      .toEqual(resolveRuntimeTurnPolicy(sceneWide, 'auto'));
+    expect(Object.isFrozen(resolveRunTurnPolicy(sceneWide, noTrace))).toBe(true);
+  });
+
+  it('binds no trace identity or evidence trace to a placeholder conversation trace id', () => {
+    expect(runAttachesTrace({})).toBe(true);
+    expect(runAttachesTrace(noTrace)).toBe(false);
+    expect(conversationTraceAttachedOption({})).toBeUndefined();
+    expect(conversationTraceAttachedOption(noTrace)).toBe(false);
+    expect(runTraceIdentity('conversation-no-trace:s', {...noTrace, referenceTraceId: 'ref'})).toEqual({});
+    const identity = runTraceIdentity('trace-a', {referenceTraceId: 'trace-b'});
+    expect(identity).toEqual({currentTraceId: 'trace-a', referenceTraceId: 'trace-b'});
+    expect(runAllowedTraces(identity)).toEqual([
+      {traceId: 'trace-a', traceSide: 'current'}, {traceId: 'trace-b', traceSide: 'reference'}]);
+    expect(runAllowedTraces(runTraceIdentity('', {referenceTraceId: 'trace-b'}))).toEqual([]);
   });
 });
