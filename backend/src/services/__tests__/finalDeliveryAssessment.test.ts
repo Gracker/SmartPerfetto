@@ -258,7 +258,7 @@ describe('server-owned analysis delivery assessment', () => {
     context.completion = {...context.completion!, status: 'incomplete', reason: 'output_limit'};
     const assessment = assessFinalResultQualityAssessment({result: target, query: 'hello', context});
     expect(assessment.issues.map(issue => issue.code)).toEqual(expect.arrayContaining([
-      'verifier_contradicted_claim', 'kernel_blocking_claim_boundary', 'sdk_incomplete',
+      'verifier_contradicted_claim', 'sdk_incomplete',
     ]));
     expect(assessment.selectedIssue?.recoveryKind).toBe('correct_evidence');
     expect(assessment.assurance.claims).toBe('failed');

@@ -47,14 +47,6 @@ export interface PlanToolCallRecorderInput {
 export interface AnalysisPlanTracker {
   current: AnalysisPlanV3 | null;
   prePlanToolCallLog?: ToolCallRecord[];
-  /**
-   * How many tool calls this run has dispatched, counted once and never
-   * revised.
-   *
-   * The bounded logs can be trimmed or transferred during plan submission.
-   * Their lengths cannot provide a monotone dispatch count.
-   */
-  dispatchedToolCallCount?: number;
 }
 
 const recordedCallIds = new WeakMap<AnalysisPlanTracker, Set<string>>();
@@ -69,7 +61,6 @@ export function resetPrePlanToolCallsForNewRun(
 ): void {
   if (!tracker) return;
   tracker.prePlanToolCallLog = [];
-  tracker.dispatchedToolCallCount = 0;
   recordedCallIds.delete(tracker);
 }
 
@@ -167,9 +158,6 @@ export function recordPlanOrPrePlanToolCall(
     seen.add(toolCallId);
     recordedCallIds.set(tracker, seen);
   }
-  // Counted before any filtering: the model dispatched this call whether or not
-  // the call is one the plan cares to remember.
-  tracker.dispatchedToolCallCount = (tracker.dispatchedToolCallCount ?? 0) + 1;
   if (tracker.current) {
     const record = recordPlanToolCall(tracker.current, input);
     if (record) reconcileSuccessfulBackfill(tracker.current, record, input.onPhaseAutoCompleted);
@@ -208,20 +196,6 @@ function reconcileSuccessfulBackfill(
   phase.completedAt = record.timestamp;
   phase.completionSource = 'evidence_backfill';
   try { notify?.(phase); } catch { /* Display observers cannot change a recorded tool outcome. */ }
-}
-
-/**
- * How many tool calls this run dispatched.
- *
- * Reads the monotone counter, not the logs: see `dispatchedToolCallCount` for
- * why the logs cannot answer this. Every runtime dispatches through
- * `recordPlanOrPrePlanToolCall`, so this is the provider-neutral signal and
- * runtimes should read it here rather than keeping private counters that drift.
- */
-export function countDispatchedToolCalls(
-  tracker: AnalysisPlanTracker | null | undefined,
-): number {
-  return tracker?.dispatchedToolCallCount ?? 0;
 }
 
 export function replayPrePlanToolCalls(tracker: AnalysisPlanTracker | null | undefined): number {

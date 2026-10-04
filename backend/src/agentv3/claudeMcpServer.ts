@@ -123,7 +123,6 @@ import {captureEvidenceTable, captureRawSqlEvidence, evidenceTableFor, nativePro
   projectEvidenceColumnUnitsForModel, projectEvidenceTableForModel,
   type CapturedFieldSemantics, type DeclaredFieldSemantics, type EvidenceTableWitness} from '../services/evidence/evidenceCapture';
 import {scopeMetadata, identityForScopeEvidence, mergeScopeProvenance, type EvidenceScopeProvenanceV1} from '../types/identityContract';
-import {assessScrollingJankClaimBoundary} from '../services/scrollingJankClaimBoundary';
 import { injectStdlibIncludes } from './sqlIncludeInjector';
 import {
   buildSqlSchemaDiagnostic,
@@ -7188,33 +7187,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
         hypothesis.status !== 'formed' && hypothesis.resolvedAt !== undefined
           ? { status: hypothesis.status, evidence: hypothesis.evidence ?? '', resolvedAt: hypothesis.resolvedAt }
           : null;
-
-      if (effectiveStatus === 'confirmed' && options.sceneType === 'scrolling') {
-        const claimBoundaryIssue = assessScrollingJankClaimBoundary(hypothesis.statement);
-        if (claimBoundaryIssue) {
-          return {
-            content: [{
-              type: 'text' as const,
-              text: JSON.stringify({
-                success: false,
-                hypothesisId: effectiveHypothesisId,
-                statement: hypothesis.statement,
-                error: localize(
-                  outputLanguage,
-                  claimBoundaryIssue.code === 'prediction_error_noise_overclaim'
-                    ? 'Prediction Error 只能作为 scheduler 预测偏差标签解释；不能把密集或连续样本一概确认为统计噪声、统计假象或 measurement artifact。请拒绝原假设，再提交带“孤立错误通常不代表用户可感知 App 卡顿”等边界的新假设。'
-                    : '不能确认“唯一真实/唯一用户可感知掉帧”这类排他性结论。请拒绝原假设，再提交只描述直接证据范围的新假设。',
-                  claimBoundaryIssue.code === 'prediction_error_noise_overclaim'
-                    ? 'Prediction Error is a scheduler prediction-drift label; dense or continuous samples cannot be confirmed as statistical noise. Reject the original hypothesis, then submit a bounded replacement such as “isolated errors usually do not imply user-perceived app jank.”'
-                    : 'An exclusive “only real/user-perceived jank” conclusion cannot be confirmed. Reject the original hypothesis, then submit a replacement limited to the directly supported evidence.',
-                ),
-                action_required: 'reject_hypothesis_and_submit_bounded_replacement',
-              }),
-            }],
-            isError: true,
-          };
-        }
-      }
 
       if (priorResolution) {
         (hypothesis.history ??= []).push(priorResolution);

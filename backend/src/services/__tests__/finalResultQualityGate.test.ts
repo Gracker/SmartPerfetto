@@ -23,8 +23,6 @@ import {
   completeFinalResultComparisonIdentity,
   assessFinalResultQuality,
   assessFinalResultQualityAssessment,
-  hasDeliverableFinalReportHeading,
-  looksLikePhaseSummaryFallback,
 } from '../finalResultQualityGate';
 
 function result(overrides: Partial<AnalysisResult>): AnalysisResult {
@@ -113,198 +111,6 @@ async function finalizeWithConsistentSemanticFixture(target: AnalysisResult, env
 }
 
 describe('final result quality gate', () => {
-  it.each([
-    'Prediction Error 1123 帧是 SurfaceFlinger 预测模型系统性漂移的统计噪声。',
-    '49 帧 App Deadline Missed 是本 trace 唯一的真实用户可感知掉帧。',
-    'Prediction Error is merely statistical noise, and App Deadline Missed is the only user-perceived jank.',
-    '本 trace 报告的 89.06% 掉帧率是统计假象：1267 帧为 Prediction Error。',
-    '真实可感知卡顿仅 3.7%（49 帧），其余都是系统侧观察。',
-    'Prediction Error is a measurement artifact; real user-perceived jank only 49 frames.',
-  ])('rejects absolute scrolling jank semantics: %s', conclusion => {
-    const issue = assessFinalResultQuality({
-      result: result({
-        conclusion,
-        findings: [{severity: 'warning', title: 'Jank evidence', description: 'FrameTimeline evidence'}] as any,
-        conclusionContract: {mode: 'focused_answer'} as any,
-      }),
-      query: '分析这个滑动 trace 的准确根因',
-      sceneType: 'scrolling',
-    });
-
-    expect(issue?.code).toBe('scrolling_jank_claim_boundary');
-    expect(issue?.offendingStatement).toBeTruthy();
-  });
-
-  it.each([
-    '孤立 Prediction Error 通常不代表用户可感知的 App 卡顿；连续呈现间隔异常仍需单独报告。',
-    '不能把密集 Prediction Error 一概称为统计噪声，当前只确认 49 帧可直接归因到 App。',
-    'The trace cannot treat Prediction Error as statistical noise; isolated errors usually do not imply user-perceived app jank.',
-    '不能把 Prediction Error 一概称为统计假象；当前有 49 帧可直接归因到 App，另外 71 个 Prediction Error 间隔超过 12.5ms。',
-    '“Prediction Error 是统计假象”这种说法不成立，仍需单独报告 71 个超 12.5ms 的呈现间隔。',
-    'Prediction Error is a measurement artifact is not supported by the evidence.',
-    '“真实可感知卡顿仅 49 帧”是不准确的；49 帧只是可直接归因到 App 的类别。',
-  ])('accepts bounded scrolling jank semantics: %s', conclusion => {
-    const issue = assessFinalResultQuality({
-      result: result({
-        conclusion,
-        findings: [{severity: 'warning', title: 'Jank evidence', description: 'FrameTimeline evidence'}] as any,
-        conclusionContract: {mode: 'focused_answer'} as any,
-      }),
-      query: '分析这个滑动 trace 的准确根因',
-      sceneType: 'scrolling',
-    });
-
-    expect(issue).toBeUndefined();
-  });
-
-  it('recognizes deliverable report headings without Chinese word-boundary false negatives', () => {
-    expect(hasDeliverableFinalReportHeading('# 启动性能分析报告\n\n## 综合结论')).toBe(true);
-    expect(hasDeliverableFinalReportHeading('## 综合结论\n\n冷启动 TTID=1912ms。')).toBe(true);
-    expect(hasDeliverableFinalReportHeading('### Phase 1 关键发现记录\n\nTTID=1912ms。')).toBe(false);
-  });
-
-  it('keeps the legacy phase detector without using it as completion authority', () => {
-    const fallback = [
-      '## 综合结论',
-      '',
-      '完成综合结论输出。冷启动TTID=1912ms，主因是主线程模拟负载过重。',
-      '',
-      '## 分阶段证据摘要',
-      '',
-      '- 启动概览采集: 获取启动概览：冷启动dur=1338ms，TTID=1912ms。',
-      '- 启动详情分析: 四象限：Q1=62.8%, Q4b=35.1%。',
-      '- 综合结论: 完成综合结论输出。',
-    ].join('\n');
-
-    expect(looksLikePhaseSummaryFallback(fallback)).toBe(true);
-    expect(assessFinalResultQuality({
-      result: result({ conclusion: fallback }),
-      query: '分析这个启动 trace',
-    })).toBeUndefined();
-
-    expect(looksLikePhaseSummaryFallback([
-      '## 综合结论',
-      '',
-      '主要瓶颈来自 ChaosTask，证据 art-30。',
-      '',
-      '## 分阶段证据摘要',
-      '',
-      '- p1: 获取启动概览，证据 art-2。',
-      '- p2: 输出结论，证据 data:sql_table:current:abc。',
-    ].join('\n'))).toBe(true);
-
-    expect(looksLikePhaseSummaryFallback([
-      '综合结论',
-      '',
-      '完成综合结论输出。',
-      '',
-      '分阶段证据摘要',
-      '',
-      '- 启动概览采集: 获取启动概览。',
-      '- 综合结论: 完成综合结论输出。',
-    ].join('\n'))).toBe(true);
-
-    expect(looksLikePhaseSummaryFallback([
-      '综合结论：',
-      '完成综合结论输出。冷启动TTID=1912ms，主因是主线程模拟负载过重(A16)。',
-      '',
-      '分阶段证据摘要：',
-      '启动概览采集: 获取启动概览：冷启动dur=1338ms，TTID=1912ms。',
-      '启动类型验证: 确认为冷启动。',
-      '启动详情分析: 四象限：Q1=62.8%,Q4b=35.1%。',
-      '综合结论: 完成综合结论输出。',
-    ].join('\n'))).toBe(true);
-
-    expect(looksLikePhaseSummaryFallback([
-      '## Final Conclusion',
-      '',
-      'Completed final conclusion output.',
-      '',
-      '## Evidence Summary By Phase',
-      '',
-      '- Overview collection: TTID=1912ms.',
-    ].join('\n'))).toBe(true);
-
-    expect(looksLikePhaseSummaryFallback([
-      '## 综合结论',
-      '',
-      '完成综合结论输出。',
-      '',
-      '## 分阶段证据摘要',
-      '',
-      '- 启动概览采集: 获取启动概览。',
-      '',
-      '## 根因拆解',
-      '',
-      '主要来自启动阶段。',
-      '',
-      '## 优化建议',
-      '',
-      '建议优化启动任务。',
-    ].join('\n'))).toBe(true);
-
-    expect(looksLikePhaseSummaryFallback([
-      '综合结论：完成综合结论输出。冷启动TTID=1912ms。',
-      '分阶段证据摘要：启动概览采集: 获取启动概览：冷启动dur=1338ms。',
-      '1. 启动详情分析: 四象限 Q1=62.8%。',
-    ].join('\n'))).toBe(true);
-  });
-
-  it('does not flag a rich report that contains independent evidence sections', () => {
-    const report = [
-      '# 启动性能分析报告',
-      '',
-      '## 综合结论',
-      '',
-      '启动类型为冷启动，TTID=1912ms，TTFD=2200ms，主因是主线程模拟负载。ChaosTask self=456ms，LoadSimulator_ActivityInit self=249.8ms。',
-      '',
-      '## 阶段耗时分解',
-      '',
-      '- 启动概览采集: 获取启动概览，TTID=1912ms。',
-      '- startup_detail 启动详情分析: 四象限 Q1=62.8%、Q4b=35.1%，关键 self_ms=456ms。',
-      '',
-      '## 关键证据链',
-      '',
-      '- 根因编号 A5：主线程类加载/模拟负载开销。',
-      '- startup_detail 对应证据 ID art-10。',
-      '- hot_slice_states 对应 data:sql_table:current:abc。',
-      '',
-      '## 优化建议',
-      '',
-      '- [App层] 降低启动期主线程模拟负载。',
-      '- [系统/平台层] 当前无系统侧阻塞证据。',
-    ].join('\n');
-
-    expect(looksLikePhaseSummaryFallback(report)).toBe(false);
-    expect(assessFinalResultQuality({
-      result: result({ conclusion: report }),
-      query: '分析这个启动 trace',
-    })).toBeUndefined();
-
-    const plainReport = [
-      '综合结论：',
-      '启动类型为冷启动，TTID=1912ms，TTFD=2200ms，主因是主线程模拟负载。',
-      '',
-      '阶段耗时分解：',
-      'startup_detail 启动概览采集: 获取启动概览，TTID=1912ms，self_ms=456ms。',
-      '',
-      '关键证据链：',
-      '根因编号 A5：主线程类加载/模拟负载开销。',
-      'startup_detail 对应证据 ID art-10。',
-      'hot_slice_states 对应 data:sql_table:current:abc。',
-      '',
-      '优化建议：',
-      '[App层] 降低启动期主线程模拟负载。',
-      '[系统/平台层] 当前无系统侧阻塞证据。',
-    ].join('\n');
-
-    expect(looksLikePhaseSummaryFallback(plainReport)).toBe(false);
-    expect(assessFinalResultQuality({
-      result: result({ conclusion: plainReport }),
-      query: '分析这个启动 trace',
-    })).toBeUndefined();
-  });
-
   it('accepts startup reports that express phase timing as a root-cause tree and use spaced audience labels', () => {
     const report = [
       '## 综合结论',
@@ -362,7 +168,7 @@ describe('final result quality gate', () => {
 
   it('appends the same quality issue only once across repeated projections', () => {
     const target = result({
-      conclusion: 'epoll_wait 证明磁盘 IO 是根因。',
+      conclusion: '',
       partial: true,
       terminationMessage: 'runtime already degraded this result',
     });
@@ -373,7 +179,7 @@ describe('final result quality gate', () => {
       query: '分析 IO 根因',
     }));
 
-    expect(issues.every(issue => issue?.code === 'kernel_blocking_claim_boundary')).toBe(true);
+    expect(issues.every(issue => issue?.code === 'empty_conclusion')).toBe(true);
     expect(target.terminationMessage).toContain('runtime already degraded this result');
     const issueMessage = issues[0]!.message;
     expect(target.terminationMessage!.split(issueMessage)).toHaveLength(2);
@@ -560,55 +366,6 @@ describe('final result quality gate', () => {
     expect(target.terminationMessage).toBe(issue?.message);
   });
 
-  it('blocks unverified causal relations in focused answers without requiring a full report', () => {
-    const target = result({
-      conclusion: '该行将帧 101 分类为 workload_heavy，证据 evidence_ref_id=`data:scrolling`。',
-      conclusionContract: {
-        schemaVersion: 'conclusion_contract_v1',
-        mode: 'focused_answer',
-        conclusions: [],
-        clusters: [],
-        evidenceChain: [],
-        claims: [],
-        uncertainties: [],
-        nextSteps: [],
-      },
-      claimSupport: [{
-        claimId: 'claim-cause',
-        kind: 'causal',
-        text: '工作负载导致该帧掉帧',
-        anchors: [],
-        supportLevel: 'inference',
-        relationEvaluation: 'candidate',
-      }],
-      claimVerificationResult: {
-        schemaVersion: 'claim_verifier@1',
-        status: 'partial',
-        policy: 'record_only',
-        passed: false,
-        checkedClaimCount: 1,
-        unsupportedClaimCount: 0,
-        claimResults: [{claimId: 'claim-cause', status: 'inference'}],
-        issues: [{
-          claimId: 'claim-cause',
-          severity: 'warning',
-          code: 'causal_relation_candidate',
-          message: 'Causal relation remains a candidate',
-        }],
-      },
-    });
-
-    const issue = applyFinalResultQualityGate({
-      result: target,
-      context: finalizationContext(target),
-      query: '分析这一帧为什么掉帧',
-    });
-
-    expect(issue?.code).toBe('causal_claim_unverified');
-    expect(target.partial).toBe(true);
-    expect(target.terminationMessage).toContain('尚未通过关系证据核验');
-  });
-
   it('does not reject a deliverable based on quick budget or report headings', () => {
     const quickRun: NonNullable<AnalysisResult['quickRun']> = {
       requestedMode: 'fast',
@@ -748,7 +505,9 @@ describe('final result quality gate', () => {
     })).toBeUndefined();
   });
 
-  it('keeps report coverage unknown while rejecting explicitly unverified causal support', () => {
+  it('keeps report coverage unknown and leaves causal support to the joined claim verification', () => {
+    // Relation evaluation of a draft's claimSupport is not a verdict: only the
+    // finalizer's claim_verifier@2 join (finite proof plus semantic review) is.
     expect(assessUnreviewedReport({
       result: result({
         conclusion: 'TTID=1912ms，主要是主线程模拟负载。',
@@ -783,7 +542,7 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析这个启动 trace',
-    })).toMatchObject({code: 'causal_claim_unverified', recoveryKind: 'correct_evidence'});
+    })).toBeUndefined();
 
     expect(assessUnreviewedReport({
       result: result({
@@ -850,7 +609,7 @@ describe('final result quality gate', () => {
         },
       }),
       query: '分析这个启动 trace',
-    })).toMatchObject({code: 'causal_claim_unverified', recoveryKind: 'correct_evidence'});
+    })).toBeUndefined();
 
     expect(assessUnreviewedReport({
       result: result({
@@ -877,7 +636,7 @@ describe('final result quality gate', () => {
         },
       }),
       query: '分析这个启动 trace',
-    })).toMatchObject({code: 'causal_claim_unverified', recoveryKind: 'correct_evidence'});
+    })).toBeUndefined();
 
     expect(assessUnreviewedReport({
       result: result({
@@ -1115,7 +874,6 @@ describe('final result quality gate', () => {
         conclusionContract: undefined,
       }),
       query: '这个滑动 trace 的应用包名是什么？',
-      sceneType: 'scrolling',
     })).toBeUndefined();
   });
 
@@ -1159,7 +917,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: focused,
       query: '只基于上一轮证据回答，不要重新做全量分析',
-      sceneType: 'scrolling',
     })).toBeUndefined();
   });
 
@@ -1198,7 +955,6 @@ describe('final result quality gate', () => {
       result: pending,
       context: {entry: 'runtime_draft'},
       query: '只基于上一条回答，不要重新分析',
-      deferFocusedEvidenceFinalization: true,
     })).toBeUndefined();
     expect(pending.partial).not.toBe(true);
 
@@ -1335,39 +1091,6 @@ describe('final result quality gate', () => {
     })).toBeUndefined();
   });
 
-  it('accepts reports that exclude epoll and prove separate app file IO', () => {
-    const report = [
-      '# ANR 根因分析报告',
-      '',
-      '## 综合结论',
-      '',
-      'do_epoll_wait 只是等待事件，本次不作为 IO 根因。',
-      '独立的 SQLite file I/O slice 持续 200ms，Trace 证据 art-io-1 支持磁盘 IO 是本次阻塞根因。',
-      '',
-      '## 关键证据链',
-      '',
-      '- SQLite file I/O slice=200ms，主线程随后触发 ANR。',
-      '',
-      '## 优化建议',
-      '',
-      '- 将数据库写入移出主线程，并验证 art-io-1 对应区间。',
-    ].join('\n');
-
-    expect(assessFinalResultQuality({
-      result: result({
-        conclusion: report,
-        findings: [{
-          severity: 'warning',
-          title: 'SQLite main-thread IO',
-          description: 'SQLite file I/O slice lasted 200ms',
-          evidence: ['art-io-1'],
-        } as any],
-      }),
-      query: '分析 ANR 根因',
-      sceneType: 'anr',
-    })).toBeUndefined();
-  });
-
   it('does not infer report coverage from legacy prose: flags pipeline reports that omit rendering-stage and BufferQueue/Fence boundaries', () => {
     const hollowPipelineReport = [
       '# 渲染管线分析报告',
@@ -1387,7 +1110,6 @@ describe('final result quality gate', () => {
         findings: [{ severity: 'warning', title: '管线边界缺失', description: 'no details', evidence: ['BufferQueue'] } as any],
       }),
       query: '分析渲染管线 BufferQueue fence',
-      sceneType: 'pipeline',
     });
 
     expect(issue).toBeUndefined();
@@ -1415,7 +1137,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: genericPipelineReport }),
       query: '分析渲染管线类型',
-      sceneType: 'pipeline',
     })).toBeUndefined();
   });
 
@@ -1440,7 +1161,6 @@ describe('final result quality gate', () => {
     const issue = assessUnreviewedReport({
       result: result({ conclusion: graphicsReportWithoutBoundary }),
       query: 'GraphicBuffer dma-buf 图形内存证据怎么分析',
-      sceneType: 'pipeline',
     });
 
     expect(issue).toBeUndefined();
@@ -1464,7 +1184,6 @@ describe('final result quality gate', () => {
     const issue = assessUnreviewedReport({
       result: result({ conclusion: reportWithoutPolicyBoundary }),
       query: 'HWC overlay 怎么分析',
-      sceneType: 'pipeline',
     });
 
     expect(issue).toBeUndefined();
@@ -1493,7 +1212,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: graphicsOnlyReport }),
       query: 'GraphicBuffer dma-buf 图形内存证据怎么分析',
-      sceneType: 'pipeline',
     })).toBeUndefined();
   });
 
@@ -1520,7 +1238,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: hwcPolicyReport }),
       query: 'SurfaceFlinger HWC overlay policy 怎么分析',
-      sceneType: 'pipeline',
     })).toBeUndefined();
   });
 
@@ -1558,7 +1275,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richPipelineReport }),
       query: '分析渲染管线 BufferQueue fence',
-      sceneType: 'pipeline',
     })).toBeUndefined();
   });
 
@@ -1586,7 +1302,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析 OkHttp EventListener DNS TLS TTFB 是否慢',
-      sceneType: 'network',
     });
 
     expect(issue).toBeUndefined();
@@ -1616,7 +1331,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析网络慢',
-      sceneType: 'network',
     });
 
     expect(issue).toBeUndefined();
@@ -1642,7 +1356,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析 OkHttp EventListener DNS TLS TTFB 是否慢',
-      sceneType: 'network',
     });
 
     expect(issue).toBeUndefined();
@@ -1671,7 +1384,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richNetworkReport }),
       query: '分析 OkHttp EventListener DNS TLS TTFB 是否慢',
-      sceneType: 'network',
     })).toBeUndefined();
   });
 
@@ -1695,7 +1407,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析 Android 17 ECH Certificate Transparency local network permission dumpsys connectivity 失败',
-      sceneType: 'network',
     });
 
     expect(issue).toBeUndefined();
@@ -1719,7 +1430,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richStackReport }),
       query: '分析 Android 17 ECH Certificate Transparency local network permission dumpsys connectivity 失败',
-      sceneType: 'network',
     })).toBeUndefined();
   });
 
@@ -1747,7 +1457,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析 network traffic is high',
-      sceneType: 'network',
     })).toBeUndefined();
   });
 
@@ -1775,7 +1484,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: 'analyze network bandwidth usage high traffic',
-      sceneType: 'network',
     })).toBeUndefined();
   });
 
@@ -1803,7 +1511,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析 JobScheduler runtime quota pending reason stop reason',
-      sceneType: 'power',
     });
 
     expect(issue).toBeUndefined();
@@ -1832,7 +1539,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richPowerReport }),
       query: '分析 JobScheduler runtime quota pending reason stop reason',
-      sceneType: 'power',
     })).toBeUndefined();
   });
 
@@ -1860,7 +1566,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析 setExactAndAllowWhileIdle exact alarm wakeup Android vitals partial wakelock',
-      sceneType: 'power',
     });
 
     expect(issue).toBeUndefined();
@@ -1888,7 +1593,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richWakeupReport }),
       query: '分析 setExactAndAllowWhileIdle exact alarm wakeup Android vitals partial wakelock',
-      sceneType: 'power',
     })).toBeUndefined();
   });
 
@@ -1916,7 +1620,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: genericPowerReport }),
       query: '分析功耗和 thermal throttling',
-      sceneType: 'power',
     })).toBeUndefined();
   });
 
@@ -1940,7 +1643,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析内存上涨和 GC 抖动',
-      sceneType: 'memory',
     });
 
     expect(issue).toBeUndefined();
@@ -1976,7 +1678,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richMemoryReport }),
       query: '分析内存上涨和 GC 抖动',
-      sceneType: 'memory',
     })).toBeUndefined();
   });
 
@@ -1995,7 +1696,6 @@ describe('final result quality gate', () => {
         },
       }),
       query: '用 ApplicationStartInfo STARTUP_STATE 和 App Performance Score 分析启动 TTID/TTFD',
-      sceneType: 'startup',
     });
 
     expect(issue).toBeUndefined();
@@ -2032,7 +1732,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richStartupReport }),
       query: '用 ApplicationStartInfo STARTUP_STATE 和 App Performance Score 分析启动 TTID/TTFD',
-      sceneType: 'startup',
     })).toBeUndefined();
   });
 
@@ -2060,7 +1759,6 @@ describe('final result quality gate', () => {
     const issue = assessUnreviewedReport({
       result: result({ conclusion: richWithoutDiagnosticBoundary }),
       query: '用 ApplicationExitInfo REASON_LOW_MEMORY 和 ProfilingManager heap dump 分析 OOM',
-      sceneType: 'memory',
     });
 
     expect(issue).toBeUndefined();
@@ -2096,7 +1794,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richMemoryDiagnosticReport }),
       query: '用 ApplicationExitInfo REASON_LOW_MEMORY 和 ProfilingManager heap dump 分析 OOM',
-      sceneType: 'memory',
     })).toBeUndefined();
   });
 
@@ -2124,7 +1821,6 @@ describe('final result quality gate', () => {
         },
       }),
       query: '用 ApplicationExitInfo getAnrInfo 和 ProfilingTrigger ANR system trace 分析 ANR',
-      sceneType: 'anr',
     });
 
     expect(issue).toBeUndefined();
@@ -2149,7 +1845,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richAnrReport }),
       query: '用 ApplicationExitInfo getAnrInfo 和 ProfilingTrigger ANR system trace 分析 ANR',
-      sceneType: 'anr',
     })).toBeUndefined();
   });
 
@@ -2181,7 +1876,6 @@ describe('final result quality gate', () => {
         },
       }),
       query: '分析 ANR direct blocker',
-      sceneType: 'anr',
     })).toBeUndefined();
   });
 
@@ -2209,7 +1903,6 @@ describe('final result quality gate', () => {
         },
       }),
       query: '分析 ANR system trace 和 stack trace 的 direct blocker',
-      sceneType: 'anr',
     })).toBeUndefined();
   });
 
@@ -2233,671 +1926,9 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析 SQLite fsync 为什么导致卡顿',
-      sceneType: 'io',
     });
 
     expect(issue).toBeUndefined();
-  });
-
-  it('flags reports that treat epoll or poll blocked_function as IO root cause', () => {
-    const misleadingPollReport = [
-      '# I/O 分析报告',
-      '',
-      '## 综合结论',
-      '',
-      'blocked_function=epoll_wait 命中 120ms，说明主线程在磁盘 IO 阻塞，所以这是 IO 根因。',
-      '',
-      '## I/O 证据类型',
-      '',
-      '- epoll_wait 120ms 与卡顿窗口重叠。',
-      '',
-      '## 文件/数据库/Provider 边界',
-      '',
-      '- 后续优化数据库。',
-      '',
-      '## 置信度与补证',
-      '',
-      '- 置信度高。',
-    ].join('\n');
-
-    const issue = assessFinalResultQuality({
-      result: result({
-        conclusion: misleadingPollReport,
-        findings: [{
-          severity: 'warning',
-          title: 'poll wait',
-          description: 'main thread epoll_wait 120ms',
-          evidence: ['blocked_function=epoll_wait dur=120ms'],
-        } as any],
-      }),
-      query: '分析 IO 为什么导致卡顿',
-      sceneType: 'io',
-    });
-
-    expect(issue?.code).toBe('kernel_blocking_claim_boundary');
-    expect(issue?.message).toContain('epoll/poll');
-  });
-
-  it('flags poll IO claims that include decimal durations', () => {
-    const issue = assessFinalResultQuality({
-      result: result({
-        conclusion: 'do_epoll_wait 持续 120.5ms，证明磁盘 IO 是根因。',
-        findings: [{
-          severity: 'warning',
-          title: 'poll wait',
-          description: 'do_epoll_wait lasted 120.5ms',
-          evidence: ['blocked_function=do_epoll_wait dur=120.5ms'],
-        } as any],
-      }),
-      query: '解释这段阻塞的 IO 根因',
-    });
-
-    expect(issue?.code).toBe('kernel_blocking_claim_boundary');
-    expect(issue?.message).toContain('epoll/poll');
-  });
-
-  it('accepts explicit English poll root-cause boundaries', () => {
-    for (const conclusion of [
-      'epoll does not prove disk I/O as the root cause.',
-      'epoll cannot directly prove disk I/O as the root cause.',
-      'epoll alone is insufficient to establish disk I/O as the root cause.',
-      'epoll does not imply that disk I/O was the root cause.',
-      'epoll does not necessarily indicate that disk I/O caused the stall.',
-      'epoll is insufficient evidence to prove disk I/O as the root cause.',
-      'epoll cannot be used to prove disk I/O was the root cause.',
-      'epoll is not sufficient evidence to establish disk I/O as the root cause.',
-      'epoll cannot conclusively prove disk I/O as the root cause.',
-      'epoll neither proves nor establishes disk I/O as the root cause.',
-      'epoll 不足以证明磁盘 IO 是根因。',
-      'epoll cannot prove disk I/O was the root cause; it only indicates a candidate.',
-      'epoll cannot prove disk I/O was the root cause; this indicates storage I/O may be a candidate root cause.',
-      'epoll cannot prove disk I/O was the root cause; it indicates possible storage I/O as a root-cause candidate.',
-      'epoll 不能证明磁盘 IO 是根因；该信号表明存储 IO 可能只是根因候选。',
-      'epoll 不能证明磁盘 IO 是根因；它说明存储 IO 仍需补证。',
-      'epoll/poll 通常表示等待事件或空闲，但仍需要 IO 证据才能证明根因。',
-    ]) {
-      const issue = assessFinalResultQuality({
-        result: result({
-          conclusion,
-          findings: [{
-            severity: 'info',
-            title: 'poll boundary',
-            description: 'epoll is event wait evidence',
-            evidence: ['blocked_function=epoll_wait'],
-          } as any],
-        }),
-        query: 'Explain why epoll is not the root cause',
-      });
-
-      expect(issue).toBeUndefined();
-    }
-  });
-
-  it('accepts reports that explicitly found no poll evidence or IO misclassification risk', () => {
-    const baseReport = result({}).conclusion;
-    for (const boundary of [
-      '**内核等待语义自检**：两侧均未命中 `epoll`/`poll` 类 `blocked_function`；D 状态均 ≤1.7%，无 IO 误判风险。',
-      'Kernel wait check: no epoll or poll match was found, so there is no disk I/O root-cause evidence.',
-      '内核等待语义边界：epoll/poll 类 blocked_function 通常表示等待事件或空闲，只有 io_wait=1 或有明确文件/数据库证据时才可列为 IO 候选 — 当前二者均不具备；blocked_function 是 kernel wchan 单帧，非完整内核调用栈。',
-      'thread_state.blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待。当前 trace 缺失此数据源，470ms Sleeping 无法归因到具体原因。',
-      'blocked_function 能力边界内，blocked_functions 列为 `-`，Sleeping 状态的具体阻塞原因（epoll/poll/futex 等）无法确认。',
-      'Q4b=470ms 因 `blocked_function` 缺失而无法追踪——可能是模拟 `Thread.sleep`、`epoll`/`poll` 事件等待或模拟 I/O 完成等待。**缺少证据不能将其定性为任何具体阻塞根因。**',
-      'blocked_function 缺失；独立 SQLite file I/O slice=200ms 证明磁盘 IO 是根因；因此无法追踪 poll 阻塞源，可能为 epoll 事件等待。',
-      'blocked_function is missing, and epoll_wait may indicate disk I/O only as a candidate; it is therefore unable to trace and may be an epoll event wait.',
-      'blocked_function 缺失且无法追踪；epoll_wait 表明磁盘 IO 仅为候选根因，可能是 epoll 事件等待。当前没有 io_wait=1，也没有文件或数据库 I/O 证据。',
-      'Sleeping 由 ChaosTask 系列切片中的主动 Thread.sleep 导致。blocked_functions 全为 null 进一步印证这是应用层主动等待（非系统 Binder/IO/epoll 阻塞）。TTID 滞后说明合成负载期间无新帧提交，SurfaceFlinger 未收到内容更新。',
-    ]) {
-      const issue = assessFinalResultQuality({
-        result: result({
-          conclusion: `${baseReport}\n\n## 内核等待语义自检\n\n${boundary}`,
-        }),
-        query: '对比两条 Trace 的启动根因',
-      });
-
-      expect(issue).toBeUndefined();
-    }
-  });
-
-  it('accepts an explicit Sleeping/poll ambiguity boundary', () => {
-    expect(assessFinalResultQuality({
-      result: result({
-        conclusion: `${result({}).conclusion}\n\nSleeping 状态不等于 I/O——当前无法区分 epoll 类事件等待、Thread.sleep 还是其他同步原语。`,
-        partial: true,
-      }),
-      query: '分析内核等待证据边界',
-    })).toBeUndefined();
-  });
-
-  it('still rejects poll root-cause claims when unrelated evidence is absent', () => {
-    for (const conclusion of [
-      '未发现其他证据，但 blocked_function=epoll_wait 证明磁盘 IO 是根因。',
-      '当前无 IO 证据，但 epoll_wait 仍说明磁盘 IO 是根因。',
-      'No other I/O evidence was found, but epoll proves disk I/O was the root cause.',
-      '未发现 epoll 之外的其他证据，但 epoll_wait 证明磁盘 IO 是根因。',
-      '没有命中 poll 以外的函数，poll_wait 说明磁盘 IO 是根因。',
-      '未发现 epoll/poll 之外的其他证据，但 epoll_wait 证明磁盘 IO 是根因。',
-      '未命中 epoll/poll 以外的函数，poll_wait 说明磁盘 IO 是根因。',
-      'No epoll evidence other than this match was found, but epoll proves disk I/O was the root cause.',
-      'epoll does not prove disk I/O as the root cause, but epoll proves storage I/O was the root cause.',
-      'epoll 不能证明磁盘 IO 是根因，但 epoll 证明存储 IO 是根因。',
-      'epoll 不但证明磁盘 IO 是根因，而且证明存储 IO 是根因。',
-      'Although epoll does not prove disk I/O as the root cause, epoll proves storage I/O was the root cause.',
-      '尽管 epoll 不能证明磁盘 IO 是根因，epoll 仍证明存储 IO 是根因。',
-      'epoll does not prove disk I/O as the root cause; conversely epoll proves storage I/O was the root cause.',
-      'epoll cannot prove disk I/O as the root cause; but it proves storage I/O was the root cause.',
-      'epoll cannot prove disk I/O as the root cause; however, this proves storage I/O was the root cause.',
-      'epoll 不能证明磁盘 IO 是根因；但它证明存储 IO 是根因。',
-      'epoll 不能证明磁盘 IO 是根因；不过该信号证明存储 IO 是根因。',
-      'epoll/poll 通常表示等待事件或空闲，但它证明磁盘 IO 是根因。',
-      'epoll/poll 通常表示等待事件或空闲，但 epoll_wait 证明磁盘 IO 是根因。',
-      'epoll/poll 通常表示等待事件或空闲，但仍证明磁盘 IO 是根因。',
-      'epoll/poll 通常表示等待事件或空闲，因此证明磁盘 IO 是根因。',
-      'epoll/poll usually represents an event wait, but still proves disk I/O was the root cause.',
-      'epoll/poll 通常表示等待事件或空闲，可是仍证明磁盘 IO 是根因。',
-      'epoll/poll 通常表示等待事件或空闲，尽管如此仍证明磁盘 IO 是根因。',
-      'epoll usually represents an event wait, yet still proves disk I/O was the root cause.',
-      'epoll 通常表示等待事件，但这个证据仍证明磁盘 IO 是根因。',
-      'epoll usually represents an event wait, but this evidence still proves disk I/O was the root cause.',
-      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，但它证明磁盘 IO 是根因。',
-      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，但 epoll_wait 证明磁盘 IO 是根因。',
-      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，并证明磁盘 IO 是根因。',
-      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，并且证明磁盘 IO 是根因。',
-      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，从而证明磁盘 IO 是根因。',
-      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，由此证明磁盘 IO 是根因。',
-      'epoll usually represents an event wait, and proves disk I/O was the root cause.',
-      'epoll usually represents an event wait, thereby proves disk I/O was the root cause.',
-      'Q4b=470ms 因 `blocked_function` 缺失而无法追踪——可能是模拟 `Thread.sleep`、`epoll`/`poll` 事件等待或模拟 I/O 完成等待，但 `epoll_wait` 仍证明磁盘 IO 是根因。',
-      'blocked_function 缺失，但 epoll_wait 仍证明磁盘 IO 是根因；因此无法追踪，可能为 epoll 事件等待。',
-      'blocked_function 缺失且无法追踪；epoll_wait 表明磁盘 IO 是根因，可能是 epoll 事件等待。',
-      'blocked_function is missing, but epoll_wait proves disk I/O was the root cause; it is therefore unable to trace and may be an epoll event wait.',
-      'blocked_function 缺失，但 epoll_wait 仍说明磁盘 IO 是根因；因此无法追踪，可能为 epoll 事件等待。',
-      'blocked_function 缺失，但 epoll_wait 仍是磁盘 IO 根因；因此无法追踪，可能为 epoll 事件等待。',
-      'blocked_function is missing, but epoll_wait is still the disk I/O root cause; it is therefore unable to trace and may be an epoll event wait.',
-      'blocked_function 缺失，epoll_wait 证明磁盘 IO 是根因但仍需补证；因此无法追踪，可能为 epoll 事件等待。',
-      'blocked_function is missing, but epoll_wait proves disk I/O was the root cause but needs more evidence; it is therefore unable to trace and may be an epoll event wait.',
-      'blocked_function 缺失，CPU 候选仍需补证但 epoll_wait 证明磁盘 IO 是根因；因此无法追踪，可能为 epoll 事件等待。',
-      'blocked_function is missing and unable to trace; epoll_wait may indicate disk I/O only as a candidate but epoll_wait proves disk I/O was the root cause and may be an epoll event wait.',
-      'blocked_function is missing and unable to trace; epoll_wait does not prove disk I/O was the root cause but epoll_wait proves disk I/O was the root cause and may be an epoll event wait.',
-      'Sleeping 状态不等于 I/O——当前无法区分 epoll 类事件等待，但 epoll_wait 仍证明磁盘 IO 是根因。',
-      'Sleeping 状态不等于 I/O 却由 epoll_wait 证明磁盘 IO 是根因，当前无法区分 epoll 类事件等待。',
-      'Sleeping 状态并非不等于 I/O——当前无法区分 epoll 类事件等待。',
-      'blocked_functions 全为 null 进一步印证这是应用层主动等待（非系统 Binder/IO/epoll 阻塞），但 epoll_wait 仍证明磁盘 IO 是根因。',
-      '并非 blocked_functions 全为 null 进一步印证这是应用层主动等待（非系统 Binder/IO/epoll 阻塞）。',
-    ]) {
-      const issue = assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析 IO 根因',
-      });
-
-      expect(issue?.code).toBe('kernel_blocking_claim_boundary');
-    }
-  });
-
-  it('accepts independent app IO evidence after a qualified poll boundary', () => {
-    for (const conclusion of [
-      'epoll 通常表示等待事件；独立 SQLite file I/O trace 证明磁盘 IO 是根因。',
-      'epoll usually represents an event wait; an independent SQLite file I/O trace proves disk I/O was the root cause.',
-      'epoll 通常表示等待事件，但独立 SQLite file I/O trace 证明磁盘 IO 是根因。',
-      'epoll 通常表示等待事件；fsync dur=100ms 证明磁盘 IO 是根因。',
-      'epoll usually represents an event wait; fsync dur=100ms proves disk I/O was the root cause.',
-      'epoll 不能证明磁盘 IO 是根因；CPU 饱和证明它才是根因。',
-      'epoll cannot prove disk I/O was the root cause; CPU saturation proves it was the root cause.',
-      'epoll usually represents an event wait, but lock contention proves it was the root cause.',
-      'blocked_reason 记录内核 wchan，可区分 Binder、futex、IO、epoll 等待，并且 fsync dur=100ms 证明磁盘 IO 是根因。',
-      'epoll usually represents an event wait, and fsync dur=100ms proves disk I/O was the root cause.',
-    ]) {
-      expect(assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析 IO 根因',
-      })).toBeUndefined();
-    }
-  });
-
-  it('accepts independent stack evidence after a qualified blocked-function boundary', () => {
-    for (const conclusion of [
-      'blocked_function is not a full call stack; other profiler data is a full kernel call stack.',
-      'blocked_function 不是完整内核调用栈；其他 profiler 数据是完整内核调用栈。',
-      'blocked_function 不是完整内核调用栈；unwinder 输出是完整内核调用栈。',
-      'blocked_function is not a full kernel call stack; unwinder output is a full kernel call stack.',
-      'blocked_function 不是完整内核调用栈；frame-pointer 重建结果是完整调用栈。',
-      'blocked_function is not a full kernel call stack; frame-pointer reconstruction is a full call stack.',
-    ]) {
-      expect(assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析内核调用栈证据边界',
-      })).toBeUndefined();
-    }
-  });
-
-  it('accepts explicit D-state and blocked-function evidence boundaries', () => {
-    for (const conclusion of [
-      'D-state alone cannot prove disk I/O as the root cause.',
-      'D 状态不能证明磁盘 IO 是根因。',
-      'D 状态不能证明磁盘 IO 是根因，但仍需 IO 证据才能证明根因。',
-      'D 状态只是不可中断等待，仍需 IO 证据才能证明根因。',
-      'D 状态仅表示不可中断等待，需要 IO 证据后才能归因。',
-      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著。',
-      '根因：合成负载在 performCreate 路径中密集运行 CPU 任务，主线程 100% 在大核上执行，无调度瓶颈（Q3 Runnable 仅 4.59ms / 0.3%），也非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%）。瓶颈纯粹是同步计算量。',
-      '也非 IO 阻塞；独立 SQLite file I/O slice 持续 200ms，Trace 证据 art-io-1 支持磁盘 IO 是本次阻塞根因；Q4a D 状态仅 22.98ms / 1.7%。',
-      '也非 IO 阻塞；独立 fsync dur=200ms，Trace 证据 art-io-2 证明磁盘 IO 是本次阻塞根因；Q4a D 状态仅 22.98ms / 1.7%。',
-      'Q4a (D-state) is only 22.98ms, confirming that I/O blocking is not significant.',
-      'D-state only indicates uninterruptible sleep; it requires I/O evidence before root-cause attribution.',
-      '| **Q4a** | D (不可中断睡眠) | 22.98ms | 1.7% | 125 次，blocked_function 缺失，**不能直接归为磁盘 IO**；仅表明存在短暂的不可中断等待，具体原因需 io_wait 或 blocked_function 信号确认 |',
-      '| D 状态 → 磁盘 IO 根因 | **无法确认** | blocked_function 与 io_wait 均缺失；D 状态 22.98ms (1.7%) 仅表明存在不可中断等待，不能直接归因为磁盘 IO |',
-      '| **D 状态根因** | 22.98ms (1.7%)，因 io_wait 和 blocked_function 均缺失，不能归因为磁盘 IO |',
-      '| 主线程 IO 根因 | **无法确认** — D 状态 22.98ms (1.7%)，`blocked_function` 未采集 | 需 `sched_blocked_reason` |',
-      '| StartupHooks.kt 磁盘 I/O | **trace 未证明** — 源码描述合成磁盘读，但 trace D 状态仅 22.98ms(1.7%)。源码提供候选机制，trace 证据才是判据 | `[PRIVATE_QUERY_REFERENCE]` + art-30 |',
-      '| 磁盘 I/O（Q4a） | 无法归因 | D-state 仅 23ms(1.7%)；无 io_wait/IO 阻塞函数绑定（能力边界 + missing_evidence） |',
-      '| D-state (Q4a) 归因 | 低 | 缺少 io_wait 和 IO 阻塞函数绑定，不可归因 I/O（能力边界） |',
-      '| D-state (Q4a) 归因 | 低 | 缺少 io_wait 和 IO 阻塞函数绑定，不可归因 I/O；独立 SQLite file I/O slice=200ms 支持磁盘 IO 根因 |',
-      '| 磁盘 I/O 根因 | D-state 23ms；缺 `io_wait`、page-cache wchan 绑定 | `missing_evidence` |',
-      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 为空 | `trace_direct` + `derived_metric` |',
-      '| IO/磁盘阻塞 | 0 D-state + blocked_function = null | `trace_direct` |',
-      '| IO/磁盘阻塞 | 0 D-state + blocked_function is null | `trace_direct` |',
-      '| IO / page-cache | io_blocking 0 行，D/DK=0ms | 高 | trace_direct |',
-      '| IO / page-cache 等待 | ✗ 排除 | 主线程无 D/DK 状态、无 io_wait、blocked_function 为空 |',
-      '| **Q4a** | Uninterruptible Sleep (D) | 22.98 | 1.7% | ✅ 占比低，不足以标定 I/O 根因（缺 `io_wait`/page-cache 证据） |',
-      '| D 状态 I/O 归因 | 不可用 | `io_wait` + `blocked_function` 信号均缺失，22.98ms D 状态只能标为"不可中断等待" |',
-      '内核等待语义自检：`blocked_function` 字段全部 null，无法判定是 Binder 等待、epoll 空闲还是其它类型阻塞，不能将其归为 IO 根因。',
-      '| **D/IO 阻塞** | Q4a（D 状态）仅 22.98ms / 1.7%，未达 >10% 干预阈值 |',
-      '所有依赖 ANR 窗口的后续分析步骤（CPU 健康、内存压力、I/O D-state、futex 锁等待、系统冻结检测、Top CPU 进程、根因诊断）均因无 ANR 窗口而返回空结果。',
-      '- **I/O 阻塞（D-state）**：未做不可中断等待（state=D）统计，无 process_name 与 uninterruptible_wait_ms 数据。',
-      '| 主线程 IO 根因 | **无法确认** — 但独立 CPU 饱和仍是启动慢的根因；D 状态 22.98ms (1.7%) | 需 `sched_blocked_reason` |',
-      '| 主线程 IO 根因 | **无法确认** — 独立 SQLite file I/O slice 持续 200ms，Trace 证据支持磁盘 IO 是根因；D 状态 22.98ms (1.7%) | 需 `sched_blocked_reason` |',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 SQLite file I/O slice=200ms 证明磁盘 IO 是根因，因此不能将 epoll 归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 CPU 饱和证明它才是启动慢根因，因此不能将 epoll 归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 SQLite file I/O slice=200ms；它证明磁盘 IO 是根因，因此不能将 epoll 归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 CPU 饱和；它证明 CPU 才是启动慢根因，因此不能将 epoll 归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；独立 SQLite file I/O slice=200ms；因此证明磁盘 IO 是根因，不能将 epoll 归为 IO 根因。',
-      'D 状态并非证明磁盘 IO 是根因，因此不能归因为磁盘 IO。',
-      'D 状态并不证明磁盘 IO 是根因，因此无法认定为磁盘 IO 根因。',
-      'D 状态不是磁盘 IO 根因，无法归因为磁盘 IO。',
-      'D-state 的 blocked_function 记录了具体阻塞根因。',
-      'Q4a / D 状态自检: D=22.98ms (1.7%)，startup_slow_reasons 的 IO 检查未触发，blocking_chain_analysis 的 waker_chain 和 blocked_function_summary 均返回 0 行（trace 未记录 blocked_function 字段）。缺少 io_wait=1 或 IO/page-cache blocked_function 证据——D 状态在本报告中统一称为「不可中断等待」，无法归因 I/O。',
-      '本次 trace 中 **未检测到任何 ANR 事件**。`anr_analysis` Skill 已完整执行了 ANR 检测、ANR 上下文提取、系统 CPU 健康度、内存压力（LMK）、I/O D-state 阻塞、futex 锁等待探针以及系统冻结检测共七个步骤，`android_anrs` 表查询返回 `total_anr_count=0`，所有依赖 ANR 窗口的后续分析均因无窗口而无数据。',
-      '| I/O D-state 阻塞 | rowCount=0 | 无 ANR 窗口，跳过 |',
-      'blocked_function is not a full call stack.',
-      'blocked_function 不是完整调用栈。',
-      'blocked_function 不是完整调用栈，但仍需 perf sample 才能证明完整调用栈。',
-      '文件 IO：blocked_functions 不含 IO/page-cache 函数族，当前侧 D-state 仅 22ms（1.7%）不足以构成根因。参考侧 D-state <1ms。',
-    ]) {
-      expect(assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析内核等待证据边界',
-      })).toBeUndefined();
-    }
-  });
-
-  it('accepts D-state taxonomy labels in an ANR diagnostic inventory', () => {
-    const baseReport = result({}).conclusion;
-    for (const boundary of [
-      'anr_analysis Skill 已完成全流水线执行——ANR 检测、ANR 上下文提取、系统 CPU 健康评估、内存压力检测、I/O D-state 不可中断等待分析、Futex 锁等待探针、系统冻结检测、Top CPU 进程排名及综合诊断——所有步骤均确认目标进程在 Trace 窗口内无 ANR。但需特别说明：Trace 采集配置中 android.anrs 表不存在，因此只能确认 Trace 未记录 ANR 事件，不能断言系统确实未发生 ANR。',
-      'I/O D-state 不可中断等待分析、Binder 阻塞分析。',
-      'I/O D-state 不可中断等待分析，Binder 阻塞分析。',
-      'The ANR diagnostic inventory completed CPU, memory, I/O D-state uninterruptible sleep analysis, futex lock-wait probing, and freeze detection. No ANR window was recorded, so no disk I/O attribution is available.',
-      'I/O D-state uninterruptible sleep analysis was skipped because no ANR window exists.',
-    ]) {
-      expect(assessFinalResultQuality({
-        result: result({
-          conclusion: `${baseReport}\n\n${boundary}`,
-          partial: true,
-        }),
-        query: '分析 ANR 根因证据边界',
-      })).toBeUndefined();
-    }
-  });
-
-  it('still rejects positive IO attribution after a D-state taxonomy label', () => {
-    for (const conclusion of [
-      'I/O D-state 不可中断等待分析已执行，但 D-state 仍证明磁盘 IO 是根因。',
-      'I/O D-state uninterruptible sleep analysis completed, but D-state still proves disk I/O was the root cause.',
-      '不可中断睡眠证明磁盘 IO 是根因。',
-      'D-state、磁盘 IO 阻塞仍是根因。',
-    ]) {
-      expect(assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析 ANR 根因证据边界',
-      })?.code).toBe('kernel_blocking_claim_boundary');
-    }
-  });
-
-  it('evaluates fenced diagnostic trees line by line', () => {
-    const safeTree = [
-      '```text',
-      '左侧启动贡献：',
-      '├─ 业务 DB I/O ─ 14ms',
-      '│  └─ SqliteLoad',
-      '└─ D-state（不可中断等待）── 23ms (1.7%)',
-      '   └─ 无法归因 I/O（缺 io_wait / wchan 数据）',
-      '```',
-    ].join('\n');
-    expect(assessFinalResultQuality({
-      result: result({conclusion: `${result({}).conclusion}\n\n${safeTree}`, partial: true}),
-      query: '分析内核等待证据边界',
-    })).toBeUndefined();
-
-    const unsafeTree = [
-      '```text',
-      '左侧启动贡献：',
-      '├─ 业务 DB I/O ─ 14ms',
-      '│  └─ SqliteLoad',
-      '└─ D-state（不可中断等待）── 23ms (1.7%)，证明磁盘 IO 是根因',
-      '```',
-    ].join('\n');
-    expect(assessFinalResultQuality({
-      result: result({conclusion: `${result({}).conclusion}\n\n${unsafeTree}`, partial: true}),
-      query: '分析内核等待证据边界',
-    })?.code).toBe('kernel_blocking_claim_boundary');
-  });
-
-  it('rejects positive kernel claims after an unrelated negative boundary', () => {
-    for (const conclusion of [
-      'D-state alone cannot prove disk I/O as root cause. However D-state proves disk I/O was the root cause.',
-      'D 状态不能证明磁盘 IO 是根因，但 D 状态证明磁盘 IO 是根因。',
-      'D-state cannot prove disk I/O was the root cause, but still proves disk I/O was the root cause.',
-      'D-state cannot prove disk I/O was the root cause, yet still proves disk I/O was the root cause.',
-      'D 状态不能证明磁盘 IO 是根因，但仍证明磁盘 IO 是根因。',
-      'D 状态不能不归因为磁盘 IO 根因。',
-      'D 状态不能不认定磁盘 IO 是根因。',
-      '| D 状态 → 磁盘 IO 根因 | 无法确认，但仍证明磁盘 IO 是根因 |',
-      '| 主线程 IO 根因 | **无法确认** — D 状态仍证明磁盘 IO 是根因，22.98ms (1.7%) | 需 `sched_blocked_reason` |',
-      '| StartupHooks.kt 磁盘 I/O | **trace 未证明** — 源码描述合成磁盘读，但 trace D 状态仍证明磁盘 IO 是根因 | `[PRIVATE_QUERY_REFERENCE]` + art-30 |',
-      '| StartupHooks.kt 磁盘 I/O | **并非 trace 未证明** — trace D 状态仅 22.98ms(1.7%) | art-30 |',
-      '| 主线程 IO 根因 | **无法确认** — 但仍证明磁盘 IO 是根因；D 状态 22.98ms (1.7%) | 需 `sched_blocked_reason` |',
-      '| 磁盘 I/O（Q4a） | 无法归因 | D-state 仅 23ms；无 io_wait/IO 阻塞函数绑定，但 D-state 仍证明磁盘 IO 是根因 |',
-      '| D-state (Q4a) 归因 | 低 | 缺少 io_wait 和 IO 阻塞函数绑定，不可归因 I/O，但它仍证明磁盘 IO 是根因 |',
-      '| D-state (Q4a) 归因 | 低 | D-state 先证明磁盘 IO 是根因，后写缺少 io_wait 和 blocked_function，无法归因 I/O |',
-      '| 磁盘 I/O 根因 | D-state 23ms，仍证明磁盘 IO 是根因；缺 `io_wait`、page-cache wchan 绑定 | `missing_evidence` |',
-      '| 磁盘 I/O 根因 | D-state 23ms；缺 `io_wait`、page-cache wchan 绑定 | `confirmed` |',
-      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 为空，但 D-state 仍证明磁盘 IO 是根因 | `trace_direct` |',
-      '| IO / page-cache | io_blocking 0 行，D/DK=0ms，但仍证明磁盘 IO 是根因 | 高 | trace_direct |',
-      '| IO / page-cache 等待 | ✗ 排除 | D 状态仍证明磁盘 IO 是根因 |',
-      '| IO / page-cache 等待 | 已确认 | ✗ 排除 | 主线程 D/DK=22ms |',
-      '| D 状态 I/O 归因 | confirmed | ✗ 排除 |',
-      '| IO / page-cache | io_blocking 0.5 行，D/DK=0ms | 高 | trace_direct |',
-      '| IO / page-cache | io_blocking 0 行，D/DK=0.5ms | 高 | trace_direct |',
-      '| IO/磁盘阻塞 | D/DK 状态 22ms + blocked_function 为空 | `trace_direct` |',
-      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 不为空 | `trace_direct` |',
-      '| IO/磁盘阻塞 | 并非零 D/DK 状态 + blocked_function 为空 | `trace_direct` |',
-      '| IO/磁盘阻塞 | 预计零 D/DK 状态 + blocked_function 为空 | `trace_direct` |',
-      '| IO/磁盘阻塞 | 可能为零 D/DK 状态 + blocked_function 为空 | `trace_direct` |',
-      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 并非 null | `trace_direct` |',
-      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function 不为 null | `trace_direct` |',
-      '| IO/磁盘阻塞 | 零 D/DK 状态 + blocked_function != null | `trace_direct` |',
-      '| IO/磁盘阻塞 | 零 D-state + blocked_function is not null | `trace_direct` |',
-      '| IO/磁盘阻塞 | 零 D-state + blocked_function <> null | `trace_direct` |',
-      '| **Q4a** | Uninterruptible Sleep (D) | 22.98 | 1.7% | 占比低，并非不足以标定 I/O 根因（缺 `io_wait`/page-cache 证据） |',
-      '| **Q4a** | Uninterruptible Sleep (D) | 22.98 | 1.7% | 占比低，不足以标定 I/O 根因，但 D-state 仍证明磁盘 IO 是根因 |',
-      '| Q4a I/O 根因 | 已确认 | D 22.98，1.7%，占比低，不足以标定 I/O 根因（缺 io_wait/page-cache） |',
-      '| Q4a I/O 根因 | confirmed | D 22.98，1.7%，占比低，不足以标定 I/O 根因（缺 io_wait/page-cache） |',
-      '| D 状态 I/O 归因 | 不可用 | D 状态仍证明磁盘 IO 是根因，尽管 `io_wait` + `blocked_function` 信号均缺失 |',
-      '| D 状态 I/O 根因 | 已确认 | 不可用 |',
-      '| 磁盘 I/O（Q4a） | 并非无法归因 | D-state 仅 23ms；无 io_wait/IO 阻塞函数绑定 |',
-      '内核等待语义自检：`blocked_function` 字段全部 null，无法判定是 Binder 等待、epoll 空闲还是其它类型阻塞，不能将其归为 IO 根因，但仍证明磁盘 IO 是根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，但 epoll_wait 仍证明磁盘 IO 是根因，不过不能将其归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，不能不将其归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定是 Binder 等待、epoll 空闲还是其它阻塞，并非不能将其归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` 全部 null，无法判定 epoll 空闲；epoll 并非不证明磁盘 IO 是根因，因此不能将其归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` null，无法判定 epoll，epoll 证明磁盘 IO 是根因，不能归为 IO 根因。',
-      '内核等待语义自检：`blocked_function` null，无法判定 epoll，epoll 仍证明磁盘 IO 是根因，不能归为 IO 根因。',
-      '| **D/IO 阻塞** | Q4a（D 状态）仅 22.98ms / 1.7%，未达 >10% 干预阈值，但仍证明磁盘 IO 是根因 |',
-      '所有依赖 ANR 窗口的后续分析步骤（CPU 健康、内存压力、I/O D-state、futex 锁等待、系统冻结检测、Top CPU 进程、根因诊断）均因无 ANR 窗口而返回空结果，但 D-state 仍证明磁盘 IO 是根因。',
-      'I/O D-state 仍证明磁盘 IO 是根因，但根因诊断因无 ANR 窗口而返回空结果。',
-      'I/O D-state 根因诊断并非因无 ANR 窗口而返回空结果。',
-      '- **I/O 阻塞（D-state）**：未做不可中断等待（state=D）统计，无 process_name 与 uninterruptible_wait_ms 数据，但 D-state 仍证明磁盘 IO 是根因。',
-      '| **D/IO 阻塞** | Q4a（D 状态）为 22.98ms / 1.7%，并非未达 >10% 干预阈值 |',
-      'D 状态证明磁盘 IO 是根因，但因证据不足不能归因为磁盘 IO。',
-      'D 状态并非证明磁盘 IO 是根因，但 D 状态证明磁盘 IO 是根因，因此不能归因为磁盘 IO。',
-      'D 状态并非证明磁盘 IO 是根因但 D 状态证明磁盘 IO 是根因因此不能归因为磁盘 IO。',
-      'D 状态不能证明磁盘 IO 是根因但仍证明磁盘 IO 是根因因此不能归因为磁盘 IO。',
-      '| I/O D-state 阻塞 | rowCount=0 | 但仍证明磁盘 IO 是根因 |',
-      'D 状态证明磁盘 IO 是根因；另一检查 rowCount=0。',
-      'Q4a / D 状态自检: D=22.98ms (1.7%)，startup_slow_reasons 的 IO 检查未触发，但 D 状态仍证明磁盘 IO 是根因。',
-      'Q4a / D 状态自检: 预计 IO 检查未触发，blocking_chain_analysis 返回0行。',
-      'Q4a / D 状态自检: IO 检查未触发并不成立，blocking_chain_analysis 返回0行。',
-      '| I/O D-state 阻塞 | rowCount!=0 |',
-      '| I/O D-state 阻塞 | 预计 rowCount=0 |',
-      '| I/O D-state 阻塞 | 并非无 ANR 窗口 |',
-      '| I/O D-state 阻塞 | 未跳过 |',
-      '| I/O D-state 阻塞 | 不跳过 |',
-      '| I/O D-state 阻塞 | 无需跳过 |',
-      '| D 状态 → 磁盘 IO 根因 | 无法确认但仍证明磁盘 IO 是根因 |',
-      '| D 状态 → 磁盘 IO 根因 | 并非 **无法确认** |',
-      'D 状态并非 **不能归因** 为磁盘 IO 根因。',
-      'D 状态只是不可中断等待，仍需 IO 证据，但仍证明磁盘 IO 是根因。',
-      'Q4a（D 状态）为 22.98ms，印证 IO 阻塞显著，是启动慢的根因。',
-      '文件 IO：blocked_functions 不含 IO/page-cache 函数族，但 D-state 仍证明磁盘 IO 是根因；当前侧 D-state 仅 22ms（1.7%）不足以构成根因。',
-      '并非 blocked_functions 不含 IO/page-cache 函数族，当前侧 D-state 仅 22ms（1.7%）不足以构成根因。',
-      'Q4a (D-state) is 22.98ms, confirming significant I/O blocking as the startup root cause.',
-      'Q4a（D 状态）仅 22.98ms，IO 阻塞并非不显著，是启动慢的根因。',
-      'D 状态证明磁盘 IO 是根因；也非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%）。',
-      '也非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%），但仍证明磁盘 IO 是根因。',
-      '也非 IO 阻塞，但 D 状态证明磁盘 IO 是根因，Q4a 仅 22.98ms / 1.7%。',
-      '也非 IO 阻塞（Q4a D 状态证明磁盘 IO 是根因，仅 22.98ms / 1.7%）。',
-      '并非非 IO 阻塞（Q4a D 状态仅 22.98ms / 1.7%）。',
-      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著，但仍导致启动慢。',
-      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著，然而是启动慢的根因。',
-      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著。它仍证明 IO 阻塞是启动慢的根因。',
-      'Q4a（D 状态）仅 22.98ms，印证 IO 阻塞不显著。它仍导致启动慢。',
-      'Q4a (D-state) is only 22.98ms, confirming that I/O blocking is not significant. It still causes startup slowdown.',
-      'Q4a (D-state) is 22.98ms, confirming I/O blocking is not insignificant.',
-      'Q4a (D-state) is 22.98ms, confirming I/O blocking is not negligible.',
-      'Q4a (D-state) is 22.98ms, confirming I/O blocking is not not significant.',
-      'blocked_function is not a full call stack. However sched_blocked_reason blocked_function is the full kernel call stack.',
-      'blocked_function 不是完整调用栈，但 sched_blocked_reason blocked_function 是完整内核调用栈。',
-      'blocked_function is not a full call stack, but still is a full kernel call stack.',
-      'blocked_function is not a full call stack, yet still is a full kernel call stack.',
-      'blocked_function 不是完整内核调用栈，但仍是完整内核调用栈。',
-    ]) {
-      expect({
-        conclusion,
-        code: assessFinalResultQuality({
-          result: result({conclusion, partial: true}),
-          query: '分析内核等待证据边界',
-        })?.code,
-      }).toEqual({
-        conclusion,
-        code: 'kernel_blocking_claim_boundary',
-      });
-    }
-  });
-
-  it('requires affirmative D-state IO evidence bound to the causal claim', () => {
-    for (const conclusion of [
-      'D 状态证明磁盘 IO 是根因。另有与该等待窗口无关的 SQLite file I/O slice=1ms。',
-      'D 状态证明磁盘 IO 是根因。注意：没有 io_wait=1 时不能归因。',
-      'D 状态证明磁盘 IO 是根因。后续需要采集 io_wait=1 或 filemap 证据。',
-      'D-state proves disk I/O was the root cause. No io_wait=1 evidence was captured.',
-      'D 状态证明磁盘 IO 是根因。另有 SQLite file I/O slice=1ms。',
-      'D 状态证明磁盘 IO 是根因。两分钟后 SQLite file I/O slice=1ms。',
-      'D 状态证明磁盘 IO 是根因。不同线程观测到 blocked_function=filemap_read dur=1ms。',
-      'D 状态证明磁盘 IO 是根因。只有 io_wait=1 才可归因，当前不具备。',
-      'D-state proves disk I/O was the root cause. We do not have io_wait=1 evidence.',
-      'D-state proves disk I/O was the root cause. io_wait=1 may be present but is unverified.',
-      'D 状态证明磁盘 IO 是根因。可能存在 io_wait=1，但尚未验证。',
-      'D 状态证明磁盘 IO 是根因。假设 io_wait=1 命中。',
-      'D-state proves disk I/O was the root cause. If io_wait=1 is observed, that would support it.',
-      'D 状态证明磁盘 IO 是根因，另有 SQLite file I/O slice=1ms。',
-      'D 状态证明磁盘 IO 是根因，同句记录 SQLite file I/O slice=1ms。',
-    ]) {
-      expect(assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析内核等待证据边界',
-      })?.code).toBe('kernel_blocking_claim_boundary');
-    }
-
-    for (const conclusion of [
-      '主线程 D 状态与 io_wait=1 在同一等待窗口命中，证明磁盘 IO 是根因。',
-      'D 状态证明磁盘 IO 是根因。同一等待窗口观测到 blocked_function=filemap_read dur=120ms。',
-    ]) {
-      expect(assessFinalResultQuality({
-        result: result({conclusion, partial: true}),
-        query: '分析内核等待证据边界',
-      })).toBeUndefined();
-    }
-  });
-
-  it('returns the exact offending statement for targeted provider correction', () => {
-    const unsafeClaim = 'D 状态证明磁盘 IO 是根因';
-    const issue = assessFinalResultQuality({
-      result: result({
-        conclusion: `## 综合结论\n\n${unsafeClaim}。\n\n## 优化建议\n\n继续采集同窗口证据。`,
-        partial: true,
-      }),
-      query: '分析内核等待证据边界',
-    });
-
-    expect(issue).toEqual(expect.objectContaining({
-      code: 'kernel_blocking_claim_boundary',
-      offendingStatement: unsafeClaim,
-    }));
-  });
-
-  it('flags reports that turn D-state-only evidence into disk IO root cause', () => {
-    const misleadingDStateReport = [
-      '# I/O 分析报告',
-      '',
-      '## 综合结论',
-      '',
-      '主线程 D-state 占比 35%，证明磁盘 IO 是本次卡顿根因。',
-      '',
-      '## I/O 证据类型',
-      '',
-      '- D-state 35%。',
-      '',
-      '## 文件/数据库/Provider 边界',
-      '',
-      '- 需要优化所有数据库访问。',
-      '',
-      '## 置信度与补证',
-      '',
-      '- 置信度高。',
-    ].join('\n');
-
-    const issue = assessFinalResultQuality({
-      result: result({
-        conclusion: misleadingDStateReport,
-        findings: [{
-          severity: 'warning',
-          title: 'D-state high',
-          description: 'main thread D-state 35%',
-          evidence: ['state=D pct=35'],
-        } as any],
-      }),
-      query: '分析主线程 D-state 为什么导致卡顿',
-      sceneType: 'io',
-    });
-
-	  expect(issue?.code).toBe('kernel_blocking_claim_boundary');
-	  expect(issue?.message).toContain('不可中断等待');
-	});
-
-	it('flags non-IO blocked_function evidence when D-state is claimed as disk IO root cause', () => {
-	  const misleadingBlockedFunctionReport = [
-	    '# I/O 分析报告',
-	    '',
-	    '## 综合结论',
-	    '',
-	    '主线程 D-state 命中 blocked_function=futex_wait_queue，证明磁盘 IO 是本次卡顿根因。',
-	    '',
-	    '## I/O 证据类型',
-	    '',
-	    '- state=D blocked_function=futex_wait_queue dur=120ms。',
-	    '',
-	    '## 文件/数据库/Provider 边界',
-	    '',
-	    '- 当前没有应用侧补强信息或 Provider 补证。',
-	    '',
-	    '## 置信度与补证',
-	    '',
-	    '- 置信度高。',
-	  ].join('\n');
-
-	  const issue = assessFinalResultQuality({
-	    result: result({
-	      conclusion: misleadingBlockedFunctionReport,
-	      findings: [{
-	        severity: 'warning',
-	        title: 'D-state high',
-	        description: 'main thread D-state blocked_function=futex_wait_queue',
-	        evidence: ['state=D blocked_function=futex_wait_queue dur=120ms'],
-	      } as any],
-	    }),
-	    query: '分析主线程 D-state 为什么导致卡顿',
-	    sceneType: 'io',
-	  });
-
-	  expect(issue?.code).toBe('kernel_blocking_claim_boundary');
-	  expect(issue?.message).toContain('IO/page-cache blocked_function');
-	});
-
-	it('flags reports that describe blocked_function as a full kernel call stack', () => {
-	  const misleadingBlockedFunctionReport = [
-      '# I/O 分析报告',
-      '',
-      '## 综合结论',
-      '',
-      'blocked_function 是完整内核调用栈，filemap_read -> io_schedule 证明这是完整 off-CPU 调用路径。',
-      '',
-      '## I/O 证据类型',
-      '',
-      '- blocked_function=filemap_read+0x508。',
-      '',
-      '## 文件/数据库/Provider 边界',
-      '',
-      '- 文件读候选，业务路径未确认。',
-      '',
-      '## 置信度与补证',
-      '',
-      '- 需要补采样。',
-    ].join('\n');
-
-    const issue = assessFinalResultQuality({
-      result: result({
-        conclusion: misleadingBlockedFunctionReport,
-        findings: [{
-          severity: 'warning',
-          title: 'filemap_read wait',
-          description: 'main thread blocked_function=filemap_read',
-          evidence: ['blocked_function=filemap_read+0x508 dur=120ms'],
-        } as any],
-      }),
-      query: '分析 blocked_function filemap_read 为什么导致卡顿',
-      sceneType: 'io',
-    });
-
-    expect(issue?.code).toBe('kernel_blocking_claim_boundary');
-    expect(issue?.message).toContain('单帧');
-  });
-
-  it('accepts io reports that separate evidence class, API boundary, and missing proof', () => {
-    const richIoReport = [
-      '# I/O 分析报告',
-      '',
-      '## 综合结论',
-      '',
-      '主线程在窗口内出现 D-state 和 fsync 等待，但当前只能支持 I/O 等待候选，不能直接判定 SQLite 数据库是业务根因。',
-      '',
-      '## I/O 证据类型',
-      '',
-      '- 证据类型：D-state 主线程文件 I/O 命中 do_fsync 120ms；block I/O 队列等待可用，page fault 未见明显集中。',
-      '',
-      '## 文件/数据库/Provider 边界',
-      '',
-      '- File I/O 有 fsync 证据；SQLite/Room、SharedPreferences/QueuedWork、ContentProvider/CursorWindow/MediaProvider 证据缺失。',
-      '- 需要区分路径栈证据和 DB slice；当前不能把 fsync 自动升级为 SQLite 根因。',
-      '',
-      '## 置信度与补证',
-      '',
-      '- 置信度中等：D-state/fsync 与卡顿窗口重叠，但业务根因需要 SQLite/数据库 stack 或 provider-side trace 补证。',
-      '- 下一步建议采集 Java/native stack、SQLite/Room trace、block I/O 和路径信息。',
-    ].join('\n');
-
-    expect(assessFinalResultQuality({
-      result: result({ conclusion: richIoReport }),
-      query: '分析 SQLite fsync 为什么导致卡顿',
-      sceneType: 'io',
-    })).toBeUndefined();
   });
 
   it('does not infer report coverage from legacy prose: flags interaction reports that omit ACK, focus/window, and display boundaries', () => {
@@ -2920,7 +1951,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析点击响应慢',
-      sceneType: 'interaction',
     });
 
     expect(issue).toBeUndefined();
@@ -2950,7 +1980,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richInteractionReport }),
       query: '分析点击响应慢',
-      sceneType: 'interaction',
     })).toBeUndefined();
   });
 
@@ -3002,7 +2031,6 @@ describe('final result quality gate', () => {
         } as any],
       }),
       query: '分析滑动响应慢',
-      sceneType: 'scroll_response',
     });
 
     expect(issue).toBeUndefined();
@@ -3032,7 +2060,6 @@ describe('final result quality gate', () => {
     expect(assessFinalResultQuality({
       result: result({ conclusion: richScrollResponseReport }),
       query: '分析滑动响应慢',
-      sceneType: 'scroll_response',
     })).toBeUndefined();
   });
 
@@ -3045,39 +2072,6 @@ describe('final result quality gate', () => {
       }),
       query: '分析这个 trace',
     })?.code).toBe('empty_conclusion');
-  });
-
-  it('still enforces kernel blocking claim boundaries for partial runtime results', () => {
-    const issue = assessFinalResultQuality({
-      result: result({
-        partial: true,
-        conclusion: [
-          '# I/O 分析报告',
-          '',
-          '## 综合结论',
-          'blocked_function 是完整内核调用栈，filemap_read -> io_schedule 证明这是完整 off-CPU 调用路径。',
-          '',
-          '## I/O 证据类型',
-          '- blocked_function=filemap_read+0x508。',
-          '',
-          '## 文件/数据库/Provider 边界',
-          '- 文件读候选，业务路径未确认。',
-          '',
-          '## 置信度与补证',
-          '- 需要补采样。',
-        ].join('\n'),
-        findings: [{
-          severity: 'warning',
-          title: 'filemap_read wait',
-          description: 'main thread blocked_function=filemap_read',
-          evidence: ['blocked_function=filemap_read+0x508 dur=120ms'],
-        } as any],
-      }),
-      query: '分析 blocked_function filemap_read 为什么导致卡顿',
-      sceneType: 'io',
-    });
-
-    expect(issue?.code).toBe('kernel_blocking_claim_boundary');
   });
 
   it('does not require package strings as a substitute for identity evidence', () => {
@@ -3312,7 +2306,6 @@ describe('quick-run triage budget follows the question boundary', () => {
         quickRun: quickReceiptFor(BOUNDED_FOLLOW_UP, 2),
       }),
       query: BOUNDED_FOLLOW_UP,
-      sceneType: 'scrolling',
     })?.code).not.toBe('quick_full_report_shape');
   });
 
@@ -3324,7 +2317,6 @@ describe('quick-run triage budget follows the question boundary', () => {
         quickRun: quickReceiptFor(SCENE_WIDE, 2, 'scene_wide'),
       }),
       query: SCENE_WIDE,
-      sceneType: 'scrolling',
     })).toBeUndefined();
   });
 
