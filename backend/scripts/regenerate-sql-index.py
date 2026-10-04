@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 """
-Regenerate perfettoSqlIndex.light.json and perfettoSqlIndex.json from the
-Perfetto SQL source.
+Regenerate perfettoSqlIndex.light.json from the Perfetto SQL source.
 
 Extracts CREATE PERFETTO FUNCTION/TABLE/VIEW declarations with their
-documentation comments. Produces a compact index used by the
-sqlKnowledgeBase for Claude's lookup_sql_schema tool, plus a full index with
-SQL source content for packaged full-SQL fallback paths.
+documentation comments. Produces the compact index that sqlKnowledgeBase and
+the lookup_sql_schema tool read. SQL source bodies are not indexed: no runtime
+path reads them, and the pinned trace processor carries the stdlib itself.
 
 Usage:
     python3 scripts/regenerate-sql-index.py
 
 Output:
     data/perfettoSqlIndex.light.json
-    data/perfettoSqlIndex.json
 """
 
 import json
@@ -33,14 +31,9 @@ PERFETTO_DIR = Path(
 STDLIB_DIR = PERFETTO_DIR / "src" / "trace_processor" / "perfetto_sql" / "stdlib"
 METRICS_DIR = PERFETTO_DIR / "src" / "trace_processor" / "metrics" / "sql"
 LIGHT_OUTPUT_FILE = BACKEND_DIR / "data" / "perfettoSqlIndex.light.json"
-FULL_OUTPUT_FILE = BACKEND_DIR / "data" / "perfettoSqlIndex.json"
 # Relative path stored in output — portable across machines, no /Users/<name> leak.
 STDLIB_REL = "perfetto/src/trace_processor/perfetto_sql/stdlib"
-METRICS_REL = "perfetto/src/trace_processor/metrics/sql"
 GENERATED_FROM = os.environ.get("PERFETTO_GENERATED_FROM")
-
-# Also extract from the built-in views/tables
-BUILTIN_DIR = PERFETTO_DIR / "src" / "trace_processor" / "perfetto_sql" / "stdlib" / "prelude"
 
 # Pattern to match CREATE PERFETTO declarations
 CREATE_RE = re.compile(
@@ -54,11 +47,6 @@ CREATE_SIMPLE_RE = re.compile(
     r"CREATE\s+(?:OR\s+REPLACE\s+)?PERFETTO\s+(VIEW|TABLE)\s+"
     r"(\w+(?:\.\w+)*)\s+AS\b",
     re.IGNORECASE,
-)
-
-# Pattern for RETURNS TABLE columns
-RETURNS_COL_RE = re.compile(
-    r"^\s+--\s+(.+)$"
 )
 
 def extract_doc_comment(lines: list[str], decl_line_idx: int) -> str:
@@ -174,13 +162,6 @@ def extract_return_columns(lines: list[str], start_idx: int) -> list[dict]:
 
     return columns
 
-
-# Pattern for @column annotations in doc comments
-AT_COLUMN_RE = re.compile(
-    r"^--\s+@column\s+(?:(\w+)\s+)?(\w+)\s+(.*?)$"
-)
-INCLUDE_MODULE_RE = re.compile(r"INCLUDE\s+PERFETTO\s+MODULE\s+([\w.]+)", re.IGNORECASE)
-RUN_METRIC_RE = re.compile(r"RUN_METRIC\s*\(\s*['\"]([^'\"]+)['\"]", re.IGNORECASE)
 
 
 def extract_at_columns(lines: list[str], decl_line_idx: int) -> list[dict]:
@@ -357,53 +338,14 @@ def extract_select_alias_columns(lines: list[str], decl_line_idx: int) -> list[d
     return columns
 
 
-def extract_dependencies(content: str) -> list[str]:
-    """Extract module/metric dependencies from a SQL file."""
-    deps = []
-    deps.extend(INCLUDE_MODULE_RE.findall(content))
-    deps.extend(f"metric:{m}" for m in RUN_METRIC_RE.findall(content))
-    return sorted(set(deps))
+def metric_source_path(filepath: Path) -> str:
+    """Return a metric SQL path relative to the metrics root, portable across machines."""
+    return filepath.relative_to(METRICS_DIR).as_posix()
 
 
-def source_file_path(filepath: Path, source_dir: Path) -> str:
-    """Return a portable path relative to the given SQL source root."""
-    return filepath.relative_to(source_dir).as_posix()
-
-
-def enrich_full_entry(entry: dict, filepath: Path, source_dir: Path, content: str) -> dict:
-    """Attach full-index-only fields while preserving the light entry shape."""
-    full = dict(entry)
-    rel = source_file_path(filepath, source_dir)
-    parts = Path(rel).parts
-    if len(parts) > 2 and "subcategory" not in full:
-        full["subcategory"] = ".".join(parts[1:-1])
-    full["sql"] = content
-    full["filePath"] = rel
-    dependencies = set(full.get("dependencies", []))
-    dependencies.update(extract_dependencies(content))
-    full["dependencies"] = sorted(dependencies)
-    return full
-
-
-def stdlib_file_entry(filepath: Path, content: str, category: str) -> dict:
-    """Create a backwards-compatible full-index entry for a stdlib SQL file."""
-    rel = source_file_path(filepath, STDLIB_DIR)
-    name = filepath.stem
-    return {
-        "id": f"stdlib.{category}.{name}",
-        "name": name,
-        "category": category,
-        "type": "view",
-        "description": f"Stdlib module SQL: {rel}",
-        "sql": content,
-        "filePath": rel,
-        "dependencies": extract_dependencies(content),
-    }
-
-
-def metric_file_entry(filepath: Path, content: str, *, full: bool) -> dict:
+def metric_file_entry(filepath: Path) -> dict:
     """Create a file-level entry for RUN_METRIC-style metric SQL files."""
-    rel = source_file_path(filepath, METRICS_DIR)
+    rel = metric_source_path(filepath)
     rel_no_ext = rel[:-4] if rel.endswith(".sql") else rel
     parts = Path(rel_no_ext).parts
     category = parts[0] if parts else "metric"
@@ -417,20 +359,14 @@ def metric_file_entry(filepath: Path, content: str, *, full: bool) -> dict:
     }
     if len(parts) > 2:
         entry["subcategory"] = ".".join(parts[1:-1])
-    if full:
-        entry["sql"] = content
-        entry["filePath"] = rel
-        entry["dependencies"] = extract_dependencies(content)
     return entry
 
 
 def annotate_metric_declaration(entry: dict, filepath: Path) -> dict:
     """Mark a metric-created declaration with the RUN_METRIC setup it needs."""
-    rel = source_file_path(filepath, METRICS_DIR)
+    rel = metric_source_path(filepath)
     annotated = dict(entry)
-    dependencies = set(annotated.get("dependencies", []))
-    dependencies.add(f"metric:{rel}")
-    annotated["dependencies"] = sorted(dependencies)
+    annotated["dependencies"] = [f"metric:{rel}"]
     annotated["requiredMetric"] = rel
     annotated["setupSql"] = f"SELECT RUN_METRIC('{rel}');"
     return annotated
@@ -439,13 +375,8 @@ def annotate_metric_declaration(entry: dict, filepath: Path) -> dict:
 def parse_sql_file(filepath: Path, category: str, id_prefix: str = "stdlib") -> list[dict]:
     """Parse a single SQL file and extract all declarations."""
     templates = []
-
-    try:
-        content = filepath.read_text(encoding="utf-8")
-    except Exception:
-        return templates
-
-    lines = content.split("\n")
+    # An unreadable stdlib file must fail the run, never shrink the index.
+    lines = filepath.read_text(encoding="utf-8").split("\n")
 
     for i, line in enumerate(lines):
         match = CREATE_RE.search(line)
@@ -521,31 +452,6 @@ def dedupe_by_name(templates: list[dict]) -> list[dict]:
     return unique_templates
 
 
-def dedupe_by_id(templates: list[dict]) -> list[dict]:
-    """Deduplicate full-index entries by id, preserving first occurrence."""
-    seen = set()
-    unique_templates = []
-    for t in templates:
-        if t["id"] not in seen:
-            seen.add(t["id"])
-            unique_templates.append(t)
-    return unique_templates
-
-
-def build_stats(templates: list[dict]) -> dict:
-    by_category = {}
-    for t in templates:
-        category = t.get("category", "unknown")
-        typ = t.get("type", "unknown")
-        cat = by_category.setdefault(category, {"count": 0, "types": {}})
-        cat["count"] += 1
-        cat["types"][typ] = cat["types"].get(typ, 0) + 1
-    return {
-        "totalTemplates": len(templates),
-        "byCategory": by_category,
-    }
-
-
 def main():
     if not STDLIB_DIR.exists():
         print(f"Error: stdlib directory not found at {STDLIB_DIR}", file=sys.stderr)
@@ -555,7 +461,6 @@ def main():
         sys.exit(1)
 
     light_templates = []
-    full_templates = []
     stdlib_file_count = 0
     declaration_file_count = 0
     metrics_file_count = 0
@@ -573,16 +478,10 @@ def main():
             continue
 
         stdlib_file_count += 1
-        content = sql_file.read_text(encoding="utf-8")
         templates = parse_sql_file(sql_file, category)
         if templates:
             light_templates.extend(templates)
-            full_templates.extend(
-                enrich_full_entry(t, sql_file, STDLIB_DIR, content)
-                for t in templates
-            )
             declaration_file_count += 1
-        full_templates.append(stdlib_file_entry(sql_file, content, category))
 
     # Walk through metric SQL files as well. These are not stdlib modules but
     # they define RUN_METRIC outputs and intermediate views that strategies can
@@ -593,27 +492,15 @@ def main():
         if any(p == "test" for p in parts[:-1]):
             continue
         category = parts[0] if len(parts) > 1 else "metric"
-        content = sql_file.read_text(encoding="utf-8")
-        parsed = [
+        light_templates.extend(
             annotate_metric_declaration(t, sql_file)
             for t in parse_sql_file(sql_file, category, id_prefix="metric")
-        ]
-        if parsed:
-            light_templates.extend(parsed)
-            full_templates.extend(
-                enrich_full_entry(t, sql_file, METRICS_DIR, content)
-                for t in parsed
-            )
-        file_entry_light = metric_file_entry(sql_file, content, full=False)
-        file_entry_full = metric_file_entry(sql_file, content, full=True)
-        light_templates.append(file_entry_light)
-        full_templates.append(file_entry_full)
+        )
+        light_templates.append(metric_file_entry(sql_file))
         metrics_file_count += 1
 
     unique_light_templates = dedupe_by_name(light_templates)
-    unique_full_templates = dedupe_by_id(full_templates)
 
-    # Build outputs
     light_output = {
         "version": "2.0",
         "generatedAt": datetime.now().isoformat(),
@@ -622,25 +509,10 @@ def main():
         "templates": unique_light_templates,
         "scenarios": [],  # Preserved for compatibility
     }
-    full_output = {
-        "version": "2.0",
-        "generatedAt": datetime.now().isoformat(),
-        "generatedFrom": GENERATED_FROM,
-        "source": {
-            "stdlib": STDLIB_REL,
-            "metrics": METRICS_REL,
-        },
-        "stats": build_stats(unique_full_templates),
-        "templates": unique_full_templates,
-        "scenarios": [],  # Preserved for compatibility
-    }
-
-    # Write outputs
+    # Write output
     LIGHT_OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(LIGHT_OUTPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(light_output, f, indent=2, ensure_ascii=False)
-    with open(FULL_OUTPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(full_output, f, indent=2, ensure_ascii=False)
 
     # Stats
     types = {}
@@ -657,12 +529,11 @@ def main():
             with_columns += 1
             total_columns += len(t["columns"])
 
-    print(f"Regenerated {LIGHT_OUTPUT_FILE.name} and {FULL_OUTPUT_FILE.name}")
+    print(f"Regenerated {LIGHT_OUTPUT_FILE.name}")
     print(f"  Stdlib files scanned: {stdlib_file_count}")
     print(f"  Stdlib files with declarations: {declaration_file_count}")
     print(f"  Metric files scanned: {metrics_file_count}")
     print(f"  Light templates: {len(unique_light_templates)}")
-    print(f"  Full templates: {len(unique_full_templates)}")
     print(f"  Types: {types}")
     print(f"  Description quality: {desc_quality['good']} good, {desc_quality['placeholder']} placeholder")
     print(f"  Column coverage: {with_columns}/{len(unique_light_templates)} templates ({total_columns} total columns)")

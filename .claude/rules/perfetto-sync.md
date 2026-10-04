@@ -63,7 +63,7 @@ Use this order unless the task has a narrower explicit scope:
    newest release in the runtime revision's CHANGELOG. After a pin change,
    run `node Trace/tools/trace-corpus.cjs build` so constructed cases record
    the runtime that reparsed them, then `trace-corpus index`.
-9. Regenerate Perfetto SQL docs, SQL indexes, stdlib symbols, and light indexes
+9. Regenerate Perfetto SQL docs, the light SQL index, and stdlib symbols
    from the exact trace-processor runtime revision with
    `cd backend && npm run stdlib:generate-runtime-assets`; this creates one
    temporary revision worktree for all outputs. Do not generate runtime

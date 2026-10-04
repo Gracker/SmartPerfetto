@@ -33,7 +33,7 @@ const requiredFiles = [
   'dist/trace-processor-pin.env',
   'dist/perfetto-recording-tools-pin.env',
   'data/perfettoSqlIndex.light.json',
-  'data/perfettoSqlIndex.json',
+  'data/perfettoSqlDocs.json',
   'data/perfettoStdlibSymbols.json',
   'prebuilts/trace_processor/linux-x64/trace_processor_shell',
   'prebuilts/trace_processor/darwin-arm64/trace_processor_shell',

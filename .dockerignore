@@ -19,7 +19,7 @@ backend/uploads/*
 backend/uploads/
 backend/data/*
 !backend/data/perfettoSqlIndex.light.json
-!backend/data/perfettoSqlIndex.json
+!backend/data/perfettoSqlDocs.json
 !backend/data/perfettoStdlibSymbols.json
 backend/data/sessions/*.db
 backend/data/sessions.db

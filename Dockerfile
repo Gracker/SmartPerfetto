@@ -10,7 +10,7 @@ COPY scripts/trace-processor-pin.env /app/scripts/trace-processor-pin.env
 COPY scripts/perfetto-recording-tools-pin.env /app/scripts/perfetto-recording-tools-pin.env
 COPY docs/rendering_pipelines /app/docs/rendering_pipelines
 COPY backend/ ./
-COPY backend/data/perfettoSqlIndex.light.json backend/data/perfettoSqlIndex.json backend/data/perfettoStdlibSymbols.json ./data/
+COPY backend/data/perfettoSqlIndex.light.json backend/data/perfettoSqlDocs.json backend/data/perfettoStdlibSymbols.json ./data/
 RUN npm run knowledge-pack:fetch && npm run build
 
 # Pin the runtime OpenCode executable independently of the builder CPU. The
@@ -115,7 +115,7 @@ COPY --from=backend-builder /app/backend/dist ./backend/dist
 COPY --from=backend-builder /app/backend/node_modules ./backend/node_modules
 COPY --from=backend-builder /app/backend/package.json ./backend/
 COPY --from=backend-builder /app/backend/data/perfettoSqlIndex.light.json ./backend/data/perfettoSqlIndex.light.json
-COPY --from=backend-builder /app/backend/data/perfettoSqlIndex.json ./backend/data/perfettoSqlIndex.json
+COPY --from=backend-builder /app/backend/data/perfettoSqlDocs.json ./backend/data/perfettoSqlDocs.json
 COPY --from=backend-builder /app/backend/data/perfettoStdlibSymbols.json ./backend/data/perfettoStdlibSymbols.json
 
 # Copy Rust flamegraph analyzer. The backend auto-discovers this path before

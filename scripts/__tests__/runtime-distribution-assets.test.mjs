@@ -64,6 +64,42 @@ test('npm and portable artifacts verify the same backend runtime surfaces', () =
   }
 });
 
+test('npm, Docker, and portable ship the same tracked backend/data runtime assets', () => {
+  // Portable copies `git ls-files backend/data`; the other surfaces must name
+  // exactly that set, so a dropped or added asset cannot reach only some of them.
+  const listed = spawnSync('git', ['ls-files', 'backend/data'], {cwd: root, encoding: 'utf8'});
+  assert.equal(listed.status, 0, listed.stderr);
+  const sorted = values => [...values].sort();
+  const tracked = sorted(listed.stdout.split('\n').filter(Boolean).map(file => file.slice('backend/data/'.length)));
+  assert.ok(tracked.includes('perfettoSqlIndex.light.json'));
+
+  const backendPackage = JSON.parse(readFileSync(join(root, 'backend/package.json'), 'utf8'));
+  assert.deepEqual(
+    sorted(backendPackage.files.filter(entry => entry.startsWith('data/')).map(entry => entry.slice('data/'.length))),
+    tracked,
+  );
+
+  const cliPackCheck = readFileSync(join(root, 'backend/scripts/check-cli-pack.cjs'), 'utf8');
+  assert.deepEqual(sorted([...cliPackCheck.matchAll(/'data\/([^'/]+)'/g)].map(match => match[1])), tracked);
+
+  const dockerignore = readFileSync(join(root, '.dockerignore'), 'utf8');
+  assert.deepEqual(
+    sorted([...dockerignore.matchAll(/^!backend\/data\/(\S+)$/gm)].map(match => match[1])),
+    tracked,
+  );
+  const dockerfile = readFileSync(join(root, 'Dockerfile'), 'utf8');
+  const builderCopy = dockerfile.match(/^COPY ((?:backend\/data\/\S+ )+)\.\/data\/$/m);
+  assert.ok(builderCopy, 'Dockerfile builder stage copies backend/data assets into ./data/');
+  assert.deepEqual(
+    sorted(builderCopy[1].trim().split(/\s+/).map(file => file.slice('backend/data/'.length))),
+    tracked,
+  );
+  const runtimeCopies = [...dockerfile.matchAll(
+    /^COPY --from=backend-builder \/app\/backend\/data\/(\S+) \.\/backend\/data\/\1$/gm,
+  )];
+  assert.deepEqual(sorted(runtimeCopies.map(match => match[1])), tracked);
+});
+
 test('Pi provider-explicit runtime ships exact aligned optional dependencies and a real integration gate', () => {
   const backendPackage = JSON.parse(readFileSync(join(root, 'backend/package.json'), 'utf8'));
   assert.equal(

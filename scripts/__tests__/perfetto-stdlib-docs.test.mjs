@@ -38,7 +38,6 @@ function writeRuntimeAssetOutputs(repoRoot, revision) {
     'backend/data/perfettoSqlDocs.json',
     'backend/data/perfettoStdlibSymbols.json',
     'backend/data/perfettoSqlIndex.light.json',
-    'backend/data/perfettoSqlIndex.json',
   ]) {
     writeJson(path.join(repoRoot, relativePath), {generatedFrom: revision});
   }

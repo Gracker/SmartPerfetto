@@ -164,14 +164,8 @@ describe('memory skill SQL semantic guards', () => {
     expect(sql).toContain('MIN(MAX(COALESCE(${max_rows|500}, 500), 1), 500)');
   });
 
-  it('keeps the local Perfetto excluded_refs contract aligned with skill wording', () => {
-    const index = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'data/perfettoSqlIndex.json'), 'utf-8'));
-    const excludedRefs = index.templates.find((entry: any) => entry.id === 'stdlib.android.excluded_refs');
-    expect(excludedRefs?.sql).toContain('KIND_WEAK_REFERENCE');
-    expect(excludedRefs?.sql).toContain('KIND_PHANTOM_REFERENCE');
-    expect(excludedRefs?.sql).toContain('KIND_FINALIZER_REFERENCE');
-    expect(excludedRefs?.sql).not.toContain('KIND_SOFT_REFERENCE');
-
+  it('names the reference kinds the pinned _excluded_refs filters', () => {
+    // android_heap_graph_leak_candidates.eval.ts runs the pinned runtime's module.
     const skill = loadYaml('skills/atomic/android_heap_graph_leak_candidates.skill.yaml');
     const holderDescription = skill.output.fields.find((field: any) => field.name === 'reference_holders')?.description;
     expect(holderDescription).toContain('weak/phantom/finalizer');

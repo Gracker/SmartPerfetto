@@ -16,7 +16,6 @@
     "!dist/**/__tests__/**",
     "!dist/**/*.test.*",
     "data/perfettoSqlIndex.light.json",
-    "data/perfettoSqlIndex.json",
     "data/perfettoSqlDocs.json",
     "data/perfettoStdlibSymbols.json",
     "skills/**/*",
