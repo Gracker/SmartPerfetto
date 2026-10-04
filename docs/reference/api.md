@@ -28,6 +28,10 @@ ID（见下文），与响应头 `X-Request-Id` 相同。完整的异常消息�
 `[UnhandledError]` 行，用 `requestId` 关联；请求体解析错误附带的原始请求体不写入日志。
 没有回显异常消息的调试开关。
 
+`Origin` 不在 `CORS_ORIGINS` 允许列表内的请求（含预检）不是服务端异常：返回 `403`
+`{"success": false, "code": "cors_origin_rejected", "error": "This origin is not allowed to call the SmartPerfetto API", "requestId": "…"}`，
+不带 `Access-Control-Allow-Origin`，服务端日志只记一条带 origin 的警告。没有 `Origin` 的请求（curl、服务间调用）不受影响。
+
 ## 请求 ID
 
 每个请求在进入后端时确定唯一一个请求 ID，所有响应（包括 CORS 拒绝、请求体解析失败、
@@ -99,9 +103,14 @@ trace_processor_shell 加载失败时返回 `trace_processor_shell could not loa
 `source_file_unreadable`）。企业模式下 SSO 会话或 API Key 解析出错时 401 只返回固定说明。此前已经
 写入的记录保留原文。
 
-分析 run 本身的失败是例外：Agent 分析的 `error` SSE 事件、`/status` 的 `error`、对话的
-`run_failed` 事件携带运行时或模型服务给出的失败原因（如鉴权、额度），因为这是会话所有者唯一能
-据以处理的信息；使用私有知识（源码、外部知识源）的 run 在这些出口都只返回所有者投影后的文案。
+分析 run 的失败在所有者能读到的每个出口都走同一个投影（`projectAnalysisFailure`）：Agent 分析的
+`error` SSE 事件、`/status` 和 analyze/run 启动响应的 `error`、对话的 `run_failed` 事件与已保存的
+run。运行时或模型服务出错（如鉴权、额度）时返回失败结果，其自身原因随结果交给所有者。run 抛出的异常
+只保留 SmartPerfetto 为所有者写的失败文案（授权已变化、provider 不存在或不可读、AI 已关闭、trace
+processor lease 或内存准入）或纯原因码（如 `analysis_history_parent_not_authorized`，不带 `:` 之后的
+细节）；其余任意异常（SQLite、文件系统等）返回 `分析未能完成，服务端已记录错误（请求 ID：<id>）。`
+（英文输出时为英文），原因只按该 ID 写入服务端日志。使用私有知识（源码、外部知识源）的 run 还会经过
+其自身的输出 guard，会话已撤销时文案被抑制，日志只记录错误类型。
 
 ## OIDC 鉴权
 
@@ -196,6 +205,9 @@ GET /api/traces?limit=100&cursor=<nextCursor>
 
 客户端不得解析或自行构造 cursor。`/api/traces/stats` 的 `traces.metadataCount`
 表示 workspace 中可见的持久化 trace 总数，而 `traces.count` 表示当前进程中的活跃 trace。
+
+响应里的 trace 记录（上传、上传失败、列表、详情、viewer）不含服务器文件路径（`path`、
+`filePath`）；客户端按 `id` 访问 trace。
 
 ## Workspace-scoped API
 
@@ -667,16 +679,23 @@ slice，结果按 trace 身份缓存。响应 schema `trace_vendor@1`：
 
 Admin path: `/api/admin`
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| `GET` | `/skills` | 管理端 Skill 列表 |
-| `POST` | `/skills` | 创建 Skill |
-| `PUT` | `/skills/:skillId` | 更新 Skill |
-| `DELETE` | `/skills/:skillId` | 删除 Skill |
-| `POST` | `/skills/validate` | 校验 Skill |
-| `POST` | `/skills/reload` | 重新加载 Skill |
-| `POST` | `/strategies/reload` | 重新加载策略 |
-| `GET` | `/self-improve/metrics` | 自改进指标 |
+| 方法 | 路径 | RBAC | 说明 |
+|---|---|---|---|
+| `GET` | `/skills` | `agent:run` | 管理端 Skill 列表（仅元数据） |
+| `GET` | `/skills/:skillId` | `runtime:manage` | Skill 定义与原始 YAML；`filePath` 为相对 Skills 根目录的路径（`composite/<id>.skill.yaml`） |
+| `POST` | `/skills` | `runtime:manage` | 创建自定义 Skill（企业模式下禁用） |
+| `PUT` | `/skills/:skillId` | `runtime:manage` | 更新自定义 Skill（企业模式下禁用） |
+| `DELETE` | `/skills/:skillId` | `runtime:manage` | 删除自定义 Skill（企业模式下禁用） |
+| `POST` | `/skills/validate` | `runtime:manage` | 校验 Skill YAML，不保存 |
+| `POST` | `/skills/reload` | `runtime:manage` | 重新加载进程级 Skill 注册表 |
+| `GET` | `/vendors` | `agent:run` | 厂商 ID 及其覆盖的 Skill |
+| `GET` | `/vendors/:vendor/overrides` | `runtime:manage` | 厂商覆盖及原始 YAML |
+| `POST` | `/strategies/reload` | `runtime:manage` | 重新加载策略 |
+| `GET` | `/self-improve/metrics` | `audit:read` | 自改进指标 |
+
+内置 Skill 目录就是 Agent 自己的工具目录，能运行 Agent 的调用方就能列出它；原始 Skill 内容、
+服务端校验、重新加载和写入属于管理运行时的分析内容。缺少权限返回 `403`
+`{success: false, error: 'Forbidden', details}`。无密钥本地模式和运维 API Key 拥有全部权限。
 
 ## Self-Evolution Admin API
 

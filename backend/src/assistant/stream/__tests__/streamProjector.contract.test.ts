@@ -271,18 +271,46 @@ describe('StreamProjector SSE Contract', () => {
 
     expect(admitted).toEqual([]);
     expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toEqual(expect.objectContaining({
+    expect(warnings[0]).toEqual({
       sessionId: 'session-invalid',
       envelopeIndex: 0,
+      errors: [{path: 'meta.source', message: 'meta.source must be a non-empty string'}],
+      totalErrors: 1,
       envelope: {
         metaType: 'skill_result',
-        metaSource: undefined,
+        metaVersion: '1.0.0',
         displayLayer: 'list',
         displayFormat: 'table',
       },
-    }));
+    });
     const parsed = parseSsePayload(res.writes.join(''));
     expect(parsed[0].data.envelope).toEqual([]);
+  });
+
+  it('reports a rejected envelope to the log by schema identity, never by its content', () => {
+    const projector = new StreamProjector();
+    const warnings: unknown[] = [];
+    const secretRow = 'row-value-that-must-not-be-logged';
+    const invalidEnvelope = createDataEnvelope(
+      {columns: ['metric'], rows: [[secretRow]]},
+      {type: 'skill_result', source: 'test.stream_projector', title: 'leaky', skillId: 'test_skill',
+        stepId: 'step_leaky', layer: 'list', format: 'table'},
+    );
+    // A column list the validator rejects carries its whole value on the error.
+    (invalidEnvelope.display as any).columns = {[secretRow]: secretRow};
+    projector.broadcastStreamingUpdate('session-leaky', [new MockSseResponse() as unknown as express.Response],
+      {type: 'data', content: invalidEnvelope, timestamp: Date.now()} as any,
+      {onDataEnvelopeValidationWarning: (warning) => warnings.push(warning)});
+
+    expect(warnings).toEqual([{
+      sessionId: 'session-leaky',
+      envelopeIndex: 0,
+      errors: [{path: 'display.columns', message: 'display.columns must be an array'}],
+      totalErrors: 1,
+      envelope: expect.objectContaining({metaSource: 'test.stream_projector', skillId: 'test_skill',
+        stepId: 'step_leaky', displayLayer: 'list', displayFormat: 'table'}),
+    }]);
+    expect(JSON.stringify(warnings)).not.toContain(secretRow);
   });
 
   it('admits only valid envelopes from a mixed batch and preserves array shape', () => {

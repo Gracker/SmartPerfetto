@@ -54,11 +54,10 @@ import { persistReport } from './reportRoutes';
 import { SessionPersistenceService } from '../services/sessionPersistenceService';
 import {
   authenticate,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
   type RequestContext,
 } from '../middleware/auth';
+import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import { createRequestId, requestIdOf } from '../middleware/requestId';
 import { sendRouteError, sendRouteFailure } from '../middleware/routeFailure';
 import {
@@ -208,10 +207,11 @@ import {
   analysisHasPrivateContext,
 } from '../services/security/analysisPrivateContext';
 import {withDurableLearningPermission} from '../services/security/durableLearning';
+import {projectAnalysisFailure, projectStoredAnalysisFailure} from '../services/analysisFailureProjection';
 import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
+  requireAdmittedAnalysisContextFingerprint,
   type AnalysisContextSelection,
 } from '../services/resolvedAnalysisContext';
 import {runAnalysisSelection} from '../services/effectiveAnalysisSelection';
@@ -3456,6 +3456,8 @@ async function runSmartAnalysis(
 ): Promise<void> {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
+  // Before the run starts: without its admitted fingerprint nothing may run.
+  const authorizationFingerprint = requireAdmittedAnalysisContextFingerprint(session.analysisContextFingerprint);
 
   const startedAt = Date.now();
   const runId = options.runContext.runId;
@@ -3473,8 +3475,6 @@ async function runSmartAnalysis(
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runId);
   const authorizationSelection: AnalysisContextSelection = runAnalysisSelection(options, session.sourceAuthorization);
   const knowledgeScope = {...options.knowledgeScope};
-  const authorizationFingerprint = session.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(authorizationSelection, knowledgeScope);
   const finalizationRun = createHttpFinalizationRun(session, runId, authorizationSelection,
     knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const cancelToken = smartCancelBridge.create(sessionId, runId);
@@ -3649,9 +3649,8 @@ async function runSmartAnalysis(
     }
     const publicErrorMessage = error instanceof SmartPreviewSelectionError
       ? smartPreviewSelectionErrorMessage(outputLanguage, error.reportId)
-      : privateKnowledge
-        ? projectOwnerAnalysisError(sessionId, error, outputLanguage)
-        : error.message || String(error);
+      : projectAnalysisFailure(error, {privateContext: sessionRunPrivateContext(session, runId),
+        guardSessionId: sessionId, language: outputLanguage, requestId: options.runContext.requestId});
     session.status = 'failed';
     session.error = publicErrorMessage;
     markSessionRunStatus(session, 'failed', session.error, runId);
@@ -4465,6 +4464,8 @@ export function resolveSessionArchitectureType(
 async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId: string, options: any = {}) {
   const session = assistantAppService.getSession(sessionId);
   if (!session) return;
+  // Before the run starts: without its admitted fingerprint nothing may run.
+  const authorizationFingerprint = requireAdmittedAnalysisContextFingerprint(session.analysisContextFingerprint);
 
   const inputRun = options.runContext as AnalyzeSessionRunContext | undefined;
   const requestedRunId = inputRun?.runId ?? session.activeRun?.runId;
@@ -4508,6 +4509,7 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   session.status = 'running';
   session.lastActivityAt = Date.now();
   const runIdForAnalysis = session.activeRun?.runId;
+  const runRequestId = session.activeRun?.requestId ?? createRequestId();
   persistSessionRunState(session, 'running', undefined, runIdForAnalysis);
   const runHeartbeatInterval = startSessionRunHeartbeat(session, runIdForAnalysis);
   logger.info('AgentDrivenAnalysis', 'Starting agent-driven analysis', {
@@ -4532,8 +4534,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   const knowledgeScope: KnowledgeScope = {...(options.knowledgeScope ?? {
     tenantId: session.tenantId, workspaceId: session.workspaceId, userId: session.userId,
   })};
-  const authorizationFingerprint = session.analysisContextFingerprint ??
-    buildAnalysisContextAuthorizationFingerprint(authorizationSelection, knowledgeScope);
   const finalizationRun = createHttpFinalizationRun(session, runIdForAnalysis,
     authorizationSelection, knowledgeScope, authorizationFingerprint, options.analysisContextFingerprint);
   const startedAt = session.activeRun!.startedAt;
@@ -5000,14 +5000,11 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       await retireAuthorizationChangedSession(sessionId, session, handleUpdate);
       if (!finalizationRun.owner.isCurrent()) return;
     }
-    const publicErrorMessage = privateKnowledge
-      ? projectOwnerAnalysisError(sessionId, error, outputLanguage)
-      : error.message;
     if (isSessionRunCancelled(session, runIdForAnalysis)) {
       logger.info('AgentDrivenAnalysis', 'Ignoring analysis error after cancellation', {
         sessionId,
         runId: runIdForAnalysis,
-        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : publicErrorMessage,
+        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : error?.message,
       });
       return;
     }
@@ -5015,10 +5012,14 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
       logger.info('AgentDrivenAnalysis', 'Ignoring stale analysis error', {
         sessionId,
         runId: runIdForAnalysis,
-        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : publicErrorMessage,
+        error: privateKnowledge ? privateAnalysisFailureMessage(sessionOutputLanguage(session)) : error?.message,
       });
       return;
     }
+    const publicErrorMessage = projectAnalysisFailure(error, {
+      privateContext: sessionRunPrivateContext(session, runIdForAnalysis), guardSessionId: sessionId,
+      language: outputLanguage, requestId: runRequestId,
+    });
     session.status = 'failed';
     session.error = publicErrorMessage;
     markSessionRunStatus(session, 'failed', publicErrorMessage, runIdForAnalysis);
@@ -5401,12 +5402,7 @@ function broadcastToAgentDrivenClients(
     onDataEnvelopeValidationWarning: (payload) => {
       console.warn(
         `[AgentRoutes.broadcastToAgentDrivenClients] DataEnvelope validation warning (envelope ${payload.envelopeIndex}):`,
-        {
-          sessionId: payload.sessionId,
-          errors: payload.errors.slice(0, 5),
-          totalErrors: payload.errors.length,
-          envelope: payload.envelope,
-        },
+        payload,
       );
     },
     onValidDataEnvelopes: (validEnvelopes) => {
@@ -7046,11 +7042,10 @@ function copyStoredClientFindings(findings: AgentRuntimeAnalysisResult['findings
   return findings.map((finding, index) => ({...finding, id: finding.id ?? `finding_${index + 1}`}));
 }
 
-/** A stored error may predate projection (startup and lease failures keep the raw message). */
+/** The stored failure text, already projected when the run failed (`projectAnalysisFailure`). */
 function projectStoredHttpError(session: AnalysisSession): string | undefined {
-  return sessionRunHasPrivateContext(session)
-    ? projectOwnerAnalysisError(session.sessionId, session.error, sessionOutputLanguage(session))
-    : session.error;
+  return projectStoredAnalysisFailure(session.error, {privateContext: sessionRunPrivateContext(session),
+    guardSessionId: session.sessionId, language: sessionOutputLanguage(session)});
 }
 
 function projectStoredHttpResult(session: AnalysisSession, result: AgentRuntimeAnalysisResult): AgentRuntimeAnalysisResult {

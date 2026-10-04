@@ -12,7 +12,6 @@ import {
 } from '../../services/security/codeAwareOutputRegistry';
 import {projectOwnerCodeAwareStreamingUpdate} from '../../services/security/codeAwareStreamingUpdateProjection';
 import {
-  projectOwnerAnalysisError,
   projectOwnerProvisionalConclusion,
   projectOwnerStructuredValue,
   projectOwnerAnalysisResult,
@@ -37,9 +36,10 @@ import {
   type ConversationEvidenceRef,
   type ConversationRuntimeOutcome,
 } from '../contracts/conversationContract';
-import type {
-  ConversationRuntimeAdapter,
-  ConversationRuntimeInput,
+import {
+  conversationRuntimeSessionId,
+  type ConversationRuntimeAdapter,
+  type ConversationRuntimeInput,
 } from '../application/conversationSessionService';
 import {analysisHasPrivateContext} from '../../services/security/analysisPrivateContext';
 import {withDurableLearningPermission} from '../../services/security/durableLearning';
@@ -99,7 +99,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
       buildAnalysisContextAuthorizationFingerprint(selection, scope);
     const controller = new AbortController();
     const runId = input.runId;
-    const runtimeSessionId = `${input.sessionId}:${input.runId}`;
+    const runtimeSessionId = conversationRuntimeSessionId(input.sessionId, input.runId);
     let abortPromise: Promise<void> | undefined;
     const abortRuntime = () => abortPromise ??= Promise.resolve()
       .then(() => this.orchestrator.abortSession?.(runtimeSessionId)).then(() => undefined).catch(() => undefined);
@@ -299,7 +299,7 @@ export class OrchestratorConversationRuntimeAdapter implements ConversationRunti
         (state.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError'))) {
         return {kind: 'cancelled', message: ''};
       }
-      if (privateKnowledge) throw new Error(projectOwnerAnalysisError(runtimeSessionId, error, outputLanguage));
+      // The conversation service projects the failure (`projectAnalysisFailure`) under this run's guard.
       throw error;
     } finally {
       this.orchestrator.off('update', onUpdate);

@@ -18,7 +18,7 @@ import express from 'express';
 import { invalidateStrategyCache } from '../agentv3/strategyLoader';
 import { collectSelfImproveMetrics } from '../agentv3/selfImprove/metricsAggregator';
 import {authenticate, requireRequestContext} from '../middleware/auth';
-import {hasRbacPermission, sendForbidden} from '../services/rbac';
+import {hasRbacPermission, requireRbacPermission, sendForbidden} from '../services/rbac';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
 
 const router = express.Router();
@@ -34,7 +34,10 @@ router.use(authenticate);
  * Safe to call any time — already-running analyses snapshot their strategy
  * version at start and are not retroactively affected.
  */
-router.post('/strategies/reload', (_req, res) => {
+router.post('/strategies/reload', requireRbacPermission(
+  'runtime:manage',
+  'Reloading strategies requires runtime:manage permission',
+), (_req, res) => {
   try {
     invalidateStrategyCache();
     res.json({ success: true, reloadedAt: new Date().toISOString() });

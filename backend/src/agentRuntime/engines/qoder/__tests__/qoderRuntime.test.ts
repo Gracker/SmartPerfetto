@@ -237,6 +237,7 @@ import type {ClaudeMcpServerOptions} from '../../../../agentv3/claudeMcpServer';
 import {NO_PRIVATE_CONTEXT} from '../../../../services/security/analysisPrivateContext';
 import * as contextAuthorization from '../../../../services/resolvedAnalysisContext';
 import * as analysisHistory from '../../../analysisHistory';
+import {admitted} from '../../../../../tests/helpers/admittedAnalysisOptions';
 
 function createRuntime(
   env: Record<string, string | undefined> = {},
@@ -975,7 +976,7 @@ describe('QoderRuntime', () => {
       });
       const authorization = revokeWhen(() => revoked);
       try {
-        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', {analysisMode: 'full', ...PRIVATE}))
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', admitted({analysisMode: 'full', ...PRIVATE})))
           .rejects.toThrow('analysis_context_changed_restart_required');
         expect(continued).toBe(false);
         expect(mockInterrupt).toHaveBeenCalled();
@@ -993,7 +994,7 @@ describe('QoderRuntime', () => {
       });
       const authorization = revokeWhen(() => revoked);
       try {
-        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', {analysisMode: 'full', ...PRIVATE}))
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', admitted({analysisMode: 'full', ...PRIVATE})))
           .rejects.toThrow('analysis_context_changed_restart_required');
         expect(classifierBoundary).toBeInstanceOf(contextAuthorization.AnalysisContextAuthorizationChangedError);
         expect(mockQuery).not.toHaveBeenCalled();
@@ -1011,7 +1012,7 @@ describe('QoderRuntime', () => {
       });
       const authorization = revokeWhen(() => revoked);
       try {
-        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', {analysisMode: 'full', ...PRIVATE}))
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', admitted({analysisMode: 'full', ...PRIVATE})))
           .rejects.toThrow('analysis_context_changed_restart_required');
         expect(render).toHaveBeenCalled();
         expect(mockQuery).not.toHaveBeenCalled();
@@ -1097,10 +1098,10 @@ describe('QoderRuntime', () => {
         {type: 'result', subtype: 'success', is_error: false, result: 'Comparison answer', num_turns: 2},
       ]));
       const result = await createRuntime({QODER_MAX_TURNS: '12', QODER_QUICK_MAX_TURNS: '3'})
-        .analyze('Compare the selected metric', 'fast-pair', 'trace-1', {
+        .analyze('Compare the selected metric', 'fast-pair', 'trace-1', admitted({
           analysisMode: 'fast', referenceTraceId: 'trace-2',
           codeAwareMode: 'metadata_only', codebaseIds: ['source-1'], knowledgeSourceIds: ['knowledge-1'],
-        });
+        }));
       expect(mockBuildComparisonContext).not.toHaveBeenCalled();
       expect(mockCreateClaudeMcpServer).toHaveBeenCalledWith(expect.objectContaining({
         lightweight: true, allowNewEvidence: true, userQuery: 'Compare the selected metric',
@@ -1119,10 +1120,10 @@ describe('QoderRuntime', () => {
       mockQuery.mockReturnValue(createMockSdkStream([
         {type: 'result', subtype: 'success', is_error: false, result: 'Previously observed fact', num_turns: 1},
       ]));
-      const result = await createRuntime({}, {query: queryTrace}).analyze('Use the existing observation', 'existing-only', 'trace-1', {
+      const result = await createRuntime({}, {query: queryTrace}).analyze('Use the existing observation', 'existing-only', 'trace-1', admitted({
         analysisMode: 'full', referenceTraceId: 'trace-2',
         codeAwareMode: 'metadata_only', codebaseIds: ['source-1'], knowledgeSourceIds: ['knowledge-1'],
-      });
+      }));
       expect(queryTrace).not.toHaveBeenCalled();
       expect(createArchitectureDetector).not.toHaveBeenCalled();
       expect(detectFocusApps).not.toHaveBeenCalled();
@@ -1140,7 +1141,7 @@ describe('QoderRuntime', () => {
       mockQuery.mockImplementation(() => createMockSdkStream([
         {type: 'result', subtype: 'success', is_error: false, result: 'Previously captured metric', num_turns: 1},
       ]));
-      const options = {analysisMode: 'fast' as const, codeAwareMode: 'metadata_only' as const, codebaseIds: ['source-1']};
+      const options = admitted({analysisMode: 'fast' as const, codeAwareMode: 'metadata_only' as const, codebaseIds: ['source-1']});
       const evidence = createRuntimeEvidenceContext({logicalSessionId: 'private-conversation', traceId: 'trace-1', options});
       const firstController = new AbortController();
       const first = evidence.bind(options, {runtimeSessionId: 'private-conversation:first', runId: 'first',
@@ -1498,13 +1499,13 @@ describe('QoderRuntime', () => {
         {type: 'result', subtype: 'success', is_error: false, result: 'done'},
       ]));
 
-      await createRuntime().analyze('quick source lookup', 'session-1', 'trace-1', {
+      await createRuntime().analyze('quick source lookup', 'session-1', 'trace-1', admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: ['cb-qoder-quick'],
-      });
+      }));
 
       const callArgs = mockQuery.mock.calls[0][0] as any;
       expect(readPromptContext(callArgs.options.systemPrompt, 'source_authorization')).toEqual({
@@ -1663,10 +1664,10 @@ describe('QoderRuntime', () => {
           {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
         ]));
 
-        const result = await createRuntime().analyze('test', 'session-1', 'trace-1', {
+        const result = await createRuntime().analyze('test', 'session-1', 'trace-1', admitted({
           codeAwareMode: 'provider_send',
           codebaseIds: [fixture.codebaseId],
-        });
+        }));
 
         expect(result).toMatchObject({
           success: true,
@@ -1708,18 +1709,18 @@ describe('QoderRuntime', () => {
           ]));
         const runtime = createRuntime();
 
-        const terminal = await runtime.analyze('source run', 'session-1', 'trace-1', {
+        const terminal = await runtime.analyze('source run', 'session-1', 'trace-1', admitted({
           codeAwareMode: 'provider_send',
           codebaseIds: [fixture.codebaseId],
-        });
+        }));
         const context = takeFinalizationContext(terminal)!;
         try {
           expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
           expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
         } finally {context.dispose();}
-        const next = await runtime.analyze('public run', 'session-1', 'trace-1', {
+        const next = await runtime.analyze('public run', 'session-1', 'trace-1', admitted({
           codeAwareMode: 'off',
-        });
+        }));
 
         expect(terminal.success).toBe(true);
         expect(terminal.sourceUseDecision).toEqual(decision);
@@ -1758,11 +1759,11 @@ describe('QoderRuntime', () => {
           'source timeout run',
           'session-qoder-source-timeout',
           'trace-1',
-          {
+          admitted({
             analysisMode: 'full',
             codeAwareMode: 'provider_send',
             codebaseIds: [fixture.codebaseId],
-          },
+          }),
         );
 
         expect(result).toMatchObject({
@@ -1798,10 +1799,10 @@ describe('QoderRuntime', () => {
       const runtime = createRuntime();
       runtime.on('update', update => updates.push(update));
 
-      await runtime.analyze('test', 'session-1', 'trace-1', {
+      await runtime.analyze('test', 'session-1', 'trace-1', admitted({
         codeAwareMode: 'metadata_only',
         codebaseIds: ['private-codebase'],
-      });
+      }));
 
       const tokens = updates.filter(update => update.type === 'answer_token');
       expect(tokens).toEqual([
@@ -1993,9 +1994,9 @@ describe('QoderRuntime', () => {
       const runtime = createRuntime();
       runtime.on('update', update => updates.push(update));
 
-      await expect(runtime.analyze('private', 'session-qoder-private-tail', 'trace-1', {
+      await expect(runtime.analyze('private', 'session-qoder-private-tail', 'trace-1', admitted({
         knowledgeSourceIds: ['private-wiki'],
-      })).resolves.toMatchObject({ success: true });
+      }))).resolves.toMatchObject({ success: true });
 
       expect(mockProjectionFlush).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(updates)).not.toContain('private-tail-canary');
@@ -2489,7 +2490,7 @@ describe('QoderRuntime', () => {
 
       const runtime = createRuntime();
       await runtime.analyze('first', 'session-1', 'trace-1');
-      await runtime.analyze('second', 'session-1', 'trace-1', { codeAwareMode: 'off' });
+      await runtime.analyze('second', 'session-1', 'trace-1', admitted({ codeAwareMode: 'off' }));
 
       const secondCallArgs = mockQuery.mock.calls[1][0] as any;
       expect(secondCallArgs.options.resume).toBeUndefined();
@@ -2509,7 +2510,7 @@ describe('QoderRuntime', () => {
         ]));
 
       const runtime = createRuntime();
-      await runtime.analyze('private', 'session-1', 'trace-1', privateOptions);
+      await runtime.analyze('private', 'session-1', 'trace-1', admitted(privateOptions));
 
       await runtime.analyze('public', 'session-1', 'trace-1');
       const publicCallArgs = mockQuery.mock.calls[1][0] as any;
@@ -2576,9 +2577,9 @@ describe('QoderRuntime', () => {
         { type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone' },
       ]));
       const runtime = createRuntime();
-      await runtime.analyze('test', 'session-1', 'trace-1', {
+      await runtime.analyze('test', 'session-1', 'trace-1', admitted({
         knowledgeSourceIds: ['private-wiki'],
-      });
+      }));
 
       const snapshot = runtime.takeSnapshot('session-1', 'trace-1', {
         agentRuntimeProviderId: 'prov-1',
@@ -2609,9 +2610,9 @@ describe('QoderRuntime', () => {
         {type: 'result', subtype: 'success', is_error: false, result: '## Final Report\ndone'},
       ]));
       try {
-        await createRuntime().analyze('private question', 'session-1', 'trace-1', {
+        await createRuntime().analyze('private question', 'session-1', 'trace-1', admitted({
           analysisMode: 'full', knowledgeSourceIds: ['private-wiki'],
-        });
+        }));
         expect(patterns).toHaveBeenCalledTimes(1);
         expect(negative).toHaveBeenCalledTimes(1);
         const systemPrompt = (mockQuery.mock.calls[0][0] as any).options.systemPrompt;
@@ -2634,7 +2635,7 @@ describe('QoderRuntime', () => {
         ]);
       });
       const runtime = createRuntime();
-      await runtime.analyze('private question', 'session-1', 'trace-1', {knowledgeSourceIds: ['private-wiki']});
+      await runtime.analyze('private question', 'session-1', 'trace-1', admitted({knowledgeSourceIds: ['private-wiki']}));
 
       // The creator's report and follow-ups read this state.
       expect(runtime.getSessionNotes('session-1')).toEqual([expect.objectContaining({content: 'Private run 1 note'})]);
@@ -2645,7 +2646,7 @@ describe('QoderRuntime', () => {
       expect(turns[0].result).toMatchObject({sourceDerived: true});
 
       // Notes carry over within the session; uncertainty flags belong to their own turn.
-      await runtime.analyze('private follow-up', 'session-1', 'trace-1', {knowledgeSourceIds: ['private-wiki']});
+      await runtime.analyze('private follow-up', 'session-1', 'trace-1', admitted({knowledgeSourceIds: ['private-wiki']}));
       expect(runtime.getSessionNotes('session-1').map(note => note.content)).toEqual(['Private run 1 note', 'Private run 2 note']);
       expect(runtime.getSessionUncertaintyFlags('session-1')).toEqual([expect.objectContaining({
         assumption: 'Private run 2 assumption'})]);

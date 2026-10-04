@@ -2,8 +2,8 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import type { Response } from 'express';
-import type { RequestContext } from '../middleware/auth';
+import type { RequestHandler, Response } from 'express';
+import { requireRequestContext, type RequestContext } from '../middleware/auth';
 import {
   isOwnedByContext,
   isRecordedCreatorOf,
@@ -220,6 +220,22 @@ export function canShareAnalysisResultResource(
   if (!hasRbacPermission(context, 'analysis_result:share')) return false;
   if (isOwnedByContext(resource, context)) return true;
   return hasRbacPermission(context, 'analysis_result:delete');
+}
+
+/**
+ * Route middleware for an operation one permission gates: the shared 403 body
+ * unless the authenticated caller holds it. Mount it per route, never with
+ * `router.use` on a router shared by a path prefix: that would gate every
+ * router mounted after it on the same prefix.
+ */
+export function requireRbacPermission(permission: RbacPermission, details: string): RequestHandler {
+  return (req, res, next) => {
+    if (!hasRbacPermission(requireRequestContext(req), permission)) {
+      sendForbidden(res, details);
+      return;
+    }
+    next();
+  };
 }
 
 export function sendForbidden(res: Response, details = 'Forbidden'): Response {

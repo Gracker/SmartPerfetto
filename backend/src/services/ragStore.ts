@@ -56,6 +56,7 @@ import {
   upsertScopedKnowledgeRecords,
 } from './scopedKnowledgeStore';
 import {PublicRequestError} from '../utils/publicRequestError';
+import {LOCAL_DEV_OWNER} from '../utils/localDevIdentity';
 
 /** Source kinds that require a `license` field at ingestion time. */
 const LICENSE_REQUIRED_KINDS: ReadonlySet<RagSourceKind> = new Set([
@@ -181,11 +182,7 @@ function privateKnowledgeVisibleInScope(
     chunk.registryOrigin === 'codebase_registry' &&
     !chunk.knowledgeScopeFingerprint
   ) {
-    return fingerprint === privateKnowledgeScopeFingerprint({
-      tenantId: 'default-dev-tenant',
-      workspaceId: 'default-workspace',
-      userId: 'dev-user-123',
-    });
+    return fingerprint === privateKnowledgeScopeFingerprint(LOCAL_DEV_OWNER);
   }
   return Boolean(fingerprint && chunk.knowledgeScopeFingerprint === fingerprint);
 }
@@ -248,11 +245,7 @@ function backfillChunk(chunk: RagChunk): RagChunk {
   if (chunk.registryOrigin === 'codebase_registry' && !chunk.knowledgeScopeFingerprint) {
     return {
       ...chunk,
-      knowledgeScopeFingerprint: privateKnowledgeScopeFingerprint({
-        tenantId: 'default-dev-tenant',
-        workspaceId: 'default-workspace',
-        userId: 'dev-user-123',
-      }),
+      knowledgeScopeFingerprint: privateKnowledgeScopeFingerprint(LOCAL_DEV_OWNER),
     };
   }
   if (isExternalPrivateKnowledgeChunk(chunk) && !chunk.knowledgeScopeFingerprint) {

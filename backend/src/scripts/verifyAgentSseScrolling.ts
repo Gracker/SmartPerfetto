@@ -30,11 +30,7 @@ import type {
   TracePairLayout,
   TraceSource,
 } from '../agentv3/types';
-import {
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
-} from '../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import { writeTraceMetadata } from '../services/traceMetadataStore';
 import {CodeLookupLedger} from '../services/codebase/codeLookupLedger';
 import {hasSourceCitation} from '../services/codebase/sourceCitations';

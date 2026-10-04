@@ -75,6 +75,7 @@ import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRunti
 import {candidateWithPopulation} from '../../../tests/helpers/conclusionDeclarationFixture';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 
 const mockOpenCodeIntentTransport = jest.fn<typeof runOpenCodeIntentTransport>();
 jest.mock('../engines/opencode/openCodeIntentTransport', () => ({
@@ -492,7 +493,7 @@ describe('OpenCode authorization at every dispatch and observation', () => {
     });
     const authorization = revokeWhen(() => revoked);
     try {
-      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-after-read', 'trace-opencode', {analysisMode: 'full', ...PRIVATE}))
+      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-after-read', 'trace-opencode', admitted({analysisMode: 'full', ...PRIVATE})))
         .rejects.toThrow('analysis_context_changed_restart_required');
       expect(reads).toBe(1);
       expect(harness.aborts[1]).toHaveBeenCalledWith({path: {id: 'native-1'}});
@@ -508,7 +509,7 @@ describe('OpenCode authorization at every dispatch and observation', () => {
     });
     const authorization = revokeWhen(() => revoked);
     try {
-      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-before-dispatch', 'trace-opencode', {analysisMode: 'full', ...PRIVATE}))
+      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-before-dispatch', 'trace-opencode', admitted({analysisMode: 'full', ...PRIVATE})))
         .rejects.toThrow('analysis_context_changed_restart_required');
       // Only the classifier's prompt was sent.
       expect(harness.prompts).toHaveLength(1);
@@ -963,9 +964,9 @@ describe('OpenCode native turn intent and delivery', () => {
     try {
       const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT,
         taskKind: 'investigation', scope, evidenceAccess: 'existing_only'}});
-      const result = await harness.runtime.analyze('same scope', `intent-existing-${scope}`, 'trace-opencode', {
+      const result = await harness.runtime.analyze('same scope', `intent-existing-${scope}`, 'trace-opencode', admitted({
         analysisMode: 'full', referenceTraceId: 'trace-reference', codeAwareMode: 'off',
-      });
+      }));
       expect(result.turnIntent).toMatchObject({status: 'resolved', scope, evidenceAccess: 'existing_only'});
       const names = harness.getTools().map(tool => tool.name);
       expect(names).toContain('fetch_artifact');
@@ -1016,9 +1017,9 @@ describe('OpenCode native turn intent and delivery', () => {
       const cases = jest.spyOn(caseBackgroundContext, 'buildCaseBackgroundContext').mockReturnValue('CASE_BACKGROUND_SECTION');
       try {
         const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'investigation', scope: 'scene_wide'}});
-        await harness.runtime.analyze('the whole scene', `private-experience-${mode}`, 'trace-opencode', {
+        await harness.runtime.analyze('the whole scene', `private-experience-${mode}`, 'trace-opencode', admitted({
           analysisMode: mode, codeAwareMode: 'metadata_only', codebaseIds: ['cb-opencode-private-experience'],
-        });
+        }));
         expect(patterns).toHaveBeenCalled();
         expect(negative).toHaveBeenCalled();
         expect(harness.prompts[1].body.system).toContain('PATTERN_MEMORY_SECTION');
@@ -3329,13 +3330,13 @@ describe('experimental OpenCode runtime contract', () => {
       '快速结合源码定位候选机制',
       'session-opencode-source-quick',
       'trace-opencode',
-      {
+      admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'metadata_only',
         codebaseIds: ['cb-opencode-quick'],
-      },
+      }),
     );
 
     const prompt = record.promptInput as {body?: {system?: string}} | undefined;
@@ -3383,21 +3384,21 @@ describe('experimental OpenCode runtime contract', () => {
         fixture.sourceUse,
         true,
       );
-      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-opencode', {
+      const terminal = await runtime.analyze('source terminal run', sessionId, 'trace-opencode', admitted({
         analysisMode: 'fast',
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
       const context = finalizationContext.takeFinalizationContext(terminal)!;
       try {
         expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(`## Final Report\n${SOURCE_FINALIZATION_RAW_SOURCE}`);
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
       mockOpenCodePreparation(runtime, null, 'startup', 'public second run', [], undefined, true);
-      const next = await runtime.analyze('public second run', sessionId, 'trace-opencode', {
+      const next = await runtime.analyze('public second run', sessionId, 'trace-opencode', admitted({
         analysisMode: 'fast',
         codeAwareMode: 'off',
-      });
+      }));
 
       expect(terminal.success).toBe(true);
       expect(terminal.sourceUseDecision).toEqual(decision);
@@ -3456,11 +3457,11 @@ describe('experimental OpenCode runtime contract', () => {
         'analyze with private source',
         'session-opencode-private',
         'trace-opencode',
-        {
+        admitted({
           analysisMode: 'full',
           codeAwareMode: 'provider_send',
           codebaseIds: ['codebase-private'],
-        },
+        }),
       );
 
       expect(paths.home).toContain('smartperfetto-opencode-private-');
@@ -3509,7 +3510,7 @@ describe('experimental OpenCode runtime contract', () => {
       'private source analysis',
       'session-opencode-legacy-adapter',
       'trace-opencode',
-      {codeAwareMode: 'metadata_only', codebaseIds: ['codebase-private']},
+      admitted({codeAwareMode: 'metadata_only', codebaseIds: ['codebase-private']}),
     )).rejects.toThrow('does not support explicit per-process environment isolation');
     expect(legacyCreate).not.toHaveBeenCalled();
   });

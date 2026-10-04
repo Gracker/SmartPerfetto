@@ -34,6 +34,13 @@ only to the server log's `[UnhandledError]` line, correlated by `requestId`;
 the raw request body a body-parse error carries is not logged. There is no
 switch that echoes exception messages.
 
+A request (preflight included) whose `Origin` is not in the `CORS_ORIGINS`
+allow-list is not a server failure: it gets `403`
+`{"success": false, "code": "cors_origin_rejected", "error": "This origin is not allowed to call the SmartPerfetto API", "requestId": "…"}`
+without `Access-Control-Allow-Origin`, and the server logs one warning naming
+the origin. Requests without an `Origin` (curl, server-to-server) are
+unaffected.
+
 ## Request IDs
 
 Each request gets exactly one request id when it reaches the backend. Every
@@ -143,12 +150,21 @@ result keeps only its reason code (else `source_file_unreadable`). In
 enterprise mode an SSO session or API key lookup failure answers 401 with
 fixed text. Records written before this change keep their stored text.
 
-Analysis run failures are the exception: the Agent analysis `error` SSE
-event, the `error` of `/status`, and the conversation `run_failed` event carry
-the runtime or model provider's failure reason (authentication, quota),
-because it is the only thing the session owner can act on. A run that uses
-private knowledge (source code, external knowledge sources) returns only the
-owner-projected text on every one of them.
+Analysis run failures follow one projection (`projectAnalysisFailure`) on
+every surface the owner reads: the Agent analysis `error` SSE event, the
+`error` of `/status` and of the analyze/run start response, and the
+conversation `run_failed` event and stored run. A runtime or model provider
+that fails (authentication, quota) returns a failed result whose own reason
+reaches the owner through the result. A run that throws keeps the text only of
+a failure SmartPerfetto wrote for the owner (authorization changed, provider
+not found or unreadable, AI disabled, trace processor lease or memory
+admission) or of a bare reason token (`analysis_history_parent_not_authorized`,
+without any detail after `:`). Any other exception (SQLite, the filesystem)
+answers `Analysis did not complete; the server logged the error (request ID:
+<id>).` (Chinese by default), and the cause is logged under that id. A run
+that uses private knowledge (source code, external knowledge sources) passes
+that text through its own output guard, which suppresses it once its session
+was revoked, and logs only the error class.
 
 ## OIDC Authentication
 
@@ -250,6 +266,10 @@ GET /api/traces?limit=100&cursor=<nextCursor>
 Clients must not parse or synthesize cursors. In `/api/traces/stats`,
 `traces.metadataCount` is the total visible persisted trace count for the
 workspace, while `traces.count` is the number active in the current process.
+
+Trace records in responses (upload, failed upload, list, detail, viewer) carry
+no server filesystem path (`path`, `filePath`); a client addresses a trace by
+its `id`.
 
 ## Workspace-scoped APIs
 
@@ -803,16 +823,25 @@ was identified (`vendor` is not `aosp`, `unknown` or `other`).
 
 Admin path: `/api/admin`
 
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/skills` | Admin Skill list |
-| `POST` | `/skills` | Create a Skill |
-| `PUT` | `/skills/:skillId` | Update a Skill |
-| `DELETE` | `/skills/:skillId` | Delete a Skill |
-| `POST` | `/skills/validate` | Validate a Skill |
-| `POST` | `/skills/reload` | Reload Skills |
-| `POST` | `/strategies/reload` | Reload strategies |
-| `GET` | `/self-improve/metrics` | Self-improvement metrics |
+| Method | Path | RBAC | Purpose |
+|---|---|---|---|
+| `GET` | `/skills` | `agent:run` | Admin Skill list (metadata only) |
+| `GET` | `/skills/:skillId` | `runtime:manage` | Skill definition and raw YAML; `filePath` is relative to the Skills root (`composite/<id>.skill.yaml`) |
+| `POST` | `/skills` | `runtime:manage` | Create a custom Skill (disabled in enterprise mode) |
+| `PUT` | `/skills/:skillId` | `runtime:manage` | Update a custom Skill (disabled in enterprise mode) |
+| `DELETE` | `/skills/:skillId` | `runtime:manage` | Delete a custom Skill (disabled in enterprise mode) |
+| `POST` | `/skills/validate` | `runtime:manage` | Validate Skill YAML without saving |
+| `POST` | `/skills/reload` | `runtime:manage` | Reload the process-wide Skill registry |
+| `GET` | `/vendors` | `agent:run` | Vendor ids and the Skills they override |
+| `GET` | `/vendors/:vendor/overrides` | `runtime:manage` | Vendor overrides with raw YAML |
+| `POST` | `/strategies/reload` | `runtime:manage` | Reload strategies |
+| `GET` | `/self-improve/metrics` | `audit:read` | Self-improvement metrics |
+
+The built-in Skill catalog is the agent's own tool catalog, so whoever may run
+the agent may list it; raw Skill content, server-side validation, reloads and
+writes manage the runtime's analysis content. A missing permission is `403`
+with `{success: false, error: 'Forbidden', details}`. Keyless local mode and
+the operator API key hold every permission.
 
 ## Self-Evolution Admin API
 

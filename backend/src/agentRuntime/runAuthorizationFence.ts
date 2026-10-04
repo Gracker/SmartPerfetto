@@ -8,7 +8,7 @@ import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {
   AnalysisContextAuthorizationChangedError,
   assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
+  requireAdmittedAnalysisContextFingerprint,
 } from '../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../services/scopedKnowledgeStore';
 import {authorizationRegistryWriteGeneration} from '../services/authorizationRegistryWrites';
@@ -73,9 +73,7 @@ export function createRuntimeRunAuthorization(input: {
   const {options, executionLease} = input;
   const enforced = analysisHasPrivateContext(options);
   const scope = resolveKnowledgeScope(options);
-  const fingerprint = enforced
-    ? options.analysisContextFingerprint ?? buildAnalysisContextAuthorizationFingerprint(options, scope)
-    : '';
+  const fingerprint = enforced ? requireAdmittedAnalysisContextFingerprint(options.analysisContextFingerprint) : '';
   let revoked: AnalysisContextAuthorizationChangedError | undefined;
   let ending: Promise<void> = Promise.resolve();
   // The registry write generation a fresh read of this turn verified, if any.

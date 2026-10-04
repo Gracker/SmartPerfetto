@@ -10,9 +10,8 @@ import request from 'supertest';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import {
   authenticate,
-  DEFAULT_DEV_USER_ID,
-  DEFAULT_TENANT_ID,
 } from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID} from '../../utils/localDevIdentity';
 import {
   bindWorkspaceRouteContext,
   requireWorkspaceRouteContext,

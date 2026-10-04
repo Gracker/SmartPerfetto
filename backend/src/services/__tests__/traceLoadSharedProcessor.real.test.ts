@@ -12,7 +12,7 @@ import {TraceProcessorFactory, WorkingTraceProcessor} from '../workingTraceProce
 import {prepareAnalysisRunTraceProcessorLeases} from '../analysisRunTraceProcessorLease';
 import {getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} from '../traceProcessorLeaseStore';
 import {analyzeRawSqlDirectProjection} from '../evidence/rawSqlDirectProjection';
-import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../utils/localDevIdentity';
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 
 jest.setTimeout(120_000);

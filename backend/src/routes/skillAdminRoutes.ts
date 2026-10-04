@@ -12,6 +12,7 @@ import express from 'express';
 import SkillAdminController from '../controllers/skillAdminController';
 import { resolveFeatureConfig } from '../config';
 import { authenticate } from '../middleware/auth';
+import { requireRbacPermission } from '../services/rbac';
 
 const router = express.Router();
 const skillAdminController = new SkillAdminController();
@@ -36,6 +37,36 @@ function disableCustomSkillWritesInEnterpriseMode(
 // Admin endpoints must always be authenticated.
 router.use(authenticate);
 
+// Each operation class has its own permission, checked per route: this router
+// is mounted on the shared /api/admin prefix, so a router-level guard would
+// also gate the strategy and Self-Evolution admin routers after it. Keyless
+// local mode and the operator API key hold every permission.
+//
+// The built-in Skill catalog is the agent's own tool catalog (`list_skills`),
+// so anyone who may run the agent may list it. Raw Skill and vendor-override
+// YAML, validating arbitrary YAML server-side, reloading the process-wide
+// registry and writing custom Skills manage the runtime's analysis content.
+const canReadSkillCatalog = requireRbacPermission(
+  'agent:run',
+  'Listing skills requires agent:run permission',
+);
+const canReadSkillSource = requireRbacPermission(
+  'runtime:manage',
+  'Reading skill source requires runtime:manage permission',
+);
+const canValidateSkill = requireRbacPermission(
+  'runtime:manage',
+  'Validating skill YAML requires runtime:manage permission',
+);
+const canReloadSkills = requireRbacPermission(
+  'runtime:manage',
+  'Reloading skills requires runtime:manage permission',
+);
+const canWriteCustomSkill = requireRbacPermission(
+  'runtime:manage',
+  'Writing custom skills requires runtime:manage permission',
+);
+
 // =============================================================================
 // Skill CRUD
 // =============================================================================
@@ -45,14 +76,14 @@ router.use(authenticate);
  *
  * List all skills with admin metadata
  */
-router.get('/skills', skillAdminController.listSkills);
+router.get('/skills', canReadSkillCatalog, skillAdminController.listSkills);
 
 /**
  * GET /api/admin/skills/:skillId
  *
  * Get skill details including raw YAML
  */
-router.get('/skills/:skillId', skillAdminController.getSkill);
+router.get('/skills/:skillId', canReadSkillSource, skillAdminController.getSkill);
 
 /**
  * POST /api/admin/skills
@@ -60,7 +91,7 @@ router.get('/skills/:skillId', skillAdminController.getSkill);
  * Create a new custom skill
  * Body: { yaml: string } or { definition: SkillDefinition }
  */
-router.post('/skills', disableCustomSkillWritesInEnterpriseMode, skillAdminController.createSkill);
+router.post('/skills', disableCustomSkillWritesInEnterpriseMode, canWriteCustomSkill, skillAdminController.createSkill);
 
 /**
  * PUT /api/admin/skills/:skillId
@@ -68,14 +99,16 @@ router.post('/skills', disableCustomSkillWritesInEnterpriseMode, skillAdminContr
  * Update an existing custom skill
  * Body: { yaml: string } or { definition: SkillDefinition }
  */
-router.put('/skills/:skillId', disableCustomSkillWritesInEnterpriseMode, skillAdminController.updateSkill);
+router.put('/skills/:skillId', disableCustomSkillWritesInEnterpriseMode, canWriteCustomSkill,
+  skillAdminController.updateSkill);
 
 /**
  * DELETE /api/admin/skills/:skillId
  *
  * Delete a custom skill
  */
-router.delete('/skills/:skillId', disableCustomSkillWritesInEnterpriseMode, skillAdminController.deleteSkill);
+router.delete('/skills/:skillId', disableCustomSkillWritesInEnterpriseMode, canWriteCustomSkill,
+  skillAdminController.deleteSkill);
 
 // =============================================================================
 // Validation
@@ -87,14 +120,14 @@ router.delete('/skills/:skillId', disableCustomSkillWritesInEnterpriseMode, skil
  * Validate skill YAML without saving
  * Body: { yaml: string }
  */
-router.post('/skills/validate', skillAdminController.validateSkill);
+router.post('/skills/validate', canValidateSkill, skillAdminController.validateSkill);
 
 /**
  * POST /api/admin/skills/reload
  *
  * Reload all skills from disk
  */
-router.post('/skills/reload', skillAdminController.reloadSkills);
+router.post('/skills/reload', canReloadSkills, skillAdminController.reloadSkills);
 
 // =============================================================================
 // Vendor Management
@@ -105,13 +138,13 @@ router.post('/skills/reload', skillAdminController.reloadSkills);
  *
  * List all vendors with override counts
  */
-router.get('/vendors', skillAdminController.listVendors);
+router.get('/vendors', canReadSkillCatalog, skillAdminController.listVendors);
 
 /**
  * GET /api/admin/vendors/:vendor/overrides
  *
  * Get all overrides for a specific vendor
  */
-router.get('/vendors/:vendor/overrides', skillAdminController.getVendorOverrides);
+router.get('/vendors/:vendor/overrides', canReadSkillSource, skillAdminController.getVendorOverrides);
 
 export default router;

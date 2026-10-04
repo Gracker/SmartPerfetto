@@ -71,11 +71,8 @@ const ALLOWED: Record<string, {count: number; why: string}> = {
   'middleware/routeFailure.ts': {count: 1, why: 'loggableError (log payload)'},
   'routes/agentConversationRoutes.ts': {count: 1, why: 'ProviderRequestError not-found text'},
   'routes/agentLogsRoutes.ts': {count: 1, why: 'setLogLevel validation'},
-  'routes/agentRoutes.ts': {
-    count: 5,
-    why: 'analysis-run failure surface x2 (owner-projected for private knowledge); AnalyzeOptionsError; '
-      + 'log-only errorMessage helper x2',
-  },
+  // The analysis-run failure surface reads no exception text here: projectAnalysisFailure (services) does.
+  'routes/agentRoutes.ts': {count: 3, why: 'AnalyzeOptionsError; log-only errorMessage helper x2'},
   'routes/analysisResultRoutes.ts': {count: 2, why: 'route-local limit/boolean parsers'},
   'routes/enterpriseTenantRoutes.ts': {count: 1, why: 'typed purge window/tombstone job error'},
   'routes/ragAdminRoutes.ts': {count: 1, why: 'index failure legacy `error`: CodebaseRequestError text'},

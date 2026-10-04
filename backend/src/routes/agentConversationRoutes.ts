@@ -18,10 +18,9 @@ import {
 import {OrchestratorConversationRuntimeAdapter} from '../assistant/runtime/orchestratorConversationRuntimeAdapter';
 import {agentSessionConfig} from '../config';
 import {
-  DEFAULT_TENANT_ID,
-  DEFAULT_WORKSPACE_ID,
   requireRequestContext,
 } from '../middleware/auth';
+import {DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 import {getDefaultAndroidInternalsPackResolver} from '../services/androidInternalsPack/androidInternalsPackResolver';
 import {authorizeAnalysisContext} from '../services/analysisContextAuthorization';
 import {
@@ -47,7 +46,6 @@ import {
   buildAnalysisContextAuthorizationFingerprint,
 } from '../services/resolvedAnalysisContext';
 import {knowledgeScopeFromRequestContext} from '../services/scopedKnowledgeStore';
-import {projectOwnerAnalysisError} from '../services/security/privateAnalysisProjection';
 import {readTraceMetadataForContext} from '../services/traceMetadataStore';
 import {getTraceProcessorService} from '../services/traceProcessorService';
 import {
@@ -207,10 +205,6 @@ const conversationSessionService = new ConversationSessionService({
     heartbeatTimers.set(run.runId, timer);
   },
   onRunSettled: settleRun,
-  // A run that may have read private material keeps its error owner-projected wherever it is stored or sent.
-  projectRunError: (session, run, error) => privateContextRestrictsAudience(run.privateContext)
-    ? projectOwnerAnalysisError(undefined, error, session.outputLanguage ?? configuredOutputLanguage())
-    : undefined,
 });
 
 async function ensureTraceAccessible(
@@ -462,6 +456,7 @@ async function startConversation(req: express.Request, res: express.Response): P
       providerSnapshotHash: providerPin.snapshotHash,
       runtimeOptions,
       analysisContextFingerprint,
+      requestId: requestContext.requestId,
     };
     assertCurrentAnalysisContextAuthorization(runtimeOptions, knowledgeScopeFromRequestContext(requestContext),
       analysisContextFingerprint);

@@ -44,6 +44,7 @@ import { SessionPersistenceService } from '../../services/sessionPersistenceServ
 import {
   getTraceProcessorLeaseStore,
   setTraceProcessorLeaseStoreForTests,
+  TraceProcessorLeaseUnavailableError,
 } from '../../services/traceProcessorLeaseStore';
 import {
   TraceProcessorService,
@@ -230,7 +231,9 @@ describe('agent analyze cancellation races', () => {
           const before = analyze.mock.calls.length;
           const failed = await analystHeaders(request(app).post(`/api/agent/v1/sessions/${sessionId}/runs`)).send(requestBody);
           if (failed.status !== 409) throw new Error(JSON.stringify(failed.body));
-          expect(failed.body.error).toBe('fixture lease preparation failed');
+          // An untyped lease failure answers fixed text naming the request; its message stays in the log.
+          expect(failed.body.error).toMatch(/请求 ID：req-|request ID: req-/);
+          expect(failed.text).not.toContain('fixture lease preparation failed');
           expect(failedRunId).toBeDefined();
           expect(db.prepare('SELECT id FROM analysis_runs WHERE id = ?').get(failedRunId!)).toBeUndefined();
           expect(analyze).toHaveBeenCalledTimes(before);
@@ -944,10 +947,10 @@ describe('agent analyze cancellation races', () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
 
-      expect(statusResponse?.body).toEqual(expect.objectContaining({
-        status: 'failed',
-        error: 'runtime failure canary',
-      }));
+      // An untyped runtime exception reaches /status as fixed text naming the run's request id.
+      expect(statusResponse?.body).toEqual(expect.objectContaining({status: 'failed'}));
+      expect(statusResponse?.body.error).toContain(statusResponse?.body.observability.requestId);
+      expect(statusResponse?.text).not.toContain('runtime failure canary');
       expect(manifest).toEqual(expect.objectContaining({
         runId,
         turns: 0,
@@ -1375,7 +1378,7 @@ describe('HTTP shared finalization ownership', () => {
       _options?: import('../../agent/core/orchestratorTypes').AnalysisOptions) => native);
     const orchestrator = Object.assign(emitter, {analyze, abortSession: jest.fn(), cleanupSession: jest.fn()});
     const session = {sessionId: id, traceId: 'trace-a', query: 'fact', createdAt: Date.now(), lastActivityAt: Date.now(),
-      status: 'running', activeRun: run, lastRun: run, runRegistry: {[runId]: run}, runSequence: 1,
+      analysisContextFingerprint: 'fixed-auth', status: 'running', activeRun: run, lastRun: run, runRegistry: {[runId]: run}, runSequence: 1,
       sseClients: [], sseEventSeq: 0, sseEventBuffer: [], dataEnvelopes: [], hypotheses: [],
       conclusionHistory: [], conversationSteps: [], agentDialogue: [], agentResponses: [], orchestrator,
       logger: {info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn(), close: jest.fn(),
@@ -1679,6 +1682,47 @@ describe('HTTP shared finalization ownership', () => {
       expect(persistence.persistAgentTurn).not.toHaveBeenCalled();
       expect(f.session.result).toBeUndefined();
       expect(taken).toBeUndefined();
+    } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
+  });
+
+  it.each([
+    ['an untyped exception', new Error('SQLITE_CORRUPT: malformed /srv/agent/private.db'),
+      '分析未能完成，服务端已记录错误（请求 ID：http-failure-untyped:request）。'],
+    ['a typed runtime failure', new TraceProcessorLeaseUnavailableError('not_acquirable',
+      'Trace processor lease lease-a is draining'), 'Trace processor lease lease-a is draining'],
+  ] as const)('sends the owner one projected failure text on SSE and in the session state for %s', async (_label, cause, text) => {
+    const id = _label === 'an untyped exception' ? 'http-failure-untyped' : 'http-failure-typed';
+    const f = fixture(id);
+    f.analyze.mockRejectedValue(cause);
+    const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await expect(agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'fact', 'trace-a', {
+        runContext: f.session.activeRun, generateTracks: false,
+      })).rejects.toBe(cause);
+      const errors = f.session.sseEventBuffer.filter((event: {eventType: string}) => event.eventType === 'error');
+      expect(errors.map((event: {eventData: string}) => JSON.parse(event.eventData).data))
+        .toEqual([expect.objectContaining({message: text, error: text})]);
+      expect(f.session.error).toBe(text);
+      expect(JSON.stringify(f.session.sseEventBuffer)).not.toContain('/srv/agent');
+    } finally {
+      log.mockRestore();
+      agentRoutesCancellationTestSeam.deleteSession(id);
+    }
+  });
+
+  it('refuses to start a run whose session lost its admitted fingerprint, and never rebuilds one', async () => {
+    const id = 'http-unadmitted';
+    const f = fixture(id);
+    f.session.analysisContextFingerprint = undefined;
+    const build = contextAuthorization.buildAnalysisContextAuthorizationFingerprint as jest.Mock;
+    build.mockClear();
+    try {
+      await expect(agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, 'fact', 'trace-a', {
+        runContext: f.session.activeRun, generateTracks: false,
+      })).rejects.toThrow('analysis_context_fingerprint_required');
+      expect(f.analyze).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
+      expect(persistence.persistAgentTurn).not.toHaveBeenCalled();
     } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
   });
 

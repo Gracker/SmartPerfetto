@@ -14,7 +14,7 @@ import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorLe
 import {getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} from '../../services/traceProcessorLeaseStore';
 import {getPortPool} from '../../services/portPool';
 import {resolveCapabilityTraceProcessorIdentity} from '../../services/capabilityManifestRuntimeIdentity';
-import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../utils/localDevIdentity';
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 
 jest.setTimeout(120_000);

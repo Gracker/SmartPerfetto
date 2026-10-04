@@ -15,10 +15,8 @@ import {
   legacyFilesystemWritesEnabled,
 } from './enterpriseMigration';
 import {buildRagSearchTokenText} from './rag/searchTokens';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../utils/localDevIdentity';
 
-const DEFAULT_TENANT_ID = 'default-dev-tenant';
-const DEFAULT_WORKSPACE_ID = 'default-workspace';
-const DEFAULT_USER_ID = 'dev-user-123';
 const SAFE_SCOPE_SEGMENT_RE = /^[a-zA-Z0-9._:-]+$/;
 
 interface KnowledgeEntryRow extends Record<string, unknown> {
@@ -245,7 +243,7 @@ export function resolveKnowledgeScope(
   );
   const userId = scope.userId
     ? sanitizeScopeSegment(scope.userId, 'userId')
-    : DEFAULT_USER_ID;
+    : DEFAULT_DEV_USER_ID;
   const sourceRunId = scope.sourceRunId || scope.runId;
   return {
     tenantId,

@@ -69,6 +69,7 @@ import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {analysisContextMemoryPartitionKey} from '../../services/resolvedAnalysisContext';
 import {StoreUnreadableError} from '../../utils/storedData';
+import {admitted} from '../../../tests/helpers/admittedAnalysisOptions';
 
 function declaredCandidate(body: string): string {
   return `${body}\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
@@ -556,13 +557,13 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       '快速结合源码定位候选机制',
       'session-claude-source-quick',
       'trace-claude-source-quick',
-      {
+      admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'metadata_only',
         codebaseIds: ['cb-claude-quick'],
-      },
+      }),
     );
 
     const call = claudeSdkMock.__getQueryCalls()[0];
@@ -755,9 +756,9 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       yield {type: 'result', subtype: 'success', num_turns: 1, result: 'The earlier evidence is sufficient.'};
     });
     try {
-      const result = await runtime.analyze('Use prior evidence', 'existing-only', 'current', {
+      const result = await runtime.analyze('Use prior evidence', 'existing-only', 'current', admitted({
         analysisMode: 'fast', referenceTraceId: 'reference', knowledgeSourceIds: ['knowledge-selected'],
-      });
+      }));
       expect(result.turnIntent?.evidenceAccess).toBe('existing_only');
       expect(mcp).toHaveBeenCalledWith(expect.objectContaining({allowNewEvidence: false,
         referenceTraceId: 'reference', comparisonContext: expect.objectContaining({referenceTraceId: 'reference', capabilityProbeStatus: 'not_checked'})}));
@@ -1018,9 +1019,9 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     });
     let context: ReturnType<typeof takeFinalizationContext>;
     try {
-      const result = await runtime.analyze('Analyze scrolling', sessionId, 'trace', {
+      const result = await runtime.analyze('Analyze scrolling', sessionId, 'trace', admitted({
         analysisMode: 'full', codeAwareMode: 'metadata_only', codebaseIds: ['cb-private-experience'],
-      });
+      }));
       context = takeFinalizationContext(result);
       expect(patterns).toHaveBeenCalledTimes(1);
       expect(negative).toHaveBeenCalledTimes(1);
@@ -2330,14 +2331,14 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     });
 
     try {
-      const result = await runtime.analyze('分析私有源码热点', sessionId, 'trace-private-sdk', {
+      const result = await runtime.analyze('分析私有源码热点', sessionId, 'trace-private-sdk', admitted({
         analysisMode: 'full',
         codeAwareMode: 'metadata_only',
         codebaseIds: ['private-app'],
         tenantId: 'tenant-private',
         workspaceId: 'workspace-private',
         userId: 'user-private',
-      });
+      }));
 
       expect(result).toMatchObject({
         success: true,
@@ -2391,13 +2392,13 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       });
 
       try {
-        const result = await runtime.analyze('source pending run', sessionId, traceId, {
+        const result = await runtime.analyze('source pending run', sessionId, traceId, admitted({
           analysisMode,
           assistantSurface: analysisMode === 'fast' ? 'conversation' : undefined,
           conversationTraceAttached: analysisMode === 'fast' ? true : undefined,
           codeAwareMode: 'provider_send',
           codebaseIds: [fixture.codebaseId],
-        });
+        }));
 
         expect(result).toMatchObject({
           success: true,
@@ -2449,13 +2450,13 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
 
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
-      const result = await runtime.analyze('source quick error run', sessionId, traceId, {
+      const result = await runtime.analyze('source quick error run', sessionId, traceId, admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
 
       expect(result.success).toBe(false);
       expect(result.terminationReason).toBe('execution_error');
@@ -2507,22 +2508,22 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
 
     try {
       const {decision} = await fixture.executeProviderSourceLookup();
-      const terminal = await runtime.analyze('source terminal run', sessionId, traceId, {
+      const terminal = await runtime.analyze('source terminal run', sessionId, traceId, admitted({
         analysisMode: 'fast',
         assistantSurface: 'conversation',
         conversationTraceAttached: true,
         codeAwareMode: 'provider_send',
         codebaseIds: [fixture.codebaseId],
-      });
+      }));
       const context = takeFinalizationContext(terminal)!;
       try {
         expect(context.getNativeDeclaration(terminal, new AbortController().signal)?.raw).toBe(SOURCE_FINALIZATION_RAW_SOURCE);
         expect(JSON.stringify(terminal)).not.toContain('conclusion_protocol_projection');
       } finally {context.dispose();}
-      const next = await runtime.analyze('public second run', sessionId, traceId, {
+      const next = await runtime.analyze('public second run', sessionId, traceId, admitted({
         analysisMode: 'fast',
         codeAwareMode: 'off',
-      });
+      }));
 
       expect(terminal.success).toBe(true);
       expect(terminal.sourceUseDecision).toEqual(decision);
@@ -2701,14 +2702,14 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         '分析私有源码启动热点',
         sessionId,
         'trace-private-stream-recovery',
-        {
+        admitted({
           analysisMode: 'full',
           codeAwareMode: 'metadata_only',
           codebaseIds: ['private-app'],
           tenantId: 'tenant-private',
           workspaceId: 'workspace-private',
           userId: 'user-private',
-        },
+        }),
       );
 
       expect(result).toMatchObject({
@@ -3170,8 +3171,8 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     });
     try {
       await expect(runtime.analyze('分析当前证据', 'session-claude-declaration-authorization-change',
-        'trace-declaration-authorization-change', {analysisMode: 'full', packageName: 'com.example.app',
-          codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}))
+        'trace-declaration-authorization-change', admitted({analysisMode: 'full', packageName: 'com.example.app',
+          codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})))
         .rejects.toThrow('analysis_context_changed_restart_required');
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
     } finally {authorization.mockRestore();}
@@ -3212,7 +3213,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const authorization = revokeWhen(() => revoked);
       try {
         await expect(newRuntime().analyze('分析当前证据', 'session-claude-revoked-continuation', 'trace-claude-revoked',
-          PRIVATE_RUN)).rejects.toThrow('analysis_context_changed_restart_required');
+          admitted(PRIVATE_RUN))).rejects.toThrow('analysis_context_changed_restart_required');
         expect(continuation).toEqual({continue: false, stopReason: 'analysis_context_changed_restart_required'});
         expect(requests).toBe(1);
         expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
@@ -3234,7 +3235,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
         return real(...args);
       });
       try {
-        const result = await newRuntime().analyze('分析当前证据', 'session-claude-check-failed', 'trace-claude-revoked', PRIVATE_RUN);
+        const result = await newRuntime().analyze('分析当前证据', 'session-claude-check-failed', 'trace-claude-revoked', admitted(PRIVATE_RUN));
         expect(verdict).toEqual({continue: false, stopReason: 'analysis_context_check_failed'});
         expect(result.terminationMessage ?? '').not.toContain('analysis_context_changed_restart_required');
       } finally {authorization.mockRestore();}
@@ -3253,7 +3254,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       const authorization = revokeWhen(() => revoked);
       try {
         await expect(newRuntime().analyze('分析当前证据', 'session-claude-revoked-before-dispatch', 'trace-claude-revoked',
-          PRIVATE_RUN)).rejects.toThrow('analysis_context_changed_restart_required');
+          admitted(PRIVATE_RUN))).rejects.toThrow('analysis_context_changed_restart_required');
         expect(requests).toBe(0);
       } finally {authorization.mockRestore();}
     });

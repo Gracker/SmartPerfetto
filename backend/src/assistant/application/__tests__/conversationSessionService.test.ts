@@ -2,7 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {describe, expect, it, jest} from '@jest/globals';
+import {afterEach, describe, expect, it, jest} from '@jest/globals';
 import * as authorization from '../../../services/resolvedAnalysisContext';
 import type {AnalysisResult} from '../../../agent/core/orchestratorTypes';
 import {toAnalysisHistoryTurn} from '../../../agentRuntime/analysisHistory';
@@ -10,6 +10,7 @@ import type {ConversationSessionDescriptor} from '../../../services/conversation
 
 import {
   ConversationSessionService as ProductConversationSessionService,
+  conversationRuntimeSessionId,
   type ConversationRuntimeAdapter,
   type ConversationRuntimeInput,
   type ConversationRuntimeOutcome,
@@ -17,6 +18,7 @@ import {
 } from '../conversationSessionService';
 import {runAnalysisSelection} from '../../../services/effectiveAnalysisSelection';
 import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
+import {clearAllCodeAwareOutputGuards, revokeCodeAwareOutputGuards} from '../../../services/security/codeAwareOutputRegistry';
 
 /**
  * The product service with the caller's duty done for it: every turn states
@@ -895,6 +897,60 @@ describe('ConversationSessionService', () => {
     const second = service.startTurn({sessionId: first.sessionId, query: 'followup'}); await second.completion;
     expect(incoming!.getHistoryTurns!()).toEqual([expect.objectContaining({id: first.runId, query: 'first',
       partial: true, completionStatus: 'incomplete', uncertainties: ['Wakeup missing'], nextSteps: ['Inspect wakeup']})]);
+  });
+
+  describe('failure projection', () => {
+    afterEach(() => {
+      jest.restoreAllMocks();
+      clearAllCodeAwareOutputGuards();
+    });
+
+    function failingService(fail: (input: ConversationRuntimeInput) => Error) {
+      return createService({run: async input => {throw fail(input);}, cancel: async () => undefined});
+    }
+
+    async function failedTurn(service: ConversationSessionService, input: Parameters<ConversationSessionService['startTurn']>[0]) {
+      const published: Array<{type: string; error?: unknown}> = [];
+      const receipt = service.startTurn(input);
+      const unsubscribe = service.subscribe(receipt.sessionId, event => published.push(event as {type: string; error?: unknown}));
+      await receipt.completion.catch(() => undefined);
+      unsubscribe();
+      const session = service.getSession(receipt.sessionId)!;
+      return {failed: published.find(event => event.type === 'run_failed'), session,
+        run: session.runs.find(candidate => candidate.runId === receipt.runId)!};
+    }
+
+    it('stores and publishes fixed text naming the starting request for an untyped failure, never its message', async () => {
+      const log = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+      const cause = new Error('SQLITE_IOERR: disk I/O error at /srv/conversation/private.db');
+      const {failed, session, run} = await failedTurn(failingService(() => cause),
+        {query: 'why is it slow', requestId: 'req-conversation-1'});
+
+      const expected = '分析未能完成，服务端已记录错误（请求 ID：req-conversation-1）。';
+      expect(failed).toMatchObject({type: 'run_failed', error: expected});
+      expect(run.error).toBe(expected);
+      expect(session.error).toBe(expected);
+      expect(JSON.stringify(session)).not.toContain('/srv/conversation');
+      expect(log).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({requestId: 'req-conversation-1'}), cause);
+    });
+
+    it('keeps a reason token a service threw for the owner', async () => {
+      const {failed} = await failedTurn(failingService(() => new Error('analysis_history_parent_not_authorized')),
+        {query: 'continue'});
+      expect(failed).toMatchObject({error: 'analysis_history_parent_not_authorized'});
+    });
+
+    it('projects a private run under its runtime session guard, which the adapter has revoked by then', async () => {
+      jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => undefined);
+      const {failed, run} = await failedTurn(failingService(input => {
+        // The adapter revokes its run's guards in `finally`, before the service sees the failure.
+        revokeCodeAwareOutputGuards(conversationRuntimeSessionId(input.sessionId, input.runId));
+        return new authorization.AnalysisContextAuthorizationChangedError();
+      }), {query: 'read the source', runtimeOptions: {codeAwareMode: 'metadata_only', codebaseIds: ['cb-private']}});
+
+      expect(run.privateContext).toMatchObject({codebase: true});
+      expect(failed).toMatchObject({error: '[PRIVATE_OUTPUT_SUPPRESSED]'});
+    });
   });
 
   it('inherits the same failed query and incomplete state before and after restart', async () => {

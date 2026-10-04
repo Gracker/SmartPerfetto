@@ -15,7 +15,7 @@ import {TraceProcessorService, setTraceProcessorServiceForTests} from '../../tra
 import {getPortPool, resetPortPool} from '../../portPool';
 import {getTraceProcessorLeaseStore, setTraceProcessorLeaseStoreForTests} from '../../traceProcessorLeaseStore';
 import {prepareAnalysisRunTraceProcessorLeases, type AnalysisRunTraceProcessorLeases} from '../../analysisRunTraceProcessorLease';
-import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../../middleware/auth';
+import {DEFAULT_DEV_USER_ID, DEFAULT_TENANT_ID, DEFAULT_WORKSPACE_ID} from '../../../utils/localDevIdentity';
 import {resolveRuntimeTurnPolicy} from '../../../agentRuntime/runtimeTurnPolicy';
 import {probeTraceCompleteness} from '../../../agentv3/traceCompletenessProber';
 import {detectFocusApps} from '../../../agentv3/focusAppDetector';

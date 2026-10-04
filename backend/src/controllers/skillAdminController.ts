@@ -21,6 +21,13 @@ const SKILLS_DIR = getSkillsDir();
 const COMPOSITE_DIR = path.join(SKILLS_DIR, 'composite');
 const VENDORS_DIR = path.join(SKILLS_DIR, 'vendors');
 const CUSTOM_DIR = path.join(SKILLS_DIR, 'custom');
+/** A vendor directory name; anything else (`..`, a separator after decoding) names no vendor. */
+const VENDOR_ID = /^[A-Za-z0-9_-][A-Za-z0-9._-]*$/;
+
+/** A Skill file as the API names it: relative to the Skills root, `/`-separated, never a server path. */
+function skillsRootRelativePath(filePath: string): string {
+  return path.relative(SKILLS_DIR, filePath).split(path.sep).join('/');
+}
 
 class SkillAdminController {
   /**
@@ -90,29 +97,23 @@ class SkillAdminController {
       }
 
       // Try to find the YAML file
+      const customPath = path.join(CUSTOM_DIR, `${skillId}.skill.yaml`);
       const possiblePaths = [
         path.join(COMPOSITE_DIR, `${skillId}.skill.yaml`),
         path.join(SKILLS_DIR, 'atomic', `${skillId}.skill.yaml`),
-        path.join(CUSTOM_DIR, `${skillId}.skill.yaml`),
+        customPath,
       ];
 
-      let rawYaml = '';
-      let filePath = '';
-      for (const p of possiblePaths) {
-        if (fs.existsSync(p)) {
-          rawYaml = fs.readFileSync(p, 'utf-8');
-          filePath = p;
-          break;
-        }
-      }
+      const foundPath = possiblePaths.find(p => fs.existsSync(p));
+      const isCustom = foundPath === customPath;
 
       res.json({
         id: skill.name,
         definition: skill,
-        rawYaml,
-        filePath,
-        isCustom: filePath.includes('/custom/'),
-        isEditable: filePath.includes('/custom/'),
+        rawYaml: foundPath ? fs.readFileSync(foundPath, 'utf-8') : '',
+        filePath: foundPath ? skillsRootRelativePath(foundPath) : '',
+        isCustom,
+        isEditable: isCustom,
       });
     } catch (error) {
       sendRouteFailure(res, {
@@ -183,7 +184,7 @@ class SkillAdminController {
         success: true,
         message: 'Skill created successfully',
         skillId: skillDef.name,
-        filePath,
+        filePath: skillsRootRelativePath(filePath),
       });
     } catch (error) {
       sendRouteFailure(res, {
@@ -456,7 +457,7 @@ class SkillAdminController {
       }
       const vendorPath = path.join(VENDORS_DIR, vendor);
 
-      if (!fs.existsSync(vendorPath)) {
+      if (!VENDOR_ID.test(vendor) || !fs.existsSync(vendorPath)) {
         return res.status(404).json({
           error: 'Vendor not found',
           details: `No vendor found: ${vendor}`,

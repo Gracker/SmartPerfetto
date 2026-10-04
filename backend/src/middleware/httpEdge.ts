@@ -21,19 +21,45 @@ import {
 } from '../security/requestOriginPolicy';
 import { handleTraceProcessorProxyUpgrade, rejectUpgrade } from '../routes/traceProcessorProxyRoutes';
 import { REQUEST_ID_HEADER, requestIdOf } from './requestId';
+import { sendPublicRequestError } from './routeFailure';
+import { PublicRequestError } from '../utils/publicRequestError';
 
-/** Exact-origin CORS; port-only matching would permit DNS rebinding. */
+/** A request whose Origin is not an allowed frontend: the caller's doing, not a server failure. */
+class CorsOriginRejectedError extends PublicRequestError {
+  constructor() {
+    super('cors_origin_rejected', 'This origin is not allowed to call the SmartPerfetto API', 403);
+  }
+}
+
+/**
+ * Exact-origin CORS; port-only matching would permit DNS rebinding. A request
+ * from another origin is answered 403 with the shared public error body, and
+ * the rejected origin is logged once as a warning for operators setting
+ * CORS_ORIGINS; it is not an unhandled server error.
+ */
 export function createCorsMiddleware(allowedOrigins: ReadonlySet<string>): RequestHandler {
-  return cors({
+  const corsHandler = cors({
     origin: (requestOrigin, callback) => {
       // No Origin header (server-to-server, curl, etc.) → allow
       if (!requestOrigin) return callback(null, true);
       if (isCorsOriginAllowed(requestOrigin, allowedOrigins)) return callback(null, true);
-      callback(new Error(`CORS blocked: ${requestOrigin}`));
+      callback(new CorsOriginRejectedError());
     },
     credentials: true,
     // A cross-origin page can read only the response headers listed here.
     exposedHeaders: [REQUEST_ID_HEADER],
+  });
+  return (req, res, next) => corsHandler(req, res, (error?: unknown) => {
+    if (!(error instanceof CorsOriginRejectedError)) {
+      next(error);
+      return;
+    }
+    console.warn('[HttpEdge] Rejected request from a disallowed origin', {
+      requestId: requestIdOf(req),
+      origin: String(req.headers.origin).slice(0, 200),
+      method: req.method,
+    });
+    sendPublicRequestError(res, error);
   });
 }
 
