@@ -3,7 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { SkillDefinition, SqlProcessScopeDeclaration, ExactSqlSource } from './types';
-import { skillExecution, stepNodesOf, type StepNode } from './skillSteps';
+import { skillExecution, stepNodesOf, stepSkillReferences, type StepNode } from './skillSteps';
 
 export const EFFECTIVE_TARGET_FRAGMENT = 'fragments/effective_target_processes.sql';
 export const EXACT_UPID_TOKEN = '${__process_scope.upid}';
@@ -100,9 +100,8 @@ export interface ExecutableSqlUnit {
  * validator rejects it (sql_not_executed).
  */
 export function executableSqlUnits(skill: unknown): ExecutableSqlUnit[] {
-  const execution = skillExecution(skill);
-  const nodes: StepNode[] = execution === 'root' ? [{node: skill, at: '', name: 'root', guarded: false}]
-    : execution === 'steps' ? stepNodesOf(skill).filter(({node}) => node.type === 'atomic') : [];
+  const nodes: StepNode[] = skillExecution(skill) === 'root' ? [{node: skill, at: '', name: 'root', guarded: false}]
+    : stepNodesOf(skill, {executedOnly: true}).filter(({node}) => node.type === 'atomic');
   return nodes.flatMap(({node, at, name, guarded}): ExecutableSqlUnit[] => {
     const prefix = at ? `${at}.` : '';
     return [
@@ -175,30 +174,19 @@ export function getExactProcessScopeSupport(
     if (selected.process_scope?.exact_unavailable) limitations.add(selected.process_scope.exact_unavailable);
     for (const limitation of selected.process_scope?.limitations || []) limitations.add(limitation);
   }
-  // The Skills it runs, and the steps no exact run can take.
-  const inspect = (node: any, path: string): string | undefined => {
-    if (!node || typeof node !== 'object') return undefined;
-    const referenced = node.item_skill || node.skill;
-    if (typeof referenced === 'string') {
-      const child = registry.get(referenced);
-      if (!child) return `${path}: Skill dependency is missing: ${referenced}`;
-      const support = getExactProcessScopeSupport(child, registry, fragments, next);
-      if (!support.supported) return support.reason;
-      support.limitations?.forEach(reason => limitations.add(reason));
-    }
-    if (node.type === 'pipeline' || node.type === 'comparison') return `${path}: exact UPID execution is not declared for ${node.type}`;
-    for (const child of node.steps || []) {
-      const reason = inspect(child, `${path}.${child.id}`);
-      if (reason) return reason;
-    }
-    for (const branch of node.conditions || []) {
-      const branchNode = typeof branch.then === 'string' ? { skill: branch.then } : branch.then;
-      const reason = inspect(branchNode, `${path}.then`);
-      if (reason) return reason;
-    }
-    return inspect(typeof node.else === 'string' ? { skill: node.else } : node.else, `${path}.else`);
-  };
-  const reason = inspect(skill, skill.name);
-  return reason ? { supported: false, reason } : { supported: true,
-    ...(limitations.size ? { partial: true, limitations: [...limitations] } : {}) };
+  // The steps no exact run can take, and the Skills it runs.
+  const unsupported = [{node: skill as any, name: ''}, ...stepNodesOf(skill, {executedOnly: true})]
+    .find(({node}) => node.type === 'pipeline' || node.type === 'comparison');
+  if (unsupported) {
+    const where = unsupported.name ? `${skill.name}.${unsupported.name}` : skill.name;
+    return { supported: false, reason: `${where}: exact UPID execution is not declared for ${unsupported.node.type}` };
+  }
+  for (const reference of stepSkillReferences(skill, {executedOnly: true})) {
+    const child = registry.get(reference.skillId);
+    if (!child) return { supported: false, reason: `${skill.name}.${reference.step.name}: Skill dependency is missing: ${reference.skillId}` };
+    const support = getExactProcessScopeSupport(child, registry, fragments, next);
+    if (!support.supported) return { supported: false, reason: support.reason };
+    support.limitations?.forEach(reason => limitations.add(reason));
+  }
+  return { supported: true, ...(limitations.size ? { partial: true, limitations: [...limitations] } : {}) };
 }

@@ -169,7 +169,7 @@ describe('in-process effective Skill validator', () => {
       ]},
     ])).toEqual([
       'save_from_invalid steps[0].steps[0].save_from',
-      'save_from_invalid steps[1].conditions[0].then[0].save_from',
+      'save_from_invalid steps[1].conditions[0].then.save_from',
     ]);
   });
 

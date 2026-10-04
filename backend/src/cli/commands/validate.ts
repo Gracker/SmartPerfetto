@@ -43,6 +43,8 @@ import {
 import { skillUsesProcessNameFilter } from '../../services/processIdentity/identityGate';
 import { EXACT_UPID_TOKEN, executableSqlUnits, sqlRunBy, type ExecutableSqlUnit } from '../../services/skillEngine/processScopeSql';
 import { stepNodesOf } from '../../services/skillEngine/skillSteps';
+import { recordedStepNames, RUNTIME_SKILL_PARAMS } from '../../services/skillEngine/skillValidator';
+import { boundSqlPlaceholders } from '../../services/skillEngine/sqlTemplate';
 import {
   analyzeSqlStdlibDependencySequence,
   moduleCoveredByStdlibDeclaration,
@@ -128,6 +130,15 @@ export interface StrategyFrontmatterValidationContext {
   seenVerifierMisdiagnosisIds?: Map<string, string>;
   investigationProfiles?: InvestigationProfiles;
   requireInvestigationContract?: boolean;
+}
+
+/** A step's type, with the legacy defaults: SQL without a type is atomic, a Skill id without one a reference. */
+function stepTypeOf(step: any): string {
+  const t = step?.type;
+  if (typeof t === 'string' && t.trim()) return t;
+  if (typeof step?.sql === 'string') return 'atomic';
+  if (typeof step?.skill === 'string') return 'skill';
+  return 'unknown';
 }
 
 /**
@@ -417,75 +428,29 @@ function validateSkillDefinition(skill: SkillDefinition, filePath: string): Vali
     }
   }
 
-  // Validate steps
-  if (skill.steps) {
-    const stepIds = new Set<string>();
-    const savedVariables = new Set<string>();
-    const executedStepIds = new Set<string>();
-
-    // Treat input params as defined variables for ${...} reference checks
-    if (Array.isArray(skill.inputs)) {
-      for (const input of skill.inputs) {
-        if (input && typeof (input as any).name === 'string') {
-          savedVariables.add(String((input as any).name));
-        }
+  // Validate steps, at any depth (stepNodesOf). A step reads what an input, a
+  // runtime parameter or an earlier top-level step recorded (recordedStepNames).
+  const steps = stepNodesOf(skill);
+  const stepIds = new Set<string>();
+  for (const {node: step, at} of steps) {
+    // Required step fields
+    if (!step.id) {
+      errors.push(`${at}: Missing required field: id`);
+    } else {
+      if (stepIds.has(step.id)) {
+        errors.push(`${at}: Duplicate step id: ${step.id}`);
       }
+      stepIds.add(step.id);
     }
-    // Common implicit params injected by tooling
-    savedVariables.add('start_ts');
-    savedVariables.add('end_ts');
-    savedVariables.add('package');
-    savedVariables.add('vendor');
-
-    for (let i = 0; i < skill.steps.length; i++) {
-      const step = skill.steps[i];
-      const stepPath = `steps[${i}]`;
-
-      // Required step fields
-      if (!step.id) {
-        errors.push(`${stepPath}: Missing required field: id`);
-      } else {
-        if (stepIds.has(step.id)) {
-          errors.push(`${stepPath}: Duplicate step id: ${step.id}`);
-        }
-        stepIds.add(step.id);
-        executedStepIds.add(step.id);
-      }
-
-      // Validate based on step type
-      const stepType = (() => {
-        const t = (step as any).type;
-        if (typeof t === 'string' && t.trim()) return t;
-        if (typeof (step as any).sql === 'string') return 'atomic'; // legacy default
-        if (typeof (step as any).skill === 'string') return 'skill';
-        return 'unknown';
-      })();
-
-      // An atomic step's SQL is checked with every other SQL unit below.
-      if (stepType === 'atomic' && typeof (step as any).sql !== 'string') {
-        errors.push(`${stepPath}: Missing required field: sql for atomic step`);
-      }
-
-      // Track saved variables
-      if ('save_as' in step && step.save_as) {
-        savedVariables.add(step.save_as);
-      }
-
-      // Validate iterator source references
-      if (stepType === 'iterator' && 'source' in step) {
-        // At runtime, iterator `source` can reference either a previous step's `save_as`
-        // or a previous step id (context.results[stepId]).
-        if ((step as any).source && !savedVariables.has((step as any).source) && !executedStepIds.has((step as any).source)) {
-          errors.push(`${stepPath}: iterator source references undefined variable: ${step.source}`);
-        }
-      }
+    // An atomic step's SQL is checked with every other SQL unit below.
+    if (stepTypeOf(step) === 'atomic' && typeof step.sql !== 'string') {
+      errors.push(`${at}: Missing required field: sql for atomic step`);
     }
   }
 
-  // Every SQL the executor runs, named and exact (executableSqlUnits). A variable
-  // reads as defined once an input or an earlier top-level step saves it; the
+  // Every SQL the executor runs, named and exact (executableSqlUnits); the
   // trusted UPID binding belongs to the process-scope checks.
-  const definedVariables = new Set<string>(['start_ts', 'end_ts', 'package', 'vendor']);
+  const definedVariables = new Set<string>(RUNTIME_SKILL_PARAMS);
   for (const input of Array.isArray(skill.inputs) ? skill.inputs : []) {
     if (input && typeof (input as any).name === 'string') definedVariables.add(String((input as any).name));
   }
@@ -509,9 +474,16 @@ function validateSkillDefinition(skill: SkillDefinition, filePath: string): Vali
     }
   };
   checkSql(skill);
-  for (const step of Array.isArray(skill.steps) ? skill.steps as any[] : []) {
-    for (const node of [step, ...stepNodesOf(step).map(nested => nested.node)]) checkSql(node);
-    if (step && typeof step.save_as === 'string' && step.save_as) definedVariables.add(step.save_as);
+  for (const top of stepNodesOf(skill, {topLevelOnly: true})) {
+    for (const {node: step, at} of steps.filter(node => node.topLevelIndex === top.topLevelIndex)) {
+      checkSql(step);
+      // At runtime, iterator `source` can reference either a previous step's
+      // `save_as` or a previous step id (context.results[stepId]).
+      if (stepTypeOf(step) === 'iterator' && step.source && !definedVariables.has(step.source)) {
+        errors.push(`${at}: iterator source references undefined variable: ${step.source}`);
+      }
+    }
+    for (const name of recordedStepNames(top.node)) definedVariables.add(name);
   }
 
   // Validate diagnostic rules (in diagnostic steps, not skill-level)
@@ -590,7 +562,7 @@ function validateVendorOverrideDefinition(override: VendorOverrideDefinition, fi
       errors.push('additional_steps must be an array');
     } else {
       const stepIds = new Set<string>();
-      const defined = new Set(['start_ts', 'end_ts', 'package', 'vendor']);
+      const defined = new Set<string>(RUNTIME_SKILL_PARAMS);
 
       override.additional_steps.forEach((step, index) => {
         const stepPath = `additional_steps[${index}]`;
@@ -766,19 +738,9 @@ export function validateContracts(skill: SkillDefinition): { errors: string[]; w
   return { errors, warnings };
 }
 
-/**
- * Extract variable references from SQL
- */
+/** The placeholders SQL binds (boundSqlPlaceholders: comments excluded), as written inside `${...}`. */
 function extractVariableReferences(sql: string): string[] {
-  const regex = /\$\{([^}]+)\}/g;
-  const refs: string[] = [];
-  let match;
-
-  while ((match = regex.exec(sql)) !== null) {
-    refs.push(match[1]);
-  }
-
-  return refs;
+  return boundSqlPlaceholders(sql).map(placeholder => placeholder.match.slice(2, -1));
 }
 
 /**

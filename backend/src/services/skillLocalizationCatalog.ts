@@ -16,6 +16,7 @@ import type {
   SynthesizeConfig,
 } from './skillEngine/types';
 import {humanizeSkillIdentifier} from './skillLocalizationLabels';
+import {stepNodesOf} from './skillEngine/skillSteps';
 
 export interface LocalizedText {
   'zh-CN': string;
@@ -165,11 +166,6 @@ function collectSynthesizeLabels(
   }
 }
 
-function nestedSteps(step: SkillStep): SkillStep[] {
-  const value = step as SkillStep & {steps?: SkillStep[]};
-  return Array.isArray(value.steps) ? value.steps : [];
-}
-
 function skillDisplayName(skill: SkillDefinition): LocalizedText {
   return localizedLabel(skill.meta?.display_name, skill.name, skill.meta?.display_name_i18n);
 }
@@ -183,35 +179,30 @@ function collectSteps(skill: SkillDefinition): Record<string, CatalogStep> {
     }),
   };
 
-  const visit = (steps: SkillStep[]): void => {
-    for (const definition of steps) {
-      const raw = definition as SkillStep & {
-        id?: string;
-        name?: string;
-        description?: string;
-        display?: DisplayConfig | boolean;
-        synthesize?: boolean | SynthesizeConfig;
-      };
-      const stepId = String(raw.id || '').trim();
-      if (!stepId) continue;
-      const displayTitle = typeof raw.display === 'object'
-        ? raw.display.title
-        : undefined;
-      const entry = result[stepId] || emptyStep(
-        localizedLabel(displayTitle || raw.name, stepId,
-          typeof raw.display === 'object' ? raw.display.title_i18n : undefined),
-      );
-      if (typeof raw.description === 'string' && raw.description.trim()) {
-        entry.description = localizedDescription(raw.description, stepId);
-      }
-      collectColumns(entry, raw.display);
-      collectSynthesizeLabels(entry, raw.synthesize);
-      result[stepId] = entry;
-      visit(nestedSteps(definition));
+  for (const {node} of stepNodesOf(skill)) {
+    const raw = node as SkillStep & {
+      id?: string;
+      name?: string;
+      description?: string;
+      display?: DisplayConfig | boolean;
+      synthesize?: boolean | SynthesizeConfig;
+    };
+    const stepId = String(raw.id || '').trim();
+    if (!stepId) continue;
+    const displayTitle = typeof raw.display === 'object'
+      ? raw.display.title
+      : undefined;
+    const entry = result[stepId] || emptyStep(
+      localizedLabel(displayTitle || raw.name, stepId,
+        typeof raw.display === 'object' ? raw.display.title_i18n : undefined),
+    );
+    if (typeof raw.description === 'string' && raw.description.trim()) {
+      entry.description = localizedDescription(raw.description, stepId);
     }
-  };
-
-  visit(Array.isArray(skill.steps) ? skill.steps : []);
+    collectColumns(entry, raw.display);
+    collectSynthesizeLabels(entry, raw.synthesize);
+    result[stepId] = entry;
+  }
   // The loader moves a legacy top-level display to output.display; read either.
   collectColumns(result[CATALOG_ROOT_STEP],
     skill.output?.display ?? (skill as SkillDefinition & {display?: DisplayConfig}).display);

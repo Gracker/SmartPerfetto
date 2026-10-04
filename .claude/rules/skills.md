@@ -176,7 +176,19 @@ Click actions should be explicit, for example:
   the step itself. SQL the executor never runs (root SQL of a non-atomic
   Skill, steps beside an atomic root, steps of a metadata-only Skill) is
   `sql_not_executed`, a `PREDATING_RULE_CODES` rule, rather than SQL no check
-  reads. Do not add a private walk. The Trace SQL regression's named-SQL
+  reads. Do not add a private walk. The same holds for steps: every check that
+  reads a Skill's steps (step ids, conditions, iterator sources, Skill
+  references, diagnostic reads, `save_from`, display contracts, the
+  localization catalog, exact scope support, the CLI's step checks) takes them
+  from `stepNodesOf` in `skillEngine/skillSteps.ts`, which walks nested steps
+  and inline conditional branches at any depth; a check that needs other
+  semantics asks with an option (`topLevelOnly`, `executedOnly`) or reads
+  `topLevelIndex`, and `stepSkillReferences` lists the Skills the steps run,
+  a branch written as a Skill id included. Only the executor and the closed
+  step schema read conditional branches themselves
+  (`executableSqlUnits.test.ts` holds this). A private walk once descended
+  only into parallel steps, so a branch's condition, step id and catalog
+  label went unchecked. The Trace SQL regression's named-SQL
   inventory (`Trace/tools/lib/skill-sql-contract.cjs`) predates the walk and
   never reads `exact_sql`; its exact units come from `executableSqlUnits` in
   the corpus runner (`backend/tests/trace-corpus/corpusRunner.ts`). An

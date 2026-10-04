@@ -204,11 +204,17 @@ function coerceValue(
 // =============================================================================
 
 /**
- * Implicit parameters always available in the execution context,
- * injected by the runtime (not declared in skill inputs).
+ * Parameters the runtime and tooling pass to every Skill without a
+ * declaration: what a Skill's SQL and conditions may read undeclared.
  */
-const IMPLICIT_PARAMS = new Set([
-  'package', 'vendor', 'start_ts', 'end_ts', 'item',
+export const RUNTIME_SKILL_PARAMS: readonly string[] = ['package', 'vendor', 'start_ts', 'end_ts'];
+
+/**
+ * Implicit parameters always available in a condition's execution context:
+ * the runtime parameters and the iterator context.
+ */
+const IMPLICIT_PARAMS: ReadonlySet<string> = new Set([
+  ...RUNTIME_SKILL_PARAMS, 'item',
   // Iterator context variables
   'currentItem', 'currentItemIndex',
 ]);
@@ -256,70 +262,53 @@ export function declaredSkillNames(skill: SkillDefinition): Set<string> {
 export function validateSkillConditions(skill: SkillDefinition): SkillValidationWarning[] {
   const warnings: SkillValidationWarning[] = [];
 
-  if (!skill.steps || skill.steps.length === 0) return warnings;
-
   // Build the set of known variable sources
   const declared = declaredSkillNames(skill);
   const declaredInputs = new Set((skill.inputs || []).map(i => i.name));
-  const availableStepIds = new Set<string>();
-  const availableSaveAs = new Set<string>();
+  const available = new Set<string>();
 
-  for (const step of skill.steps) {
-    const stepAny = step as any;
-
-    // Check condition expression if present
-    if (typeof stepAny.condition === 'string' && stepAny.condition.trim()) {
-      const vars = extractRootVariables(stepAny.condition);
-      for (const v of vars) {
-        if (
-          isUncheckedConditionRoot(v) ||
-          declared.has(v) ||
-          availableStepIds.has(v) ||
-          availableSaveAs.has(v)
-        ) {
-          continue;
+  // A step reads what the top-level steps before its own recorded, at any
+  // depth: its condition runs in executeStep wherever the step sits.
+  const nodes = stepNodesOf(skill);
+  for (const top of stepNodesOf(skill, { topLevelOnly: true })) {
+    for (const { node: step, name } of nodes.filter(node => node.topLevelIndex === top.topLevelIndex)) {
+      if (typeof step.condition === 'string' && step.condition.trim()) {
+        for (const v of extractRootVariables(step.condition)) {
+          if (isUncheckedConditionRoot(v) || declared.has(v) || available.has(v)) continue;
+          warnings.push({
+            stepId: name,
+            message: `Condition references unknown variable '${v}' in expression: ${step.condition}`,
+          });
         }
-        warnings.push({
-          stepId: step.id,
-          message: `Condition references unknown variable '${v}' in expression: ${stepAny.condition}`,
-        });
+      }
+
+      // Validate iterator source reference
+      if (step.type === 'iterator' && typeof step.source === 'string') {
+        const src = step.source;
+        if (!available.has(src) && !declaredInputs.has(src) && !IMPLICIT_PARAMS.has(src)) {
+          warnings.push({
+            stepId: name,
+            message: `Iterator source '${src}' references undefined step or variable`,
+          });
+        }
       }
     }
-
-    // Validate iterator source reference
-    if (stepAny.type === 'iterator' && typeof stepAny.source === 'string') {
-      const src = stepAny.source;
-      if (
-        !availableStepIds.has(src) &&
-        !availableSaveAs.has(src) &&
-        !declaredInputs.has(src) &&
-        !IMPLICIT_PARAMS.has(src)
-      ) {
-        warnings.push({
-          stepId: step.id,
-          message: `Iterator source '${src}' references undefined step or variable`,
-        });
-      }
-    }
-
-    // Accumulate step ID and save_as for subsequent steps
-    if (step.id) {
-      availableStepIds.add(step.id);
-    }
-    if (typeof stepAny.save_as === 'string') {
-      availableSaveAs.add(stepAny.save_as);
-    }
-
-    // Also accumulate from nested parallel steps
-    if (stepAny.type === 'parallel' && Array.isArray(stepAny.steps)) {
-      for (const nested of stepAny.steps) {
-        if (nested.id) availableStepIds.add(nested.id);
-        if (typeof nested.save_as === 'string') availableSaveAs.add(nested.save_as);
-      }
-    }
+    for (const name of recordedStepNames(top.node)) available.add(name);
   }
 
   return warnings;
+}
+
+/**
+ * The names a top-level step makes readable to the steps after it once it ran
+ * (the executor's recordStepResult): its id and save_as, and the ids (and
+ * save_as) of a parallel step's own steps, which executeParallelStep records
+ * as results too.
+ */
+export function recordedStepNames(step: any): string[] {
+  const recorders = [step, ...(step?.type === 'parallel' ? stepNodesOf(step, { topLevelOnly: true }).map(({ node }) => node) : [])];
+  return recorders.flatMap(recorder => [recorder.id, recorder.save_as])
+    .filter((name): name is string => typeof name === 'string' && name !== '');
 }
 
 // =============================================================================

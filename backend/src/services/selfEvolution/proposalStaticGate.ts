@@ -32,8 +32,8 @@ import {
   PREDATING_RULE_CODES,
   validateSkillDefinitionsInProcess,
   validateStrategyDefinitionsInProcess,
-  visitSteps,
 } from './inProcessValidator';
+import {stepNodesOf} from '../skillEngine/skillSteps';
 import {causeWordingReaders} from '../skillEngine/causeWordingEvidence';
 import {
   parseProposalSqlRegressionProofV1,
@@ -423,9 +423,9 @@ function withCandidateStepSql(
     outcome = 'replaced';
   };
   if (delta.operationId === 'root' && typeof candidate.sql === 'string') replace(candidate);
-  visitSteps(candidate.steps ?? [], step => {
+  for (const {node: step} of stepNodesOf(candidate)) {
     if (step.id === delta.operationId && 'sql' in step) replace(step);
-  });
+  }
   if (outcome === 'missing') return 'static_skill_sql_target_step_missing';
   if (outcome === 'stale') return 'static_skill_sql_anchor_stale';
   return skills.map(skill => skill === target ? candidate : skill);

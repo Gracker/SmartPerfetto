@@ -18,7 +18,9 @@ import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from '@jest/globals';
 import type { SkillDefinition } from '../types';
 import { executableSqlUnits, getExactProcessScopeSupport } from '../processScopeSql';
-import { validateFragmentReferences, validateNormalizedStdlibReads, validateProcessScopeDeclarations } from '../skillValidator';
+import { validateFragmentReferences, validateNormalizedStdlibReads, validateProcessScopeDeclarations, validateSkillConditions } from '../skillValidator';
+import { stepNodesOf, stepSkillReferences } from '../skillSteps';
+import { skillCatalogEntry } from '../../skillLocalizationCatalog';
 import { undecidedResultPathReads } from '../resultPathReads';
 import { causeWordingReaders, unsupportedCauseWording } from '../causeWordingEvidence';
 import { collectSkillSqlUnits } from '../../processIdentity/identityGate';
@@ -86,6 +88,35 @@ function findings(skill: SkillDefinition): Record<string, Array<[string, string]
       .filter(site => /sql$/.test(site.field) && site.rule.wording === 'heat')
       .map(site => [`${site.stepId ?? 'root'}${site.field.startsWith('exact_sql.') ? '.exact_sql' : ''}`, marked(site.text)]),
   };
+}
+
+const SRC = path.join(process.cwd(), 'src');
+/** Every production TypeScript file under `dir`. */
+function sourceFiles(dir = SRC): string[] {
+  return fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
+    entry.isDirectory() ? (entry.name === '__tests__' ? [] : sourceFiles(path.join(dir, entry.name)))
+      : entry.name.endsWith('.ts') ? [path.join(dir, entry.name)] : []);
+}
+/** The property a destructuring element reads: a name, a string, or a constant computed key. */
+function boundKey(element: ts.BindingElement): string | undefined {
+  const key = element.propertyName ?? element.name;
+  if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) return key.text;
+  return ts.isComputedPropertyName(key) && ts.isStringLiteralLike(key.expression) ? key.expression.text : undefined;
+}
+/** Whether `file` reads property `key` in code: a property access, a string-keyed read or a destructuring (not comments or strings). */
+function readsProperty(file: string, key: string): boolean {
+  const text = fs.readFileSync(file, 'utf8');
+  if (!text.includes(key)) return false;
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    const read = ts.isPropertyAccessExpression(node) ? node.name.text
+      : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text
+        : ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent) ? boundKey(node) : undefined;
+    if (read === key) found = true;
+    else ts.forEachChild(node, visit);
+  };
+  visit(ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true));
+  return found;
 }
 
 describe('executable SQL units', () => {
@@ -225,35 +256,11 @@ describe('executable SQL units', () => {
   });
 
   it('is the only walk over exact_sql outside the closed schema check', () => {
-    const src = path.join(process.cwd(), 'src');
-    const walk = (dir: string): string[] => fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
-      entry.isDirectory() ? (entry.name === '__tests__' ? [] : walk(path.join(dir, entry.name)))
-        : entry.name.endsWith('.ts') ? [path.join(dir, entry.name)] : []);
-    /** The property a destructuring element reads: a name, a string, or a constant computed key. */
-    const boundKey = (element: ts.BindingElement): string | undefined => {
-      const key = element.propertyName ?? element.name;
-      if (ts.isIdentifier(key) || ts.isStringLiteralLike(key)) return key.text;
-      return ts.isComputedPropertyName(key) && ts.isStringLiteralLike(key.expression) ? key.expression.text : undefined;
-    };
-    // A property read, a string-keyed read or a destructuring of exact_sql, in code (not comments or strings).
-    const readsExactSql = (file: string): boolean => {
-      const text = fs.readFileSync(file, 'utf8');
-      if (!text.includes('exact_sql')) return false;
-      let found = false;
-      const visit = (node: ts.Node): void => {
-        const key = ts.isPropertyAccessExpression(node) ? node.name.text
-          : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression) ? node.argumentExpression.text
-            : ts.isBindingElement(node) && ts.isObjectBindingPattern(node.parent) ? boundKey(node) : undefined;
-        if (key === 'exact_sql') found = true;
-        else ts.forEachChild(node, visit);
-      };
-      visit(ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true));
-      return found;
-    };
     // processScopeSql.ts owns the walk; the closed step schema checks one record's own field.
     const allowed = new Set(['services/skillEngine/processScopeSql.ts', 'services/selfEvolution/skillStepRuntimeValidator.ts']);
-    const readers = walk(src).filter(readsExactSql).map(file => path.relative(src, file).split(path.sep).join('/'));
-    expect(readers.filter(file => !allowed.has(file))).toEqual([]);
+    expect(sourceFiles().filter(file => readsProperty(file, 'exact_sql'))
+      .map(file => path.relative(SRC, file).split(path.sep).join('/'))
+      .filter(file => !allowed.has(file))).toEqual([]);
     // The guard sees every form of read.
     const probe = path.join(dir, 'probe.ts');
     for (const [code, reads] of [
@@ -265,7 +272,75 @@ describe('executable SQL units', () => {
       ["const a = 'node.exact_sql'; // node.exact_sql", false], ['const a = /\\.exact_sql\\b/;', false],
     ] as const) {
       fs.writeFileSync(probe, code);
-      expect([code, readsExactSql(probe)]).toEqual([code, reads]);
+      expect([code, readsProperty(probe, 'exact_sql')]).toEqual([code, reads]);
     }
+  });
+});
+
+/**
+ * Every check that reads a Skill's steps takes them from one walk
+ * (skillSteps.stepNodesOf); a check that needs other semantics asks for them
+ * with an option. A private walk once descended only into parallel steps, so
+ * a conditional branch's condition, step id and catalog label went unchecked.
+ */
+describe('the one step walk', () => {
+  const branchy = {
+    name: 'branchy', version: '1', type: 'composite', meta,
+    inputs: [{ name: 'limit', type: 'number' }],
+    steps: [
+      { id: 'first', type: 'atomic', sql: 'SELECT 1', save_as: 'rows' },
+      { id: 'group', type: 'parallel', steps: [{ id: 'inner', type: 'atomic', sql: 'SELECT 2', condition: 'rows.data.length > 0' }] },
+      {
+        id: 'choice', type: 'conditional',
+        conditions: [
+          { when: 'true', then: { id: 'branch', type: 'atomic', sql: 'SELECT 3', condition: 'unknown_name > 0',
+            display: { title: 'Branch rows' } } },
+          { when: 'false', then: 'no_such_skill' },
+        ],
+        else: { id: 'branch', type: 'atomic', sql: 'SELECT 4' },
+      },
+    ],
+  } as unknown as SkillDefinition;
+
+  it('walks nested steps and branches in order, and narrows by option', () => {
+    expect(stepNodesOf(branchy).map(({ at, topLevelIndex }) => [at, topLevelIndex])).toEqual([
+      ['steps[0]', 0], ['steps[1]', 1], ['steps[1].steps[0]', 1], ['steps[2]', 2],
+      ['steps[2].conditions[0].then', 2], ['steps[2].else', 2],
+    ]);
+    expect(stepNodesOf(branchy, { topLevelOnly: true }).map(({ at }) => at)).toEqual(['steps[0]', 'steps[1]', 'steps[2]']);
+    // A Skill that runs its root SQL, or runs nothing, has no executed steps.
+    expect(stepNodesOf({ ...branchy, type: 'atomic', sql: 'SELECT 0' }, { executedOnly: true })).toEqual([]);
+    expect(stepNodesOf({ ...branchy, type: 'comparison' }, { executedOnly: true })).toEqual([]);
+    expect(stepNodesOf(branchy, { executedOnly: true })).toHaveLength(6);
+    expect(stepSkillReferences(branchy).map(({ skillId, at }) => [skillId, at]))
+      .toEqual([['no_such_skill', 'steps[2].conditions[1].then']]);
+  });
+
+  it('gives every step check the branches the executor runs', () => {
+    expect(validateSkillConditions(branchy).map(({ stepId, message }) => [stepId, /'(\w+)'/.exec(message)?.[1]]))
+      .toEqual([['branch', 'unknown_name']]);
+    const issues = validateSkillDefinitionsInProcess({ definitions: [branchy], validateReferences: true }).issues
+      .filter(issue => ['skill_reference_missing', 'step_id_duplicate'].includes(issue.code))
+      .map(issue => `${issue.code} ${issue.path}`);
+    expect(issues).toEqual(['step_id_duplicate steps[2].else.id', 'skill_reference_missing steps[2].conditions[1].then']);
+    expect(skillCatalogEntry(branchy).steps.branch.title.en).toBe('Branch rows');
+    // Exact scope follows a branch written as a Skill id into that Skill.
+    const router = { ...branchy, name: 'router', steps: [{ id: 'choice', type: 'conditional',
+      conditions: [{ when: 'false', then: 'no_such_skill' }] }] } as unknown as SkillDefinition;
+    expect(getExactProcessScopeSupport(router, new Map([['router', router]]), new Map()).reason)
+      .toBe('router.choice: Skill dependency is missing: no_such_skill');
+  });
+
+  it('is the only walk over conditional branches outside the executor and the closed schema check', () => {
+    const allowed = new Set([
+      'services/skillEngine/skillSteps.ts',
+      'services/skillEngine/skillExecutor.ts',
+      'services/selfEvolution/skillStepRuntimeValidator.ts',
+    ]);
+    const skillDirs = ['services/skillEngine', 'services/selfEvolution', 'services/skillPacks', 'cli'];
+    const readers = sourceFiles().map(file => path.relative(SRC, file).split(path.sep).join('/'))
+      .filter(file => skillDirs.some(dir => file.startsWith(`${dir}/`)) || /^services\/skillLocalization/.test(file))
+      .filter(file => readsProperty(path.join(SRC, file), 'conditions'));
+    expect(readers.filter(file => !allowed.has(file))).toEqual([]);
   });
 });
