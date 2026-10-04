@@ -206,10 +206,6 @@ export interface AnalysisOptions {
   codebaseIds?: string[];
   /** Explicit external knowledge-source allowlist for this analysis session. */
   knowledgeSourceIds?: string[];
-  /** Internal source phase routing. */
-  sourceUsePolicy?: {
-    phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
-  };
   /**
    * Requested source depth, sizing the run's source budget: `locate` finds
    * code, `mechanism` reads enough to explain it, `auto` follows the run's

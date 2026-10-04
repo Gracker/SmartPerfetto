@@ -80,22 +80,14 @@ const CONVERSATION_START_PUBLIC_ERRORS: readonly PublicErrorClass[] = [
   AnalyzeOptionsError,
 ];
 
+/** A run's stream ends at its terminal event, or after replaying a run that already settled. */
 export function shouldCloseConversationStream(input: {
   eventType?: string;
-  enrichmentPending?: boolean;
   replay?: boolean;
-  primarySettled?: boolean;
-  enrichmentStatus?: 'running' | 'completed' | 'failed' | 'cancelled';
+  runSettled?: boolean;
 }): boolean {
-  if (input.replay) {
-    if (!input.primarySettled) return false;
-    return input.enrichmentStatus !== 'running';
-  }
-  if (input.eventType === 'run_completed') return input.enrichmentPending !== true;
-  return input.eventType === 'run_failed' ||
-    input.eventType === 'source_enrichment_completed' ||
-    input.eventType === 'source_enrichment_failed' ||
-    input.eventType === 'source_enrichment_cancelled';
+  if (input.replay) return input.runSettled === true;
+  return input.eventType === 'run_completed' || input.eventType === 'run_failed';
 }
 
 function configuredOutputLanguage(): OutputLanguage {
@@ -396,9 +388,6 @@ async function startConversation(req: express.Request, res: express.Response): P
       // At most one watchdog bound: a delivered answer commits its turn first.
       await conversationSessionService.supersedeRun(existing.sessionId, existing.activeRun.runId);
     }
-    if (existing) {
-      await conversationSessionService.cancelSourceEnrichments(existing.sessionId);
-    }
     // Resolve immediately before the synchronous startTurn boundary. Any
     // awaited Trace load or cancellation above may have allowed a Provider
     // mutation request to run in the same process.
@@ -686,19 +675,14 @@ async function streamConversation(req: express.Request, res: express.Response): 
       return;
     }
     sendRunEvent(event);
-    if (shouldCloseConversationStream({
-      eventType: event.type,
-      enrichmentPending: event.type === 'run_completed'
-        ? event.enrichmentPending
-        : undefined,
-    })) close();
+    if (shouldCloseConversationStream({eventType: event.type})) close();
   });
   const heartbeat = setInterval(() => send('heartbeat', {timestamp: Date.now()}), 15_000);
   heartbeat.unref?.();
   req.on('close', close);
   send('connected', {sessionId: session.sessionId, runId, status: run.status});
   if (run.lifecycleSettled && run.events.length === 0 && run.outcome) {
-    send('run_completed', {sessionId: session.sessionId, runId, outcome: run.outcome, enrichmentPending: false});
+    send('run_completed', {sessionId: session.sessionId, runId, outcome: run.outcome});
   }
   for (const event of [...run.events].sort((left, right) => left.seqId - right.seqId)) {
     sendRunEvent(event);
@@ -707,13 +691,7 @@ async function streamConversation(req: express.Request, res: express.Response): 
   for (const event of pendingLiveEvents.sort((left, right) => left.seqId - right.seqId)) {
     sendRunEvent(event);
   }
-  if (shouldCloseConversationStream({
-    replay: true,
-    primarySettled: Boolean(run.outcome || run.error),
-    enrichmentStatus: run.sourceEnrichment?.status ?? (
-      run.sourceEnrichmentPending ? 'running' : undefined
-    ),
-  })) close();
+  if (shouldCloseConversationStream({replay: true, runSettled: Boolean(run.outcome || run.error)})) close();
 }
 
 async function cancelConversation(req: express.Request, res: express.Response): Promise<void> {

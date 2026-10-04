@@ -625,7 +625,6 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
       traceContext: {kind: 'attached', traceId: 'trace-1'}});
 
     expect(receivedOptions).toMatchObject({...analysisOptions, assistantSurface: 'conversation', analysisMode: 'fast'});
-    expect(receivedOptions?.sourceUsePolicy).toBeUndefined();
     expect(mockFinalize.mock.calls[0][0].owner.analysisContextFingerprint).toBe(analysisOptions.analysisContextFingerprint);
     expect(orchestrator.analyze).toHaveBeenCalledTimes(1);
   });
@@ -647,18 +646,14 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     expect(received.map(options => options.sourceDepth)).toEqual(['locate', 'mechanism']);
   });
 
-  it('preserves an explicit caller source policy and the total runtime budget', async () => {
+  it('preserves the total runtime budget', async () => {
     let receivedOptions: AnalysisOptions | undefined;
     const orchestrator = createOrchestrator(async options => {
       receivedOptions = options;
       return result('answer');
     });
-    const sourceUsePolicy = {phase: 'explicit' as const};
-    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {
-      codeAwareMode: 'provider_send', codebaseIds: ['private-app'], sourceUsePolicy, taskTimeoutMs: 25_000,
-    }});
+    const adapter = new OrchestratorConversationRuntimeAdapter(orchestrator, {analysisOptions: {taskTimeoutMs: 25_000}});
     await adapter.run({sessionId: 'conversation', runId: 'run', query: '继续', history: [], traceContext: {kind: 'none'}});
-    expect(receivedOptions?.sourceUsePolicy).toBe(sourceUsePolicy);
     expect(receivedOptions?.taskTimeoutMs).toBe(25_000);
   });
 
@@ -734,7 +729,6 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
     try {
       const orchestrator = createOrchestrator(async () => result('answer'));
       orchestrator.analyze = jest.fn<IOrchestrator['analyze']>(async (_query, sessionId, traceId, runtimeOptions) => {
-        expect(runtimeOptions?.sourceUsePolicy).toBeUndefined();
         const reader = createRuntimeAnalysisHistoryReader({options: {...runtimeOptions!}, sessionId, traceId,
           getTurns: () => [], assertActive: () => {}});
         expect(reader.getTurns()).toEqual([restoredTurn]);
@@ -821,9 +815,6 @@ describe('OrchestratorConversationRuntimeAdapter', () => {
       expect(orchestrator.analyze).toHaveBeenCalledTimes(1);
       expect(mockFinalize).toHaveBeenCalledTimes(1);
       expect(receivedOptions).toMatchObject({codeAwareMode: 'provider_send', codebaseIds: ['private-app']});
-      expect(receivedOptions?.sourceUsePolicy).toBeUndefined();
-      expect(adapter).not.toHaveProperty('shouldStartSourceEnrichment');
-      expect(adapter).not.toHaveProperty('runSourceEnrichment');
     },
   );
 

@@ -26,7 +26,6 @@ import {randomUUID} from 'crypto';
 import { AssistantApplicationService } from '../../assistant/application/assistantApplicationService';
 import {
   AgentAnalyzeSessionService,
-  resolveAgentQuery,
   type AnalyzeManagedSession,
 } from '../../assistant/application/agentAnalyzeSessionService';
 import { getTraceProcessorService } from '../../services/traceProcessorService';
@@ -108,12 +107,6 @@ import { validateDataEnvelope, type DataEnvelope } from '../../types/dataContrac
 import type { CliAnalysisMode, CliSessionLineage } from '../types';
 import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {resolveEffectiveAnalysisMode} from '../../services/effectiveAnalysisMode';
-import {
-  projectPrimaryAnalysisOptions,
-  resolveAnalysisSourceActivation,
-} from '../../services/codebase/analysisSourceActivationPolicy';
-import {resetRuntimeForSourceActivation} from '../../services/codebase/analysisSourceContextTransition';
-import type {AnalysisSourceSupplementOutcome} from '../../services/codebase/analysisSourceSupplement';
 import {projectSafeSourceProvenance} from '../../services/codebase/sourceClaimVerifier';
 import {
   sanitizeSourceReference,
@@ -244,10 +237,6 @@ export interface RunTurnOutput {
   privateKnowledge?: boolean;
   /** Internal source-scope binding for durable history, not a provider credential. */
   analysisContextFingerprint?: string;
-  /** Safe, separately persisted source supplement. Never modifies the primary report. */
-  sourceSupplement?: AnalysisSourceSupplementOutcome;
-  /** Internal continuation that lets the caller commit the primary output first. */
-  sourceSupplementTask?: Promise<AnalysisSourceSupplementOutcome | undefined>;
   /**
    * The sealed RunManifest's internal performance receipt (timings, model-call
    * purposes, token counts). The CLI keeps it as a local turn artifact because
@@ -503,21 +492,9 @@ export class CliAnalyzeService {
     }
 
     const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(effectiveInput, knowledgeScope);
-    const sourceActivation = resolveAnalysisSourceActivation({
-      query: input.query,
-      analysisMode: input.analysisMode,
-      codeAwareMode: effectiveCodeAwareMode,
-      codebaseIds: effectiveInput.codebaseIds,
-    });
-    const primaryOptions: AnalysisOptions = projectPrimaryAnalysisOptions({
-      analysisMode: input.analysisMode,
-      codeAwareMode: effectiveCodeAwareMode,
-      codebaseIds: effectiveInput.codebaseIds,
-      knowledgeSourceIds: effectiveInput.knowledgeSourceIds,
-      analysisContextFingerprint,
-    }, sourceActivation);
-    const primaryPrivateContext = resolveAnalysisPrivateContext(primaryOptions);
-    const primaryPrivateKnowledge = privateContextRestrictsAudience(primaryPrivateContext);
+    const privateContext = resolveAnalysisPrivateContext({codeAwareMode: effectiveCodeAwareMode,
+      codebaseIds: effectiveInput.codebaseIds, knowledgeSourceIds: effectiveInput.knowledgeSourceIds});
+    const privateKnowledge = privateContextRestrictsAudience(privateContext);
     const { sessionId, session } = this.analyzeService.prepareSession({
       traceId,
       query: input.query,
@@ -528,9 +505,9 @@ export class CliAnalyzeService {
       options: {
         ...knowledgeScope,
         outputLanguage,
-        codeAwareMode: primaryOptions.codeAwareMode,
-        codebaseIds: primaryOptions.codebaseIds,
-        knowledgeSourceIds: primaryOptions.knowledgeSourceIds,
+        codeAwareMode: effectiveCodeAwareMode,
+        codebaseIds: effectiveInput.codebaseIds,
+        knowledgeSourceIds: effectiveInput.knowledgeSourceIds,
       },
     });
     this.currentSessionRuns.get(sessionId)?.controller.abort(new DOMException('CLI run superseded', 'AbortError'));
@@ -550,18 +527,6 @@ export class CliAnalyzeService {
     };
     assertActive();
     this.ownedSessionIds.add(sessionId);
-    const resetQuery = await resetRuntimeForSourceActivation({
-      orchestrator: session.orchestrator,
-      sessionId,
-      query: input.query,
-      previousActivation: session.sourceActivation,
-      nextActivation: sourceActivation,
-      queryHistory: session.queryHistory,
-      conclusionHistory: session.conclusionHistory,
-    });
-    assertActive();
-    if (resetQuery) session.agentQuery = resetQuery;
-    session.sourceActivation = sourceActivation;
     session.sourceAuthorization =
       effectiveCodeAwareMode !== 'off' && effectiveInput.codebaseIds?.length
         ? {
@@ -570,11 +535,10 @@ export class CliAnalyzeService {
             analysisContextFingerprint,
           }
         : undefined;
-    session.codeAwareMode = primaryOptions.codeAwareMode;
-    session.codebaseIds = primaryOptions.codebaseIds;
-    session.knowledgeSourceIds = primaryOptions.knowledgeSourceIds;
-    session.analysisContextFingerprint = analysisContextFingerprint;
-    if (primaryPrivateKnowledge) registerPrivateAnalysisQueryForEcho(sessionId, input.query);
+    session.codeAwareMode = effectiveCodeAwareMode;
+    session.codebaseIds = effectiveInput.codebaseIds;
+    session.knowledgeSourceIds = effectiveInput.knowledgeSourceIds;
+    if (privateKnowledge) registerPrivateAnalysisQueryForEcho(sessionId, input.query);
     if (input.lineage) {
       session.lineage = input.lineage;
     }
@@ -594,7 +558,7 @@ export class CliAnalyzeService {
       turn: session.runSequence,
       query: input.query,
       timestamp: Date.now(),
-      sourceDerived: primaryPrivateKnowledge ? true : undefined,
+      sourceDerived: privateKnowledge ? true : undefined,
     });
     const requestedAnalysisMode = resolveEffectiveAnalysisMode(input.analysisMode, {
       referenceTraceId: effectiveReferenceTraceId,
@@ -610,7 +574,7 @@ export class CliAnalyzeService {
       traceId,
       query: input.query,
       mode: requestedAnalysisMode,
-      privateContext: primaryPrivateContext,
+      privateContext,
     });
     const runtimeRegistrySnapshot = await getEffectiveRuntimeRegistrySnapshot({
       scope: resolvedScope,
@@ -671,7 +635,7 @@ export class CliAnalyzeService {
           const projectedUpdate = projectOwnerCodeAwareStreamingUpdate(
             sessionId,
             update,
-            primaryPrivateKnowledge,
+            privateKnowledge,
             outputLanguage,
           );
           if (!projectedUpdate || !shouldExposeLiveStreamingUpdate(projectedUpdate)) return;
@@ -689,7 +653,6 @@ export class CliAnalyzeService {
         let context: RuntimeFinalizationContext | undefined;
         let contextTransferred = false;
         let finalQualityIssue: FinalResultQualityIssue | undefined;
-        const agentQuery = resolveAgentQuery(session, input.query);
         try {
           // The run may learn across sessions only under the marker its run record carries.
           let runtimeOptions: AnalysisOptions = withDurableLearningPermission({
@@ -697,19 +660,18 @@ export class CliAnalyzeService {
             runId: run.runId,
             referenceTraceId: effectiveReferenceTraceId,
             analysisMode: requestedAnalysisMode,
-            codeAwareMode: primaryOptions.codeAwareMode,
-            codebaseIds: primaryOptions.codebaseIds,
-            knowledgeSourceIds: primaryOptions.knowledgeSourceIds,
-            sourceUsePolicy: primaryOptions.sourceUsePolicy,
+            codeAwareMode: effectiveCodeAwareMode,
+            codebaseIds: effectiveInput.codebaseIds,
+            knowledgeSourceIds: effectiveInput.knowledgeSourceIds,
             sourceDepth: input.sourceDepth,
-            analysisContextFingerprint: primaryOptions.analysisContextFingerprint,
+            analysisContextFingerprint,
             runManifestAttributionSink: runManifestLifecycle.builder,
             ...knowledgeScope,
-          }, primaryPrivateContext);
+          }, privateContext);
           if (input.history?.length) {
             // Current source activation controls both the preview and later tool reads.
             const history = input.history.filter(turn => !turn.sourceDerived ||
-              (primaryPrivateKnowledge && Boolean(turn.analysisContextFingerprint) &&
+              (privateKnowledge && Boolean(turn.analysisContextFingerprint) &&
                 turn.analysisContextFingerprint === analysisContextFingerprint));
             const backendHistory = createRuntimeAnalysisHistoryReader({options: runtimeOptions,
               sessionId, traceId, assertActive,
@@ -721,7 +683,7 @@ export class CliAnalyzeService {
             }});
             runtimeOptions = withAnalysisHistoryReader(runtimeOptions, reader);
           }
-          result = await orchestrator.analyze(agentQuery, sessionId, traceId, runtimeOptions);
+          result = await orchestrator.analyze(input.query, sessionId, traceId, runtimeOptions);
           context = takeFinalizationContext(result);
           orchestrator.off('update', handler);
           assertActive();
@@ -755,8 +717,7 @@ export class CliAnalyzeService {
           const onProvisionalAnswer = input.onProvisionalAnswer;
           const finalized = await finalizeAnalysisResult({result, context, query: input.query,
             owner: {runId: run.runId, signal: run.controller.signal,
-              ...(primaryOptions.analysisContextFingerprint !== undefined
-                ? {analysisContextFingerprint: primaryOptions.analysisContextFingerprint} : {}),
+              analysisContextFingerprint,
               isCurrent: () => this.currentSessionRuns.get(sessionId) === run && session.runSequence === ownedRunSequence,
               assertAuthorized: () => assertCurrentAnalysisContextAuthorization(effectiveInput, knowledgeScope, analysisContextFingerprint)},
             dataEnvelopes: session.dataEnvelopes as DataEnvelope[], comparisonReportSection: session.comparisonReportSection,
@@ -774,7 +735,7 @@ export class CliAnalyzeService {
             // The finalizer treats a throwing observer as "not delivered".
             ...(onProvisionalAnswer ? {onProvisionalAnswer: (answer: ProvisionalAnalysisAnswer) => {
               assertActive();
-              onProvisionalAnswer({conclusion: projectOwnerProvisionalConclusion(primaryPrivateKnowledge, sessionId,
+              onProvisionalAnswer({conclusion: projectOwnerProvisionalConclusion(privateKnowledge, sessionId,
                 answer.conclusion, outputLanguage)});
             }} : {}),
           });
@@ -796,9 +757,9 @@ export class CliAnalyzeService {
           if (!contextTransferred) context?.dispose();
         }
         assertActive();
-        session.codeAwareMode = primaryOptions.codeAwareMode;
-        session.codebaseIds = primaryOptions.codebaseIds;
-        session.knowledgeSourceIds = primaryOptions.knowledgeSourceIds;
+        session.codeAwareMode = effectiveCodeAwareMode;
+        session.codebaseIds = effectiveInput.codebaseIds;
+        session.knowledgeSourceIds = effectiveInput.knowledgeSourceIds;
         session.claimSupport = result.claimSupport;
         session.claimVerificationResult = result.claimVerificationResult;
         session.identityResolutions = result.identityResolutions;
@@ -832,7 +793,7 @@ export class CliAnalyzeService {
             conclusion: result.conclusion,
             confidence: result.confidence ?? 0,
             timestamp: Date.now(),
-            sourceDerived: primaryPrivateKnowledge ? true : undefined,
+            sourceDerived: privateKnowledge ? true : undefined,
           });
         }
         assertActive();
@@ -899,7 +860,7 @@ export class CliAnalyzeService {
           traceId,
           query: input.query,
           result,
-          privateContext: primaryPrivateContext,
+          privateContext,
         });
 
         const persistedSnapshot = (
@@ -933,8 +894,8 @@ export class CliAnalyzeService {
         }
 
         assertActive();
-        const reportOutput = this.buildReportHtml(session, result, primaryPrivateContext);
-        const durableResult = primaryPrivateKnowledge
+        const reportOutput = this.buildReportHtml(session, result, privateContext);
+        const durableResult = privateKnowledge
           ? projectOwnerAnalysisResult(sessionId, result, outputLanguage)
           : result;
 
@@ -944,7 +905,7 @@ export class CliAnalyzeService {
           traceId,
           result: durableResult,
           reportHtml: reportOutput.html,
-          reportError: projectOwnerReportError(primaryPrivateKnowledge, sessionId, reportOutput.error, outputLanguage),
+          reportError: projectOwnerReportError(privateKnowledge, sessionId, reportOutput.error, outputLanguage),
           model,
           providerId: persistedProviderId !== undefined ? persistedProviderId : (session.providerId ?? null),
           agentRuntimeKind: publicRuntimeKind,
@@ -953,7 +914,7 @@ export class CliAnalyzeService {
               ? persistedProviderSnapshotHash
               : (session.providerSnapshotHash ?? null),
           codeAwareMode: effectiveCodeAwareMode,
-          privateKnowledge: primaryPrivateKnowledge,
+          privateKnowledge,
           analysisContextFingerprint,
           ...(runManifest.performance ? {runtimePerformance: runManifest.performance} : {}),
           ...(runManifest.toolResults ? {toolResultAudit: runManifest.toolResults} : {}),
@@ -967,7 +928,7 @@ export class CliAnalyzeService {
         openRunScope,
         run.controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')
           ? 'cancelled' : 'failed',
-        primaryPrivateKnowledge ? projectOwnerAnalysisError(sessionId, message, outputLanguage) : message,
+        privateKnowledge ? projectOwnerAnalysisError(sessionId, message, outputLanguage) : message,
       );
       if (runManifestLifecycle.state === 'collecting') {
         try {

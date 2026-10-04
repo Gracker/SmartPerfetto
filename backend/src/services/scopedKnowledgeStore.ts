@@ -459,6 +459,54 @@ export function getScopedKnowledgeRecord<T>(
   });
 }
 
+/** The owner columns of one RAG chunk row; the row's content is neither returned nor parsed. */
+export interface ScopedRagChunkOwnerRow {
+  /** `rag:<chunk kind>`. */
+  scope: string;
+  registryOrigin?: string;
+  codebaseId?: string;
+  sourceGeneration?: string;
+  scopeFingerprint?: string;
+}
+
+/**
+ * One RAG chunk's owner, selecting only the indexed owner columns, so a caller
+ * can decide whether it may use a chunk before reading its body. Retired case
+ * chunks are excluded as every RAG read excludes them (that filter evaluates
+ * the row, as it does for every read).
+ */
+export function getScopedRagChunkOwner(
+  kind: string,
+  externalId: string,
+  scopeInput?: KnowledgeScope,
+): ScopedRagChunkOwnerRow | undefined {
+  const scope = resolveKnowledgeScope(scopeInput);
+  return withKnowledgeDb((db) => {
+    const row = db.prepare<unknown[], {
+      scope: string;
+      rag_registry_origin: string | null;
+      rag_codebase_id: string | null;
+      rag_source_generation: string | null;
+      rag_scope_fingerprint: string | null;
+    }>(`
+      SELECT scope, rag_registry_origin, rag_codebase_id, rag_source_generation, rag_scope_fingerprint
+      FROM memory_entries
+      WHERE id = ? AND tenant_id = ? AND workspace_id = ?
+        AND scope LIKE 'rag:%'
+        AND NOT ${RETIRED_RAG_CHUNK_SQL}
+      LIMIT 1
+    `).get(scopedKnowledgeRowId(kind, externalId, scope), scope.tenantId, scope.workspaceId);
+    if (!row) return undefined;
+    return {
+      scope: row.scope,
+      ...(row.rag_registry_origin ? {registryOrigin: row.rag_registry_origin} : {}),
+      ...(row.rag_codebase_id ? {codebaseId: row.rag_codebase_id} : {}),
+      ...(row.rag_source_generation ? {sourceGeneration: row.rag_source_generation} : {}),
+      ...(row.rag_scope_fingerprint ? {scopeFingerprint: row.rag_scope_fingerprint} : {}),
+    };
+  });
+}
+
 export function removeScopedKnowledgeRecord(
   kind: string,
   externalId: string,

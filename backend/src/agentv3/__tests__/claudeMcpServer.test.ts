@@ -424,9 +424,6 @@ function createTestServer(options: {
   outputLanguage?: OutputLanguage;
   runManifestAttributionSink?: RunManifestAttributionSink;
   analysisHistoryReader?: AnalysisHistoryReader;
-  sourceUsePolicy?: {
-    phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
-  };
   sourceDepth?: SourceDepth;
   sourceDepthDecision?: SourceDepthDecisionV1;
   sourceDepthPolicy?: SourceDepthPolicy;
@@ -517,7 +514,6 @@ function createTestServer(options: {
     runManifestAttributionSink: options.runManifestAttributionSink,
     analysisHistoryReader: options.analysisHistoryReader,
     conversationTraceAttached: options.conversationTraceAttached,
-    sourceUsePolicy: options.sourceUsePolicy,
     ...(options.sourceDepthDecision ? {sourceDepthDecision: options.sourceDepthDecision}
       : options.sourceDepth ? {sourceDepthDecision: {requested: options.sourceDepth, effective: options.sourceDepth,
         origin: 'requested' as const}} : {}),
@@ -8827,7 +8823,6 @@ describe('createClaudeMcpServer', () => {
           codebaseRegistry,
           codeLookupLedger: ledger,
           knowledgeScope: scope,
-          sourceUsePolicy: {phase: 'explicit'},
           sourceDepth: 'locate',
         });
 
@@ -8875,63 +8870,6 @@ describe('createClaudeMcpServer', () => {
       } finally {
         fs.rmSync(tmpDir, {recursive: true, force: true});
       }
-    });
-
-    it('keeps trace-attached automatic enrichment source-only', () => {
-      const {tools} = createTestServer({
-        lightweight: true,
-        conversationTraceAttached: true,
-        codeAwareMode: 'provider_send',
-        codebaseIds: ['app-codebase'],
-        sourceUsePolicy: {phase: 'automatic_enrichment'},
-      });
-
-      expect([...tools.keys()].sort()).toEqual([
-        'find_codebase_files',
-        'list_codebases',
-        'read_codebase_file',
-        'search_codebase',
-      ]);
-    });
-
-    it('keeps Full trace tools while limiting explicit source access to list/search/read', () => {
-      const {tools} = createTestServer({
-        lightweight: false,
-        codeAwareMode: 'provider_send',
-        codebaseIds: ['app-codebase'],
-        sourceUsePolicy: {phase: 'explicit'},
-      });
-
-      expect(tools.has('execute_sql')).toBe(true);
-      expect(tools.has('invoke_skill')).toBe(true);
-      expect(tools.has('list_codebases')).toBe(true);
-      expect(tools.has('search_codebase')).toBe(true);
-      expect(tools.has('read_codebase_file')).toBe(true);
-      expect(tools.has('query_code_graph')).toBe(false);
-      expect(tools.has('inspect_code_symbol')).toBe(false);
-      expect(tools.has('lookup_app_source')).toBe(false);
-      expect(tools.has('lookup_kernel_source')).toBe(false);
-      expect(tools.has('resolve_symbol')).toBe(false);
-      expect(tools.has('propose_patch')).toBe(false);
-      expect(tools.has('query_perfetto_source')).toBe(false);
-      expect(tools.has('lookup_aosp_source')).toBe(false);
-      expect(tools.has('lookup_oem_sdk')).toBe(false);
-    });
-
-    it.each([true, false])('keeps deep source supplements source-only (lightweight=%s)', lightweight => {
-      const {tools} = createTestServer({
-        lightweight,
-        codeAwareMode: 'provider_send',
-        codebaseIds: ['app-codebase'],
-        sourceUsePolicy: {phase: 'deep_enrichment'},
-      });
-
-      expect([...tools.keys()].sort()).toEqual([
-        'find_codebase_files',
-        'list_codebases',
-        'read_codebase_file',
-        'search_codebase',
-      ]);
     });
 
     it('registers provider-sent search bodies for outbound echo redaction', async () => {
@@ -9016,14 +8954,14 @@ describe('createClaudeMcpServer', () => {
         expect(projected).toContain(
           `[Code: ${reference.id} @ src/ReadGuard.kt:1-1]`,
         );
-        const sourceSupplementEvent = projectPrivateStructuredValue(sessionId, {
-          type: 'source_enrichment_completed',
-          message: `Source supplement echoed: ${reference.numberedText}`,
+        const echoedPayload = projectPrivateStructuredValue(sessionId, {
+          type: 'progress',
+          message: `Model echoed: ${reference.numberedText}`,
         });
-        expect(JSON.stringify(sourceSupplementEvent)).not.toContain(
+        expect(JSON.stringify(echoedPayload)).not.toContain(
           'ON_DEMAND_READ_ECHO_CANARY',
         );
-        expect(sourceSupplementEvent.message).toContain('[Code:');
+        expect(echoedPayload.message).toContain('[Code:');
       } finally {
         clearCodeAwareOutputGuards(sessionId);
         fs.rmSync(tmpDir, {recursive: true, force: true});

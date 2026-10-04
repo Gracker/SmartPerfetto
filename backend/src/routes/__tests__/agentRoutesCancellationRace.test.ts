@@ -20,7 +20,6 @@ import * as streamingProjection from '../../services/security/codeAwareStreaming
 import {projectOwnerConclusion} from '../../services/security/privateAnalysisProjection';
 import * as summary from '../../services/managedTraceSummary';
 import * as comparison from '../../services/comparisonAppendixService';
-import * as sourceSupplement from '../../services/codebase/analysisSourceSupplement';
 import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import * as reports from '../reportRoutes';
 import * as snapshots from '../../services/analysisResultSnapshotPipeline';
@@ -320,14 +319,43 @@ describe('agent analyze cancellation races', () => {
     }
   });
 
-  it('cancels detached source enrichment without changing the completed primary run', async () => {
-    const sessionId = 'session-source-enrichment-cancel';
+  it('answers an unknown run id as not found and leaves the running run alone', async () => {
+    const sessionId = 'session-cancel-unknown-run';
+    const runId = `${sessionId}:1`;
+    const abortSession = jest.fn();
+    const cleanupSession = jest.fn();
+    const run = {runId, requestId: 'request-cancel-unknown-run', sequence: 1, query: 'trace 时长',
+      startedAt: Date.now(), status: 'running' as const, privateContext: NO_PRIVATE_CONTEXT};
+    const session = {sessionId, status: 'running' as const, createdAt: Date.now(), lastActivityAt: Date.now(),
+      traceId: 'trace-cancel-unknown-run', query: run.query, sseClients: [], sseEventSeq: 0, sseEventBuffer: [],
+      runSequence: 1, activeRun: run, lastRun: run, runRegistry: {[runId]: run},
+      orchestrator: {abortSession, cleanupSession}, logger: {info: jest.fn(), warn: jest.fn(), error: jest.fn()}} as any;
+    const before = JSON.stringify(session);
+    agentRoutesCancellationTestSeam.setSession(sessionId, session);
+    try {
+      const result = await agentRoutesCancellationTestSeam.cancelSessionRun(sessionId, 'run-does-not-exist', 'stop');
+      expect(result).toMatchObject({outcome: 'run_not_found', runId: 'run-does-not-exist'});
+      expect(agentRoutesCancellationTestSeam.projectCancelSessionRunResult(result!)).toEqual({status: 404, body: {
+        success: false, sessionId, runId: 'run-does-not-exist', code: 'RUN_NOT_FOUND', error: 'Run not found in session'}});
+      expect(abortSession).not.toHaveBeenCalled();
+      expect(cleanupSession).not.toHaveBeenCalled();
+      // No terminal event, and the current run, its status and the session are exactly as they were.
+      expect(session.sseEventBuffer).toEqual([]);
+      expect(session.activeRun).toBe(run);
+      expect(JSON.stringify(session)).toBe(before);
+    } finally {
+      agentRoutesCancellationTestSeam.deleteSession(sessionId);
+    }
+  });
+
+  it('leaves a completed run and its stream untouched when it is cancelled afterwards', async () => {
+    const sessionId = 'session-cancel-after-completion';
     const runId = `${sessionId}:1`;
     const abortSession = jest.fn();
     const cleanupSession = jest.fn();
     const run = {
       runId,
-      requestId: 'request-source-enrichment-cancel',
+      requestId: 'request-cancel-after-completion',
       sequence: 1,
       query: '完整审查源码',
       startedAt: Date.now(),
@@ -340,7 +368,7 @@ describe('agent analyze cancellation races', () => {
       status: 'completed' as const,
       createdAt: Date.now(),
       lastActivityAt: Date.now(),
-      traceId: 'trace-source-enrichment-cancel',
+      traceId: 'trace-cancel-after-completion',
       query: run.query,
       sseClients: [],
       sseEventSeq: 0,
@@ -349,11 +377,6 @@ describe('agent analyze cancellation races', () => {
       activeRun: run,
       lastRun: run,
       runRegistry: {[runId]: run},
-      analysisSourceEnrichment: {
-        runId,
-        status: 'running' as const,
-        startedAt: Date.now(),
-      },
       orchestrator: {abortSession, cleanupSession},
       logger: {info: jest.fn(), warn: jest.fn(), error: jest.fn()},
     } as any;
@@ -362,23 +385,16 @@ describe('agent analyze cancellation races', () => {
       const result = await agentRoutesCancellationTestSeam.cancelSessionRun(
         sessionId,
         runId,
-        'cancel source supplement',
+        'cancel after completion',
       );
 
-      expect(result).toMatchObject({
-        outcome: 'source_enrichment_cancelled',
-        runStatus: 'completed',
-      });
+      expect(result).toMatchObject({outcome: 'run_not_cancellable', runStatus: 'completed'});
       expect(session.status).toBe('completed');
       expect(run.status).toBe('completed');
-      expect(session.analysisSourceEnrichment.status).toBe('cancelled');
-      expect(abortSession).toHaveBeenCalledWith(
-        `${sessionId}:${runId}:analysis-source-enrichment`,
-      );
-      expect(session.sseEventBuffer.map((event: any) => event.eventType)).toEqual([
-        'analysis_source_enrichment_cancelled',
-        'end',
-      ]);
+      expect(abortSession).not.toHaveBeenCalled();
+      expect(cleanupSession).not.toHaveBeenCalled();
+      // Nothing is appended to a finished stream.
+      expect(session.sseEventBuffer).toEqual([]);
     } finally {
       agentRoutesCancellationTestSeam.deleteSession(sessionId);
     }
@@ -1405,7 +1421,6 @@ describe('HTTP shared finalization ownership', () => {
       });
       const summarySpy = jest.spyOn(summary, 'executeManagedTraceSummaryV1');
       const comparisonSpy = jest.spyOn(comparison, 'buildRawTraceComparisonReportSection');
-      const sourceSpy = jest.spyOn(sourceSupplement, 'runAnalysisSourceSupplement');
       const query = jest.fn();
       const finalize = jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
         expect(input.result).toBe(f.native);
@@ -1427,7 +1442,6 @@ describe('HTTP shared finalization ownership', () => {
         expect(f.analyze.mock.calls[0][3]?.runId).toBe(f.runId);
         expect(summarySpy).not.toHaveBeenCalled();
         expect(comparisonSpy).not.toHaveBeenCalled();
-        expect(sourceSpy).not.toHaveBeenCalled();
         expect(query).not.toHaveBeenCalled();
         expect(persistence.persistAgentTurn).toHaveBeenCalledWith(expect.objectContaining({result: f.native}));
         expect(f.session.result.conclusion).toBe('exact\r\nbody');
@@ -1643,26 +1657,6 @@ describe('HTTP shared finalization ownership', () => {
         runContext: f.session.activeRun, generateTracks: false,
       });
       expect(resolveDurableLearningPermission(f.analyze.mock.calls[0][3]!)).toEqual(granted ? {runId: f.runId} : undefined);
-    } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
-  });
-
-  it('does not launch an automatic source supplement for a legacy deep_supplement activation', async () => {
-    const id = 'http-no-automatic-source-supplement'; const f = fixture(id);
-    f.native.success = true; f.attach({evidenceAccess: 'read_new'});
-    f.session.sourceActivation = 'deep_supplement'; f.session.sourceAuthorization = {codeAwareMode: 'metadata_only', codebaseIds: ['source']};
-    const supplement = jest.spyOn(sourceSupplement, 'runAnalysisSourceSupplement');
-    jest.spyOn(reports, 'persistReport').mockImplementation(() => undefined);
-    jest.spyOn(snapshots, 'persistCompletedAnalysisResultSnapshot').mockReturnValue(null);
-    jest.spyOn(finalization, 'finalizeAnalysisResult').mockImplementation(async input => {
-      input.context?.dispose(); return {result: input.result};
-    });
-    try {
-      await agentRoutesCancellationTestSeam.runAgentDrivenAnalysis(id, '审查源码中的阻塞原因', 'trace-a', {
-        runContext: f.session.activeRun, generateTracks: false,
-      });
-      expect(supplement).not.toHaveBeenCalled();
-      expect(f.session.analysisSourceEnrichment).toBeUndefined();
-      expect(f.analyze).toHaveBeenCalledTimes(1);
     } finally {agentRoutesCancellationTestSeam.deleteSession(id);}
   });
 

@@ -118,19 +118,6 @@ export function loadedCliAnalysisEvidence(output: CliAnalysisEvidenceOutput): Lo
     : {status: 'available', bundle: output, legacy: false};
 }
 
-export function rebindCliAnalysisEvidenceTurnMarkdown(
-  output: CliAnalysisEvidenceOutput,
-  turnMarkdown: string,
-): CliAnalysisEvidenceOutput {
-  return {
-    ...output,
-    binding: {
-      ...output.binding,
-      turnMarkdownFingerprint: analysisDeliveryFingerprint(turnMarkdown),
-    },
-  };
-}
-
 export function renderCliAnalysisEvidence(
   loaded: LoadedCliAnalysisEvidence,
   language: OutputLanguage,

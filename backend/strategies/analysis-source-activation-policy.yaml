@@ -1,5 +1,0 @@
-schema_version: analysis_source_activation_policy@3
-
-safe_replay:
-  max_turns: 6
-  max_chars_per_entry: 1200

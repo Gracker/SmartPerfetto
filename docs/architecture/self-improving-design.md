@@ -117,7 +117,7 @@ provisional
 
 学到的经验只在能证明由公开 run 写入时才会被读取。产品在派发时按 run 自己在准入时固定的
 私有上下文标记签发学习权限，并绑定 runId（`services/security/durableLearning.ts`）；
-私有、unknown、回放和源码补充等没有权限的 run 都不写入。store 在保存时给条目盖准入戳
+私有、unknown 和回放等没有权限的 run 都不写入。store 在保存时给条目盖准入戳
 `learningAdmission`；读取、合并、淘汰和租户导出只认带戳的条目，没有戳的条目最先被淘汰，
 并随 TTL 过期。SQL 修正对遵循同一规则。私有 run 与公开 run 读取同一批已准入经验。
 

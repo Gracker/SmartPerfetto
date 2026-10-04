@@ -2597,7 +2597,7 @@ export async function collectSseSummary(
 
           await options.observeEvent?.(event, event === 'data' ? parsed : payload);
           // The product's own predicate: a failed run ends with `error` and leaves the stream open.
-          const terminal = isTerminalSseEvent(event, dataText);
+          const terminal = isTerminalSseEvent(event);
           if (options.readUntilClose && !terminalObservation && terminal) {
             terminalObservation = setTimeout(() => {observationFinished = true; controller.abort();}, options.terminalObservationMs ?? 2000);
           }

@@ -406,11 +406,8 @@ runtime 声明 `draftAnswerStreaming` 能力（当前为 Claude 与 OpenAI）时
 任何持久化，断线重连不会重放。其他 runtime 不发送草稿。进度标签只来自 `progress` 类型的
 `runtime_update`。
 
-`run_completed` 表示主回答已经完成并可立即展示；它包含 `enrichmentPending`。该值为
-`false` 时流立即结束，为 `true` 时流继续发送 `source_enrichment_started`，并在
-`source_enrichment_completed`、`source_enrichment_failed` 或
-`source_enrichment_cancelled` 后结束。源码补充终态不会改写主 run 的 completed 状态。
-主分析失败仍以 `run_failed` 结束。客户端重连可发送 `Last-Event-ID`，或使用
+`run_completed` 表示 run 已经结束，回答可立即展示，流随即关闭；它携带 `outcome`。
+失败的 run 以 `run_failed` 结束。客户端重连可发送 `Last-Event-ID`，或使用
 `lastEventId` query；服务端按单调 `id` 去重重放。只有 outcome 为 `recommend_full` 时，
 `full-handoff` 才返回交接，否则返回 `409 FULL_ANALYSIS_NOT_RECOMMENDED`。
 

@@ -642,7 +642,7 @@ Important whitelisted examples:
   of a workspace, so it holds only what a proven-public run learned. The
   product grants durable learning at dispatch from the run's own marker, bound
   to its run id (`services/security/durableLearning.ts`); a run without a grant
-  (private, unknown, replay, source supplement) learns nothing. The store
+  (private, unknown, replay) learns nothing. The store
   stamps each entry it saves, and reads, merges, eviction and tenant export
   admit only stamped entries; an unstamped entry is evicted first and ages out
   with its TTL. Every run, private ones included, reads the same admitted

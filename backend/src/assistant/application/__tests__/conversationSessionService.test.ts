@@ -9,11 +9,31 @@ import {toAnalysisHistoryTurn} from '../../../agentRuntime/analysisHistory';
 import type {ConversationSessionDescriptor} from '../../../services/conversationSessionStore';
 
 import {
-  ConversationSessionService,
+  ConversationSessionService as ProductConversationSessionService,
   type ConversationRuntimeAdapter,
   type ConversationRuntimeInput,
   type ConversationRuntimeOutcome,
+  type StartConversationTurnInput,
 } from '../conversationSessionService';
+import {runAnalysisSelection} from '../../../services/effectiveAnalysisSelection';
+import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
+
+/**
+ * The product service with the caller's duty done for it: every turn states
+ * its authorization fingerprint, computed as the route computes it. A
+ * continuing turn keeps its session's unless a test changes it explicitly.
+ */
+class ConversationSessionService extends ProductConversationSessionService {
+  override startTurn(input: Omit<StartConversationTurnInput, 'analysisContextFingerprint'> &
+    {analysisContextFingerprint?: string}) {
+    const existing = input.sessionId ? this.getSession(input.sessionId) : undefined;
+    const analysisContextFingerprint = input.analysisContextFingerprint ??
+      input.runtimeOptions?.analysisContextFingerprint ?? existing?.analysisContextFingerprint ??
+      authorization.buildAnalysisContextAuthorizationFingerprint(runAnalysisSelection(input.runtimeOptions ?? {}),
+        resolveKnowledgeScope(input.owner ?? {}));
+    return super.startTurn({...input, analysisContextFingerprint});
+  }
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -546,85 +566,37 @@ describe('ConversationSessionService', () => {
     expect(JSON.stringify(retained)).not.toContain('Draft');
   });
 
-  it('completes the primary run before starting independent source enrichment', async () => {
-    const enrichment = deferred<{
-      message: string;
-      evidence: Array<{id: string; label: string}>;
-      metrics: {searchCalls: number; readCalls: number; durationMs: number};
-    }>();
+  it('settles a run with run_completed that carries only the outcome', async () => {
     const adapter: ConversationRuntimeAdapter = {
-      shouldStartSourceEnrichment: jest.fn(() => true),
-      run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({
-        kind: 'answered',
-        message: 'Primary trace answer',
-        evidence: [{id: 'trace-1', label: 'Foo::bar', source: 'sql'}],
-      })),
-      runSourceEnrichment: jest.fn(async () => enrichment.promise),
+      run: jest.fn(async (): Promise<ConversationRuntimeOutcome> => ({kind: 'answered', message: 'Primary trace answer'})),
       cancel: jest.fn(async () => undefined),
-      cancelSourceEnrichment: jest.fn(async () => undefined),
     };
     const service = createService(adapter);
-    const receipt = service.startTurn({
-      query: 'Why is startup slow?',
-      traceContext: {kind: 'attached', traceId: 'trace-1'},
-      runtimeOptions: {
-        codeAwareMode: 'provider_send',
-        codebaseIds: ['private-app'],
-      },
-    });
-    const eventTypes: string[] = [];
-    service.subscribe(receipt.sessionId, event => eventTypes.push(event.type));
-
-    await expect(receipt.completion).resolves.toMatchObject({
-      message: 'Primary trace answer',
-    });
-    expect(service.getSession(receipt.sessionId)).toMatchObject({
-      status: 'completed',
-      activeRun: undefined,
-    });
-    expect(eventTypes.indexOf('run_completed')).toBeGreaterThanOrEqual(0);
-    expect(eventTypes.indexOf('source_enrichment_started'))
-      .toBeGreaterThan(eventTypes.indexOf('run_completed'));
-    expect(eventTypes).not.toContain('source_enrichment_completed');
-
-    enrichment.resolve({
-      message: 'Source supplement',
-      evidence: [{id: 'source-1', label: 'Foo.kt:L10-L12'}],
-      metrics: {searchCalls: 1, readCalls: 2, durationMs: 40},
-    });
-    const run = service.getSession(receipt.sessionId)?.runs[0];
-    await run?.sourceEnrichment?.completion;
-    expect(run?.sourceEnrichment).toMatchObject({
-      status: 'completed',
-      message: 'Source supplement',
-    });
-    expect(eventTypes[eventTypes.length - 1]).toBe('source_enrichment_completed');
+    const receipt = service.startTurn({query: 'Why is startup slow?', traceContext: {kind: 'attached', traceId: 'trace-1'},
+      runtimeOptions: {codeAwareMode: 'provider_send', codebaseIds: ['private-app']}});
+    await receipt.completion;
+    const completed = service.getSession(receipt.sessionId)!.runs[0].events.find(event => event.type === 'run_completed');
+    // Clients read run_completed as the end of the run; no pending follow-up is announced.
+    expect(completed).toEqual({type: 'run_completed', sessionId: receipt.sessionId, runId: receipt.runId,
+      outcome: {kind: 'answered', message: 'Primary trace answer'}, seqId: expect.any(Number)});
+    // A completed run cannot be cancelled again.
+    await expect(service.cancelRun(receipt.sessionId, receipt.runId)).rejects.toMatchObject({
+      code: 'CONVERSATION_RUN_NOT_ACTIVE'});
   });
 
-  it('marks history from runs with private context and excludes automatic enrichment from history', async () => {
+  it('marks history from runs with private context', async () => {
     const authorizationCheck = jest.spyOn(authorization, 'assertCurrentAnalysisContextAuthorization')
       .mockImplementation(() => undefined);
     try {
-      const enrichment = deferred<{
-        message: string;
-        evidence: Array<{id: string; label: string}>;
-        metrics: {searchCalls: number; readCalls: number; durationMs: number};
-      }>();
       let turn = 0;
       const inputs: ConversationRuntimeInput[] = [];
       const adapter: ConversationRuntimeAdapter = {
-        shouldStartSourceEnrichment: jest.fn((
-          _input: ConversationRuntimeInput,
-          outcome: ConversationRuntimeOutcome,
-        ) => outcome.message === 'trace answer'),
         run: jest.fn(async (input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome> => {
           inputs.push(input);
           turn += 1;
           return {kind: 'answered', message: turn === 1 ? 'source answer' : turn === 2 ? 'trace answer' : 'next answer'};
         }),
-        runSourceEnrichment: jest.fn(async () => enrichment.promise),
         cancel: jest.fn(async () => undefined),
-        cancelSourceEnrichment: jest.fn(async () => undefined),
       };
       const service = createService(adapter);
       // A session authorized to read source makes every run in it private.
@@ -633,12 +605,6 @@ describe('ConversationSessionService', () => {
       await first.completion;
       const second = service.startTurn({sessionId: first.sessionId, query: '分析启动'});
       await second.completion;
-      enrichment.resolve({
-        message: 'automatic supplement',
-        evidence: [],
-        metrics: {searchCalls: 1, readCalls: 0, durationMs: 5},
-      });
-      await service.getSession(first.sessionId)?.runs[1].sourceEnrichment?.completion;
       const third = service.startTurn({sessionId: first.sessionId, query: '继续'});
       await third.completion;
 
@@ -648,8 +614,8 @@ describe('ConversationSessionService', () => {
       expect(service.getSession(first.sessionId)!.historyTurns[0].analysisContextFingerprint).toBe(
         service.getSession(first.sessionId)!.analysisContextFingerprint);
       expect(service.getSession(first.sessionId)!.historyTurns[0].analysisContextFingerprint).toBeTruthy();
-      expect(inputs[2].history).not.toEqual(expect.arrayContaining([
-        expect.objectContaining({content: 'automatic supplement'}),
+      expect(inputs[2].history).toEqual(expect.arrayContaining([
+        expect.objectContaining({content: 'trace answer', sourceDerived: true}),
       ]));
     } finally {authorizationCheck.mockRestore();}
   });
@@ -860,13 +826,11 @@ describe('ConversationSessionService', () => {
     expect(adapter.run).toHaveBeenCalledTimes(1);
   });
 
-  it('does not publish old completion or start enrichment after a settlement hook starts the next run', async () => {
+  it('does not publish an old completion after a settlement hook starts the next run', async () => {
     const next = deferred<ConversationRuntimeOutcome>();
     let calls = 0;
     const adapter: ConversationRuntimeAdapter = {
       run: jest.fn<ConversationRuntimeAdapter['run']>(() => ++calls === 1 ? Promise.resolve({kind: 'answered', message: 'first answer'}) : next.promise),
-      shouldStartSourceEnrichment: jest.fn(() => true),
-      runSourceEnrichment: jest.fn(async () => ({message: 'unexpected', evidence: [], metrics: {searchCalls: 0, readCalls: 0, durationMs: 0}})),
       cancel: jest.fn(async () => undefined),
     };
     let service!: ConversationSessionService;
@@ -878,7 +842,6 @@ describe('ConversationSessionService', () => {
     const session = service.getSession(first.sessionId)!;
     expect(session.activeRun?.runId).toBe(replacement?.runId);
     expect(session.runs[0].events.some(event => event.type === 'run_completed')).toBe(false);
-    expect(adapter.runSourceEnrichment).not.toHaveBeenCalled();
     next.resolve({kind: 'answered', message: 'next answer'});
     await replacement!.completion;
   });

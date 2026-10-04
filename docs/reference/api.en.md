@@ -490,12 +490,9 @@ replay buffer, history or any persistence, so a reconnect does not replay it.
 Other runtimes send no draft. The loading label comes only from `progress`
 runtime updates.
 
-`run_completed` means the primary answer is ready for immediate display and
-contains `enrichmentPending`. When it is `false`, the stream closes. When it is
-`true`, the stream continues with `source_enrichment_started` and closes after
-`source_enrichment_completed`, `source_enrichment_failed`, or
-`source_enrichment_cancelled`. A source terminal event never changes the
-primary run's completed status. Primary failures still end with `run_failed`.
+`run_completed` means the run has ended and its answer is ready for immediate
+display; the stream closes after it. It carries the `outcome`. A failed run
+ends with `run_failed`.
 Reconnecting clients can send `Last-Event-ID` or the `lastEventId` query parameter; replay uses
 monotonic event ids for deduplication. `full-handoff` succeeds only after a
 `recommend_full` outcome; otherwise it returns

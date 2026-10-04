@@ -320,7 +320,7 @@ describe('continueSession Level-3 lineage', () => {
 
   describe('Ctrl-C', () => {
     /** A turn that prints its answer, then finalizes only when the review is stopped. */
-    function reviewingService(options: {deliver?: boolean; ignoreReviewStop?: boolean; supplement?: Promise<any>} = {}) {
+    function reviewingService(options: {deliver?: boolean; ignoreReviewStop?: boolean} = {}) {
       let provisionalShown!: () => void;
       const shown = new Promise<void>(resolve => {provisionalShown = resolve;});
       const service = {
@@ -333,8 +333,7 @@ describe('continueSession Level-3 lineage', () => {
             input.signal.addEventListener('abort', () => reject(input.signal.reason), {once: true});
             if (!options.ignoreReviewStop) input.reviewStopSignal.addEventListener('abort', () => resolve(), {once: true});
           });
-          return {...makeRunTurnOutput('backend-old', 'trace-old'),
-            ...(options.supplement ? {sourceSupplementTask: options.supplement} : {})};
+          return makeRunTurnOutput('backend-old', 'trace-old');
         }),
       } as unknown as CliAnalyzeService;
       return {service, shown};
@@ -395,23 +394,17 @@ describe('continueSession Level-3 lineage', () => {
       await expect(turn).rejects.toBeInstanceOf(TurnInterruptedError);
     });
 
-    it('releases Ctrl-C once the turn is committed, before the source supplement', async () => {
+    it('releases Ctrl-C once the turn is committed', async () => {
       const sp = seedSession();
       const source = new ForwardingInterruptSource();
-      let finishSupplement!: (value: undefined) => void;
-      const supplement = new Promise<undefined>(resolve => {finishSupplement = resolve;});
-      const {service, shown} = reviewingService({supplement});
+      const {service, shown} = reviewingService();
       const turn = continueSession({paths, service, renderer: textRenderer(), interruptSource: source},
         {sessionId: 'agent-1', query: '继续分析'});
       await shown;
       source.interrupt();
-      for (let attempt = 0; attempt < 50 && !fs.existsSync(path.join(sp.turnsDir, '002.md')); attempt++) {
-        await new Promise(resolve => setTimeout(resolve, 5));
-      }
+      await expect(turn).resolves.toMatchObject({turn: 2});
       expect(fs.existsSync(path.join(sp.turnsDir, '002.md'))).toBe(true);
       expect(source.interrupt()).toBe(false);
-      finishSupplement(undefined);
-      await expect(turn).resolves.toMatchObject({turn: 2});
     });
   });
 

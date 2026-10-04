@@ -19,7 +19,6 @@ import type { CliPaths, SessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
 import type { CliSessionConfig, CliSessionIndexEntry } from '../types';
 import type { RunTurnOutput } from './cliAnalyzeService';
-import type {AnalysisSourceSupplementOutcome} from '../../services/codebase/analysisSourceSupplement';
 import {
   writeConfig,
   writeConclusion,
@@ -32,7 +31,7 @@ import { upsertSession } from '../io/indexJson';
 import { appendTranscriptTurn } from '../io/transcriptWriter';
 import {toAnalysisHistoryTurn} from '../../agentRuntime/analysisHistory';
 import {projectToolResultAuditForPrivateRun} from '../../agentRuntime/runtimeToolResultAudit';
-import {localize, parseOutputLanguage} from '../../agentv3/outputLanguage';
+import {parseOutputLanguage} from '../../agentv3/outputLanguage';
 import {
   projectOwnerAnalysisError,
   projectOwnerAnalysisResult,
@@ -48,12 +47,10 @@ import {deriveDeliveryVerdict, summarizeClaimVerification} from '../../services/
 import {
   buildCliAnalysisEvidenceBundle,
   latestCliAnalysisEvidencePath,
-  rebindCliAnalysisEvidenceTurnMarkdown,
   turnCliAnalysisEvidencePath,
-  type CliAnalysisEvidenceOutput,
 } from './analysisResultPresentation';
 import {buildCliSceneReportBundle, cliSceneReportMetadata, latestCliSceneReportPath, loadedCliSceneReport,
-  rebindCliSceneReportTurnMarkdown, turnCliSceneReportPath} from './sceneReportReference';
+  turnCliSceneReportPath} from './sceneReportReference';
 
 export interface CommitTurnInput {
   paths: CliPaths;
@@ -79,7 +76,7 @@ export interface CommitTurnInput {
   indexEntry: CliSessionIndexEntry;
 }
 
-export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOutput {
+export function commitTurnOutputs(input: CommitTurnInput): void {
   const { paths, sp, renderer, sessionId, turn, query, config, reportAppendix } = input;
   const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
   const rawConclusion = input.result.result.conclusion || '';
@@ -198,50 +195,6 @@ export function commitTurnOutputs(input: CommitTurnInput): CliAnalysisEvidenceOu
     ...(result.result.terminationReason ? { terminationReason: result.result.terminationReason } : {}),
     deliveryVerdict: deriveDeliveryVerdict(result.result),
     ...cliSceneReportMetadata(loadedCliSceneReport(sceneBundle)),
-  });
-  return evidenceBundle;
-}
-
-export function commitSourceSupplementOutput(input: {
-  sp: SessionPaths;
-  renderer: Renderer;
-  sessionId: string;
-  turn: number;
-  supplement: AnalysisSourceSupplementOutcome;
-  analysisEvidence: CliAnalysisEvidenceOutput;
-}): void {
-  const outputLanguage = parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
-  const safeSupplement = {
-    message: sanitizeOwnerCodeAwareText(input.sessionId, input.supplement.message),
-    metrics: {...input.supplement.metrics},
-  };
-  const turnPrefix = path.join(input.sp.turnsDir, String(input.turn).padStart(3, '0'));
-  const turnPath = `${turnPrefix}.md`;
-  const previousTurnMarkdown = fs.existsSync(turnPath) ? fs.readFileSync(turnPath, 'utf8') : '';
-  const current = previousTurnMarkdown.trimEnd();
-  const heading = localize(outputLanguage, '源码补充', 'Source supplement');
-  const metrics = localize(
-    outputLanguage,
-    `${safeSupplement.metrics.searchCalls} 次搜索 / ${safeSupplement.metrics.readCalls} 次读取 / ${safeSupplement.metrics.durationMs}ms`,
-    `${safeSupplement.metrics.searchCalls} searches / ${safeSupplement.metrics.readCalls} reads / ${safeSupplement.metrics.durationMs}ms`,
-  );
-  const turnMarkdown = `${current}\n\n## ${heading}\n\n${safeSupplement.message}\n\n_${metrics}_\n`;
-  const reboundEvidence = rebindCliAnalysisEvidenceTurnMarkdown(
-    input.analysisEvidence,
-    turnMarkdown,
-  );
-  rebindCliSceneReportTurnMarkdown({sp: input.sp, sessionId: input.sessionId, turn: input.turn,
-    turnMarkdown: previousTurnMarkdown, nextMarkdown: turnMarkdown});
-  writeTurnMarkdown(input.sp, input.turn, turnMarkdown);
-  writeJsonFile(input.sp, turnCliAnalysisEvidencePath(input.sp, input.turn), reboundEvidence);
-  // Latest remains a pointer-by-value and is written after the per-turn pair.
-  writeJsonFile(input.sp, latestCliAnalysisEvidencePath(input.sp), reboundEvidence);
-  writeJsonFile(input.sp, path.join(input.sp.dir, 'source-supplement.json'), safeSupplement);
-  writeJsonFile(input.sp, `${turnPrefix}.source-supplement.json`, safeSupplement);
-  input.renderer.onEvent({
-    type: 'analysis_source_enrichment_completed',
-    content: safeSupplement,
-    timestamp: Date.now(),
   });
 }
 

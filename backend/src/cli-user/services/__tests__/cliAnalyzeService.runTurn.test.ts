@@ -11,6 +11,7 @@ import type { AnalysisResult, IOrchestrator } from '../../../agent/core/orchestr
 import type { StreamingUpdate } from '../../../agent/types';
 import { createDataEnvelope } from '../../../types/dataContract';
 import { CliAnalyzeService } from '../cliAnalyzeService';
+import {CLI_CAPABILITY_MANIFEST_ATTRIBUTION} from '../../../../tests/helpers/cliRunTurnMocks';
 import type {FinalizeAnalysisResultInput, FinalizedAnalysisResult} from '../../../services/finalizeAnalysisResult';
 import * as finalizationContexts from '../../../agentRuntime/analysisFinalizationContext';
 import type {RuntimeFinalizationContextInput} from '../../../agentRuntime/analysisFinalizationContext';
@@ -43,18 +44,7 @@ const mockPrepareTraceLeases = jest.fn<(...args: any[]) => any>();
 jest.mock('../../../services/analysisRunTraceProcessorLease', () => ({
   prepareAnalysisRunTraceProcessorLeases: (...args: unknown[]) => mockPrepareTraceLeases(...args),
 }));
-const capabilityManifest = {
-  schemaVersion: 'capability_manifest_attribution@1',
-  resolution: {
-    status: 'ready',
-    manifestId: `capability_manifest:${'a'.repeat(64)}`,
-    contentHash: 'a'.repeat(64),
-    manifestSchemaVersion: 'capability_manifest@1',
-    traceFingerprintSha256: 'b'.repeat(64),
-    traceProcessor: {source: 'bundled', gitRevision: 'd'.repeat(40)},
-  },
-  probeCache: {hits: 1, misses: 1, bypasses: 0},
-} as const;
+const capabilityManifest = CLI_CAPABILITY_MANIFEST_ATTRIBUTION;
 
 let mockPreparedSession: any;
 
@@ -63,9 +53,6 @@ jest.mock('../../../assistant/application/agentAnalyzeSessionService', () => ({
     mockSecurityCleanups.push(options.onSessionSecurityCleanup);
     return {prepareSession: (...args: unknown[]) => mockPrepareSession(...args)};
   }),
-  resolveAgentQuery: jest.requireActual<
-    typeof import('../../../assistant/application/agentAnalyzeSessionService')
-  >('../../../assistant/application/agentAnalyzeSessionService').resolveAgentQuery,
 }));
 
 function defaultPreparedSessionResult() {
@@ -140,59 +127,16 @@ jest.mock('../../../agentRuntime/runtimeSelection', () => ({
   resolveAgentRuntimeSelection: jest.fn(() => ({ kind: 'openai-agents-sdk' })),
 }));
 
-jest.mock('../../../services/skillPacks/workspaceSkillRegistryProvider', () => ({
-  getWorkspaceSkillRegistry: jest.fn(async () => ({registry: {}})),
-}));
-
-jest.mock('../../../services/selfEvolution/effectiveRuntimeRegistryProvider', () => ({
-  getEffectiveRuntimeRegistrySnapshot: jest.fn(async ({scope}: any) => ({
-    scope: {
-      tenantId: scope.tenantId,
-      workspaceId: scope.workspaceId,
-    },
-    overlayGeneration: 'builtin:registry-test',
-    skillRegistry: {},
-    strategyRegistry: {},
-  })),
-}));
-
-jest.mock('../../../services/selfEvolution/skillFingerprint', () => ({
-  buildSkillRegistryAttribution: jest.fn(() => ({
-    registryFingerprint: 'registry-test',
-    evolutionOverlayGeneration: 'builtin:registry-test',
-    skills: [],
-  })),
-}));
-
-jest.mock('../../../services/selfEvolution/runManifestLifecycle', () => ({
-  createRunManifestLifecycle: jest.fn((input: any) => {
-    const lifecycle: any = {
-      state: 'collecting',
-      builder: {
-        identity: {
-          runId: input.runId,
-          sessionId: input.sessionId,
-          scope: input.scope,
-        },
-      },
-      sealOnceAndPersist: jest.fn(() => {
-        lifecycle.state = 'persisted';
-        return {
-          runManifestId: 'manifest-cli-test',
-          runId: input.runId,
-          capabilityManifest,
-        };
-      }),
-      dispose: jest.fn(() => {
-        lifecycle.state = 'disposed';
-      }),
-    };
-    mockRunManifestLifecycles.push(lifecycle);
-    return lifecycle;
-  }),
-  withRunManifestLifecycle: (_lifecycle: unknown, callback: () => unknown) => callback(),
-  currentRunManifestAttributionSink: () => undefined,
-}));
+type CliRunTurnMocks = typeof import('../../../../tests/helpers/cliRunTurnMocks');
+jest.mock('../../../services/skillPacks/workspaceSkillRegistryProvider', () =>
+  jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks').workspaceSkillRegistryProviderModule());
+jest.mock('../../../services/selfEvolution/effectiveRuntimeRegistryProvider', () =>
+  jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks').effectiveRuntimeRegistryProviderModule());
+jest.mock('../../../services/selfEvolution/skillFingerprint', () =>
+  jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks').skillFingerprintModule());
+jest.mock('../../../services/selfEvolution/runManifestLifecycle', () =>
+  jest.requireActual<CliRunTurnMocks>('../../../../tests/helpers/cliRunTurnMocks')
+    .runManifestLifecycleModule(lifecycle => mockRunManifestLifecycles.push(lifecycle)));
 
 const cliTurnBinding = {
   turn: 1,
@@ -481,11 +425,9 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
         query, options: expect.objectContaining(expectedOptions),
       }));
       expect(mockAnalyze).toHaveBeenLastCalledWith(expect.any(String), expect.any(String), 'trace-cli',
-        expect.objectContaining({...expectedOptions, analysisContextFingerprint: mockPreparedSession.analysisContextFingerprint}));
-      const runtimeOptions = mockAnalyze.mock.calls[mockAnalyze.mock.calls.length - 1][3];
-      expect(runtimeOptions?.sourceUsePolicy).toBeUndefined();
+        expect.objectContaining({...expectedOptions,
+          analysisContextFingerprint: (mockPrepareSession.mock.lastCall![0] as any).analysisContextFingerprint}));
       expect(output.privateKnowledge).toBe(true);
-      expect(output.sourceSupplementTask).toBeUndefined();
     }
     expect(mockAnalyze).toHaveBeenCalledTimes(3);
   });
@@ -923,14 +865,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     }
   });
 
-  it('passes the prepared agentQuery to the runtime while preserving the user query for persistence', async () => {
-    mockPreparedSession.agentQuery = [
-      'Source context changed before this turn.',
-      '',
-      'User query:',
-      '分析启动慢',
-    ].join('\n');
-
+  it('sends the user query to the runtime and persists the same query', async () => {
     const service = new CliAnalyzeService();
     await service.runTurn({
       ...cliTurnBinding,
@@ -940,7 +875,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     });
 
     const analyzeCall = mockAnalyze.mock.calls[0] as unknown[];
-    expect(analyzeCall[0]).toBe(mockPreparedSession.agentQuery);
+    expect(analyzeCall[0]).toBe('分析启动慢');
     expect(analyzeCall[1]).toBe('cli-session-quality');
     expect(analyzeCall[2]).toBe('trace-cli');
     expect(analyzeCall[3]).toEqual(expect.any(Object));

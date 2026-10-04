@@ -48,7 +48,6 @@ import {
 import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
 import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
 import {parseSourceAnchorNormalization} from '../../services/codebase/traceAnchorLocator';
-import {parseAnalysisSourceActivationPolicy} from '../../services/codebase/analysisSourceActivationPolicy';
 import {parseInvestigationContract, parseInvestigationProfiles, type InvestigationProfiles} from '../../agentv3/strategyLoader';
 
 // ANSI color codes (fallback for chalk ESM issues)
@@ -1233,7 +1232,6 @@ function validateStrategySkillReferences(): number {
 const STRATEGY_POLICY_PARSERS: ReadonlyArray<readonly [string, (value: unknown) => unknown]> = [
   ['source-depth-policy', parseSourceDepthPolicy],
   ['source-anchor-normalization', parseSourceAnchorNormalization],
-  ['analysis-source-activation-policy', parseAnalysisSourceActivationPolicy],
 ];
 
 /**

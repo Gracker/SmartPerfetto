@@ -15,7 +15,7 @@ function turn(index = 0): AnalysisHistoryTurn {
 }
 
 describe('typed analysis history', () => {
-  it('carries product-resolved source activation through real runtime wrappers without sourceUsePolicy', () => {
+  it('carries product-resolved source activation through real runtime wrappers', () => {
     const source = {...turn(), sourceDerived: true, analysisContextFingerprint: 'scope-A', answer: 'AUTHORIZED_SOURCE_HISTORY'};
     const missingFingerprint = {...turn(1), sourceDerived: true, answer: 'LEGACY_PRIVATE_HISTORY'};
     const publicTurn = turn(2);
@@ -25,7 +25,6 @@ describe('typed analysis history', () => {
       assertActive: () => {if (!productActive) throw new Error('product_revoked');}});
     const baseOptions = {analysisContextFingerprint: 'scope-A', codeAwareMode: 'provider_send' as const, codebaseIds: ['A']};
     const bound = withAnalysisHistoryReader(baseOptions, productReader, {includeSourceDerived: true});
-    expect(bound).not.toHaveProperty('sourceUsePolicy');
     const runtime = createRuntimeAnalysisHistoryReader({options: {...bound}, sessionId: 'physical-run', traceId: 'trace',
       getTurns: () => [], assertActive: () => {if (!runtimeActive) throw new Error('runtime_revoked');}});
     expect(runtime.getTurns()).toEqual([source, publicTurn]);

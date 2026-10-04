@@ -8,7 +8,6 @@ import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {analysisDeliveryFingerprint} from '../../types/analysisDelivery';
 import {localize, type OutputLanguage} from '../../agentv3/outputLanguage';
 import type {SessionPaths} from '../io/paths';
-import {writeJsonFile} from '../io/sessionStore';
 
 export type CliSceneReportReference = NonNullable<AnalysisResult['sceneReport']>;
 const id = z.string().min(1).max(256);
@@ -124,15 +123,4 @@ export function loadCliSceneReport(input: LoadSceneReportInput): LoadedCliSceneR
     }
   }
   return bundle ? loadedCliSceneReport(bundle) : {status: 'unavailable', reason: 'scene_reference_mismatched'};
-}
-/** Source supplementation changes readable Markdown only; rebind the existing locator, never create one. */
-export function rebindCliSceneReportTurnMarkdown(input: Omit<LoadSceneReportInput, 'latest'> & {nextMarkdown: string}): void {
-  const bundle = readBundle(input);
-  if (!bundle) return;
-  const rebound = {...bundle, binding: {...bundle.binding, turnMarkdownFingerprint: analysisDeliveryFingerprint(input.nextMarkdown)}};
-  const latest = readBundle({...input, latest: true});
-  writeJsonFile(input.sp, turnCliSceneReportPath(input.sp, input.turn), rebound);
-  if (latest && analysisDeliveryFingerprint(latest) === analysisDeliveryFingerprint(bundle)) {
-    writeJsonFile(input.sp, latestCliSceneReportPath(input.sp), rebound);
-  }
 }

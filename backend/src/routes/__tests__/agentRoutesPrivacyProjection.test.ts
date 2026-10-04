@@ -93,6 +93,8 @@ describe('agent route private projections', () => {
     const completed = events.find(event => event.eventType === 'analysis_completed');
     expect(completed).toBeDefined();
     const payload = JSON.parse(completed!.eventData).data;
+    // A completed analysis ends its stream.
+    expect(events[events.length - 1].eventType).toBe('end');
     const turn = agentRoutesPrivacyProjectionTestSeam.buildTurnSummary({id: 'turn', turnIndex: 1, timestamp: 1,
       query: 'original query', completed: true, result: {...result, message: conclusion}} as any, sessionId, 'en');
     const get = jest.fn();
@@ -477,7 +479,6 @@ describe('agent route private projections', () => {
       sessionId,
       traceId: 'trace-private',
       query: canary,
-      agentQuery: canary,
       result: {conclusion: canary},
       error: canary,
       hypotheses: [{description: canary}],

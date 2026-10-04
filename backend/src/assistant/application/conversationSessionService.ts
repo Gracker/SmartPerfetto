@@ -15,13 +15,7 @@ import type {
   ConversationTraceContext,
   FullAnalysisHandoff,
 } from '../contracts/conversationContract';
-import {
-  ConversationSourceEnrichmentCoordinator,
-  type ConversationSourceEnrichmentEvent,
-  type ConversationSourceEnrichmentOutcome,
-  type ConversationSourceEnrichmentState,
-} from './conversationSourceEnrichmentCoordinator';
-import {buildAnalysisContextAuthorizationFingerprint, assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
+import {assertCurrentAnalysisContextAuthorization} from '../../services/resolvedAnalysisContext';
 import {runAnalysisSelection} from '../../services/effectiveAnalysisSelection';
 import {
   privateContextRestrictsAudience,
@@ -81,20 +75,8 @@ export interface ConversationRuntimeInput {
   reviewStopSignal?: AbortSignal;
 }
 
-export interface ConversationSourceEnrichmentRuntimeInput extends ConversationRuntimeInput {
-  primaryOutcome: ConversationRuntimeOutcome;
-}
-
 export interface ConversationRuntimeAdapter {
   run(input: ConversationRuntimeInput): Promise<ConversationRuntimeOutcome>;
-  shouldStartSourceEnrichment?(
-    input: ConversationRuntimeInput,
-    outcome: ConversationRuntimeOutcome,
-  ): boolean;
-  runSourceEnrichment?(
-    input: ConversationSourceEnrichmentRuntimeInput,
-  ): Promise<ConversationSourceEnrichmentOutcome>;
-  cancelSourceEnrichment?(sessionId: string, runId: string): Promise<void>;
   cancel(sessionId: string, runId: string): Promise<void>;
   dispose?(): void | Promise<void>;
 }
@@ -108,10 +90,8 @@ type ConversationSessionEventPayload =
       sessionId: string;
       runId: string;
       outcome: ConversationRuntimeOutcome;
-      enrichmentPending: boolean;
     }
-  | {type: 'run_failed'; sessionId: string; runId: string; error: string}
-  | ConversationSourceEnrichmentEvent;
+  | {type: 'run_failed'; sessionId: string; runId: string; error: string};
 
 /** A replayable run event, ordered by `seqId`, which is also its SSE id. */
 export type ConversationSessionEvent = ConversationSessionEventPayload & {seqId: number};
@@ -135,8 +115,6 @@ export interface ConversationRun {
   completion: Promise<ConversationRuntimeOutcome>;
   events: ConversationSessionEvent[];
   lifecycleSettled?: boolean;
-  sourceEnrichmentPending?: boolean;
-  sourceEnrichment?: ConversationSourceEnrichmentState;
   /**
    * Fixed at admission from the selection this run was authorized with. A
    * session's selection is pinned by its authorization fingerprint, so a
@@ -164,7 +142,7 @@ export interface ConversationSession extends ManagedAssistantSession {
   providerFollowsActive?: boolean;
   runtimeKind?: AgentRuntimeKind;
   providerSnapshotHash?: string;
-  analysisContextFingerprint?: string;
+  analysisContextFingerprint: string;
   outputLanguage?: AnalysisOptions['outputLanguage'];
   codeAwareMode?: AnalysisOptions['codeAwareMode'];
   codebaseIds?: string[];
@@ -186,7 +164,8 @@ export interface StartConversationTurnInput {
   runtimeKind?: AgentRuntimeKind;
   providerSnapshotHash?: string;
   runtimeOptions?: Omit<AnalysisOptions, 'analysisMode' | 'assistantSurface' | 'runId'>;
-  analysisContextFingerprint?: string;
+  /** The request's current authorization fingerprint; a session's turns all run under one. */
+  analysisContextFingerprint: string;
 }
 
 /**
@@ -285,7 +264,6 @@ export class ConversationSessionService {
   private readonly onRunSettled?: ConversationSessionServiceDeps['onRunSettled'];
   private readonly projectRunError?: ConversationSessionServiceDeps['projectRunError'];
   private readonly listeners = new Map<string, Set<(event: ConversationPublishedEvent) => void>>();
-  private readonly sourceEnrichmentCoordinator: ConversationSourceEnrichmentCoordinator;
   private nextEventSeqId = 0;
   private readonly cancellationRequested = new WeakSet<ConversationRun>();
   private readonly runAuthorizationChecks = new WeakMap<ConversationRun, () => void>();
@@ -301,23 +279,6 @@ export class ConversationSessionService {
     this.onRunStarted = deps.onRunStarted;
     this.onRunSettled = deps.onRunSettled;
     this.projectRunError = deps.projectRunError;
-    this.sourceEnrichmentCoordinator = new ConversationSourceEnrichmentCoordinator({
-      now: this.now,
-      onEvent: (event) => {
-        const terminal = event.type !== 'source_enrichment_started';
-        const run = this.sessions.getSession(event.sessionId)?.runs.find(
-          candidate => candidate.runId === event.runId,
-        );
-        if (run) {
-          run.sourceEnrichment = this.sourceEnrichmentCoordinator.get(event.runId);
-          if (terminal) {
-            run.sourceEnrichmentPending = false;
-          }
-        }
-        this.publish(event.sessionId, event);
-        if (terminal) this.sourceEnrichmentCoordinator.remove(event.runId);
-      },
-    });
   }
 
   getSession(sessionId: string): ConversationSession | undefined {
@@ -428,9 +389,7 @@ export class ConversationSessionService {
         ...(input.providerSnapshotHash
           ? {providerSnapshotHash: input.providerSnapshotHash}
           : {}),
-        ...(input.analysisContextFingerprint
-          ? {analysisContextFingerprint: input.analysisContextFingerprint}
-          : {}),
+        analysisContextFingerprint: input.analysisContextFingerprint,
         ...(input.runtimeOptions?.outputLanguage
           ? {outputLanguage: input.runtimeOptions.outputLanguage}
           : {}),
@@ -459,8 +418,7 @@ export class ConversationSessionService {
     }
     if (input.owner && (session.userId !== input.owner.userId || session.tenantId !== input.owner.tenantId ||
       session.workspaceId !== input.owner.workspaceId)) throw conversationNotFound();
-    if (!isNewSession && input.analysisContextFingerprint && session.analysisContextFingerprint &&
-      input.analysisContextFingerprint !== session.analysisContextFingerprint) {
+    if (!isNewSession && input.analysisContextFingerprint !== session.analysisContextFingerprint) {
       throw new ConversationRequestError('ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED',
         'Start a new conversation after changing authorized sources', 409);
     }
@@ -566,10 +524,8 @@ export class ConversationSessionService {
     };
     const authorizationSelection = runAnalysisSelection(session);
     const authorizationScope = resolveKnowledgeScope(session);
-    const authorizationFingerprint = input.analysisContextFingerprint ?? input.runtimeOptions?.analysisContextFingerprint ??
-      session.analysisContextFingerprint ?? buildAnalysisContextAuthorizationFingerprint(authorizationSelection, authorizationScope);
     // Bind only new turns to the grant checked for this run; older entries keep their original provenance.
-    session.analysisContextFingerprint ??= authorizationFingerprint;
+    const authorizationFingerprint = session.analysisContextFingerprint;
     run.analysisContextFingerprint = authorizationFingerprint;
     this.runStops.set(run, stop);
     this.runAuthorizationChecks.set(run, () => assertCurrentAnalysisContextAuthorization(
@@ -612,29 +568,7 @@ export class ConversationSessionService {
     }
     const completion = runtimeCompletion
       .then((outcome) => {
-        const enrichmentPending = outcome.kind !== 'cancelled' && this.isCurrentRun(session!, run) &&
-          !this.cancellationRequested.has(run) && Boolean(session!.runtime.runSourceEnrichment &&
-            session!.runtime.shouldStartSourceEnrichment?.(runtimeInput, outcome));
-        const accepted = this.commitRun(session!, run, outcome, {finalized: true, enrichmentPending});
-        if (!accepted) return {kind: 'cancelled' as const, message: ''};
-        if (!this.isLatestRun(session!, run)) return accepted;
-        this.publishRunCompleted(session!, run, accepted);
-        if (run.sourceEnrichmentPending && this.isLatestRun(session!, run)) {
-          queueMicrotask(() => {
-            if (!this.isLatestRun(session!, run) || !run.sourceEnrichmentPending || !session!.runtime.runSourceEnrichment) return;
-            run.sourceEnrichment = this.sourceEnrichmentCoordinator.start({
-              sessionId: session!.sessionId,
-              runId,
-              execute: () => {
-                if (!this.isLatestRun(session!, run) || !run.sourceEnrichmentPending) throw new DOMException('Conversation run changed', 'AbortError');
-                this.runAuthorizationChecks.get(run)?.();
-                return session!.runtime.runSourceEnrichment!({...runtimeInput, primaryOutcome: accepted});
-              },
-              cancel: () => session!.runtime.cancelSourceEnrichment?.(session!.sessionId, runId) ?? Promise.resolve(),
-            });
-          });
-        }
-        return accepted;
+        return this.commitRun(session!, run, outcome, true) ?? {kind: 'cancelled' as const, message: ''};
       })
       .catch((error: unknown) => {
         if (!this.isCurrentRun(session!, run)) return {kind: 'cancelled' as const, message: ''};
@@ -674,7 +608,8 @@ export class ConversationSessionService {
     if (session.activeRun) {
       await this.supersedeRun(session.sessionId, session.activeRun.runId);
     }
-    return this.startTurn(input);
+    // A steer continues the session under the authorization it already holds.
+    return this.startTurn({...input, analysisContextFingerprint: session.analysisContextFingerprint});
   }
 
   /**
@@ -689,15 +624,6 @@ export class ConversationSessionService {
     if (!session) throw conversationNotFound(sessionId);
     const run = session.activeRun;
     if (!run || run.runId !== runId) {
-      const completedRun = session.runs.find(candidate => candidate.runId === runId);
-      if (
-        completedRun?.sourceEnrichmentPending ||
-        completedRun?.sourceEnrichment?.status === 'running'
-      ) {
-        completedRun.sourceEnrichmentPending = false;
-        await this.sourceEnrichmentCoordinator.cancel(runId);
-        return {status: 'settled', outcome: completedRun.outcome ?? {kind: 'cancelled', message: ''}};
-      }
       throw new ConversationRequestError('CONVERSATION_RUN_NOT_ACTIVE', `Active conversation run not found: ${runId}`, 409);
     }
     const stop = this.runStops.get(run);
@@ -763,7 +689,6 @@ export class ConversationSessionService {
           finalResult: buildReviewNotFinishedResult({sessionId: session.sessionId, conclusion: message,
             outputLanguage: session.outputLanguage ?? 'zh-CN'})});
         if (!accepted) return false;
-        if (this.isLatestRun(session, run)) this.publishRunCompleted(session, run, accepted);
         // The finalization that never settled is abandoned; its late result is ignored.
         abortRuntime(run);
         return true;
@@ -775,16 +700,6 @@ export class ConversationSessionService {
         return this.settleCancelledRun(session, run);
       },
     }});
-  }
-
-  async cancelSourceEnrichments(sessionId: string): Promise<void> {
-    const session = this.sessions.getSession(sessionId);
-    if (!session) return;
-    await Promise.all(session.runs.map(async (run) => {
-      if (!run.sourceEnrichmentPending && run.sourceEnrichment?.status !== 'running') return;
-      run.sourceEnrichmentPending = false;
-      await this.sourceEnrichmentCoordinator.cancel(run.runId);
-    }));
   }
 
   buildFullAnalysisHandoff(sessionId: string): FullAnalysisHandoff | undefined {
@@ -826,14 +741,6 @@ export class ConversationSessionService {
         const cancel = activeRun
           ? session.runtime.cancel(sessionId, activeRun.runId)
           : Promise.resolve();
-        for (const run of session.runs) {
-          if (run.sourceEnrichmentPending || run.sourceEnrichment?.status === 'running') {
-            void this.sourceEnrichmentCoordinator.cancel(run.runId)
-              .finally(() => this.sourceEnrichmentCoordinator.remove(run.runId));
-          } else {
-            this.sourceEnrichmentCoordinator.remove(run.runId);
-          }
-        }
         void Promise.resolve(cancel)
           .catch(() => undefined)
           .finally(() => Promise.resolve(session.runtime.dispose?.()).catch(() => undefined));
@@ -853,33 +760,29 @@ export class ConversationSessionService {
 
   private settleCancelledRun(session: ConversationSession, run: ConversationRun): ConversationRuntimeOutcome {
     const outcome: ConversationRuntimeOutcome = {kind: 'cancelled', message: ''};
-    const accepted = this.commitRun(session, run, outcome);
-    if (accepted && this.isLatestRun(session, run)) this.publishRunCompleted(session, run, accepted);
-    return accepted ?? outcome;
-  }
-
-  private publishRunCompleted(session: ConversationSession, run: ConversationRun,
-    outcome: ConversationRuntimeOutcome): void {
-    this.publish(session.sessionId, {type: 'run_completed', sessionId: session.sessionId, runId: run.runId,
-      outcome, enrichmentPending: Boolean(run.sourceEnrichmentPending)});
+    return this.commitRun(session, run, outcome) ?? outcome;
   }
 
   /**
    * The single terminal write of a run: outcome and history in memory, then the
    * durable commit (onRunSettled, one SQLite transaction that refuses a turn
    * already terminal), in one synchronous step. The first writer wins; a run
-   * that is no longer current writes nothing.
+   * that is no longer current writes nothing. Once settled, the latest run
+   * announces its outcome; a settlement hook that started a newer run silences it.
    */
   private commitRun(
     session: ConversationSession,
     run: ConversationRun,
     outcome: ConversationRuntimeOutcome,
-    options: {finalized?: boolean; enrichmentPending?: boolean} = {},
+    finalized = false,
   ): ConversationRuntimeOutcome | undefined {
-    const accepted = this.completeRun(session, run, outcome, options.finalized === true);
+    const accepted = this.completeRun(session, run, outcome, finalized);
     if (!accepted) return undefined;
-    run.sourceEnrichmentPending = accepted.kind !== 'cancelled' && options.enrichmentPending === true;
     this.settleRun(session, run);
+    if (this.isLatestRun(session, run)) {
+      this.publish(session.sessionId, {type: 'run_completed', sessionId: session.sessionId, runId: run.runId,
+        outcome: accepted});
+    }
     return accepted;
   }
 

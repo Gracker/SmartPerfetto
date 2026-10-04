@@ -17,7 +17,6 @@ import {prepareAnalysisRunTraceProcessorLeases, analysisRunTraceProcessorFailure
 import {AnalyzeOptionsError, normalizeAnalyzeOptions, normalizeSelectionContext} from '../../routes/agent/normalizeAnalyzeOptions';
 import {AgentAnalyzeSessionService, AnalyzeSessionPreparationError} from './agentAnalyzeSessionService';
 import {getDefaultAndroidInternalsPackResolver} from '../../services/androidInternalsPack/androidInternalsPackResolver';
-import {projectPrimaryAnalysisOptions, resolveAnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 import {knowledgeScopeFromRequestContext} from '../../services/scopedKnowledgeStore';
 import {authorizeAnalysisContext} from '../../services/analysisContextAuthorization';
 import {registerPrivateAnalysisQueryForEcho, revokeCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
@@ -32,7 +31,6 @@ import type {AgentRuntimeAnalysisResult, StreamingUpdate} from '../../agent';
 import type {TraceProcessorHolderType} from '../../services/traceProcessorLeaseStore';
 import type {TraceProcessorLeaseModeDecision} from '../../services/traceProcessorLeaseModeDecision';
 import type {PersistedAnalysisRunStatus} from '../../services/analysisRunStore';
-import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 import type {AnalyzeMode, NormalizedAnalyzeOptions} from '../../routes/agent/normalizeAnalyzeOptions';
 import type {SceneAnalysisSelection} from '../../agent/scene/types';
 import type {ResourceOwnerFields} from '../../services/resourceOwnership';
@@ -125,7 +123,6 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
   abortHttpFinalizationRuns(session: TSession, runId?: string): void;
   isStaleRun(session: TSession, runId: string | undefined): boolean;
   settleSessionRunExecution(session: TSession, runId: string): void;
-  resetSessionRuntimeForSourceActivation(session: TSession, query: string, nextActivation: AnalysisSourceActivation): Promise<void>;
   createHttpRunManifestLifecycle(session: TSession, run: AnalyzeSessionRunContext, options: {
     analysisMode?: AnalyzeMode;
     referenceTraceId?: string;
@@ -133,7 +130,6 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
   sealCompletedHttpRunManifest(session: TSession, lifecycle: RunManifestLifecycle, runId: string): void;
   finalizeHttpRunManifestLifecycle(session: TSession, lifecycle: RunManifestLifecycle): void;
   persistSessionRunState(session: TSession, status: PersistedAnalysisRunStatus, error?: string, runId?: string): void;
-  cancelActiveAnalysisSourceEnrichment(session: TSession, reason: string): Promise<boolean>;
   assignSessionOwner(session: TSession, context: RequestContext): void;
   requestedSessionIsVisible(sessionId: string, context: RequestContext): boolean;
   resolveVisibleSessionReferenceTraceIdForTrace(sessionId: string | undefined, traceId: string, context: RequestContext): string | undefined;
@@ -192,9 +188,9 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     configuredOutputLanguage, sessionOutputLanguage, enterpriseLeasesEnabled,
     leaseScopeFromRequestContext, buildLeaseModeDecisionForTrace, startSessionRun,
     markSessionRunStatus, isSessionRunCancelled, abortHttpFinalizationRuns,
-    isStaleRun, settleSessionRunExecution, resetSessionRuntimeForSourceActivation,
+    isStaleRun, settleSessionRunExecution,
     createHttpRunManifestLifecycle, sealCompletedHttpRunManifest, finalizeHttpRunManifestLifecycle,
-    persistSessionRunState, cancelActiveAnalysisSourceEnrichment, assignSessionOwner,
+    persistSessionRunState, assignSessionOwner,
     requestedSessionIsVisible, resolveVisibleSessionReferenceTraceIdForTrace, buildRecoveredResultFromContext,
     ensureToolsRegistered, isDedicatedSceneReplayRequest, runSmartAnalysis,
     smartSelectionReportId, analyzeOptionsErrorMessage, smartPreviewSelectionErrorMessage,
@@ -385,12 +381,6 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         respond(503, {success: false, code: 'SCENE_DISPATCH_NOT_CONFIGURED', error: 'Scene investigation dispatch is not configured'});
         return;
       }
-      const sourceActivation = resolveAnalysisSourceActivation({
-        query,
-        analysisMode: options.analysisMode,
-        codeAwareMode: options.codeAwareMode,
-        codebaseIds: options.codebaseIds,
-      });
       const authorizedCodebaseSelection =
         options.codeAwareMode &&
         options.codeAwareMode !== 'off' &&
@@ -537,29 +527,21 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         onSessionSecurityCleanup: sessionId => {
           revokeCodeAwareOutputGuards(sessionId);
           const active = assistantAppService.getSession(sessionId);
-          if (active) {
-            abortHttpFinalizationRuns(active);
-            void cancelActiveAnalysisSourceEnrichment(active, 'analysis_context_changed');
-          }
+          if (active) abortHttpFinalizationRuns(active);
         },
       });
 
       let sessionId: string;
       let preparedSession: TSession | undefined;
       let isNewSession = true;
+      let analysisContextFingerprint: string;
       if (sendRunStartConflictIfNeeded(liveRequestedSession)) return;
       try {
-        const analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
+        analysisContextFingerprint = buildAnalysisContextAuthorizationFingerprint(
           options,
           knowledgeScopeFromRequestContext(requestContext),
         );
-        options = projectPrimaryAnalysisOptions(
-          {
-            ...options,
-            analysisContextFingerprint,
-          } as AnalysisOptions,
-          sourceActivation,
-        ) as ReturnType<typeof normalizeAnalyzeOptions>;
+        options = {...options, analysisContextFingerprint} as ReturnType<typeof normalizeAnalyzeOptions>;
         const availablePack = getDefaultAndroidInternalsPackResolver().resolve();
         if (availablePack) {
           (options as AnalysisOptions).androidInternalsPackPin = {
@@ -583,8 +565,8 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
           analysisContextFingerprint,
         });
         sessionId = prepared.sessionId;
+        // A prepared session carries the fingerprint it was prepared under.
         preparedSession = prepared.session as TSession;
-        preparedSession.analysisContextFingerprint = analysisContextFingerprint;
         preparedSession.androidInternalsPackPin ??=
           (options as AnalysisOptions).androidInternalsPackPin;
         (options as AnalysisOptions).androidInternalsPackPin =
@@ -629,13 +611,10 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         sessionForRun.referenceTraceId = effectiveReferenceTraceId;
         sessionForRun.comparisonSource = 'raw_trace_pair';
       }
-      await cancelActiveAnalysisSourceEnrichment(sessionForRun, 'superseded_by_new_analysis');
-      await resetSessionRuntimeForSourceActivation(sessionForRun, query, sourceActivation);
-      sessionForRun.sourceActivation = sourceActivation;
       sessionForRun.sourceAuthorization = authorizedCodebaseSelection
         ? {
             ...authorizedCodebaseSelection,
-            analysisContextFingerprint: sessionForRun.analysisContextFingerprint as string,
+            analysisContextFingerprint,
           }
         : undefined;
       sessionForRun.codeAwareMode = options.codeAwareMode;

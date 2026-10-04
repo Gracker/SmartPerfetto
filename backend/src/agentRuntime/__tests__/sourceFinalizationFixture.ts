@@ -27,6 +27,9 @@ type CreatedClaudeMcpServer = ReturnType<CreateClaudeMcpServer>;
 export interface RuntimeSourceFinalizationFixture {
   sessionId: string;
   codebaseId: string;
+  /** The registry and owner scope the fixture registered its codebase in. */
+  codebaseRegistry: CodebaseRegistry;
+  scope: {tenantId: string; workspaceId: string; userId: string};
   sourceUse: CreatedClaudeMcpServer['sourceUse'];
   mcp: CreatedClaudeMcpServer;
   invoke(toolName: string, args?: Record<string, unknown>): Promise<unknown>;
@@ -122,6 +125,8 @@ export function createRuntimeSourceFinalizationFixture(input: {
   return {
     sessionId: input.sessionId,
     codebaseId: registered.codebaseId,
+    codebaseRegistry,
+    scope,
     sourceUse: mcp.sourceUse,
     mcp,
     invoke,

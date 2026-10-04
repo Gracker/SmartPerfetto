@@ -46,6 +46,7 @@ import {
   legacyKnowledgeFilesystemWritesEnabled,
   type KnowledgeScope,
   getScopedKnowledgeRecord,
+  getScopedRagChunkOwner,
   getScopedRagStats,
   listScopedKnowledgeRecords,
   removeScopedKnowledgeRecord,
@@ -170,7 +171,10 @@ export function privateKnowledgeScopeFingerprint(scope?: KnowledgeScope): string
     .digest('hex');
 }
 
-function privateKnowledgeVisibleInScope(chunk: RagChunk, scope?: KnowledgeScope): boolean {
+function privateKnowledgeVisibleInScope(
+  chunk: Pick<RagChunk, 'kind' | 'registryOrigin' | 'knowledgeScopeFingerprint'>,
+  scope?: KnowledgeScope,
+): boolean {
   if (!isPrivateKnowledgeChunk(chunk)) return true;
   const fingerprint = privateKnowledgeScopeFingerprint(scope);
   if (
@@ -834,6 +838,35 @@ export class RagStore {
     this.load();
     const chunk = this.chunks.get(chunkId);
     return chunk && readableChunk(chunk, scope) ? chunk : undefined;
+  }
+
+  /**
+   * Who owns a chunk, returned without its body: the codebase and generation
+   * it was indexed from, or undefined when it is absent or not readable in this
+   * scope (the same visibility as getChunk). A caller decides from this
+   * whether it may read the chunk at all.
+   */
+  getChunkOwner(chunkId: string, scope?: KnowledgeScope): {codebaseId?: string; sourceGeneration?: string} | undefined {
+    if (enterpriseKnowledgeStoreEnabled()) {
+      const owner = getScopedRagChunkOwner(KNOWLEDGE_KIND, chunkId, scope);
+      if (!owner) return undefined;
+      const visible = privateKnowledgeVisibleInScope({
+        kind: owner.scope.slice(RAG_ROW_SCOPE_PREFIX.length) as RagSourceKind,
+        registryOrigin: owner.registryOrigin as RagChunk['registryOrigin'],
+        knowledgeScopeFingerprint: owner.scopeFingerprint,
+      }, scope);
+      return visible ? {
+        ...(owner.codebaseId ? {codebaseId: owner.codebaseId} : {}),
+        ...(owner.sourceGeneration ? {sourceGeneration: owner.sourceGeneration} : {}),
+      } : undefined;
+    }
+    this.load();
+    const chunk = this.chunks.get(chunkId);
+    if (!chunk || !readableChunk(chunk, scope)) return undefined;
+    return {
+      ...(chunk.codebaseId ? {codebaseId: chunk.codebaseId} : {}),
+      ...(chunk.sourceGeneration ? {sourceGeneration: chunk.sourceGeneration} : {}),
+    };
   }
 
   /** List chunks for rebuild/maintenance callers without changing search semantics. */

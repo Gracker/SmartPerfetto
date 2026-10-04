@@ -55,8 +55,8 @@ const conv = {
     {update: {type: 'progress', content: {phase: 'final_review', stage: 'started', answerReadable: true}}}, id),
   provisional: (id: number) => convFrame('provisional_answer', {message: BODY, verification: 'pending'}, id),
   completed: (id: number, finalResult: Record<string, unknown> = {}) =>
-    convFrame('run_completed', {outcome: {kind: 'answered', message: BODY, finalResult}, enrichmentPending: false}, id),
-  cancelled: (id: number) => convFrame('run_completed', {outcome: {kind: 'cancelled', message: ''}, enrichmentPending: false}, id),
+    convFrame('run_completed', {outcome: {kind: 'answered', message: BODY, finalResult}}, id),
+  cancelled: (id: number) => convFrame('run_completed', {outcome: {kind: 'cancelled', message: ''}}, id),
 };
 
 const events = (normalize: typeof normalizeAgentFrame, frames: SseFrame[]): StopObservedEvent[] =>

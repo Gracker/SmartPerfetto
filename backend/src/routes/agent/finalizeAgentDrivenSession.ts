@@ -7,7 +7,6 @@ import type {
   Hypothesis,
   StreamingUpdate,
 } from '../../agent';
-import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 import type {FinalResultQualityIssue} from '../../services/finalResultQualityGate';
 import {
   privateContextRestrictsAudience,
@@ -26,7 +25,6 @@ interface FinalizeSessionLike {
     timestamp: number;
     sourceDerived?: boolean;
   }>;
-  sourceActivation?: AnalysisSourceActivation;
   runSequence?: number;
   activeRun?: { runId?: string; requestId?: string; sequence?: number };
   lastRun?: { runId?: string; requestId?: string; sequence?: number };

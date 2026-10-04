@@ -7,8 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { describe, expect, it, jest } from '@jest/globals';
 import { computePaths, ensureLayout, ensureSessionLayout, sessionPaths } from '../../io/paths';
-import { commitSourceSupplementOutput, commitTurnOutputs } from '../turnPersistence';
-import {loadCliAnalysisEvidence} from '../analysisResultPresentation';
+import { commitTurnOutputs } from '../turnPersistence';
 import {latestCliSceneReportPath, loadCliSceneReport, turnCliSceneReportPath} from '../sceneReportReference';
 import type { Renderer } from '../../repl/renderer';
 import type { RunTurnOutput } from '../cliAnalyzeService';
@@ -28,7 +27,7 @@ function rendererStub(): Renderer {
 }
 
 describe('commitTurnOutputs', () => {
-  it('persists a bound scene reference, rebinds supplements and clears latest on an ordinary next turn', () => {
+  it('persists a bound scene reference and clears latest on an ordinary next turn', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-scene-'));
     const paths = computePaths(home); ensureLayout(paths);
     const sessionId = 'scene-cli-session', sp = sessionPaths(paths, sessionId), renderer = rendererStub();
@@ -45,65 +44,18 @@ describe('commitTurnOutputs', () => {
       indexEntry: {sessionId, createdAt: 1, lastTurnAt: turn, tracePath: '/tmp/trace', traceFilename: 'trace',
         firstQuery: 'query', turnCount: turn, status: 'completed'}});
     try {
-      const analysisEvidence = commit(1, initial);
+      commit(1, initial);
       expect(JSON.parse(fs.readFileSync(turnCliSceneReportPath(sp, 1), 'utf8'))).toMatchObject({status: 'available', reference: sceneReport});
       expect(renderer.printCompletion).toHaveBeenCalledWith(expect.objectContaining({sceneReport, sceneReportStatus: 'partial'}));
       expect(fs.readFileSync(sp.transcript, 'utf8')).not.toContain('RAW_SCENE_HISTORY_CANARY');
       expect(JSON.parse(fs.readFileSync(sp.transcript, 'utf8').trim()).history).not.toHaveProperty('sceneReport');
-      commitSourceSupplementOutput({sp, renderer, sessionId, turn: 1, analysisEvidence,
-        supplement: {message: 'Source supplement.', metrics: {searchCalls: 1, readCalls: 1, durationMs: 1}}});
-      const supplemented = fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf8');
-      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: supplemented, latest: true}).status).toBe('available');
+      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: initial, latest: true}).status).toBe('available');
       delete result.result.sceneReport; delete result.result.sceneTimeline;
       commit(2, '# Turn 2\n\nbody\n');
       expect(JSON.parse(fs.readFileSync(latestCliSceneReportPath(sp), 'utf8'))).toMatchObject({status: 'none', reference: null, binding: {turn: 2}});
-      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: supplemented}).status).toBe('available');
+      expect(loadCliSceneReport({sp, sessionId, turn: 1, conclusion: 'body', turnMarkdown: initial}).status).toBe('available');
     } finally {fs.rmSync(home, {recursive: true, force: true});}
   });
-  it('rebinds per-turn and latest evidence after appending a source supplement', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-source-supplement-'));
-    const paths = computePaths(home);
-    ensureLayout(paths);
-    const sessionId = 'session-source-supplement';
-    const sp = sessionPaths(paths, sessionId);
-    ensureSessionLayout(sp);
-    const renderer = rendererStub();
-    const result: RunTurnOutput = {
-      sessionId,
-      traceId: 'trace-1',
-      codeAwareMode: 'provider_send',
-      result: {
-        sessionId, success: true, findings: [], hypotheses: [], conclusion: 'Primary conclusion.',
-        confidence: 0.8, rounds: 1, totalDurationMs: 1,
-      },
-    };
-    const initialMarkdown = '# Turn 1\n\nPrimary conclusion.\n';
-    try {
-      const analysisEvidence = commitTurnOutputs({
-        paths, sp, renderer, sessionId, turn: 1, query: 'query', result,
-        config: {sessionId, tracePath: '/tmp/trace', traceId: 'trace-1', createdAt: 1, lastTurnAt: 2, turnCount: 1},
-        turnMarkdown: initialMarkdown,
-        indexEntry: {sessionId, createdAt: 1, lastTurnAt: 2, tracePath: '/tmp/trace', traceFilename: 'trace',
-          firstQuery: 'query', turnCount: 1, status: 'completed'},
-      });
-      commitSourceSupplementOutput({
-        sp, renderer, sessionId, turn: 1, analysisEvidence,
-        supplement: {message: 'Bounded source follow-up.', metrics: {searchCalls: 1, readCalls: 2, durationMs: 3}},
-      });
-
-      const turnMarkdown = fs.readFileSync(path.join(sp.turnsDir, '001.md'), 'utf8');
-      expect(turnMarkdown).toContain('Bounded source follow-up.');
-      expect(loadCliAnalysisEvidence({sp, sessionId, turn: 1, conclusion: 'Primary conclusion.', turnMarkdown}))
-        .toMatchObject({status: 'available'});
-      expect(loadCliAnalysisEvidence({sp, sessionId, turn: 1, conclusion: 'Primary conclusion.', turnMarkdown, latest: true}))
-        .toMatchObject({status: 'available'});
-      expect(JSON.parse(fs.readFileSync(path.join(sp.dir, 'analysis-evidence.json'), 'utf8')))
-        .toEqual(JSON.parse(fs.readFileSync(path.join(sp.turnsDir, '001.analysis-evidence.json'), 'utf8')));
-    } finally {
-      fs.rmSync(home, {recursive: true, force: true});
-    }
-  });
-
   it('keeps the conclusion durable when evidence projection is unavailable', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'smartperfetto-cli-evidence-unavailable-'));
     const paths = computePaths(home);

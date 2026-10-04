@@ -1219,8 +1219,6 @@ export interface AnalysisCompletedEvent {
     smartScenePreview?: import('../agent/scene/types').SmartScenePreviewPayload;
     sceneTimeline?: SceneTimelineView;
     sceneReport?: SceneReportReference;
-    /** Primary result is terminal, but a separate source supplement is still running. */
-    sourceEnrichmentPending?: boolean;
     terminalRunStatus?: 'completed' | 'failed' | 'cancelled' | 'quota_exceeded';
     findings: AnalysisCompletedFinding[];
     resultContract?: import('../assistant/contracts/assistantResultContract').AssistantResultContract;

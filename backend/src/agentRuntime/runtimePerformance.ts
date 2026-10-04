@@ -449,7 +449,7 @@ export class RuntimePerformanceRecorder {
 
   /**
    * The run's own finalization decides first; a later finalization that shares
-   * this manifest scope (a source supplement) cannot replace that decision.
+   * this manifest scope cannot replace that decision.
    */
   recordFinalReview(input: RuntimePerformanceFinalReviewReceiptV1): void {
     this.assertCollecting('record_final_review');

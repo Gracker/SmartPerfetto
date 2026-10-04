@@ -303,8 +303,6 @@ export interface StreamingUpdate {
     | 'scene_story_cancelled' | 'scene_story_dropped' | 'scene_story_report_ready'
     | 'scene_story_smart_eta_refined'
     | 'scene_timeline_updated'
-    | 'analysis_source_enrichment_started' | 'analysis_source_enrichment_completed'
-    | 'analysis_source_enrichment_failed' | 'analysis_source_enrichment_cancelled'
     /** @deprecated Use 'skill_layered_result' instead. Will be removed in v3.0 */
     | 'skill_data';
   content: any;

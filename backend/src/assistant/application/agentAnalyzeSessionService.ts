@@ -44,7 +44,6 @@ import {
 import {
   registerSessionBackgroundKnowledgeReferences,
 } from '../../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
-import type {AnalysisSourceActivation} from '../../services/codebase/analysisSourceActivationPolicy';
 import {
   analysisHasPrivateContext,
   privateContextRestrictsAudience,
@@ -151,9 +150,6 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
     codebaseIds: string[];
     analysisContextFingerprint: string;
   };
-  sourceActivation?: AnalysisSourceActivation;
-  /** Runtime-only replacement for `query` (source-activation reset, private-query scrub); see resolveAgentQuery. */
-  agentQuery?: string;
   /** Append-only audit of provider snapshot changes observed when this session was restored. */
   continuityBreaks?: ProviderContinuityBreak[];
   /** Backend-session ancestry when a user-visible session bridged to a fresh backend session. */
@@ -224,7 +220,12 @@ interface PrepareAnalyzeSessionInput {
   providerId?: string | null;
   providerScope?: ProviderScope;
   options?: any;
-  analysisContextFingerprint?: string;
+  /**
+   * The request's current authorization fingerprint. Continuity is decided by
+   * comparing it with the session's, so it is required: a caller that cannot
+   * state it gets no session rather than one that skipped the comparison.
+   */
+  analysisContextFingerprint: string;
 }
 
 export interface PrepareAnalyzeSessionResult<TSession extends AnalyzeManagedSession> {
@@ -255,10 +256,6 @@ function comparisonSourceForReference(referenceTraceId?: string): ComparisonSour
   return referenceTraceId ? 'raw_trace_pair' : undefined;
 }
 
-/** The text a runtime receives for this turn: the prepared replacement when it belongs to this query. */
-export function resolveAgentQuery(session: {query?: string; agentQuery?: string}, query: string): string {
-  return session.agentQuery && session.query === query ? session.agentQuery : query;
-}
 
 function readPersistedReferenceTraceId(
   stateSnapshot: { referenceTraceId?: string } | null | undefined,
@@ -362,6 +359,12 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
 
   private prepareSessionUnchecked(input: PrepareAnalyzeSessionInput): PrepareAnalyzeSessionResult<TSession> {
     const { traceId, query, requestedSessionId, options = {} } = input;
+    if (typeof input.analysisContextFingerprint !== 'string' || !input.analysisContextFingerprint.trim()) {
+      throw new AnalyzeSessionPreparationError('The analysis context fingerprint is required', {
+        code: 'ANALYSIS_CONTEXT_FINGERPRINT_REQUIRED',
+        httpStatus: 500,
+      });
+    }
     const defaultOutputLanguage = parseOutputLanguage(
       process.env.SMARTPERFETTO_OUTPUT_LANGUAGE,
     );
@@ -424,7 +427,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       const liveAnalysisContextMismatch = Boolean(
         locatedSession &&
         locatedSession.traceId === traceId &&
-        input.analysisContextFingerprint &&
         locatedSession.analysisContextFingerprint !== input.analysisContextFingerprint,
       );
       if ((liveAnalysisContextMismatch || liveOutputLanguageMismatch) && locatedSession) {
@@ -528,7 +530,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
             previousQuery: privateKnowledge ? privateQuery : existingSession.query,
           });
           existingSession.query = query;
-          existingSession.agentQuery = undefined;
           existingSession.status = 'pending';
           existingSession.lastActivityAt = Date.now();
           console.log(`[AgentRoutes] Reusing agent session ${requestedSessionId} for multi-turn dialogue`);
@@ -542,10 +543,8 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
 
       const persistedAnalysisContextFingerprint = persistedContinuitySnapshot
         ?.analysisContextFingerprint;
-      const persistedAnalysisContextMismatch = Boolean(
-        input.analysisContextFingerprint &&
-        persistedAnalysisContextFingerprint !== input.analysisContextFingerprint,
-      );
+      const persistedAnalysisContextMismatch =
+        persistedAnalysisContextFingerprint !== input.analysisContextFingerprint;
       const persistedOutputLanguageMismatch = Boolean(
         persistedContinuitySnapshot?.outputLanguage &&
         persistedContinuitySnapshot.outputLanguage !== requestedOutputLanguage,

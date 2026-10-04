@@ -25,6 +25,9 @@ import {
 } from '../rag/sourceFileSelection';
 import type {RagChunk} from '../../types/sparkContracts';
 import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
+import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
+import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
+import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../enterpriseMigration';
 
 let tmpDir: string;
 let storagePath: string;
@@ -121,6 +124,35 @@ describe('RagStore — basic CRUD', () => {
     store.addChunk(makeChunk({chunkId: 'a', snippet: 'old'}));
     store.addChunk(makeChunk({chunkId: 'a', snippet: 'new'}));
     expect(store.getChunk('a')?.snippet).toBe('new');
+  });
+});
+
+describe('RagStore — chunk owner', () => {
+  it.each(['local file', 'enterprise database'] as const)('names a chunk\'s codebase and generation without its body, in the scope getChunk reads (%s)', mode => {
+    const saved = [ENTERPRISE_FEATURE_FLAG_ENV, ENTERPRISE_DB_PATH_ENV, ENTERPRISE_MIGRATION_PHASE_ENV]
+      .map(key => [key, process.env[key]] as const);
+    if (mode === 'enterprise database') {
+      process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+      process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise.sqlite');
+      process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
+    }
+    try {
+      const store = new RagStore(storagePath);
+      store.addChunk(makeCodebaseGenerationChunk('codebase_2', 0, 'OWNER_BODY_MARKER'), PRIVATE_SCOPE);
+      const owner = store.getChunkOwner('codebase_2-0', PRIVATE_SCOPE);
+      expect(owner).toEqual({codebaseId: 'capacity-codebase', sourceGeneration: 'codebase_2'});
+      expect(JSON.stringify(owner)).not.toContain('OWNER_BODY_MARKER');
+      // Another owner's scope cannot see the chunk, as getChunk cannot.
+      const otherScope = {...PRIVATE_SCOPE, userId: 'user-b'};
+      expect(store.getChunk('codebase_2-0', otherScope)).toBeUndefined();
+      expect(store.getChunkOwner('codebase_2-0', otherScope)).toBeUndefined();
+      expect(store.getChunkOwner('absent-chunk', PRIVATE_SCOPE)).toBeUndefined();
+    } finally {
+      for (const [key, value] of saved) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });
 

@@ -989,7 +989,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       codeAwareMode: options?.codeAwareMode,
       codebaseIds: options?.codebaseIds,
       knowledgeSourceIds: options?.knowledgeSourceIds,
-      sourceUsePolicy: options?.sourceUsePolicy,
       sourceDepthDecision: runtimeSourceDepth(policy, options),
       analysisContextFingerprint: options?.analysisContextFingerprint,
       androidInternalsPackPin: options?.androidInternalsPackPin,

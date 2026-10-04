@@ -13,7 +13,7 @@ import {createAnswerDraftStream, createProjectedAnswerDraft} from '../../agentRu
 import type {AnalysisPlanV3, PlanPhase} from '../../agentv3/types';
 import type {SessionStateSnapshot} from '../../agentv3/sessionStateSnapshot';
 import type {TraceProcessorService} from '../../services/traceProcessorService';
-import type {OpenAIAgentConfig} from '../../agentRuntime/engines/openai/openAiConfig';
+import {chatCompletionResponse, createOpenAiConfigForTest} from '../../../tests/helpers/openAiRuntimeFixture';
 import * as finalization from '../../agentRuntime/analysisFinalizationContext';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {captureEvidenceTable} from '../../services/evidence/evidenceCapture';
@@ -60,14 +60,6 @@ const decision: AnalysisTurnIntentDecision = {
   schemaVersion: 1, taskKind: 'fact', sceneId: 'general', scope: 'bounded_question',
   recommendedComplexity: 'quick', deliverable: 'answer', evidenceAccess: 'read_new',
 };
-function createOpenAiConfigForTest(): OpenAIAgentConfig {
-  return {model: 'pinned-primary', lightModel: 'pinned-light', apiKey: 'test-only',
-    baseURL: 'https://provider.invalid/v1', protocol: 'responses', cwd: process.cwd(),
-    maxOutputTokens: 1024, maxTurns: 3, quickMaxTurns: 2, quickTargetTurns: 1,
-    fullPathPerTurnMs: 60_000, fullRequestTimeoutMs: 60_000, streamIdleTimeoutMs: 60_000,
-    maxRunTimeoutMs: 120_000, maxHistoryBytes: 4 * 1024 * 1024, quickPathPerTurnMs: 30_000,
-    classifierTimeoutMs: 10_000, outputLanguage: 'zh-CN'};
-}
 function classify(value: AnalysisTurnIntentDecision = decision) {
   jest.mocked(intentTransport.runOpenAiIntentTransport).mockResolvedValue({
     status: 'ok', text: JSON.stringify(value), actualModel: 'pinned-light', finishReason: 'stop',
@@ -1064,10 +1056,7 @@ describe('OpenAI bounded output-limit recovery', () => {
       sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns,
       hypotheses: [],
     }));
-    const wire = (id: string, delta: unknown, finishReason: string) => new Response([
-      {id, object: 'chat.completion.chunk', created: 1, model: 'pinned-primary', choices: [{index: 0, delta, finish_reason: null}]},
-      {id, object: 'chat.completion.chunk', created: 1, model: 'pinned-primary', choices: [{index: 0, delta: {}, finish_reason: finishReason}]},
-    ].map(value => `data: ${JSON.stringify(value)}\n\n`).join('') + 'data: [DONE]\n\n', {headers: {'content-type': 'text/event-stream'}});
+    const wire = chatCompletionResponse;
     const fetchMock = jest.spyOn(globalThis, 'fetch')
       .mockResolvedValueOnce(wire('source-call', {role: 'assistant', tool_calls: [{index: 0, id: 'source-call-1', type: 'function', function: {name: 'read_codebase_file', arguments: '{}'}}]}, 'tool_calls'))
       .mockResolvedValueOnce(wire('limited-answer', {role: 'assistant', content: 'The source begins'}, maxTurns === 2 ? 'stop' : 'length'))

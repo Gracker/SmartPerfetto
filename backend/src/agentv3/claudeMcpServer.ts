@@ -612,6 +612,7 @@ const PATCH_REFUSAL_ACTIONS: ReadonlyMap<string, string> = new Map([
   ['no_send_to_provider_consent', 'continue_without_patch'],
   ['source_path_outside_provider_grant', 'continue_without_patch'],
   ['budget_exceeded', 'continue_without_patch'],
+  ['patch_target_not_selected', 'continue_without_patch'],
 ]);
 // `source_not_found_or_out_of_scope` also covers a source deleted mid-run, so it stays a failure.
 const KNOWLEDGE_ACCESS_REFUSAL_REASONS: ReadonlySet<string> = new Set([
@@ -1434,10 +1435,6 @@ export interface ClaudeMcpServerOptions {
   codebaseIds?: string[];
   /** Private external-knowledge source ids whitelisted for this analysis session. */
   knowledgeSourceIds?: string[];
-  /** Source phase routing. */
-  sourceUsePolicy?: {
-    phase: 'explicit' | 'automatic_enrichment' | 'deep_enrichment';
-  };
   /**
    * How the run's source depth was decided (`resolveEffectiveSourceDepth`); its
    * effective depth sizes the source budget, `locate` when absent, and it is
@@ -1536,7 +1533,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // The effective selection, then the backend's feature switch on its own.
   const analysisSelection = effectiveAnalysisSelection(options);
   const codeAwareMode = normalizeCodeAwareMode(analysisSelection.codeAwareMode);
-  const sourceUsePolicy = options.sourceUsePolicy;
   const codebaseIds = codeAwareMode === 'off' ? [] : analysisSelection.codebaseIds ?? [];
   const knowledgeSourceIds = analysisSelection.knowledgeSourceIds ?? [];
   const retrievedContextToolBoundary = requireToolDescription('retrieved-context-tool-safety').replace(/\s+/g, ' ');
@@ -6194,7 +6190,24 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     },
     async ({context_chunk_ids, problem, proposed_diff, patch_sketch}) => {
       assertPrivateAnalysisContextCurrent();
-      // The codebases and generations the context was looked up from, as the
+      // First, from each chunk's owner metadata, before the patch path reads
+      // any chunk body, the ledger or the proposer: every codebase the offered
+      // context names must be in this run's selection and have its index,
+      // whatever the ledger says. (The store itself may load its file or judge
+      // retirement as every read does; nothing it holds reaches a result.) The refusal names no unselected
+      // codebase. A chunk a rebuild has collected has no owner to judge here;
+      // the proposer then refuses it as missing context (`missing_context_chunk`).
+      const offeredCodebaseIds = [...new Set(context_chunk_ids.flatMap(chunkId => {
+        const codebaseId = ragStore.getChunkOwner(chunkId, knowledgeScope)?.codebaseId;
+        return codebaseId ? [codebaseId] : [];
+      }))];
+      if (offeredCodebaseIds.some(codebaseId => !codebaseIds.includes(codebaseId))) {
+        return policyRefusal(PATCH_REFUSAL_ACTIONS.get('patch_target_not_selected')!,
+          {unsupportedReason: 'patch_target_not_selected'}, {isError: true});
+      }
+      const unindexed = offeredCodebaseIds.find(codebaseId => !codebaseHas(codebaseId, 'index'));
+      if (unindexed) return codebaseCapabilityRefusal(unindexed, 'index');
+      // Only now the ledger: the codebases and generations the context was looked up from, as the
       // lookup ledger recorded them: a rebuild may already have collected the
       // chunks, so they cannot name their own codebase. A patch is checked
       // against the generation this run pinned for each, before and after
@@ -8281,9 +8294,6 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     // A scene run must commit its timeline before its acquisition budget runs out.
     ...(sceneContext ? {acquisitionPolicy: createSceneAcquisitionPolicy(sceneContext)} : {}),
   });
-  const sourceOnlyPhase = sourceUsePolicy?.phase === 'automatic_enrichment' ||
-    sourceUsePolicy?.phase === 'deep_enrichment';
-
   if (sceneContext) {
     const context = sceneContext;
     const description = requireToolDescription('scene-tool-guidance');
@@ -8337,87 +8347,78 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     });
   }
 
-  if (sourceOnlyPhase) {
-    registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
-    registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-  } else {
-    // Budget mode does not change the authorized capability set.
-    if (options.conversationTraceAttached !== false) {
-      registry.registerSdk(executeSql, 'execute_sql', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(invokeSkill, 'invoke_skill', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(detectArchitecture, 'detect_architecture', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(analyzeWaitChain, 'analyze_wait_chain', 'public', {evidenceEffect: 'acquire'});
-    }
-    registry.registerSdk(listSkills, 'list_skills', 'public', {evidenceEffect: 'none'});
-    registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
-      evidenceEffect: 'none',
-      concurrency: {mode: 'commutative_read'},
-    });
-    registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public', {
-      evidenceEffect: 'none',
-      concurrency: {mode: 'commutative_read'},
-    });
-    registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
-    registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public', {evidenceEffect: 'acquire'});
-    // Background, not acquisition: an existing_only turn may consult them.
-    if (documentCollectionIds.length > 0) {
-      registry.registerSdk(searchKnowledge, 'search_knowledge', 'public', {evidenceEffect: 'background'});
-      registry.registerSdk(readKnowledgeSection, 'read_knowledge_section', 'public', {evidenceEffect: 'background'});
-    }
-    registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
-    registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    registry.registerSdk(locateTraceAnchorTool, 'locate_trace_anchor', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-    if (!sourceUsePolicy) {
-      registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});
-      registry.registerSdk(lookupOemSdk, 'lookup_oem_sdk', 'public', {evidenceEffect: 'acquire'});
-      // Graph and index tools only accelerate source access; offered only when a
-      // selected codebase actually has the graph or an active index.
-      if (anySelectedCodebaseHas('graph')) {
-        registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-        registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-      }
-      if (anySelectedCodebaseHas('index')) {
-        registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-        registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-        registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-        // A patch changes how code behaves, which only a mechanism-depth run reads for.
-        if (sourceDepth === 'mechanism') {
-          registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
-        }
-      }
-    }
-    registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(compareBaselines, 'compare_baselines', 'public', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(recallProjectMemory, 'recall_project_memory', 'public', {evidenceEffect: 'read_existing'});
-    registry.registerSdk(recallSimilarCase, 'recall_similar_case', 'public', {evidenceEffect: 'acquire'});
-    registry.registerSdk(recallSimilarResult, 'recall_similar_result', 'public', {evidenceEffect: 'acquire'});
-    if (writeAnalysisNote) registry.registerSdk(writeAnalysisNote, 'write_analysis_note', 'internal', {evidenceEffect: 'none'});
-    if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
-    if (readSessionHistory) registry.registerSdk(readSessionHistory, 'read_session_history', 'public', {evidenceEffect: 'read_existing'});
-    if (submitPlan) registry.registerSdk(submitPlan, 'submit_plan', 'internal', {evidenceEffect: 'none'});
-    if (updatePlanPhase) registry.registerSdk(updatePlanPhase, 'update_plan_phase', 'internal', {evidenceEffect: 'none'});
-    if (revisePlan) registry.registerSdk(revisePlan, 'revise_plan', 'internal', {evidenceEffect: 'none'});
-    registry.registerSdk(lookupStrategyDetail, 'lookup_strategy_detail', 'internal', {evidenceEffect: 'none'});
-    if (submitHypothesis) registry.registerSdk(submitHypothesis, 'submit_hypothesis', 'internal', {evidenceEffect: 'none'});
-    if (resolveHypothesis) registry.registerSdk(resolveHypothesis, 'resolve_hypothesis', 'internal', {evidenceEffect: 'none'});
-    if (flagUncertainty) registry.registerSdk(flagUncertainty, 'flag_uncertainty', 'internal', {evidenceEffect: 'none'});
-    // recall_patterns stays 'internal' for one more commit. Plan 41 M1b
-    // routes the recall path through openSupersedeStoreReadOnly so it no
-    // longer mkdir's or migrates the supersede DB on first call. The
-    // public-readonly exposure flip is gated on the M1b invariant test
-    // soaking for one release cycle to catch any hidden writable code
-    // path; that flip is the M1b commit 2 follow-up.
-    registry.registerSdk(recallPatterns, 'recall_patterns', 'internal', {evidenceEffect: 'read_existing'});
-    // Comparison mode tools — only when referenceTraceId is provided.
-    if (options.conversationTraceAttached !== false && compareSkill) registry.registerSdk(compareSkill, 'compare_skill', 'internal', {evidenceEffect: 'acquire'});
-    if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
-    if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
+  // Budget mode does not change the authorized capability set.
+  if (options.conversationTraceAttached !== false) {
+    registry.registerSdk(executeSql, 'execute_sql', 'public', {evidenceEffect: 'acquire'});
+    registry.registerSdk(invokeSkill, 'invoke_skill', 'public', {evidenceEffect: 'acquire'});
+    registry.registerSdk(detectArchitecture, 'detect_architecture', 'public', {evidenceEffect: 'acquire'});
+    registry.registerSdk(analyzeWaitChain, 'analyze_wait_chain', 'public', {evidenceEffect: 'acquire'});
   }
+  registry.registerSdk(listSkills, 'list_skills', 'public', {evidenceEffect: 'none'});
+  registry.registerSdk(lookupSqlSchema, 'lookup_sql_schema', 'public', {
+    evidenceEffect: 'none',
+    concurrency: {mode: 'commutative_read'},
+  });
+  registry.registerSdk(listStdlibModules, 'list_stdlib_modules', 'public', {
+    evidenceEffect: 'none',
+    concurrency: {mode: 'commutative_read'},
+  });
+  registry.registerSdk(lookupKnowledge, 'lookup_knowledge', 'public', {evidenceEffect: 'none'});
+  registry.registerSdk(lookupBlogKnowledge, 'lookup_blog_knowledge', 'public', {evidenceEffect: 'acquire'});
+  // Background, not acquisition: an existing_only turn may consult them.
+  if (documentCollectionIds.length > 0) {
+    registry.registerSdk(searchKnowledge, 'search_knowledge', 'public', {evidenceEffect: 'background'});
+    registry.registerSdk(readKnowledgeSection, 'read_knowledge_section', 'public', {evidenceEffect: 'background'});
+  }
+  registry.registerSdk(listCodebases, 'list_codebases', 'requires_codebase_permission', {evidenceEffect: 'none'});
+  registry.registerSdk(searchCodebase, 'search_codebase', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(readCodebaseFile, 'read_codebase_file', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(findCodebaseFiles, 'find_codebase_files', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(locateTraceAnchorTool, 'locate_trace_anchor', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  registry.registerSdk(queryPerfettoSource, 'query_perfetto_source', 'public', {evidenceEffect: 'acquire'});
+  registry.registerSdk(lookupAospSource, 'lookup_aosp_source', 'public', {evidenceEffect: 'acquire'});
+  registry.registerSdk(lookupOemSdk, 'lookup_oem_sdk', 'public', {evidenceEffect: 'acquire'});
+  // Graph and index tools only accelerate source access; offered only when a
+  // selected codebase actually has the graph or an active index.
+  if (anySelectedCodebaseHas('graph')) {
+    registry.registerSdk(queryCodeGraph, 'query_code_graph', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(inspectCodeSymbol, 'inspect_code_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+  }
+  if (anySelectedCodebaseHas('index')) {
+    registry.registerSdk(lookupAppSource, 'lookup_app_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(lookupKernelSource, 'lookup_kernel_source', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    registry.registerSdk(resolveSymbol, 'resolve_symbol', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    // A patch changes how code behaves, which only a mechanism-depth run reads for.
+    if (sourceDepth === 'mechanism') {
+      registry.registerSdk(proposePatch, 'propose_patch', 'requires_codebase_permission', {evidenceEffect: 'acquire'});
+    }
+  }
+  registry.registerSdk(lookupBaseline, 'lookup_baseline', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerSdk(compareBaselines, 'compare_baselines', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerSdk(recallProjectMemory, 'recall_project_memory', 'public', {evidenceEffect: 'read_existing'});
+  registry.registerSdk(recallSimilarCase, 'recall_similar_case', 'public', {evidenceEffect: 'acquire'});
+  registry.registerSdk(recallSimilarResult, 'recall_similar_result', 'public', {evidenceEffect: 'acquire'});
+  if (writeAnalysisNote) registry.registerSdk(writeAnalysisNote, 'write_analysis_note', 'internal', {evidenceEffect: 'none'});
+  if (fetchArtifact) registry.registerSdk(fetchArtifact, 'fetch_artifact', 'public', {evidenceEffect: 'read_existing'});
+  if (readSessionHistory) registry.registerSdk(readSessionHistory, 'read_session_history', 'public', {evidenceEffect: 'read_existing'});
+  if (submitPlan) registry.registerSdk(submitPlan, 'submit_plan', 'internal', {evidenceEffect: 'none'});
+  if (updatePlanPhase) registry.registerSdk(updatePlanPhase, 'update_plan_phase', 'internal', {evidenceEffect: 'none'});
+  if (revisePlan) registry.registerSdk(revisePlan, 'revise_plan', 'internal', {evidenceEffect: 'none'});
+  registry.registerSdk(lookupStrategyDetail, 'lookup_strategy_detail', 'internal', {evidenceEffect: 'none'});
+  if (submitHypothesis) registry.registerSdk(submitHypothesis, 'submit_hypothesis', 'internal', {evidenceEffect: 'none'});
+  if (resolveHypothesis) registry.registerSdk(resolveHypothesis, 'resolve_hypothesis', 'internal', {evidenceEffect: 'none'});
+  if (flagUncertainty) registry.registerSdk(flagUncertainty, 'flag_uncertainty', 'internal', {evidenceEffect: 'none'});
+  // recall_patterns stays 'internal' for one more commit. Plan 41 M1b
+  // routes the recall path through openSupersedeStoreReadOnly so it no
+  // longer mkdir's or migrates the supersede DB on first call. The
+  // public-readonly exposure flip is gated on the M1b invariant test
+  // soaking for one release cycle to catch any hidden writable code
+  // path; that flip is the M1b commit 2 follow-up.
+  registry.registerSdk(recallPatterns, 'recall_patterns', 'internal', {evidenceEffect: 'read_existing'});
+  // Comparison mode tools — only when referenceTraceId is provided.
+  if (options.conversationTraceAttached !== false && compareSkill) registry.registerSdk(compareSkill, 'compare_skill', 'internal', {evidenceEffect: 'acquire'});
+  if (options.conversationTraceAttached !== false && executeSqlOn) registry.registerSdk(executeSqlOn, 'execute_sql_on', 'internal', {evidenceEffect: 'acquire'});
+  if (getComparisonContext) registry.registerSdk(getComparisonContext, 'get_comparison_context', 'internal', {evidenceEffect: 'read_existing'});
 
   const allowedTools = registry.buildAllowedTools(toolRequestScope);
   const toolDefinitions = registry.listForRequest(toolRequestScope);
@@ -8431,7 +8432,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   };
   // One line per run that says how deep source access may go (owner view only:
   // strict surfaces drop progress for a private run).
-  if (emitUpdate && sourceAuthorization.budget && options.allowNewEvidence !== false && !sourceOnlyPhase) {
+  if (emitUpdate && sourceAuthorization.budget && options.allowNewEvidence !== false) {
     const {searchesLeft, readsLeft} = sourceAuthorization.budget;
     const origin = options.sourceDepthDecision?.origin;
     const [originZh, originEn] = options.sourceDepthDecision?.cap === 'metadata_only' ? ['仅元数据，上限为定位', 'metadata only, capped at locate']

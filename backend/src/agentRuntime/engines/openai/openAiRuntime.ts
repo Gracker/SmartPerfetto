@@ -1403,7 +1403,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       outputLanguage: config.outputLanguage, knowledgeScope,
       durableLearning: resolveDurableLearningPermission(options),
       codeAwareMode: options.codeAwareMode, codebaseIds: options.codebaseIds, knowledgeSourceIds: options.knowledgeSourceIds,
-      sourceUsePolicy: options.sourceUsePolicy, analysisContextFingerprint: options.analysisContextFingerprint,
+      analysisContextFingerprint: options.analysisContextFingerprint,
       sourceDepthDecision: runtimeSourceDepth(policy, options),
       androidInternalsPackPin: options.androidInternalsPackPin,
     });

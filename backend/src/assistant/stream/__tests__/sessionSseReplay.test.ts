@@ -43,18 +43,12 @@ describe('session SSE replay state', () => {
   it('detects terminal events that must stop reconnect replay', () => {
     const state = createState();
     appendReplayableSseEvent(state, 'progress', {step: 1});
-    appendReplayableSseEvent(state, 'analysis_completed', {
-      data: {
-        reportUrl: '/api/reports/report-a',
-        sourceEnrichmentPending: true,
-      },
-    });
     expect(hasTerminalReplayAfter(state, 0)).toBe(false);
     appendReplayableSseEvent(state, 'end', {timestamp: 123});
 
     expect(hasTerminalReplayAfter(state, 0)).toBe(true);
-    expect(hasTerminalReplayAfter(state, 2)).toBe(true);
-    expect(hasTerminalReplayAfter(state, 3)).toBe(false);
+    expect(hasTerminalReplayAfter(state, 1)).toBe(true);
+    expect(hasTerminalReplayAfter(state, 2)).toBe(false);
   });
 
   it('keeps ordinary analysis_completed as a terminal reconnect boundary', () => {

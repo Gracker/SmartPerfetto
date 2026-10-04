@@ -27,7 +27,7 @@ import { ensureSessionLayout, sessionPaths } from '../io/paths';
 import type { Renderer } from '../repl/renderer';
 import type { CliSessionConfig, CliSessionLineage, CliTranscriptTurn } from '../types';
 import type { CliAnalyzeService, RunTurnInput, RunTurnOutput } from './cliAnalyzeService';
-import {commitSourceSupplementOutput, commitTurnOutputs} from './turnPersistence';
+import {commitTurnOutputs} from './turnPersistence';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {analysisConfidenceIsGrounded} from '../../agentv3/analysisTermination';
 import { loadSession } from '../io/sessionStore';
@@ -231,7 +231,7 @@ async function runStartSession(
     turnCount: 1,
   };
 
-  const analysisEvidence = commitTurnOutputs({
+  commitTurnOutputs({
     paths: ctx.paths,
     sp,
     renderer: ctx.renderer,
@@ -257,7 +257,6 @@ async function runStartSession(
   });
   // The turn is saved: Ctrl-C no longer belongs to it.
   interrupt?.markCommitted();
-  await completeSourceSupplement(ctx, sp, resolvedSessionId, result, 1, analysisEvidence);
 
   return {
     sessionId: resolvedSessionId,
@@ -416,7 +415,7 @@ async function runContinueSession(
   const idx = readIndex(ctx.paths);
   const prev = idx.sessions[userSessionId];
 
-  const analysisEvidence = commitTurnOutputs({
+  commitTurnOutputs({
     paths: ctx.paths,
     sp,
     renderer: ctx.renderer,
@@ -446,7 +445,6 @@ async function runContinueSession(
   });
   // The turn is saved: Ctrl-C no longer belongs to it.
   interrupt?.markCommitted();
-  await completeSourceSupplement(ctx, sp, userSessionId, result, nextTurn, analysisEvidence);
 
   if (degraded) {
     const notice = buildLineageNotice(updatedConfig.lineage);
@@ -460,43 +458,6 @@ async function runContinueSession(
     success: result.result.success,
     degraded,
   };
-}
-
-async function completeSourceSupplement(
-  ctx: TurnRunnerContext,
-  sp: SessionPaths,
-  sessionId: string,
-  result: RunTurnOutput,
-  turn: number,
-  analysisEvidence: ReturnType<typeof commitTurnOutputs>,
-): Promise<void> {
-  if (!result.sourceSupplementTask) return;
-  const supplement = await result.sourceSupplementTask;
-  if (!supplement) {
-    const failed = {
-      type: 'analysis_source_enrichment_failed' as const,
-      content: {errorCode: 'analysis_source_enrichment_failed'},
-      timestamp: Date.now(),
-    };
-    ctx.renderer.onEvent(failed);
-    appendStreamEvent(sp.stream, failed);
-    return;
-  }
-  result.sourceSupplement = supplement;
-  const completed = {
-    type: 'analysis_source_enrichment_completed' as const,
-    content: supplement,
-    timestamp: Date.now(),
-  };
-  appendStreamEvent(sp.stream, completed);
-  commitSourceSupplementOutput({
-    sp,
-    renderer: ctx.renderer,
-    sessionId,
-    turn,
-    supplement,
-    analysisEvidence,
-  });
 }
 
 function isTraceIdMismatchError(err: unknown): boolean {
