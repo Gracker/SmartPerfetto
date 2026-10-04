@@ -28,6 +28,10 @@ ID（见下文），与响应头 `X-Request-Id` 相同。完整的异常消息�
 `[UnhandledError]` 行，用 `requestId` 关联；请求体解析错误附带的原始请求体不写入日志。
 没有回显异常消息的调试开关。
 
+`Origin` 不在 `CORS_ORIGINS` 允许列表内的请求（含预检）不是服务端异常：返回 `403`
+`{"success": false, "code": "cors_origin_rejected", "error": "This origin is not allowed to call the SmartPerfetto API", "requestId": "…"}`，
+不带 `Access-Control-Allow-Origin`，服务端日志只记一条带 origin 的警告。没有 `Origin` 的请求（curl、服务间调用）不受影响。
+
 ## 请求 ID
 
 每个请求在进入后端时确定唯一一个请求 ID，所有响应（包括 CORS 拒绝、请求体解析失败、

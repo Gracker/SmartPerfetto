@@ -34,6 +34,13 @@ only to the server log's `[UnhandledError]` line, correlated by `requestId`;
 the raw request body a body-parse error carries is not logged. There is no
 switch that echoes exception messages.
 
+A request (preflight included) whose `Origin` is not in the `CORS_ORIGINS`
+allow-list is not a server failure: it gets `403`
+`{"success": false, "code": "cors_origin_rejected", "error": "This origin is not allowed to call the SmartPerfetto API", "requestId": "…"}`
+without `Access-Control-Allow-Origin`, and the server logs one warning naming
+the origin. Requests without an `Origin` (curl, server-to-server) are
+unaffected.
+
 ## Request IDs
 
 Each request gets exactly one request id when it reaches the backend. Every

@@ -68,11 +68,40 @@ describe('createCorsMiddleware', () => {
     expect(res.headers['access-control-allow-origin']).toBe(FRONTEND_ORIGIN);
   });
 
-  it('grants nothing to an origin outside the list', async () => {
-    const res = await request(makeApp()).get('/api/probe').set('Origin', 'http://localhost:10001');
+  it('grants nothing to an origin outside the list and answers it 403 with the public error body', async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    const res = await request(makeApp()).get('/api/probe')
+      .set('Origin', 'http://localhost:10001')
+      .set('X-Request-Id', 'cross-origin-denied');
 
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({
+      success: false,
+      code: 'cors_origin_rejected',
+      error: 'This origin is not allowed to call the SmartPerfetto API',
+      requestId: 'cross-origin-denied',
+    });
+    expect(res.headers[REQUEST_ID_HEADER.toLowerCase()]).toBe('cross-origin-denied');
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
     expect(res.headers['access-control-expose-headers']).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('disallowed origin'),
+      expect.objectContaining({requestId: 'cross-origin-denied', origin: 'http://localhost:10001'}));
+    expect(error).not.toHaveBeenCalled();
+    warn.mockRestore();
+    error.mockRestore();
+  });
+
+  it('answers the preflight of an origin outside the list 403 without reaching the route', async () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const res = await request(makeApp()).options('/api/probe')
+      .set('Origin', 'http://localhost:10001')
+      .set('Access-Control-Request-Method', 'POST');
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({success: false, code: 'cors_origin_rejected'});
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+    jest.restoreAllMocks();
   });
 });
 
