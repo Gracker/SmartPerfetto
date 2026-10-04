@@ -10,7 +10,14 @@ This page selects the shortest startup path. For complete model and proxy config
   [Latest Release](https://github.com/Gracker/SmartPerfetto/releases/latest), download and
   verify SHA256, use Extract All, run `SmartPerfetto.exe`, save/test/activate a Provider in
   the UI, then load a trace. Follow the complete [Windows guide](windows.en.md).
+- **macOS or Linux desktop users**: download the matching `macos-arm64` or
+  `linux-x64` portable archive; it bundles Node.js, the backend, the pre-built
+  UI, and trace processor. Platform requirements are in
+  [Platform Compatibility](../reference/platform-compatibility.en.md).
 - **Container deployment**: use Docker Desktop/Engine; Windows uses the WSL2 backend.
+- **Terminal or automation**: install the standalone CLI with Node.js 24 via
+  `npm install -g @gracker/smartperfetto`, then run `smp doctor`; the CLI has no
+  Web UI. See the [CLI Reference](../reference/cli.en.md).
 - **Developers**: clone the repository for backend, Skill, or source work. Initialize the
   `perfetto/` submodule only for Perfetto UI plugin development.
 
@@ -94,8 +101,9 @@ Common prompts:
 - `Analyze this ANR`
 - `What is the app package name and main process in this trace?`
 
-If a completed result shows a feedback opportunity, select **Ask Agent what to
-report**. The Agent uses that run's persisted evidence to explain whether the
+If a completed result shows a feedback opportunity, select **Ask the Agent whether to report this**
+(shown as **Ask the Agent what I should report or contribute** after a
+thumbs-down). The Agent uses that run's persisted evidence to explain whether the
 finding is actionable, who owns it, and what contribution could help. After
 required answers and sensitive-data review, SmartPerfetto opens only an
 unsubmitted GitHub draft. See

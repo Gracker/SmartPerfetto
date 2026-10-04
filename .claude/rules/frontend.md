@@ -93,7 +93,10 @@ npm run generate:frontend-types
 
 ## SSE and Session Semantics
 
-The plugin talks to `/api/agent/v1/*`.
+The plugin talks to the workspace-scoped agent routes,
+`/api/workspaces/:workspaceId/agent/*` (`assistant_api_v1.ts` builds them on the
+`/api/agent/v1` path shape); the legacy global base answers with
+`Deprecation` / `Sunset` headers.
 
 - Draft, provisional and final are three states of one answer message.
   `answer_token` / `answer_segment_reset` (runtimes with

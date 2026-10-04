@@ -51,6 +51,14 @@ SmartPerfetto 在 Perfetto Trace 之上增加 AI 分析层。加载 Trace、用�
   可选索引设置见[源码分析指南](docs/getting-started/code-aware-analysis.md)。相关片段会发送给
   当前配置的 AI 服务，源码检索会增加分析耗时。结果和源码引用可随本地历史、报告保存；
   AI 服务的内容留存取决于该服务的配置与政策。
+- 可按轮选用已注册的文档知识库（如 Android Internals Wiki 或团队文档），按需检索并带出处引用；
+  知识库只作背景，不替代当前 trace 的证据。见
+  [Android Internals 知识](docs/getting-started/android-internals-knowledge.md)。
+- 先交付、后核验：Claude 与 OpenAI runtime 边生成边显示回答草稿；回答写完立即可读，
+  一次无工具语义复核的核验结论随后补上，停止只结束核验、不丢回答。
+- 在选中的 `thread_state` 上打开 Critical path 等待链抽屉，或在火焰图页查看 CPU 调用栈热点，
+  均带规则兜底的 AI 总结。见 [Critical path 与火焰图](docs/getting-started/critical-path-and-flamegraph.md)。
+- 用 `smp capture` 从连接的 Android 设备按预置或自定义配置抓 trace，可选抓完直接分析。
 - UI 选区只传身份与时间边界；名称等描述性事实由后端重新查询，`/anr` 与 `/jank`
   也进入同一套证据和验证管线。
 - 支持浏览器 UI、`smp` CLI 和 HTTP/SSE 接入；完整范围见

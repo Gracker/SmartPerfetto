@@ -80,6 +80,26 @@ TRACE_PROCESSOR_DOWNLOAD_URL=https://your-mirror/trace_processor_shell ./start.s
 
 镜像需保持 `<PERFETTO_ARTIFACT_VERSION>/<platform>/trace_processor_shell` 的目录结构，其中 `PERFETTO_ARTIFACT_VERSION` 是 release tag 或上游 main 提交的完整 SHA。镜像或 URL 下载的内容仍会按 `scripts/trace-processor-pin.env` 中的固定 SHA256 校验。不要随意使用来源不明且校验不匹配的 binary。
 
+## Docker 启动失败或 AI 凭证
+
+检查：
+
+- Docker 运行时仓库根目录 `.env` 是否存在；本地源码运行时 `backend/.env` 是否存在。
+- 是否配置了 `ANTHROPIC_API_KEY`，或 `ANTHROPIC_BASE_URL` 加 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`。
+- 带鉴权的 `/api/runtime-health` 里的 `aiEngine.credentialSource` 是否为预期来源；如果是 `provider-manager`，active provider 会覆盖 `.env`。公开 `/health` 不返回凭证诊断。
+- Docker 可用内存和磁盘是否足够。
+
+Docker Hub 和普通 source Docker build 都消费提交的 `frontend/`，不要求初始化
+`perfetto/` submodule。只有 UI plugin 开发路径才需要 submodule。
+
+本地开发排查更容易时，可以先运行：
+
+```bash
+./start.sh
+```
+
+确认普通源码路径正常后再回到 Docker；只有修改 Perfetto UI plugin 时才使用 `./scripts/start-dev.sh`。
+
 ## macOS 拦截 trace_processor_shell
 
 如果 macOS 提示 `trace_processor_shell` 来自身份不明的开发者、终端只显示 `killed`，或脚本提示 `--version smoke test failed`，说明系统安全策略拦截了这个下载的可执行文件。
@@ -123,14 +143,21 @@ chmod +x /absolute/path/to/trace_processor_shell
 
 ## LLM 调用慢或失败
 
-慢模型、代理模型、本地模型通常需要更长超时：
+慢模型、代理模型、本地模型通常需要更长超时。共享的 `AGENT_*` 上限也作用于 Provider Manager
+profile，runtime-specific 值只覆盖直接 env provider：
 
 ```bash
+AGENT_FULL_REQUEST_TIMEOUT_MS=1800000
+AGENT_STREAM_IDLE_TIMEOUT_MS=600000
 CLAUDE_FULL_PER_TURN_MS=120000
 CLAUDE_QUICK_PER_TURN_MS=80000
-CLAUDE_VERIFIER_TIMEOUT_MS=120000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=60000
+OPENAI_FULL_PER_TURN_MS=120000
+OPENAI_QUICK_PER_TURN_MS=80000
+OPENAI_CLASSIFIER_TIMEOUT_MS=60000
 ```
+
+各变量的含义与默认值见 [配置指南](../getting-started/configuration.md#分析预算与超时)。
 
 如果 fast 模式分析重型问题失败，改用 full：
 
@@ -141,6 +168,46 @@ CLAUDE_CLASSIFIER_TIMEOUT_MS=60000
   }
 }
 ```
+
+## 停止后结论仍在、或提示“正在停止”
+
+- 回答已经显示、正在核验时，第一次点“停止”只结束核验：结论照常保存，核验状态为“已按用户要求
+  停止语义复核”（未核验）。按钮随后变为“强制停止”。
+- 再点一次“强制停止”，后端最多等 `SMARTPERFETTO_REVIEW_STOP_WATCHDOG_MS`（默认 15 秒）让本轮
+  保存。仍未保存时，已读到的结论作为未完成核验的回合保存（`terminationReason: review_not_finished`，
+  界面标为未完成）；使用源码或知识库、或授权已撤销的回合不保存正文。
+- 回答出现之前点停止是完整取消，只保留取消标记。
+- 停止后立刻发新问题可能得到 409 `CANCELLATION_IN_PROGRESS` 或 `RUN_ALREADY_ACTIVE`：上一轮仍在
+  收尾，界面会有界等待后再发送；通过 API 调用时稍后重试即可。
+- CLI 的 Ctrl-C 规则见 [基本使用](../getting-started/usage.md#ui-分析流程)。
+
+## 源码分析被拒绝或中途结束
+
+启动分析时返回 409，`codebases[]` 列出每个源码库的固定原因码（不含路径）：
+
+| `code` | 含义与处理 |
+|---|---|
+| `ANALYSIS_CONTEXT_CODEBASE_ROOT_UNAVAILABLE` | 注册的根目录被移动、卸载、删除、不可读或移出 allowlist（`root_missing`、`outside_allowlist` 等）；恢复原路径或重新注册 |
+| `ANALYSIS_CONTEXT_CODEBASE_NOT_CONSENTED` | 选了 `发送正文` 但该源码库没有正文授权；在 **设置 → 源码库** 点“允许发送正文”，或本轮改为 `仅定位` |
+| `ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE` | 正文授权与当前范围不一致（范围改过）；重新“允许发送正文”并确认 |
+| `FEATURE_DISABLED` | 后端设置了 `SMARTPERFETTO_CODE_AWARE=off`，不接受源码选择 |
+
+分析途中授权变化（撤销正文授权、修改已选源码库范围或删除它）会以
+`analysis_context_changed_restart_required` 结束本轮；重新发起分析即可，对话模式需要开始新对话。
+
+## 模型分析被禁用
+
+返回 `code: "AI_DISABLED"`（`retryable: false`）说明部署设置了 `SMARTPERFETTO_AI_ENABLED=false` 或
+给了无法解析的值（按禁用处理）。带鉴权的 `/api/runtime-health` 的 `aiPolicy` 和 `smp doctor` 会给出原因。
+Trace 读取、SQL、报告和确定性 Skill 仍可用，见
+[配置指南](../getting-started/configuration.md#临时禁用模型分析)。
+
+## Critical path 或火焰图返回 410
+
+enterprise 模式（`SMARTPERFETTO_ENTERPRISE=true` 或启用 OIDC）下，非 workspace 的
+`/api/critical-path/*` 与 `/api/flamegraph/*` 返回 410 `ENTERPRISE_WORKSPACE_ROUTE_REQUIRED`。
+Critical path 抽屉使用 workspace 路由，不受影响；火焰图页在该模式下不可用。见
+[Critical path 与火焰图](../getting-started/critical-path-and-flamegraph.md)。
 
 ## 401 或鉴权失败
 
@@ -179,26 +246,6 @@ SSE 断开通常由浏览器刷新、网络中断或请求超时触发。后端�
 ```
 
 说明当前环境未启用 `FEATURE_AGENT_SCENE_RECONSTRUCT`。
-
-## Docker 启动失败
-
-检查：
-
-- Docker 运行时仓库根目录 `.env` 是否存在；本地源码运行时 `backend/.env` 是否存在。
-- 是否配置了 `ANTHROPIC_API_KEY`，或 `ANTHROPIC_BASE_URL` 加 `ANTHROPIC_AUTH_TOKEN` / `ANTHROPIC_API_KEY`。
-- 带鉴权的 `/api/runtime-health` 里的 `aiEngine.credentialSource` 是否为预期来源；如果是 `provider-manager`，active provider 会覆盖 `.env`。公开 `/health` 不返回凭证诊断。
-- Docker 可用内存和磁盘是否足够。
-
-Docker Hub 和普通 source Docker build 都消费提交的 `frontend/`，不要求初始化
-`perfetto/` submodule。只有 UI plugin 开发路径才需要 submodule。
-
-本地开发排查更容易时，可以先运行：
-
-```bash
-./start.sh
-```
-
-确认普通源码路径正常后再回到 Docker；只有修改 Perfetto UI plugin 时才使用 `./scripts/start-dev.sh`。
 
 ## Self-Evolution 不可用或没有提案
 

@@ -16,8 +16,8 @@ be checked against the public product surfaces below.
 | Portable app | GitHub release assets | non-developer Windows/macOS/Linux users | Bundles Node.js 24, native deps, backend, `frontend/`, trace processor |
 | npm CLI | `npm install -g @gracker/smartperfetto`; `smp` | automation and terminal users | Requires host Node.js `>=24 <25`, no Web UI |
 | CLI trace capture | `smp capture ...` | terminal users collecting traces | Uses Android capture presets/configs, optional post-capture `--analyze`, and local turn artifacts |
-| HTTP/SSE API | `/api/agent/v1/*`, `/api/traces/*`, `/api/reports/*` | integrations and frontend | Keep response contracts stable or regenerate frontend types |
-| Agent external feedback | Analysis message CTA, `/api/agent/v1/:sessionId/external-issue/*` | users reporting analysis, Skill, runtime, docs, or UI gaps | Resolve the persisted source run; pin provider/runtime; validate and deidentify; never submit to GitHub |
+| HTTP/SSE API | `/api/workspaces/:workspaceId/{agent,traces,reports,providers,…}/*`; legacy global `/api/agent/v1/*`, `/api/traces/*`, `/api/reports/*`, `/api/v1/providers/*` answer with `Deprecation` + `Sunset` (`legacyAgentApi.ts`) | integrations and frontend | The plugin calls only the workspace routes. Keep response contracts stable or regenerate frontend types |
+| Agent external feedback | Analysis message CTA, `/api/workspaces/:workspaceId/agent/:sessionId/external-issue/*` | users reporting analysis, Skill, runtime, docs, or UI gaps | Resolve the persisted source run; pin provider/runtime; validate and deidentify; never submit to GitHub |
 | Self-Evolution admin | Settings `Evolution`, `/api/admin/self-evolution/*` | authorized analysts and administrators | Default off; preserve RBAC/scope, immutable run snapshots, persistence fail-closed, gate binding, reconciliation, and revert |
 | Critical-path wait chain | AI Assistant `Critical path` drawer on a selected `thread_state` -> `POST /api/workspaces/:workspaceId/critical-path/:traceId/analyze` (legacy `/api/critical-path/*` is 410 under enterprise/OIDC) | Web UI users inspecting one blocked task | Response contract in `backend/src/types/criticalPathContract.ts`, generated into the plugin (`check:types`); trace ownership checked like Agent routes. The optional model summary is AI feature `critical_path_ai_summary`: AI off, a caller without `agent:run`, a non-Claude active runtime, or missing credentials return the deterministic summary with a warning (never 403). It follows the caller's Provider Manager profile, runs the shared isolated one-shot call (`services/oneShotModelCall.ts`), and aborts on client disconnect. The route's result is not persisted to reports, snapshots, or the conversation. The same engine backs the `analyze_wait_chain` MCP tool, whose output does enter the conversation and run evidence |
 | Flamegraph | Static `assistant-flamegraph.js` page -> `GET /api/flamegraph/:traceId/availability`, `POST /api/flamegraph/:traceId/analyze` | Web UI users reading CPU call-stack hotspots | Non-workspace route (410 under enterprise/OIDC); validation and trace ownership as the critical-path route, and the page sends no workspace headers. AI feature `flamegraph_ai_summary` degrades like the critical-path summary (same one-shot call, `agent:run`); Chinese output only. Not persisted |
@@ -47,12 +47,12 @@ a different provider after the user changes the active profile.
 | Content | Path | Runtime use | Change rule |
 | --- | --- | --- | --- |
 | Pre-built Perfetto UI | `frontend/` | Docker, `./start.sh`, portable packages | After AI Assistant plugin UI changes, verify dev mode and run `./scripts/update-frontend.sh` |
-| Perfetto UI source | `perfetto/` | only UI/plugin development | Push submodule commit to `fork` before pushing root gitlink |
+| Perfetto UI source | `perfetto/` | only UI/plugin development | Push the submodule commit to `fork` and anchor it to `fork/main` before pushing the root gitlink (`git.md`) |
 | Skills | `backend/skills/` | MCP `invoke_skill`, CLI `skill`, reports | Validate Skills; do not hardcode Skill logic in TypeScript |
 | Strategies/prompts | `backend/strategies/` | system prompts and scene methodology | Do not hardcode prompt content in TypeScript |
 | SQL fragments/indexes | `backend/sql/`, generated backend data | schema lookup and Skill execution | Update generators before generated output when applicable |
 | Rendering pipeline docs | `docs/rendering_pipelines/` | teaching mode and Skill-linked docs | Treat as runtime-read; update Skill/config references when moving files |
-| Trace processor prebuilts | `prebuilts/trace_processor/` and package assets | CLI, Docker, portable, source fallback | Keep pin, SHA256, package copy rules, and docs in sync |
+| Trace processor prebuilts | `backend/prebuilts/trace_processor/` and package assets | CLI, Docker, portable, source fallback | Keep pin, SHA256, package copy rules, and docs in sync |
 
 ## AI Result Surfaces
 
@@ -61,10 +61,10 @@ AI analysis output is consumed through several surfaces:
 | Surface | Typical path | Notes |
 | --- | --- | --- |
 | Live chat / AI panel | SSE `answer_token` / `answer_segment_reset` drafts (draft-capable runtimes only), then provisional or final `conclusion` / conversation `provisional_answer`, then `analysis_completed` / `run_completed` | Should be readable and avoid raw SQL/audit noise; a live-only, revocable draft shows while the model writes (never stored or replayed), the finished body replaces it — marked pending while the review runs — and only the terminal event carries the verdict |
-| HTML report | `/api/reports/*`, report export | Keeps evidence, claim verification, identities, and appendix detail |
+| HTML report | `/api/workspaces/:workspaceId/reports/*`, report export | Keeps evidence, claim verification, identities, and appendix detail |
 | CLI turn artifacts | `~/.smartperfetto/` session/report files | Used by `smp run`, `smp ask`, `smp capture --analyze`, and `smp report` |
 | Analysis-result snapshot | snapshot services and frontend comparison state | Used for multi-result comparison and later review |
-| Agent-assisted issue draft | `/api/agent/v1/:sessionId/external-issue/*`, per-message UI state | Uses persisted run evidence and user confirmation; a durable public thumbs-down may add only an explicit triage signal, while Agent invocation, drafting, Self-Evolution actions, and GitHub submission remain separate |
+| Agent-assisted issue draft | `/api/workspaces/:workspaceId/agent/:sessionId/external-issue/*`, per-message UI state | Uses persisted run evidence and user confirmation; a durable public thumbs-down may add only an explicit triage signal, while Agent invocation, drafting, Self-Evolution actions, and GitHub submission remain separate |
 | Frontend generated contract | generated DataEnvelope/analysis types | Regenerate when backend contract types change |
 
 Do not collapse these into one behavior. A readability fix for chat should not

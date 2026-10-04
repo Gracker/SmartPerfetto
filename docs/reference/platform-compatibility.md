@@ -11,7 +11,7 @@ SmartPerfetto 有四种分发 / runtime 家族；产品内部仍有更多具体�
 
 | 入口 | 推荐宿主 / target | CPU 架构边界 | runtime 是否随产物提供 | 更新路径 | 当前证据类别 |
 |---|---|---|---|---|---|
-| Source Web (`./start.sh`) | macOS、Linux；原生 Windows 开发使用 WSL2 | 由 Node.js 24、Go 和当前原生依赖共同约束 | 否；使用宿主 Node.js，并准备固定 trace processor | Git 同步后重新启动 | source build、readiness 和项目门禁 |
+| Source Web (`./start.sh`) | macOS、Linux；原生 Windows 开发使用 WSL2 | 由 Node.js 24 和当前原生依赖约束（Go 只用于构建 portable launcher） | 否；使用宿主 Node.js，并准备固定 trace processor | Git 同步后重新启动 | source build、readiness 和项目门禁 |
 | npm CLI (`smp`) | 支持 Node.js 24 的 macOS、Linux、Windows shell | Linux x64、macOS arm64、Windows x64 随包提供 trace processor；其他 host 按固定版本下载且可能不受支持 | CLI runtime 随 npm 包；不包含 Web launcher | npm 安装新的明确版本 | npm pack contract + 空目录真实安装 smoke |
 | Docker image | 任意可运行兼容 Linux container 的 Docker host；实际 runtime 是 Linux | 发布镜像为 `linux/amd64`、`linux/arm64` | 是；镜像包含 Node、后端、提交版 UI 和固定 trace processor | 拉取明确 tag 后重建 container | image build/health + 已发布 tag/manifest 验收 |
 | Portable archive | Windows 10 / Windows Server 2016 及以上 x64、macOS arm64 13.5+、Linux x64 glibc 2.34+；必须在匹配 target 上运行，不支持 Alpine 等 musl 系统 | 每个归档只支持文件名和 manifest 声明的单一 target；Windows、macOS 最低系统版本写入 manifest，macOS 同时以包内 `LSMinimumSystemVersion` 为准 | 是；包含 launcher、Node、原生依赖、后端、提交版 UI 和固定 trace processor | 下载新归档并按平台说明迁移/保留数据 | static package contract + 全 payload ELF/Mach-O 最低版本审计 + 匹配 target 的 exact-archive runtime smoke + GitHub release 验收 |
@@ -28,11 +28,12 @@ SmartPerfetto 有四种分发 / runtime 家族；产品内部仍有更多具体�
 任一层缺少证据时，只报告已完成的层级；Windows/Linux 交叉构建不能写成 Windows/Linux
 runtime smoke，Docker host 的操作系统也不能写成 container target。
 
-Windows 用户操作以 [Windows 指南](../getting-started/windows.md) 为准。当前公开 v1.7.0
-的 Windows x64 最终归档已在 Windows Server 2025 runner 验证包内 runtime、health、
-最小 trace processor 查询、退出和端口释放；这不等于 Windows 10/11 桌面、SmartScreen
-或 Provider UI 已人工验收。后续归档门禁还要求实际加载 SQLite/sodium、运行本地 Provider
-生命周期和 Windows DPAPI SecretStore probe；只有对应最终归档执行成功后才能计为证据。
+Windows 用户操作以 [Windows 指南](../getting-started/windows.md) 为准。托管的 exact-archive
+smoke 在 Windows Server 2025 runner 上运行最终 Windows x64 归档，检查包内 runtime、health、
+最小 trace processor 查询、实际加载 SQLite/sodium、Windows DPAPI SecretStore probe、受控退出和
+端口释放；macOS 与 Linux 分别在 macOS 15 和 Ubuntu 24.04 runner 上运行。某个版本是否已有这份证据，
+以该版本 GitHub release 的 smoke 证据为准。runner 证据不等于 Windows 10/11 桌面、SmartScreen
+或 Provider UI 已人工验收。
 
 ## 网络绑定边界
 

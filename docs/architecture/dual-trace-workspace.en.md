@@ -2,6 +2,8 @@
 
 [English](dual-trace-workspace.en.md) | [中文](dual-trace-workspace.md)
 
+<!-- i18n-headings: paired -->
+
 This document defines the Web UI operation model for Raw Trace Compare. It
 extends the comparison-mode section in [Architecture Overview](overview.en.md)
 and focuses on user operations, AI Panel context, frontend/backend coordination,
@@ -277,39 +279,96 @@ Rules:
 
 ## Edge Cases
 
-- Current trace not ready: the normal trace-page entry cannot use it as an
-  initial baseline. The no-trace page remains a valid separate entry and builds
-  backend trace identities through pane uploads.
-- No comparison trace: still open either initial-baseline-plus-empty or two
-  empty panes. Empty panes offer upload; selectors still reject self-comparison.
-- Reload or backend restart: local/API-key mode restores the last open state,
-  pair, layout, and split for the same backend/workspace. Existing backend
-  storage remains authoritative for trace files and completed sessions/reports/
-  snapshots. Active connection state is not persisted as resumable; an
-  unfinished run appears in its recorded interrupted/failed terminal state.
-- Either pair trace cannot be read: the affected iframe shows the Perfetto
-  load failure; backend SQL/Skill calls report the actual trace-service error.
-- User opens a new trace: destroy dual-view iframes, reset to Single trace,
-  clear pair/workspace state, and create or restore the new trace's session.
-- Workspace switch: destroy dual-view iframes and clear catalog, pair,
-  workspace state, and agent session; URLs must use the new workspace path.
-- Dual view exited: its iframes are destroyed, but `referenceTraceId` remains,
-  so future questions are still dual-trace comparison with
-  `workspaceOpen=false`. Reopening recreates the iframes for the same pair.
-- Comparison exited: `referenceTraceId` is cleared; future requests no longer
-  register comparison tools or send `tracePairContext`.
-- Pane minimized/maximized or layout changed: hidden panes are still analyzable
-  and should be described as context-only, not missing. These visual changes
-  preserve both iframe DOM nodes and `src` values.
-- AI Panel hidden/shown or repositioned: Right/Bottom/floating/hidden AI Panel
-  state neither unmounts the dual view nor reloads its iframes, and does not
-  change baseline/comparison semantics.
-- Pane selector changes: first updates baseline and second updates comparison.
-  Choosing the opposite trace or `Swap` atomically reverses the pair; arbitrary
-  `history A versus history B` pairs are supported.
-- Multi-turn sessions: entering comparison drops incompatible single-trace agent
-  state; exiting comparison drops comparison agent state. Provider/runtime
-  pinning still follows normal session rules.
+### Current Trace Not Ready
+
+The normal trace-page entry depends on `isInRpcMode && hasBackendTrace`; until
+then the trace cannot be the initial baseline. The no-trace home page is a
+separate valid entry: it can create two empty panes and build backend trace
+identities through pane uploads.
+
+### No Comparison Trace Available
+
+Dual view still opens at once, either as a default baseline plus an empty
+comparison pane or as two empty panes. Empty panes offer upload; both selectors
+use the same deduplicated candidate catalog, and the state machine rejects
+self-comparison.
+
+### Page Reload Or Backend Restart
+
+Local/API-key mode restores the last dual-view open state, pair, layout, and
+split per backend URL and workspace. Trace files, completed sessions, reports,
+and snapshots remain owned by the existing backend workspace storage; as long
+as the backend did not exit and clean them up, they can be reopened after a
+reload or a normal restart. The frontend never persists an active run's
+connection state as resumable; on restore, terminal states the backend recorded
+(interrupted, failed, completed) are shown as recorded.
+
+### Either Pair Trace Cannot Be Read
+
+The affected pane's iframe shows the Perfetto load failure; AI analysis
+requests still get the actual error from the backend trace service or SQL
+tools. The UI must not silently swap another trace into the failed side.
+
+### User Opens A New Trace
+
+A new-trace reset returns to Single trace:
+
+- clear the baseline/comparison pair identity
+- close dual view and destroy its iframes
+- clear the max/min state
+- clear the old comparison session bridge
+- create or restore the new trace's own single-trace session
+
+This keeps an old pair from being applied to the new page trace.
+
+### User Switches Workspace
+
+A workspace switch destroys the dual-view iframes and clears the trace list,
+pair, dual-view state, and agent session. New trace file URLs must use the new
+workspace's `/api/workspaces/:workspaceId/traces/:traceId/file`.
+
+### Conversation After Exiting Dual View
+
+`referenceTraceId` remains, so later questions are still a dual-trace raw
+comparison. The model sees `workspaceOpen=false`, meaning "the visual dual view
+was exited and its iframes released, but the reference trace is still
+analyzable". Clicking "Open dual view" again recreates the iframes for the same
+pair.
+
+### Conversation After Exiting Comparison
+
+Exiting clears `referenceTraceId` and the comparison agent session. Later
+requests register no comparison tools and send no `tracePairContext`.
+
+### Conversation After Minimize Or Maximize
+
+The AI must not treat a hidden pane as missing. The hidden side stays
+analyzable through SQL/Skills and is labelled context-only in answers.
+Maximize, minimize, restore, and layout changes alter visibility through
+CSS/state only; both loaded iframes keep their DOM nodes and `src`. A side is
+unavailable only when its trace load or backend queries fail.
+
+### AI Panel Hidden Or Repositioned
+
+Hiding/showing the AI Panel and its Right/Bottom/floating position affect only
+the conversation panel: they never unmount dual view, change
+baseline/comparison semantics, or reload the iframes. The dual-view host is a
+trace-page-level view.
+
+### Pane Selector Changes
+
+The first selector updates the baseline and the second the comparison; either
+side may pick the page trace or a historical trace. Choosing the trace already
+on the other side, or clicking `Swap`, atomically swaps the two sides. Choosing
+a new trace loads only that pane's iframe; any `history A versus history B`
+pair is allowed.
+
+### Multi-Turn Sessions
+
+Entering comparison drops an incompatible single-trace agent session; exiting
+comparison drops the comparison session. Provider/runtime pinning follows the
+normal session rules and never switches provider silently because of
+comparison mode.
 
 ## Completion Criteria
 

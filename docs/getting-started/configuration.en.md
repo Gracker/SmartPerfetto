@@ -191,27 +191,43 @@ For first-time CLI setup, run:
 smp config init
 ```
 
-It creates `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads package/source `backend/.env` first, then `~/.smartperfetto/env`, with the user file taking priority. If you pass `--env-file /path/to/env`, the CLI reads only that file. CLI configuration follows the same rule: choose one runtime block, not every block. Use `smp provider list` and `smp provider test <providerId>` only to inspect a profile already present in the current CLI store; the CLI does not currently add, edit, or activate Provider profiles.
+It creates `~/.smartperfetto/env`. When `--env-file` is not passed, the CLI loads package/source `backend/.env` first, then `~/.smartperfetto/env`, with the user file taking priority. If you pass `--env-file /path/to/env`, the CLI reads only that file. The CLI data directory (sessions, trace copies, `env`) defaults to `~/.smartperfetto`; move it with `--session-dir <path>` or the `SMARTPERFETTO_HOME` environment variable, the flag taking priority. CLI configuration follows the same rule: choose one runtime block, not every block. Use `smp provider list` and `smp provider test <providerId>` only to inspect a profile already present in the current CLI store; the CLI does not currently add, edit, or activate Provider profiles.
 
 ## Codebase Selection And Provider Authorization
 
-Registrations on the `Codebases` tab never attach to analysis automatically.
-The user must explicitly select the codebase and `metadata_only` /
-`provider_send` mode for the current request. A reachable registered live root
-supports bounded search without an index; reindexing is optional acceleration.
+Registrations under **Settings → Codebases** never attach to analysis
+automatically. Each turn explicitly selects codebases and the `Locate only`
+(`metadata_only`) / `Send text` (`provider_send`) mode in the composer's
+"Analysis context for this turn" popover; the CLI uses `--codebase-id` and
+`--code-aware`. A reachable registered live root supports bounded search without
+an index; building an index is optional acceleration.
 
-`metadata_only` can locate only relative files, line ranges, and reference `id`s
-values. `provider_send` requires registration-level `sendToProvider` consent,
-and the target path must be admitted by both the current selection and consent
-grant. Expanding path filters, relaxing exclude globs, or adding source
-languages never expands provider authorization automatically. Use **Authorize
-current scope** / **Authorize new languages** to update the grant explicitly.
+`metadata_only` can locate only relative files, line ranges, and reference
+`id`s. `provider_send` requires the codebase to hold a source-text grant, and
+the target file must be inside the granted scope. Registration itself cannot
+grant: `POST /api/rag/codebases/register` with `sendToProvider: true` answers
+400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`. Source text is granted only after
+reviewing the server-reported disclosure (include paths, exclude globs,
+languages): on the Web, **Allow source text** → **Allow** ("Add and use for
+analysis" goes straight to this step after registering); in the CLI,
+`smp codebase authorize-content <id>` prints the disclosure and its token, and `--confirm <token>`
+grants it. Widening the path scope or adding languages later never widens the
+grant automatically; review and confirm again.
 
-When successful selection, consent, authorization, activation, reindex, or
-deletion changes currently available content, the Web UI retires the old Agent
-session and resets conversation state so old and new authorization cannot mix.
-See [Code-Aware Analysis](code-aware-analysis.en.md) for management, receipts,
-and evidence semantics.
+Operations that change a selected codebase's authorization (granting or
+revoking source text, saving its scope, deleting it) change the analysis
+context's authorization fingerprint: the next analysis uses a new backend
+session, and conversation mode asks you to start a new conversation, so old and
+new authorization cannot mix. Rebuilding an index, accepting an index
+candidate, changes to unselected codebases, and identical resubmissions reset
+nothing. Revoking authorization while a run is in progress ends that run.
+
+Deployers can set `SMARTPERFETTO_CODE_AWARE=off` to disable source analysis
+entirely: source tools are no longer registered, requests with `codebaseIds`
+answer 409 `FEATURE_DISABLED`, and the Web context popover shows that source
+analysis is disabled on the backend. See
+[Code-Aware Analysis](code-aware-analysis.en.md) for management, receipts, and
+evidence semantics.
 
 ## LLM Configuration
 
@@ -417,7 +433,7 @@ your personal OpenCode login or project extensions. Removing the custom provider
 or switching `SMARTPERFETTO_AGENT_RUNTIME` back to `claude-agent-sdk` /
 `openai-agents-sdk` is the rollback path.
 
-## Runtime and Provider Diagnostics
+### Runtime and Provider Diagnostics
 
 SmartPerfetto does not read Codex CLI, Gemini CLI, or personal OpenCode login state; those tools manage their own config files. The `opencode` runtime is configured explicitly through Provider Manager or env. Qoder is an explicit runtime integration: after installing its optional SDK, `qoder-agent-sdk` can use the local `qodercli` login or an explicit PAT.
 
@@ -518,7 +534,7 @@ persisted session) under the caller's Provider Manager profile:
 
 | Feature | Entry point | When AI is unavailable |
 | --- | --- | --- |
-| `critical_path_ai_summary` | `POST /api/critical-path/:traceId/analyze` | Rule summary, `aiSummary.fallbackReason` + `warnings` |
+| `critical_path_ai_summary` | `POST /api/workspaces/:workspaceId/critical-path/:traceId/analyze` | Rule summary, `aiSummary.fallbackReason` + `warnings` |
 | `flamegraph_ai_summary` | `POST /api/flamegraph/:traceId/analyze` | Rule summary, `aiSummary.fallbackReason` + `warnings` |
 | `comparison_ai_conclusion` | AI conclusion of analysis-result comparison | Deterministic conclusion, reason in `uncertainty` |
 
@@ -530,7 +546,10 @@ conclusion also supports the OpenAI runtime; every other runtime degrades), and
 configured credentials. `SMARTPERFETTO_COMPARISON_AI_DISABLED=true` turns off
 only the comparison conclusion and applies alongside the global switch.
 Timeouts: `CRITICAL_PATH_AI_TIMEOUT_MS` and `FLAMEGRAPH_AI_TIMEOUT_MS`
-(default 60000).
+(default 60000). Flamegraph hotspot analysis prefers the Rust analyzer
+(`FLAMEGRAPH_ANALYZER_BIN` selects an executable; `FLAMEGRAPH_ANALYZER_TIMEOUT_MS`
+defaults to 60000) and falls back to the TypeScript implementation when it is
+unavailable; see [Critical Path And Flamegraph](critical-path-and-flamegraph.en.md).
 
 ## Budgets and Timeouts
 
@@ -546,7 +565,6 @@ CLAUDE_FULL_PER_TURN_MS=60000
 CLAUDE_FULL_REQUEST_TIMEOUT_MS=1200000
 CLAUDE_STREAM_IDLE_TIMEOUT_MS=300000
 CLAUDE_QUICK_PER_TURN_MS=40000
-CLAUDE_VERIFIER_TIMEOUT_MS=60000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=30000
 
 OPENAI_FULL_PER_TURN_MS=60000
@@ -640,13 +658,17 @@ NODE_ENV=development
 # SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
 # Only when an operator confirms RFC 2544 fake-IP DNS from a local TUN:
 # SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS=storage.googleapis.com
+# JSON / form request body limit (default 50mb; trace uploads use MAX_FILE_SIZE):
+# BODY_LIMIT=50mb
+# Scene reconstruction report disk retention (default 7 days):
+# SCENE_REPORT_TTL_MS=604800000
 ```
 
 Default local ports:
 
 - Backend: `3000`
 - Perfetto UI: `10000`
-- trace_processor HTTP RPC pool: `9100-9900`
+- trace_processor HTTP RPC pool: `9100-9900` (`TP_PORT_MIN` / `TP_PORT_MAX`)
 
 Use `SMARTPERFETTO_BACKEND_PORT` for the backend port. `PORT` remains a
 compatibility fallback for Node/Docker/PaaS environments. Use
@@ -786,6 +808,12 @@ MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 ```
+
+A trace processor waits for HTTP readiness for the larger of
+`TP_STARTUP_TIMEOUT_MS` (default 30000) and the trace size ×
+`TP_STARTUP_TIMEOUT_PER_GIB_MS` (default 120000 per GiB), capped at
+`TP_STARTUP_TIMEOUT_MAX_MS` (default 900000). Raise them when very large traces
+time out while starting on slow disks.
 
 `UPLOAD_DIR` is the upload root; a relative path resolves against the backend
 process's working directory. Uploaded trace files and their metadata live in

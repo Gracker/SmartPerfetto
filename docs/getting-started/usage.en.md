@@ -18,10 +18,10 @@ SmartPerfetto works best with Android 12+ traces, especially traces that include
 
 ## UI Analysis Flow
 
-1. Open the URL supplied by the runtime; Windows portable uses the actual `Open:` URL printed by the launcher, while Docker defaults to `http://localhost:10000`.
+1. Open the URL supplied by the runtime; Windows portable uses the actual `Open:` URL printed by the launcher, while Docker defaults to `http://127.0.0.1:10000`.
 2. Load a `.pftrace` or `.perfetto-trace` file.
 3. Open the SmartPerfetto AI Assistant panel.
-4. Choose an analysis mode: conversation, fast, full, or auto.
+4. Choose an analysis mode: Chat, Fast, Full, or Auto.
 5. Ask a natural-language question.
 6. Wait for SSE streaming output, table evidence, and the final conclusion.
 
@@ -62,14 +62,7 @@ Scene reports are retained for 7 days by default and require continued access to
 
 ## Converse Before Starting Analysis
 
-At the investigation turn limit, the remaining budget can produce one no-tool
-summary of findings, gaps and next steps while retaining partial status. Follow-up
-questions inherit these limitations and retrieve older details when needed.
-The same conversation can recover after reopening or a backend restart, following
-current owner, provider, trace and source authorization checks. The page reports
-failed saves, interrupted runs and source history that is no longer readable.
-
-`Conversation` is the default entry. Without an open trace, the top-bar AI
+`Chat` is the default entry. Without an open trace, the top-bar AI
 entry opens a dedicated conversation page. With a trace open, the same mode
 attaches the current trace inside the AI Assistant panel. Use it to clarify a
 goal, discuss performance concepts, or query authorized source code. It asks an
@@ -83,6 +76,13 @@ or attached-trace changes establish a new security boundary. A no-trace
 conversation has no trace-query tools. An authorized registered local source
 root remains searchable/readable on demand even without an index; the index is
 an optional graph and retrieval accelerator.
+
+At the investigation turn limit, the remaining budget can produce one no-tool
+summary of findings, gaps and next steps while retaining partial status. Follow-up
+questions inherit these limitations and retrieve older details when needed.
+The same conversation can recover after reopening or a backend restart, following
+current owner, provider, trace and source authorization checks. The page reports
+failed saves, interrupted runs and source history that is no longer readable.
 
 ## Use Analysis-Result Actions
 
@@ -188,7 +188,7 @@ This compares completed analysis results and does not require the other Perfetto
 
 | Mode | Good for | Avoid for |
 |---|---|---|
-| Conversation | Goal clarification, performance concepts, authorized source, and deciding whether trace analysis is needed | Requests that should immediately run full trace causal analysis |
+| Chat | Goal clarification, performance concepts, authorized source, and deciding whether trace analysis is needed | Requests that should immediately run full trace causal analysis |
 | Fast | Package name, process name, trace overview, simple facts | Heavy analysis such as startup or scrolling jank |
 | Full | Startup, scrolling, ANR, complex rendering root cause | A single simple fact query |
 | Auto | Mixed-script traces where you want to inspect scenes before choosing a deep-dive scope | Cases where you already know the single scene and want to run full analysis directly |
@@ -206,40 +206,58 @@ Only inspect my selected time range. Why did the UI thread slow down?
 Is there a Binder or scheduling problem around this slice?
 ```
 
-Follow-up questions reuse the current session. Switching between conversation, fast, full, and auto starts a new backend agent session so lightweight and full contexts do not mix.
+Follow-up questions reuse the current session. Switching between Chat, Fast, Full, and Auto starts a new backend agent session so lightweight and full contexts do not mix.
 
 `/anr` and `/jank` use the same backend evidence, claim-verification, and report path as ordinary analysis. They are blocked when backend policy disables AI.
 
-## Source And Android Internals Background
+## Source And Document Knowledge Bases
 
-- To map trace findings to local source, register through UI `Codebases` or
-  `smp codebase preview/register`, then select the codebase explicitly for the
-  analysis. A registered live root supports bounded search/read without an
-  index; `reindex` is optional acceleration.
+- To map trace findings to local source, register through **Settings →
+  Codebases** or `smp codebase preview/register`. A registered live root
+  supports bounded search/read without an index; building an index is optional
+  acceleration.
 - To let an analysis consult the Android Internals Wiki or team documents,
-  register the folder as a document knowledge base (the composer context
-  control's "Manage…" or CLI `smp knowledge register`), index it, then select it
-  explicitly for the analysis.
+  register the folder as a document knowledge base (**Settings → Codebases →
+  Document knowledge bases**, or CLI `smp knowledge register`), index it, then
+  select it.
 
-Source and background knowledge do not replace current-trace SQL/Skill
-evidence. Code-Aware defaults to `CodeRef` metadata. See
+Registration only makes a source selectable; it never attaches it to an
+analysis. The **Analysis context for this turn** popover next to the composer
+decides, per turn, what is used:
+
+- **Source**: `Off`, `Locate only` (only files, symbols, and lines go to the AI
+  service), or `Send text` (relevant source passages go to the AI service; only
+  codebases whose text is allowed can be checked), then check the codebases.
+- **Source depth**: `Auto` (decide from the question whether to read
+  implementations), `Quick locate`, or `Full analysis` (read implementations to
+  explain mechanisms; takes longer).
+- **Knowledge bases**: check indexed knowledge bases whose text is allowed.
+- **Where it goes**: states which content goes to which AI service for the
+  current selection.
+- **Turn all off** clears source and knowledge at once; **Manage…** opens the
+  Codebases page in Settings.
+
+The context cannot change while an analysis runs. Source and background
+knowledge do not replace current-trace SQL/Skill evidence. See
 [Code-Aware](code-aware-analysis.en.md) and
 [Android Internals Knowledge](android-internals-knowledge.en.md).
 
-With source selected, full analysis first establishes occurrence with
-Trace/Skill/SQL. A queryable symbol, slice, Binder descriptor, or build-id
-anchor requires bounded source lookup; otherwise the run records a structured
-reason such as `not_needed`, `disallowed`, or `no_queryable_anchor`. The source
-receipt distinguishes selected, queried, and actually used codebases, search
+Selecting source only hands the authorized source tools to the model: whether
+and how much to search is the model's decision for the question and budget, and
+completing an analysis does not require a lookup. The source receipt records
+status from the calls that actually happened in the run (`pending`,
+`attempted`, `located`, `corroborated`, `not_found_complete`,
+`search_incomplete`, or `not_needed` for a turn that may acquire no evidence),
+and distinguishes selected, queried, and actually used codebases, search
 coverage, and a `corroborated|compatible|ambiguous|unverified` mechanism
 status. Trace proves what happened; a `CodeRef` explains how the implementation
 could cause it. A `CodeRef` alone cannot promote a trace occurrence to a
 verified root cause.
 
-Web chat keeps only a safe collapsible receipt with no file paths, source
-snippets, search query, or free-text reason. HTML reports, CLI artifacts, and
-snapshot/API surfaces may retain safe relative `CodeRef` values and bindings,
-but still contain no absolute root or source body.
+Web chat shows a collapsed source receipt without `CodeRef`s. Source passages
+quoted by an authorized analysis are kept with the result in local history,
+HTML reports, CLI artifacts, and snapshots; these artifacts never store the
+registered absolute root or credentials.
 
 ## CLI Batch And Android Capture
 

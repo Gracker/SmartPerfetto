@@ -160,22 +160,31 @@ code（HTTP 409）拒绝，而不是回落到 `.env`：文件里可能配置的�
 smp config init
 ```
 
-它会创建 `~/.smartperfetto/env`。没有显式传 `--env-file` 时，CLI 先读取包内/源码目录的 `backend/.env`，再读取 `~/.smartperfetto/env`，后者覆盖前者；如果传了 `--env-file /path/to/env`，CLI 只读取这个文件。CLI 配置方式仍然遵守同一条规则：选择一个 runtime block，不要把所有 block 都打开。`smp provider list` 和 `smp provider test <providerId>` 只能检查当前 CLI store 中已有的 profile；CLI 当前不提供 Provider profile 的 add、edit 或 activate 命令。
+它会创建 `~/.smartperfetto/env`。没有显式传 `--env-file` 时，CLI 先读取包内/源码目录的 `backend/.env`，再读取 `~/.smartperfetto/env`，后者覆盖前者；如果传了 `--env-file /path/to/env`，CLI 只读取这个文件。CLI 的数据目录（会话、trace 副本、`env`）默认是 `~/.smartperfetto`，可用 `--session-dir <path>` 或环境变量 `SMARTPERFETTO_HOME` 改到别处，前者优先。CLI 配置方式仍然遵守同一条规则：选择一个 runtime block，不要把所有 block 都打开。`smp provider list` 和 `smp provider test <providerId>` 只能检查当前 CLI store 中已有的 profile；CLI 当前不提供 Provider profile 的 add、edit 或 activate 命令。
 
 ## Codebase 选择与 Provider 授权
 
-`Codebases` 页中的注册项不会自动附加到分析。用户必须在当前请求显式选择 codebase 和
-`metadata_only` / `provider_send` 模式。注册且仍可访问的 live root 无需索引就能有界搜索；
-reindex 是可选加速。
+**设置 → 源码库** 中的注册项不会自动附加到分析。每轮在输入框旁的“本轮分析上下文”中显式
+选择源码库和 `仅定位`（`metadata_only`）/ `发送正文`（`provider_send`）模式；CLI 用
+`--codebase-id` 与 `--code-aware`。注册且仍可访问的 live root 无需索引就能有界搜索；
+构建索引是可选加速。
 
-`metadata_only` 只允许定位相对文件、行号和引用 `id`。`provider_send` 要求注册时
-`sendToProvider` 已开启，并且目标路径同时位于当前 selection 与 consent grant 的交集内。
-放宽 path filter、exclude glob 或新增语言不会自动扩大 provider 授权；使用
-**授权当前范围** / **授权新语言** 显式更新 grant。
+`metadata_only` 只允许定位相对文件、行号和引用 `id`。`provider_send` 需要该源码库已获
+正文授权，且目标文件位于授权范围内。注册本身不能授权：`POST /api/rag/codebases/register`
+带 `sendToProvider: true` 会返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`。正文授权只能在
+审阅服务端给出的披露范围（包含路径、排除规则、语言）之后授予：Web 点 **允许发送正文** →
+**确认允许**（“添加并用于分析”在注册后直接进入这一步），CLI 用
+`smp codebase authorize-content <id>` 查看披露与 token、再用 `--confirm <token>` 授予。之后放宽路径范围或
+新增语言都不会自动扩大授权，需要重新审阅并确认。
 
-成功的 selection、consent、授权、激活、reindex 或删除如果改变当前可用内容，Web UI 会退役
-旧 Agent session 并重置对话，防止新旧权限混用。详细管理、回执与证据语义见
-[Code-Aware Analysis](code-aware-analysis.md)。
+改变已选源码库授权的操作（授予或撤销正文授权、保存范围、删除）会改变本轮分析上下文的授权
+指纹：下一轮分析换用新的后端 session，对话模式要求重新开始对话，防止新旧权限混用。重建索引、
+接受索引候选、未选源码库的变化以及内容相同的重复提交都不会重置会话。运行中撤销授权会终止
+该 run。
+
+部署者可设置 `SMARTPERFETTO_CODE_AWARE=off` 整体关闭源码分析：源码工具不再注册，带
+`codebaseIds` 的请求返回 409 `FEATURE_DISABLED`，Web 上下文弹层显示“后端已关闭源码分析”。详细管理、回执与证据
+语义见 [Code-Aware Analysis](code-aware-analysis.md)。
 
 ## LLM 配置
 
@@ -464,11 +473,11 @@ SMARTPERFETTO_AI_ENABLED=false
 
 | Feature | 入口 | AI 不可用时 |
 | --- | --- | --- |
-| `critical_path_ai_summary` | `POST /api/critical-path/:traceId/analyze` | 规则兜底总结，`aiSummary.fallbackReason` + `warnings` |
+| `critical_path_ai_summary` | `POST /api/workspaces/:workspaceId/critical-path/:traceId/analyze` | 规则兜底总结，`aiSummary.fallbackReason` + `warnings` |
 | `flamegraph_ai_summary` | `POST /api/flamegraph/:traceId/analyze` | 规则兜底总结，`aiSummary.fallbackReason` + `warnings` |
 | `comparison_ai_conclusion` | 分析结果对比的 AI 结论 | 确定性对比结论，`uncertainty` 写明原因 |
 
-除 AI 开关外，模型调用还要求：调用者有 `agent:run` 权限（只有 `trace:read` 的 viewer 得到 `fallbackReason: "permission_denied"`；对比结论沿用创建对比所需的 `comparison:create`），当前 Provider 是 Claude Agent SDK runtime（对比结论另外支持 OpenAI runtime；其他 runtime 一律降级），以及已配置凭证。`SMARTPERFETTO_COMPARISON_AI_DISABLED=true` 只关闭对比结论，与全局开关同时生效。超时分别由 `CRITICAL_PATH_AI_TIMEOUT_MS`、`FLAMEGRAPH_AI_TIMEOUT_MS`（默认 60000）控制。
+除 AI 开关外，模型调用还要求：调用者有 `agent:run` 权限（只有 `trace:read` 的 viewer 得到 `fallbackReason: "permission_denied"`；对比结论沿用创建对比所需的 `comparison:create`），当前 Provider 是 Claude Agent SDK runtime（对比结论另外支持 OpenAI runtime；其他 runtime 一律降级），以及已配置凭证。`SMARTPERFETTO_COMPARISON_AI_DISABLED=true` 只关闭对比结论，与全局开关同时生效。超时分别由 `CRITICAL_PATH_AI_TIMEOUT_MS`、`FLAMEGRAPH_AI_TIMEOUT_MS`（默认 60000）控制。火焰图的热点分析优先使用 Rust 分析器（`FLAMEGRAPH_ANALYZER_BIN` 指定可执行文件，`FLAMEGRAPH_ANALYZER_TIMEOUT_MS` 默认 60000），不可用时回退到 TypeScript 实现，见 [Critical path 与火焰图](critical-path-and-flamegraph.md)。
 
 ## 分析预算与超时
 
@@ -484,7 +493,6 @@ CLAUDE_FULL_PER_TURN_MS=60000
 CLAUDE_FULL_REQUEST_TIMEOUT_MS=1200000
 CLAUDE_STREAM_IDLE_TIMEOUT_MS=300000
 CLAUDE_QUICK_PER_TURN_MS=40000
-CLAUDE_VERIFIER_TIMEOUT_MS=60000
 CLAUDE_CLASSIFIER_TIMEOUT_MS=30000
 
 OPENAI_FULL_PER_TURN_MS=60000
@@ -564,13 +572,17 @@ NODE_ENV=development
 # SMARTPERFETTO_EXTERNAL_ISSUE_URL=https://github.example.com/org/repo/issues/new
 # 仅当部署管理员确认本机 TUN 使用 RFC 2544 fake-IP 时，精确列出可信 Trace 主机：
 # SMARTPERFETTO_TRACE_URL_TRUSTED_FAKE_IP_HOSTS=storage.googleapis.com
+# JSON / 表单请求体大小上限（默认 50mb；trace 上传走单独的 MAX_FILE_SIZE）：
+# BODY_LIMIT=50mb
+# 场景还原报告的磁盘保留时间（默认 7 天）：
+# SCENE_REPORT_TTL_MS=604800000
 ```
 
 本地开发默认端口：
 
 - Backend: `3000`
 - Perfetto UI: `10000`
-- trace_processor HTTP RPC pool: `9100-9900`
+- trace_processor HTTP RPC pool: `9100-9900`（`TP_PORT_MIN` / `TP_PORT_MAX`）
 
 后端端口优先使用 `SMARTPERFETTO_BACKEND_PORT`；`PORT` 仍保留为
 Node/Docker/PaaS 兼容 fallback。Perfetto UI 端口使用
@@ -681,6 +693,10 @@ MAX_FILE_SIZE=2147483648
 UPLOAD_DIR=./uploads
 TRACE_PROCESSOR_PATH=/path/to/trace_processor_shell
 ```
+
+trace processor 启动时等待 HTTP 就绪的时间取 `TP_STARTUP_TIMEOUT_MS`（默认 30000）与 trace 大小 ×
+`TP_STARTUP_TIMEOUT_PER_GIB_MS`（默认每 GiB 120000）中的较大者，上限 `TP_STARTUP_TIMEOUT_MAX_MS`
+（默认 900000）；超大 trace 在慢盘上启动超时时调大这几项。
 
 `UPLOAD_DIR` 是上传根目录，相对路径按后端进程的工作目录解析。上传的 trace 文件与其元数据保存在
 `${UPLOAD_DIR}/traces`；上传接口、元数据和后端重启后按 traceId 重新加载 trace 都使用这同一个目录。

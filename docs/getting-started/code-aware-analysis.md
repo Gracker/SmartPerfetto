@@ -14,6 +14,12 @@ Code-Aware Analysis 让 SmartPerfetto 在分析 trace 时按需引用本机代�
 
 关闭源码模式时，“添加并用于分析”只启用新库；已有正文模式时追加新库，已有仅定位模式时保持仅定位。旧的未启用选择或仅定位权限不会因此升级。
 
+注册后，每轮分析使用什么由输入框旁的 **本轮分析上下文** 弹层决定：源码模式（`关闭` / `仅定位` /
+`发送正文`，后者只能勾选已允许发送正文的源码库）、要用的源码库、源码深度（`智能` / `快速定位` /
+`完整分析`）和知识库；“数据去向”说明本轮哪些内容会发给哪个 AI 服务，“全部关闭”一次关掉源码和
+知识库，“管理…”打开设置中的源码库页。分析运行期间不能修改。后端设置了
+`SMARTPERFETTO_CODE_AWARE=off` 时，弹层显示“后端已关闭源码分析”。
+
 CLI 示例：
 
 ```bash
@@ -57,7 +63,7 @@ npm run cli:dev -- run --format json \
 
 修改源码库的选择范围时，可证明的收窄会让发送授权随之收窄；其他变化会撤销发送授权，需要重新授权：`smp codebase authorize-content` 先显示将授权的具体范围与 token，再用 `--confirm <token>` 授权（API 为 consent 接口的 `authorizeContent: true` 加 `contentDisclosureToken`）。实际的授权或范围变化会让正在进行的对话重新开始；重复提交相同授权、修改未选中的库或在别处重建索引都不会打断它。
 
-分析预算和证据权限相互独立：选择源码、对比 Trace 或私有 RAG 不会把请求的 `fast|auto` 自动升级为 `full`。`provider_send` 需要两层授权：注册后用 `smp codebase authorize-content` 查看并确认披露范围（Web 端为“添加并使用”在注册后按返回的披露授权），且本次分析显式选择 `--code-aware provider_send`。注册本身不能授权正文发送。
+分析预算和证据权限相互独立：选择源码、对比 Trace 或私有 RAG 不会把请求的 `fast|auto` 自动升级为 `full`。`provider_send` 需要两层授权：注册后用 `smp codebase authorize-content` 查看并确认披露范围（Web 端为“添加并用于分析”在注册后按返回的披露授权），且本次分析显式选择 `--code-aware provider_send`。注册本身不能授权正文发送。
 
 ## 什么时候使用源码
 
@@ -123,7 +129,7 @@ GitNexus 是独立的第三方可选工具。其[官方项目](https://github.co
 
 源码枚举按 `ripgrep > git > node-walk` 的能力阶梯运行，并在 preview、CLI 与索引审计中返回实际 backend、fidelity 和 coverage。`.git`、`.hg`、`.svn`、`.repo` 与证书/密钥文件始终排除；`node_modules`、`build`、`Pods` 等噪声目录只有在 path filter 显式指向其中时才会进入候选集。AOSP preview 会读取有界的 `.repo/manifest.xml` 元数据，提供 project/group 范围按钮，但 `.repo` 对象库本身永不作为源码遍历。Manifest 缺失表示没有可用的范围建议；读取、解析或身份校验失败会返回 `manifestUnavailableReason`，不会否决已经完成的文件枚举。只有 codebase root 身份漂移仍会阻止 preview。
 
-`.gitignore`、`.ignore` 和 `.rgignore` 只影响枚举召回，不是 provider 授权边界。授权是动态路径范围：当前 selection policy 与注册时冻结的 consent grant 永远取交集。扩大 path filter 或放宽 exclude glob 不会自动扩大 provider 授权；`providerGrantScopeCurrent=false` 时，新增范围先以 metadata-only 使用，用户可显式点击“授权当前范围”。产品升级新增的 Dart、TypeScript、Swift、Objective-C 等语言也可以先用于 `metadata_only` 定位，但已有注册项必须显式点击“授权新语言”后才能发送正文；授权新语言会在已有活动索引上提示重建，以补齐可能缺失的语言。
+`.gitignore`、`.ignore` 和 `.rgignore` 只影响枚举召回，不是 provider 授权边界。正文授权只覆盖授予时审阅的路径范围和语言。保存一个可证明落在原授权内的收窄范围时，授权随之收窄；其他范围变化会撤销正文授权（`providerGrantScopeCurrent=false`），需要重新点击“允许发送正文”审阅并确认。语言不属于路径范围：产品升级新增的 Dart、TypeScript、Swift、Objective-C 等语言先只能用于 `metadata_only` 定位，授权未覆盖的语言文件在发送正文时逐个被扣下（搜索标记 `provider_grant_scope`），重新“允许发送正文”后才覆盖全部当前可用语言。CLI 另保留 `authorize-selection` / `authorize-extensions`，它们只在已有正文授权时分别更新路径范围或语言。
 
 索引覆盖被拆成独立状态。完整、确定性的候选可直接激活；若已有完整索引，新的确定性截断结果会进入 pending，用户可接受或丢弃，旧完整索引保持服务。枚举超时、遍历错误或不确定结果永不自动激活。索引仍是可选加速，pending 或失败不会阻止 live root 的按需搜索。
 
@@ -144,14 +150,14 @@ list/detail/audit 响应不暴露它、绝对路径或原始运行时错误；�
 
 ## 管理与会话生命周期
 
-Web UI 的 `Codebases` 页不只用于注册：它会展示 root 是否可用、selection/grant revision、活动索引与覆盖、待处理 candidate、provider 授权范围是否过期、工作区与内容指纹。用户可以完整替换 path filter / exclude glob，启用或撤销 provider-send，授权新语言或当前路径范围，用 CAS 接受/拒绝精确 pending generation，reindex，查看安全 audit，以及删除注册项和其全部索引代次。
+Web UI 的 `源码库` 页不只用于注册：它会展示 root 是否可用、selection/grant revision、活动索引与覆盖、待处理 candidate、provider 授权范围是否过期、工作区与内容指纹。用户可以编辑并预览范围后保存、**允许发送正文**（审阅服务端给出的包含范围、排除规则和语言后 **确认允许**；披露在确认前发生变化时要求重新确认）或 **撤销正文授权**、用 CAS 接受/丢弃精确的受限索引候选、构建可选索引、查看安全审计，以及删除注册项和其全部索引代次。
 
-任何改变当前授权或可用内容的成功操作都会递增仅前端使用的 `authorizationEpoch`，退役旧后端 Agent session，并在新安全边界内重置对话。这个 epoch 不发送给后端。只拒绝一个尚未激活的 pending candidate 不会改变当前授权。
+授予或撤销正文授权、保存范围和删除已选源码库会改变授权指纹：前端同时递增仅前端使用的 `authorizationEpoch`，下一轮分析换用新的后端 Agent session，对话在新安全边界内重新开始。这个 epoch 不发送给后端。重建索引、接受或丢弃索引候选、修改未选中的库都不改变授权，不会打断会话。分析运行中授权发生变化时，该 run 在下一次模型请求或工具调用前终止（`analysis_context_changed_restart_required`），不会以部分结果交付。
 
 ## 安全边界
 
 - `metadata_only`：模型可按需搜索，但只看到相对路径、行号和引用 `id`，不能读取源码正文。
-- `provider_send`：只有本次显式选中、注册时同意 `sendToProvider`，且目标相对路径同时被当前 selection 与 consent grant 允许时，才能搜索和读取有界、脱敏后的片段。selection/grant revision 不一致时，新增范围保持 metadata-only，已授权交集不被扩大。
+- `provider_send`：只有本次显式选中、已经过披露审阅获得正文授权，且目标相对路径和语言都在授权范围内时，才能搜索和读取有界、脱敏后的片段。授权与当前范围不一致时拒绝启动（`ANALYSIS_CONTEXT_CODEBASE_CONSENT_STALE`）；授权未覆盖的语言只能定位。
 - 按需工具受注册 path filter、exclude glob、文件类型、单文件大小、结果数、读取行数和凭据脱敏约束；绝对 root 始终留在后端信任边界内，不进入工具结果、模型上下文、报告或导出。凭据脱敏按整份文件的语法识别，只替换凭据的值（凭据命名的键与赋值、凭据 getter 的返回值、`Bearer`/`Basic`、已知前缀令牌、JWT、PEM 私钥、凭据命名的标记元素与属性，以及启发式识别的无键随机串），保留键名、标识符和每个换行，行号不变；只以 `token` 结尾的名字（窗口、帧、词法或模型流的 token）只在值看起来像凭据时才替换。按需读取立即使用这些规则；此前建立的索引仍是旧规则（会连同键名整段替换），重建索引后才使用新规则。
 - 代码图结果始终是 metadata-only。报告、snapshot 和 CLI artifact 可以保留相对 `CodeRef` 及分析引用的源码，但不能把图关系写成 Trace 证据。
 - 系统文件夹选择器的变更请求必须同时具有 loopback Host、socket 与 Origin；只读能力探测可省略 Origin。选择器在 Docker、enterprise 或非 loopback 监听模式下关闭；目录绝对路径和 `rootAuthorization` 不会出现在 codebase list/detail/audit 响应中。
