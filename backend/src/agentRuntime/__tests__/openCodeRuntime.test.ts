@@ -3104,40 +3104,33 @@ describe('experimental OpenCode runtime contract', () => {
     expect(JSON.stringify(projected)).not.toMatch(/PRIVATE_SOURCE|privateToolResultReceipt/);
   });
 
-  it('projects private wiki results before emitting OpenCode responses', async () => {
+  it('projects document knowledge results before emitting OpenCode responses', async () => {
     const updates: any[] = [];
     await dispatchOpenCodeBridgeRequest([{
-      name: 'lookup_blog_knowledge',
+      name: 'search_knowledge',
       exposure: 'internal',
       tool: {},
       shared: {
-        name: 'lookup_blog_knowledge',
-        description: 'Lookup knowledge',
+        name: 'search_knowledge',
+        description: 'Search the selected document knowledge bases',
         exposure: 'internal',
         inputSchema: {},
-        handler: jest.fn(async () => ({content: [{type: 'text', text: JSON.stringify({result: {
-          query: 'Handler',
-          probed: ['android_internals_wiki'],
-          retrievedAt: 1,
-          legacyPath: false,
-          hits: [{
-            chunkId: 'wiki-1',
-            score: 1,
-            metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-            snippet: 'OPENCODE_PRIVATE_WIKI_CANARY',
-          }],
-        }})}]})),
+        handler: jest.fn(async () => ({content: [{type: 'text', text: JSON.stringify({success: true, hits: [{
+          id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+          title: 'Handler', headingPath: ['Handler'], relativePath: 'private/notes.md',
+          lineRange: {start: 3, end: 9}, excerpt: 'OPENCODE_PRIVATE_KNOWLEDGE_CANARY',
+        }]})}]})),
       },
     } as any], {
       jsonrpc: '2.0',
-      id: 'wiki-call',
+      id: 'knowledge-call',
       method: 'tools/call',
-      params: {name: 'lookup_blog_knowledge', arguments: {}},
+      params: {name: 'search_knowledge', arguments: {}},
     }, update => updates.push(update));
 
-    const serialized = JSON.stringify(updates.filter(update => update.type === 'agent_response'));
-    expect(serialized).not.toContain('OPENCODE_PRIVATE_WIKI_CANARY');
-    expect(serialized).toContain('snippetHash');
+    const responses = updates.filter(update => update.type === 'agent_response');
+    expect(JSON.stringify(responses)).not.toContain('OPENCODE_PRIVATE_KNOWLEDGE_CANARY');
+    expect(JSON.parse(String(responses[0]?.content.result))).toMatchObject({knowledge: {referenceCount: 1}});
   });
 
   it('records OpenCode MCP bridge tool executions into the shared analysis plan evidence log', async () => {

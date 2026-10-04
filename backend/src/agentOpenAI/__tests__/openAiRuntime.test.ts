@@ -1450,41 +1450,34 @@ describe('OpenAI shared tool receipt and private projection', () => {
     expect(onToolCalled).toHaveBeenCalledTimes(2);
   });
 
-  it('projects private wiki tool output before emitting it', () => {
+  it('projects document knowledge tool output before emitting it', () => {
     const { runtime, updates } = createRuntimeWithUpdates();
-    const context = streamContext('s-private-wiki', false);
+    const context = streamContext('s-private-knowledge', false);
     runtime.handleStreamEvent({
       type: 'run_item_stream_event',
       name: 'tool_called',
       item: {rawItem: {
-        callId: 'wiki-call',
-        name: 'lookup_blog_knowledge',
-        arguments: JSON.stringify({source: 'android_internals_wiki'}),
+        callId: 'knowledge-call',
+        name: 'search_knowledge',
+        arguments: JSON.stringify({query: 'Handler'}),
       }},
     }, 'zh-CN', context);
     runtime.handleStreamEvent({
       type: 'run_item_stream_event',
       name: 'tool_output',
       item: {rawItem: {
-        callId: 'wiki-call',
-        output: JSON.stringify({result: {
-          query: 'Handler',
-          probed: ['android_internals_wiki'],
-          retrievedAt: 1,
-          legacyPath: false,
-          hits: [{
-            chunkId: 'wiki-1',
-            score: 1,
-            metadata: {kind: 'android_internals_wiki', knowledgeSourceId: 'source-a'},
-            snippet: 'OPENAI_PRIVATE_WIKI_CANARY',
-          }],
-        }}),
+        callId: 'knowledge-call',
+        output: JSON.stringify({success: true, hits: [{
+          id: 'kref-11111111-2222-3333-4444-555555555555', knowledgeBaseId: `eks_${'a'.repeat(24)}`,
+          title: 'Handler', headingPath: ['Handler'], relativePath: 'private/notes.md',
+          lineRange: {start: 3, end: 9}, excerpt: 'OPENAI_PRIVATE_KNOWLEDGE_CANARY',
+        }]}),
       }},
     }, 'zh-CN', context);
 
-    const serialized = JSON.stringify(updates.filter(update => update.type === 'agent_response'));
-    expect(serialized).not.toContain('OPENAI_PRIVATE_WIKI_CANARY');
-    expect(serialized).toContain('snippetHash');
+    const responses = updates.filter(update => update.type === 'agent_response');
+    expect(JSON.stringify(responses)).not.toContain('OPENAI_PRIVATE_KNOWLEDGE_CANARY');
+    expect(JSON.parse(String(responses[0]?.content.result))).toMatchObject({knowledge: {referenceCount: 1}});
   });
 
   it('records source references before projecting private tool output', () => {

@@ -17,7 +17,7 @@ function metricsWithPrivateError(): SessionMetrics {
     totalDurationMs: 1,
     turns: 1,
     toolExecutions: [{
-      toolName: 'lookup_blog_knowledge',
+      toolName: 'search_knowledge',
       startTime: 1,
       durationMs: 1,
       inputChars: 10,
@@ -31,7 +31,7 @@ function metricsWithPrivateError(): SessionMetrics {
       successCount: 0,
       failureCount: 1,
       byTool: {
-        lookup_blog_knowledge: {calls: 1, totalMs: 1, avgMs: 1, failures: 1},
+        search_knowledge: {calls: 1, totalMs: 1, avgMs: 1, failures: 1},
       },
     },
   };
@@ -43,7 +43,7 @@ describe('agent metrics privacy projection', () => {
     const projected = projectSessionMetricsForPersistence(original, true);
 
     expect(projected.toolExecutions[0]).toEqual(expect.objectContaining({
-      toolName: 'lookup_blog_knowledge',
+      toolName: 'search_knowledge',
       success: false,
       durationMs: 1,
     }));

@@ -1238,12 +1238,12 @@ describe('Agent SSE verification evidence', () => {
 
     expect(successfulCodeLookupToolCounts([
       entry('lookup_app_source', 'success', ['chunk-app']),
-      entry('lookup_blog_knowledge', 'success', ['chunk-rag']),
+      entry('lookup_aosp_source', 'success', ['chunk-rag']),
       entry('lookup_app_source', 'unresolved', []),
       entry('lookup_kernel_source', 'success', []),
     ])).toEqual({
       lookup_app_source: 1,
-      lookup_blog_knowledge: 1,
+      lookup_aosp_source: 1,
     });
   });
 });

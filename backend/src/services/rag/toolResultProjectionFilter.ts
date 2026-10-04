@@ -75,6 +75,8 @@ export interface ProjectedPayload {
 
 const SENSITIVE_RAG_TOOL_NAMES = new Set([
   ...KNOWLEDGE_TOOL_NAMES,
+  // Standalone public MCP server only (bin/smartperfetto-mcp.ts); its public
+  // blog hits are projected below, anything else fails closed.
   'lookup_blog_knowledge',
   'lookup_app_source',
   'lookup_kernel_source',
