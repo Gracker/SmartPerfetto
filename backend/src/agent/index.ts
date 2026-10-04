@@ -8,4 +8,3 @@ export type {
   AgentRuntimeAnalysisResult,
   IOrchestrator,
 } from './core/orchestratorTypes';
-export { registerCoreTools } from './tools';

@@ -74,7 +74,7 @@ function fixture(entry: AnalysisRunDispatchInput['entry'] = 'analysis') {
     sealCompletedHttpRunManifest: jest.fn(), finalizeHttpRunManifestLifecycle: jest.fn(), persistSessionRunState: jest.fn(),
     assignSessionOwner: () => {},
     requestedSessionIsVisible: () => true, resolveVisibleSessionReferenceTraceIdForTrace: () => undefined,
-    buildRecoveredResultFromContext: () => null, ensureToolsRegistered: jest.fn(),
+    buildRecoveredResultFromContext: () => null,
     isDedicatedSceneReplayRequest: query => query === 'scene reconstruction',
     runSmartAnalysis: smart, smartSelectionReportId: () => undefined,
     analyzeOptionsErrorMessage: error => error.message, smartPreviewSelectionErrorMessage: () => 'stale',

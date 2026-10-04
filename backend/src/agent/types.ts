@@ -20,48 +20,12 @@ import type { ClaimSupportV1 } from '../types/evidenceContract';
 import type { ClaimVerificationResult } from '../types/claimVerification';
 import type { IdentityResolutionV1 } from '../types/identityContract';
 
-export interface ToolParameter {
-  name: string;
-  type: 'string' | 'number' | 'boolean' | 'timestamp' | 'array' | 'object';
-  required: boolean;
-  description: string;
-  default?: any;
-}
-
-export interface ToolDefinition {
-  name: string;
-  description: string;
-  category: 'sql' | 'analysis' | 'data' | 'visualization' | 'knowledge';
-  parameters: ToolParameter[];
-  returns: {
-    type: string;
-    description: string;
-  };
-}
-
 export interface ToolResult<T = any> {
   success: boolean;
   data?: T;
   error?: string;
   executionTimeMs: number;
   metadata?: Record<string, any>;
-}
-
-export interface Tool<TParams = any, TResult = any> {
-  definition: ToolDefinition;
-  execute(params: TParams, context: ToolContext): Promise<ToolResult<TResult>>;
-  validate?(params: TParams): { valid: boolean; errors: string[] };
-}
-
-export interface ToolContext {
-  traceId: string;
-  traceProcessor?: any;
-  traceProcessorService?: any;
-  package?: string;
-  /** AI 服务，用于 ai_summary 和 ai_decision 步骤 */
-  aiService?: {
-    chat: (prompt: string) => Promise<string>;
-  };
 }
 
 // =============================================================================
@@ -239,18 +203,6 @@ export interface OrchestratorTrace {
   synthesisThought: AgentThought;
   totalDuration: number;
   totalLLMCalls: number;
-}
-
-// =============================================================================
-// Registry Types
-// =============================================================================
-
-export interface ToolRegistry {
-  register(tool: Tool): void;
-  get(name: string): Tool | undefined;
-  list(): ToolDefinition[];
-  listByCategory(category: string): ToolDefinition[];
-  getToolDescriptionsForLLM(): string;
 }
 
 export interface StreamingUpdate {

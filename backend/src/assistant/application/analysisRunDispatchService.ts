@@ -135,7 +135,6 @@ export interface AnalysisRunDispatchDependencies<TSession extends AnalysisDispat
   requestedSessionIsVisible(sessionId: string, context: RequestContext): boolean;
   resolveVisibleSessionReferenceTraceIdForTrace(sessionId: string | undefined, traceId: string, context: RequestContext): string | undefined;
   buildRecoveredResultFromContext(sessionId: string, context: EnhancedSessionContext): AgentRuntimeAnalysisResult | null;
-  ensureToolsRegistered(): void;
   isDedicatedSceneReplayRequest(query: string): boolean;
   runSmartAnalysis(sessionId: string, query: string, traceId: string, options: {
     runContext: AnalyzeSessionRunContext;
@@ -193,7 +192,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     createHttpRunManifestLifecycle, sealCompletedHttpRunManifest, finalizeHttpRunManifestLifecycle,
     persistSessionRunState, assignSessionOwner,
     requestedSessionIsVisible, resolveVisibleSessionReferenceTraceIdForTrace, buildRecoveredResultFromContext,
-    ensureToolsRegistered, isDedicatedSceneReplayRequest, runSmartAnalysis,
+    isDedicatedSceneReplayRequest, runSmartAnalysis,
     smartSelectionReportId, analyzeOptionsErrorMessage, smartPreviewSelectionErrorMessage,
     resolveSmartPreviewReportForSelection, runAgentDrivenAnalysis, broadcastToAgentDrivenClients,
     assistantAppService, httpAnalysisRunLeaseControllers, admittedLocalAnalysisRuns,
@@ -514,9 +513,6 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         respond(quotaDecision.httpStatus, {success: false, code: quotaDecision.code, status: quotaDecision.status, error: quotaDecision.message, details: quotaDecision.details});
         return;
       }
-
-      // Initialize tools
-      ensureToolsRegistered();
 
       const analyzeSessionService = new AgentAnalyzeSessionService<TSession>({
         assistantAppService,
