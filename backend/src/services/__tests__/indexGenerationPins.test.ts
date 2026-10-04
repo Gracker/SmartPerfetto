@@ -52,9 +52,6 @@ async function fixture() {
     lease => lease.activateGeneration({generation, revision: 'r', contentFingerprint: generation, dirty: false,
       indexedArticleCount: 1, indexedChunkCount: 1}));
   await activateKnowledge(wikiId, 'wiki_gen_1');
-  store.addChunk({chunkId: 'wiki-chunk', kind: 'android_internals_wiki', registryOrigin: 'external_knowledge_registry',
-    knowledgeSourceId: wikiId, sourceGeneration: 'wiki_gen_1', uri: `android-internals-wiki://${wikiId}/a`,
-    snippet: 'Handler dispatch.', indexedAt: 1, license: 'internal'}, scope);
   await activateKnowledge(collectionId, COLLECTION_GENERATION);
   const files = new Set([COLLECTION_GENERATION]);
   const selection = {codebaseIds: [indexed.codebaseId, unindexed.codebaseId], knowledgeSourceIds: [wikiId, collectionId]};

@@ -64,8 +64,6 @@ const LICENSE_REQUIRED_KINDS: ReadonlySet<RagSourceKind> = new Set([
   'aosp',
   'oem_sdk',
   'kernel_source',
-  'android_internals_wiki',
-  'android_internals_pack',
 ]);
 
 /** All RagSourceKind values. Kept here so getStats() can initialize a
@@ -130,10 +128,6 @@ export interface RagStoreSearchOptions {
   symbolExact?: string;
   filePathExact?: string;
   languages?: RagChunk['language'][];
-  /** Request-scoped private knowledge source allowlist. */
-  knowledgeSourceIds?: string[];
-  /** Active generation per allowed private knowledge source. */
-  activeSourceGenerations?: Record<string, string>;
   /** Active generation per allowed registered codebase. */
   activeCodebaseGenerations?: Record<string, string>;
 }
@@ -210,9 +204,10 @@ function defaultRegistryOrigin(kind: RagSourceKind): RagChunk['registryOrigin'] 
 }
 
 function normalizeChunkForStorage(chunk: RagChunk): RagChunk {
-  if (chunk.kind === 'android_internals_pack') {
+  // Stored retired chunks stay listable and deletable; no writer adds more.
+  if (ragChunkAudience(chunk) === 'retired_private') {
     throw new Error(
-      'Built-in Android Internals Pack chunks are retired and are never stored',
+      `RAG chunk '${chunk.chunkId}' (${chunk.kind}) belongs to a retired knowledge connector and is never stored`,
     );
   }
   const registryOrigin = chunk.registryOrigin ?? defaultRegistryOrigin(chunk.kind);
@@ -486,20 +481,10 @@ export class RagStore {
           `License required for source kind '${chunk.kind}' but missing on chunk '${chunk.chunkId}'`,
         );
       }
-      const audience = ragChunkAudience(normalized);
-      if (audience !== 'public') {
+      if (ragChunkAudience(normalized) === 'user_codebase') {
         const scopeFingerprint = privateKnowledgeScopeFingerprint(scope);
         if (!scopeFingerprint) {
           throw new Error(`Private knowledge chunk '${chunk.chunkId}' requires tenant/workspace/user scope`);
-        }
-        if (
-          audience === 'retired_private' && (
-            normalized.registryOrigin !== 'external_knowledge_registry' ||
-            !normalized.knowledgeSourceId ||
-            !normalized.sourceGeneration
-          )
-        ) {
-          throw new Error(`Private knowledge chunk '${chunk.chunkId}' requires source registry metadata`);
         }
         normalized = {...normalized, knowledgeScopeFingerprint: scopeFingerprint};
       }
@@ -705,47 +690,6 @@ export class RagStore {
     return removedIds.size;
   }
 
-  /** Remove an exact pre-activation snapshot without touching later generations. */
-  removeKnowledgeSourceChunkIds(
-    sourceId: string,
-    chunkIds: readonly string[],
-    scope?: KnowledgeScope,
-  ): number {
-    const enterpriseRemoved = enterpriseKnowledgeDbWritesEnabled()
-      ? removeScopedKnowledgeRecords(KNOWLEDGE_KIND, chunkIds, scope)
-      : 0;
-    const remove = new Set(chunkIds);
-    const legacyRemoved = this.removeKnowledgeSourceChunksMatching(
-      sourceId,
-      scope,
-      chunk => remove.has(chunk.chunkId),
-      true,
-    );
-    return Math.max(enterpriseRemoved, legacyRemoved);
-  }
-
-  /** Remove staged and superseded generations after a new generation is active. */
-  removeInactiveKnowledgeSourceChunks(
-    sourceId: string,
-    activeGeneration: string,
-    scope?: KnowledgeScope,
-  ): number {
-    const enterpriseRemoved = enterpriseKnowledgeDbWritesEnabled()
-      ? removeScopedRagRecords(scope, {
-          knowledgeSourceId: sourceId,
-          excludeSourceGeneration: activeGeneration,
-          scopeFingerprint: privateKnowledgeScopeFingerprint(scope),
-        })
-      : 0;
-    const legacyRemoved = this.removeKnowledgeSourceChunksMatching(
-      sourceId,
-      scope,
-      chunk => chunk.sourceGeneration !== activeGeneration,
-      true,
-    );
-    return Math.max(enterpriseRemoved, legacyRemoved);
-  }
-
   private removeKnowledgeSourceChunksMatching(
     sourceId: string,
     scope: KnowledgeScope | undefined,
@@ -925,25 +869,12 @@ export class RagStore {
         };
       }
     }
-    const codebaseSelectionRequested = opts.codebaseIds !== undefined;
-    const knowledgeSelectionRequested = opts.knowledgeSourceIds !== undefined;
-    const enterpriseSelection = codebaseSelectionRequested && knowledgeSelectionRequested
-      ? 'none'
-      : codebaseSelectionRequested
-        ? 'codebase'
-        : knowledgeSelectionRequested
-          ? 'knowledge'
-          : 'public';
     const enterpriseSearch = enterpriseSearchEnabled
       ? searchScopedRagKnowledgeRecords<RagChunk>(KNOWLEDGE_KIND, opts.scope, {
           rowScopes: opts.kinds?.map(ragRowScope),
-          selection: enterpriseSelection,
+          selection: opts.codebaseIds !== undefined ? 'codebase' : 'public',
           codebaseGenerations: opts.codebaseIds?.flatMap(id => {
             const generation = opts.activeCodebaseGenerations?.[id];
-            return generation ? [{id, generation}] : [];
-          }),
-          knowledgeSourceGenerations: opts.knowledgeSourceIds?.flatMap(id => {
-            const generation = opts.activeSourceGenerations?.[id];
             return generation ? [{id, generation}] : [];
           }),
           scopeFingerprint: privateKnowledgeScopeFingerprint(opts.scope),
@@ -965,9 +896,6 @@ export class RagStore {
       ? enterpriseSearch.records.map(row => row.record)
       : Array.from(this.chunks.values()).filter(chunk => !isRetiredRagChunk(chunk));
     const codebaseFilter = opts.codebaseIds ? new Set(opts.codebaseIds) : null;
-    const knowledgeSourceFilter = opts.knowledgeSourceIds
-      ? new Set(opts.knowledgeSourceIds)
-      : null;
     const languageFilter = opts.languages ? new Set(opts.languages) : null;
 
     const probed = opts.kinds
@@ -983,7 +911,8 @@ export class RagStore {
 
     for (const chunk of chunks) {
       if (!privateKnowledgeVisibleInScope(chunk, opts.scope)) continue;
-      if (ragChunkAudience(chunk) === 'retired_private' && !knowledgeSourceFilter) continue;
+      // Retired private knowledge is listed and deletable, never searched.
+      if (ragChunkAudience(chunk) === 'retired_private') continue;
       if (chunk.registryOrigin === 'codebase_registry') {
         const activeGeneration = chunk.codebaseId
           ? opts.activeCodebaseGenerations?.[chunk.codebaseId]
@@ -995,14 +924,6 @@ export class RagStore {
       if (kindFilter && !kindFilter.has(chunk.kind)) continue;
       if (chunk.unsupportedReason) continue;
       if (codebaseFilter && (!chunk.codebaseId || !codebaseFilter.has(chunk.codebaseId))) continue;
-      if (
-        knowledgeSourceFilter &&
-        (!chunk.knowledgeSourceId || !knowledgeSourceFilter.has(chunk.knowledgeSourceId))
-      ) continue;
-      if (knowledgeSourceFilter && chunk.knowledgeSourceId) {
-        const activeGeneration = opts.activeSourceGenerations?.[chunk.knowledgeSourceId];
-        if (!activeGeneration || chunk.sourceGeneration !== activeGeneration) continue;
-      }
       if (opts.vendor && chunk.vendor !== opts.vendor) continue;
       if (opts.buildId && chunk.buildId !== opts.buildId) continue;
       if (opts.pathPrefix && !(chunk.filePath ?? chunk.uri).startsWith(opts.pathPrefix)) continue;
@@ -1023,7 +944,7 @@ export class RagStore {
         ) {
           const unsupportedReason =
             'local_rag_search_budget_exceeded: selected knowledge exceeds the local JSON search budget; ' +
-            'select fewer codebases/knowledge sources or enable the enterprise knowledge store';
+            'select fewer codebases or enable the enterprise knowledge store';
           return {
             ...makeSparkProvenance({source: 'ragStore.search', unsupportedReason}),
             query,
@@ -1182,7 +1103,6 @@ function normalizeRagSearchInput(query: string, opts: RagStoreSearchOptions): nu
     kinds: opts.kinds,
     codebaseIds: opts.codebaseIds,
     languages: opts.languages,
-    knowledgeSourceIds: opts.knowledgeSourceIds,
   })) {
     if (value === undefined) continue;
     if (!Array.isArray(value)) {

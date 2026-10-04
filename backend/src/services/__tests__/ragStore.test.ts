@@ -26,6 +26,7 @@ import {
 import type {RagChunk} from '../../types/sparkContracts';
 import {RAG_ROW_SCOPE_PREFIX, ragChunkAudience, ragPublicAudienceSql} from '../rag/ragChunkAudience';
 import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
+import {seedRetiredWikiChunks as seedRetiredChunks, type RetiredWikiChunkSeed} from '../../../tests/helpers/retiredRagChunks';
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../enterpriseMigration';
@@ -55,6 +56,11 @@ function makeChunk(overrides: Partial<RagChunk> = {}): RagChunk {
     indexedAt: 1714600000000,
     ...overrides,
   };
+}
+
+function seedRetiredWikiChunks(chunks: ReadonlyArray<{chunkId: string; sourceId: string; generation: string; snippet?: string}>): void {
+  seedRetiredChunks(storagePath, chunks.map((chunk): RetiredWikiChunkSeed => ({chunkId: chunk.chunkId,
+    knowledgeSourceId: chunk.sourceId, sourceGeneration: chunk.generation, snippet: chunk.snippet})), PRIVATE_SCOPE);
 }
 
 function makeCodebaseGenerationChunk(
@@ -192,14 +198,19 @@ describe('RagStore — license gate', () => {
     ).toThrow(/license/i);
   });
 
-  it('rejects Android Internals Wiki chunks without a license', () => {
+  it('refuses to store retired Android Internals Wiki chunks', () => {
     const store = new RagStore(storagePath);
     expect(() =>
       store.addChunk(makeChunk({
         chunkId: 'wiki-a',
-        kind: 'android_internals_wiki' as RagChunk['kind'],
-      })),
-    ).toThrow(/license/i);
+        kind: 'android_internals_wiki',
+        license: 'CC-BY-NC-SA-4.0',
+        registryOrigin: 'external_knowledge_registry',
+        knowledgeSourceId: 'source-a',
+        sourceGeneration: 'gen-1',
+      }), PRIVATE_SCOPE),
+    ).toThrow(/retired knowledge connector/);
+    expect(store.listChunks({scope: PRIVATE_SCOPE})).toEqual([]);
   });
 
   it('accepts aosp chunks with Apache-2.0 license', () => {
@@ -413,23 +424,15 @@ describe('RagStore — persistence', () => {
     ['an unsupported schema', JSON.stringify({schemaVersion: 99, chunks: []})],
   ])('fails closed when a warm private reader sees %s', (_label, invalidContent) => {
     const writer = new RagStore(storagePath);
-    writer.addChunk(makeChunk({
-      chunkId: 'private-warm-cache',
-      kind: 'android_internals_wiki',
-      uri: 'android-internals-wiki://source-a/private-warm-cache',
-      snippet: 'PRIVATE_WARM_CACHE_CANARY Handler callback',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: 'source-a',
-      sourceGeneration: 'gen-1',
-    }), PRIVATE_SCOPE);
+    writer.addChunk(makeCodebaseGenerationChunk('codebase_1', 0, 'PRIVATE_WARM_CACHE_CANARY Handler callback'),
+      PRIVATE_SCOPE);
     writer.flush();
 
     const reader = new RagStore(storagePath);
     const searchOptions = {
-      kinds: ['android_internals_wiki'] as RagChunk['kind'][],
-      knowledgeSourceIds: ['source-a'],
-      activeSourceGenerations: {'source-a': 'gen-1'},
+      kinds: ['app_source'] as RagChunk['kind'][],
+      codebaseIds: ['capacity-codebase'],
+      activeCodebaseGenerations: {'capacity-codebase': 'codebase_1'},
       scope: PRIVATE_SCOPE,
     };
     expect(reader.search('Handler', searchOptions).results).toHaveLength(1);
@@ -670,126 +673,36 @@ describe('RagStore — search', () => {
     expect(result.results.every(r => r.chunk?.kind === 'aosp')).toBe(true);
   });
 
-  it('searches only the request-scoped active private knowledge generation', () => {
+  it('lists stored retired knowledge in its owner scope but never searches it', () => {
+    seedRetiredWikiChunks([{chunkId: 'retired-a', sourceId: 'source-a', generation: 'gen-1',
+      snippet: '消息队列 Handler callback'}]);
     const store = new RagStore(storagePath);
-    const wiki = (overrides: Record<string, unknown>) => makeChunk({
-      kind: 'android_internals_wiki' as RagChunk['kind'],
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry' as RagChunk['registryOrigin'],
-      snippet: '消息队列 Handler callback',
-      ...(overrides as Partial<RagChunk>),
-    });
-    store.addChunk(
-      wiki({chunkId: 'old', knowledgeSourceId: 'source-a', sourceGeneration: 'gen-1'}),
-      PRIVATE_SCOPE,
-    );
-    store.addChunk(
-      wiki({chunkId: 'new', knowledgeSourceId: 'source-a', sourceGeneration: 'gen-2'}),
-      PRIVATE_SCOPE,
-    );
-    store.addChunk(
-      wiki({chunkId: 'other', knowledgeSourceId: 'source-b', sourceGeneration: 'gen-2'}),
-      PRIVATE_SCOPE,
-    );
 
-    const result = store.search('Handler', {
-      kinds: ['android_internals_wiki' as RagChunk['kind']],
-      knowledgeSourceIds: ['source-a'],
-      activeSourceGenerations: {'source-a': 'gen-2'},
-      scope: PRIVATE_SCOPE,
-    });
-
-    expect(result.results.map(hit => hit.chunkId)).toEqual(['new']);
+    expect(store.listChunks({scope: PRIVATE_SCOPE}).map(chunk => chunk.chunkId)).toEqual(['retired-a']);
+    expect(store.getStats(PRIVATE_SCOPE).android_internals_wiki.chunkCount).toBe(1);
+    for (const kinds of [undefined, ['android_internals_wiki'] as RagChunk['kind'][]]) {
+      expect(store.search('Handler', {...(kinds ? {kinds} : {}), scope: PRIVATE_SCOPE}).results).toEqual([]);
+    }
   });
 
-  it('removes every generation for one private knowledge source in one operation', () => {
+  it('removes every generation for one retired knowledge source in one operation', () => {
+    seedRetiredWikiChunks([
+      {chunkId: 'old', sourceId: 'source-a', generation: 'gen-1'},
+      {chunkId: 'new', sourceId: 'source-a', generation: 'gen-2'},
+      {chunkId: 'other', sourceId: 'source-b', generation: 'gen-1'},
+    ]);
     const store = new RagStore(storagePath);
-    const wiki = (chunkId: string, sourceId: string, generation: string) => makeChunk({
-      chunkId,
-      kind: 'android_internals_wiki',
-      uri: `android-internals-wiki://${sourceId}/${chunkId}`,
-      snippet: 'Handler callback',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: sourceId,
-      sourceGeneration: generation,
-    });
-    store.addChunk(wiki('old', 'source-a', 'gen-1'), PRIVATE_SCOPE);
-    store.addChunk(wiki('new', 'source-a', 'gen-2'), PRIVATE_SCOPE);
-    store.addChunk(wiki('other', 'source-b', 'gen-1'), PRIVATE_SCOPE);
-    store.flush();
 
     expect(store.removeKnowledgeSourceChunks('source-a', PRIVATE_SCOPE)).toBe(2);
     expect(store.listChunks({scope: PRIVATE_SCOPE}).map(chunk => chunk.chunkId)).toEqual(['other']);
-  });
-
-  it('removes only inactive generations for one private knowledge source', () => {
-    const store = new RagStore(storagePath);
-    const wiki = (chunkId: string, sourceId: string, generation: string) => makeChunk({
-      chunkId,
-      kind: 'android_internals_wiki',
-      uri: `android-internals-wiki://${sourceId}/${chunkId}`,
-      snippet: 'Handler callback',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: sourceId,
-      sourceGeneration: generation,
-    });
-    store.addChunk(wiki('old', 'source-a', 'gen-1'), PRIVATE_SCOPE);
-    store.addChunk(wiki('active', 'source-a', 'gen-2'), PRIVATE_SCOPE);
-    store.addChunk(wiki('other', 'source-b', 'gen-1'), PRIVATE_SCOPE);
-    store.flush();
-
-    expect(store.removeInactiveKnowledgeSourceChunks('source-a', 'gen-2', PRIVATE_SCOPE)).toBe(1);
-    expect(store.listChunks({scope: PRIVATE_SCOPE}).map(chunk => chunk.chunkId)).toEqual([
-      'active',
-      'other',
-    ]);
-  });
-
-  it('removes only an exact private-chunk snapshot during fenced cleanup', () => {
-    const store = new RagStore(storagePath);
-    const wiki = (chunkId: string, sourceId: string, generation: string) => makeChunk({
-      chunkId,
-      kind: 'android_internals_wiki',
-      uri: `android-internals-wiki://${sourceId}/${chunkId}`,
-      snippet: 'Handler callback',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: sourceId,
-      sourceGeneration: generation,
-    });
-    store.addChunk(wiki('snapshot-old', 'source-a', 'gen-1'), PRIVATE_SCOPE);
-    store.addChunk(wiki('later-active', 'source-a', 'gen-2'), PRIVATE_SCOPE);
-    store.addChunk(wiki('same-id-other-source', 'source-b', 'gen-1'), PRIVATE_SCOPE);
-    store.flush();
-    const persist = jest.spyOn(store as any, 'persist');
-
-    expect(store.removeKnowledgeSourceChunkIds(
-      'source-a',
-      ['snapshot-old', 'same-id-other-source'],
-      PRIVATE_SCOPE,
-    )).toBe(1);
-    expect(persist).toHaveBeenCalledTimes(1);
-    expect(store.listChunks({scope: PRIVATE_SCOPE}).map(chunk => chunk.chunkId)).toEqual([
-      'later-active',
-      'same-id-other-source',
-    ]);
+    expect(new RagStore(storagePath).listChunks({scope: PRIVATE_SCOPE}).map(chunk => chunk.chunkId))
+      .toEqual(['other']);
   });
 
   it('fails closed across tenant, workspace, and user scope in the legacy store', () => {
+    seedRetiredWikiChunks([{chunkId: 'private-a', sourceId: 'source-a', generation: 'gen-1',
+      snippet: 'PRIVATE_SCOPE_CANARY Handler callback'}]);
     const store = new RagStore(storagePath);
-    const chunk = makeChunk({
-      chunkId: 'private-a',
-      kind: 'android_internals_wiki',
-      uri: 'android-internals-wiki://source-a/private-a',
-      snippet: 'PRIVATE_SCOPE_CANARY Handler callback',
-      license: 'CC-BY-NC-SA-4.0',
-      registryOrigin: 'external_knowledge_registry',
-      knowledgeSourceId: 'source-a',
-      sourceGeneration: 'gen-1',
-    });
-    store.addChunk(chunk, PRIVATE_SCOPE);
 
     const otherUser = {...PRIVATE_SCOPE, userId: 'user-b'};
     expect(store.getChunk('private-a', PRIVATE_SCOPE)?.snippet).toContain('PRIVATE_SCOPE_CANARY');
@@ -797,12 +710,8 @@ describe('RagStore — search', () => {
     expect(store.getChunk('private-a')).toBeUndefined();
     expect(store.listChunks({scope: otherUser})).toEqual([]);
     expect(store.getStats(otherUser).android_internals_wiki.chunkCount).toBe(0);
-    expect(store.search('Handler', {
-      kinds: ['android_internals_wiki'],
-      knowledgeSourceIds: ['source-a'],
-      activeSourceGenerations: {'source-a': 'gen-1'},
-      scope: otherUser,
-    }).results).toEqual([]);
+    expect(store.removeKnowledgeSourceChunks('source-a', otherUser)).toBe(0);
+    expect(store.listChunks({scope: PRIVATE_SCOPE})).toHaveLength(1);
   });
 
   it('supports codebase metadata filters and rank tiers', () => {
@@ -914,7 +823,7 @@ describe('RagStore — search', () => {
 
     expect(result.results).toEqual([]);
     expect(result.unsupportedReason).toContain('local_rag_search_budget_exceeded');
-    expect(result.unsupportedReason).toContain('select fewer codebases/knowledge sources');
+    expect(result.unsupportedReason).toContain('select fewer codebases or enable');
   });
 
   it('search result carries spark provenance and the query string', () => {

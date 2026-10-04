@@ -152,9 +152,9 @@ export interface ScopedRagGenerationPair {
 
 export interface ScopedRagSearchOptions {
   rowScopes?: readonly string[];
-  selection: 'public' | 'codebase' | 'knowledge' | 'none';
+  /** `public` reads the public audience; `codebase` reads exactly the given codebase generations. */
+  selection: 'public' | 'codebase';
   codebaseGenerations?: readonly ScopedRagGenerationPair[];
-  knowledgeSourceGenerations?: readonly ScopedRagGenerationPair[];
   scopeFingerprint?: string;
   queryTokens?: readonly string[];
   candidateLimit?: number;
@@ -182,7 +182,6 @@ export interface ScopedRagMaintenanceFilter {
    * chunks carried a generation, as search does.
    */
   includeLegacyDefaultGeneration?: boolean;
-  excludeSourceGeneration?: string;
   scopeFingerprint?: string;
 }
 
@@ -551,9 +550,6 @@ function scopedRagMaintenanceWhere(
   if (Boolean(filter.codebaseId) === Boolean(filter.knowledgeSourceId)) {
     throw new Error('Exactly one RAG maintenance owner id is required');
   }
-  if (filter.sourceGeneration && filter.excludeSourceGeneration) {
-    throw new Error('RAG maintenance generation filters are mutually exclusive');
-  }
   const params: Record<string, string> = {
     tenantId: scope.tenantId,
     workspaceId: scope.workspaceId,
@@ -582,10 +578,6 @@ function scopedRagMaintenanceWhere(
       ? `(rag_source_generation = @sourceGeneration
           OR (rag_source_generation IS NULL AND @sourceGeneration = 'codebase_1'))`
       : 'rag_source_generation = @sourceGeneration');
-  }
-  if (filter.excludeSourceGeneration) {
-    params.excludeSourceGeneration = filter.excludeSourceGeneration;
-    clauses.push(`COALESCE(rag_source_generation, '') <> @excludeSourceGeneration`);
   }
   return {where: clauses.join('\n AND '), params};
 }
@@ -747,49 +739,31 @@ export function searchScopedRagKnowledgeRecords<T>(
       eligibleClauses.push('0');
     }
 
-    const addGenerationPairs = (
-      column: 'rag_codebase_id' | 'rag_knowledge_source_id',
-      pairs: readonly ScopedRagGenerationPair[] | undefined,
-      prefix: string,
-      allowLegacyDefault: boolean,
-    ): void => {
+    if (opts.selection === 'codebase') {
+      const pairs = opts.codebaseGenerations;
       if (!pairs || pairs.length === 0 || !opts.scopeFingerprint) {
         eligibleClauses.push('0');
-        return;
+      } else {
+        params.scopeFingerprint = opts.scopeFingerprint;
+        const pairClauses = pairs.map((pair, index) => {
+          const idName = `codebaseId${index}`;
+          const generationName = `codebaseGeneration${index}`;
+          params[idName] = pair.id;
+          params[generationName] = pair.generation;
+          // Chunks written before chunks carried a generation belong to `codebase_1`.
+          return `(memory_entries.rag_codebase_id = @${idName} AND
+            (memory_entries.rag_source_generation = @${generationName}
+              OR (memory_entries.rag_source_generation IS NULL AND @${generationName} = 'codebase_1')))`;
+        });
+        eligibleClauses.push(`(${pairClauses.join(' OR ')})`);
+        eligibleClauses.push('memory_entries.rag_scope_fingerprint = @scopeFingerprint');
       }
-      params.scopeFingerprint = opts.scopeFingerprint;
-      const pairClauses = pairs.map((pair, index) => {
-        const idName = `${prefix}Id${index}`;
-        const generationName = `${prefix}Generation${index}`;
-        params[idName] = pair.id;
-        params[generationName] = pair.generation;
-        const generationClause = allowLegacyDefault
-          ? `(memory_entries.rag_source_generation = @${generationName}
-              OR (memory_entries.rag_source_generation IS NULL AND @${generationName} = 'codebase_1'))`
-          : `memory_entries.rag_source_generation = @${generationName}`;
-        return `(memory_entries.${column} = @${idName} AND ${generationClause})`;
-      });
-      eligibleClauses.push(`(${pairClauses.join(' OR ')})`);
-      eligibleClauses.push('memory_entries.rag_scope_fingerprint = @scopeFingerprint');
-    };
-
-    if (opts.selection === 'codebase') {
-      addGenerationPairs('rag_codebase_id', opts.codebaseGenerations, 'codebase', true);
-    } else if (opts.selection === 'knowledge') {
-      addGenerationPairs(
-        'rag_knowledge_source_id',
-        opts.knowledgeSourceGenerations,
-        'knowledge',
-        false,
-      );
-    } else if (opts.selection === 'public') {
+    } else {
       eligibleClauses.push(ragPublicAudienceSql({
         scope: 'memory_entries.scope',
         registryOrigin: 'memory_entries.rag_registry_origin',
         codebaseId: 'memory_entries.rag_codebase_id',
       }));
-    } else {
-      eligibleClauses.push('0');
     }
 
     const addExact = (column: string, value: string | undefined, name: string): void => {
