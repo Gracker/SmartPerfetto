@@ -257,15 +257,17 @@ same-claim trace occurrence plus `provider_send` body/indexed evidence.
 provenance for SSE, reports, CLI, snapshots, and APIs; Web further reduces it
 to the current-run receipt.
 
-### Android Internals
+### Document Knowledge Bases
 
-The signed built-in Knowledge Pack and a private checkout are separate sources:
-
-- the bundled Pack ships with every product and can update through a TUF
-  channel; its provenance is background knowledge, never current-trace
-  evidence;
-- a private checkout requires a path allowlist, rights acknowledgement,
-  provider consent, and request-level source selection.
+Knowledge has one source: document knowledge bases (`document_collection`) the
+user registers and selects per turn, including the Android Internals Wiki's
+`src/`. They require a path allowlist (or the local folder picker), a rights
+acknowledgement, provider consent, and an active index. Results of
+`search_knowledge` / `read_knowledge_section` are background
+(`evidenceEffect: background`), carry `kref-` references and `kb:` citations,
+and never stand in for current-trace evidence. Records of the legacy Wiki
+connector are a retired kind: listed and deletable, and refused at the run-start
+gate with `ANALYSIS_CONTEXT_SOURCE_RETIRED`.
 
 The resolved analysis context pins codebase/knowledge generations,
 tenant/workspace/user, provider consent, and session continuity. Resume,
@@ -341,8 +343,7 @@ at one exit.
 
 Release surfaces are independent:
 
-- npm bundles CLI dist, Skills, Strategies, SQL, trace processor, and the
-  Knowledge Pack;
+- npm bundles CLI dist, Skills, Strategies, SQL, and trace processor;
 - portable additionally bundles Node.js 24, native dependencies, backend,
   `frontend/`, and a launcher;
 - Docker builds a Linux image from `main` using committed `frontend/` and

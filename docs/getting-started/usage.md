@@ -187,10 +187,8 @@ fast 模式默认 50 turns，可由 runtime-specific quick-turn 配置覆盖。�
 
 - 要把 trace 结论映射到本机源码，先在 UI `Codebases` 或 CLI
   `smp codebase preview/register` 注册，再在本次分析显式选择 codebase。注册的 live root 无索引也能有界搜索/读取；`reindex` 只是可选加速。
-- 内置 Android Internals Knowledge Pack 随产品分发；用
-  `smp knowledge-pack status` 查看版本，用 `update --check` 只检查更新。
-- 私有 Android Internals checkout 与内置 Pack 不同，必须配置路径 allowlist、
-  权利确认、provider 同意，并在请求中选择 source id。
+- 要让分析参考 Android Internals Wiki 或团队文档，把目录注册为文档知识库（UI 上下文控件
+  “管理…”或 CLI `smp knowledge register`），建立索引后在本次分析显式选择。
 
 源码和知识背景都不能替代当前 trace 的 SQL/Skill 证据。Code-Aware 默认只给模型
 `CodeRef`；完整边界见 [Code-Aware](code-aware-analysis.md) 和

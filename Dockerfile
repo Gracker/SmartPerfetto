@@ -11,7 +11,7 @@ COPY scripts/perfetto-recording-tools-pin.env /app/scripts/perfetto-recording-to
 COPY docs/rendering_pipelines /app/docs/rendering_pipelines
 COPY backend/ ./
 COPY backend/data/perfettoSqlIndex.light.json backend/data/perfettoSqlIndex.json backend/data/perfettoStdlibSymbols.json ./data/
-RUN npm run knowledge-pack:fetch && npm run build
+RUN npm run build
 
 # Pin the runtime OpenCode executable independently of the builder CPU. The
 # upstream postinstall selects AVX2 from /proc/cpuinfo; copying that selection

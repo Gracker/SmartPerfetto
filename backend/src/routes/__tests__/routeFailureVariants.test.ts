@@ -193,14 +193,14 @@ describe('route failure variants', () => {
           new Error(CANARY));
       })},
       codebaseManagementService: {get: jest.fn(downstream), delete: jest.fn(async (): Promise<never> => downstream())},
-      externalKnowledgeRegistry: {get: jest.fn(() => ({id: 'k1', kind: 'android_internals_wiki'})), setProviderConsent: jest.fn(downstream)},
-      androidInternalsWikiIngester: {ingest: jest.fn(async (): Promise<never> => downstream())},
+      externalKnowledgeRegistry: {get: jest.fn(() => ({id: 'k1', kind: 'document_collection'})), setProviderConsent: jest.fn(downstream)},
+      documentCollectionIngester: {ingest: jest.fn(async (): Promise<never> => downstream())},
     };
     const app = () => appWith(a => a.use('/api/rag', createRagAdminRoutes({} as never, services as never)));
 
     test('knowledge source consent: unknown source is a typed 404, a database failure is fixed', async () => {
       expectFixedFailure(
-        await request(app()).patch('/api/rag/android-internals/sources/k1/consent').send({sendToProvider: true}),
+        await request(app()).patch('/api/rag/knowledge/k1/consent').send({sendToProvider: true}),
         500,
         'knowledge_source_consent_failed',
       );
@@ -209,7 +209,7 @@ describe('route failure variants', () => {
         throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_NOT_FOUND', 'External knowledge source \'k1\' not found', 404);
       });
       expectPublicError(
-        await request(app()).patch('/api/rag/android-internals/sources/k1/consent').send({sendToProvider: true}),
+        await request(app()).patch('/api/rag/knowledge/k1/consent').send({sendToProvider: true}),
         404,
         'KNOWLEDGE_SOURCE_NOT_FOUND',
         'External knowledge source \'k1\' not found',
@@ -217,10 +217,10 @@ describe('route failure variants', () => {
     });
 
     test('knowledge source reindex: a reason token keeps its code without its detail, prose is fixed', async () => {
-      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
+      services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('source_changed_during_ingest:docs/secret-canary-7e3a.md');
       });
-      const reason = await request(app()).post('/api/rag/android-internals/sources/k1/reindex');
+      const reason = await request(app()).post('/api/rag/knowledge/k1/reindex');
       expect(reason.status).toBe(400);
       expect(reason.body).toEqual({
         success: false,
@@ -231,33 +231,33 @@ describe('route failure variants', () => {
       // A rejection, not a fault: logged at warn level with the dropped detail.
       expect(JSON.stringify(warnLog.mock.calls)).toContain('secret-canary-7e3a');
 
-      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => downstream());
-      expectPathFreeFixedFailure(await request(app()).post('/api/rag/android-internals/sources/k1/reindex'), 500,
-        'knowledge_source_reindex_failed');
+      services.documentCollectionIngester.ingest.mockImplementation(async () => downstream());
+      expectPathFreeFixedFailure(await request(app()).post('/api/rag/knowledge/k1/reindex'), 500,
+        'KNOWLEDGE_COLLECTION_REINDEX_FAILED');
     });
 
     test('an internal reason token gets fixed text; a caller-facing one keeps its code', async () => {
-      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
+      services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('staged_chunk_count_mismatch:3:2');
       });
-      const internal = await request(app()).post('/api/rag/android-internals/sources/k1/reindex');
+      const internal = await request(app()).post('/api/rag/knowledge/k1/reindex');
       expect(internal.status).toBe(500);
-      expect(internal.body.code).toBe('knowledge_source_reindex_failed');
+      expect(internal.body.code).toBe('KNOWLEDGE_COLLECTION_REINDEX_FAILED');
       expect(internal.text).not.toContain('staged_chunk_count_mismatch');
 
       // A caller-facing family prefix does not make an unlisted token public.
-      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
+      services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('codebase_delete_not_started');
       });
-      const prefixed = await request(app()).post('/api/rag/android-internals/sources/k1/reindex');
+      const prefixed = await request(app()).post('/api/rag/knowledge/k1/reindex');
       expect(prefixed.status).toBe(500);
-      expect(prefixed.body.code).toBe('knowledge_source_reindex_failed');
+      expect(prefixed.body.code).toBe('KNOWLEDGE_COLLECTION_REINDEX_FAILED');
       expect(prefixed.text).not.toContain('codebase_delete_not_started');
 
-      services.androidInternalsWikiIngester.ingest.mockImplementation(async () => {
+      services.documentCollectionIngester.ingest.mockImplementation(async () => {
         throw new Error('provider_send_not_consented');
       });
-      const consent = await request(app()).post('/api/rag/android-internals/sources/k1/reindex');
+      const consent = await request(app()).post('/api/rag/knowledge/k1/reindex');
       expect(consent.status).toBe(400);
       expect(consent.body.code).toBe('provider_send_not_consented');
     });

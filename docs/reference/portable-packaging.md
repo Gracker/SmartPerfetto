@@ -11,8 +11,7 @@ This file is part of SmartPerfetto. See LICENSE for details.
 <!-- i18n-headings: paired -->
 
 SmartPerfetto 的免安装包不是单文件二进制。启动器负责拉起包内 Node.js 24
-runtime、后端、预构建 Perfetto UI、固定版本 `trace_processor_shell` 和签名的
-Android Internals Knowledge Pack。
+runtime、后端、预构建 Perfetto UI 和固定版本 `trace_processor_shell`。
 
 当前维护的 release asset：
 
@@ -215,8 +214,7 @@ data root 时使用 `SMARTPERFETTO_PORTABLE_DATA_DIR`；它同样禁用迁移。
 ## 验证
 
 脚本会校验包结构、版本、manifest、Node runtime、目标平台 native 依赖、
-`trace_processor_shell` pin，以及 Knowledge Pack lock/manifest/database/license
-的版本和哈希。交叉编译、结构和静态签名校验不证明目标系统能启动。公开发布采用
+`trace_processor_shell` pin。交叉编译、结构和静态签名校验不证明目标系统能启动。公开发布采用
 build-once：在各目标平台解压即将上传的同一份最终归档做 smoke，通过后不再重新
 构建；macOS 必须测试公证、staple 后重新生成的 final zip。当前兼容下限是 Windows
 10 / Windows Server 2016 及以上 x64、macOS arm64 13.5+ 和 Linux x64 glibc
@@ -260,9 +258,8 @@ launcher 会自动选择下一个可用端口，并打印实际访问 URL。只�
 2. 打开 launcher 打印的前端 URL，通常是 [http://127.0.0.1:10000](http://127.0.0.1:10000)。
 3. 检查 launcher 打印的后端 health URL，通常是 [http://127.0.0.1:3000/health](http://127.0.0.1:3000/health)。
 4. 上传一条小 trace，确认后端日志中启动了对应平台的 `trace_processor_shell`。
-5. 在包内 CLI 或后端运行 `smp knowledge-pack status --format json`，确认 bundled/active Pack 可解析且未撤回。
-6. 执行包内 Node、Claude 和 OpenCode 的版本命令（存在时）。
-7. 正常停止 launcher，确认子进程退出且前后端端口已经释放。
+5. 执行包内 Node、Claude 和 OpenCode 的版本命令（存在时）。
+6. 正常停止 launcher，确认子进程退出且前后端端口已经释放。
 
 Windows、macOS 或 Linux 任一最终归档缺少目标平台 smoke 时，GitHub release 应保持
 draft。只有用户明确接受并在 release/交付说明中公开未测试平台时才允许降级发布，

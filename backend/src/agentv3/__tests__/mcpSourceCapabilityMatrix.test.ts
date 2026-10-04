@@ -28,7 +28,7 @@ const SESSION_ID = 'mcp-source-capability-matrix';
 const PUBLIC_TRACE_TOOLS = [
   'analyze_wait_chain', 'compare_baselines', 'detect_architecture', 'execute_sql', 'fetch_artifact',
   'flag_uncertainty', 'invoke_skill', 'list_skills', 'list_stdlib_modules', 'lookup_aosp_source',
-  'lookup_baseline', 'lookup_blog_knowledge', 'lookup_knowledge', 'lookup_oem_sdk', 'lookup_sql_schema',
+  'lookup_baseline', 'lookup_knowledge', 'lookup_oem_sdk', 'lookup_sql_schema',
   'lookup_strategy_detail', 'query_perfetto_source', 'recall_patterns', 'recall_project_memory',
   'recall_similar_case', 'recall_similar_result', 'resolve_hypothesis', 'revise_plan', 'submit_hypothesis',
   'submit_plan', 'update_plan_phase', 'write_analysis_note',

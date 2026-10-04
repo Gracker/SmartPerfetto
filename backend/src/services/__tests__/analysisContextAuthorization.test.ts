@@ -173,7 +173,7 @@ describe('authorizeAnalysisContext', () => {
     codebaseRegistry = new CodebaseRegistry(join(testRoot, 'codebases.json'));
     knowledgeRegistry = new ExternalKnowledgeSourceRegistry(join(testRoot, 'knowledge.json'));
     const source = knowledgeRegistry.register({
-      kind: 'android_internals_wiki',
+      kind: 'document_collection',
       displayName: 'Docs',
       rootRealpath: testRoot,
       revision: 'rev-1',
@@ -198,6 +198,38 @@ describe('authorizeAnalysisContext', () => {
       allowed: false,
       payload: {code: 'ANALYSIS_CONTEXT_SOURCE_UNAVAILABLE'},
     });
+  });
+
+  it('refuses a retired Wiki source even when its rights, consent and index are all in place', async () => {
+    const testRoot = mkdtempSync(join(tmpdir(), 'smartperfetto-knowledge-retired-'));
+    roots.push(testRoot);
+    codebaseRegistry = new CodebaseRegistry(join(testRoot, 'codebases.json'));
+    const knowledgePath = join(testRoot, 'knowledge.json');
+    knowledgeRegistry = new ExternalKnowledgeSourceRegistry(knowledgePath);
+    const collection = knowledgeRegistry.register({
+      kind: 'document_collection', displayName: 'Docs', rootRealpath: testRoot, revision: 'rev-1',
+      contentFingerprint: 'fingerprint', rightsAcknowledged: true, sendToProvider: true,
+      consentedBy: scope.userId, scope, dirty: false,
+    });
+    await knowledgeRegistry.withIngestLease(collection.sourceId, scope, lease => lease.activateGeneration({
+      generation: 'dc_' + '1'.repeat(32), revision: 'rev-1', contentFingerprint: 'fingerprint', dirty: false,
+      indexedArticleCount: 1, indexedChunkCount: 1,
+    }));
+    expect(authorize({knowledgeSourceIds: [collection.sourceId]})).toEqual({allowed: true});
+    // The same usable record as the retired connector stored it; registration
+    // no longer writes this kind, so only stored state carries it.
+    const envelope = JSON.parse(readFileSync(knowledgePath, 'utf8'));
+    const retired = {...envelope.sources[0], kind: 'android_internals_wiki', sourceId: `eks_${'f'.repeat(24)}`};
+    envelope.sources.push(retired);
+    writeFileSync(knowledgePath, JSON.stringify(envelope));
+
+    for (const [outputLanguage, text] of [['en', 'retired legacy Wiki connector'], ['zh-CN', '已停用的旧版 Wiki 连接器']] as const) {
+      const decision = authorize({knowledgeSourceIds: [collection.sourceId, retired.sourceId]}, {outputLanguage});
+      expect(decision).toMatchObject({allowed: false, httpStatus: 409, payload: {code: 'ANALYSIS_CONTEXT_SOURCE_RETIRED'}});
+      expect(JSON.stringify(decision)).toContain(text);
+    }
+    // An unknown id is still answered first.
+    expect(authorize({knowledgeSourceIds: [retired.sourceId, 'ks_missing']})).toMatchObject({httpStatus: 404});
   });
 });
 

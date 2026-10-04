@@ -16,8 +16,6 @@
  * - `codebase`: a registered source index serves only the pinned generation
  *   while it is still the active one and the store still holds every chunk it
  *   was pinned with; the live root stays searchable.
- * - `wiki`: an Android Internals Wiki rebuild deletes the older generation,
- *   so any change refuses, as does a generation that lost chunks.
  * - `document_collection`: a rebuild keeps the previous generation, so the
  *   pinned one serves while its file holds everything its manifest sealed.
  *
@@ -27,22 +25,18 @@
 
 import {activeCodebaseGeneration, codebaseHasActiveIndex} from './codebase/codebaseRegistry';
 import {sourceAccessRefusalAction} from './codebase/sourceAccessRefusal';
-import {externalKnowledgeSourceHasActiveIndex} from './externalKnowledgeSourceRegistry';
 import type {AnalysisContextRegistrations} from './resolvedAnalysisContext';
 
-export type IndexGenerationPolicy = 'codebase' | 'wiki' | 'document_collection';
+export type IndexGenerationPolicy = 'codebase' | 'document_collection';
 
 /**
  * The refusal each policy returns, as the tool result's payload. A codebase
- * names the codebase and points at on-demand search; a Wiki continues without
- * private knowledge; a document collection is unavailable, as when a read
- * finds its file gone.
+ * names the codebase and points at on-demand search; a document collection
+ * is unavailable, as when a read finds its file gone.
  */
 const INDEX_GENERATION_REFUSALS = {
   codebase: {unsupportedReason: 'codebase_index_generation_changed',
     action: sourceAccessRefusalAction('codebase_index_generation_changed'), namesCodebase: true, isError: true},
-  wiki: {unsupportedReason: 'knowledge_index_generation_changed',
-    action: 'continue_without_private_knowledge', namesCodebase: false, isError: false},
   document_collection: {unsupportedReason: 'knowledge_index_unavailable',
     action: undefined, namesCodebase: false, isError: true},
 } as const satisfies Record<IndexGenerationPolicy, {
@@ -67,7 +61,6 @@ export function indexGenerationRefusal(policy: IndexGenerationPolicy, id: string
 /** Where a pinned generation's data is stored, to tell whether it is still whole. */
 export interface IndexGenerationStores {
   countCodebaseGenerationChunks(codebaseId: string, generation: string): number;
-  countKnowledgeSourceGenerationChunks(sourceId: string, generation: string): number;
   /** Whether a document collection's generation file is there and holds all it sealed. */
   documentCollectionServes(sourceId: string, generation: string): boolean;
 }
@@ -85,7 +78,8 @@ export class IndexGenerationPins {
   private constructor(
     private readonly stores: IndexGenerationStores,
     private readonly codebases: ReadonlyMap<string, Pin>,
-    private readonly knowledge: ReadonlyMap<string, Pin>,
+    /** Knowledge source id to its pinned generation; a collection's file says whether it is whole. */
+    private readonly knowledge: ReadonlyMap<string, string>,
   ) {}
 
   /** Pin every selected index's active generation, once, at the start of a run. */
@@ -96,8 +90,7 @@ export class IndexGenerationPins {
         ...(codebaseHasActiveIndex(ref!) ? {chunkCount: ref!.chunkCount} : {})}] as const] : [];
     }));
     const knowledge = new Map([...registrations.knowledgeSources].flatMap(([sourceId, source]) =>
-      source?.activeGeneration ? [[sourceId, {generation: source.activeGeneration,
-        ...(externalKnowledgeSourceHasActiveIndex(source) ? {chunkCount: source.indexedChunkCount} : {})}] as const] : []));
+      source?.activeGeneration ? [[sourceId, source.activeGeneration] as const] : []));
     return new IndexGenerationPins(stores, codebases, knowledge);
   }
 
@@ -110,7 +103,7 @@ export class IndexGenerationPins {
   }
 
   knowledgeGeneration(sourceId: string): string | undefined {
-    return this.knowledge.get(sourceId)?.generation;
+    return this.knowledge.get(sourceId);
   }
 
   /**
@@ -137,14 +130,7 @@ export class IndexGenerationPins {
         (pin.chunkCount === undefined || (codebaseHasActiveIndex(ref!) &&
           this.stores.countCodebaseGenerationChunks(id, pin.generation) >= pin.chunkCount));
     }
-    const pin = this.knowledge.get(id);
-    if (pin === undefined) return false;
-    if (policy === 'wiki') {
-      const source = registrations.knowledgeSources.get(id);
-      return source?.activeGeneration === pin.generation &&
-        (pin.chunkCount === undefined || (externalKnowledgeSourceHasActiveIndex(source) &&
-          this.stores.countKnowledgeSourceGenerationChunks(id, pin.generation) >= pin.chunkCount));
-    }
-    return this.stores.documentCollectionServes(id, pin.generation);
+    const generation = this.knowledge.get(id);
+    return generation !== undefined && this.stores.documentCollectionServes(id, generation);
   }
 }

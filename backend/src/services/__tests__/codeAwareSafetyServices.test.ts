@@ -47,7 +47,10 @@ import {projectOwnerDataEnvelopes} from '../security/privateAnalysisProjection';
 import {issuePrivateToolResultNarrationReceipt} from '../../agentv3/toolNarration';
 import {FINAL_SEMANTIC_INPUT_BYTE_LIMIT} from '../finalSemanticLimits';
 import {LLMEchoOutputStream, type CodeRef} from '../security/llmEchoOutputFilter';
-import {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
+import {
+  ExternalKnowledgeSourceRegistry,
+  type RegisterExternalKnowledgeSourceInput,
+} from '../externalKnowledgeSourceRegistry';
 import {parseConclusionContractSidecar, renderConclusionContractSidecar} from '../../agent/core/conclusionContract';
 import {projectConclusionProtocol, projectConclusionContractForDisplay} from '../security/conclusionProtocolProjection';
 import {warningsDuring} from '../../../tests/helpers/consoleWarnings';
@@ -728,9 +731,9 @@ describe('filterRagLookup', () => {
     const source = {left: () => 1_000, spend: jest.fn()};
 
     const first = await filterRagLookup(makeRawResult(legacyChunk),
-      {toolName: 'lookup_blog_knowledge', turn: 1, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
+      {toolName: 'lookup_aosp_source', turn: 1, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
     const second = await filterRagLookup(makeRawResult(legacyChunk),
-      {toolName: 'lookup_blog_knowledge', turn: 2, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
+      {toolName: 'lookup_aosp_source', turn: 2, budget: {sourceTokens: source, knowledgeTokens: knowledge}});
 
     expect(first.hits[0]?.snippet).toBe('legacy article text');
     expect(left).toBe(0);
@@ -751,7 +754,7 @@ describe('filterRagLookup', () => {
     });
     const result = await filterRagLookup(
       makeRawResult(legacyChunk),
-      {toolName: 'lookup_blog_knowledge', turn: 1, ledger},
+      {toolName: 'lookup_aosp_source', turn: 1, ledger},
     );
     await ledger.flush();
 
@@ -764,11 +767,13 @@ describe('filterRagLookup', () => {
     }));
   });
 
-  it('rechecks private knowledge consent and returns attributed redacted snippets', async () => {
+  it('refuses a stored retired Wiki chunk even with rights, consent and its active generation', async () => {
     const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'external-sources.json'));
     const root = path.join(tmpDir, 'wiki');
     fs.mkdirSync(root);
     const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    // A record the retired Wiki connector registered; registration no longer
+    // types this kind, so the cast stands in for that stored state.
     const source = registry.register({
       kind: 'android_internals_wiki',
       displayName: 'Android Internals Wiki',
@@ -781,7 +786,7 @@ describe('filterRagLookup', () => {
       sendToProvider: true,
       consentedBy: 'user-a',
       scope,
-    });
+    } as unknown as RegisterExternalKnowledgeSourceInput);
     await registry.withIngestLease(source.sourceId, scope, lease =>
       lease.activateGeneration({
         generation: 'generation-a',
@@ -810,30 +815,26 @@ describe('filterRagLookup', () => {
       contentFingerprint: source.contentFingerprint,
       codebaseId: undefined,
     });
+    const ledger = new CodeLookupLedger('session-retired-wiki', 1, path.join(tmpDir, 'ledger-retired-wiki.jsonl'));
+    let left = 1_000;
+    const knowledge = {left: () => left, spend: (tokens: number) => {left -= tokens;}};
 
     const result = await filterRagLookup(makeRawResult(chunk), {
-      toolName: 'lookup_blog_knowledge',
+      toolName: 'lookup_aosp_source',
       turn: 1,
-      externalKnowledgeRegistry: registry,
-      knowledgeSourceIds: [source.sourceId],
+      ledger,
+      budget: {sourceTokens: {left: () => 1_000, spend: () => undefined}, knowledgeTokens: knowledge},
       knowledgeScope: scope,
-    } as any);
+    });
+    await ledger.flush();
 
     expect(result.legacyPath).toBe(false);
-    expect(result.hits[0]?.snippet).toContain('[REDACTED_SECRET]');
-    expect(result.hits[0]?.metadata).toEqual(expect.objectContaining({
-      kind: 'android_internals_wiki',
-      knowledgeSourceId: source.sourceId,
-      sourceGeneration: 'generation-a',
-      sourceStatus: 'finalized',
-      sourceConfidence: 'high',
-      verifiedAt: 1714600000000,
-    }));
-    expect(result.hits[0]?.metadata).not.toEqual(expect.objectContaining({
-      title: expect.anything(),
-      license: expect.anything(),
-      attribution: expect.anything(),
-    }));
+    expect(result.hits).toEqual([expect.objectContaining({chunkId: 'wiki-1', unsupportedReason: 'knowledge_kind_retired'})]);
+    expect(result.hits[0]).not.toHaveProperty('snippet');
+    expect(JSON.stringify(result)).not.toContain('Handler callback');
+    expect(left).toBe(1_000);
+    expect(ledger.getEntries()).toEqual([expect.objectContaining({
+      outcome: 'rejected', chunkIds: [], tokensSpent: 0, consentApplied: true})]);
   });
 });
 

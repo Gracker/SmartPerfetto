@@ -1188,7 +1188,6 @@ interface AnalysisSession {
     codebaseIds: string[];
     analysisContextFingerprint: string;
   };
-  androidInternalsPackPin?: import('../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
   /** Reference trace ID for comparison mode (dual-trace analysis) */
   referenceTraceId?: string;
   comparisonSource?: 'raw_trace_pair' | 'analysis_result_snapshots';
@@ -4771,7 +4770,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
               : undefined,
             sourceDepth: options.sourceDepth,
             analysisContextFingerprint: options.analysisContextFingerprint,
-            androidInternalsPackPin: session.androidInternalsPackPin,
             tenantId: session.tenantId,
             workspaceId: session.workspaceId,
             userId: session.userId,

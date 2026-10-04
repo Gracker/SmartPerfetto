@@ -26,6 +26,7 @@ import type {KnowledgeDeliveredLocation, KnowledgeReferenceLedger} from './knowl
 
 export const KNOWLEDGE_USE_SCHEMA_VERSION = 'knowledge_use@1' as const;
 
+/** `android_internals_wiki` is read from records written before that connector was retired; no run writes it. */
 export const KNOWLEDGE_BASE_KINDS = ['document_collection', 'android_internals_wiki'] as const;
 export type KnowledgeBaseKind = typeof KNOWLEDGE_BASE_KINDS[number];
 
@@ -101,25 +102,13 @@ const KNOWLEDGE_CITATION_PATTERNS: WrittenLocationPatterns = {
  * evaluation-filtered and repeated content never count.
  */
 export class KnowledgeUseRecorder {
-  private readonly wiki = new Map<string, {generation: string; chunkIds: Set<string>}>();
-
   constructor(private readonly references: KnowledgeReferenceLedger) {}
 
-  /** Android Internals Wiki chunks returned to the model (it has no line references, so it is counted only). */
-  recordWikiDelivery(knowledgeBaseId: string, generation: string, chunkIds: readonly string[]): void {
-    if (chunkIds.length === 0) return;
-    const entry = this.wiki.get(knowledgeBaseId) ?? {generation, chunkIds: new Set<string>()};
-    for (const chunkId of chunkIds) entry.chunkIds.add(chunkId);
-    this.wiki.set(knowledgeBaseId, entry);
-  }
-
   snapshot(): KnowledgeUseRecord {
-    const sources: KnowledgeUseSourceV1[] = [
-      ...[...this.references.deliveredReferenceCounts()].map(([knowledgeBaseId, {generation, count}]) => ({
-        knowledgeBaseId, kind: 'document_collection' as const, generation, deliveredReferenceCount: count})),
-      ...[...this.wiki].map(([knowledgeBaseId, {generation, chunkIds}]) => ({
-        knowledgeBaseId, kind: 'android_internals_wiki' as const, generation, deliveredReferenceCount: chunkIds.size})),
-    ].sort((left, right) => left.knowledgeBaseId.localeCompare(right.knowledgeBaseId));
+    const sources: KnowledgeUseSourceV1[] = [...this.references.deliveredReferenceCounts()]
+      .map(([knowledgeBaseId, {generation, count}]) => ({
+        knowledgeBaseId, kind: 'document_collection' as const, generation, deliveredReferenceCount: count}))
+      .sort((left, right) => left.knowledgeBaseId.localeCompare(right.knowledgeBaseId));
     return {sources, locations: this.references.deliveredLocations()};
   }
 }

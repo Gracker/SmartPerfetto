@@ -21,8 +21,8 @@ any release work, it must also read [AGENTS.md](../../AGENTS.md),
 
 | Form | Artifact | User entry | Key boundary |
 |---|---|---|---|
-| npm CLI | `@gracker/smartperfetto` | `smp` / `smartperfetto` | Requires user Node.js `>=24 <25`; includes Skills/Strategies/SQL/trace processor/signed Knowledge Pack, but not the Web UI launcher |
-| GitHub portable | `smartperfetto-v<version>-windows-x64.zip`, `smartperfetto-v<version>-macos-arm64.zip`, `smartperfetto-v<version>-linux-x64.tar.gz` | bundled launcher | Bundles Node.js 24, native dependencies, committed `frontend/`, pinned `trace_processor_shell`, and the signed Knowledge Pack |
+| npm CLI | `@gracker/smartperfetto` | `smp` / `smartperfetto` | Requires user Node.js `>=24 <25`; includes Skills/Strategies/SQL/trace processor, but not the Web UI launcher |
+| GitHub portable | `smartperfetto-v<version>-windows-x64.zip`, `smartperfetto-v<version>-macos-arm64.zip`, `smartperfetto-v<version>-linux-x64.tar.gz` | bundled launcher | Bundles Node.js 24, native dependencies, committed `frontend/`, and pinned `trace_processor_shell` |
 | Docker Hub | Linux image built from `main` workflow | `docker compose -f docker-compose.hub.yml up -d` | Does not read host Claude Code local auth |
 | Source checkout | Git repository | `./start.sh` | Normal use serves committed `frontend/`; `perfetto/` submodule is only needed for UI plugin work |
 
@@ -124,7 +124,6 @@ npm install @gracker/smartperfetto@<version>
 ./node_modules/.bin/smp --version
 ./node_modules/.bin/smartperfetto --help
 ./node_modules/.bin/smp doctor --format json
-./node_modules/.bin/smp knowledge-pack status --format json
 ```
 
 Local `npm publish` is an emergency fallback only and requires WebAuthn. Run
@@ -203,7 +202,7 @@ git status --short --branch
 
 ## Post-Release Verification
 
-- npm: `npm view @gracker/smartperfetto version --json` equals the new version, and an empty-directory install can run `smp doctor --format json` plus `smp knowledge-pack status --format json`.
+- npm: `npm view @gracker/smartperfetto version --json` equals the new version, and an empty-directory install can run `smp doctor --format json`.
 - GitHub: `gh release view v<version>` returns a non-draft release, and all
   three asset names, sizes, target commit, and remote `sha256:` digests match
   the locally smoked archives.

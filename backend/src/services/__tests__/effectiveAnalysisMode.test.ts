@@ -142,21 +142,22 @@ describe('effective analysis mode', () => {
     )).toThrow(AnalysisContextAuthorizationChangedError);
   });
 
-  it('leaves a knowledge index losing its chunks to the run\'s generation pin, not the run boundary', () => {
-    let indexedChunkCount = 3;
+  it('leaves a knowledge index losing its generation file to the run\'s generation pin, not the run boundary', () => {
+    let generationServes = true;
     const knowledgeRegistry = {
       get: () => ({
-        sourceId: 'wiki',
+        sourceId: 'docs',
+        kind: 'document_collection',
         indexGeneration: 2,
-        activeGeneration: 'knowledge_2_test',
+        activeGeneration: 'dc_' + '2'.repeat(32),
         contentFingerprint: 'c'.repeat(64),
-        indexedChunkCount,
+        indexedChunkCount: 3,
         rightsAcknowledged: true,
         sendToProvider: true,
         consentedAt: 1,
       }),
     } as any;
-    const selection = {knowledgeSourceIds: ['wiki']};
+    const selection = {knowledgeSourceIds: ['docs']};
     const scope = {tenantId: 'tenant', workspaceId: 'workspace', userId: 'user'};
     const expected = buildAnalysisContextAuthorizationFingerprint(
       selection,
@@ -165,9 +166,9 @@ describe('effective analysis mode', () => {
     );
     const registrations = () => readAnalysisContextRegistrations(selection, scope, {knowledgeRegistry});
     const pins = IndexGenerationPins.capture(registrations(), {countCodebaseGenerationChunks: () => 0,
-      countKnowledgeSourceGenerationChunks: () => 3, documentCollectionServes: () => false});
+      documentCollectionServes: () => generationServes});
 
-    indexedChunkCount = 0;
+    generationServes = false;
 
     // Index state is not authorization: the run stays current...
     expect(() => assertCurrentAnalysisContextAuthorization(
@@ -176,8 +177,8 @@ describe('effective analysis mode', () => {
       expected,
       {knowledgeRegistry},
     )).not.toThrow();
-    // ...and the Wiki lookup refuses the emptied index instead of searching it.
-    expect(pins.refusal('wiki', ['wiki'], registrations())?.payload)
-      .toMatchObject({unsupportedReason: 'knowledge_index_generation_changed'});
+    // ...and the knowledge tools refuse the lost generation instead of searching it.
+    expect(pins.refusal('document_collection', ['docs'], registrations())?.payload)
+      .toMatchObject({unsupportedReason: 'knowledge_index_unavailable'});
   });
 });

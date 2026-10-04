@@ -112,21 +112,30 @@ describe('knowledge_use@1 citations', () => {
 });
 
 describe('knowledge use sources', () => {
-  it('counts each delivered reference and Wiki chunk once, per base', () => {
-    const snapshot = record((ledger, recorder) => {
+  it('counts each delivered reference once, per base', () => {
+    const snapshot = record(ledger => {
       ledger.issue(binding());
       ledger.issue(binding());
       ledger.issue(binding({chunkId: 'd1:0:1'}));
-      recorder.recordWikiDelivery(BASE_B, 'wiki_gen', ['c1', 'c2']);
-      recorder.recordWikiDelivery(BASE_B, 'wiki_gen', ['c2']);
-      recorder.recordWikiDelivery(BASE_B, 'wiki_gen', []);
+      ledger.issue(binding({sourceId: BASE_B, chunkId: 'b:0'}));
     });
     expect(snapshot.sources).toEqual([
       {knowledgeBaseId: BASE_A, kind: 'document_collection', generation: GEN_1, deliveredReferenceCount: 2},
-      {knowledgeBaseId: BASE_B, kind: 'android_internals_wiki', generation: 'wiki_gen', deliveredReferenceCount: 2},
+      {knowledgeBaseId: BASE_B, kind: 'document_collection', generation: GEN_1, deliveredReferenceCount: 1},
     ]);
-    expect(knowledgeReferenceCount(buildKnowledgeUse(snapshot, ''))).toBe(4);
+    expect(knowledgeReferenceCount(buildKnowledgeUse(snapshot, ''))).toBe(3);
     expect(knowledgeReferenceCount(undefined)).toBeUndefined();
+  });
+
+  it('still reads a record a retired Wiki source contributed to before its removal', () => {
+    // No run records this kind any more; a stored record keeps it readable.
+    const historical = {
+      schemaVersion: 'knowledge_use@1',
+      sources: [{knowledgeBaseId: BASE_B, kind: 'android_internals_wiki', generation: 'wiki_gen', deliveredReferenceCount: 2}],
+      citations: [],
+    };
+    expect(sanitizeKnowledgeUse(structuredClone(historical))).toEqual(historical);
+    expect(knowledgeReferenceCount(sanitizeKnowledgeUse(structuredClone(historical)))).toBe(2);
   });
 });
 

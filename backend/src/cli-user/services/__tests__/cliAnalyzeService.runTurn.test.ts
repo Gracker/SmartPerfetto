@@ -102,7 +102,10 @@ jest.mock('../../../services/codebase/defaultCodebaseServices', () => ({
   getDefaultCodebaseRegistry: () => ({get: mockCodebaseGet}),
 }));
 
-jest.mock('../../../services/externalKnowledgeSourceRegistry', () => ({
+jest.mock('../../../services/externalKnowledgeSourceRegistry', () => {
+  const actual = jest.requireActual<typeof import('../../../services/externalKnowledgeSourceRegistry')>(
+    '../../../services/externalKnowledgeSourceRegistry');
+  return {
   externalKnowledgeSourceHasActiveIndex: (source: {
     activeGeneration?: string;
     contentFingerprint?: string;
@@ -110,8 +113,15 @@ jest.mock('../../../services/externalKnowledgeSourceRegistry', () => ({
   }) => Boolean(
     source.activeGeneration && source.contentFingerprint && (source.indexedChunkCount ?? 0) > 0
   ),
-  getDefaultExternalKnowledgeSourceRegistry: () => ({get: mockKnowledgeSourceGet}),
-}));
+  // The real access rule (scope, whitelist, retired kind, rights, consent) over the mocked records.
+  getDefaultExternalKnowledgeSourceRegistry: () => ({
+    get: mockKnowledgeSourceGet,
+    evaluateAccess(...args: Parameters<typeof actual.ExternalKnowledgeSourceRegistry.prototype.evaluateAccess>) {
+      return actual.ExternalKnowledgeSourceRegistry.prototype.evaluateAccess.apply(this, args);
+    },
+  }),
+  };
+});
 
 jest.mock('../../../agent/context/enhancedSessionContext', () => ({
   sessionContextManager: {
@@ -399,6 +409,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
     });
     mockKnowledgeSourceGet.mockReturnValue({
       sourceId: 'wiki-cli',
+      kind: 'document_collection',
       indexGeneration: 2,
       activeGeneration: 'knowledge_2_test',
       contentFingerprint: 'b'.repeat(64),
@@ -523,6 +534,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
   it('rejects an activated knowledge source whose generation contains no chunks', async () => {
     mockKnowledgeSourceGet.mockReturnValue({
       sourceId: 'wiki-empty',
+      kind: 'document_collection',
       indexGeneration: 2,
       activeGeneration: 'knowledge_2_empty',
       contentFingerprint: 'b'.repeat(64),
@@ -563,7 +575,7 @@ describe('CliAnalyzeService runTurn final quality gate', () => {
       consent: {sendToProvider: false, consentHash: 'consent'},
     });
     const activeKnowledge = {
-      indexGeneration: 2, activeGeneration: 'knowledge_2', contentFingerprint: 'b'.repeat(64),
+      kind: 'document_collection', indexGeneration: 2, activeGeneration: 'knowledge_2', contentFingerprint: 'b'.repeat(64),
       indexedChunkCount: 1, rightsAcknowledged: true, sendToProvider: true, consentedAt: 1,
     };
     const ids = (prefix: string, count: number) => Array.from({length: count}, (_, index) => `${prefix}-${index}`);

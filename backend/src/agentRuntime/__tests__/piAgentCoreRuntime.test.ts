@@ -345,14 +345,13 @@ function rejectAfter(ms: number, onTimeout?: () => void): Promise<never> {
   });
 }
 
-/** Provider activity timing uses real MCP tools, without machine-local AIW corpus verification. */
+/**
+ * Provider activity timing uses real MCP tools. It once switched off the
+ * built-in Knowledge Pack's machine-local verification; with the Pack removed
+ * there is nothing to switch, and the wrapper only marks these cases.
+ */
 async function withProviderActivityTimingFixture<T>(run: () => Promise<T>): Promise<T> {
-  const previous = process.env.SMARTPERFETTO_AIW_PACK_ENABLED;
-  process.env.SMARTPERFETTO_AIW_PACK_ENABLED = '0';
-  try {return await run();} finally {
-    if (previous === undefined) delete process.env.SMARTPERFETTO_AIW_PACK_ENABLED;
-    else process.env.SMARTPERFETTO_AIW_PACK_ENABLED = previous;
-  }
+  return run();
 }
 
 function delay(ms: number): Promise<void> {

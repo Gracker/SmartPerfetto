@@ -351,7 +351,7 @@ describe('public evidence tool result shape', () => {
     const mcp = createClaudeMcpServer({
       traceId: 'trace-public-contract', sessionId: 'session-public-contract', traceProcessorService,
       skillExecutor: new SkillExecutor(traceProcessorService), artifactStore: new ArtifactStore(),
-      emitUpdate: () => {}, androidInternalsPackStore: null,
+      emitUpdate: () => {},
     });
     const registry = new McpToolRegistry();
     for (const definition of mcp.toolDefinitions) registry.registerShared(definition.shared);

@@ -65,9 +65,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     const registry = new Registry(path.join(tmpDir, 'sources.json'));
 
     expect(() => registry.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -83,9 +83,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     const storagePath = path.join(tmpDir, 'sources.json');
     const registry = new ExternalKnowledgeSourceRegistry(storagePath) as any;
     const source = registry.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: true,
@@ -119,9 +119,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     );
     const scope = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
     const source = registry.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -153,9 +153,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     const first = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'first.json'));
     const second = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'second.json'));
     const source = first.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -188,9 +188,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     const first = new ExternalKnowledgeSourceRegistry(storagePath);
     const second = new ExternalKnowledgeSourceRegistry(storagePath);
     const source = first.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -274,9 +274,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     const first = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'first-fence.json'));
     const second = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'second-fence.json'));
     const source = first.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -339,9 +339,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     const first = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'first-clear.json'));
     const second = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'second-clear.json'));
     const source = first.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -391,9 +391,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
   it('does not expose a source across tenant or workspace scope', () => {
     const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
     const source = registry.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -417,9 +417,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     );
     const scope = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
     const source = registry.register({
-      kind: 'android_internals_wiki',
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection',
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       revision: 'a'.repeat(40),
       contentFingerprint: 'b'.repeat(64),
       dirty: false,
@@ -461,9 +461,9 @@ describe('ExternalKnowledgeSourceRegistry', () => {
     const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
     const scope = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
     const base = {
-      kind: 'android_internals_wiki' as const,
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
+      kind: 'document_collection' as const,
+      displayName: 'Team docs',
+      rootRealpath: path.join(tmpDir, 'docs'),
       dirty: false,
       license: 'CC-BY-NC-SA-4.0',
       rightsAcknowledged: true,
@@ -505,22 +505,6 @@ describe('ExternalKnowledgeSourceRegistry', () => {
 describe('ExternalKnowledgeSourceRegistry document collections and deletion', () => {
   const scope = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
 
-  function wikiInput(sendToProvider?: boolean) {
-    return {
-      kind: 'android_internals_wiki' as const,
-      displayName: 'Android Internals Wiki',
-      rootRealpath: path.join(tmpDir, 'wiki'),
-      revision: 'a'.repeat(40),
-      contentFingerprint: 'b'.repeat(64),
-      dirty: false,
-      license: 'CC-BY-NC-SA-4.0',
-      rightsAcknowledged: true,
-      sendToProvider,
-      consentedBy: 'user-1',
-      scope,
-    };
-  }
-
   function collectionInput(overrides: Record<string, unknown> = {}) {
     return {
       kind: 'document_collection' as const,
@@ -547,10 +531,8 @@ describe('ExternalKnowledgeSourceRegistry document collections and deletion', ()
     }));
   }
 
-  it.each([
-    ['android_internals_wiki', wikiInput] as const,
-    ['document_collection', (sendToProvider?: boolean) => collectionInput({sendToProvider})] as const,
-  ])('keeps recorded consent when %s re-registration omits it and changes it only when explicit', (_kind, input) => {
+  it('keeps recorded consent when a re-registration omits it and changes it only when explicit', () => {
+    const input = (sendToProvider?: boolean) => collectionInput({sendToProvider});
     const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
     expect(registry.register(input()).sendToProvider).toBe(false);
     const granted = registry.register(input(true));
@@ -763,11 +745,9 @@ describe('ExternalKnowledgeSourceRegistry document collections and deletion', ()
     expect(getScopedKnowledgeRecord('external_knowledge_source', source.sourceId, scope)).toBeUndefined();
   });
 
-  it.each([
-    ['android_internals_wiki', wikiInput] as const,
-    ['document_collection', (sendToProvider?: boolean) => collectionInput({sendToProvider})] as const,
-  ])('does not let an omitted-consent %s re-registration restore a consent a partial dual write revoked', (_kind, input) => {
-    const storagePath = useDualWrite(`dual-consent-${_kind}`);
+  it('does not let an omitted-consent re-registration restore a consent a partial dual write revoked', () => {
+    const input = (sendToProvider?: boolean) => collectionInput({sendToProvider});
+    const storagePath = useDualWrite('dual-consent');
     const registry = new ExternalKnowledgeSourceRegistry(storagePath);
     const source = registry.register(input(true));
     failPersist(registry, [true]);
@@ -840,26 +820,108 @@ describe('ExternalKnowledgeSourceRegistry document collections and deletion', ()
     expect(registry.get(source.sourceId, scope)).toBeUndefined();
   });
 
-  it('bounds the display name of every kind', () => {
+  it('bounds the display name', () => {
     const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'sources.json'));
-    for (const input of [wikiInput(), collectionInput()]) {
-      expect(() => registry.register({...input, displayName: 'x'.repeat(121)}))
-        .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_METADATA_INVALID'}));
-    }
+    expect(() => registry.register({...collectionInput(), displayName: 'x'.repeat(121)}))
+      .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_METADATA_INVALID'}));
   });
 
   it('lets a record stored before the limit keep its long name, but not take a new one', () => {
     const storagePath = path.join(tmpDir, 'legacy-sources.json');
     const registry = new ExternalKnowledgeSourceRegistry(storagePath);
-    const stored = registry.register(wikiInput());
-    const longName = 'Wiki '.repeat(40).trim();
+    const stored = registry.register(collectionInput());
+    const longName = 'Docs '.repeat(40).trim();
     // A record written before display names were bounded.
     const envelope = JSON.parse(fs.readFileSync(storagePath, 'utf8'));
     envelope.sources[0].displayName = longName;
     fs.writeFileSync(storagePath, JSON.stringify(envelope));
-    expect(registry.register({...wikiInput(), displayName: longName})).toMatchObject({
+    expect(registry.register(collectionInput({displayName: longName}))).toMatchObject({
       sourceId: stored.sourceId, displayName: longName});
-    expect(() => registry.register({...wikiInput(), displayName: `${longName} renamed`}))
+    expect(() => registry.register(collectionInput({displayName: `${longName} renamed`})))
       .toThrow(expect.objectContaining({code: 'KNOWLEDGE_SOURCE_METADATA_INVALID'}));
+  });
+});
+
+describe('ExternalKnowledgeSourceRegistry retired Wiki records', () => {
+  const scope = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
+  const sourceId = `eks_${'a'.repeat(24)}`;
+
+  /**
+   * A record the retired Android Internals Wiki connector wrote: registration
+   * no longer accepts the kind, so it exists only as stored state. It is
+   * otherwise fully usable: rights, consent and an active index.
+   */
+  function retiredWikiRecord(): ExternalKnowledgeSource {
+    return {
+      kind: 'android_internals_wiki',
+      sourceId,
+      displayName: 'Android Internals Wiki',
+      rootRealpath: path.join(tmpDir, 'wiki'),
+      revision: 'a'.repeat(40),
+      contentFingerprint: 'b'.repeat(64),
+      dirty: false,
+      license: 'CC-BY-NC-SA-4.0',
+      rightsAcknowledged: true,
+      rightsAcknowledgedAt: 1,
+      sendToProvider: true,
+      consentedBy: 'user-1',
+      consentedAt: 1,
+      scope,
+      indexGeneration: 1,
+      activeGeneration: 'wiki_gen_1',
+      indexedArticleCount: 1,
+      indexedChunkCount: 2,
+    };
+  }
+
+  function writeStoredSources(storagePath: string, sources: ExternalKnowledgeSource[]): void {
+    fs.writeFileSync(storagePath, JSON.stringify({schemaVersion: 1, sources}));
+  }
+
+  it('still loads and lists a stored retired record but never grants it to a run', () => {
+    const storagePath = path.join(tmpDir, 'retired-sources.json');
+    writeStoredSources(storagePath, [retiredWikiRecord()]);
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+
+    expect(registry.get(sourceId, scope)).toEqual(expect.objectContaining({kind: 'android_internals_wiki'}));
+    expect(registry.list(scope).map(source => source.sourceId)).toEqual([sourceId]);
+    expect(registry.evaluateAccess(sourceId, scope, [sourceId]))
+      .toEqual({allowed: false, reason: 'knowledge_kind_retired'});
+    // The whitelist and the scope are still checked first.
+    expect(registry.evaluateAccess(sourceId, scope, []))
+      .toEqual({allowed: false, reason: 'source_not_whitelisted'});
+    expect(registry.evaluateAccess(sourceId, {...scope, workspaceId: 'workspace-2'}, [sourceId]))
+      .toEqual({allowed: false, reason: 'source_not_found_or_out_of_scope'});
+  });
+
+  it('removes a stored retired record through the kind-agnostic deletion path', async () => {
+    const storagePath = path.join(tmpDir, 'retired-remove.json');
+    writeStoredSources(storagePath, [retiredWikiRecord()]);
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+    const removeIndex = jest.fn<(tombstone: ExternalKnowledgeSource, fence: unknown) => void>();
+
+    await registry.remove(sourceId, scope, 'user-1', removeIndex);
+
+    expect(removeIndex).toHaveBeenCalledWith(
+      expect.objectContaining({kind: 'android_internals_wiki', lifecycleState: 'deleting', sendToProvider: false}),
+      expect.anything(),
+    );
+    expect(registry.get(sourceId, scope)).toBeUndefined();
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).sources).toEqual([]);
+  });
+
+  it('refuses a retired record held by the enterprise store too', async () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise-retired-kind.sqlite');
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'retired';
+    upsertScopedKnowledgeRecord('external_knowledge_source', sourceId, 'external-knowledge-source',
+      retiredWikiRecord(), scope);
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'enterprise-retired-kind.json'));
+
+    expect(registry.list(scope).map(source => source.sourceId)).toEqual([sourceId]);
+    expect(registry.evaluateAccess(sourceId, scope, [sourceId]))
+      .toEqual({allowed: false, reason: 'knowledge_kind_retired'});
+    await registry.remove(sourceId, scope, 'user-1', () => undefined);
+    expect(getScopedKnowledgeRecord('external_knowledge_source', sourceId, scope)).toBeUndefined();
   });
 });

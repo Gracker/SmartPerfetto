@@ -1,6 +1,6 @@
 {
   "note": "Backend exports no production module uses, in or outside its own file: used only by tests, or by nothing, including barrel re-exports nothing imports through the barrel. Each entry is accepted debt, and a suite over it vouches for nothing the product does. Shrink this list; do not grow it.",
-  "generated": "2026-10-03",
+  "generated": "2026-10-04",
   "unusedExports": [
     "src/agent/core/modelRouter.ts#default",
     "src/agent/detectors/index.ts#ArchitectureDetector",
@@ -218,10 +218,6 @@
     "src/services/analysisHistoryStore.ts#resetAnalysisHistoryStoreForTests",
     "src/services/analysisRunStore.ts#resetAnalysisRunStoreForTests",
     "src/services/analysisRunTraceProcessorLease.ts#AnalysisRunProcessorPolicy",
-    "src/services/androidInternalsPack/androidInternalsPackResolver.ts#__resetAndroidInternalsPackStoresForTests",
-    "src/services/androidInternalsPack/sessionBackgroundKnowledgeRegistry.ts#clearSessionBackgroundKnowledgeReferences",
-    "src/services/androidInternalsPack/types.ts#AndroidInternalsBackgroundReference",
-    "src/services/androidInternalsPack/types.ts#BackgroundKnowledgeReference",
     "src/services/applicationUpdate/applicationUpdateService.ts#resetApplicationUpdateServiceForTests",
     "src/services/auth/codebaseScopes.ts#hasCodebaseScope",
     "src/services/batchTrace/batchTraceTypes.ts#BatchTraceComparisonBridgeResult",

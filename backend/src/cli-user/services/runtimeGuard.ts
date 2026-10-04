@@ -35,12 +35,6 @@ import {
 import { parseAdbDevices } from './androidCapture';
 import { resolveAdbTool, resolveTraceboxTool } from './captureTools';
 import type { CaptureToolResolution } from '../types';
-import {
-  getAndroidInternalsPackStatus,
-} from '../../services/androidInternalsPack/knowledgePackStatus';
-import type {
-  AndroidInternalsPackStatus,
-} from '../../services/androidInternalsPack/types';
 
 export interface RuntimeGuardResult {
   selection: RuntimeSelection;
@@ -169,7 +163,6 @@ export interface DoctorReport {
       type: string;
     };
   };
-  knowledgePack: AndroidInternalsPackStatus;
   checks: DoctorCheck[];
 }
 
@@ -187,7 +180,6 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
   const providers = providerSvc.list();
   const active = providers.find((p) => p.isActive);
   const nodeMajor = Number.parseInt(process.version.replace(/^v/, '').split('.')[0] || '0', 10);
-  const knowledgePack = getAndroidInternalsPackStatus();
 
   const qoderSdkInstalled = selection.kind !== QODER_AGENT_RUNTIME_KIND ||
     runtimeDiagnostics.sdkInstalled === true;
@@ -264,27 +256,6 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       ? [buildClaudeSdkBinaryCheck(runtimeDiagnostics.sdkBinary)]
       : []),
     {
-      name: 'android_internals_pack',
-      ok: knowledgePack.availability === 'available' || knowledgePack.availability === 'disabled',
-      status: knowledgePack.availability === 'available'
-        ? 'ok'
-        : knowledgePack.availability === 'disabled'
-          ? 'warn'
-          : knowledgePack.availability === 'revoked' || knowledgePack.availability === 'invalid'
-            ? 'error'
-            : 'warn',
-      message: knowledgePack.active
-        ? `${knowledgePack.active.contentVersion} (${knowledgePack.active.origin}, ${knowledgePack.licenseExpression})`
-        : `Knowledge Pack is ${knowledgePack.availability}`,
-      details: {
-        version: knowledgePack.active?.contentVersion ?? null,
-        fingerprint: knowledgePack.active?.contentFingerprint ?? null,
-        sourceRevision: knowledgePack.active?.sourceRevision ?? null,
-        license: knowledgePack.licenseExpression,
-        lastError: knowledgePack.lastError ?? null,
-      },
-    },
-    {
       name: 'trace_processor_shell',
       ok: traceProcessorExists && traceProcessorExecutable,
       status: traceProcessorExists && traceProcessorExecutable ? 'ok' : 'warn',
@@ -341,7 +312,6 @@ export function collectDoctorReport(cliHome: string): DoctorReport {
       count: providers.length,
       ...(active ? { active: { id: active.id, name: active.name, type: active.type } } : {}),
     },
-    knowledgePack,
     checks,
   };
 }

@@ -185,28 +185,23 @@ Trace 实时对比用于在同一个 AI 对话中，从当前 workspace 任意�
 
 完整说明见 [多 Trace 分析结果对比](multi-trace-result-comparison.md)。
 
-## 8. Android Internals 知识
+## 8. 文档知识库与 Android Internals Wiki
 
-SmartPerfetto 把 Android Internals 背景知识分成两个明确来源：
-
-- 随 npm、Docker、源码和 portable 分发的签名 Knowledge Pack，离线可用，并可通过
-  TUF stable channel 检查或安装更新；
-- 用户显式允许的私有 checkout，受路径、权利、provider 同意和请求级 source id
-  约束。
+用户可以把任意文档目录（`.md .markdown .mdx .txt .rst .adoc .html .htm`）注册为文档知识库，
+包括公开的 Android Internals Wiki 的 `src/` 目录。知识库按轮显式选择，模型用
+`search_knowledge` / `read_knowledge_section` 按需检索，并以 `kb:路径#L起-L止` 引用出处。
 
 入口：
 
-- CLI：`smp knowledge-pack status`、`smp knowledge-pack update --check`。
-- AI 分析：内置 Pack 由 runtime 在需要时检索；私有 source 必须在本次请求显式选择。
-- 管理 API：`/api/rag/android-internals/*` 只管理私有 checkout。
+- AI Assistant 对话框的上下文控件 →“管理…”→“文档知识库”：预览、注册、重建索引、试检索、删除。
+- CLI：`smp knowledge preview/register/reindex/list/search/remove`，分析时用 `--knowledge-source-id`。
 
 效果：
 
-- Pack/私有知识只作为 background knowledge，不能伪装成当前 trace 的 SQL/Skill 证据。
-- 报告保留来源、版本、fingerprint 和 snippet hash；日志/SSE 不投影正文片段。
-- 更新不会让运行中的 session 静默换版本；撤回会要求创建新分析上下文。
+- 知识库只作为背景，不能代替当前 trace 的 SQL/Skill 证据；只依据知识库的说法会被标明。
+- 报告、快照和 CLI 产物记录交付了哪些知识库引用（`knowledge_use@1`）以及答案中每条引用是否对得上。
 
-完整说明见 [Android Internals 知识包与私有知识库](android-internals-knowledge.md)。
+完整说明见 [把 Android Internals Wiki 作为知识库使用](android-internals-knowledge.md)。
 
 ## 9. Code-Aware 本机源码分析
 
@@ -332,7 +327,7 @@ SmartPerfetto 支持多种运行方式：
 | 生成可分享的分析结论 | HTML report |
 | 当前对话中临时对比 reference Trace | `compare_arrows` Trace 实时对比 |
 | 跨窗口/跨用户对比已完成结果 | `fact_check` 多 Trace 分析结果对比 |
-| 查询 Android Internals 背景 | 内置 Knowledge Pack；私有资料用显式 knowledge source |
+| 查询 Android Internals 或团队文档背景 | 注册并选择文档知识库 |
 | 把结论映射到本机源码文件和行号 | Code-Aware Analysis |
 | 判断一次分析是否值得反馈、能贡献什么 | 结果下方“让 Agent 帮我判断是否应反馈” |
 | 审阅并应用经过门控的分析改进 | 设置 → 自进化 / Evolution |

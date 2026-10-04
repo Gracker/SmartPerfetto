@@ -111,8 +111,10 @@ export interface VerifyOptions {
   setupCodebaseRoot?: string;
   /** Explicit setup behavior; omitted preserves the historical register-and-index path. */
   setupCodebaseMode?: 'register-only' | 'register-and-index';
-  /** Optional Wiki root registered and indexed through the real admin API before analysis. */
+  /** Optional document folder registered and indexed as a knowledge base through the real admin API before analysis. */
   setupKnowledgeRoot?: string;
+  setupKnowledgeName?: string;
+  setupKnowledgeDescription?: string;
   /**
    * undefined = use active Provider Manager profile if configured.
    * string = use that explicit provider.
@@ -1092,7 +1094,9 @@ function printUsage(): void {
   console.log('  --setup-codebase-root <path>       Register and index an app-source root before analysis');
   console.log('  --setup-codebase-mode <register-only|register-and-index>');
   console.log('                                      Select setup behavior (default: register-and-index)');
-  console.log('  --setup-knowledge-root <path>      Register and index an Android Internals Wiki root before analysis');
+  console.log('  --setup-knowledge-root <path>      Register and index a document knowledge base before analysis');
+  console.log('  --setup-knowledge-name <text>      Display name for --setup-knowledge-root');
+  console.log('  --setup-knowledge-description <t>  Description for --setup-knowledge-root');
   console.log('  --provider-id <id|env|null>        Provider id, or env/null to ignore active providers');
   console.log('  --require-code-ref                 Require source-level code refs in conclusion/analysis_completed text');
   console.log('  --require-claim-verifier-ok        Require analysis_completed claim verifier to pass with no unsupported claims');
@@ -1559,6 +1563,16 @@ export function parseArgs(argv: string[]): VerifyOptions {
       continue;
     }
 
+    if (arg === '--setup-knowledge-name' || arg === '--setup-knowledge-description') {
+      if (!next) {
+        throw new Error(`${arg} requires a value`);
+      }
+      if (arg === '--setup-knowledge-name') options.setupKnowledgeName = next;
+      else options.setupKnowledgeDescription = next;
+      i += 1;
+      continue;
+    }
+
     if (arg === '--provider-id') {
       if (!next) {
         throw new Error('--provider-id requires a value');
@@ -1946,20 +1960,17 @@ export async function setupAnalysisContext(
   }
 
   if (options.setupKnowledgeRoot) {
-    const registration = await postJsonOrThrow(baseUrl, '/api/rag/android-internals/sources', {
+    const registration = await postJsonOrThrow(baseUrl, '/api/rag/knowledge/register', {
       rootPath: options.setupKnowledgeRoot,
-      displayName: 'DeepSeek E2E Android Internals',
+      displayName: options.setupKnowledgeName ?? 'DeepSeek E2E knowledge base',
+      ...(options.setupKnowledgeDescription ? {description: options.setupKnowledgeDescription} : {}),
       rightsAcknowledged: true,
       sendToProvider: true,
     });
     const source = asRecord(registration.source);
     const sourceId = typeof source?.sourceId === 'string' ? source.sourceId : '';
     if (!sourceId) throw new Error('Context setup did not return a knowledge source id');
-    await postJsonOrThrow(
-      baseUrl,
-      `/api/rag/android-internals/sources/${encodeURIComponent(sourceId)}/reindex`,
-      {},
-    );
+    await postJsonOrThrow(baseUrl, `/api/rag/knowledge/${encodeURIComponent(sourceId)}/reindex`, {});
     options.knowledgeSourceIds.push(sourceId);
   }
 

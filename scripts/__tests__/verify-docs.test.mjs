@@ -85,10 +85,10 @@ test('derives top-level CLI commands from live help formatting', () => {
       '',
       'Commands:',
       '  run [options] <trace>  run analysis',
-      '  knowledge-pack         inspect Pack',
+      '  knowledge              manage knowledge',
       '  help [command]         display help',
     ].join('\n')),
-    ['run', 'knowledge-pack'],
+    ['run', 'knowledge'],
   );
 });
 

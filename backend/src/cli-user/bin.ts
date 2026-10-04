@@ -61,10 +61,6 @@ import {
 } from './commands/codebase';
 import type {CodebaseOutputFormat} from './commands/codebase';
 import {
-  runKnowledgePackStatusCommand,
-  runKnowledgePackUpdateCommand,
-} from './commands/knowledgePack';
-import {
   runKnowledgeListCommand,
   runKnowledgePreviewCommand,
   runKnowledgeRegisterCommand,
@@ -438,22 +434,6 @@ function main(): void {
       }));
     });
 
-  const knowledgePackCmd = program
-    .command('knowledge-pack')
-    .description('inspect or update the signed Android Internals Knowledge Pack');
-  knowledgePackCmd
-    .command('status')
-    .description('show the active, bundled, and signed-channel Pack state')
-    .option('--format <format>', 'output format: text or json')
-    .action(async (opts: {format?: string}) => {
-      const g = globals();
-      await runAndExit(() => runKnowledgePackStatusCommand({
-        envFile: g.envFile,
-        sessionDir: g.sessionDir,
-        format: textJsonFormat(opts.format) === 'json' ? 'json' : 'text',
-      }));
-    });
-
   const knowledgeCmd = program
     .command('knowledge')
     .description('register document folders as searchable knowledge bases for analysis');
@@ -546,20 +526,6 @@ function main(): void {
         envFile: g.envFile,
         sessionDir: g.sessionDir,
         format: textJsonFormat(opts.format),
-      }));
-    });
-  knowledgePackCmd
-    .command('update')
-    .description('refresh TUF metadata and atomically install the stable Pack')
-    .option('--check', 'check for an update without installing it', false)
-    .option('--format <format>', 'output format: text or json')
-    .action(async (opts: {check?: boolean; format?: string}) => {
-      const g = globals();
-      await runAndExit(() => runKnowledgePackUpdateCommand({
-        envFile: g.envFile,
-        sessionDir: g.sessionDir,
-        checkOnly: opts.check,
-        format: textJsonFormat(opts.format) === 'json' ? 'json' : 'text',
       }));
     });
 

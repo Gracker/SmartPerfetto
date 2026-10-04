@@ -43,7 +43,7 @@ import {
 } from './assistantApplicationService';
 import {
   registerSessionBackgroundKnowledgeReferences,
-} from '../../services/androidInternalsPack/sessionBackgroundKnowledgeRegistry';
+} from '../../services/knowledge/sessionBackgroundKnowledgeRegistry';
 import {
   analysisHasPrivateContext,
   privateContextRestrictsAudience,
@@ -141,7 +141,6 @@ export interface AnalyzeManagedSession extends ManagedAssistantSession {
   providerSnapshotChangeReason?: string;
   /** Authorization partition for source/RAG-aware runtime continuity. */
   analysisContextFingerprint?: string;
-  androidInternalsPackPin?: import('../../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
   codeAwareMode?: import('../../services/codebase/codeAwareFeature').CodeAwareMode;
   codebaseIds?: string[];
   knowledgeSourceIds?: string[];
@@ -788,7 +787,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
                 ? 'provider_snapshot_hash_mismatch'
                 : undefined,
               analysisContextFingerprint: input.analysisContextFingerprint,
-              androidInternalsPackPin: stateSnapshot?.androidInternalsPackPin,
               continuityBreaks: restoredContinuityBreaks.length > 0 ? restoredContinuityBreaks : undefined,
               lineage: restoredLineage,
               referenceTraceId: effectiveReferenceTraceId,
@@ -888,7 +886,6 @@ export class AgentAnalyzeSessionService<TSession extends AnalyzeManagedSession> 
       providerSnapshotHash: sessionProviderSnapshotHash,
       providerSnapshotChanged: false,
       analysisContextFingerprint: input.analysisContextFingerprint,
-      androidInternalsPackPin: input.options?.androidInternalsPackPin,
       referenceTraceId: effectiveReferenceTraceId,
       comparisonSource: comparisonSourceForReference(effectiveReferenceTraceId),
       createdAt: Date.now(),

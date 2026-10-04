@@ -191,32 +191,29 @@ Output:
 
 See [Multi-Trace Analysis Result Comparison](multi-trace-result-comparison.en.md) for the full workflow.
 
-## 8. Android Internals Knowledge
+## 8. Document Knowledge Bases And The Android Internals Wiki
 
-SmartPerfetto separates Android Internals background knowledge into two sources:
-
-- a signed Knowledge Pack bundled with npm, Docker, source, and portable
-  products, available offline and updatable through a TUF stable channel;
-- a user-allowed private checkout guarded by path, rights, provider-consent,
-  and request-level source-id checks.
+Any folder of documents (`.md .markdown .mdx .txt .rst .adoc .html .htm`) can be
+registered as a document knowledge base, including the `src/` folder of the
+public Android Internals Wiki. Knowledge bases are selected explicitly per turn;
+the model searches them on demand with `search_knowledge` /
+`read_knowledge_section` and cites them as `kb:path#Lstart-Lend`.
 
 Entry points:
 
-- CLI: `smp knowledge-pack status` and `smp knowledge-pack update --check`.
-- AI analysis: the runtime retrieves the built-in Pack when relevant; a private
-  source must be selected explicitly for the request.
-- Admin API: `/api/rag/android-internals/*` manages private checkouts only.
+- The AI Assistant composer's context control → "Manage…" → "Document
+  knowledge bases": preview, register, reindex, test search, delete.
+- CLI: `smp knowledge preview/register/reindex/list/search/remove`, and
+  `--knowledge-source-id` for an analysis.
 
-Output:
+Effects:
 
-- Pack/private content is background knowledge, never current-trace SQL/Skill
-  evidence.
-- Reports retain source, version, fingerprint, and snippet hashes; logs/SSE do
-  not project excerpt bodies.
-- Updates do not silently switch active sessions; revocation requires a new
-  analysis context.
+- A knowledge base is background only and never stands in for current-trace
+  SQL/Skill evidence; statements based only on it are labelled.
+- Reports, snapshots, and CLI artifacts record which knowledge references were
+  delivered (`knowledge_use@1`) and whether each citation in the answer matches.
 
-See [Android Internals Knowledge Pack And Private Knowledge](android-internals-knowledge.en.md).
+See [Using The Android Internals Wiki As A Knowledge Base](android-internals-knowledge.en.md).
 
 ## 9. Code-Aware Local Source Analysis
 
@@ -358,7 +355,7 @@ running directory. See [Application Updates](application-updates.en.md).
 | Produce a shareable conclusion | HTML report |
 | Temporarily compare a reference trace in this conversation | `compare_arrows` live trace comparison |
 | Compare completed results across windows or users | `fact_check` multi-trace result comparison |
-| Retrieve Android Internals background | Built-in Knowledge Pack; explicit knowledge source for private material |
+| Retrieve Android Internals or team-document background | Register and select a document knowledge base |
 | Map findings to local source files and line ranges | Code-Aware Analysis |
 | Decide whether an analysis is worth reporting and what to contribute | “Ask the Agent whether to report this” below the result |
 | Review and apply a qualified analysis improvement | Settings -> Evolution |

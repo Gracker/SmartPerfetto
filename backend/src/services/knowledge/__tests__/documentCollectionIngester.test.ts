@@ -14,8 +14,10 @@ import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../../enterpriseMigration';
 import {
   type ExternalKnowledgeIngestLeaseGuard,
   ExternalKnowledgeSourceRegistry,
+  type RegisterExternalKnowledgeSourceInput,
 } from '../../externalKnowledgeSourceRegistry';
 import {DocumentCollectionIngester} from '../documentCollectionIngester';
+import {removeKnowledgeSource} from '../knowledgeSourceRemoval';
 import {DocumentCollectionStore, KnowledgeIndexUnavailableError} from '../documentCollectionStore';
 
 const SCOPE = {tenantId: 'tenant-1', workspaceId: 'workspace-1', userId: 'user-1'};
@@ -235,6 +237,7 @@ describe('DocumentCollectionIngester', () => {
     });
     expect(indexFiles()).toEqual([]);
 
+    // A record of the retired Wiki connector: only stored state carries the kind, hence the cast.
     const wiki = registry.register({
       kind: 'android_internals_wiki',
       displayName: 'Wiki',
@@ -246,7 +249,7 @@ describe('DocumentCollectionIngester', () => {
       rightsAcknowledged: true,
       consentedBy: 'user-1',
       scope: SCOPE,
-    });
+    } as unknown as RegisterExternalKnowledgeSourceInput);
     await expect(ingester.ingest(wiki.sourceId, SCOPE)).rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_KIND_MISMATCH'});
   });
 
@@ -309,19 +312,24 @@ describe('DocumentCollectionIngester registration and removal', () => {
     expect(again.source).toMatchObject({sourceId: first.source.sourceId, displayName: 'Team', sendToProvider: true});
   });
 
-  it('removes a document collection with its index, and refuses another kind before revoking it', async () => {
+  it('removes a document collection with its index, and a retired Wiki record with its RagStore chunks', async () => {
     writeDoc('a.md', '# A\n\nAlpha notes.');
     const source = register(true);
     await ingester.ingest(source.sourceId, SCOPE);
     expect(indexFiles().length).toBeGreaterThan(0);
-    await ingester.remove(source.sourceId, SCOPE, 'user-1');
+    const removedChunks: string[] = [];
+    const services = {registry, collections: ingester,
+      ragStore: {removeKnowledgeSourceChunks: (sourceId: string) => {removedChunks.push(sourceId); return 1;}}};
+    await removeKnowledgeSource(services, source.sourceId, SCOPE, 'user-1');
     expect(registry.get(source.sourceId, SCOPE)).toBeUndefined();
     expect(indexFiles()).toEqual([]);
+    expect(removedChunks).toEqual([]);
+    // A record of the retired Wiki connector: only stored state carries the kind, hence the cast.
     const wiki = registry.register({kind: 'android_internals_wiki', displayName: 'Wiki', rootRealpath: docsRoot,
       revision: 'r', contentFingerprint: 'f', dirty: false, license: 'internal', rightsAcknowledged: true,
-      sendToProvider: true, consentedBy: 'user-1', scope: SCOPE});
-    await expect(ingester.remove(wiki.sourceId, SCOPE, 'user-1')).rejects.toMatchObject({code: 'KNOWLEDGE_SOURCE_KIND_MISMATCH'});
-    // Refused before its tombstone: the Wiki is still readable.
-    expect(registry.get(wiki.sourceId, SCOPE)).toMatchObject({sourceId: wiki.sourceId, sendToProvider: true});
+      sendToProvider: true, consentedBy: 'user-1', scope: SCOPE} as unknown as RegisterExternalKnowledgeSourceInput);
+    await removeKnowledgeSource(services, wiki.sourceId, SCOPE, 'user-1');
+    expect(registry.get(wiki.sourceId, SCOPE)).toBeUndefined();
+    expect(removedChunks).toEqual([wiki.sourceId]);
   });
 });

@@ -577,9 +577,11 @@ export interface SessionStateSnapshot {
   continuityBreaks?: ProviderContinuityBreak[];
   /** Authorization partition for source/RAG continuation. */
   analysisContextFingerprint?: string;
-  /** Immutable public Knowledge Pack identity pinned to this analysis session. */
-  androidInternalsPackPin?: import('../services/androidInternalsPack/types').AndroidInternalsPackIdentity;
-  /** Public background citations, kept separate from current-trace evidence. */
+  /**
+   * Public background citations from the retired built-in Knowledge Pack,
+   * kept separate from current-trace evidence. Only sessions recorded before
+   * its removal carry them; they are preserved, never produced anew.
+   */
   backgroundKnowledgeReferences?: import('../types/sparkContracts').BackgroundKnowledgeReference[];
   /** Backend-session ancestry when a user-visible session had to bridge to a fresh backend session. */
   lineage?: SessionLineage;
@@ -673,7 +675,6 @@ export interface SessionFieldsForSnapshot {
   /** Append-only audit of provider snapshot changes observed when this session was restored. */
   continuityBreaks?: ProviderContinuityBreak[];
   analysisContextFingerprint?: string;
-  androidInternalsPackPin?: SessionStateSnapshot['androidInternalsPackPin'];
   backgroundKnowledgeReferences?: SessionStateSnapshot['backgroundKnowledgeReferences'];
   /** Backend-session ancestry when a user-visible session had to bridge to a fresh backend session. */
   lineage?: SessionLineage;

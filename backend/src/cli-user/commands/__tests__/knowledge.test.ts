@@ -17,6 +17,11 @@ import {
   runKnowledgeSearchCommand,
 } from '../knowledge';
 import {resetCliEnvironmentForTesting} from '../../bootstrap';
+import {resolveCodebaseScope} from '../../../services/codebase/codebaseRegistry';
+import {
+  getDefaultExternalKnowledgeSourceRegistry,
+  type RegisterExternalKnowledgeSourceInput,
+} from '../../../services/externalKnowledgeSourceRegistry';
 
 let tmpDir: string;
 let docsRoot: string;
@@ -108,6 +113,23 @@ describe('smp knowledge', () => {
     expect(lastJson().sources).toEqual([]);
     expect(await runKnowledgeSearchCommand({sourceId, query: 'frame', sessionDir: sessionDir(), format: 'json'})).toBe(3);
     expect(lastJson()).toMatchObject({success: false, code: 'KNOWLEDGE_SOURCE_NOT_FOUND'});
+  });
+
+  it('lists a retired Wiki record as retired and removes it', async () => {
+    // The CLI's own registry, after the CLI has bootstrapped its environment.
+    expect(await runKnowledgeListCommand({sessionDir: sessionDir(), format: 'json'})).toBe(0);
+    // A record of the retired Wiki connector: only stored state carries the kind, hence the cast.
+    const {sourceId} = getDefaultExternalKnowledgeSourceRegistry().register({kind: 'android_internals_wiki',
+      displayName: 'Old Wiki', rootRealpath: docsRoot, revision: 'r', contentFingerprint: 'f', dirty: false,
+      license: 'internal', rightsAcknowledged: true, sendToProvider: true, consentedBy: 'local',
+      scope: resolveCodebaseScope()} as unknown as RegisterExternalKnowledgeSourceInput);
+
+    expect(await runKnowledgeListCommand({sessionDir: sessionDir(), format: 'text'})).toBe(0);
+    expect(printed()).toContain(`${sourceId}\tandroid_internals_wiki (retired: delete it, re-register the folder)\tOld Wiki`);
+    expect(await runKnowledgeRemoveCommand({sourceId, sessionDir: sessionDir(), format: 'json', yes: true})).toBe(0);
+    expect(lastJson()).toEqual({success: true, sourceId, deleted: true});
+    expect(await runKnowledgeListCommand({sessionDir: sessionDir(), format: 'json'})).toBe(0);
+    expect(lastJson().sources).toEqual([]);
   });
 
   it('reports an empty folder and a bad search as input errors, with a product code only', async () => {

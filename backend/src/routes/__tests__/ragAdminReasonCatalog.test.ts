@@ -25,7 +25,6 @@ const SRC_ROOT = path.resolve(__dirname, '..', '..');
 const PRODUCERS = [
   'routes/ragAdminRoutes.ts',
   'services/rag',
-  'services/androidInternalsWiki',
   'services/knowledge',
   'services/externalKnowledgeSourceRegistry.ts',
   'services/scopedIngestLease.ts',
@@ -53,12 +52,7 @@ const INTERNAL_OR_NOT_A_REASON = new Set([
   'external_knowledge_registry',
   'external_knowledge_source',
   // The routes' own fixed failure codes.
-  'knowledge_source_audit_failed',
   'knowledge_source_consent_failed',
-  'knowledge_source_index_delete_failed',
-  'knowledge_source_preview_failed',
-  'knowledge_source_register_failed',
-  'knowledge_source_reindex_failed',
   // Invariants and process failures the caller cannot act on.
   'codebase_delete_not_started',
   'source_enumerator_failed',

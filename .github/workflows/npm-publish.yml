@@ -418,7 +418,4 @@ jobs:
           if (!doctor.traceProcessor?.exists || !doctor.traceProcessor?.executable) {
             throw new Error('public CLI trace_processor_shell is unavailable');
           }
-          if (doctor.knowledgePack?.availability !== 'available') {
-            throw new Error('public CLI Knowledge Pack is unavailable');
-          }
           NODE

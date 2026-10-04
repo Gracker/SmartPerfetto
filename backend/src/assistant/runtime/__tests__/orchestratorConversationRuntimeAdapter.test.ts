@@ -130,7 +130,7 @@ describe('Conversation evidence and stream consumer boundaries', () => {
         artifactStore: store, traceProcessorService: {query} as unknown as TraceProcessorService,
         skillExecutor: new SkillExecutor({query}), analysisNotes: [], hypotheses: [], uncertaintyFlags: [],
         watchdogWarning: {current: null}, lightweight: true, allowNewEvidence: firstTurn,
-        conversationTraceAttached: true, androidInternalsPackStore: null,
+        conversationTraceAttached: true,
         emitUpdate: update => emitter.emit('update', update)});
       const invoke = async (name: string, args: Record<string, unknown>) => {
         const tool = mcp.toolDefinitions.find(definition => definition.name === name);

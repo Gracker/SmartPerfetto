@@ -23,10 +23,10 @@
  * maintenance and deletion. Responses carry relative paths and fixed reason
  * codes, never a registered root.
  *
- * The Android Internals endpoints only register and index an operator-
- * allowlisted local checkout. Remote blog, AOSP, and OEM fetchers remain
- * operator-script-only because their authenticated source credentials do
- * not belong in the HTTP surface.
+ * The former Android Internals Wiki endpoints (`/android-internals/*`)
+ * answer 410: the Wiki is registered as a document collection. Remote blog,
+ * AOSP, and OEM fetchers remain operator-script-only because their
+ * authenticated source credentials do not belong in the HTTP surface.
  *
  * The `/knowledge` endpoints register, index, search, set consent on and
  * delete document collections (any allowlisted folder of documents, or one
@@ -48,6 +48,7 @@ import {
 } from 'express';
 
 import {authenticate, requireRequestContext} from '../middleware/auth';
+import {rejectRemovedApi} from '../middleware/removedApi';
 import {
   logRouteFailure,
   pathFreeFailure,
@@ -105,24 +106,10 @@ import {
   getDefaultExternalKnowledgeSourceRegistry,
   KnowledgeSourceRequestError,
   projectKnowledgeSourceForManagement,
-  sanitizeExternalKnowledgeSource,
-  type ExternalKnowledgeKind,
-  type ExternalKnowledgeSource,
-  type KnowledgeCleanupFence,
 } from '../services/externalKnowledgeSourceRegistry';
 import {DocumentCollectionIngester} from '../services/knowledge/documentCollectionIngester';
 import {KnowledgeIndexUnavailableError} from '../services/knowledge/documentCollectionStore';
-import {AndroidInternalsWikiIngester} from '../services/androidInternalsWiki/androidInternalsWikiIngester';
-import {
-  inspectAndroidInternalsWikiIdentity,
-  scanAndroidInternalsWiki,
-} from '../services/androidInternalsWiki/androidInternalsWikiCorpus';
-import {
-  auditAndroidInternalsWiki,
-  loadAuditableSkills,
-  loadValidatedAssertionRefs,
-  loadWikiCapabilityMap,
-} from '../services/androidInternalsWiki/androidInternalsWikiAudit';
+import {removeKnowledgeSource} from '../services/knowledge/knowledgeSourceRemoval';
 
 export interface RagAdminRouteServices {
   registry?: CodebaseRegistry;
@@ -134,13 +121,7 @@ export interface RagAdminRouteServices {
   kernelSourceIngester?: KernelSourceIngester;
   directoryPicker?: NativeDirectoryPicker;
   externalKnowledgeRegistry?: ExternalKnowledgeSourceRegistry;
-  androidInternalsWikiIngester?: AndroidInternalsWikiIngester;
   documentCollectionIngester?: DocumentCollectionIngester;
-  androidInternalsWikiAuditPaths?: {
-    capabilityMapPath: string;
-    skillsPath: string;
-    fixtureManifestPath: string;
-  };
 }
 
 function snippetHash(snippet: string): string {
@@ -285,6 +266,7 @@ export const CALLER_FACING_RAG_REASONS: ReadonlySet<string> = new Set([
   'pending_generation_not_found',
   'pending_generation_stale',
   // Consent and rights
+  'knowledge_kind_retired',
   'provider_send_consent_required',
   'provider_send_disabled_for_session',
   'provider_send_not_consented',
@@ -298,8 +280,6 @@ function callerFacing(reason: string | undefined): string | undefined {
 function callerFacingRagReason(status: number): (reason: string) => number | undefined {
   return reason => (callerFacing(reason) ? status : undefined);
 }
-
-const LEGACY_WIKI_KIND = 'android_internals_wiki';
 
 /**
  * An optional request string. Routes check only presence and type; the
@@ -418,49 +398,8 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
   };
   const externalKnowledgeRegistry = services.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
-  const androidInternalsWikiIngester = services.androidInternalsWikiIngester ??
-    new AndroidInternalsWikiIngester(
-      s,
-      externalKnowledgeRegistry,
-      new PathSecurityGate({
-        allowlistEnvironmentVariable: 'SMARTPERFETTO_KNOWLEDGE_ROOTS',
-        allowedExtensions: ['.md'],
-        maxFiles: 5_000,
-        maxTotalBytes: 64 * 1024 * 1024,
-      }),
-    );
   const documentCollectionIngester = services.documentCollectionIngester ??
     new DocumentCollectionIngester(externalKnowledgeRegistry);
-  /** How each kind's index goes when its source is deleted; the Record type covers every kind. */
-  const removeIndexByKind: Readonly<Record<
-    ExternalKnowledgeKind,
-    (scope: KnowledgeScope, sourceId: string, fence: KnowledgeCleanupFence) => Promise<void> | void
-  >> = {
-    android_internals_wiki: (scope, sourceId) => {
-      removeWikiChunks(sourceId, scope);
-    },
-    document_collection: (scope, sourceId, fence) => documentCollectionIngester.removeIndex(scope, sourceId, fence),
-  };
-  /** The legacy Wiki connector's sources; a document collection is managed under `/knowledge`. */
-  const legacyWikiSource = (sourceId: string, scope: KnowledgeScope): ExternalKnowledgeSource | undefined => {
-    const source = externalKnowledgeRegistry.get(sourceId, scope);
-    return source?.kind === LEGACY_WIKI_KIND ? source : undefined;
-  };
-  const removeWikiChunks = (sourceId: string, scope: KnowledgeScope): number => {
-    const chunkIds = s.listChunks({
-      kind: 'android_internals_wiki',
-      registryOrigin: 'external_knowledge_registry',
-      scope,
-    }).filter(chunk => chunk.knowledgeSourceId === sourceId)
-      .map(chunk => chunk.chunkId);
-    return s.removeKnowledgeSourceChunkIds(sourceId, chunkIds, scope);
-  };
-  const backendRoot = path.resolve(__dirname, '../..');
-  const androidInternalsWikiAuditPaths = services.androidInternalsWikiAuditPaths ?? {
-    capabilityMapPath: path.join(backendRoot, 'knowledge/android-internals-capability-map.yaml'),
-    skillsPath: path.join(backendRoot, 'skills'),
-    fixtureManifestPath: path.join(backendRoot, 'skills/public-fixtures.yaml'),
-  };
   const symbolResolverFor = (scope: KnowledgeScope) => new SymbolResolver(s, scope, registry);
   const router = Router();
   router.use(authenticate);
@@ -553,277 +492,13 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
   });
 
-  router.post('/android-internals/preview', requireCodebaseScope('codebase:read'), async (req, res) => {
-    const rootPath = typeof req.body?.rootPath === 'string' ? req.body.rootPath : '';
-    if (!rootPath) {
-      return res.status(400).json({success: false, error: '`rootPath` is required'});
-    }
-    try {
-      // The folder walk is inside the boundary: its failure is logged without a path.
-      const preview = await androidInternalsWikiIngester.preview(rootPath);
-      if (preview.blocked) {
-        return res.status(400).json({
-          success: false,
-          error: preview.blockedReason ?? 'knowledge root blocked',
-          preview: {
-            blocked: true,
-            blockedReason: preview.blockedReason,
-            acceptedFileCount: preview.acceptedFiles.length,
-            skippedFileCount: preview.skippedFileCount,
-          },
-        });
-      }
-      const corpus = scanAndroidInternalsWiki(
-        preview.rootRealpath,
-        preview.acceptedFiles.map(file => file.relativePath),
-        androidInternalsWikiIngester.getSourceReadLimits(),
-      );
-      const identity = inspectAndroidInternalsWikiIdentity(corpus);
-      const statusCounts: Record<string, number> = {};
-      for (const article of corpus.articles) {
-        const status = article.status ?? 'unknown';
-        statusCounts[status] = (statusCounts[status] ?? 0) + 1;
-      }
-      return res.json({
-        success: true,
-        preview: {
-          blocked: false,
-          acceptedFileCount: preview.acceptedFiles.length,
-          skippedFileCount: preview.skippedFileCount,
-          totalArticles: corpus.totalArticles,
-          metadataErrorCount: corpus.articles.filter(article => !article.metadataValid).length,
-          statusCounts,
-          revision: identity.revision,
-          contentFingerprint: identity.contentFingerprint,
-          dirtyAcceptedArticleCount: identity.dirtyAcceptedArticlePaths.length,
-        },
-      });
-    } catch (error) {
-      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
-        code: 'knowledge_source_preview_failed',
-        error: 'Knowledge source preview failed',
-        logLabel: '[RagAdmin] Knowledge source preview error',
-      });
-    }
-  });
-
-  router.post('/android-internals/sources', requireCodebaseScope('codebase:manage'), async (req, res) => {
-    const rootPath = typeof req.body?.rootPath === 'string' ? req.body.rootPath : '';
-    const displayName = typeof req.body?.displayName === 'string'
-      ? req.body.displayName.trim()
-      : 'Android Internals Wiki';
-    if (!rootPath) return res.status(400).json({success: false, error: '`rootPath` is required'});
-    if (req.body?.rightsAcknowledged !== true) {
-      return res.status(400).json({
-        success: false,
-        error: '`rightsAcknowledged: true` is required for CC BY-NC-SA use',
-      });
-    }
-    // Omitted keeps the consent already on record; a boolean grants or revokes it.
-    const sendToProvider: unknown = req.body?.sendToProvider;
-    if (sendToProvider !== undefined && typeof sendToProvider !== 'boolean') {
-      return res.status(400).json({
-        success: false,
-        error: '`sendToProvider` must be a boolean when provided',
-      });
-    }
-    try {
-      const preview = await androidInternalsWikiIngester.preview(rootPath);
-      if (preview.blocked) {
-        return res.status(400).json({
-          success: false,
-          error: preview.blockedReason ?? 'knowledge root blocked',
-        });
-      }
-      const corpus = scanAndroidInternalsWiki(
-        preview.rootRealpath,
-        preview.acceptedFiles.map(file => file.relativePath),
-        androidInternalsWikiIngester.getSourceReadLimits(),
-      );
-      const identity = inspectAndroidInternalsWikiIdentity(corpus);
-      const context = requireRequestContext(req);
-      const scope = knowledgeScopeFromRequestContext(context);
-      const source = externalKnowledgeRegistry.register({
-        kind: LEGACY_WIKI_KIND,
-        displayName,
-        rootRealpath: preview.rootRealpath,
-        revision: identity.revision,
-        contentFingerprint: identity.contentFingerprint,
-        dirty: identity.dirty,
-        license: 'CC-BY-NC-SA-4.0',
-        rightsAcknowledged: true,
-        sendToProvider,
-        consentedBy: context.userId,
-        scope,
-      });
-      return res.json({success: true, source: sanitizeExternalKnowledgeSource(source)});
-    } catch (error) {
-      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
-        code: 'knowledge_source_register_failed',
-        error: 'Knowledge source registration failed',
-        logLabel: '[RagAdmin] Knowledge source register error',
-      }, [KnowledgeSourceRequestError]);
-    }
-  });
-
-  router.get('/android-internals/sources', requireCodebaseScope('codebase:read'), (req, res) => {
-    const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-    const sources = externalKnowledgeRegistry.list(scope)
-      .filter(source => source.kind === LEGACY_WIKI_KIND)
-      .map(sanitizeExternalKnowledgeSource);
-    return res.json({success: true, sources});
-  });
-
-  router.post(
-    '/android-internals/sources/:id/reindex',
-    requireCodebaseScope('codebase:manage'),
-    async (req, res) => {
-      const sourceId = routeParam(req.params.id);
-      const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-      if (!legacyWikiSource(sourceId, scope)) {
-        return res.status(404).json({
-          success: false,
-          error: `External knowledge source '${sourceId}' not found`,
-        });
-      }
-      try {
-        const result = await androidInternalsWikiIngester.ingest(sourceId, scope);
-        return res.json({success: true, result});
-      } catch (error) {
-        return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
-          code: 'knowledge_source_reindex_failed',
-          error: 'Knowledge source reindex failed',
-          logLabel: '[RagAdmin] Knowledge source reindex error',
-        }, [KnowledgeSourceRequestError]);
-      }
-    },
-  );
-
-  /**
-   * Provider-send consent of any knowledge source in the caller's scope, one
-   * implementation behind two routes: the legacy Wiki path and
-   * `/knowledge/:sourceId/consent`, which answers with the `/knowledge` projection.
-   */
-  const setKnowledgeConsent = (
-    sourceIdParam: 'id' | 'sourceId',
-    project: (source: ExternalKnowledgeSource) => object,
-  ) => (req: Request, res: Response) => {
-    if (typeof req.body?.sendToProvider !== 'boolean') {
-      return res.status(400).json({
-        success: false,
-        error: '`sendToProvider` must be an explicit boolean',
-      });
-    }
-    const context = requireRequestContext(req);
-    const scope = knowledgeScopeFromRequestContext(context);
-    try {
-      const source = externalKnowledgeRegistry.setProviderConsent(
-        routeParam(req.params[sourceIdParam]),
-        scope,
-        req.body.sendToProvider,
-        context.userId,
-      );
-      return res.json({success: true, source: project(source)});
-    } catch (error) {
-      return sendRouteError(res, error, {
-        code: 'knowledge_source_consent_failed',
-        error: 'Knowledge source consent update failed',
-        logLabel: '[RagAdmin] Knowledge source consent error',
-      }, [KnowledgeSourceRequestError]);
-    }
-  };
-
-  router.patch(
-    '/android-internals/sources/:id/consent',
-    requireCodebaseScope('codebase:manage'),
-    setKnowledgeConsent('id', sanitizeExternalKnowledgeSource),
-  );
-
-  router.delete(
-    '/android-internals/sources/:id/index',
-    requireCodebaseScope('codebase:manage'),
-    async (req, res) => {
-      const sourceId = routeParam(req.params.id);
-      const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-      if (!legacyWikiSource(sourceId, scope)) {
-        return res.status(404).json({
-          success: false,
-          error: `External knowledge source '${sourceId}' not found`,
-        });
-      }
-      try {
-        return await externalKnowledgeRegistry.withIngestLease(sourceId, scope, lease => {
-          const source = lease.clearActiveGeneration();
-          const removedChunkCount = removeWikiChunks(sourceId, scope);
-          return res.json({
-            success: true,
-            removedChunkCount,
-            source: sanitizeExternalKnowledgeSource(source),
-          });
-        });
-      } catch (error) {
-        return sendRouteReasonError(res, error, callerFacingRagReason(409), {
-          code: 'knowledge_source_index_delete_failed',
-          error: 'Knowledge source index deletion failed',
-          logLabel: '[RagAdmin] Knowledge source index delete error',
-        }, [KnowledgeSourceRequestError]);
-      }
-    },
-  );
-
-  router.get(
-    '/android-internals/sources/:id/audit',
-    requireCodebaseScope('codebase:read'),
-    async (req, res) => {
-      const sourceId = routeParam(req.params.id);
-      const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-      const source = legacyWikiSource(sourceId, scope);
-      if (!source) {
-        return res.status(404).json({
-          success: false,
-          error: `External knowledge source '${sourceId}' not found`,
-        });
-      }
-      try {
-        const preview = await androidInternalsWikiIngester.preview(source.rootRealpath);
-        if (preview.blocked) {
-          throw new Error(preview.blockedReason ?? 'knowledge_root_blocked');
-        }
-        if (preview.rootRealpath !== source.rootRealpath) {
-          throw new Error('knowledge_root_realpath_drift');
-        }
-        const corpus = scanAndroidInternalsWiki(
-          preview.rootRealpath,
-          preview.acceptedFiles.map(file => file.relativePath),
-          androidInternalsWikiIngester.getSourceReadLimits(),
-        );
-        const identity = inspectAndroidInternalsWikiIdentity(corpus);
-        const report = auditAndroidInternalsWiki(
-          corpus,
-          loadWikiCapabilityMap(androidInternalsWikiAuditPaths.capabilityMapPath),
-          loadAuditableSkills(androidInternalsWikiAuditPaths.skillsPath),
-          loadValidatedAssertionRefs(androidInternalsWikiAuditPaths.fixtureManifestPath),
-        );
-        return res.json({
-          success: true,
-          audit: {
-            repository: {
-              revision: identity.revision,
-              contentFingerprint: identity.contentFingerprint,
-              dirtyAcceptedArticlePaths: identity.dirtyAcceptedArticlePaths,
-            },
-            report,
-          },
-        });
-      } catch (error) {
-        return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
-          code: 'knowledge_source_audit_failed',
-          error: 'Knowledge source audit failed',
-          logLabel: '[RagAdmin] Knowledge source audit error',
-        }, [KnowledgeSourceRequestError]);
-      }
-    },
-  );
+  // The legacy Wiki connector is retired: its records stay listed and
+  // deletable under `/knowledge`, the folder is re-registered as a document
+  // collection.
+  router.use('/android-internals', rejectRemovedApi({
+    error: 'The Android Internals Wiki connector API has been removed',
+    fallback: '/api/rag/knowledge',
+  }));
 
   router.get('/knowledge', requireCodebaseScope('codebase:read'), (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
@@ -887,11 +562,31 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
   });
 
-  router.patch(
-    '/knowledge/:sourceId/consent',
-    requireCodebaseScope('codebase:manage'),
-    setKnowledgeConsent('sourceId', projectKnowledgeSourceForManagement),
-  );
+  router.patch('/knowledge/:sourceId/consent', requireCodebaseScope('codebase:manage'), (req, res) => {
+    if (typeof req.body?.sendToProvider !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        error: '`sendToProvider` must be an explicit boolean',
+      });
+    }
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
+    try {
+      const source = externalKnowledgeRegistry.setProviderConsent(
+        routeParam(req.params.sourceId),
+        scope,
+        req.body.sendToProvider,
+        context.userId,
+      );
+      return res.json({success: true, source: projectKnowledgeSourceForManagement(source)});
+    } catch (error) {
+      return sendRouteError(res, error, {
+        code: 'knowledge_source_consent_failed',
+        error: 'Knowledge source consent update failed',
+        logLabel: '[RagAdmin] Knowledge source consent error',
+      }, [KnowledgeSourceRequestError]);
+    }
+  });
 
   router.post('/knowledge/:sourceId/reindex', requireCodebaseScope('codebase:manage'), async (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
@@ -933,12 +628,9 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const context = requireRequestContext(req);
     const scope = knowledgeScopeFromRequestContext(context);
     try {
-      await externalKnowledgeRegistry.remove(sourceId, scope, context.userId, (tombstone, fence) => {
-        // A stored record of a kind this build does not know keeps its tombstone.
-        const removeIndex = removeIndexByKind[tombstone.kind] as typeof removeIndexByKind[ExternalKnowledgeKind] | undefined;
-        if (!removeIndex) throw new Error('Unknown external knowledge kind');
-        return removeIndex(scope, sourceId, fence);
-      });
+      await removeKnowledgeSource(
+        {registry: externalKnowledgeRegistry, collections: documentCollectionIngester, ragStore: s},
+        sourceId, scope, context.userId);
       return res.json({success: true, sourceId, deleted: true});
     } catch (error) {
       return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(409), {

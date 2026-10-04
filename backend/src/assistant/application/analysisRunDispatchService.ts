@@ -17,7 +17,6 @@ import {prepareAnalysisRunTraceProcessorLeases, analysisRunTraceProcessorFailure
 import {AnalyzeOptionsError, normalizeAnalyzeOptions, normalizeSelectionContext} from '../../routes/agent/normalizeAnalyzeOptions';
 import {publicRequestErrorBody} from '../../utils/publicRequestError';
 import {AgentAnalyzeSessionService, AnalyzeSessionPreparationError} from './agentAnalyzeSessionService';
-import {getDefaultAndroidInternalsPackResolver} from '../../services/androidInternalsPack/androidInternalsPackResolver';
 import {knowledgeScopeFromRequestContext} from '../../services/scopedKnowledgeStore';
 import {authorizeAnalysisContext} from '../../services/analysisContextAuthorization';
 import {registerPrivateAnalysisQueryForEcho, revokeCodeAwareOutputGuards} from '../../services/security/codeAwareOutputRegistry';
@@ -541,14 +540,6 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
           knowledgeScopeFromRequestContext(requestContext),
         );
         options = {...options, analysisContextFingerprint} as ReturnType<typeof normalizeAnalyzeOptions>;
-        const availablePack = getDefaultAndroidInternalsPackResolver().resolve();
-        if (availablePack) {
-          (options as AnalysisOptions).androidInternalsPackPin = {
-            contentVersion: availablePack.contentVersion,
-            contentFingerprint: availablePack.contentFingerprint,
-            sourceRevision: availablePack.sourceRevision,
-          };
-        }
         const prepared = analyzeSessionService.prepareSession({
           traceId,
           query,
@@ -566,10 +557,6 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         sessionId = prepared.sessionId;
         // A prepared session carries the fingerprint it was prepared under.
         preparedSession = prepared.session as TSession;
-        preparedSession.androidInternalsPackPin ??=
-          (options as AnalysisOptions).androidInternalsPackPin;
-        (options as AnalysisOptions).androidInternalsPackPin =
-          preparedSession.androidInternalsPackPin;
         isNewSession = prepared.isNewSession;
         if (isNewSession) {
           assignSessionOwner(preparedSession, requestContext);

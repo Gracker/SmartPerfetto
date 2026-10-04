@@ -216,11 +216,10 @@ Follow-up questions reuse the current session. Switching between conversation, f
   `smp codebase preview/register`, then select the codebase explicitly for the
   analysis. A registered live root supports bounded search/read without an
   index; `reindex` is optional acceleration.
-- The built-in Android Internals Knowledge Pack ships with the product. Use
-  `smp knowledge-pack status`, or `update --check` to check without installing.
-- A private Android Internals checkout is separate from the built-in Pack and
-  requires a path allowlist, rights acknowledgement, provider consent, and a
-  request-selected source id.
+- To let an analysis consult the Android Internals Wiki or team documents,
+  register the folder as a document knowledge base (the composer context
+  control's "Manage…" or CLI `smp knowledge register`), index it, then select it
+  explicitly for the analysis.
 
 Source and background knowledge do not replace current-trace SQL/Skill
 evidence. Code-Aware defaults to `CodeRef` metadata. See

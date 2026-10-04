@@ -76,7 +76,7 @@ and frontend readiness.
 | Self-Evolution | `backend/src/services/selfEvolution/`, `backend/src/routes/selfEvolutionAdminRoutes.ts` | RunManifest, feedback projection, eval/replay, proposal gates, overlays, reconciliation, and the RBAC control plane |
 | Agent external feedback | `backend/src/services/externalIssueReporting/`, `agentExternalIssueRoutes.ts`, AI Assistant plugin | Source-run signals, pinned-provider triage, strict validation, and deidentified GitHub drafts with no automatic submission |
 | Code-aware analysis | `backend/src/services/codebase/`, `backend/src/services/rag/`, `backend/src/services/symbol/` | Local path registration, index-free on-demand search/read, optional source indexing, symbol resolution, private projection, and patch status verification |
-| External Android knowledge | `backend/src/services/androidInternalsWiki/`, `externalKnowledgeSourceRegistry.ts`, `ragStore.ts` | Full-corpus Wiki audit, version/fingerprint identity, generation indexing, license/consent/scope, and private-content projection |
+| Document knowledge bases | `backend/src/services/knowledge/`, `externalKnowledgeSourceRegistry.ts` | Folder registration/preview, FTS5/BM25 generation indexing, `search_knowledge`/`read_knowledge_section`, `kb:` citations and `knowledge_use@1`, license/consent/scope, retired kinds, and private-content projection |
 | Trace processor | `backend/src/services/traceProcessorService.ts` | Trace loading, RPC management, SQL query execution |
 | Reports | `backend/src/services/htmlReportGenerator.ts` | HTML report generation |
 | Result quality pipeline | `backend/src/services/canonicalAnalysisResult.ts`, `finalizeAnalysisResult.ts`, `finalSemanticAssessment.ts`, `evidence/`, `verifier/`, `analysisResultSnapshotPipeline.ts` | Original propositions, captures, finite proof and at most one semantic review, followed by shared projection/persistence |
@@ -203,12 +203,10 @@ metadata-only visibility.
       -> execute_sql -> trace_processor_shell
       -> invoke_skill -> SkillExecutor -> SQL / DataEnvelope
       -> lookup_knowledge / lookup_sql_schema / fetch_artifact
-      -> lookup_blog_knowledge(source=android_internals_pack)
-         -> session-pinned signed Pack -> FTS5/BM25 -> redacted, budgeted background citations
-      -> lookup_blog_knowledge(source=android_internals_wiki)
-         -> request source allowlist + live registry consent/scope check
-         -> active RAG generation -> bounded attributed background context
-      (neither Android Internals source is current-trace evidence)
+      -> search_knowledge / read_knowledge_section (only when this turn selected a document knowledge base)
+         -> per-turn selection + live registry consent/scope check -> pinned index generation
+         -> FTS5/BM25 -> kref- references, kb: citations, separate token pool
+      (knowledge is background, not current-trace evidence; the Android Internals Wiki joins as a document knowledge base)
       -> selected codebase + live authorization + on-demand source access
          -> per-codebase capabilities (search / read_body / index / graph) + run depth and budget -> source_authorization
          -> search_codebase / read_codebase_file / find_codebase_files (live root, no index required)

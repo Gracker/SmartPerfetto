@@ -54,9 +54,8 @@ Step 2: run `docker compose -f docker-compose.hub.yml up -d`.
 
 Open [http://localhost:10000](http://localhost:10000), load a `.pftrace` or `.perfetto-trace` file, then open the AI Assistant panel.
 
-The image already contains the pinned trace processor, committed UI, and signed
-Android Internals Knowledge Pack; the host does not download those runtime
-assets.
+The image already contains the pinned trace processor and committed UI; the host
+does not download those runtime assets.
 
 ## 5. Run Locally
 
@@ -80,9 +79,6 @@ port, startup reports its owner and exits instead of killing it.
 | Backend health | `http://localhost:3000/health` |
 
 The backend starts automatically and the frontend uses the checked-in pre-built UI. Only AI Assistant frontend plugin work requires `git submodule update --init --recursive` followed by `./scripts/start-dev.sh`.
-The repository also contains an offline Knowledge Pack snapshot. The background
-worker only checks signed updates according to configuration and never silently
-switches an active session's knowledge version.
 
 ## 6. Docker Or Source Users: First Analysis
 
