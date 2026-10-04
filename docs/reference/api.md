@@ -92,8 +92,37 @@ RAG 管理接口背后的服务把机器可读的原因码作为异常消息抛�
 `code` 和 `error`，去掉第一个 `:` 之后的细节（可能是 id、路径、大小或被排除的条目数），原始消息以
 warn 级别写入日志；未列入的原因码（即使前缀相同，如存储损坏、暂存计数不一致、子进程失败）和不是
 原因码的消息一律固定文案。自进化接口沿用 `{success: false, error: <code>}` 形状，返回
-完整的小写原因码（只含 `a-z 0-9 _ : -`，可带 `:` 之后的 id），其他异常为
-`self_evolution_request_failed`。
+SmartPerfetto 自己为调用方编写的错误保留可操作的文案：形状相同，`error` 为该文案，HTTP 状态取错误自身的
+状态，少数错误（Agent analyze 参数）另带结构化 `details`。后端里它们是 `PublicRequestError` 的领域子类，
+每个路由只回显它列出的子类，其他异常一律返回固定文案。5xx 的这类错误（系统目录选择器无法打开）仍会记录原因；
+逃到全局错误处理器的，状态码保留，文案用处理器的固定文案。例如：
+
+- Provider Manager 输入（`provider_invalid_request` 400、`provider_not_found` 404）与无法读取的
+  providers.json（`provider_store_unreadable` 409）、trace 列表分页（`INVALID_TRACE_LIST_PAGE`）、Agent
+  日志级别（`invalid_log_level`）、Agent analyze 参数、RAG 检索输入（`invalid_rag_search_input`）、目录选择器
+  （`DIRECTORY_*`）和企业工作区管理（`enterprise_admin_invalid_request` 400、`enterprise_admin_forbidden` 403、
+  `enterprise_admin_not_found` 404、`enterprise_admin_conflict` 409）。
+- 对话：`CONVERSATION_NOT_FOUND` 404、`CONVERSATION_QUERY_REQUIRED` 400，对话上下文已变化
+  （`CONVERSATION_TRACE_CHANGED`、`CONVERSATION_PROVIDER_CHANGED`、`CONVERSATION_PROVIDER_SNAPSHOT_CHANGED`、
+  `ANALYSIS_CONTEXT_CHANGED_RESTART_REQUIRED`，恢复时源码或知识授权已不成立则为小写的
+  `analysis_context_changed_restart_required`）409、`RUN_ALREADY_ACTIVE` 409、`CANCELLATION_IN_PROGRESS` 409，
+  停止已不活跃的 run 为 `CONVERSATION_RUN_NOT_ACTIVE` 409。状态码由错误类型决定，不再匹配消息文本。
+- URL 上传：`INVALID_TRACE_URL` 400、`TRACE_URL_TIMEOUT` 504、`TRACE_URL_REDIRECT_INVALID` 502。
+- 知识策展（baseline、case、记忆提升）、企业 API Key 创建、被拒绝的 OIDC 登录（`oidc_subject_tenant_conflict`
+  403）、trace config proposal、反馈写入（输入校验与目标缺失或矛盾 400，supersede/幂等冲突 409）、代码库与外部
+  知识源字段校验（代码库管理使用 `CODEBASE_*`，含 `CODEBASE_METADATA_INVALID` 与 `PENDING_GENERATION_ID_INVALID`），
+  以及批量 trace 请求（`error` 可在 `:` 后带字段名、数量或 Skill 类型，如
+  `invalid_batch_trace_limit:trace_count:2>1`；与 workspace Skill Pack 冲突的 Skill 为 409）。
+- Skill Pack：manifest、asset 或 pack 内 Skill 定义无效，或 pack 不可安装 400；asset 自预检后被改动、已安装版本
+  内容变化（`installed_pack_content_hash_mismatch`），或与 workspace Skill / fragment 冲突 409；未知 pack 404。
+  `error` 为原因码，可在 `:` 后带 pack 内相对路径、字段名或 Skill id。持久化等内部失败返回固定文案。
+
+RAG 管理背后的服务以机器原因码作为异常消息（`root_outside_allowlist`、`source_chunk_limit_exceeded:5000`）。
+只有逐项列为调用方可处理的原因码（源码路径、知识库根目录、索引生命周期、同意与使用权确认；
+`ragAdminRoutes.ts` 的 `CALLER_FACING_RAG_REASONS`）会作为 `code` 与 `error` 返回，并去掉第一个 `:` 之后的细节
+（id、路径、大小或排除项数量），原始消息记 warn 日志；未列出的原因码（无论前缀，如存储损坏、暂存分片数不一致、
+子进程失败）以及不是原因码的消息都返回固定文案。Self-Evolution 保持 `{success: false, error: <code>}` 形状，
+返回完整的小写原因码（只含 `a-z 0-9 _ : -`，可带 `:` 之后的 id），其他异常为 `self_evolution_request_failed`。
 
 后续通过其他接口读到的失败记录同样不含异常消息：对比 run 的 `error` 为 `Comparison failed`；
 租户清理任务（`GET /api/tenant/purge/:jobId`）的 `error` 只保留清理窗口未到和 tombstone 不存在
