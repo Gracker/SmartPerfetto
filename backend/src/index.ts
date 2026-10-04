@@ -52,9 +52,9 @@ import {
   AGENT_API_V1_BASE,
   LEGACY_AGENT_API_BASE,
   markLegacyApi,
-  rejectLegacyAgentApi,
 } from './middleware/legacyAgentApi';
 import {
+  rejectLegacyAgentApi,
   rejectRemovedPerfettoSqlApi,
   rejectRemovedSessionsApi,
   rejectRemovedSqlApi,
