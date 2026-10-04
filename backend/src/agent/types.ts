@@ -277,69 +277,6 @@ export interface StageResult {
   retryCount: number;
 }
 
-// =============================================================================
-// Multi-Model Router Types (新架构)
-// =============================================================================
-
-export type ModelProvider = 'anthropic' | 'openai' | 'deepseek' | 'mock';
-export type ModelStrength = 'reasoning' | 'coding' | 'speed' | 'cost' | 'vision';
-export type TaskType =
-  | 'intent_understanding'
-  | 'planning'
-  | 'synthesis'
-  | 'evaluation'
-  | 'sql_generation'
-  | 'code_analysis'
-  | 'simple_extraction'
-  | 'formatting'
-  | 'general';
-
-export interface ModelProfile {
-  id: string;
-  provider: ModelProvider;
-  model: string;
-  strengths: ModelStrength[];
-  costPerInputToken: number;
-  costPerOutputToken: number;
-  avgLatencyMs: number;
-  maxTokens: number;
-  supportsJSON: boolean;
-  supportsStreaming: boolean;
-  enabled: boolean;
-}
-
-export interface ModelRouterConfig {
-  models: ModelProfile[];
-  defaultModel: string;
-  taskModelMapping: Partial<Record<TaskType, string>>;
-  fallbackChain: string[];
-  enableEnsemble: boolean;
-  ensembleThreshold: number;
-}
-
-export interface ModelCallResult {
-  modelId: string;
-  response: string;
-  usage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalCost: number;
-  };
-  latencyMs: number;
-  success: boolean;
-  error?: string;
-  errorCode?: 'context_overflow' | 'provider_error';
-}
-
-export interface EnsembleResult {
-  responses: ModelCallResult[];
-  aggregatedResponse: string;
-  confidence: number;
-  agreementScore: number;
-  totalCost: number;
-  totalLatencyMs: number;
-}
-
 export interface SubAgentResult {
   agentId?: string;
   success: boolean;

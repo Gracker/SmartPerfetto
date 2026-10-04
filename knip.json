@@ -25,6 +25,7 @@
     "backend": {
       "entry": [
         "package.json",
+        "bin/smartperfetto-mcp.ts!",
         "src/agent/core/conclusionContract.ts!",
         "src/agentRuntime/analysisFinalizationContext.ts!",
         "src/agentRuntime/engines/pi/piAgentCoreProvider.ts!",
@@ -67,7 +68,7 @@
         "src/**/__tests__/**/*.ts",
         "tests/**/*.ts"
       ],
-      "project": ["package.json", "src/**/*.ts!", "tests/**/*.ts", "scripts/**/*.ts!"],
+      "project": ["package.json", "bin/**/*.ts!", "src/**/*.ts!", "tests/**/*.ts", "scripts/**/*.ts!"],
       "ignoreDependencies": ["@earendil-works/pi-agent-core", "@qoder-ai/qoder-agent-sdk", "jest", "tsx"],
       "ignoreBinaries": ["jest", "pgrep", "ps", "secret-tool", "sqlite3", "tsx"],
       "ignoreUnresolved": ["/usr/bin/security"]

@@ -835,13 +835,15 @@ the source in each analysis `knowledgeSourceIds` list. See
 
 ## Rate Limiting
 
-```bash
-SMARTPERFETTO_USAGE_MAX_REQUESTS=200
-SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS=100
-SMARTPERFETTO_USAGE_WINDOW_MS=86400000
-```
+SmartPerfetto has no built-in request rate limiting and does not read the
+`SMARTPERFETTO_USAGE_MAX_REQUESTS`, `SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS` or
+`SMARTPERFETTO_USAGE_WINDOW_MS` settings that earlier docs listed; setting them
+has no effect.
 
-Rate-limit state is lost after restart. For strict production quotas, add persistent rate limiting at the reverse proxy or API gateway layer.
+For a public or shared deployment, enable [OIDC Browser Login](#oidc-browser-login)
+(or at least set `SMARTPERFETTO_API_KEY`) and rate-limit at the reverse proxy or
+API gateway. Enterprise workspace quotas on trace size, concurrent runs and
+monthly runs bound analysis resources; they are not per-request rate limits.
 
 ## Runtime and Provider Boundary
 

@@ -604,24 +604,6 @@ export const pipelineConfig = {
 } as const;
 
 // =============================================================================
-// Model Router Configuration
-// =============================================================================
-
-export const modelRouterConfig = {
-  /** Default model to use */
-  defaultModel: process.env.MODEL_DEFAULT || 'glm-5',
-
-  /** Fallback chain for model failures */
-  fallbackChain: parseArrayEnv('MODEL_FALLBACK_CHAIN', ['deepseek-reasoner', 'deepseek-chat']),
-
-  /** Enable ensemble mode */
-  enableEnsemble: parseBoolEnv('MODEL_ENABLE_ENSEMBLE', false),
-
-  /** Ensemble confidence threshold (0-1) */
-  ensembleThreshold: parseFloatEnv('MODEL_ENSEMBLE_THRESHOLD', 0.8),
-} as const;
-
-// =============================================================================
 // Fork Manager Configuration
 // =============================================================================
 
@@ -774,7 +756,6 @@ export const config = {
   traceProcessor: traceProcessorConfig,
   agent: agentConfig,
   pipeline: pipelineConfig,
-  modelRouter: modelRouterConfig,
   fork: forkConfig,
   analysis: analysisConfig,
   context: contextConfig,

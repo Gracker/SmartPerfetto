@@ -121,13 +121,6 @@ function makeApp(): express.Express {
         minEstimateBytes: 128 * 1024 * 1024,
       },
     }),
-    modelRouterUsageProvider: () => ({
-      totalCost: 0.42,
-      stats: {
-        'claude-sonnet': { calls: 2, tokens: 1200, cost: 0.3, failures: 0 },
-        'gpt-4.1-mini': { calls: 1, tokens: 300, cost: 0.12, failures: 1 },
-      },
-    }),
   }));
   return app;
 }
@@ -303,16 +296,8 @@ describe('enterprise runtime dashboard routes', () => {
       'tenant.audit',
       'runtime.read',
     ]);
-    expect(res.body.llmCost).toEqual({
-      totalCost: 0.42,
-      totalCalls: 3,
-      totalTokens: 1500,
-      totalFailures: 1,
-      byModel: {
-        'claude-sonnet': { calls: 2, tokens: 1200, cost: 0.3, failures: 0 },
-        'gpt-4.1-mini': { calls: 1, tokens: 300, cost: 0.12, failures: 1 },
-      },
-    });
+    // No runtime-wide LLM usage counter exists; the dashboard reports none rather than zeros.
+    expect(res.body).not.toHaveProperty('llmCost');
   });
 
   it('requires runtime manage permission', async () => {

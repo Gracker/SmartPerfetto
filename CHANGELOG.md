@@ -51,6 +51,27 @@ Detailed commit-level history is available via `git log`.
   packages by substring. No Skill route takes the same request bodies, so the
   response points to the workspace agent API. The template analyzers and the
   VSync period helpers only they used are gone.
+- `/api/sql/*` (`/tables`, `/generate`) now answers 410 in every deployment
+  mode. Nothing called it. `/tables` returned a fixed excerpt of five tables
+  instead of the loaded trace's schema, and `/generate` matched a regex
+  template or returned a canned query without reading a trace. No route takes
+  the same request bodies, so the response points to the workspace agent API.
+  The SQL template engine and the generator service only it used are gone.
+- The runtime dashboard (`GET /api/admin/runtime`) no longer returns
+  `llmCost`. Its counters came from a legacy model router that no analysis
+  path called, so they were always zero, while the router itself read
+  `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `DEEPSEEK_API_KEY` around Provider
+  Manager. The router, its session-log telemetry hook and the unread
+  `MODEL_DEFAULT`, `MODEL_FALLBACK_CHAIN`, `MODEL_ENABLE_ENSEMBLE`,
+  `MODEL_ENSEMBLE_THRESHOLD` and `MODEL_NATIVE_*` settings are gone. The
+  enterprise load-test script now reports the LLM counters as missing instead
+  of reading a constant zero.
+- `SMARTPERFETTO_USAGE_MAX_REQUESTS`, `SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS`
+  and `SMARTPERFETTO_USAGE_WINDOW_MS` are gone. The configuration guide and
+  `.env.example` documented them as request rate limiting, but the middleware
+  that read them was never mounted, so they never limited anything. There is
+  no built-in rate limiting: enable OIDC for public deployments and rate-limit
+  at the reverse proxy.
 - Agent endpoints no longer take a request id from a `requestId` field in the
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 

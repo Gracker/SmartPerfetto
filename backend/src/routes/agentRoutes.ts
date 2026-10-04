@@ -71,7 +71,6 @@ import { hasRbacPermission, sendForbidden } from '../services/rbac';
 import { readTraceMetadataForContext } from '../services/traceMetadataStore';
 import { sessionContextManager, EnhancedSessionContext } from '../agent/context/enhancedSessionContext';
 import { StreamingUpdate, AgentRuntimeAnalysisResult, Hypothesis } from '../agent';
-import { getSharedModelRouter } from '../agent/core/modelRouterSingleton';
 import type { AnalysisOptions, IOrchestrator, TraceDataset } from '../agent/core/orchestratorTypes';
 import { localize, parseOutputLanguage, type OutputLanguage } from '../agentv3/outputLanguage';
 import { finalReviewProgressUpdate } from '../services/finalizationProgress';
@@ -4568,14 +4567,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
   // also produce TrackEvent(s) when the scene reconstruction skill runs.
   const shouldGenerateTracks = !options.sceneRunBinding && options.generateTracks !== false;
 
-  // Capture LLM call telemetry into session logs (privacy-safe: hashes + params only)
-  const modelRouter = getSharedModelRouter();
-  const onLlmTelemetry = (event: any) => {
-    if (!event || event.sessionId !== sessionId) return;
-    logger.debug('LLM', 'llmTelemetry', event);
-  };
-  modelRouter.on('llmTelemetry', onLlmTelemetry);
-
   const runWithTraceProcessorLease = <T>(fn: () => Promise<T>): Promise<T> => {
     const leaseContexts = [options.traceProcessorLease, options.referenceTraceProcessorLease].filter(
       Boolean,
@@ -5069,7 +5060,6 @@ async function runAgentDrivenAnalysis(sessionId: string, query: string, traceId:
     if (session.orchestratorUpdateHandler === handleUpdate) {
       session.orchestratorUpdateHandler = undefined;
     }
-    modelRouter.off('llmTelemetry', onLlmTelemetry);
   }
 }
 

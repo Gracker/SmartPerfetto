@@ -181,6 +181,33 @@ test('lists entrypoints with the file that establishes each, including live path
   });
 });
 
+// The OpenCode runtime spawns backend/bin/smartperfetto-mcp.ts by path with tsx.
+test('a launcher under bin is tooling only while something live names it', () => {
+  const { entrypoints, live } = analyze({
+    'src/app.ts': longBody("import {spawn} from './spawner';\nexport default spawn;\n"),
+    'src/spawner.ts': longBody("export const spawn = ['tsx', 'bin/server.ts'];\n"),
+    'src/served.ts': longBody("import {nested} from './nested';\nexport const served = nested;\n"),
+    'src/nested.ts': longBody("export const nested = 'bin/nested.ts';\n"),
+    'src/nestedTool.ts': longBody('export const nestedTool = 1;\n'),
+    'src/deadSpawner.ts': longBody("export const dead = 'bin/unlaunched.ts';\n"),
+    'src/unlaunchedOnly.ts': longBody('export const unlaunchedOnly = 1;\n'),
+    'bin/server.ts': "import {served} from '../src/served';\nconsole.log(served);\n",
+    'bin/nested.ts': "import {nestedTool} from '../src/nestedTool';\nconsole.log(nestedTool);\n",
+    'bin/unlaunched.ts': "import {unlaunchedOnly} from '../src/unlaunchedOnly';\nconsole.log(unlaunchedOnly);\n",
+    'bin/orphan.ts': "import {unlaunchedOnly} from '../src/unlaunchedOnly';\nconsole.log(unlaunchedOnly);\n",
+  }, ['tsx src/app.ts'], analyzeModuleGraph);
+  assert.deepEqual(entrypoints.get('src/served.ts'), {
+    reason: 'imported by backend/bin/server.ts (named by backend/src/spawner.ts)',
+    via: 'bin/server.ts',
+  });
+  // A launcher named only by a module another launcher made live still counts.
+  assert.equal(entrypoints.get('src/nestedTool.ts')?.via, 'bin/nested.ts');
+  assert.deepEqual(['src/served.ts', 'src/nested.ts', 'src/nestedTool.ts'].filter(module => !live.has(module)), []);
+  // Named only by a dead module, or by nothing: no entrypoint.
+  assert.equal(live.has('src/unlaunchedOnly.ts'), false);
+  assert.equal(entrypoints.has('src/unlaunchedOnly.ts'), false);
+});
+
 test('only findings outside the baseline are new debt', () => {
   assert.deepEqual(compareWithBaseline(['src/a.ts', 'src/b.ts'], ['src/a.ts', 'src/gone.ts']), {
     added: ['src/b.ts'],

@@ -357,6 +357,8 @@ function buildRegistry(): McpToolRegistry {
           cuj,
           includeReviewed: include_unpublished,
           topK: top_k,
+          // A stdio host loads no trace, so the rendering architecture is unknown.
+          architectureType: undefined,
         });
         return {
           content: [

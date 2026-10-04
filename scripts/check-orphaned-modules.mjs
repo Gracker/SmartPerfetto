@@ -29,10 +29,12 @@
  *
  * Entrypoints: modules a `backend/package.json` script or bin, or tooling
  * under `backend/scripts/`, names by path (a `dist/<path>.js` command names
- * `src/<path>.ts`), and modules that tooling imports. Nothing is an
- * entrypoint by where it lives: an unregistered script under `src/scripts/`
- * is dead and keeps everything it imports looking alive. Harnesses and
- * helpers under `backend/tests/` count as tests. A sibling that names
+ * `src/<path>.ts`), and modules that tooling imports. A launcher under
+ * `backend/bin/` (run from source, outside `src`) is tooling only while a
+ * command, a tool or a live module names its path; its imports are then
+ * entrypoints. Nothing is an entrypoint by where it lives: an unregistered
+ * script under `src/scripts/` or an unnamed launcher is dead and keeps
+ * nothing alive. Harnesses and helpers under `backend/tests/` count as tests. A sibling that names
  * `<stem>.js` or `<stem>.ts` (a worker or child process loaded by path) is
  * treated as importing that module, so a dead loader does not keep it alive.
  * Re-export shims (short files of nothing but `export ... from`) kept so
@@ -143,9 +145,11 @@ export function analyzeModuleGraph(modules, commands, backendDir = BACKEND) {
   const pathLoadedBy = new Map();
   const testImported = new Set();
   const shims = new Set();
+  const productSources = new Map();
   for (const file of [...modules, ...tooling]) {
     const source = readFileSync(join(backendDir, file), 'utf8');
     const fromModule = moduleSet.has(file);
+    if (fromModule && !isTestPath(file)) productSources.set(file, source);
     if (fromModule && isShim(source)) shims.add(file);
     const targets = Array.from(source.matchAll(IMPORT_RE), match => resolve(file, match[1], moduleSet));
     if (fromModule && !isTestPath(file)) {
@@ -167,10 +171,42 @@ export function analyzeModuleGraph(modules, commands, backendDir = BACKEND) {
     }
   }
 
-  const live = new Set(entrypoints.keys());
-  for (const pending = [...live]; pending.length > 0;) {
-    for (const target of imports.get(pending.pop()) ?? []) {
-      if (!live.has(target)) { live.add(target); pending.push(target); }
+  const live = new Set();
+  const propagate = (roots) => {
+    for (const pending = [...roots]; pending.length > 0;) {
+      const module = pending.pop();
+      if (live.has(module)) continue;
+      live.add(module);
+      pending.push(...(imports.get(module) ?? []));
+    }
+  };
+  propagate([...entrypoints.keys()]);
+
+  // A launcher becomes tooling once something live names it; what it imports
+  // may make further modules live, which may name further launchers.
+  const launchers = listFiles(backendDir, 'bin', name => /\.[cm]?[jt]s$/.test(name)).map(file => {
+    const source = readFileSync(join(backendDir, file), 'utf8');
+    return {
+      file,
+      namer: namers.find(({ text }) => text.includes(file))?.reason,
+      namingModules: Array.from(productSources).filter(([, text]) => text.includes(file)).map(([module]) => module),
+      targets: Array.from(source.matchAll(IMPORT_RE), match => resolve(file, match[1], moduleSet)).filter(Boolean),
+    };
+  });
+  for (let launched = true; launched;) {
+    launched = false;
+    for (const launcher of launchers) {
+      if (launcher.done) continue;
+      const namingModule = launcher.namingModules.find(module => live.has(module));
+      const namer = launcher.namer ?? (namingModule && `named by backend/${namingModule}`);
+      if (!namer) continue;
+      launcher.done = launched = true;
+      for (const target of launcher.targets) {
+        if (!entrypoints.has(target)) {
+          entrypoints.set(target, { reason: `imported by backend/${launcher.file} (${namer})`, via: launcher.file });
+        }
+      }
+      propagate(launcher.targets);
     }
   }
   for (const [target, loaders] of pathLoadedBy) {
