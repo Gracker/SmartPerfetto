@@ -10,7 +10,7 @@ import {
   REQUIRED_RSS_BENCHMARK_SIZE_BUCKETS,
 } from './enterpriseRssBenchmarkMatrix';
 import {
-  MIN_ACCEPTANCE_ESTIMATED_DAILY_LLM_CALLS,
+  MIN_ACCEPTANCE_ESTIMATED_DAILY_ANALYSIS_RUNS,
   MIN_ACCEPTANCE_VISIBLE_TRACE_METADATA,
 } from './enterpriseAcceptanceLoadTest';
 
@@ -64,7 +64,8 @@ const REQUIRED_ACCEPTANCE_EVIDENCE_ITEMS = [
   'One slow SQL does not directly kill a frontend-owned lease',
   'Memory / SQL learning / case / baseline default to tenant/workspace isolation',
   'Tenant export / tombstone / async purge / audit proof all work',
-  'Load-test report includes p50/p95, error rate, worker RSS, queue length, LLM cost, trace metadata scale, and daily LLM call projection',
+  // No global model cost or call counter exists, so scale is projected from completed analysis runs.
+  'Load-test report includes p50/p95, error rate, worker RSS, queue length, trace metadata scale, and daily analysis run projection',
 ];
 const USER_DEFERRED_EXTERNAL_VALIDATION_MARKER = 'User-deferred external validation: yes';
 
@@ -380,9 +381,7 @@ function missingLoadReportMetricEvidence(markdown: string): string[] {
   const pendingSamples = parseMarkdownNumber(markdownTableValue(markdown, 'Queued/pending samples'));
   const maxQueueLength = parseMarkdownNumber(markdownTableValue(markdown, 'Max queue length'));
   const preRunBaseline = markdownTableValue(markdown, 'Pre-run runtime baseline')?.trim().toLowerCase() ?? null;
-  const llmCostDelta = parseMarkdownNumber(markdownTableValue(markdown, 'LLM cost delta'));
-  const llmCallDelta = parseMarkdownNumber(markdownTableValue(markdown, 'LLM call delta'));
-  const estimatedDailyLlmCalls = parseMarkdownNumber(markdownTableValue(markdown, 'Estimated daily LLM calls'));
+  const estimatedDailyRuns = parseMarkdownNumber(markdownTableValue(markdown, 'Estimated daily analysis runs'));
 
   if (observedUsers === null || observedUsers < 50) missing.push('observed online users < 50');
   if (targetRunning === null || targetRunning < 5 || targetRunning > 15) missing.push('target running runs not in 5-15 range');
@@ -414,11 +413,8 @@ function missingLoadReportMetricEvidence(markdown: string): string[] {
   ) {
     missing.push('missing worker/lease RSS');
   }
-  if (llmCostDelta === null) missing.push('missing LLM cost delta');
-  else if (llmCostDelta < 0) missing.push('LLM cost delta < 0');
-  if (llmCallDelta === null || llmCallDelta <= 0) missing.push('LLM call delta <= 0');
-  if (estimatedDailyLlmCalls === null || estimatedDailyLlmCalls < MIN_ACCEPTANCE_ESTIMATED_DAILY_LLM_CALLS) {
-    missing.push(`estimated daily LLM calls < ${MIN_ACCEPTANCE_ESTIMATED_DAILY_LLM_CALLS}`);
+  if (estimatedDailyRuns === null || estimatedDailyRuns < MIN_ACCEPTANCE_ESTIMATED_DAILY_ANALYSIS_RUNS) {
+    missing.push(`estimated daily analysis runs < ${MIN_ACCEPTANCE_ESTIMATED_DAILY_ANALYSIS_RUNS}`);
   }
   const requestedRuns = targetRunning !== null && targetPending !== null
     ? targetRunning + targetPending
@@ -522,8 +518,6 @@ function missingLoadReportRuntimeSampleEvidence(markdown: string): string[] {
     && row['Queue length'] !== undefined
     && row['Worker RSS'] !== undefined
     && row['Lease RSS'] !== undefined
-    && row['LLM cost'] !== undefined
-    && row['LLM calls'] !== undefined
   );
 
   if (runtimeRows.length < 2) {
@@ -539,24 +533,6 @@ function missingLoadReportRuntimeSampleEvidence(markdown: string): string[] {
     && !isPresentMarkdownMetric(row['Lease RSS'] ?? null)
   )) {
     missing.push('runtime sample table missing RSS values');
-  }
-
-  const llmCosts = runtimeRows
-    .map(row => parseMarkdownNumber(row['LLM cost']))
-    .filter((value): value is number => value !== null);
-  if (llmCosts.length < 2) {
-    missing.push('runtime sample table has fewer than 2 LLM cost values');
-  } else if (llmCosts[llmCosts.length - 1]! < llmCosts[0]!) {
-    missing.push('runtime sample table LLM cost decreased');
-  }
-
-  const llmCalls = runtimeRows
-    .map(row => parseMarkdownNumber(row['LLM calls']))
-    .filter((value): value is number => value !== null);
-  if (llmCalls.length < 2) {
-    missing.push('runtime sample table has fewer than 2 LLM call values');
-  } else if (llmCalls[llmCalls.length - 1]! <= llmCalls[0]!) {
-    missing.push('runtime sample table LLM calls did not increase');
   }
 
   return missing;

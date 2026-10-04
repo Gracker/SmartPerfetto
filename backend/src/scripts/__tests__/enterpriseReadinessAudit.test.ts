@@ -81,10 +81,10 @@ function finalRuntimeSampleRows(): string[] {
   return [
     '## Runtime Samples',
     '',
-    '| Timestamp | Queue length | Worker RSS | Lease RSS | LLM cost | LLM calls |',
-    '| --- | ---: | ---: | ---: | ---: | ---: |',
-    '| 2026-05-09T00:00:00.000Z | 1 | 128.0 MiB | 64.0 MiB | 0.75 | 3 |',
-    '| 2026-05-09T00:00:01.000Z | 5 | 256.0 MiB | 128.0 MiB | 1.23 | 4 |',
+    '| Timestamp | Queue length | Worker RSS | Lease RSS |',
+    '| --- | ---: | ---: | ---: |',
+    '| 2026-05-09T00:00:00.000Z | 1 | 128.0 MiB | 64.0 MiB |',
+    '| 2026-05-09T00:00:01.000Z | 5 | 256.0 MiB | 128.0 MiB |',
   ];
 }
 
@@ -127,13 +127,8 @@ function finalLoadReport(): string {
     '| Pre-run runtime baseline | yes |',
     '| Max worker RSS | 256.0 MiB |',
     '| Max lease RSS | 128.0 MiB |',
-    '| Initial LLM cost | 0.75 |',
-    '| Final LLM cost | 1.23 |',
-    '| LLM cost delta | 0.48 |',
-    '| Initial LLM calls | 3 |',
-    '| Final LLM calls | 4 |',
-    '| LLM call delta | 1 |',
-    '| Estimated daily LLM calls | 288 |',
+    '| Completed analysis runs | 4 |',
+    '| Estimated daily analysis runs | 1152 |',
     '',
     ...finalOnlineUserSampleRows(),
     '',
@@ -160,7 +155,7 @@ function finalAcceptanceEvidence(): string {
     '| One slow SQL does not directly kill a frontend-owned lease | Covered | runtime tests |',
     '| Memory / SQL learning / case / baseline default to tenant/workspace isolation | Covered | scope tests |',
     '| Tenant export / tombstone / async purge / audit proof all work | Covered | tenant tests |',
-    '| Load-test report includes p50/p95, error rate, worker RSS, queue length, LLM cost, trace metadata scale, and daily LLM call projection | Covered | measured load report |',
+    '| Load-test report includes p50/p95, error rate, worker RSS, queue length, trace metadata scale, and daily analysis run projection | Covered | measured load report |',
     '',
   ].join('\n');
 }
@@ -217,7 +212,7 @@ function deferredAcceptanceEvidence(): string {
     '| One slow SQL does not directly kill a frontend-owned lease | Covered | runtime tests |',
     '| Memory / SQL learning / case / baseline default to tenant/workspace isolation | Covered | scope tests |',
     '| Tenant export / tombstone / async purge / audit proof all work | Covered | tenant tests |',
-    '| Load-test report includes p50/p95, error rate, worker RSS, queue length, LLM cost, trace metadata scale, and daily LLM call projection | User-deferred | Maintainer deferred the real load metrics on 2026-05-09. |',
+    '| Load-test report includes p50/p95, error rate, worker RSS, queue length, trace metadata scale, and daily analysis run projection | User-deferred | Maintainer deferred the real load metrics on 2026-05-09. |',
     '',
   ].join('\n');
 }
@@ -416,7 +411,7 @@ describe('enterprise readiness audit', () => {
           'observed online users < 50',
           'missing overall p50',
           'missing worker/lease RSS',
-          'LLM call delta <= 0',
+          'estimated daily analysis runs < 200',
         ]),
       });
     } finally {
@@ -424,7 +419,7 @@ describe('enterprise readiness audit', () => {
     }
   });
 
-  it('requires load-test scale evidence for trace metadata and daily LLM calls', async () => {
+  it('requires load-test scale evidence for trace metadata and daily analysis runs', async () => {
     const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'enterprise-readiness-'));
     try {
       const readmePath = await writeFixture(tmpDir, 'README.md', completeReadme());
@@ -434,7 +429,7 @@ describe('enterprise readiness audit', () => {
         'load.md',
         finalLoadReport()
           .replace('| Visible trace metadata | 1000 |', '| Visible trace metadata | 999 |')
-          .replace('| Estimated daily LLM calls | 288 |', '| Estimated daily LLM calls | 199 |'),
+          .replace('| Estimated daily analysis runs | 1152 |', '| Estimated daily analysis runs | 199 |'),
       );
       const rssBenchmarkPath = await writeFixture(tmpDir, 'rss.md', finalRssBenchmark());
       const releaseNotesPath = await writeFixture(tmpDir, 'release.md', '# Release Notes\nAll final.\n');
@@ -453,7 +448,7 @@ describe('enterprise readiness audit', () => {
         status: 'blocked',
         evidence: expect.arrayContaining([
           'visible trace metadata < 1000',
-          'estimated daily LLM calls < 200',
+          'estimated daily analysis runs < 200',
         ]),
       });
     } finally {
@@ -471,8 +466,7 @@ describe('enterprise readiness audit', () => {
         'load.md',
         finalLoadReport()
           .replace('| Error rate | 0.00% |', '| Error rate | 2.00% |')
-          .replace('| Pre-run runtime baseline | yes |', '| Pre-run runtime baseline | no |')
-          .replace('| LLM cost delta | 0.48 |', '| LLM cost delta | -0.25 |'),
+          .replace('| Pre-run runtime baseline | yes |', '| Pre-run runtime baseline | no |'),
       );
       const rssBenchmarkPath = await writeFixture(tmpDir, 'rss.md', finalRssBenchmark());
       const releaseNotesPath = await writeFixture(tmpDir, 'release.md', '# Release Notes\nAll final.\n');
@@ -492,7 +486,6 @@ describe('enterprise readiness audit', () => {
         evidence: expect.arrayContaining([
           'error rate exceeds max error rate',
           'pre-run runtime baseline not yes',
-          'LLM cost delta < 0',
         ]),
       });
     } finally {
@@ -589,8 +582,8 @@ describe('enterprise readiness audit', () => {
           .replace('| 2026-05-09T00:00:01.000Z | 3 | 2 | 5 | 0 | 0 | 0 | 0 | 0 |', '| 2026-05-09T00:00:01.000Z | 0 | 0 | 1 | 0 | 1 | 0 | 0 | 0 |')
           .replace('| 2026-05-09T00:00:02.000Z | 2 | 3 | 10 | 0 | 0 | 0 | 0 | 0 |', '| 2026-05-09T00:00:02.000Z | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |')
           .replace('| 2026-05-09T00:00:03.000Z | 0 | 1 | 10 | 4 | 0 | 0 | 0 | 0 |', '| 2026-05-09T00:00:03.000Z | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 |')
-          .replace('| 2026-05-09T00:00:00.000Z | 1 | 128.0 MiB | 64.0 MiB | 0.75 | 3 |', '| 2026-05-09T00:00:00.000Z | n/a | n/a | n/a | 1.23 | 4 |')
-          .replace('| 2026-05-09T00:00:01.000Z | 5 | 256.0 MiB | 128.0 MiB | 1.23 | 4 |', '| 2026-05-09T00:00:01.000Z | n/a | n/a | n/a | 0.75 | 3 |'),
+          .replace('| 2026-05-09T00:00:00.000Z | 1 | 128.0 MiB | 64.0 MiB |', '| 2026-05-09T00:00:00.000Z | n/a | n/a | n/a |')
+          .replace('| 2026-05-09T00:00:01.000Z | 5 | 256.0 MiB | 128.0 MiB |', '| 2026-05-09T00:00:01.000Z | n/a | n/a | n/a |'),
       );
       const rssBenchmarkPath = await writeFixture(tmpDir, 'rss.md', finalRssBenchmark());
       const releaseNotesPath = await writeFixture(tmpDir, 'release.md', '# Release Notes\nAll final.\n');
@@ -613,8 +606,6 @@ describe('enterprise readiness audit', () => {
           'status snapshot table has failed/error/quota_exceeded counts',
           'runtime sample table missing queue length values',
           'runtime sample table missing RSS values',
-          'runtime sample table LLM cost decreased',
-          'runtime sample table LLM calls did not increase',
         ]),
       });
     } finally {
