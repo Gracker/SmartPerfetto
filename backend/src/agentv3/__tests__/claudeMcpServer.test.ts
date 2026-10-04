@@ -3305,6 +3305,52 @@ describe('createClaudeMcpServer', () => {
       expect(mockTpService.query).toHaveBeenCalledTimes(1);
     });
 
+    it.each([
+      'SELECT * FROM __intrinsic_trace_diagnostics',
+      'SELECT upid, state FROM __intrinsic_android_process_state WHERE upid = 3',
+      'SELECT * FROM slice s JOIN "__intrinsic_trace_diagnostics" d ON d.id = s.id',
+      'SELECT * FROM report_artifacts',
+      'SELECT * FROM art_method',
+    ])('passes real trace_processor __intrinsic_* tables to the processor: %s', async sql => {
+      const {tools, mockTpService} = createTestServer({lightweight: true});
+
+      const result = await callTool(tools, 'execute_sql', {sql});
+
+      expect(result.blocked).not.toBe(true);
+      expect(mockTpService.query).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['SELECT * FROM slice s JOIN art-3 a ON a.id = s.id', 'art-3'],
+      ['SELECT * FROM main.art_4', 'art-4'],
+      ['SELECT * FROM (SELECT id FROM slice) x, art_5_rows y', 'art-5'],
+      ['SELECT * FROM slice WHERE id IN (SELECT id FROM "art-6")', 'art-6'],
+    ])('blocks artifact ids in every table position: %s', async (sql, artifactId) => {
+      const {tools, mockTpService} = createTestServer({lightweight: true});
+
+      const result = await callTool(tools, 'execute_sql', {sql});
+
+      expect(result).toMatchObject({success: false, blocked: true, action_required: 'fetch_artifact', artifactId});
+      expect(result.hint).toContain(`artifactId="${artifactId}"`);
+      expect(mockTpService.query).not.toHaveBeenCalled();
+    });
+
+    it('reads the misuse explanation and nudge from strategy templates in the output language', async () => {
+      const zh = createTestServer({lightweight: true});
+      const blocked = await callTool(zh.tools, 'execute_sql', {sql: 'SELECT * FROM synthesizeArtifacts'});
+      expect(blocked.error).toContain('不是 trace_processor SQL 表或函数');
+      expect(blocked.hint).toContain('artifactId="art-N"');
+      expect(blocked.artifactId).toBeUndefined();
+
+      const en = createTestServer({lightweight: true, outputLanguage: 'en'});
+      const englishBlocked = await callTool(en.tools, 'execute_sql', {sql: 'SELECT * FROM synthesizeArtifacts'});
+      expect(englishBlocked.error).toContain('is not a trace_processor SQL table or function');
+      const raw = await en.tools.get('execute_sql')!.handler({sql: 'SELECT 1'});
+      const text = raw.content.find((entry: any) => entry.type === 'text').text as string;
+      expect(text).toContain('[REFLECT] Before the next action');
+      expect(text).not.toContain('<!--');
+    });
+
     it('blocks synthesizeArtifacts pseudo-table names before executing raw SQL', async () => {
       const { tools, mockTpService } = createTestServer({ lightweight: true });
 

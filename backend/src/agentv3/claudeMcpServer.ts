@@ -13,6 +13,7 @@ import {sceneTimelineProposalToolShape} from '../agent/scene/sceneTimelineContra
 import type {RuntimeToolObserver} from '../agentRuntime/runtimeToolObserver';
 import type {AnalysisHistoryReader} from '../agentRuntime/analysisHistory';
 import {renderRequiredLocalizedStrategyTemplate} from './localizedStrategyTemplate';
+import {findArtifactSqlReference} from './artifactSqlReference';
 import { tool as sdkTool } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import { createHash } from 'crypto';
@@ -1144,8 +1145,6 @@ const ERROR_FIX_PAIR_TTL_MS = 30 * 24 * 60 * 60 * 1000;
  * Prompts Claude to explicitly reason about observations before next action.
  * Cost: ~20 tokens per data tool call, ~200-300 total per analysis.
  */
-const REASONING_NUDGE_ZH = '\n\n[REFLECT] 在执行下一步之前：这个数据的关键发现是什么？是否支持/反驳你的假设？如有重要推断，请用 submit_hypothesis 或 write_analysis_note 记录。';
-const REASONING_NUDGE_EN = '\n\n[REFLECT] Before the next action: what is the key finding from this data? Does it support or refute your hypothesis? If there is an important inference, record it with submit_hypothesis or write_analysis_note.';
 
 function sqlErrorLogFile(scope?: KnowledgeScope): string {
   if (!enterpriseKnowledgeStoreEnabled() && !scope) {
@@ -2489,214 +2488,18 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     );
   }
 
-  function skipSqlQuotedText(sql: string, index: number, quote: string): number {
-    let i = index + 1;
-    while (i < sql.length) {
-      if (sql[i] === quote) {
-        if (sql[i + 1] === quote) {
-          i += 2;
-          continue;
-        }
-        return i + 1;
-      }
-      i += 1;
-    }
-    return sql.length;
-  }
-
-  function skipSqlIgnoredText(sql: string, index: number): number {
-    const char = sql[index];
-    const next = sql[index + 1];
-    if (char === '-' && next === '-') {
-      let i = index + 2;
-      while (i < sql.length && sql[i] !== '\n' && sql[i] !== '\r') i += 1;
-      return i;
-    }
-    if (char === '/' && next === '*') {
-      let i = index + 2;
-      while (i < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) i += 1;
-      return Math.min(sql.length, i + 2);
-    }
-    if (char === '\'' || char === '"' || char === '`') return skipSqlQuotedText(sql, index, char);
-    if (char === '[') {
-      let i = index + 1;
-      while (i < sql.length && sql[i] !== ']') i += 1;
-      return Math.min(sql.length, i + 1);
-    }
-    return index;
-  }
-
-  function readSqlIdentifierToken(sql: string, index: number): { value: string; end: number } | null {
-    const char = sql[index];
-    if (char === '\'' || char === '"' || char === '`') {
-      const end = skipSqlQuotedText(sql, index, char);
-      const inner = sql.slice(index + 1, end - 1).split(`${char}${char}`).join(char);
-      return { value: inner, end };
-    }
-    if (char === '[') {
-      const end = skipSqlIgnoredText(sql, index);
-      return { value: sql.slice(index + 1, end - 1), end };
-    }
-
-    let i = index;
-    while (i < sql.length && /[A-Za-z0-9_$-]/.test(sql[i])) i += 1;
-    if (i === index) return null;
-    return { value: sql.slice(index, i), end: i };
-  }
-
-  function readSqlTableNameAfterFromOrJoin(sql: string, index: number): { tableName: string; end: number } | null {
-    let i = index;
-    while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    if (sql[i] === '(') return null;
-
-    let token = readSqlIdentifierToken(sql, i);
-    if (!token) return null;
-    let tableName = token.value;
-    i = token.end;
-
-    while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    if (sql[i] === '.') {
-      i += 1;
-      while (i < sql.length && /\s/.test(sql[i])) i += 1;
-      token = readSqlIdentifierToken(sql, i);
-      if (!token) return { tableName, end: i };
-      tableName = token.value;
-      i = token.end;
-    }
-
-    return { tableName, end: i };
-  }
-
-  const tableAliasBoundaryWord = /^(WHERE|JOIN|LEFT|RIGHT|INNER|OUTER|CROSS|FULL|NATURAL|GROUP|ORDER|LIMIT|ON|USING|HAVING|UNION|EXCEPT|INTERSECT|WINDOW|QUALIFY|VALUES)$/i;
-
-  function readOptionalSqlAliasEnd(sql: string, index: number): number {
-    let i = index;
-    while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    const asMatch = /^AS\b/i.exec(sql.slice(i));
-    if (asMatch) {
-      i += asMatch[0].length;
-      while (i < sql.length && /\s/.test(sql[i])) i += 1;
-    }
-
-    const token = readSqlIdentifierToken(sql, i);
-    if (!token || tableAliasBoundaryWord.test(token.value)) return index;
-    return token.end;
-  }
-
-  function isArtifactPseudoTableName(tableName: string): boolean {
-    const lower = tableName.toLowerCase();
-    return (
-      lower !== '__intrinsic_batch_frame_root_cause' &&
-      (
-        /^__intrinsic_[a-z_]\w*$/i.test(tableName) ||
-        /^art[-_]\d+(?:[-_]\w+)*$/i.test(tableName) ||
-        lower === 'synthesizeartifacts' ||
-        lower === 'synthesize_artifacts' ||
-        lower === 'artifacts'
-      )
-    );
-  }
-
-  function findArtifactPseudoTableNameInReference(sql: string, index: number): { tableName: string | null; end: number | null } {
-    const table = readSqlTableNameAfterFromOrJoin(sql, index);
-    if (!table) return { tableName: null, end: null };
-    const end = readOptionalSqlAliasEnd(sql, table.end);
-    return {
-      tableName: isArtifactPseudoTableName(table.tableName) ? table.tableName : null,
-      end: Math.max(table.end, end),
-    };
-  }
-
-  function findArtifactPseudoTableName(sql: string): string | null {
-    let i = 0;
-    while (i < sql.length) {
-      const skipped = skipSqlIgnoredText(sql, i);
-      if (skipped !== i) {
-        i = skipped;
-        continue;
-      }
-
-      if (/[A-Za-z_]/.test(sql[i])) {
-        const wordStart = i;
-        while (i < sql.length && /[A-Za-z0-9_]/.test(sql[i])) i += 1;
-        const word = sql.slice(wordStart, i);
-        if (/^FROM$/i.test(word)) {
-          while (i < sql.length) {
-            const reference = findArtifactPseudoTableNameInReference(sql, i);
-            if (reference.tableName) return reference.tableName;
-            if (reference.end === null) break;
-            i = reference.end;
-            while (i < sql.length && /\s/.test(sql[i])) i += 1;
-            if (sql[i] !== ',') break;
-            i += 1;
-          }
-          continue;
-        }
-        if (/^JOIN$/i.test(word)) {
-          const reference = findArtifactPseudoTableNameInReference(sql, i);
-          if (reference.tableName) return reference.tableName;
-          if (reference.end !== null) i = Math.max(i, reference.end);
-        }
-        continue;
-      }
-
-      i += 1;
-    }
-
-    return null;
-  }
-
-  function findArtifactPseudoFunctionReference(
-    sql: string,
-  ): { functionName: string; artifactId: string } | null {
-    let i = 0;
-    while (i < sql.length) {
-      const skipped = skipSqlIgnoredText(sql, i);
-      if (skipped !== i) {
-        i = skipped;
-        continue;
-      }
-
-      if (!/[A-Za-z_]/.test(sql[i])) {
-        i += 1;
-        continue;
-      }
-      const wordStart = i;
-      while (i < sql.length && /[A-Za-z0-9_]/.test(sql[i])) i += 1;
-      const functionName = sql.slice(wordStart, i);
-      if (!/^(?:read|query|fetch)_artifact(?:_rows)?$/i.test(functionName)) continue;
-
-      let argsStart = i;
-      while (argsStart < sql.length && /\s/.test(sql[argsStart])) argsStart += 1;
-      const artifactMatch = /^\(\s*(['"])(?:art[-_])(\d+)\1/i.exec(sql.slice(argsStart));
-      if (artifactMatch?.[2]) {
-        return {functionName, artifactId: `art-${artifactMatch[2]}`};
-      }
-    }
-    return null;
-  }
-
   function artifactSqlMisuseHint(sql: string, language: OutputLanguage): Record<string, unknown> | null {
-    const functionReference = findArtifactPseudoFunctionReference(sql);
-    const tableName = findArtifactPseudoTableName(sql);
-    if (!functionReference && !tableName) return null;
-    const artifactNumber = tableName ? /^art[-_](\d+)/i.exec(tableName)?.[1] : undefined;
-    const artifactId = functionReference?.artifactId ?? (artifactNumber ? `art-${artifactNumber}` : undefined);
-    const pseudoReference = functionReference?.functionName ?? tableName!;
-
+    const artifact = findArtifactSqlReference(sql);
+    if (!artifact) return null;
     return {
       success: false,
       blocked: true,
-      error: localize(
-        language,
-        `${pseudoReference} 不是 trace_processor SQL 表或函数。Skill 返回的 art-* / synthesizeArtifacts 是 SmartPerfetto artifact 引用，不能用 execute_sql 查询。`,
-        `${pseudoReference} is not a trace_processor SQL table or function. art-* / synthesizeArtifacts from Skill results are SmartPerfetto artifact references and cannot be queried with execute_sql.`,
-      ),
+      error: renderRequiredLocalizedStrategyTemplate('prompt-artifact-sql-misuse', language,
+        {reference: artifact.reference}),
       action_required: 'fetch_artifact',
-      ...(artifactId ? {artifactId} : {}),
-      hint: artifactId
-        ? `Use fetch_artifact(artifactId="${artifactId}", detail="summary") first. Read the minimum rows needed only if the summary lacks a required field or the user explicitly requests row-level data.`
-        : 'Use fetch_artifact(artifactId="art-N", detail="summary") first with the artifactId returned by invoke_skill. Read the minimum rows needed only if the summary lacks a required field or the user explicitly requests row-level data.',
+      ...(artifact.artifactId ? {artifactId: artifact.artifactId} : {}),
+      hint: renderTemplate(requireToolDescription('prompt-artifact-sql-misuse-hint'),
+        {artifact_id: artifact.artifactId ?? 'art-N'}),
       sql,
     };
   }
@@ -2710,7 +2513,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   function getReasoningNudge(): string {
     dataToolCallCount++;
     if (dataToolCallCount > REASONING_NUDGE_MAX_CALLS) return '';
-    return outputLanguage === 'en' ? REASONING_NUDGE_EN : REASONING_NUDGE_ZH;
+    return `\n\n${renderRequiredLocalizedStrategyTemplate('prompt-reasoning-nudge', outputLanguage, {})}`;
   }
 
   let evidenceProducerOrdinal = 0;
@@ -6589,16 +6392,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   // analysisPlanRef is declared above (P0-G10) and shared with planning tools
   const submitPlan = analysisPlanRef ? tool(
     'submit_plan',
-    'Optionally submit a structured analysis plan. ' +
-    'Define phases with goals and expected tools. The system tracks plan adherence and warns on deviation. ' +
-    'Use when: an explicit multi-phase plan helps organize the analysis.\n' +
-    'Don\'t use when: plan already submitted (use revise_plan to modify, update_plan_phase to track progress).\n' +
-    'expectedCalls skillId is only valid for invoke_skill/compare_skill; scope every other tool as {tool:"fetch_artifact"} or {tool:"execute_sql"} with no skillId.\n\n' +
-    'Examples:\n' +
-    '1. Scrolling plan: phases=[{id:"p1", name:"概览采集", goal:"获取帧统计和卡顿分布", expectedTools:["invoke_skill"], expectedCalls:[{tool:"invoke_skill", skillId:"scrolling_analysis"}]}, ' +
-    '{id:"p2", name:"根因分析", goal:"逐帧诊断卡顿原因", expectedTools:["invoke_skill","execute_sql"], expectedCalls:[{tool:"invoke_skill", skillId:"jank_frame_detail"}]}, ' +
-    '{id:"p3", name:"深入验证", goal:"验证根因假设", expectedTools:["execute_sql","fetch_artifact"]}], ' +
-    'successCriteria="识别卡顿根因并提供量化证据"',
+    requireToolDescription('prompt-submit-plan-tool-description'),
     {
       phases: PLAN_PHASES_ARG_SCHEMA.describe('Ordered list of analysis phases.'),
       successCriteria: z.string().describe('What constitutes a successful analysis (e.g. "Identify root cause of jank frames with evidence")'),
