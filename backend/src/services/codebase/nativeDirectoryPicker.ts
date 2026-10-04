@@ -37,6 +37,20 @@ export type DirectoryPickerUnavailableReason =
   | 'no_supported_dialog'
   | 'remote_request';
 
+/** What the folder is for; it only sets the dialog's title. */
+export type DirectoryPickerPurpose = 'codebase' | 'knowledge';
+
+const DIRECTORY_PICKER_PROMPTS: Readonly<Record<DirectoryPickerPurpose, string>> = {
+  codebase: 'Choose a source code folder',
+  knowledge: 'Choose a documents folder',
+};
+
+export const DIRECTORY_PICKER_PURPOSES = Object.keys(DIRECTORY_PICKER_PROMPTS) as DirectoryPickerPurpose[];
+
+export function isDirectoryPickerPurpose(value: unknown): value is DirectoryPickerPurpose {
+  return (DIRECTORY_PICKER_PURPOSES as unknown[]).includes(value);
+}
+
 export interface DirectoryPickerCapability {
   available: boolean;
   platform: NodeJS.Platform;
@@ -353,8 +367,9 @@ export class NativeDirectoryPicker {
 
   async chooseDirectory(
     scope: CodebaseScope,
+    purpose: DirectoryPickerPurpose = 'codebase',
   ): Promise<DirectoryPickerSelection | DirectoryPickerCancelled> {
-    const command = this.resolvePickerCommand();
+    const command = this.resolvePickerCommand(DIRECTORY_PICKER_PROMPTS[purpose]);
     const capability = this.capability();
     if (!capability.available || 'reason' in command) {
       throw new NativeDirectoryPickerError(
@@ -391,6 +406,7 @@ export class NativeDirectoryPicker {
     }
   }
 
+  /** Checks a selection without using it up: a preview may run any number of times. */
   validateSelection(
     selectionId: string,
     rootPath: string,
@@ -399,28 +415,28 @@ export class NativeDirectoryPicker {
     return this.resolveSelection(selectionId, rootPath, scope);
   }
 
-  runWithSelection<T>(
+  /**
+   * Uses a selection up for one operation, synchronous or asynchronous. The
+   * selection is taken before the operation starts, so a concurrent replay of
+   * the same id finds nothing; it comes back only when the operation fails
+   * (and has not expired meanwhile), so the user can retry without picking
+   * the folder again.
+   */
+  async runWithSelection<T>(
     selectionId: string,
     rootPath: string,
     scope: CodebaseScope,
-    operation: (rootRealpath: string) => T,
-  ): T {
+    operation: (rootRealpath: string) => T | Promise<T>,
+  ): Promise<T> {
     const rootRealpath = this.resolveSelection(
       selectionId,
       rootPath,
       scope,
     );
-    const selection = this.pendingSelections.get(selectionId);
-    if (!selection) {
-      throw new NativeDirectoryPickerError(
-        'DIRECTORY_SELECTION_NOT_FOUND',
-        'Directory selection was not found',
-        400,
-      );
-    }
+    const selection = this.pendingSelections.get(selectionId)!;
     this.pendingSelections.delete(selectionId);
     try {
-      return operation(rootRealpath);
+      return await operation(rootRealpath);
     } catch (error) {
       if (
         selection.expiresAt > this.now() &&
@@ -432,7 +448,7 @@ export class NativeDirectoryPicker {
     }
   }
 
-  private resolvePickerCommand():
+  private resolvePickerCommand(prompt = DIRECTORY_PICKER_PROMPTS.codebase):
     | PickerCommand
     | {reason: Extract<DirectoryPickerUnavailableReason, 'no_graphical_session' | 'no_supported_dialog'>} {
     if (this.platform === 'darwin') {
@@ -445,7 +461,7 @@ export class NativeDirectoryPicker {
             executable,
             args: [
               '-e',
-              'POSIX path of (choose folder with prompt "Choose a source code folder")',
+              `POSIX path of (choose folder with prompt "${prompt}")`,
             ],
           }
         : {reason: 'no_supported_dialog'};
@@ -466,7 +482,7 @@ export class NativeDirectoryPicker {
         ? systemPowerShell
         : this.findExecutable('powershell.exe') ?? this.findExecutable('pwsh.exe');
       return executable
-        ? this.windowsPickerCommand(executable, 'windows')
+        ? this.windowsPickerCommand(executable, 'windows', prompt)
         : {reason: 'no_supported_dialog'};
     }
 
@@ -477,7 +493,7 @@ export class NativeDirectoryPicker {
         const wslpath = this.findExecutable('wslpath');
         if (powershell && wslpath) {
           return {
-            ...this.windowsPickerCommand(powershell, 'windows_wsl'),
+            ...this.windowsPickerCommand(powershell, 'windows_wsl', prompt),
             convertWithWslpath: wslpath,
           };
         }
@@ -493,7 +509,7 @@ export class NativeDirectoryPicker {
           args: [
             '--file-selection',
             '--directory',
-            '--title=Choose a source code folder',
+            `--title=${prompt}`,
           ],
         };
       }
@@ -502,7 +518,7 @@ export class NativeDirectoryPicker {
         return {
           provider: 'kdialog',
           executable: kdialog,
-          args: ['--getexistingdirectory', '.', '--title', 'Choose a source code folder'],
+          args: ['--getexistingdirectory', '.', '--title', prompt],
         };
       }
       return {reason: 'no_supported_dialog'};
@@ -514,12 +530,13 @@ export class NativeDirectoryPicker {
   private windowsPickerCommand(
     executable: string,
     provider: 'windows' | 'windows_wsl',
+    prompt: string,
   ): PickerCommand {
     const script = [
       '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
       'Add-Type -AssemblyName System.Windows.Forms',
       '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
-      '$dialog.Description = "Choose a source code folder"',
+      `$dialog.Description = "${prompt}"`,
       '$dialog.ShowNewFolderButton = $false',
       'try {',
       '  if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',

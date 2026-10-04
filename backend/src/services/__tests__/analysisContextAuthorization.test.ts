@@ -18,7 +18,7 @@ import {
 import {effectiveAnalysisSelection} from '../effectiveAnalysisSelection';
 import {CodebaseRegistry} from '../codebase/codebaseRegistry';
 import {PathSecurityGate} from '../codebase/pathSecurityGate';
-import {contentDisclosureToken} from '../codebase/sourceDisclosure';
+import {contentDisclosure} from '../codebase/sourceDisclosure';
 import {ExternalKnowledgeSourceRegistry} from '../externalKnowledgeSourceRegistry';
 
 const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
@@ -320,7 +320,7 @@ describe('the effective analysis selection', () => {
 
     // Registration already granted the current selection and every language.
     codebaseRegistry.setProviderConsent(codebaseId, scope, true, scope.userId);
-    const token = contentDisclosureToken(codebaseRegistry.get(codebaseId, scope)!);
+    const token = contentDisclosure(codebaseRegistry.get(codebaseId, scope)!).token;
     codebaseRegistry.authorizeContent(codebaseId, scope, scope.userId, token);
     codebaseRegistry.authorizeContent(codebaseId, scope, scope.userId, token);
     codebaseRegistry.authorizeAvailableExtensions(codebaseId, scope, scope.userId);

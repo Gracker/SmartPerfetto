@@ -92,6 +92,19 @@ describe('route failure variants', () => {
     expect(loggedText()).toContain(CANARY);
   }
 
+  /**
+   * A route that reads a user's folder logs a failure through
+   * `pathFreeFailure`: the fixed answer, and a log that keeps the error's
+   * class and frames but not its message, which can carry the folder's path.
+   */
+  function expectPathFreeFixedFailure(res: request.Response, status: number, code: string): void {
+    expect(res.status).toBe(status);
+    expect(res.body).toEqual({success: false, code, error: expect.any(String), requestId: context.requestId});
+    expect(res.text).not.toContain('canary-7e3a');
+    expect(loggedText()).toContain(code);
+    expect(loggedText()).not.toContain('canary-7e3a');
+  }
+
   function expectPublicError(res: request.Response, status: number, code: string, error: string): void {
     expect(res.status).toBe(status);
     expect(res.body).toEqual({success: false, code, error, requestId: context.requestId});
@@ -219,7 +232,7 @@ describe('route failure variants', () => {
       expect(JSON.stringify(warnLog.mock.calls)).toContain('secret-canary-7e3a');
 
       services.androidInternalsWikiIngester.ingest.mockImplementation(async () => downstream());
-      expectFixedFailure(await request(app()).post('/api/rag/android-internals/sources/k1/reindex'), 500,
+      expectPathFreeFixedFailure(await request(app()).post('/api/rag/android-internals/sources/k1/reindex'), 500,
         'knowledge_source_reindex_failed');
     });
 

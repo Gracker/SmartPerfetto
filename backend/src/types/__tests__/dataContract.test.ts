@@ -9,7 +9,8 @@ import ts from 'typescript';
 import {
   ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS,
   analysisCompletedContractFragment,
-  analysisCompletedPublicTypeFragment,
+  ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS,
+  analysisPublicTypeFragments,
   conclusionContractFragment,
   criticalPathContractFragment,
 } from '../../../scripts/frontendContractFragments';
@@ -155,8 +156,9 @@ describe('dataContract column inference', () => {
 
   it('generates only reachable public type declarations and resolves their constant type queries', () => {
     const source = fs.readFileSync(path.resolve(__dirname, '../dataContract.ts'), 'utf8');
-    const fragment = analysisCompletedPublicTypeFragment(source, ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS.map(sourcePath =>
-      fs.readFileSync(path.resolve(__dirname, '../../', sourcePath), 'utf8')));
+    const read = (sourcePath: string) => fs.readFileSync(path.resolve(__dirname, '../../', sourcePath), 'utf8');
+    const fragment = analysisPublicTypeFragments(source, ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS.map(read),
+      ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS.map(read)).analysisCompleted;
     const parsed = ts.createSourceFile('public-types.ts', fragment, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
     expect(parsed.statements.every(statement => ts.isInterfaceDeclaration(statement) || ts.isTypeAliasDeclaration(statement))).toBe(true);
     const names = parsed.statements.map(statement => (statement as ts.InterfaceDeclaration).name.text);

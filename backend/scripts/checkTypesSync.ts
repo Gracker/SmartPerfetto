@@ -22,10 +22,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS,
-  analysisCompletedPublicTypeFragment,
+  ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS,
   analysisCompletedContractFragment,
+  analysisPublicTypeFragments,
+  findOutOfSyncContractFragments,
   FRONTEND_CONTRACT_SOURCES,
   frontendContractFragments,
+  readBackendSources,
   readFrontendContractSources,
 } from './frontendContractFragments';
 
@@ -64,27 +67,6 @@ function extractConstArrayValues(content: string, constName: string): string[] {
   }
 
   return values;
-}
-
-/**
- * Normalize content for comparison by removing:
- * - Timestamp lines (@generated)
- * - Trailing whitespace
- * - Multiple blank lines
- */
-function normalizeForComparison(content: string): string {
-  return content
-    // Remove @generated timestamp line
-    .replace(/@generated \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, '@generated TIMESTAMP')
-    // Normalize line endings
-    .replace(/\r\n/g, '\n')
-    // Remove trailing whitespace
-    .split('\n')
-    .map(line => line.trimEnd())
-    .join('\n')
-    // Collapse multiple blank lines
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
 }
 
 /**
@@ -211,13 +193,6 @@ function buildExpectedConclusionContractSync(
   };
 }
 
-
-function findOutOfSyncContractFragments(frontendContent: string, fragments: Array<{ name: string; content: string }>): string[] {
-  const normalizedFrontend = normalizeForComparison(frontendContent);
-  return fragments
-    .filter(fragment => !normalizedFrontend.includes(normalizeForComparison(fragment.content)))
-    .map(fragment => fragment.name);
-}
 
 function extractAnalysisQualityExpectations(content: string): AnalysisQualitySyncExpectation {
   const dataEnvelopeMetaMatch = content.match(/export interface DataEnvelopeMeta\s*\{([\s\S]*?)\n\}/m);
@@ -346,11 +321,14 @@ async function checkTypesSync(): Promise<boolean> {
   // Same transforms the generator applies, imported rather than restated: a
   // private copy here once expected `SourceUseDecisionV1` that the generator
   // deliberately rewrites, so the check could never pass.
+  const readFile = (filePath: string) => fs.readFileSync(filePath, 'utf-8');
+  const publicTypes = analysisPublicTypeFragments(backendContent,
+    readBackendSources(projectRoot, readFile, ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS),
+    readBackendSources(projectRoot, readFile, ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS));
   const outOfSyncFragments = findOutOfSyncContractFragments(frontendContent, [
     {name: 'AnalysisCompletedEvent', content: analysisCompletedContractFragment(backendContent)},
-    {name: 'AnalysisCompletedEvent public dependencies', content: analysisCompletedPublicTypeFragment(backendContent,
-      ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS.map(sourcePath =>
-        fs.readFileSync(path.join(projectRoot, 'backend/src', sourcePath), 'utf-8')))},
+    {name: 'AnalysisCompletedEvent public dependencies', content: publicTypes.analysisCompleted},
+    {name: 'AnalysisReceipt', content: publicTypes.analysisReceipt},
     ...Object.entries(frontendContractFragments(contractSources)).map(([name, content]) =>
       ({name: FRONTEND_CONTRACT_SOURCES[name as keyof typeof FRONTEND_CONTRACT_SOURCES].path, content})),
   ]);
@@ -384,6 +362,7 @@ async function checkTypesSync(): Promise<boolean> {
   console.log('  ConclusionContract: synced (sceneId/clusterPolicy + analysis_completed reference)');
   console.log('  AnalysisQualityContracts: synced (Evidence/Verifier/Identity + SSE fields)');
   console.log('  ExternalIssueReporting: synced (Opportunity/Review/Draft + attestation)');
+  console.log('  AnalysisReceipt: synced (receipt declarations + dependencies)');
 
   return true;
 }

@@ -3,6 +3,7 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import type { Request, Response } from 'express';
+import { types as utilTypes } from 'util';
 import { PublicRequestError, thrownReasonCode } from '../utils/publicRequestError';
 import { createRequestId, REQUEST_ID_HEADER, requestIdOf } from './requestId';
 
@@ -72,6 +73,40 @@ export function logRouteFailure(
     headersSent: res.headersSent,
   }, loggableError(err));
   return requestId;
+}
+
+const FILESYSTEM_ERROR_CODE = /^E[A-Z0-9]+$/;
+const SYSCALL_NAME = /^[a-z_]+$/;
+/** An absolute POSIX, Windows drive or UNC path at the start of a reason detail or after a separator in it. */
+const ABSOLUTE_PATH_IN_DETAIL = /(?:^|[:=,])(?:\/|\\|[A-Za-z]:[\\/])/;
+
+/**
+ * A failure as a path-free record, for routes that read a folder the user
+ * registered or picked. A filesystem error carries the absolute path in its
+ * message, its stack's first line and its `path`/`dest` fields, and the route
+ * log would keep all of them. A public request error and a reason token keep
+ * their own text (SmartPerfetto wrote it; a reason's detail is dropped when it
+ * holds an absolute path, while a path relative to the folder stays for
+ * diagnosis); anything else keeps only its class name, errno code,
+ * syscall and stack frames, which name source files, never the user's.
+ */
+export function pathFreeFailure(err: unknown): unknown {
+  if (err instanceof PublicRequestError) return err;
+  const reason = thrownReasonCode(err);
+  if (reason !== undefined) {
+    const detail = (err as Error).message.slice(reason.length + 1);
+    return new Error(detail && !ABSOLUTE_PATH_IN_DETAIL.test(detail) ? `${reason}:${detail}` : reason);
+  }
+  // A Node filesystem error can come from another realm (as under Jest), so instanceof alone is not enough.
+  if (!(err instanceof Error) && !utilTypes.isNativeError(err)) return {name: typeof err};
+  const {code, syscall, errno} = err as NodeJS.ErrnoException;
+  return {
+    name: err.name,
+    ...(typeof code === 'string' && FILESYSTEM_ERROR_CODE.test(code) ? {code} : {}),
+    ...(typeof syscall === 'string' && SYSCALL_NAME.test(syscall) ? {syscall} : {}),
+    ...(typeof errno === 'number' ? {errno} : {}),
+    frames: (err.stack ?? '').split('\n').filter(line => /^\s+at /.test(line)).map(line => line.trim()),
+  };
 }
 
 function responseRequestId(res: Response): string {

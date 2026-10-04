@@ -5,7 +5,7 @@
 /**
  * `smp knowledge`: register and manage document folders as searchable
  * knowledge bases from the terminal. It uses the same registry, ingester and
- * store as the `/api/admin/rag/knowledge` routes; only the trust differs: the
+ * store as the `/api/rag/knowledge` routes; only the trust differs: the
  * local user's own folder stands in for `SMARTPERFETTO_KNOWLEDGE_ROOTS`, as
  * `smp codebase` trusts a registered source root.
  *

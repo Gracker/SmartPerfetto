@@ -22,7 +22,7 @@ import {
 } from '../../services/codebase/codebaseManagementService';
 import {PathSecurityGate} from '../../services/codebase/pathSecurityGate';
 import {SourceEnumerator} from '../../services/codebase/sourceEnumerator';
-import {buildSourceSelectionIR, sourceExtensionsForKind} from '../../services/codebase/sourceSelectionPolicy';
+import {buildSourceSelectionIR} from '../../services/codebase/sourceSelectionPolicy';
 import {AppSourceIngester} from '../../services/rag/appSourceIngester';
 import {AospSourceIngester} from '../../services/rag/aospSourceIngester';
 import {KernelSourceIngester} from '../../services/rag/kernelSourceIngester';
@@ -357,24 +357,18 @@ export async function runCodebaseAuthorizeContentCommand(args: CodebaseCommandBa
   const {service, scope} = managementContext(args);
   try {
     const codebase = await withConsoleLogToStderr(format === 'json', async () => service.get(args.codebaseId, scope));
-    const disclosure = {
-      codebaseId: codebase.codebaseId,
-      includePrefixes: codebase.pathFilters ?? [],
-      excludeGlobs: codebase.excludeGlobs ?? [],
-      languages: [...sourceExtensionsForKind(codebase.kind)].sort(),
-      notice: SOURCE_SEND_DISCLOSURE,
-      contentDisclosureToken: codebase.contentDisclosureToken,
-    };
+    // The service's disclosure: the lists its token names, which is what the grant takes.
+    const disclosure = {...codebase.contentDisclosure, codebaseId: codebase.codebaseId, notice: SOURCE_SEND_DISCLOSURE};
     if (format === 'json') {
       console.log(JSON.stringify({success: true, action: 'disclosure', granted: false, disclosure}, null, 2));
     } else {
       console.log(`Granting provider-send for ${codebase.codebaseId} would cover:`);
       console.log(`  include: ${disclosure.includePrefixes.length ? disclosure.includePrefixes.join(', ') : '(whole registered root)'}`);
       console.log(`  exclude: ${disclosure.excludeGlobs.length ? disclosure.excludeGlobs.join(', ') : '(none)'}`);
-      console.log(`  languages: ${disclosure.languages.join(' ')}`);
+      console.log(`  languages: ${disclosure.extensions.join(' ')}`);
       console.log(disclosure.notice);
       console.log('Nothing was granted. To grant exactly this scope, run:');
-      console.log(`  smp codebase authorize-content ${codebase.codebaseId} --confirm ${disclosure.contentDisclosureToken}`);
+      console.log(`  smp codebase authorize-content ${codebase.codebaseId} --confirm ${disclosure.token}`);
     }
     return 0;
   } catch (error) {

@@ -28,8 +28,9 @@
  * operator-script-only because their authenticated source credentials do
  * not belong in the HTTP surface.
  *
- * The `/knowledge` endpoints register, index, search and delete document
- * collections (any allowlisted folder of documents) and delete any external
+ * The `/knowledge` endpoints register, index, search, set consent on and
+ * delete document collections (any allowlisted folder of documents, or one
+ * the owner chose in the local directory picker) and delete any external
  * knowledge source. Responses carry relative paths and counts, never the
  * registered absolute root.
  *
@@ -41,6 +42,7 @@ import * as path from 'path';
 
 import {
   Router,
+  type Request,
   type Response,
   type Router as ExpressRouter,
 } from 'express';
@@ -48,6 +50,7 @@ import {
 import {authenticate, requireRequestContext} from '../middleware/auth';
 import {
   logRouteFailure,
+  pathFreeFailure,
   sendPublicRequestError,
   sendRouteError,
   sendRouteReasonError,
@@ -84,6 +87,8 @@ import {
   type RegisteredCodebase,
 } from '../services/codebase/codebaseManagementService';
 import {
+  DIRECTORY_PICKER_PURPOSES,
+  isDirectoryPickerPurpose,
   isLocalDirectoryPickerRequest,
   NativeDirectoryPicker,
   NativeDirectoryPickerError,
@@ -94,6 +99,7 @@ import {KernelSourceIngester} from '../services/rag/kernelSourceIngester';
 import {isSourceChunkLimitExceeded, resolveSourcePathPatterns} from '../services/rag/sourceFileSelection';
 import {SymbolResolver} from '../services/symbol/symbolResolver';
 import {codeAwareFeatureEnabled} from '../services/codebase/codeAwareFeature';
+import {pickedRootGateOptions} from '../services/codebase/codebaseCapability';
 import {
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
@@ -314,6 +320,39 @@ function requiredKnowledgeString(value: unknown, field: string): string {
 }
 
 const KNOWLEDGE_ROUTE_ERRORS = [KnowledgeSourceRequestError, KnowledgeIndexUnavailableError];
+/** Preview and registration may also name a directory selection. */
+const KNOWLEDGE_PICKER_ROUTE_ERRORS = [...KNOWLEDGE_ROUTE_ERRORS, NativeDirectoryPickerError];
+
+/** Whether a request comes from the local UI over loopback (Host, socket and Origin), the picker's precondition. */
+function isLocalPickerRequest(req: Request): boolean {
+  return isLocalDirectoryPickerRequest({
+    hostname: req.hostname,
+    remoteAddress: req.socket.remoteAddress,
+    origin: req.get('origin'),
+  });
+}
+
+/**
+ * The directory selection a preview or registration names, codebase and
+ * knowledge alike. It is honoured only from the local UI; anywhere else the
+ * request is refused rather than downgraded to the raw path, which only the
+ * configured allowlist admits.
+ */
+function directorySelectionFromRequest(req: Request, selectionId: string | undefined): string | undefined {
+  if (!selectionId) return undefined;
+  if (!isLocalPickerRequest(req)) {
+    throw new NativeDirectoryPickerError('DIRECTORY_PICKER_UNAVAILABLE',
+      'Directory selections can be used only from the local SmartPerfetto UI', 403);
+  }
+  return selectionId;
+}
+
+/** A registration whose complete enumeration matched nothing; answered with its preview. */
+class EmptyEffectiveSelection extends Error {
+  constructor(readonly enumeration: Parameters<typeof projectCodebaseEnumeration>[0]) {
+    super('effective_source_selection_empty');
+  }
+}
 
 function routeParam(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? '';
@@ -357,6 +396,26 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       sourceEnumerator,
     });
   const directoryPicker = services.directoryPicker ?? new NativeDirectoryPicker();
+  /**
+   * Runs `operation` with the folder a request's directory selection resolved
+   * to (undefined without one). A preview only checks the selection; a
+   * registration holds it for the whole operation and uses it up, or gives it
+   * back on failure while it has not expired.
+   */
+  const withPickedRoot = async <T>(
+    req: Request,
+    selectionId: string | undefined,
+    rootPath: string,
+    scope: KnowledgeScope,
+    mode: 'preview' | 'register',
+    operation: (pickedRoot: string | undefined) => T | Promise<T>,
+  ): Promise<T> => {
+    const id = directorySelectionFromRequest(req, selectionId);
+    if (!id) return operation(undefined);
+    return mode === 'preview'
+      ? operation(directoryPicker.validateSelection(id, rootPath, scope))
+      : directoryPicker.runWithSelection(id, rootPath, scope, operation);
+  };
   const externalKnowledgeRegistry = services.externalKnowledgeRegistry ??
     getDefaultExternalKnowledgeSourceRegistry();
   const androidInternalsWikiIngester = services.androidInternalsWikiIngester ??
@@ -499,20 +558,21 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     if (!rootPath) {
       return res.status(400).json({success: false, error: '`rootPath` is required'});
     }
-    const preview = await androidInternalsWikiIngester.preview(rootPath);
-    if (preview.blocked) {
-      return res.status(400).json({
-        success: false,
-        error: preview.blockedReason ?? 'knowledge root blocked',
-        preview: {
-          blocked: true,
-          blockedReason: preview.blockedReason,
-          acceptedFileCount: preview.acceptedFiles.length,
-          skippedFileCount: preview.skippedFileCount,
-        },
-      });
-    }
     try {
+      // The folder walk is inside the boundary: its failure is logged without a path.
+      const preview = await androidInternalsWikiIngester.preview(rootPath);
+      if (preview.blocked) {
+        return res.status(400).json({
+          success: false,
+          error: preview.blockedReason ?? 'knowledge root blocked',
+          preview: {
+            blocked: true,
+            blockedReason: preview.blockedReason,
+            acceptedFileCount: preview.acceptedFiles.length,
+            skippedFileCount: preview.skippedFileCount,
+          },
+        });
+      }
       const corpus = scanAndroidInternalsWiki(
         preview.rootRealpath,
         preview.acceptedFiles.map(file => file.relativePath),
@@ -539,7 +599,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         },
       });
     } catch (error) {
-      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
         code: 'knowledge_source_preview_failed',
         error: 'Knowledge source preview failed',
         logLabel: '[RagAdmin] Knowledge source preview error',
@@ -567,14 +627,14 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         error: '`sendToProvider` must be a boolean when provided',
       });
     }
-    const preview = await androidInternalsWikiIngester.preview(rootPath);
-    if (preview.blocked) {
-      return res.status(400).json({
-        success: false,
-        error: preview.blockedReason ?? 'knowledge root blocked',
-      });
-    }
     try {
+      const preview = await androidInternalsWikiIngester.preview(rootPath);
+      if (preview.blocked) {
+        return res.status(400).json({
+          success: false,
+          error: preview.blockedReason ?? 'knowledge root blocked',
+        });
+      }
       const corpus = scanAndroidInternalsWiki(
         preview.rootRealpath,
         preview.acceptedFiles.map(file => file.relativePath),
@@ -598,7 +658,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       });
       return res.json({success: true, source: sanitizeExternalKnowledgeSource(source)});
     } catch (error) {
-      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
         code: 'knowledge_source_register_failed',
         error: 'Knowledge source registration failed',
         logLabel: '[RagAdmin] Knowledge source register error',
@@ -630,7 +690,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         const result = await androidInternalsWikiIngester.ingest(sourceId, scope);
         return res.json({success: true, result});
       } catch (error) {
-        return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+        return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
           code: 'knowledge_source_reindex_failed',
           error: 'Knowledge source reindex failed',
           logLabel: '[RagAdmin] Knowledge source reindex error',
@@ -639,34 +699,44 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     },
   );
 
+  /**
+   * Provider-send consent of any knowledge source in the caller's scope, one
+   * implementation behind two routes: the legacy Wiki path and
+   * `/knowledge/:sourceId/consent`, which answers with the `/knowledge` projection.
+   */
+  const setKnowledgeConsent = (
+    sourceIdParam: 'id' | 'sourceId',
+    project: (source: ExternalKnowledgeSource) => object,
+  ) => (req: Request, res: Response) => {
+    if (typeof req.body?.sendToProvider !== 'boolean') {
+      return res.status(400).json({
+        success: false,
+        error: '`sendToProvider` must be an explicit boolean',
+      });
+    }
+    const context = requireRequestContext(req);
+    const scope = knowledgeScopeFromRequestContext(context);
+    try {
+      const source = externalKnowledgeRegistry.setProviderConsent(
+        routeParam(req.params[sourceIdParam]),
+        scope,
+        req.body.sendToProvider,
+        context.userId,
+      );
+      return res.json({success: true, source: project(source)});
+    } catch (error) {
+      return sendRouteError(res, error, {
+        code: 'knowledge_source_consent_failed',
+        error: 'Knowledge source consent update failed',
+        logLabel: '[RagAdmin] Knowledge source consent error',
+      }, [KnowledgeSourceRequestError]);
+    }
+  };
+
   router.patch(
     '/android-internals/sources/:id/consent',
     requireCodebaseScope('codebase:manage'),
-    (req, res) => {
-      if (typeof req.body?.sendToProvider !== 'boolean') {
-        return res.status(400).json({
-          success: false,
-          error: '`sendToProvider` must be an explicit boolean',
-        });
-      }
-      const context = requireRequestContext(req);
-      const scope = knowledgeScopeFromRequestContext(context);
-      try {
-        const source = externalKnowledgeRegistry.setProviderConsent(
-          routeParam(req.params.id),
-          scope,
-          req.body.sendToProvider,
-          context.userId,
-        );
-        return res.json({success: true, source: sanitizeExternalKnowledgeSource(source)});
-      } catch (error) {
-        return sendRouteError(res, error, {
-          code: 'knowledge_source_consent_failed',
-          error: 'Knowledge source consent update failed',
-          logLabel: '[RagAdmin] Knowledge source consent error',
-        }, [KnowledgeSourceRequestError]);
-      }
-    },
+    setKnowledgeConsent('id', sanitizeExternalKnowledgeSource),
   );
 
   router.delete(
@@ -746,7 +816,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           },
         });
       } catch (error) {
-        return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+        return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
           code: 'knowledge_source_audit_failed',
           error: 'Knowledge source audit failed',
           logLabel: '[RagAdmin] Knowledge source audit error',
@@ -763,17 +833,21 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     });
   });
 
+  // A directory selection is checked, never used up, by a preview.
   router.post('/knowledge/preview', requireCodebaseScope('codebase:manage'), async (req, res) => {
     try {
-      const preview = await documentCollectionIngester.previewIndexable(
-        requiredKnowledgeString(req.body?.rootPath, 'rootPath'));
+      const rootPath = requiredKnowledgeString(req.body?.rootPath, 'rootPath');
+      const preview = await withPickedRoot(req,
+        optionalKnowledgeString(req.body?.directorySelectionId, 'directorySelectionId'), rootPath,
+        knowledgeScopeFromRequestContext(requireRequestContext(req)), 'preview',
+        pickedRoot => documentCollectionIngester.previewIndexable(rootPath, pickedRootGateOptions(pickedRoot)));
       return res.json({success: true, preview: preview.summary});
     } catch (error) {
-      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
         code: 'KNOWLEDGE_COLLECTION_PREVIEW_FAILED',
         error: 'Knowledge collection preview failed',
         logLabel: '[RagAdmin] Knowledge collection preview error',
-      }, KNOWLEDGE_ROUTE_ERRORS);
+      }, KNOWLEDGE_PICKER_ROUTE_ERRORS);
     }
   });
 
@@ -787,26 +861,37 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
           '`sendToProvider` must be a boolean when provided');
       }
       const context = requireRequestContext(req);
-      const {source, preview} = await documentCollectionIngester.register({
-        rootPath,
-        displayName: optionalKnowledgeString(body.displayName, 'displayName'),
-        description: optionalKnowledgeString(body.description, 'description'),
-        attribution: optionalKnowledgeString(body.attribution, 'attribution'),
-        license: optionalKnowledgeString(body.license, 'license'),
-        rightsAcknowledged: body.rightsAcknowledged === true,
-        sendToProvider: body.sendToProvider as boolean | undefined,
-        consentedBy: context.userId,
-        scope: knowledgeScopeFromRequestContext(context),
-      });
+      const scope = knowledgeScopeFromRequestContext(context);
+      // A registration uses its selection up; a failed one gives it back for a retry.
+      const {source, preview} = await withPickedRoot(req,
+        optionalKnowledgeString(body.directorySelectionId, 'directorySelectionId'), rootPath, scope, 'register',
+        pickedRootRealpath => documentCollectionIngester.register({
+          rootPath,
+          pickedRootRealpath,
+          displayName: optionalKnowledgeString(body.displayName, 'displayName'),
+          description: optionalKnowledgeString(body.description, 'description'),
+          attribution: optionalKnowledgeString(body.attribution, 'attribution'),
+          license: optionalKnowledgeString(body.license, 'license'),
+          rightsAcknowledged: body.rightsAcknowledged === true,
+          sendToProvider: body.sendToProvider as boolean | undefined,
+          consentedBy: context.userId,
+          scope,
+        }));
       return res.json({success: true, source: projectKnowledgeSourceForManagement(source), preview: preview.summary});
     } catch (error) {
-      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
         code: 'KNOWLEDGE_COLLECTION_REGISTER_FAILED',
         error: 'Knowledge collection registration failed',
         logLabel: '[RagAdmin] Knowledge collection register error',
-      }, KNOWLEDGE_ROUTE_ERRORS);
+      }, KNOWLEDGE_PICKER_ROUTE_ERRORS);
     }
   });
+
+  router.patch(
+    '/knowledge/:sourceId/consent',
+    requireCodebaseScope('codebase:manage'),
+    setKnowledgeConsent('sourceId', projectKnowledgeSourceForManagement),
+  );
 
   router.post('/knowledge/:sourceId/reindex', requireCodebaseScope('codebase:manage'), async (req, res) => {
     const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
@@ -814,7 +899,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       const result = await documentCollectionIngester.ingest(routeParam(req.params.sourceId), scope);
       return res.json({success: true, result});
     } catch (error) {
-      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
         code: 'KNOWLEDGE_COLLECTION_REINDEX_FAILED',
         error: 'Knowledge collection reindex failed',
         logLabel: '[RagAdmin] Knowledge collection reindex error',
@@ -835,7 +920,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         ...documentCollectionIngester.search(routeParam(req.params.sourceId), scope, query, topK),
       });
     } catch (error) {
-      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
         code: 'KNOWLEDGE_COLLECTION_SEARCH_FAILED',
         error: 'Knowledge collection search failed',
         logLabel: '[RagAdmin] Knowledge collection search error',
@@ -856,7 +941,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       });
       return res.json({success: true, sourceId, deleted: true});
     } catch (error) {
-      return sendRouteReasonError(res, error, callerFacingRagReason(409), {
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(409), {
         code: 'KNOWLEDGE_SOURCE_DELETE_FAILED',
         error: 'Knowledge source deletion failed',
         logLabel: '[RagAdmin] Knowledge source delete error',
@@ -900,20 +985,23 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     '/codebases/directory-picker',
     requireCodebaseScope('codebase:manage'),
     async (req, res) => {
-      if (!isLocalDirectoryPickerRequest({
-        hostname: req.hostname,
-        remoteAddress: req.socket.remoteAddress,
-        origin: req.get('origin'),
-      })) {
+      if (!isLocalPickerRequest(req)) {
         return res.status(403).json({
           success: false,
           code: 'DIRECTORY_PICKER_UNAVAILABLE',
           error: 'System directory selection is available only from the local SmartPerfetto UI',
         });
       }
+      const purpose = req.body?.purpose ?? 'codebase';
+      if (!isDirectoryPickerPurpose(purpose)) {
+        return res.status(400).json({
+          success: false,
+          error: `\`purpose\` must be one of ${DIRECTORY_PICKER_PURPOSES.map(key => `"${key}"`).join(', ')} when provided`,
+        });
+      }
       const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
       try {
-        const result = await directoryPicker.chooseDirectory(scope);
+        const result = await directoryPicker.chooseDirectory(scope, purpose);
         return res.json({success: true, ...result});
       } catch (error) {
         return sendDirectoryPickerError(res, error);
@@ -939,41 +1027,25 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
         error: '`directorySelectionId` must be a string when provided',
       });
     }
-    if (directorySelectionId && !isLocalDirectoryPickerRequest({
-      hostname: req.hostname,
-      remoteAddress: req.socket.remoteAddress,
-      origin: req.get('origin'),
-    })) {
-      return res.status(403).json({
-        success: false,
-        code: 'DIRECTORY_PICKER_UNAVAILABLE',
-        error: 'Directory selections can be used only from the local SmartPerfetto UI',
-      });
-    }
     try {
       const scope = knowledgeScopeFromRequestContext(requireRequestContext(req));
-      const selectedRoot = directorySelectionId
-        ? directoryPicker.validateSelection(directorySelectionId, rootPath, scope)
-        : undefined;
       return res.json({
         success: true,
-        preview: await codebaseManagementService.preview({
-          rootPath,
-          kind,
-          pathFilters,
-          excludeGlobs,
-          ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
-        }, scope),
+        preview: await withPickedRoot(req, directorySelectionId, rootPath, scope, 'preview',
+          pickedRoot => codebaseManagementService.preview({
+            rootPath,
+            kind,
+            pathFilters,
+            excludeGlobs,
+            ...pickedRootGateOptions(pickedRoot),
+          }, scope)),
       });
     } catch (error) {
-      if (error instanceof NativeDirectoryPickerError) {
-        return sendDirectoryPickerError(res, error);
-      }
-      return sendRouteError(res, error, {
+      return sendRouteError(res, pathFreeFailure(error), {
         code: 'CODEBASE_PREVIEW_FAILED',
         error: 'Codebase preview failed',
         logLabel: '[RagAdmin] Codebase preview error',
-      }, [CodebaseManagementError]);
+      }, [CodebaseManagementError, NativeDirectoryPickerError]);
     }
   });
 
@@ -1011,17 +1083,6 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
       return res.status(400).json({
         success: false,
         error: '`directorySelectionId` must be a string when provided',
-      });
-    }
-    if (directorySelectionId && !isLocalDirectoryPickerRequest({
-      hostname: req.hostname,
-      remoteAddress: req.socket.remoteAddress,
-      origin: req.get('origin'),
-    })) {
-      return res.status(403).json({
-        success: false,
-        code: 'DIRECTORY_PICKER_UNAVAILABLE',
-        error: 'Directory selections can be used only from the local SmartPerfetto UI',
       });
     }
     let normalizedPathFilters: string[] | undefined;
@@ -1074,82 +1135,71 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     }
     const context = requireRequestContext(req);
     const scope = knowledgeScopeFromRequestContext(context);
-    let selectedRoot: string | undefined;
     try {
-      selectedRoot = directorySelectionId
-        ? directoryPicker.validateSelection(directorySelectionId, rootPath, scope)
-        : undefined;
-    } catch (error) {
-      return sendDirectoryPickerError(res, error);
-    }
-    try {
-      const rootRealpath = await gate.validateRoot(
-        rootPath,
-        selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : undefined,
-      );
-      const enumeration = await sourceEnumerator.enumerate({
-        rootRealpath,
-        policy: buildSourceSelectionIR({
-          kind,
-          includePrefixes: normalizedPathFilters,
-          excludeGlobs: normalizedExcludeGlobs,
-        }),
-        gate,
-        ...(selectedRoot ? {additionalAllowlistRoots: [selectedRoot]} : {}),
-      });
-      if (enumeration.enumerationComplete && enumeration.files.length === 0) {
-        return res.status(400).json({
-          success: false,
-          error: 'effective_source_selection_empty',
-          message: 'No source files matched the effective selection.',
-          hint: 'Check the path filters, exclude globs, ignored files, and supported extensions.',
-          preview: projectCodebaseEnumeration(enumeration),
-        });
-      }
-      const register = () => registry.register({
-        kind,
-        displayName: normalizedDisplayName ||
-          path.basename(rootRealpath) ||
-          'Source code',
-        rootPath,
-        rootRealpath,
-        ...(directorySelectionId ? {rootAuthorization: 'native_picker'} : {}),
-        ...(normalizedCommitHash ? {commitHash: normalizedCommitHash} : {}),
-        ...(normalizedVendor ? {vendor: normalizedVendor} : {}),
-        ...(normalizedBuildId ? {buildId: normalizedBuildId} : {}),
-        ...(normalizedPathFilters ? {pathFilters: normalizedPathFilters} : {}),
-        ...(normalizedExcludeGlobs ? {excludeGlobs: normalizedExcludeGlobs} : {}),
-        ...(normalizedLicenseTag ? {licenseTag: normalizedLicenseTag} : {}),
-        sendToProvider: sendToProvider ?? false,
-        consentedBy: context.userId,
-        tenantId: context.tenantId,
-        workspaceId: context.workspaceId,
-        userId: context.userId,
-      });
-      const ref = directorySelectionId
-        ? directoryPicker.runWithSelection(
-            directorySelectionId,
+      // The selection is held for the whole registration, root check and
+      // enumeration included: a concurrent replay finds nothing, and a failure
+      // (an empty selection too) gives it back while it has not expired.
+      const {ref, enumeration} = await withPickedRoot(req, directorySelectionId, rootPath, scope, 'register',
+        async pickedRoot => {
+          const gateOptions = pickedRootGateOptions(pickedRoot);
+          const rootRealpath = await gate.validateRoot(rootPath, gateOptions);
+          const enumeration = await sourceEnumerator.enumerate({
+            rootRealpath,
+            policy: buildSourceSelectionIR({
+              kind,
+              includePrefixes: normalizedPathFilters,
+              excludeGlobs: normalizedExcludeGlobs,
+            }),
+            gate,
+            ...gateOptions,
+          });
+          if (enumeration.enumerationComplete && enumeration.files.length === 0) {
+            throw new EmptyEffectiveSelection(enumeration);
+          }
+          const ref = registry.register({
+            kind,
+            displayName: normalizedDisplayName ||
+              path.basename(rootRealpath) ||
+              'Source code',
             rootPath,
-            scope,
-            register,
-          )
-        : register();
+            rootRealpath,
+            ...(pickedRoot ? {rootAuthorization: 'native_picker' as const} : {}),
+            ...(normalizedCommitHash ? {commitHash: normalizedCommitHash} : {}),
+            ...(normalizedVendor ? {vendor: normalizedVendor} : {}),
+            ...(normalizedBuildId ? {buildId: normalizedBuildId} : {}),
+            ...(normalizedPathFilters ? {pathFilters: normalizedPathFilters} : {}),
+            ...(normalizedExcludeGlobs ? {excludeGlobs: normalizedExcludeGlobs} : {}),
+            ...(normalizedLicenseTag ? {licenseTag: normalizedLicenseTag} : {}),
+            sendToProvider: sendToProvider ?? false,
+            consentedBy: context.userId,
+            tenantId: context.tenantId,
+            workspaceId: context.workspaceId,
+            userId: context.userId,
+          });
+          return {ref, enumeration};
+        });
       res.json({
         success: true,
         codebase: codebaseManagementService.project(ref),
         preview: projectCodebaseEnumeration(enumeration),
       });
     } catch (error) {
-      if (error instanceof NativeDirectoryPickerError) {
-        return sendDirectoryPickerError(res, error);
+      if (error instanceof EmptyEffectiveSelection) {
+        return res.status(400).json({
+          success: false,
+          error: 'effective_source_selection_empty',
+          message: 'No source files matched the effective selection.',
+          hint: 'Check the path filters, exclude globs, ignored files, and supported extensions.',
+          preview: projectCodebaseEnumeration(error.enumeration),
+        });
       }
       // Path gate and registry rejections are reason tokens; filesystem and
-      // database failures get fixed text.
-      return sendRouteReasonError(res, error, callerFacingRagReason(400), {
+      // database failures get fixed text, and the log keeps no path.
+      return sendRouteReasonError(res, pathFreeFailure(error), callerFacingRagReason(400), {
         code: 'CODEBASE_REGISTER_FAILED',
         error: 'Codebase registration failed',
         logLabel: '[RagAdmin] Codebase register error',
-      }, [CodebaseRequestError]);
+      }, [CodebaseRequestError, NativeDirectoryPickerError]);
     }
   });
 
@@ -1263,7 +1313,7 @@ export function createRagAdminRoutes(store?: RagStore, services: RagAdminRouteSe
     const sendIndexFailure = async (error: unknown) => {
       const capacityExceeded = isSourceChunkLimitExceeded(error);
       const code = capacityExceeded ? 'CODEBASE_INDEX_CAPACITY_EXCEEDED' : 'CODEBASE_INDEX_FAILED';
-      const requestId = logRouteFailure(res, '[RagAdmin] Codebase index error', 400, code, error);
+      const requestId = logRouteFailure(res, '[RagAdmin] Codebase index error', 400, code, pathFreeFailure(error));
       const onDemandAvailable = codebaseManagementService.rootCapability(codebaseId, scope).available;
       const message = capacityExceeded
         ? 'Optional source index reached its capacity; this index attempt was rolled back.'

@@ -24,7 +24,7 @@ import {
 import {PathSecurityGate} from './pathSecurityGate';
 import {SourceEnumerator, type EnumerationResult} from './sourceEnumerator';
 import {buildSourceSelectionIR, sourceSelectionForRef} from './sourceSelectionPolicy';
-import {availableNotConsentedExtensions, contentDisclosureToken} from './sourceDisclosure';
+import {availableNotConsentedExtensions, contentDisclosure, type ContentDisclosure} from './sourceDisclosure';
 import {
   readAospManifestProjects,
   type AospManifestProject,
@@ -149,8 +149,8 @@ export type RegisteredCodebase = Omit<
   };
   availableNotConsentedExtensions: string[];
   providerGrantScopeCurrent: boolean;
-  /** What `authorizeContent` would grant now; pass it back to grant exactly that. */
-  contentDisclosureToken: string;
+  /** What `authorizeContent` would grant now: show these lists, then grant with `contentDisclosure.token`. */
+  contentDisclosure: ContentDisclosure;
   lastIngestError?: string;
 };
 
@@ -158,7 +158,7 @@ export type CodebaseListItem = Omit<CodebaseRefSummary, 'rootAuthorization' | 'l
   lastIngestError?: string;
   rootAvailable: boolean;
   unavailableReason?: CodebaseRootUnavailableReason;
-  contentDisclosureToken: string;
+  contentDisclosure: ContentDisclosure;
 };
 
 export interface CodebaseAudit {
@@ -279,6 +279,7 @@ function projectRegisteredCodebase(
     lastIngestError,
     ...rest
   } = ref;
+  const selection = sourceSelectionForRef(ref);
   const safeError = safeOperationalDiagnostic(lastIngestError);
   return {
     ...rest,
@@ -294,23 +295,25 @@ function projectRegisteredCodebase(
       grantRevision: consent.grant?.revision ?? 1,
     },
     availableNotConsentedExtensions: availableNotConsentedExtensions(ref),
-    providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref),
-    contentDisclosureToken: contentDisclosureToken(ref),
+    providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref, selection),
+    contentDisclosure: contentDisclosure(ref, selection),
   };
 }
 
 function projectListItem(ref: CodebaseRef, root: CodebaseRootCapability): CodebaseListItem {
+  // One source selection serves the grant check and the disclosure.
+  const selection = sourceSelectionForRef(ref);
   const {
     rootAuthorization: _rootAuthorization,
     lastIngestError,
     ...safeSummary
-  } = summarizeCodebase(ref);
+  } = summarizeCodebase(ref, selection);
   const safeError = safeOperationalDiagnostic(lastIngestError);
   return {
     ...safeSummary,
     ...(safeError ? {lastIngestError: safeError} : {}),
     ...rootFields(root),
-    contentDisclosureToken: contentDisclosureToken(ref),
+    contentDisclosure: contentDisclosure(ref, selection),
   };
 }
 

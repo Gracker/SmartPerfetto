@@ -5,10 +5,10 @@
 import * as fs from 'fs';
 
 import type {CodeAwareMode} from './codeAwareFeature';
-import type {CodebaseRef, CodebaseRootAuthorization} from './codebaseRegistry';
+import type {CodebaseRef} from './codebaseRegistry';
 import {PathSecurityGate, sameCanonicalPath} from './pathSecurityGate';
 import {effectiveConsentGrant, grantMatchesSelection} from './sourceDisclosure';
-import {sourceSelectionForRef} from './sourceSelectionPolicy';
+import {sourceSelectionForRef, type SourceSelectionIR} from './sourceSelectionPolicy';
 
 /**
  * What a registered codebase can do, in two layers every consumer shares:
@@ -24,10 +24,24 @@ import {sourceSelectionForRef} from './sourceSelectionPolicy';
  * realpath, allowlist content or a native error.
  */
 
+/**
+ * How a registered root (a codebase or a document collection) was
+ * authorized. `native_picker` and `local_cli` roots were chosen by the local
+ * user through that channel; see `channelAuthorizedRoots`. A record without
+ * one was admitted by the configured allowlist.
+ */
+export type RootAuthorizationChannel = 'configured_allowlist' | 'native_picker' | 'local_cli';
+
+/** A registration's root and the channel that authorized it. */
+interface ChannelledRoot {
+  rootAuthorization?: RootAuthorizationChannel;
+  rootRealpath: string;
+}
+
 /** Registration channels this process trusts in place of the configured allowlist. */
-let trustedRootChannels: ReadonlySet<CodebaseRootAuthorization> = new Set(['native_picker']);
+let trustedRootChannels: ReadonlySet<RootAuthorizationChannel> = new Set(['native_picker']);
 /** Channel assumed for records written before registration recorded one; unset on the server. */
-let unrecordedRootChannel: CodebaseRootAuthorization | undefined;
+let unrecordedRootChannel: RootAuthorizationChannel | undefined;
 
 /**
  * The CLI trusts roots its local user registered, including records written
@@ -45,9 +59,15 @@ export function resetRegistrationChannelTrustForTests(): void {
   unrecordedRootChannel = undefined;
 }
 
-/** Gate options for a root authorized by its registration channel rather than the allowlist. */
+/**
+ * Gate options for a root authorized by its registration channel rather than
+ * the allowlist: a registered codebase or document collection the local user
+ * chose through the directory picker. Only that record's own root is
+ * admitted, for that one check; nothing is added to a shared allowlist, so a
+ * raw path request never inherits it.
+ */
 export function channelAuthorizedRoots(
-  ref: Pick<CodebaseRef, 'rootAuthorization' | 'rootRealpath'>,
+  ref: ChannelledRoot,
 ): {additionalAllowlistRoots: string[]} | undefined {
   const channel = ref.rootAuthorization ?? unrecordedRootChannel;
   return channel && trustedRootChannels.has(channel)
@@ -55,11 +75,35 @@ export function channelAuthorizedRoots(
     : undefined;
 }
 
+/**
+ * The dual-write rule for a root channel: a channel only one store side
+ * records is not trusted, so the merged record drops it.
+ */
+export function withoutUnsharedRootChannel<T extends Pick<ChannelledRoot, 'rootAuthorization'>>(
+  record: T,
+  counterpart: Pick<ChannelledRoot, 'rootAuthorization'>,
+): T {
+  if (record.rootAuthorization === undefined || record.rootAuthorization === counterpart.rootAuthorization) {
+    return record;
+  }
+  const {rootAuthorization: _unshared, ...rest} = record;
+  return rest as T;
+}
+
+/**
+ * Gate options for a folder a directory-picker selection resolved to: that
+ * one root, for this one check. Nothing when there is no selection.
+ */
+export function pickedRootGateOptions(pickedRoot: string | undefined): {additionalAllowlistRoots?: string[]} {
+  return pickedRoot ? {additionalAllowlistRoots: [pickedRoot]} : {};
+}
+
 /** Whether the provider-send grant covers exactly the current path selection. */
 export function codebaseProviderGrantScopeCurrent(
   ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs' | 'consent'>,
+  selection: SourceSelectionIR = sourceSelectionForRef(ref),
 ): boolean {
-  return grantMatchesSelection(effectiveConsentGrant(ref), sourceSelectionForRef(ref));
+  return grantMatchesSelection(effectiveConsentGrant(ref), selection);
 }
 
 /** Why a registered root cannot be read, in the order they are checked. */

@@ -11,12 +11,14 @@ import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
 import {ENTERPRISE_FEATURE_FLAG_ENV} from '../../config';
 import {ENTERPRISE_DB_PATH_ENV} from '../enterpriseDb';
 import {ENTERPRISE_MIGRATION_PHASE_ENV} from '../enterpriseMigration';
+import {channelAuthorizedRoots} from '../codebase/codebaseCapability';
 import {
   type ExternalKnowledgeSource,
   ExternalKnowledgeSourceRegistry,
   getDefaultExternalKnowledgeSourceRegistry,
+  sanitizeExternalKnowledgeSource,
 } from '../externalKnowledgeSourceRegistry';
-import {getScopedKnowledgeRecord} from '../scopedKnowledgeStore';
+import {getScopedKnowledgeRecord, upsertScopedKnowledgeRecord} from '../scopedKnowledgeStore';
 
 let tmpDir: string;
 
@@ -783,6 +785,41 @@ describe('ExternalKnowledgeSourceRegistry document collections and deletion', ()
       'external_knowledge_source', source.sourceId, scope)?.record.sendToProvider).toBe(false);
     // Only an explicit grant restores it.
     expect(registry.register(input(true)).sendToProvider).toBe(true);
+  });
+
+  it('records the root channel of each registration and hides it from management projections', () => {
+    const registry = new ExternalKnowledgeSourceRegistry(path.join(tmpDir, 'channel.json'));
+    const picked = registry.register(collectionInput({rootAuthorization: 'native_picker'}));
+    expect(picked.rootAuthorization).toBe('native_picker');
+    expect(sanitizeExternalKnowledgeSource(picked)).not.toHaveProperty('rootAuthorization');
+    expect(channelAuthorizedRoots(picked)).toEqual({additionalAllowlistRoots: [picked.rootRealpath]});
+    // A later registration through the configured allowlist records its own channel, not the picker's.
+    const reregistered = registry.register(collectionInput());
+    expect(reregistered.sourceId).toBe(picked.sourceId);
+    expect(reregistered).not.toHaveProperty('rootAuthorization');
+    expect(channelAuthorizedRoots(reregistered)).toBeUndefined();
+    // The same folder in another scope is another source with no channel of its own.
+    const otherScope = registry.register(collectionInput({scope: {...scope, userId: 'user-2'}}));
+    expect(otherScope.sourceId).not.toBe(picked.sourceId);
+    expect(channelAuthorizedRoots(otherScope)).toBeUndefined();
+  });
+
+  it('does not trust a root channel only one dual-write side records', () => {
+    const storagePath = useDualWrite('dual-channel');
+    const registry = new ExternalKnowledgeSourceRegistry(storagePath);
+    const source = registry.register(collectionInput({rootAuthorization: 'native_picker'}));
+    expect(new ExternalKnowledgeSourceRegistry(storagePath).get(source.sourceId, scope)?.rootAuthorization)
+      .toBe('native_picker');
+    // The DB copy loses the channel; the filesystem copy (the dual-write authority) keeps it.
+    const {rootAuthorization: _channel, ...unchannelled} = getScopedKnowledgeRecord<ExternalKnowledgeSource>(
+      'external_knowledge_source', source.sourceId, scope)!.record;
+    upsertScopedKnowledgeRecord('external_knowledge_source', source.sourceId, 'external-knowledge-source',
+      unchannelled, scope);
+    expect(JSON.parse(fs.readFileSync(storagePath, 'utf8')).sources[0].rootAuthorization).toBe('native_picker');
+    const reader = new ExternalKnowledgeSourceRegistry(storagePath);
+    expect(reader.get(source.sourceId, scope)).toBeDefined();
+    expect(reader.get(source.sourceId, scope)).not.toHaveProperty('rootAuthorization');
+    expect(reader.list(scope)[0]).not.toHaveProperty('rootAuthorization');
   });
 
   it('refuses fenced activation and clearing when only the filesystem copy is a tombstone', async () => {

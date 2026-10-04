@@ -5,7 +5,13 @@
 import {createHash} from 'crypto';
 import * as path from 'path';
 
-import type {PathSecurityGate} from '../codebase/pathSecurityGate';
+import {channelAuthorizedRoots, pickedRootGateOptions} from '../codebase/codebaseCapability';
+import {
+  type PathPreviewOptions,
+  type PathPreviewResult,
+  type PathSecurityGate,
+  sameCanonicalPath,
+} from '../codebase/pathSecurityGate';
 import {
   type ExternalKnowledgeScope,
   type ExternalKnowledgeSource,
@@ -74,9 +80,16 @@ export class DocumentCollectionIngester {
    * owner must acknowledge the right to use the documents; provider-send
    * consent left out keeps the consent in effect (none for a new source).
    * Registration indexes nothing: a reindex does.
+   *
+   * `pickedRootRealpath` is the folder a directory-picker selection resolved
+   * to, which the caller has validated and consumes: it admits that one root
+   * in place of the configured allowlist and records the `native_picker`
+   * channel, so the source's own reindexes trust it too. Without it the
+   * configured allowlist alone decides.
    */
   async register(input: {
     rootPath: string;
+    pickedRootRealpath?: string;
     displayName?: string;
     description?: string;
     attribution?: string;
@@ -90,11 +103,14 @@ export class DocumentCollectionIngester {
       throw new KnowledgeSourceRequestError('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED',
         '`rightsAcknowledged: true` is required: confirm you may use these documents');
     }
-    const preview = await this.previewIndexable(input.rootPath);
+    const picked = input.pickedRootRealpath;
+    const preview = await this.previewIndexable(input.rootPath, pickedRootGateOptions(picked));
+    if (picked && !sameCanonicalPath(preview.rootRealpath, picked)) throw new Error('knowledge_root_realpath_drift');
     const source = this.registry.register({
       kind: 'document_collection',
       displayName: input.displayName?.trim() || path.basename(preview.rootRealpath),
       rootRealpath: preview.rootRealpath,
+      ...(picked ? {rootAuthorization: 'native_picker' as const} : {}),
       revision: `content-${preview.summary.contentFingerprint.slice(0, 40)}`,
       contentFingerprint: preview.summary.contentFingerprint,
       dirty: false,
@@ -116,9 +132,16 @@ export class DocumentCollectionIngester {
       {kind: 'document_collection'});
   }
 
-  /** What a folder would index; a blocked or empty folder is refused. */
-  async previewIndexable(rootPath: string): Promise<DocumentCollectionPreview> {
-    const preview = await this.gate.preview(rootPath);
+  /**
+   * What a folder would index; a blocked or empty folder is refused.
+   * `additionalAllowlistRoots` carries a validated directory-picker selection
+   * for this one call only.
+   */
+  async previewIndexable(
+    rootPath: string,
+    options: Pick<PathPreviewOptions, 'additionalAllowlistRoots'> = {},
+  ): Promise<DocumentCollectionPreview> {
+    const preview = await this.gate.preview(rootPath, options);
     if (preview.blocked) throw knowledgeRootBlockedError(preview.blockedReason);
     const summary = await readDocumentCollection(preview, this.gate.getSourceReadLimits());
     if (summary.documentCount === 0) throw documentCollectionEmptyError(summary.skipped);
@@ -133,10 +156,7 @@ export class DocumentCollectionIngester {
     // Checked before the lease too, so an unknown id never creates a lease record.
     this.requireCollection(sourceId, scope);
     return this.registry.withIngestLease(sourceId, scope, async lease => {
-      const source = this.requireCollection(sourceId, scope);
-      const preview = await this.gate.preview(source.rootRealpath);
-      if (preview.blocked) throw knowledgeRootBlockedError(preview.blockedReason);
-      if (preview.rootRealpath !== source.rootRealpath) throw new Error('knowledge_root_realpath_drift');
+      const preview = await this.previewRegisteredRoot(this.requireCollection(sourceId, scope));
       lease.assertHeld();
 
       const generation = `dc_${createHash('sha256')
@@ -232,6 +252,20 @@ export class DocumentCollectionIngester {
   /** Every index file of a source; the registry's `remove` calls it after the tombstone, under its lease. */
   removeIndex(scope: ExternalKnowledgeScope, sourceId: string, fence: KnowledgeCleanupFence): Promise<void> {
     return this.store.removeSource(scope, sourceId, fence);
+  }
+
+  /**
+   * The registered root of a source, read again: the knowledge counterpart of
+   * `evaluateCodebaseRoot`. The configured allowlist admits it, or its own
+   * recorded channel (a folder picked in the directory picker); the gate checks
+   * identity, permissions and link boundaries on every read, and a root that
+   * now resolves elsewhere is drift.
+   */
+  private async previewRegisteredRoot(source: ExternalKnowledgeSource): Promise<PathPreviewResult> {
+    const preview = await this.gate.preview(source.rootRealpath, channelAuthorizedRoots(source));
+    if (preview.blocked) throw knowledgeRootBlockedError(preview.blockedReason);
+    if (!sameCanonicalPath(preview.rootRealpath, source.rootRealpath)) throw new Error('knowledge_root_realpath_drift');
+    return preview;
   }
 
   private requireCollection(sourceId: string, scope: ExternalKnowledgeScope): ExternalKnowledgeSource {

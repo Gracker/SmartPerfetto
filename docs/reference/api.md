@@ -753,20 +753,21 @@ Base path: `/api/rag`
 | `POST` | `/android-internals/sources` | 以独立权利确认和 provider 同意注册 Wiki |
 | `POST` | `/android-internals/sources/:id/reindex` | 分阶段重建并原子激活索引 generation |
 | `GET` | `/android-internals/sources/:id/audit` | 返回每篇文章的 metadata-only Skill disposition |
-| `PATCH` | `/android-internals/sources/:id/consent` | 显式授予或撤销 provider-send 同意 |
+| `PATCH` | `/android-internals/sources/:id/consent` | 显式授予或撤销 provider-send 同意（旧路径；任何类型的知识源都适用，与 `/knowledge/:sourceId/consent` 同一实现） |
 | `DELETE` | `/android-internals/sources/:id/index` | 停用 generation 并清除该 source 的全部 chunk |
 | `GET` | `/knowledge` | 列出当前 scope 的全部外部知识源（含 `kind`、`description`、`documentCount`、`hasActiveIndex`），不返回根路径 |
-| `POST` | `/knowledge/preview` | 预览文档集合：可入库篇数、section/chunk 数与按原因分类的跳过数；0 篇返回 400 `KNOWLEDGE_COLLECTION_EMPTY` |
-| `POST` | `/knowledge/register` | 注册文档集合（`rootPath`、`rightsAcknowledged: true`，可选 `displayName`、`description` ≤280 字、`attribution`、`license`、`sendToProvider`）；省略 `sendToProvider` 保留既有同意 |
+| `POST` | `/knowledge/preview` | 预览文档集合（`rootPath`，可选 `directorySelectionId`）：可入库篇数、section/chunk 数与按原因分类的跳过数；0 篇返回 400 `KNOWLEDGE_COLLECTION_EMPTY` |
+| `POST` | `/knowledge/register` | 注册文档集合（`rootPath`、`rightsAcknowledged: true`，可选 `directorySelectionId`、`displayName`、`description` ≤280 字、`attribution`、`license`、`sendToProvider`）；省略 `sendToProvider` 保留既有同意 |
+| `PATCH` | `/knowledge/:sourceId/consent` | `{sendToProvider: boolean}` 显式授予或撤销该知识源的 provider-send 同意，返回 `/knowledge` 列表同款投影 |
 | `POST` | `/knowledge/:sourceId/reindex` | 分批建本地 SQLite FTS 索引并原子激活新 generation；只需权利确认，不需要 provider-send 同意 |
 | `POST` | `/knowledge/:sourceId/search` | 管理端试搜索 `{query, topK?}`：返回标题、相对路径、标题路径、行号与摘录 |
 | `DELETE` | `/knowledge/:sourceId` | 先写 tombstone 立即撤销访问，再删除索引文件（Wiki 为 chunk）与注册项；失败可重试 |
-| `GET` | `/codebases` | 列出已注册 codebase；`rootAvailable` 不可用时附固定原因 `unavailableReason` |
+| `GET` | `/codebases` | 列出已注册 codebase；`rootAvailable` 不可用时附固定原因 `unavailableReason`；附 `contentDisclosure` |
 | `GET` | `/codebases/directory-picker` | 返回当前后端是否支持本机系统文件夹选择 |
-| `POST` | `/codebases/directory-picker` | 打开本机系统选择器并返回短时、当前 scope 绑定的目录授权 |
+| `POST` | `/codebases/directory-picker` | 打开本机系统选择器并返回短时、当前 scope 绑定的目录授权；可选 `purpose: "codebase" \| "knowledge"` 只决定对话框标题，源码库与知识库共用同一种选择 |
 | `POST` | `/codebases/preview` | 用与索引相同的 selection policy 预览源码文件与枚举覆盖率 |
 | `POST` | `/codebases/register` | 注册本机代码库 |
-| `GET` | `/codebases/:id` | codebase 详情（含 `rootAvailable` / `unavailableReason`） |
+| `GET` | `/codebases/:id` | codebase 详情（含 `rootAvailable` / `unavailableReason`、`contentDisclosure`） |
 | `GET` | `/codebases/:id/symbols` | 符号解析 |
 | `GET` | `/codebases/:id/excerpt` | 读取已索引片段 |
 | `POST` | `/codebases/:id/reindex` | 重新索引；request body 仍可用有界 `pathPrefix` 兼容输入，CLI `reindex` 无此选项 |
@@ -797,10 +798,15 @@ provider-send 授权只覆盖它被授予时的范围，且必须与当前 selec
 同意，需要重新授权。语言不属于路径选择，授权保留原语言集合。
 
 `authorizeContent: true` 是唯一的统一授权动作：开启 provider-send，并把授权设为当前
-include prefixes/exclude globs 与该类型全部语言。请求必须同时携带调用方披露时取得的
-`contentDisclosureToken`（列表与详情都返回，由 selection revision 与范围、语言摘要组成），
+include prefixes/exclude globs 与该类型全部语言。列表与详情返回
+`contentDisclosure: {token, includePrefixes, excludeGlobs, extensions}`：三个列表就是
+`authorizeContent` 将写入授权的规范化范围与该类型的全部语言（而不只是
+`availableNotConsentedExtensions` 那部分新语言），`token` 由 selection revision 与这三个列表的
+摘要组成。请求必须以请求体字段 `contentDisclosureToken` 携带调用方所展示披露的 `token`，
 缺少时返回 400 `CODEBASE_CONSENT_DISCLOSURE_REQUIRED`；披露之后若范围被修改或新版本增加了
-语言，返回 409 `CODEBASE_CONSENT_DISCLOSURE_STALE`，授权状态不变。与当前完全相同的重复提交
+语言，返回 409 `CODEBASE_CONSENT_DISCLOSURE_STALE`，授权状态不变。调用方应展示同一次响应里的
+这三个列表并提交同一个 `token`；收到 409 stale 后重新读取、
+重新展示、由用户重新确认，不要自动换用新 token 重试。与当前完全相同的重复提交
 不改变 consent hash 或 `grantRevision`，因此不会打断会话；`sendToProvider` 重复提交当前值、
 已覆盖全部语言时再次 `authorizeAvailableExtensions` 同样是幂等的。两个窄动作保持原有边界和前置条件，不会被扩大成统一动作：
 `authorizeAvailableExtensions: true` 只加入新版本增加的语言（`availableNotConsentedExtensions`），
@@ -847,13 +853,28 @@ provider-send，绝不会替用户开启正文发送。若已有活动索引，�
 目录选择接口只在 source/portable、非 enterprise、loopback 监听和 loopback
 请求中启用；选择、预览和注册等变更请求还必须携带 loopback Origin。成功选择返回的 `directorySelectionId` 有效期为 5 分钟；调用
 `/codebases/preview` 和 `/codebases/register` 时应与相同 `rootPath` 一起传入。
-preview 不消费授权；register 会在同步持久化期间独占该授权，成功后永久消费，
-持久化失败时保留原有效期供重试。凭证与
+preview 不消费授权；register 在整个注册期间独占该授权（根目录校验、源码枚举和写入注册项
+都在独占期内），成功后永久消费；失败（包括完整枚举为零命中）时若授权尚未过期则恢复供重试，
+已在注册期间过期则不再恢复。凭证与
 tenant/workspace/user 绑定，不能授权其他路径；Docker、远程或无图形环境应使用
-手动路径和 `SMARTPERFETTO_CODEBASE_ROOTS`。后端会保留这项授权来源以支持后续
+手动路径和 `SMARTPERFETTO_CODEBASE_ROOTS`。注册进行中并发重放同一
+`directorySelectionId` 返回 400 `DIRECTORY_SELECTION_NOT_FOUND`。后端会保留这项授权来源以支持后续
 reindex 与删除，但 `GET /codebases`、`GET /codebases/:id` 和
 `GET /codebases/:id/audit` 的安全管理响应都不暴露 `rootAuthorization`、绝对路径或原始
 运行时错误。删除 codebase 会撤销持久目录授权。
+
+文档知识库使用同一种目录选择：`/knowledge/preview` 与 `/knowledge/register` 带上
+`directorySelectionId` 和相同 `rootPath`（同样只接受 loopback Host、socket 与 Origin，
+否则 403 `DIRECTORY_PICKER_UNAVAILABLE`），preview 不消费；register 在整个注册期间独占
+（异步预览与写入注册项都在独占期内），成功后消费，失败时按同样的过期规则恢复。
+注册后知识源记录 `native_picker` 渠道（按 owner scope 隔离的来源记录，不写入任何共享
+配置），只有该来源自己的根目录在之后的 reindex 中免于 `SMARTPERFETTO_KNOWLEDGE_ROOTS`
+检查，每次读取仍校验目录身份、权限与链接边界；删除知识源即撤销。只带 `rootPath` 的请求
+（包括同一用户对同一目录的再次注册）只受 `SMARTPERFETTO_KNOWLEDGE_ROOTS` 约束，不会继承
+任何 picker 授权；通过它重新注册会把记录的渠道换成配置白名单。知识库响应与错误不返回
+绝对路径或 `rootAuthorization`。读取所选目录失败（如子目录无权限、目录被并发删除）时，
+这些知识库路由与 codebase 的 preview/register/reindex 只返回固定错误码与 `requestId`，
+服务端日志只记录 errno、syscall 与源码栈帧，不记录路径。
 
 Android Internals 接口的路径 allowlist、CC 权利确认、可撤销同意、请求级
 `options.knowledgeSourceIds` 和 Docker mount 流程见

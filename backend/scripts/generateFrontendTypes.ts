@@ -16,9 +16,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS,
-  analysisCompletedPublicTypeFragment,
+  ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS,
+  analysisPublicTypeFragments,
   analysisCompletedContractFragment,
   frontendContractFragments,
+  readBackendSources,
   readFrontendContractSources,
 } from './frontendContractFragments';
 
@@ -78,9 +80,13 @@ function extractConstArrayValues(content: string, constName: string): string[] {
 // Read backend contract
 console.log('Reading backend data contract...');
 const backendContent = fs.readFileSync(backendContractPath, 'utf-8');
-const analysisCompletedPublicTypes = analysisCompletedPublicTypeFragment(backendContent,
-  ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS.map(sourcePath =>
-    fs.readFileSync(path.join(projectRoot, 'backend/src', sourcePath), 'utf-8')));
+const readFile = (filePath: string) => fs.readFileSync(filePath, 'utf-8');
+const {
+  analysisCompleted: analysisCompletedPublicTypes,
+  analysisReceipt: analysisReceiptPublicTypes,
+} = analysisPublicTypeFragments(backendContent,
+  readBackendSources(projectRoot, readFile, ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS),
+  readBackendSources(projectRoot, readFile, ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS));
 const contractFragments = frontendContractFragments(
   readFrontendContractSources(projectRoot, (filePath) => fs.readFileSync(filePath, 'utf-8')),
 );
@@ -800,67 +806,7 @@ export interface QuickRunReceipt {
   verifierStatus: 'passed' | 'issues' | 'not_checked' | 'failed';
 }
 
-export type AnalysisReceiptRuntime =
-  | 'claude-agent-sdk'
-  | 'openai-agents-sdk'
-  | 'pi-agent-core'
-  | 'opencode'
-  | 'qoder-agent-sdk';
-
-export type AnalysisReceiptGateStatus = 'passed' | 'partial' | 'not_applicable';
-
-export interface AnalysisReceiptBase {
-  runId: string;
-  sessionId: string;
-  traceId: string;
-  mode: 'fast' | 'full' | 'auto';
-  resolvedMode: 'quick' | 'full';
-  runtime?: AnalysisReceiptRuntime;
-  providerId: string | null;
-  generatedAt: number;
-  traceEvidence: {
-    sqlCount: number;
-    skillCount: number;
-    dataEnvelopeCount: number;
-    artifactCount: number;
-    evidenceRefCount: number;
-  };
-  nonEvidenceContext: {
-    frontendPrequeryCount: number;
-    memoryHintCount: number;
-    conversationContextCount: number;
-    strategyHintCount: number;
-  };
-  claimAudit: {
-    totalClaims: number;
-    verifiedClaims: number;
-    unsupportedClaims: number;
-    uncertainClaims: number;
-  };
-  qualityGates: {
-    finalReportContract: AnalysisReceiptGateStatus;
-    claimVerification: AnalysisReceiptGateStatus;
-    identityResolution: AnalysisReceiptGateStatus;
-  };
-  outputs: {
-    reportId?: string;
-    reportUrl?: string;
-    resultSnapshotId?: string;
-    cliTurnPath?: string;
-    reportError?: string;
-  };
-}
-
-export interface AnalysisReceiptV1 extends AnalysisReceiptBase {
-  schemaVersion: 1;
-}
-
-export interface AnalysisReceiptV2 extends AnalysisReceiptBase {
-  schemaVersion: 2;
-  runManifestId: string;
-}
-
-export type AnalysisReceipt = AnalysisReceiptV1 | AnalysisReceiptV2;
+${analysisReceiptPublicTypes}
 
 export type UiActionKind =
   | 'navigate_timeline'

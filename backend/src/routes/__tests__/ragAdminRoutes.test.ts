@@ -7,6 +7,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {describe, it, expect, beforeEach, afterEach, jest} from '@jest/globals';
+import {types as utilTypes} from 'util';
+
 import express from 'express';
 import request from 'supertest';
 
@@ -316,6 +318,49 @@ describe('POST /api/rag/search', () => {
 });
 
 describe('Android Internals Wiki routes', () => {
+  it('keeps the Wiki folder out of responses and logs when a directory disappears mid-read', async () => {
+    const root = createCommittedWiki('vanishing-wiki');
+    const realRoot = fs.realpathSync(root);
+    const extra = path.join(root, 'extra');
+    const call = async (send: () => request.Test) => {
+      fs.mkdirSync(extra, {recursive: true});
+      fs.writeFileSync(path.join(extra, 'more.md'), '# More\n');
+      const opendir = removeWhenOpened(extra);
+      let response!: request.Response;
+      try {
+        const logs = await logsDuring(async () => {
+          response = await send();
+        });
+        return {response, logs};
+      } finally {
+        opendir.mockRestore();
+      }
+    };
+    const expectPathFree = ({response, logs}: {response: request.Response; logs: string}, code: string) => {
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual(expect.objectContaining({success: false, code, requestId: expect.any(String)}));
+      expect(JSON.stringify(response.body)).not.toContain(realRoot);
+      expect(logs).toContain('ENOENT');
+      expect(logs).not.toContain(realRoot);
+      expect(logs).not.toContain(root);
+    };
+
+    expectPathFree(await call(() => request(app).post('/api/rag/android-internals/preview').send({rootPath: root})),
+      'knowledge_source_preview_failed');
+    expectPathFree(await call(() => request(app).post('/api/rag/android-internals/sources')
+      .send({rootPath: root, rightsAcknowledged: true})), 'knowledge_source_register_failed');
+
+    // The legacy connector indexes only with provider-send consent.
+    const registered = await request(app).post('/api/rag/android-internals/sources')
+      .send({rootPath: root, rightsAcknowledged: true, sendToProvider: true});
+    expect(registered.status).toBe(200);
+    const sourceId = registered.body.source.sourceId;
+    expectPathFree(await call(() => request(app).post(`/api/rag/android-internals/sources/${sourceId}/reindex`).send({})),
+      'knowledge_source_reindex_failed');
+    expectPathFree(await call(() => request(app).get(`/api/rag/android-internals/sources/${sourceId}/audit`)),
+      'knowledge_source_audit_failed');
+  });
+
   it('previews the official article inventory without returning corpus prose', async () => {
     const root = path.join(tmpDir, 'wiki');
     fs.mkdirSync(path.join(root, 'src'), {recursive: true});
@@ -528,6 +573,33 @@ describe('Android Internals Wiki routes', () => {
   });
 });
 
+/** Every console.error and console.warn line while `act` runs, for asserting what the logs may contain. */
+async function logsDuring(act: () => Promise<void>): Promise<string> {
+  const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+  const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  try {
+    await act();
+    return JSON.stringify([...error.mock.calls, ...warn.mock.calls], (_key, value) =>
+      value instanceof Error || utilTypes.isNativeError(value)
+        ? {...value, message: (value as Error).message, stack: (value as Error).stack} : value);
+  } finally {
+    error.mockRestore();
+    warn.mockRestore();
+  }
+}
+
+/** Removes `directory` just before the gate opens it, as a concurrent deletion would. */
+function removeWhenOpened(directory: string) {
+  const fsPromises = require('fs/promises') as typeof import('fs/promises');
+  const original = fsPromises.opendir;
+  return jest.spyOn(fsPromises, 'opendir').mockImplementation(async (target, ...rest) => {
+    if (String(target) === fs.realpathSync(path.dirname(directory)) + path.sep + path.basename(directory)) {
+      fs.rmSync(directory, {recursive: true, force: true});
+    }
+    return original(target, ...rest);
+  });
+}
+
 describe('document collection routes', () => {
   function collection(name: string, files: Record<string, string>): string {
     const root = path.join(tmpDir, name);
@@ -723,6 +795,216 @@ describe('document collection routes', () => {
     expect(wikiDeleted.status).toBe(200);
     expect(store.listChunks({kind: 'android_internals_wiki', scope: DEFAULT_SCOPE})).toHaveLength(0);
     expect((await request(app).get('/api/rag/android-internals/sources')).body.sources).toEqual([]);
+  });
+
+  describe('directory picker registration', () => {
+    const ORIGIN = 'http://127.0.0.1:10000';
+    const local = (req: request.Test) => req.set('Origin', ORIGIN);
+
+    function pickedCollection(): string {
+      // Outside SMARTPERFETTO_KNOWLEDGE_ROOTS (tmpDir): only the picker can admit it.
+      externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-knowledge-root-'));
+      fs.writeFileSync(path.join(externalPickerDir, 'guide.md'), '# Guide\nPickedFolderCanary notes\n');
+      pickerSelectedRoot = externalPickerDir;
+      return externalPickerDir;
+    }
+
+    async function pick(): Promise<string> {
+      const selection = await local(request(app).post('/api/rag/codebases/directory-picker')).send({purpose: 'knowledge'});
+      expect(selection.status).toBe(200);
+      return selection.body.directorySelectionId;
+    }
+
+    it('previews without using the selection up, registers once, and trusts only that source\'s own root', async () => {
+      const root = pickedCollection();
+      const badPurpose = await local(request(app).post('/api/rag/codebases/directory-picker')).send({purpose: 'other'});
+      expect(badPurpose.status).toBe(400);
+      const selectionId = await pick();
+
+      const raw = await request(app).post('/api/rag/knowledge/preview').send({rootPath: root});
+      expect(raw.body).toEqual(expect.objectContaining({
+        code: 'KNOWLEDGE_ROOT_BLOCKED', details: {blockedReason: 'root_outside_allowlist'}}));
+      for (const refused of [
+        await request(app).post('/api/rag/knowledge/preview').send({rootPath: root, directorySelectionId: selectionId}),
+        await request(app).post('/api/rag/knowledge/preview')
+          .set('Host', 'smartperfetto.example.com').set('Origin', 'https://smartperfetto.example.com')
+          .send({rootPath: root, directorySelectionId: selectionId}),
+      ]) {
+        expect(refused.status).toBe(403);
+        expect(refused.body.code).toBe('DIRECTORY_PICKER_UNAVAILABLE');
+      }
+      const mismatch = await local(request(app).post('/api/rag/knowledge/preview'))
+        .send({rootPath: tmpDir, directorySelectionId: selectionId});
+      expect(mismatch.status).toBe(400);
+      expect(mismatch.body.code).toBe('DIRECTORY_SELECTION_PATH_MISMATCH');
+      const otherWorkspace = await local(request(app).post('/api/rag/knowledge/preview'))
+        .set('X-Workspace-Id', 'workspace-b').send({rootPath: root, directorySelectionId: selectionId});
+      expect(otherWorkspace.status).toBe(403);
+      expect(otherWorkspace.body.code).toBe('DIRECTORY_SELECTION_SCOPE_MISMATCH');
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const preview = await local(request(app).post('/api/rag/knowledge/preview'))
+          .send({rootPath: root, directorySelectionId: selectionId});
+        expect(preview.status).toBe(200);
+        expect(preview.body.preview.documentCount).toBe(1);
+        expectNoRoot(preview.body, root);
+      }
+
+      // A registration that fails after taking the selection gives it back.
+      const noRights = await local(request(app).post('/api/rag/knowledge/register'))
+        .send({rootPath: root, directorySelectionId: selectionId});
+      expect(noRights.body.code).toBe('KNOWLEDGE_SOURCE_RIGHTS_REQUIRED');
+      const registered = await local(request(app).post('/api/rag/knowledge/register'))
+        .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
+      expect(registered.status).toBe(200);
+      expectNoRoot(registered.body, root);
+      expect(JSON.stringify(registered.body)).not.toContain('rootAuthorization');
+      const sourceId = registered.body.source.sourceId;
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorization).toBe('native_picker');
+      const replay = await local(request(app).post('/api/rag/knowledge/register'))
+        .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
+      expect(replay.status).toBe(400);
+      expect(replay.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+
+      // The source's own root is trusted for its reindex, and nothing else is.
+      const reindex = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      expect(reindex.status).toBe(200);
+      expectNoRoot(reindex.body, root);
+      const search = await request(app).post(`/api/rag/knowledge/${sourceId}/search`).send({query: 'PickedFolderCanary'});
+      expect(search.body.hits).toHaveLength(1);
+      for (const rawAgain of [
+        await request(app).post('/api/rag/knowledge/preview').send({rootPath: root}),
+        await request(app).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true}),
+        await request(app).post('/api/rag/knowledge/preview').set('X-Workspace-Id', 'workspace-b').send({rootPath: root}),
+      ]) {
+        expect(rawAgain.body.code).toBe('KNOWLEDGE_ROOT_BLOCKED');
+      }
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.rootAuthorization).toBe('native_picker');
+
+      // Deleting the source revokes the channel with it.
+      expect((await request(app).delete(`/api/rag/knowledge/${sourceId}`)).status).toBe(200);
+      const afterDelete = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      expect(afterDelete.status).toBe(404);
+      expect(afterDelete.body.code).toBe('KNOWLEDGE_SOURCE_NOT_FOUND');
+    });
+
+    it('gives a source registered by its raw path no channel: its reindex follows the configured allowlist', async () => {
+      const root = collection('docs-allowlisted', {'a.md': '# A\nalpha\n'});
+      const registered = await request(app).post('/api/rag/knowledge/register').send({rootPath: root, rightsAcknowledged: true});
+      const sourceId = registered.body.source.sourceId;
+      expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)).not.toHaveProperty('rootAuthorization');
+      expect((await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({})).status).toBe(200);
+      process.env.SMARTPERFETTO_KNOWLEDGE_ROOTS = path.join(tmpDir, 'elsewhere');
+      const blocked = await request(app).post(`/api/rag/knowledge/${sourceId}/reindex`).send({});
+      expect(blocked.body).toEqual(expect.objectContaining({
+        code: 'KNOWLEDGE_ROOT_BLOCKED', details: {blockedReason: 'root_outside_allowlist'}}));
+    });
+
+    const canReadOnlyAsOwner = typeof process.getuid === 'function' && process.getuid() !== 0;
+    (canReadOnlyAsOwner ? it : it.skip)('keeps the picked folder out of responses and logs when a subdirectory cannot be read', async () => {
+      const root = pickedCollection();
+      const locked = path.join(root, 'locked');
+      fs.mkdirSync(locked);
+      fs.writeFileSync(path.join(locked, 'inside.md'), '# Inside\n');
+      const selectionId = await pick();
+      fs.chmodSync(locked, 0o000);
+      try {
+        const responses: request.Response[] = [];
+        const logs = await logsDuring(async () => {
+          responses.push(await local(request(app).post('/api/rag/knowledge/preview'))
+            .send({rootPath: root, directorySelectionId: selectionId}));
+          responses.push(await local(request(app).post('/api/rag/knowledge/register'))
+            .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true}));
+        });
+        expect(responses.map(response => [response.status, response.body.code])).toEqual([
+          [500, 'KNOWLEDGE_COLLECTION_PREVIEW_FAILED'],
+          [500, 'KNOWLEDGE_COLLECTION_REGISTER_FAILED'],
+        ]);
+        for (const response of responses) {
+          expect(response.body.requestId).toEqual(expect.any(String));
+          expectNoRoot(response.body, root);
+        }
+        expect(logs).toContain('EACCES');
+        expect(logs).toContain('opendir');
+        expect(logs).not.toContain(root);
+        expect(logs).not.toContain(fs.realpathSync(root));
+
+        // The failed registration gave the selection back; the reindex of the registered source logs no path either.
+        fs.chmodSync(locked, 0o755);
+        const registered = await local(request(app).post('/api/rag/knowledge/register'))
+          .send({rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true});
+        expect(registered.status).toBe(200);
+        fs.chmodSync(locked, 0o000);
+        let reindex!: request.Response;
+        const reindexLogs = await logsDuring(async () => {
+          reindex = await request(app).post(`/api/rag/knowledge/${registered.body.source.sourceId}/reindex`).send({});
+        });
+        expect(reindex.status).toBe(500);
+        expect(reindex.body.code).toBe('KNOWLEDGE_COLLECTION_REINDEX_FAILED');
+        expectNoRoot(reindex.body, root);
+        expect(reindexLogs).toContain('EACCES');
+        expect(reindexLogs).not.toContain(fs.realpathSync(root));
+      } finally {
+        fs.chmodSync(locked, 0o755);
+      }
+    });
+
+    it('keeps the picked folder out of responses and logs when a subdirectory disappears mid-read', async () => {
+      const root = pickedCollection();
+      const vanishing = path.join(root, 'vanishing');
+      fs.mkdirSync(vanishing);
+      fs.writeFileSync(path.join(vanishing, 'gone.md'), '# Gone\n');
+      const selectionId = await pick();
+      const opendir = removeWhenOpened(vanishing);
+      let response!: request.Response;
+      try {
+        const logs = await logsDuring(async () => {
+          response = await local(request(app).post('/api/rag/knowledge/preview'))
+            .send({rootPath: root, directorySelectionId: selectionId});
+        });
+        expect(response.status).toBe(500);
+        expect(response.body.code).toBe('KNOWLEDGE_COLLECTION_PREVIEW_FAILED');
+        expectNoRoot(response.body, root);
+        expect(logs).toContain('ENOENT');
+        expect(logs).not.toContain(fs.realpathSync(root));
+      } finally {
+        opendir.mockRestore();
+      }
+    });
+
+    it('lets exactly one of two concurrent registrations use a selection', async () => {
+      const root = pickedCollection();
+      const selectionId = await pick();
+      const body = {rootPath: root, directorySelectionId: selectionId, rightsAcknowledged: true};
+      const responses = await Promise.all([
+        local(request(app).post('/api/rag/knowledge/register')).send(body),
+        local(request(app).post('/api/rag/knowledge/register')).send(body),
+      ]);
+      expect(responses.map(response => response.status).sort()).toEqual([200, 400]);
+      expect(responses.find(response => response.status === 400)!.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+    });
+  });
+
+  it('sets a collection\'s provider consent under /knowledge, the same implementation as the legacy route', async () => {
+    const root = collection('docs-consent-route', {'a.md': '# A\nalpha\n'});
+    const registered = await request(app).post('/api/rag/knowledge/register')
+      .send({rootPath: root, rightsAcknowledged: true});
+    const sourceId = registered.body.source.sourceId;
+    const granted = await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: true});
+    expect(granted.status).toBe(200);
+    expect(granted.body.source).toEqual(expect.objectContaining({
+      sourceId, kind: 'document_collection', sendToProvider: true, documentCount: 0, hasActiveIndex: false}));
+    expectNoRoot(granted.body, root);
+    expect(externalKnowledgeRegistry.evaluateAccess(sourceId, DEFAULT_SCOPE, [sourceId]).allowed).toBe(true);
+    const legacy = await request(app).patch(`/api/rag/android-internals/sources/${sourceId}/consent`)
+      .send({sendToProvider: false});
+    expect(legacy.status).toBe(200);
+    expect(legacy.body.source.sendToProvider).toBe(false);
+    expect((await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`).send({sendToProvider: 'yes'})).status)
+      .toBe(400);
+    const otherWorkspace = await request(app).patch(`/api/rag/knowledge/${sourceId}/consent`)
+      .set('X-Workspace-Id', 'workspace-b').send({sendToProvider: true});
+    expect(otherWorkspace.status).toBe(404);
+    expect(externalKnowledgeRegistry.get(sourceId, DEFAULT_SCOPE)?.sendToProvider).toBe(false);
   });
 
   it('keeps legacy Wiki consent when re-registration omits it', async () => {
@@ -971,6 +1253,141 @@ describe('codebase routes', () => {
       });
     expect(reused.status).toBe(400);
     expect(reused.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+  });
+
+  it('keeps a picked source folder out of codebase responses and logs when enumeration fails on the filesystem', async () => {
+    externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-codebase-leak-'));
+    fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
+    pickerSelectedRoot = externalPickerDir;
+    const pickedRoot = fs.realpathSync(externalPickerDir);
+    // What a traversal that loses a directory throws: the absolute path in the message and fields.
+    const fsError = Object.assign(new Error(`EACCES: permission denied, opendir '${pickedRoot}/feature'`), {
+      code: 'EACCES', errno: -13, syscall: 'opendir', path: `${pickedRoot}/feature`});
+    const enumerate = jest.spyOn(SourceEnumerator.prototype, 'enumerate').mockRejectedValue(fsError);
+    try {
+      for (const route of ['preview', 'register'] as const) {
+        const selection = await request(app).post('/api/rag/codebases/directory-picker')
+          .set('Origin', 'http://127.0.0.1:10000').send({});
+        let response!: request.Response;
+        const logs = await logsDuring(async () => {
+          response = await request(app).post(`/api/rag/codebases/${route}`)
+            .set('Origin', 'http://127.0.0.1:10000')
+            .send({rootPath: externalPickerDir, directorySelectionId: selection.body.directorySelectionId});
+        });
+        expect(response.status).toBeGreaterThanOrEqual(400);
+        expect(response.body.code).toBe(route === 'preview' ? 'CODEBASE_PREVIEW_FAILED' : 'CODEBASE_REGISTER_FAILED');
+        expect(JSON.stringify(response.body)).not.toContain(pickedRoot);
+        // The management preview answers its own fixed failure without logging; registration logs the errno.
+        if (route === 'register') expect(logs).toContain('EACCES');
+        expect(logs).not.toContain(pickedRoot);
+      }
+    } finally {
+      enumerate.mockRestore();
+    }
+  });
+
+  describe('codebase registration with a directory selection', () => {
+    let clock: number;
+    let enumerations: number;
+    let releaseEnumeration: (() => void) | undefined;
+    let pickerApp: express.Express;
+
+    beforeEach(() => {
+      externalPickerDir = fs.mkdtempSync(path.join(os.tmpdir(), 'picker-codebase-register-'));
+      fs.writeFileSync(path.join(externalPickerDir, 'Main.kt'), 'class Main\n');
+      pickerSelectedRoot = externalPickerDir;
+      clock = 1_000;
+      enumerations = 0;
+      releaseEnumeration = undefined;
+      const realEnumerator = new SourceEnumerator();
+      const picker = new NativeDirectoryPicker({
+        platform: 'linux',
+        env: {DISPLAY: ':0', PATH: '/usr/bin'},
+        distribution: 'source',
+        enterprise: false,
+        bindHost: '127.0.0.1',
+        findExecutable: name => name === 'zenity' ? '/usr/bin/zenity' : undefined,
+        runCommand: async () => ({stdout: `${pickerSelectedRoot}\n`, stderr: ''}),
+        now: () => clock,
+        selectionTtlMs: 5_000,
+        idGenerator: () => `ttl-selection-${++pickerSelectionSequence}`,
+      });
+      pickerApp = express();
+      pickerApp.use(express.json());
+      pickerApp.use('/api/rag', createRagAdminRoutes(store, {
+        registry,
+        gate: new PathSecurityGate({allowlistRoots: [tmpDir]}),
+        codebaseManagementService,
+        directoryPicker: picker,
+        externalKnowledgeRegistry,
+        sourceEnumerator: {
+          enumerate: async (input: Parameters<SourceEnumerator['enumerate']>[0]) => {
+            enumerations += 1;
+            if (releaseEnumeration === undefined) {
+              await new Promise<void>(resolve => { releaseEnumeration = resolve; });
+            }
+            return realEnumerator.enumerate(input);
+          },
+        } as unknown as SourceEnumerator,
+      }));
+    });
+
+    const pickFolder = async () => (await request(pickerApp).post('/api/rag/codebases/directory-picker')
+      .set('Origin', 'http://127.0.0.1:10000').send({})).body.directorySelectionId as string;
+    const register = (selectionId: string, extra: Record<string, unknown> = {}) => request(pickerApp)
+      .post('/api/rag/codebases/register').set('Origin', 'http://127.0.0.1:10000')
+      .send({kind: 'app_source', rootPath: externalPickerDir, directorySelectionId: selectionId, ...extra});
+
+    it('holds the selection for the whole registration: a concurrent replay never enumerates', async () => {
+      const selectionId = await pickFolder();
+      const first = register(selectionId).then(response => response);
+      try {
+        // Wait until the first registration is enumerating, holding the selection.
+        while (releaseEnumeration === undefined) await new Promise(resolve => setImmediate(resolve));
+        const replay = await register(selectionId);
+        expect(replay.status).toBe(400);
+        expect(replay.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+        expect(enumerations).toBe(1);
+      } finally {
+        releaseEnumeration?.();
+      }
+      expect((await first).status).toBe(200);
+      expect(registry.list(DEFAULT_SCOPE)).toHaveLength(1);
+    });
+
+    it('gives a failed registration\'s selection back until it expires, and not after', async () => {
+      releaseEnumeration = () => undefined;
+      // An empty selection fails after the selection was taken: it comes back for a retry.
+      fs.mkdirSync(path.join(externalPickerDir!, 'docs'));
+      fs.writeFileSync(path.join(externalPickerDir!, 'docs', 'notes.txt'), 'not source\n');
+      const selectionId = await pickFolder();
+      const empty = await register(selectionId, {pathFilters: ['docs']});
+      expect(empty.status).toBe(400);
+      expect(empty.body.error).toBe('effective_source_selection_empty');
+      clock = 5_999;
+      const retried = await register(selectionId);
+      expect(retried.status).toBe(200);
+      expect(retried.body.codebase).toMatchObject({displayName: path.basename(externalPickerDir!)});
+
+      // A failure that ends after the expiry does not give it back.
+      const late = await pickFolder();
+      const failing = jest.spyOn(registry, 'register').mockImplementationOnce(() => {
+        clock += 10_000;
+        throw new Error('registry_write_failed');
+      });
+      const failed = await register(late);
+      failing.mockRestore();
+      expect(failed.status).toBe(500);
+      const afterExpiry = await register(late);
+      expect(afterExpiry.status).toBe(400);
+      expect(afterExpiry.body.code).toBe('DIRECTORY_SELECTION_NOT_FOUND');
+
+      // At the boundary the selection has expired.
+      const boundary = await pickFolder();
+      clock += 5_000;
+      const expired = await register(boundary);
+      expect(expired.body.code).toBe('DIRECTORY_SELECTION_EXPIRED');
+    });
   });
 
   it('rejects remote directory-picker requests and cross-workspace selection reuse', async () => {
@@ -1464,10 +1881,11 @@ describe('codebase routes', () => {
     expect(untokened.body.code).toBe('CODEBASE_CONSENT_DISCLOSURE_REQUIRED');
     const detail = await request(app).get(`/api/rag/codebases/${ref.codebaseId}`);
     const listed = await request(app).get('/api/rag/codebases');
-    const token = detail.body.codebase.contentDisclosureToken;
+    const token = detail.body.codebase.contentDisclosure.token;
     expect(token).toMatch(/^cd1:/);
+    expect(detail.body.codebase).not.toHaveProperty('contentDisclosureToken');
     expect(listed.body.codebases.find((item: {codebaseId: string}) => item.codebaseId === ref.codebaseId)
-      .contentDisclosureToken).toBe(token);
+      .contentDisclosure.token).toBe(token);
 
     const granted = await request(app).patch(`/api/rag/codebases/${ref.codebaseId}/consent`)
       .send({authorizeContent: true, contentDisclosureToken: token});

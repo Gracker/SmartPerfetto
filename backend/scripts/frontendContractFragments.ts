@@ -27,6 +27,19 @@ interface ContractFragmentOptions {
   omit?: readonly string[];
 }
 
+/** The name a type reference or heritage clause names, when it is a plain identifier. */
+function referencedTypeName(node: ts.Node): string | undefined {
+  return ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) ? node.typeName.text
+    : ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression) ? node.expression.text
+      : undefined;
+}
+
+/** The name `import('...').Name` names. */
+function importedTypeName(node: ts.Node): string | undefined {
+  return ts.isImportTypeNode(node) && !node.isTypeOf && node.qualifier && ts.isIdentifier(node.qualifier)
+    ? node.qualifier.text : undefined;
+}
+
 const isExported = (declaration: ContractDeclaration): boolean =>
   Boolean(declaration.modifiers?.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword));
 
@@ -110,9 +123,7 @@ function contractFragment(content: string, options: ContractFragmentOptions = {}
     if (included.has(declaration)) continue;
     included.add(declaration);
     const visit = (node: ts.Node): void => {
-      const name = ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) ? node.typeName.text
-        : ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression) ? node.expression.text
-          : undefined;
+      const name = referencedTypeName(node);
       const referenced = name === undefined ? undefined : byName.get(name);
       if (referenced && !included.has(referenced)) pending.push(referenced);
       ts.forEachChild(node, visit);
@@ -272,8 +283,16 @@ export const ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS = [
   'services/knowledge/knowledgeUse.ts',
 ] as const;
 
-/** Only reachable type declarations cross the boundary, never runtime code. */
-export function analysisCompletedPublicTypeFragment(eventContent: string, contents: readonly string[]): string {
+const FILE_HEADER_COMMENT =
+  /^\/\/ SPDX-License-Identifier:[^\n]*\n\/\/ Copyright[^\n]*\n\/\/ This file is part of SmartPerfetto[^\n]*\n/;
+
+/** The type declarations and literal constants of a set of backend sources, by name. */
+interface PublicTypeSources {
+  declarations: Map<string, ts.InterfaceDeclaration | ts.TypeAliasDeclaration>;
+  constants: Map<string, ts.Expression>;
+}
+
+function readPublicTypeSources(contents: readonly string[]): PublicTypeSources {
   const declarations = new Map<string, ts.InterfaceDeclaration | ts.TypeAliasDeclaration>();
   const constants = new Map<string, ts.Expression>();
   for (const content of contents) {
@@ -288,6 +307,20 @@ export function analysisCompletedPublicTypeFragment(eventContent: string, conten
       }
     }
   }
+  return {declarations, constants};
+}
+
+/**
+ * The declarations reachable from `roots`, printed for the frontend: `typeof`
+ * a literal constant is spelled out, `import('...').Name` of a known
+ * declaration becomes `Name`, and names in `exclude` (emitted by another
+ * fragment of the same generated module) are referenced but not emitted.
+ */
+function publicTypeClosure(
+  roots: readonly string[],
+  {declarations, constants}: PublicTypeSources,
+  exclude: ReadonlySet<string> = new Set(),
+): {text: string; emitted: Set<string>} {
   const literalType = (expression: ts.Expression, seen = new Set<string>()): ts.TypeNode => {
     if (ts.isAsExpression(expression) || ts.isParenthesizedExpression(expression)) return literalType(expression.expression, seen);
     if (ts.isIdentifier(expression)) {
@@ -306,23 +339,13 @@ export function analysisCompletedPublicTypeFragment(eventContent: string, conten
     if (!ts.isIdentifier(name) || !constants.has(name.text)) throw new Error('Unresolved public type query');
     return literalType(constants.get(name.text)!);
   };
-  const pending: string[] = [];
-  const eventSource = ts.createSourceFile('dataContract.ts', eventContent, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-  const event = eventSource.statements.find(statement => ts.isInterfaceDeclaration(statement) && statement.name.text === 'AnalysisCompletedEvent');
-  if (!event) throw new Error('Missing AnalysisCompletedEvent public contract');
-  const collectRoots = (node: ts.Node): void => {
-    if (ts.isImportTypeNode(node) && node.qualifier && ts.isIdentifier(node.qualifier) && declarations.has(node.qualifier.text)) {
-      pending.push(node.qualifier.text);
-    }
-    if (ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) && declarations.has(node.typeName.text)) {
-      pending.push(node.typeName.text);
-    }
-    ts.forEachChild(node, collectRoots);
-  };
-  collectRoots(event);
+  const pending = roots.filter(name => !exclude.has(name));
   const emitted = new Set<string>();
   const parts: string[] = [];
   const printer = ts.createPrinter({newLine: ts.NewLineKind.LineFeed});
+  const reference = (name: string): void => {
+    if (!exclude.has(name)) pending.push(name);
+  };
   for (let index = 0; index < pending.length; index++) {
     const name = pending[index];
     if (emitted.has(name)) continue;
@@ -338,17 +361,109 @@ export function analysisCompletedPublicTypeFragment(eventContent: string, conten
           return ts.factory.createUnionTypeNode(tuple.elements as readonly ts.TypeNode[]);
         }
         if (ts.isTypeQueryNode(node)) return constantType(node.exprName);
-        const referencedName = ts.isTypeReferenceNode(node) && ts.isIdentifier(node.typeName) ? node.typeName.text
-          : ts.isExpressionWithTypeArguments(node) && ts.isIdentifier(node.expression) ? node.expression.text : undefined;
-        if (referencedName && declarations.has(referencedName)) pending.push(referencedName);
+        const imported = importedTypeName(node);
+        if (imported !== undefined && (declarations.has(imported) || exclude.has(imported))) {
+          reference(imported);
+          return ts.factory.createTypeReferenceNode(imported,
+            (node as ts.ImportTypeNode).typeArguments?.map(argument => ts.visitNode(argument, visit) as ts.TypeNode));
+        }
+        const referencedName = referencedTypeName(node);
+        if (referencedName && declarations.has(referencedName)) reference(referencedName);
         return ts.visitEachChild(node, visit, context);
       };
       return ts.visitNode(root, visit) as typeof root;
     }]);
-    parts.push(printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0], declaration.getSourceFile()).trim());
+    // A module's first declaration carries the file's SPDX header as a leading comment.
+    parts.push(printer.printNode(ts.EmitHint.Unspecified, transformed.transformed[0], declaration.getSourceFile())
+      .replace(FILE_HEADER_COMMENT, '').trim());
     transformed.dispose();
   }
-  return parts.join('\n\n');
+  return {text: parts.join('\n\n'), emitted};
+}
+
+/** The public type names `AnalysisCompletedEvent` reaches, for its fragment. */
+function analysisCompletedPublicTypeRoots(eventContent: string, sources: PublicTypeSources): string[] {
+  const eventSource = ts.createSourceFile('dataContract.ts', eventContent, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const event = eventSource.statements.find(statement => ts.isInterfaceDeclaration(statement) && statement.name.text === 'AnalysisCompletedEvent');
+  if (!event) throw new Error('Missing AnalysisCompletedEvent public contract');
+  const roots: string[] = [];
+  const collectRoots = (node: ts.Node): void => {
+    const name = importedTypeName(node) ?? (ts.isTypeReferenceNode(node) ? referencedTypeName(node) : undefined);
+    if (name !== undefined && sources.declarations.has(name)) roots.push(name);
+    ts.forEachChild(node, collectRoots);
+  };
+  collectRoots(event);
+  return roots;
+}
+
+/**
+ * Sources of the `AnalysisReceipt` declarations (in `dataContract.ts`) and
+ * every type they reach. It overlaps `ANALYSIS_COMPLETED_PUBLIC_TYPE_PATHS`
+ * (`runtimeKinds.ts`); a declaration both fragments reach is emitted by the
+ * `AnalysisCompletedEvent` fragment only.
+ */
+export const ANALYSIS_RECEIPT_PUBLIC_TYPE_PATHS = [
+  'types/dataContract.ts',
+  'types/adaptiveRouting.ts',
+  'types/capabilityManifest.ts',
+  'types/traceSummaryAttribution.ts',
+  'agentRuntime/runtimeKinds.ts',
+] as const;
+
+/** Backend sources by their path under `backend/src`. */
+export function readBackendSources(
+  projectRoot: string,
+  readFile: (filePath: string) => string,
+  sourcePaths: readonly string[],
+): string[] {
+  return sourcePaths.map(sourcePath => readFile(`${projectRoot}/backend/src/${sourcePath}`));
+}
+
+/**
+ * The public type fragments of the generated module, from one closure walk
+ * each: the types `AnalysisCompletedEvent` reaches, and the full
+ * `AnalysisReceipt` declarations with their dependencies, so a receipt field
+ * the backend adds, drops or retypes reaches the frontend types. Names the
+ * first fragment emits (such as `AgentRuntimeKind`) the second references
+ * without emitting them twice. Only type declarations cross, never runtime code.
+ */
+export function analysisPublicTypeFragments(
+  eventContent: string,
+  analysisCompletedContents: readonly string[],
+  receiptContents: readonly string[],
+): {analysisCompleted: string; analysisReceipt: string} {
+  const completedSources = readPublicTypeSources(analysisCompletedContents);
+  const analysisCompleted = publicTypeClosure(
+    analysisCompletedPublicTypeRoots(eventContent, completedSources), completedSources);
+  const analysisReceipt = publicTypeClosure(
+    ['AnalysisReceipt'], readPublicTypeSources(receiptContents), analysisCompleted.emitted);
+  return {analysisCompleted: analysisCompleted.text, analysisReceipt: analysisReceipt.text};
+}
+
+/**
+ * Normalize generated content for comparison: the @generated timestamp, line
+ * endings, trailing whitespace and runs of blank lines do not count.
+ */
+function normalizeForComparison(content: string): string {
+  return content
+    .replace(/@generated \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/g, '@generated TIMESTAMP')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map(line => line.trimEnd())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+/** The names of the fragments the generated frontend module does not contain verbatim. */
+export function findOutOfSyncContractFragments(
+  frontendContent: string,
+  fragments: ReadonlyArray<{name: string; content: string}>,
+): string[] {
+  const normalizedFrontend = normalizeForComparison(frontendContent);
+  return fragments
+    .filter(fragment => !normalizedFrontend.includes(normalizeForComparison(fragment.content)))
+    .map(fragment => fragment.name);
 }
 
 /** Exact event transform shared by generation and sync checking. */

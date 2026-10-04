@@ -4,7 +4,7 @@
 
 import express from 'express';
 import request from 'supertest';
-import { sendRouteError, sendRouteFailure } from '../routeFailure';
+import { pathFreeFailure, sendRouteError, sendRouteFailure } from '../routeFailure';
 import { PublicRequestError, thrownReasonCode } from '../../utils/publicRequestError';
 
 const CANARY = 'canary-91c2 /srv/secret/reports.db SELECT key FROM provider_secrets';
@@ -152,5 +152,32 @@ describe('thrownReasonCode', () => {
 
   test('is undefined for a non-Error', () => {
     expect(thrownReasonCode('root_not_found')).toBeUndefined();
+  });
+});
+
+describe('pathFreeFailure', () => {
+  const folder = '/Users/someone/private-docs';
+
+  test('keeps a filesystem error\'s errno and syscall and drops every path', () => {
+    const error = Object.assign(new Error(`EACCES: permission denied, opendir '${folder}/sub'`), {
+      code: 'EACCES', errno: -13, syscall: 'opendir', path: `${folder}/sub`, dest: `${folder}/other`});
+    const projected = pathFreeFailure(error);
+    expect(projected).toEqual(expect.objectContaining({name: 'Error', code: 'EACCES', errno: -13, syscall: 'opendir'}));
+    expect(JSON.stringify(projected)).not.toContain(folder);
+  });
+
+  test('keeps public errors and reason tokens, dropping a reason detail that looks like a path', () => {
+    const publicError = new PublicRequestError('KNOWLEDGE_ROOT_BLOCKED', 'The knowledge folder is blocked');
+    expect(pathFreeFailure(publicError)).toBe(publicError);
+    expect((pathFreeFailure(new Error('source_chunk_limit_exceeded:5000')) as Error).message)
+      .toBe('source_chunk_limit_exceeded:5000');
+    expect((pathFreeFailure(new Error(`root_not_found:${folder}`)) as Error).message).toBe('root_not_found');
+    expect((pathFreeFailure(new Error('root_not_found:C:\\Users\\someone')) as Error).message).toBe('root_not_found');
+    expect((pathFreeFailure(new Error(`source_chunk_limit_exceeded:5000:${folder}`)) as Error).message)
+      .toBe('source_chunk_limit_exceeded');
+    // A path relative to the folder stays for diagnosis.
+    expect((pathFreeFailure(new Error('source_changed_during_ingest:docs/a.md')) as Error).message)
+      .toBe('source_changed_during_ingest:docs/a.md');
+    expect(pathFreeFailure('text')).toEqual({name: 'string'});
   });
 });

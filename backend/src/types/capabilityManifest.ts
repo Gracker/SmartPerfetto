@@ -166,8 +166,12 @@ export interface CapabilityManifestV1 {
   contentHash: string;
 }
 
-export type CapabilityManifestResolutionV1 =
-  | {status: 'ready'; manifest: CapabilityManifestV1}
+/**
+ * Why no manifest was resolved. A resolution and its attribution share these
+ * branches, so the attribution (and the analysis receipt that carries it)
+ * never reaches the full manifest or its provenance.
+ */
+export type CapabilityManifestUnresolvedV1 =
   | {
       status: 'unavailable';
       reason:
@@ -179,6 +183,10 @@ export type CapabilityManifestResolutionV1 =
       detailCode?: string;
     }
   | {status: 'failed'; reason: 'capability_manifest_build_failed'};
+
+export type CapabilityManifestResolutionV1 =
+  | {status: 'ready'; manifest: CapabilityManifestV1}
+  | CapabilityManifestUnresolvedV1;
 
 export type CapabilityManifestProbeCacheOutcome = 'hit' | 'miss' | 'bypass';
 
@@ -203,8 +211,7 @@ export type CapabilityManifestAttributionResolutionV1 =
       traceFingerprintSha256: string;
       traceProcessor: CapabilityManifestTraceProcessorIdentityV1;
     }
-  | Extract<CapabilityManifestResolutionV1, {status: 'unavailable'}>
-  | Extract<CapabilityManifestResolutionV1, {status: 'failed'}>;
+  | CapabilityManifestUnresolvedV1;
 
 export interface CapabilityManifestAttributionV1 {
   schemaVersion: typeof CAPABILITY_MANIFEST_ATTRIBUTION_SCHEMA_VERSION;

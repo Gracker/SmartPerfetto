@@ -895,20 +895,21 @@ Base path: `/api/rag`
 | `POST` | `/android-internals/sources` | Register a Wiki with separate rights and provider consent |
 | `POST` | `/android-internals/sources/:id/reindex` | Stage and atomically activate an index generation |
 | `GET` | `/android-internals/sources/:id/audit` | Return one metadata-only Skill disposition per article |
-| `PATCH` | `/android-internals/sources/:id/consent` | Explicitly grant or revoke provider-send consent |
+| `PATCH` | `/android-internals/sources/:id/consent` | Explicitly grant or revoke provider-send consent (legacy path; applies to a knowledge source of any kind, the same implementation as `/knowledge/:sourceId/consent`) |
 | `DELETE` | `/android-internals/sources/:id/index` | Deactivate and clear every chunk for the source |
 | `GET` | `/knowledge` | List every external knowledge source in the current scope (with `kind`, `description`, `documentCount`, `hasActiveIndex`), never its root path |
-| `POST` | `/knowledge/preview` | Preview a document collection: indexable documents, section/chunk counts and skips by reason; zero documents answers 400 `KNOWLEDGE_COLLECTION_EMPTY` |
-| `POST` | `/knowledge/register` | Register a document collection (`rootPath`, `rightsAcknowledged: true`, optional `displayName`, `description` of at most 280 characters, `attribution`, `license`, `sendToProvider`); an omitted `sendToProvider` keeps the recorded consent |
+| `POST` | `/knowledge/preview` | Preview a document collection (`rootPath`, optional `directorySelectionId`): indexable documents, section/chunk counts and skips by reason; zero documents answers 400 `KNOWLEDGE_COLLECTION_EMPTY` |
+| `POST` | `/knowledge/register` | Register a document collection (`rootPath`, `rightsAcknowledged: true`, optional `directorySelectionId`, `displayName`, `description` of at most 280 characters, `attribution`, `license`, `sendToProvider`); an omitted `sendToProvider` keeps the recorded consent |
+| `PATCH` | `/knowledge/:sourceId/consent` | `{sendToProvider: boolean}` explicitly grants or revokes the source's provider-send consent; answers with the `/knowledge` list projection |
 | `POST` | `/knowledge/:sourceId/reindex` | Build the local SQLite FTS index in batches and atomically activate the new generation; needs the rights acknowledgement, not provider-send consent |
 | `POST` | `/knowledge/:sourceId/search` | Owner test search `{query, topK?}`: titles, relative paths, heading paths, line ranges and snippets |
 | `DELETE` | `/knowledge/:sourceId` | Write a tombstone that revokes access at once, then delete the index files (chunks for a Wiki) and the registration; a failure can be retried |
-| `GET` | `/codebases` | List registered codebases; an unavailable `rootAvailable` carries a fixed `unavailableReason` |
+| `GET` | `/codebases` | List registered codebases; an unavailable `rootAvailable` carries a fixed `unavailableReason`; with `contentDisclosure` |
 | `GET` | `/codebases/directory-picker` | Report whether the backend can open a local system folder picker |
-| `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization |
+| `POST` | `/codebases/directory-picker` | Open the local system picker and return a short-lived, scope-bound directory authorization; optional `purpose: "codebase" \| "knowledge"` only sets the dialog title, codebases and knowledge bases share one kind of selection |
 | `POST` | `/codebases/preview` | Preview source files and enumeration coverage with the same selection policy used by indexing |
 | `POST` | `/codebases/register` | Register a local codebase |
-| `GET` | `/codebases/:id` | Codebase detail (including `rootAvailable` / `unavailableReason`) |
+| `GET` | `/codebases/:id` | Codebase detail (including `rootAvailable` / `unavailableReason`, `contentDisclosure`) |
 | `GET` | `/codebases/:id/symbols` | Resolve symbols |
 | `GET` | `/codebases/:id/excerpt` | Read an indexed excerpt |
 | `POST` | `/codebases/:id/reindex` | Reindex; the request body retains a bounded `pathPrefix` compatibility input, while CLI `reindex` has no such option |
@@ -949,12 +950,18 @@ of a path selection, so the grant keeps its languages.
 
 `authorizeContent: true` is the one combined consent action: it turns
 provider-send on and sets the grant to the current include prefixes/exclude
-globs and every language of the kind. The request must carry the
-`contentDisclosureToken` the caller disclosed (list and detail both return it;
-it binds the selection revision and a digest of the scope and languages):
-without it the answer is `400 CODEBASE_CONSENT_DISCLOSURE_REQUIRED`, and after a
-selection edit or a language a newer version adds it is
-`409 CODEBASE_CONSENT_DISCLOSURE_STALE` with the grant unchanged. Repeating it
+globs and every language of the kind. List and detail return
+`contentDisclosure: {token, includePrefixes, excludeGlobs, extensions}`: the
+three lists are exactly what `authorizeContent` writes into the grant, the
+canonical scope and every language of the kind (not only the new languages in
+`availableNotConsentedExtensions`), and `token` binds the selection revision and
+a digest of the three lists. The request must carry the disclosed `token` in
+the request-body field `contentDisclosureToken`: without it the answer is
+`400 CODEBASE_CONSENT_DISCLOSURE_REQUIRED`, and after a selection edit or a
+language a newer version adds it is `409 CODEBASE_CONSENT_DISCLOSURE_STALE`
+with the grant unchanged. Show the lists of one response
+and submit that response's `token`; after a 409 stale, read again, show again
+and let the user confirm again rather than retrying with a fresh token. Repeating it
 while the grant already says exactly that changes neither the consent hash nor
 `grantRevision`, so it never interrupts a session; repeating the current
 `sendToProvider` value, or `authorizeAvailableExtensions` on a grant that already
@@ -1021,9 +1028,12 @@ loopback listeners receiving a loopback request. Picker, preview, and register
 mutations also require a loopback Origin. A successful selection returns
 a `directorySelectionId` valid for five minutes. Send it with the same
 `rootPath` to `/codebases/preview` and `/codebases/register`. Preview does not
-consume it. Register holds it exclusively while synchronously persisting the
-registration, consumes it after success, and keeps the original expiry for a
-retry if persistence fails. The
+consume it. Register holds it exclusively for the whole registration (the root
+check, the source enumeration and the registry write), consumes it after
+success, and gives it back for a retry when the registration fails (a complete
+enumeration that matched nothing included) unless it expired meanwhile; a
+concurrent replay of the same `directorySelectionId` answers
+`400 DIRECTORY_SELECTION_NOT_FOUND`. The
 credential is bound to tenant/workspace/user and cannot authorize another
 path. Docker, remote, or headless environments must use manual paths and
 `SMARTPERFETTO_CODEBASE_ROOTS`. The backend retains the authorization source
@@ -1031,6 +1041,27 @@ for later reindex and deletion, but safe responses from `GET /codebases`,
 `GET /codebases/:id`, and `GET /codebases/:id/audit` expose neither
 `rootAuthorization`, absolute paths, nor raw operational errors. Deleting the
 codebase revokes the persistent directory authorization.
+
+Document knowledge bases use the same selection: send `directorySelectionId`
+with the same `rootPath` to `/knowledge/preview` and `/knowledge/register`
+(loopback Host, socket and Origin only, otherwise
+`403 DIRECTORY_PICKER_UNAVAILABLE`); preview does not consume it, and register
+holds it for the whole registration (the asynchronous preview and the registry
+write), consumes it after success and gives it back on failure under the same
+expiry rule. The registered source records
+the `native_picker` channel in its own owner-scoped record (no shared
+configuration is written), and only that source's own root is exempt from
+`SMARTPERFETTO_KNOWLEDGE_ROOTS` on its later reindexes; every read still checks
+the directory's identity, permissions and link boundaries, and deleting the
+source revokes it. A request with only `rootPath`, including the same user
+registering the same folder again, is admitted by `SMARTPERFETTO_KNOWLEDGE_ROOTS`
+alone and never inherits a picker authorization; such a re-registration
+replaces the recorded channel with the configured allowlist. Knowledge
+responses and errors never return an absolute path or `rootAuthorization`.
+When reading the chosen folder fails (an unreadable subdirectory, a directory
+removed meanwhile), these knowledge routes and the codebase
+preview/register/reindex routes answer a fixed code with the `requestId`, and
+the server log keeps the errno, syscall and source stack frames, never a path.
 
 See [Android Internals External Knowledge](../getting-started/android-internals-knowledge.en.md)
 for path allowlisting, the CC rights acknowledgement, revocable consent,

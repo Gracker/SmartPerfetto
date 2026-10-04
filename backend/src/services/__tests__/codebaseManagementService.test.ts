@@ -17,6 +17,7 @@ import {
   type IndexCoverage,
 } from '../codebase/codebaseRegistry';
 import {PathSecurityGate} from '../codebase/pathSecurityGate';
+import {sourceExtensionsForKind} from '../codebase/sourceSelectionPolicy';
 import {CodebaseStateError, type CodebaseStateReason} from '../codebase/codebaseRequestError';
 import {SourceEnumerator} from '../codebase/sourceEnumerator';
 import {RagStore} from '../ragStore';
@@ -336,19 +337,62 @@ describe('CodebaseManagementService', () => {
     expect(widened).toMatchObject({eligibleForSendToProvider: false});
     // The token is part of every management view, list and detail alike.
     const listed = (await service.list(DEFAULT_SCOPE)).find(item => item.codebaseId === ref.codebaseId)!;
-    expect(listed.contentDisclosureToken).toBe(widened.contentDisclosureToken);
+    expect(listed.contentDisclosure.token).toBe(widened.contentDisclosure.token);
     const content = await service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId,
-      widened.contentDisclosureToken, DEFAULT_SCOPE);
+      widened.contentDisclosure.token, DEFAULT_SCOPE);
     expect(content).toMatchObject({eligibleForSendToProvider: true, providerGrantScopeCurrent: true,
       availableNotConsentedExtensions: []});
     const repeated = await service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId,
-      content.contentDisclosureToken, DEFAULT_SCOPE);
+      content.contentDisclosure.token, DEFAULT_SCOPE);
     expect(repeated.consent).toEqual(content.consent);
     // A disclosure from before a selection edit grants nothing.
     const edited = await service.updateSelection(ref.codebaseId, {excludeGlobs: ['**/fixtures/**']}, DEFAULT_SCOPE);
-    await expect(service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId, content.contentDisclosureToken,
+    await expect(service.authorizeContent(ref.codebaseId, DEFAULT_SCOPE.userId, content.contentDisclosure.token,
       DEFAULT_SCOPE)).rejects.toMatchObject({code: 'CODEBASE_CONSENT_DISCLOSURE_STALE', status: 409});
     expect(service.get(ref.codebaseId, DEFAULT_SCOPE).consent).toEqual(edited.consent);
+  });
+
+  it('discloses exactly what authorizeContent grants, from the token\'s own lists', async () => {
+    const legacy = registerApp('Legacy Grant App');
+    // A record from before grants were stored: its legacy grant covers fewer languages than the kind admits.
+    const storagePath = path.join(tmpDir, 'codebases.json');
+    const stored = JSON.parse(fs.readFileSync(storagePath, 'utf8'));
+    const entries = (Array.isArray(stored) ? stored : stored.codebases ?? stored.refs) as Array<{consent: {grant?: unknown}}>;
+    for (const entry of entries) delete entry.consent.grant;
+    fs.writeFileSync(storagePath, JSON.stringify(stored));
+    registry = new CodebaseRegistry(storagePath);
+    service = new CodebaseManagementService({
+      registry, store, gate: new PathSecurityGate({allowlistRoots: [tmpDir]}), sourceEnumerator: new SourceEnumerator()});
+    const narrowed = await service.updateSelection(legacy.codebaseId,
+      {pathFilters: ['src', 'app'], excludeGlobs: ['**/gen/**']}, DEFAULT_SCOPE);
+    expect(narrowed.availableNotConsentedExtensions.length).toBeGreaterThan(0);
+
+    const detail = service.get(legacy.codebaseId, DEFAULT_SCOPE);
+    const listed = (await service.list(DEFAULT_SCOPE)).find(item => item.codebaseId === legacy.codebaseId)!;
+    expect(listed.contentDisclosure).toEqual(detail.contentDisclosure);
+    expect(detail.contentDisclosure).toEqual({
+      token: expect.stringMatching(/^cd1:/),
+      includePrefixes: ['app', 'src'],
+      excludeGlobs: ['**/gen/**'],
+      extensions: [...sourceExtensionsForKind('app_source')],
+    });
+    // The full set, not only what is missing from the current grant.
+    expect(detail.contentDisclosure.extensions).toEqual(expect.arrayContaining(detail.availableNotConsentedExtensions));
+    expect(detail.contentDisclosure.extensions.length).toBeGreaterThan(detail.availableNotConsentedExtensions.length);
+
+    await service.authorizeContent(legacy.codebaseId, DEFAULT_SCOPE.userId, detail.contentDisclosure.token, DEFAULT_SCOPE);
+    const grant = registry.get(legacy.codebaseId, DEFAULT_SCOPE)!.consent.grant!;
+    expect({
+      includePrefixes: grant.includePrefixes,
+      excludeGlobs: grant.excludeGlobs,
+      extensions: grant.extensions,
+    }).toEqual({
+      includePrefixes: detail.contentDisclosure.includePrefixes,
+      excludeGlobs: detail.contentDisclosure.excludeGlobs,
+      extensions: detail.contentDisclosure.extensions,
+    });
+    // Granting what was disclosed leaves the disclosure unchanged.
+    expect(service.get(legacy.codebaseId, DEFAULT_SCOPE).contentDisclosure).toEqual(detail.contentDisclosure);
   });
 
   it('previews a selection edit exactly as a save would enumerate it, without the root', async () => {

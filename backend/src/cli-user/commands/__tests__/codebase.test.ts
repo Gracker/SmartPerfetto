@@ -435,7 +435,8 @@ describe('smp codebase command handlers', () => {
       success: true,
       action: 'disclosure',
       granted: false,
-      disclosure: {includePrefixes: [], excludeGlobs: [], languages: expect.arrayContaining(['.kt', '.java'])},
+      disclosure: {codebaseId: ref.codebaseId, includePrefixes: [], excludeGlobs: [],
+        extensions: expect.arrayContaining(['.kt', '.java']), token: expect.stringMatching(/^cd1:/)},
     });
     expect(disclosed.disclosure.notice).toMatch(/retention by the AI service depends on its configuration and policy/);
     expect(JSON.stringify(disclosed)).not.toContain(root);
@@ -444,7 +445,7 @@ describe('smp codebase command handlers', () => {
     logSpy.mockClear();
     expect(await runCodebaseAuthorizeContentCommand({
       codebaseId: ref.codebaseId,
-      confirm: disclosed.disclosure.contentDisclosureToken,
+      confirm: disclosed.disclosure.token,
       format: 'json',
       sessionDir,
       managementService,
@@ -461,7 +462,7 @@ describe('smp codebase command handlers', () => {
     logSpy.mockClear();
     expect(await runCodebaseAuthorizeContentCommand({
       codebaseId: ref.codebaseId,
-      confirm: disclosed.disclosure.contentDisclosureToken,
+      confirm: disclosed.disclosure.token,
       format: 'json',
       sessionDir,
       managementService,

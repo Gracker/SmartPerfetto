@@ -107,20 +107,35 @@ export function grantMatchesSelection(
 }
 
 /**
- * What the combined consent action discloses: the selection revision and a
- * digest of the include prefixes, exclusions and languages a grant would
- * cover. A caller grants with the token of the disclosure it showed; a
- * selection edit or a language a newer version adds changes it.
+ * What the combined consent action discloses and grants: the canonical
+ * include prefixes and exclusions of the current selection and every language
+ * this kind admits, with the token that names exactly this disclosure (the
+ * selection revision and a digest of the three lists). A caller shows these
+ * lists and grants with their token; `authorizeContent` grants the lists of
+ * the disclosure whose token it was given, so what is shown is what is
+ * granted. A selection edit or a language a newer version adds changes the
+ * token; the order of the lists does not.
  */
-export function contentDisclosureToken(
+export interface ContentDisclosure {
+  token: string;
+  includePrefixes: string[];
+  excludeGlobs: string[];
+  extensions: string[];
+}
+
+export function contentDisclosure(
   ref: Pick<CodebaseRef, 'kind' | 'pathFilters' | 'excludeGlobs' | 'selectionPolicyRevision'>,
-): string {
-  const selection = sourceSelectionForRef(ref);
+  selection: SourceSelectionIR = sourceSelectionForRef(ref),
+): ContentDisclosure {
+  const includePrefixes = [...selection.includePrefixes];
+  const excludeGlobs = [...selection.excludeGlobs];
+  // The kind's own order, as a grant stores it; the digest is order-free.
+  const extensions = [...sourceExtensionsForKind(ref.kind)];
   const digest = createHash('sha256').update(JSON.stringify({
     kind: ref.kind,
-    includePrefixes: selection.includePrefixes,
-    excludeGlobs: selection.excludeGlobs,
-    extensions: [...sourceExtensionsForKind(ref.kind)].sort(),
+    includePrefixes,
+    excludeGlobs,
+    extensions: [...extensions].sort(),
   })).digest('hex').slice(0, 16);
-  return `cd1:${ref.selectionPolicyRevision ?? 1}:${digest}`;
+  return {token: `cd1:${ref.selectionPolicyRevision ?? 1}:${digest}`, includePrefixes, excludeGlobs, extensions};
 }

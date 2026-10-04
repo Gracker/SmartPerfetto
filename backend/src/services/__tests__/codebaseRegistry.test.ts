@@ -28,8 +28,9 @@ import {
 } from '../codebase/codebaseCapability';
 import * as selectionPolicy from '../codebase/sourceSelectionPolicy';
 import {sourceExtensionsForKind} from '../codebase/sourceSelectionPolicy';
-import {contentDisclosureToken, sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
+import {contentDisclosure, sourcePathAllowedForProvider} from '../codebase/sourceDisclosure';
 import {buildAnalysisContextAuthorizationFingerprint} from '../resolvedAnalysisContext';
+import {getScopedKnowledgeRecord, upsertScopedKnowledgeRecord} from '../scopedKnowledgeStore';
 
 let tmpDir: string;
 
@@ -320,7 +321,7 @@ describe('CodebaseRegistry', () => {
     const legacy = new CodebaseRegistry(registryPath);
     const before = legacy.get(ref.codebaseId)!;
 
-    const granted = legacy.authorizeContent(ref.codebaseId, {}, 'user', contentDisclosureToken(before));
+    const granted = legacy.authorizeContent(ref.codebaseId, {}, 'user', contentDisclosure(before).token);
     expect(granted.consent.sendToProvider).toBe(true);
     expect(granted.consent.consentHash).not.toBe(before.consent.consentHash);
     expect(granted.consent.grant).toMatchObject({
@@ -331,7 +332,7 @@ describe('CodebaseRegistry', () => {
     });
     expect(codebaseProviderGrantScopeCurrent(granted)).toBe(true);
 
-    const again = legacy.authorizeContent(ref.codebaseId, {}, 'user', contentDisclosureToken(granted));
+    const again = legacy.authorizeContent(ref.codebaseId, {}, 'user', contentDisclosure(granted).token);
     expect(again.consent).toEqual(granted.consent);
     const repeatedOn = legacy.setProviderConsent(ref.codebaseId, {}, true, 'user');
     expect(repeatedOn.consent).toEqual(granted.consent);
@@ -340,14 +341,14 @@ describe('CodebaseRegistry', () => {
     expect(off.consent.grant!.revision).toBe(granted.consent.grant!.revision + 1);
     const repeatedOff = legacy.setProviderConsent(ref.codebaseId, {}, false, 'user');
     expect(repeatedOff.consent).toEqual(off.consent);
-    expect(() => legacy.authorizeContent('missing', {}, 'user', contentDisclosureToken(granted))).toThrow();
+    expect(() => legacy.authorizeContent('missing', {}, 'user', contentDisclosure(granted).token)).toThrow();
   });
 
   describe('the combined grant is bound to what was disclosed', () => {
     const registered = () => {
       const registry = new CodebaseRegistry(path.join(tmpDir, `disclosure-${Math.random()}.json`));
       const ref = registry.register({kind: 'app_source', displayName: 'Disclosed', rootPath: tmpDir, pathFilters: ['app']});
-      return {registry, ref, token: contentDisclosureToken(ref)};
+      return {registry, ref, token: contentDisclosure(ref).token};
     };
 
     it('grants with the token of the current disclosure', () => {
@@ -359,7 +360,7 @@ describe('CodebaseRegistry', () => {
     it('refuses a disclosure older than a selection edit and changes nothing', () => {
       const {registry, ref, token} = registered();
       const edited = registry.updateSelectionPolicy(ref.codebaseId, {}, {pathFilters: ['app', 'lib']});
-      expect(contentDisclosureToken(edited)).not.toBe(token);
+      expect(contentDisclosure(edited).token).not.toBe(token);
 
       expect(() => registry.authorizeContent(ref.codebaseId, {}, 'user', token)).toThrow('consent_disclosure_stale');
       expect(registry.get(ref.codebaseId)).toEqual(edited);
@@ -371,7 +372,7 @@ describe('CodebaseRegistry', () => {
       const withNewLanguage = jest.spyOn(selectionPolicy, 'sourceExtensionsForKind')
         .mockImplementation(kind => [...original(kind), '.zig']);
       try {
-        expect(contentDisclosureToken(ref)).not.toBe(token);
+        expect(contentDisclosure(ref).token).not.toBe(token);
         expect(() => registry.authorizeContent(ref.codebaseId, {}, 'user', token)).toThrow('consent_disclosure_stale');
         expect(registry.get(ref.codebaseId)).toEqual(ref);
       } finally {
@@ -1051,6 +1052,26 @@ describe('CodebaseRegistry', () => {
       return lease.deleteRegistration();
     }, 'delete')).rejects.toThrow('codebase_reindex_lease_lost');
     expect(deleting.get(deleteRef.codebaseId, {})?.lifecycleState).toBe('deleting');
+  });
+
+  it('does not trust a root channel only one dual-write side records', () => {
+    process.env[ENTERPRISE_FEATURE_FLAG_ENV] = 'true';
+    process.env[ENTERPRISE_DB_PATH_ENV] = path.join(tmpDir, 'enterprise-dual-channel.sqlite');
+    process.env[ENTERPRISE_MIGRATION_PHASE_ENV] = 'dual-write';
+    const scope = {tenantId: 'tenant-a', workspaceId: 'workspace-a', userId: 'user-a'};
+    const registryPath = path.join(tmpDir, 'dual-channel.json');
+    const ref = new CodebaseRegistry(registryPath).register({
+      kind: 'app_source', displayName: 'Picked', rootPath: tmpDir, rootAuthorization: 'native_picker', ...scope});
+    expect(new CodebaseRegistry(registryPath).get(ref.codebaseId, scope)?.rootAuthorization).toBe('native_picker');
+    // The DB copy loses the channel; the filesystem copy (the dual-write authority) keeps it.
+    const {rootAuthorization: _channel, ...unchannelled} =
+      getScopedKnowledgeRecord<CodebaseRef>('codebase_registry_ref', ref.codebaseId, scope)!.record;
+    upsertScopedKnowledgeRecord('codebase_registry_ref', ref.codebaseId, 'codebase-registry-ref', unchannelled, scope);
+    expect(fs.readFileSync(registryPath, 'utf8')).toContain('native_picker');
+    const merged = new CodebaseRegistry(registryPath).get(ref.codebaseId, scope)!;
+    expect(merged).toBeDefined();
+    expect(merged.rootAuthorization).toBeUndefined();
+    expect(channelAuthorizedRoots(merged)).toBeUndefined();
   });
 
   it('replicates fenced generation switches to the filesystem during dual-write', async () => {

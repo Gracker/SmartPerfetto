@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {backendLogPath} from '../runtimePaths';
+import {type RootAuthorizationChannel, withoutUnsharedRootChannel} from './codebase/codebaseCapability';
 import {withFilesystemRegistryLock} from './filesystemRegistryLock';
 import {
   enterpriseKnowledgeDbWritesEnabled,
@@ -76,9 +77,20 @@ const KIND_POLICIES: Readonly<Record<ExternalKnowledgeKind, ExternalKnowledgeKin
   },
 };
 
+/**
+ * How a registered root was authorized when it is not by
+ * `SMARTPERFETTO_KNOWLEDGE_ROOTS`: `native_picker` is a folder the owner chose
+ * in the local directory picker. Each registration records its own channel,
+ * and only that source's own root is trusted through it
+ * (`channelAuthorizedRoots`); deleting the source revokes it.
+ */
+export type KnowledgeRootAuthorization = Extract<RootAuthorizationChannel, 'native_picker'>;
+
 interface RegisterExternalKnowledgeSourceBase {
   displayName: string;
   rootRealpath: string;
+  /** Absent: the configured allowlist authorized the root. */
+  rootAuthorization?: KnowledgeRootAuthorization;
   revision: string;
   contentFingerprint: string;
   dirty: boolean;
@@ -208,9 +220,9 @@ const SOURCE_ID_PREFIX = 'eks_';
 const SOURCE_ID_HEX_CHARS = 24;
 const SOURCE_ID_PATTERN = new RegExp(`^${SOURCE_ID_PREFIX}[0-9a-f]{${SOURCE_ID_HEX_CHARS}}$`);
 
-/** A source as its owner's management surfaces show it: no root path, no scope. */
+/** A source as its owner's management surfaces show it: no root path, no scope, no root channel. */
 export function sanitizeExternalKnowledgeSource(source: ExternalKnowledgeSource) {
-  const {rootRealpath: _rootRealpath, scope: _scope, ...safeSource} = source;
+  const {rootRealpath: _rootRealpath, scope: _scope, rootAuthorization: _rootAuthorization, ...safeSource} = source;
   return safeSource;
 }
 
@@ -239,8 +251,9 @@ function sameScope(left: ExternalKnowledgeScope, right: ExternalKnowledgeScope):
 
 /**
  * `primary` carrying every denial `other` holds: a tombstone on either side
- * deletes, and a consent revoked on either side stays revoked (with the
- * revoking side's audit fields). Without `primary`, only an in-scope
+ * deletes, a consent revoked on either side stays revoked (with the
+ * revoking side's audit fields), and a root channel missing on either side
+ * is not trusted. Without `primary`, only an in-scope
  * tombstone of `other` survives, so a deletion half done stays in force.
  */
 function withDenialsOf(
@@ -252,11 +265,12 @@ function withDenialsOf(
   if (!primary) return counterpart && isDeleting(counterpart) ? counterpart : undefined;
   if (!counterpart || isDeleting(primary)) return primary;
   if (isDeleting(counterpart)) return {...primary, lifecycleState: 'deleting'};
-  if (primary.sendToProvider && !counterpart.sendToProvider) {
-    const {consentedAt: _consentedAt, ...granted} = primary;
-    return {...granted, sendToProvider: false, consentedBy: counterpart.consentedBy};
+  let effective = withoutUnsharedRootChannel(primary, counterpart);
+  if (effective.sendToProvider && !counterpart.sendToProvider) {
+    const {consentedAt: _consentedAt, ...granted} = effective;
+    effective = {...granted, sendToProvider: false, consentedBy: counterpart.consentedBy};
   }
-  return primary;
+  return effective;
 }
 
 /**
@@ -361,6 +375,8 @@ export class ExternalKnowledgeSourceRegistry {
         kind: input.kind,
         displayName,
         rootRealpath: path.resolve(input.rootRealpath),
+        // The channel of this registration, never one an earlier registration recorded.
+        ...(input.rootAuthorization ? {rootAuthorization: input.rootAuthorization} : {}),
         ...activeIdentity,
         ...descriptiveFields,
         rightsAcknowledged: true,

@@ -24,8 +24,17 @@ import {
   type ScopedIngestLeaseConfig,
   withScopedIngestLease,
 } from '../scopedIngestLease';
-import {codebaseProviderGrantScopeCurrent} from './codebaseCapability';
-import {contentDisclosureToken, effectiveConsentGrant, legacyConsentGrant} from './sourceDisclosure';
+import {
+  codebaseProviderGrantScopeCurrent,
+  type RootAuthorizationChannel,
+  withoutUnsharedRootChannel,
+} from './codebaseCapability';
+import {
+  availableNotConsentedExtensions,
+  contentDisclosure,
+  effectiveConsentGrant,
+  legacyConsentGrant,
+} from './sourceDisclosure';
 import {
   buildSourceSelectionIR,
   CODEBASE_KINDS,
@@ -42,12 +51,6 @@ import {
 } from './codebaseRequestError';
 
 export type CodebaseKind = Extract<RagSourceKind, 'app_source' | 'aosp' | 'kernel_source' | 'oem_sdk'>;
-/**
- * How a registered root was authorized. `native_picker` and `local_cli` roots were
- * chosen by the local user through that channel; see `channelAuthorizedRoots`
- * (`codebaseCapability.ts`).
- */
-export type CodebaseRootAuthorization = 'configured_allowlist' | 'native_picker' | 'local_cli';
 const DEFAULT_TENANT_ID = 'default-dev-tenant';
 const DEFAULT_WORKSPACE_ID = 'default-workspace';
 const DEFAULT_USER_ID = 'dev-user-123';
@@ -141,7 +144,7 @@ export interface CodebaseRef {
    * How the canonical root was authorized. Older registrations omit this
    * field and retain the configured allowlist behavior.
    */
-  rootAuthorization?: CodebaseRootAuthorization;
+  rootAuthorization?: RootAuthorizationChannel;
   commitHash?: string;
   vendor?: string;
   buildId?: string;
@@ -196,7 +199,7 @@ export interface CodebaseRefSummary {
   lifecycleState: 'active' | 'deleting';
   kind: CodebaseRef['kind'];
   displayName: string;
-  rootAuthorization: CodebaseRootAuthorization;
+  rootAuthorization: RootAuthorizationChannel;
   commitHash?: string;
   vendor?: string;
   buildId?: string;
@@ -231,7 +234,7 @@ export interface RegisterCodebaseInput {
   displayName: string;
   rootPath: string;
   rootRealpath?: string;
-  rootAuthorization?: CodebaseRootAuthorization;
+  rootAuthorization?: RootAuthorizationChannel;
   commitHash?: string;
   vendor?: string;
   buildId?: string;
@@ -420,7 +423,7 @@ function ingestLeaseKey(codebaseId: string, scope: CodebaseScope): string {
  * work: root availability is the caller's `evaluateCodebaseRoot`, under the
  * caller's own allowlist.
  */
-export function summarizeCodebase(ref: CodebaseRef): CodebaseRefSummary {
+export function summarizeCodebase(ref: CodebaseRef, selection?: SourceSelectionIR): CodebaseRefSummary {
   ref = normalizeCodebaseRef(ref);
   return {
     codebaseId: ref.codebaseId,
@@ -438,9 +441,8 @@ export function summarizeCodebase(ref: CodebaseRef): CodebaseRefSummary {
     activeIndexState: ref.activeIndexState ?? 'none',
     selectionPolicyRevision: ref.selectionPolicyRevision ?? 1,
     grantRevision: effectiveConsentGrant(ref).revision,
-    providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref),
-    availableNotConsentedExtensions: sourceExtensionsForKind(ref.kind)
-      .filter(extension => !effectiveConsentGrant(ref).extensions.includes(extension)),
+    providerGrantScopeCurrent: codebaseProviderGrantScopeCurrent(ref, selection),
+    availableNotConsentedExtensions: availableNotConsentedExtensions(ref),
     ...(ref.activeIndexCoverage ? {activeIndexCoverage: ref.activeIndexCoverage} : {}),
     ...(ref.pendingGeneration ? {pendingGeneration: ref.pendingGeneration} : {}),
     ...(ref.maintenanceWarning ? {maintenanceWarning: ref.maintenanceWarning} : {}),
@@ -469,7 +471,7 @@ function mergeDualWriteCodebaseFailClosed(
   if (!filesystemRef || !sameScope(filesystemRef, scope)) return undefined;
   if (!databaseRef || !sameScope(databaseRef, scope)) return filesystemRef;
   if (databaseRef.lifecycleState === 'deleting') return databaseRef;
-  let effective = filesystemRef;
+  let effective = withoutUnsharedRootChannel(filesystemRef, databaseRef);
   if (filesystemRef.consent.sendToProvider && !databaseRef.consent.sendToProvider) {
     effective = {...effective, consent: databaseRef.consent};
   }
@@ -652,7 +654,7 @@ export class CodebaseRegistry {
   }
 
   list(scope: CodebaseScope = {}): CodebaseRefSummary[] {
-    return this.listRefs(scope).map(summarizeCodebase);
+    return this.listRefs(scope).map(ref => summarizeCodebase(ref));
   }
 
   /** Every registration in this scope, ordered by id. */
@@ -760,21 +762,21 @@ export class CodebaseRegistry {
   ): CodebaseRef {
     const updated = this.mutate(codebaseId, scope, existing => {
       if (existing.lifecycleState === 'deleting') throw new CodebaseStateError('codebase_deleting');
-      if (disclosureToken !== contentDisclosureToken(existing)) {
+      // The grant is the disclosure the token names, never a recomputation.
+      const disclosure = contentDisclosure(existing);
+      if (disclosureToken !== disclosure.token) {
         throw new CodebaseStateError('consent_disclosure_stale');
       }
-      const extensions = [...sourceExtensionsForKind(existing.kind)];
       if (
         existing.consent.sendToProvider &&
-        grantCoversLanguages(existing, extensions) &&
+        grantCoversLanguages(existing, disclosure.extensions) &&
         codebaseProviderGrantScopeCurrent(existing)
       ) return existing;
-      const selection = sourceSelectionForRef(existing);
       const now = Date.now();
       return withRenewedGrant(existing, actor, now, {
-        extensions,
-        includePrefixes: [...selection.includePrefixes],
-        excludeGlobs: [...selection.excludeGlobs],
+        extensions: disclosure.extensions,
+        includePrefixes: disclosure.includePrefixes,
+        excludeGlobs: disclosure.excludeGlobs,
       }, {sendToProvider: true, consentHash: nextConsentHash(existing, 'content', actor, now)});
     });
     if (!updated) throw codebaseNotFound(codebaseId);
