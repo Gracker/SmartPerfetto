@@ -50,11 +50,6 @@ const SSO_SESSION_COOKIE_NAME = 'sp_sso_session';
 export const DEFAULT_TENANT_ID = 'default-dev-tenant';
 export const DEFAULT_WORKSPACE_ID = 'default-workspace';
 export const DEFAULT_DEV_USER_ID = 'dev-user-123';
-const USAGE_WINDOW_MS = Number.parseInt(process.env.SMARTPERFETTO_USAGE_WINDOW_MS || '', 10) || 24 * 60 * 60 * 1000;
-const MAX_REQUESTS = Number.parseInt(process.env.SMARTPERFETTO_USAGE_MAX_REQUESTS || '', 10);
-const MAX_TRACE_REQUESTS = Number.parseInt(process.env.SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS || '', 10);
-
-const usageTracker = new Map<string, { resetAt: number; total: number; trace: number }>();
 
 function isSafeMethod(method: string): boolean {
   return method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
@@ -443,60 +438,6 @@ export const authenticate = async (
 };
 
 export const attachRequestContext = authenticate;
-
-/**
- * Usage check middleware - in-memory rate limiting (optional)
- */
-export const checkUsage = (isTraceAnalysis: boolean = false) => {
-  return async (req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> => {
-    const hasTotalLimit = Number.isFinite(MAX_REQUESTS);
-    const hasTraceLimit = Number.isFinite(MAX_TRACE_REQUESTS);
-
-    if (!hasTotalLimit && !hasTraceLimit) {
-      next();
-      return;
-    }
-
-    const apiKey = getProvidedApiKey(req);
-    const identity = req.user?.id
-      || (apiKey ? `api-key-${hashApiKey(apiKey)}` : undefined)
-      || req.ip
-      || 'anonymous';
-
-    const now = Date.now();
-    const entry = usageTracker.get(identity);
-    const record = entry && entry.resetAt > now
-      ? entry
-      : { resetAt: now + USAGE_WINDOW_MS, total: 0, trace: 0 };
-
-    record.total += 1;
-    if (isTraceAnalysis) {
-      record.trace += 1;
-    }
-
-    usageTracker.set(identity, record);
-
-    if (hasTotalLimit && record.total > MAX_REQUESTS) {
-      const error: ErrorResponse = {
-        error: 'Usage limit exceeded',
-        details: `Exceeded max requests (${MAX_REQUESTS}) in current window`,
-      };
-      res.status(429).json(error);
-      return;
-    }
-
-    if (isTraceAnalysis && hasTraceLimit && record.trace > MAX_TRACE_REQUESTS) {
-      const error: ErrorResponse = {
-        error: 'Trace analysis limit exceeded',
-        details: `Exceeded max trace analyses (${MAX_TRACE_REQUESTS}) in current window`,
-      };
-      res.status(429).json(error);
-      return;
-    }
-
-    next();
-  };
-};
 
 export type { AuthenticatedRequest };
 export type { RequestContext, RequestContextAuthType };

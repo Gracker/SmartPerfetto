@@ -66,6 +66,12 @@ Detailed commit-level history is available via `git log`.
   `MODEL_ENSEMBLE_THRESHOLD` and `MODEL_NATIVE_*` settings are gone. The
   enterprise load-test script now reports the LLM counters as missing instead
   of reading a constant zero.
+- `SMARTPERFETTO_USAGE_MAX_REQUESTS`, `SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS`
+  and `SMARTPERFETTO_USAGE_WINDOW_MS` are gone. The configuration guide and
+  `.env.example` documented them as request rate limiting, but the middleware
+  that read them was never mounted, so they never limited anything. There is
+  no built-in rate limiting: enable OIDC for public deployments and rate-limit
+  at the reverse proxy.
 - Agent endpoints no longer take a request id from a `requestId` field in the
   request body; send `X-Request-Id` (or `X-Correlation-Id`) instead.
 

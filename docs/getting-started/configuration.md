@@ -731,15 +731,13 @@ allowlist；仍需通过 API 独立确认使用权、provider-send 同意、建�
 
 ## 请求限流
 
-内存级限流，适合公开试用环境的基础保护：
+SmartPerfetto 没有内置的请求限流，也不读取旧文档列出的
+`SMARTPERFETTO_USAGE_MAX_REQUESTS`、`SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS` 和
+`SMARTPERFETTO_USAGE_WINDOW_MS`，设置它们没有效果。
 
-```bash
-SMARTPERFETTO_USAGE_MAX_REQUESTS=200
-SMARTPERFETTO_USAGE_MAX_TRACE_REQUESTS=100
-SMARTPERFETTO_USAGE_WINDOW_MS=86400000
-```
-
-重启后限流状态会丢失；生产部署如果需要严格配额，应在反向代理或 API 网关层增加持久化限流。
+公开或共享部署请启用 [OIDC 浏览器登录](#oidc-浏览器登录)（或至少配置
+`SMARTPERFETTO_API_KEY`），并在反向代理或 API 网关层做限流。Enterprise workspace 的
+trace 大小、并发 run 与每月 run 配额只约束分析资源，不是按请求计数的限流。
 
 ## Runtime 与 Provider 的边界
 

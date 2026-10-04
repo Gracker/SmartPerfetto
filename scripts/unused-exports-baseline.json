@@ -46,7 +46,6 @@
     "src/cli-user/services/turnRunner.ts#truncateAtBoundary",
     "src/config/index.ts#config",
     "src/config/index.ts#featureConfig",
-    "src/middleware/auth.ts#checkUsage",
     "src/routes/agentRoutes.ts#SmartPreviewSelectionError",
     "src/services/adb/adbContextDetector.ts#detectAdbContext",
     "src/services/analysisRunTraceProcessorLease.ts#AnalysisRunProcessorPolicy",
