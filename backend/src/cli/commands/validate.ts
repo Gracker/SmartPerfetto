@@ -44,6 +44,7 @@ import {
 import { skillUsesProcessNameFilter } from '../../services/processIdentity/identityGate';
 import { EXACT_UPID_TOKEN, executableSqlUnits, sqlRunBy, type ExecutableSqlUnit } from '../../services/skillEngine/processScopeSql';
 import { stepNodesOf } from '../../services/skillEngine/skillSteps';
+import { listSkillFiles, SKILL_FILE_PATTERN, SKILL_LAYOUT } from '../../services/skillEngine/skillLayout';
 import { recordedStepNames, RUNTIME_SKILL_PARAMS } from '../../services/skillEngine/skillValidator';
 import { boundSqlPlaceholders } from '../../services/skillEngine/sqlTemplate';
 import {
@@ -94,7 +95,7 @@ let skillFragmentCache: ReadonlyMap<string, string> | undefined;
 /** Fragment bodies keyed as Skills reference them, so SQL checks see injected text. */
 function loadSkillFragmentCache(): ReadonlyMap<string, string> {
   if (!skillFragmentCache) {
-    const fragmentsDir = path.join(SKILLS_DIR, 'fragments');
+    const fragmentsDir = path.join(SKILLS_DIR, SKILL_LAYOUT.fragmentsDir);
     skillFragmentCache = new Map(fs.existsSync(fragmentsDir)
       ? fs.readdirSync(fragmentsDir).filter(file => file.endsWith('.sql')).map(file => [
         skillFragmentKey(file), readSkillFragmentFile(fragmentsDir, file),
@@ -110,13 +111,11 @@ let diskCauseWordingReaders: CauseWordingReaders | undefined;
 function loadSkillDefinitionsById(): ReadonlyMap<string, SkillDefinition> {
   if (!skillDefinitionsById) {
     const byId = new Map<string, SkillDefinition>();
-    for (const dir of ['atomic', 'composite', 'deep', 'system', 'comparison', 'modules', 'pipelines', 'custom']) {
-      for (const file of findSkillFiles(path.join(SKILLS_DIR, dir), /\.skill\.ya?ml$/)) {
-        try {
-          const skill = yaml.load(fs.readFileSync(file, 'utf-8')) as SkillDefinition | undefined;
-          if (skill?.name) byId.set(skill.name, skill);
-        } catch { /* the file's own validation reports parse errors */ }
-      }
+    for (const {path: file} of listSkillFiles(SKILLS_DIR, {includeCustom: true})) {
+      try {
+        const skill = yaml.load(fs.readFileSync(file, 'utf-8')) as SkillDefinition | undefined;
+        if (skill?.name) byId.set(skill.name, skill);
+      } catch { /* the file's own validation reports parse errors */ }
     }
     skillDefinitionsById = byId;
   }
@@ -1236,40 +1235,24 @@ export const validateCommand = new Command('validate')
 
     let files: string[] = [];
 
+    // The files the loader reads (listSkillFiles), and with --all the vendor overrides.
+    const skillFiles = listSkillFiles(SKILLS_DIR, {includeCustom: true});
     if (skillId) {
       // Validate specific skill
-      const possiblePaths = [
-        path.join(SKILLS_DIR, 'composite', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'atomic', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'deep', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'comparison', `${skillId}.skill.yaml`),
-        path.join(SKILLS_DIR, 'custom', `${skillId}.skill.yaml`),
-      ];
-
-      const foundPath = possiblePaths.find(p => fs.existsSync(p))
-        ?? findSkillFiles(path.join(SKILLS_DIR, 'modules'), /\.skill\.ya?ml$/)
-          .find(p => path.basename(p).replace(/\.skill\.ya?ml$/, '') === skillId);
+      const foundPath = skillFiles.find(file => path.basename(file.path).replace(SKILL_FILE_PATTERN, '') === skillId)?.path;
       if (foundPath) {
         files.push(foundPath);
       } else {
         console.log(colors.red(`Skill not found: ${skillId}`));
         process.exit(1);
       }
+    } else if (options.all) {
+      files = skillFiles.map(file => file.path);
+      files.push(...findSkillFiles(path.join(SKILLS_DIR, SKILL_LAYOUT.vendorsDir), /\.override\.ya?ml$/));
     } else {
-      // Validate all skills
-      files = findSkillFiles(path.join(SKILLS_DIR, 'composite'), /\.skill\.ya?ml$/);
-      files.push(...findSkillFiles(path.join(SKILLS_DIR, 'atomic'), /\.skill\.ya?ml$/));
-      files.push(...findSkillFiles(path.join(SKILLS_DIR, 'deep'), /\.skill\.ya?ml$/));
-      files.push(...findSkillFiles(path.join(SKILLS_DIR, 'comparison'), /\.skill\.ya?ml$/));
-
-      if (options.all) {
-        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'modules'), /\.skill\.ya?ml$/));
-        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'vendors'), /\.override\.ya?ml$/));
-        // The pipeline loaders skip `_`-prefixed templates.
-        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'pipelines'), /\.skill\.ya?ml$/)
-          .filter(file => !path.basename(file).startsWith('_')));
-        files.push(...findSkillFiles(path.join(SKILLS_DIR, 'custom'), /\.skill\.ya?ml$/));
-      }
+      // Without --all: the plain Skill directories.
+      files = skillFiles.filter(file => file.kind === 'skill' && !file.path.includes(`${path.sep}${SKILL_LAYOUT.customDir}${path.sep}`))
+        .map(file => file.path);
     }
 
     if (files.length === 0) {

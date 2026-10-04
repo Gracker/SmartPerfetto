@@ -10,6 +10,7 @@
 import fs from 'fs';
 import path from 'path';
 import {substituteSqlPlaceholders} from './sqlTemplate';
+import {SKILL_LAYOUT} from './skillLayout';
 
 /** The built-in skills directory shipped with the backend. */
 export function builtInSkillsDir(): string {
@@ -35,7 +36,7 @@ const builtInCache = new Map<string, string>();
 export function builtInSkillFragment(file: string): string {
   const cached = builtInCache.get(file);
   if (cached !== undefined) return cached;
-  const content = readSkillFragmentFile(path.join(builtInSkillsDir(), 'fragments'), file);
+  const content = readSkillFragmentFile(path.join(builtInSkillsDir(), SKILL_LAYOUT.fragmentsDir), file);
   builtInCache.set(file, content);
   return content;
 }

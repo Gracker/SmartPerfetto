@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 
 import { SkillRegistry } from '../skillLoader';
+import { listSkillFiles } from '../skillLayout';
 
 describe('custom skill loading', () => {
   let tmpDir: string;
@@ -489,5 +490,33 @@ describe('custom skill loading', () => {
     // which bind no global: the condition evaluates as ' > 3'.
     await write('embedded_global', '${Math.PI} > 3');
     await expect(load()).rejects.toThrow('skill_validation_failed:embedded_global');
+  });
+  // The loader, the CLI and the Trace tooling read one layout (skillLayout.ts).
+  it('reads the files listSkillFiles names, in its order, with custom Skills only from the built-in root', async () => {
+    const skillYaml = (name: string, type = 'atomic') => [
+      `name: ${name}`, 'version: "1"', `type: ${type}`, 'meta:', `  display_name: ${name}`, `  description: ${name}`,
+      ...(type === 'pipeline_definition' ? [] : ['sql: SELECT 1 AS value']), '',
+    ].join('\n');
+    const write = async (relative: string, content: string) => {
+      await fs.mkdir(path.dirname(path.join(tmpDir, relative)), {recursive: true});
+      await fs.writeFile(path.join(tmpDir, relative), content, 'utf-8');
+    };
+    await write('system/sys.skill.yaml', skillYaml('sys'));
+    await write('atomic/first.skill.yml', skillYaml('first'));
+    await write('custom/mine.skill.yaml', skillYaml('mine'));
+    await write('modules/app/deep/expert.skill.yaml', skillYaml('expert'));
+    await write('pipelines/_template.skill.yaml', skillYaml('template', 'pipeline_definition'));
+    await write('pipelines/flow.skill.yaml', skillYaml('flow', 'pipeline_definition'));
+    await write('atomic/notes.yaml', 'not a skill');
+
+    const files = listSkillFiles(tmpDir, {includeCustom: true}).map(file => [path.relative(tmpDir, file.path), file.kind]);
+    expect(files).toEqual([
+      ['atomic/first.skill.yml', 'skill'], ['system/sys.skill.yaml', 'skill'], ['custom/mine.skill.yaml', 'skill'],
+      [path.join('modules', 'app', 'deep', 'expert.skill.yaml'), 'module'], ['pipelines/flow.skill.yaml', 'pipeline'],
+    ]);
+    const builtIn = new SkillRegistry();
+    await builtIn.loadSkillRoots([{rootPath: tmpDir, origin: 'built_in'}]);
+    expect(builtIn.getAllSkills().map(skill => skill.name).sort()).toEqual(['expert', 'first', 'flow', 'mine', 'sys']);
+    expect(listSkillFiles(tmpDir).some(file => file.path.includes(`${path.sep}custom${path.sep}`))).toBe(false);
   });
 });
