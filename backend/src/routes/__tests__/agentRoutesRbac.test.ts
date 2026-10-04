@@ -1309,6 +1309,28 @@ describe('agent route RBAC', () => {
     expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
   });
 
+  it('answers an analyze option error with its details and request id', async () => {
+    delete process.env.SMARTPERFETTO_API_KEY;
+    process.env.SMARTPERFETTO_SSO_TRUSTED_HEADERS = 'true';
+    process.env.SMARTPERFETTO_AI_ENABLED = 'true';
+    const traceService = {getOrLoadTrace: jest.fn()};
+    setTraceProcessorServiceForTests(traceService as unknown as TraceProcessorService);
+
+    const res = await analystHeaders(request(makeApp()).post('/api/agent/v1/analyze'))
+      .set('X-Request-Id', 'req-analyze-options')
+      .send({traceId: 'trace-a', query: 'Analyze this trace', options: {maxRounds: 3, outputLanguage: 'en'}});
+
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({
+      success: false,
+      code: 'UNSUPPORTED_RUNTIME_CONTROL',
+      error: 'maxRounds is not supported as a request-level control across all AI runtimes',
+      details: {field: 'maxRounds'},
+      requestId: 'req-analyze-options',
+    });
+    expect(traceService.getOrLoadTrace).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       'source mode',

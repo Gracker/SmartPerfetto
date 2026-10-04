@@ -15,6 +15,7 @@ import {evaluateTenantMutationPolicy, sendTenantMutationDeniedPayload} from '../
 import {TraceProcessorAdmissionError} from '../../services/traceProcessorRamBudget';
 import {prepareAnalysisRunTraceProcessorLeases, analysisRunTraceProcessorFailureSide, type AnalysisRunTraceProcessorLeases} from '../../services/analysisRunTraceProcessorLease';
 import {AnalyzeOptionsError, normalizeAnalyzeOptions, normalizeSelectionContext} from '../../routes/agent/normalizeAnalyzeOptions';
+import {publicRequestErrorBody} from '../../utils/publicRequestError';
 import {AgentAnalyzeSessionService, AnalyzeSessionPreparationError} from './agentAnalyzeSessionService';
 import {getDefaultAndroidInternalsPackResolver} from '../../services/androidInternalsPack/androidInternalsPackResolver';
 import {knowledgeScopeFromRequestContext} from '../../services/scopedKnowledgeStore';
@@ -202,6 +203,12 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
     if (response) throw new Error('analysis_dispatch_response_already_sent');
     response = {status, body};
   };
+  const respondAnalyzeOptionsError = (error: AnalyzeOptionsError, language: OutputLanguage): void =>
+    respond(error.status, publicRequestErrorBody(
+      error,
+      input.requestId,
+      analyzeOptionsErrorMessage(error, language),
+    ));
   const ensureTraceAccessible = async (traceId: string, code = 'TRACE_NOT_UPLOADED'): Promise<boolean> => {
     if (await readTraceMetadataForContext(traceId, input.context)) return true;
     respond(404, {success: false, error: 'Trace not found in backend', code});
@@ -356,11 +363,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
                 !Array.isArray(rawOptions) && rawOptions.outputLanguage === 'zh-CN'
               ? 'zh-CN'
               : configuredOutputLanguage();
-          respond(error.status, {
-            success: false,
-            error: analyzeOptionsErrorMessage(error, requestedErrorLanguage),
-            code: error.code,
-          });
+          respondAnalyzeOptionsError(error, requestedErrorLanguage);
           return;
         }
         throw error;
@@ -432,11 +435,7 @@ export async function dispatchAnalysisRun<TSession extends AnalysisDispatchSessi
         selectionContext = normalizeSelectionContext(rawSelectionContext);
       } catch (error) {
         if (error instanceof AnalyzeOptionsError) {
-          respond(error.status, {
-            success: false,
-            code: error.code,
-            error: analyzeOptionsErrorMessage(error, requestOutputLanguage),
-          });
+          respondAnalyzeOptionsError(error, requestOutputLanguage);
           return;
         }
         throw error;

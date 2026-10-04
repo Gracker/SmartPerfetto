@@ -4,7 +4,7 @@
 
 import type { Request, Response } from 'express';
 import { types as utilTypes } from 'util';
-import { PublicRequestError, thrownReasonCode } from '../utils/publicRequestError';
+import { PublicRequestError, publicRequestErrorBody, thrownReasonCode } from '../utils/publicRequestError';
 import { createRequestId, REQUEST_ID_HEADER, requestIdOf } from './requestId';
 
 // body-parser attaches the raw request body to its errors; a malformed JSON
@@ -140,13 +140,7 @@ export function sendPublicRequestError(
     .status(err.status)
     .type('json')
     .set(REQUEST_ID_HEADER, requestId)
-    .json({
-      success: false,
-      code: err.code,
-      error: err.message,
-      ...(err.details ? {details: err.details} : {}),
-      requestId,
-    });
+    .json(publicRequestErrorBody(err, requestId));
 }
 
 /**

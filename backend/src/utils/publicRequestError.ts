@@ -27,6 +27,24 @@ export class PublicRequestError extends Error {
   }
 }
 
+/**
+ * The response body of a public request error. `message` replaces its text
+ * only for a localized rendering of the same error.
+ */
+export function publicRequestErrorBody(
+  err: PublicRequestError,
+  requestId: string,
+  message = err.message,
+) {
+  return {
+    success: false as const,
+    code: err.code,
+    error: message,
+    ...(err.details ? {details: err.details} : {}),
+    requestId,
+  };
+}
+
 const THROWN_REASON = /^([a-z][a-z0-9_]{2,79})(?::\S*)?$/;
 
 /**

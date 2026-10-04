@@ -67,7 +67,8 @@ function exceptionTextLines(source: string): number[] {
 
 const ALLOWED: Record<string, {count: number; why: string}> = {
   'controllers/skillAdminController.ts': {count: 1, why: 'YAML parse error of the caller\'s own skill content'},
-  'middleware/routeFailure.ts': {count: 2, why: 'loggableError (log payload); sendPublicRequestError (typed text)'},
+  // sendPublicRequestError's typed text is read by publicRequestErrorBody (utils), which only accepts a PublicRequestError.
+  'middleware/routeFailure.ts': {count: 1, why: 'loggableError (log payload)'},
   'routes/agentConversationRoutes.ts': {count: 1, why: 'ProviderRequestError not-found text'},
   'routes/agentLogsRoutes.ts': {count: 1, why: 'setLogLevel validation'},
   'routes/agentRoutes.ts': {
