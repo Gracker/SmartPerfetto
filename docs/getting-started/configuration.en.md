@@ -433,7 +433,7 @@ your personal OpenCode login or project extensions. Removing the custom provider
 or switching `SMARTPERFETTO_AGENT_RUNTIME` back to `claude-agent-sdk` /
 `openai-agents-sdk` is the rollback path.
 
-## Runtime and Provider Diagnostics
+### Runtime and Provider Diagnostics
 
 SmartPerfetto does not read Codex CLI, Gemini CLI, or personal OpenCode login state; those tools manage their own config files. The `opencode` runtime is configured explicitly through Provider Manager or env. Qoder is an explicit runtime integration: after installing its optional SDK, `qoder-agent-sdk` can use the local `qodercli` login or an explicit PAT.
 
