@@ -7,12 +7,12 @@ import {
   buildStrategyRegistrySnapshotFromDefinitions,
   fingerprintStrategyDefinition,
   getFinalReportContract,
-  getPhaseHints,
   getRegisteredScenes,
   getStrategyContent,
   getStrategyDetails,
   invalidateStrategyCache,
   loadStrategies,
+  parseStrategyContribution,
   type StrategyRegistryContribution,
 } from '../strategyLoader';
 import fs from 'fs';
@@ -38,17 +38,6 @@ function contribution(
         op: 'append_core',
         operationId: 'append-core-a',
         content: 'Overlay core section.',
-      },
-      {
-        op: 'append_phase_hints',
-        operationId: 'append-hint-a',
-        hints: [{
-          id: 'overlay_hint_a',
-          keywords: ['overlay'],
-          constraints: 'Use overlay evidence.',
-          criticalTools: ['invoke_skill'],
-          critical: false,
-        }],
       },
       {
         op: 'append_detail_sections',
@@ -83,7 +72,6 @@ describe('strategy registry snapshots', () => {
 
     expect(effective.content).toContain(base.content);
     expect(effective.content).toContain('Overlay core section.');
-    expect(effective.phaseHints.map(hint => hint.id)).toContain('overlay_hint_a');
     expect(effective.detailSections.map(detail => detail.id)).toContain('overlay_detail_a');
     expect(effective.planTemplate).toEqual(base.planTemplate);
     expect(effective.finalReportContract).toEqual(base.finalReportContract);
@@ -120,20 +108,23 @@ describe('strategy registry snapshots', () => {
       }],
     })).toThrow('strategy_contribution_unknown_operation');
 
-    const base = loadStrategies().get('scrolling')!;
+    // Phase hints reach no analysis; only a persisted overlay may still name them.
+    const appendsPhaseHints = contribution({
+      operations: [{
+        op: 'append_phase_hints',
+        operationId: 'append-legacy-hint',
+        hints: [{id: 'legacy_hint', constraints: 'Legacy.'}],
+      }],
+    });
     expect(() => buildStrategyRegistrySnapshot({
       scope,
       overlayGeneration: 'overlay:test',
-      contributions: [contribution({
-        operations: [{
-          op: 'append_phase_hints',
-          operationId: 'append-conflicting-hint',
-          hints: [{
-            ...base.phaseHints[0],
-          }],
-        }],
-      })],
-    })).toThrow('strategy_overlay_conflict:phase_hint');
+      contributions: [appendsPhaseHints],
+    })).toThrow('strategy_contribution_inert_operation');
+    expect(() => parseStrategyContribution(appendsPhaseHints))
+      .toThrow('strategy_contribution_inert_operation');
+    expect(parseStrategyContribution(appendsPhaseHints, {legacyPhaseHints: 'read'})
+      .operations).toEqual(appendsPhaseHints.operations);
   });
 
   it('makes every strategy getter observe the same pinned snapshot', () => {
@@ -158,7 +149,6 @@ describe('strategy registry snapshots', () => {
 
     withEffectiveRuntimeRegistrySnapshot(runtimeSnapshot, () => {
       expect(getStrategyContent('scrolling')).toContain('Overlay core section.');
-      expect(getPhaseHints('scrolling').map(hint => hint.id)).toContain('overlay_hint_a');
       expect(getStrategyDetails('scrolling').map(detail => detail.id)).toContain('overlay_detail_a');
       expect(getRegisteredScenes().find(scene => scene.scene === 'scrolling'))
         .toBe(snapshot.getStrategy('scrolling'));

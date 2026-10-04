@@ -43,7 +43,6 @@ export interface SupersedeMarker {
   strategyFile: string;
   strategyContentHash: string;
   patchFingerprint: string;
-  phaseHintId: string | null;
   gitCommit: string | null;
   prNumber: number | null;
   state: SupersedeState;
@@ -62,7 +61,6 @@ export interface UpsertMarkerInput {
   strategyFile: string;
   strategyContentHash: string;
   patchFingerprint: string;
-  phaseHintId?: string;
   gitCommit?: string;
   prNumber?: number;
   observationDays?: number;
@@ -87,6 +85,8 @@ interface MigrationStep {
   up: (db: Database.Database) => void;
 }
 
+// `phase_hint_id` is kept so existing stores need no migration; strategy phase
+// hints were removed, and nothing reads or writes the column.
 const MIGRATIONS: ReadonlyArray<MigrationStep> = [
   {
     version: 1,
@@ -169,7 +169,6 @@ interface MarkerRow {
   strategy_file: string;
   strategy_content_hash: string;
   patch_fingerprint: string;
-  phase_hint_id: string | null;
   git_commit: string | null;
   pr_number: number | null;
   state: SupersedeState;
@@ -190,7 +189,6 @@ function rowToMarker(row: MarkerRow): SupersedeMarker {
     strategyFile: row.strategy_file,
     strategyContentHash: row.strategy_content_hash,
     patchFingerprint: row.patch_fingerprint,
-    phaseHintId: row.phase_hint_id,
     gitCommit: row.git_commit,
     prNumber: row.pr_number,
     state: row.state,
@@ -221,16 +219,15 @@ export class SupersedeStoreHandle {
       this.db.prepare(`
         INSERT INTO supersede_markers (
           id, failure_mode_hash, strategy_file, strategy_content_hash,
-          patch_fingerprint, phase_hint_id, git_commit, pr_number, state,
+          patch_fingerprint, git_commit, pr_number, state,
           created_at, updated_at, observation_days, observation_count_target
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending_review', ?, ?, ?, ?)
       `).run(
         id,
         input.failureModeHash,
         input.strategyFile,
         input.strategyContentHash,
         input.patchFingerprint,
-        input.phaseHintId ?? null,
         input.gitCommit ?? null,
         input.prNumber ?? null,
         now,

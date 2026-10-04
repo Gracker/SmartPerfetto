@@ -17,7 +17,6 @@ import type {
   EvolutionOverlayProvenanceV1,
   EvolutionOverlayRegistryEntryV1,
   EvolutionSkillNoteDeltaV1,
-  EvolutionStrategyDeltaV1,
   EvolutionValidationBoundInputsV1,
   RunManifestScope,
   SelfEvolutionPersistenceCapability,
@@ -35,6 +34,7 @@ import {
   evolutionValidationInputFingerprint,
   EVOLUTION_OVERLAY_LOADER_SCHEMA_VERSION,
   EVOLUTION_OVERLAY_VALIDATOR_VERSION,
+  isInertStrategyDelta,
 } from './evolutionOverlayContract';
 import {EvolutionOverlayArtifactStore} from './evolutionOverlayArtifactStore';
 import {EvolutionOverlayRegistry} from './evolutionOverlayRegistry';
@@ -67,6 +67,12 @@ export interface OverlayReconciliationResult {
   snapshot: EffectiveRuntimeRegistrySnapshot;
   report: UpgradeReconciliationReportV1;
 }
+
+/**
+ * Reason recorded for an overlay persisted before strategy phase hints were
+ * removed: it is readable but no longer applied.
+ */
+export const INERT_OVERLAY_REASON = 'inert_injection_target_unsupported';
 
 interface ReconciliationCandidate {
   entry: EvolutionOverlayRegistryEntryV1;
@@ -125,6 +131,38 @@ export class OverlayReconciler {
         artifact = this.options.artifactStore.load(
           entry.artifactContentHash,
         );
+        if (
+          artifact.payload.payloadKind === 'strategy_delta'
+          && isInertStrategyDelta(artifact.payload.strategyDelta)
+        ) {
+          // Phase hints reach no analysis: keep the overlay readable and
+          // revertible, never apply it, and say so.
+          this.options.registry.reconcileEntry({
+            scope,
+            entryId: entry.entryId,
+            baseRelation: entry.baseRelation,
+            validationState: 'error',
+            userDisabled: entry.userDisabled,
+            validationReason: INERT_OVERLAY_REASON,
+            reconciledAt: now,
+          });
+          issues.push({
+            schemaVersion: 1,
+            issueId: `overlay:${canonicalContentHash({
+              entryId: entry.entryId,
+              artifactContentHash: entry.artifactContentHash,
+              reasonCode: INERT_OVERLAY_REASON,
+            })}`,
+            source: 'overlay',
+            kind: 'validation_error',
+            overlayId: entry.overlayId,
+            baseId: entry.provenance.derivedFrom.baseId,
+            reasonCode: INERT_OVERLAY_REASON,
+            message:
+              'Strategy phase hints are no longer supported; this overlay is ignored.',
+          });
+          continue;
+        }
         baseState = resolveBaseState({
           artifact,
           snapshot: base,
@@ -430,10 +468,6 @@ function buildCandidateSnapshotInput(input: {
 }): BuildEffectiveRuntimeRegistrySnapshotInput {
   const skillOverlays: SkillOverlayDeltaV1[] = [];
   const strategyContributions: StrategyRegistryContribution[] = [];
-  const strategyDeltas: Exclude<
-    EvolutionStrategyDeltaV1,
-    {kind: 'strategy_contribution'}
-  >[] = [];
   const skillNoteDeltas: EvolutionSkillNoteDeltaV1[] = [];
   for (const candidate of input.candidates) {
     const payload = candidate.artifact.payload;
@@ -443,14 +477,14 @@ function buildCandidateSnapshotInput(input: {
         baseFingerprint: candidate.currentBaseFingerprint,
       });
     } else if (payload.payloadKind === 'strategy_delta') {
-      if (payload.strategyDelta.kind === 'strategy_contribution') {
-        strategyContributions.push({
-          ...payload.strategyDelta.contribution,
-          baseStrategyFingerprint: candidate.currentBaseFingerprint,
-        });
-      } else {
-        strategyDeltas.push(payload.strategyDelta);
+      // Inert strategy deltas were quarantined before they became candidates.
+      if (payload.strategyDelta.kind !== 'strategy_contribution') {
+        throw new Error('overlay_reconciler_inert_candidate');
       }
+      strategyContributions.push({
+        ...payload.strategyDelta.contribution,
+        baseStrategyFingerprint: candidate.currentBaseFingerprint,
+      });
     } else {
       skillNoteDeltas.push(payload.skillNoteDelta);
     }
@@ -459,7 +493,6 @@ function buildCandidateSnapshotInput(input: {
     scope: input.scope,
     skillOverlays,
     strategyContributions,
-    strategyDeltas,
     skillNoteDeltas,
     publishedGeneration: input.publishedGeneration,
   };
@@ -587,26 +620,13 @@ function strategyOverlayAbsorbed(
 ): boolean {
   if (artifact.payload.payloadKind !== 'strategy_delta') return false;
   const delta = artifact.payload.strategyDelta;
-  if (delta.kind === 'phase_hint_delta') {
-    const existing = strategy.phaseHints.find(hint => hint.id === delta.hintId);
-    return delta.op === 'remove'
-      ? existing === undefined
-      : existing !== undefined
-        && canonicalContentHash(existing) === canonicalContentHash(delta.after);
-  }
-  if (delta.kind === 'retire_phase_hint') {
-    return !strategy.phaseHints.some(hint => hint.id === delta.hintId);
-  }
+  // Inert deltas are quarantined before base resolution.
+  if (delta.kind !== 'strategy_contribution') return false;
   return delta.contribution.operations.every(operation => {
     if (operation.op === 'append_core') {
       return strategy.content.endsWith(operation.content);
     }
-    if (operation.op === 'append_phase_hints') {
-      return operation.hints.every(expected =>
-        strategy.phaseHints.some(actual =>
-          actual.id === expected.id
-          && canonicalContentHash(actual) === canonicalContentHash(expected)));
-    }
+    if (operation.op === 'append_phase_hints') return false;
     return operation.sections.every(expected =>
       strategy.detailSections.some(actual =>
         actual.id === expected.id

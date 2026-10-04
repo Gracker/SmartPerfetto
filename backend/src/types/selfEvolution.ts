@@ -213,6 +213,11 @@ export interface RunInjectionAttribution {
   patterns: RunInjectionReference[];
   skillNotes: RunInjectionReference[];
   cases: RunInjectionReference[];
+  /**
+   * Always empty for new runs: strategy phase hints were never injected and
+   * have been removed. Kept so manifests sealed before then, which may carry
+   * entries, and new ones share one schema.
+   */
   phaseHints: RunInjectionReference[];
   knowledgeDocs: RunInjectionReference[];
 }
@@ -803,6 +808,13 @@ export interface EvolutionOverlayProvenanceV1 {
   scope: RunManifestScope;
 }
 
+/**
+ * `phase_hint_delta` and `retire_phase_hint` (and a contribution's
+ * `append_phase_hints` operation) were persisted before strategy phase hints
+ * were removed. They are read back verbatim so their overlay's content hash
+ * verifies; reconciliation quarantines them (`isInertStrategyDelta`) and no
+ * new overlay of these shapes is created.
+ */
 export type EvolutionStrategyDeltaV1 =
   | {
       kind: 'strategy_contribution';

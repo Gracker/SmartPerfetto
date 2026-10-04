@@ -3,6 +3,10 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import { describe, it, expect, beforeEach, afterEach } from '@jest/globals';
+import Database from 'better-sqlite3';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import {
   openSupersedeStore,
   injectionWeightForSupersede,
@@ -27,7 +31,6 @@ describe('supersedeStore', () => {
       strategyFile: 'scrolling.strategy.md',
       strategyContentHash: 'cont_v1',
       patchFingerprint: 'patch_v1',
-      phaseHintId: 'phase_2_6',
     });
   }
 
@@ -39,6 +42,35 @@ describe('supersedeStore', () => {
     it('reflects defaults from __testing', () => {
       expect(__testing.DEFAULT_OBSERVATION_DAYS).toBe(7);
       expect(__testing.DEFAULT_OBSERVATION_COUNT_TARGET).toBe(5);
+    });
+  });
+
+  describe('stores written before phase hints were removed', () => {
+    it('reads a marker whose phase_hint_id column is set', () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'supersede-legacy-'));
+      const dbPath = path.join(dir, 'supersede.db');
+      try {
+        openSupersedeStore({ dbPath }).close();
+        const raw = new Database(dbPath);
+        raw.prepare(`
+          INSERT INTO supersede_markers (
+            id, failure_mode_hash, strategy_file, strategy_content_hash,
+            patch_fingerprint, phase_hint_id, state, created_at, updated_at
+          ) VALUES ('sup-legacy', 'h_legacy', 'scrolling.strategy.md', 'cont_v1',
+            'patch_v1', 'phase_2_6', 'active', 1, 1)
+        `).run();
+        raw.close();
+        const reopened = openSupersedeStore({ dbPath });
+        try {
+          const marker = reopened.findActiveByHash('h_legacy');
+          expect(marker).toMatchObject({ id: 'sup-legacy', state: 'active' });
+          expect(marker).not.toHaveProperty('phaseHintId');
+        } finally {
+          reopened.close();
+        }
+      } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+      }
     });
   });
 

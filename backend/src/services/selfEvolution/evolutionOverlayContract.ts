@@ -835,7 +835,9 @@ function parseEvolutionStrategyDelta(value: unknown): EvolutionStrategyDeltaV1 {
     exactKeys(delta, ['kind', 'contribution']);
     return {
       kind: 'strategy_contribution',
-      contribution: parseStrategyContribution(delta.contribution),
+      contribution: parseStrategyContribution(delta.contribution, {
+        legacyPhaseHints: 'read',
+      }),
     };
   }
   if (delta.kind === 'phase_hint_delta') {

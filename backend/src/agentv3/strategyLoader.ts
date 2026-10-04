@@ -203,17 +203,25 @@ const DEV_MODE = process.env.NODE_ENV !== 'production';
 
 let baseCache: Map<string, StrategyDefinition> | null = null;
 
+/**
+ * An `append_phase_hints` operation persisted in a Self-Evolution overlay
+ * before phase hints were removed. Its hints are kept verbatim so the overlay's
+ * content hash still verifies; overlay reconciliation quarantines it, and no
+ * registry build or new contribution accepts it.
+ */
+export interface LegacyAppendPhaseHintsOperation {
+  op: 'append_phase_hints';
+  operationId: string;
+  hints: readonly unknown[];
+}
+
 export type StrategyRegistryContributionOperation =
   | {
       op: 'append_core';
       operationId: string;
       content: string;
     }
-  | {
-      op: 'append_phase_hints';
-      operationId: string;
-      hints: PhaseHint[];
-    }
+  | LegacyAppendPhaseHintsOperation
   | {
       op: 'append_detail_sections';
       operationId: string;
@@ -815,47 +823,6 @@ function parsePhaseHintMaxToolCalls(
   return {maxToolCalls: {...value} as Record<string, number>};
 }
 
-function parsePhaseHintContribution(
-  value: unknown,
-  contributionId: string,
-): PhaseHint {
-  if (
-    !isRecord(value)
-    || !hasOnlyKeys(value, [
-      'id',
-      'keywords',
-      'constraints',
-      'criticalTools',
-      'maxToolCalls',
-      'critical',
-    ])
-    || !nonEmptyString(value.id)
-    || typeof value.constraints !== 'string'
-    || typeof value.critical !== 'boolean'
-  ) {
-    throw new Error(`strategy_contribution_invalid_phase_hint:${contributionId}`);
-  }
-  assertStringArray(
-    value.keywords,
-    `strategy_contribution_invalid_phase_hint_keywords:${contributionId}`,
-  );
-  assertStringArray(
-    value.criticalTools,
-    `strategy_contribution_invalid_phase_hint_tools:${contributionId}`,
-  );
-  return {
-    id: value.id,
-    keywords: [...value.keywords],
-    constraints: value.constraints,
-    criticalTools: [...value.criticalTools],
-    ...parsePhaseHintMaxToolCalls(
-      value.maxToolCalls,
-      `strategy_contribution_invalid_phase_hint_max_tool_calls:${contributionId}`,
-    ),
-    critical: value.critical,
-  };
-}
-
 function parseDetailContribution(
   value: unknown,
   contributionId: string,
@@ -893,8 +860,14 @@ function parseDetailContribution(
   };
 }
 
+/**
+ * Parse a strategy contribution. `append_phase_hints` targets a field no
+ * analysis reads and is refused, except when `legacyPhaseHints: 'read'` reads
+ * back an overlay persisted before phase hints were removed.
+ */
 export function parseStrategyContribution(
   value: unknown,
+  options: {legacyPhaseHints?: 'read'} = {},
 ): StrategyRegistryContribution {
   if (
     !isRecord(value)
@@ -949,10 +922,16 @@ export function parseStrategyContribution(
         };
       }
       if (operation.op === 'append_phase_hints') {
+        if (options.legacyPhaseHints !== 'read') {
+          throw new Error(
+            `strategy_contribution_inert_operation:${contributionId}:append_phase_hints`,
+          );
+        }
         if (
           !hasOnlyKeys(operation, ['op', 'operationId', 'hints'])
           || !Array.isArray(operation.hints)
           || operation.hints.length === 0
+          || !operation.hints.every(isRecord)
         ) {
           throw new Error(
             `strategy_contribution_invalid_append_phase_hints:${contributionId}`,
@@ -961,8 +940,7 @@ export function parseStrategyContribution(
         return {
           op: 'append_phase_hints',
           operationId: operation.operationId,
-          hints: operation.hints.map(hint =>
-            parsePhaseHintContribution(hint, contributionId)),
+          hints: JSON.parse(JSON.stringify(operation.hints)) as unknown[],
         };
       }
       if (operation.op === 'append_detail_sections') {
@@ -1013,7 +991,7 @@ export function buildStrategyRegistrySnapshot(input: {
     ]),
   );
   const parsedContributions = (input.contributions ?? [])
-    .map(parseStrategyContribution);
+    .map(contribution => parseStrategyContribution(contribution));
   const byScene = new Map<string, StrategyRegistryContributionOperation[]>();
 
   for (const contribution of parsedContributions.sort((left, right) => {
@@ -1051,18 +1029,11 @@ export function buildStrategyRegistrySnapshot(input: {
   for (const [scene, operations] of byScene) {
     const current = definitions.get(scene)!;
     let content = current.content;
-    const phaseHints = current.phaseHints.map(hint => ({
-      ...hint,
-      keywords: [...hint.keywords],
-      criticalTools: [...hint.criticalTools],
-      ...(hint.maxToolCalls ? {maxToolCalls: {...hint.maxToolCalls}} : {}),
-    }));
     const detailSections = current.detailSections.map(detail => ({
       ...detail,
       keywords: [...detail.keywords],
     }));
     const operationIds = new Set<string>();
-    const phaseHintIds = new Set(phaseHints.map(hint => hint.id));
     const detailIds = new Set(detailSections.map(detail => detail.id));
 
     for (const operation of operations) {
@@ -1072,15 +1043,7 @@ export function buildStrategyRegistrySnapshot(input: {
       operationIds.add(operation.operationId);
       if (operation.op === 'append_core') {
         content = `${content}\n\n${operation.content}`.trim();
-      } else if (operation.op === 'append_phase_hints') {
-        for (const hint of operation.hints) {
-          if (phaseHintIds.has(hint.id)) {
-            throw new Error(`strategy_overlay_conflict:phase_hint:${scene}:${hint.id}`);
-          }
-          phaseHintIds.add(hint.id);
-          phaseHints.push(hint);
-        }
-      } else {
+      } else if (operation.op === 'append_detail_sections') {
         for (const detail of operation.sections) {
           if (detailIds.has(detail.id)) {
             throw new Error(`strategy_overlay_conflict:detail:${scene}:${detail.id}`);
@@ -1088,13 +1051,15 @@ export function buildStrategyRegistrySnapshot(input: {
           detailIds.add(detail.id);
           detailSections.push(detail);
         }
+      } else {
+        // The strict parse above already refused it; never apply one.
+        throw new Error(`strategy_contribution_inert_operation:${operation.operationId}`);
       }
     }
 
     definitions.set(scene, cloneStrategyDefinition({
       ...current,
       content,
-      phaseHints,
       detailSections,
     }));
   }

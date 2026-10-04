@@ -148,6 +148,96 @@ describe('OverlayReconciler', () => {
       .toBe(result.snapshot);
   });
 
+  it('quarantines persisted phase-hint overlays as unsupported without failing the generation', async () => {
+    stageArtifact('overlay_one', 'first_tag');
+    const legacyDeltas = [
+      {
+        kind: 'phase_hint_delta',
+        op: 'add',
+        scene: 'scrolling',
+        hintId: 'legacy_hint_add',
+        after: {
+          id: 'legacy_hint_add',
+          keywords: ['legacy'],
+          constraints: 'Legacy constraint.',
+          criticalTools: [],
+          critical: false,
+        },
+      },
+      {
+        kind: 'retire_phase_hint',
+        hintId: 'legacy_hint_retire',
+        contentHash: canonicalContentHash('legacy_hint_retire'),
+        scene: 'scrolling',
+      },
+      {
+        kind: 'strategy_contribution',
+        contribution: {
+          contributionId: 'legacy_contribution',
+          scope,
+          scene: 'scrolling',
+          baseStrategyFingerprint: canonicalContentHash('old-scrolling'),
+          createdAt: '2026-07-29T00:00:00.000Z',
+          operations: [{
+            op: 'append_phase_hints',
+            operationId: 'legacy_append',
+            hints: [{
+              id: 'legacy_hint_append',
+              keywords: ['legacy'],
+              constraints: 'Legacy appended constraint.',
+              criticalTools: [],
+              critical: false,
+            }],
+          }],
+        },
+      },
+    ];
+    legacyDeltas.forEach((delta, index) =>
+      stageLegacyStrategyArtifact(`legacy_overlay_${index}`, delta));
+    const reconcile = new OverlayReconciler({
+      registry,
+      artifactStore,
+      persistence: persistence(root),
+      buildIdentity: identity,
+      buildIdentityFilePath: path.join(root, 'identity.json'),
+      traceProcessorVersion: 'v49.0',
+      now: () => 100,
+    });
+
+    const result = await reconcile.reconcile(scope);
+
+    const legacyIds = legacyDeltas.map((_, index) => `legacy_overlay_${index}`);
+    expect(result.report.byActivationState.active).toEqual(['overlay_one']);
+    expect(result.report.byActivationState.quarantined).toEqual(legacyIds);
+    expect(result.report.byValidationState.error).toEqual(legacyIds);
+    for (const overlayId of legacyIds) {
+      expect(registry.listEntries(scope).find(entry =>
+        entry.overlayId === overlayId)).toMatchObject({
+        validationState: 'error',
+        validationReason: 'inert_injection_target_unsupported',
+        effectiveEnabled: false,
+      });
+      expect(result.report.issues).toContainEqual(expect.objectContaining({
+        source: 'overlay',
+        kind: 'validation_error',
+        overlayId,
+        reasonCode: 'inert_injection_target_unsupported',
+      }));
+    }
+    expect(JSON.stringify(result.snapshot.strategyRegistry.getAllStrategies()))
+      .not.toMatch(/legacy_hint_/);
+    expect(() => createEvolutionOverlayArtifactV1({
+      artifactId: 'artifact:new_legacy',
+      payload: {
+        schemaVersion: 1,
+        payloadKind: 'strategy_delta',
+        strategyDelta: legacyDeltas[0] as never,
+      },
+      provenance: registry.listEntries(scope)
+        .find(entry => entry.overlayId === 'legacy_overlay_0')!.provenance,
+    })).toThrow('inert_injection_target');
+  });
+
   it('classifies base change, deletion, and downgrade conservatively', async () => {
     stageArtifact('overlay_one', 'first_tag');
     const reconcile = new OverlayReconciler({
@@ -467,6 +557,54 @@ describe('OverlayReconciler', () => {
       userDisabled: false,
       createdAt: 1,
       provenance: artifact.provenance,
+    });
+    registry.commitAction(`action_${overlayId}`);
+  }
+
+  /** Writes an overlay as it was persisted before phase hints were removed. */
+  function stageLegacyStrategyArtifact(overlayId: string, strategyDelta: unknown): void {
+    const payload = {
+      schemaVersion: 1,
+      payloadKind: 'strategy_delta',
+      strategyDelta,
+    } as unknown as EvolutionOverlayPayloadV1;
+    const provenance = {
+      ...artifactFor(overlayId, 'unused').provenance,
+      overlayKind: 'strategy_delta' as const,
+      overlayContentHash: canonicalContentHash(payload),
+      derivedFrom: {
+        baseKind: 'strategy' as const,
+        baseId: 'scrolling',
+        baseVersion: '1',
+        baseContentFingerprint: canonicalContentHash('old-scrolling'),
+        baseOrigin: 'built_in' as const,
+      },
+    };
+    const withoutHash = {
+      schemaVersion: 1 as const,
+      artifactId: `artifact:${overlayId}`,
+      payload,
+      provenance,
+    };
+    const artifact = {
+      ...withoutHash,
+      contentHash: canonicalContentHash(withoutHash),
+    };
+    artifactStore.put(artifact);
+    registry.stageEntry({
+      entryId: `entry_${overlayId}`,
+      overlayId,
+      overlayKind: 'strategy_delta',
+      scope,
+      proposalId: `proposal_${overlayId}`,
+      proposalRevision: 3,
+      artifactContentHash: artifact.contentHash,
+      actionId: `action_${overlayId}`,
+      baseRelation: 'unchanged',
+      validationState: 'pending',
+      userDisabled: false,
+      createdAt: 1,
+      provenance,
     });
     registry.commitAction(`action_${overlayId}`);
   }

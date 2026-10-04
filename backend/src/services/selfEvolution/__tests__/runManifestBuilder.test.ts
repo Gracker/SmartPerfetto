@@ -135,6 +135,9 @@ describe('RunManifestBuilder', () => {
     builder.recordToolAllowlist(['query_trace', 'invoke_skill', 'query_trace']);
     builder.recordInjection('patterns', 'pattern-b', 'hash-b');
     builder.recordInjection('patterns', 'pattern-a', 'hash-a');
+    // Phase hints reach no analysis; a run never records one.
+    expect(() => builder.recordInjection('phaseHints', 'hint-a', 'hash-a'))
+      .toThrow('run_manifest_unknown_injection_category:phaseHints');
     builder.recordPromptTemplate('strategy-template', 'template-hash');
     builder.recordTurnCount(3);
     builder.recordRuntime({
@@ -171,6 +174,7 @@ describe('RunManifestBuilder', () => {
       'pattern-a',
       'pattern-b',
     ]);
+    expect(manifest.injections.phaseHints).toEqual([]);
     expect(Object.isFrozen(manifest)).toBe(true);
     expect(Object.isFrozen(manifest.skills)).toBe(true);
   });
