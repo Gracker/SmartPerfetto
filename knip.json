@@ -52,6 +52,8 @@
         "src/scripts/verifyTraceAnchorLocatorHpfc.ts!",
         "src/scripts/verifyEnterpriseMultiTenantWindows.ts!",
         "src/services/canonicalAnalysisResult.ts!",
+        "src/services/resolvedAnalysisContext.ts!",
+        "src/services/scopedKnowledgeStore.ts!",
         "src/services/selfEvolution/feedbackMigrationCli.ts!",
         "src/services/traceProcessorSqlWorkerThread.ts!",
         "src/types/claimVerification.ts!",
