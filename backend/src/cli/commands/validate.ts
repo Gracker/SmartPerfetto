@@ -35,7 +35,7 @@ import {
   formatUndeclaredStrategySkillParams,
   type StrategySkillInputs,
 } from '../../agentv3/strategySkillCalls';
-import {readSkillFragmentFile, skillFragmentKey} from '../../services/skillEngine/skillFragments';
+import {readSkillFragments} from '../../services/skillEngine/skillFragments';
 import {
   analyzeSqlGuardrails,
   DEFAULT_VALIDATE_SQL_GUARDRAIL_RULES,
@@ -94,15 +94,7 @@ let skillFragmentCache: ReadonlyMap<string, string> | undefined;
 
 /** Fragment bodies keyed as Skills reference them, so SQL checks see injected text. */
 function loadSkillFragmentCache(): ReadonlyMap<string, string> {
-  if (!skillFragmentCache) {
-    const fragmentsDir = path.join(SKILLS_DIR, SKILL_LAYOUT.fragmentsDir);
-    skillFragmentCache = new Map(fs.existsSync(fragmentsDir)
-      ? fs.readdirSync(fragmentsDir).filter(file => file.endsWith('.sql')).map(file => [
-        skillFragmentKey(file), readSkillFragmentFile(fragmentsDir, file),
-      ])
-      : []);
-  }
-  return skillFragmentCache;
+  return skillFragmentCache ??= readSkillFragments(SKILLS_DIR);
 }
 let skillDefinitionsById: ReadonlyMap<string, SkillDefinition> | undefined;
 let diskCauseWordingReaders: CauseWordingReaders | undefined;

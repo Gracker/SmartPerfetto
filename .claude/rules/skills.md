@@ -202,9 +202,17 @@ Click actions should be explicit, for example:
   (`executableSqlUnits.test.ts` holds this). A private walk once descended
   only into parallel steps, so a branch's condition, step id and catalog
   label went unchecked. The Trace SQL regression's named-SQL
-  inventory (`Trace/tools/lib/skill-sql-contract.cjs`) predates the walk and
-  never reads `exact_sql`; its exact units come from `executableSqlUnits` in
-  the corpus runner (`backend/tests/trace-corpus/corpusRunner.ts`). An
+  contract (`Trace/tools/lib/skill-sql-contract.cjs`) keeps no reader of its
+  own: it reads the committed `Trace/skill-sql.inventory.json`, which
+  `npm run generate:skill-sql-inventory` builds from the same walk and readers
+  (`skillEngine/skillSqlInventory.ts`: `executableSqlUnits`,
+  `sqlScopeDeclarationError`, `boundSqlPlaceholders`, `recordedStepNames`,
+  the structural `sqlResultColumns` / `sqlIsReadOnly`, `SKILL_LAYOUT`), so the
+  tooling runs on a clean checkout without the TypeScript build.
+  `validate:skills` fails when the inventory is stale, and `trace:validate`
+  when a Skill file no longer has the text hash it was generated from. The
+  inventory lists named SQL only; exact units come from `executableSqlUnits`
+  in the corpus runner (`backend/tests/trace-corpus/corpusRunner.ts`). An
   executed Skill expectation's `exact_scope` names a process that must
   resolve to exactly one UPID in the case trace and lists the exact units it
   binds; the runner reloads the trace (so no view the named run created

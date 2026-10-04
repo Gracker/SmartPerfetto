@@ -7,7 +7,7 @@ const path = require('node:path');
 
 const {discoverCoverageTargets, resolveCaseTrace} = require('./lib/catalog.cjs');
 const {buildConstructedTrace} = require('./lib/generator.cjs');
-const {skillSqlContract} = require('./lib/skill-sql-contract.cjs');
+const {loadSkillSqlInventory, skillSqlContract} = require('./lib/skill-sql-contract.cjs');
 
 const repoRoot = path.resolve(__dirname, '../..');
 const yaml = require(require.resolve('js-yaml', {paths: [path.join(repoRoot, 'backend')]}));
@@ -415,30 +415,14 @@ const ISOLATED_SQL_PROBES = new Map([
   }]],
 ]);
 
-function listSkillFiles(root) {
-  const result = [];
-  const stack = [root];
-  while (stack.length > 0) {
-    const current = stack.pop();
-    for (const entry of fs.readdirSync(current, {withFileTypes: true})) {
-      const absolute = path.join(current, entry.name);
-      if (entry.isDirectory()) stack.push(absolute);
-      else if (
-        entry.isFile() &&
-        entry.name.endsWith('.skill.yaml') &&
-        !entry.name.startsWith('_') &&
-        !absolute.split(path.sep).includes('_template')
-      ) result.push(absolute);
-    }
-  }
-  return result.sort();
-}
-
+/** The Skills the committed SQL inventory lists, each with its definition and SQL contract. */
 function loadSkills() {
-  return listSkillFiles(path.join(repoRoot, 'backend/skills')).map((filePath) => {
-    const definition = yaml.load(fs.readFileSync(filePath, 'utf8'));
-    return {filePath, definition};
-  });
+  return Object.values(loadSkillSqlInventory(repoRoot).skills)
+    .sort((left, right) => (left.source_file < right.source_file ? -1 : left.source_file > right.source_file ? 1 : 0))
+    .map((entry) => {
+      const filePath = path.join(repoRoot, entry.source_file);
+      return {filePath, definition: yaml.load(fs.readFileSync(filePath, 'utf8')), contract: skillSqlContract(entry)};
+    });
 }
 
 function loadStrategyFixtures() {
@@ -493,9 +477,9 @@ function parameterValue(input, identities) {
 }
 
 function skillExpectation(skill, family, identities) {
-  const definition = skill.definition;
-  const contract = skillSqlContract(definition);
-  const {steps, hasRootSql} = contract;
+  const {definition, contract} = skill;
+  const {hasRootSql} = contract;
+  const steps = Array.isArray(definition.steps) ? definition.steps : [];
   const parameters = {};
   for (const input of Array.isArray(definition.inputs) ? definition.inputs : []) {
     if (input.required || input.default !== undefined) {

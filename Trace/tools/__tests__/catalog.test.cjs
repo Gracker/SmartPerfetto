@@ -25,6 +25,39 @@ function sha256(content) {
   return crypto.createHash('sha256').update(content).digest('hex');
 }
 
+const CPU_PROBE_FILE = 'backend/skills/atomic/cpu_probe.skill.yaml';
+
+/**
+ * The fixture's Trace/skill-sql.inventory.json, as the backend generator
+ * would write it for cpu_probe (the generator's own facts are tested in the
+ * backend); `overrides` replaces fields of its entry.
+ */
+function writeInventory(repoRoot, overrides = {}) {
+  const source = fs.readFileSync(path.join(repoRoot, CPU_PROBE_FILE), 'utf8');
+  writeJson(path.join(repoRoot, 'Trace/skill-sql.inventory.json'), {
+    schemaVersion: 1,
+    source: 'fixture',
+    layout: {skills_root: 'backend/skills'},
+    skills: {
+      cpu_probe: {
+        source_file: CPU_PROBE_FILE,
+        source_sha256: sha256(source.replace(/\r\n/g, '\n')),
+        type: 'composite',
+        execution: 'steps',
+        declared_modules: ['android.frames.timeline'],
+        top_level_steps: ['summary'],
+        unexecuted_sql: false,
+        units: [{
+          id: 'summary', at: 'steps[0].sql', top_level_index: 0, sha256: sha256('SELECT 1 AS status'),
+          required_columns: ['status'], has_condition: false, read_only: true, placeholders: [],
+          process_scope_valid: null, forceable: true,
+        }],
+        ...overrides,
+      },
+    },
+  });
+}
+
 function createFixture() {
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'trace-catalog-'));
   const trace = Buffer.from([0x0a, 0x00]);
@@ -97,6 +130,7 @@ function createFixture() {
       '',
     ].join('\n'),
   );
+  writeInventory(repoRoot);
   fs.writeFileSync(
     path.join(repoRoot, 'backend/skills/_template/ignored.skill.yaml'),
     'name: "{{SKILL_ID}}"\n',
@@ -284,12 +318,24 @@ test('rejects SQL inventory drift and definition-only SQL coverage', () => {
   assert.ok(validation.issues.some((item) => item.code === 'sql-inventory-mismatch'));
 });
 
-test('rejects ambiguous Skills that declare both root and step SQL', () => {
+test('rejects ambiguous Skills that declare SQL the executor never runs', () => {
   const fixture = createFixture();
-  const skillPath = path.join(fixture.repoRoot, 'backend/skills/atomic/cpu_probe.skill.yaml');
+  const skillPath = path.join(fixture.repoRoot, CPU_PROBE_FILE);
   fs.appendFileSync(skillPath, 'sql: SELECT 2 AS root_status\n');
+  writeInventory(fixture.repoRoot, {unexecuted_sql: true});
   const validation = validateCatalog(fixture.repoRoot);
   assert.ok(validation.issues.some((item) => item.code === 'ambiguous-root-and-step-sql'));
+});
+
+test('refuses an inventory a Skill edit has made stale', () => {
+  const fixture = createFixture();
+  assert.equal(validateCatalog(fixture.repoRoot).issues.some((item) => item.code === 'stale-skill-sql-inventory'), false);
+  fs.appendFileSync(path.join(fixture.repoRoot, CPU_PROBE_FILE), '# edited\n');
+  assert.ok(validateCatalog(fixture.repoRoot).issues.some((item) => item.code === 'stale-skill-sql-inventory'));
+  // A CRLF checkout of the same text is current.
+  const skillPath = path.join(fixture.repoRoot, CPU_PROBE_FILE);
+  fs.writeFileSync(skillPath, fs.readFileSync(skillPath, 'utf8').replace(/# edited\n$/, '').replace(/\n/g, '\r\n'));
+  assert.equal(validateCatalog(fixture.repoRoot).issues.some((item) => item.code === 'stale-skill-sql-inventory'), false);
 });
 
 test('rejects duplicate ids, unsafe paths, hash drift, and tracked private cases', () => {

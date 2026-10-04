@@ -1480,17 +1480,13 @@
         "gpu_hwc_stats",
         "slow_compositions",
         "fence_analysis",
+        "composition_phases",
         "layer_stats",
         "root_cause_classification",
         "fallback_no_sf_data"
       ],
       "isolated_sql_probes": [],
-      "expected_condition_skips": [
-        {
-          "step": "composition_phases",
-          "reason": "This conditional SQL is exercised only on its production branch because forcing it would mutate state or require condition-populated context."
-        }
-      ],
+      "expected_condition_skips": [],
       "semantic_step": "vsync_config",
       "required_columns": [
         "refresh_rate_hz",

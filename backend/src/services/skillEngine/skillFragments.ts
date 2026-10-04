@@ -27,6 +27,14 @@ export function readSkillFragmentFile(fragmentsDir: string, file: string): strin
   return fs.readFileSync(path.join(fragmentsDir, file), 'utf-8').trim();
 }
 
+/** Every fragment of a Skill root by registry key, read as the loader reads them. */
+export function readSkillFragments(skillsDir: string): Map<string, string> {
+  const fragmentsDir = path.join(skillsDir, SKILL_LAYOUT.fragmentsDir);
+  if (!fs.existsSync(fragmentsDir)) return new Map();
+  return new Map(fs.readdirSync(fragmentsDir).filter(file => file.endsWith('.sql'))
+    .map(file => [skillFragmentKey(file), readSkillFragmentFile(fragmentsDir, file)]));
+}
+
 const builtInCache = new Map<string, string>();
 
 /**

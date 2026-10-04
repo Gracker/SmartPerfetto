@@ -4,7 +4,7 @@
 
 // Where a Skill root keeps what: the one description of the layout the loader
 // reads, the CLI validates, a Skill pack may ship and the Trace tooling
-// inventories (skills/skill-sql.inventory.json records it for the tooling,
+// inventories (Trace/skill-sql.inventory.json records it for the tooling,
 // which cannot import TypeScript).
 
 import fs from 'fs';

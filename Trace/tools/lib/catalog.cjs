@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2024-2026 Gracker (Chris)
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const Ajv2020 = require('ajv/dist/2020');
 
 const {sha256File} = require('./hash.cjs');
 const {SUPPORTED_SIGNAL_TYPES} = require('./generator.cjs');
-const {skillSqlContract} = require('./skill-sql-contract.cjs');
-const yaml = require('js-yaml');
+const {INVENTORY_FILE, loadSkillSqlInventory, skillSqlContract} = require('./skill-sql-contract.cjs');
 
 const CASE_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const HASH_PATTERN = /^[a-f0-9]{64}$/;
@@ -37,21 +37,9 @@ function parseScalarField(content, field) {
 }
 
 function discoverCoverageTargets(repoRoot) {
-  const skillsRoot = path.join(repoRoot, 'backend', 'skills');
+  // The Skills are the ones the loader reads, as the committed SQL inventory lists them.
+  const skills = Object.keys(loadSkillSqlInventory(repoRoot).skills);
   const strategiesRoot = path.join(repoRoot, 'backend', 'strategies');
-  const skills = listFilesRecursive(
-    skillsRoot,
-    (filePath) =>
-      filePath.endsWith('.skill.yaml') &&
-      !filePath.split(path.sep).includes('_template') &&
-      !path.basename(filePath).startsWith('_'),
-  ).map((filePath) => {
-    const name = parseScalarField(fs.readFileSync(filePath, 'utf8'), 'name');
-    if (!name || name.includes('{{') || name.includes('${')) {
-      throw new Error(`Skill has no concrete name: ${path.relative(repoRoot, filePath)}`);
-    }
-    return name;
-  });
   const strategies = listFilesRecursive(
     strategiesRoot,
     (filePath) => filePath.endsWith('.strategy.md'),
@@ -68,25 +56,34 @@ function discoverCoverageTargets(repoRoot) {
   };
 }
 
+/** The SQL contract of every Skill the committed inventory lists, by name, in source path order. */
 function discoverSkillContracts(repoRoot) {
-  const skillsRoot = path.join(repoRoot, 'backend', 'skills');
   const contracts = new Map();
-  for (const filePath of listFilesRecursive(
-    skillsRoot,
-    (candidate) =>
-      candidate.endsWith('.skill.yaml') &&
-      !candidate.split(path.sep).includes('_template') &&
-      !path.basename(candidate).startsWith('_'),
-  )) {
-    const definition = yaml.load(fs.readFileSync(filePath, 'utf8'));
-    if (!definition?.name) continue;
-    contracts.set(definition.name, {
-      ...skillSqlContract(definition),
-      definition,
-      source_file: path.relative(repoRoot, filePath).split(path.sep).join('/'),
-    });
+  const entries = Object.entries(loadSkillSqlInventory(repoRoot).skills)
+    .sort(([, left], [, right]) => (left.source_file < right.source_file ? -1 : left.source_file > right.source_file ? 1 : 0));
+  for (const [name, entry] of entries) {
+    contracts.set(name, {...skillSqlContract(entry), source_file: entry.source_file, source_sha256: entry.source_sha256});
   }
   return contracts;
+}
+
+/** A Skill file's text hash as the inventory records it: line endings normalized, so a CRLF checkout agrees. */
+function skillSourceSha256(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath, 'utf8').replace(/\r\n/g, '\n')).digest('hex');
+}
+
+/** Each Skill file the inventory lists must still hold the text it was generated from. */
+function validateSkillSqlInventoryFreshness(repoRoot, skillContracts, issues) {
+  for (const [name, contract] of skillContracts) {
+    const filePath = path.join(repoRoot, contract.source_file);
+    if (!fs.existsSync(filePath) || skillSourceSha256(filePath) !== contract.source_sha256) {
+      issues.push(issue(
+        'stale-skill-sql-inventory',
+        path.join(repoRoot, INVENTORY_FILE),
+        `Skill ${name} changed since ${INVENTORY_FILE} was generated; run: npm --prefix backend run generate:skill-sql-inventory`,
+      ));
+    }
+  }
 }
 
 function runtimePerfettoRevision(repoRoot) {
@@ -422,6 +419,7 @@ function validateCatalog(repoRoot) {
   const targets = discoverCoverageTargets(repoRoot);
   const skillContracts = discoverSkillContracts(repoRoot);
   const issues = [];
+  validateSkillSqlInventoryFreshness(repoRoot, skillContracts, issues);
   const sourceTruth = loadSqlSourceTruth(repoRoot, issues);
   const portableSqlContracts = discoverPortableSqlContracts(repoRoot, sourceTruth, issues);
   const ids = new Map();
@@ -648,12 +646,12 @@ function validateCatalog(repoRoot) {
             `Skill ${expectation.target} source_file must be ${contract.source_file}`,
           ));
         }
-        const executable = contract.hasRootSql || contract.steps.length > 0;
-        if (contract.hasRootSql && contract.hasStepSql) {
+        const executable = contract.hasRootSql || contract.topLevelStepIds.length > 0;
+        if (contract.unexecutedSql) {
           issues.push(issue(
             'ambiguous-root-and-step-sql',
             entry.manifest_path,
-            `Skill ${expectation.target} declares both root SQL and step SQL; the runtime contract must choose one execution model`,
+            `Skill ${expectation.target} declares SQL the executor never runs (root SQL beside steps, or root SQL of a non-atomic Skill); the runtime contract must choose one execution model`,
           ));
         }
         if (mode === 'definition' && executable) {
@@ -713,10 +711,10 @@ function validateCatalog(repoRoot) {
           }
           for (const topLevelIndex of new Set(
             contract.sqlIds.length === 0
-              ? contract.steps.map((_, index) => index)
+              ? contract.topLevelStepIds.map((_, index) => index)
               : contract.sqlSteps.map((step) => step.topLevelIndex),
           )) {
-            const stepId = contract.steps[topLevelIndex]?.id;
+            const stepId = contract.topLevelStepIds[topLevelIndex];
             if (stepId && !requiredStepIds.has(stepId)) {
               issues.push(issue(
                 'missing-sql-execution-step',
