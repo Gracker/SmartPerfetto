@@ -59,6 +59,19 @@ The [Android Performance Ecosystem](https://github.com/Gracker/android-performan
   for excluded paths and optional indexing. Relevant snippets are sent to the configured
   AI service; source lookup adds analysis time. Results and quoted source can be
   retained in local history and exports; AI-service retention depends on its policy.
+- Optionally selects registered document knowledge bases per turn (such as the
+  Android Internals Wiki or team documents), searched on demand and cited; a
+  knowledge base is background, never a substitute for current-trace evidence.
+  See [Android Internals Knowledge](docs/getting-started/android-internals-knowledge.en.md).
+- Delivers first, verifies after: the Claude and OpenAI runtimes stream the
+  answer as a draft while it is written, the finished answer is readable at
+  once, and the verdict of one no-tool semantic review follows; a stop ends
+  only the verification and keeps the answer.
+- Opens a critical-path wait-chain drawer on a selected `thread_state`, and a
+  flamegraph page for CPU call-stack hotspots, both with a rule-based fallback
+  AI summary. See [Critical Path And Flamegraph](docs/getting-started/critical-path-and-flamegraph.en.md).
+- Captures traces from a connected Android device with `smp capture`, from
+  presets or your own config, optionally analyzing right after capture.
 - Sends UI selections as identity and time bounds only; the backend re-queries
   descriptive facts and runs `/anr` or `/jank` through the same evidence and
   verification pipeline.

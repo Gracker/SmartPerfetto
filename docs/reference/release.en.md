@@ -23,7 +23,7 @@ any release work, it must also read [AGENTS.md](../../AGENTS.md),
 |---|---|---|---|
 | npm CLI | `@gracker/smartperfetto` | `smp` / `smartperfetto` | Requires user Node.js `>=24 <25`; includes Skills/Strategies/SQL/trace processor, but not the Web UI launcher |
 | GitHub portable | `smartperfetto-v<version>-windows-x64.zip`, `smartperfetto-v<version>-macos-arm64.zip`, `smartperfetto-v<version>-linux-x64.tar.gz` | bundled launcher | Bundles Node.js 24, native dependencies, committed `frontend/`, and pinned `trace_processor_shell` |
-| Docker Hub | Linux image built from `main` workflow | `docker compose -f docker-compose.hub.yml up -d` | Does not read host Claude Code local auth |
+| Docker Hub | Linux image: a version tag runs the workflow that publishes SemVer and `latest`; schedule/manual runs on `main` update only `nightly` | `docker compose -f docker-compose.hub.yml up -d` | Does not read host Claude Code local auth |
 | Source checkout | Git repository | `./start.sh` | Normal use serves committed `frontend/`; `perfetto/` submodule is only needed for UI plugin work |
 
 ## Normal Public Release
@@ -197,7 +197,7 @@ git status --short --branch
   replace, or edit them.
 - `dist/portable/`, `dist/windows-exe/`, and `.cache/smartperfetto-portable/` are generated outputs and must not be committed.
 - `frontend/` is consumed by Docker, `./start.sh`, and portable packages; AI Assistant plugin UI changes must run `./scripts/update-frontend.sh`.
-- If a root commit points at a new `perfetto/` submodule commit, that submodule commit must already be pushed to the Gracker fork.
+- If a root commit points at a new `perfetto/` submodule commit, that submodule commit must already be pushed to the Gracker fork and be reachable from `fork/main` (`git -C perfetto merge-base --is-ancestor <gitlink> fork/main` exits 0); a gitlink reachable only from a feature branch breaks once that branch is deleted.
 - Never commit, document, or echo npm tokens, provider keys, or GitHub tokens.
 
 ## Post-Release Verification

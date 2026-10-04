@@ -12,7 +12,7 @@ surface proves the others.
 | --- | --- | --- | --- | --- |
 | npm CLI | `@gracker/smartperfetto` | `smp`, `smartperfetto` | CLI dist, backend runtime assets, Skills, Strategies, SQL, packaged `trace_processor_shell` prebuilts for supported targets | Web UI launcher, Docker image, portable app bundle |
 | GitHub portable | `smartperfetto-v<version>-windows-x64.zip`, `smartperfetto-v<version>-macos-arm64.zip`, `smartperfetto-v<version>-linux-x64.tar.gz` | bundled launcher | Node.js 24 runtime, native production dependencies, backend, committed `frontend/`, pinned `trace_processor_shell` | npm global install |
-| Docker Hub | Linux container image from `main` workflow | `docker compose -f docker-compose.hub.yml up -d` | backend, committed `frontend/`, pinned trace processor, Docker volumes | host Claude Code local auth |
+| Docker Hub | Linux container image: version tags publish SemVer + `latest`, `main` schedule/manual runs publish only `nightly` | `docker compose -f docker-compose.hub.yml up -d` | backend, committed `frontend/`, pinned trace processor, Docker volumes | host Claude Code local auth |
 | Source checkout | Git repository | `./start.sh` | backend source, committed `frontend/`, optional `perfetto/` submodule for UI development | published artifact guarantees |
 
 The npm CLI requires user-provided Node.js `>=24 <25`. Portable packages bundle
@@ -201,8 +201,9 @@ should use WSL2; native Windows users should use the portable package.
   retried within that budget. A different integrity, or output that is not a
   single SRI, fails immediately.
 - Post-publish smoke must install the public exact version without user npm
-  credentials and verify the supported Node boundary, CLI bins, Knowledge
-  Pack, and packaged `trace_processor_shell`.
+  credentials and verify the supported Node boundary, CLI bins, `smp doctor`
+  package checks, the Claude Agent SDK native binary, and packaged
+  `trace_processor_shell`.
 
 ## Portable Release Invariants
 
