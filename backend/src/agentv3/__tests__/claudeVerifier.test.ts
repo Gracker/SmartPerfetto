@@ -5,7 +5,7 @@
 /** Runtime-state checks; content truth is covered by the shared finalizer suites. */
 
 import {jest, describe, it, expect, beforeEach} from '@jest/globals';
-import type {Finding, StreamingUpdate} from '../../agent/types';
+import type {Finding} from '../../agent/types';
 import type {AnalysisPlanV3, Hypothesis, VerificationIssue} from '../types';
 import {summarizeToolCallInput} from '../toolCallSummary';
 import {
@@ -173,7 +173,7 @@ describe('generateCorrectionPrompt', () => {
   it('does not infer a full report from body style, scene, or diagnostic language', () => {
     for (const body of ['短回答', 'Unheaded text'.repeat(200), '# Report\nLonger body']) {
       for (const message of ['Final Report Contract required structure missing: representative frames', '结论文本被截断', '其他']) {
-        const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message}], body, 'en', 'scrolling');
+        const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message}], body, 'en');
         expect(correctionContext(prompt).recoveryKinds).toEqual([]);
         expect(correctionContext(prompt).missingSections).toEqual([]);
       }
@@ -184,7 +184,7 @@ describe('generateCorrectionPrompt', () => {
     const missingSections = [{id: 'scope', label: 'Scope', description: 'State the measured population'}];
     for (const message of ['缺少内容', 'Falta contenido', 'arbitrary diagnostic']) {
       const prompt = generateCorrectionPrompt([{type: 'missing_reasoning', severity: 'error', message,
-        recoveryKind: 'complete_report_content', missingSections}], 'Original', 'en', 'startup');
+        recoveryKind: 'complete_report_content', missingSections}], 'Original', 'en');
       expect(correctionContext(prompt).missingSections).toEqual(missingSections);
       expect(correctionContext(prompt).recoveryKinds).toEqual(['complete_report_content']);
     }
@@ -227,7 +227,7 @@ describe('verifyConclusion runtime-only diagnostics', () => {
   ])('does not infer content quality or authorship from words: %s', body => {
     return expect(verifyConclusion(Array.from({length: 8}, (_, index) => makeFinding({
       id: `finding-${index}`, severity: 'critical', description: body, evidence: [],
-    })), body, {plan: makePlan(), sceneType: 'startup', query: 'Analyze everything',
+    })), body, {plan: makePlan(),
       deliveryContext: makeDeliveryContext(body, 'completed')})).resolves.toMatchObject({
       passed: true, heuristicIssues: [],
     });
@@ -329,13 +329,12 @@ describe('verifyConclusion runtime-only diagnostics', () => {
     expect(unconfirmed.heuristicIssues.every(issue => issue.recoveryKind === undefined)).toBe(true);
   });
 
-  it('never calls an auxiliary model or writes learned keywords even when legacy options request it', async () => {
+  it('never calls an auxiliary model or writes learned keywords', async () => {
     const body = 'VSync [CRITICAL] because blocked; source_lookup';
     const plan = makePlan();
     plan.toolCallLog = [];
     const result = await verifyConclusion([makeFinding({severity: 'critical', evidence: []})], body, {
-      enableLLM: true, lightModel: 'fixture-model',
-      verifierTimeoutMs: 1, providerId: 'fixture-provider', plan,
+      plan,
       deliveryContext: makeDeliveryContext(body, 'incomplete'),
     });
     expect(result.passed).toBe(false);
@@ -347,21 +346,11 @@ describe('verifyConclusion runtime-only diagnostics', () => {
   });
 
   it('does not reclassify historical content through an auxiliary provider', async () => {
-    await verifyConclusion([], 'Historical text', {deliveryContext: {entry: 'historical_restore'},
-      enableLLM: true});
+    await verifyConclusion([], 'Historical text', {deliveryContext: {entry: 'historical_restore'}});
     expect(sdkQuery).not.toHaveBeenCalled();
     expect(fs.writeFileSync).not.toHaveBeenCalled();
   });
 
-  it('emits only generic runtime progress and honors suppression', async () => {
-    const emitted: StreamingUpdate[] = [];
-    const options = {emitUpdate: (update: StreamingUpdate) => emitted.push(update)};
-    await verifyConclusion([], '', options);
-    expect(emitted).toEqual([expect.objectContaining({type: 'progress', content: expect.objectContaining({phase: 'concluding'})})]);
-    emitted.length = 0;
-    await verifyConclusion([], '', {...options, emitIssueProgress: false});
-    expect(emitted).toEqual([]);
-  });
 });
 
 type CurrentDeliveryContext = Exclude<AnalysisDeliveryContext, {entry: 'historical_restore'}>;

@@ -1657,7 +1657,7 @@ describe('createClaudeMcpServer', () => {
         expect(description).toContain('aliases/formats grant no unit/investigation authority');
         expect(description).not.toMatch(/COUNT\(\*\)|AVG\(value\)|ts BETWEEN|SUM\(dur\)/);
       }
-      expect(descriptionByName.get('execute_sql')).toContain('No __intrinsic_*/Skill-step tables');
+      expect(descriptionByName.get('execute_sql')).toContain('Skill steps and art-* ids are not tables');
       expect(descriptionByName.get('execute_sql')).toContain('fetch_artifact, not VALUES');
       expect(descriptionByName.get('execute_sql')).toContain('Current trace');
       expect(descriptionByName.get('execute_sql_on')).toContain('trace=current/reference');
@@ -3333,6 +3333,54 @@ describe('createClaudeMcpServer', () => {
 
       expect(result.blocked).not.toBe(true);
       expect(mockTpService.query).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      'SELECT * FROM __intrinsic_trace_diagnostics',
+      'SELECT upid, state FROM __intrinsic_android_process_state WHERE upid = 3',
+      'SELECT * FROM slice s JOIN "__intrinsic_trace_diagnostics" d ON d.id = s.id',
+      'SELECT * FROM report_artifacts',
+      'SELECT * FROM art_method',
+      'WITH artifacts AS (SELECT 1 AS id) SELECT * FROM artifacts',
+      'WITH art_5(id) AS MATERIALIZED (SELECT 1) SELECT * FROM slice JOIN art_5 USING (id)',
+    ])('passes real trace_processor __intrinsic_* tables to the processor: %s', async sql => {
+      const {tools, mockTpService} = createTestServer({lightweight: true});
+
+      const result = await callTool(tools, 'execute_sql', {sql});
+
+      expect(result.blocked).not.toBe(true);
+      expect(mockTpService.query).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['SELECT * FROM slice s JOIN art-3 a ON a.id = s.id', 'art-3'],
+      ['SELECT * FROM main.art_4', 'art-4'],
+      ['SELECT * FROM (SELECT id FROM slice) x, art_5_rows y', 'art-5'],
+      ['SELECT * FROM slice WHERE id IN (SELECT id FROM "art-6")', 'art-6'],
+    ])('blocks artifact ids in every table position: %s', async (sql, artifactId) => {
+      const {tools, mockTpService} = createTestServer({lightweight: true});
+
+      const result = await callTool(tools, 'execute_sql', {sql});
+
+      expect(result).toMatchObject({success: false, blocked: true, action_required: 'fetch_artifact', artifactId});
+      expect(result.hint).toContain(`artifactId="${artifactId}"`);
+      expect(mockTpService.query).not.toHaveBeenCalled();
+    });
+
+    it('reads the misuse explanation and nudge from strategy templates in the output language', async () => {
+      const zh = createTestServer({lightweight: true});
+      const blocked = await callTool(zh.tools, 'execute_sql', {sql: 'SELECT * FROM synthesizeArtifacts'});
+      expect(blocked.error).toContain('不是 trace_processor SQL 表或函数');
+      expect(blocked.hint).toContain('artifactId="art-N"');
+      expect(blocked.artifactId).toBeUndefined();
+
+      const en = createTestServer({lightweight: true, outputLanguage: 'en'});
+      const englishBlocked = await callTool(en.tools, 'execute_sql', {sql: 'SELECT * FROM synthesizeArtifacts'});
+      expect(englishBlocked.error).toContain('is not a trace_processor SQL table or function');
+      const raw = await en.tools.get('execute_sql')!.handler({sql: 'SELECT 1'});
+      const text = raw.content.find((entry: any) => entry.type === 'text').text as string;
+      expect(text).toContain('[REFLECT] Before the next action');
+      expect(text).not.toContain('<!--');
     });
 
     it('blocks synthesizeArtifacts pseudo-table names before executing raw SQL', async () => {
@@ -6886,12 +6934,9 @@ describe('createClaudeMcpServer', () => {
       expect(hypotheses[0].status).toBe('confirmed');
     });
 
-    it.each([
-      'Prediction Error 1123 帧是 SurfaceFlinger 预测模型系统性漂移的统计噪声',
-      '49 帧 App Deadline Missed 是本 trace 唯一的真实用户可感知掉帧',
-    ])('keeps an absolute scrolling jank hypothesis unresolved: %s', async statement => {
+    it('resolves a scrolling hypothesis by its explicit verdict; its wording never decides it', async () => {
       const {tools, hypotheses} = createTestServer({sceneType: 'scrolling'});
-      await callTool(tools, 'submit_hypothesis', {id: 'h1', statement});
+      await callTool(tools, 'submit_hypothesis', {id: 'h1', statement: '49 帧 App Deadline Missed 是本 trace 唯一的真实用户可感知掉帧'});
 
       const result = await callTool(tools, 'resolve_hypothesis', {
         hypothesisId: 'h1',
@@ -6899,12 +6944,9 @@ describe('createClaudeMcpServer', () => {
         evidence: 'FrameTimeline summary and representative frame evidence',
       });
 
-      expect(result).toMatchObject({
-        success: false,
-        hypothesisId: 'h1',
-        action_required: 'reject_hypothesis_and_submit_bounded_replacement',
-      });
-      expect(hypotheses[0].status).toBe('formed');
+      // The answer's evidence boundary is the strategy's and the finalizer's semantic review's.
+      expect(result.success).toBe(true);
+      expect(hypotheses[0].status).toBe('confirmed');
     });
 
     it.each([
@@ -7074,34 +7116,6 @@ describe('createClaudeMcpServer', () => {
       expect(hypotheses[0].status).toBe('confirmed');
       expect(hypotheses[0].history).toHaveLength(2);
       expect(hypotheses[0].history!.map(record => record.status)).toEqual(['confirmed', 'rejected']);
-    });
-
-    it('keeps the prior resolution untouched when the scrolling guard blocks a re-resolution confirm', async () => {
-      const { tools, hypotheses } = createTestServer({ sceneType: 'scrolling' });
-      await callTool(tools, 'submit_hypothesis', {
-        id: 'h1',
-        statement: '49 帧 App Deadline Missed 是本 trace 唯一的真实用户可感知掉帧',
-      });
-      const rejected = await callTool(tools, 'resolve_hypothesis', {
-        hypothesisId: 'h1',
-        status: 'rejected',
-        evidence: 'FrameTimeline cannot certify user-perceivability for the whole trace',
-      });
-      expect(rejected.success).toBe(true);
-
-      const blockedReconfirm = await callTool(tools, 'resolve_hypothesis', {
-        hypothesisId: 'h1',
-        status: 'confirmed',
-        evidence: 'FrameTimeline summary and representative frame evidence',
-      });
-
-      expect(blockedReconfirm).toMatchObject({
-        success: false,
-        hypothesisId: 'h1',
-        action_required: 'reject_hypothesis_and_submit_bounded_replacement',
-      });
-      expect(hypotheses[0].status).toBe('rejected');
-      expect(hypotheses[0].history).toBeUndefined();
     });
   });
 

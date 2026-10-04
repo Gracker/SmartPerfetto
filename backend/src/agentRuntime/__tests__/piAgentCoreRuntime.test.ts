@@ -55,8 +55,9 @@ import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {renderConclusionContractSidecar, type ConclusionContract} from '../../agent/core/conclusionContract';
 import {inspectCandidateProtocol} from '../../services/canonicalAnalysisResult';
-import * as qualityGateModule from '../../services/finalResultQualityGate';
+import * as finalizationModule from '../analysisFinalizationContext';
 import {takeFinalizationContext} from '../analysisFinalizationContext';
+import {expectRuntimeLeftTerminalStateToFinalizer, UNREPAIRABLE_DRAFT_ISSUE} from '../../../tests/helpers/runtimeDraftTerminalState';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {loadPiProviderRuntimeModules} from '../engines/pi/piAgentCoreProvider';
 import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRuntimeMatrixFixture';
@@ -3571,7 +3572,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     finally {context.dispose();}
     expect(result.completion?.attemptId).toBe('1');
     expect(inspectCandidateProtocol(result.conclusion).status).toBe('invalid');
-    expect(result.terminationMessage).not.toContain('candidate_protocol_diagnostic@1');
+    // A rejected repair leaves no runtime-written terminal message; finalization assesses the candidate.
+    expect(result.terminationMessage).toBeUndefined();
   });
 
   it('does not retry a Pi candidate invalidated only by the application projection', async () => {
@@ -3712,6 +3714,39 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(correctionPrompt).toContain('candidateProtocolDiagnostic');
   });
 
+  it('gathers no trace facts and binds no trace for a conversation without a mounted trace', async () => {
+    passVerification();
+    const trace = createFakeTraceProcessorService();
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop',
+      content: [{type: 'text', text: declaredPiCandidate('No trace is attached.')}]}];
+    const sessionId = 'pi-no-trace';
+    try {
+      const result = await typedRuntime({trace}).analyze('A question', sessionId, `conversation-no-trace:${sessionId}`,
+        {assistantSurface: 'conversation', conversationTraceAttached: false, analysisMode: 'full'});
+      expect(trace.query).not.toHaveBeenCalled();
+      const context = takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({});
+      context?.dispose();
+    } finally {sessionContextManager.remove(sessionId);}
+  });
+
+  it('leaves the terminal state to the finalizer when a draft diagnostic has no repair', async () => {
+    mockClaudeVerifierVerifyConclusion.mockImplementation(async () => ({passed: false,
+      heuristicIssues: [UNREPAIRABLE_DRAFT_ISSUE], llmIssues: []}));
+    FakePiAgent.promptHandler = async () => [{role: 'assistant', stopReason: 'stop',
+      content: [{type: 'text', text: declaredPiCandidate('Frame 12 missed its deadline.')}]}];
+    const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
+    const sessionId = 'pi-draft-terminal-state';
+    try {
+      const result = await runtime.analyze('same question', sessionId, 'trace-pi', {runId: 'r-draft', analysisMode: 'fast'});
+      expect(FakePiAgent.instances[0].promptCount).toBe(1);
+      expect(result.completion).toMatchObject({status: 'completed'});
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: false},
+        recordedTurn: sessionContextManager.get(sessionId, 'trace-pi')?.getAllTurns().slice(-1)[0]?.result});
+      takeFinalizationContext(result)?.dispose();
+    } finally {sessionContextManager.remove(sessionId);}
+  });
+
   it('binds a shorter unheaded correction to its own successful SDK attempt without reclassifying', async () => {
     const issue = {type: 'missing_evidence', severity: 'error', message: '任意语言的说明', recoveryKind: 'correct_evidence'};
     mockClaudeVerifierVerifyConclusion.mockImplementationOnce(async () => ({passed: false, heuristicIssues: [issue], llmIssues: []}))
@@ -3740,23 +3775,25 @@ describe('experimental Pi agent-core runtime contract', () => {
     expect(result.conclusion).toBe('Original evidence gap');
     expect(result.completion).toMatchObject({status: 'completed', attemptId: '1',
       conclusionFingerprint: analysisDeliveryFingerprint('Original evidence gap')});
-    expect(result.partial).toBe(true);
+    // The draft diagnostic chose the correction only; the completed native answer is not partial.
+    expect(result.partial).toBeUndefined();
+    expect(result.terminationReason).toBeUndefined();
   });
 
   function observePiProjection() {
     const projection = jest.spyOn(sourceProjectionModule, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const gate = jest.spyOn(qualityGateModule, 'applyFinalResultQualityGate');
+    const attach = jest.spyOn(finalizationModule, 'attachFinalizationContext');
     return {
-      projection, gate,
+      projection, attach,
       assertReturnedContext(result: unknown) {
         const projected = projection.mock.results.map(entry => entry.value as ReturnType<typeof sourceProjectionModule.finalizeOwnerSourceAwareAnalysisResultWithProjection>)
           .find(entry => entry?.result === result);
-        const gateInput = gate.mock.calls.map(([input]) => input).find(input => input.result === result);
+        const attached = attach.mock.calls.find(([target]) => target === result)?.[1];
         expect(projected).toBeDefined();
-        expect(gateInput?.context).toBe(projected?.deliveryContext);
+        expect(attached?.deliveryContext).toBe(projected?.deliveryContext);
         return projected!;
       },
-      restore() { projection.mockRestore(); gate.mockRestore(); },
+      restore() { projection.mockRestore(); attach.mockRestore(); },
     };
   }
 
@@ -3821,6 +3858,22 @@ describe('experimental Pi agent-core runtime contract', () => {
       expect(projected.deliveryContext).toMatchObject({outputOrigin: 'runtime_fallback', completion: result.completion});
       expect(result.completion?.candidateRef).not.toBe(`replaced-${id}:pi:1`);
     } finally { observation.restore(); clearCodeAwareOutputGuards(sessionId); }
+  });
+
+  it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => {
+    const sessionId = 'pi-replaced-terminal-state';
+    FakePiAgent.promptHandler = async () => {
+      revokeCodeAwareOutputGuards(sessionId);
+      return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: 'Native model conclusion'}]}];
+    };
+    const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
+    try {
+      const result = await runtime.analyze('context only', sessionId, 'trace-pi', {runId: 'replaced-terminal', analysisMode: 'fast'});
+      expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
+        recordedTurn: sessionContextManager.get(sessionId, 'trace-pi')?.getAllTurns().slice(-1)[0]?.result});
+      takeFinalizationContext(result)?.dispose();
+    } finally {clearCodeAwareOutputGuards(sessionId); sessionContextManager.remove(sessionId);}
   });
 
   it('keeps an empty native answer ineligible after a revoked-session replacement', async () => {

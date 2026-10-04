@@ -15,7 +15,7 @@
  */
 
 import {localize, parseOutputLanguage, type OutputLanguage} from '../../agentv3/outputLanguage';
-import {resolveReviewStopWatchdogMs, ReviewStopHandle} from '../../services/reviewStopHandle';
+import {resolveReviewStopWatchdogMs, ReviewStopController} from '../../services/reviewStopHandle';
 
 export interface InterruptSource {
   /** Registers the turn's handler; the returned function removes it. */
@@ -74,7 +74,7 @@ export interface TurnInterruptOptions {
 }
 
 export class TurnInterruptController {
-  private readonly stop = new ReviewStopHandle();
+  private readonly stop: ReviewStopController<void>;
   private readonly abortController = new AbortController();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private unsubscribe?: () => void;
@@ -87,6 +87,20 @@ export class TurnInterruptController {
     this.language = options.language ?? parseOutputLanguage(process.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     this.notify = options.notify ?? (message => { process.stderr.write(`\n${message}\n`); });
     this.exit = options.exit ?? (code => process.exit(code));
+    // The CLI never saves an unverified body: a stop whose commit outlives the
+    // shared watchdog is the full abort, and the turn is not saved.
+    this.stop = new ReviewStopController<void>({
+      watchdogMs: options.watchdogMs ?? resolveReviewStopWatchdogMs(),
+      owner: {
+        fullCancel: () => {
+          if (this.disposed || this.abortController.signal.aborted) return;
+          this.notify(localize(this.language,
+            '核验未能按时结束，停止本轮分析；上方已显示的结论不会保存。',
+            'Verification did not end in time; stopping this turn. The answer shown above is not saved.'));
+          this.abortTurn();
+        },
+      },
+    });
     this.unsubscribe = options.source.subscribe(() => this.handleInterrupt());
   }
 
@@ -110,6 +124,7 @@ export class TurnInterruptController {
     this.disposed = true;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    this.stop.dispose();
     for (const timer of this.timers) clearTimeout(timer);
     this.timers.clear();
   }
@@ -122,13 +137,6 @@ export class TurnInterruptController {
       this.notify(localize(this.language,
         '正在结束核验；结论将按未核验保存。再按 Ctrl-C 放弃保存并停止。',
         'Stopping verification; the answer will be saved as unverified. Press Ctrl-C again to stop without saving.'));
-      this.schedule(this.options.watchdogMs ?? resolveReviewStopWatchdogMs(), () => {
-        if (this.abortController.signal.aborted) return;
-        this.notify(localize(this.language,
-          '核验未能按时结束，停止本轮分析；上方已显示的结论不会保存。',
-          'Verification did not end in time; stopping this turn. The answer shown above is not saved.'));
-        this.abortTurn();
-      });
       return;
     }
     if (request === 'full') {

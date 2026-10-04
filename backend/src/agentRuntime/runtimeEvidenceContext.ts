@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {runAllowedTraces} from './runtimeTraceAttachment';
 import type {AnalysisOptions} from '../agent/core/orchestratorTypes';
 import {ArtifactStore} from '../agentv3/artifactStore';
 import {
@@ -134,10 +135,8 @@ async function describeRunArtifacts(run: RunState): Promise<RuntimeEvidenceArtif
   const {store, scope} = run.context;
   // The original Store serializes shallow references; do not copy its row data.
   const ids = store.serialize().map(artifact => artifact.id).reverse();
-  const view = store.createEvidenceReadView({ownerKey: scope.key, allowedTraces: [
-    {traceId: scope.traceId, traceSide: 'current'},
-    ...(scope.referenceTraceId ? [{traceId: scope.referenceTraceId, traceSide: 'reference' as const}] : []),
-  ]});
+  const view = store.createEvidenceReadView({ownerKey: scope.key,
+    allowedTraces: runAllowedTraces({currentTraceId: scope.traceId, referenceTraceId: scope.referenceTraceId})});
   const resolutions = await view.resolveReferences(ids.map(artifactId => ({key: artifactId,
     reference: {artifactId}, requiredColumns: []})), run.input.signal);
   assertRunActive(run);

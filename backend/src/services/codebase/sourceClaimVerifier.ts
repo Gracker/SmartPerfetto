@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {refreshQuickRunStopReason} from '../../agentRuntime/quickBudget';
 import {parseClaimSemanticsDeclaration, type ConclusionContract} from '../../agent/core/conclusionContract';
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {
@@ -722,6 +723,8 @@ export function finalizeSourceAwareAnalysisResultWithProjection(
     result.outputOrigin = 'runtime_fallback';
     result.success = false;
     result.partial = true;
+    // A quick receipt describes the delivered candidate, which is now partial.
+    refreshQuickRunStopReason(result);
     if (deliveryContext && deliveryContext.entry !== 'historical_restore') {
       deliveryContext = {...deliveryContext, outputOrigin: 'runtime_fallback'};
     }

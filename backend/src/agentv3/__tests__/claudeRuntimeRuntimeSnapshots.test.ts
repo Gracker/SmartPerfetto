@@ -7,6 +7,7 @@ import os from 'os';
 import path from 'path';
 import { ENTERPRISE_FEATURE_FLAG_ENV } from '../../config';
 import { sessionContextManager } from '../../agent/context/enhancedSessionContext';
+import {expectRuntimeLeftTerminalStateToFinalizer, UNREPAIRABLE_DRAFT_ISSUE} from '../../../tests/helpers/runtimeDraftTerminalState';
 import { ENTERPRISE_DB_PATH_ENV } from '../../services/enterpriseDb';
 import {
   ENTERPRISE_MIGRATION_CUTOVER_CONFIRMED_ENV,
@@ -1111,6 +1112,30 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       expect(result.completion?.status).toBe('cancelled');
       expect(saves).toBe(0);
     });
+  });
+
+  it('leaves the terminal state to the finalizer when a draft diagnostic has no repair', async () => {
+    intentDecision = {...defaultIntent, taskKind: 'fact', scope: 'bounded_question', deliverable: 'answer',
+      recommendedComplexity: 'quick'};
+    const sessionId = 'claude-draft-terminal-state';
+    const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableSubAgents: false});
+    const updates: Array<{type?: string; content?: unknown}> = [];
+    runtime.on('update', update => updates.push(update as any));
+    mockClaudeVerifierVerifyConclusion.mockResolvedValue({passed: false, heuristicIssues: [UNREPAIRABLE_DRAFT_ISSUE],
+      llmIssues: [], durationMs: 0});
+    claudeSdkMock.__setQueryImplementation(async function* () {
+      yield {type: 'result', subtype: 'success', num_turns: 1, result: 'Frame 12 missed its deadline by 4 ms.'};
+    });
+    let context: ReturnType<typeof takeFinalizationContext>;
+    try {
+      const result = await runtime.analyze('A bounded question', sessionId, 'trace', {analysisMode: 'fast'});
+      expect(result.completion).toMatchObject({status: 'completed'});
+      expect(mockClaudeVerifierVerifyConclusion).toHaveBeenCalled();
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: false},
+        recordedTurn: sessionContextManager.getOrCreate(sessionId, 'trace').getAllTurns().slice(-1)[0]?.result});
+      context = takeFinalizationContext(result);
+    } finally {context?.dispose(); sessionContextManager.remove(sessionId);}
   });
 
   it('does not infer insights or save a pattern from a runtime-only verification pass', async () => {

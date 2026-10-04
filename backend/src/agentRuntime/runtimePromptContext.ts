@@ -14,13 +14,10 @@ import {
   type FocusAppTimeRange,
 } from '../agentv3/focusAppDetector';
 import {
-  comparisonPackageSources,
   hasFocusAppDetectionData,
   resolveFocusAppTarget,
-  type FocusAppTarget,
 } from './focusAppTarget';
 import type {RuntimeTurnPolicy} from './runtimeTurnPolicy';
-import type {FinalResultComparisonIdentity} from '../services/finalResultQualityGate';
 import {createArchitectureDetector} from '../agent/detectors/architectureDetector';
 import type {TraceProcessorService} from '../services/traceProcessorService';
 import {
@@ -66,19 +63,6 @@ export async function detectRunFocusApps(input: {
     timeRange: input.timeRange ?? focusAppTimeRangeFromSelection(input.selectionContext),
   });
   return input.measure ? input.measure(detect) : detect();
-}
-
-/** Both sides of a comparison's package identity, with their provenance; undefined without a comparison. */
-export function buildComparisonIdentity(
-  focusTarget: FocusAppTarget,
-  comparison: ComparisonContext | undefined,
-): FinalResultComparisonIdentity | undefined {
-  if (!comparison) return undefined;
-  return {
-    currentPackageName: focusTarget.packageName,
-    referencePackageName: comparison.referencePackageName,
-    ...comparisonPackageSources(focusTarget, comparison),
-  };
 }
 
 /** Pure pair identity. Presence of a reference trace does not authorize a probe. */

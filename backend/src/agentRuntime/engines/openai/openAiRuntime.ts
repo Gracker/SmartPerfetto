@@ -54,8 +54,6 @@ import {loadOpenAIConfig, type OpenAIAgentConfig} from './openAiConfig';
 import {buildOpenAIChatCompletionsTokenLimit} from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
 import {createOpenAIToolsFromMcpDefinitions, openAiToolCallKey} from './openAiToolAdapter';
-import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
-import {verifyConclusion} from '../claude/claudeVerifier';
 import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
 import type {RuntimeSelection} from '../../runtimeSelection';
@@ -66,7 +64,6 @@ import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {countCompletedQuickConversationTurns} from '../../quickBudget';
 import {
-  buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   detectRunFocusApps,
 } from '../../runtimePromptContext';
@@ -76,7 +73,8 @@ import {createDeadlineRuntimeTimeout, createProgressAwareRunDeadline, createRese
 import {randomUUID} from 'node:crypto';
 import {TransformStream} from 'node:stream/web';
 import {createAnalysisTurnIntentResolver, type AnalysisTurnIntent} from '../../analysisTurnIntent';
-import {resolveRuntimeTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {resolveRunTurnPolicy, usesLightweightToolCatalog, type RuntimeTurnPolicy} from '../../runtimeTurnPolicy';
+import {conversationTraceAttachedOption, runAllowedTraces, runTraceIdentity} from '../../runtimeTraceAttachment';
 import {runOpenAiIntentTransport} from './openAiIntentTransport';
 import {
   attachFinalizationContext,
@@ -268,20 +266,12 @@ function finalizeOpenAiCandidate(input: {
     result.success = false;
     result.partial = true;
     result.confidence = 0;
-    result.terminationReason ??= 'quality_gate_failed';
   }
   const nativeContext: AnalysisDeliveryContext = {entry: 'runtime_draft', acceptedCandidate,
     completion: result.completion, outputOrigin: input.outputOrigin, turnIntent: result.turnIntent};
   const finalized = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, input.sourceUse, {
     context: nativeContext,
   });
-  if (finalized.result.quickRun) {
-    finalized.result.quickRun.stopReason = quickStopReasonFromTermination({
-      partial: finalized.result.partial, terminationReason: finalized.result.terminationReason,
-      actualTurns: finalized.result.quickRun.actualTurns, targetTurns: finalized.result.quickRun.targetTurns,
-      hardCapTurns: finalized.result.quickRun.hardCapTurns,
-    });
-  }
   if (!finalized.deliveryContext) throw new Error('OpenAI candidate projection omitted delivery context');
   return {...finalized, deliveryContext: finalized.deliveryContext};
 }
@@ -570,7 +560,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
   }
 
   getCachedArchitecture(traceId: string): ArchitectureInfo | undefined {
-    return this.architectureCache.get(traceId);
+    return getLruCacheEntry(this.architectureCache, traceId);
   }
 
   getSessionNotes(sessionId: string): AnalysisNote[] {
@@ -651,9 +641,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const resolvedTurnIntent = await intentResolver.resolve();
       turnIntent = resolvedTurnIntent;
       analysisAbortScope.throwIfAborted();
-      const resolvedPolicy = resolveRuntimeTurnPolicy(turnIntent, options.analysisMode);
-      const policy = options.assistantSurface === 'conversation' && options.conversationTraceAttached !== true
-        ? {...resolvedPolicy, allowAutomaticPrefetch: false, preflight: 'none' as const} : resolvedPolicy;
+      const policy = resolveRunTurnPolicy(turnIntent, options);
       const quickMode = policy.budgetMode === 'quick';
       const sceneType = turnIntent.sceneId;
       // A failed light-model classifier does not authorize a provider switch.
@@ -664,13 +652,8 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const finalizationConfig = Object.freeze({baseURL: config.baseURL, apiKey: config.apiKey,
         protocol: config.protocol, lightModel: config.model,
         ...(config.maxOutputTokens !== undefined ? {maxOutputTokens: config.maxOutputTokens} : {})});
-      const currentTraceId = traceId && (options.assistantSurface !== 'conversation' || options.conversationTraceAttached === true)
-        ? traceId : undefined;
-      const referenceTraceId = currentTraceId ? options.referenceTraceId : undefined;
-      const allowedTraces = [
-        ...(currentTraceId ? [{traceId: currentTraceId, traceSide: 'current' as const}] : []),
-        ...(referenceTraceId ? [{traceId: referenceTraceId, traceSide: 'reference' as const}] : []),
-      ];
+      const traceIdentity = runTraceIdentity(traceId, options);
+      const allowedTraces = runAllowedTraces(traceIdentity);
       const evidenceOwnerKey = analysisDeliveryFingerprint({runId, sessionId,
         tenantId: options.tenantId, workspaceId: options.workspaceId, userId: options.userId,
         analysisContextFingerprint: options.analysisContextFingerprint,
@@ -1060,21 +1043,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
         candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(result.conclusion), 'runtime_projected',
           recoveryCandidate && attemptId !== recoveryCandidate.attemptId ? 2 : 1, conclusionProjection.disposition)}, timestamp: Date.now()});
-      const verificationPhase = runtimePerformance.startPhase('verification');
-      await verifyConclusion(result.findings, result.conclusion, {
-        emitUpdate: update => this.emitUpdate(update), enableLLM: false,
-        plan: this.sessionPlans.get(sessionId)?.current ?? null, hypotheses: context.hypotheses,
-        sceneType, outputLanguage: config.outputLanguage, emitIssueProgress: false,
-        deliveryContext,
-        conclusionContract: result.conclusionContract,
-      });
-      verificationPhase.end('ok');
       analysisAbortScope.throwIfAborted();
-      // Draft diagnostics precede contract/evidence extraction. They cannot stamp
-      // terminal failure; the shared new_finalization gate evaluates the actual facts.
-      // Runtime draft assessment cannot certify final evidence collected by HTTP/CLI later.
-      applyFinalResultQualityGate({result, sceneType, context: deliveryContext,
-        comparisonIdentity: context.comparisonIdentity, deferFocusedEvidenceFinalization: true});
       const closingProvider = provider;
       return await commitAfterProviderClose(() => closingProvider.close().catch(() => undefined), analysisAbortScope, () => {
         provider = undefined;
@@ -1090,7 +1059,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           providerQuery: {text: analysisRunSpec.query.text, analysisContextFingerprint: options.analysisContextFingerprint},
           strategyRegistry: intentResolver.strategyRegistry,
           selection: analysisRunSpec.selection,
-          traceIdentity: {currentTraceId, referenceTraceId}, deliveryContext, protocolProjection,
+          traceIdentity, deliveryContext, protocolProjection,
           ...sourceUseFinalizationFields(sourceUse),
           evidenceReadView: this.artifactStores.get(sessionId)?.createEvidenceReadView({
             allowedTraces, ownerKey: evidenceOwnerKey, currentRunId: runId,
@@ -1218,7 +1187,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       planHistory: privateKnowledge ? [] : planState?.history ?? [],
       uncertaintyFlags: privateKnowledge ? [] : this.sessionUncertaintyFlags.get(sessionId) || [],
       claudeHypotheses: privateKnowledge ? undefined : this.sessionHypotheses.get(sessionId) || undefined,
-      architecture: this.architectureCache.get(traceId),
+      architecture: getLruCacheEntry(this.architectureCache, traceId),
       // No native SDK state crosses a logical turn, so only the provider pin is engine-local.
       engineState: createOpenAISnapshotEngineState({
         providerId: sessionFields.agentRuntimeProviderId,
@@ -1251,7 +1220,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.artifactStores.set(sessionId, ArtifactStore.fromSnapshot(snapshot.artifacts));
     }
     if (snapshot.architecture) {
-      this.architectureCache.set(traceId, snapshot.architecture);
+      setLruCacheEntry(this.architectureCache, traceId, snapshot.architecture);
     }
   }
 
@@ -1388,7 +1357,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       toolObserver: runtime.toolObserver,
       canInvokeTool,
       runAuthorization: runtime.runAuthorization,
-      conversationTraceAttached: options.assistantSurface === 'conversation' ? options.conversationTraceAttached === true : undefined,
+      conversationTraceAttached: conversationTraceAttachedOption(options),
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId, traceId, userQuery: query, traceProcessorService: this.traceProcessorService, skillExecutor,
       packageName: effectivePackageName, focusTarget, emitUpdate: update => {
@@ -1431,7 +1400,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       tools: createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions), allowedTools: mcp.allowedTools,
       sessionContext, previousTurns: runtime.previousTurns, architecture, hypotheses,
       effectivePackageName, sourceUse: mcp.sourceUse,
-      ...(comparisonContext ? {comparisonIdentity: buildComparisonIdentity(focusTarget, comparisonContext)} : {}),
     };
   }
 

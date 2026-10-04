@@ -5,7 +5,6 @@
 import { describe, expect, it } from '@jest/globals';
 import type { AnalysisPlanV3 } from '../types';
 import {
-  countDispatchedToolCalls,
   findCompletedPhaseEvidenceGaps,
   recordPlanToolCall,
   recordPlanOrPrePlanToolCall,
@@ -186,22 +185,20 @@ describe('actual call identity and evidence completion', () => {
       .toEqual(['p1']);
   });
 
-  it('deduplicates real IDs before counting, including replay and trimmed log history', () => {
+  it('deduplicates real IDs, including replay and trimmed log history', () => {
     const tracker: AnalysisPlanTracker = {current: null};
     const input = (toolCallId: string) => ({toolName: 'execute_sql', input: {sql: 'SELECT 1'}, resultFacts: {success: true}, toolCallId});
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeDefined();
     tracker.current = planWithTwoPhases();
     replayPrePlanToolCalls(tracker);
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeUndefined();
     expect(tracker.current.toolCallLog).toHaveLength(1);
     for (let index = 0; index < 110; index++) recordPlanOrPrePlanToolCall(tracker, input(`call-${index}`));
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
-    expect(countDispatchedToolCalls(tracker)).toBe(111);
+    // The first call has been trimmed from the log; its ID is still remembered.
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeUndefined();
     expect(tracker.current.toolCallLog).toHaveLength(100);
     resetPrePlanToolCallsForNewRun(tracker);
-    recordPlanOrPrePlanToolCall(tracker, input('call-first'));
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
+    expect(recordPlanOrPrePlanToolCall(tracker, input('call-first'))).toBeDefined();
   });
 
   it.each([undefined, '', 'unknown'])('does not merge two calls with unavailable ID %s', toolCallId => {
@@ -209,7 +206,7 @@ describe('actual call identity and evidence completion', () => {
     const input = {toolName: 'execute_sql', resultFacts: {success: true}, toolCallId};
     recordPlanOrPrePlanToolCall(tracker, input);
     recordPlanOrPrePlanToolCall(tracker, input);
-    expect(countDispatchedToolCalls(tracker)).toBe(2);
+    expect(tracker.prePlanToolCallLog).toHaveLength(2);
   });
 });
 
@@ -1085,40 +1082,13 @@ describe('result facts survive transport truncation', () => {
   });
 });
 
-describe('countDispatchedToolCalls', () => {
-  /**
-   * Every runtime already writes here, so this is the one place that can say
-   * whether a run did any work of its own — the signal that separates a
-   * transport failure from a short answer that happens to name one.
-   */
-  it('returns zero for a run that dispatched nothing', () => {
-    expect(countDispatchedToolCalls(null)).toBe(0);
-    expect(countDispatchedToolCalls(undefined)).toBe(0);
-    expect(countDispatchedToolCalls({current: null})).toBe(0);
-  });
-
-  it('counts pre-plan calls before a plan exists', () => {
-    const tracker: {current: AnalysisPlanV3 | null} = {current: null};
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 1'},
-    });
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
-  });
-
-  /**
-   * The counterexample that retired the previous log-based reader: a pre-plan
-   * call that matches no phase is dropped by replay, which then clears the
-   * pre-plan log — so both logs end empty for a run that demonstrably ran a
-   * query. Counting dispatch instead of retention is what makes this hold.
-   */
-  it('survives a replay that discards an unmatched pre-plan call', () => {
+describe('replayPrePlanToolCalls', () => {
+  it('survives a replay that keeps an unmatched pre-plan call as unbound history', () => {
     const tracker: AnalysisPlanTracker = {current: null};
     recordPlanOrPrePlanToolCall(tracker, {
       toolName: 'mcp__smartperfetto__execute_sql',
       input: {sql: 'SELECT 1'},
     });
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
 
     // A plan whose single phase expects nothing, so the pre-plan call matches
     // no phase; replay retains it as unbound audit history.
@@ -1141,38 +1111,5 @@ describe('countDispatchedToolCalls', () => {
     expect(tracker.current.toolCallLog).toHaveLength(1);
     expect(tracker.current.toolCallLog[0].matchedPhaseId).toBeUndefined();
     expect(tracker.prePlanToolCallLog).toHaveLength(0);
-    // Replay does not dispatch the already-recorded call a second time.
-    expect(countDispatchedToolCalls(tracker)).toBe(1);
-  });
-
-  it('resets to zero when a new run starts', () => {
-    const tracker: AnalysisPlanTracker = {current: null};
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 1'},
-    });
-    resetPrePlanToolCallsForNewRun(tracker);
-    expect(countDispatchedToolCalls(tracker)).toBe(0);
-  });
-
-  it('adds plan and pre-plan calls together', () => {
-    const tracker: {current: AnalysisPlanV3 | null} = {current: null};
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 1'},
-    });
-    tracker.current = {
-      planId: 'p1',
-      goal: 'g',
-      phases: [],
-      createdAt: Date.now(),
-      revision: 1,
-      toolCallLog: [],
-    } as unknown as AnalysisPlanV3;
-    recordPlanOrPrePlanToolCall(tracker, {
-      toolName: 'mcp__smartperfetto__execute_sql',
-      input: {sql: 'SELECT 2'},
-    });
-    expect(countDispatchedToolCalls(tracker)).toBe(2);
   });
 });
