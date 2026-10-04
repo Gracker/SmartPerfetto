@@ -52,9 +52,7 @@ import {
   type SessionFieldsForSnapshot,
   type SessionStateSnapshot,
 } from '../../../agentv3/sessionStateSnapshot';
-import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
 import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliveryContext, type AnalysisOutputOrigin} from '../../../types/analysisDelivery';
-import { verifyConclusion } from '../claude/claudeVerifier';
 import {
   createCodeAwareStreamingTextProjection,
   sanitizeOwnerCodeAwareText,
@@ -1324,28 +1322,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         {sourceUse, attemptId: acceptedAttemptId});
       sessionState.assistantText = result.conclusion;
       sessionState.delivery = {result, context: deliveryContext, protocolProjection};
-      const verificationPhase = runtimePerformance.startPhase('verification');
-      try {
-        const verification = await verifyConclusion(result.findings, result.conclusion, {
-          emitUpdate: update => { if (isRunDeliverable()) this.emitUpdate(update); },
-          enableLLM: false, plan: planState.current, hypotheses, sceneType, outputLanguage,
-          deliveryContext, conclusionContract: result.conclusionContract,
-          emitIssueProgress: false,
-        });
-        executionLease.throwIfAborted();
-        verificationPhase.end('ok');
-        if ([...verification.heuristicIssues, ...(verification.llmIssues ?? [])]
-          .some(issue => issue.severity === 'error' && issue.type !== 'plan_deviation' && issue.type !== 'unresolved_hypothesis')) {
-          result.partial = true;
-          result.terminationReason ??= 'quality_gate_failed';
-          result.confidence = Math.min(result.confidence, estimateAnalysisConfidence({findings: result.findings, partial: true}));
-        }
-      } catch (error) {
-        verificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-        executionLease.throwIfAborted();
-        // No advisory verifier failure can certify the result. The shared final
-        // assessment will retain unavailable/not-checked assurance explicitly.
-      }
       if (isQuickMode) result.quickRun = buildQuickRunReceipt({
         requestedMode: options.analysisMode ?? 'auto', turnIntent, budget: quickBudget,
         actualTurns: result.rounds, elapsedMs: result.totalDurationMs,
@@ -1353,9 +1329,6 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
           terminationReason: result.terminationReason, actualTurns: result.rounds,
           targetTurns: quickBudget.targetTurns, hardCapTurns: quickBudget.hardCapTurns}),
       });
-      executionLease.throwIfAborted();
-      applyFinalResultQualityGate({result, context: deliveryContext, deferFocusedEvidenceFinalization: true});
-
       executionLease.throwIfAborted();
       sessionContext.addTurn(
         query,

@@ -21,7 +21,6 @@ import {
   appendRelationProposalRecoveryFragment,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
-  INVALID_NATIVE_DECLARATION,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn,
   type AnalysisHistoryReader} from '../../analysisHistory';
@@ -88,14 +87,8 @@ import {
   resetPrePlanToolCallsForNewRun,
   readToolResultFacts,
 } from '../../../agentv3/planToolCallRecorder';
-import {
-  applyFinalResultQualityGate,
-  type FinalResultComparisonIdentity,
-} from '../../../services/finalResultQualityGate';
-import {
-  generateCorrectionPrompt,
-  verifyConclusion,
-} from '../claude/claudeVerifier';
+import {generateCorrectionPrompt} from '../claude/claudeVerifier';
+import {assessRuntimeDraft, chooseRuntimeDraftRecovery} from '../../runtimeDraftDiagnostics';
 import type { ClaimVerificationResult } from '../../../types/claimVerification';
 import type {
   RuntimeToolConcurrencyPolicy,
@@ -112,7 +105,6 @@ import type { RuntimeEngineDefinition, RuntimeFactoryInput } from '../../runtime
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import { canonicalRuntimeKind, createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
-  buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
   buildRuntimeMemoryContext,
@@ -141,7 +133,7 @@ import {
 import {stableStringify} from '../../../utils/stableJson';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {countCompletedQuickConversationTurns} from '../../quickBudget';
+import {countCompletedQuickConversationTurns, refreshQuickRunStopReason} from '../../quickBudget';
 import {getLruCacheEntry, setLruCacheEntry} from '../../runtimeCache';
 import {
   DEFAULT_FULL_REQUEST_TIMEOUT_MS,
@@ -304,7 +296,6 @@ interface PiAnalysisPreparation {
   hypotheses: Hypothesis[];
   uncertaintyFlags: UncertaintyFlag[];
   analysisRunSpec: AnalysisRunSpec;
-  comparisonIdentity?: FinalResultComparisonIdentity;
   quickMemoryContextCounts?: ReturnType<typeof buildQuickMemoryContextPayload>['counts'];
   sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'];
   artifactStore: ArtifactStore;
@@ -319,7 +310,6 @@ function projectPiAnalysisResult(
   if (!result.conclusion.trim()) {
     result.success = false;
     result.partial = true;
-    result.terminationReason ??= 'quality_gate_failed';
   }
   return finalizeOwnerSourceAwareAnalysisResultWithProjection(result, sourceUse, {
     context,
@@ -1271,7 +1261,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           entry: 'runtime_draft', acceptedCandidate: interrupted.completion,
           completion: interrupted.completion, outputOrigin: interrupted.outputOrigin, turnIntent,
         });
-        applyFinalResultQualityGate({result: projected.result, query, context: projected.deliveryContext});
         if (turnIntent && strategyRegistry && projected.deliveryContext) {
           attachFinalizationContext(projected.result, {
             runId: executionLease.key.runId!, sessionId, deadlineMs: startedAt + requestTimeoutMs,
@@ -1476,7 +1465,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const projected = projectPiAnalysisResult(result, undefined, {
       entry: 'runtime_draft', acceptedCandidate: candidate, completion, outputOrigin: result.outputOrigin,
     });
-    applyFinalResultQualityGate({result: projected.result, query, context: projected.deliveryContext});
     return projected.result;
   }
 
@@ -1661,38 +1649,33 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       if (isPiAgentCoreVisibleOutputEvent(event)) runtimePerformance.recordFirstOutput();
       if (update) this.emit('update', update);
     });
-    let verification: Awaited<ReturnType<typeof verifyConclusion>> | undefined;
     const verifyCandidate = async (text: string, assistant: Record<string, unknown> | undefined, attemptId: string, limited = false) => {
       executionLease.throwIfAborted();
       const phase = runtimePerformance.startPhase('verification');
       try {
-        const value = await verifyConclusion(extractFindingsFromText(text), text, {
-          emitUpdate: update => { if (!executionLease.signal.aborted) this.emit('update', update); },
-          enableLLM: false, plan: prep.analysisPlan.current, hypotheses: prep.hypotheses,
-          sceneType: turnIntent.sceneId, outputLanguage, query,
-          emitIssueProgress: false,
+        const completion = completionFor(assistant, text, attemptId, limited);
+        const draft = await assessRuntimeDraft({
+          conclusion: text, plan: prep.analysisPlan.current, hypotheses: prep.hypotheses, outputLanguage,
           deliveryContext: {entry: 'runtime_draft', turnIntent,
-            acceptedCandidate: candidateIdentity(text, attemptId),
-            completion: completionFor(assistant, text, attemptId, limited),
-            outputOrigin: closeoutAccepted || completionFor(assistant, text, attemptId, limited).status === 'completed'
-              ? 'sdk_final' : 'assistant_stream'},
+            acceptedCandidate: candidateIdentity(text, attemptId), completion,
+            outputOrigin: closeoutAccepted || completion.status === 'completed' ? 'sdk_final' : 'assistant_stream'},
         });
         const nativeProtocol = inspectCandidateProtocol(text);
         if (assistant) this.emit('update', {type: 'progress', content: {phase: 'candidate_protocol',
           candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(nativeProtocol, 'native', attemptId === '1' ? 1 : 2)}, timestamp: Date.now()});
-        if (completionFor(assistant, text, attemptId, limited).status === 'completed' &&
+        // A framing failure or an empty body is repaired by a full-answer correction.
+        if (completion.status === 'completed' &&
             (nativeProtocol.status === 'invalid' || !nativeProtocol.canonicalBody.trim())) {
-          value.heuristicIssues.push({type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
+          draft.recoverableIssues.push({type: 'missing_check', severity: 'error', recoveryKind: 'continue_output',
             message: nativeProtocol.status === 'invalid'
               ? localize(outputLanguage, '当前候选的结论声明格式无效，需要按本轮协议重新输出。',
                 'The candidate has invalid conclusion declarations and needs to follow this turn\'s protocol.')
               : localize(outputLanguage, '当前候选没有可交付的正文，需要补全完整答案。',
                 'The candidate has no deliverable body and needs a complete answer.')});
-          value.passed = false;
         }
         executionLease.throwIfAborted();
         phase.end('ok');
-        return value;
+        return draft;
       } catch (error) {
         phase.end(runtimeOutcomeFromError(error, executionLease.signal));
         throw error;
@@ -1748,22 +1731,18 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           }
         }
       }
-      verification = await verifyCandidate(acceptedText, acceptedAssistant, acceptedAttemptId, acceptedTurnLimitReached);
-      const issues = [...verification.heuristicIssues, ...(verification.llmIssues ?? [])];
-      const actionable = issues.filter(issue => issue.severity === 'error' && issue.recoveryKind &&
-        issue.type !== 'plan_deviation' && issue.type !== 'unresolved_hypothesis');
+      const draft = await verifyCandidate(acceptedText, acceptedAssistant, acceptedAttemptId, acceptedTurnLimitReached);
       const acceptedCompletion = completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedTurnLimitReached);
       const declarationNeed = requestNativeDeclarationCompletion({
         intent: turnIntent, completion: acceptedCompletion, candidate: acceptedText,
         remainingDeliveryTurns: rounds < turnBudget.totalTurns ? turnBudget.deliveryTurns : 0,
         repairInvalid: true,
       });
-      const declarationRequest = declarationNeed && nativeDeclarationBodyCanFitOutput(acceptedText, 64 * 1024)
-        ? declarationNeed : undefined;
-      // A repair that cannot run leaves the issue-based correction available, as before repairs existed.
-      const correctionNeeded = declarationRequest !== undefined ||
-        (declarationNeed === undefined || declarationNeed.reason === INVALID_NATIVE_DECLARATION) && actionable.length > 0;
-      if (correctionNeeded &&
+      const recovery = chooseRuntimeDraftRecovery({declarationNeed, recoverableIssues: draft.recoverableIssues,
+        declarationRequest: declarationNeed && nativeDeclarationBodyCanFitOutput(acceptedText, 64 * 1024)
+          ? declarationNeed : undefined});
+      const declarationRequest = recovery?.kind === 'declaration' ? recovery.request : undefined;
+      if (recovery &&
         rounds < (declarationRequest ? turnBudget.totalTurns : turnBudget.acquisitionTurns)
         && completionFor(acceptedAssistant, acceptedText, acceptedAttemptId, acceptedTurnLimitReached).status === 'completed') {
         const originalTools = agent.state.tools;
@@ -1779,10 +1758,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             ? originalSystemPrompt
             : `${originalSystemPrompt}\n\n${loadPiFinalReportCorrectionSystemPrompt(outputLanguage)}`;
           const correctionDiagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(acceptedText), 'native', 1);
-          const correctionPrompt = declarationRequest
-            ? buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage})
+          const correctionPrompt = recovery.kind === 'declaration'
+            ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
             : appendRelationProposalRecoveryFragment(
-              `${generateCorrectionPrompt(actionable, acceptedText, outputLanguage,
+              `${generateCorrectionPrompt(recovery.issues, acceptedText, outputLanguage,
                 turnIntent.sceneId)}\n\n${JSON.stringify({candidateProtocolDiagnostic: correctionDiagnostic})}`,
               correctionDiagnostic, outputLanguage);
           const candidate = await runProviderPrompt(correctionPrompt,
@@ -1801,14 +1780,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
             const ordinaryCorrectionAccepted = !declarationRequest && correctedProtocol.canonicalBody.trim() &&
               correctedProtocol.status !== 'invalid' &&
               !(originalProtocol.status !== 'absent' && correctedProtocol.status === 'absent') &&
-              ![...checked.heuristicIssues, ...(checked.llmIssues ?? [])].some(issue => issue.severity === 'error' &&
-                issue.type !== 'plan_deviation' && issue.type !== 'unresolved_hypothesis');
+              checked.deliveryErrors.length === 0 && checked.recoverableIssues.length === 0;
             if (acceptedDeclaration || ordinaryCorrectionAccepted) {
               acceptedAssistant = candidate.assistant;
               acceptedText = candidate.text;
               acceptedAttemptId = candidate.attemptId;
               acceptedTurnLimitReached = candidate.turnLimitReached;
-              verification = checked;
             }
           }
         } catch {
@@ -1835,15 +1812,12 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     executionLease.throwIfAborted();
     const conclusion = acceptedText;
     const completion = completionFor(acceptedAssistant, conclusion, acceptedAttemptId, acceptedTurnLimitReached);
-    // Exploration diagnostics remain in the verifier and session state; they
-    // do not establish whether this native answer fulfilled its delivery.
-    const evidenceIssue = [...(verification?.heuristicIssues ?? []), ...(verification?.llmIssues ?? [])]
-      .find(issue => issue.severity === 'error' && issue.type !== 'plan_deviation' && issue.type !== 'unresolved_hypothesis');
-    const partial = completion.status !== 'completed' || !conclusion || Boolean(evidenceIssue);
+    // Native facts only: draft diagnostics chose a repair above and never set
+    // the terminal state, which the shared finalizer assesses.
+    const partial = completion.status !== 'completed' || !conclusion;
     const terminationReason: AnalysisResult['terminationReason'] = completion.reason === 'turn_limit' ? 'max_turns'
       : completion.status === 'failed' ? 'execution_error'
-      : completion.status === 'cancelled' ? 'timeout'
-      : partial ? 'quality_gate_failed' : undefined;
+      : completion.status === 'cancelled' ? 'timeout' : undefined;
     const findings = extractFindingsFromText(conclusion);
     const nativeResult: AnalysisResult = {
       sessionId, success: completion.status !== 'failed' && completion.status !== 'cancelled', findings,
@@ -1853,7 +1827,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       confidence: estimateAnalysisConfidence({findings, partial}),
       rounds, totalDurationMs: Date.now() - startedAt,
       partial: partial || undefined, terminationReason,
-      terminationMessage: evidenceIssue?.message,
       ...(prep.quickMode ? {quickRun: buildQuickRunReceipt({
         requestedMode: options.analysisMode ?? 'auto', turnIntent, budget: quickBudget,
         actualTurns: rounds, elapsedMs: Date.now() - startedAt,
@@ -1869,12 +1842,10 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       outputOrigin: nativeResult.outputOrigin, turnIntent,
     });
     const result = projected.result;
+    refreshQuickRunStopReason(result);
     this.emit('update', {type: 'progress', content: {phase: 'candidate_protocol',
       candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(result.conclusion), 'runtime_projected',
         acceptedAttemptId === '1' ? 1 : 2, projected.conclusionProjection.disposition)}, timestamp: Date.now()});
-    applyFinalResultQualityGate({result, query, sceneType: turnIntent.sceneId,
-      context: projected.deliveryContext,
-      comparisonIdentity: prep.comparisonIdentity, deferFocusedEvidenceFinalization: true});
     executionLease.throwIfAborted();
     prep.sessionContext.addTurn(query, {
       primaryGoal: query, aspects: [], expectedOutputType: 'diagnosis',
@@ -2200,7 +2171,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       analysisRunSpec,
       sourceUse,
       artifactStore,
-      ...(comparisonContext ? {comparisonIdentity: buildComparisonIdentity(focusTarget, comparisonContext)} : {}),
     };
   }
 

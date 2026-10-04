@@ -6,7 +6,6 @@ import { describe, expect, it } from '@jest/globals';
 import type { FocusAppDetectionResult } from '../../agentv3/focusAppDetector';
 import {
   buildFocusAppPromptData,
-  comparisonPackageSources,
   focusAppSelectorCandidates,
   formatFocusAppTargetProgress,
   packageProvenance,
@@ -89,13 +88,7 @@ describe('focus-app consumers', () => {
     });
   });
 
-  it('only a user-named package is an authoritative comparison identity', () => {
-    const referenceFocusTarget = resolveFocusAppTarget({focusResult: confident});
-    expect(comparisonPackageSources(resolveFocusAppTarget({focusResult: confident}), {
-      referencePackageName: referenceFocusTarget.packageName,
-    })).toEqual({currentPackageSource: 'auto_detected', referencePackageSource: 'auto_detected'});
-    expect(comparisonPackageSources(resolveFocusAppTarget({userPackageName: 'com.user.app'}), {})).toEqual({
-      currentPackageSource: 'user'});
+  it('a package no target produced is user-named unless the caller cannot name one', () => {
     // A package no target produced came from the caller; the reference side has no caller.
     expect(packageProvenance('com.other.app', undefined)).toEqual({source: 'user'});
     expect(packageProvenance('com.other.app', undefined, {userMayName: false})).toEqual({source: 'auto_detected'});

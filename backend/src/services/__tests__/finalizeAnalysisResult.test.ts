@@ -72,6 +72,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
   sourceAccessOnly?: boolean;
   /** What the run delivered from its selected knowledge bases. */
   knowledgeUse?: KnowledgeUseRecord;
+  /** The runtime's native terminal record for the candidate (default completed). */
+  nativeCompletion?: {status: 'incomplete'; reason: 'output_limit'};
   dispatch?: (input: IntentTransportInput) => Promise<IntentTransportResult>} = {}) {
   const runId = options.runId ?? 'run';
   const body = options.body ?? (options.source ? 'The captured name identifies the source marker.' : 'The captured value is 49.');
@@ -148,7 +150,8 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
     evidenceAccess: 'existing_only' as const});
   const nativeDelivery = {entry: 'runtime_draft' as const, acceptedCandidate: candidate,
     outputOrigin: options.evidenceRenderedAcknowledgement ? 'evidence_rendered' as const : 'sdk_final' as const,
-    completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const, status: 'completed' as const},
+    completion: {...candidate, schemaVersion: 1 as const, runtimeKind: 'openai-agents-sdk' as const,
+      ...(options.nativeCompletion ?? {status: 'completed' as const})},
     ...(options.evidenceRenderedAcknowledgement ? {evidenceRenderedProof: {kind: 'acknowledgement' as const, candidate,
       intentFingerprint: analysisDeliveryFingerprint(intentFor(registry.registryFingerprint)), evidence: 'not_applicable' as const}} : {})};
   const projection = sourceUse || options.nativeProjection ? finalizeOwnerSourceAwareAnalysisResultWithProjection(result,
@@ -199,6 +202,29 @@ function fixture(options: {body?: string; capture?: boolean; claim?: boolean; in
 }
 
 afterEach(() => {clearAllCodeAwareOutputGuards(); clearRunManifestLifecyclesForTests(); jest.useRealTimers();});
+
+describe('finalizer-owned terminal state', () => {
+  it('writes the quality verdict a runtime draft left to it', async () => {
+    // A runtime records only native facts: an output-limited answer is partial,
+    // with no quality termination reason of its own.
+    const run = fixture({nativeCompletion: {status: 'incomplete', reason: 'output_limit'}});
+    run.result.partial = true;
+    expect(run.result.terminationReason).toBeUndefined();
+    const final = await run.run();
+    expect(final.qualityIssue?.code).toBe('sdk_incomplete');
+    expect(final.result).toMatchObject({partial: true, terminationReason: 'quality_gate_failed'});
+    expect(final.result.confidence).toBeLessThanOrEqual(0.55);
+    expect(final.result.terminationMessage).toContain(final.qualityIssue!.message);
+    expect(final.result.deliveryAssurance?.completion).toBe('failed');
+  });
+
+  it('leaves a delivered answer without a verdict when no gate issue applies', async () => {
+    const final = await fixture({currentRead: true}).run();
+    expect(final.qualityIssue).toBeUndefined();
+    expect(final.result.partial).toBeUndefined();
+    expect(final.result.terminationReason).toBeUndefined();
+  });
+});
 
 describe('knowledge_use@1 in finalization', () => {
   const base = `eks_${'a'.repeat(24)}`;

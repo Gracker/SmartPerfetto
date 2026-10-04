@@ -69,10 +69,6 @@ import {
 import type { McpToolDefinition } from '../../../agentv3/mcpToolRegistry';
 import type { JsonRpcRequest, JsonRpcResponse } from '../../../agentv3/standaloneMcpServer';
 import { RPC_ERROR_CODES } from '../../../agentv3/standaloneMcpServer';
-import {
-  applyFinalResultQualityGate,
-  type FinalResultComparisonIdentity,
-} from '../../../services/finalResultQualityGate';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn,
   type AnalysisHistoryReader} from '../../analysisHistory';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
@@ -84,7 +80,6 @@ import {
   requestNativeDeclarationCompletion,
 } from '../../runtimeConclusionProtocol';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
-import { verifyConclusion } from '../claude/claudeVerifier';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
@@ -101,7 +96,6 @@ import {
 } from '../../runtimePerformance';
 import { createAnalysisRunSpec, type AnalysisRunSpec } from '../../analysisRunSpec';
 import {
-  buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   buildRuntimeTracePairIdentityContext,
   buildRuntimeMemoryContext,
@@ -126,7 +120,7 @@ import {analysisDeliveryFingerprint, type AnalysisCompletion, type AnalysisDeliv
 import {resolveAgentRuntimeBudgetConfig} from '../../../config';
 import { RuntimeExecutionGuard, type RuntimeExecutionLease } from '../../runtimeExecutionGuard';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {countCompletedQuickConversationTurns} from '../../quickBudget';
+import {countCompletedQuickConversationTurns, refreshQuickRunStopReason} from '../../quickBudget';
 import {
   createJsonSchemaFromZodRawShape,
   normalizeRuntimeToolArgs,
@@ -323,7 +317,6 @@ interface OpenCodeAnalysisPreparation {
   hypotheses: Hypothesis[];
   uncertaintyFlags: UncertaintyFlag[];
   analysisRunSpec: AnalysisRunSpec;
-  comparisonIdentity?: FinalResultComparisonIdentity;
   quickMemoryContextCounts?: ReturnType<typeof buildQuickMemoryContextPayload>['counts'];
   sourceUse: ReturnType<typeof createClaudeMcpServer>['sourceUse'];
 }
@@ -2654,7 +2647,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       authorization,
     );
     executionLease.throwIfAborted();
-    const resolveFinalReportSceneType = () => prep.sceneType;
     const abortController = new AbortController();
     const mcpTimeout = resolveOpenCodeMcpTimeoutMs(this.env[OPENCODE_MCP_TIMEOUT_MS_ENV]);
     const bridge = await this.bridgeStarter(
@@ -2915,7 +2907,8 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       rounds: actualTurns, totalDurationMs: Date.now() - startedAt,
       turnIntent, completion, outputOrigin: acceptedMessage ? 'sdk_final' : 'assistant_stream',
       partial: partial || undefined,
-      ...(turnLimited ? {terminationReason: 'max_turns' as const} : {}),
+      ...(sdkError ? {terminationReason: 'execution_error' as const}
+        : turnLimited ? {terminationReason: 'max_turns' as const} : {}),
       ...(turnLimited && !closeoutAccepted && actualTurns >= turnBudget.totalTurns ? {
         terminationMessage: localize(outputLanguage,
           'OpenCode 在两次状态观测之间已用完轮次预算，保留当前结果；未追加总结请求。',
@@ -2940,53 +2933,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const {deliveryContext, protocolProjection} = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, prep.sourceUse, {
       context: nativeDeliveryContext,
     });
-    executionLease.throwIfAborted();
-    const verificationPhase = runtimePerformance.startPhase('verification');
-    try {
-      const verification = await verifyConclusion(result.findings, result.conclusion, {
-        emitUpdate: update => this.emitUpdate(update), enableLLM: false,
-        plan: prep.analysisPlan.current, hypotheses: prep.hypotheses,
-        sceneType: prep.sceneType, outputLanguage: prep.analysisRunSpec.outputLanguage,
-        query, emitIssueProgress: false,
-        deliveryContext,
-      });
-      const issue = [...verification.heuristicIssues, ...(verification.llmIssues ?? [])]
-        .find(issue => issue.severity === 'error' && issue.type !== 'plan_deviation' && issue.type !== 'unresolved_hypothesis');
-      if (issue) {
-        result.partial = true;
-        result.terminationReason ??= 'quality_gate_failed';
-        result.terminationMessage ??= issue.message;
-        result.confidence = estimateAnalysisConfidence({findings: result.findings, partial: true});
-      }
-      verificationPhase.end('ok');
-    } catch (error) {
-      verificationPhase.end(runtimeOutcomeFromError(error, executionLease.signal));
-      throw error;
-    }
-    executionLease.throwIfAborted();
-    const wasPartialBeforeQualityGate = result.partial === true;
-    const gateIssue = applyFinalResultQualityGate({
-      result,
-      query,
-      sceneType: resolveFinalReportSceneType(),
-      comparisonIdentity: prep.comparisonIdentity,
-      deferFocusedEvidenceFinalization: true,
-      context: deliveryContext,
-    });
-    if (gateIssue && result.partial === true && !wasPartialBeforeQualityGate) {
-      result.confidence = estimateAnalysisConfidence({findings: result.findings, partial: true});
-      this.emitUpdate({
-        type: 'degraded',
-        content: {
-          module: 'openCodeRuntime',
-          fallback: gateIssue.code,
-          message: gateIssue.message,
-          partial: true,
-        },
-        timestamp: Date.now(),
-      });
-    }
-
+    refreshQuickRunStopReason(result);
     executionLease.throwIfAborted();
     prep.sessionContext.addTurn(
       query,
@@ -3174,7 +3121,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       ...(options.tracePairContext ? { tracePairContext: options.tracePairContext } : {}),
     }) : buildRuntimeTracePairIdentityContext({
       referenceTraceId: options.referenceTraceId, tracePairContext: options.tracePairContext});
-    const comparisonIdentity = buildComparisonIdentity(focusTarget, comparisonContext);
     const extraSystemPrompt = normalizeOptionalString(
       getProviderForSelection(this.selection, this.input.providerScope)?.connection.openCodeSystemPrompt,
     ) || normalizeOptionalString(this.env[OPENCODE_SYSTEM_PROMPT_ENV]);
@@ -3289,7 +3235,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         uncertaintyFlags,
         analysisRunSpec,
         sourceUse,
-        comparisonIdentity,
         quickMemoryContextCounts: quickMemoryPayload.counts,
       };
     }
@@ -3340,7 +3285,6 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       uncertaintyFlags,
       analysisRunSpec,
       sourceUse,
-      comparisonIdentity,
     };
   }
 

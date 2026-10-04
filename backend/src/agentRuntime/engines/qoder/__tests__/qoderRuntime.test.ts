@@ -162,14 +162,6 @@ jest.mock('../../../../agentv3/traceCompletenessProber', () => ({
   }),
 }));
 
-jest.mock('../../../../services/finalResultQualityGate', () => ({
-  applyFinalResultQualityGate: jest.fn(),
-}));
-
-jest.mock('../../claude/claudeVerifier', () => ({
-  verifyConclusion: jest.fn<(...args: any[]) => any>().mockResolvedValue({ heuristicIssues: [], llmIssues: [] }),
-}));
-
 jest.mock('../../../../services/security/codeAwareOutputRegistry', () => {
   const actual = jest.requireActual<typeof import('../../../../services/security/codeAwareOutputRegistry')>(
     '../../../../services/security/codeAwareOutputRegistry',
@@ -204,6 +196,7 @@ import { detectFocusApps } from '../../../../agentv3/focusAppDetector';
 import { probeTraceCompleteness } from '../../../../agentv3/traceCompletenessProber';
 import {analysisDeliveryFingerprint} from '../../../../types/analysisDelivery';
 import {takeFinalizationContext} from '../../../analysisFinalizationContext';
+import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../../../tests/helpers/runtimeDraftTerminalState';
 import type {AnalysisOptions} from '../../../../agent/core/orchestratorTypes';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../../../services/scopedKnowledgeStore';
@@ -339,10 +332,6 @@ describe('QoderRuntime', () => {
 
   describe('shared tool observation', () => {
     it.each([false, true])('keeps pending exploration advisory after native completion or failure: failed=%s', async nativeError => {
-      const verifier = jest.requireMock('../../claude/claudeVerifier') as {verifyConclusion: jest.Mock};
-      const actualVerifier = jest.requireActual<typeof import('../../claude/claudeVerifier')>('../../claude/claudeVerifier');
-      const previousVerifier = verifier.verifyConclusion.getMockImplementation();
-      verifier.verifyConclusion.mockImplementation(actualVerifier.verifyConclusion as any);
       mockQuery.mockReset();
       let tracker!: AnalysisPlanTracker;
       const hypothesis = {id: 'open-hypothesis', statement: 'A separate cause may exist.', status: 'formed', formedAt: 1};
@@ -366,15 +355,9 @@ describe('QoderRuntime', () => {
         expect(result.success).toBe(!nativeError);
         expect(result.partial).toBe(nativeError);
         expect(result.terminationReason).toBe(nativeError ? 'execution_error' : undefined);
-        const verification = await verifier.verifyConclusion.mock.results[0].value;
-        expect(verification).toMatchObject({heuristicIssues: expect.arrayContaining([
-          expect.objectContaining({type: 'plan_deviation', severity: 'error'}),
-          expect.objectContaining({type: 'unresolved_hypothesis', severity: 'error'}),
-        ])});
         expect(tracker.current?.phases).toEqual([expect.objectContaining({id: 'explore', status: 'pending'})]);
         expect(hypothesis.status).toBe('formed');
       } finally {
-        verifier.verifyConclusion.mockImplementation(previousVerifier!);
         mockQuery.mockReset();
       }
     });
@@ -454,7 +437,6 @@ describe('QoderRuntime', () => {
       // active phase at the later time when the exception is observed.
       expect(records.map(record => record.matchedPhaseId)).toEqual(['p1', 'p2', 'p2', undefined]);
       expect(new Set(records.map(record => record.toolCallId)).size).toBe(4);
-      expect(tracker.dispatchedToolCallCount).toBe(4);
       expect(tracker.current!.phases.map(phase => phase.status)).toEqual(['completed', 'in_progress']);
       expect(updates.filter(update => update.type === 'plan_phase_updated')).toEqual([
         expect.objectContaining({content: expect.objectContaining({phaseId: 'p1', status: 'completed', origin: 'auto'})}),
@@ -504,7 +486,6 @@ describe('QoderRuntime', () => {
 
       expect(result).toMatchObject({success: true, rounds: 1});
       expect(handler).toHaveBeenCalledTimes(8);
-      expect(tracker.dispatchedToolCallCount).toBe(6);
       const starts = updates.filter(update => update.type === 'agent_task_dispatched');
       const results = updates.filter(update => update.type === 'agent_response');
       expect(starts).toHaveLength(6);
@@ -636,7 +617,6 @@ describe('QoderRuntime', () => {
       if (ending !== 'request-cancelled') {
         options.emitUpdate({type: 'progress', content: 'late MCP update', timestamp: 1});
       }
-      expect(options.analysisPlan.dispatchedToolCallCount).toBe(0);
       expect(options.analysisPlan.prePlanToolCallLog).toEqual([]);
       expect(updates).toHaveLength(previousUpdateCount);
       releaseStream.resolve();
@@ -698,7 +678,6 @@ describe('QoderRuntime', () => {
 
       expect(handler).toHaveBeenCalledTimes(2);
       expect(trackers[1]).toBe(trackers[0]);
-      expect(trackers[1].dispatchedToolCallCount).toBe(1);
       expect(trackers[1].prePlanToolCallLog).toEqual([
         expect.objectContaining({toolCallId: 'reused-id', success: true}),
       ]);
@@ -735,7 +714,6 @@ describe('QoderRuntime', () => {
         .resolves.toMatchObject({success: true});
       const newOptions = mockCreateClaudeMcpServer.mock.calls[1][0] as {analysisPlan: AnalysisPlanTracker};
       expect(newOptions.analysisPlan).toBe(oldOptions.analysisPlan);
-      expect(newOptions.analysisPlan.dispatchedToolCallCount).toBe(0);
       expect(newOptions.analysisPlan.prePlanToolCallLog).toEqual([]);
     });
   });
@@ -2100,14 +2078,36 @@ describe('QoderRuntime', () => {
               status: 'unknown', runId: 'replacement-run', conclusionFingerprint: receipt.outputFingerprint,
             }});
           expect(result.completion?.candidateRef).not.toBe('replacement-run:qoder:main');
-          const verifier = jest.requireMock('../../claude/claudeVerifier') as {verifyConclusion: jest.Mock};
-          const context = (verifier.verifyConclusion.mock.calls[0][2] as any).deliveryContext;
+          const finalization = takeFinalizationContext(result);
+          const context = finalization?.deliveryContext as any;
+          finalization?.dispose();
           expect(context.outputOrigin).toBe('runtime_fallback');
           expect(context.completion).toEqual(result.completion);
           expect(context.acceptedCandidate.conclusionFingerprint).toBe(receipt.outputFingerprint);
           expect(JSON.stringify(result)).not.toContain(receipt.inputFingerprint);
         } finally {api.clearCodeAwareOutputGuards('whole-replacement');}
       });
+
+    it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => {
+      const api = privacyProjectionApi();
+      api.revokeCodeAwareOutputGuards('replaced-terminal-state');
+      mockQuery.mockReturnValue(createMockSdkStream([
+        {type: 'result', subtype: 'success', is_error: false, stop_reason: null, result: 'Native answer', num_turns: 1},
+      ]));
+      try {
+        const runtime = createRuntime(); const updates: any[] = [];
+        runtime.on('update', (update: any) => updates.push(update));
+        const result = await runtime.analyze('any request', 'replaced-terminal-state', 'trace-1',
+          {runId: 'replaced-terminal-run', analysisMode: 'fast'});
+        expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
+        expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
+          recordedTurn: sessionContextManager.get('replaced-terminal-state', 'trace-1')?.getAllTurns().slice(-1)[0]?.result});
+        takeFinalizationContext(result)?.dispose();
+      } finally {
+        api.clearCodeAwareOutputGuards('replaced-terminal-state');
+        sessionContextManager.remove('replaced-terminal-state');
+      }
+    });
 
     it.each(['A normal answer', '正常模型回答', '[PRIVATE_OUTPUT_SUPPRESSED]'])
       ('does not infer replacement from a preserved native body: %s', async nativeBody => {
@@ -2132,8 +2132,9 @@ describe('QoderRuntime', () => {
       expect(result).toMatchObject({success: true, partial: false, conclusion: receipt.text,
         outputOrigin: 'sdk_final', completion: {status: 'completed', conclusionFingerprint: receipt.outputFingerprint}});
       expect(result.completion?.candidateRef).not.toBe('redaction-run-id:qoder:main');
-      const verifier = jest.requireMock('../../claude/claudeVerifier') as {verifyConclusion: jest.Mock};
-      const context = (verifier.verifyConclusion.mock.calls[0][2] as any).deliveryContext;
+      const finalization = takeFinalizationContext(result);
+      const context = finalization?.deliveryContext as any;
+      finalization?.dispose();
       expect(context.completion).toEqual(result.completion);
       expect(context.acceptedCandidate.conclusionFingerprint).toBe(receipt.outputFingerprint);
       api.clearCodeAwareOutputGuards('redaction-run');

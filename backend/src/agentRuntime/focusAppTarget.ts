@@ -137,23 +137,6 @@ export function packageProvenance(
   };
 }
 
-/**
- * Provenance of both sides of a comparison identity. Only a user-named package
- * is an expected identity; inferred ones are hypotheses the gate must not
- * enforce. No user names the reference side's package, so it is always inferred.
- */
-export function comparisonPackageSources(
-  current: FocusAppTarget | undefined,
-  comparison: {referencePackageName?: string},
-): {currentPackageSource?: PackageProvenance['source']; referencePackageSource?: PackageProvenance['source']} {
-  const currentSource = packageProvenance(current?.packageName, current).source;
-  const referenceSource = comparison.referencePackageName ? 'auto_detected' : undefined;
-  return {
-    ...(currentSource ? {currentPackageSource: currentSource} : {}),
-    ...(referenceSource ? {referencePackageSource: referenceSource} : {}),
-  };
-}
-
 /** Detection ran and produced something the model can read. */
 export function hasFocusAppDetectionData(target: FocusAppTarget | undefined): target is FocusAppTarget {
   return Boolean(target && (target.candidates.length > 0 || target.excludedNoActivity.length > 0));

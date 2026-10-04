@@ -48,7 +48,6 @@ import * as focusAppDetectorModule from '../../agentv3/focusAppDetector';
 import {resolveFocusPackageCell} from './focusEvidenceFixture';
 import * as traceCompletenessProber from '../../agentv3/traceCompletenessProber';
 import * as runtimePromptContext from '../runtimePromptContext';
-import * as finalResultQualityGate from '../../services/finalResultQualityGate';
 import * as providerManager from '../../services/providerManager';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
 import * as finalizationContext from '../analysisFinalizationContext';
@@ -75,6 +74,8 @@ import {createSceneRuntimeMatrixFixture} from '../../../tests/helpers/sceneRunti
 import {candidateWithPopulation} from '../../../tests/helpers/conclusionDeclarationFixture';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
+import {sessionContextManager} from '../../agent/context/enhancedSessionContext';
+import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../tests/helpers/runtimeDraftTerminalState';
 
 const mockOpenCodeIntentTransport = jest.fn<typeof runOpenCodeIntentTransport>();
 jest.mock('../engines/opencode/openCodeIntentTransport', () => ({
@@ -96,6 +97,14 @@ jest.mock('../engines/claude/claudeVerifier', () => {
     verifyConclusion: (...args: unknown[]) => mockClaudeVerifierVerifyConclusion(...args),
   };
 });
+
+/** The delivery context the run handed to finalization; the context is released. */
+function attachedDeliveryContext(result: Parameters<typeof finalizationContext.takeFinalizationContext>[0]) {
+  const context = finalizationContext.takeFinalizationContext(result);
+  const deliveryContext = context?.deliveryContext;
+  context?.dispose();
+  return deliveryContext;
+}
 
 type FakeTraceProcessorService = TraceProcessorService & {
   query: jest.MockedFunction<(traceId: string, sql: string) => Promise<QueryResult>>;
@@ -650,12 +659,9 @@ describe('OpenCode native turn intent and delivery', () => {
       conclusionFingerprint: analysisDeliveryFingerprint(body)});
     expect(result.success).toBe(!nativeError);
     expect(result.partial === true).toBe(nativeError);
-    expect(result.terminationReason).toBe(nativeError ? 'quality_gate_failed' : undefined);
-    const verification = await mockClaudeVerifierVerifyConclusion.mock.results[0].value;
-    expect(verification).toMatchObject({heuristicIssues: expect.arrayContaining([
-      expect.objectContaining({type: 'plan_deviation', severity: 'error'}),
-      expect.objectContaining({type: 'unresolved_hypothesis', severity: 'error'}),
-    ])});
+    // Only the native failure is recorded; the pending plan and hypothesis stay advisory.
+    expect(result.terminationReason).toBe(nativeError ? 'execution_error' : undefined);
+    expect(mockClaudeVerifierVerifyConclusion).not.toHaveBeenCalled();
     const snapshot = harness.runtime.takeSnapshot(sessionId, 'trace-opencode', createSnapshotFields());
     expect(snapshot.analysisPlan?.phases).toEqual([expect.objectContaining({id: 'explore', status: 'pending'})]);
     expect(snapshot.claudeHypotheses).toEqual([expect.objectContaining({id: 'open-hypothesis', status: 'formed'})]);
@@ -821,7 +827,6 @@ describe('OpenCode native turn intent and delivery', () => {
     const sessionId = `privacy-redacted-${language}`;
     registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
     try {
       const harness = createNativeIntentHarness({answer});
       const result = await harness.runtime.analyze('same scope', sessionId, 'trace-opencode');
@@ -833,11 +838,10 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(result.completion?.status).toBe('completed');
       expect(result.completion?.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
       expect(result.completion?.conclusionFingerprint).not.toBe(analysisDeliveryFingerprint(answer));
-      expect(gate.mock.calls[0][0].context).toBe(projected.deliveryContext);
-      expect(mockClaudeVerifierVerifyConclusion.mock.calls[0][2]).toMatchObject({deliveryContext: projected.deliveryContext});
+      expect(attachedDeliveryContext(result)).toEqual(projected.deliveryContext);
       expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
     } finally {
-      gate.mockRestore(); projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+      projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
     }
   }));
 
@@ -847,7 +851,6 @@ describe('OpenCode native turn intent and delivery', () => {
     const sessionId = `privacy-replaced-${language}`;
     revokeCodeAwareOutputGuards(sessionId);
     const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
     try {
       const harness = createNativeIntentHarness({answer});
       const result = await harness.runtime.analyze('same scope', sessionId, 'trace-opencode');
@@ -857,11 +860,27 @@ describe('OpenCode native turn intent and delivery', () => {
       expect(projected.conclusionProjection.disposition).toBe('replaced');
       expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'runtime_fallback'});
       expect(result.completion?.status).toBe('unknown');
-      expect(gate.mock.calls[0][0].context).toBe(projected.deliveryContext);
-      expect(mockClaudeVerifierVerifyConclusion.mock.calls[0][2]).toMatchObject({deliveryContext: projected.deliveryContext});
+      expect(attachedDeliveryContext(result)).toEqual(projected.deliveryContext);
       expect(result.completion?.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
     } finally {
-      gate.mockRestore(); projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+      projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+    }
+  }));
+
+  it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => withBackendDataDir(async () => {
+    const sessionId = 'privacy-replaced-terminal-state';
+    revokeCodeAwareOutputGuards(sessionId);
+    try {
+      const harness = createNativeIntentHarness({answer: 'Native model conclusion'});
+      const updates: any[] = [];
+      harness.runtime.on('update', update => updates.push(update));
+      const result = await harness.runtime.analyze('same scope', sessionId, 'trace-opencode', {analysisMode: 'fast'});
+      expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
+        recordedTurn: sessionContextManager.get(sessionId, 'trace-opencode')?.getAllTurns().slice(-1)[0]?.result});
+      attachedDeliveryContext(result);
+    } finally {
+      clearCodeAwareOutputGuards(sessionId); sessionContextManager.remove(sessionId);
     }
   }));
 
@@ -897,7 +916,7 @@ describe('OpenCode native turn intent and delivery', () => {
     registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const entered = createDeferred<void>();
     const pending = createDeferred<void>();
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
+    const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
     try {
       const harness = createNativeIntentHarness({answer: 'Late PRIVATE_CANARY output', beforeAnswerReply: async () => {
         entered.resolve(); await pending.promise;
@@ -910,12 +929,12 @@ describe('OpenCode native turn intent and delivery', () => {
       await harness.runtime.abortSession(sessionId);
       await rejected;
       pending.resolve();
-      expect(gate).not.toHaveBeenCalled();
+      expect(projection).not.toHaveBeenCalled();
       expect(updates.length).toBeGreaterThan(0);
       expect(updates.some(update => update.type === 'conclusion')).toBe(false);
       expect(JSON.stringify(updates)).not.toContain('PRIVATE_CANARY');
     } finally {
-      pending.resolve(); gate.mockRestore(); clearCodeAwareOutputGuards(sessionId);
+      pending.resolve(); projection.mockRestore(); clearCodeAwareOutputGuards(sessionId);
     }
   }));
 
@@ -1108,22 +1127,18 @@ describe('OpenCode native turn intent and delivery', () => {
         const identity = originalPairBuilder(input);
         return identity ? {...identity, referencePackageName: 'com.reference.app'} : undefined;
       });
-    const gate = jest.spyOn(finalResultQualityGate, 'applyFinalResultQualityGate');
     try {
       const harness = createNativeIntentHarness({decision: {...BOUNDED_INTENT, taskKind: 'comparison'}});
-      await harness.runtime.analyze('same scope', `intent-pair-${analysisMode}`, 'trace-opencode', {
+      const result = await harness.runtime.analyze('same scope', `intent-pair-${analysisMode}`, 'trace-opencode', {
         analysisMode, packageName: 'com.current.app', referenceTraceId: 'trace-reference',
       });
       expect(pair).toHaveBeenCalledTimes(1);
-      expect(gate).toHaveBeenCalledTimes(1);
-      // The user named the current package; the reference package is always inferred.
-      expect(gate.mock.calls[0][0].comparisonIdentity).toEqual({
-        currentPackageName: 'com.current.app', referencePackageName: 'com.reference.app',
-        currentPackageSource: 'user', referencePackageSource: 'auto_detected',
-      });
+      // The pair reaches finalization, which resolves both sides' identities itself.
+      const context = finalizationContext.takeFinalizationContext(result);
+      expect(context?.traceIdentity).toEqual({currentTraceId: 'trace-opencode', referenceTraceId: 'trace-reference'});
+      context?.dispose();
       expect(harness.traceProcessor.query).toHaveBeenCalled();
     } finally {
-      gate.mockRestore();
       pair.mockRestore();
     }
   }));
@@ -3931,22 +3946,20 @@ describe('experimental OpenCode runtime contract', () => {
     });
   });
 
-  it('does not publish an OpenCode turn when cancelled during final verification', async () => {
+  it('does not publish an OpenCode turn when cancelled after its answer was projected', async () => {
     await withBackendDataDir(async () => {
       const sessionId = 'session-opencode-verification-cancel';
       const traceId = 'trace-opencode';
-      const verificationStarted = createDeferred<void>();
-      const releaseVerification = createDeferred<void>();
-      mockClaudeVerifierVerifyConclusion.mockImplementationOnce(async () => {
-        verificationStarted.resolve();
-        await releaseVerification.promise;
-        return {
-          passed: true,
-          heuristicIssues: [],
-          llmIssues: [],
-          durationMs: 1,
-        };
-      });
+      let promptCountAtCancellation = -1;
+      const originalProjection = sourceClaimVerifier.finalizeOwnerSourceAwareAnalysisResultWithProjection;
+      const projection = jest.spyOn(sourceClaimVerifier, 'finalizeOwnerSourceAwareAnalysisResultWithProjection')
+        .mockImplementation((...args) => {
+          if (promptCountAtCancellation < 0) {
+            promptCountAtCancellation = promptInputs.length;
+            void runtime.abortSession(sessionId);
+          }
+          return originalProjection(...args);
+        });
       const addTurn = jest.fn();
       const promptInputs: unknown[] = [];
       const close = jest.fn();
@@ -4003,16 +4016,13 @@ describe('experimental OpenCode runtime contract', () => {
         analysisRunSpec: {runtime: {kind: OPENCODE_RUNTIME_KIND}, query: {text: '分析滑动性能'}, outputLanguage: 'zh-CN', traceContext: {datasetCount: 0}, mode: {adaptiveRouting: undefined}},
       });
 
-      const analysis = runtime.analyze('分析滑动性能', sessionId, traceId, {
-        analysisMode: 'full',
-        runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
-      });
-      await verificationStarted.promise;
-      const promptCountAtCancellation = promptInputs.length;
-      await runtime.abortSession(sessionId);
-      releaseVerification.resolve();
-
-      await expect(analysis).rejects.toThrow(/aborted|cancelled/i);
+      try {
+        await expect(runtime.analyze('分析滑动性能', sessionId, traceId, {
+          analysisMode: 'full',
+          runManifestAttributionSink: createNoopAttributionSink(runtimePerformanceRecorder),
+        })).rejects.toThrow(/aborted|cancelled/i);
+      } finally {projection.mockRestore();}
+      expect(promptCountAtCancellation).toBeGreaterThan(0);
       expect(promptInputs).toHaveLength(promptCountAtCancellation);
       expect(addTurn).not.toHaveBeenCalled();
       expect(close).toHaveBeenCalledTimes(1);

@@ -14,7 +14,6 @@ import {
   buildNativeDeclarationCompletionPrompt,
   nativeDeclarationBodyCanFitOutput,
   requestNativeDeclarationCompletion,
-  INVALID_NATIVE_DECLARATION,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
@@ -125,9 +124,9 @@ import {projectToolResultForExternalSurface} from '../../../services/rag/toolRes
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {diagnosticLogIdentity} from '../../../utils/logger';
 import { runSnapshots } from '../../../agentv3/selfImprove/strategyFingerprint';
-import {verifyConclusion, generateCorrectionPrompt} from './claudeVerifier';
+import {generateCorrectionPrompt} from './claudeVerifier';
+import {assessRuntimeDraft, chooseRuntimeDraftRecovery} from '../../runtimeDraftDiagnostics';
 import {isRuntimeCandidateAdmitted} from '../../runtimeCandidateAdmission';
-import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
 import { getProductionEngineCapabilities } from '../../runtimeDescriptors';
 import type { EngineCapabilities } from '../../runtimeDescriptorTypes';
 import {
@@ -1688,20 +1687,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
       }
 
-      let verificationDegradedMessage: string | undefined;
-      // Both budgets verify submitted plans and actual evidence. Semantic final
-      // coverage is owned by the shared async finalizer, not this runtime loop.
+      // Draft diagnostics only choose a same-run repair; the quality verdict
+      // belongs to the shared finalizer (runtimeDraftDiagnostics.ts).
       try {
-        const verification = await verifyConclusion(mergedFindings, conclusionText, {
-          emitUpdate: update => this.emitUpdate(update), enableLLM: false,
-          plan: ctx.analysisPlan.current, hypotheses: ctx.hypotheses, sceneType,
-          lightModel: runtimeConfig.lightModel, verifierTimeoutMs: runtimeConfig.verifierTimeoutMs,
-          providerId: options.providerId, providerScope, outputLanguage, query,
-          deliveryContext: projectedCandidate.deliveryContext,
+        const draft = await assessRuntimeDraft({
+          conclusion: conclusionText, plan: ctx.analysisPlan.current, hypotheses: ctx.hypotheses,
+          outputLanguage, deliveryContext: projectedCandidate.deliveryContext,
         });
         executionLease.throwIfAborted();
-        const issues = [...verification.heuristicIssues, ...(verification.llmIssues ?? [])]
-          .filter(issue => issue.severity === 'error' && issue.recoveryKind !== undefined);
         const remainingTurns = runtimeConfig.maxTurns - observedRunTurns();
         const nativeCandidate = acceptedRawBody ?? conclusionText;
         const declarationNeed = requestNativeDeclarationCompletion({
@@ -1711,30 +1704,31 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           remainingDeliveryTurns: remainingTurns > 0 ? turnBudget.deliveryTurns : 0,
           repairInvalid: true,
         });
-        const declarationRequest = declarationNeed &&
+        const admittedDeclaration = declarationNeed &&
           nativeDeclarationBodyCanFitOutput(nativeCandidate, 128 * 1024) &&
           (remainingBudgetUsd === undefined || remainingBudgetUsd > 0) ? declarationNeed : undefined;
         // Which gate closed is otherwise unrecoverable after the run: the candidate
         // carrying the declaration is private and never persisted.
-        if (!declarationRequest) {
+        if (!admittedDeclaration) {
           console.log(`[ClaudeRuntime] declaration repair skipped: need=${declarationNeed?.reason ?? 'none'} ` +
             `completion=${projectedCandidate.deliveryContext.completion?.status ?? 'unknown'} turns=${remainingTurns} ` +
             `fits=${nativeDeclarationBodyCanFitOutput(nativeCandidate, 128 * 1024)} ` +
             `budget=${remainingBudgetUsd === undefined ? 'unbounded' : remainingBudgetUsd > 0 ? 'available' : 'exhausted'}`);
         }
-        // A repair that cannot run leaves the issue-based correction available, as before repairs existed.
-        const correctionNeeded = declarationRequest !== undefined ||
-          (declarationNeed === undefined || declarationNeed.reason === INVALID_NATIVE_DECLARATION) && issues.length > 0;
-        if (correctionNeeded &&
+        const recovery = chooseRuntimeDraftRecovery({
+          declarationNeed, declarationRequest: admittedDeclaration, recoverableIssues: draft.recoverableIssues,
+        });
+        const declarationRequest = recovery?.kind === 'declaration' ? recovery.request : undefined;
+        if (recovery &&
             projectedCandidate.deliveryContext.completion?.status === 'completed' &&
             remainingTurns > 0 && Date.now() < requestDeadline) {
           assertAuthorized();
           answerDraft?.reset();
           const correctionAttemptId = `${runId}:correction:1`;
           const {stream, close} = sdkQueryWithRetry({
-            prompt: declarationRequest
-              ? buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage})
-              : generateCorrectionPrompt(issues, conclusionText, outputLanguage, sceneType),
+            prompt: recovery.kind === 'declaration'
+              ? buildNativeDeclarationCompletionPrompt({request: recovery.request, intent: turnIntent, outputLanguage})
+              : generateCorrectionPrompt(recovery.issues, conclusionText, outputLanguage, sceneType),
             options: withAuthorizationHooks({
               model: runtimeConfig.model, maxTurns: 1, systemPrompt: ctx.sdkSystemPrompt,
               includePartialMessages: true, settingSources: [], tools: [], allowedTools: [],
@@ -1801,9 +1795,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             close(); unregister();
           }
         }
-      } catch (error) {
+      } catch {
         executionLease.throwIfAborted();
-        verificationDegradedMessage = error instanceof Error ? error.message : 'Verification unavailable';
+        // A failed optional repair keeps the accepted candidate and its terminal state.
       }
       const finalAnalysisResult = projectedCandidate.result;
       const deliveryContext = projectedCandidate.deliveryContext;
@@ -1811,7 +1805,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         deliveryContext.completion?.status !== 'completed';
       if (acceptedTerminal.reason === 'provider_error') terminationReason = 'execution_error';
       if (acceptedTerminal.reason === 'budget_limit') terminationReason = 'max_budget_usd';
-      if (verificationDegradedMessage) terminationMessage = verificationDegradedMessage;
       const baseConfidence = estimateAnalysisConfidence({findings: finalAnalysisResult.findings});
       finalAnalysisResult.confidence = isRuntimePartialResult
         ? capPartialConfidence(baseConfidence, finalAnalysisResult.findings.length > 0) : baseConfidence;
@@ -1822,24 +1815,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       finalAnalysisResult.terminationMessage ??= terminationMessage === undefined ? undefined
         : sanitizeOwnerCodeAwareStructuredTextWithReceipt(sessionId, terminationMessage).text;
       attachQuickReceipt(finalAnalysisResult);
-      // This is the final accepted projection. A shared finalization context can
-      // be attached here once, using deliveryContext rather than the native one.
-      const gateIssue = applyFinalResultQualityGate({
-        result: finalAnalysisResult, query, sceneType, deferFocusedEvidenceFinalization: true,
-        context: deliveryContext,
-      });
-      if (gateIssue) {
-        this.emitUpdate({
-          type: 'degraded',
-          content: {
-            module: 'claudeRuntime',
-            fallback: gateIssue.code,
-            message: gateIssue.message,
-            partial: true,
-          },
-          timestamp: Date.now(),
-        });
-      }
 
       executionLease.throwIfAborted();
       ctx.sessionContext.addTurn(
@@ -1947,9 +1922,6 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       // their receipt to the conclusion candidate.
       failedResult.terminationMessage = safeErrorMessage;
       attachQuickReceipt(failedResult);
-      applyFinalResultQualityGate({result: failedResult, query,
-        sceneType: turnIntent?.sceneId, context: failedProjection.deliveryContext,
-        deferFocusedEvidenceFinalization: true});
       attachAcceptedFinalization(failedResult, failedProjection.deliveryContext, false, failedProjection.protocolProjection);
       // A failure before an accepted answer has no context; what was delivered still counts.
       attachRunDeliveryRecord(failedResult, {runId, sessionId, knowledgeUse: sourceUse?.getKnowledgeUse?.()});

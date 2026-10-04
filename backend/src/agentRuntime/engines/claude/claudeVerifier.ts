@@ -9,8 +9,7 @@
  * support belong to the shared final semantic assessment and finalizer.
  */
 
-import type {ProviderScope} from '../../../services/providerManager';
-import type {Finding, StreamingUpdate} from '../../../agent/types';
+import type {Finding} from '../../../agent/types';
 import type {VerificationResult, VerificationIssue, AnalysisPlanV3, Hypothesis} from '../../../agentv3/types';
 import {formatExpectedCall} from '../../../agentv3/types';
 import {getPhaseToolEvidenceStatus} from '../../../agentv3/planToolCallRecorder';
@@ -121,7 +120,7 @@ export function isConclusionIncomplete(
 
 /** All controller inputs remain structured, regardless of message language. */
 export function generateCorrectionPrompt(
-  issues: VerificationIssue[],
+  issues: readonly VerificationIssue[],
   originalConclusion: string,
   outputLanguage: OutputLanguage = DEFAULT_OUTPUT_LANGUAGE,
   _sceneType?: SceneType,
@@ -207,34 +206,20 @@ function assessDeliveryIssues(
 
 /**
  * Evaluate runtime state only. This result does not certify claim truth, source
- * use or semantic coverage; the shared finalizer owns those judgments.
+ * use or semantic coverage; the shared finalizer owns those judgments. It emits
+ * nothing and writes no terminal state: runtimes read it through
+ * `agentRuntime/runtimeDraftDiagnostics.ts` to decide a same-run repair only.
  * The historical heuristicIssues field carries these runtime diagnostics.
  */
 export async function verifyConclusion(
   _findings: Finding[],
   conclusion: string,
   options: {
-    emitUpdate?: (update: StreamingUpdate) => void;
-    /** @deprecated Ignored. Semantic review runs only through the shared finalizer. */
-    enableLLM?: boolean;
     plan?: AnalysisPlanV3 | null;
     hypotheses?: Hypothesis[];
-    /** @deprecated Ignored. Scene words cannot select runtime checks. */
-    sceneType?: SceneType;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    lightModel?: string;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    verifierTimeoutMs?: number;
     outputLanguage?: OutputLanguage;
     deliveryContext?: AnalysisDeliveryContext;
     conclusionContract?: unknown;
-    /** @deprecated Ignored. Runtime checks do not classify the user query. */
-    query?: string;
-    emitIssueProgress?: boolean;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    providerId?: string | null;
-    /** @deprecated Ignored; this verifier makes no provider calls. */
-    providerScope?: ProviderScope;
   } = {},
 ): Promise<VerificationResult> {
   const startTime = Date.now();
@@ -244,15 +229,6 @@ export async function verifyConclusion(
     ...(options.hypotheses === undefined ? [] : verifyHypotheses(options.hypotheses)),
     ...assessDeliveryIssues(conclusion, options.deliveryContext, options.conclusionContract, outputLanguage),
   ];
-  if (options.emitUpdate && options.emitIssueProgress !== false && heuristicIssues.length > 0) {
-    options.emitUpdate({
-      type: 'progress',
-      content: {phase: 'concluding', message: localize(outputLanguage,
-        '运行状态检查记录了需要处理的事项。',
-        'Runtime checks recorded items that need attention.')},
-      timestamp: Date.now(),
-    });
-  }
   return {
     passed: !heuristicIssues.some(issue => issue.severity === 'error'),
     heuristicIssues,

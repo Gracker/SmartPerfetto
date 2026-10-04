@@ -54,8 +54,6 @@ import {loadOpenAIConfig, type OpenAIAgentConfig} from './openAiConfig';
 import {buildOpenAIChatCompletionsTokenLimit} from '../../../services/providerManager/openAiChatCompletionsCompat';
 import {createMimoReasoningContentFetch, shouldUseMimoReasoningContentCompat} from './mimoReasoningCompat';
 import {createOpenAIToolsFromMcpDefinitions, openAiToolCallKey} from './openAiToolAdapter';
-import {applyFinalResultQualityGate} from '../../../services/finalResultQualityGate';
-import {verifyConclusion} from '../claude/claudeVerifier';
 import {buildQuickRunReceipt, captureSkillDisplayEntities, createRuntimeSkillNotesBudget, getLruCacheEntry, knowledgeScopeFromAnalysisOptions, providerScopeFromAnalysisOptions, quickStopReasonFromTermination, resolveQuickTurnBudget, setLruCacheEntry, toProtocolHypothesis as toRuntimeProtocolHypothesis} from '../../runtimeCommon';
 import {createAnalysisRunSpec, type AnalysisRunSpec} from '../../analysisRunSpec';
 import type {RuntimeSelection} from '../../runtimeSelection';
@@ -64,9 +62,8 @@ import {createRuntimePerformanceRun, runtimeOutcomeFromError, type RuntimeModelC
   type RuntimeModelCallTrigger, type RuntimePerformanceOutcome, type RuntimePerformanceRun} from '../../runtimePerformance';
 import {OPENAI_AGENT_RUNTIME_KIND} from '../../runtimeKinds';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
-import {countCompletedQuickConversationTurns} from '../../quickBudget';
+import {countCompletedQuickConversationTurns, refreshQuickRunStopReason} from '../../quickBudget';
 import {
-  buildComparisonIdentity,
   buildRuntimeTracePairComparisonContext,
   detectRunFocusApps,
 } from '../../runtimePromptContext';
@@ -268,20 +265,13 @@ function finalizeOpenAiCandidate(input: {
     result.success = false;
     result.partial = true;
     result.confidence = 0;
-    result.terminationReason ??= 'quality_gate_failed';
   }
   const nativeContext: AnalysisDeliveryContext = {entry: 'runtime_draft', acceptedCandidate,
     completion: result.completion, outputOrigin: input.outputOrigin, turnIntent: result.turnIntent};
   const finalized = finalizeOwnerSourceAwareAnalysisResultWithProjection(result, input.sourceUse, {
     context: nativeContext,
   });
-  if (finalized.result.quickRun) {
-    finalized.result.quickRun.stopReason = quickStopReasonFromTermination({
-      partial: finalized.result.partial, terminationReason: finalized.result.terminationReason,
-      actualTurns: finalized.result.quickRun.actualTurns, targetTurns: finalized.result.quickRun.targetTurns,
-      hardCapTurns: finalized.result.quickRun.hardCapTurns,
-    });
-  }
+  refreshQuickRunStopReason(finalized.result);
   if (!finalized.deliveryContext) throw new Error('OpenAI candidate projection omitted delivery context');
   return {...finalized, deliveryContext: finalized.deliveryContext};
 }
@@ -1060,21 +1050,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       this.emitUpdate({type: 'progress', content: {phase: 'candidate_protocol',
         candidateProtocolDiagnostic: buildCandidateProtocolDiagnostic(inspectCandidateProtocol(result.conclusion), 'runtime_projected',
           recoveryCandidate && attemptId !== recoveryCandidate.attemptId ? 2 : 1, conclusionProjection.disposition)}, timestamp: Date.now()});
-      const verificationPhase = runtimePerformance.startPhase('verification');
-      await verifyConclusion(result.findings, result.conclusion, {
-        emitUpdate: update => this.emitUpdate(update), enableLLM: false,
-        plan: this.sessionPlans.get(sessionId)?.current ?? null, hypotheses: context.hypotheses,
-        sceneType, outputLanguage: config.outputLanguage, emitIssueProgress: false,
-        deliveryContext,
-        conclusionContract: result.conclusionContract,
-      });
-      verificationPhase.end('ok');
       analysisAbortScope.throwIfAborted();
-      // Draft diagnostics precede contract/evidence extraction. They cannot stamp
-      // terminal failure; the shared new_finalization gate evaluates the actual facts.
-      // Runtime draft assessment cannot certify final evidence collected by HTTP/CLI later.
-      applyFinalResultQualityGate({result, sceneType, context: deliveryContext,
-        comparisonIdentity: context.comparisonIdentity, deferFocusedEvidenceFinalization: true});
       const closingProvider = provider;
       return await commitAfterProviderClose(() => closingProvider.close().catch(() => undefined), analysisAbortScope, () => {
         provider = undefined;
@@ -1432,7 +1408,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       tools: createOpenAIToolsFromMcpDefinitions(mcp.toolDefinitions), allowedTools: mcp.allowedTools,
       sessionContext, previousTurns: runtime.previousTurns, architecture, hypotheses,
       effectivePackageName, sourceUse: mcp.sourceUse,
-      ...(comparisonContext ? {comparisonIdentity: buildComparisonIdentity(focusTarget, comparisonContext)} : {}),
     };
   }
 

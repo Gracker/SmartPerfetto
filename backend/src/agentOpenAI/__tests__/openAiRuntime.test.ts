@@ -3,6 +3,8 @@
 // This file is part of SmartPerfetto. See LICENSE for details.
 
 import {afterEach, beforeEach, describe, expect, it, jest} from '@jest/globals';
+import {sessionContextManager} from '../../agent/context/enhancedSessionContext';
+import {expectRuntimeLeftTerminalStateToFinalizer} from '../../../tests/helpers/runtimeDraftTerminalState';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -24,7 +26,6 @@ import {
   clearCodeAwareOutputGuards, createCodeAwareStreamingTextProjection,
   registerCodeAwareCanary, revokeCodeAwareOutputGuards,
 } from '../../services/security/codeAwareOutputRegistry';
-import * as verifier from '../../agentRuntime/engines/claude/claudeVerifier';
 import * as patternMemory from '../../agentv3/analysisPatternMemory';
 import * as configModule from '../../agentRuntime/engines/openai/openAiConfig';
 import * as intentTransport from '../../agentRuntime/engines/openai/openAiIntentTransport';
@@ -76,6 +77,13 @@ afterEach(() => {
   for (const sessionId of privacySessions.splice(0)) clearCodeAwareOutputGuards(sessionId);
   jest.restoreAllMocks();
 });
+/** The delivery context the run handed to finalization (the context is kept for disposal). */
+function attachedDeliveryContext(result: Parameters<typeof finalization.takeFinalizationContext>[0]) {
+  const context = finalization.takeFinalizationContext(result);
+  if (context) finalizationContexts.push(context);
+  return context?.deliveryContext;
+}
+
 function createOpenAiRuntimeForTest(trace?: TraceProcessorService): any {
   const runtime = new OpenAIRuntime(trace ?? {query: jest.fn(async () => ({columns: [], rows: [], durationMs: 0})), getTrace: jest.fn()} as unknown as TraceProcessorService);
   runtimes.push(runtime);
@@ -341,8 +349,6 @@ describe('OpenAI typed intent integration', () => {
       }]}], uncertainties: [], nextSteps: []};
     const body = JSON.stringify(contract);
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream(body));
-    jest.spyOn(verifier, 'verifyConclusion').mockResolvedValue({passed: false, durationMs: 1,
-      heuristicIssues: [{type: 'missing_evidence', severity: 'error', message: 'Contract extraction is pending'}]});
     const result = await runtime.analyze('query', 'draft-diagnostic', 'trace', {providerId: null});
     expect(result.completion.status).toBe('completed');
     expect(result.partial).toBeUndefined(); expect(result.terminationReason).toBeUndefined();
@@ -1686,26 +1692,24 @@ describe('OpenAI durable learning across the run lifecycle', () => {
 
   it('learns nothing from a run cancelled after its answer was complete', async () => {
     const {runtime, save} = setup(); mockRun(sdkStream(LEARNABLE_ANSWER));
-    const verifying = createDeferred<void>(); const release = createDeferred<void>();
-    const verify = jest.spyOn(verifier, 'verifyConclusion').mockImplementation(async () => {
-      verifying.resolve(); await release.promise;
-      return {passed: true, durationMs: 1, heuristicIssues: []} as never;
+    // The candidate is complete once its protocol diagnostic is out; cancel right there.
+    let answered = false;
+    runtime.on('update', (update: any) => {
+      if (update.type !== 'progress' || update.content?.phase !== 'candidate_protocol' || answered) return;
+      answered = true; runtime.abortSession('learning-cancelled');
     });
-    const pending = runtime.analyze('query', 'learning-cancelled', 'trace', grant('run-cancelled'));
-    const rejected = expect(pending).rejects.toThrow();
-    await verifying.promise; runtime.abortSession('learning-cancelled'); release.resolve(); await rejected;
-    expect(verify).toHaveBeenCalledTimes(1);
+    await expect(runtime.analyze('query', 'learning-cancelled', 'trace', grant('run-cancelled'))).rejects.toThrow();
+    expect(answered).toBe(true);
     expect(await learned(save)).toEqual([]); expect(save).not.toHaveBeenCalled(); expect(storedPatternFiles()).toEqual([]);
   });
 
   it('learns nothing from a run cancelled while its provider closes', async () => {
     const {runtime, save} = setup(); mockRun(sdkStream(LEARNABLE_ANSWER));
-    const verify = jest.spyOn(verifier, 'verifyConclusion');
     const closing = createDeferred<void>(); const release = createDeferred<void>();
     jest.spyOn(OpenAIProvider.prototype, 'close').mockImplementation(async () => {closing.resolve(); await release.promise;});
     const pending = runtime.analyze('query', 'learning-closing', 'trace', grant('run-closing'));
     const rejected = expect(pending).rejects.toThrow();
-    await closing.promise; expect(verify).toHaveBeenCalledTimes(1);
+    await closing.promise;
     runtime.abortSession('learning-closing'); release.resolve(); await rejected;
     expect(await learned(save)).toEqual([]); expect(save).not.toHaveBeenCalled(); expect(storedPatternFiles()).toEqual([]);
   });
@@ -1775,7 +1779,6 @@ describe('OpenAI candidate-bound privacy projection', () => {
     registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream(nativeBody));
     const projected = jest.spyOn(sourceProjection, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const verified = jest.spyOn(verifier, 'verifyConclusion');
     const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, outputLanguage, knowledgeSourceIds: ['private-source']});
     const outcome = projected.mock.results[0].value as ReturnType<typeof sourceProjection.finalizeOwnerSourceAwareAnalysisResultWithProjection>;
     expect(outcome.conclusionProjection.disposition).toBe('redacted');
@@ -1785,7 +1788,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
     const originalContext = projected.mock.calls[0][2]?.context;
     expect(result.completion.candidateRef).not.toBe(originalContext?.entry === 'runtime_draft'
       ? originalContext.acceptedCandidate?.candidateRef : undefined);
-    expect(verified.mock.calls[0][2]?.deliveryContext).toBe(outcome.deliveryContext);
+    expect(attachedDeliveryContext(result)).toEqual(outcome.deliveryContext);
     expect(JSON.stringify(result)).not.toContain('PRIVATE_CANARY');
     expect(JSON.stringify(result)).not.toContain(outcome.conclusionProjection.inputFingerprint);
   });
@@ -1798,18 +1801,30 @@ describe('OpenAI candidate-bound privacy projection', () => {
     revokeCodeAwareOutputGuards(sessionId);
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream(nativeBody));
     const projected = jest.spyOn(sourceProjection, 'finalizeOwnerSourceAwareAnalysisResultWithProjection');
-    const verified = jest.spyOn(verifier, 'verifyConclusion');
     const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, outputLanguage, knowledgeSourceIds: ['private-source']});
     const outcome = projected.mock.results[0].value as ReturnType<typeof sourceProjection.finalizeOwnerSourceAwareAnalysisResultWithProjection>;
     expect(outcome.conclusionProjection.disposition).toBe('replaced');
     expect(result).toMatchObject({success: false, partial: true, outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}, quickRun: {stopReason: 'partial'}});
-    expect(verified.mock.calls[0][2]?.deliveryContext).toBe(outcome.deliveryContext);
+    expect(attachedDeliveryContext(result)).toEqual(outcome.deliveryContext);
     expect(result.completion.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
     if (!nativeBody) {
       const context = projected.mock.calls[0][2]?.context;
       expect(context?.entry === 'runtime_draft' && context.completion?.status).toBe('unknown');
       expect(result.confidence).toBe(0);
     }
+  });
+  it('leaves the terminal state of a privacy-replaced draft to the finalizer', async () => {
+    const sessionId = 'replaced-terminal-state'; privacySessions.push(sessionId);
+    revokeCodeAwareOutputGuards(sessionId);
+    const {runtime, updates} = createRuntimeWithUpdates(); prepareStub(runtime); mockRun(sdkStream('Native answer'));
+    try {
+      const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, analysisMode: 'fast',
+        knowledgeSourceIds: ['private-source']});
+      expect(result).toMatchObject({outputOrigin: 'runtime_fallback', completion: {status: 'unknown'}});
+      expectRuntimeLeftTerminalStateToFinalizer({result, updates, native: {partial: true},
+        recordedTurn: sessionContextManager.get(sessionId, 'trace')?.getAllTurns().slice(-1)[0]?.result});
+      attachedDeliveryContext(result);
+    } finally {sessionContextManager.remove(sessionId);}
   });
   it('keeps literal placeholder text as model content when no replacement occurred', async () => {
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream('[PRIVATE_OUTPUT_SUPPRESSED]'));
@@ -1824,10 +1839,9 @@ describe('OpenAI candidate-bound privacy projection', () => {
     const sessionId = `projection-status-${status}`; privacySessions.push(sessionId);
     registerCodeAwareCanary(sessionId, 'PRIVATE_CANARY');
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime); mockRun(sdkStream('Before PRIVATE_CANARY after', {status}));
-    const verified = jest.spyOn(verifier, 'verifyConclusion');
     const result = await runtime.analyze('query', sessionId, 'trace', {providerId: null, knowledgeSourceIds: ['private-source']});
     expect(result.completion.status).toBe(status);
-    const context = verified.mock.calls[0][2]?.deliveryContext;
+    const context = attachedDeliveryContext(result);
     expect(context?.entry === 'runtime_draft' && context.completion).toEqual(result.completion);
     expect(context?.entry === 'runtime_draft' && context.acceptedCandidate?.conclusionFingerprint).toBe(analysisDeliveryFingerprint(result.conclusion));
   });
@@ -1851,7 +1865,7 @@ describe('OpenAI candidate-bound privacy projection', () => {
     prepareStub(runtime, {getSourceUseDecision: () => undefined, getKnowledgeUse: () => knowledgeUse});
     mockRun();
     // A failure after the provider answered reaches the outer catch, which returns a failure candidate.
-    jest.spyOn(verifier, 'verifyConclusion').mockRejectedValue(new Error('failure after a knowledge read'));
+    jest.spyOn(runtime, 'recordTurn').mockImplementation(() => { throw new Error('failure after a knowledge read'); });
     const result = await runtime.analyze('query', 'openai-knowledge-failure', 'trace',
       {providerId: null, runId: 'openai-knowledge-failure-run'});
     expect(result).toMatchObject({success: false, completion: {status: 'failed', reason: 'provider_error'}});
@@ -2294,7 +2308,8 @@ describe('OpenAI parallel tool call identity', () => {
       .map(update => [update.content.taskId, update.content.toolName]);
     expect(summarize('agent_task_dispatched')).toEqual(expected);
     expect(summarize('agent_response')).toEqual(expected);
-    expect(runtime.sessionPlans.get('parallel-calls')?.dispatchedToolCallCount).toBe(expected.length);
+    expect(runtime.sessionPlans.get('parallel-calls')?.current?.toolCallLog.map((record: any) => record.toolCallId))
+      .toEqual(expected.map(([taskId]) => taskId));
     expect(context.toolInputsByTaskId.size).toBe(0);
   });
 
@@ -2307,6 +2322,7 @@ describe('OpenAI parallel tool call identity', () => {
         output: {type: 'text', text: '{"success":true}'}}}}, 'en', context);
     expect(updates.find(update => update.type === 'agent_response')?.content)
       .toMatchObject({taskId: 'call-unseen', toolName: 'read_codebase_file'});
-    expect(runtime.sessionPlans.get('unseen-dispatch')?.dispatchedToolCallCount).toBe(1);
+    expect(runtime.sessionPlans.get('unseen-dispatch')?.current?.toolCallLog.map((record: any) => record.toolCallId))
+      .toEqual(['call-unseen']);
   });
 });
