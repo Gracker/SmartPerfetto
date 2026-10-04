@@ -14,10 +14,7 @@ import type {
 } from '../agentRuntime/runtimeToolResultAudit';
 import type {CapabilityManifestAttributionV1} from './capabilityManifest';
 import type {AdaptiveRoutingReceiptV1} from './adaptiveRouting';
-import type {
-  PhaseHint,
-  StrategyRegistryContribution,
-} from '../agentv3/strategyLoader';
+import type {StrategyRegistryContribution} from '../agentv3/strategyLoader';
 import type {
   DisplayConfig,
   SkillStep,
@@ -826,7 +823,8 @@ export type EvolutionStrategyDeltaV1 =
       scene: string;
       hintId: string;
       beforeContentHash?: string;
-      after?: PhaseHint;
+      /** The hint as stored; its shape is no longer a live contract. */
+      after?: Readonly<Record<string, unknown>>;
     }
   | {
       kind: 'retire_phase_hint';

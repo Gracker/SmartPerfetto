@@ -54,7 +54,7 @@ import {
 import {validateCaseKnowledgeFiles} from '../../services/caseSchemaValidator';
 import {parseSourceDepthPolicy} from '../../services/codebase/sourceDepthPolicy';
 import {parseSourceAnchorNormalization} from '../../services/codebase/traceAnchorLocator';
-import {parseInvestigationContract, parseInvestigationProfiles, type InvestigationProfiles} from '../../agentv3/strategyLoader';
+import {parseInvestigationContract, parseInvestigationProfiles, REMOVED_STRATEGY_FRONTMATTER_KEYS, type InvestigationProfiles} from '../../agentv3/strategyLoader';
 
 // ANSI color codes (fallback for chalk ESM issues)
 const colors = {
@@ -1050,7 +1050,14 @@ export function validateStrategyFrontmatter(
   } catch (error) {
     investigationErrors.push(`${file}: ${error instanceof Error ? error.message : String(error)}`);
   }
+  const frontmatter = parsed.frontmatter;
+  // Loading only warns about these so a stray one cannot stop sessions; a
+  // strategy file must not bring them back.
+  const removedFieldErrors = REMOVED_STRATEGY_FRONTMATTER_KEYS
+    .filter(key => frontmatter[key] !== undefined)
+    .map(key => `${file}: ${key} was removed and has no effect; use investigation_contract for evidence obligations`);
   return [
+    ...removedFieldErrors,
     ...investigationErrors,
     ...validateFinalReportContractFrontmatter(parsed.frontmatter, file),
     ...validateVerifierMisdiagnosisFrontmatter(parsed.frontmatter, file, context),

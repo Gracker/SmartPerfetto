@@ -85,8 +85,8 @@ describe('typed turn prompt assembly', () => {
     const scene: StrategyDefinition = {
       scene: 'scrolling', classificationDescription: 'Frame delivery during scrolling.',
       strategyKind: 'normal', priority: 1, effort: 'high', keywords: [],
-      requiredCapabilities: ['frames'], optionalCapabilities: [], phaseHints: [],
-      planTemplate: null, verifierMisdiagnosisPatterns: [], detailSections: [],
+      requiredCapabilities: ['frames'], optionalCapabilities: [],
+      verifierMisdiagnosisPatterns: [], detailSections: [],
       sourcePath: '/pinned/scrolling.strategy.md',
       content: 'Legacy recipe that must stay out of typed prompts.',
       finalReportContract: {requiredSections: [{

@@ -2,10 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
-import {
-  parseStrategyContribution,
-  type PhaseHint,
-} from '../../agentv3/strategyLoader';
+import {parseStrategyContribution} from '../../agentv3/strategyLoader';
 import {isProductionAgentRuntimeKind} from '../../agentRuntime/runtimeKinds';
 import type {ApplicationBuildIdentity} from '../applicationUpdate/types';
 import type {
@@ -867,7 +864,9 @@ function parseEvolutionStrategyDelta(value: unknown): EvolutionStrategyDeltaV1 {
       ...(delta.beforeContentHash
         ? {beforeContentHash: delta.beforeContentHash as string}
         : {}),
-      ...(delta.after ? {after: delta.after as PhaseHint} : {}),
+      ...(delta.after
+        ? {after: delta.after as Readonly<Record<string, unknown>>}
+        : {}),
     });
   }
   if (delta.kind === 'retire_phase_hint') {

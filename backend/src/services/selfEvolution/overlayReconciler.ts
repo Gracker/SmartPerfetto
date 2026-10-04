@@ -72,7 +72,7 @@ export interface OverlayReconciliationResult {
  * Reason recorded for an overlay persisted before strategy phase hints were
  * removed: it is readable but no longer applied.
  */
-export const INERT_OVERLAY_REASON = 'inert_injection_target_unsupported';
+const INERT_OVERLAY_REASON = 'inert_injection_target_unsupported';
 
 interface ReconciliationCandidate {
   entry: EvolutionOverlayRegistryEntryV1;

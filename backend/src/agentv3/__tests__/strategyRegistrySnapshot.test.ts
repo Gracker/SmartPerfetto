@@ -73,11 +73,10 @@ describe('strategy registry snapshots', () => {
     expect(effective.content).toContain(base.content);
     expect(effective.content).toContain('Overlay core section.');
     expect(effective.detailSections.map(detail => detail.id)).toContain('overlay_detail_a');
-    expect(effective.planTemplate).toEqual(base.planTemplate);
     expect(effective.finalReportContract).toEqual(base.finalReportContract);
     expect(effective.requiredCapabilities).toEqual(base.requiredCapabilities);
     expect(Object.isFrozen(effective)).toBe(true);
-    expect(Object.isFrozen(effective.phaseHints)).toBe(true);
+    expect(Object.isFrozen(effective.detailSections)).toBe(true);
   });
 
   it('rejects scope, base fingerprint, unknown operation, and id conflicts', () => {
@@ -183,6 +182,34 @@ describe('strategy registry snapshots', () => {
       const snapshot = buildStrategyRegistrySnapshotFromDefinitions({definitions: [legacy], overlayGeneration: 'legacy'});
       expect(snapshot.getStrategy('scrolling')).not.toHaveProperty('investigationRequirements');
     } finally {read.mockRestore();}
+  });
+
+  it('ignores removed phase_hints and plan_template frontmatter with a warning', () => {
+    for (const definition of loadStrategies().values()) {
+      expect(definition).not.toHaveProperty('phaseHints');
+      expect(definition).not.toHaveProperty('planTemplate');
+    }
+    const sourcePath = loadStrategies().get('scrolling')!.sourcePath;
+    const readFileSync = fs.readFileSync;
+    const read = jest.spyOn(fs, 'readFileSync').mockImplementation((file, options) =>
+      String(file) === sourcePath
+        ? '---\nscene: scrolling\nphase_hints:\n  - id: stray\n    critical_tools: [invoke_skill]\n'
+          + 'plan_template:\n  mandatory_aspects:\n    - id: stray\n---\nFixture core.'
+        : readFileSync(file, options));
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const loaded = loadStrategies().get('scrolling')!;
+      expect(loaded.content).toBe('Fixture core.');
+      expect(loaded).not.toHaveProperty('phaseHints');
+      expect(loaded).not.toHaveProperty('planTemplate');
+      expect(warn).toHaveBeenCalledWith(
+        '[StrategyLoader] strategy_frontmatter_removed_field:scrolling.strategy.md:phase_hints is ignored');
+      expect(warn).toHaveBeenCalledWith(
+        '[StrategyLoader] strategy_frontmatter_removed_field:scrolling.strategy.md:plan_template is ignored');
+    } finally {
+      read.mockRestore();
+      warn.mockRestore();
+    }
   });
 
   it.each(['null', '[]', '"a scalar"', '[42]', '["valid", "  "]', '["valid", null]'])(

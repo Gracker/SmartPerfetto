@@ -41,37 +41,6 @@ keywords:
   - 卡死
   - 杀进程
 
-phase_hints:
-  - id: anr_chain
-    keywords: ['ANR', '卡死', 'freeze', 'binder', 'lock', 'monitor']
-    constraints: 'ANR/卡死先调用 anr_analysis；若定位到具体 ANR 事件，再用 anr_detail 深钻。'
-    critical_tools: ['anr_analysis', 'anr_detail']
-    critical: false
-  - id: memory_growth
-    keywords: ['leak', 'growth', 'RSS', 'swap', '内存泄漏', '内存增长']
-    constraints: '内存增长/泄漏先调用 memory_growth_detector；涉及 LMK/OOM 时补 lmk_kill_attribution 和 oom_adjuster_score_timeline。'
-    critical_tools: ['memory_growth_detector', 'lmk_kill_attribution', 'oom_adjuster_score_timeline']
-    critical: true
-  - id: native_heap
-    keywords: ['native heap', 'heapprofd', 'malloc', 'C++', 'native 内存']
-    constraints: 'native heap 问题调用 native_heap_breakdown。无 heapprofd 数据时必须说明 trace 不支持 native heap attribution。'
-    critical_tools: ['native_heap_breakdown']
-    critical: false
-
-plan_template:
-  mandatory_aspects:
-    - id: runtime_primary_signal
-      match_keywords: ['anr_analysis', 'memory_growth_detector', 'native_heap_breakdown', 'lmk_kill_attribution', 'ANR', '内存', 'runtime']
-      suggestion: '运行时正确性场景需要至少包含 ANR、内存增长、LMK/OOM 或 native heap 的一条主证据链'
-      required_expected_call_alternatives:
-        - tool: invoke_skill
-          skill_id: anr_analysis
-        - tool: invoke_skill
-          skill_id: memory_growth_detector
-        - tool: invoke_skill
-          skill_id: native_heap_breakdown
-        - tool: invoke_skill
-          skill_id: lmk_kill_attribution
 ---
 
 #### runtime_correctness Core Strategy

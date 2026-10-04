@@ -21,7 +21,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import * as yaml from 'js-yaml';
-import type { ExpectedCall } from './types';
 import type {AnalysisReportRequirementCondition} from '../types/analysisDelivery';
 import {canonicalContentHash} from '../services/selfEvolution/canonicalJson';
 import {
@@ -32,35 +31,6 @@ import {currentRunManifestAttributionSink} from '../services/selfEvolution/runMa
 import type {RunManifestScope} from '../types/selfEvolution';
 import {INVESTIGATION_CONDITION_OPERATORS, type AnalysisInvestigationContract,
   type AnalysisInvestigationRequirement} from '../types/analysisInvestigation';
-
-/**
- * Historical phase hint from strategy frontmatter `phase_hints`.
- *
- * These are **not injected into an analysis run**. The `update_plan_phase`
- * restatement that consumed them was removed when typed intent replaced
- * prescribed plans, and its matcher followed; the fields remain readable so
- * pinned snapshots, fingerprints and existing Self-Evolution overlays keep
- * loading. Nothing here selects a tool, reaches the model, or constrains a
- * phase.
- *
- * The selector also could not have done the job it reads as doing: it matched
- * keywords against the phase name and goal the model wrote itself, so a hint
- * could only reinforce an investigation already chosen, never redirect one
- * that was not. Evidence-keyed obligations belong in a scene's
- * `investigation_contract`, which binds to producer metrics instead of to
- * phrasing.
- */
-export interface PhaseHint {
-  id: string;
-  keywords: string[];
-  constraints: string;
-  /** @deprecated Historical configuration; never admitted or suggested a tool. */
-  criticalTools: string[];
-  /** @deprecated Read only for historical overlay/fingerprint compatibility; never enforces tool admission. */
-  maxToolCalls?: Readonly<Record<string, number>>;
-  /** @deprecated Historical fallback flag; no injection path consumes it. */
-  critical: boolean;
-}
 
 /** On-demand strategy detail section parsed from Markdown comment blocks. */
 export interface StrategyDetailSection {
@@ -73,36 +43,6 @@ export interface StrategyDetailSection {
   content: string;
   /** Author-designated default detail for discovery; never selects a plan phase. */
   default: boolean;
-}
-
-/**
- * Historical plan advice from `plan_template.mandatory_aspects` frontmatter.
- * These fields remain readable in pinned strategy snapshots; they do not
- * validate or require phases, words, tools, or waiver text in an agent's plan.
- */
-export interface PlanMandatoryAspect {
-  /** Stable identifier for diff-friendly tracking (e.g. `frame_jank_analysis`). */
-  id: string;
-  matchKeywords: string[];
-  /** Historical discovery metadata, not an execution trigger. */
-  triggerKeywords?: string[];
-  suggestion: string;
-  /** Author-suggested calls retained as advice, not mandatory execution. */
-  requiredExpectedCalls?: ExpectedCall[];
-  /** Author-suggested alternatives. */
-  alternativeExpectedCalls?: ExpectedCall[];
-  /** Historical contextual suggestions; no automatic keyword selection. */
-  conditionalRequiredExpectedCalls?: Array<{
-    triggerKeywords: string[];
-    requiredExpectedCalls: ExpectedCall[];
-  }>;
-  /** Historical field; no longer grants or denies a waiver. */
-  waivable?: boolean;
-}
-
-/** Plan template loaded from a strategy's `plan_template:` frontmatter. */
-export interface PlanTemplate {
-  mandatoryAspects: PlanMandatoryAspect[];
 }
 
 /**
@@ -163,13 +103,6 @@ export interface StrategyDefinition {
   investigationRequirements?: string[];
   /** Expanded profile contents travel with the same immutable registry pin. */
   investigationContract?: AnalysisInvestigationContract;
-  /** Historical phase hints. Retained for snapshots and overlays; see `PhaseHint`. */
-  phaseHints: PhaseHint[];
-  /**
-   * Optional historical plan advice. `null` means no advice was declared;
-   * neither this field nor its absence imposes an execution requirement.
-   */
-  planTemplate: PlanTemplate | null;
   /**
    * Data-only contract for final answer completeness. Runtime code must
    * execute this contract generically instead of hardcoding scene checks.
@@ -193,6 +126,18 @@ export interface StrategyDefinition {
    */
   sourcePath: string;
 }
+
+/**
+ * Frontmatter fields that no longer exist. `phase_hints` (with
+ * `critical_tools`) and `plan_template` (with `mandatory_aspects` and its
+ * expected calls) were never injected into an analysis and were removed.
+ * `validate:strategies` rejects a strategy file that declares one; loading
+ * ignores it with a warning, so a stray declaration cannot stop every session
+ * from starting. Obligations that must bind to what a run measured belong in
+ * `investigation_contract`.
+ */
+export const REMOVED_STRATEGY_FRONTMATTER_KEYS = ['phase_hints', 'plan_template'] as const;
+const reportedRemovedFrontmatterKeys = new Set<string>();
 
 const STRATEGIES_DIR = path.resolve(__dirname, '../../strategies');
 /** Tolerates leading `<!-- -->` blocks (e.g. SPDX/license headers) before the frontmatter. */
@@ -268,23 +213,6 @@ export function buildStrategyRegistrySnapshotFromDefinitions(input: {
       return [...orderedDefinitions];
     },
   });
-}
-
-function parseExpectedCalls(value: unknown): ExpectedCall[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((entry): ExpectedCall | null => {
-      if (!entry || typeof entry !== 'object') return null;
-      const record = entry as Record<string, unknown>;
-      const tool = typeof record.tool === 'string' ? record.tool : '';
-      const skillId = typeof record.skillId === 'string'
-        ? record.skillId
-        : typeof record.skill_id === 'string'
-          ? record.skill_id
-          : undefined;
-      return tool ? { tool, ...(skillId ? { skillId } : {}) } : null;
-    })
-    .filter((entry): entry is ExpectedCall => entry !== null);
 }
 
 function parseDetailAttributes(raw: string): Record<string, string> {
@@ -546,6 +474,12 @@ function parseStrategyFile(filePath: string, investigationProfiles: Investigatio
 
   const frontmatter = yaml.load(match[1]) as Record<string, unknown>;
   const content = match[2].trim();
+  for (const key of REMOVED_STRATEGY_FRONTMATTER_KEYS) {
+    const report = `${path.basename(filePath)}:${key}`;
+    if (frontmatter[key] === undefined || reportedRemovedFrontmatterKeys.has(report)) continue;
+    reportedRemovedFrontmatterKeys.add(report);
+    console.warn(`[StrategyLoader] strategy_frontmatter_removed_field:${report} is ignored`);
+  }
 
   const rawInvestigationRequirements = frontmatter.investigation_requirements;
   let investigationRequirements: string[] | undefined;
@@ -559,51 +493,6 @@ function parseStrategyFile(filePath: string, investigationProfiles: Investigatio
   const investigationContract = withStrategyParseContext(
     () => parseInvestigationContract(frontmatter.investigation_contract, investigationProfiles),
     filePath);
-
-  const rawHints = (frontmatter.phase_hints as Array<Record<string, unknown>> | undefined) || [];
-  const phaseHints: PhaseHint[] = rawHints.map(h => ({
-    id: (h.id as string) || '',
-    keywords: (h.keywords as string[]) || [],
-    constraints: (h.constraints as string) || '',
-    criticalTools: (h.critical_tools as string[]) || [],
-    ...parsePhaseHintMaxToolCalls(h.max_tool_calls, `strategy_phase_hint_invalid_max_tool_calls:${filePath}`),
-    critical: (h.critical as boolean) ?? false,
-  }));
-
-  const rawPlanTemplate = frontmatter.plan_template as Record<string, unknown> | undefined;
-  let planTemplate: PlanTemplate | null = null;
-  if (rawPlanTemplate) {
-    const aspects = (rawPlanTemplate.mandatory_aspects as Array<Record<string, unknown>> | undefined) || [];
-    planTemplate = {
-      mandatoryAspects: aspects.map(a => {
-        const triggerKeywords = Array.isArray(a.trigger_keywords)
-          ? a.trigger_keywords as string[]
-          : [];
-        const conditionalRequiredExpectedCalls = Array.isArray(a.conditional_required_expected_calls)
-          ? (a.conditional_required_expected_calls as Array<Record<string, unknown>>)
-              .map(group => ({
-                triggerKeywords: Array.isArray(group.trigger_keywords)
-                  ? group.trigger_keywords as string[]
-                  : [],
-                requiredExpectedCalls: parseExpectedCalls(group.required_expected_calls),
-              }))
-              .filter(group => group.triggerKeywords.length > 0 && group.requiredExpectedCalls.length > 0)
-          : [];
-        return {
-          id: (a.id as string) || '',
-          matchKeywords: (a.match_keywords as string[]) || [],
-          ...(triggerKeywords.length > 0 ? { triggerKeywords } : {}),
-          suggestion: (a.suggestion as string) || '',
-          requiredExpectedCalls: parseExpectedCalls(a.required_expected_calls),
-          alternativeExpectedCalls: parseExpectedCalls(a.required_expected_call_alternatives),
-          ...(conditionalRequiredExpectedCalls.length > 0
-            ? { conditionalRequiredExpectedCalls }
-            : {}),
-          waivable: (a.waivable as boolean | undefined) ?? true,
-        };
-      }),
-    };
-  }
 
   const finalReportContract = parseFinalReportContract(frontmatter.final_report_contract);
 
@@ -644,8 +533,6 @@ function parseStrategyFile(filePath: string, investigationProfiles: Investigatio
     optionalCapabilities: (frontmatter.optional_capabilities as string[]) || [],
     ...(investigationRequirements ? {investigationRequirements} : {}),
     ...(investigationContract ? {investigationContract} : {}),
-    phaseHints,
-    planTemplate,
     finalReportContract,
     verifierMisdiagnosisPatterns,
     content: parsedContent.coreContent,
@@ -681,39 +568,6 @@ function cloneStrategyDefinition(definition: StrategyDefinition): StrategyDefini
         ...(requirement.evidenceMetrics ? {evidenceMetrics: [...requirement.evidenceMetrics]} : {}),
       })),
     }} : {}),
-    phaseHints: definition.phaseHints.map(hint => ({
-      ...hint,
-      keywords: [...hint.keywords],
-      criticalTools: [...hint.criticalTools],
-      ...(hint.maxToolCalls ? {maxToolCalls: {...hint.maxToolCalls}} : {}),
-    })),
-    planTemplate: definition.planTemplate
-      ? {
-          mandatoryAspects: definition.planTemplate.mandatoryAspects.map(aspect => ({
-            ...aspect,
-            matchKeywords: [...aspect.matchKeywords],
-            ...(aspect.triggerKeywords
-              ? {triggerKeywords: [...aspect.triggerKeywords]}
-              : {}),
-            ...(aspect.requiredExpectedCalls
-              ? {requiredExpectedCalls: aspect.requiredExpectedCalls.map(call => ({...call}))}
-              : {}),
-            ...(aspect.alternativeExpectedCalls
-              ? {alternativeExpectedCalls: aspect.alternativeExpectedCalls.map(call => ({...call}))}
-              : {}),
-            ...(aspect.conditionalRequiredExpectedCalls
-              ? {
-                  conditionalRequiredExpectedCalls:
-                    aspect.conditionalRequiredExpectedCalls.map(group => ({
-                      triggerKeywords: [...group.triggerKeywords],
-                      requiredExpectedCalls:
-                        group.requiredExpectedCalls.map(call => ({...call})),
-                    })),
-                }
-              : {}),
-          })),
-        }
-      : null,
     finalReportContract: definition.finalReportContract
       ? {
           requiredSections:
@@ -802,25 +656,6 @@ function assertStringArray(value: unknown, code: string): asserts value is strin
   if (!Array.isArray(value) || value.some(entry => typeof entry !== 'string')) {
     throw new Error(code);
   }
-}
-
-function parsePhaseHintMaxToolCalls(
-  value: unknown,
-  code: string,
-): {maxToolCalls?: Record<string, number>} {
-  if (value === undefined) return {};
-  if (
-    !isRecord(value)
-    || Object.entries(value).some(([toolName, limit]) =>
-      !toolName.trim()
-      || (toolName !== 'execute_sql' && toolName !== 'execute_sql_on')
-      || typeof limit !== 'number'
-      || !Number.isInteger(limit)
-      || limit < 0)
-  ) {
-    throw new Error(code);
-  }
-  return {maxToolCalls: {...value} as Record<string, number>};
 }
 
 function parseDetailContribution(
@@ -1119,23 +954,6 @@ export function getStrategyDetailByRef(
 export function getRegisteredScenes(): StrategyDefinition[] {
   return Array.from(loadStrategies().values())
     .filter(def => def.strategyKind !== 'contract_only');
-}
-
-/** Get phase-level restatement hints for a scene. Returns [] if scene has no hints. */
-export function getPhaseHints(scene: string, registry?: ReadonlyStrategyRegistrySnapshot): PhaseHint[] {
-  const def = registry ? registry.getStrategy(scene) : loadStrategies().get(scene);
-  if (def?.strategyKind === 'contract_only') return [];
-  return def?.phaseHints || [];
-}
-
-/**
- * Read optional plan advice from the selected registry. Unknown scenes and
- * absent declarations return null; an explicit pin never falls back to globals.
- */
-export function getPlanTemplate(scene: string, registry?: ReadonlyStrategyRegistrySnapshot): PlanTemplate | null {
-  const def = registry ? registry.getStrategy(scene) : loadStrategies().get(scene);
-  if (def?.strategyKind === 'contract_only') return null;
-  return def?.planTemplate ?? null;
 }
 
 /**

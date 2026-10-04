@@ -5,25 +5,12 @@
 /**
  * Strategy version fingerprinting + per-run snapshot freezing.
  *
- * Two kinds of fingerprint cooperate so PR9b's supersede markers survive
- * sloppy real-world edits:
- *
- *   1. `strategyContentHash` — sha256 of the entire strategy file. Cheap to
- *      compute, but too coarse to use alone: a typo fix in an unrelated
- *      paragraph would invalidate every supersede marker pinned to the file.
- *   2. `patchFingerprint` — a hash over the normalized form of a single
- *      phase_hints entry (id + sorted keywords + constraints + critical
- *      tools). Drift detection on the patch fingerprint tells us whether the
- *      *patched* hint is still in place even if the whole file changed.
- *
- * The §11.2 three-tier drift rule:
- *   - file hash changed, patch fingerprint still present → stay `active`
- *   - patch fingerprint changed → `drifted` (×0.5 injection weight)
- *   - phase_hints entry deleted entirely → `reverted` (restore to ×1.0)
- *
- * The `RunSnapshotRegistry` ensures an in-flight analysis sees a frozen
- * version of its scene's strategy + phase_hints — `invalidateStrategyCache()`
- * must never half-update an analysis mid-flight.
+ * `strategyContentHash` identifies the strategy version a run used. The
+ * `RunSnapshotRegistry` ensures an in-flight analysis sees a frozen version of
+ * its scene's strategy — `invalidateStrategyCache()` must never half-update an
+ * analysis mid-flight — and capturing reads the content through
+ * `getStrategyContent`, which records the scene's `strategyId` and
+ * `strategyContentHash` in the run's manifest.
  *
  * See docs/architecture/self-improving-design.md "组件级 Review 与 Patch 边界".
  */
@@ -33,11 +20,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import {
   getStrategyContent,
-  getPhaseHints,
   getStrategyFilePath,
-  type PhaseHint,
 } from '../strategyLoader';
-import { computeHintFingerprint } from './hintFingerprint';
 import {canonicalContentHash} from '../../services/selfEvolution/canonicalJson';
 import {currentEffectiveRuntimeRegistrySnapshot, type ReadonlyStrategyRegistrySnapshot} from '../../services/selfEvolution/effectiveRuntimeRegistryContext';
 
@@ -46,22 +30,14 @@ const STRATEGIES_DIR = path.resolve(__dirname, '..', '..', '..', 'strategies');
 export interface StrategyVersionFingerprint {
   strategyFile: string;
   strategyContentHash: string;
-  /**
-   * Hash of the targeted phase_hints entry's normalized form. Empty string
-   * for fingerprints that don't pin a specific hint (e.g., scene-level
-   * fingerprints used during snapshot capture).
-   */
-  patchFingerprint: string;
-  /** Optional: id of the targeted phase_hints entry (for human auditing). */
-  phaseHintId?: string;
   /** Commit on `main` where this version was last observed. */
   gitCommit?: string;
   appliedAt: number;
 }
 
 /**
- * Frozen view of a scene's strategy + phase hints, captured at analyze()
- * start and released on completion.
+ * Frozen view of a scene's strategy, captured at analyze() start and released
+ * on completion.
  */
 export interface RunSnapshot {
   readonly sessionId: string;
@@ -69,15 +45,8 @@ export interface RunSnapshot {
   readonly overlayGeneration: string;
   readonly registryFingerprint?: string;
   readonly strategyContent: string | undefined;
-  readonly phaseHints: readonly PhaseHint[];
   readonly fingerprint: Readonly<StrategyVersionFingerprint>;
 }
-
-export type DriftStatus =
-  | 'none'                 // hashes match exactly
-  | 'whole_file_only'      // file hash differs but patch fingerprint still present
-  | 'patch_changed'        // the targeted phase_hint differs in normalized form
-  | 'patch_deleted';       // the targeted phase_hint id is no longer present
 
 /**
  * Resolve the strategy file path through the loader's registry rather than
@@ -101,53 +70,6 @@ export function computeStrategyContentHash(scene: string): string {
   if (!fs.existsSync(file)) return '';
   const content = fs.readFileSync(file, 'utf-8');
   return createHash('sha256').update(content).digest('hex');
-}
-
-/**
- * Hash a phase_hints entry by its shared canonical form. Sorted keys +
- * lower-case strings + array sort keep the hash stable across cosmetic
- * reordering of the same content.
- *
- * Intentionally excludes `id`: auto-generated hint ids were derived from
- * the fingerprint, so including it would be circular.
- */
-export function computePatchFingerprint(hint: PhaseHint): string {
-  return computeHintFingerprint({
-    keywords: hint.keywords || [],
-    constraints: hint.constraints || '',
-    criticalTools: hint.criticalTools || [],
-    critical: hint.critical === true,
-  });
-}
-
-/**
- * Compare a stored fingerprint against the current on-disk state and report
- * which drift tier we're in. Pure function — does not mutate anything.
- */
-export function detectDrift(input: {
-  fingerprint: StrategyVersionFingerprint;
-  currentHints: ReadonlyArray<PhaseHint>;
-  currentContentHash: string;
-}): DriftStatus {
-  if (
-    input.fingerprint.strategyContentHash === input.currentContentHash &&
-    input.fingerprint.patchFingerprint === '' // scene-level fingerprint
-  ) {
-    return 'none';
-  }
-  if (input.fingerprint.patchFingerprint === '') {
-    return input.fingerprint.strategyContentHash === input.currentContentHash ? 'none' : 'whole_file_only';
-  }
-  const pinnedId = input.fingerprint.phaseHintId;
-  const pinnedHint = pinnedId
-    ? input.currentHints.find(h => h.id === pinnedId)
-    : input.currentHints.find(h => computePatchFingerprint(h) === input.fingerprint.patchFingerprint);
-  if (!pinnedHint) return 'patch_deleted';
-  const currentPatchHash = computePatchFingerprint(pinnedHint);
-  if (currentPatchHash === input.fingerprint.patchFingerprint) {
-    return input.fingerprint.strategyContentHash === input.currentContentHash ? 'none' : 'whole_file_only';
-  }
-  return 'patch_changed';
 }
 
 /**
@@ -177,14 +99,12 @@ export class RunSnapshotRegistry {
       return existing;
     }
     const strategyContent = getStrategyContent(sceneType, registry);
-    const phaseHints = Object.freeze([...getPhaseHints(sceneType, registry)]);
     const strategyContentHash = registry
       ? canonicalContentHash(strategyContent ?? '')
       : computeStrategyContentHash(sceneType);
     const fingerprint: StrategyVersionFingerprint = {
       strategyFile: `${sceneType}.strategy.md`,
       strategyContentHash,
-      patchFingerprint: '', // scene-level snapshot pins nothing in particular
       appliedAt: Date.now(),
     };
     const snapshot: RunSnapshot = Object.freeze({
@@ -193,7 +113,6 @@ export class RunSnapshotRegistry {
       overlayGeneration,
       ...(registry ? {registryFingerprint: registry.registryFingerprint} : {}),
       strategyContent,
-      phaseHints,
       fingerprint: Object.freeze(fingerprint),
     });
     this.snapshots.set(sessionId, snapshot);
