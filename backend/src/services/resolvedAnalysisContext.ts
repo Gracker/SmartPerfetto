@@ -104,12 +104,26 @@ function readRegistrationsOf(
   scope: KnowledgeScope,
   registries: AnalysisContextRegistries,
 ): AnalysisContextRegistrations {
-  const codebaseRegistry = registries.codebaseRegistry ?? getDefaultCodebaseRegistry();
-  const knowledgeRegistry = registries.knowledgeRegistry ?? getDefaultExternalKnowledgeSourceRegistry();
+  const codebaseIds = selectedIds(effective.codebaseIds);
+  const knowledgeSourceIds = selectedIds(effective.knowledgeSourceIds);
+  // One fresh read of each store for every selected id. A store that cannot
+  // be read throws `StoreUnreadableError`: a failed read is not a revoke.
   return {
-    codebases: new Map(selectedIds(effective.codebaseIds).map(id => [id, codebaseRegistry.get(id, scope)])),
-    knowledgeSources: new Map(selectedIds(effective.knowledgeSourceIds).map(id => [id, knowledgeRegistry.get(id, scope)])),
+    codebases: codebaseIds.length === 0 ? new Map()
+      : readSelected(registries.codebaseRegistry ?? getDefaultCodebaseRegistry(), codebaseIds, scope),
+    knowledgeSources: knowledgeSourceIds.length === 0 ? new Map()
+      : readSelected(registries.knowledgeRegistry ?? getDefaultExternalKnowledgeSourceRegistry(), knowledgeSourceIds, scope),
   };
+}
+
+/** A registry offering only `get` (an injected port) is read one id at a time. */
+function readSelected<T>(
+  registry: {get(id: string, scope: KnowledgeScope): T | undefined; getSelected?(ids: readonly string[], scope: KnowledgeScope): Map<string, T | undefined>},
+  ids: readonly string[],
+  scope: KnowledgeScope,
+): ReadonlyMap<string, T | undefined> {
+  return typeof registry.getSelected === 'function'
+    ? registry.getSelected(ids, scope) : new Map(ids.map(id => [id, registry.get(id, scope)]));
 }
 
 /** The fingerprint of registrations already read (`readAnalysisContextRegistrations`). */

@@ -17,7 +17,6 @@ import {
   INVALID_NATIVE_DECLARATION,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
-import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import type {RuntimeToolObserver} from '../../runtimeToolObserver';
 import {runClaudeIntentTransport} from './claudeIntentTransport';
 import {
@@ -31,8 +30,10 @@ import {analysisDeliveryFingerprint, type AnalysisCandidateIdentity, type Analys
 import type {ReadonlyStrategyRegistrySnapshot} from '../../../services/selfEvolution/effectiveRuntimeRegistryContext';
 import * as fs from 'fs';
 import * as path from 'path';
-import {SYSTEM_PROMPT_DYNAMIC_BOUNDARY} from '@anthropic-ai/claude-agent-sdk';
+import {SYSTEM_PROMPT_DYNAMIC_BOUNDARY, type HookCallback, type Options as ClaudeSdkOptions} from '@anthropic-ai/claude-agent-sdk';
+import {AnalysisContextAuthorizationChangedError} from '../../../services/resolvedAnalysisContext';
 import {claudeSdkQuery as sdkQuery} from './claudeSdkQuery';
+import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
 import {
   commitEvaluationExposureSince,
   currentEvaluationInjectionContract,
@@ -93,8 +94,6 @@ import { buildAgentDefinitions } from './claudeAgentDefinitions';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
 import {
   analysisContextMemoryPartitionKey,
-  assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
 } from '../../../services/resolvedAnalysisContext';
 import type { AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, FailedApproach, Hypothesis, UncertaintyFlag } from '../../../agentv3/types';
 import { ArtifactStore } from '../../../agentv3/artifactStore';
@@ -351,6 +350,38 @@ function sdkAttemptHasObservedWork(message: unknown): boolean {
   // Partial model events, assistant messages, tool progress/results and unknown
   // events cannot establish that replaying this attempt consumes no work.
   return true;
+}
+
+type ClaudeSdkHooks = NonNullable<ClaudeSdkOptions['hooks']>;
+
+/**
+ * The CLI awaits these before it sends the prompt and before every request
+ * that follows a tool batch (sub-agent batches included), which are the SDK's
+ * native continuations, so a failed check stops the query there. Only a revoke
+ * answers with the revoke's code; the fence has already ended the run then. A
+ * check that could not run (a store that failed to read) refuses this request
+ * as an ordinary failure, and the run is not marked revoked.
+ */
+function claudeAuthorizationHooks(authorization: Pick<RunAuthorizationCheck, 'assertCurrent'>): ClaudeSdkHooks {
+  const check: HookCallback = async () => {
+    try {
+      authorization.assertCurrent();
+      return {};
+    } catch (error) {
+      return {continue: false, stopReason: error instanceof AnalysisContextAuthorizationChangedError
+        ? 'analysis_context_changed_restart_required' : 'analysis_context_check_failed'};
+    }
+  };
+  return {UserPromptSubmit: [{hooks: [check]}], PostToolBatch: [{hooks: [check]}]};
+}
+
+/** Caller hooks first, then `added`, per event; neither replaces the other. */
+function mergeClaudeHooks(own: ClaudeSdkHooks | undefined, added: ClaudeSdkHooks): ClaudeSdkHooks {
+  const merged: ClaudeSdkHooks = {...own};
+  for (const [event, matchers] of Object.entries(added) as Array<[keyof ClaudeSdkHooks, ClaudeSdkHooks[keyof ClaudeSdkHooks]]>) {
+    merged[event] = [...own?.[event] ?? [], ...matchers ?? []];
+  }
+  return merged;
 }
 
 function sdkQueryWithRetry(
@@ -682,13 +713,16 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       executionLease.throwIfAborted();
       const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
       const previousTurns = sessionContext.getAllTurns?.() || [];
-      const authorizationScope = resolveKnowledgeScope(options);
-      const authorizationFingerprint = options.analysisContextFingerprint ??
-        buildAnalysisContextAuthorizationFingerprint(options, authorizationScope);
-      const assertAuthorized = () => {
-        executionLease.throwIfAborted();
-        assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
-      };
+      // Checked before every SDK dispatch, by the CLI's own hooks before the
+      // prompt and before each request that follows a tool batch, and around
+      // every tool call. Aborting the lease ends the run, whose cleanup closes the query.
+      const {fence: authorization, assertActive: assertAuthorized} = createRuntimeRunAuthorization({options, executionLease});
+      const authorizationHooks = claudeAuthorizationHooks(authorization);
+      // Every SDK options object this run dispatches with: classifier, main, correction, closeout and review.
+      const withAuthorizationHooks = (sdkOptions: ClaudeSdkOptions | undefined): ClaudeSdkOptions =>
+        ({...sdkOptions, hooks: mergeClaudeHooks(sdkOptions?.hooks, authorizationHooks)});
+      const authorizedSdk = async () => ({query: (input: Parameters<typeof sdkQuery>[0]) =>
+        sdkQuery({...input, options: withAuthorizationHooks(input.options)})});
       const analysisHistoryReader = createRuntimeAnalysisHistoryReader({
         options, sessionId, traceId,
         getTurns: () => sessionContext.getAnalysisHistory(),
@@ -712,7 +746,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         dispatch: input => runClaudeIntentTransport({
           ...input, config: resolvedConfig, sdkEnv,
           sdkBinaryOptions: getSdkBinaryOption(sdkEnv),
-          loadSdk: async () => ({query: sdkQuery}),
+          loadSdk: authorizedSdk,
         }),
       });
       turnIntent = await intentResolver.resolve();
@@ -785,7 +819,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             try {
               return await runClaudeIntentTransport({...input,
                 config: {lightModel: finalizationModel, cwd: directory}, sdkEnv: finalizationEnv,
-                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: async () => ({query: sdkQuery})});
+                sdkBinaryOptions: finalizationBinaryOptions, loadSdk: authorizedSdk});
             } finally {
               await fs.promises.rm(directory, {recursive: true, force: true});
             }
@@ -824,7 +858,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
           if (event.phase === 'completed') deadline.recordProgress();
           return closeoutTape.observe(event);
         },
-        analysisHistoryReader, acquisition,
+        analysisHistoryReader, acquisition, runAuthorization: authorization,
         sceneDeadlineMs: deadline.hardDeadlineAt, scenePacing: deadline,
       });
       sourceUse = ctx.sourceUse;
@@ -936,7 +970,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         }
         const { stream, close: closeSdk } = sdkQueryWithRetry({
             prompt: effectivePrompt,
-            options: {
+            options: withAuthorizationHooks({
               model: runtimeConfig.model,
               maxTurns: turnBudget.acquisitionTurns,
               systemPrompt: ctx.sdkSystemPrompt,
@@ -955,7 +989,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               },
               ...(runtimeConfig.maxBudgetUsd ? { maxBudgetUsd: runtimeConfig.maxBudgetUsd } : {}),
               ...(ctx.agents ? { agents: ctx.agents } : {}),
-            },
+            }),
         }, {
             emitUpdate: (update) => this.emitUpdate(update),
             outputLanguage: outputLanguage,
@@ -1592,9 +1626,9 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
               sdkEnv: finalizationEnv, sdkBinaryOptions: finalizationBinaryOptions,
               loadSdk: async () => ({query: input => {
                 assertAuthorized();
-                return sdkQuery({...input, options: {
+                return sdkQuery({...input, options: withAuthorizationHooks({
                   ...input.options, ...(remainingBudgetUsd === undefined ? {} : {maxBudgetUsd: remainingBudgetUsd}),
-                }});
+                })});
               }}),
             });
             assertAuthorized();
@@ -1700,14 +1734,14 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
             prompt: declarationRequest
               ? buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage})
               : generateCorrectionPrompt(issues, conclusionText, outputLanguage, sceneType),
-            options: {
+            options: withAuthorizationHooks({
               model: runtimeConfig.model, maxTurns: 1, systemPrompt: ctx.sdkSystemPrompt,
               includePartialMessages: true, settingSources: [], tools: [], allowedTools: [],
               mcpServers: {}, strictMcpConfig: true, persistSession: false,
               ...resolveClaudeSdkPermissionOptions(), cwd: runtimeConfig.cwd,
               ...(declarationRequest && remainingBudgetUsd !== undefined ? {maxBudgetUsd: remainingBudgetUsd} : {}),
               effort: ctx.effectiveEffort, env: sdkEnv,
-            },
+            }),
           }, {maxRetries: 0, signal: executionLease.signal, runtimePerformance});
           const unregister = this.registerAbortHandle(sessionId, {abort: close});
           const turnsBeforeCorrection = observedRunTurns();
@@ -1885,6 +1919,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
         error,
         executionLease.signal,
       );
+      throwIfRunAuthorizationRevoked(executionLease.signal);
       const rawErrorMessage = (error as Error).message || 'Unknown error';
       const errMsg = explainClaudeRuntimeError(
         rawErrorMessage,
@@ -2175,6 +2210,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       toolObserver?: RuntimeToolObserver;
       analysisHistoryReader?: ReturnType<typeof createRuntimeAnalysisHistoryReader>;
       acquisition?: {open: boolean};
+      runAuthorization?: RunAuthorizationCheck;
       sceneDeadlineMs?: number;
       scenePacing?: ScenePacingInputs;
     },
@@ -2483,6 +2519,7 @@ export class ClaudeRuntime extends EventEmitter implements IOrchestrator {
       toolObserver: precomputed.toolObserver,
       analysisHistoryReader: precomputed.analysisHistoryReader,
       canInvokeTool,
+      runAuthorization: precomputed.runAuthorization,
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
         : undefined,

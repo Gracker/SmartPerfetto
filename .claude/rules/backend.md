@@ -787,7 +787,10 @@ or a private run; a store's error then travels on through routes that echo
 - Replacing the message changes no failure semantics. A reader that degrades
   uses `tryParseStoredJson`: a row picked by a client id whose owner data cannot
   be read is missing, as a deleted one would be; a store that failed closed on
-  a parse error still does.
+  a parse error still does. A reader that must tell a failed read from an
+  absent record (the registries' `getSelected`, read by authorization checks)
+  throws `StoreUnreadableError`, which names the store only, instead of
+  degrading to empty.
 - A store test writes an unquoted canary (and a digit canary for positions)
   and asserts that no message, response, report or log line contains it;
   `tests/helpers/consoleWarnings.ts` captures the log lines.

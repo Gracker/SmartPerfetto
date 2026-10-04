@@ -39,11 +39,13 @@ import {
   compactSharedToolSpec,
   createClaudeSdkToolFromSharedSpec,
   sharedToolSpecFromClaudeSdkTool,
+  withRuntimeToolAuthorization,
   withRuntimeToolConcurrency,
   withRuntimeToolGuard,
   withRuntimeToolTiming,
   type SharedToolSpec,
 } from '../agentRuntime/runtimeToolSpec';
+import type {RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
 import {
   createRuntimeToolConcurrencyCoordinator,
   type RuntimeToolConcurrencyCoordinator,
@@ -202,6 +204,7 @@ export class McpToolRegistry {
   private readonly canInvokeTool?: () => boolean;
   private readonly acquisitionPolicy?: RuntimeAcquisitionPolicy;
   private readonly runId?: string;
+  private readonly runAuthorization?: RunAuthorizationCheck;
 
   constructor(options: {
     toolConcurrencyCoordinator?: RuntimeToolConcurrencyCoordinator;
@@ -212,6 +215,8 @@ export class McpToolRegistry {
     canInvokeTool?: () => boolean;
     acquisitionPolicy?: RuntimeAcquisitionPolicy;
     runId?: string;
+    /** The run's pinned authorization, checked around every tool call. */
+    runAuthorization?: RunAuthorizationCheck;
   } = {}) {
     this.toolConcurrencyCoordinator = options.toolConcurrencyCoordinator
       ?? createRuntimeToolConcurrencyCoordinator();
@@ -221,6 +226,7 @@ export class McpToolRegistry {
     this.canInvokeTool = options.canInvokeTool;
     this.acquisitionPolicy = options.acquisitionPolicy;
     this.runId = options.runId;
+    this.runAuthorization = options.runAuthorization;
     this.requestScope = options.requestScope && Object.freeze({
       ...options.requestScope,
       ...(options.requestScope.capabilities
@@ -272,8 +278,9 @@ export class McpToolRegistry {
       }
       if (this.toolObserver) await this.toolObserver(event);
     } : this.toolObserver;
+    const scoped = withRuntimeToolInvocationScope(withRuntimeToolObserver(guarded, observer), this.runId);
     const runtimeShared = withRuntimeToolConcurrency(
-      withRuntimeToolInvocationScope(withRuntimeToolObserver(guarded, observer), this.runId),
+      this.runAuthorization?.enforced ? withRuntimeToolAuthorization(scoped, this.runAuthorization) : scoped,
       this.toolConcurrencyCoordinator,
       {runManifestAttributionSink: this.runManifestAttributionSink},
     );

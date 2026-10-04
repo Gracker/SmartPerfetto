@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import type {RunAuthorizationCheck} from '../agentRuntime/runAuthorizationFence';
 import {createRuntimeToolResult, runtimeToolReceiptMetadata} from '../agentRuntime/runtimeToolResult';
 import {assertSceneRuntimeCapability} from '../agent/scene/sceneRuntimeBinding';
 import {sceneRunState, type SceneRunContext} from '../agent/scene/sceneRunContext';
@@ -1373,6 +1374,12 @@ export interface ClaudeMcpServerOptions {
   /** Runtime lease: no tool body may execute after acquisition closes. */
   canInvokeTool?: () => boolean;
   /**
+   * The run's pinned authorization (`createRuntimeRunAuthorization`), checked
+   * before and after every tool call and by every private-context check
+   * inside one; a change ends the run.
+   */
+  runAuthorization?: RunAuthorizationCheck;
+  /**
    * The run id finalization reads evidence with (`currentRunId`). Tool-call
    * captures and observations carry it, so the ledger can tell this run's
    * acquisition from reused evidence; any other value reads as reused.
@@ -1764,13 +1771,19 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
   const knowledgeSourceCapabilityHint = wikiKnowledgeSourceIds.length > 0
     ? ` Request-authorized Android Internals Wiki source ids: ${wikiKnowledgeSourceIds.join(', ')}.`
     : ' No private Android Internals Wiki source is authorized for this request.';
+  // The run's fence when the runtime supplied one: a revoke seen inside a
+  // tool ends the run exactly as one seen at a model dispatch.
+  const runAuthorization = options.runAuthorization?.enforced ? options.runAuthorization : undefined;
   const assertRegistrationsAuthorized = (registrations: AnalysisContextRegistrations): void => {
     if (analysisContextFingerprintOf(analysisContextSelection, knowledgeScope ?? {}, registrations) !==
       pinnedAnalysisContextFingerprint) {
+      runAuthorization?.revoke();
       throw new Error('analysis_context_changed_restart_required');
     }
   };
-  const assertPrivateAnalysisContextCurrent = (): void => assertRegistrationsAuthorized(readSelectedRegistrations());
+  const assertPrivateAnalysisContextCurrent = (): void => runAuthorization
+    ? runAuthorization.assertCurrentInTurn()
+    : assertRegistrationsAuthorized(readSelectedRegistrations());
   const codeLookupLedger = options.codeLookupLedger ?? (
     options.sessionId
       ? CodeLookupLedger.restore(
@@ -8291,6 +8304,7 @@ export function createClaudeMcpServer(options: ClaudeMcpServerOptions) {
     runId: options.runId,
     requestScope: toolRequestScope,
     canInvokeTool: options.canInvokeTool,
+    runAuthorization,
     // A scene run must commit its timeline before its acquisition budget runs out.
     ...(sceneContext ? {acquisitionPolicy: createSceneAcquisitionPolicy(sceneContext)} : {}),
   });

@@ -3496,6 +3496,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     let originalPrompt = '';
     const authorizationChecksAtDispatch: number[] = [];
     FakePiAgent.promptHandler = async (agent, _input, index) => {
+      // The request Pi's own loop sends through the runtime's streamFn.
+      (agent.options!.streamFn as (...args: unknown[]) => unknown)(agent.state.model, {marker: 'repair'}, {});
       authorizationChecksAtDispatch.push(authorization.mock.calls.length);
       if (index === 1) originalPrompt = agent.state.systemPrompt;
       else {
@@ -3508,7 +3510,8 @@ describe('experimental Pi agent-core runtime contract', () => {
     const runtime = typedRuntime(); const updates: any[] = []; runtime.on('update', update => updates.push(update));
     const authorization = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization');
     try {
-      const result = await runtime.analyze('query', `pi-protocol-${kind}`, 'trace-pi', {runId: `pi-protocol-${kind}`});
+      const result = await runtime.analyze('query', `pi-protocol-${kind}`, 'trace-pi', {runId: `pi-protocol-${kind}`,
+        codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']});
       expect(FakePiAgent.instances[0].promptCount).toBe(2);
       expect(authorizationChecksAtDispatch[0]).toBeGreaterThan(0);
       expect(authorizationChecksAtDispatch[1]).toBeGreaterThan(authorizationChecksAtDispatch[0]);
@@ -3591,10 +3594,18 @@ describe('experimental Pi agent-core runtime contract', () => {
     } finally { project.mockRestore(); }
   });
 
+  const PRIVATE_SELECTION = {codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+
   it('does not redispatch Pi source context after authorization changes', async () => {
     passVerification();
     let revoked = false;
-    FakePiAgent.promptHandler = async () => {
+    let sent = 0;
+    FakePiAgent.promptHandler = async agent => {
+      // Pi's loop sends each prompt through the runtime's streamFn; a refused request sends nothing.
+      try {
+        (agent.options!.streamFn as (...args: unknown[]) => unknown)(agent.state.model, {marker: 'protocol'}, {});
+        sent += 1;
+      } catch { return []; }
       revoked = true;
       return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: protocolSidecar}]}];
     };
@@ -3604,17 +3615,64 @@ describe('experimental Pi agent-core runtime contract', () => {
       return realAuthorization(...args);
     });
     try {
-      const result = await typedRuntime().analyze('query', 'pi-protocol-revoked', 'trace-pi');
-      expect(FakePiAgent.instances[0].promptCount).toBe(1);
-      expect(inspectCandidateProtocol(result.conclusion).status).toBe('valid');
-      const context = takeFinalizationContext(result)!;
-      try {expect(context.getNativeDeclaration(result, new AbortController().signal)?.raw).toBe(protocolSidecar);}
-      finally {context.dispose();}
-      expect(result.completion?.attemptId).toBe('1');
+      await expect(typedRuntime().analyze('query', 'pi-protocol-revoked', 'trace-pi', PRIVATE_SELECTION))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      expect(sent).toBe(1);
+      expect(FakePiAgent.instances[0].aborted).toBe(true);
     } finally { authorization.mockRestore(); }
   });
 
-  it('rejects a Pi declaration returned after authorization changes without replacing the first candidate', async () => {
+  describe('authorization is checked before every model request', () => {
+    // The fake agent drives the runtime's streamFn the way Pi's native loop does.
+    const mainDispatches = () => piClassifierCalls.filter(call =>
+      (call.context as {marker?: string} | undefined)?.marker === 'main');
+    const dispatch = (agent: FakePiAgent) =>
+      (agent.options!.streamFn as (...args: unknown[]) => unknown)(agent.state.model, {marker: 'main'}, {});
+    const revokeWhen = (revoked: () => boolean) => {
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+        return real(...args);
+      });
+    };
+
+    it('ends the run when authorization changes after a body read, before the continuation that resends it', async () => {
+      let revoked = false;
+      let continuation: unknown;
+      FakePiAgent.promptHandler = async agent => {
+        dispatch(agent);
+        revoked = true; // A source body was read and returned; consent is withdrawn before the next request.
+        try { dispatch(agent); } catch (error) { continuation = error; }
+        return [{role: 'assistant', stopReason: 'stop', content: [{type: 'text', text: protocolSidecar}]}];
+      };
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(typedRuntime().analyze('query', 'pi-revoked-continuation', 'trace-pi', PRIVATE_SELECTION))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(continuation).toBeInstanceOf(contextAuthorization.AnalysisContextAuthorizationChangedError);
+        expect(mainDispatches()).toHaveLength(1);
+        expect(FakePiAgent.instances[0].aborted).toBe(true);
+        expect(FakePiAgent.instances[0].promptCount).toBe(1);
+      } finally { authorization.mockRestore(); }
+    });
+
+    it('dispatches nothing when authorization changes after the history is rendered, before the first request', async () => {
+      let revoked = false;
+      FakePiAgent.promptHandler = async agent => {
+        revoked = true;
+        expect(() => dispatch(agent)).toThrow('analysis_context_changed_restart_required');
+        return [];
+      };
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(typedRuntime().analyze('query', 'pi-revoked-before-dispatch', 'trace-pi', PRIVATE_SELECTION))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(mainDispatches()).toHaveLength(0);
+      } finally { authorization.mockRestore(); }
+    });
+  });
+
+  it('ends the run when authorization changes during a declaration repair', async () => {
     passVerification();
     const body = 'Authorized candidate body.';
     const repaired = `${body}\n${protocolSidecar}`;
@@ -3629,11 +3687,9 @@ describe('experimental Pi agent-core runtime contract', () => {
       return realAuthorization(...args);
     });
     try {
-      const result = await typedRuntime().analyze('query', 'pi-declaration-authorization-change', 'trace-pi');
+      await expect(typedRuntime().analyze('query', 'pi-declaration-authorization-change', 'trace-pi', PRIVATE_SELECTION))
+        .rejects.toThrow('analysis_context_changed_restart_required');
       expect(FakePiAgent.instances[0].promptCount).toBe(2);
-      expect(FakePiAgent.instances[0].state.messages).toHaveLength(1);
-      expect(result.conclusion).toBe(body);
-      expect(result.completion).toMatchObject({status: 'completed', attemptId: '1'});
     } finally { authorization.mockRestore(); }
   });
 

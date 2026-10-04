@@ -28,8 +28,8 @@ import {resolveFocusAppTarget} from '../../focusAppTarget';
 import {registerFocusAppEvidence} from '../../focusAppEvidence';
 import {type SceneType} from '../../../agentv3/sceneClassifier';
 import {getExtendedKnowledgeBase} from '../../../services/sqlKnowledgeBase';
-import {analysisContextMemoryPartitionKey, assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
-import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
+import {analysisContextMemoryPartitionKey} from '../../../services/resolvedAnalysisContext';
+import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
 import type {AnalysisNote, AnalysisPlanV3, ClaudeAnalysisContext, Hypothesis, TracePairContext, TraceCompleteness, UncertaintyFlag} from '../../../agentv3/types';
 import {recordPlanOrPrePlanToolCall, resetPrePlanToolCallsForNewRun, readToolResultFacts} from '../../../agentv3/planToolCallRecorder';
 import {buildComplexityClassifierInput} from '../../../agentv3/queryComplexityContext';
@@ -618,16 +618,21 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       executionLease.throwIfAborted();
       const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
       const previousTurns = sessionContext.getAllTurns?.() ?? [];
-      const authorizationScope = resolveKnowledgeScope(options);
-      const authorizationFingerprint = options.analysisContextFingerprint ??
-        buildAnalysisContextAuthorizationFingerprint(options, authorizationScope);
+      // Checked before every provider HTTP request, through the one fenced
+      // fetch the classifier and the main client both use (each SDK-internal
+      // continuation and retry that resends earlier tool results included), and
+      // around every tool call. Aborting the lease aborts the SDK run.
+      const {fence: authorization, assertActive} = createRuntimeRunAuthorization({options, executionLease});
+      const authorizedFetch = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+        authorization.assertCurrent();
+        return fetch(input, init);
+      }) as typeof fetch;
       const historyReader = createRuntimeAnalysisHistoryReader({options, sessionId, traceId,
         getTurns: () => sessionContext.getAnalysisHistory?.() ?? previousTurns.map(turn =>
           toAnalysisHistoryTurn({...turn, traceId, sourceDerived: turn.result?.sourceDerived})),
         assertActive: () => {
-          executionLease.throwIfAborted();
           analysisAbortScope.throwIfAborted();
-          assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
+          assertActive();
         },
       });
       const intentResolver = createAnalysisTurnIntentResolver({
@@ -640,7 +645,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         signal: analysisAbortScope.signal,
         deadlineMs: Date.now() + config.classifierTimeoutMs,
         dispatch: input => runOpenAiIntentTransport({...input, config, purpose: 'classification',
-          maxOutputTokens: Math.min(config.maxOutputTokens ?? 2048, 2048)}),
+          fetchImpl: authorizedFetch, maxOutputTokens: Math.min(config.maxOutputTokens ?? 2048, 2048)}),
       });
       const resolvedTurnIntent = await intentResolver.resolve();
       turnIntent = resolvedTurnIntent;
@@ -689,7 +694,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       const context = await this.prepareAnalysisContext(query, sessionId, traceId, options, {
         config, runId, sceneType, policy, turnIntent, strategyRegistry: intentResolver.strategyRegistry,
         analysisRunSpec, sessionContext, previousTurns, executionLease, runtimePerformance,
-        historyReader, toolObserver: closeoutTape.observe,
+        historyReader, toolObserver: closeoutTape.observe, runAuthorization: authorization,
         isActive: () => acceptsToolUpdates && !analysisAbortScope.signal.aborted &&
           (!sceneRunDeadline || Date.now() < sceneRunDeadline.current()),
         sceneDeadlineMs: sceneRunDeadline?.hardDeadlineAt, scenePacing: sceneRunDeadline,
@@ -703,7 +708,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       let runInput: string | AgentInputItem[] = historyContext ? `${historyContext}\n\n${effectivePrompt}` : effectivePrompt;
       let chatTerminal: OpenAiChatTerminal = {};
       const nativeFetch = shouldUseMimoReasoningContentCompat(config)
-        ? createMimoReasoningContentFetch() as typeof fetch : fetch;
+        ? createMimoReasoningContentFetch(authorizedFetch) as typeof fetch : authorizedFetch;
       const observedFetch = config.protocol === 'chat_completions'
         ? createOpenAiTerminalFetch(nativeFetch, terminal => {chatTerminal = terminal;}) : nativeFetch;
       setTracingDisabled(true);
@@ -813,10 +818,6 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
         const providerPhase = runtimePerformance.startPhase('provider');
         try {
           if (Date.now() >= (attemptDeliveryDeadlineAt ?? runDeadline.current())) {timedOut = true; throw new Error('OpenAI request deadline elapsed');}
-          if (recoveringOutputLimit) {
-            executionLease.throwIfAborted();
-            assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
-          }
           commitEvaluationSdkHandoffIfActive();
           attemptDispatched = true;
           modelCall = startAttemptModelCall();
@@ -871,7 +872,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
           await Promise.race([consume(), requestTimeout.promise, providerIdleTimeout.promise, cancellation]);
           analysisAbortScope.throwIfAborted();
           if (recoveringOutputLimit) {
-            assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
+            authorization.assertCurrent();
           }
           attemptDraft.finish();
           // SDK currentTurn can be zero-based; every native response consumes a turn.
@@ -1105,6 +1106,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       });
     } catch (error) {
       runtimePerformanceOutcome = runtimeOutcomeFromError(error, executionLease.signal);
+      throwIfRunAuthorizationRevoked(executionLease.signal);
       analysisAbortScope.throwIfAborted();
       const message = compactProviderErrorMessage(error);
       const attemptId = randomUUID();
@@ -1314,6 +1316,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       runtimePerformance?: RuntimePerformanceRun;
       historyReader?: AnalysisHistoryReader;
       toolObserver?: RuntimeToolObserver;
+      runAuthorization?: RunAuthorizationCheck;
       isActive?: () => boolean;
       sceneDeadlineMs?: number;
       scenePacing?: ScenePacingInputs;
@@ -1383,6 +1386,7 @@ export class OpenAIRuntime extends EventEmitter implements IOrchestrator {
       analysisHistoryReader: runtime.historyReader,
       toolObserver: runtime.toolObserver,
       canInvokeTool,
+      runAuthorization: runtime.runAuthorization,
       conversationTraceAttached: options.assistantSurface === 'conversation' ? options.conversationTraceAttached === true : undefined,
       runManifestAttributionSink: options.runManifestAttributionSink,
       sessionId, traceId, userQuery: query, traceProcessorService: this.traceProcessorService, skillExecutor,

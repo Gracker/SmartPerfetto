@@ -15,6 +15,11 @@ export interface RuntimeExecutionLease {
   readonly key: RuntimeExecutionKey;
   readonly signal: AbortSignal;
   throwIfAborted(): void;
+  /**
+   * Aborts this lease alone with `reason`, never another run of the session.
+   * Returns whether it ended a live run: false once the lease was aborted or settled.
+   */
+  abort(reason: unknown): boolean;
   settle(): void;
 }
 
@@ -63,11 +68,24 @@ export class RuntimeExecutionGuard {
     }
     activeKeys.add(canonicalKey);
 
+    let settled = false;
     return {
       key: entry.key,
       signal: controller.signal,
       throwIfAborted: () => throwAborted(controller.signal),
-      settle: () => this.settle(canonicalKey, token),
+      abort: reason => {
+        if (settled || controller.signal.aborted) return false;
+        try {
+          controller.abort(reason);
+        } catch {
+          // As in abortSession: a throwing listener must not hide that the run was ended.
+        }
+        return true;
+      },
+      settle: () => {
+        settled = true;
+        this.settle(canonicalKey, token);
+      },
     };
   }
 

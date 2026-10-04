@@ -44,7 +44,10 @@ and builds a non-secret authorization fingerprint. It covers
 tenant/workspace/user, the effective source mode, sorted allowlists, selection
 scope and grant revisions, lifecycle, and license/consent state; it holds no
 index generation (each index tool checks the generation its run pinned). Tool
-and run boundaries recompute it. Deleting a selected source, an actual consent
+and run boundaries recompute it, and so does every model request a runtime can
+intercept, because a native loop resends earlier tool results with each request:
+a change ends the run with `analysis_context_changed_restart_required` instead of
+only refusing later reads. Deleting a selected source, an actual consent
 or scope change, or a scope change therefore fails the old session closed and
 requires a fresh session. Repeating the same consent, an equivalent selection,
 or a change to an unselected source leaves it unchanged.
@@ -130,8 +133,10 @@ source-dependent claim's standing on the server (`invalid`, `unbound`,
 `location_only`, `source_only`, `trace_linked`) and matches every source location
 written in the body against this run's issued references. Only `invalid` (an
 unissued or out-of-selection reference, or a Trace ID not belonging to that
-claim) fails the answer; weaker standings stay unverified. Even `trace_linked`
-means only a read body plus same-claim Trace evidence: it proves no behavior,
+claim) fails the answer; weaker standings stay unverified. A claim whose answer
+cites it only at lines the run did not read stays `location_only`, whatever else
+it read. Even `trace_linked` means only a read and cited body plus same-claim
+Trace evidence: it proves no behavior,
 call chain, or causality, and complete body semantic review still applies.
 Malformed entries anywhere in the binding array cannot be filtered into an
 absent declaration.

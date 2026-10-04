@@ -764,7 +764,7 @@ describe('OpenAI cancellation and bounded recovery', () => {
     expect(result.terminationMessage).toContain(issue!.message);
     expect(result.conclusion).toContain('Investigation incomplete; the cause is still unknown.');
   });
-  it('keeps the original turn-limit candidate when authorization changes during its summary', async () => {
+  it('ends the run when authorization changes during a turn-limit summary', async () => {
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
     const run = mockRun().mockRejectedValueOnce(new MaxTurnsExceededError('cap'))
       .mockResolvedValueOnce(sdkStream('A summary that must not be accepted after revocation.'));
@@ -773,10 +773,9 @@ describe('OpenAI cancellation and bounded recovery', () => {
       if (run.mock.calls.length >= 2) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
       return currentAuthorization(...args);
     });
-    const result = await runtime.analyze('query', 'cap-summary-revoked', 'trace', {analysisMode: 'fast', providerId: null});
+    await expect(runtime.analyze('query', 'cap-summary-revoked', 'trace', {analysisMode: 'fast', providerId: null,
+      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})).rejects.toThrow('analysis_context_changed_restart_required');
     expect(run).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({conclusion: '', rounds: 2, partial: true,
-      completion: {status: 'incomplete', reason: 'turn_limit', conclusionFingerprint: analysisDeliveryFingerprint('')}});
   });
   it('starts a fresh physical response and injects typed partial history instead of opaque SDK state', async () => {
     const runtime = createOpenAiRuntimeForTest(); const prepare = prepareStub(runtime);
@@ -1139,17 +1138,94 @@ describe('OpenAI bounded output-limit recovery', () => {
     expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit'});
   });
 
-  it('checks current authorization before redispatching already-read private context', async () => {
+  it('ends the run instead of redispatching already-read private context after authorization changes', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...createOpenAiConfigForTest(), protocol: 'chat_completions', maxTurns: 3});
     const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
-    const run = mockRun(recoverableStream('original partial answer'));
-    jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation(() => {
-      if (run.mock.calls.length > 0) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+    let revoked = false;
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementationOnce(async () => {
+      revoked = true; // The partial answer quotes source; consent is withdrawn before the recovery request.
+      return chatCompletionResponse('partial', {role: 'assistant', content: 'original partial answer'}, 'length');
+    }).mockResolvedValue(chatCompletionResponse('recovered', {role: 'assistant', content: 'Must never be requested.'}, 'stop'));
+    const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+    jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+      if (revoked) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+      return real(...args);
     });
-    const result = await runtime.analyze('query', 'revoked-recovery', 'trace', {providerId: null});
-    expect(run).toHaveBeenCalledTimes(1);
-    expect(result.conclusion).toBe('original partial answer');
-    expect(result.completion).toMatchObject({status: 'incomplete', reason: 'output_limit'});
-    expect(result.terminationMessage).toBeUndefined();
+    await expect(runtime.analyze('query', 'revoked-recovery', 'trace', {providerId: null, analysisMode: 'full',
+      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})).rejects.toThrow('analysis_context_changed_restart_required');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends no classifier retry after authorization changes during its backoff', async () => {
+    jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...createOpenAiConfigForTest(), classifierTimeoutMs: 30_000});
+    jest.mocked(intentTransport.runOpenAiIntentTransport).mockRestore();
+    const runtime = createOpenAiRuntimeForTest(); prepareStub(runtime);
+    let revoked = false;
+    // A transient failure, then the retry the transport would send after its backoff.
+    const fetchMock = jest.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      revoked = true;
+      return new Response('unavailable', {status: 503});
+    });
+    const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+    jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+      if (revoked) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+      return real(...args);
+    });
+    await expect(runtime.analyze('query', 'revoked-classifier-retry', 'trace', {providerId: null,
+      codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']})).rejects.toThrow('analysis_context_changed_restart_required');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  }, 15_000);
+
+  describe('authorization is checked before every provider request', () => {
+    const revokeWhen = (revoked: () => boolean) => {
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+        return real(...args);
+      });
+    };
+    const sourceRuntime = (execute: () => Promise<string>) => {
+      jest.mocked(configModule.loadOpenAIConfig).mockReturnValue({...createOpenAiConfigForTest(), protocol: 'chat_completions', maxTurns: 3});
+      const sourceTool = tool({name: 'read_codebase_file', description: 'Read source', parameters: z.object({}), execute});
+      const runtime = createOpenAiRuntimeForTest();
+      prepareStub(runtime).mockImplementation(async (...args: any[]) => ({
+        systemPrompt: 'test system prompt', tools: [sourceTool], allowedTools: ['read_codebase_file'],
+        sessionContext: args[4].sessionContext, previousTurns: args[4].previousTurns, hypotheses: [],
+      }));
+      return runtime;
+    };
+    const options = {providerId: null, analysisMode: 'full', codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']};
+
+    it('ends the run when authorization changes after a body read, before the continuation that resends it', async () => {
+      let revoked = false;
+      const execute = jest.fn(async () => { revoked = true; return '{"success":true,"text":"startMarker()"}'; });
+      const runtime = sourceRuntime(execute);
+      const fetchMock = jest.spyOn(globalThis, 'fetch')
+        .mockResolvedValueOnce(chatCompletionResponse('source-call', {role: 'assistant', tool_calls: [{index: 0,
+          id: 'source-call-1', type: 'function', function: {name: 'read_codebase_file', arguments: '{}'}}]}, 'tool_calls'))
+        .mockResolvedValueOnce(chatCompletionResponse('answer', {role: 'assistant', content: 'Must never be requested.'}, 'stop'));
+      revokeWhen(() => revoked);
+      await expect(runtime.analyze('query', 'revoked-after-read', 'trace', options))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('dispatches nothing when authorization changes after the history is rendered, before the first request', async () => {
+      let revoked = false;
+      const runtime = sourceRuntime(async () => '{}');
+      const fetchMock = jest.spyOn(globalThis, 'fetch')
+        .mockResolvedValue(chatCompletionResponse('answer', {role: 'assistant', content: 'Must never be requested.'}, 'stop'));
+      const realRun = Runner.prototype.run;
+      jest.spyOn(Runner.prototype as any, 'run').mockImplementation(function (this: Runner, ...args: any[]) {
+        revoked = true;
+        return (realRun as any).apply(this, args);
+      });
+      revokeWhen(() => revoked);
+      await expect(runtime.analyze('query', 'revoked-before-dispatch', 'trace', options))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
   });
 
   it('can repair current-run output without resuming an earlier remote response', async () => {

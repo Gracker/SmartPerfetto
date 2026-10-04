@@ -46,8 +46,7 @@ import {
 } from '../../../services/selfEvolution/evaluationRuntimeHooks';
 import type { TraceProcessorService } from '../../../services/traceProcessorService';
 import { getExtendedKnowledgeBase } from '../../../services/sqlKnowledgeBase';
-import {assertCurrentAnalysisContextAuthorization, buildAnalysisContextAuthorizationFingerprint} from '../../../services/resolvedAnalysisContext';
-import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
+import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
 import {inspectCandidateProtocol, buildCandidateProtocolDiagnostic} from '../../../services/canonicalAnalysisResult';
 import {
   isSensitiveRagToolName,
@@ -151,6 +150,7 @@ import {
 } from '../../runtimeLimits';
 import {
   createPiAgentCoreProviderRuntime,
+  type PiAgentCoreProviderRuntime,
   type PiAgentCoreProviderRuntimeLoader,
 } from './piAgentCoreProvider';
 import {
@@ -1234,6 +1234,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         );
       void analysis.catch(() => undefined);
       result = await Promise.race([analysis, requestTimeout, executionAbort.promise]);
+      throwIfRunAuthorizationRevoked(executionLease.signal);
       if (!(executionLease.signal.aborted && result.success === false)) {
         executionLease.throwIfAborted();
       }
@@ -1251,6 +1252,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           const analysisCleanedUp = await joinPiPromptCleanup(analysis, timeouts.abortJoinTimeoutMs);
           deferLeaseSettleToAnalysisCleanup = !analysisCleanedUp;
         }
+        throwIfRunAuthorizationRevoked(executionLease.signal);
         const timeout = timedOut ?? {kind: 'request' as const, timeoutMs: timeouts.requestTimeoutMs};
         const interrupted = buildPiTimeoutResult({
           sessionId,
@@ -1503,21 +1505,28 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const privateAnalysisContext = analysisHasPrivateContext(options);
-    const authorizationScope = resolveKnowledgeScope(options);
-    const authorizationFingerprint = options.analysisContextFingerprint ??
-      buildAnalysisContextAuthorizationFingerprint(options, authorizationScope);
+    // Checked before every model request, through the one fenced streamFn every
+    // dispatch below uses (each native continuation that resends earlier tool
+    // results included), and around every tool call.
+    let runAgent: PiAgentCoreAgent | undefined;
+    const {fence: authorization, assertActive} = createRuntimeRunAuthorization({
+      options, executionLease, stopNative: () => runAgent?.abort(),
+    });
     const analysisHistoryReader = createRuntimeAnalysisHistoryReader({options, sessionId, traceId,
       getTurns: () => sessionContext.getAnalysisHistory?.() ?? (sessionContext.getAllTurns?.() ?? [])
         .map(turn => toAnalysisHistoryTurn({...turn, traceId, sourceDerived: turn.result?.sourceDerived,
           analysisContextFingerprint: turn.result?.analysisContextFingerprint})),
-      assertActive: () => {
-        executionLease.throwIfAborted();
-        assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
-      }});
+      assertActive});
     const modelConfig = resolvePiAgentCoreModel(this.env, false);
     // Pi accepts one complete configured model, not an ID-only light-model override.
     // The same pinned native provider is reused by classification and the main Agent.
-    const providerPromise = this.getProviderRuntime(modelConfig);
+    const providerPromise = this.getProviderRuntime(modelConfig).then(runtime => ({
+      ...runtime,
+      streamFn: ((...args: Parameters<PiAgentCoreProviderRuntime['streamFn']>) => {
+        authorization.assertCurrent();
+        return runtime.streamFn(...args);
+      }) as PiAgentCoreProviderRuntime['streamFn'],
+    }));
     const classifierTimeoutMs = positiveIntegerEnv(this.env, ['AGENT_CLASSIFIER_TIMEOUT_MS'], 30_000);
     const intentResolver = createAnalysisTurnIntentResolver({
       productRun: {options, runId: executionLease.key.runId!, sessionId, traceId},
@@ -1554,7 +1563,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const prep = await this.prepareAnalysis(
       query, sessionId, traceId, options, providerRuntime.model.id,
       executionLease, turnIntent, policy, intentResolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
-      () => toolAdmissionsOpen && !executionLease.signal.aborted, getRunDeadlineMs(),
+      () => toolAdmissionsOpen && !executionLease.signal.aborted, getRunDeadlineMs(), authorization,
     );
     onPreparationReady({sourceUse: prep.sourceUse, artifactStore: prep.artifactStore,
       selection: prep.analysisRunSpec.selection});
@@ -1608,6 +1617,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         return undefined;
       },
     });
+    runAgent = agent;
     this.activeAgents.set(sessionId, agent);
     const providerIdle = createPiProviderIdleSupervisor({
       sessionId, timeoutMs: streamIdleTimeoutMs, markTimeout,
@@ -1719,7 +1729,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
         if (closeoutPrompt) {
           try {
             executionLease.throwIfAborted();
-            assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
             agent.state.tools = [];
             const closeoutAttemptId = `closeout-${++attempt}`;
             rounds++;
@@ -1729,7 +1738,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               outputByteLimit: 64 * 1024, providerRuntime,
             });
             executionLease.throwIfAborted();
-            assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
+            authorization.assertCurrent();
             if (closeout.status === 'ok') {
               acceptedText = closeout.text;
               acceptedAttemptId = closeoutAttemptId;
@@ -1773,7 +1782,6 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
           agent.state.systemPrompt = declarationRequest
             ? originalSystemPrompt
             : `${originalSystemPrompt}\n\n${loadPiFinalReportCorrectionSystemPrompt(outputLanguage)}`;
-          assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
           const correctionDiagnostic = buildCandidateProtocolDiagnostic(inspectCandidateProtocol(acceptedText), 'native', 1);
           const correctionPrompt = declarationRequest
             ? buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage})
@@ -1783,7 +1791,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
               correctionDiagnostic, outputLanguage);
           const candidate = await runProviderPrompt(correctionPrompt,
             declarationRequest ? turnBudget.totalTurns : turnBudget.acquisitionTurns);
-          assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
+          authorization.assertCurrent();
           if (candidate && completionFor(candidate.assistant, candidate.text, candidate.attemptId, candidate.turnLimitReached).status === 'completed') {
             const checked = await verifyCandidate(candidate.text, candidate.assistant, candidate.attemptId, candidate.turnLimitReached);
             const originalProtocol = inspectCandidateProtocol(acceptedText);
@@ -1919,6 +1927,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     toolObserver?: RuntimeToolObserver,
     canInvokeTool?: () => boolean,
     sceneDeadlineMs?: number,
+    runAuthorization?: RunAuthorizationCheck,
   ): Promise<PiAnalysisPreparation> {
     executionLease.throwIfAborted();
     const outputLanguage = options.outputLanguage
@@ -2079,7 +2088,7 @@ export class PiAgentCoreRuntime extends EventEmitter implements IOrchestrator {
     const { toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId: executionLease.key.runId!,
-      toolObserver, canInvokeTool, analysisHistoryReader,
+      toolObserver, canInvokeTool, runAuthorization, analysisHistoryReader,
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
         : undefined,

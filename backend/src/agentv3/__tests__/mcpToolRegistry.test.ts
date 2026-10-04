@@ -50,6 +50,74 @@ describe('McpToolRegistry — basic registration', () => {
     expect(refused.structuredContent).toMatchObject({unsupportedReason: 'acquisition_closed'});
   });
 
+  it('checks the run authorization before a tool runs and again before its result is handed back', async () => {
+    const revoke = new Error('analysis_context_changed_restart_required');
+    let checks = 0;
+    let revokeAt = Infinity;
+    const check = jest.fn(() => { if (++checks >= revokeAt) throw revoke; });
+    const authorization = {enforced: true, assertCurrent: check, assertCurrentInTurn: check,
+      revoke: (): never => { throw revoke; }, settled: async () => undefined};
+    // The body reads a source file; consent is withdrawn while it runs.
+    const body = jest.fn(async () => { revokeAt = checks + 1; return createRuntimeToolResult({success: true, text: 'body'}); });
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'read_codebase_file', description: 'read', inputSchema: {}, handler: body,
+      exposure: 'public', evidenceEffect: 'read_existing'});
+    const tool = registry.list()[0].shared;
+    await expect(tool.handler({}, {})).rejects.toBe(revoke);
+    expect(body).toHaveBeenCalledTimes(1);
+    expect(check).toHaveBeenCalledTimes(2);
+    // Once revoked, the next call never reaches its body.
+    await expect(tool.handler({}, {})).rejects.toBe(revoke);
+    expect(body).toHaveBeenCalledTimes(1);
+  });
+
+  it('wraps no tool for a run whose fence is not enforced', async () => {
+    const authorization = {enforced: false, assertCurrent: jest.fn(), assertCurrentInTurn: jest.fn(),
+      revoke: (): never => { throw new Error('unused'); }, settled: async () => undefined};
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'execute_sql', description: 'sql', inputSchema: {},
+      handler: async () => createRuntimeToolResult({success: true}), exposure: 'public', evidenceEffect: 'acquire'});
+    await registry.list()[0].shared.handler({}, {});
+    expect(authorization.assertCurrentInTurn).not.toHaveBeenCalled();
+  });
+
+  it('fails a call whose own check saw the revoke only after the run cancel settled', async () => {
+    const revoke = new Error('analysis_context_changed_restart_required');
+    let finish!: () => void;
+    const cancelled = new Promise<void>(resolve => { finish = resolve; });
+    // The wrapper's checks pass; the tool's own private-context check sees the revoke.
+    const authorization = {enforced: true, assertCurrent: () => undefined, assertCurrentInTurn: () => undefined,
+      revoke: (): never => { throw revoke; }, settled: () => cancelled};
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'read_codebase_file', description: 'read', inputSchema: {},
+      handler: async () => { throw revoke; }, exposure: 'public', evidenceEffect: 'read_existing'});
+    let outcome: unknown;
+    const call = registry.list()[0].shared.handler({}, {}).catch(error => { outcome = error; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(outcome).toBeUndefined();
+    finish();
+    await call;
+    expect(outcome).toBe(revoke);
+  });
+
+  it('fails a revoked tool call only after the run cancel settled', async () => {
+    const revoke = new Error('analysis_context_changed_restart_required');
+    let finish!: () => void;
+    const cancelled = new Promise<void>(resolve => { finish = resolve; });
+    const authorization = {enforced: true, assertCurrent: (): never => { throw revoke; },
+      assertCurrentInTurn: (): never => { throw revoke; }, revoke: (): never => { throw revoke; }, settled: () => cancelled};
+    const registry = new McpToolRegistry({runAuthorization: authorization});
+    registry.registerShared({name: 'read_codebase_file', description: 'read', inputSchema: {},
+      handler: async () => createRuntimeToolResult({success: true}), exposure: 'public', evidenceEffect: 'read_existing'});
+    let outcome: unknown;
+    const call = registry.list()[0].shared.handler({}, {}).catch(error => { outcome = error; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(outcome).toBeUndefined();
+    finish();
+    await call;
+    expect(outcome).toBe(revoke);
+  });
+
   it('rechecks acquisition after waiting behind an already running tool', async () => {
     let active = true;
     let release!: () => void;

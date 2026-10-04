@@ -228,6 +228,46 @@ describe('verifySourceClaimBindings', () => {
         .toBe('trace_linked');
     });
 
+    test('a read body never upgrades an unread reference the answer cites instead', () => {
+      // The exact repro: read body A in one file, search hit B in another, the answer cites only B.
+      const read = live({referenceId: 'lookup-a', filePath: 'src/main/Bar.kt', lineRange: {start: 1, end: 50}});
+      const hit = live({referenceId: 'lookup-b', lookupKind: 'search_hit', lineRange: {start: 12, end: 12}});
+      const result = run([read, hit], [read.id, hit.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L12.');
+      expect(statusOf(result)).toBe('location_only');
+      expect(result.status).toBe('partial');
+      expect(result.citations).toEqual([expect.objectContaining({status: 'located', sourceReferenceId: hit.id})]);
+      expect(result.issues).toContainEqual(expect.objectContaining({claimId: 'claim-1', code: 'source_claim_location_only'}));
+      // Citing the read body as well makes the reading visible.
+      expect(statusOf(run([read, hit], [read.id, hit.id],
+        'Foo.run blocks the main thread at src/main/Foo.kt:L12 via src/main/Bar.kt:L20.'))).toBe('trace_linked');
+    });
+
+    test('a read window of other lines in the same file does not make a cited hit read', () => {
+      const window = live({referenceId: 'lookup-w', lineRange: {start: 1, end: 10}});
+      const hit = live({referenceId: 'lookup-h', lookupKind: 'search_hit', lineRange: {start: 40, end: 40}});
+      const result = run([window, hit], [window.id, hit.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L40.');
+      expect(statusOf(result)).toBe('location_only');
+      expect(result.citations).toEqual([expect.objectContaining({status: 'located'})]);
+      // A citation reaching past the read window is not read whole either.
+      const wide = live({referenceId: 'lookup-x', lookupKind: 'search_hit', lineRange: {start: 5, end: 40}});
+      expect(statusOf(run([window, wide], [window.id, wide.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L8-L12.')))
+        .toBe('location_only');
+      expect(statusOf(run([window, hit], [window.id, hit.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L5.')))
+        .toBe('trace_linked');
+    });
+
+    test('a hit whose lines a read window of the same version covers is read where cited', () => {
+      const window = live({referenceId: 'lookup-w', lineRange: {start: 30, end: 50}});
+      const hit = live({referenceId: 'lookup-h', lookupKind: 'search_hit', lineRange: {start: 40, end: 40}});
+      expect(statusOf(run([window, hit], [hit.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L40.')))
+        .toBe('trace_linked');
+      // The same lines read in another content version do not count.
+      const stale = live({referenceId: 'lookup-s', sourceGeneration: 'live-2', lineRange: {start: 30, end: 50}});
+      const other = live({referenceId: 'lookup-o', filePath: 'src/main/Bar.kt', lineRange: {start: 1, end: 5}});
+      expect(statusOf(run([stale, hit, other], [hit.id, other.id], 'Foo.run blocks the main thread at src/main/Foo.kt:L40.')))
+        .toBe('location_only');
+    });
+
     test('a binding pins an ambiguous citation for its claim only, and the answer keeps the ambiguity', () => {
       const a = live({referenceId: 'lookup-a'});
       const b = live({referenceId: 'lookup-b', sourceGeneration: 'live-2'});

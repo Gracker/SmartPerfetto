@@ -68,6 +68,7 @@ import {candidateWithPopulation, declaredCandidateWithClaims, declaredClaim} fro
 import {NO_PRIVATE_CONTEXT} from '../../services/security/analysisPrivateContext';
 import {admitLearnedEntry, withDurableLearningPermission} from '../../services/security/durableLearning';
 import {analysisContextMemoryPartitionKey} from '../../services/resolvedAnalysisContext';
+import {StoreUnreadableError} from '../../utils/storedData';
 
 function declaredCandidate(body: string): string {
   return `${body}\n${renderConclusionContractSidecar({schemaVersion: 'conclusion_contract_v1', mode: 'focused_answer',
@@ -1546,6 +1547,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       throwIfAborted: () => {
         if (abortController.signal.aborted) throw abortError;
       },
+      abort: jest.fn(() => false),
       settle: jest.fn(),
     };
     const architectureStarted = createDeferred<void>();
@@ -3147,7 +3149,7 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
     expect(JSON.stringify(updates)).not.toContain('Changed bounded answer');
   });
 
-  it('rejects a Claude declaration returned after authorization changes without replacing the first candidate', async () => {
+  it('ends the run when authorization changes during a declaration repair', async () => {
     const body = 'Authorized candidate body.';
     const repaired = declaredCandidate(body);
     const runtime = new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
@@ -3167,12 +3169,94 @@ describe('ClaudeRuntime runtime state and snapshots', () => {
       return realAuthorization(...args);
     });
     try {
-      const result = await runtime.analyze('分析当前证据', 'session-claude-declaration-authorization-change',
-        'trace-declaration-authorization-change', {analysisMode: 'full', packageName: 'com.example.app'});
+      await expect(runtime.analyze('分析当前证据', 'session-claude-declaration-authorization-change',
+        'trace-declaration-authorization-change', {analysisMode: 'full', packageName: 'com.example.app',
+          codeAwareMode: 'provider_send', codebaseIds: ['codebase-a']}))
+        .rejects.toThrow('analysis_context_changed_restart_required');
       expect(claudeSdkMock.__getQueryCalls()).toHaveLength(2);
-      expect(result.conclusion).toBe(body);
-      expect(result.completion?.attemptId).not.toContain(':correction:1');
     } finally {authorization.mockRestore();}
+  });
+
+  describe('authorization is checked before every SDK dispatch', () => {
+    // The mock plays the CLI: it awaits the hooks where the real CLI does, before
+    // sending the prompt and before the request that follows a tool batch.
+    const runHook = async (params: any, event: 'UserPromptSubmit' | 'PostToolBatch') =>
+      params.options.hooks[event][0].hooks[0]({hook_event_name: event}, undefined, {signal: new AbortController().signal});
+    const revokeWhen = (revoked: () => boolean) => {
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+        return real(...args);
+      });
+    };
+    const PRIVATE_RUN = {analysisMode: 'full' as const, packageName: 'com.example.app',
+      codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+    const newRuntime = () => new ClaudeRuntime({query: async () => ({columns: [], rows: []}), getTrace: () => undefined} as any,
+      {enableVerification: false, enableSubAgents: false, maxTurns: 4});
+
+    it('ends the run when authorization changes after a body read, before the continuation that resends it', async () => {
+      let revoked = false;
+      let requests = 0;
+      let continuation: unknown;
+      claudeSdkMock.__setQueryImplementation(async function* (params: any) {
+        expect(await runHook(params, 'UserPromptSubmit')).toEqual({});
+        requests += 1;
+        yield {type: 'assistant', parent_tool_use_id: null, message: {content: [
+          {type: 'tool_use', id: 'read-1', name: 'mcp__smartperfetto__read_codebase_file', input: {}}]}};
+        revoked = true; // The body was returned; consent is withdrawn before the next request.
+        continuation = await runHook(params, 'PostToolBatch');
+        if ((continuation as {continue?: boolean}).continue === false) return;
+        requests += 1;
+        yield {type: 'result', subtype: 'success', num_turns: 2, result: 'Must never be requested.'};
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(newRuntime().analyze('分析当前证据', 'session-claude-revoked-continuation', 'trace-claude-revoked',
+          PRIVATE_RUN)).rejects.toThrow('analysis_context_changed_restart_required');
+        expect(continuation).toEqual({continue: false, stopReason: 'analysis_context_changed_restart_required'});
+        expect(requests).toBe(1);
+        expect(claudeSdkMock.__getQueryCalls()).toHaveLength(1);
+      } finally {authorization.mockRestore();}
+    });
+
+    it('refuses a request for a check that could not run without calling it a revoke', async () => {
+      let verdict: unknown;
+      let failOnce = false;
+      claudeSdkMock.__setQueryImplementation(async function* (params: any) {
+        failOnce = true; // One registry read fails; nothing was revoked.
+        verdict = await runHook(params, 'PostToolBatch');
+        expect(await runHook(params, 'PostToolBatch')).toEqual({});
+        yield {type: 'result', subtype: 'success', num_turns: 1, result: 'Authorized answer.'};
+      });
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      const authorization = jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (failOnce) { failOnce = false; throw new StoreUnreadableError('codebase registry'); }
+        return real(...args);
+      });
+      try {
+        const result = await newRuntime().analyze('分析当前证据', 'session-claude-check-failed', 'trace-claude-revoked', PRIVATE_RUN);
+        expect(verdict).toEqual({continue: false, stopReason: 'analysis_context_check_failed'});
+        expect(result.terminationMessage ?? '').not.toContain('analysis_context_changed_restart_required');
+      } finally {authorization.mockRestore();}
+    });
+
+    it('dispatches nothing when authorization changes after the history is rendered, before the first request', async () => {
+      let revoked = false;
+      let requests = 0;
+      claudeSdkMock.__setQueryImplementation(async function* (params: any) {
+        revoked = true; // Between the runtime's last check and the CLI sending the prompt.
+        const verdict = await runHook(params, 'UserPromptSubmit');
+        if (verdict.continue === false) return;
+        requests += 1;
+        yield {type: 'result', subtype: 'success', num_turns: 1, result: 'Must never be requested.'};
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(newRuntime().analyze('分析当前证据', 'session-claude-revoked-before-dispatch', 'trace-claude-revoked',
+          PRIVATE_RUN)).rejects.toThrow('analysis_context_changed_restart_required');
+        expect(requests).toBe(0);
+      } finally {authorization.mockRestore();}
+    });
   });
 
   it('uses scoped Claude provider tuning when preparing full SDK options', async () => {

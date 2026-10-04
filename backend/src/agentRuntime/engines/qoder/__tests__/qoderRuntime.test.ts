@@ -235,6 +235,8 @@ import * as caseBackgroundContext from '../../../../services/caseEvolution/caseB
 import {admitLearnedEntry, withDurableLearningPermission} from '../../../../services/security/durableLearning';
 import type {ClaudeMcpServerOptions} from '../../../../agentv3/claudeMcpServer';
 import {NO_PRIVATE_CONTEXT} from '../../../../services/security/analysisPrivateContext';
+import * as contextAuthorization from '../../../../services/resolvedAnalysisContext';
+import * as analysisHistory from '../../../analysisHistory';
 
 function createRuntime(
   env: Record<string, string | undefined> = {},
@@ -946,6 +948,75 @@ describe('QoderRuntime', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
+  });
+
+  describe('authorization at every dispatch and observed message', () => {
+    const PRIVATE = {codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+    const revokeWhen = (revoked: () => boolean) => {
+      const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+      return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+        if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+        return real(...args);
+      });
+    };
+
+    it('interrupts the query when authorization changes after a body read, at the next streamed message', async () => {
+      let revoked = false;
+      let continued = false;
+      mockQuery.mockReturnValue({
+        async *[Symbol.asyncIterator]() {
+          yield {type: 'assistant', message: {content: [{type: 'tool_use', id: 'read-1', name: 'read_codebase_file', input: {}}]}};
+          revoked = true; // The body was returned; consent is withdrawn before the SDK continues.
+          yield {type: 'user', message: {content: [{type: 'tool_result', tool_use_id: 'read-1', content: 'body'}]}};
+          continued = true;
+          yield {type: 'result', subtype: 'success', is_error: false, result: 'Must never be requested.'};
+        },
+        interrupt: mockInterrupt, close: mockClose,
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', {analysisMode: 'full', ...PRIVATE}))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(continued).toBe(false);
+        expect(mockInterrupt).toHaveBeenCalled();
+        expect(mockCreateClaudeMcpServer.mock.calls[0][0]).toMatchObject({runAuthorization: expect.any(Object)});
+      } finally {authorization.mockRestore();}
+    });
+
+    it('gives every SDK text dispatch the run fence at its query boundary', async () => {
+      let revoked = false;
+      let classifierBoundary: unknown;
+      mockIntentTransport.mockImplementationOnce(async (input: {beforeQuery?: () => void}) => {
+        revoked = true; // Withdrawn while the classifier resolves its SDK and auth.
+        try { input.beforeQuery?.(); } catch (error) { classifierBoundary = error; }
+        return {status: 'unavailable', reason: 'provider_error'};
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', {analysisMode: 'full', ...PRIVATE}))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(classifierBoundary).toBeInstanceOf(contextAuthorization.AnalysisContextAuthorizationChangedError);
+        expect(mockQuery).not.toHaveBeenCalled();
+      } finally {authorization.mockRestore();}
+    });
+
+    it('dispatches nothing when authorization changes after the history is rendered, before the query', async () => {
+      let revoked = false;
+      const realRender = analysisHistory.renderAnalysisHistoryContext;
+      const render = jest.spyOn(analysisHistory, 'renderAnalysisHistoryContext').mockImplementation((...args) => {
+        const rendered = realRender(...args);
+        // The main prompt's history (the classifier renders a bounded one first).
+        if (args[1]?.maxBytes === undefined) revoked = true;
+        return rendered;
+      });
+      const authorization = revokeWhen(() => revoked);
+      try {
+        await expect(createRuntime().analyze('test query', 'session-1', 'trace-1', {analysisMode: 'full', ...PRIVATE}))
+          .rejects.toThrow('analysis_context_changed_restart_required');
+        expect(render).toHaveBeenCalled();
+        expect(mockQuery).not.toHaveBeenCalled();
+      } finally {authorization.mockRestore(); render.mockRestore();}
+    });
   });
 
   describe('SkillExecutor wiring', () => {

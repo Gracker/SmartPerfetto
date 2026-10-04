@@ -23,6 +23,8 @@ export interface QoderIntentTransportInput extends IntentTransportInput {
   config: Pick<QoderRuntimeConfig, 'model' | 'lightModel' | 'byok' | 'cliPath'>;
   scopedEnv: Record<string, string | undefined>;
   isolatedClassifierDirectory: string;
+  /** The run's authorization, checked after the SDK and auth resolved, right before `query`. */
+  beforeQuery?: () => void;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -69,6 +71,7 @@ export function runQoderIntentTransport(input: QoderIntentTransportInput) {
       if (!queryHasClose) scope.signal.removeEventListener('abort', onAbort);
     });
     if (scope.signal.aborted) onAbort();
+    input.beforeQuery?.();
     const candidate = sdk.query({
       prompt: input.prompt,
       options: {

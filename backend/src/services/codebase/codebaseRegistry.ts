@@ -2,12 +2,14 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {noteAuthorizationRegistryWrite} from '../authorizationRegistryWrites';
 import * as fs from 'fs';
 import * as path from 'path';
 import {createHash, randomUUID} from 'crypto';
 
 import type {RagSourceKind} from '../../types/sparkContracts';
 import {withFilesystemRegistryLock} from '../filesystemRegistryLock';
+import {logStoredReadFailure, parseStoredJson, StoreUnreadableError} from '../../utils/storedData';
 import {
   enterpriseKnowledgeDbWritesEnabled,
   enterpriseKnowledgeStoreEnabled,
@@ -517,6 +519,8 @@ export function codebaseHasActiveIndex(
     Boolean(ref.activeGeneration && ref.contentFingerprint && (ref.chunkCount ?? 0) > 0);
 }
 
+const CODEBASE_REGISTRY_STORE = 'codebase registry';
+
 export class CodebaseRegistry {
   private readonly registryPath: string;
   private readonly codebases = new Map<string, CodebaseRef>();
@@ -610,6 +614,7 @@ export class CodebaseRegistry {
     const scope = resolveCodebaseScope(input);
     const persistRegistration = (): void => {
       if (enterpriseKnowledgeDbWritesEnabled()) {
+        noteAuthorizationRegistryWrite();
         upsertScopedKnowledgeRecord(
           REGISTRY_KNOWLEDGE_KIND,
           ref.codebaseId,
@@ -631,6 +636,23 @@ export class CodebaseRegistry {
       persistRegistration();
     }
     return ref;
+  }
+
+  /**
+   * The selected registrations from one fresh read of the store, for an
+   * authorization check. Unlike `get`, a registry file that exists but cannot
+   * be read or parsed throws `StoreUnreadableError` instead of reading as
+   * empty, so a failed read is never taken for a deleted registration.
+   */
+  getSelected(codebaseIds: readonly string[], scope: CodebaseScope = {}): Map<string, CodebaseRef | undefined> {
+    if (enterpriseKnowledgeStoreEnabled()) return new Map(codebaseIds.map(id => [id, this.get(id, scope)]));
+    const filesystem = this.readFilesystemRefsStrict();
+    return new Map(codebaseIds.map(id => [id, mergeDualWriteCodebaseFailClosed(
+      filesystem.get(id),
+      enterpriseKnowledgeDbWritesEnabled()
+        ? getScopedKnowledgeRecord<CodebaseRef>(REGISTRY_KNOWLEDGE_KIND, id, scope)?.record : undefined,
+      scope,
+    )]));
   }
 
   get(codebaseId: string, scope: CodebaseScope = {}): CodebaseRef | undefined {
@@ -1180,6 +1202,7 @@ export class CodebaseRegistry {
       // the secondary DB projection first so every failure leaves the
       // authoritative filesystem tombstone available for an idempotent retry.
       if (lease.distributed) {
+        noteAuthorizationRegistryWrite();
         removeScopedKnowledgeRecord(REGISTRY_KNOWLEDGE_KIND, codebaseId, scope);
       }
       if (legacyKnowledgeFilesystemWritesEnabled()) {
@@ -1250,6 +1273,7 @@ export class CodebaseRegistry {
   ): CodebaseRef | undefined {
     let updated: CodebaseRef | undefined;
     if (enterpriseKnowledgeStoreEnabled()) {
+      noteAuthorizationRegistryWrite();
       updated = mutateScopedKnowledgeRecord<CodebaseRef>(
         REGISTRY_KNOWLEDGE_KIND,
         codebaseId,
@@ -1267,6 +1291,7 @@ export class CodebaseRegistry {
       if (!existing) return undefined;
       updated = mutate(normalizeCodebaseRef(existing));
       if (enterpriseKnowledgeDbWritesEnabled()) {
+        noteAuthorizationRegistryWrite();
         upsertScopedKnowledgeRecord(
           REGISTRY_KNOWLEDGE_KIND,
           codebaseId,
@@ -1285,6 +1310,21 @@ export class CodebaseRegistry {
     return updated;
   }
 
+  /** The registry file read whole; a missing file is empty, an unreadable one throws. */
+  private readFilesystemRefsStrict(): Map<string, CodebaseRef> {
+    if (!fs.existsSync(this.registryPath)) return new Map();
+    try {
+      const parsed = parseStoredJson<RegistryEnvelope>(fs.readFileSync(this.registryPath, 'utf-8'), CODEBASE_REGISTRY_STORE);
+      if ((parsed.schemaVersion !== 1 && parsed.schemaVersion !== 2) || !Array.isArray(parsed.codebases)) {
+        throw new StoreUnreadableError(CODEBASE_REGISTRY_STORE);
+      }
+      return new Map(parsed.codebases.map(ref => [ref.codebaseId, normalizeCodebaseRef(ref)]));
+    } catch (error) {
+      logStoredReadFailure('[CodebaseRegistry] Registry could not be read', error);
+      throw new StoreUnreadableError(CODEBASE_REGISTRY_STORE);
+    }
+  }
+
   private getFilesystemRef(codebaseId: string): CodebaseRef | undefined {
     this.load(true);
     return this.codebases.get(codebaseId);
@@ -1296,6 +1336,7 @@ export class CodebaseRegistry {
   }
 
   private persist(): void {
+    noteAuthorizationRegistryWrite();
     const dir = path.dirname(this.registryPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, {recursive: true});
     const tmp = `${this.registryPath}.tmp.${process.pid}.${Math.random().toString(36).slice(2)}`;

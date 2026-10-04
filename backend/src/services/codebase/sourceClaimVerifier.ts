@@ -6,7 +6,9 @@ import {parseClaimSemanticsDeclaration, type ConclusionContract} from '../../age
 import type {AnalysisResult} from '../../agent/core/orchestratorTypes';
 import {
   isLocateOnlyLookupKind,
+  lineRangesCover,
   lineRangesIntersect,
+  readBodyRanges,
   referenceHasReadBody,
   sourceReferenceIdentity,
   sanitizeSourceClaimBindings,
@@ -331,6 +333,8 @@ const SOURCE_CLAIM_OUTCOMES = {
     message: 'source-dependent claim has no binding to a reference returned by this run'},
   location_only: {status: 'location_only', code: 'source_claim_location_only',
     message: 'bound source references only locate code; no implementation body was read'},
+  visible_location_only: {status: 'location_only', code: 'source_claim_location_only',
+    message: 'the answer cites this claim\'s source only at locations whose body was not read'},
   trace_unlinked: {status: 'source_only', code: 'source_claim_trace_unlinked',
     message: 'source explanation has no verified Trace evidence for the same claim'},
   not_visible: {status: 'source_only', code: 'source_claim_not_visible',
@@ -347,7 +351,9 @@ const SOURCE_CLAIM_OUTCOMES = {
  * error; `unbound` (no binding, or the claim's text or visible answer blocks
  * cite a location the run never returned, or one several file versions fit
  * that its binding does not pin to exactly one); `location_only` (no bound
- * reference delivered a body); `source_only` (no matched same-claim Trace
+ * reference delivered a body, or every location the answer visibly cites for
+ * the claim is one whose lines the run did not read in the bound file
+ * version); `source_only` (no matched same-claim Trace
  * evidence, or no answer block cites the claim's bound lines, or more
  * locations were written than are checked); `trace_linked`.
  *
@@ -476,14 +482,19 @@ export function verifySourceClaimBindings(input: {
       (citation.status === 'ambiguous' && boundIdentities(citation).size !== 1);
     // Citations of the claim's bound lines; the blocks holding the resolved ones are its visible text.
     const related = citations.filter(citation => boundIdentities(citation).size > 0);
-    const visibleBlocks = new Set(related.filter(citation => citation.block >= 0 && !mismatches(citation))
-      .map(citation => citation.block));
+    const visible = related.filter(citation => citation.block >= 0 && !mismatches(citation));
+    const visibleBlocks = new Set(visible.map(citation => citation.block));
+    // A visible citation supports the claim's reading only when the run read every line it writes,
+    // in the file version the claim binds; a body read elsewhere never upgrades it.
+    const readVisible = visible.some(citation => [...boundIdentities(citation)]
+      .some(identity => lineRangesCover(readBodyRanges(references, identity), citation.lineRange)));
     const claimTextMismatch = textCitations.citations
       .some(citation => mismatches(matchSourceCitation(citation, references)));
     const answerMismatch = related.some(mismatches) ||
       citations.some(citation => visibleBlocks.has(citation.block) && mismatches(citation));
     const outcome = bound.length === 0 || claimTextMismatch || answerMismatch ? SOURCE_CLAIM_OUTCOMES.unbound
       : !bound.some(reference => referenceHasReadBody(reference, references)) ? SOURCE_CLAIM_OUTCOMES.location_only
+        : visibleBlocks.size > 0 && !readVisible ? SOURCE_CLAIM_OUTCOMES.visible_location_only
         : !traceEvidenceRefIds.some(id => matchedTraceIds.has(id)) ? SOURCE_CLAIM_OUTCOMES.trace_unlinked
           : visibleBlocks.size === 0 ? SOURCE_CLAIM_OUTCOMES.not_visible
             : undefined;

@@ -300,15 +300,22 @@ export function referenceHasReadBody(
   if (isBodyLookupKind(reference.lookupKind)) return true;
   const range = reference.lineRange;
   if (!range || reference.sourceGeneration === undefined) return false;
-  const identity = sourceReferenceIdentity(reference);
   // Bodies of the one known version together, as a written citation is judged.
+  return lineRangesCover(readBodyRanges(issued, sourceReferenceIdentity(reference)), range);
+}
+
+/** The body windows the run delivered for one file version (`sourceReferenceIdentity`). */
+export function readBodyRanges(
+  issued: Iterable<SourceReferenceV1>,
+  identity: string,
+): Array<{start: number; end: number}> {
   const bodies: Array<{start: number; end: number}> = [];
   for (const other of issued) {
     if (isBodyLookupKind(other.lookupKind) && other.lineRange && sourceReferenceIdentity(other) === identity) {
       bodies.push(other.lineRange);
     }
   }
-  return lineRangesCover(bodies, range);
+  return bodies;
 }
 
 type LineRange = {start: number; end: number};

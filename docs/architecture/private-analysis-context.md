@@ -34,8 +34,10 @@ Conversation 复用这些按需能力，不自动启动额外源码分析。Smar
 每个 run 在创建 session 前解析当前 scope 中的注册项，并生成非 secret 授权指纹。指纹
 覆盖 tenant/workspace/user、有效源码模式、排序后的 allowlist、选择范围与授权
 revision、生命周期，以及许可/同意状态；不含索引 generation（索引工具各自检查本 run
-固定的 generation）。工具调用和 run 边界重新计算指纹；发生删除所选源、实际同意或范围
-变化、或 scope 变化时，旧 session fail closed，并要求新会话。重复提交相同同意、等价范围
+固定的 generation）。工具调用和 run 边界重新计算指纹；runtime 能拦截的每次模型请求
+前也重新计算，因为原生循环每次请求都会重发之前的工具结果：指纹变化即以
+`analysis_context_changed_restart_required` 结束 run，而不只是拒绝之后的读取。发生删除
+所选源、实际同意或范围变化、或 scope 变化时，旧 session fail closed，并要求新会话。重复提交相同同意、等价范围
 或修改未选中的源不改变指纹。
 
 私有分析只允许当前进程内的受限多轮连续性，不恢复持久化 provider conversation。
@@ -69,8 +71,9 @@ finalization context 中；公开声明与正文另外经过安全投影。共�
 源码不走有限证明：`source_claim_verifier@2` 由服务端为每个依赖源码的 claim 计算状态
 （`invalid`、`unbound`、`location_only`、`source_only`、`trace_linked`），并把正文
 写出的源码位置与本轮签发的引用比对。只有 `invalid`（未签发或越出选择的引用、不属于
-该 claim 的 Trace ID）使答案失败；较弱的状态保持未核验。`trace_linked` 也只说明读取
-过正文且有同一 claim 的 Trace 证据，不证明函数行为、调用链或因果，仍需完整的正文
+该 claim 的 Trace ID）使答案失败；较弱的状态保持未核验。答案只在本轮未读过的行引用某个
+claim 时，无论还读过别的什么，该 claim 都停在 `location_only`。`trace_linked` 也只说明
+被引用的位置读取过正文且有同一 claim 的 Trace 证据，不证明函数行为、调用链或因果，仍需完整的正文
 语义复核。整个关联数组的错误结构不能被过滤成“未提供”。
 
 无需源码的回答不会被要求取得源码核验通过。共享 finalizer 仅在本轮实际 MCP 访问

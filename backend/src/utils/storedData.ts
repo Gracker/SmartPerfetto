@@ -122,3 +122,20 @@ export function logStoredReadFailure(
     ? {...context, store: error.store, reason: error.reason, bytes: error.byteLength, ...error.location}
     : {...context, error: error instanceof Error ? error.message : String(error)});
 }
+
+/**
+ * A store that exists but could not be read or parsed as a whole. It is not an
+ * empty store: a reader that must tell "the record is gone" from "the store
+ * failed to read" throws this instead of degrading to empty. Its message names
+ * the store only.
+ */
+export class StoreUnreadableError extends Error {
+  override readonly name = 'StoreUnreadableError';
+
+  constructor(
+    /** A fixed noun phrase from the caller, never a path, tenant or user value. */
+    readonly store: string,
+  ) {
+    super(`${store} could not be read`);
+  }
+}

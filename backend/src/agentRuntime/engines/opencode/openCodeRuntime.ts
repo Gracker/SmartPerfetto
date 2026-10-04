@@ -73,14 +73,10 @@ import {
   applyFinalResultQualityGate,
   type FinalResultComparisonIdentity,
 } from '../../../services/finalResultQualityGate';
-import {
-  assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
-} from '../../../services/resolvedAnalysisContext';
-import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext, toAnalysisHistoryTurn,
   type AnalysisHistoryReader} from '../../analysisHistory';
 import {createRuntimeTurnCloseoutTape, resolveRuntimeTurnBudget} from '../../runtimeTurnCloseout';
+import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked, type RunAuthorizationCheck} from '../../runAuthorizationFence';
 import {
   acceptNativeDeclarationCompletion,
   buildNativeDeclarationCompletionPrompt,
@@ -2084,6 +2080,11 @@ export async function runOpenCodePrompt(
     adaptiveObservation?: boolean;
     maxSteps?: number;
     onTurnLimit?: () => void;
+    /**
+     * The run's authorization: checked right before the prompt is sent and at
+     * every observation; a change has already aborted the session when it throws.
+     */
+    assertAuthorized?: () => void;
   },
 ): Promise<{ promptResponse?: unknown; messagesResponse?: unknown; turnLimitReached?: boolean;
   turnLimitCandidate?: Record<string, unknown> }> {
@@ -2158,6 +2159,7 @@ export async function runOpenCodePrompt(
     );
 
     commitEvaluationSdkHandoffIfActive();
+    options.assertAuthorized?.();
     assertSdkSuccess(
       await awaitOperation(() => opencode.client.session.promptAsync!(promptInput)),
       'OpenCode async prompt',
@@ -2189,6 +2191,7 @@ export async function runOpenCodePrompt(
       }
       messagesResponse = normalizeMessageWindow(unwrapSdkData(rawMessagesResponse, 'OpenCode messages'));
       throwIfStopped();
+      options.assertAuthorized?.();
       const newAssistantMessages = await resolveOpenCodeCurrentTurnMessages({
         initialMessagesResponse: messagesResponse,
         baselineWatermark,
@@ -2261,6 +2264,7 @@ export async function runOpenCodePrompt(
     getOpenCodeAssistantMessages(baselineMessagesResponse)[0],
   );
   commitEvaluationSdkHandoffIfActive();
+  options.assertAuthorized?.();
   const promptResponse = unwrapSdkData(
     await awaitOperation(() => opencode.client.session.prompt(promptInput)),
     'OpenCode prompt',
@@ -2406,6 +2410,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         error,
         executionLease.signal,
       );
+      throwIfRunAuthorizationRevoked(executionLease.signal);
       throw error;
     } finally {
       const finalizationPhase = runtimePerformance.startPhase('finalization');
@@ -2554,13 +2559,13 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     let sdkPromise: Promise<OpenCodeSdkModule> | undefined;
     const loadSdk = () => sdkPromise ??= this.moduleLoader(this.env);
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
-    const authorizationScope = resolveKnowledgeScope(options);
-    const authorizationFingerprint = options.analysisContextFingerprint ??
-      buildAnalysisContextAuthorizationFingerprint(options, authorizationScope);
-    const assertActive = () => {
-      executionLease.throwIfAborted();
-      assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
-    };
+    // Checked right before every prompt is sent, at every observation of the
+    // running session and around every tool call; a change aborts the session.
+    // OpenCode's own continuations between two observations are not interceptable.
+    const {fence: authorization, assertActive} = createRuntimeRunAuthorization({
+      options, executionLease, stopNative: () => this.interruptSession(sessionId),
+    });
+    const beforeDispatch = () => authorization.assertCurrent();
     const analysisHistoryReader = createRuntimeAnalysisHistoryReader({options, sessionId, traceId,
       getTurns: () => sessionContext.getAnalysisHistory?.() ?? (sessionContext.getAllTurns?.() ?? [])
         .map(turn => toAnalysisHistoryTurn({...turn, traceId, sourceDerived: turn.result?.sourceDerived,
@@ -2609,6 +2614,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         ...input,
         model: classifierModel,
         createClassifierHost: createNoToolsHost,
+        beforeDispatch,
       }),
     });
     const turnIntent = await resolver.resolve();
@@ -2648,6 +2654,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
       `${modelConfig.model.providerID}/${modelConfig.model.modelID}`,
       turnIntent, turnPolicy, resolver.strategyRegistry, analysisHistoryReader, closeoutTape.observe,
       () => toolAdmissionsOpen && !executionLease.signal.aborted, sceneDeadlineMs, executionLease.signal, runId,
+      authorization,
     );
     executionLease.throwIfAborted();
     const resolveFinalReportSceneType = () => prep.sceneType;
@@ -2777,6 +2784,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
             promptSession.aborted
           ),
           onFirstAssistantMessage: () => runtimePerformance.recordFirstOutput(),
+          assertAuthorized: beforeDispatch,
           adaptiveObservation: isRuntimeCandidateAdmitted('task8', this.env),
         });
         resumedPromptSession = true;
@@ -2824,7 +2832,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           const closeout = await runOpenCodeIntentTransport({
             prompt: closeoutPrompt, systemPrompt: prep.systemPrompt,
             signal: executionLease.signal, deadlineMs, outputByteLimit: 64 * 1024,
-            model: modelConfig.model, createClassifierHost: createNoToolsHost,
+            model: modelConfig.model, createClassifierHost: createNoToolsHost, beforeDispatch,
           });
           assertActive();
           if (closeout.status === 'ok') {
@@ -2867,6 +2875,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
           outputByteLimit: declarationOutputLimit,
           model: modelConfig.model,
           createClassifierHost: createNoToolsHost,
+          beforeDispatch,
         });
         assertActive();
         if (repaired.status === 'ok' && acceptNativeDeclarationCompletion({
@@ -3059,6 +3068,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     sceneDeadlineMs?: number,
     sceneSignal?: AbortSignal,
     runId?: string,
+    runAuthorization?: RunAuthorizationCheck,
   ): Promise<OpenCodeAnalysisPreparation> {
     const outputLanguage = options.outputLanguage
       ?? parseOutputLanguage(this.env.SMARTPERFETTO_OUTPUT_LANGUAGE);
@@ -3179,7 +3189,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
     const { toolDefinitions, sourceUse, sourceAuthorization } = createClaudeMcpServer({
       sceneRunContext,
       runId,
-      toolObserver, canInvokeTool, analysisHistoryReader,
+      toolObserver, canInvokeTool, runAuthorization, analysisHistoryReader,
       strategyRegistry,
       conversationTraceAttached: options.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
@@ -3356,9 +3366,15 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
   }
 
   async abortSession(sessionId: string): Promise<void> {
+    const handle = await this.interruptSession(sessionId);
+    if (handle) await this.closeSessionResources(handle);
+  }
+
+  /** Aborts the run's lease and its OpenCode session; the run's own cleanup releases its resources. */
+  private async interruptSession(sessionId: string): Promise<OpenCodeActiveSession | undefined> {
     await this.executionGuard.abortSession(sessionId);
     const handle = this.activeSessions.get(sessionId);
-    if (!handle) return;
+    if (!handle) return undefined;
     handle.aborted = true;
     handle.abortController?.abort();
     if (handle.client?.session.abort && handle.openCodeSessionId) {
@@ -3366,7 +3382,7 @@ export class OpenCodeRuntime extends EventEmitter implements IOrchestrator {
         path: { id: handle.openCodeSessionId },
       }).catch(() => undefined);
     }
-    await this.closeSessionResources(handle);
+    return handle;
   }
 
   restoreArchitectureCache(traceId: string, architecture: ArchitectureInfo): void {

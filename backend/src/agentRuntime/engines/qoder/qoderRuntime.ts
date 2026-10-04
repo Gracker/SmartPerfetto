@@ -59,10 +59,7 @@ import {
   createCodeAwareStreamingTextProjection,
   sanitizeOwnerCodeAwareText,
 } from '../../../services/security/codeAwareOutputRegistry';
-import {
-  assertCurrentAnalysisContextAuthorization,
-  buildAnalysisContextAuthorizationFingerprint,
-} from '../../../services/resolvedAnalysisContext';
+import {createRuntimeRunAuthorization, throwIfRunAuthorizationRevoked} from '../../runAuthorizationFence';
 import {finalizeOwnerSourceAwareAnalysisResultWithProjection} from '../../../services/codebase/sourceClaimVerifier';
 import {projectToolResultForExternalSurface} from '../../../services/rag/toolResultProjectionFilter';
 import {formatToolCallNarration, formatToolResultNarration, issuePrivateToolResultNarrationReceipt} from '../../../agentv3/toolNarration';
@@ -89,7 +86,6 @@ import {
   requestNativeDeclarationCompletion,
 } from '../../runtimeConclusionProtocol';
 import {createRuntimeAnalysisHistoryReader, renderAnalysisHistoryContext} from '../../analysisHistory';
-import {resolveKnowledgeScope} from '../../../services/scopedKnowledgeStore';
 import {INTENT_TRANSPORT_CLEANUP_TIMEOUT_MS, runIntentTransport} from '../../intentTransport';
 import {runQoderIntentTransport} from './qoderIntentTransport';
 import type {IntentTransportInput, IntentTransportResult} from '../../intentTransport';
@@ -462,6 +458,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       );
       if (runtimePerformanceOutcome === 'cancelled') {
         await settleQoderWork(analysis);
+        throwIfRunAuthorizationRevoked(executionLease.signal);
         result = buildQoderCancelledResult(
           sessionId,
           analysisStartedAt,
@@ -566,13 +563,19 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
     const normalizedOptions = options;
     const sessionContext = sessionContextManager.getOrCreate(sessionId, traceId);
     const previousTurns = sessionContext.getAllTurns?.() ?? [];
-    const authorizationScope = resolveKnowledgeScope(options);
-    const authorizationFingerprint = options.analysisContextFingerprint ??
-      buildAnalysisContextAuthorizationFingerprint(options, authorizationScope);
-    const assertAuthorized = () => {
-      executionLease.throwIfAborted();
-      assertCurrentAnalysisContextAuthorization(options, authorizationScope, authorizationFingerprint);
-    };
+    // Checked at the real query boundary of every SDK dispatch, at every
+    // message the SDK streams and around every tool call; a change interrupts
+    // the query. Qoder's own continuations between two observed messages are
+    // not interceptable.
+    const {fence: authorization, assertActive: assertAuthorized} = createRuntimeRunAuthorization({
+      options, executionLease,
+      stopNative: () => {
+        sessionState.aborted = true;
+        sessionState.abortController.abort();
+        return sessionState.sdkQuery?.interrupt();
+      },
+    });
+    const beforeDispatch = () => authorization.assertCurrent();
     const analysisHistoryReader = createRuntimeAnalysisHistoryReader({
       options, sessionId, traceId, getTurns: () => sessionContext.getAnalysisHistory(),
       assertActive: assertAuthorized,
@@ -623,12 +626,13 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       config: QoderRuntimeConfig,
       loadSdk: () => Promise<QoderSdkModule>,
       resolveAuth: (sdk: QoderSdkModule) => Promise<unknown>,
+      beforeQuery?: () => void,
     ): Promise<IntentTransportResult> => runIntentTransport(input, async scope => {
       const directory = await mkdtemp(join(tmpdir(), 'smartperfetto-qoder-text-'));
       scope.onCleanup(() => rm(directory, {recursive: true, force: true}));
       scope.throwIfInactive();
       return runQoderIntentTransport({
-        ...input, signal: scope.signal, loadSdk,
+        ...input, signal: scope.signal, loadSdk, beforeQuery,
         resolveAuth: sdk => resolveAuth(sdk as QoderSdkModule),
         config, scopedEnv: scopedSdkEnv, isolatedClassifierDirectory: directory,
       });
@@ -643,7 +647,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       }),
       signal: executionLease.signal,
       deadlineMs: Date.now() + (numericEnv(this.env.AGENT_CLASSIFIER_TIMEOUT_MS) ?? 30_000),
-      dispatch: input => dispatchQoderText(input, this.config, startSdkModuleLoad, resolveRunAuth),
+      dispatch: input => dispatchQoderText(input, this.config, startSdkModuleLoad, resolveRunAuth, beforeDispatch),
     });
     sessionState.strategyRegistry = intentResolver.strategyRegistry;
     const turnIntent = await intentResolver.resolve();
@@ -959,6 +963,7 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
       toolObserver,
       analysisHistoryReader,
       canInvokeTool,
+      runAuthorization: authorization,
       conversationTraceAttached: options?.assistantSurface === 'conversation'
         ? options.conversationTraceAttached === true
         : undefined,
@@ -1127,6 +1132,9 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
             return;
           }
           executionLease.throwIfAborted();
+          // Each streamed message is a boundary the SDK has already passed; a
+          // revoke seen here interrupts the query before its next request.
+          authorization.assertCurrent();
 
           const msgType = getMessageType(message);
 
@@ -1235,13 +1243,10 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         if (prompt && Date.now() < sessionState.deadlineMs) {
           sessionState.rounds += 1;
           try {
-            assertAuthorized();
             const summary = await dispatchQoderText({
               prompt, systemPrompt: finalSystemPrompt, signal: executionLease.signal,
               deadlineMs: sessionState.deadlineMs, outputByteLimit: 128 * 1024,
-            }, {...this.config, lightModel: undefined},
-            async () => {assertAuthorized(); return sdk;},
-            async () => {assertAuthorized(); return auth;});
+            }, {...this.config, lightModel: undefined}, async () => sdk, async () => auth, beforeDispatch);
             assertAuthorized();
             if (summary.status === 'ok' && summary.text.trim()) {
               sdkFinalBodySupplied = true;
@@ -1273,16 +1278,13 @@ export class QoderRuntime extends EventEmitter implements IOrchestrator {
         executionLease.throwIfAborted();
         sessionState.rounds += 1;
         try {
-          assertAuthorized();
           const repaired = await dispatchQoderText({
             prompt: buildNativeDeclarationCompletionPrompt({request: declarationRequest, intent: turnIntent, outputLanguage}),
             systemPrompt: finalSystemPrompt,
             signal: executionLease.signal,
             deadlineMs: sessionState.deadlineMs,
             outputByteLimit: declarationOutputLimit,
-          }, {...this.config, lightModel: undefined},
-          async () => {assertAuthorized(); return sdk;},
-          async () => {assertAuthorized(); return auth;});
+          }, {...this.config, lightModel: undefined}, async () => sdk, async () => auth, beforeDispatch);
           assertAuthorized();
           if (repaired.status === 'ok' && acceptNativeDeclarationCompletion({
             request: declarationRequest, completion: {status: 'completed'}, candidate: repaired.text,

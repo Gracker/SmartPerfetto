@@ -2,6 +2,7 @@
 // Copyright (C) 2024-2026 Gracker (Chris)
 // This file is part of SmartPerfetto. See LICENSE for details.
 
+import {noteAuthorizationRegistryWrite} from './authorizationRegistryWrites';
 import {createHash, randomUUID} from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -25,6 +26,7 @@ import {
   withScopedIngestLease,
 } from './scopedIngestLease';
 import {PublicRequestError} from '../utils/publicRequestError';
+import {logStoredReadFailure, parseStoredJson, StoreUnreadableError} from '../utils/storedData';
 
 /** An external knowledge source request the caller has to change: an unknown source or a missing acknowledgement. */
 export class KnowledgeSourceRequestError extends PublicRequestError {}
@@ -317,6 +319,8 @@ function markDeleting(source: ExternalKnowledgeSource, actor: string): ExternalK
 }
 
 /** Persistent policy boundary for operator-registered private knowledge. */
+const KNOWLEDGE_REGISTRY_STORE = 'knowledge source registry';
+
 export class ExternalKnowledgeSourceRegistry {
   private readonly sources = new Map<string, ExternalKnowledgeSource>();
   private loaded = false;
@@ -397,6 +401,24 @@ export class ExternalKnowledgeSourceRegistry {
           : {}),
       };
     });
+  }
+
+  /**
+   * The selected sources from one fresh read of the store, for an
+   * authorization check; a source being deleted reads as absent. Unlike `get`,
+   * a store file that exists but cannot be read or parsed throws
+   * `StoreUnreadableError` instead of reading as empty.
+   */
+  getSelected(sourceIds: readonly string[], scope: ExternalKnowledgeScope): Map<string, ExternalKnowledgeSource | undefined> {
+    if (enterpriseKnowledgeStoreEnabled()) return new Map(sourceIds.map(id => [id, this.get(id, scope)]));
+    const filesystem = this.readFilesystemSourcesStrict();
+    return new Map(sourceIds.map(id => {
+      const filesystemSource = filesystem.get(id);
+      const source = enterpriseKnowledgeDbWritesEnabled()
+        ? mergeDualWriteExternalSourceFailClosed(filesystemSource, this.databaseSource(id, scope), scope)
+        : filesystemSource && sameScope(filesystemSource.scope, scope) ? filesystemSource : undefined;
+      return [id, source && !isDeleting(source) ? source : undefined];
+    }));
   }
 
   /** A source being deleted reads as absent. */
@@ -627,6 +649,7 @@ export class ExternalKnowledgeSourceRegistry {
     const deleteRecord = (): void => {
       lease.assertHeld(true);
       if (lease.distributed) {
+        noteAuthorizationRegistryWrite();
         removeScopedKnowledgeRecordIf<ExternalKnowledgeSource>(
           REGISTRY_KNOWLEDGE_KIND,
           sourceId,
@@ -754,6 +777,19 @@ export class ExternalKnowledgeSourceRegistry {
     }
   }
 
+  /** The store file read whole; a missing file is empty, an unreadable one throws. */
+  private readFilesystemSourcesStrict(): Map<string, ExternalKnowledgeSource> {
+    if (!fs.existsSync(this.storagePath)) return new Map();
+    try {
+      const parsed = parseStoredJson<StorageEnvelope>(fs.readFileSync(this.storagePath, 'utf8'), KNOWLEDGE_REGISTRY_STORE);
+      if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.sources)) throw new StoreUnreadableError(KNOWLEDGE_REGISTRY_STORE);
+      return new Map(parsed.sources.map(source => [source.sourceId, source]));
+    } catch (error) {
+      logStoredReadFailure('[ExternalKnowledgeSourceRegistry] Registry could not be read', error);
+      throw new StoreUnreadableError(KNOWLEDGE_REGISTRY_STORE);
+    }
+  }
+
   private getFilesystemSource(sourceId: string): ExternalKnowledgeSource | undefined {
     this.load(true);
     return this.sources.get(sourceId);
@@ -785,6 +821,7 @@ export class ExternalKnowledgeSourceRegistry {
     mutate: (current: ExternalKnowledgeSource | undefined) => ExternalKnowledgeSource,
   ): ExternalKnowledgeSource {
     if (enterpriseKnowledgeStoreEnabled()) {
+      noteAuthorizationRegistryWrite();
       return mutateScopedKnowledgeRecord(
         REGISTRY_KNOWLEDGE_KIND,
         sourceId,
@@ -811,6 +848,7 @@ export class ExternalKnowledgeSourceRegistry {
       : filesystemSource;
     const updated = mutate(current);
     if (enterpriseKnowledgeDbWritesEnabled()) {
+      noteAuthorizationRegistryWrite();
       upsertScopedKnowledgeRecord(
         REGISTRY_KNOWLEDGE_KIND,
         sourceId,
@@ -827,6 +865,7 @@ export class ExternalKnowledgeSourceRegistry {
   }
 
   private persist(): void {
+    noteAuthorizationRegistryWrite();
     fs.mkdirSync(path.dirname(this.storagePath), {recursive: true});
     const tempPath = `${this.storagePath}.tmp.${process.pid}.${randomUUID()}`;
     const envelope: StorageEnvelope = {

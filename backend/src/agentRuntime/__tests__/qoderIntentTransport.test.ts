@@ -52,6 +52,24 @@ describe('Qoder intent transport', () => {
   beforeEach(() => {jest.useFakeTimers({now: 1000});});
   afterEach(() => {jest.useRealTimers();});
 
+  it('checks the run authorization at the query boundary, after auth resolved', async () => {
+    const {input, sdk, resolveAuth} = fixture();
+    let releaseAuth!: (auth: unknown) => void;
+    resolveAuth.mockReturnValue(new Promise(resolve => { releaseAuth = resolve; }));
+    let revoked = false;
+    const beforeQuery = jest.fn(() => {
+      if (revoked) throw new Error('analysis_context_changed_restart_required');
+    });
+    const pending = runQoderIntentTransport({...input, deadlineMs: Date.now() + 5_000, beforeQuery});
+    await jest.advanceTimersByTimeAsync(0);
+    expect(resolveAuth).toHaveBeenCalledTimes(1);
+    revoked = true; // Consent is withdrawn while auth resolves.
+    releaseAuth({type: 'test-auth'});
+    await pending;
+    expect(beforeQuery).toHaveBeenCalledTimes(1);
+    expect(sdk.query).not.toHaveBeenCalled();
+  });
+
   it('dispatches one isolated tool-free query with fixed same-provider BYOK selection', async () => {
     const {input, query, sdk, auth, resolveAuth} = fixture();
     await expect(runQoderIntentTransport(input)).resolves.toEqual({

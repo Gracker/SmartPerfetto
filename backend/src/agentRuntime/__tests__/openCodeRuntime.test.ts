@@ -53,6 +53,7 @@ import * as providerManager from '../../services/providerManager';
 import * as sourceClaimVerifier from '../../services/codebase/sourceClaimVerifier';
 import * as finalizationContext from '../analysisFinalizationContext';
 import {buildAnalysisContextAuthorizationFingerprint} from '../../services/resolvedAnalysisContext';
+import * as contextAuthorization from '../../services/resolvedAnalysisContext';
 import {resolveKnowledgeScope} from '../../services/scopedKnowledgeStore';
 import {ArtifactStore} from '../../agentv3/artifactStore';
 import {
@@ -370,6 +371,8 @@ function createNativeIntentHarness(input: {
   };
   beforeClassifierReply?: () => Promise<void>;
   beforeAnswerReply?: () => Promise<void>;
+  /** Runs when the main session is created: after its prompt (and history) is rendered, before the prompt is sent. */
+  onMainSessionCreate?: () => void;
   env?: Record<string, string>;
   selection?: RuntimeFactoryInput['selection'];
 } = {}) {
@@ -398,6 +401,7 @@ function createNativeIntentHarness(input: {
         client: {session: {
           create: async request => {
             directories.push(request.query?.directory ?? '');
+            if (index === 1) input.onMainSessionCreate?.();
             return {data: {id: `native-${index}`}};
           },
           abort,
@@ -459,6 +463,58 @@ function createNativeIntentHarness(input: {
   return {runtime, traceProcessor, configs, prompts, directories, serverCloses, aborts,
     moduleLoader, bridgeClose, messageReadLimits, getTools: () => tools};
 }
+
+describe('OpenCode authorization at every dispatch and observation', () => {
+  const revokeWhen = (revoked: () => boolean) => {
+    const real = contextAuthorization.assertCurrentAnalysisContextAuthorization;
+    return jest.spyOn(contextAuthorization, 'assertCurrentAnalysisContextAuthorization').mockImplementation((...args) => {
+      if (revoked()) throw new contextAuthorization.AnalysisContextAuthorizationChangedError();
+      return real(...args);
+    });
+  };
+  const PRIVATE = {codeAwareMode: 'provider_send' as const, codebaseIds: ['codebase-a']};
+  const toolStep = {info: {role: 'assistant', id: 'msg-tool', finish: 'tool-calls', time: {created: 1, completed: 2}},
+    parts: [{type: 'tool', tool: 'smartperfetto_read_codebase_file'}]};
+
+  it('aborts the session when authorization changes after a body read, at the first observation', async () => withBackendDataDir(async () => {
+    let revoked = false;
+    let reads = 0;
+    const harness = createNativeIntentHarness({
+      env: {SMARTPERFETTO_OPENCODE_PROMPT_TIMEOUT_MS: '4000'},
+      mainSession: {
+        messages: async () => {
+          reads += 1;
+          revoked = true; // The tool step returned a body; consent is withdrawn before OpenCode continues.
+          return {data: [toolStep]};
+        },
+        status: async () => ({data: {'native-1': {type: 'busy'}}}),
+      },
+    });
+    const authorization = revokeWhen(() => revoked);
+    try {
+      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-after-read', 'trace-opencode', {analysisMode: 'full', ...PRIVATE}))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      expect(reads).toBe(1);
+      expect(harness.aborts[1]).toHaveBeenCalledWith({path: {id: 'native-1'}});
+      expect(harness.prompts).toHaveLength(2);
+    } finally {authorization.mockRestore();}
+  }), 15_000);
+
+  it('sends nothing when authorization changes after the prompt is rendered, before it is sent', async () => withBackendDataDir(async () => {
+    let revoked = false;
+    const harness = createNativeIntentHarness({
+      mainSession: {messages: async () => ({data: []}), status: async () => ({data: {}})},
+      onMainSessionCreate: () => { revoked = true; },
+    });
+    const authorization = revokeWhen(() => revoked);
+    try {
+      await expect(harness.runtime.analyze('为什么掉帧', 'opencode-revoked-before-dispatch', 'trace-opencode', {analysisMode: 'full', ...PRIVATE}))
+        .rejects.toThrow('analysis_context_changed_restart_required');
+      // Only the classifier's prompt was sent.
+      expect(harness.prompts).toHaveLength(1);
+    } finally {authorization.mockRestore();}
+  }), 15_000);
+});
 
 describe('OpenCode native turn intent and delivery', () => {
   it('scene runtime matrix: runs the pinned OpenCode provider through shared bridge proposal and private seal', async () => {

@@ -8,6 +8,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { z } from 'zod';
 import {isPlaceholderToolString} from './toolArgPlaceholders';
+import type {RunAuthorizationCheck} from './runAuthorizationFence';
 import type { McpToolExposure } from '../types/sparkContracts';
 import type {RunManifestAttributionSink} from '../types/selfEvolution';
 import {runtimeOutcomeFromError} from './runtimePerformance';
@@ -371,6 +372,44 @@ export function withRuntimeToolConcurrency(
   };
   coordinatedHandler[TIMED_SHARED_TOOL_HANDLER] = true;
   return {...timedSpec, handler: coordinatedHandler};
+}
+
+/**
+ * The run's authorization around one tool call: checked before the call and
+ * again after it, before its result reaches the runtime adapter. A revoked
+ * authorization ends the run; the call fails only after that cancel settled,
+ * whether the wrapper's check or the tool's own (a private-context check, an
+ * index checkpoint) saw it, so a native loop cannot turn the failure into
+ * another model request carrying this result or an earlier one. `settled`
+ * resolves at once when nothing was revoked.
+ */
+export function withRuntimeToolAuthorization(
+  spec: SharedToolSpec,
+  authorization: Pick<RunAuthorizationCheck, 'assertCurrentInTurn' | 'settled'>,
+): SharedToolSpec {
+  const timed = withRuntimeToolTiming(spec).handler;
+  const check = async () => {
+    try {
+      authorization.assertCurrentInTurn();
+    } catch (error) {
+      await authorization.settled();
+      throw error;
+    }
+  };
+  const handler: TimedRuntimeToolHandler = async (args, extra) => {
+    await check();
+    let result: Awaited<ReturnType<typeof timed>>;
+    try {
+      result = await timed(args, extra);
+    } catch (error) {
+      await authorization.settled();
+      throw error;
+    }
+    await check();
+    return result;
+  };
+  handler[TIMED_SHARED_TOOL_HANDLER] = true;
+  return {...spec, handler};
 }
 
 /** Both admission branches own one timing receipt, including already-timed SDK handlers. */

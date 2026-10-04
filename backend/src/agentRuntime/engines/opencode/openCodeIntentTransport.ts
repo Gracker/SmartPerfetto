@@ -50,6 +50,8 @@ export interface OpenCodeIntentTransportInput extends IntentTransportInput {
     deadlineMs: number;
     model: OpenCodeIntentModel;
   }): Promise<OpenCodeClassifierHost>;
+  /** The run's authorization, checked after the host started, right before the prompt is sent. */
+  beforeDispatch?: () => void;
 }
 
 function object(value: unknown): Record<string, unknown> | undefined {
@@ -104,6 +106,7 @@ export function runOpenCodeIntentTransport(input: OpenCodeIntentTransportInput) 
       scope.onCleanup(signal => host.client.session.delete!({path, query, signal}));
     }
     scope.throwIfInactive();
+    input.beforeDispatch?.();
     const message = responseData(await host.client.session.prompt({
       path, query, signal: scope.signal,
       body: {
