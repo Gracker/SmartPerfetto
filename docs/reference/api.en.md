@@ -2,8 +2,13 @@
 
 [English](api.en.md) | [中文](api.md)
 
-The default backend address is `http://localhost:3000`. Set
-`SMARTPERFETTO_BACKEND_PORT` to use a different backend port. If
+The default backend address is `http://127.0.0.1:3000`. Set
+`SMARTPERFETTO_BACKEND_PORT` to use a different backend port. The Web UI uses
+the `/api/workspaces/:workspaceId/*` routes; the matching global paths
+(`/api/agent/v1/*`, `/api/traces/*`, `/api/reports/*`, `/api/v1/providers/*`)
+remain available for local and compatibility use, but every response carries
+`Deprecation: true`, `Sunset: Wed, 30 Jun 2027 00:00:00 GMT`, and a
+`Link: <...>; rel="successor-version"` naming the workspace route. If
 `SMARTPERFETTO_API_KEY` is set, protected APIs require:
 
 ```http
@@ -253,8 +258,12 @@ npm registry, or Docker Hub; clients cannot supply a URL. With
 Upload example:
 
 ```bash
-curl -F "file=@trace.pftrace" http://localhost:3000/api/traces/upload
+curl -F "file=@trace.pftrace" \
+  http://127.0.0.1:3000/api/workspaces/default-workspace/traces/upload
 ```
+
+Every `/api/traces/*` path in the table has the same child path under
+`/api/workspaces/:workspaceId/traces/*`.
 
 The list returns the newest 100 records by default. Use `limit=1..200` and the
 opaque `nextCursor` from the previous response:
@@ -289,6 +298,7 @@ for local and compatibility flows.
 | `/api/workspaces/:workspaceId/trace-config` | Side-effect-free trace config proposals |
 | `/api/workspaces/:workspaceId/skill-packs` | Local-directory Skill Pack preview, install, enable/disable, and remove |
 | `/api/workspaces/:workspaceId/batch-traces` | Deterministic Skill batch over workspace trace sets, report export, snapshot promotion, and comparison bridge |
+| `/api/workspaces/:workspaceId/critical-path` | Critical-path wait-chain analysis of a selected `thread_state`; see [Critical-Path Wait Chain](#critical-path-wait-chain) below |
 
 ## Skill Pack API
 
@@ -309,7 +319,7 @@ Skill YAML, SQL fragments, and docs into
 | `DELETE` | `/:packId` | Disable the pack and remove only its managed copy; built-in Skills are untouched |
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/skill-packs/preview \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/skill-packs/preview \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{ "sourcePath": "/absolute/path/to/local-skill-pack" }'
@@ -352,7 +362,7 @@ by `SMARTPERFETTO_BATCH_TRACE_MAX_TRACES`.
 Create example:
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/batch-traces \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/batch-traces \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
@@ -391,7 +401,7 @@ tracebox, and it does not record the device. `proposal.config.textproto` is
 rendered by the same renderer used by `smp capture config`.
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/trace-config/proposals \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/trace-config/proposals \
   -H "Content-Type: application/json" \
   -d '{
     "request": "debug startup first frame jank",
@@ -428,6 +438,7 @@ Base path: `/api/agent/v1`
 |---|---|---|
 | `POST` | `/analyze` | Start analysis |
 | `POST` | `/conversation` | Start or continue a lightweight conversation with optional trace and authorized source context |
+| `GET` | `/conversation/:sessionId` | Read conversation state and the latest 200 history messages |
 | `GET` | `/conversation/:sessionId/stream` | Conversation SSE by `runId`, with `Last-Event-ID` replay |
 | `POST` | `/conversation/:sessionId/cancel` | Cancel the exact conversation run |
 | `GET` | `/conversation/:sessionId/full-handoff` | Read a recommended full-analysis handoff |
@@ -452,15 +463,26 @@ Base path: `/api/agent/v1`
 | `POST` | `/scene-detect-quick` | Quick scene detection |
 | `POST` | `/teaching/pipeline` | Rendering pipeline teaching |
 | `GET` | `/sessions` | Session catalog |
-| `GET` | `/logs` | Agent logs, gated by feature flag |
+| `GET` | `/logs` | List agent session logs |
+| `GET` | `/logs/:sessionId` | Read one session's logs, filtered by `level`, `component`, `search`, `limit` |
+| `GET` | `/logs/:sessionId/errors` | Read only that session's error logs |
+| `GET` | `/logs/metrics/summary` | Aggregate session metrics over the last `days` (default 7) |
+| `POST` | `/logs/cleanup` | Delete log files older than `maxAgeDays` (default 7) |
+| `GET` / `PUT` | `/admin/log-level` | Read or set the process log level; `PUT {level: null}` restores the `LOG_LEVEL` default |
 
 The workspace-scoped agent base is `/api/workspaces/:workspaceId/agent`, with
-the same child paths as the table above. `/api/agent/v1` still exists and is
-tracked by legacy telemetry with a migration target.
+the same child paths as the table above. `/api/agent/v1` still exists; its
+responses carry the `Deprecation` / `Sunset` / `Link` headers described above
+and are counted by legacy telemetry.
+
+`/logs*` is gated by `FEATURE_AGENT_LOGS_API` (on by default) and answers 503
+`FEATURE_DISABLED` when it is off; only callers with the `org_admin` role or the
+`*` scope can read it, everyone else gets 404. `/admin/log-level` requires only
+authentication.
 
 ### Lightweight Conversation
 
-All four `/conversation` endpoints require `agent:run` and revalidate tenant,
+All five `/conversation` endpoints require `agent:run` and revalidate tenant,
 workspace, and user ownership on every request. `POST /conversation` returns a
 `sessionId` and exact `runId`. A new turn in the same session stops the older
 run before reserving the new run, waiting at most one review-stop watchdog
@@ -469,6 +491,14 @@ trace tools. Codebase and knowledge-source selections still use the same
 permission, registered-root, rights, and provider-send authorization as
 `/analyze`. Private queries, tool bodies, and errors are projected before SSE
 replay or durable persistence.
+
+`GET /conversation/:sessionId` returns `status`, `traceContext`, the latest 200
+`history` messages (older ones counted in `historyOmittedMessages`, those hidden
+because their source authorization is unavailable in
+`historyUnavailableMessages`), `recoveryStatus`, the in-progress run's
+`activeRunId`, and, when the latest turn's sources are readable,
+`pendingQuestion`, `recommendedFullAnalysis`, and `fullHandoff`. Source-derived
+messages pass the owner credential filter before they are returned.
 
 When the semantic review is dispatched, the stream first sends one
 `provisional_answer` (`message` is the owner-projected final body,
@@ -551,7 +581,7 @@ for the user and privacy contract.
 Start analysis:
 
 ```bash
-curl -X POST http://localhost:3000/api/agent/v1/analyze \
+curl -X POST http://127.0.0.1:3000/api/agent/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{
     "traceId": "trace-id",
@@ -565,14 +595,14 @@ curl -X POST http://localhost:3000/api/agent/v1/analyze \
 The response returns `sessionId`. Then subscribe:
 
 ```bash
-curl -N http://localhost:3000/api/agent/v1/<sessionId>/stream
+curl -N http://127.0.0.1:3000/api/agent/v1/<sessionId>/stream
 ```
 
 Cancellation must include the exact `runId` returned by `/analyze`. A missing,
 unknown, or no-longer-active run cannot trigger a session-level runtime abort:
 
 ```bash
-curl -X POST http://localhost:3000/api/agent/v1/<sessionId>/cancel \
+curl -X POST http://127.0.0.1:3000/api/agent/v1/<sessionId>/cancel \
   -H "Content-Type: application/json" \
   -d '{"runId":"<runId>"}'
 ```
@@ -1201,7 +1231,7 @@ actor, issuedAt); a POST body's copies of these are ignored. A case written
 before attestations needs one again: send a reviewed case back as GET returned
 it, and publish a published case again.
 
-The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API. `/api/template-analysis/*` likewise answers 410; `/auto`, `/four-quadrant`, `/cpu-core` and `/frame-stats` have no successor that takes the same body, so only `migration.fallback` is set. `/api/sql/*` also answers 410: `/tables` returned a fixed five-table excerpt rather than the loaded trace's schema, and `/generate` only matched a regex template or returned a canned query without reading any trace. Neither has a successor that takes the same body; `migration.fallback` points to the workspace agent API, which reads the actual schema and runs SQL.
+The legacy agent API base is rejected by `rejectLegacyAgentApi` to avoid new external use of deprecated paths. Legacy direct AI routes such as `/api/advanced-ai/*`, `/api/auto-analysis/*`, and `/api/agent/v1/llm/*` have been removed; use `/api/agent/v1/analyze`. `/api/perfetto-sql/*` has been removed and answers 410 in every deployment mode: scene endpoints such as `/startup` and `/scrolling` map to `POST /api/skills/execute/<skillId>` with the same `{traceId, packageName}` body (enterprise deployments require the workspace route there too), named in the response's `migration.successor`; `/sql`, `/tables`, `/functions`, `/skills`, `/analyze`, `/input`, `/buffer-flow` and `/systemserver` have no direct successor, and `migration.fallback` points to the workspace agent API. `/api/template-analysis/*` likewise answers 410; `/auto`, `/four-quadrant`, `/cpu-core` and `/frame-stats` have no successor that takes the same body, so only `migration.fallback` is set. `/api/sessions/*` answers 410: it was an unscoped session-store API that ignored ownership, and `migration.successor` names the owner-checked route (`GET /api/sessions` → `/api/agent/v1/sessions`, `GET /api/sessions/:id` → `/api/agent/v1/:id/turns`, `DELETE /api/sessions/:id` → `/api/agent/v1/:id`); `/export` has none. `/api/sql/*` also answers 410: `/tables` returned a fixed five-table excerpt rather than the loaded trace's schema, and `/generate` only matched a regex template or returned a canned query without reading any trace. Neither has a successor that takes the same body; `migration.fallback` points to the workspace agent API, which reads the actual schema and runs SQL.
 
 ### Critical-path wait chain
 

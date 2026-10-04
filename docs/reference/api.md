@@ -2,8 +2,11 @@
 
 [English](api.en.md) | [中文](api.md)
 
-默认后端地址是 `http://localhost:3000`。如需修改后端端口，设置
-`SMARTPERFETTO_BACKEND_PORT`。如果设置了 `SMARTPERFETTO_API_KEY`，受保护接口需要：
+默认后端地址是 `http://127.0.0.1:3000`。如需修改后端端口，设置
+`SMARTPERFETTO_BACKEND_PORT`。Web UI 使用 `/api/workspaces/:workspaceId/*` 路由；对应的全局路径
+（`/api/agent/v1/*`、`/api/traces/*`、`/api/reports/*`、`/api/v1/providers/*`）仍可用于本地与兼容
+场景，但每个响应都带 `Deprecation: true`、`Sunset: Wed, 30 Jun 2027 00:00:00 GMT` 和指向 workspace
+路由的 `Link: <...>; rel="successor-version"`。如果设置了 `SMARTPERFETTO_API_KEY`，受保护接口需要：
 
 ```http
 Authorization: Bearer <token>
@@ -194,8 +197,11 @@ registry 或 Docker Hub 的固定 HTTPS endpoint，不接受客户端 URL。设�
 上传示例：
 
 ```bash
-curl -F "file=@trace.pftrace" http://localhost:3000/api/traces/upload
+curl -F "file=@trace.pftrace" \
+  http://127.0.0.1:3000/api/workspaces/default-workspace/traces/upload
 ```
+
+下表中的 `/api/traces/*` 在 `/api/workspaces/:workspaceId/traces/*` 下有同样的子路径。
 
 列表默认返回最近 100 条，支持 `limit=1..200` 和响应中的不透明 `nextCursor`：
 
@@ -225,6 +231,7 @@ GET /api/traces?limit=100&cursor=<nextCursor>
 | `/api/workspaces/:workspaceId/trace-config` | 无副作用 trace config proposal |
 | `/api/workspaces/:workspaceId/skill-packs` | 本地目录型 Skill Pack 预检、安装、启停和移除 |
 | `/api/workspaces/:workspaceId/batch-traces` | workspace trace set 的确定性 Skill batch、报告导出、snapshot promotion 和 comparison bridge |
+| `/api/workspaces/:workspaceId/critical-path` | 选中 `thread_state` 的 Critical path 等待链分析，见下文 [Critical path 等待链](#critical-path-等待链) |
 
 ## Skill Pack API
 
@@ -244,7 +251,7 @@ manifest 声明的 Skill YAML、SQL fragment 和 docs 复制到受管目录
 | `DELETE` | `/:packId` | 禁用 pack 并删除受管目录副本，内置 Skill 不受影响 |
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/skill-packs/preview \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/skill-packs/preview \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{ "sourcePath": "/absolute/path/to/local-skill-pack" }'
@@ -284,7 +291,7 @@ batch create 默认最多 2 个，可通过
 创建示例：
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/batch-traces \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/batch-traces \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
@@ -319,7 +326,7 @@ Base path: `/api/workspaces/:workspaceId/trace-config`
 响应中的 `proposal.config.textproto` 来自 `smp capture config` 使用的同一个 renderer。
 
 ```bash
-curl -X POST http://localhost:3000/api/workspaces/default-workspace/trace-config/proposals \
+curl -X POST http://127.0.0.1:3000/api/workspaces/default-workspace/trace-config/proposals \
   -H "Content-Type: application/json" \
   -d '{
     "request": "debug startup first frame jank",
@@ -356,6 +363,7 @@ Base path: `/api/agent/v1`
 |---|---|---|
 | `POST` | `/analyze` | 启动分析 |
 | `POST` | `/conversation` | 启动或继续轻量对话；可选附加 Trace 与已授权源码 |
+| `GET` | `/conversation/:sessionId` | 读取对话状态与最近 200 条历史 |
 | `GET` | `/conversation/:sessionId/stream` | 对话 SSE，使用 `runId` 并支持 `Last-Event-ID` 重放 |
 | `POST` | `/conversation/:sessionId/cancel` | 取消精确对话 run |
 | `GET` | `/conversation/:sessionId/full-handoff` | 读取已建议的完整分析交接 |
@@ -380,17 +388,30 @@ Base path: `/api/agent/v1`
 | `POST` | `/scene-detect-quick` | 快速场景检测 |
 | `POST` | `/teaching/pipeline` | 渲染管线教学 |
 | `GET` | `/sessions` | session catalog |
-| `GET` | `/logs` | agent logs，受 feature flag 控制 |
+| `GET` | `/logs` | 列出 agent session 日志 |
+| `GET` | `/logs/:sessionId` | 读取一个 session 的日志，可按 `level`、`component`、`search`、`limit` 过滤 |
+| `GET` | `/logs/:sessionId/errors` | 只读该 session 的错误日志 |
+| `GET` | `/logs/metrics/summary` | 汇总最近 `days` 天（默认 7）的 session 指标 |
+| `POST` | `/logs/cleanup` | 删除早于 `maxAgeDays`（默认 7）的日志文件 |
+| `GET` / `PUT` | `/admin/log-level` | 读取或设置进程日志级别；`PUT {level: null}` 恢复 `LOG_LEVEL` 默认值 |
 
-Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路径与上表一致。`/api/agent/v1` 当前仍存在，但会通过 legacy telemetry 标记迁移目标。
+Workspace-scoped agent base 为 `/api/workspaces/:workspaceId/agent`，其子路径与上表一致。`/api/agent/v1` 当前仍存在，响应带上文所述的 `Deprecation` / `Sunset` / `Link` 头，并计入 legacy telemetry。
+
+`/logs*` 受 `FEATURE_AGENT_LOGS_API`（默认开启）控制，关闭时返回 503 `FEATURE_DISABLED`；只有
+`org_admin` 角色或 `*` scope 的调用方可访问，其他调用方得到 404。`/admin/log-level` 只要求登录。
 
 ### 轻量对话
 
-四个 `/conversation` 接口都要求 `agent:run`，并在每次访问时重验 tenant、workspace、
+五个 `/conversation` 接口都要求 `agent:run`，并在每次访问时重验 tenant、workspace、
 user owner。`POST /conversation` 返回 `sessionId` 和精确 `runId`；同一 session 的新消息
 会先停止旧 run 并至多等待一个复核停止看门狗时长（见下文）让它提交，再占用新 run。没有 `traceId` 时 runtime 不暴露 Trace 工具；传入
 codebase/knowledge source 仍须通过与 `/analyze` 相同的权限、注册根目录、权利确认和
 provider 发送同意。私有 query、工具正文和错误在进入 SSE 重放或持久化前完成投影。
+
+`GET /conversation/:sessionId` 返回 `status`、`traceContext`、最近 200 条 `history`（更早的条数在
+`historyOmittedMessages`，来源授权已不可用而隐藏的条数在 `historyUnavailableMessages`）、
+`recoveryStatus`、进行中 run 的 `activeRunId`，以及最近一轮来源可读时的 `pendingQuestion`、
+`recommendedFullAnalysis` 与 `fullHandoff`。源码派生的消息在返回前经 owner 凭据过滤。
 
 语义复核一旦发出，流先发送一次 `provisional_answer`（`message` 为经 owner 投影的最终正文，
 `verification: "pending"`）：正文已定稿、可以阅读，但核验结论尚未产生；客户端应保持 run
@@ -451,7 +472,7 @@ claim/finding/evidence/Skill id。源 provider snapshot 不匹配或 runtime 不
 启动分析：
 
 ```bash
-curl -X POST http://localhost:3000/api/agent/v1/analyze \
+curl -X POST http://127.0.0.1:3000/api/agent/v1/analyze \
   -H "Content-Type: application/json" \
   -d '{
     "traceId": "trace-id",
@@ -465,14 +486,14 @@ curl -X POST http://localhost:3000/api/agent/v1/analyze \
 响应会返回 `sessionId`。随后订阅：
 
 ```bash
-curl -N http://localhost:3000/api/agent/v1/<sessionId>/stream
+curl -N http://127.0.0.1:3000/api/agent/v1/<sessionId>/stream
 ```
 
 取消必须携带 `/analyze` 回执中的精确 `runId`。缺失、未知或已经不再拥有当前
 session 的 run 不会触发 session 级 runtime abort：
 
 ```bash
-curl -X POST http://localhost:3000/api/agent/v1/<sessionId>/cancel \
+curl -X POST http://127.0.0.1:3000/api/agent/v1/<sessionId>/cancel \
   -H "Content-Type: application/json" \
   -d '{"runId":"<runId>"}'
 ```
@@ -973,7 +994,7 @@ trace 的诊断证据或 root-cause 证明。接口复用当前 workspace scope�
 
 仍在维护的辅助 API 包括 `/api/flamegraph/*`、`/api/critical-path/*`、`/api/baselines/*`、`/api/memory/*`、`/api/cases/*`、`/api/ci/*`、`/api/tp/*`、`/api/auth/*`、`/api/tenant/*` 和 `/api/admin/runtime/*`。这些接口面向特定产品面或管理面，调用前应先确认当前部署是否启用了对应 feature / auth。`/api/cases/*` 的读取只需登录；新建、删除、发布、归档与边的增删要求 `self_evolution:curate`，curator 与 reviewer 取自登录身份，请求体中的名字不被采用。学习产生的 case 已退役：以 `learned:` 开头的 id 与学习来源的 case 不再返回，写入会被拒绝。分析只读取 published / reviewed、已 `redacted` 且带有策展证明的 case：新建与 publish 时，服务端为 case 的当前内容签发证明；archive 只保留 case 原有的准入，不会让 case 进入分析。返回的每条 case 都附带 `analysisAdmitted` 与 `curation`（issuer、actor、issuedAt），POST 请求体里的这两个字段会被忽略。引入准入之前写入的 case 需要补戳：reviewed case 用 GET 读回后原样 POST，published case 重新 publish。
 
-legacy agent API base 会被 `rejectLegacyAgentApi` 拒绝，避免外部继续接入废弃路径。`/api/advanced-ai/*`、`/api/auto-analysis/*` 和 `/api/agent/v1/llm/*` 这类旧 direct AI route 已移除；统一使用 `/api/agent/v1/analyze`。`/api/perfetto-sql/*` 已移除，所有部署模式下都返回 410：场景端点（如 `/startup`、`/scrolling`）改用请求体相同（`{traceId, packageName}`）的 `POST /api/skills/execute/<skillId>`（enterprise 部署下该接口同样要求 workspace 路由），响应的 `migration.successor` 给出对应路径；`/sql`、`/tables`、`/functions`、`/skills`、`/analyze`、`/input`、`/buffer-flow`、`/systemserver` 没有直接替代，`migration.fallback` 指向 workspace agent 接口。`/api/template-analysis/*` 同样返回 410；`/auto`、`/four-quadrant`、`/cpu-core`、`/frame-stats` 都没有请求体相同的替代，只给出 `migration.fallback`。`/api/sql/*` 也返回 410：`/tables` 返回的是固定的五张表摘录而不是当前 trace 的 schema，`/generate` 只做正则模板匹配或返回预置 SQL，并不读取任何 trace；两者都没有请求体相同的替代，`migration.fallback` 指向 workspace agent 接口，由 agent 读取实际 schema 并执行 SQL。
+legacy agent API base 会被 `rejectLegacyAgentApi` 拒绝，避免外部继续接入废弃路径。`/api/advanced-ai/*`、`/api/auto-analysis/*` 和 `/api/agent/v1/llm/*` 这类旧 direct AI route 已移除；统一使用 `/api/agent/v1/analyze`。`/api/perfetto-sql/*` 已移除，所有部署模式下都返回 410：场景端点（如 `/startup`、`/scrolling`）改用请求体相同（`{traceId, packageName}`）的 `POST /api/skills/execute/<skillId>`（enterprise 部署下该接口同样要求 workspace 路由），响应的 `migration.successor` 给出对应路径；`/sql`、`/tables`、`/functions`、`/skills`、`/analyze`、`/input`、`/buffer-flow`、`/systemserver` 没有直接替代，`migration.fallback` 指向 workspace agent 接口。`/api/template-analysis/*` 同样返回 410；`/auto`、`/four-quadrant`、`/cpu-core`、`/frame-stats` 都没有请求体相同的替代，只给出 `migration.fallback`。`/api/sessions/*` 返回 410：它是不按所有者过滤的旧会话存储接口，`migration.successor` 给出按所有者鉴权的替代路径（`GET /api/sessions` → `/api/agent/v1/sessions`，`GET /api/sessions/:id` → `/api/agent/v1/:id/turns`，`DELETE /api/sessions/:id` → `/api/agent/v1/:id`），`/export` 没有替代。`/api/sql/*` 也返回 410：`/tables` 返回的是固定的五张表摘录而不是当前 trace 的 schema，`/generate` 只做正则模板匹配或返回预置 SQL，并不读取任何 trace；两者都没有请求体相同的替代，`migration.fallback` 指向 workspace agent 接口，由 agent 读取实际 schema 并执行 SQL。
 
 ### Critical path 等待链
 

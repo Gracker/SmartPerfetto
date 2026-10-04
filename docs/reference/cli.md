@@ -362,6 +362,7 @@ smp compare baseline.perfetto-trace comparison.perfetto-trace --query "对比卡
 smp list
 smp list --json
 smp list --format json
+smp list --limit 20 --since 2026-01-01
 smp show <sessionId>
 smp report <sessionId>
 smp report <sessionId> --turn 1
@@ -372,28 +373,55 @@ smp report export <sessionId> --format md --out report.md
 smp report export <sessionId> --format json --out report.json
 ```
 
+`smp list` 按最近更新排序；`--limit <n>` 只显示前 n 条，`--since <date>` 只显示该时间之后更新的会话
+（任意 `Date.parse` 可解析的值）。
+
 CLI 文件存储在：
 
 ```text
 ~/.smartperfetto/
 ├── index.json
+├── env
 ├── traces/
 └── sessions/<sessionId>/
     ├── config.json
     ├── conclusion.md
     ├── report.html
+    ├── transcript.jsonl
+    ├── stream.jsonl
+    ├── claim-support.json
+    ├── claim-verification.json
+    ├── identity-resolutions.json
+    ├── analysis-receipt.json
+    ├── analysis-evidence.json
+    ├── scene-report.json
     ├── source-use-decision.json
     ├── source-claim-bindings.json
     ├── ui-action-proposals.json
-    ├── transcript.jsonl
-    ├── stream.jsonl
     └── turns/
         ├── 001.md
+        ├── 001.html
+        ├── 001.claim-support.json
+        ├── 001.claim-verification.json
+        ├── 001.identity-resolutions.json
+        ├── 001.investigation-assessment.json
+        ├── 001.delivery-assurance.json
+        ├── 001.analysis-receipt.json
+        ├── 001.analysis-evidence.json
+        ├── 001.scene-report.json
         ├── 001.source-use-decision.json
         ├── 001.source-claim-bindings.json
         ├── 001.ui-action-proposals.json
-        └── 001.html
+        ├── 001.runtime-performance.json
+        └── 001.tool-results.json
 ```
+
+根目录默认是 `~/.smartperfetto`，可用 `--session-dir` 或环境变量 `SMARTPERFETTO_HOME` 改到别处（前者优先）。
+`claim-support`、`claim-verification`、`identity-resolutions` 保存断言支撑、核验结果和身份解析；
+`investigation-assessment`、`delivery-assurance` 保存调查义务评估和交付核验状态；`analysis-receipt`
+是分析回执；`scene-report.json` 只在场景还原回合中指向报告，其他回合写入显式的“无”。
+`runtime-performance.json` 只记录计时，`tool-results.json` 只记录工具结果交接事实（不含载荷值；私有回合
+去掉 Skill id），两者仅在 runtime 提供时生成。会话根目录下不带编号的同名文件是最新一轮的副本。
 
 两组 source sidecar 只在本轮有 canonical safe source provenance 时生成。最新文件会随新 turn 替换；一次无源码 turn 会清除过期的“最新” sidecar，但不删除历史 turn 文件。这两组来源元数据只保留安全决策、相对 `CodeRef` 与 mechanism binding，不包含绝对 root、snippet、检索 query 或自由文本 binding reason。分析正文与正式声明可以保留 `provider_send` 已授权的源码摘录；密钥、私有 canary 和绝对 root 仍受输出投影保护。
 
@@ -526,7 +554,7 @@ Platform-Tools binary 不会被直接盲目再分发。需要 sideload 时，CLI
 宿主机都可以抓 Android 设备；Linux 宿主机 system tracing 预留给后续
 `smp capture linux` target。
 
-当连接多个设备时必须传 `--serial`。
+当连接多个设备时必须传 `--serial`。`--adb <path>` 只为本次命令指定 adb（覆盖 `ADB_PATH`）；`--no-guardrails` 把同名参数传给设备上的 perfetto，用于超出默认 guardrail 的长时间或大 buffer 抓取。
 
 ## REPL
 

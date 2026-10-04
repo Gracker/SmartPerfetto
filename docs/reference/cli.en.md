@@ -423,6 +423,7 @@ limits in the report body.
 smp list
 smp list --json
 smp list --format json
+smp list --limit 20 --since 2026-01-01
 smp show <sessionId>
 smp report <sessionId>
 smp report <sessionId> --turn 1
@@ -433,28 +434,62 @@ smp report export <sessionId> --format md --out report.md
 smp report export <sessionId> --format json --out report.json
 ```
 
+`smp list` sorts by most recent update; `--limit <n>` shows at most n
+entries and `--since <date>` only sessions updated at or after that time (any
+`Date.parse` input).
+
 CLI files are stored under:
 
 ```text
 ~/.smartperfetto/
 ├── index.json
+├── env
 ├── traces/
 └── sessions/<sessionId>/
     ├── config.json
     ├── conclusion.md
     ├── report.html
+    ├── transcript.jsonl
+    ├── stream.jsonl
+    ├── claim-support.json
+    ├── claim-verification.json
+    ├── identity-resolutions.json
+    ├── analysis-receipt.json
+    ├── analysis-evidence.json
+    ├── scene-report.json
     ├── source-use-decision.json
     ├── source-claim-bindings.json
     ├── ui-action-proposals.json
-    ├── transcript.jsonl
-    ├── stream.jsonl
     └── turns/
         ├── 001.md
+        ├── 001.html
+        ├── 001.claim-support.json
+        ├── 001.claim-verification.json
+        ├── 001.identity-resolutions.json
+        ├── 001.investigation-assessment.json
+        ├── 001.delivery-assurance.json
+        ├── 001.analysis-receipt.json
+        ├── 001.analysis-evidence.json
+        ├── 001.scene-report.json
         ├── 001.source-use-decision.json
         ├── 001.source-claim-bindings.json
         ├── 001.ui-action-proposals.json
-        └── 001.html
+        ├── 001.runtime-performance.json
+        └── 001.tool-results.json
 ```
+
+The root defaults to `~/.smartperfetto`; move it with `--session-dir` or the
+`SMARTPERFETTO_HOME` environment variable (the flag takes priority).
+`claim-support`, `claim-verification`, and `identity-resolutions` hold claim
+support, verification results, and identity resolution;
+`investigation-assessment` and `delivery-assurance` hold the investigation
+obligation assessment and delivery verification state; `analysis-receipt` is
+the analysis receipt; `scene-report.json` points at the report only for a scene
+reconstruction turn and records an explicit none otherwise.
+`runtime-performance.json` records timing only and `tool-results.json` only the
+tool-result handoff facts (no payload values; Skill ids dropped for private
+turns); both are written only when the runtime supplies them. Unnumbered files
+in the session root are copies of the latest turn.
 
 The source sidecars exist only when the turn has canonical safe source
 provenance. Latest files are replaced by later turns; a source-free turn clears
@@ -619,7 +654,7 @@ device-ABI `tracebox` from `prebuilts/perfetto-recording-tools/android-*/` or
 and Linux hosts can capture Android devices. Linux host system tracing is
 reserved for a future `smp capture linux` target.
 
-Pass `--serial` when multiple devices are connected.
+Pass `--serial` when multiple devices are connected. `--adb <path>` selects the adb binary for this command only (overriding `ADB_PATH`); `--no-guardrails` passes the same flag to the device perfetto for long or large-buffer captures beyond its default guardrails.
 
 ## REPL
 

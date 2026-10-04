@@ -102,7 +102,7 @@ counts, `knowledgeBaseId`, the part position and a closed refusal action.
 
 | Tool | Purpose |
 |---|---|
-| `submit_plan` | Submit the investigation plan and unlock gated evidence tools in full mode |
+| `submit_plan` | Submit an investigation plan on demand; no evidence tool requires one, and once submitted its `expectedCalls` bind the run |
 | `update_plan_phase` | Update phase progress and optionally inject next-phase reminders |
 | `revise_plan` | Replace the plan when evidence changes the investigation |
 | `submit_hypothesis` | Record a testable hypothesis |
@@ -110,7 +110,9 @@ counts, `knowledgeBaseId`, the part position and a closed refusal action.
 | `flag_uncertainty` | Mark uncertainty or missing evidence explicitly |
 | `write_analysis_note` | Persist session analysis notes when configured |
 | `fetch_artifact` | Page through large SQL/Skill artifacts when an artifact store exists. `detail="rows"` returns `rows` as `{rowIndex, values}` with `rowIndex = offset + position` (artifact-wide) and `rowShape: "indexed_rows@1"`; `detail="full"` keeps the original structure |
-| `lookup_strategy_detail` | Read scene strategy details by detail ref returned from plan tools; informational fallback only and does not satisfy expectedCalls |
+| `lookup_strategy_detail` | Read the complete detail for a detail ref from the scene strategy catalog, from the run's pinned strategy registry; informational, does not satisfy expectedCalls |
+| `read_session_history` | Read earlier turns of this session as typed history (paged by `turnId`, `offset` / `limit`, `textOffset` / `maxChars`); keeps native partial/unknown status, uncertainties, and declared locators, and returns source-derived history only under the same authorization fingerprint. Not evidence acquisition; available under `existing_only` |
+| `propose_scene_timeline` | Scene reconstruction runs only (internal): submit a scene timeline candidate revision against a `baseRevision`; see [Scene Reconstruction](../architecture/scene-reconstruction.en.md) |
 
 These tools enforce investigation discipline and reduce context size. Artifact summaries are not a reason to discard full DataEnvelope evidence from frontend, reports, CLI artifacts, or snapshots.
 

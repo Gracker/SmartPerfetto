@@ -97,7 +97,7 @@ Trace 证据或源码引用。每次调用前后都复核授权上下文与固�
 
 | Tool | 作用 |
 |---|---|
-| `submit_plan` | 提交调查计划，解锁 full mode 下的核心证据工具 |
+| `submit_plan` | 按需提交调查计划；计划不是证据工具的前置条件，一旦提交，其 `expectedCalls` 对本轮有约束力 |
 | `update_plan_phase` | 更新当前 phase，并可注入下一阶段提示 |
 | `revise_plan` | 证据改变方向时替换计划 |
 | `submit_hypothesis` | 记录可验证假设 |
@@ -105,7 +105,9 @@ Trace 证据或源码引用。每次调用前后都复核授权上下文与固�
 | `flag_uncertainty` | 显式记录不确定性或缺失证据 |
 | `write_analysis_note` | 写入 session 分析笔记，按配置启用 |
 | `fetch_artifact` | 分页读取大型 SQL/Skill artifact，按 artifact store 启用。`detail="rows"` 返回 `rows: {rowIndex, values}`，`rowIndex = offset + 位置`（整个 artifact 内的行号），并带 `rowShape: "indexed_rows@1"`；`detail="full"` 保持原始结构 |
-| `lookup_strategy_detail` | 按 plan 工具返回的 detail ref 读取场景策略细节；仅作 informational fallback，不满足 expectedCalls |
+| `lookup_strategy_detail` | 按场景策略目录中的 detail ref 读取本轮固定策略注册表中的完整细节；informational，不满足 expectedCalls |
+| `read_session_history` | 读取本会话更早轮次的类型化历史（按 `turnId`、`offset` / `limit`、`textOffset` / `maxChars` 分页）；保留原生的部分完成/未知状态、不确定性和已声明的定位符，源码派生历史只在授权指纹一致时返回。不是证据采集，`existing_only` 下可用 |
+| `propose_scene_timeline` | 场景还原 run 专用（internal）：提交带 `baseRevision` 的场景时间线候选修订，见 [场景还原](../architecture/scene-reconstruction.md) |
 
 这些工具服务于分析纪律和上下文压缩。不要把 artifact 摘要当作完整证据删除；完整 DataEnvelope 仍可进入前端、报告、CLI 或 snapshot。
 
